@@ -35,6 +35,7 @@ typedef struct {
     pid_t child_pid;          /* Phase 0+1: exactly one child at a time (launcher or menu) */
     jw_child_kind child_kind;
     bool pending_menu;
+    bool daemon_only;
     bool shutdown_requested;
 } jw_daemon_state;
 
@@ -65,6 +66,10 @@ static int jw__set_bin_dir(char *argv0, char *out, size_t out_size) {
 
     snprintf(out, out_size, "%s", dir);
     return 0;
+}
+
+static void jw__print_usage(FILE *stream) {
+    fprintf(stream, "Usage: jawakad [--daemon-only] [--help]\n");
 }
 
 static int jw__reply_json(jw_ipc_client *client, cJSON *root) {
@@ -112,6 +117,21 @@ static const char *jw__child_name(jw_child_kind kind) {
         case JW_CHILD_MENU: return "jawaka-menu";
         default: return NULL;
     }
+}
+
+static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
+
+static int jw__request_open_menu(jw_daemon_state *state) {
+    if (!state) {
+        return -1;
+    }
+
+    if (state->child_pid <= 0) {
+        return jw__spawn_child(state, JW_CHILD_MENU);
+    }
+
+    state->pending_menu = true;
+    return 0;
 }
 
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
@@ -193,7 +213,10 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     }
 
     if (strcmp(type->valuestring, "open-menu") == 0) {
-        state->pending_menu = true;
+        if (jw__request_open_menu(state) != 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, "open-menu failed");
+        }
         jw_log_info("open-menu requested");
         cJSON_Delete(root);
         return jw__reply_ok(client, "open-menu", NULL);
@@ -257,6 +280,10 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         return;
     }
 
+    if (state->daemon_only) {
+        return;
+    }
+
     if (exited_kind == JW_CHILD_MENU) {
         jw__spawn_child(state, JW_CHILD_LAUNCHER);
         return;
@@ -284,8 +311,6 @@ static void jw__cleanup(jw_daemon_state *state) {
 }
 
 int main(int argc, char *argv[]) {
-    (void)argc;
-
     signal(SIGINT, jw__handle_signal);
     signal(SIGTERM, jw__handle_signal);
     signal(SIGPIPE, SIG_IGN);
@@ -293,6 +318,21 @@ int main(int argc, char *argv[]) {
     jw_daemon_state state;
     memset(&state, 0, sizeof(state));
     state.child_pid = -1;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--daemon-only") == 0) {
+            state.daemon_only = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            jw__print_usage(stdout);
+            return 0;
+        }
+
+        jw__print_usage(stderr);
+        jw_log_error("unknown argument: %s", argv[i]);
+        return 2;
+    }
 
     if (jw__set_bin_dir(argv[0], state.bin_dir, sizeof(state.bin_dir)) != 0) {
         jw_log_error("could not resolve binary directory");
@@ -336,10 +376,15 @@ int main(int argc, char *argv[]) {
     jw_log_info("sdcard root: %s", state.sdcard_root);
     jw_log_info("socket path: %s", state.socket_path);
     jw_log_info("db path: %s", state.db_path);
+    if (state.daemon_only) {
+        jw_log_info("daemon-only mode enabled");
+    }
 
-    if (jw__spawn_child(&state, JW_CHILD_LAUNCHER) != 0) {
-        jw__cleanup(&state);
-        return 1;
+    if (!state.daemon_only) {
+        if (jw__spawn_child(&state, JW_CHILD_LAUNCHER) != 0) {
+            jw__cleanup(&state);
+            return 1;
+        }
     }
 
     while (1) {

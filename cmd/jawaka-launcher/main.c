@@ -270,6 +270,9 @@ static void jw__render_launcher(const jw_launcher_state *state) {
     };
     cat_draw_footer(footer, 4);
 
+    /* This UI consumes raw SDL events directly, so keep Catastrophe out of its
+     * idle wait path; otherwise cat_present() can swallow the next wake event. */
+    cat_request_frame();
     cat_present();
 }
 

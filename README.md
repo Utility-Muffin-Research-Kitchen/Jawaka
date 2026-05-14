@@ -58,6 +58,18 @@ for manual interaction:
 JAWAKA_AUTODEMO=0 make run-daemon
 ```
 
+To keep `jawakad` running without auto-spawning a UI, use daemon-only mode:
+
+```sh
+make run-daemon-only
+```
+
+Then start the launcher separately against that daemon:
+
+```sh
+make run-launcher
+```
+
 ## Keyboard controls
 
 ### Launcher
@@ -81,6 +93,9 @@ JAWAKA_AUTODEMO=0 make run-daemon
 | `JAWAKA_RUNTIME_DIR` | runtime socket dir, defaults to `/tmp/jawaka-$USER` |
 | `JAWAKA_AUTODEMO` | `1` enables the short automated launcher/menu flow |
 | `JAWAKA_AUTODEMO_DELAY_MS` | delay before auto actions, defaults to `1200` |
+
+`build/bin/jawakad` also accepts `--daemon-only` to skip the initial
+launcher spawn when you want to attach `jawaka-launcher` manually.
 
 ## Layout
 
