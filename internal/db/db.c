@@ -272,3 +272,42 @@ int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
     jw_db_close(db);
     return rc == 0 ? 0 : -1;
 }
+
+int jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *out_count) {
+    if (!db_path || !out || max_count <= 0 || !out_count) {
+        return -1;
+    }
+
+    *out_count = 0;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    static const char *sql =
+        "SELECT name, pak_dir, icon FROM apps ORDER BY name LIMIT ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_count);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW && *out_count < max_count) {
+        const unsigned char *name = sqlite3_column_text(stmt, 0);
+        const unsigned char *pak_dir = sqlite3_column_text(stmt, 1);
+        const unsigned char *icon = sqlite3_column_text(stmt, 2);
+        int i = *out_count;
+        if (name) snprintf(out[i].name, sizeof(out[i].name), "%s", name);
+        if (pak_dir) snprintf(out[i].pak_dir, sizeof(out[i].pak_dir), "%s", pak_dir);
+        if (icon) snprintf(out[i].icon, sizeof(out[i].icon), "%s", icon);
+        (*out_count)++;
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return 0;
+}
