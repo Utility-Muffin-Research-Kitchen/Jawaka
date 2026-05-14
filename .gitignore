@@ -1,0 +1,7 @@
+build/
+mock-sdcard/
+.DS_Store
+*.o
+*.dSYM/
+third_party/catastrophe/*
+!third_party/catastrophe/.gitkeep

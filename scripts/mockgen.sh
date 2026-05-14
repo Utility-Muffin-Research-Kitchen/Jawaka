@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${JAWAKA_SDCARD_ROOT:-./mock-sdcard}"
+FORCE="${FORCE:-0}"
+ROM_COUNT=0
+SYSTEM_COUNT=0
+
+if [[ -d "$ROOT" ]]; then
+    if [[ "$FORCE" == "1" ]]; then
+        rm -rf "$ROOT"
+    else
+        echo "mockgen: updating in place"
+    fi
+fi
+
+mkdir -p "$ROOT"/Roms "$ROOT"/Images "$ROOT"/BIOS "$ROOT"/Apps
+
+create_rom() {
+    local sys="$1"
+    local ext="$2"
+    local title="$3"
+    local rom_path="$ROOT/Roms/$sys/$title.$ext"
+    local image_path="$ROOT/Images/$sys/$title.png"
+
+    mkdir -p "$ROOT/Roms/$sys" "$ROOT/Images/$sys"
+
+    if [[ ! -f "$rom_path" ]]; then
+        printf 'mock rom for %s\n' "$title" >"$rom_path"
+        ROM_COUNT=$((ROM_COUNT + 1))
+    fi
+
+    if [[ ! -f "$image_path" ]]; then
+        python3 -c "
+import sys, zlib, struct
+def c(t, d): return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+png = (b'\x89PNG\r\n\x1a\n'
+    + c(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0))
+    + c(b'IDAT', zlib.compress(b'\x00\xd0\x80\x00'))
+    + c(b'IEND', b''))
+open(sys.argv[1], 'wb').write(png)
+" "$image_path"
+    fi
+}
+
+create_app() {
+    local pak_dir="$1"
+    local app_name="$2"
+    local message="$3"
+
+    mkdir -p "$ROOT/Apps/$pak_dir"
+    printf '#!/bin/sh\nprintf "%s\\n"\n' "$message" >"$ROOT/Apps/$pak_dir/launch.sh"
+    chmod +x "$ROOT/Apps/$pak_dir/launch.sh"
+    printf '{ "name": "%s", "icon": "", "platform": "mac", "pak_version": "0.0.1", "min_jawaka_version": "0.0.1" }\n' "$app_name" >"$ROOT/Apps/$pak_dir/pak.json"
+}
+
+while IFS=: read -r sys ext titles; do
+    [[ -n "$sys" ]] || continue
+    SYSTEM_COUNT=$((SYSTEM_COUNT + 1))
+
+    IFS='|' read -r -a title_array <<<"$titles"
+    created_for_system=0
+    for title in "${title_array[@]}"; do
+        create_rom "$sys" "$ext" "$title"
+        created_for_system=$((created_for_system + 1))
+    done
+
+    target_count=20
+    if [[ "$sys" == "PORTS" ]]; then
+        target_count=5
+    fi
+
+    filler=1
+    while [[ $created_for_system -lt $target_count ]]; do
+        create_rom "$sys" "$ext" "$sys Filler $filler"
+        created_for_system=$((created_for_system + 1))
+        filler=$((filler + 1))
+    done
+done <<'EOF'
+GB:zip:Tetris|Super Mario Land|Pokemon Red|Kirby's Dream Land|Metroid II|Wario Land|Final Fantasy Adventure
+GBA:zip:Advance Wars|Golden Sun|Mario Kart Super Circuit|Metroid Fusion|Pokemon Emerald|Castlevania Aria of Sorrow|F-Zero Maximum Velocity
+GBC:zip:Pokemon Crystal|Zelda Oracle of Ages|Wario Land 3|Dragon Warrior Monsters|Survival Kids
+SFC:zip:Super Mario World|Chrono Trigger|F-Zero|Earthbound|Super Metroid|Final Fantasy VI|Star Fox
+FC:zip:Super Mario Bros 3|Metroid|Castlevania|Mega Man 2|Contra|Kirby's Adventure|Final Fantasy
+MD:zip:Sonic the Hedgehog|Streets of Rage 2|Gunstar Heroes|Phantasy Star IV|Shining Force|Rocket Knight Adventures
+GG:zip:Sonic Triple Trouble|Shinobi|Columns|Wonder Boy
+MS:zip:Phantasy Star|Wonder Boy III|Alex Kidd in Miracle World
+PCE:zip:Bonk's Adventure|R-Type|Castlevania Rondo of Blood
+NEOGEO:zip:Metal Slug|King of Fighters 98|Samurai Shodown II|Garou Mark of the Wolves
+LYNX:zip:California Games|Blue Lightning|Chip's Challenge
+PS:chd:Castlevania Symphony of the Night|Metal Gear Solid|Final Fantasy VII|Chrono Cross|Silent Hill|Resident Evil 2|Ridge Racer Type 4
+NDS:nds:Mario Kart DS|Castlevania Dawn of Sorrow|Advance Wars Dual Strike|Phoenix Wright Ace Attorney
+ARCADE:zip:1942|Street Fighter II|Final Fight|Cadillacs and Dinosaurs|Sunset Riders
+PORTS:sh:DOOM|Quake|OpenLara
+EOF
+
+create_app "HelloApp.pak" "Hello App" "Hello from a Jawaka mock pak!"
+create_app "Tools.pak" "Tools" "Tools placeholder"
+
+echo "mockgen: generated $ROM_COUNT fake ROMs across $SYSTEM_COUNT systems in $ROOT"
