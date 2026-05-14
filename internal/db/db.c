@@ -191,6 +191,44 @@ static int jw__query_string(sqlite3 *db, const char *sql, char *out, size_t out_
     return 0;
 }
 
+int jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count, int *out_count) {
+    if (!db_path || !out || max_count <= 0 || !out_count) {
+        return -1;
+    }
+
+    *out_count = 0;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    static const char *sql =
+        "SELECT system, COUNT(*) FROM games GROUP BY system ORDER BY system LIMIT ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_count);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW && *out_count < max_count) {
+        const unsigned char *name = sqlite3_column_text(stmt, 0);
+        int count = sqlite3_column_int(stmt, 1);
+        if (name) {
+            snprintf(out[*out_count].name, sizeof(out[*out_count].name), "%s", name);
+            out[*out_count].game_count = count;
+            (*out_count)++;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return 0;
+}
+
 int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
     if (!db_path || !out) {
         return -1;

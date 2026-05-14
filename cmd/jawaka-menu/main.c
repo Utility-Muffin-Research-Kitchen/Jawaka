@@ -12,7 +12,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const char *kMenuItems[] = {
+    "Rescan Library",
+    "Return to Launcher",
+    "Shutdown",
+};
+#define JW_MENU_ITEM_COUNT 3
+
+#define JW_MENU_RESCAN   0
+#define JW_MENU_RETURN   1
+#define JW_MENU_SHUTDOWN 2
+
 typedef struct {
+    int  cursor;
     char status[256];
 } jw_menu_state;
 
@@ -23,36 +35,26 @@ static int jw__env_flag(const char *name) {
 
 static uint32_t jw__env_u32(const char *name, uint32_t fallback) {
     const char *value = getenv(name);
-    if (!value || !value[0]) {
-        return fallback;
-    }
+    if (!value || !value[0]) return fallback;
     long parsed = strtol(value, NULL, 10);
-    if (parsed <= 0) {
-        return fallback;
-    }
+    if (parsed <= 0) return fallback;
     return (uint32_t)parsed;
 }
 
 static int jw__request_json(const char *socket_path, cJSON *request, cJSON **out_response) {
     char *request_json = cJSON_PrintUnformatted(request);
     cJSON_Delete(request);
-    if (!request_json) {
-        return -1;
-    }
+    if (!request_json) return -1;
 
     char *response_json = NULL;
     size_t response_len = 0;
     int rc = jw_ipc_request(socket_path, request_json, strlen(request_json), &response_json, &response_len);
     cJSON_free(request_json);
-    if (rc != 0) {
-        return -1;
-    }
+    if (rc != 0) return -1;
 
     cJSON *response = cJSON_Parse(response_json);
     free(response_json);
-    if (!response) {
-        return -1;
-    }
+    if (!response) return -1;
 
     *out_response = response;
     return 0;
@@ -64,12 +66,11 @@ static int jw__send_hello(const char *socket_path) {
     cJSON_AddStringToObject(request, "role", "menu");
 
     cJSON *response = NULL;
-    if (jw__request_json(socket_path, request, &response) != 0) {
-        return -1;
-    }
+    if (jw__request_json(socket_path, request, &response) != 0) return -1;
 
     cJSON *type = cJSON_GetObjectItemCaseSensitive(response, "type");
-    int ok = cJSON_IsString(type) && type->valuestring && strcmp(type->valuestring, "hello-ok") == 0;
+    int ok = cJSON_IsString(type) && type->valuestring &&
+             strcmp(type->valuestring, "hello-ok") == 0;
     cJSON_Delete(response);
     return ok ? 0 : -1;
 }
@@ -84,8 +85,15 @@ static int jw__send_scan(const char *socket_path, jw_menu_state *state) {
         return -1;
     }
 
+    cJSON *type = cJSON_GetObjectItemCaseSensitive(response, "type");
+    if (!cJSON_IsString(type) || strcmp(type->valuestring, "ok") != 0) {
+        snprintf(state->status, sizeof(state->status), "%s", "scan failed: daemon error");
+        cJSON_Delete(response);
+        return -1;
+    }
+
     cJSON *game_count = cJSON_GetObjectItemCaseSensitive(response, "game_count");
-    cJSON *app_count = cJSON_GetObjectItemCaseSensitive(response, "app_count");
+    cJSON *app_count  = cJSON_GetObjectItemCaseSensitive(response, "app_count");
     if (cJSON_IsNumber(game_count) && cJSON_IsNumber(app_count)) {
         snprintf(state->status, sizeof(state->status), "scan complete: %d games, %d apps",
             game_count->valueint, app_count->valueint);
@@ -109,28 +117,51 @@ static int jw__send_shutdown(const char *socket_path) {
 
 static void jw__render_menu(const jw_menu_state *state) {
     ap_theme *theme = cat_get_theme();
-    TTF_Font *body_font = cat_get_font(CAT_FONT_LARGE);
+    TTF_Font *body_font  = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small_font = cat_get_font(CAT_FONT_SMALL);
 
+    cat_status_bar_opts sb;
+    memset(&sb, 0, sizeof(sb));
+    sb.show_clock   = CAT_CLOCK_AUTO;
+    sb.show_battery = true;
+
     cat_clear_screen();
-    cat_draw_screen_title("Jawaka Menu", NULL);
+    cat_draw_screen_title("Menu", &sb);
 
-    SDL_Rect content = cat_get_content_rect(true, false, false);
-    int x = CAT_S(24);
-    int y = content.y + CAT_S(16);
-    int max_w = content.w - CAT_S(48);
+    SDL_Rect content = cat_get_content_rect(true, true, false);
+    int x      = content.x + CAT_S(24);
+    int item_h = CAT_S(36);
+    int item_w = content.w * 55 / 100;
 
-    cat_draw_text_wrapped(body_font, "Daemon-owned contextual shell", x, y, max_w, theme->accent, CAT_ALIGN_LEFT);
-    y += CAT_S(34);
+    for (int i = 0; i < JW_MENU_ITEM_COUNT; i++) {
+        int iy = content.y + CAT_S(16) + i * item_h;
 
-    cat_draw_text_wrapped(small_font, "R rescan library", x, y, max_w, theme->text, CAT_ALIGN_LEFT);
-    y += CAT_S(20);
-    cat_draw_text_wrapped(small_font, "Esc return to launcher", x, y, max_w, theme->text, CAT_ALIGN_LEFT);
-    y += CAT_S(20);
-    cat_draw_text_wrapped(small_font, "Q shutdown", x, y, max_w, theme->text, CAT_ALIGN_LEFT);
-    y += CAT_S(34);
+        if (i == state->cursor) {
+            cat_draw_pill(x - CAT_S(10), iy,
+                item_w, item_h - CAT_S(4),
+                theme->highlight);
+        }
 
-    cat_draw_text_wrapped(small_font, state->status, x, y, max_w, theme->hint, CAT_ALIGN_LEFT);
+        ap_color color = (i == state->cursor) ? theme->highlighted_text : theme->text;
+        int text_y = iy + (item_h - CAT_S(4) - TTF_FontHeight(body_font)) / 2;
+        cat_draw_text(body_font, kMenuItems[i], x, text_y, color);
+    }
+
+    /* Status line */
+    if (state->status[0]) {
+        int status_y = content.y + content.h - CAT_S(28);
+        cat_draw_text_ellipsized(small_font, state->status,
+            x, status_y, theme->hint, item_w);
+    }
+
+    /* Footer */
+    cat_footer_item footer[] = {
+        { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+        { CAT_BTN_A,  "Select",   false, NULL },
+        { CAT_BTN_B,  "Back",     false, "Esc" },
+    };
+    cat_draw_footer(footer, 3);
+
     cat_present();
 }
 
@@ -175,10 +206,34 @@ int main(void) {
                 running = false;
             } else if (event.type == SDL_KEYDOWN && !event.key.repeat) {
                 switch (event.key.keysym.sym) {
+                    case SDLK_UP:
+                        if (state.cursor > 0) state.cursor--;
+                        break;
+                    case SDLK_DOWN:
+                        if (state.cursor < JW_MENU_ITEM_COUNT - 1) state.cursor++;
+                        break;
+                    case SDLK_RETURN:
+                        switch (state.cursor) {
+                            case JW_MENU_RESCAN:
+                                snprintf(state.status, sizeof(state.status), "%s", "scanning...");
+                                jw__render_menu(&state);
+                                jw__send_scan(socket_path, &state);
+                                break;
+                            case JW_MENU_RETURN:
+                                running = false;
+                                break;
+                            case JW_MENU_SHUTDOWN:
+                                jw__send_shutdown(socket_path);
+                                running = false;
+                                break;
+                        }
+                        break;
                     case SDLK_ESCAPE:
                         running = false;
                         break;
                     case SDLK_r:
+                        snprintf(state.status, sizeof(state.status), "%s", "scanning...");
+                        jw__render_menu(&state);
                         jw__send_scan(socket_path, &state);
                         break;
                     case SDLK_q:

@@ -10,6 +10,11 @@ typedef struct {
     char sample_summary[256];
 } jw_library_summary;
 
+typedef struct {
+    char name[64];
+    int  game_count;
+} jw_system_entry;
+
 int  jw_db_open(const char *path, sqlite3 **out);
 int  jw_db_apply_schema(sqlite3 *db);
 void jw_db_close(sqlite3 *db);
@@ -18,5 +23,6 @@ int  jw_db_reset_library(sqlite3 *db);
 int  jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path);
 int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version);
 int  jw_db_read_summary(const char *db_path, jw_library_summary *out);
+int  jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count, int *out_count);
 
 #endif

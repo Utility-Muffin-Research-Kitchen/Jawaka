@@ -35,7 +35,7 @@ UI_SRCS := \
 	internal/db/db.c \
 	third_party/cjson/cJSON.c
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu mockgen run-daemon run-launcher run-menu clean help tg5040 tg5050 my355 check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu mockgen run-daemon run-daemon-interactive run-launcher run-menu clean help tg5040 tg5050 my355 check-catastrophe check-sdl
 
 all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu
 
@@ -67,16 +67,25 @@ mockgen:
 	bash scripts/mockgen.sh
 
 run-daemon: $(BUILD)/bin/jawakad mockgen
+	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
 	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
 	JAWAKA_AUTODEMO="$${JAWAKA_AUTODEMO:-1}" \
 	JAWAKA_AUTODEMO_DELAY_MS="$${JAWAKA_AUTODEMO_DELAY_MS:-1200}" \
 	$(BUILD)/bin/jawakad
 
+run-daemon-interactive: $(BUILD)/bin/jawakad mockgen
+	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
+	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
+	JAWAKA_AUTODEMO=0 \
+	$(BUILD)/bin/jawakad
+
 run-launcher: $(BUILD)/bin/jawaka-launcher mockgen
+	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
 	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
 	$(BUILD)/bin/jawaka-launcher
 
 run-menu: $(BUILD)/bin/jawaka-menu mockgen
+	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
 	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
 	$(BUILD)/bin/jawaka-menu
 
@@ -92,9 +101,10 @@ help:
 	@echo "===================="
 	@echo "  make               Build jawakad, jawaka-launcher, jawaka-menu"
 	@echo "  make mockgen       Create/update the mock SD-card tree"
-	@echo "  make run-daemon    Run the daemon-driven phase-0/1 demo"
-	@echo "  make run-launcher  Run jawaka-launcher directly"
-	@echo "  make run-menu      Run jawaka-menu directly"
+	@echo "  make run-daemon              Run the daemon-driven phase-0/1 demo (auto-transitions)"
+	@echo "  make run-daemon-interactive  Run daemon without auto-demo (stays open for testing)"
+	@echo "  make run-launcher            Run jawaka-launcher directly"
+	@echo "  make run-menu                Run jawaka-menu directly"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"
 	@echo "  make tg5050        Placeholder cross-compile target"

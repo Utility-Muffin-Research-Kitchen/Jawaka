@@ -13,10 +13,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define JW_MAX_SYSTEMS 64
+#define JW_TAB_GAMES   1
+
+static const char *kTabs[] = { "Recents", "Games", "Apps", "Settings" };
+
 typedef struct {
     jw_library_summary summary;
-    char status[256];
-    bool scan_ready;
+    jw_system_entry    systems[JW_MAX_SYSTEMS];
+    int                system_count;
+    int                cursor;
+    int                scroll_offset;
+    int                visible_rows;
+    char               status[256];
+    bool               scan_ready;
 } jw_launcher_state;
 
 static int jw__env_flag(const char *name) {
@@ -26,36 +36,26 @@ static int jw__env_flag(const char *name) {
 
 static uint32_t jw__env_u32(const char *name, uint32_t fallback) {
     const char *value = getenv(name);
-    if (!value || !value[0]) {
-        return fallback;
-    }
+    if (!value || !value[0]) return fallback;
     long parsed = strtol(value, NULL, 10);
-    if (parsed <= 0) {
-        return fallback;
-    }
+    if (parsed <= 0) return fallback;
     return (uint32_t)parsed;
 }
 
 static int jw__request_json(const char *socket_path, cJSON *request, cJSON **out_response) {
     char *request_json = cJSON_PrintUnformatted(request);
     cJSON_Delete(request);
-    if (!request_json) {
-        return -1;
-    }
+    if (!request_json) return -1;
 
     char *response_json = NULL;
     size_t response_len = 0;
     int rc = jw_ipc_request(socket_path, request_json, strlen(request_json), &response_json, &response_len);
     cJSON_free(request_json);
-    if (rc != 0) {
-        return -1;
-    }
+    if (rc != 0) return -1;
 
     cJSON *response = cJSON_Parse(response_json);
     free(response_json);
-    if (!response) {
-        return -1;
-    }
+    if (!response) return -1;
 
     *out_response = response;
     return 0;
@@ -67,17 +67,17 @@ static int jw__send_hello(const char *socket_path) {
     cJSON_AddStringToObject(request, "role", "launcher");
 
     cJSON *response = NULL;
-    if (jw__request_json(socket_path, request, &response) != 0) {
-        return -1;
-    }
+    if (jw__request_json(socket_path, request, &response) != 0) return -1;
 
     cJSON *type = cJSON_GetObjectItemCaseSensitive(response, "type");
-    int ok = cJSON_IsString(type) && type->valuestring && strcmp(type->valuestring, "hello-ok") == 0;
+    int ok = cJSON_IsString(type) && type->valuestring &&
+             strcmp(type->valuestring, "hello-ok") == 0;
     cJSON_Delete(response);
     return ok ? 0 : -1;
 }
 
-static int jw__scan_library(const char *socket_path, const char *db_path, jw_launcher_state *state) {
+static int jw__scan_library(const char *socket_path, const char *db_path,
+                             jw_launcher_state *state) {
     cJSON *request = cJSON_CreateObject();
     cJSON_AddStringToObject(request, "type", "scan-library");
 
@@ -100,9 +100,13 @@ static int jw__scan_library(const char *socket_path, const char *db_path, jw_lau
         return -1;
     }
 
+    jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
+
     state->scan_ready = true;
-    snprintf(state->status, sizeof(state->status), "scan complete: %d games, %d apps",
-        state->summary.game_count, state->summary.app_count);
+    state->cursor = 0;
+    state->scroll_offset = 0;
+    snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
+        state->summary.game_count, state->system_count, state->summary.app_count);
     return 0;
 }
 
@@ -128,45 +132,116 @@ static int jw__send_shutdown(const char *socket_path) {
 
 static void jw__render_launcher(const jw_launcher_state *state) {
     ap_theme *theme = cat_get_theme();
-    TTF_Font *body_font = cat_get_font(CAT_FONT_LARGE);
+    TTF_Font *body_font  = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small_font = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *large_font = cat_get_font(CAT_FONT_EXTRA_LARGE);
 
     cat_clear_screen();
-    cat_draw_screen_title("Jawaka Launcher", NULL);
 
-    SDL_Rect content = cat_get_content_rect(true, false, false);
-    int x = CAT_S(24);
-    int y = content.y + CAT_S(12);
-    int max_w = content.w - CAT_S(48);
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    int fh = cat_get_footer_height();
 
-    cat_draw_text_wrapped(body_font,
-        "Games | Apps | Recents | Favorites | Settings",
-        x, y, max_w, theme->accent, CAT_ALIGN_LEFT);
-    y += CAT_S(34);
+    /* Tab bar header */
+    int header_h = CAT_DS(26);
+    cat_draw_rect(0, 0, sw, header_h, theme->accent);
 
-    char line[256];
-    snprintf(line, sizeof(line), "Games indexed: %d", state->summary.game_count);
-    cat_draw_text(body_font, line, x, y, theme->text);
-    y += CAT_S(24);
+    int tab_font_h = TTF_FontHeight(small_font);
+    int tab_y = (header_h - tab_font_h) / 2;
+    int tab_x = CAT_S(16);
+    for (int i = 0; i < 4; i++) {
+        ap_color color = (i == JW_TAB_GAMES) ? theme->text : theme->hint;
+        int tw = cat_draw_text(small_font, kTabs[i], tab_x, tab_y, color);
+        tab_x += tw + CAT_S(20);
+    }
 
-    snprintf(line, sizeof(line), "Apps indexed: %d", state->summary.app_count);
-    cat_draw_text(body_font, line, x, y, theme->text);
-    y += CAT_S(24);
+    /* Content geometry */
+    int margin    = CAT_S(12);
+    int content_y = header_h;
+    int content_h = sh - header_h - fh;
 
-    snprintf(line, sizeof(line), "Systems: %s", state->summary.systems_summary[0] ? state->summary.systems_summary : "none");
-    cat_draw_text_wrapped(small_font, line, x, y, max_w, theme->text, CAT_ALIGN_LEFT);
-    y += CAT_S(30);
+    /* Left panel: systems list (45% of screen width) */
+    int list_x   = margin;
+    int list_w   = sw * 45 / 100;
+    int item_h   = CAT_S(34);
+    int list_h   = content_h - CAT_S(28); /* reserve bottom row for status */
+    int visible  = (list_h - margin) / item_h;
+    if (visible < 1) visible = 1;
 
-    snprintf(line, sizeof(line), "Sample: %s", state->summary.sample_summary[0] ? state->summary.sample_summary : "none");
-    cat_draw_text_wrapped(small_font, line, x, y, max_w, theme->text, CAT_ALIGN_LEFT);
-    y += CAT_S(40);
+    /* Right panel: art placeholder */
+    int art_x = list_w + margin * 2;
+    int art_y = content_y + margin;
+    int art_w = sw - art_x - margin;
+    int art_h = content_h - margin * 2;
 
-    cat_draw_text_wrapped(small_font, state->status, x, y, max_w, theme->hint, CAT_ALIGN_LEFT);
-    y += CAT_S(36);
+    cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
+        cat_hex_to_color("#ffffff18"));
 
-    cat_draw_text_wrapped(small_font,
-        "M open menu  |  R rescan  |  Q shutdown",
-        x, y, max_w, theme->accent, CAT_ALIGN_LEFT);
+    /* System name preview inside art panel */
+    if (state->system_count > 0 && state->cursor < state->system_count) {
+        const char *sys = state->systems[state->cursor].name;
+        int large_h = TTF_FontHeight(large_font);
+        int tw = cat_measure_text(large_font, sys);
+        cat_draw_text_ellipsized(large_font, sys,
+            art_x + (art_w - tw) / 2,
+            art_y + (art_h - large_h) / 2,
+            theme->hint, art_w - margin * 2);
+    }
+
+    /* Systems list items */
+    if (state->system_count == 0) {
+        cat_draw_text_wrapped(body_font,
+            state->scan_ready ? "No games found" : "Scanning library...",
+            list_x + CAT_S(8), content_y + margin + CAT_S(8),
+            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+    } else {
+        for (int i = state->scroll_offset;
+             i < state->system_count && i < state->scroll_offset + visible; i++) {
+            int iy = content_y + margin + (i - state->scroll_offset) * item_h;
+
+            if (i == state->cursor) {
+                cat_draw_pill(list_x, iy,
+                    list_w - margin - CAT_S(6), item_h - CAT_S(4),
+                    theme->highlight);
+            }
+
+            ap_color name_col  = (i == state->cursor) ? theme->highlighted_text : theme->text;
+            ap_color count_col = (i == state->cursor) ? theme->highlighted_text : theme->hint;
+
+            char count_str[16];
+            snprintf(count_str, sizeof(count_str), "%d", state->systems[i].game_count);
+            int count_w = cat_measure_text(small_font, count_str);
+            int name_max_w = list_w - margin - CAT_S(6) - count_w - CAT_S(20);
+
+            int text_y = iy + (item_h - CAT_S(4) - TTF_FontHeight(body_font)) / 2;
+            cat_draw_text_ellipsized(body_font, state->systems[i].name,
+                list_x + CAT_S(10), text_y, name_col, name_max_w);
+
+            int count_x = list_x + list_w - margin - CAT_S(6) - count_w;
+            int small_y = iy + (item_h - CAT_S(4) - TTF_FontHeight(small_font)) / 2;
+            cat_draw_text(small_font, count_str, count_x, small_y, count_col);
+        }
+
+        if (state->system_count > visible) {
+            cat_draw_scrollbar(list_x + list_w - CAT_S(4),
+                content_y + margin, list_h - margin,
+                visible, state->system_count, state->scroll_offset);
+        }
+    }
+
+    /* Status line */
+    int status_y = sh - fh - CAT_S(26);
+    cat_draw_text_ellipsized(small_font, state->status,
+        list_x, status_y, theme->hint, list_w);
+
+    /* Footer */
+    cat_footer_item footer[] = {
+        { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+        { CAT_BTN_A,    "Select",   false, NULL },
+        { CAT_BTN_MENU, "Menu",     false, "M"  },
+        { CAT_BTN_Y,    "Rescan",   false, "R"  },
+    };
+    cat_draw_footer(footer, 4);
 
     cat_present();
 }
@@ -202,12 +277,20 @@ int main(void) {
 
     jw_launcher_state state;
     memset(&state, 0, sizeof(state));
-    snprintf(state.summary.systems_summary, sizeof(state.summary.systems_summary), "%s", "pending");
-    snprintf(state.summary.sample_summary, sizeof(state.summary.sample_summary), "%s", "pending");
     snprintf(state.status, sizeof(state.status), "%s", "scanning library...");
 
-    jw__render_launcher(&state);
+    /* Compute visible_rows from layout constants (used for keyboard scrolling) */
+    {
+        int fh = cat_get_footer_height();
+        int header_h = CAT_DS(26);
+        int content_h = cat_get_screen_height() - header_h - fh;
+        int list_h = content_h - CAT_S(28);
+        int item_h = CAT_S(34);
+        state.visible_rows = (list_h - CAT_S(12)) / item_h;
+        if (state.visible_rows < 1) state.visible_rows = 1;
+    }
 
+    jw__render_launcher(&state);
     jw__scan_library(socket_path, db_path, &state);
 
     bool running = true;
@@ -224,6 +307,22 @@ int main(void) {
                 running = false;
             } else if (event.type == SDL_KEYDOWN && !event.key.repeat) {
                 switch (event.key.keysym.sym) {
+                    case SDLK_UP:
+                        if (state.cursor > 0) {
+                            state.cursor--;
+                            if (state.cursor < state.scroll_offset) {
+                                state.scroll_offset = state.cursor;
+                            }
+                        }
+                        break;
+                    case SDLK_DOWN:
+                        if (state.cursor < state.system_count - 1) {
+                            state.cursor++;
+                            if (state.cursor >= state.scroll_offset + state.visible_rows) {
+                                state.scroll_offset = state.cursor - state.visible_rows + 1;
+                            }
+                        }
+                        break;
                     case SDLK_m:
                         if (jw__send_open_menu(socket_path) == 0) {
                             cat_hide_window();
@@ -233,6 +332,8 @@ int main(void) {
                         }
                         break;
                     case SDLK_r:
+                        snprintf(state.status, sizeof(state.status), "%s", "rescanning...");
+                        jw__render_launcher(&state);
                         jw__scan_library(socket_path, db_path, &state);
                         break;
                     case SDLK_q:
