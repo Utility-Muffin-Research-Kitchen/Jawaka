@@ -18,6 +18,9 @@ CFLAGS_DAEMON := $(CFLAGS_COMMON)
 CFLAGS_UI := $(CFLAGS_COMMON) -I$(CATASTROPHE_INCLUDE) $(SDL_CFLAGS)
 LDLIBS_COMMON := -lsqlite3
 LDLIBS_UI := $(LDLIBS_COMMON) $(SDL_LDFLAGS) -lm -lpthread
+ifeq ($(shell uname -s),Darwin)
+LDLIBS_UI += -lobjc
+endif
 
 DAEMON_SRCS := \
 	cmd/jawakad/main.c \

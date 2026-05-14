@@ -13,6 +13,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __APPLE__
+#include <objc/objc.h>
+#include <objc/message.h>
+static void jw__platform_activate(void) {
+    /* SDL_RaiseWindow alone doesn't give keyboard focus when the process was
+     * spawned from a background daemon. Promote to a regular foreground app
+     * and request activation through the Cocoa layer. */
+    typedef id   (*id_fn)(id, SEL);
+    typedef void (*void_long_fn)(id, SEL, long);
+    typedef void (*void_int_fn)(id, SEL, int);
+    id app = ((id_fn)objc_msgSend)((id)objc_getClass("NSApplication"),
+                                    sel_registerName("sharedApplication"));
+    ((void_long_fn)objc_msgSend)(app, sel_registerName("setActivationPolicy:"), 0L);
+    ((void_int_fn)objc_msgSend)(app, sel_registerName("activateIgnoringOtherApps:"), 1);
+}
+#else
+static void jw__platform_activate(void) {}
+#endif
+
 #define JW_MAX_SYSTEMS 64
 #define JW_TAB_GAMES   1
 
@@ -150,8 +169,12 @@ static void jw__render_launcher(const jw_launcher_state *state) {
     int tab_y = (header_h - tab_font_h) / 2;
     int tab_x = CAT_S(16);
     for (int i = 0; i < 4; i++) {
-        ap_color color = (i == JW_TAB_GAMES) ? theme->text : theme->hint;
+        bool active = (i == JW_TAB_GAMES);
+        ap_color color = active ? theme->text : theme->hint;
         int tw = cat_draw_text(small_font, kTabs[i], tab_x, tab_y, color);
+        if (active) {
+            cat_draw_rect(tab_x, header_h - CAT_S(3), tw, CAT_S(3), theme->text);
+        }
         tab_x += tw + CAT_S(20);
     }
 
@@ -163,7 +186,8 @@ static void jw__render_launcher(const jw_launcher_state *state) {
     /* Left panel: systems list (45% of screen width) */
     int list_x   = margin;
     int list_w   = sw * 45 / 100;
-    int item_h   = CAT_S(34);
+    int body_h   = TTF_FontHeight(body_font);
+    int item_h   = body_h + CAT_S(12);    /* sized to the actual rendered font */
     int list_h   = content_h - CAT_S(28); /* reserve bottom row for status */
     int visible  = (list_h - margin) / item_h;
     if (visible < 1) visible = 1;
@@ -199,10 +223,13 @@ static void jw__render_launcher(const jw_launcher_state *state) {
              i < state->system_count && i < state->scroll_offset + visible; i++) {
             int iy = content_y + margin + (i - state->scroll_offset) * item_h;
 
+            int pad    = CAT_S(6);
+            int pill_h = body_h + pad;
+            int pill_y = iy + (item_h - pill_h) / 2;
+            int pill_w = list_w - margin - CAT_S(4);
+
             if (i == state->cursor) {
-                cat_draw_pill(list_x, iy,
-                    list_w - margin - CAT_S(6), item_h - CAT_S(4),
-                    theme->highlight);
+                cat_draw_pill(list_x, pill_y, pill_w, pill_h, theme->highlight);
             }
 
             ap_color name_col  = (i == state->cursor) ? theme->highlighted_text : theme->text;
@@ -211,14 +238,14 @@ static void jw__render_launcher(const jw_launcher_state *state) {
             char count_str[16];
             snprintf(count_str, sizeof(count_str), "%d", state->systems[i].game_count);
             int count_w = cat_measure_text(small_font, count_str);
-            int name_max_w = list_w - margin - CAT_S(6) - count_w - CAT_S(20);
+            int name_max_w = pill_w - count_w - CAT_S(24);
 
-            int text_y = iy + (item_h - CAT_S(4) - TTF_FontHeight(body_font)) / 2;
+            int text_y  = pill_y + (pill_h - body_h) / 2;
             cat_draw_text_ellipsized(body_font, state->systems[i].name,
                 list_x + CAT_S(10), text_y, name_col, name_max_w);
 
-            int count_x = list_x + list_w - margin - CAT_S(6) - count_w;
-            int small_y = iy + (item_h - CAT_S(4) - TTF_FontHeight(small_font)) / 2;
+            int count_x = list_x + pill_w - count_w - CAT_S(8);
+            int small_y = pill_y + (pill_h - TTF_FontHeight(small_font)) / 2;
             cat_draw_text(small_font, count_str, count_x, small_y, count_col);
         }
 
@@ -275,17 +302,23 @@ int main(void) {
         return 1;
     }
 
+    /* On macOS, windows spawned from a background process don't get keyboard
+     * focus automatically; raise the window and activate through Cocoa. */
+    SDL_RaiseWindow(cat_get_window());
+    jw__platform_activate();
+
     jw_launcher_state state;
     memset(&state, 0, sizeof(state));
     snprintf(state.status, sizeof(state.status), "%s", "scanning library...");
 
-    /* Compute visible_rows from layout constants (used for keyboard scrolling) */
+    /* Compute visible_rows — must match the item_h formula in jw__render_launcher */
     {
         int fh = cat_get_footer_height();
         int header_h = CAT_DS(26);
         int content_h = cat_get_screen_height() - header_h - fh;
         int list_h = content_h - CAT_S(28);
-        int item_h = CAT_S(34);
+        int body_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM));
+        int item_h = body_h + CAT_S(12);
         state.visible_rows = (list_h - CAT_S(12)) / item_h;
         if (state.visible_rows < 1) state.visible_rows = 1;
     }

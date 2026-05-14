@@ -12,6 +12,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __APPLE__
+#include <objc/objc.h>
+#include <objc/message.h>
+static void jw__platform_activate(void) {
+    typedef id   (*id_fn)(id, SEL);
+    typedef void (*void_long_fn)(id, SEL, long);
+    typedef void (*void_int_fn)(id, SEL, int);
+    id app = ((id_fn)objc_msgSend)((id)objc_getClass("NSApplication"),
+                                    sel_registerName("sharedApplication"));
+    ((void_long_fn)objc_msgSend)(app, sel_registerName("setActivationPolicy:"), 0L);
+    ((void_int_fn)objc_msgSend)(app, sel_registerName("activateIgnoringOtherApps:"), 1);
+}
+#else
+static void jw__platform_activate(void) {}
+#endif
+
 static const char *kMenuItems[] = {
     "Rescan Library",
     "Return to Launcher",
@@ -130,20 +146,24 @@ static void jw__render_menu(const jw_menu_state *state) {
 
     SDL_Rect content = cat_get_content_rect(true, true, false);
     int x      = content.x + CAT_S(24);
-    int item_h = CAT_S(36);
     int item_w = content.w * 55 / 100;
 
+    int body_h  = TTF_FontHeight(body_font);
+    int item_h  = body_h + CAT_S(12);
+    int pad     = CAT_S(6);
+    int pill_h  = body_h + pad;
+    int pill_w  = item_w;
+
     for (int i = 0; i < JW_MENU_ITEM_COUNT; i++) {
-        int iy = content.y + CAT_S(16) + i * item_h;
+        int iy     = content.y + CAT_S(16) + i * item_h;
+        int pill_y = iy + (item_h - pill_h) / 2;
 
         if (i == state->cursor) {
-            cat_draw_pill(x - CAT_S(10), iy,
-                item_w, item_h - CAT_S(4),
-                theme->highlight);
+            cat_draw_pill(x - CAT_S(10), pill_y, pill_w, pill_h, theme->highlight);
         }
 
         ap_color color = (i == state->cursor) ? theme->highlighted_text : theme->text;
-        int text_y = iy + (item_h - CAT_S(4) - TTF_FontHeight(body_font)) / 2;
+        int text_y = pill_y + (pill_h - body_h) / 2;
         cat_draw_text(body_font, kMenuItems[i], x, text_y, color);
     }
 
@@ -188,6 +208,11 @@ int main(void) {
         free(socket_path);
         return 1;
     }
+
+    /* On macOS, windows spawned from a background process don't get keyboard
+     * focus automatically; raise the window and activate through Cocoa. */
+    SDL_RaiseWindow(cat_get_window());
+    jw__platform_activate();
 
     jw_menu_state state;
     memset(&state, 0, sizeof(state));
