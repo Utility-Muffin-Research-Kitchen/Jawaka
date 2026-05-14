@@ -149,6 +149,22 @@ static int jw__send_shutdown(const char *socket_path) {
     return rc;
 }
 
+static void jw__move_cursor(jw_launcher_state *state, int delta) {
+    if (!state || delta == 0) return;
+
+    int next = state->cursor + delta;
+    if (next < 0) next = 0;
+    if (next >= state->system_count) next = state->system_count - 1;
+    if (next < 0 || next == state->cursor) return;
+
+    state->cursor = next;
+    if (state->cursor < state->scroll_offset) {
+        state->scroll_offset = state->cursor;
+    } else if (state->cursor >= state->scroll_offset + state->visible_rows) {
+        state->scroll_offset = state->cursor - state->visible_rows + 1;
+    }
+}
+
 static void jw__render_launcher(const jw_launcher_state *state) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body_font  = cat_get_font(CAT_FONT_MEDIUM);
@@ -264,16 +280,49 @@ static void jw__render_launcher(const jw_launcher_state *state) {
     /* Footer */
     cat_footer_item footer[] = {
         { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
-        { CAT_BTN_A,    "Select",   false, NULL },
-        { CAT_BTN_MENU, "Menu",     false, "M"  },
-        { CAT_BTN_Y,    "Rescan",   false, "R"  },
+        { CAT_BTN_MENU, "Menu",     false, "H"  },
+        { CAT_BTN_Y,    "Rescan",   false, "Y"  },
+        { CAT_BTN_B,    "Shutdown", false, "B"  },
     };
     cat_draw_footer(footer, 4);
 
-    /* This UI consumes raw SDL events directly, so keep Catastrophe out of its
-     * idle wait path; otherwise cat_present() can swallow the next wake event. */
-    cat_request_frame();
     cat_present();
+}
+
+static void jw__rescan(const char *socket_path, const char *db_path, jw_launcher_state *state) {
+    snprintf(state->status, sizeof(state->status), "%s", "rescanning...");
+    cat_request_frame();
+    jw__render_launcher(state);
+    jw__scan_library(socket_path, db_path, state);
+}
+
+static void jw__handle_input(const char *socket_path, const char *db_path,
+                              jw_launcher_state *state, cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_UP:
+            jw__move_cursor(state, -1);
+            break;
+        case CAT_BTN_DOWN:
+            jw__move_cursor(state, 1);
+            break;
+        case CAT_BTN_MENU:
+            if (jw__send_open_menu(socket_path) == 0) {
+                cat_hide_window();
+                *running = false;
+            } else {
+                snprintf(state->status, sizeof(state->status), "%s", "open-menu failed");
+            }
+            break;
+        case CAT_BTN_Y:
+            jw__rescan(socket_path, db_path, state);
+            break;
+        case CAT_BTN_B:
+            jw__send_shutdown(socket_path);
+            *running = false;
+            break;
+        default:
+            break;
+    }
 }
 
 int main(void) {
@@ -336,61 +385,25 @@ int main(void) {
     uint32_t started_ms = SDL_GetTicks();
 
     while (running) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) {
-                jw__send_shutdown(socket_path);
+        cat_input_event event;
+        while (cat_poll_input(&event)) {
+            if (!event.pressed) continue;
+            jw__handle_input(socket_path, db_path, &state, event.button, &running);
+        }
+
+        if (auto_demo && !auto_action_sent) {
+            uint32_t elapsed_ms = SDL_GetTicks() - started_ms;
+            if (elapsed_ms >= auto_delay_ms) {
+                cat_hide_window();
+                jw__send_open_menu(socket_path);
+                auto_action_sent = true;
                 running = false;
-            } else if (event.type == SDL_KEYDOWN && !event.key.repeat) {
-                switch (event.key.keysym.sym) {
-                    case SDLK_UP:
-                        if (state.cursor > 0) {
-                            state.cursor--;
-                            if (state.cursor < state.scroll_offset) {
-                                state.scroll_offset = state.cursor;
-                            }
-                        }
-                        break;
-                    case SDLK_DOWN:
-                        if (state.cursor < state.system_count - 1) {
-                            state.cursor++;
-                            if (state.cursor >= state.scroll_offset + state.visible_rows) {
-                                state.scroll_offset = state.cursor - state.visible_rows + 1;
-                            }
-                        }
-                        break;
-                    case SDLK_m:
-                        if (jw__send_open_menu(socket_path) == 0) {
-                            cat_hide_window();
-                            running = false;
-                        } else {
-                            snprintf(state.status, sizeof(state.status), "%s", "open-menu failed");
-                        }
-                        break;
-                    case SDLK_r:
-                        snprintf(state.status, sizeof(state.status), "%s", "rescanning...");
-                        jw__render_launcher(&state);
-                        jw__scan_library(socket_path, db_path, &state);
-                        break;
-                    case SDLK_q:
-                        jw__send_shutdown(socket_path);
-                        running = false;
-                        break;
-                    default:
-                        break;
-                }
+            } else {
+                cat_request_frame_in(auto_delay_ms - elapsed_ms);
             }
         }
 
-        if (auto_demo && !auto_action_sent && SDL_GetTicks() - started_ms >= auto_delay_ms) {
-            cat_hide_window();
-            jw__send_open_menu(socket_path);
-            auto_action_sent = true;
-            running = false;
-        }
-
         jw__render_launcher(&state);
-        SDL_Delay(16);
     }
 
     cat_quit();

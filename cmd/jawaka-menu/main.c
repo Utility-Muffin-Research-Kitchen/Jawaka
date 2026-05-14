@@ -131,6 +131,8 @@ static int jw__send_shutdown(const char *socket_path) {
     return rc;
 }
 
+static int jw__activate_selection(const char *socket_path, jw_menu_state *state, bool *running);
+
 static void jw__render_menu(const jw_menu_state *state) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body_font  = cat_get_font(CAT_FONT_MEDIUM);
@@ -177,15 +179,61 @@ static void jw__render_menu(const jw_menu_state *state) {
     /* Footer */
     cat_footer_item footer[] = {
         { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
-        { CAT_BTN_A,  "Select",   false, NULL },
-        { CAT_BTN_B,  "Back",     false, "Esc" },
+        { CAT_BTN_A,  "Select",   false, "A" },
+        { CAT_BTN_B,  "Back",     false, "B" },
     };
     cat_draw_footer(footer, 3);
 
-    /* This UI consumes raw SDL events directly, so keep Catastrophe out of its
-     * idle wait path; otherwise cat_present() can swallow the next wake event. */
-    cat_request_frame();
     cat_present();
+}
+
+static void jw__move_cursor(jw_menu_state *state, int delta) {
+    if (!state || delta == 0) return;
+
+    int next = state->cursor + delta;
+    if (next < 0) next = 0;
+    if (next >= JW_MENU_ITEM_COUNT) next = JW_MENU_ITEM_COUNT - 1;
+    state->cursor = next;
+}
+
+static int jw__activate_selection(const char *socket_path, jw_menu_state *state, bool *running) {
+    switch (state->cursor) {
+        case JW_MENU_RESCAN:
+            snprintf(state->status, sizeof(state->status), "%s", "scanning...");
+            cat_request_frame();
+            jw__render_menu(state);
+            return jw__send_scan(socket_path, state);
+        case JW_MENU_RETURN:
+            *running = false;
+            return 0;
+        case JW_MENU_SHUTDOWN:
+            jw__send_shutdown(socket_path);
+            *running = false;
+            return 0;
+        default:
+            return 0;
+    }
+}
+
+static void jw__handle_input(const char *socket_path, jw_menu_state *state,
+                              cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_UP:
+            jw__move_cursor(state, -1);
+            break;
+        case CAT_BTN_DOWN:
+            jw__move_cursor(state, 1);
+            break;
+        case CAT_BTN_A:
+        case CAT_BTN_START:
+            jw__activate_selection(socket_path, state, running);
+            break;
+        case CAT_BTN_B:
+            *running = false;
+            break;
+        default:
+            break;
+    }
 }
 
 int main(void) {
@@ -228,60 +276,24 @@ int main(void) {
     uint32_t started_ms = SDL_GetTicks();
 
     while (running) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) {
+        cat_input_event event;
+        while (cat_poll_input(&event)) {
+            if (!event.pressed) continue;
+            jw__handle_input(socket_path, &state, event.button, &running);
+        }
+
+        if (auto_demo && !auto_shutdown_sent) {
+            uint32_t elapsed_ms = SDL_GetTicks() - started_ms;
+            if (elapsed_ms >= auto_delay_ms) {
+                jw__send_shutdown(socket_path);
+                auto_shutdown_sent = true;
                 running = false;
-            } else if (event.type == SDL_KEYDOWN && !event.key.repeat) {
-                switch (event.key.keysym.sym) {
-                    case SDLK_UP:
-                        if (state.cursor > 0) state.cursor--;
-                        break;
-                    case SDLK_DOWN:
-                        if (state.cursor < JW_MENU_ITEM_COUNT - 1) state.cursor++;
-                        break;
-                    case SDLK_RETURN:
-                        switch (state.cursor) {
-                            case JW_MENU_RESCAN:
-                                snprintf(state.status, sizeof(state.status), "%s", "scanning...");
-                                jw__render_menu(&state);
-                                jw__send_scan(socket_path, &state);
-                                break;
-                            case JW_MENU_RETURN:
-                                running = false;
-                                break;
-                            case JW_MENU_SHUTDOWN:
-                                jw__send_shutdown(socket_path);
-                                running = false;
-                                break;
-                        }
-                        break;
-                    case SDLK_ESCAPE:
-                        running = false;
-                        break;
-                    case SDLK_r:
-                        snprintf(state.status, sizeof(state.status), "%s", "scanning...");
-                        jw__render_menu(&state);
-                        jw__send_scan(socket_path, &state);
-                        break;
-                    case SDLK_q:
-                        jw__send_shutdown(socket_path);
-                        running = false;
-                        break;
-                    default:
-                        break;
-                }
+            } else {
+                cat_request_frame_in(auto_delay_ms - elapsed_ms);
             }
         }
 
-        if (auto_demo && !auto_shutdown_sent && SDL_GetTicks() - started_ms >= auto_delay_ms) {
-            jw__send_shutdown(socket_path);
-            auto_shutdown_sent = true;
-            running = false;
-        }
-
         jw__render_menu(&state);
-        SDL_Delay(16);
     }
 
     cat_quit();
