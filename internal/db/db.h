@@ -1,6 +1,7 @@
 #ifndef JW_DB_H
 #define JW_DB_H
 
+#include <stddef.h>
 #include <sqlite3.h>
 
 typedef struct {
@@ -31,5 +32,10 @@ int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const 
 int  jw_db_read_summary(const char *db_path, jw_library_summary *out);
 int  jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count, int *out_count);
 int  jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *out_count);
+
+int  jw_db_get_setting(const char *db_path, const char *key,
+                        char *out, size_t out_size);
+int  jw_db_set_setting(const char *db_path, const char *key, const char *value);
+int  jw_db_get_theme_name(const char *db_path, char *out, size_t out_size);
 
 #endif

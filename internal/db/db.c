@@ -5,7 +5,7 @@
 
 static const char *kSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
-    "PRAGMA user_version = 1;\n"
+    "PRAGMA user_version = 2;\n"
     "\n"
     "CREATE TABLE IF NOT EXISTS games (\n"
     "    id          INTEGER PRIMARY KEY,\n"
@@ -61,7 +61,12 @@ static const char *kSchemaSql =
     "        VALUES ('delete', old.id, old.name, old.system);\n"
     "    INSERT INTO games_fts(rowid, name, system)\n"
     "        VALUES (new.id, new.name, new.system);\n"
-    "END;\n";
+    "END;\n"
+    "\n"
+    "CREATE TABLE IF NOT EXISTS settings (\n"
+    "    key   TEXT PRIMARY KEY,\n"
+    "    value TEXT NOT NULL\n"
+    ");\n";
 
 static int jw__exec(sqlite3 *db, const char *sql) {
     char *err = NULL;
@@ -271,6 +276,69 @@ int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
 
     jw_db_close(db);
     return rc == 0 ? 0 : -1;
+}
+
+int jw_db_get_setting(const char *db_path, const char *key,
+                       char *out, size_t out_size) {
+    if (!db_path || !key || !out || out_size == 0) return -1;
+    out[0] = '\0';
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql = "SELECT value FROM settings WHERE key = ?;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *text = sqlite3_column_text(stmt, 0);
+        if (text) snprintf(out, out_size, "%s", text);
+    }
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return 0;
+}
+
+int jw_db_set_setting(const char *db_path, const char *key, const char *value) {
+    if (!db_path || !key || !value) return -1;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql =
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, key,   -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, value, -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_get_theme_name(const char *db_path, char *out, size_t out_size) {
+    return jw_db_get_setting(db_path, "theme_name", out, out_size);
 }
 
 int jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *out_count) {

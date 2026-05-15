@@ -7,6 +7,7 @@
 #include "internal/core/log.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/paths.h"
+#include "internal/settings/theme_resolve.h"
 
 #include <SDL2/SDL.h>
 #include <stdbool.h>
@@ -120,8 +121,10 @@ static void jw__handle_input(const char *socket_path, jw_menu_state *state,
 
 int main(void) {
     char *socket_path = jw_socket_path();
+    char *db_path     = jw_db_path();
     if (!socket_path) {
         jw_log_error("could not resolve socket path");
+        free(db_path);
         return 1;
     }
 
@@ -129,6 +132,7 @@ int main(void) {
         jw_log_error("could not connect to jawakad at %s; is the daemon running?",
                      socket_path);
         free(socket_path);
+        free(db_path);
         return 1;
     }
 
@@ -140,7 +144,18 @@ int main(void) {
     if (cat_init(&cfg) != CAT_OK) {
         jw_log_error("catastrophe init failed: %s", cat_get_error());
         free(socket_path);
+        free(db_path);
         return 1;
+    }
+
+    /* Resolve theme: env > DB > default Jawaka-Tabs.
+       Matches launcher precedence so menu inherits whatever was last picked. */
+    {
+        char theme_name[256];
+        jw_resolve_theme_name(db_path, theme_name, sizeof(theme_name));
+        cat_stylesheet ss;
+        if (cat_stylesheet_load_theme(&ss, theme_name) == CAT_OK)
+            cat_stylesheet_apply(&ss);
     }
 
     cat_activate_window();
@@ -176,5 +191,6 @@ int main(void) {
 
     cat_quit();
     free(socket_path);
+    free(db_path);
     return 0;
 }

@@ -10,6 +10,8 @@
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/paths.h"
+#include "internal/settings/settings.h"
+#include "internal/settings/theme_resolve.h"
 
 #include <SDL2/SDL.h>
 #include <stdbool.h>
@@ -32,18 +34,6 @@ typedef enum {
 } jw_tab;
 
 static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Games", "Apps", "Settings" };
-
-/* ─── Settings items (shared across modes) ────────────────────────────────── */
-
-static const char *kSettingsItems[] = {
-    "Rescan Library",
-    "Return to Menu",
-    "Shutdown",
-};
-#define JW_SETTINGS_RESCAN   0
-#define JW_SETTINGS_RETURN   1
-#define JW_SETTINGS_SHUTDOWN 2
-#define JW_SETTINGS_COUNT    3
 
 /* ─── Flat nav list (vertical + horizontal modes) ─────────────────────────── */
 
@@ -80,6 +70,8 @@ typedef struct {
     /* horizontal: tools sub-menu */
     bool               tools_open;
     cat_list_state     tools_list;
+    /* settings (Appearance/Library/Behavior/About) */
+    jw_settings_ui     settings;
     /* status line */
     char               status[256];
     bool               scan_ready;
@@ -127,7 +119,7 @@ static int jw__tab_list_count(const jw_launcher_state *state) {
         case JW_TAB_RECENTS:  return 0;
         case JW_TAB_GAMES:    return state->system_count;
         case JW_TAB_APPS:     return state->app_count;
-        case JW_TAB_SETTINGS: return JW_SETTINGS_COUNT;
+        case JW_TAB_SETTINGS: return 0;  /* handled by jw_settings_ui */
         default:              return 0;
     }
 }
@@ -164,6 +156,12 @@ static void jw__switch_tab(jw_launcher_state *state, int direction) {
     if (next < 0) next += JW_TAB_COUNT;
     state->current_tab = (jw_tab)next;
     cat_list_state_jump(&state->list, 0, jw__tab_list_count(state));
+    /* In tabbed mode, the Settings tab is owned by jw_settings_ui:
+       auto-open on entry, close when navigating away. */
+    if (state->current_tab == JW_TAB_SETTINGS)
+        jw_settings_ui_enter(&state->settings);
+    else
+        jw_settings_ui_close(&state->settings);
 }
 
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
@@ -210,23 +208,6 @@ static void jw__draw_app_item(int idx, int ix, int iy, int iw, int ih,
     ap_color name_c = selected ? theme->highlighted_text : theme->text;
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     cat_draw_text_ellipsized(body, ctx->apps[idx].name,
-        ix + CAT_S(10), text_y, name_c, iw - CAT_S(20));
-}
-
-static void jw__draw_settings_item(int idx, int ix, int iy, int iw, int ih,
-                                    bool selected, void *user) {
-    (void)user;
-    ap_theme *theme = cat_get_theme();
-    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-
-    int pill_h = TTF_FontHeight(body) + CAT_S(6);
-    int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
-
-    ap_color name_c = selected ? theme->highlighted_text : theme->text;
-    int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, kSettingsItems[idx],
         ix + CAT_S(10), text_y, name_c, iw - CAT_S(20));
 }
 
@@ -353,22 +334,16 @@ static void jw__render_settings(const jw_launcher_state *state,
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
     int fh = cat_get_footer_height();
-    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
 
-    int list_x = margin;
-    int list_w = sw - margin * 2;
-    int body_h = TTF_FontHeight(body);
-    int item_h = body_h + CAT_S(12);
-    int list_h = content_h - CAT_S(28);
+    int sx = margin;
+    int sy = content_y + margin;
+    int sw_inner = sw - margin * 2;
+    int sh_inner = content_h - CAT_S(28);
 
-    cat_draw_list_pane(list_x, content_y + margin, list_w, list_h,
-        JW_SETTINGS_COUNT, &state->list, item_h,
-        jw__draw_settings_item, NULL);
+    jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
 
     int status_y = sh - fh - CAT_S(26);
-    cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
-    (void)content_h;
-    (void)margin;
+    cat_draw_text_ellipsized(small, state->status, sx, status_y, theme->hint, sw_inner);
 }
 
 static void jw__render_tabbed(const jw_launcher_state *state) {
@@ -400,15 +375,24 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
             break;
     }
 
-    cat_footer_item footer[] = {
-        { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
-        { CAT_BTN_L2,   "Tab",      false, ";" },
-        { CAT_BTN_R2,   "Tab",      false, "t" },
-        { CAT_BTN_MENU, "Menu",     false, "H" },
-        { CAT_BTN_Y,    "Rescan",   false, "Y" },
-        { CAT_BTN_B,    "Shutdown", false, "B" },
-    };
-    cat_draw_footer(footer, 6);
+    if (jw_settings_ui_is_open(&state->settings)) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+            { CAT_BTN_A,  "Select",   false, "A" },
+            { CAT_BTN_B,  "Back",     false, "B" },
+        };
+        cat_draw_footer(footer, 3);
+    } else {
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+            { CAT_BTN_L2,   "Tab",      false, ";" },
+            { CAT_BTN_R2,   "Tab",      false, "t" },
+            { CAT_BTN_MENU, "Menu",     false, "H" },
+            { CAT_BTN_Y,    "Rescan",   false, "Y" },
+            { CAT_BTN_B,    "Shutdown", false, "B" },
+        };
+        cat_draw_footer(footer, 6);
+    }
     cat_present();
 }
 
@@ -539,13 +523,38 @@ static void jw__render_vertical(const jw_launcher_state *state) {
     cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, list_w - margin);
 
-    cat_footer_item footer[] = {
-        { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
-        { CAT_BTN_MENU, "Menu",     false, "H" },
-        { CAT_BTN_Y,    "Rescan",   false, "Y" },
-        { CAT_BTN_B,    "Shutdown", false, "B" },
-    };
-    cat_draw_footer(footer, 4);
+    /* Settings overlay (dims background + draws panel) */
+    if (jw_settings_ui_is_open(&state->settings)) {
+        SDL_Renderer *ren = cat_get_renderer();
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, 180);
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+        SDL_Rect full = { 0, 0, sw, sh };
+        SDL_RenderFillRect(ren, &full);
+
+        int ox = sw / 6;
+        int ow = sw - ox * 2;
+        int oy = content_y;
+        int oh = content_h;
+        cat_draw_rounded_rect(ox, oy, ow, oh, CAT_S(8), theme->background);
+        jw_settings_ui_render(&state->settings,
+                               ox + CAT_S(12), oy + CAT_S(8),
+                               ow - CAT_S(24), oh - CAT_S(16));
+
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+            { CAT_BTN_A,  "Select",   false, "A" },
+            { CAT_BTN_B,  "Back",     false, "B" },
+        };
+        cat_draw_footer(footer, 3);
+    } else {
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+            { CAT_BTN_MENU, "Menu",     false, "H" },
+            { CAT_BTN_Y,    "Rescan",   false, "Y" },
+            { CAT_BTN_B,    "Shutdown", false, "B" },
+        };
+        cat_draw_footer(footer, 4);
+    }
     cat_present();
 }
 
@@ -765,14 +774,39 @@ static void jw__render_horizontal(jw_launcher_state *state) {
     if (state->tools_open)
         jw__draw_tools_menu(state);
 
-    cat_footer_item footer[] = {
-        { CAT_BTN_LEFT,  "Navigate", false, "\xe2\x86\x90\xe2\x86\x92" },
-        { CAT_BTN_A,     "Select",   false, "A" },
-        { CAT_BTN_MENU,  "Menu",     false, "H" },
-        { CAT_BTN_Y,     "Rescan",   false, "Y" },
-        { CAT_BTN_B,     "Shutdown", false, "B" },
-    };
-    cat_draw_footer(footer, 5);
+    /* Settings overlay */
+    if (jw_settings_ui_is_open(&state->settings)) {
+        SDL_Renderer *ren = cat_get_renderer();
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, 200);
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+        SDL_Rect full = { 0, 0, sw, sh };
+        SDL_RenderFillRect(ren, &full);
+
+        int ox = sw / 6;
+        int ow = sw - ox * 2;
+        int oy = sb_h + CAT_S(8);
+        int oh = sh - oy - fh - CAT_S(8);
+        cat_draw_rounded_rect(ox, oy, ow, oh, CAT_S(8), theme->background);
+        jw_settings_ui_render(&state->settings,
+                               ox + CAT_S(12), oy + CAT_S(8),
+                               ow - CAT_S(24), oh - CAT_S(16));
+
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+            { CAT_BTN_A,  "Select",   false, "A" },
+            { CAT_BTN_B,  "Back",     false, "B" },
+        };
+        cat_draw_footer(footer, 3);
+    } else {
+        cat_footer_item footer[] = {
+            { CAT_BTN_LEFT,  "Navigate", false, "\xe2\x86\x90\xe2\x86\x92" },
+            { CAT_BTN_A,     "Select",   false, "A" },
+            { CAT_BTN_MENU,  "Menu",     false, "H" },
+            { CAT_BTN_Y,     "Rescan",   false, "Y" },
+            { CAT_BTN_B,     "Shutdown", false, "B" },
+        };
+        cat_draw_footer(footer, 5);
+    }
     cat_present();
 }
 
@@ -795,30 +829,15 @@ static void jw__render_launcher(jw_launcher_state *state) {
 
 static void jw__activate_tabbed(const char *socket_path, const char *db_path,
                                   jw_launcher_state *state, bool *running) {
+    (void)socket_path; (void)db_path; (void)running;
     switch (state->current_tab) {
         case JW_TAB_GAMES:
         case JW_TAB_APPS:
             snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
             break;
-        case JW_TAB_SETTINGS: {
-            int idx = state->list.cursor;
-            if (idx == JW_SETTINGS_RESCAN) {
-                snprintf(state->status, sizeof(state->status), "%s", "rescanning...");
-                cat_request_frame();
-                jw__scan_library(socket_path, db_path, state);
-            } else if (idx == JW_SETTINGS_RETURN) {
-                if (jw_ipc_open_menu(socket_path) == 0) {
-                    cat_hide_window();
-                    *running = false;
-                } else {
-                    snprintf(state->status, sizeof(state->status), "%s", "open-menu failed");
-                }
-            } else if (idx == JW_SETTINGS_SHUTDOWN) {
-                jw_ipc_shutdown(socket_path);
-                *running = false;
-            }
+        case JW_TAB_SETTINGS:
+            /* Settings tab content is owned by jw_settings_ui; A is handled there. */
             break;
-        }
         default:
             break;
     }
@@ -830,8 +849,7 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
     const jw_flat_item *it = &state->flat_items[state->list.cursor];
     switch (it->kind) {
         case JW_FLAT_SETTINGS:
-            /* Cycle into settings sub-items (reuse settings list) */
-            snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
+            jw_settings_ui_enter(&state->settings);
             break;
         case JW_FLAT_TOOLS:
             state->tools_open = true;
@@ -854,12 +872,44 @@ static const char *jw__system_label_cb(int idx, void *user) {
     return systems[idx].name;
 }
 
+/* Rebuild layout-dependent state. Call after the active stylesheet's
+ * launcher.layout may have changed (theme switch) or at first startup. */
+static void jw__rebuild_for_layout(jw_launcher_state *state) {
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    cat_launcher_layout layout = ss->launcher.layout;
+
+    state->tools_open = false;
+
+    if (layout == CAT_LAUNCHER_HORIZONTAL) {
+        jw__build_carousel_list(state);
+    } else if (layout == CAT_LAUNCHER_VERTICAL) {
+        jw__build_flat_list(state);
+    } else {
+        state->flat_count = 0;
+    }
+
+    int fh        = cat_get_footer_height();
+    int sb_h      = CAT_DS(20);
+    int margin    = CAT_S(10);
+    int content_h = cat_get_screen_height() - sb_h - margin - fh - margin;
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int item_h    = TTF_FontHeight(body) + CAT_S(12);
+    int visible   = content_h / item_h;
+    if (visible < 1) visible = 1;
+
+    int count = (layout == CAT_LAUNCHER_TABBED) ? jw__tab_list_count(state)
+                                                : state->flat_count;
+    cat_list_state_init(&state->list, visible);
+    cat_list_state_jump(&state->list, 0, count);
+}
+
 static void jw__handle_input(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, cat_button button, bool *running) {
     const cat_stylesheet *ss = cat_get_stylesheet();
     cat_launcher_layout layout = ss->launcher.layout;
 
-    /* Tools overlay captures all input first */
+    /* Tools overlay captures all input first.
+       Tools entries: 0=Recently Played, 1=Favorites, 2=Apps, 3=Settings */
     if (state->tools_open) {
         static const int kToolsCount = 4;
         switch (button) {
@@ -870,9 +920,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                 cat_list_state_move(&state->tools_list, +1, kToolsCount);
                 break;
             case CAT_BTN_A:
-                /* placeholder: tools item selected */
                 state->tools_open = false;
-                snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
+                if (state->tools_list.cursor == 3) {
+                    jw_settings_ui_enter(&state->settings);
+                } else {
+                    snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
+                }
                 break;
             case CAT_BTN_B:
             case CAT_BTN_MENU:
@@ -880,6 +933,27 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                 break;
             default:
                 break;
+        }
+        return;
+    }
+
+    /* Settings UI captures input when open. */
+    if (jw_settings_ui_is_open(&state->settings)) {
+        bool theme_changed = false;
+        bool still_open = jw_settings_ui_handle_button(
+            &state->settings, button,
+            state->status, sizeof(state->status), &theme_changed);
+        if (theme_changed)
+            jw__rebuild_for_layout(state);
+        if (!still_open) {
+            /* B at Settings home closed it.
+               In tabbed mode, snap back to Games tab so the user isn't
+               stranded on an empty Settings tab. In flat/horizontal
+               modes, the launcher's main view is what they see. */
+            if (layout == CAT_LAUNCHER_TABBED) {
+                state->current_tab = JW_TAB_GAMES;
+                cat_list_state_jump(&state->list, 0, jw__tab_list_count(state));
+            }
         }
         return;
     }
@@ -998,9 +1072,10 @@ int main(void) {
         return 1;
     }
 
-    /* Load Jawaka theme (defaults to Jawaka-Tabs; env var can override) */
-    const char *theme_name = getenv("JAWAKA_THEME");
-    if (!theme_name || !theme_name[0]) theme_name = "Jawaka-Tabs";
+    /* Resolve theme: env > DB > default Jawaka-Tabs */
+    char theme_name_buf[256];
+    jw_resolve_theme_name(db_path, theme_name_buf, sizeof(theme_name_buf));
+    const char *theme_name = theme_name_buf;
     {
         cat_stylesheet ss;
         if (cat_stylesheet_load_theme(&ss, theme_name) == CAT_OK)
@@ -1026,33 +1101,10 @@ int main(void) {
                             : "tabbed";
     jw_log_info("launcher layout: %s (theme=%s)", layout_name, theme_name);
 
-    /* Build navigation list based on layout mode */
-    if (layout == CAT_LAUNCHER_HORIZONTAL) {
-        jw__build_carousel_list(&state);
-    } else if (layout == CAT_LAUNCHER_VERTICAL) {
-        jw__build_flat_list(&state);
-    }
+    /* Init settings UI with the currently-active theme */
+    jw_settings_ui_init(&state.settings, db_path, theme_name);
 
-    /* Initialise list cursor for the active layout */
-    {
-        int fh       = cat_get_footer_height();
-        int sb_h     = CAT_DS(20);
-        int margin   = CAT_S(10);
-        int content_h = cat_get_screen_height() - sb_h - margin - fh - margin;
-        TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-        int item_h    = TTF_FontHeight(body) + CAT_S(12);
-        int visible   = content_h / item_h;
-        if (visible < 1) visible = 1;
-
-        int count;
-        if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_VERTICAL)
-            count = state.flat_count;
-        else
-            count = jw__tab_list_count(&state);
-
-        cat_list_state_init(&state.list, visible);
-        cat_list_state_jump(&state.list, 0, count);
-    }
+    jw__rebuild_for_layout(&state);
 
     jw_autodemo demo;
     jw_autodemo_init(&demo);

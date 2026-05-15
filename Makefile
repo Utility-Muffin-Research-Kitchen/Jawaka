@@ -39,6 +39,8 @@ UI_SRCS := \
 	internal/ipc/ipc_client.c \
 	internal/platform/paths.c \
 	internal/db/db.c \
+	internal/settings/settings.c \
+	internal/settings/theme_resolve.c \
 	third_party/cjson/cJSON.c
 
 .PHONY: all jawakad jawaka-launcher jawaka-menu mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 check-catastrophe check-sdl
