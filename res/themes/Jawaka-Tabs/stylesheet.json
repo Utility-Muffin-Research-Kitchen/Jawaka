@@ -1,0 +1,26 @@
+{
+  "ui": {
+    "ui_font": { "path": "fonts/SpaceGrotesk/SpaceGrotesk-Regular.ttf", "size": 36 },
+    "text_color": "#ffffff",
+    "background_color": "#0d1117",
+    "highlight_color": "#9b2257",
+    "highlight_text_color": "#ffffff",
+    "disabled_color": "#6e7681",
+    "tab_color": "#ffffff70",
+    "tab_selected_color": "#ffffff",
+    "pill_radius_ratio": 0.25
+  },
+  "status_bar": { "show_battery_level": true, "show_clock": true, "show_wifi": true, "text_color": "#ffffff" },
+  "button_hints": {
+    "button_a_color": "#9b2257",
+    "button_b_color": "#9b2257",
+    "button_x_color": "#9b2257",
+    "button_y_color": "#9b2257",
+    "button_bg_color": "#6e7681",
+    "button_text_color": "#ffffff",
+    "text_color": "#ffffff"
+  },
+  "menu": { "background_color": "#0d1117" },
+  "cjk_font": { "path": "fonts/SourceHanSansCN/SourceHanSansCN-Heavy.otf", "size": 36 },
+  "launcher": { "layout": "tabbed" }
+}

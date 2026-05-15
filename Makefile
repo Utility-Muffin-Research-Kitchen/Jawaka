@@ -9,6 +9,7 @@ BUILD ?= build
 DEFAULT_CATASTROPHE_DIR := $(if $(wildcard ../Catastrophe/include/catastrophe.h),$(abspath ../Catastrophe),third_party/catastrophe)
 CATASTROPHE_DIR ?= $(DEFAULT_CATASTROPHE_DIR)
 CATASTROPHE_INCLUDE := $(CATASTROPHE_DIR)/include
+CATASTROPHE_RES := $(CATASTROPHE_DIR)/res
 
 SDL_CFLAGS := $(shell pkg-config --cflags sdl2 SDL2_ttf SDL2_image)
 SDL_LDFLAGS := $(shell pkg-config --libs sdl2 SDL2_ttf SDL2_image)
@@ -26,6 +27,7 @@ DAEMON_SRCS := \
 	cmd/jawakad/main.c \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
+	internal/ipc/ipc_client.c \
 	internal/platform/paths.c \
 	internal/db/db.c \
 	internal/discovery/discovery.c \
@@ -34,11 +36,12 @@ DAEMON_SRCS := \
 UI_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
+	internal/ipc/ipc_client.c \
 	internal/platform/paths.c \
 	internal/db/db.c \
 	third_party/cjson/cJSON.c
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu clean help tg5040 tg5050 my355 check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 check-catastrophe check-sdl
 
 all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu
 
@@ -71,30 +74,63 @@ mockgen:
 
 run-daemon: $(BUILD)/bin/jawakad mockgen
 	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
+	CAT_FONTS_DIR="$(CATASTROPHE_RES)" \
+	CAT_THEMES_DIR="$(CATASTROPHE_RES)/themes" \
 	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
 	JAWAKA_AUTODEMO="$${JAWAKA_AUTODEMO:-1}" \
 	JAWAKA_AUTODEMO_DELAY_MS="$${JAWAKA_AUTODEMO_DELAY_MS:-1200}" \
+	JAWAKA_THEME="$${JAWAKA_THEME:-Jawaka-Tabs}" \
 	$(BUILD)/bin/jawakad
 
 run-daemon-interactive: $(BUILD)/bin/jawakad mockgen
 	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
+	CAT_FONTS_DIR="$(CATASTROPHE_RES)" \
+	CAT_THEMES_DIR="$(CATASTROPHE_RES)/themes" \
 	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
 	JAWAKA_AUTODEMO=0 \
+	JAWAKA_THEME="$${JAWAKA_THEME:-Jawaka-Tabs}" \
 	$(BUILD)/bin/jawakad
 
 run-daemon-only: $(BUILD)/bin/jawakad mockgen
 	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
+	CAT_FONTS_DIR="$(CATASTROPHE_RES)" \
+	CAT_THEMES_DIR="$(CATASTROPHE_RES)/themes" \
 	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
+	JAWAKA_THEME="$${JAWAKA_THEME:-Jawaka-Tabs}" \
 	$(BUILD)/bin/jawakad --daemon-only
 
 run-launcher: $(BUILD)/bin/jawaka-launcher mockgen
 	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
+	CAT_FONTS_DIR="$(CATASTROPHE_RES)" \
+	CAT_THEMES_DIR="$(CATASTROPHE_RES)/themes" \
 	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
+	JAWAKA_THEME="$${JAWAKA_THEME:-Jawaka-Tabs}" \
 	$(BUILD)/bin/jawaka-launcher
+
+run-interactive: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher mockgen
+	@CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
+	CAT_FONTS_DIR="$(CATASTROPHE_RES)" \
+	CAT_THEMES_DIR="$(CATASTROPHE_RES)/themes" \
+	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
+	JAWAKA_THEME="$${JAWAKA_THEME:-Jawaka-Tabs}" \
+	JAWAKA_RUNTIME_DIR="$${JAWAKA_RUNTIME_DIR:-/tmp/jawaka-$$USER}" \
+	bash -c '\
+	  set -uo pipefail; \
+	  $(BUILD)/bin/jawakad --daemon-only & \
+	  DAEMON_PID=$$!; \
+	  trap "kill $$DAEMON_PID 2>/dev/null || true; wait $$DAEMON_PID 2>/dev/null || true" EXIT INT TERM; \
+	  SOCK="$$JAWAKA_RUNTIME_DIR/jawakad.sock"; \
+	  for _ in $$(seq 1 200); do test -S "$$SOCK" && break; sleep 0.05; done; \
+	  test -S "$$SOCK" || { echo "ERROR: daemon socket did not appear at $$SOCK"; exit 1; }; \
+	  $(BUILD)/bin/jawaka-launcher; \
+	'
 
 run-menu: $(BUILD)/bin/jawaka-menu mockgen
 	CAT_WINDOW_WIDTH=1280 CAT_WINDOW_HEIGHT=720 \
+	CAT_FONTS_DIR="$(CATASTROPHE_RES)" \
+	CAT_THEMES_DIR="$(CATASTROPHE_RES)/themes" \
 	JAWAKA_SDCARD_ROOT="$${JAWAKA_SDCARD_ROOT:-./mock-sdcard}" \
+	JAWAKA_THEME="$${JAWAKA_THEME:-Jawaka-Tabs}" \
 	$(BUILD)/bin/jawaka-menu
 
 clean:
@@ -113,6 +149,7 @@ help:
 	@echo "  make run-daemon-interactive  Run daemon without auto-demo (stays open for testing)"
 	@echo "  make run-daemon-only         Run jawakad without spawning launcher/menu"
 	@echo "  make run-launcher            Run jawaka-launcher directly (requires daemon)"
+	@echo "  make run-interactive         Run daemon + launcher together; launcher stays alive, daemon dies on exit"
 	@echo "  make run-menu                Run jawaka-menu directly"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"
@@ -124,6 +161,7 @@ help:
 	@echo "  JAWAKA_SDCARD_ROOT            Path to SD-card root (default: ./mock-sdcard)"
 	@echo "  JAWAKA_AUTODEMO=1             Auto-transition launcher→menu→shutdown (default in run-daemon)"
 	@echo "  JAWAKA_AUTODEMO_DELAY_MS=N    Delay before auto-demo action fires, ms (default: 1200)"
+	@echo "  JAWAKA_THEME=Jawaka-Tabs      Launcher theme: Jawaka-Tabs, Jawaka-Vertical, Jawaka-Horizontal"
 	@echo ""
 	@echo "Catastrophe include root: $(CATASTROPHE_INCLUDE)"
 	@echo ""
