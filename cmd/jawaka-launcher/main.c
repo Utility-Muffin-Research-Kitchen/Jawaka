@@ -22,6 +22,7 @@
 
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
+#define JW_MAX_GAMES   512
 
 /* ─── Tabbed mode ─────────────────────────────────────────────────────────── */
 
@@ -64,6 +65,11 @@ typedef struct {
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
+    jw_game_entry      games[JW_MAX_GAMES];
+    int                game_count;
+    char               game_system[64];
+    bool               games_open;
+    cat_list_state     game_list;
     /* flat nav (vertical / horizontal) */
     jw_flat_item       flat_items[JW_MAX_SYSTEMS + 6];
     int                flat_count;
@@ -166,6 +172,7 @@ static void jw__switch_tab(jw_launcher_state *state, int direction) {
 
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
 typedef struct { const jw_app_entry   *apps;    } jw__apps_ctx;
+typedef struct { const jw_game_entry  *games;   } jw__roms_ctx;
 
 static void jw__draw_game_item(int idx, int ix, int iy, int iw, int ih,
                                 bool selected, void *user) {
@@ -209,6 +216,41 @@ static void jw__draw_app_item(int idx, int ix, int iy, int iw, int ih,
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     cat_draw_text_ellipsized(body, ctx->apps[idx].name,
         ix + CAT_S(10), text_y, name_c, iw - CAT_S(20));
+}
+
+static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
+                               bool selected, void *user) {
+    jw__roms_ctx *ctx = (jw__roms_ctx *)user;
+    ap_theme *theme   = cat_get_theme();
+    TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small   = cat_get_font(CAT_FONT_SMALL);
+
+    int pill_h = TTF_FontHeight(body) + CAT_S(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
+
+    ap_color name_c = selected ? theme->highlighted_text : theme->text;
+    ap_color path_c = selected ? theme->highlighted_text : theme->hint;
+    int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    const char *name = ctx->games[idx].name;
+    const char *path = ctx->games[idx].rom_path;
+    int path_w = iw / 3;
+    int name_max = iw - path_w - CAT_S(32);
+    if (name_max < CAT_S(80)) {
+        path_w = 0;
+        name_max = iw - CAT_S(20);
+    }
+
+    cat_draw_text_ellipsized(body, name, ix + CAT_S(10), text_y, name_c, name_max);
+
+    if (path_w > 0 && path && path[0]) {
+        int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
+        cat_draw_text_ellipsized(small, path,
+            ix + iw - CAT_S(10) - path_w, small_y,
+            path_c, path_w);
+    }
 }
 
 static void jw__render_recents(const jw_launcher_state *state,
@@ -379,9 +421,10 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
         cat_footer_item footer[] = {
             { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
             { CAT_BTN_A,  "Select",   false, "A" },
-            { CAT_BTN_B,  "Back",     false, "B" },
+            { CAT_BTN_L2, "Tab",      false, ";" },
+            { CAT_BTN_R2, "Tab",      false, "t" },
         };
-        cat_draw_footer(footer, 3);
+        cat_draw_footer(footer, 4);
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
@@ -389,9 +432,8 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
             { CAT_BTN_R2,   "Tab",      false, "t" },
             { CAT_BTN_MENU, "Menu",     false, "H" },
             { CAT_BTN_Y,    "Rescan",   false, "Y" },
-            { CAT_BTN_B,    "Shutdown", false, "B" },
         };
-        cat_draw_footer(footer, 6);
+        cat_draw_footer(footer, 5);
     }
     cat_present();
 }
@@ -551,9 +593,8 @@ static void jw__render_vertical(const jw_launcher_state *state) {
             { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
             { CAT_BTN_MENU, "Menu",     false, "H" },
             { CAT_BTN_Y,    "Rescan",   false, "Y" },
-            { CAT_BTN_B,    "Shutdown", false, "B" },
         };
-        cat_draw_footer(footer, 4);
+        cat_draw_footer(footer, 3);
     }
     cat_present();
 }
@@ -803,10 +844,78 @@ static void jw__render_horizontal(jw_launcher_state *state) {
             { CAT_BTN_A,     "Select",   false, "A" },
             { CAT_BTN_MENU,  "Menu",     false, "H" },
             { CAT_BTN_Y,     "Rescan",   false, "Y" },
-            { CAT_BTN_B,     "Shutdown", false, "B" },
         };
-        cat_draw_footer(footer, 5);
+        cat_draw_footer(footer, 4);
     }
+    cat_present();
+}
+
+static void jw__render_game_browser(const jw_launcher_state *state) {
+    cat_clear_screen();
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
+
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    int fh = cat_get_footer_height();
+    int margin = CAT_S(12);
+    int header_h = CAT_DS(30);
+    int content_y = header_h + margin;
+    int content_h = sh - content_y - fh - margin;
+
+    char title[96];
+    snprintf(title, sizeof(title), "%s Games", state->game_system);
+    cat_draw_text_ellipsized(large, title, margin, CAT_S(6), theme->text, sw - margin * 2);
+
+    int list_x = margin;
+    int list_w = sw * 58 / 100;
+    int item_h = TTF_FontHeight(body) + CAT_S(12);
+    int detail_x = list_x + list_w + margin;
+    int detail_w = sw - detail_x - margin;
+
+    if (state->game_count == 0) {
+        cat_draw_text_wrapped(body, "No games found",
+            list_x + CAT_S(8), content_y + CAT_S(8),
+            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+    } else {
+        jw__roms_ctx ctx = { state->games };
+        cat_draw_list_pane(list_x, content_y, list_w, content_h,
+            state->game_count, &state->game_list, item_h,
+            jw__draw_rom_item, &ctx);
+    }
+
+    cat_draw_rounded_rect(detail_x, content_y, detail_w, content_h, CAT_S(8),
+        cat_hex_to_color("#ffffff10"));
+
+    if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
+        const jw_game_entry *game = &state->games[state->game_list.cursor];
+        int large_h = TTF_FontHeight(large);
+        int name_w = cat_measure_text(large, game->name);
+        cat_draw_text_ellipsized(large, game->name,
+            detail_x + (detail_w - name_w) / 2,
+            content_y + content_h / 2 - large_h,
+            theme->text, detail_w - margin * 2);
+
+        int path_w = cat_measure_text(small, game->rom_path);
+        cat_draw_text_ellipsized(small, game->rom_path,
+            detail_x + (detail_w - path_w) / 2,
+            content_y + content_h / 2 + CAT_S(8),
+            theme->hint, detail_w - margin * 2);
+    }
+
+    int status_y = sh - fh - CAT_S(26);
+    cat_draw_text_ellipsized(small, state->status, margin, status_y,
+                             theme->hint, sw - margin * 2);
+
+    cat_footer_item footer[] = {
+        { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+        { CAT_BTN_A,  "Launch",   false, "A" },
+        { CAT_BTN_B,  "Back",     false, "B" },
+    };
+    cat_draw_footer(footer, 3);
     cat_present();
 }
 
@@ -815,6 +924,11 @@ static void jw__render_horizontal(jw_launcher_state *state) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static void jw__render_launcher(jw_launcher_state *state) {
+    if (state->games_open) {
+        jw__render_game_browser(state);
+        return;
+    }
+
     const cat_stylesheet *ss = cat_get_stylesheet();
     switch (ss->launcher.layout) {
         case CAT_LAUNCHER_VERTICAL:   jw__render_vertical(state);   break;
@@ -827,11 +941,63 @@ static void jw__render_launcher(jw_launcher_state *state) {
  * ACTION + INPUT
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+static int jw__game_browser_visible_rows(void) {
+    int fh = cat_get_footer_height();
+    int content_h = cat_get_screen_height() - CAT_DS(30) - CAT_S(24) - fh;
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int item_h = TTF_FontHeight(body) + CAT_S(12);
+    int visible = content_h / item_h;
+    return visible > 0 ? visible : 1;
+}
+
+static int jw__open_system_games(const char *db_path, const char *system,
+                                 jw_launcher_state *state) {
+    if (jw_db_list_games_for_system(db_path, system, state->games, JW_MAX_GAMES,
+                                    &state->game_count) != 0 ||
+        state->game_count == 0) {
+        snprintf(state->status, sizeof(state->status), "No launchable games for %s", system);
+        return -1;
+    }
+
+    snprintf(state->game_system, sizeof(state->game_system), "%s", system);
+    state->games_open = true;
+    cat_list_state_init(&state->game_list, jw__game_browser_visible_rows());
+    cat_list_state_jump(&state->game_list, 0, state->game_count);
+    snprintf(state->status, sizeof(state->status), "%d %s games",
+             state->game_count, system);
+    return 0;
+}
+
+static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *state,
+                                    bool *running) {
+    if (state->game_count <= 0 || state->game_list.cursor >= state->game_count) {
+        snprintf(state->status, sizeof(state->status), "%s", "No game selected");
+        return -1;
+    }
+
+    const jw_game_entry *game = &state->games[state->game_list.cursor];
+    snprintf(state->status, sizeof(state->status), "Launching %s...", game->name);
+    cat_request_frame();
+    jw__render_launcher(state);
+
+    if (jw_ipc_launch_game(socket_path, game->system, game->rom_path,
+                           state->status, sizeof(state->status)) != 0) {
+        return -1;
+    }
+
+    cat_hide_window();
+    *running = false;
+    return 0;
+}
+
 static void jw__activate_tabbed(const char *socket_path, const char *db_path,
                                   jw_launcher_state *state, bool *running) {
-    (void)socket_path; (void)db_path; (void)running;
     switch (state->current_tab) {
         case JW_TAB_GAMES:
+            if (state->system_count > 0 && state->list.cursor < state->system_count) {
+                jw__open_system_games(db_path, state->systems[state->list.cursor].name, state);
+            }
+            break;
         case JW_TAB_APPS:
             snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
             break;
@@ -841,6 +1007,8 @@ static void jw__activate_tabbed(const char *socket_path, const char *db_path,
         default:
             break;
     }
+    (void)socket_path;
+    (void)running;
 }
 
 static void jw__activate_flat(const char *socket_path, const char *db_path,
@@ -858,13 +1026,16 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
         case JW_FLAT_RECENTLY_PLAYED:
         case JW_FLAT_FAVORITES:
         case JW_FLAT_APPS:
-        case JW_FLAT_SYSTEM:
             snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
+            break;
+        case JW_FLAT_SYSTEM:
+            jw__open_system_games(db_path, state->systems[it->system_idx].name, state);
             break;
         default:
             break;
     }
-    (void)socket_path; (void)db_path; (void)running;
+    (void)socket_path;
+    (void)running;
 }
 
 static const char *jw__system_label_cb(int idx, void *user) {
@@ -903,10 +1074,53 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
     cat_list_state_jump(&state->list, 0, count);
 }
 
+static void jw__handle_game_browser_input(const char *socket_path,
+                                          jw_launcher_state *state,
+                                          cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_UP:
+            cat_list_state_move(&state->game_list, -1, state->game_count);
+            break;
+        case CAT_BTN_DOWN:
+            cat_list_state_move(&state->game_list, +1, state->game_count);
+            break;
+        case CAT_BTN_LEFT:
+            cat_list_state_page(&state->game_list, -1, state->game_count);
+            break;
+        case CAT_BTN_RIGHT:
+            cat_list_state_page(&state->game_list, +1, state->game_count);
+            break;
+        case CAT_BTN_A:
+            jw__launch_selected_game(socket_path, state, running);
+            break;
+        case CAT_BTN_B:
+            state->games_open = false;
+            state->game_count = 0;
+            state->status[0] = '\0';
+            break;
+        default:
+            break;
+    }
+}
+
 static void jw__handle_input(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, cat_button button, bool *running) {
     const cat_stylesheet *ss = cat_get_stylesheet();
     cat_launcher_layout layout = ss->launcher.layout;
+
+    /* Desktop-only: Q exercises the IPC shutdown path. Catastrophe only
+       emits CAT_BTN_QUIT off-device, so this is inert on real hardware. */
+    if (button == CAT_BTN_QUIT) {
+        jw_ipc_shutdown(socket_path);
+        *running = false;
+        return;
+    }
+
+    if (state->games_open) {
+        jw__handle_game_browser_input(socket_path, state, button, running);
+        (void)db_path;
+        return;
+    }
 
     /* Tools overlay captures all input first.
        Tools entries: 0=Recently Played, 1=Favorites, 2=Apps, 3=Settings */
@@ -939,21 +1153,30 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
 
     /* Settings UI captures input when open. */
     if (jw_settings_ui_is_open(&state->settings)) {
+        /* Tabbed mode: Settings is a tab, not an app. Triggers must escape
+           it cleanly from any sub-screen, and B at Settings home is a no-op
+           (the user leaves via L2/R2). jw__switch_tab closes Settings as a
+           side effect when moving off the tab. */
+        if (layout == CAT_LAUNCHER_TABBED) {
+            if (button == CAT_BTN_L2) {
+                jw__switch_tab(state, -1);
+                return;
+            }
+            if (button == CAT_BTN_R2) {
+                jw__switch_tab(state, +1);
+                return;
+            }
+        }
         bool theme_changed = false;
         bool still_open = jw_settings_ui_handle_button(
             &state->settings, button,
             state->status, sizeof(state->status), &theme_changed);
         if (theme_changed)
             jw__rebuild_for_layout(state);
-        if (!still_open) {
-            /* B at Settings home closed it.
-               In tabbed mode, snap back to Games tab so the user isn't
-               stranded on an empty Settings tab. In flat/horizontal
-               modes, the launcher's main view is what they see. */
-            if (layout == CAT_LAUNCHER_TABBED) {
-                state->current_tab = JW_TAB_GAMES;
-                cat_list_state_jump(&state->list, 0, jw__tab_list_count(state));
-            }
+        if (!still_open && layout == CAT_LAUNCHER_TABBED) {
+            /* B at Settings home in tabbed mode is a no-op: re-open so the
+               user stays in Settings until they use the triggers to leave. */
+            jw_settings_ui_enter(&state->settings);
         }
         return;
     }
@@ -1029,10 +1252,6 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                 cat_list_state_jump(&state->list, 0, jw__tab_list_count(state));
             break;
         }
-        case CAT_BTN_B:
-            jw_ipc_shutdown(socket_path);
-            *running = false;
-            break;
         default:
             break;
     }

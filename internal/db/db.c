@@ -379,3 +379,48 @@ int jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *
     jw_db_close(db);
     return 0;
 }
+
+int jw_db_list_games_for_system(const char *db_path, const char *system,
+                                jw_game_entry *out, int max_count, int *out_count) {
+    if (!db_path || !system || !out || max_count <= 0 || !out_count) {
+        return -1;
+    }
+
+    *out_count = 0;
+    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    static const char *sql =
+        "SELECT system, name, rom_path, COALESCE(image_path, '') "
+        "FROM games WHERE system = ? ORDER BY name LIMIT ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, system, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, max_count);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW && *out_count < max_count) {
+        const unsigned char *system_text = sqlite3_column_text(stmt, 0);
+        const unsigned char *name_text = sqlite3_column_text(stmt, 1);
+        const unsigned char *rom_text = sqlite3_column_text(stmt, 2);
+        const unsigned char *image_text = sqlite3_column_text(stmt, 3);
+        int i = *out_count;
+        if (system_text) snprintf(out[i].system, sizeof(out[i].system), "%s", system_text);
+        if (name_text) snprintf(out[i].name, sizeof(out[i].name), "%s", name_text);
+        if (rom_text) snprintf(out[i].rom_path, sizeof(out[i].rom_path), "%s", rom_text);
+        if (image_text) snprintf(out[i].image_path, sizeof(out[i].image_path), "%s", image_text);
+        (*out_count)++;
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return 0;
+}

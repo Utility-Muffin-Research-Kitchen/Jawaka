@@ -72,23 +72,25 @@ make run-launcher
 
 ## Keyboard controls
 
-Desktop testing now follows Catastrophe's default desktop mapping rather than
-the old direct `M`/`R`/`Q`/`Esc` shortcuts:
+Desktop testing follows Catastrophe's default desktop mapping:
 
 - arrows = d-pad navigation
 - `A` = face button A
-- `B` = face button B
+- `B` = face button B (back/close within overlays; no-op at launcher root)
 - `Y` = face button Y
 - `Enter` = Start
 - `Space` = Select
 - `H` = Menu
+- `;` / `t` = L2 / R2 (triggers — tab switching in tabbed mode)
+- `Q` = quit launcher (desktop only — calls daemon shutdown; not mapped on device)
 
 ### Launcher
 
 - `Up` / `Down` navigate systems
 - `H` open the menu through the daemon
 - `Y` rescan the mock SD-card library
-- `B` request shutdown through the daemon
+- `;` / `t` switch tabs in tabbed mode (works from inside Settings too)
+- `Q` desktop-only shortcut to request daemon shutdown
 
 ### Menu
 

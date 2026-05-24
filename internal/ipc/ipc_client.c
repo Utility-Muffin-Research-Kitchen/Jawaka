@@ -85,6 +85,42 @@ int jw_ipc_open_menu(const char *socket_path) {
     return rc;
 }
 
+int jw_ipc_launch_game(const char *socket_path, const char *system,
+                       const char *rom_path, char *status, int status_len) {
+    if (!system || !system[0] || !rom_path || !rom_path[0]) {
+        if (status) snprintf(status, (size_t)status_len, "%s", "launch failed: missing game");
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "launch-game");
+    cJSON_AddStringToObject(req, "system", system);
+    cJSON_AddStringToObject(req, "rom_path", rom_path);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status) snprintf(status, (size_t)status_len, "%s", "launch failed: daemon unavailable");
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "launch failed: %s", message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "launch failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (status) snprintf(status, (size_t)status_len, "%s", "launch requested");
+    cJSON_Delete(resp);
+    return 0;
+}
+
 int jw_ipc_shutdown(const char *socket_path) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "shutdown");

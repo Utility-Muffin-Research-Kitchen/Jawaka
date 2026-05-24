@@ -21,7 +21,8 @@
 typedef enum {
     JW_CHILD_NONE = 0,
     JW_CHILD_LAUNCHER,
-    JW_CHILD_MENU
+    JW_CHILD_MENU,
+    JW_CHILD_RETROARCH
 } jw_child_kind;
 
 typedef struct {
@@ -32,9 +33,12 @@ typedef struct {
     char  bin_dir[PATH_MAX];
     sqlite3 *db;
     jw_ipc_server *server;
-    pid_t child_pid;          /* Phase 0+1: exactly one child at a time (launcher or menu) */
+    pid_t child_pid;          /* exactly one daemon-owned child at a time */
     jw_child_kind child_kind;
     bool pending_menu;
+    bool pending_launch;
+    char pending_launch_system[64];
+    char pending_launch_rom_path[PATH_MAX];
     bool daemon_only;
     bool shutdown_requested;
 } jw_daemon_state;
@@ -115,11 +119,13 @@ static const char *jw__child_name(jw_child_kind kind) {
     switch (kind) {
         case JW_CHILD_LAUNCHER: return "jawaka-launcher";
         case JW_CHILD_MENU: return "jawaka-menu";
+        case JW_CHILD_RETROARCH: return "RetroArch";
         default: return NULL;
     }
 }
 
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
+static int jw__spawn_retroarch(jw_daemon_state *state);
 
 static int jw__request_open_menu(jw_daemon_state *state) {
     if (!state) {
@@ -134,9 +140,92 @@ static int jw__request_open_menu(jw_daemon_state *state) {
     return 0;
 }
 
+static int jw__resolve_rom_path(jw_daemon_state *state, const char *rom_path,
+                                char *out, size_t out_size) {
+    if (!state || !rom_path || !rom_path[0] || !out || out_size == 0) {
+        return -1;
+    }
+
+    char candidate[PATH_MAX];
+    if (rom_path[0] == '/') {
+        snprintf(candidate, sizeof(candidate), "%s", rom_path);
+    } else {
+        if (snprintf(candidate, sizeof(candidate), "%s/%s", state->sdcard_root, rom_path) >= (int)sizeof(candidate)) {
+            return -1;
+        }
+    }
+
+    char resolved[PATH_MAX];
+    if (!realpath(candidate, resolved)) {
+        return -1;
+    }
+
+    if (snprintf(out, out_size, "%s", resolved) >= (int)out_size) {
+        return -1;
+    }
+    return 0;
+}
+
+static int jw__validate_launch_request(jw_daemon_state *state, const char *system,
+                                       const char *rom_path, const char **out_error) {
+    if (!state || !system || !system[0] || !rom_path || !rom_path[0]) {
+        if (out_error) *out_error = "missing launch payload";
+        return -1;
+    }
+
+    char *retroarch = jw_retroarch_bin_path();
+    if (!retroarch || !jw__path_exists(retroarch)) {
+        free(retroarch);
+        if (out_error) *out_error = "RetroArch binary missing";
+        return -1;
+    }
+    free(retroarch);
+
+    char *core = jw_retroarch_core_path_for_system(system);
+    if (!core) {
+        if (out_error) *out_error = "unsupported system";
+        return -1;
+    }
+    if (!jw__path_exists(core)) {
+        free(core);
+        if (out_error) *out_error = "libretro core missing";
+        return -1;
+    }
+    free(core);
+
+    char rom_abs[PATH_MAX];
+    if (jw__resolve_rom_path(state, rom_path, rom_abs, sizeof(rom_abs)) != 0 ||
+        !jw__path_exists(rom_abs)) {
+        if (out_error) *out_error = "ROM path missing";
+        return -1;
+    }
+
+    return 0;
+}
+
+static int jw__request_launch_game(jw_daemon_state *state, const char *system,
+                                   const char *rom_path, const char **out_error) {
+    if (jw__validate_launch_request(state, system, rom_path, out_error) != 0) {
+        return -1;
+    }
+
+    snprintf(state->pending_launch_system, sizeof(state->pending_launch_system), "%s", system);
+    snprintf(state->pending_launch_rom_path, sizeof(state->pending_launch_rom_path), "%s", rom_path);
+    state->pending_launch = true;
+
+    if (state->child_pid <= 0) {
+        if (jw__spawn_retroarch(state) != 0) {
+            if (out_error) *out_error = "RetroArch spawn failed";
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     const char *name = jw__child_name(kind);
-    if (!state || !name) {
+    if (!state || !name || kind == JW_CHILD_RETROARCH) {
         return -1;
     }
 
@@ -164,6 +253,76 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     state->child_kind = kind;
     jw_log_info("spawned %s pid=%d", name, (int)pid);
     return 0;
+}
+
+static int jw__spawn_retroarch(jw_daemon_state *state) {
+    if (!state || !state->pending_launch) {
+        return -1;
+    }
+
+    char rom_abs[PATH_MAX];
+    if (jw__resolve_rom_path(state, state->pending_launch_rom_path, rom_abs, sizeof(rom_abs)) != 0) {
+        jw_log_error("could not resolve ROM path: %s", state->pending_launch_rom_path);
+        state->pending_launch = false;
+        return -1;
+    }
+
+    char *retroarch = jw_retroarch_bin_path();
+    char *core = jw_retroarch_core_path_for_system(state->pending_launch_system);
+    char *append_config = NULL;
+
+    if (!retroarch || !jw__path_exists(retroarch)) {
+        jw_log_error("RetroArch binary missing: %s", retroarch ? retroarch : "(null)");
+        goto fail;
+    }
+    if (!core || !jw__path_exists(core)) {
+        jw_log_error("libretro core missing for %s: %s",
+                     state->pending_launch_system, core ? core : "(null)");
+        goto fail;
+    }
+
+    append_config = jw_write_retroarch_append_config(state->runtime_dir, state->sdcard_root, core);
+    if (!append_config) {
+        jw_log_error("could not write RetroArch appendconfig");
+        goto fail;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_log_error("fork failed: %s", strerror(errno));
+        goto fail;
+    }
+
+    if (pid == 0) {
+        char *const argv[] = {
+            retroarch,
+            "-L", core,
+            "--appendconfig", append_config,
+            rom_abs,
+            NULL
+        };
+        execv(retroarch, argv);
+        perror("execv");
+        _exit(127);
+    }
+
+    state->child_pid = pid;
+    state->child_kind = JW_CHILD_RETROARCH;
+    state->pending_launch = false;
+    jw_log_info("spawned RetroArch pid=%d system=%s rom=%s",
+                (int)pid, state->pending_launch_system, rom_abs);
+
+    free(retroarch);
+    free(core);
+    free(append_config);
+    return 0;
+
+fail:
+    state->pending_launch = false;
+    free(retroarch);
+    free(core);
+    free(append_config);
+    return -1;
 }
 
 static int jw__handle_scan(jw_daemon_state *state, jw_ipc_client *client) {
@@ -222,6 +381,23 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_ok(client, "open-menu", NULL);
     }
 
+    if (strcmp(type->valuestring, "launch-game") == 0) {
+        cJSON *system = cJSON_GetObjectItemCaseSensitive(root, "system");
+        cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(root, "rom_path");
+        const char *error_message = NULL;
+        if (!cJSON_IsString(system) || !system->valuestring ||
+            !cJSON_IsString(rom_path) || !rom_path->valuestring ||
+            jw__request_launch_game(state, system->valuestring, rom_path->valuestring, &error_message) != 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, error_message ? error_message : "launch-game failed");
+        }
+
+        jw_log_info("launch-game requested system=%s rom=%s",
+                    system->valuestring, rom_path->valuestring);
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "launch-game", NULL);
+    }
+
     if (strcmp(type->valuestring, "shutdown") == 0) {
         state->shutdown_requested = true;
         jw_log_info("shutdown requested");
@@ -271,9 +447,15 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         return;
     }
 
-    /* Spawn-on-exit model: the launcher sends "open-menu" (setting pending_menu),
-     * then exits voluntarily. The daemon detects the exit here and spawns the menu.
-     * When the menu exits, the daemon always respawns the launcher. */
+    /* Spawn-on-exit model: the launcher sends a pending action, then exits
+     * voluntarily. The daemon detects the exit here and owns the next process. */
+    if (exited_kind == JW_CHILD_LAUNCHER && state->pending_launch) {
+        if (jw__spawn_retroarch(state) != 0 && !state->daemon_only) {
+            jw__spawn_child(state, JW_CHILD_LAUNCHER);
+        }
+        return;
+    }
+
     if (exited_kind == JW_CHILD_LAUNCHER && state->pending_menu) {
         state->pending_menu = false;
         jw__spawn_child(state, JW_CHILD_MENU);
@@ -285,6 +467,11 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     if (exited_kind == JW_CHILD_MENU) {
+        jw__spawn_child(state, JW_CHILD_LAUNCHER);
+        return;
+    }
+
+    if (exited_kind == JW_CHILD_RETROARCH) {
         jw__spawn_child(state, JW_CHILD_LAUNCHER);
         return;
     }

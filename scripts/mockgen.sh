@@ -14,7 +14,52 @@ if [[ -d "$ROOT" ]]; then
     fi
 fi
 
-mkdir -p "$ROOT"/Roms "$ROOT"/Images "$ROOT"/BIOS "$ROOT"/Apps
+mkdir -p "$ROOT"/Roms "$ROOT"/Images "$ROOT"/BIOS "$ROOT"/Apps "$ROOT"/Saves "$ROOT"/States "$ROOT"/.umrk
+mkdir -p "$ROOT"/UMRK/mac/defaults
+
+cat >"$ROOT/UMRK/mac/manifest.json" <<'JSON'
+{
+  "platform": "mac",
+  "version": "0.0.1",
+  "artifact_format": "directory",
+  "retroarch_bin_relpath": "retroarch/RetroArch.app/Contents/MacOS/RetroArch",
+  "cores_dir_relpath": "cores",
+  "info_dir_relpath": "info",
+  "defaults_dir_relpath": "defaults",
+  "theme_dir_relpath": "themes",
+  "source_repos": {
+    "launcher": "Jawaka",
+    "retroarch": "retroarch-builds",
+    "cores": "Cores-spruce"
+  }
+}
+JSON
+
+cat >"$ROOT/UMRK/mac/defaults/cores.json" <<'JSON'
+{
+  "platform": "mac",
+  "systems": {
+    "FC": { "core": "fceumm_libretro.dylib" },
+    "NES": { "core": "fceumm_libretro.dylib" },
+    "GB": { "core": "gambatte_libretro.dylib" },
+    "GBC": { "core": "gambatte_libretro.dylib" },
+    "GBA": { "core": "mgba_libretro.dylib" },
+    "MD": { "core": "genesis_plus_gx_libretro.dylib" },
+    "GG": { "core": "genesis_plus_gx_libretro.dylib" },
+    "MS": { "core": "genesis_plus_gx_libretro.dylib" },
+    "PS": { "core": "swanstation_libretro.dylib" }
+  }
+}
+JSON
+
+cat >"$ROOT/UMRK/mac/defaults/retroarch.cfg" <<'CFG'
+config_save_on_exit = "false"
+libretro_directory = "cores"
+libretro_info_path = "info"
+system_directory = "BIOS"
+savefile_directory = "Saves"
+savestate_directory = "States"
+CFG
 
 create_rom() {
     local sys="$1"

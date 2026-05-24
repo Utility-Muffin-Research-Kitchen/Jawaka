@@ -16,6 +16,12 @@ int jw_ipc_scan_library(const char *socket_path, char *status, int status_len);
 /* Ask jawakad to show the menu overlay. Returns 0 on success, -1 on failure. */
 int jw_ipc_open_menu(const char *socket_path);
 
+/* Ask jawakad to launch a game through the daemon-owned RetroArch process.
+ * rom_path may be absolute or relative to the SD-card root.
+ * Populates status[status_len] with a human-readable result when provided. */
+int jw_ipc_launch_game(const char *socket_path, const char *system,
+                       const char *rom_path, char *status, int status_len);
+
 /* Ask jawakad to shut down. Returns 0 on success. */
 int jw_ipc_shutdown(const char *socket_path);
 
