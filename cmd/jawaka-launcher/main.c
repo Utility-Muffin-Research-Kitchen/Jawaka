@@ -19,10 +19,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
 
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
 #define JW_MAX_GAMES   512
+#define JW_MAX_SEARCH_RESULTS 128
 
 /* ─── Tabbed mode ─────────────────────────────────────────────────────────── */
 
@@ -70,6 +72,11 @@ typedef struct {
     char               game_system[64];
     bool               games_open;
     cat_list_state     game_list;
+    jw_search_result   search_results[JW_MAX_SEARCH_RESULTS];
+    int                search_count;
+    char               search_query[256];
+    bool               search_open;
+    cat_list_state     search_list;
     /* flat nav (vertical / horizontal) */
     jw_flat_item       flat_items[JW_MAX_SYSTEMS + 6];
     int                flat_count;
@@ -79,6 +86,7 @@ typedef struct {
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
     /* status line */
+    char               sdcard_root[PATH_MAX];
     char               status[256];
     bool               scan_ready;
 } jw_launcher_state;
@@ -173,6 +181,7 @@ static void jw__switch_tab(jw_launcher_state *state, int direction) {
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
 typedef struct { const jw_app_entry   *apps;    } jw__apps_ctx;
 typedef struct { const jw_game_entry  *games;   } jw__roms_ctx;
+typedef struct { const jw_search_result *results; } jw__search_ctx;
 
 static void jw__draw_game_item(int idx, int ix, int iy, int iw, int ih,
                                 bool selected, void *user) {
@@ -251,6 +260,46 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
             ix + iw - CAT_S(10) - path_w, small_y,
             path_c, path_w);
     }
+}
+
+static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
+                                  bool selected, void *user) {
+    jw__search_ctx *ctx = (jw__search_ctx *)user;
+    ap_theme *theme     = cat_get_theme();
+    TTF_Font *body      = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small     = cat_get_font(CAT_FONT_SMALL);
+
+    const jw_search_result *result = &ctx->results[idx];
+    const char *kind = result->kind == JW_SEARCH_APP ? "App" : "Game";
+    const char *meta = result->kind == JW_SEARCH_APP ? result->pak_dir : result->system;
+
+    int pill_h = TTF_FontHeight(body) + CAT_S(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
+
+    ap_color name_c = selected ? theme->highlighted_text : theme->text;
+    ap_color meta_c = selected ? theme->highlighted_text : theme->hint;
+
+    int kind_w = cat_measure_text(small, kind);
+    int meta_w = iw / 4;
+    int name_max = iw - kind_w - meta_w - CAT_S(42);
+    if (name_max < CAT_S(96)) {
+        meta_w = 0;
+        name_max = iw - kind_w - CAT_S(32);
+    }
+
+    int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    cat_draw_text_ellipsized(body, result->name,
+        ix + CAT_S(10), text_y, name_c, name_max);
+
+    int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
+    if (meta_w > 0 && meta && meta[0]) {
+        cat_draw_text_ellipsized(small, meta,
+            ix + iw - kind_w - meta_w - CAT_S(24), small_y,
+            meta_c, meta_w);
+    }
+    cat_draw_text(small, kind, ix + iw - kind_w - CAT_S(10), small_y, meta_c);
 }
 
 static void jw__render_recents(const jw_launcher_state *state,
@@ -430,10 +479,11 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
             { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
             { CAT_BTN_L2,   "Tab",      false, ";" },
             { CAT_BTN_R2,   "Tab",      false, "t" },
+            { CAT_BTN_X,    "Search",   false, "X" },
             { CAT_BTN_MENU, "Menu",     false, "H" },
             { CAT_BTN_Y,    "Rescan",   false, "Y" },
         };
-        cat_draw_footer(footer, 5);
+        cat_draw_footer(footer, 6);
     }
     cat_present();
 }
@@ -591,10 +641,11 @@ static void jw__render_vertical(const jw_launcher_state *state) {
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_UP,   "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+            { CAT_BTN_X,    "Search",   false, "X" },
             { CAT_BTN_MENU, "Menu",     false, "H" },
             { CAT_BTN_Y,    "Rescan",   false, "Y" },
         };
-        cat_draw_footer(footer, 3);
+        cat_draw_footer(footer, 4);
     }
     cat_present();
 }
@@ -842,12 +893,77 @@ static void jw__render_horizontal(jw_launcher_state *state) {
         cat_footer_item footer[] = {
             { CAT_BTN_LEFT,  "Navigate", false, "\xe2\x86\x90\xe2\x86\x92" },
             { CAT_BTN_A,     "Select",   false, "A" },
+            { CAT_BTN_X,     "Search",   false, "X" },
             { CAT_BTN_MENU,  "Menu",     false, "H" },
             { CAT_BTN_Y,     "Rescan",   false, "Y" },
         };
-        cat_draw_footer(footer, 4);
+        cat_draw_footer(footer, 5);
     }
     cat_present();
+}
+
+static int jw__resolve_sdcard_path(const jw_launcher_state *state, const char *path,
+                                    char *out, size_t out_size) {
+    if (!state || !path || !path[0] || !out || out_size == 0) {
+        return -1;
+    }
+
+    int needed = 0;
+    if (path[0] == '/') {
+        needed = snprintf(out, out_size, "%s", path);
+    } else {
+        needed = snprintf(out, out_size, "%s/%s", state->sdcard_root, path);
+    }
+
+    return needed >= 0 && needed < (int)out_size ? 0 : -1;
+}
+
+static SDL_Texture *jw__load_cached_image(const char *path, int *out_w, int *out_h) {
+    if (!path || !path[0]) {
+        return NULL;
+    }
+
+    int tex_w = 0;
+    int tex_h = 0;
+    SDL_Texture *tex = cat_cache_get(path, &tex_w, &tex_h);
+    if (tex) {
+        if (out_w) *out_w = tex_w;
+        if (out_h) *out_h = tex_h;
+        return tex;
+    }
+
+    tex = cat_load_image(path);
+    if (!tex) {
+        return NULL;
+    }
+
+    if (SDL_QueryTexture(tex, NULL, NULL, &tex_w, &tex_h) != 0 || tex_w <= 0 || tex_h <= 0) {
+        SDL_DestroyTexture(tex);
+        return NULL;
+    }
+
+    cat_cache_put(path, tex, tex_w, tex_h);
+    if (out_w) *out_w = tex_w;
+    if (out_h) *out_h = tex_h;
+    return tex;
+}
+
+static void jw__draw_image_fit(SDL_Texture *tex, int tex_w, int tex_h,
+                                int x, int y, int w, int h) {
+    if (!tex || tex_w <= 0 || tex_h <= 0 || w <= 0 || h <= 0) {
+        return;
+    }
+
+    int draw_w = w;
+    int draw_h = (tex_h * draw_w) / tex_w;
+    if (draw_h > h) {
+        draw_h = h;
+        draw_w = (tex_w * draw_h) / tex_h;
+    }
+
+    int draw_x = x + (w - draw_w) / 2;
+    int draw_y = y + (h - draw_h) / 2;
+    cat_draw_image(tex, draw_x, draw_y, draw_w, draw_h);
 }
 
 static void jw__render_game_browser(const jw_launcher_state *state) {
@@ -892,17 +1008,125 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
     if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
         const jw_game_entry *game = &state->games[state->game_list.cursor];
+        bool drew_art = false;
+        char image_abs[PATH_MAX];
+        int image_w = 0;
+        int image_h = 0;
+        if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0) {
+            SDL_Texture *tex = jw__load_cached_image(image_abs, &image_w, &image_h);
+            if (tex) {
+                int art_pad = CAT_S(16);
+                int art_x = detail_x + art_pad;
+                int art_y = content_y + art_pad;
+                int art_w = detail_w - art_pad * 2;
+                int art_h = content_h * 68 / 100;
+                jw__draw_image_fit(tex, image_w, image_h, art_x, art_y, art_w, art_h);
+
+                int text_y = art_y + art_h + CAT_S(12);
+                cat_draw_text_ellipsized(large, game->name,
+                    detail_x + art_pad, text_y,
+                    theme->text, detail_w - art_pad * 2);
+                cat_draw_text_ellipsized(small, game->rom_path,
+                    detail_x + art_pad, text_y + TTF_FontHeight(large) + CAT_S(8),
+                    theme->hint, detail_w - art_pad * 2);
+                drew_art = true;
+            }
+        }
+
+        if (!drew_art) {
+            int large_h = TTF_FontHeight(large);
+            int name_w = cat_measure_text(large, game->name);
+            cat_draw_text_ellipsized(large, game->name,
+                detail_x + (detail_w - name_w) / 2,
+                content_y + content_h / 2 - large_h,
+                theme->text, detail_w - margin * 2);
+
+            int path_w = cat_measure_text(small, game->rom_path);
+            cat_draw_text_ellipsized(small, game->rom_path,
+                detail_x + (detail_w - path_w) / 2,
+                content_y + content_h / 2 + CAT_S(8),
+                theme->hint, detail_w - margin * 2);
+        }
+    }
+
+    int status_y = sh - fh - CAT_S(26);
+    cat_draw_text_ellipsized(small, state->status, margin, status_y,
+                             theme->hint, sw - margin * 2);
+
+    cat_footer_item footer[] = {
+        { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+        { CAT_BTN_A,  "Launch",   false, "A" },
+        { CAT_BTN_X,  "Search",   false, "X" },
+        { CAT_BTN_B,  "Back",     false, "B" },
+    };
+    cat_draw_footer(footer, 4);
+    cat_present();
+}
+
+static void jw__render_search(const jw_launcher_state *state) {
+    cat_clear_screen();
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
+
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    int fh = cat_get_footer_height();
+    int margin = CAT_S(12);
+    int header_h = CAT_DS(34);
+    int content_y = header_h + margin;
+    int content_h = sh - content_y - fh - margin;
+
+    char title[320];
+    snprintf(title, sizeof(title), "Search: %s", state->search_query[0] ? state->search_query : "(empty)");
+    cat_draw_text_ellipsized(large, title, margin, CAT_S(6), theme->text, sw - margin * 2);
+
+    int list_x = margin;
+    int list_w = sw * 58 / 100;
+    int item_h = TTF_FontHeight(body) + CAT_S(12);
+    int detail_x = list_x + list_w + margin;
+    int detail_w = sw - detail_x - margin;
+
+    if (state->search_count == 0) {
+        cat_draw_text_wrapped(body, "No results",
+            list_x + CAT_S(8), content_y + CAT_S(8),
+            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+    } else {
+        jw__search_ctx ctx = { state->search_results };
+        cat_draw_list_pane(list_x, content_y, list_w, content_h,
+            state->search_count, &state->search_list, item_h,
+            jw__draw_search_item, &ctx);
+    }
+
+    cat_draw_rounded_rect(detail_x, content_y, detail_w, content_h, CAT_S(8),
+        cat_hex_to_color("#ffffff10"));
+
+    if (state->search_count > 0 && state->search_list.cursor < state->search_count) {
+        const jw_search_result *result = &state->search_results[state->search_list.cursor];
+        const char *kind = result->kind == JW_SEARCH_APP ? "App" : "Game";
+        const char *line_one = result->kind == JW_SEARCH_APP ? result->pak_dir : result->system;
+        const char *line_two = result->kind == JW_SEARCH_APP ? "launch.sh" : result->rom_path;
+
         int large_h = TTF_FontHeight(large);
-        int name_w = cat_measure_text(large, game->name);
-        cat_draw_text_ellipsized(large, game->name,
+        int kind_w = cat_measure_text(small, kind);
+        int name_w = cat_measure_text(large, result->name);
+        cat_draw_text(small, kind,
+            detail_x + (detail_w - kind_w) / 2,
+            content_y + content_h / 2 - large_h - CAT_S(28),
+            theme->hint);
+        cat_draw_text_ellipsized(large, result->name,
             detail_x + (detail_w - name_w) / 2,
             content_y + content_h / 2 - large_h,
             theme->text, detail_w - margin * 2);
-
-        int path_w = cat_measure_text(small, game->rom_path);
-        cat_draw_text_ellipsized(small, game->rom_path,
-            detail_x + (detail_w - path_w) / 2,
-            content_y + content_h / 2 + CAT_S(8),
+        cat_draw_text_ellipsized(small, line_one,
+            detail_x + margin,
+            content_y + content_h / 2 + CAT_S(10),
+            theme->hint, detail_w - margin * 2);
+        cat_draw_text_ellipsized(small, line_two,
+            detail_x + margin,
+            content_y + content_h / 2 + CAT_S(10) + TTF_FontHeight(small) + CAT_S(4),
             theme->hint, detail_w - margin * 2);
     }
 
@@ -913,9 +1137,10 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_footer_item footer[] = {
         { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
         { CAT_BTN_A,  "Launch",   false, "A" },
+        { CAT_BTN_X,  "Search",   false, "X" },
         { CAT_BTN_B,  "Back",     false, "B" },
     };
-    cat_draw_footer(footer, 3);
+    cat_draw_footer(footer, 4);
     cat_present();
 }
 
@@ -924,6 +1149,11 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static void jw__render_launcher(jw_launcher_state *state) {
+    if (state->search_open) {
+        jw__render_search(state);
+        return;
+    }
+
     if (state->games_open) {
         jw__render_game_browser(state);
         return;
@@ -950,6 +1180,46 @@ static int jw__game_browser_visible_rows(void) {
     return visible > 0 ? visible : 1;
 }
 
+static int jw__search_visible_rows(void) {
+    int fh = cat_get_footer_height();
+    int content_h = cat_get_screen_height() - CAT_DS(34) - CAT_S(24) - fh;
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int item_h = TTF_FontHeight(body) + CAT_S(12);
+    int visible = content_h / item_h;
+    return visible > 0 ? visible : 1;
+}
+
+static int jw__perform_search(const char *db_path, jw_launcher_state *state,
+                              const char *query) {
+    snprintf(state->search_query, sizeof(state->search_query), "%s", query ? query : "");
+    state->search_count = 0;
+
+    if (jw_db_search_library(db_path, state->search_query, state->search_results,
+                             JW_MAX_SEARCH_RESULTS, &state->search_count) != 0) {
+        state->search_open = true;
+        cat_list_state_init(&state->search_list, jw__search_visible_rows());
+        snprintf(state->status, sizeof(state->status), "%s", "search failed");
+        return -1;
+    }
+
+    state->search_open = true;
+    cat_list_state_init(&state->search_list, jw__search_visible_rows());
+    cat_list_state_jump(&state->search_list, 0, state->search_count);
+    snprintf(state->status, sizeof(state->status), "%d results", state->search_count);
+    return 0;
+}
+
+static void jw__open_search(const char *db_path, jw_launcher_state *state) {
+    cat_keyboard_result result;
+    int rc = cat_keyboard(state->search_query, "Start: Search | Y: Cancel",
+                          CAT_KB_GENERAL, &result);
+    if (rc == CAT_OK) {
+        jw__perform_search(db_path, state, result.text);
+    } else if (rc == CAT_ERROR) {
+        snprintf(state->status, sizeof(state->status), "%s", "search keyboard failed");
+    }
+}
+
 static int jw__open_system_games(const char *db_path, const char *system,
                                  jw_launcher_state *state) {
     if (jw_db_list_games_for_system(db_path, system, state->games, JW_MAX_GAMES,
@@ -965,6 +1235,27 @@ static int jw__open_system_games(const char *db_path, const char *system,
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     snprintf(state->status, sizeof(state->status), "%d %s games",
              state->game_count, system);
+    return 0;
+}
+
+static int jw__launch_app_request(const char *socket_path, const char *name,
+                                  const char *pak_dir, jw_launcher_state *state,
+                                  bool *running) {
+    if (!pak_dir || !pak_dir[0]) {
+        snprintf(state->status, sizeof(state->status), "%s", "No app selected");
+        return -1;
+    }
+
+    snprintf(state->status, sizeof(state->status), "Launching %s...", name && name[0] ? name : "app");
+    cat_request_frame();
+    jw__render_launcher(state);
+
+    if (jw_ipc_launch_app(socket_path, pak_dir, state->status, sizeof(state->status)) != 0) {
+        return -1;
+    }
+
+    cat_hide_window();
+    *running = false;
     return 0;
 }
 
@@ -990,6 +1281,44 @@ static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *
     return 0;
 }
 
+static int jw__launch_selected_app(const char *socket_path, jw_launcher_state *state,
+                                   bool *running) {
+    if (state->app_count <= 0 || state->list.cursor >= state->app_count) {
+        snprintf(state->status, sizeof(state->status), "%s", "No app selected");
+        return -1;
+    }
+
+    const jw_app_entry *app = &state->apps[state->list.cursor];
+    return jw__launch_app_request(socket_path, app->name, app->pak_dir, state, running);
+}
+
+static int jw__launch_selected_search_result(const char *socket_path,
+                                             jw_launcher_state *state,
+                                             bool *running) {
+    if (state->search_count <= 0 || state->search_list.cursor >= state->search_count) {
+        snprintf(state->status, sizeof(state->status), "%s", "No result selected");
+        return -1;
+    }
+
+    const jw_search_result *result = &state->search_results[state->search_list.cursor];
+    if (result->kind == JW_SEARCH_APP) {
+        return jw__launch_app_request(socket_path, result->name, result->pak_dir, state, running);
+    }
+
+    snprintf(state->status, sizeof(state->status), "Launching %s...", result->name);
+    cat_request_frame();
+    jw__render_launcher(state);
+
+    if (jw_ipc_launch_game(socket_path, result->system, result->rom_path,
+                           state->status, sizeof(state->status)) != 0) {
+        return -1;
+    }
+
+    cat_hide_window();
+    *running = false;
+    return 0;
+}
+
 static void jw__activate_tabbed(const char *socket_path, const char *db_path,
                                   jw_launcher_state *state, bool *running) {
     switch (state->current_tab) {
@@ -999,7 +1328,7 @@ static void jw__activate_tabbed(const char *socket_path, const char *db_path,
             }
             break;
         case JW_TAB_APPS:
-            snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
+            jw__launch_selected_app(socket_path, state, running);
             break;
         case JW_TAB_SETTINGS:
             /* Settings tab content is owned by jw_settings_ui; A is handled there. */
@@ -1074,6 +1403,37 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
     cat_list_state_jump(&state->list, 0, count);
 }
 
+static void jw__handle_search_input(const char *socket_path, const char *db_path,
+                                    jw_launcher_state *state,
+                                    cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_UP:
+            cat_list_state_move(&state->search_list, -1, state->search_count);
+            break;
+        case CAT_BTN_DOWN:
+            cat_list_state_move(&state->search_list, +1, state->search_count);
+            break;
+        case CAT_BTN_LEFT:
+            cat_list_state_page(&state->search_list, -1, state->search_count);
+            break;
+        case CAT_BTN_RIGHT:
+            cat_list_state_page(&state->search_list, +1, state->search_count);
+            break;
+        case CAT_BTN_A:
+            jw__launch_selected_search_result(socket_path, state, running);
+            break;
+        case CAT_BTN_B:
+            state->search_open = false;
+            state->status[0] = '\0';
+            break;
+        case CAT_BTN_X:
+            jw__open_search(db_path, state);
+            break;
+        default:
+            break;
+    }
+}
+
 static void jw__handle_game_browser_input(const char *socket_path,
                                           jw_launcher_state *state,
                                           cat_button button, bool *running) {
@@ -1116,7 +1476,16 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         return;
     }
 
+    if (state->search_open) {
+        jw__handle_search_input(socket_path, db_path, state, button, running);
+        return;
+    }
+
     if (state->games_open) {
+        if (button == CAT_BTN_X) {
+            jw__open_search(db_path, state);
+            return;
+        }
         jw__handle_game_browser_input(socket_path, state, button, running);
         (void)db_path;
         return;
@@ -1178,6 +1547,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                user stays in Settings until they use the triggers to leave. */
             jw_settings_ui_enter(&state->settings);
         }
+        return;
+    }
+
+    if (button == CAT_BTN_X) {
+        jw__open_search(db_path, state);
         return;
     }
 
@@ -1264,10 +1638,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
 int main(void) {
     char *socket_path = jw_socket_path();
     char *db_path     = jw_db_path();
-    if (!socket_path || !db_path) {
+    char *sdcard_root = jw_sdcard_root();
+    if (!socket_path || !db_path || !sdcard_root) {
         jw_log_error("could not resolve runtime paths");
         free(socket_path);
         free(db_path);
+        free(sdcard_root);
         return 1;
     }
 
@@ -1276,6 +1652,7 @@ int main(void) {
                      socket_path);
         free(socket_path);
         free(db_path);
+        free(sdcard_root);
         return 1;
     }
 
@@ -1288,6 +1665,7 @@ int main(void) {
         jw_log_error("catastrophe init failed: %s", cat_get_error());
         free(socket_path);
         free(db_path);
+        free(sdcard_root);
         return 1;
     }
 
@@ -1308,6 +1686,7 @@ int main(void) {
     jw_launcher_state state;
     memset(&state, 0, sizeof(state));
     state.current_tab = JW_TAB_GAMES;
+    snprintf(state.sdcard_root, sizeof(state.sdcard_root), "%s", sdcard_root);
     snprintf(state.status, sizeof(state.status), "%s", "scanning library...");
 
     /* Scan first so flat lists can be built */
@@ -1355,5 +1734,6 @@ int main(void) {
     cat_quit();
     free(socket_path);
     free(db_path);
+    free(sdcard_root);
     return 0;
 }

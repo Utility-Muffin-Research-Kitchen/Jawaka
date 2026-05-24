@@ -20,6 +20,9 @@ Current scope:
 - SQLite schema with FTS5
 - mock SD-card generator
 - real game/app scan into the database
+- search over indexed games and apps
+- local game box art in game detail views
+- daemon-owned game and app launch requests
 - minimal launcher and menu surfaces
 
 Deferred:
@@ -88,6 +91,7 @@ Desktop testing follows Catastrophe's default desktop mapping:
 
 - `Up` / `Down` navigate systems
 - `H` open the menu through the daemon
+- `X` open launcher search
 - `Y` rescan the mock SD-card library
 - `;` / `t` switch tabs in tabbed mode (works from inside Settings too)
 - `Q` desktop-only shortcut to request daemon shutdown

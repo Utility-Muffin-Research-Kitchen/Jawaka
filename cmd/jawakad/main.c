@@ -22,7 +22,8 @@ typedef enum {
     JW_CHILD_NONE = 0,
     JW_CHILD_LAUNCHER,
     JW_CHILD_MENU,
-    JW_CHILD_RETROARCH
+    JW_CHILD_RETROARCH,
+    JW_CHILD_APP
 } jw_child_kind;
 
 typedef struct {
@@ -39,6 +40,8 @@ typedef struct {
     bool pending_launch;
     char pending_launch_system[64];
     char pending_launch_rom_path[PATH_MAX];
+    bool pending_app;
+    char pending_app_pak_dir[PATH_MAX];
     bool daemon_only;
     bool shutdown_requested;
 } jw_daemon_state;
@@ -53,6 +56,11 @@ static void jw__handle_signal(int signo) {
 static int jw__path_exists(const char *path) {
     struct stat st;
     return path && stat(path, &st) == 0;
+}
+
+static int jw__is_regular_file(const char *path) {
+    struct stat st;
+    return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
 static int jw__set_bin_dir(char *argv0, char *out, size_t out_size) {
@@ -120,12 +128,14 @@ static const char *jw__child_name(jw_child_kind kind) {
         case JW_CHILD_LAUNCHER: return "jawaka-launcher";
         case JW_CHILD_MENU: return "jawaka-menu";
         case JW_CHILD_RETROARCH: return "RetroArch";
+        case JW_CHILD_APP: return "app";
         default: return NULL;
     }
 }
 
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
 static int jw__spawn_retroarch(jw_daemon_state *state);
+static int jw__spawn_app(jw_daemon_state *state);
 
 static int jw__request_open_menu(jw_daemon_state *state) {
     if (!state) {
@@ -163,6 +173,89 @@ static int jw__resolve_rom_path(jw_daemon_state *state, const char *rom_path,
     if (snprintf(out, out_size, "%s", resolved) >= (int)out_size) {
         return -1;
     }
+    return 0;
+}
+
+static int jw__path_is_within(const char *path, const char *root) {
+    if (!path || !root) {
+        return 0;
+    }
+    size_t root_len = strlen(root);
+    return strncmp(path, root, root_len) == 0 &&
+           (path[root_len] == '\0' || path[root_len] == '/');
+}
+
+static int jw__resolve_app_launch_path(jw_daemon_state *state, const char *pak_dir,
+                                       char *pak_abs, size_t pak_abs_size,
+                                       char *launch_abs, size_t launch_abs_size,
+                                       const char **out_error) {
+    if (!state || !pak_dir || !pak_dir[0] || !pak_abs || !launch_abs) {
+        if (out_error) *out_error = "missing app payload";
+        return -1;
+    }
+
+    char sdcard_abs[PATH_MAX];
+    char apps_abs[PATH_MAX];
+    if (!realpath(state->sdcard_root, sdcard_abs)) {
+        if (out_error) *out_error = "SD-card root missing";
+        return -1;
+    }
+
+    char apps_candidate[PATH_MAX];
+    if (snprintf(apps_candidate, sizeof(apps_candidate), "%s/Apps", sdcard_abs) >= (int)sizeof(apps_candidate) ||
+        !realpath(apps_candidate, apps_abs)) {
+        if (out_error) *out_error = "Apps directory missing";
+        return -1;
+    }
+
+    char candidate[PATH_MAX];
+    if (pak_dir[0] == '/') {
+        snprintf(candidate, sizeof(candidate), "%s", pak_dir);
+    } else if (snprintf(candidate, sizeof(candidate), "%s/%s", sdcard_abs, pak_dir) >= (int)sizeof(candidate)) {
+        if (out_error) *out_error = "app path too long";
+        return -1;
+    }
+
+    char resolved_pak[PATH_MAX];
+    if (!realpath(candidate, resolved_pak)) {
+        if (out_error) *out_error = "app pak missing";
+        return -1;
+    }
+
+    if (!jw__path_is_within(resolved_pak, apps_abs)) {
+        if (out_error) *out_error = "app pak outside Apps";
+        return -1;
+    }
+
+    char launch_candidate[PATH_MAX];
+    if (snprintf(launch_candidate, sizeof(launch_candidate), "%s/launch.sh", resolved_pak) >= (int)sizeof(launch_candidate)) {
+        if (out_error) *out_error = "app launch path too long";
+        return -1;
+    }
+
+    if (!jw__is_regular_file(launch_candidate)) {
+        if (out_error) *out_error = "app launch.sh missing or not executable";
+        return -1;
+    }
+
+    char exec_error[256];
+    if (!jw_sdcard_exec_available_for_path(launch_candidate, exec_error, sizeof(exec_error))) {
+        jw_log_error("cannot launch app from SD: %s", exec_error);
+        if (out_error) *out_error = "SD-card mounted noexec; switcher remount failed or regressed";
+        return -1;
+    }
+
+    if (access(launch_candidate, X_OK) != 0) {
+        if (out_error) *out_error = "app launch.sh missing or not executable";
+        return -1;
+    }
+
+    if (snprintf(pak_abs, pak_abs_size, "%s", resolved_pak) >= (int)pak_abs_size ||
+        snprintf(launch_abs, launch_abs_size, "%s", launch_candidate) >= (int)launch_abs_size) {
+        if (out_error) *out_error = "app path too long";
+        return -1;
+    }
+
     return 0;
 }
 
@@ -223,9 +316,31 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
     return 0;
 }
 
+static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
+                                  const char **out_error) {
+    char pak_abs[PATH_MAX];
+    char launch_abs[PATH_MAX];
+    if (jw__resolve_app_launch_path(state, pak_dir, pak_abs, sizeof(pak_abs),
+                                    launch_abs, sizeof(launch_abs), out_error) != 0) {
+        return -1;
+    }
+
+    snprintf(state->pending_app_pak_dir, sizeof(state->pending_app_pak_dir), "%s", pak_dir);
+    state->pending_app = true;
+
+    if (state->child_pid <= 0) {
+        if (jw__spawn_app(state) != 0) {
+            if (out_error) *out_error = "app spawn failed";
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     const char *name = jw__child_name(kind);
-    if (!state || !name || kind == JW_CHILD_RETROARCH) {
+    if (!state || !name || kind == JW_CHILD_RETROARCH || kind == JW_CHILD_APP) {
         return -1;
     }
 
@@ -255,6 +370,49 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     return 0;
 }
 
+static int jw__spawn_app(jw_daemon_state *state) {
+    if (!state || !state->pending_app) {
+        return -1;
+    }
+
+    const char *error_message = NULL;
+    char pak_abs[PATH_MAX];
+    char launch_abs[PATH_MAX];
+    if (jw__resolve_app_launch_path(state, state->pending_app_pak_dir,
+                                    pak_abs, sizeof(pak_abs),
+                                    launch_abs, sizeof(launch_abs),
+                                    &error_message) != 0) {
+        jw_log_error("could not resolve app launch path: %s",
+                     error_message ? error_message : state->pending_app_pak_dir);
+        state->pending_app = false;
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_log_error("fork failed: %s", strerror(errno));
+        state->pending_app = false;
+        return -1;
+    }
+
+    if (pid == 0) {
+        if (chdir(pak_abs) != 0) {
+            perror("chdir");
+            _exit(127);
+        }
+        char *const argv[] = { (char *)launch_abs, NULL };
+        execv(launch_abs, argv);
+        perror("execv");
+        _exit(127);
+    }
+
+    state->child_pid = pid;
+    state->child_kind = JW_CHILD_APP;
+    state->pending_app = false;
+    jw_log_info("spawned app pid=%d pak=%s", (int)pid, pak_abs);
+    return 0;
+}
+
 static int jw__spawn_retroarch(jw_daemon_state *state) {
     if (!state || !state->pending_launch) {
         return -1;
@@ -278,6 +436,12 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     if (!core || !jw__path_exists(core)) {
         jw_log_error("libretro core missing for %s: %s",
                      state->pending_launch_system, core ? core : "(null)");
+        goto fail;
+    }
+
+    char exec_error[256];
+    if (!jw_sdcard_exec_available_for_path(core, exec_error, sizeof(exec_error))) {
+        jw_log_error("cannot launch RetroArch core from SD: %s", exec_error);
         goto fail;
     }
 
@@ -309,8 +473,8 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     state->child_pid = pid;
     state->child_kind = JW_CHILD_RETROARCH;
     state->pending_launch = false;
-    jw_log_info("spawned RetroArch pid=%d system=%s rom=%s",
-                (int)pid, state->pending_launch_system, rom_abs);
+    jw_log_info("spawned RetroArch pid=%d system=%s retroarch=%s core=%s append_config=%s rom=%s",
+                (int)pid, state->pending_launch_system, retroarch, core, append_config, rom_abs);
 
     free(retroarch);
     free(core);
@@ -398,6 +562,20 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_ok(client, "launch-game", NULL);
     }
 
+    if (strcmp(type->valuestring, "launch-app") == 0) {
+        cJSON *pak_dir = cJSON_GetObjectItemCaseSensitive(root, "pak_dir");
+        const char *error_message = NULL;
+        if (!cJSON_IsString(pak_dir) || !pak_dir->valuestring ||
+            jw__request_launch_app(state, pak_dir->valuestring, &error_message) != 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, error_message ? error_message : "launch-app failed");
+        }
+
+        jw_log_info("launch-app requested pak=%s", pak_dir->valuestring);
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "launch-app", NULL);
+    }
+
     if (strcmp(type->valuestring, "shutdown") == 0) {
         state->shutdown_requested = true;
         jw_log_info("shutdown requested");
@@ -443,6 +621,15 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     state->child_pid = -1;
     state->child_kind = JW_CHILD_NONE;
 
+    const char *name = jw__child_name(exited_kind);
+    if (WIFEXITED(status)) {
+        jw_log_info("%s exited status=%d", name ? name : "child", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        jw_log_warn("%s terminated signal=%d", name ? name : "child", WTERMSIG(status));
+    } else {
+        jw_log_warn("%s changed state status=%d", name ? name : "child", status);
+    }
+
     if (state->shutdown_requested || g_shutdown_requested) {
         return;
     }
@@ -451,6 +638,13 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
      * voluntarily. The daemon detects the exit here and owns the next process. */
     if (exited_kind == JW_CHILD_LAUNCHER && state->pending_launch) {
         if (jw__spawn_retroarch(state) != 0 && !state->daemon_only) {
+            jw__spawn_child(state, JW_CHILD_LAUNCHER);
+        }
+        return;
+    }
+
+    if (exited_kind == JW_CHILD_LAUNCHER && state->pending_app) {
+        if (jw__spawn_app(state) != 0 && !state->daemon_only) {
             jw__spawn_child(state, JW_CHILD_LAUNCHER);
         }
         return;
@@ -472,6 +666,11 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     if (exited_kind == JW_CHILD_RETROARCH) {
+        jw__spawn_child(state, JW_CHILD_LAUNCHER);
+        return;
+    }
+
+    if (exited_kind == JW_CHILD_APP) {
         jw__spawn_child(state, JW_CHILD_LAUNCHER);
         return;
     }

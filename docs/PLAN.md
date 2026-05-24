@@ -175,7 +175,8 @@ Target outcomes:
 
 Important scope cut:
 
-- local artwork/metadata only
+- local artwork and app `pak.json` metadata only
+- per-game metadata stays deferred, matching the current architecture decision
 - no scraper/downloader yet
 
 ### Phase 3 - Core launcher UI

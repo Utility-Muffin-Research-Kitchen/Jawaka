@@ -121,6 +121,41 @@ int jw_ipc_launch_game(const char *socket_path, const char *system,
     return 0;
 }
 
+int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
+                      char *status, int status_len) {
+    if (!pak_dir || !pak_dir[0]) {
+        if (status) snprintf(status, (size_t)status_len, "%s", "launch failed: missing app");
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "launch-app");
+    cJSON_AddStringToObject(req, "pak_dir", pak_dir);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status) snprintf(status, (size_t)status_len, "%s", "launch failed: daemon unavailable");
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "launch failed: %s", message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "launch failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (status) snprintf(status, (size_t)status_len, "%s", "app launch requested");
+    cJSON_Delete(resp);
+    return 0;
+}
+
 int jw_ipc_shutdown(const char *socket_path) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "shutdown");

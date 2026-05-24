@@ -70,6 +70,39 @@ static char *jw__dup_realpath_or_literal(const char *path) {
     return path ? jw__dup_printf("%s", path) : NULL;
 }
 
+static bool jw__path_is_within(const char *path, const char *root) {
+    if (!path || !root) {
+        return false;
+    }
+    size_t root_len = strlen(root);
+    return strncmp(path, root, root_len) == 0 &&
+           (path[root_len] == '\0' || path[root_len] == '/');
+}
+
+static bool jw__option_list_has(const char *list, const char *option) {
+    if (!list || !option) {
+        return false;
+    }
+
+    char needle[64];
+    if (snprintf(needle, sizeof(needle), ",%s,", option) >= (int)sizeof(needle)) {
+        return false;
+    }
+
+    char wrapped[4096];
+    if (snprintf(wrapped, sizeof(wrapped), ",%s,", list) >= (int)sizeof(wrapped)) {
+        return false;
+    }
+
+    return strstr(wrapped, needle) != NULL;
+}
+
+static void jw__set_error(char *error, size_t error_size, const char *message) {
+    if (error && error_size > 0) {
+        snprintf(error, error_size, "%s", message ? message : "");
+    }
+}
+
 static char *jw__env_or_probe(const char *env_name, const char *relative_path,
                               const char *absolute_path) {
     const char *env = getenv(env_name);
@@ -239,7 +272,7 @@ char *jw_retroarch_bin_path(void) {
     return jw__env_or_probe(
         "JAWAKA_RETROARCH_BIN",
         NULL,
-        "/userdata/app/retroarch/retroarch");
+        "/mnt/sdcard/UMRK/mlp1/bin/retroarch");
 #else
     return jw__env_or_probe(
         "JAWAKA_RETROARCH_BIN",
@@ -350,7 +383,7 @@ static char *jw__default_cores_dir(void) {
     return jw__env_or_probe(
         "JAWAKA_RETROARCH_CORES_DIR",
         NULL,
-        "/userdata/app/retroarch/.config/cores");
+        "/mnt/sdcard/UMRK/mlp1/cores");
 #else
     return jw__env_or_probe(
         "JAWAKA_RETROARCH_CORES_DIR",
@@ -382,6 +415,73 @@ char *jw_retroarch_core_path_for_system(const char *system) {
     free(cores_dir);
     free(core_name);
     return path;
+}
+
+bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size) {
+#if !defined(PLATFORM_MLP1)
+    (void)path;
+    jw__set_error(error, error_size, "");
+    return true;
+#else
+    jw__set_error(error, error_size, "");
+    if (!path || !path[0]) {
+        return true;
+    }
+
+    char *sdcard_root = jw_sdcard_root();
+    if (!sdcard_root) {
+        jw__set_error(error, error_size, "SD-card exec check failed: could not resolve SD root");
+        return false;
+    }
+
+    char sdcard_abs[PATH_MAX];
+    if (!realpath(sdcard_root, sdcard_abs)) {
+        snprintf(sdcard_abs, sizeof(sdcard_abs), "%s", sdcard_root);
+    }
+    free(sdcard_root);
+
+    char path_abs[PATH_MAX];
+    if (!realpath(path, path_abs)) {
+        snprintf(path_abs, sizeof(path_abs), "%s", path);
+    }
+
+    if (!jw__path_is_within(path_abs, sdcard_abs)) {
+        return true;
+    }
+
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) {
+        jw__set_error(error, error_size,
+                      "SD-card exec check failed: could not read /proc/mounts");
+        return false;
+    }
+
+    char mountpoint[PATH_MAX];
+    char opts[2048];
+    bool found = false;
+    while (fscanf(fp, "%*255s %4095s %*63s %2047s %*d %*d",
+                  mountpoint, opts) == 2) {
+        if (strcmp(mountpoint, sdcard_abs) == 0 || strcmp(mountpoint, "/mnt/sdcard") == 0) {
+            found = true;
+            break;
+        }
+    }
+    fclose(fp);
+
+    if (!found) {
+        jw__set_error(error, error_size,
+                      "SD-card exec check failed: no /mnt/sdcard mount entry");
+        return false;
+    }
+
+    if (jw__option_list_has(opts, "noexec")) {
+        jw__set_error(error, error_size,
+                      "SD-card is mounted noexec; switcher remount failed or regressed");
+        return false;
+    }
+
+    return true;
+#endif
 }
 
 static void jw__retroarch_cfg_string(FILE *fp, const char *key, const char *value) {
@@ -470,6 +570,11 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     if (info_dir && jw__is_directory(info_dir)) {
         jw__retroarch_cfg_string(fp, "libretro_info_path", info_dir);
     }
+#ifdef PLATFORM_MLP1
+    jw__retroarch_cfg_string(fp, "video_driver", "gl");
+    jw__retroarch_cfg_string(fp, "audio_driver", "alsa");
+    jw__retroarch_cfg_string(fp, "input_driver", "sdl2");
+#endif
     jw__retroarch_cfg_string(fp, "config_save_on_exit", "false");
 
     int failed = ferror(fp);

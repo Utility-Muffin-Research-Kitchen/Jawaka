@@ -4,7 +4,7 @@
 -- later codegen replaces this duplication.
 
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 1;
+PRAGMA user_version = 3;
 
 CREATE TABLE IF NOT EXISTS games (
     id          INTEGER PRIMARY KEY,
@@ -61,3 +61,29 @@ CREATE TRIGGER IF NOT EXISTS games_au AFTER UPDATE ON games BEGIN
     INSERT INTO games_fts(rowid, name, system)
         VALUES (new.id, new.name, new.system);
 END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
+    name, pak_dir, content='apps', content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS apps_ai AFTER INSERT ON apps BEGIN
+    INSERT INTO apps_fts(rowid, name, pak_dir)
+        VALUES (new.id, new.name, new.pak_dir);
+END;
+
+CREATE TRIGGER IF NOT EXISTS apps_ad AFTER DELETE ON apps BEGIN
+    INSERT INTO apps_fts(apps_fts, rowid, name, pak_dir)
+        VALUES ('delete', old.id, old.name, old.pak_dir);
+END;
+
+CREATE TRIGGER IF NOT EXISTS apps_au AFTER UPDATE ON apps BEGIN
+    INSERT INTO apps_fts(apps_fts, rowid, name, pak_dir)
+        VALUES ('delete', old.id, old.name, old.pak_dir);
+    INSERT INTO apps_fts(rowid, name, pak_dir)
+        VALUES (new.id, new.name, new.pak_dir);
+END;
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

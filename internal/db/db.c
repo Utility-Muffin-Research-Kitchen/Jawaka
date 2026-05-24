@@ -1,11 +1,12 @@
 #include "internal/db/db.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
 static const char *kSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
-    "PRAGMA user_version = 2;\n"
+    "PRAGMA user_version = 3;\n"
     "\n"
     "CREATE TABLE IF NOT EXISTS games (\n"
     "    id          INTEGER PRIMARY KEY,\n"
@@ -63,6 +64,27 @@ static const char *kSchemaSql =
     "        VALUES (new.id, new.name, new.system);\n"
     "END;\n"
     "\n"
+    "CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(\n"
+    "    name, pak_dir, content='apps', content_rowid='id'\n"
+    ");\n"
+    "\n"
+    "CREATE TRIGGER IF NOT EXISTS apps_ai AFTER INSERT ON apps BEGIN\n"
+    "    INSERT INTO apps_fts(rowid, name, pak_dir)\n"
+    "        VALUES (new.id, new.name, new.pak_dir);\n"
+    "END;\n"
+    "\n"
+    "CREATE TRIGGER IF NOT EXISTS apps_ad AFTER DELETE ON apps BEGIN\n"
+    "    INSERT INTO apps_fts(apps_fts, rowid, name, pak_dir)\n"
+    "        VALUES ('delete', old.id, old.name, old.pak_dir);\n"
+    "END;\n"
+    "\n"
+    "CREATE TRIGGER IF NOT EXISTS apps_au AFTER UPDATE ON apps BEGIN\n"
+    "    INSERT INTO apps_fts(apps_fts, rowid, name, pak_dir)\n"
+    "        VALUES ('delete', old.id, old.name, old.pak_dir);\n"
+    "    INSERT INTO apps_fts(rowid, name, pak_dir)\n"
+    "        VALUES (new.id, new.name, new.pak_dir);\n"
+    "END;\n"
+    "\n"
     "CREATE TABLE IF NOT EXISTS settings (\n"
     "    key   TEXT PRIMARY KEY,\n"
     "    value TEXT NOT NULL\n"
@@ -107,7 +129,10 @@ int jw_db_reset_library(sqlite3 *db) {
     if (!db) {
         return -1;
     }
-    return jw__exec(db, "DELETE FROM apps; DELETE FROM games;");
+    return jw__exec(db,
+        "INSERT INTO games_fts(games_fts) VALUES('rebuild');"
+        "INSERT INTO apps_fts(apps_fts) VALUES('rebuild');"
+        "DELETE FROM apps; DELETE FROM games;");
 }
 
 int jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path) {
@@ -423,4 +448,128 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
     sqlite3_finalize(stmt);
     jw_db_close(db);
     return 0;
+}
+
+static int jw__build_fts_query(const char *query, char *out, size_t out_size) {
+    if (!query || !out || out_size == 0) {
+        return -1;
+    }
+
+    out[0] = '\0';
+    size_t used = 0;
+    int token_count = 0;
+
+    for (const unsigned char *p = (const unsigned char *)query; *p; ) {
+        while (*p && !isalnum(*p)) {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+
+        char token[64];
+        size_t token_len = 0;
+        while (*p && isalnum(*p)) {
+            if (token_len + 1 < sizeof(token)) {
+                token[token_len++] = (char)tolower(*p);
+            }
+            p++;
+        }
+        token[token_len] = '\0';
+        if (token_len == 0) {
+            continue;
+        }
+
+        size_t needed = token_len + 1u + (token_count > 0 ? 1u : 0u);
+        if (used + needed + 1u >= out_size) {
+            break;
+        }
+
+        if (token_count > 0) {
+            out[used++] = ' ';
+        }
+        memcpy(out + used, token, token_len);
+        used += token_len;
+        out[used++] = '*';
+        out[used] = '\0';
+        token_count++;
+    }
+
+    return token_count > 0 ? 0 : 1;
+}
+
+int jw_db_search_library(const char *db_path, const char *query,
+                         jw_search_result *out, int max_count, int *out_count) {
+    if (!db_path || !query || !out || max_count <= 0 || !out_count) {
+        return -1;
+    }
+
+    *out_count = 0;
+    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
+
+    char fts_query[256];
+    int query_rc = jw__build_fts_query(query, fts_query, sizeof(fts_query));
+    if (query_rc > 0) {
+        return 0;
+    }
+    if (query_rc < 0) {
+        return -1;
+    }
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    static const char *sql =
+        "SELECT kind, name, system, rom_path, image_path, pak_dir, icon FROM ("
+        "  SELECT 0 AS kind, games.name AS name, games.system AS system,"
+        "         games.rom_path AS rom_path, COALESCE(games.image_path, '') AS image_path,"
+        "         '' AS pak_dir, '' AS icon, bm25(games_fts) AS score"
+        "    FROM games_fts JOIN games ON games_fts.rowid = games.id"
+        "   WHERE games_fts MATCH ?"
+        "  UNION ALL"
+        "  SELECT 1 AS kind, apps.name AS name, '' AS system,"
+        "         '' AS rom_path, '' AS image_path,"
+        "         apps.pak_dir AS pak_dir, COALESCE(apps.icon, '') AS icon,"
+        "         bm25(apps_fts) AS score"
+        "    FROM apps_fts JOIN apps ON apps_fts.rowid = apps.id"
+        "   WHERE apps_fts MATCH ?"
+        ") ORDER BY score ASC, kind ASC, name ASC LIMIT ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fts_query, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, fts_query, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, max_count);
+
+    int step_rc = SQLITE_ROW;
+    while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && *out_count < max_count) {
+        int i = *out_count;
+        out[i].kind = sqlite3_column_int(stmt, 0) == 1 ? JW_SEARCH_APP : JW_SEARCH_GAME;
+
+        const unsigned char *name = sqlite3_column_text(stmt, 1);
+        const unsigned char *system = sqlite3_column_text(stmt, 2);
+        const unsigned char *rom_path = sqlite3_column_text(stmt, 3);
+        const unsigned char *image_path = sqlite3_column_text(stmt, 4);
+        const unsigned char *pak_dir = sqlite3_column_text(stmt, 5);
+        const unsigned char *icon = sqlite3_column_text(stmt, 6);
+
+        if (name) snprintf(out[i].name, sizeof(out[i].name), "%s", name);
+        if (system) snprintf(out[i].system, sizeof(out[i].system), "%s", system);
+        if (rom_path) snprintf(out[i].rom_path, sizeof(out[i].rom_path), "%s", rom_path);
+        if (image_path) snprintf(out[i].image_path, sizeof(out[i].image_path), "%s", image_path);
+        if (pak_dir) snprintf(out[i].pak_dir, sizeof(out[i].pak_dir), "%s", pak_dir);
+        if (icon) snprintf(out[i].icon, sizeof(out[i].icon), "%s", icon);
+        (*out_count)++;
+    }
+
+    int rc = (step_rc == SQLITE_DONE || *out_count >= max_count) ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
 }
