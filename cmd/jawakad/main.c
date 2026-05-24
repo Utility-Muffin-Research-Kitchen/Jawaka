@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef enum {
@@ -27,6 +28,16 @@ typedef enum {
 } jw_child_kind;
 
 typedef struct {
+    bool active;
+    pid_t pid;
+    time_t started_at;
+    char system[64];
+    char rom_path[PATH_MAX];
+    char core_path[PATH_MAX];
+    char append_config_path[PATH_MAX];
+} jw_retroarch_session;
+
+typedef struct {
     char *runtime_dir;
     char *sdcard_root;
     char *socket_path;
@@ -36,6 +47,7 @@ typedef struct {
     jw_ipc_server *server;
     pid_t child_pid;          /* exactly one daemon-owned child at a time */
     jw_child_kind child_kind;
+    jw_retroarch_session retroarch_session;
     bool pending_menu;
     bool pending_launch;
     char pending_launch_system[64];
@@ -136,6 +148,83 @@ static const char *jw__child_name(jw_child_kind kind) {
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
 static int jw__spawn_retroarch(jw_daemon_state *state);
 static int jw__spawn_app(jw_daemon_state *state);
+
+static void jw__retroarch_session_clear(jw_retroarch_session *session) {
+    if (!session) {
+        return;
+    }
+
+    memset(session, 0, sizeof(*session));
+}
+
+static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
+                                        const char *system, const char *rom_path,
+                                        const char *core_path,
+                                        const char *append_config_path) {
+    if (!state || pid <= 0) {
+        return;
+    }
+
+    jw_retroarch_session *session = &state->retroarch_session;
+    jw__retroarch_session_clear(session);
+    session->active = true;
+    session->pid = pid;
+    session->started_at = time(NULL);
+    snprintf(session->system, sizeof(session->system), "%s", system ? system : "");
+    snprintf(session->rom_path, sizeof(session->rom_path), "%s", rom_path ? rom_path : "");
+    snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
+    snprintf(session->append_config_path, sizeof(session->append_config_path), "%s",
+             append_config_path ? append_config_path : "");
+
+    jw_log_info("RetroArch session started pid=%d system=%s core=%s append_config=%s rom=%s",
+                (int)pid, session->system, session->core_path,
+                session->append_config_path, session->rom_path);
+}
+
+static long jw__retroarch_session_runtime_s(const jw_retroarch_session *session) {
+    if (!session || session->started_at <= 0) {
+        return 0;
+    }
+
+    time_t ended_at = time(NULL);
+    if (ended_at == (time_t)-1 || ended_at < session->started_at) {
+        return 0;
+    }
+    return (long)(ended_at - session->started_at);
+}
+
+static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int status) {
+    if (!state) {
+        return;
+    }
+
+    jw_retroarch_session *session = &state->retroarch_session;
+    if (!session->active) {
+        jw_log_warn("RetroArch child exited without active session pid=%d", (int)pid);
+        return;
+    }
+
+    long runtime_s = jw__retroarch_session_runtime_s(session);
+    if (session->pid != pid) {
+        jw_log_warn("RetroArch session pid mismatch tracked=%d exited=%d",
+                    (int)session->pid, (int)pid);
+    }
+
+    if (WIFEXITED(status)) {
+        jw_log_info("RetroArch session ended pid=%d runtime_s=%ld status=%d system=%s rom=%s",
+                    (int)pid, runtime_s, WEXITSTATUS(status),
+                    session->system, session->rom_path);
+    } else if (WIFSIGNALED(status)) {
+        jw_log_warn("RetroArch session terminated pid=%d runtime_s=%ld signal=%d system=%s rom=%s",
+                    (int)pid, runtime_s, WTERMSIG(status),
+                    session->system, session->rom_path);
+    } else {
+        jw_log_warn("RetroArch session changed state pid=%d runtime_s=%ld status=%d system=%s rom=%s",
+                    (int)pid, runtime_s, status, session->system, session->rom_path);
+    }
+
+    jw__retroarch_session_clear(session);
+}
 
 static int jw__request_open_menu(jw_daemon_state *state) {
     if (!state) {
@@ -473,8 +562,8 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     state->child_pid = pid;
     state->child_kind = JW_CHILD_RETROARCH;
     state->pending_launch = false;
-    jw_log_info("spawned RetroArch pid=%d system=%s retroarch=%s core=%s append_config=%s rom=%s",
-                (int)pid, state->pending_launch_system, retroarch, core, append_config, rom_abs);
+    jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
+    jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs, core, append_config);
 
     free(retroarch);
     free(core);
@@ -483,6 +572,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
 
 fail:
     state->pending_launch = false;
+    jw__retroarch_session_clear(&state->retroarch_session);
     free(retroarch);
     free(core);
     free(append_config);
@@ -618,6 +708,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     jw_child_kind exited_kind = state->child_kind;
+    pid_t exited_pid = waited;
     state->child_pid = -1;
     state->child_kind = JW_CHILD_NONE;
 
@@ -628,6 +719,10 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         jw_log_warn("%s terminated signal=%d", name ? name : "child", WTERMSIG(status));
     } else {
         jw_log_warn("%s changed state status=%d", name ? name : "child", status);
+    }
+
+    if (exited_kind == JW_CHILD_RETROARCH) {
+        jw__retroarch_session_finish(state, exited_pid, status);
     }
 
     if (state->shutdown_requested || g_shutdown_requested) {
@@ -684,8 +779,15 @@ static void jw__cleanup(jw_daemon_state *state) {
     }
 
     if (state->child_pid > 0) {
-        kill(state->child_pid, SIGTERM);
-        waitpid(state->child_pid, NULL, 0);
+        pid_t child_pid = state->child_pid;
+        jw_child_kind child_kind = state->child_kind;
+        int status = 0;
+        kill(child_pid, SIGTERM);
+        if (waitpid(child_pid, &status, 0) > 0 && child_kind == JW_CHILD_RETROARCH) {
+            jw__retroarch_session_finish(state, child_pid, status);
+        }
+        state->child_pid = -1;
+        state->child_kind = JW_CHILD_NONE;
     }
 
     jw_ipc_server_close(state->server);

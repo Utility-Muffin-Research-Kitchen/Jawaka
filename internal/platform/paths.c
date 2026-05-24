@@ -1,4 +1,5 @@
 #include "internal/platform/paths.h"
+#include "internal/retroarch/command.h"
 
 #include "cJSON.h"
 
@@ -607,6 +608,11 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
         jw__retroarch_cfg_string(fp, "libretro_info_path", info_dir);
     }
     jw__retroarch_cfg_string(fp, "config_save_on_exit", "false");
+    jw__retroarch_cfg_string(fp, "network_cmd_enable", "true");
+    char command_port[16];
+    snprintf(command_port, sizeof(command_port), "%u", JW_RA_DEFAULT_PORT);
+    jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
+    jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
 
     int failed = ferror(fp);
     if (fclose(fp) != 0) {
