@@ -37,6 +37,10 @@ DAEMON_SRCS := \
 	internal/discovery/discovery.c \
 	third_party/cjson/cJSON.c
 
+RETROARCH_CTL_SRCS := \
+	cmd/jawaka-retroarchctl/main.c \
+	internal/retroarch/command.c
+
 UI_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
@@ -47,13 +51,14 @@ UI_SRCS := \
 	internal/settings/theme_resolve.c \
 	third_party/cjson/cJSON.c
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-retroarchctl mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke check-catastrophe check-sdl
 
-all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu
+all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu $(BUILD)/bin/jawaka-retroarchctl
 
 jawakad: $(BUILD)/bin/jawakad
 jawaka-launcher: $(BUILD)/bin/jawaka-launcher
 jawaka-menu: $(BUILD)/bin/jawaka-menu
+jawaka-retroarchctl: $(BUILD)/bin/jawaka-retroarchctl
 
 $(BUILD)/bin:
 	@mkdir -p $(BUILD)/bin
@@ -74,6 +79,9 @@ $(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(UI_SRCS) $(CATASTROPH
 
 $(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(UI_SRCS) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-menu/main.c $(UI_SRCS) $(LDLIBS_UI)
+
+$(BUILD)/bin/jawaka-retroarchctl: $(RETROARCH_CTL_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(RETROARCH_CTL_SRCS)
 
 mockgen:
 	bash scripts/mockgen.sh
@@ -142,6 +150,9 @@ mlp1-adb-smoke:
 mlp1-adb-input-capture:
 	scripts/adb-mlp1-input-capture.sh
 
+mlp1-adb-ra-command-smoke:
+	scripts/adb-mlp1-retroarch-command-smoke.sh
+
 help:
 	@echo ""
 	@echo "Jawaka build targets"
@@ -161,6 +172,7 @@ help:
 	@echo "  make mlp1          Cross-compile for Miniloong Pocket 1"
 	@echo "  make mlp1-adb-smoke  Build, push to /tmp, and run an ADB UI smoke"
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"
+	@echo "  make mlp1-adb-ra-command-smoke  Run RetroArch command feature smoke over ADB"
 	@echo ""
 	@echo "Environment variables"
 	@echo "====================="
