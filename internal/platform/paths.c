@@ -160,6 +160,37 @@ static char *jw__read_text_file(const char *path, size_t max_size) {
     return buf;
 }
 
+static char *jw__platform_defaults_path(const char *sdcard_root, const char *filename) {
+    if (!sdcard_root || !filename || !filename[0]) {
+        return NULL;
+    }
+
+    char path[PATH_MAX];
+    int needed = snprintf(path, sizeof(path), "%s/UMRK/%s/defaults/%s",
+                          sdcard_root, jw__platform_id(), filename);
+    if (needed < 0 || needed >= (int)sizeof(path)) {
+        return NULL;
+    }
+
+    return jw__path_exists(path) ? jw__dup_realpath_or_literal(path) : NULL;
+}
+
+static int jw__write_text_file_contents(FILE *fp, const char *path) {
+    char *text = jw__read_text_file(path, 64u * 1024u);
+    if (!text) {
+        return -1;
+    }
+
+    fputs(text, fp);
+    size_t len = strlen(text);
+    if (len == 0 || text[len - 1] != '\n') {
+        fputc('\n', fp);
+    }
+
+    free(text);
+    return ferror(fp) ? -1 : 0;
+}
+
 static int jw__mkdir_child(const char *root, const char *name) {
     char path[PATH_MAX];
     if (!root || !name || snprintf(path, sizeof(path), "%s/%s", root, name) >= (int)sizeof(path)) {
@@ -555,14 +586,19 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     }
 
     char *info_dir = jw__core_info_dir(core_path);
+    char *defaults_path = jw__platform_defaults_path(sdroot_abs, "retroarch.cfg");
 
     FILE *fp = fopen(path, "wb");
     if (!fp) {
+        free(defaults_path);
         free(info_dir);
         free(path);
         return NULL;
     }
 
+    if (defaults_path) {
+        jw__write_text_file_contents(fp, defaults_path);
+    }
     jw__retroarch_cfg_string(fp, "system_directory", system_dir);
     jw__retroarch_cfg_string(fp, "savefile_directory", saves_dir);
     jw__retroarch_cfg_string(fp, "savestate_directory", states_dir);
@@ -570,11 +606,6 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     if (info_dir && jw__is_directory(info_dir)) {
         jw__retroarch_cfg_string(fp, "libretro_info_path", info_dir);
     }
-#ifdef PLATFORM_MLP1
-    jw__retroarch_cfg_string(fp, "video_driver", "gl");
-    jw__retroarch_cfg_string(fp, "audio_driver", "alsa");
-    jw__retroarch_cfg_string(fp, "input_driver", "sdl2");
-#endif
     jw__retroarch_cfg_string(fp, "config_save_on_exit", "false");
 
     int failed = ferror(fp);
@@ -582,6 +613,7 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
         failed = 1;
     }
 
+    free(defaults_path);
     free(info_dir);
     if (failed) {
         unlink(path);
