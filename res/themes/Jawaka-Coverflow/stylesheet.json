@@ -1,0 +1,33 @@
+{
+  "ui": {
+    "ui_font": { "path": "fonts/SpaceGrotesk/SpaceGrotesk-Regular.ttf", "size": 36 },
+    "text_color": "#f0f0f0",
+    "background_color": "#0a1428",
+    "highlight_color": "#3b82f6",
+    "highlight_text_color": "#ffffff",
+    "disabled_color": "#6b7e9a",
+    "tab_color": "#f0f0f070",
+    "tab_selected_color": "#f0f0f0",
+    "pill_radius_ratio": 0.15
+  },
+  "status_bar": { "show_battery_level": true, "show_clock": true, "show_wifi": true, "text_color": "#f0f0f0" },
+  "button_hints": {
+    "button_a_color": "#3b82f6",
+    "button_b_color": "#3b82f6",
+    "button_x_color": "#3b82f6",
+    "button_y_color": "#3b82f6",
+    "button_bg_color": "#152844",
+    "button_text_color": "#ffffff",
+    "text_color": "#f0f0f0"
+  },
+  "menu": { "background_color": "#0a1428" },
+  "cjk_font": { "path": "fonts/SourceHanSansCN/SourceHanSansCN-Heavy.otf", "size": 36 },
+  "launcher": {
+    "layout": "coverflow",
+    "coverflow_icon_size": 256,
+    "coverflow_side_size": 160,
+    "coverflow_spacing": 280,
+    "coverflow_side_alpha": 140,
+    "coverflow_anim_ms": 180
+  }
+}

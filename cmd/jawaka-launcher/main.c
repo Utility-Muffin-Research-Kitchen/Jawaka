@@ -54,6 +54,15 @@ typedef struct {
     int          system_idx;
 } jw_flat_item;
 
+/* ─── Coverflow animation state ───────────────────────────────────────────── */
+
+typedef struct {
+    bool      active;
+    float     from_visual;   /* visual cursor position at animation start */
+    int       to_cursor;     /* logical target position */
+    uint32_t  start_ms;
+} jw_coverflow_anim;
+
 /* ─── Launcher state ──────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -83,6 +92,8 @@ typedef struct {
     /* horizontal: tools sub-menu */
     bool               tools_open;
     cat_list_state     tools_list;
+    /* coverflow animation */
+    jw_coverflow_anim  coverflow_anim;
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
     /* status line */
@@ -966,6 +977,214 @@ static void jw__draw_image_fit(SDL_Texture *tex, int tex_w, int tex_h,
     cat_draw_image(tex, draw_x, draw_y, draw_w, draw_h);
 }
 
+/* ─── Coverflow: icon loader ──────────────────────────────────────────────── */
+
+/* Loader order:
+ *   1. <sdcard_root>/Roms/<SYSTEM>/icon.png  (user override; skipped for codes starting with '_')
+ *   2. <theme_dir>/<theme>/<icon_dir>/<SYSTEM>.png  (bundled)
+ *   3. <theme_dir>/<theme>/<icon_dir>/_default.png  (fallback)
+ * Returns NULL only if all three fail.
+ * Pass "_tools" as system_code for the Tools tile.
+ */
+static SDL_Texture *jw__load_system_icon(const char *system_code,
+                                         int *out_w, int *out_h) {
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    const char *theme_dir    = cat_get_active_theme_dir();
+    const char *theme_name   = cat_get_active_theme_name();
+    char path[1024];
+
+    if (system_code[0] != '_') {
+        char *sdcard_root = jw_sdcard_root();
+        if (sdcard_root) {
+            snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
+                     sdcard_root, system_code);
+            SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
+            free(sdcard_root);
+            if (t) return t;
+        }
+    }
+
+    if (theme_dir[0] && theme_name[0]) {
+        snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
+                 theme_dir, theme_name,
+                 ss->launcher.coverflow_icon_dir, system_code);
+        SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
+        if (t) return t;
+    }
+
+    if (theme_dir[0] && theme_name[0]) {
+        snprintf(path, sizeof(path), "%s/%s/%s/_default.png",
+                 theme_dir, theme_name,
+                 ss->launcher.coverflow_icon_dir);
+        SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
+        if (t) return t;
+    }
+
+    return NULL;
+}
+
+/* ─── Coverflow: animation helpers ───────────────────────────────────────── */
+
+static float jw__ease_out_cubic(float t) {
+    float u = 1.0f - t;
+    return 1.0f - u * u * u;
+}
+
+static float jw__coverflow_visual_cursor(const jw_launcher_state *state) {
+    const jw_coverflow_anim *a = &state->coverflow_anim;
+    if (!a->active) return (float)state->list.cursor;
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    uint32_t elapsed = SDL_GetTicks() - a->start_ms;
+    if (elapsed >= ss->launcher.coverflow_anim_ms) return (float)a->to_cursor;
+    float t = (float)elapsed / (float)ss->launcher.coverflow_anim_ms;
+    float eased = jw__ease_out_cubic(t);
+    return a->from_visual + ((float)a->to_cursor - a->from_visual) * eased;
+}
+
+static void jw__coverflow_start_anim(jw_launcher_state *state, int new_cursor) {
+    jw_coverflow_anim *a = &state->coverflow_anim;
+    a->from_visual = jw__coverflow_visual_cursor(state);
+    a->to_cursor   = new_cursor;
+    a->start_ms    = SDL_GetTicks();
+    a->active      = true;
+    state->list.cursor = new_cursor;
+}
+
+/* ─── Coverflow: render ───────────────────────────────────────────────────── */
+
+static void jw__render_coverflow(jw_launcher_state *state) {
+    cat_clear_screen();
+
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    ap_theme *theme    = cat_get_theme();
+    TTF_Font *label_font = cat_get_font(CAT_FONT_EXTRA_LARGE);
+    TTF_Font *small_font = cat_get_font(CAT_FONT_SMALL);
+
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    int fh = cat_get_footer_height();
+
+    int icon_c  = CAT_S(ss->launcher.coverflow_icon_size);
+    int icon_s  = CAT_S(ss->launcher.coverflow_side_size);
+    int spacing = CAT_S(ss->launcher.coverflow_spacing);
+    int cx0     = sw / 2;
+    int cy      = sh / 2 - fh / 2 - CAT_S(20);
+    int count   = state->flat_count;
+
+    /* Retire animation when finished */
+    jw_coverflow_anim *a = &state->coverflow_anim;
+    if (a->active && SDL_GetTicks() - a->start_ms >= ss->launcher.coverflow_anim_ms) {
+        a->active = false;
+    }
+
+    float v_cursor = jw__coverflow_visual_cursor(state);
+
+    /* Request another frame while animation is in flight */
+    if (a->active) cat_request_frame();
+
+    int lo = (int)floorf(v_cursor) - 1;
+    int hi = (int)floorf(v_cursor) + 2;
+    if (lo < 0)           lo = 0;
+    if (hi > count - 1)   hi = count - 1;
+
+    /* Two-pass draw: sides first so center overlaps them */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = lo; i <= hi; i++) {
+            float dist  = (float)i - v_cursor;
+            float adist = fabsf(dist);
+            if (adist > 2.0f) continue;
+
+            bool is_center_pass = adist < 0.5f;
+            if (pass == 0 && is_center_pass)  continue;
+            if (pass == 1 && !is_center_pass) continue;
+
+            /* c = 1 at center, 0 at side */
+            float c = 1.0f - fminf(adist, 1.0f);
+            if (c < 0.0f) c = 0.0f;
+
+            int size_px = (int)((1.0f - c) * (float)icon_s + c * (float)icon_c);
+            uint8_t alpha = (uint8_t)((1.0f - c) * (float)ss->launcher.coverflow_side_alpha
+                                      + c * 255.0f);
+            int cx = cx0 + (int)(dist * (float)spacing);
+
+            const jw_flat_item *it = &state->flat_items[i];
+            const char *code;
+            if (it->kind == JW_FLAT_SYSTEM)     code = state->systems[it->system_idx].name;
+            else if (it->kind == JW_FLAT_TOOLS) code = "_tools";
+            else                                continue;
+
+            int tw, th;
+            SDL_Texture *tex = jw__load_system_icon(code, &tw, &th);
+            if (!tex) continue;
+
+            SDL_SetTextureAlphaMod(tex, alpha);
+            jw__draw_image_fit(tex, tw, th,
+                               cx - size_px / 2, cy - size_px / 2,
+                               size_px, size_px);
+            SDL_SetTextureAlphaMod(tex, 255);
+        }
+    }
+
+    /* Label + game count for the logical (target) cursor item */
+    if (count > 0 && state->list.cursor < count) {
+        const jw_flat_item *it = &state->flat_items[state->list.cursor];
+        const char *label = jw__flat_label(state, state->list.cursor);
+        int lw = cat_measure_text(label_font, label);
+        int ly = cy + icon_c / 2 + CAT_S(20);
+        cat_draw_text(label_font, label, (sw - lw) / 2, ly, theme->text);
+
+        if (it->kind == JW_FLAT_SYSTEM) {
+            char cnt[32];
+            snprintf(cnt, sizeof(cnt), "%d games",
+                     state->systems[it->system_idx].game_count);
+            int cw = cat_measure_text(small_font, cnt);
+            cat_draw_text(small_font, cnt, (sw - cw) / 2,
+                          ly + TTF_FontHeight(label_font) + CAT_S(6),
+                          theme->hint);
+        }
+    }
+
+    /* Tools overlay */
+    if (state->tools_open)
+        jw__draw_tools_menu(state);
+
+    /* Settings overlay */
+    if (jw_settings_ui_is_open(&state->settings)) {
+        SDL_Renderer *ren = cat_get_renderer();
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, 200);
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+        SDL_Rect full = { 0, 0, sw, sh };
+        SDL_RenderFillRect(ren, &full);
+
+        int sb_h = CAT_DS(20);
+        int ox = sw / 6;
+        int ow = sw - ox * 2;
+        int oy = sb_h + CAT_S(8);
+        int oh = sh - oy - fh - CAT_S(8);
+        cat_draw_rounded_rect(ox, oy, ow, oh, CAT_S(8), theme->background);
+        jw_settings_ui_render(&state->settings,
+                               ox + CAT_S(12), oy + CAT_S(8),
+                               ow - CAT_S(24), oh - CAT_S(16));
+
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
+            { CAT_BTN_A,  "Select",   false, "A" },
+            { CAT_BTN_B,  "Back",     false, "B" },
+        };
+        cat_draw_footer(footer, 3);
+    } else {
+        cat_footer_item footer[] = {
+            { CAT_BTN_LEFT, "Navigate", false, "\xe2\x86\x90\xe2\x86\x92" },
+            { CAT_BTN_A,    "Select",   false, "A" },
+            { CAT_BTN_X,    "Search",   false, "X" },
+            { CAT_BTN_MENU, "Menu",     false, "H" },
+            { CAT_BTN_Y,    "Rescan",   false, "Y" },
+        };
+        cat_draw_footer(footer, 5);
+    }
+    cat_present();
+}
+
 static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_clear_screen();
 
@@ -1163,6 +1382,7 @@ static void jw__render_launcher(jw_launcher_state *state) {
     switch (ss->launcher.layout) {
         case CAT_LAUNCHER_VERTICAL:   jw__render_vertical(state);   break;
         case CAT_LAUNCHER_HORIZONTAL: jw__render_horizontal(state); break;
+        case CAT_LAUNCHER_COVERFLOW:  jw__render_coverflow(state);  break;
         default:                      jw__render_tabbed(state);     break;
     }
 }
@@ -1379,8 +1599,9 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
     cat_launcher_layout layout = ss->launcher.layout;
 
     state->tools_open = false;
+    memset(&state->coverflow_anim, 0, sizeof(state->coverflow_anim));
 
-    if (layout == CAT_LAUNCHER_HORIZONTAL) {
+    if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW) {
         jw__build_carousel_list(state);
     } else if (layout == CAT_LAUNCHER_VERTICAL) {
         jw__build_flat_list(state);
@@ -1560,26 +1781,34 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
 
     switch (button) {
         case CAT_BTN_UP:
-            if (layout == CAT_LAUNCHER_HORIZONTAL)
+            if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW)
                 break;
             cat_list_state_move(&state->list, -1, count);
             break;
         case CAT_BTN_DOWN:
-            if (layout == CAT_LAUNCHER_HORIZONTAL)
+            if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW)
                 break;
             cat_list_state_move(&state->list, +1, count);
             break;
         case CAT_BTN_LEFT:
-            if (layout == CAT_LAUNCHER_HORIZONTAL)
+            if (layout == CAT_LAUNCHER_COVERFLOW) {
+                int nc = state->list.cursor > 0 ? state->list.cursor - 1 : 0;
+                if (nc != state->list.cursor) jw__coverflow_start_anim(state, nc);
+            } else if (layout == CAT_LAUNCHER_HORIZONTAL) {
                 cat_list_state_move(&state->list, -1, count);
-            else
+            } else {
                 cat_list_state_page(&state->list, -1, count);
+            }
             break;
         case CAT_BTN_RIGHT:
-            if (layout == CAT_LAUNCHER_HORIZONTAL)
+            if (layout == CAT_LAUNCHER_COVERFLOW) {
+                int nc = state->list.cursor < count - 1 ? state->list.cursor + 1 : count - 1;
+                if (nc != state->list.cursor) jw__coverflow_start_anim(state, nc);
+            } else if (layout == CAT_LAUNCHER_HORIZONTAL) {
                 cat_list_state_move(&state->list, +1, count);
-            else
+            } else {
                 cat_list_state_page(&state->list, +1, count);
+            }
             break;
         case CAT_BTN_L1:
             if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_GAMES)
@@ -1618,7 +1847,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             cat_request_frame();
             jw__render_launcher(state);
             jw__scan_library(socket_path, db_path, state);
-            if (layout == CAT_LAUNCHER_HORIZONTAL)
+            if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW)
                 jw__build_carousel_list(state);
             else if (layout == CAT_LAUNCHER_VERTICAL)
                 jw__build_flat_list(state);
@@ -1696,6 +1925,7 @@ int main(void) {
     cat_launcher_layout layout = ss->launcher.layout;
     const char *layout_name = (layout == CAT_LAUNCHER_VERTICAL)   ? "vertical"
                             : (layout == CAT_LAUNCHER_HORIZONTAL) ? "horizontal"
+                            : (layout == CAT_LAUNCHER_COVERFLOW)  ? "coverflow"
                             : "tabbed";
     jw_log_info("launcher layout: %s (theme=%s)", layout_name, theme_name);
 

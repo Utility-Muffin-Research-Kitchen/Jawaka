@@ -47,6 +47,8 @@ make mockgen
 make
 ```
 
+Run `./scripts/fetch-coverflow-icons.sh` once to populate console icons for the Coverflow theme.
+
 ## Run
 
 ```sh
