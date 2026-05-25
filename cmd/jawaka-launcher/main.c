@@ -343,8 +343,6 @@ static void jw__render_games(const jw_launcher_state *state,
     TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small   = cat_get_font(CAT_FONT_SMALL);
     int sw = cat_get_screen_width();
-    int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
 
     int list_x  = margin;
     int list_w  = sw * 45 / 100;
@@ -377,7 +375,7 @@ static void jw__render_games(const jw_launcher_state *state,
             jw__draw_game_item, &ctx);
     }
 
-    int status_y = sh - fh - CAT_S(26);
+    int status_y = content_y + content_h - TTF_FontHeight(small);
     cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
     (void)margin;
 }
@@ -389,8 +387,6 @@ static void jw__render_apps(const jw_launcher_state *state,
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
     int sw = cat_get_screen_width();
-    int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
 
     int list_x = margin;
     int list_w = sw * 45 / 100;
@@ -427,7 +423,7 @@ static void jw__render_apps(const jw_launcher_state *state,
             jw__draw_app_item, &ctx);
     }
 
-    int status_y = sh - fh - CAT_S(26);
+    int status_y = content_y + content_h - TTF_FontHeight(small);
     cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
     (void)margin;
 }
@@ -437,8 +433,6 @@ static void jw__render_settings(const jw_launcher_state *state,
     ap_theme *theme = cat_get_theme();
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int sw = cat_get_screen_width();
-    int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
 
     int sx = margin;
     int sy = content_y + margin;
@@ -447,7 +441,7 @@ static void jw__render_settings(const jw_launcher_state *state,
 
     jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
 
-    int status_y = sh - fh - CAT_S(26);
+    int status_y = content_y + content_h - TTF_FontHeight(small);
     cat_draw_text_ellipsized(small, state->status, sx, status_y, theme->hint, sw_inner);
 }
 
@@ -623,7 +617,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
     jw__render_vertical_preview(state, prev_x, content_y, prev_w - margin, content_h);
 
     /* Status line at bottom-left */
-    int status_y = sh - fh - CAT_S(26);
+    int status_y = content_y + content_h - TTF_FontHeight(small);
     cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, list_w - margin);
 
@@ -877,7 +871,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
     }
 
     /* Status line */
-    int status_y = sh - fh - CAT_S(26);
+    int status_y = sh - fh - TTF_FontHeight(small);
     cat_draw_text_ellipsized(small, state->status, CAT_S(12), status_y,
                              theme->hint, sw / 2);
 
@@ -1339,21 +1333,25 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
         if (!drew_art) {
             int large_h = TTF_FontHeight(large);
+            int max_w   = detail_w - margin * 2;
+
             int name_w = cat_measure_text(large, game->name);
+            if (name_w > max_w) name_w = max_w;
             cat_draw_text_ellipsized(large, game->name,
                 detail_x + (detail_w - name_w) / 2,
                 content_y + content_h / 2 - large_h,
-                theme->text, detail_w - margin * 2);
+                theme->text, max_w);
 
             int path_w = cat_measure_text(small, game->rom_path);
+            if (path_w > max_w) path_w = max_w;
             cat_draw_text_ellipsized(small, game->rom_path,
                 detail_x + (detail_w - path_w) / 2,
                 content_y + content_h / 2 + CAT_S(8),
-                theme->hint, detail_w - margin * 2);
+                theme->hint, max_w);
         }
     }
 
-    int status_y = sh - fh - CAT_S(26);
+    int status_y = content_y + content_h - TTF_FontHeight(small);
     cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, sw - margin * 2);
 
@@ -1414,16 +1412,21 @@ static void jw__render_search(const jw_launcher_state *state) {
         const char *line_two = result->kind == JW_SEARCH_APP ? "launch.sh" : result->rom_path;
 
         int large_h = TTF_FontHeight(large);
+        int max_w   = detail_w - margin * 2;
+
         int kind_w = cat_measure_text(small, kind);
-        int name_w = cat_measure_text(large, result->name);
-        cat_draw_text(small, kind,
+        if (kind_w > max_w) kind_w = max_w;
+        cat_draw_text_ellipsized(small, kind,
             detail_x + (detail_w - kind_w) / 2,
             content_y + content_h / 2 - large_h - CAT_S(28),
-            theme->hint);
+            theme->hint, max_w);
+
+        int name_w = cat_measure_text(large, result->name);
+        if (name_w > max_w) name_w = max_w;
         cat_draw_text_ellipsized(large, result->name,
             detail_x + (detail_w - name_w) / 2,
             content_y + content_h / 2 - large_h,
-            theme->text, detail_w - margin * 2);
+            theme->text, max_w);
         cat_draw_text_ellipsized(small, line_one,
             detail_x + margin,
             content_y + content_h / 2 + CAT_S(10),
@@ -1434,7 +1437,7 @@ static void jw__render_search(const jw_launcher_state *state) {
             theme->hint, detail_w - margin * 2);
     }
 
-    int status_y = sh - fh - CAT_S(26);
+    int status_y = content_y + content_h - TTF_FontHeight(small);
     cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, sw - margin * 2);
 
