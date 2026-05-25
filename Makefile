@@ -33,6 +33,7 @@ DAEMON_SRCS := \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
 	internal/platform/paths.c \
+	internal/retroarch/catalog.c \
 	internal/db/db.c \
 	internal/discovery/discovery.c \
 	third_party/cjson/cJSON.c
@@ -41,18 +42,26 @@ RETROARCH_CTL_SRCS := \
 	cmd/jawaka-retroarchctl/main.c \
 	internal/retroarch/command.c
 
+SCAN_SMOKE_SRCS := \
+	cmd/jawaka-scan-smoke/main.c \
+	internal/db/db.c \
+	internal/discovery/discovery.c \
+	internal/retroarch/catalog.c \
+	third_party/cjson/cJSON.c
+
 UI_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
 	internal/platform/paths.c \
+	internal/retroarch/catalog.c \
 	internal/db/db.c \
 	internal/launcher/console_colors.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
 	third_party/cjson/cJSON.c
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-retroarchctl mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-retroarchctl jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
 
 all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu $(BUILD)/bin/jawaka-retroarchctl
 
@@ -60,6 +69,7 @@ jawakad: $(BUILD)/bin/jawakad
 jawaka-launcher: $(BUILD)/bin/jawaka-launcher
 jawaka-menu: $(BUILD)/bin/jawaka-menu
 jawaka-retroarchctl: $(BUILD)/bin/jawaka-retroarchctl
+jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 
 $(BUILD)/bin:
 	@mkdir -p $(BUILD)/bin
@@ -83,6 +93,12 @@ $(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(UI_SRCS) $(CATASTROPHE_HEADER
 
 $(BUILD)/bin/jawaka-retroarchctl: $(RETROARCH_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(RETROARCH_CTL_SRCS)
+
+$(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(SCAN_SMOKE_SRCS) $(LDLIBS_COMMON)
+
+phase3-fixture-scan-smoke:
+	scripts/phase3-fixture-scan-smoke.sh
 
 mockgen:
 	bash scripts/mockgen.sh
@@ -174,6 +190,7 @@ help:
 	@echo "  make mlp1-adb-smoke  Build, push to /tmp, and run an ADB UI smoke"
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"
 	@echo "  make mlp1-adb-ra-command-smoke  Run RetroArch command feature smoke over ADB"
+	@echo "  make phase3-fixture-scan-smoke  Run metadata-aware scan fixture checks"
 	@echo ""
 	@echo "Environment variables"
 	@echo "====================="

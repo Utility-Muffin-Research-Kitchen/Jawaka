@@ -1,4 +1,6 @@
 #include "internal/platform/paths.h"
+#include "internal/core/log.h"
+#include "internal/retroarch/catalog.h"
 #include "internal/retroarch/command.h"
 
 #include "cJSON.h"
@@ -425,6 +427,46 @@ static char *jw__default_cores_dir(void) {
 }
 
 char *jw_retroarch_core_path_for_system(const char *system) {
+    if (!system || !system[0]) {
+        return NULL;
+    }
+
+    const char *disable_v2 = getenv("JAWAKA_DISABLE_RETROARCH_V2");
+    if (!disable_v2 || strcmp(disable_v2, "1") != 0) {
+        char *sdcard_root = jw_sdcard_root();
+        char *cores_dir = jw__default_cores_dir();
+        char error[256];
+        const jw_ra_catalog *catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
+        if (catalog && cores_dir) {
+            char core_file[PATH_MAX];
+            char core_id[128];
+            char diagnostic[256];
+            if (jw_ra_catalog_resolve_core_file(catalog, system, cores_dir,
+                                                core_file, sizeof(core_file),
+                                                core_id, sizeof(core_id),
+                                                diagnostic, sizeof(diagnostic)) == 0) {
+                if (diagnostic[0]) {
+                    jw_log_warn("RetroArch metadata fallback for %s: %s", system, diagnostic);
+                } else {
+                    jw_log_info("RetroArch metadata resolved %s -> %s", system, core_id);
+                }
+                char *path = jw__dup_printf("%s/%s", cores_dir, core_file);
+                free(sdcard_root);
+                free(cores_dir);
+                return path;
+            }
+            if (diagnostic[0]) {
+                jw_log_warn("RetroArch metadata could not resolve %s: %s", system, diagnostic);
+            } else {
+                jw_log_warn("RetroArch metadata could not resolve %s", system);
+            }
+        } else if (error[0]) {
+                jw_log_warn("RetroArch metadata unavailable: %s", error);
+            }
+        free(sdcard_root);
+        free(cores_dir);
+    }
+
     char *core_name = jw__core_name_from_defaults(system);
     if (!core_name) {
         const char *fallback_name = jw__core_name_for_system(system);
