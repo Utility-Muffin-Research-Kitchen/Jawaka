@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define JW_SETTINGS_THEME_COUNT 3
+#define JW_SETTINGS_THEME_COUNT 4
 extern const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT];
 
 typedef enum {

@@ -9,6 +9,7 @@
 #include "internal/core/log.h"
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
+#include "internal/launcher/console_colors.h"
 #include "internal/platform/paths.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
@@ -37,6 +38,11 @@ typedef enum {
 } jw_tab;
 
 static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Games", "Apps", "Settings" };
+
+/* Forward declarations: shared preview helper used by Tabs games-tab and the
+ * Vertical preview pane. Defined alongside jw__load_system_icon below. */
+static void jw__draw_system_preview(int px, int py, int pw, int ph,
+                                     const char *system_code, int game_count);
 
 /* ─── Flat nav list (vertical + horizontal modes) ─────────────────────────── */
 
@@ -94,6 +100,8 @@ typedef struct {
     cat_list_state     tools_list;
     /* coverflow animation */
     jw_coverflow_anim  coverflow_anim;
+    /* curated per-console colors (Horizontal carousel; loaded from active theme) */
+    jw_console_color_table console_colors;
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
     /* status line */
@@ -334,7 +342,6 @@ static void jw__render_games(const jw_launcher_state *state,
     ap_theme *theme   = cat_get_theme();
     TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small   = cat_get_font(CAT_FONT_SMALL);
-    TTF_Font *large   = cat_get_font(CAT_FONT_EXTRA_LARGE);
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
     int fh = cat_get_footer_height();
@@ -349,17 +356,13 @@ static void jw__render_games(const jw_launcher_state *state,
     int art_w   = sw - art_x - margin;
     int art_h   = content_h - margin * 2;
 
-    cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
-        cat_hex_to_color("#ffffff18"));
-
     if (state->system_count > 0 && state->list.cursor < state->system_count) {
-        const char *sys = state->systems[state->list.cursor].name;
-        int large_h = TTF_FontHeight(large);
-        int tw = cat_measure_text(large, sys);
-        cat_draw_text_ellipsized(large, sys,
-            art_x + (art_w - tw) / 2,
-            art_y + (art_h - large_h) / 2,
-            theme->hint, art_w - margin * 2);
+        const jw_system_entry *sys = &state->systems[state->list.cursor];
+        jw__draw_system_preview(art_x, art_y, art_w, art_h,
+                                sys->name, sys->game_count);
+    } else {
+        cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
+            cat_hex_to_color("#ffffff18"));
     }
 
     if (state->system_count == 0) {
@@ -554,34 +557,32 @@ static void jw__draw_vert_item(int idx, int ix, int iy, int iw, int ih,
 
 static void jw__render_vertical_preview(const jw_launcher_state *state,
                                          int px, int py, int pw, int ph) {
-    ap_theme *theme = cat_get_theme();
-    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-    int margin = CAT_S(16);
-
-    cat_draw_rounded_rect(px, py, pw, ph, CAT_S(8), cat_hex_to_color("#ffffff10"));
-
-    if (state->flat_count == 0 || state->list.cursor >= state->flat_count) return;
+    if (state->flat_count == 0 || state->list.cursor >= state->flat_count) {
+        cat_draw_rounded_rect(px, py, pw, ph, CAT_S(8),
+                              cat_hex_to_color("#ffffff10"));
+        return;
+    }
 
     const jw_flat_item *it = &state->flat_items[state->list.cursor];
-    const char *label = jw__flat_label(state, state->list.cursor);
-
-    int large_h = TTF_FontHeight(large);
-    int label_w = cat_measure_text(large, label);
-    cat_draw_text_ellipsized(large, label,
-        px + (pw - label_w) / 2,
-        py + ph / 2 - large_h,
-        theme->text, pw - margin * 2);
 
     if (it->kind == JW_FLAT_SYSTEM) {
-        char sub[64];
-        snprintf(sub, sizeof(sub), "%d games",
-                 state->systems[it->system_idx].game_count);
-        int sw2 = cat_measure_text(small, sub);
-        cat_draw_text(small, sub,
-            px + (pw - sw2) / 2,
-            py + ph / 2 + CAT_S(8),
-            theme->hint);
+        const jw_system_entry *sys = &state->systems[it->system_idx];
+        jw__draw_system_preview(px, py, pw, ph, sys->name, sys->game_count);
+    } else {
+        /* Non-system entries (Recents, Favorites, Apps, Settings): text only,
+         * matches pre-icon behaviour. */
+        ap_theme *theme  = cat_get_theme();
+        TTF_Font *large  = cat_get_font(CAT_FONT_EXTRA_LARGE);
+        const char *label = jw__flat_label(state, state->list.cursor);
+        int large_h = TTF_FontHeight(large);
+        int label_w = cat_measure_text(large, label);
+        int margin  = CAT_S(16);
+        cat_draw_rounded_rect(px, py, pw, ph, CAT_S(8),
+                              cat_hex_to_color("#ffffff10"));
+        cat_draw_text_ellipsized(large, label,
+                                  px + (pw - label_w) / 2,
+                                  py + (ph - large_h) / 2,
+                                  theme->text, pw - margin * 2);
     }
 }
 
@@ -697,13 +698,20 @@ static void jw__draw_carousel_tile(const jw_launcher_state *state, int tile_idx,
     const jw_flat_item *it = &state->flat_items[tile_idx];
     const char *label = jw__flat_label(state, tile_idx);
 
-    /* Derive a muted background color from the label */
-    uint32_t h = jw__str_hash(label);
-    int hue = (int)(h % 360);
-    (void)hue;
-    /* Use highlight blended with dark bg for variety */
+    /* Background color: curated per-console palette if available, otherwise
+     * fall back to a muted hash-derived color so unmapped systems still get
+     * deterministic-but-distinct tiles. */
     SDL_Color bg;
-    {
+    bool curated = false;
+    if (it->kind == JW_FLAT_SYSTEM) {
+        curated = jw_console_colors_lookup(
+            &state->console_colors,
+            state->systems[it->system_idx].name, &bg);
+    }
+    if (curated) {
+        bg.a = alpha;
+    } else {
+        uint32_t h = jw__str_hash(label);
         SDL_Color hl = theme->highlight;
         uint8_t mix = (uint8_t)((h & 0xFF) / 3);
         bg.r = (uint8_t)((hl.r * mix + 20 * (255 - mix)) / 255);
@@ -977,13 +985,14 @@ static void jw__draw_image_fit(SDL_Texture *tex, int tex_w, int tex_h,
     cat_draw_image(tex, draw_x, draw_y, draw_w, draw_h);
 }
 
-/* ─── Coverflow: icon loader ──────────────────────────────────────────────── */
+/* ─── System icon loader (shared across themes) ──────────────────────────── */
 
 /* Loader order:
- *   1. <sdcard_root>/Roms/<SYSTEM>/icon.png  (user override; skipped for codes starting with '_')
- *   2. <theme_dir>/<theme>/<icon_dir>/<SYSTEM>.png  (bundled)
- *   3. <theme_dir>/<theme>/<icon_dir>/_default.png  (fallback)
- * Returns NULL only if all three fail.
+ *   1. <sdcard_root>/Roms/<SYSTEM>/icon.png       (user override; skipped for codes starting with '_')
+ *   2. <theme_dir>/<theme>/<icon_dir>/<SYSTEM>.png (theme-bundled override, if any)
+ *   3. <themes_dir_parent>/system_icons/<SYSTEM>.png (shared baseline)
+ *   4. <themes_dir_parent>/system_icons/_default.png (final fallback)
+ * Returns NULL only if all four fail.
  * Pass "_tools" as system_code for the Tools tile.
  */
 static SDL_Texture *jw__load_system_icon(const char *system_code,
@@ -993,6 +1002,7 @@ static SDL_Texture *jw__load_system_icon(const char *system_code,
     const char *theme_name   = cat_get_active_theme_name();
     char path[1024];
 
+    /* (1) user override on the sdcard */
     if (system_code[0] != '_') {
         char *sdcard_root = jw_sdcard_root();
         if (sdcard_root) {
@@ -1004,6 +1014,7 @@ static SDL_Texture *jw__load_system_icon(const char *system_code,
         }
     }
 
+    /* (2) theme-bundled override, if the theme ships its own system_icons/ */
     if (theme_dir[0] && theme_name[0]) {
         snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
                  theme_dir, theme_name,
@@ -1012,15 +1023,89 @@ static SDL_Texture *jw__load_system_icon(const char *system_code,
         if (t) return t;
     }
 
-    if (theme_dir[0] && theme_name[0]) {
-        snprintf(path, sizeof(path), "%s/%s/%s/_default.png",
-                 theme_dir, theme_name,
-                 ss->launcher.coverflow_icon_dir);
+    /* (3) shared baseline at <themes_dir_parent>/system_icons/<SYSTEM>.png.
+     * theme_dir is e.g. "./res/themes" or "/mnt/SDCARD/Themes"; the shared
+     * icons live next to it. */
+    if (theme_dir[0]) {
+        snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
+                 theme_dir, system_code);
+        SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
+        if (t) return t;
+    }
+
+    /* (4) shared _default.png */
+    if (theme_dir[0]) {
+        snprintf(path, sizeof(path), "%s/../system_icons/_default.png",
+                 theme_dir);
         SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
         if (t) return t;
     }
 
     return NULL;
+}
+
+/* Shared preview-pane renderer: rounded backdrop + centered icon + label
+ * + game-count subtitle. Used by Tabs games-tab right pane and the Vertical
+ * preview pane so they stay visually consistent.
+ *
+ * Pass game_count < 0 to suppress the subtitle (e.g. non-system entries). */
+static void jw__draw_system_preview(int px, int py, int pw, int ph,
+                                     const char *system_code, int game_count) {
+    ap_theme *theme   = cat_get_theme();
+    TTF_Font *large   = cat_get_font(CAT_FONT_EXTRA_LARGE);
+    TTF_Font *small   = cat_get_font(CAT_FONT_SMALL);
+    int margin        = CAT_S(16);
+
+    cat_draw_rounded_rect(px, py, pw, ph, CAT_S(8),
+                          cat_hex_to_color("#ffffff10"));
+
+    /* Icon: up to 40% of pane width or 192px, whichever is smaller */
+    int icon_max = CAT_S(192);
+    int icon_box = pw * 40 / 100;
+    if (icon_box > icon_max) icon_box = icon_max;
+    if (icon_box > ph / 2)   icon_box = ph / 2;
+
+    int label_h = TTF_FontHeight(large);
+    int sub_h   = TTF_FontHeight(small);
+    int gap     = CAT_S(12);
+    int sub_gap = CAT_S(4);
+
+    /* Vertical stack: icon + name + (count). Center the block in the pane. */
+    int block_h = icon_box + gap + label_h
+                + ((game_count >= 0) ? (sub_gap + sub_h) : 0);
+    int top_y   = py + (ph - block_h) / 2;
+
+    SDL_Texture *tex = NULL;
+    int tw = 0, th = 0;
+    if (system_code && system_code[0])
+        tex = jw__load_system_icon(system_code, &tw, &th);
+
+    if (tex) {
+        jw__draw_image_fit(tex, tw, th,
+                           px + (pw - icon_box) / 2, top_y,
+                           icon_box, icon_box);
+    } else {
+        /* No icon → collapse the icon slot so text sits centered */
+        top_y += icon_box / 2;
+    }
+
+    /* System name */
+    int label_y = top_y + (tex ? (icon_box + gap) : 0);
+    int label_w = cat_measure_text(large, system_code ? system_code : "");
+    cat_draw_text_ellipsized(large, system_code ? system_code : "",
+                              px + (pw - label_w) / 2, label_y,
+                              theme->text, pw - margin * 2);
+
+    /* Game count */
+    if (game_count >= 0) {
+        char sub[32];
+        snprintf(sub, sizeof(sub), "%d games", game_count);
+        int subw = cat_measure_text(small, sub);
+        cat_draw_text(small, sub,
+                      px + (pw - subw) / 2,
+                      label_y + label_h + sub_gap,
+                      theme->hint);
+    }
 }
 
 /* ─── Coverflow: animation helpers ───────────────────────────────────────── */
@@ -1600,6 +1685,12 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
 
     state->tools_open = false;
     memset(&state->coverflow_anim, 0, sizeof(state->coverflow_anim));
+
+    /* Refresh per-console color palette from the active theme stylesheet.
+     * Empty / missing maps degrade to hash-derived colors in the carousel. */
+    jw_console_colors_load(&state->console_colors,
+                           cat_get_active_theme_dir(),
+                           cat_get_active_theme_name());
 
     if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW) {
         jw__build_carousel_list(state);

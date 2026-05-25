@@ -47,6 +47,7 @@ UI_SRCS := \
 	internal/ipc/ipc_client.c \
 	internal/platform/paths.c \
 	internal/db/db.c \
+	internal/launcher/console_colors.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
 	third_party/cjson/cJSON.c

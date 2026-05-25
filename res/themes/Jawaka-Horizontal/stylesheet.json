@@ -24,6 +24,22 @@
   "cjk_font": { "path": "fonts/SourceHanSansCN/SourceHanSansCN-Heavy.otf", "size": 36 },
   "launcher": {
     "layout": "horizontal",
-    "carousel_skew": 28
+    "carousel_skew": 28,
+    "console_colors": {
+      "GB":     "#9BBC0F",
+      "GBC":    "#5A2D81",
+      "GBA":    "#6B4FB8",
+      "FC":     "#A33C3C",
+      "SFC":    "#8A7FB8",
+      "NDS":    "#7A8A95",
+      "MD":     "#1F1F1F",
+      "MS":     "#2A4A8F",
+      "GG":     "#3A3A3A",
+      "LYNX":   "#A04020",
+      "NEOGEO": "#C9A227",
+      "PCE":    "#D8C8B0",
+      "PS":     "#3C3C46",
+      "ARCADE": "#D0801C"
+    }
   }
 }

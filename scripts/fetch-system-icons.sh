@@ -9,7 +9,7 @@ REPO_RAW="https://git.libretro.com/libretro-assets/retroarch-assets/-/raw"
 COMMIT="e11d6708b49a893f392b238effc713c6c7cfadef"
 BASE="$REPO_RAW/$COMMIT/xmb/systematic/png"
 
-DEST="$(cd "$(dirname "$0")/.." && pwd)/res/themes/Jawaka-Coverflow/system_icons"
+DEST="$(cd "$(dirname "$0")/.." && pwd)/res/system_icons"
 mkdir -p "$DEST"
 
 # Mapping: jawaka_code|libretro filename (no .png suffix)

@@ -25,6 +25,9 @@ cp -f "$BUILD_DIR/bin/jawakad" "$BUNDLE_DIR/bin/jawakad"
 cp -f "$BUILD_DIR/bin/jawaka-launcher" "$BUNDLE_DIR/bin/jawaka-launcher"
 cp -f "$BUILD_DIR/bin/jawaka-menu" "$BUNDLE_DIR/bin/jawaka-menu"
 cp -Rf "$ROOT_DIR/res/themes" "$BUNDLE_DIR/res/"
+if [ -d "$ROOT_DIR/res/system_icons" ]; then
+    cp -Rf "$ROOT_DIR/res/system_icons" "$BUNDLE_DIR/res/"
+fi
 cp -Rf "$WORKSPACE_ROOT/Catastrophe/res/fonts" "$BUNDLE_DIR/res/"
 cp -f "$WORKSPACE_ROOT/Catastrophe/res/font.ttf" "$BUNDLE_DIR/res/font.ttf"
 

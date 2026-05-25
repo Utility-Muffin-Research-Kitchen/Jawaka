@@ -9,6 +9,7 @@ const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT] = {
     "Jawaka-Tabs",
     "Jawaka-Vertical",
     "Jawaka-Horizontal",
+    "Jawaka-Coverflow",
 };
 
 static const char *kCategoryLabels[] = {
