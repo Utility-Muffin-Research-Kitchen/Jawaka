@@ -26,6 +26,11 @@ LDLIBS_UI := $(LDLIBS_COMMON) $(SDL_LDFLAGS) -lm -lpthread
 ifeq ($(shell uname -s),Darwin)
 LDLIBS_UI += -lobjc
 endif
+# MLP1 dismisses the stock boot transition by dlopen-ing libloong_sdk.so at
+# runtime (see internal/platform/loong_lifecycle.c), which needs libdl.
+ifneq (,$(findstring PLATFORM_MLP1,$(CFLAGS_PLATFORM)))
+LDLIBS_UI += -ldl
+endif
 
 DAEMON_SRCS := \
 	cmd/jawakad/main.c \
@@ -59,6 +64,7 @@ UI_SRCS := \
 	internal/launcher/console_colors.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
+	internal/platform/loong_lifecycle.c \
 	third_party/cjson/cJSON.c
 
 .PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-retroarchctl jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl

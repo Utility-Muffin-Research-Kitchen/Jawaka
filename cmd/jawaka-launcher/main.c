@@ -10,6 +10,7 @@
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
+#include "internal/platform/loong_lifecycle.h"
 #include "internal/platform/paths.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
@@ -2033,6 +2034,10 @@ int main(void) {
     bool running = true;
 
     jw__render_launcher(&state);
+
+    /* First frame is on screen: tell loong_service the home launcher is ready so
+     * it dismisses the stock boot transition (MLP1 only; no-op elsewhere). */
+    jw_loong_notify_home_ready();
 
     while (running) {
         cat_input_event ev;
