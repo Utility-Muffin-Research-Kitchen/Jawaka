@@ -31,4 +31,8 @@ int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
 /* Ask jawakad to shut down. Returns 0 on success. */
 int jw_ipc_shutdown(const char *socket_path);
 
+/* Notify jawakad that a frontend process has rendered enough to be considered
+ * ready. role is usually "launcher" or "menu". Returns 0 on success. */
+int jw_ipc_frontend_ready(const char *socket_path, const char *role);
+
 #endif /* JW_IPC_CLIENT_H */

@@ -1,4 +1,5 @@
 #include "internal/platform/paths.h"
+#include "internal/platform/device.h"
 #include "internal/core/log.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/retroarch/command.h"
@@ -57,14 +58,6 @@ static int jw__is_directory(const char *path) {
     return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-static const char *jw__platform_id(void) {
-#if defined(PLATFORM_MLP1)
-    return "mlp1";
-#else
-    return "mac";
-#endif
-}
-
 static char *jw__dup_realpath_or_literal(const char *path) {
     char resolved[PATH_MAX];
     if (path && realpath(path, resolved)) {
@@ -73,6 +66,7 @@ static char *jw__dup_realpath_or_literal(const char *path) {
     return path ? jw__dup_printf("%s", path) : NULL;
 }
 
+#if defined(PLATFORM_MLP1)
 static bool jw__path_is_within(const char *path, const char *root) {
     if (!path || !root) {
         return false;
@@ -99,6 +93,7 @@ static bool jw__option_list_has(const char *list, const char *option) {
 
     return strstr(wrapped, needle) != NULL;
 }
+#endif
 
 static void jw__set_error(char *error, size_t error_size, const char *message) {
     if (error && error_size > 0) {
@@ -170,7 +165,7 @@ static char *jw__platform_defaults_path(const char *sdcard_root, const char *fil
 
     char path[PATH_MAX];
     int needed = snprintf(path, sizeof(path), "%s/UMRK/%s/defaults/%s",
-                          sdcard_root, jw__platform_id(), filename);
+                          sdcard_root, jw_platform_compiled_id(), filename);
     if (needed < 0 || needed >= (int)sizeof(path)) {
         return NULL;
     }
@@ -352,7 +347,7 @@ static char *jw__core_name_from_defaults(const char *system) {
     char defaults_path[PATH_MAX];
     int needed = snprintf(defaults_path, sizeof(defaults_path),
                           "%s/UMRK/%s/defaults/cores.json",
-                          sdcard_root, jw__platform_id());
+                          sdcard_root, jw_platform_compiled_id());
     free(sdcard_root);
     if (needed < 0 || needed >= (int)sizeof(defaults_path)) {
         return NULL;
@@ -393,7 +388,7 @@ static char *jw__packaged_core_dir(void) {
 
     char path[PATH_MAX];
     int needed = snprintf(path, sizeof(path), "%s/UMRK/%s/cores",
-                          sdcard_root, jw__platform_id());
+                          sdcard_root, jw_platform_compiled_id());
     free(sdcard_root);
     if (needed < 0 || needed >= (int)sizeof(path) || !jw__is_directory(path)) {
         return NULL;
@@ -530,7 +525,7 @@ bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t err
         return false;
     }
 
-    char mountpoint[PATH_MAX];
+    char mountpoint[4096];
     char opts[2048];
     bool found = false;
     while (fscanf(fp, "%*255s %4095s %*63s %2047s %*d %*d",

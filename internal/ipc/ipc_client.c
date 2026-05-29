@@ -164,3 +164,22 @@ int jw_ipc_shutdown(const char *socket_path) {
     if (resp) cJSON_Delete(resp);
     return rc;
 }
+
+int jw_ipc_frontend_ready(const char *socket_path, const char *role) {
+    if (!role || !role[0]) {
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "frontend-ready");
+    cJSON_AddStringToObject(req, "role", role);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    int ok = ipc__type_is(resp, "ok");
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}

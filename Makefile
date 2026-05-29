@@ -22,14 +22,15 @@ CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -I
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
 CFLAGS_UI := $(CFLAGS_COMMON) -I$(CATASTROPHE_INCLUDE) $(SDL_CFLAGS)
 LDLIBS_COMMON := -lsqlite3
+LDLIBS_DAEMON := $(LDLIBS_COMMON)
 LDLIBS_UI := $(LDLIBS_COMMON) $(SDL_LDFLAGS) -lm -lpthread
 ifeq ($(shell uname -s),Darwin)
 LDLIBS_UI += -lobjc
 endif
-# MLP1 dismisses the stock boot transition by dlopen-ing libloong_sdk.so at
-# runtime (see internal/platform/loong_lifecycle.c), which needs libdl.
+# MLP1 dismisses the stock boot transition from jawakad's platform backend by
+# dlopen-ing libloong_sdk.so at runtime, which needs libdl.
 ifneq (,$(findstring PLATFORM_MLP1,$(CFLAGS_PLATFORM)))
-LDLIBS_UI += -ldl
+LDLIBS_DAEMON += -ldl
 endif
 
 DAEMON_SRCS := \
@@ -37,6 +38,7 @@ DAEMON_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
+	internal/platform/device.c \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
 	internal/db/db.c \
@@ -46,6 +48,14 @@ DAEMON_SRCS := \
 RETROARCH_CTL_SRCS := \
 	cmd/jawaka-retroarchctl/main.c \
 	internal/retroarch/command.c
+
+PLATFORM_CTL_SRCS := \
+	cmd/jawaka-platformctl/main.c \
+	internal/core/log.c \
+	internal/ipc/ipc.c \
+	internal/platform/paths.c \
+	internal/retroarch/catalog.c \
+	third_party/cjson/cJSON.c
 
 SCAN_SMOKE_SRCS := \
 	cmd/jawaka-scan-smoke/main.c \
@@ -64,17 +74,17 @@ UI_SRCS := \
 	internal/launcher/console_colors.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
-	internal/platform/loong_lifecycle.c \
 	third_party/cjson/cJSON.c
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-retroarchctl jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-retroarchctl jawaka-platformctl jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
 
-all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu $(BUILD)/bin/jawaka-retroarchctl
+all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu $(BUILD)/bin/jawaka-retroarchctl $(BUILD)/bin/jawaka-platformctl
 
 jawakad: $(BUILD)/bin/jawakad
 jawaka-launcher: $(BUILD)/bin/jawaka-launcher
 jawaka-menu: $(BUILD)/bin/jawaka-menu
 jawaka-retroarchctl: $(BUILD)/bin/jawaka-retroarchctl
+jawaka-platformctl: $(BUILD)/bin/jawaka-platformctl
 jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 
 $(BUILD)/bin:
@@ -89,7 +99,7 @@ check-sdl:
 		( echo "SDL2 libraries not found. Install with: brew install sdl2 sdl2_ttf sdl2_image" && exit 1 )
 
 $(BUILD)/bin/jawakad: $(DAEMON_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_DAEMON) -o $@ $(DAEMON_SRCS) $(LDLIBS_COMMON)
+	$(CC) $(CFLAGS_DAEMON) -o $@ $(DAEMON_SRCS) $(LDLIBS_DAEMON)
 
 $(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(UI_SRCS) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(UI_SRCS) $(LDLIBS_UI)
@@ -99,6 +109,9 @@ $(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(UI_SRCS) $(CATASTROPHE_HEADER
 
 $(BUILD)/bin/jawaka-retroarchctl: $(RETROARCH_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(RETROARCH_CTL_SRCS)
+
+$(BUILD)/bin/jawaka-platformctl: $(PLATFORM_CTL_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(PLATFORM_CTL_SRCS) $(LDLIBS_COMMON)
 
 $(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(SCAN_SMOKE_SRCS) $(LDLIBS_COMMON)
@@ -188,6 +201,7 @@ help:
 	@echo "  make run-launcher            Run jawaka-launcher directly (requires daemon)"
 	@echo "  make run-interactive         Alias for run-daemon-interactive"
 	@echo "  make run-menu                Run jawaka-menu directly"
+	@echo "  make jawaka-platformctl      Build platform status/control helper"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"
 	@echo "  make tg5050        Placeholder cross-compile target"

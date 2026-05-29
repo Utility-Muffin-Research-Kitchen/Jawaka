@@ -3,6 +3,7 @@
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
 #include "internal/ipc/ipc.h"
+#include "internal/platform/device.h"
 #include "internal/platform/paths.h"
 
 #include <errno.h>
@@ -45,6 +46,7 @@ typedef struct {
     char  bin_dir[PATH_MAX];
     sqlite3 *db;
     jw_ipc_server *server;
+    jw_platform_context platform;
     pid_t child_pid;          /* exactly one daemon-owned child at a time */
     jw_child_kind child_kind;
     jw_retroarch_session retroarch_session;
@@ -132,6 +134,74 @@ static int jw__reply_error(jw_ipc_client *client, const char *message) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "error");
     cJSON_AddStringToObject(root, "message", message);
+    return jw__reply_json(client, root);
+}
+
+static void jw__json_add_int_or_null(cJSON *root, const char *name, int value) {
+    if (value < 0) {
+        cJSON_AddNullToObject(root, name);
+    } else {
+        cJSON_AddNumberToObject(root, name, value);
+    }
+}
+
+static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "battery", cap && cap->battery);
+    cJSON_AddBoolToObject(root, "charging", cap && cap->charging);
+    cJSON_AddBoolToObject(root, "sleep", cap && cap->sleep);
+    cJSON_AddBoolToObject(root, "poweroff", cap && cap->poweroff);
+    cJSON_AddBoolToObject(root, "reboot", cap && cap->reboot);
+    cJSON_AddBoolToObject(root, "brightness", cap && cap->brightness);
+    cJSON_AddBoolToObject(root, "volume", cap && cap->volume);
+    cJSON_AddBoolToObject(root, "wifi", cap && cap->wifi);
+    cJSON_AddBoolToObject(root, "bluetooth", cap && cap->bluetooth);
+    return root;
+}
+
+static cJSON *jw__platform_status_json(const jw_platform_status *status) {
+    cJSON *root = cJSON_CreateObject();
+    if (!status) {
+        return root;
+    }
+
+    jw__json_add_int_or_null(root, "battery_percent", status->battery_percent);
+    jw__json_add_int_or_null(root, "charging", status->charging);
+    jw__json_add_int_or_null(root, "brightness_percent", status->brightness_percent);
+    jw__json_add_int_or_null(root, "volume_percent", status->volume_percent);
+    jw__json_add_int_or_null(root, "wifi_connected", status->wifi_connected);
+    jw__json_add_int_or_null(root, "wifi_strength", status->wifi_strength);
+    jw__json_add_int_or_null(root, "bluetooth_connected", status->bluetooth_connected);
+    return root;
+}
+
+static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "platform-status");
+    cJSON_AddStringToObject(root, "platform_id", state->platform.platform_id);
+    cJSON_AddStringToObject(root, "platform_name", state->platform.platform_name);
+    cJSON_AddStringToObject(root, "script_dir", state->platform.script_dir);
+    cJSON_AddItemToObject(root, "capabilities",
+                          jw__platform_capabilities_json(&state->platform.capabilities));
+    cJSON_AddItemToObject(root, "status", jw__platform_status_json(&status));
+    return jw__reply_json(client, root);
+}
+
+static int jw__reply_platform_result(jw_ipc_client *client, const char *action,
+                                     const jw_platform_result *result) {
+    bool ok = result && result->code == JW_PLATFORM_RESULT_OK;
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", ok ? "ok" : "error");
+    if (action) {
+        cJSON_AddStringToObject(root, "action", action);
+    }
+    cJSON_AddStringToObject(root, "code",
+                            jw_platform_result_code_name(result ? result->code
+                                                                : JW_PLATFORM_RESULT_FAILED));
+    cJSON_AddStringToObject(root, "message", result ? result->message : "platform action failed");
     return jw__reply_json(client, root);
 }
 
@@ -666,6 +736,60 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_ok(client, "launch-app", NULL);
     }
 
+    if (strcmp(type->valuestring, "platform-status") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_platform_status(state, client);
+    }
+
+    if (strcmp(type->valuestring, "platform-action") == 0) {
+        cJSON *action_json = cJSON_GetObjectItemCaseSensitive(root, "action");
+        if (!cJSON_IsString(action_json) || !action_json->valuestring) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, "missing platform action");
+        }
+
+        jw_platform_action action;
+        if (!jw_platform_parse_action(action_json->valuestring, &action)) {
+            jw_platform_result result;
+            char action_name[64];
+            snprintf(action_name, sizeof(action_name), "%s", action_json->valuestring);
+            result.code = JW_PLATFORM_RESULT_INVALID;
+            snprintf(result.message, sizeof(result.message), "unknown platform action: %s",
+                     action_name);
+            cJSON_Delete(root);
+            return jw__reply_platform_result(client, action_name, &result);
+        }
+
+        int value = 0;
+        cJSON *value_json = cJSON_GetObjectItemCaseSensitive(root, "value");
+        if (cJSON_IsNumber(value_json)) {
+            value = value_json->valueint;
+        }
+
+        jw_platform_result result;
+        jw_platform_perform_action(&state->platform, action, value, &result);
+        jw_log_info("platform-action requested action=%s code=%s",
+                    jw_platform_action_name(action),
+                    jw_platform_result_code_name(result.code));
+        cJSON_Delete(root);
+        return jw__reply_platform_result(client, jw_platform_action_name(action), &result);
+    }
+
+    if (strcmp(type->valuestring, "frontend-ready") == 0) {
+        cJSON *role = cJSON_GetObjectItemCaseSensitive(root, "role");
+        if (!cJSON_IsString(role) || !role->valuestring || !role->valuestring[0]) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, "missing frontend role");
+        }
+
+        jw_platform_result result;
+        jw_platform_frontend_ready(&state->platform, role->valuestring, &result);
+        jw_log_info("frontend-ready role=%s code=%s",
+                    role->valuestring, jw_platform_result_code_name(result.code));
+        cJSON_Delete(root);
+        return jw__reply_platform_result(client, "frontend-ready", &result);
+    }
+
     if (strcmp(type->valuestring, "shutdown") == 0) {
         state->shutdown_requested = true;
         jw_log_info("shutdown requested");
@@ -837,6 +961,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    if (jw_platform_init(&state.platform, state.runtime_dir, state.sdcard_root) != 0) {
+        jw_log_error("could not initialize platform service");
+        jw__cleanup(&state);
+        return 1;
+    }
+
     if (!jw__path_exists(state.sdcard_root)) {
         jw_log_error("sdcard root missing: %s (run 'make mockgen')", state.sdcard_root);
         jw__cleanup(&state);
@@ -864,6 +994,8 @@ int main(int argc, char *argv[]) {
     jw_log_info("sdcard root: %s", state.sdcard_root);
     jw_log_info("socket path: %s", state.socket_path);
     jw_log_info("db path: %s", state.db_path);
+    jw_log_info("platform: %s (%s)", state.platform.platform_id, state.platform.platform_name);
+    jw_log_info("platform script dir: %s", state.platform.script_dir);
     if (state.daemon_only) {
         jw_log_info("daemon-only mode enabled");
     }

@@ -10,7 +10,6 @@
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
-#include "internal/platform/loong_lifecycle.h"
 #include "internal/platform/paths.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
@@ -2035,9 +2034,11 @@ int main(void) {
 
     jw__render_launcher(&state);
 
-    /* First frame is on screen: tell loong_service the home launcher is ready so
-     * it dismisses the stock boot transition (MLP1 only; no-op elsewhere). */
-    jw_loong_notify_home_ready();
+    /* First frame is on screen; jawakad owns any platform-specific readiness
+     * side effects such as dismissing the MLP1 stock boot transition. */
+    if (jw_ipc_frontend_ready(socket_path, "launcher") != 0) {
+        jw_log_warn("frontend-ready notification failed");
+    }
 
     while (running) {
         cat_input_event ev;
