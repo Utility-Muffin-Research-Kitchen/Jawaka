@@ -1,5 +1,5 @@
 #include "internal/platform/paths.h"
-#include "internal/platform/device.h"
+#include "internal/platform/platform_id.h"
 #include "internal/core/log.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/retroarch/command.h"
@@ -66,7 +66,53 @@ static char *jw__dup_realpath_or_literal(const char *path) {
     return path ? jw__dup_printf("%s", path) : NULL;
 }
 
-#if defined(PLATFORM_MLP1)
+typedef struct {
+    const char *platform_id;
+    const char *runtime_dir_absolute;
+    const char *retroarch_bin_relative;
+    const char *retroarch_bin_absolute;
+    const char *cores_relative;
+    const char *cores_absolute;
+    const char *core_library_suffix;
+    const char *ps_core_name;
+    bool requires_sdcard_exec_check;
+} jw_path_layout;
+
+static const jw_path_layout JW_PATH_LAYOUTS[] = {
+    {
+        "mlp1",
+        "/tmp/jawaka-runtime",
+        NULL,
+        "/mnt/sdcard/UMRK/mlp1/bin/retroarch",
+        NULL,
+        "/mnt/sdcard/UMRK/mlp1/cores",
+        "_libretro.so",
+        "pcsx_rearmed_libretro.so",
+        true,
+    },
+    {
+        "mac",
+        NULL,
+        "../retroarch-builds/output/macos/RetroArch.app/Contents/MacOS/RetroArch",
+        "/Volumes/Storage/UMRK/retroarch-builds/output/macos/RetroArch.app/Contents/MacOS/RetroArch",
+        "../Cores-spruce/output/macos/cores",
+        "/Volumes/Storage/UMRK/Cores-spruce/output/macos/cores",
+        "_libretro.dylib",
+        "swanstation_libretro.dylib",
+        false,
+    },
+};
+
+static const jw_path_layout *jw__path_layout(void) {
+    const char *platform_id = jw_platform_compiled_id();
+    for (size_t i = 0; i < sizeof(JW_PATH_LAYOUTS) / sizeof(JW_PATH_LAYOUTS[0]); i++) {
+        if (platform_id && strcmp(platform_id, JW_PATH_LAYOUTS[i].platform_id) == 0) {
+            return &JW_PATH_LAYOUTS[i];
+        }
+    }
+    return &JW_PATH_LAYOUTS[sizeof(JW_PATH_LAYOUTS) / sizeof(JW_PATH_LAYOUTS[0]) - 1u];
+}
+
 static bool jw__path_is_within(const char *path, const char *root) {
     if (!path || !root) {
         return false;
@@ -93,7 +139,6 @@ static bool jw__option_list_has(const char *list, const char *option) {
 
     return strstr(wrapped, needle) != NULL;
 }
-#endif
 
 static void jw__set_error(char *error, size_t error_size, const char *message) {
     if (error && error_size > 0) {
@@ -218,7 +263,12 @@ char *jw_runtime_dir(void) {
     if (env && env[0]) {
         path = jw__dup_printf("%s", env);
     } else {
-        path = jw__dup_printf("/tmp/jawaka-%s", jw__username());
+        const jw_path_layout *layout = jw__path_layout();
+        if (layout->runtime_dir_absolute) {
+            path = jw__dup_printf("%s", layout->runtime_dir_absolute);
+        } else {
+            path = jw__dup_printf("/tmp/jawaka-%s", jw__username());
+        }
     }
 
     if (!path) {
@@ -285,6 +335,22 @@ char *jw_socket_path(void) {
     return path;
 }
 
+char *jw_osd_socket_path(void) {
+    const char *env = getenv("JAWAKA_OSD_SOCKET");
+    if (env && env[0]) {
+        return jw__dup_printf("%s", env);
+    }
+
+    char *runtime_dir = jw_runtime_dir();
+    if (!runtime_dir) {
+        return NULL;
+    }
+
+    char *path = jw__dup_printf("%s/jawaka-osd.sock", runtime_dir);
+    free(runtime_dir);
+    return path;
+}
+
 char *jw_db_path(void) {
     char *state_dir = jw_state_dir();
     if (!state_dir) {
@@ -297,41 +363,29 @@ char *jw_db_path(void) {
 }
 
 char *jw_retroarch_bin_path(void) {
-#if defined(PLATFORM_MLP1)
-    return jw__env_or_probe(
-        "JAWAKA_RETROARCH_BIN",
-        NULL,
-        "/mnt/sdcard/UMRK/mlp1/bin/retroarch");
-#else
-    return jw__env_or_probe(
-        "JAWAKA_RETROARCH_BIN",
-        "../retroarch-builds/output/macos/RetroArch.app/Contents/MacOS/RetroArch",
-        "/Volumes/Storage/UMRK/retroarch-builds/output/macos/RetroArch.app/Contents/MacOS/RetroArch");
-#endif
+    const jw_path_layout *layout = jw__path_layout();
+    return jw__env_or_probe("JAWAKA_RETROARCH_BIN",
+                            layout->retroarch_bin_relative,
+                            layout->retroarch_bin_absolute);
 }
 
 static const char *jw__core_name_for_system(const char *system) {
     if (!system) return NULL;
-#if defined(PLATFORM_MLP1)
-    if (strcmp(system, "FC") == 0 || strcmp(system, "NES") == 0) return "fceumm_libretro.so";
-    if (strcmp(system, "GB") == 0 || strcmp(system, "GBC") == 0) return "gambatte_libretro.so";
-    if (strcmp(system, "GBA") == 0) return "mgba_libretro.so";
-    if (strcmp(system, "MD") == 0 || strcmp(system, "GEN") == 0 ||
-        strcmp(system, "GENESIS") == 0 || strcmp(system, "GG") == 0 ||
-        strcmp(system, "MS") == 0) return "genesis_plus_gx_libretro.so";
-    if (strcmp(system, "SFC") == 0 || strcmp(system, "SNES") == 0) return "snes9x_libretro.so";
-    if (strcmp(system, "PS") == 0 || strcmp(system, "PSX") == 0) return "pcsx_rearmed_libretro.so";
-    return NULL;
-#else
-    if (strcmp(system, "FC") == 0 || strcmp(system, "NES") == 0) return "fceumm_libretro.dylib";
-    if (strcmp(system, "GB") == 0 || strcmp(system, "GBC") == 0) return "gambatte_libretro.dylib";
-    if (strcmp(system, "GBA") == 0) return "mgba_libretro.dylib";
-    if (strcmp(system, "MD") == 0 || strcmp(system, "GEN") == 0 ||
-        strcmp(system, "GENESIS") == 0 || strcmp(system, "GG") == 0 ||
-        strcmp(system, "MS") == 0) return "genesis_plus_gx_libretro.dylib";
-    if (strcmp(system, "PS") == 0 || strcmp(system, "PSX") == 0) return "swanstation_libretro.dylib";
-    return NULL;
-#endif
+    const jw_path_layout *layout = jw__path_layout();
+    const char *base = NULL;
+    if (strcmp(system, "FC") == 0 || strcmp(system, "NES") == 0) base = "fceumm";
+    else if (strcmp(system, "GB") == 0 || strcmp(system, "GBC") == 0) base = "gambatte";
+    else if (strcmp(system, "GBA") == 0) base = "mgba";
+    else if (strcmp(system, "MD") == 0 || strcmp(system, "GEN") == 0 ||
+             strcmp(system, "GENESIS") == 0 || strcmp(system, "GG") == 0 ||
+             strcmp(system, "MS") == 0) base = "genesis_plus_gx";
+    else if (strcmp(system, "SFC") == 0 || strcmp(system, "SNES") == 0) base = "snes9x";
+    else if (strcmp(system, "PS") == 0 || strcmp(system, "PSX") == 0) return layout->ps_core_name;
+    else return NULL;
+
+    static char core_name[96];
+    snprintf(core_name, sizeof(core_name), "%s%s", base, layout->core_library_suffix);
+    return core_name;
 }
 
 static char *jw__core_name_from_defaults(const char *system) {
@@ -408,17 +462,10 @@ static char *jw__default_cores_dir(void) {
         return packaged_dir;
     }
 
-#if defined(PLATFORM_MLP1)
-    return jw__env_or_probe(
-        "JAWAKA_RETROARCH_CORES_DIR",
-        NULL,
-        "/mnt/sdcard/UMRK/mlp1/cores");
-#else
-    return jw__env_or_probe(
-        "JAWAKA_RETROARCH_CORES_DIR",
-        "../Cores-spruce/output/macos/cores",
-        "/Volumes/Storage/UMRK/Cores-spruce/output/macos/cores");
-#endif
+    const jw_path_layout *layout = jw__path_layout();
+    return jw__env_or_probe("JAWAKA_RETROARCH_CORES_DIR",
+                            layout->cores_relative,
+                            layout->cores_absolute);
 }
 
 char *jw_retroarch_core_path_for_system(const char *system) {
@@ -487,12 +534,13 @@ char *jw_retroarch_core_path_for_system(const char *system) {
 }
 
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size) {
-#if !defined(PLATFORM_MLP1)
-    (void)path;
+    const jw_path_layout *layout = jw__path_layout();
     jw__set_error(error, error_size, "");
-    return true;
-#else
-    jw__set_error(error, error_size, "");
+    if (!layout->requires_sdcard_exec_check) {
+        (void)path;
+        return true;
+    }
+
     if (!path || !path[0]) {
         return true;
     }
@@ -550,7 +598,6 @@ bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t err
     }
 
     return true;
-#endif
 }
 
 static void jw__retroarch_cfg_string(FILE *fp, const char *key, const char *value) {

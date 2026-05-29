@@ -13,6 +13,7 @@ extern const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT];
 typedef enum {
     JW_SETTINGS_HOME = 0,
     JW_SETTINGS_APPEARANCE,
+    JW_SETTINGS_DISPLAY,
     JW_SETTINGS_LIBRARY,
     JW_SETTINGS_BEHAVIOR,
     JW_SETTINGS_ABOUT,
@@ -23,14 +24,18 @@ typedef struct {
     jw_settings_screen screen;
     cat_list_state     home_list;
     cat_list_state     appearance_list;
+    cat_list_state     display_list;
     cat_list_state     placeholder_list;
     int                theme_index;
+    int                brightness_percent;
     char               db_path[1024];
+    char               socket_path[1024];
 } jw_settings_ui;
 
 /* Lifecycle */
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
-                         const char *initial_theme_name);
+                         const char *initial_theme_name,
+                         const char *socket_path);
 void jw_settings_ui_enter(jw_settings_ui *ui);
 void jw_settings_ui_close(jw_settings_ui *ui);
 bool jw_settings_ui_is_open(const jw_settings_ui *ui);

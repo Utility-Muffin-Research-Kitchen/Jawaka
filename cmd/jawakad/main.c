@@ -4,6 +4,7 @@
 #include "internal/discovery/discovery.h"
 #include "internal/ipc/ipc.h"
 #include "internal/platform/device.h"
+#include "internal/platform/input_proxy.h"
 #include "internal/platform/paths.h"
 
 #include <errno.h>
@@ -42,13 +43,16 @@ typedef struct {
     char *runtime_dir;
     char *sdcard_root;
     char *socket_path;
+    char *osd_socket_path;
     char *db_path;
     char  bin_dir[PATH_MAX];
     sqlite3 *db;
     jw_ipc_server *server;
     jw_platform_context platform;
+    jw_input_proxy input_proxy;
     pid_t child_pid;          /* exactly one daemon-owned child at a time */
     jw_child_kind child_kind;
+    pid_t osd_pid;
     jw_retroarch_session retroarch_session;
     bool pending_menu;
     bool pending_launch;
@@ -202,6 +206,9 @@ static int jw__reply_platform_result(jw_ipc_client *client, const char *action,
                             jw_platform_result_code_name(result ? result->code
                                                                 : JW_PLATFORM_RESULT_FAILED));
     cJSON_AddStringToObject(root, "message", result ? result->message : "platform action failed");
+    if (result && result->has_value) {
+        cJSON_AddNumberToObject(root, "value", result->value);
+    }
     return jw__reply_json(client, root);
 }
 
@@ -216,6 +223,7 @@ static const char *jw__child_name(jw_child_kind kind) {
 }
 
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
+static int jw__spawn_osd(jw_daemon_state *state);
 static int jw__spawn_retroarch(jw_daemon_state *state);
 static int jw__spawn_app(jw_daemon_state *state);
 
@@ -497,6 +505,178 @@ static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
     return 0;
 }
 
+static bool jw__env_is_disabled(const char *name) {
+    const char *value = getenv(name);
+    return value && strcmp(value, "0") == 0;
+}
+
+static int jw__spawn_osd(jw_daemon_state *state) {
+    if (!state || state->osd_pid > 0 || jw__env_is_disabled("JAWAKA_OSD")) {
+        return 0;
+    }
+
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/jawaka-osd", state->bin_dir);
+    if (!jw__path_exists(path)) {
+        jw_log_warn("osd binary missing: %s", path);
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_log_warn("osd fork failed: %s", strerror(errno));
+        return -1;
+    }
+    if (pid == 0) {
+        char *const argv[] = { (char *)path, NULL };
+        execv(path, argv);
+        perror("execv");
+        _exit(127);
+    }
+
+    state->osd_pid = pid;
+    jw_log_info("spawned jawaka-osd pid=%d", (int)pid);
+    return 0;
+}
+
+static void jw__handle_osd_exit(jw_daemon_state *state) {
+    if (!state || state->osd_pid <= 0) {
+        return;
+    }
+
+    int status = 0;
+    pid_t waited = waitpid(state->osd_pid, &status, WNOHANG);
+    if (waited == 0 || waited < 0) {
+        return;
+    }
+
+    state->osd_pid = -1;
+    if (WIFEXITED(status)) {
+        jw_log_info("jawaka-osd exited status=%d", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        jw_log_warn("jawaka-osd terminated signal=%d", WTERMSIG(status));
+    }
+
+    if (!state->shutdown_requested && !g_shutdown_requested) {
+        jw__spawn_osd(state);
+    }
+}
+
+static int jw__osd_show_brightness(jw_daemon_state *state, int percent) {
+    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
+        return -1;
+    }
+
+    if (state->osd_pid <= 0) {
+        jw__spawn_osd(state);
+    }
+
+    char request[128];
+    snprintf(request, sizeof(request),
+             "{\"type\":\"show-brightness\",\"percent\":%d}", percent);
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        char *response = NULL;
+        size_t response_len = 0;
+        if (jw_ipc_request(state->osd_socket_path, request, strlen(request),
+                           &response, &response_len) == 0) {
+            free(response);
+            return 0;
+        }
+        free(response);
+        if (attempt == 0) {
+            usleep(100000);
+        }
+    }
+    jw_log_warn("osd brightness request failed");
+    return -1;
+}
+
+static void jw__persist_brightness(jw_daemon_state *state, int percent) {
+    if (!state || !state->db_path) {
+        return;
+    }
+
+    char value[16];
+    snprintf(value, sizeof(value), "%d", percent);
+    if (jw_db_set_setting(state->db_path, "platform.brightness_percent", value) != 0) {
+        jw_log_warn("could not persist brightness setting");
+    }
+}
+
+static int jw__set_brightness(jw_daemon_state *state, int percent,
+                              bool persist, bool show_osd,
+                              jw_platform_result *out) {
+    if (!state) {
+        if (out) {
+            out->code = JW_PLATFORM_RESULT_INVALID;
+            snprintf(out->message, sizeof(out->message), "%s", "daemon state missing");
+            out->has_value = false;
+            out->value = 0;
+        }
+        return -1;
+    }
+
+    int clamped = jw_platform_clamp_brightness_percent(percent);
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_BRIGHTNESS,
+                               clamped, out);
+    if (!out || out->code != JW_PLATFORM_RESULT_OK) {
+        return -1;
+    }
+
+    int resolved = out->has_value ? out->value : clamped;
+    if (persist) {
+        jw__persist_brightness(state, resolved);
+    }
+    if (show_osd) {
+        jw__osd_show_brightness(state, resolved);
+    }
+    return 0;
+}
+
+static void jw__apply_persisted_brightness(jw_daemon_state *state) {
+    char value[32];
+    if (!state || !state->db_path ||
+        jw_db_get_setting(state->db_path, "platform.brightness_percent",
+                          value, sizeof(value)) != 0 ||
+        !value[0]) {
+        return;
+    }
+
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0')) {
+        jw_log_warn("ignoring invalid persisted brightness: %s", value);
+        return;
+    }
+
+    jw_platform_result result;
+    if (jw__set_brightness(state, (int)parsed, false, false, &result) == 0) {
+        jw_log_info("applied persisted brightness value=%d", result.value);
+    } else {
+        jw_log_warn("persisted brightness apply failed: %s", result.message);
+    }
+}
+
+static void jw__input_brightness_delta(void *userdata, int delta_percent) {
+    jw_daemon_state *state = (jw_daemon_state *)userdata;
+    if (!state) {
+        return;
+    }
+
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+    int current = status.brightness_percent >= 0 ? status.brightness_percent : 50;
+
+    jw_platform_result result;
+    if (jw__set_brightness(state, current + delta_percent, true, true, &result) == 0) {
+        jw_log_info("brightness hotkey delta=%d value=%d",
+                    delta_percent, result.has_value ? result.value : current + delta_percent);
+    } else {
+        jw_log_warn("brightness hotkey failed: %s", result.message);
+    }
+}
+
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     const char *name = jw__child_name(kind);
     if (!state || !name || kind == JW_CHILD_RETROARCH || kind == JW_CHILD_APP) {
@@ -767,7 +947,11 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         }
 
         jw_platform_result result;
-        jw_platform_perform_action(&state->platform, action, value, &result);
+        if (action == JW_PLATFORM_ACTION_SET_BRIGHTNESS) {
+            jw__set_brightness(state, value, true, true, &result);
+        } else {
+            jw_platform_perform_action(&state->platform, action, value, &result);
+        }
         jw_log_info("platform-action requested action=%s code=%s",
                     jw_platform_action_name(action),
                     jw_platform_result_code_name(result.code));
@@ -803,7 +987,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
 
 static int jw__accept_and_process(jw_daemon_state *state) {
     jw_ipc_client *client = NULL;
-    int rc = jw_ipc_server_accept(state->server, &client, 200);
+    int rc = jw_ipc_server_accept(state->server, &client, 50);
     if (rc != 0) {
         return rc;
     }
@@ -914,11 +1098,20 @@ static void jw__cleanup(jw_daemon_state *state) {
         state->child_kind = JW_CHILD_NONE;
     }
 
+    if (state->osd_pid > 0) {
+        kill(state->osd_pid, SIGTERM);
+        waitpid(state->osd_pid, NULL, 0);
+        state->osd_pid = -1;
+    }
+
+    jw_input_proxy_shutdown(&state->input_proxy);
+    jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
     free(state->runtime_dir);
     free(state->sdcard_root);
     free(state->socket_path);
+    free(state->osd_socket_path);
     free(state->db_path);
 }
 
@@ -930,6 +1123,7 @@ int main(int argc, char *argv[]) {
     jw_daemon_state state;
     memset(&state, 0, sizeof(state));
     state.child_pid = -1;
+    state.osd_pid = -1;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--daemon-only") == 0) {
@@ -954,8 +1148,10 @@ int main(int argc, char *argv[]) {
     state.runtime_dir = jw_runtime_dir();
     state.sdcard_root = jw_sdcard_root();
     state.socket_path = jw_socket_path();
+    state.osd_socket_path = jw_osd_socket_path();
     state.db_path = jw_db_path();
-    if (!state.runtime_dir || !state.sdcard_root || !state.socket_path || !state.db_path) {
+    if (!state.runtime_dir || !state.sdcard_root || !state.socket_path ||
+        !state.osd_socket_path || !state.db_path) {
         jw_log_error("could not resolve runtime paths");
         jw__cleanup(&state);
         return 1;
@@ -978,6 +1174,7 @@ int main(int argc, char *argv[]) {
         jw__cleanup(&state);
         return 1;
     }
+    jw__apply_persisted_brightness(&state);
 
     if (jw_ipc_server_listen(state.socket_path, &state.server) != 0) {
         jw_log_error("could not bind socket: %s", state.socket_path);
@@ -988,17 +1185,26 @@ int main(int argc, char *argv[]) {
     /* Exported so child processes receive them via execv's inherited environment */
     setenv("JAWAKA_RUNTIME_DIR", state.runtime_dir, 1);
     setenv("JAWAKA_SDCARD_ROOT", state.sdcard_root, 1);
+    setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
+
+    if (jw_input_proxy_init(&state.input_proxy, jw__input_brightness_delta, &state) == 0 &&
+        state.input_proxy.enabled && state.input_proxy.virtual_event_path[0]) {
+        setenv("CAT_INPUT_WAKE_EVENT", state.input_proxy.virtual_event_path, 1);
+    }
 
     jw_log_info("jawakad starting");
     jw_log_info("runtime dir: %s", state.runtime_dir);
     jw_log_info("sdcard root: %s", state.sdcard_root);
     jw_log_info("socket path: %s", state.socket_path);
+    jw_log_info("osd socket path: %s", state.osd_socket_path);
     jw_log_info("db path: %s", state.db_path);
     jw_log_info("platform: %s (%s)", state.platform.platform_id, state.platform.platform_name);
     jw_log_info("platform script dir: %s", state.platform.script_dir);
     if (state.daemon_only) {
         jw_log_info("daemon-only mode enabled");
     }
+
+    jw__spawn_osd(&state);
 
     if (!state.daemon_only) {
         if (jw__spawn_child(&state, JW_CHILD_LAUNCHER) != 0) {
@@ -1013,6 +1219,8 @@ int main(int argc, char *argv[]) {
         }
 
         jw__handle_child_exit(&state);
+        jw__handle_osd_exit(&state);
+        jw_input_proxy_tick(&state.input_proxy);
 
         if (state.shutdown_requested && state.child_pid <= 0) {
             break;

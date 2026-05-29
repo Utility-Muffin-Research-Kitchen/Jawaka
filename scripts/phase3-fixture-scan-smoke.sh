@@ -37,7 +37,7 @@ printf 'ignore me\n' >"$SD_ROOT/Roms/UNKNOWN/readme.txt"
 
 make -C "$JAWAKA_DIR" \
     BUILD="$BUILD_DIR" \
-    CFLAGS_PLATFORM="-DPLATFORM_MLP1" \
+    PLATFORM=mlp1 \
     jawaka-scan-smoke >/dev/null
 
 "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PATH"

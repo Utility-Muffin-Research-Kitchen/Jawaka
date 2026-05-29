@@ -13,7 +13,7 @@ all:
 	$(MAKE) -C "$(JAWAKA_DIR)" \
 		BUILD="$(BUILD)" \
 		CSTD="-std=gnu11" \
-		CFLAGS_PLATFORM="-DPLATFORM_MLP1" \
+		PLATFORM=mlp1 \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
 		all
 

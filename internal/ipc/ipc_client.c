@@ -183,3 +183,75 @@ int jw_ipc_frontend_ready(const char *socket_path, const char *role) {
     cJSON_Delete(resp);
     return ok ? 0 : -1;
 }
+
+int jw_ipc_platform_brightness(const char *socket_path, int *out_percent) {
+    if (out_percent) {
+        *out_percent = -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    int rc = -1;
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *brightness = cJSON_GetObjectItemCaseSensitive(status, "brightness_percent");
+    if (cJSON_IsNumber(brightness)) {
+        if (out_percent) {
+            *out_percent = brightness->valueint;
+        }
+        rc = 0;
+    }
+
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_set_brightness(const char *socket_path, int percent,
+                          int *out_percent, char *status, int status_len) {
+    if (out_percent) {
+        *out_percent = -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-action");
+    cJSON_AddStringToObject(req, "action", "set-brightness");
+    cJSON_AddNumberToObject(req, "value", percent);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "brightness failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status && status_len > 0) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "brightness failed: %s", message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "brightness failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(resp, "value");
+    int resolved = cJSON_IsNumber(value) ? value->valueint : percent;
+    if (out_percent) {
+        *out_percent = resolved;
+    }
+    if (status && status_len > 0) {
+        snprintf(status, (size_t)status_len, "brightness: %d%%", resolved);
+    }
+
+    cJSON_Delete(resp);
+    return 0;
+}

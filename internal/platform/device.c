@@ -1,81 +1,58 @@
 #include "internal/platform/device.h"
-#include "internal/core/log.h"
+#include "internal/platform/device_backend.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(PLATFORM_MLP1)
-#include <dlfcn.h>
-#endif
-
-static void jw__platform_result_set(jw_platform_result *out,
-                                    jw_platform_result_code code,
-                                    const char *message) {
+void jw_platform_result_set(jw_platform_result *out,
+                            jw_platform_result_code code,
+                            const char *message) {
     if (!out) {
         return;
     }
     out->code = code;
     snprintf(out->message, sizeof(out->message), "%s", message ? message : "");
+    out->has_value = false;
+    out->value = 0;
 }
 
-#if defined(PLATFORM_MLP1)
-static int jw__read_int_file(const char *path) {
-    FILE *fp = fopen(path, "r");
-    if (!fp) {
-        return -1;
+void jw_platform_result_set_value(jw_platform_result *out,
+                                  jw_platform_result_code code,
+                                  const char *message,
+                                  int value) {
+    jw_platform_result_set(out, code, message);
+    if (out) {
+        out->has_value = true;
+        out->value = value;
     }
-
-    int value = -1;
-    if (fscanf(fp, "%d", &value) != 1) {
-        value = -1;
-    }
-    fclose(fp);
-    return value;
 }
-#endif
 
-#if !defined(PLATFORM_MLP1)
-static int jw__env_int(const char *name, int min_value, int max_value) {
-    const char *value = getenv(name);
-    if (!value || !value[0]) {
-        return -1;
-    }
-
-    char *end = NULL;
-    long parsed = strtol(value, &end, 10);
-    if (end == value || (end && *end != '\0')) {
-        return -1;
-    }
-    if (parsed < min_value) {
-        parsed = min_value;
-    }
-    if (parsed > max_value) {
-        parsed = max_value;
-    }
-    return (int)parsed;
+void jw_platform_result_unsupported(jw_platform_action action,
+                                    const char *platform_id,
+                                    jw_platform_result *out) {
+    char message[JW_PLATFORM_MAX_MESSAGE];
+    snprintf(message, sizeof(message), "%s is unsupported on %s",
+             jw_platform_action_name(action), platform_id ? platform_id : "unknown");
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED, message);
 }
-#endif
 
 int jw_platform_init(jw_platform_context *ctx, const char *runtime_dir, const char *sdcard_root) {
     if (!ctx || !runtime_dir || !sdcard_root) {
         return -1;
     }
 
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (!backend || !backend->platform_id || !backend->platform_name) {
+        return -1;
+    }
+
     memset(ctx, 0, sizeof(*ctx));
-    snprintf(ctx->platform_id, sizeof(ctx->platform_id), "%s", jw_platform_compiled_id());
+    snprintf(ctx->platform_id, sizeof(ctx->platform_id), "%s", backend->platform_id);
+    snprintf(ctx->platform_name, sizeof(ctx->platform_name), "%s", backend->platform_name);
     snprintf(ctx->runtime_dir, sizeof(ctx->runtime_dir), "%s", runtime_dir);
     snprintf(ctx->sdcard_root, sizeof(ctx->sdcard_root), "%s", sdcard_root);
-
-#if defined(PLATFORM_MLP1)
-    snprintf(ctx->platform_name, sizeof(ctx->platform_name), "%s", "Miniloong Pocket 1");
-    ctx->capabilities.battery = true;
-    ctx->capabilities.charging = true;
-#else
-    snprintf(ctx->platform_name, sizeof(ctx->platform_name), "%s", "Mac Preview");
-    ctx->capabilities.battery = true;
-    ctx->capabilities.charging = true;
-#endif
+    ctx->capabilities = backend->capabilities;
 
     const char *script_env = getenv("JAWAKA_PLATFORM_SCRIPT_DIR");
     if (script_env && script_env[0]) {
@@ -85,7 +62,17 @@ int jw_platform_init(jw_platform_context *ctx, const char *runtime_dir, const ch
                  sdcard_root, ctx->platform_id);
     }
 
+    if (backend->init && backend->init(ctx) != 0) {
+        return -1;
+    }
     return 0;
+}
+
+void jw_platform_shutdown(jw_platform_context *ctx) {
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (ctx && backend && backend->shutdown) {
+        backend->shutdown(ctx);
+    }
 }
 
 void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out) {
@@ -102,87 +89,25 @@ void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out) {
     out->wifi_strength = -1;
     out->bluetooth_connected = -1;
 
-#if defined(PLATFORM_MLP1)
-    int battery = jw__read_int_file("/sys/class/power_supply/battery/capacity");
-    if (battery >= 0 && battery <= 100) {
-        out->battery_percent = battery;
-    }
-
-    int charger = jw__read_int_file("/sys/class/power_supply/ac/online");
-    if (charger != 1) {
-        charger = jw__read_int_file("/sys/class/power_supply/usb/online");
-    }
-    if (charger >= 0) {
-        out->charging = (charger == 1) ? 1 : 0;
-    }
-#else
-    out->battery_percent = jw__env_int("CAT_PREVIEW_BATTERY_PERCENT", 0, 100);
-    int charging = jw__env_int("CAT_PREVIEW_CHARGING", 0, 1);
-    if (charging >= 0) {
-        out->charging = charging ? 1 : 0;
-    }
-#endif
-}
-
-#if defined(PLATFORM_MLP1)
-static int (*s_event_opend)(const char *id);
-static bool s_loong_loaded;
-
-static void jw__loong_load(void) {
-    if (s_loong_loaded) {
-        return;
-    }
-    s_loong_loaded = true;
-
-    void *handle = dlopen("/usr/lib/libloong_sdk.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!handle) {
-        jw_log_error("loong: dlopen libloong_sdk.so failed: %s", dlerror());
-        return;
-    }
-
-    *(void **)(&s_event_opend) = dlsym(handle, "EventOpend");
-    if (!s_event_opend) {
-        jw_log_error("loong: EventOpend symbol not found: %s", dlerror());
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->get_status) {
+        backend->get_status(ctx, out);
     }
 }
-
-static void jw__mlp1_home_ready(jw_platform_context *ctx, jw_platform_result *out) {
-    if (ctx->home_ready_sent) {
-        jw__platform_result_set(out, JW_PLATFORM_RESULT_OK, "home ready already sent");
-        return;
-    }
-
-    jw__loong_load();
-    if (!s_event_opend) {
-        jw__platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
-                                "loong SDK EventOpend unavailable");
-        return;
-    }
-
-    int rc = s_event_opend("HOME");
-    jw_log_info("loong: EventOpend(\"HOME\") -> %d (dismissing boot transition)", rc);
-    ctx->home_ready_sent = true;
-    jw__platform_result_set(out, JW_PLATFORM_RESULT_OK, "home ready sent");
-}
-#endif
 
 void jw_platform_frontend_ready(jw_platform_context *ctx, const char *role, jw_platform_result *out) {
     if (!ctx || !role || !role[0]) {
-        jw__platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "missing frontend role");
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "missing frontend role");
         return;
     }
 
-    if (strcmp(role, "launcher") != 0) {
-        jw__platform_result_set(out, JW_PLATFORM_RESULT_OK, "frontend ready noted");
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->frontend_ready) {
+        backend->frontend_ready(ctx, role, out);
         return;
     }
 
-#if defined(PLATFORM_MLP1)
-    jw__mlp1_home_ready(ctx, out);
-#else
-    ctx->home_ready_sent = true;
-    jw__platform_result_set(out, JW_PLATFORM_RESULT_OK, "frontend ready noted");
-#endif
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "frontend ready noted");
 }
 
 bool jw_platform_parse_action(const char *name, jw_platform_action *out) {
@@ -243,15 +168,16 @@ const char *jw_platform_result_code_name(jw_platform_result_code code) {
 
 void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                 int value, jw_platform_result *out) {
-    (void)value;
-
     if (!ctx) {
-        jw__platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "platform not initialized");
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "platform not initialized");
         return;
     }
 
-    char message[JW_PLATFORM_MAX_MESSAGE];
-    snprintf(message, sizeof(message), "%s is unsupported on %s",
-             jw_platform_action_name(action), ctx->platform_id);
-    jw__platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED, message);
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->perform_action) {
+        backend->perform_action(ctx, action, value, out);
+        return;
+    }
+
+    jw_platform_result_unsupported(action, ctx->platform_id, out);
 }

@@ -2024,7 +2024,7 @@ int main(void) {
     jw_log_info("launcher layout: %s (theme=%s)", layout_name, theme_name);
 
     /* Init settings UI with the currently-active theme */
-    jw_settings_ui_init(&state.settings, db_path, theme_name);
+    jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
 
     jw__rebuild_for_layout(&state);
 

@@ -8,6 +8,7 @@ char *jw_runtime_dir(void);
 char *jw_sdcard_root(void);
 char *jw_state_dir(void);
 char *jw_socket_path(void);
+char *jw_osd_socket_path(void);
 char *jw_db_path(void);
 char *jw_retroarch_bin_path(void);
 char *jw_retroarch_core_path_for_system(const char *system);

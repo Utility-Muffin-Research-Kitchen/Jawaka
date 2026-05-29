@@ -1,0 +1,178 @@
+#include "internal/platform/device_backend.h"
+#include "internal/core/log.h"
+
+#include <dlfcn.h>
+#include <stdio.h>
+#include <string.h>
+
+#define JW_MLP1_BACKLIGHT_DIR "/sys/class/backlight/backlight"
+#define JW_MLP1_BACKLIGHT_BRIGHTNESS JW_MLP1_BACKLIGHT_DIR "/brightness"
+#define JW_MLP1_BACKLIGHT_ACTUAL JW_MLP1_BACKLIGHT_DIR "/actual_brightness"
+#define JW_MLP1_BACKLIGHT_MAX JW_MLP1_BACKLIGHT_DIR "/max_brightness"
+
+static int (*s_event_opend)(const char *id);
+static bool s_loong_loaded;
+
+static int jw__read_int_file(const char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    int value = -1;
+    if (fscanf(fp, "%d", &value) != 1) {
+        value = -1;
+    }
+    fclose(fp);
+    return value;
+}
+
+static int jw__write_int_file(const char *path, int value) {
+    FILE *fp = fopen(path, "w");
+    if (!fp) {
+        return -1;
+    }
+
+    int rc = fprintf(fp, "%d\n", value) > 0 ? 0 : -1;
+    if (fclose(fp) != 0) {
+        rc = -1;
+    }
+    return rc;
+}
+
+static int jw__brightness_raw_to_percent(int raw, int max_raw) {
+    if (raw < 0 || max_raw <= 0) {
+        return -1;
+    }
+    int percent = (raw * 100 + max_raw / 2) / max_raw;
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    return percent;
+}
+
+static int jw__brightness_percent_to_raw(int percent, int max_raw) {
+    percent = jw_platform_clamp_brightness_percent(percent);
+    if (max_raw <= 0) {
+        return -1;
+    }
+    int raw = (percent * max_raw + 50) / 100;
+    if (raw < 1) raw = 1;
+    if (raw > max_raw) raw = max_raw;
+    return raw;
+}
+
+static int jw__mlp1_get_brightness_percent(void) {
+    int max_raw = jw__read_int_file(JW_MLP1_BACKLIGHT_MAX);
+    int raw = jw__read_int_file(JW_MLP1_BACKLIGHT_ACTUAL);
+    if (raw < 0) {
+        raw = jw__read_int_file(JW_MLP1_BACKLIGHT_BRIGHTNESS);
+    }
+    return jw__brightness_raw_to_percent(raw, max_raw);
+}
+
+static void jw__loong_load(void) {
+    if (s_loong_loaded) {
+        return;
+    }
+    s_loong_loaded = true;
+
+    void *handle = dlopen("/usr/lib/libloong_sdk.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+        jw_log_error("loong: dlopen libloong_sdk.so failed: %s", dlerror());
+        return;
+    }
+
+    *(void **)(&s_event_opend) = dlsym(handle, "EventOpend");
+    if (!s_event_opend) {
+        jw_log_error("loong: EventOpend symbol not found: %s", dlerror());
+    }
+}
+
+static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *out) {
+    (void)ctx;
+    if (!out) {
+        return;
+    }
+
+    int battery = jw__read_int_file("/sys/class/power_supply/battery/capacity");
+    if (battery >= 0 && battery <= 100) {
+        out->battery_percent = battery;
+    }
+
+    int charger = jw__read_int_file("/sys/class/power_supply/ac/online");
+    if (charger != 1) {
+        charger = jw__read_int_file("/sys/class/power_supply/usb/online");
+    }
+    if (charger >= 0) {
+        out->charging = (charger == 1) ? 1 : 0;
+    }
+
+    out->brightness_percent = jw__mlp1_get_brightness_percent();
+}
+
+static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
+                                    jw_platform_result *out) {
+    if (strcmp(role, "launcher") != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "frontend ready noted");
+        return;
+    }
+
+    if (ctx->home_ready_sent) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "home ready already sent");
+        return;
+    }
+
+    jw__loong_load();
+    if (!s_event_opend) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
+                               "loong SDK EventOpend unavailable");
+        return;
+    }
+
+    int rc = s_event_opend("HOME");
+    jw_log_info("loong: EventOpend(\"HOME\") -> %d (dismissing boot transition)", rc);
+    ctx->home_ready_sent = true;
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "home ready sent");
+}
+
+static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action action,
+                                    int value, jw_platform_result *out) {
+    if (action != JW_PLATFORM_ACTION_SET_BRIGHTNESS) {
+        jw_platform_result_unsupported(action, ctx ? ctx->platform_id : "mlp1", out);
+        return;
+    }
+
+    int percent = jw_platform_clamp_brightness_percent(value);
+    int max_raw = jw__read_int_file(JW_MLP1_BACKLIGHT_MAX);
+    int raw = jw__brightness_percent_to_raw(percent, max_raw);
+    if (raw < 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
+                               "backlight max brightness unavailable");
+        return;
+    }
+    if (jw__write_int_file(JW_MLP1_BACKLIGHT_BRIGHTNESS, raw) != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                               "backlight brightness write failed");
+        return;
+    }
+
+    char message[JW_PLATFORM_MAX_MESSAGE];
+    snprintf(message, sizeof(message), "brightness set to %d%%", percent);
+    jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, percent);
+}
+
+const jw_platform_backend *jw_platform_get_backend(void) {
+    static const jw_platform_backend backend = {
+        .platform_id = "mlp1",
+        .platform_name = "Miniloong Pocket 1",
+        .capabilities = {
+            .battery = true,
+            .charging = true,
+            .brightness = true,
+        },
+        .get_status = jw__mlp1_get_status,
+        .frontend_ready = jw__mlp1_frontend_ready,
+        .perform_action = jw__mlp1_perform_action,
+    };
+    return &backend;
+}

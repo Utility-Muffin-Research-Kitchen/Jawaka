@@ -1,6 +1,8 @@
 #include "internal/settings/settings.h"
 
 #include "internal/db/db.h"
+#include "internal/ipc/ipc_client.h"
+#include "internal/platform/device.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -14,13 +16,15 @@ const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT] = {
 
 static const char *kCategoryLabels[] = {
     "Appearance",
+    "Display",
     "Library",
     "Behavior",
     "About",
 };
-#define JW_SETTINGS_CATEGORY_COUNT 4
+#define JW_SETTINGS_CATEGORY_COUNT 5
 
 #define JW_SETTINGS_APPEARANCE_COUNT 1
+#define JW_SETTINGS_DISPLAY_COUNT 1
 
 /* ─── Lifecycle ──────────────────────────────────────────────────────────── */
 
@@ -32,18 +36,34 @@ static int jw__find_theme_index(const char *name) {
     return 0;
 }
 
+static void jw__refresh_brightness(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) {
+        return;
+    }
+    int percent = -1;
+    if (jw_ipc_platform_brightness(ui->socket_path, &percent) == 0 && percent >= 0) {
+        ui->brightness_percent = jw_platform_clamp_brightness_percent(percent);
+    }
+}
+
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
-                          const char *initial_theme_name) {
+                          const char *initial_theme_name,
+                          const char *socket_path) {
     if (!ui) return;
     memset(ui, 0, sizeof(*ui));
     ui->open    = false;
     ui->screen  = JW_SETTINGS_HOME;
     cat_list_state_init(&ui->home_list,        JW_SETTINGS_CATEGORY_COUNT);
     cat_list_state_init(&ui->appearance_list,  JW_SETTINGS_APPEARANCE_COUNT);
+    cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
     cat_list_state_init(&ui->placeholder_list, 1);
     ui->theme_index = jw__find_theme_index(initial_theme_name);
+    ui->brightness_percent = 50;
     if (db_path && db_path[0])
         snprintf(ui->db_path, sizeof(ui->db_path), "%s", db_path);
+    if (socket_path && socket_path[0])
+        snprintf(ui->socket_path, sizeof(ui->socket_path), "%s", socket_path);
+    jw__refresh_brightness(ui);
 }
 
 void jw_settings_ui_enter(jw_settings_ui *ui) {
@@ -51,6 +71,7 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     ui->open = true;
     /* Always re-enter at home; home cursor is preserved across enter/close. */
     ui->screen = JW_SETTINGS_HOME;
+    jw__refresh_brightness(ui);
 }
 
 void jw_settings_ui_close(jw_settings_ui *ui) {
@@ -139,6 +160,42 @@ static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w,
     (void)h;
 }
 
+static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
+
+    jw__draw_header("Display", x, y, w);
+    int header_h = TTF_FontHeight(large) + cat_scale(10);
+    int item_h = TTF_FontHeight(body) + cat_scale(28);
+    int iy = y + header_h;
+    bool selected = (ui->display_list.cursor == 0);
+    int pill_h = item_h - cat_scale(6);
+    int pill_y = iy + cat_scale(3);
+    if (selected)
+        cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
+
+    ap_color label_c = selected ? theme->highlighted_text : theme->text;
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int ty = pill_y + cat_scale(8);
+
+    cat_draw_text_ellipsized(body, "Brightness", x + cat_scale(12), ty, label_c,
+                              w / 2 - cat_scale(20));
+
+    char value_str[32];
+    snprintf(value_str, sizeof(value_str), "%d%%", ui->brightness_percent);
+    int vw = cat_measure_text(body, value_str);
+    cat_draw_text(body, value_str, x + w - vw - cat_scale(16), ty, value_c);
+
+    int track_x = x + cat_scale(12);
+    int track_y = pill_y + pill_h - cat_scale(16);
+    int track_w = w - cat_scale(32);
+    int fill_w = (track_w * ui->brightness_percent) / 100;
+    cat_draw_rect(track_x, track_y, track_w, cat_scale(4), cat_hex_to_color("#ffffff33"));
+    cat_draw_rect(track_x, track_y, fill_w, cat_scale(4), value_c);
+    (void)h;
+}
+
 static void jw__render_placeholder(const jw_settings_ui *ui, const char *title,
                                     int x, int y, int w, int h) {
     ap_theme *theme = cat_get_theme();
@@ -167,6 +224,9 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
             break;
         case JW_SETTINGS_APPEARANCE:
             jw__render_appearance(ui, x, y, w, h);
+            break;
+        case JW_SETTINGS_DISPLAY:
+            jw__render_display(ui, x, y, w, h);
             break;
         case JW_SETTINGS_LIBRARY:
             jw__render_placeholder(ui, "Library", x, y, w, h);
@@ -217,6 +277,22 @@ static void jw__cycle_theme(jw_settings_ui *ui, int direction,
     jw__apply_theme(ui, next, status_buf, status_size, theme_changed);
 }
 
+static void jw__change_brightness(jw_settings_ui *ui, int delta,
+                                  char *status_buf, size_t status_size) {
+    int next = jw_platform_clamp_brightness_percent(ui->brightness_percent + delta);
+    int resolved = next;
+    if (ui->socket_path[0] &&
+        jw_ipc_set_brightness(ui->socket_path, next, &resolved, status_buf,
+                              (int)status_size) == 0) {
+        ui->brightness_percent = jw_platform_clamp_brightness_percent(resolved);
+        return;
+    }
+
+    if (status_buf && status_size > 0) {
+        snprintf(status_buf, status_size, "%s", "brightness failed");
+    }
+}
+
 bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                     char *status_buf, size_t status_size,
                                     bool *theme_changed) {
@@ -235,9 +311,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 case CAT_BTN_A: {
                     int idx = ui->home_list.cursor;
                     if (idx == 0) ui->screen = JW_SETTINGS_APPEARANCE;
-                    else if (idx == 1) ui->screen = JW_SETTINGS_LIBRARY;
-                    else if (idx == 2) ui->screen = JW_SETTINGS_BEHAVIOR;
-                    else if (idx == 3) ui->screen = JW_SETTINGS_ABOUT;
+                    else if (idx == 1) ui->screen = JW_SETTINGS_DISPLAY;
+                    else if (idx == 2) ui->screen = JW_SETTINGS_LIBRARY;
+                    else if (idx == 3) ui->screen = JW_SETTINGS_BEHAVIOR;
+                    else if (idx == 4) ui->screen = JW_SETTINGS_ABOUT;
                     break;
                 }
                 case CAT_BTN_B:
@@ -269,6 +346,25 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 case CAT_BTN_A:
                     if (ui->appearance_list.cursor == 0)
                         jw__cycle_theme(ui, +1, status_buf, status_size, theme_changed);
+                    break;
+                case CAT_BTN_B:
+                    ui->screen = JW_SETTINGS_HOME;
+                    break;
+                default:
+                    break;
+            }
+            break;
+
+        case JW_SETTINGS_DISPLAY:
+            switch (button) {
+                case CAT_BTN_LEFT:
+                    jw__change_brightness(ui, -JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
+                                          status_buf, status_size);
+                    break;
+                case CAT_BTN_RIGHT:
+                case CAT_BTN_A:
+                    jw__change_brightness(ui, JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
+                                          status_buf, status_size);
                     break;
                 case CAT_BTN_B:
                     ui->screen = JW_SETTINGS_HOME;

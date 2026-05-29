@@ -1,4 +1,5 @@
 #include "internal/retroarch/catalog.h"
+#include "internal/platform/platform_id.h"
 
 #include "cJSON.h"
 
@@ -10,11 +11,7 @@
 #include <sys/stat.h>
 
 static const char *jw_ra_platform_id(void) {
-#if defined(PLATFORM_MLP1)
-    return "mlp1";
-#else
-    return "mac";
-#endif
+    return jw_platform_compiled_id();
 }
 
 static void jw_ra_set_error(char *error, size_t error_size, const char *message) {

@@ -4,8 +4,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "internal/platform/platform_id.h"
+
 #define JW_PLATFORM_MAX_PATH    4096
 #define JW_PLATFORM_MAX_MESSAGE 256
+#define JW_PLATFORM_BRIGHTNESS_MIN_PERCENT 5
+#define JW_PLATFORM_BRIGHTNESS_MAX_PERCENT 100
+#define JW_PLATFORM_BRIGHTNESS_STEP_PERCENT 5
 
 typedef struct {
     bool battery;
@@ -27,6 +32,7 @@ typedef struct {
     char script_dir[JW_PLATFORM_MAX_PATH];
     jw_platform_capabilities capabilities;
     bool home_ready_sent;
+    void *backend_data;
 } jw_platform_context;
 
 typedef struct {
@@ -62,23 +68,19 @@ typedef enum {
 typedef struct {
     jw_platform_result_code code;
     char message[JW_PLATFORM_MAX_MESSAGE];
+    bool has_value;
+    int value;
 } jw_platform_result;
 
-static inline const char *jw_platform_compiled_id(void) {
-#if defined(PLATFORM_MLP1)
-    return "mlp1";
-#else
-    return "mac";
-#endif
-}
-
 int  jw_platform_init(jw_platform_context *ctx, const char *runtime_dir, const char *sdcard_root);
+void jw_platform_shutdown(jw_platform_context *ctx);
 void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out);
 void jw_platform_frontend_ready(jw_platform_context *ctx, const char *role, jw_platform_result *out);
 
 bool jw_platform_parse_action(const char *name, jw_platform_action *out);
 const char *jw_platform_action_name(jw_platform_action action);
 const char *jw_platform_result_code_name(jw_platform_result_code code);
+int  jw_platform_clamp_brightness_percent(int percent);
 void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                 int value, jw_platform_result *out);
 
