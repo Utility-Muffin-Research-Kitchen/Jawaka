@@ -1,26 +1,28 @@
 {
   "ui": {
     "ui_font": { "path": "fonts/SpaceGrotesk/SpaceGrotesk-Regular.ttf", "size": 36 },
-    "text_color": "#e6edf3",
-    "background_color": "#0d1117",
-    "highlight_color": "#1f6feb",
-    "highlight_text_color": "#ffffff",
-    "disabled_color": "#6e7681",
-    "tab_color": "#e6edf370",
-    "tab_selected_color": "#e6edf3",
-    "pill_radius_ratio": 0.5
+    "text_color": "#993B41",
+    "background_color": "#D3D0CC",
+    "highlight_color": "#993B41",
+    "highlight_text_color": "#D3D0CC",
+    "disabled_color": "#CABCBA",
+    "hint_color": "#993B41",
+    "tab_color": "#993B4170",
+    "tab_selected_color": "#993B41",
+    "pill_radius_ratio": 1.0
   },
-  "status_bar": { "show_battery_level": true, "show_clock": true, "show_wifi": true, "text_color": "#e6edf3" },
+  "status_bar": { "show_battery_level": true, "show_clock": true, "show_wifi": true, "text_color": "#993B41" },
   "button_hints": {
-    "button_a_color": "#1f6feb",
-    "button_b_color": "#1f6feb",
-    "button_x_color": "#1f6feb",
-    "button_y_color": "#1f6feb",
-    "button_bg_color": "#21262d",
-    "button_text_color": "#ffffff",
-    "text_color": "#e6edf3"
+    "button_a_color": "#CABCBA",
+    "button_b_color": "#CABCBA",
+    "button_x_color": "#CABCBA",
+    "button_y_color": "#CABCBA",
+    "button_bg_color": "#CABCBA",
+    "glyph_bg_color": "#993B41",
+    "button_text_color": "#D3D0CC",
+    "text_color": "#993B41"
   },
-  "menu": { "background_color": "#161b22" },
+  "menu": { "background_color": "#D3D0CC" },
   "cjk_font": { "path": "fonts/SourceHanSansCN/SourceHanSansCN-Heavy.otf", "size": 36 },
   "launcher": {
     "layout": "vertical",
