@@ -234,6 +234,58 @@ static int jw__write_text_file_contents(FILE *fp, const char *path) {
     return ferror(fp) ? -1 : 0;
 }
 
+static bool jw__retroarch_cfg_line_has_key(const char *line, size_t len, const char *key) {
+    if (!line || !key) {
+        return false;
+    }
+
+    while (len > 0 && (*line == ' ' || *line == '\t')) {
+        line++;
+        len--;
+    }
+    if (len == 0 || *line == '#') {
+        return false;
+    }
+
+    size_t key_len = strlen(key);
+    if (len < key_len || strncmp(line, key, key_len) != 0) {
+        return false;
+    }
+
+    line += key_len;
+    len -= key_len;
+    while (len > 0 && (*line == ' ' || *line == '\t')) {
+        line++;
+        len--;
+    }
+
+    return len > 0 && *line == '=';
+}
+
+static int jw__write_text_file_contents_skip_key(FILE *fp, const char *path, const char *skip_key) {
+    char *text = jw__read_text_file(path, 64u * 1024u);
+    if (!text) {
+        return -1;
+    }
+
+    const char *line = text;
+    while (*line) {
+        const char *next = strchr(line, '\n');
+        size_t len = next ? (size_t)(next - line) : strlen(line);
+        if (!jw__retroarch_cfg_line_has_key(line, len, skip_key)) {
+            fwrite(line, 1, len, fp);
+            fputc('\n', fp);
+        }
+        if (!next) {
+            break;
+        }
+        line = next + 1;
+    }
+
+    free(text);
+    return ferror(fp) ? -1 : 0;
+}
+
 static int jw__mkdir_child(const char *root, const char *name) {
     char path[PATH_MAX];
     if (!root || !name || snprintf(path, sizeof(path), "%s/%s", root, name) >= (int)sizeof(path)) {
@@ -635,7 +687,7 @@ static char *jw__core_info_dir(const char *core_path) {
 }
 
 char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdcard_root,
-                                       const char *core_path) {
+                                       const char *core_path, int player1_joypad_index) {
     if (!runtime_dir || !sdcard_root || !core_path) {
         return NULL;
     }
@@ -682,7 +734,12 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     }
 
     if (defaults_path) {
-        jw__write_text_file_contents(fp, defaults_path);
+        if (player1_joypad_index >= 0) {
+            jw__write_text_file_contents_skip_key(fp, defaults_path,
+                                                  "input_player1_joypad_index");
+        } else {
+            jw__write_text_file_contents(fp, defaults_path);
+        }
     }
     jw__retroarch_cfg_string(fp, "system_directory", system_dir);
     jw__retroarch_cfg_string(fp, "savefile_directory", saves_dir);
@@ -697,6 +754,11 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     snprintf(command_port, sizeof(command_port), "%u", JW_RA_DEFAULT_PORT);
     jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
     jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
+    if (player1_joypad_index >= 0) {
+        char joypad_index[16];
+        snprintf(joypad_index, sizeof(joypad_index), "%d", player1_joypad_index);
+        jw__retroarch_cfg_string(fp, "input_player1_joypad_index", joypad_index);
+    }
 
     int failed = ferror(fp);
     if (fclose(fp) != 0) {

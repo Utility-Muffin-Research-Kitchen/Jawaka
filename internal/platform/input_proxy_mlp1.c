@@ -18,6 +18,7 @@
 
 #define JW_MLP1_INPUT_NAME "Loong Gamepad"
 #define JW_MLP1_BRIGHTNESS_REPEAT_MS 120u
+#define JW_MLP1_MENU_TAP_MS 80u
 
 typedef struct {
     int input_fd;
@@ -26,6 +27,8 @@ typedef struct {
     bool menu_held;
     bool menu_forwarded;
     bool chord_active;
+    bool deferred_menu_release;
+    uint64_t deferred_menu_release_at_ms;
     uint64_t last_brightness_ms;
 } jw_mlp1_input_proxy_data;
 
@@ -41,6 +44,17 @@ static uint64_t jw__monotonic_ms(void) {
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
+static bool jw__event_name_matches(int fd, const char *expected) {
+    if (!expected || !expected[0]) {
+        return false;
+    }
+
+    char name[128];
+    memset(name, 0, sizeof(name));
+    return ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
+           strcmp(name, expected) == 0;
+}
+
 static int jw__open_loong_gamepad(char *out_path, size_t out_size) {
     for (int i = 0; i < 32; i++) {
         char path[64];
@@ -50,10 +64,7 @@ static int jw__open_loong_gamepad(char *out_path, size_t out_size) {
             continue;
         }
 
-        char name[128];
-        memset(name, 0, sizeof(name));
-        if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
-            strcmp(name, JW_MLP1_INPUT_NAME) == 0) {
+        if (jw__event_name_matches(fd, JW_MLP1_INPUT_NAME)) {
             snprintf(out_path, out_size, "%s", path);
             return fd;
         }
@@ -156,6 +167,13 @@ static bool jw__same_rdev(const char *a, const char *b) {
     return stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_rdev == sb.st_rdev;
 }
 
+static bool jw__same_event_path(const char *a, const char *b) {
+    if (!a || !b || !a[0] || !b[0]) {
+        return false;
+    }
+    return strcmp(a, b) == 0 || jw__same_rdev(a, b);
+}
+
 static int jw__find_virtual_event(const char *physical_path, char *out, size_t out_size) {
     for (int attempt = 0; attempt < 50; attempt++) {
         for (int i = 0; i < 64; i++) {
@@ -170,10 +188,7 @@ static int jw__find_virtual_event(const char *physical_path, char *out, size_t o
                 continue;
             }
 
-            char name[128];
-            memset(name, 0, sizeof(name));
-            bool match = ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
-                         strcmp(name, JW_MLP1_INPUT_NAME) == 0;
+            bool match = jw__event_name_matches(fd, JW_MLP1_INPUT_NAME);
             close(fd);
             if (match) {
                 snprintf(out, out_size, "%s", path);
@@ -221,8 +236,22 @@ static void jw__flush_menu_press(jw_mlp1_input_proxy_data *data) {
 static void jw__emit_deferred_menu_tap(jw_mlp1_input_proxy_data *data) {
     jw__write_event(data, EV_KEY, BTN_MODE, 1);
     jw__emit_syn(data);
+    data->deferred_menu_release = true;
+    data->deferred_menu_release_at_ms = jw__monotonic_ms() + JW_MLP1_MENU_TAP_MS;
+}
+
+static void jw__release_deferred_menu_tap(jw_mlp1_input_proxy_data *data, bool force) {
+    if (!data->deferred_menu_release) {
+        return;
+    }
+    if (!force && jw__monotonic_ms() < data->deferred_menu_release_at_ms) {
+        return;
+    }
+
     jw__write_event(data, EV_KEY, BTN_MODE, 0);
     jw__emit_syn(data);
+    data->deferred_menu_release = false;
+    data->deferred_menu_release_at_ms = 0;
 }
 
 static bool jw__volume_key(uint16_t code) {
@@ -310,6 +339,9 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
         free(data);
         return 0;
     }
+    snprintf(proxy->physical_event_path, sizeof(proxy->physical_event_path),
+             "%s", data->physical_path);
+    snprintf(proxy->device_name, sizeof(proxy->device_name), "%s", JW_MLP1_INPUT_NAME);
 
     data->uinput_fd = jw__create_virtual_gamepad(data->input_fd);
     if (data->uinput_fd < 0) {
@@ -342,12 +374,45 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
     return 0;
 }
 
+int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->virtual_event_path[0]) {
+        return -1;
+    }
+
+    const char *device_name = proxy->device_name[0] ? proxy->device_name : JW_MLP1_INPUT_NAME;
+    int joypad_index = 0;
+    for (int i = 0; i < 64; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+
+        bool match = jw__event_name_matches(fd, device_name);
+        close(fd);
+        if (!match) {
+            continue;
+        }
+
+        if (jw__same_event_path(path, proxy->virtual_event_path)) {
+            return joypad_index;
+        }
+        joypad_index++;
+    }
+
+    return -1;
+}
+
 void jw_input_proxy_tick(jw_input_proxy *proxy) {
     if (!proxy || !proxy->enabled || !proxy->backend_data) {
         return;
     }
 
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw__release_deferred_menu_tap(data, false);
+
     while (1) {
         struct input_event ev;
         ssize_t n = read(data->input_fd, &ev, sizeof(ev));
@@ -355,9 +420,11 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 jw_log_warn("input proxy: read failed: %s", strerror(errno));
             }
+            jw__release_deferred_menu_tap(data, false);
             return;
         }
         if (n != (ssize_t)sizeof(ev)) {
+            jw__release_deferred_menu_tap(data, false);
             return;
         }
 
@@ -375,6 +442,8 @@ void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     }
 
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw__release_deferred_menu_tap(data, true);
+
     if (data->input_fd >= 0) {
         ioctl(data->input_fd, EVIOCGRAB, 0);
         close(data->input_fd);

@@ -784,7 +784,30 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         goto fail;
     }
 
-    append_config = jw_write_retroarch_append_config(state->runtime_dir, state->sdcard_root, core);
+    jw_platform_result ready_result;
+    jw_platform_frontend_ready(&state->platform, "launcher", &ready_result);
+    jw_log_info("RetroArch launch transition readiness code=%s",
+                jw_platform_result_code_name(ready_result.code));
+
+    int player1_joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);
+    if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
+        if (player1_joypad_index >= 0) {
+            jw_log_info("RetroArch input proxy: physical=%s virtual=%s joypad_index=%d",
+                        state->input_proxy.physical_event_path[0]
+                            ? state->input_proxy.physical_event_path
+                            : "(unknown)",
+                        state->input_proxy.virtual_event_path,
+                        player1_joypad_index);
+        } else {
+            jw_log_warn("RetroArch input proxy: could not resolve virtual joypad index for %s",
+                        state->input_proxy.virtual_event_path);
+        }
+    }
+
+    append_config = jw_write_retroarch_append_config(state->runtime_dir,
+                                                     state->sdcard_root,
+                                                     core,
+                                                     player1_joypad_index);
     if (!append_config) {
         jw_log_error("could not write RetroArch appendconfig");
         goto fail;

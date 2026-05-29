@@ -14,6 +14,6 @@ char *jw_retroarch_bin_path(void);
 char *jw_retroarch_core_path_for_system(const char *system);
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size);
 char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdcard_root,
-                                       const char *core_path);
+                                       const char *core_path, int player1_joypad_index);
 
 #endif
