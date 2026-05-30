@@ -38,6 +38,18 @@
 #define JW_HINT_DEVICE(desktop_key, device_key) (desktop_key)
 #endif
 
+/* ─── Status bar ─────────────────────────────────────────────────────────── */
+
+static void jw__draw_status_bar(void) {
+    cat_status_bar_opts opts = {
+        .show_clock   = CAT_CLOCK_AUTO,
+        .use_24h      = false,
+        .show_battery = true,
+        .show_wifi    = true,
+    };
+    cat_draw_status_bar(&opts);
+}
+
 /* ─── Tabbed mode ─────────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -463,6 +475,10 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     int header_h = cat_get_tab_bar_height();
 
     cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
+    /* TODO: status bar in tabbed layout needs Catastrophe support —
+       either a taller tab bar, an inline icon strip, or a combined
+       cat_draw_tab_bar_with_status API. The current pill is too tall
+       for the tab bar height. */
 
     int content_y = header_h;
     int content_h = sh - header_h - fh;
@@ -590,6 +606,7 @@ static void jw__render_vertical_preview(const jw_launcher_state *state,
 
 static void jw__render_vertical(const jw_launcher_state *state) {
     cat_clear_screen();
+    jw__draw_status_bar();
 
     const cat_stylesheet *ss = cat_get_stylesheet();
     ap_theme *theme = cat_get_theme();
@@ -830,6 +847,7 @@ static void jw__draw_tools_menu(jw_launcher_state *state) {
 
 static void jw__render_horizontal(jw_launcher_state *state) {
     cat_clear_screen();
+    jw__draw_status_bar();
 
     const cat_stylesheet *ss = cat_get_stylesheet();
     ap_theme *theme = cat_get_theme();
@@ -1142,6 +1160,7 @@ static void jw__coverflow_start_anim(jw_launcher_state *state, int new_cursor) {
 
 static void jw__render_coverflow(jw_launcher_state *state) {
     cat_clear_screen();
+    jw__draw_status_bar();
 
     const cat_stylesheet *ss = cat_get_stylesheet();
     ap_theme *theme    = cat_get_theme();
@@ -1275,6 +1294,7 @@ static void jw__render_coverflow(jw_launcher_state *state) {
 
 static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_clear_screen();
+    jw__draw_status_bar();
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
@@ -1376,6 +1396,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
 static void jw__render_search(const jw_launcher_state *state) {
     cat_clear_screen();
+    jw__draw_status_bar();
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
