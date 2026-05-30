@@ -26,12 +26,16 @@
 static const char *kMenuItems[] = {
     "Rescan Library",
     "Return to Launcher",
-    "Shutdown",
+    "Exit to Stock",
+    "Reboot",
+    "Power Off",
 };
-#define JW_MENU_COUNT    3
-#define JW_MENU_RESCAN   0
-#define JW_MENU_RETURN   1
-#define JW_MENU_SHUTDOWN 2
+#define JW_MENU_COUNT       5
+#define JW_MENU_RESCAN      0
+#define JW_MENU_RETURN      1
+#define JW_MENU_EXIT_STOCK  2
+#define JW_MENU_REBOOT      3
+#define JW_MENU_POWEROFF    4
 
 typedef struct {
     cat_list_state list;
@@ -97,8 +101,19 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
         case JW_MENU_RETURN:
             *running = false;
             return 0;
-        case JW_MENU_SHUTDOWN:
+        case JW_MENU_EXIT_STOCK:
+            /* EXIT-TO-STOCK: temporary dev/test feature. Sends shutdown IPC
+               which writes /tmp/umrk-exit-to-stock sentinel. See jawakad
+               shutdown handler and loong_pangu.wrapper sentinel check. */
             jw_ipc_shutdown(socket_path);
+            *running = false;
+            return 0;
+        case JW_MENU_REBOOT:
+            jw_ipc_platform_action(socket_path, "reboot", 0);
+            *running = false;
+            return 0;
+        case JW_MENU_POWEROFF:
+            jw_ipc_platform_action(socket_path, "poweroff", 0);
             *running = false;
             return 0;
         default:

@@ -1053,9 +1053,16 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_platform_result(client, "frontend-ready", &result);
     }
 
+    /* EXIT-TO-STOCK: temporary dev/test feature. Writes a sentinel so the
+       wrapper falls back to stock for this session only. The sentinel lives
+       in /tmp and is cleared on reboot. See loong_pangu.wrapper sentinel
+       check and jawaka-menu EXIT_STOCK case. May be removed after testing. */
     if (strcmp(type->valuestring, "shutdown") == 0) {
         state->shutdown_requested = true;
-        jw_log_info("shutdown requested");
+        unlink("/userdata/umrk-launcher-crash-state");
+        FILE *fp = fopen("/tmp/umrk-exit-to-stock", "w");
+        if (fp) fclose(fp);
+        jw_log_info("shutdown requested — exiting to stock (this session only)");
         cJSON_Delete(root);
         return jw__reply_ok(client, "shutdown", NULL);
     }
