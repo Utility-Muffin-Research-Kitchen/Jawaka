@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <limits.h>
 #include <sqlite3.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +44,18 @@ static int jw__is_hidden(const char *name) {
 
 static int jw__is_private_rom_name(const char *name) {
     return name[0] == '_';
+}
+
+static int jw__format_string(char *out, size_t out_size, const char *fmt, ...) {
+    if (!out || out_size == 0) {
+        return -1;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+    int needed = vsnprintf(out, out_size, fmt, args);
+    va_end(args);
+    return needed >= 0 && (size_t)needed < out_size ? 0 : -1;
 }
 
 static void jw__lower_copy(const char *in, char *out, size_t out_size) {
@@ -217,6 +230,26 @@ static int jw__metadata_accepts_rom(const jw_ra_system *system,
     return 0;
 }
 
+static int jw__metadata_system_has_packaged_retroarch_core(const jw_ra_catalog *catalog,
+                                                           const jw_ra_system *system) {
+    if (!catalog || !system) {
+        return 0;
+    }
+
+    if (jw_ra_core_is_packaged_retroarch(jw_ra_catalog_find_core(catalog, system->default_core))) {
+        return 1;
+    }
+
+    for (size_t i = 0; i < system->alternate_cores.count; i++) {
+        if (jw_ra_core_is_packaged_retroarch(
+                jw_ra_catalog_find_core(catalog, system->alternate_cores.items[i]))) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static const char *jw__metadata_image_path(const jw_ra_system *system,
                                            const char *physical_folder,
                                            const char *title,
@@ -252,8 +285,10 @@ static const char *jw__metadata_image_path(const jw_ra_system *system,
 static int jw__scan_roms_compat(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     char roms_root[PATH_MAX];
     char images_root[PATH_MAX];
-    snprintf(roms_root, sizeof(roms_root), "%s/Roms", sdcard_root);
-    snprintf(images_root, sizeof(images_root), "%s/Images", sdcard_root);
+    if (jw__format_string(roms_root, sizeof(roms_root), "%s/Roms", sdcard_root) != 0 ||
+        jw__format_string(images_root, sizeof(images_root), "%s/Images", sdcard_root) != 0) {
+        return -1;
+    }
 
     DIR *systems = opendir(roms_root);
     if (!systems) {
@@ -307,9 +342,11 @@ static int jw__scan_roms_compat(sqlite3 *db, const char *sdcard_root, jw_scan_re
                          system_entry->d_name, file_entry->d_name) >= (int)sizeof(rom_rel)) {
                 continue;
             }
-            snprintf(image_abs, sizeof(image_abs), "%s/%s/%s.png", images_root, system_entry->d_name, title);
-            snprintf(image_rel, sizeof(image_rel), "Images/%s/%s.png", system_entry->d_name, title);
-            if (jw__is_file(image_abs)) {
+            if (jw__format_string(image_abs, sizeof(image_abs), "%s/%s/%s.png",
+                                  images_root, system_entry->d_name, title) == 0 &&
+                jw__format_string(image_rel, sizeof(image_rel), "Images/%s/%s.png",
+                                  system_entry->d_name, title) == 0 &&
+                jw__is_file(image_abs)) {
                 image_path = image_rel;
             }
 
@@ -366,6 +403,13 @@ static int jw__scan_roms_metadata(sqlite3 *db,
         if (!system) {
             fprintf(stderr, "RetroArch discovery: skipping unknown ROM folder %s\n",
                     system_entry->d_name);
+            continue;
+        }
+        if (!jw__metadata_system_has_packaged_retroarch_core(catalog, system)) {
+            fprintf(stderr,
+                    "RetroArch discovery: skipping unsupported ROM folder %s "
+                    "(%s has no packaged RetroArch core)\n",
+                    system_entry->d_name, system->id);
             continue;
         }
 
@@ -455,7 +499,12 @@ static int jw__scan_roms(sqlite3 *db, const char *sdcard_root, jw_scan_result *o
 }
 
 static void jw__trim_pak_suffix(const char *name, char *out, size_t out_size) {
-    snprintf(out, out_size, "%s", name);
+    if (!out || out_size == 0) {
+        return;
+    }
+    if (jw__format_string(out, out_size, "%s", name ? name : "") != 0) {
+        out[out_size - 1] = '\0';
+    }
     size_t len = strlen(out);
     if (len > 4 && strcmp(out + len - 4, ".pak") == 0) {
         out[len - 4] = '\0';
@@ -464,7 +513,9 @@ static void jw__trim_pak_suffix(const char *name, char *out, size_t out_size) {
 
 static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     char apps_root[PATH_MAX];
-    snprintf(apps_root, sizeof(apps_root), "%s/Apps", sdcard_root);
+    if (jw__format_string(apps_root, sizeof(apps_root), "%s/Apps", sdcard_root) != 0) {
+        return -1;
+    }
 
     DIR *apps = opendir(apps_root);
     if (!apps) {
@@ -478,18 +529,24 @@ static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *o
         }
 
         char pak_abs[PATH_MAX];
-        snprintf(pak_abs, sizeof(pak_abs), "%s/%s", apps_root, entry->d_name);
+        if (jw__format_string(pak_abs, sizeof(pak_abs), "%s/%s",
+                              apps_root, entry->d_name) != 0) {
+            continue;
+        }
         if (!jw__is_directory(pak_abs)) {
             continue;
         }
 
         char pak_rel[PATH_MAX];
-        char default_name[PATH_MAX];
-        snprintf(pak_rel, sizeof(pak_rel), "Apps/%s", entry->d_name);
+        char default_name[256];
+        if (jw__format_string(pak_rel, sizeof(pak_rel), "Apps/%s", entry->d_name) != 0) {
+            continue;
+        }
         jw__trim_pak_suffix(entry->d_name, default_name, sizeof(default_name));
 
         char pak_json_path[PATH_MAX];
-        snprintf(pak_json_path, sizeof(pak_json_path), "%s/pak.json", pak_abs);
+        int has_pak_json_path =
+            jw__format_string(pak_json_path, sizeof(pak_json_path), "%s/pak.json", pak_abs) == 0;
 
         char name_buf[256];
         char icon_buf[256];
@@ -503,7 +560,7 @@ static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *o
         pak_version_buf[0] = '\0';
         min_version_buf[0] = '\0';
 
-        if (jw__is_file(pak_json_path)) {
+        if (has_pak_json_path && jw__is_file(pak_json_path)) {
             FILE *fp = fopen(pak_json_path, "rb");
             if (fp) {
                 fseek(fp, 0, SEEK_END);

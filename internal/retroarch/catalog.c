@@ -519,19 +519,15 @@ static int jw_ra_validate_system_defaults(const jw_ra_catalog *catalog, char *er
             jw_ra_set_error(error, error_size, message);
             return -1;
         }
-        if (strcmp(core->status, "packaged") != 0) {
-            char message[256];
-            snprintf(message, sizeof(message), "%s default core is not packaged: %s",
-                     system->id, system->default_core);
-            jw_ra_set_error(error, error_size, message);
-            return -1;
-        }
-        if (strcmp(core->type, "retroarch") != 0 || !core->file_name || !core->file_name[0]) {
-            char message[256];
-            snprintf(message, sizeof(message), "%s default core is not launchable by RetroArch: %s",
-                     system->id, system->default_core);
-            jw_ra_set_error(error, error_size, message);
-            return -1;
+        for (size_t j = 0; j < system->alternate_cores.count; j++) {
+            const char *alternate_core = system->alternate_cores.items[j];
+            if (!jw_ra_catalog_find_core(catalog, alternate_core)) {
+                char message[256];
+                snprintf(message, sizeof(message), "%s alternate core missing from RetroArch metadata: %s",
+                         system->id, alternate_core);
+                jw_ra_set_error(error, error_size, message);
+                return -1;
+            }
         }
     }
     return 0;

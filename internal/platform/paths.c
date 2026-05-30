@@ -41,6 +41,18 @@ static char *jw__dup_printf(const char *fmt, ...) {
     return buf;
 }
 
+static bool jw__format_string(char *out, size_t out_size, const char *fmt, ...) {
+    if (!out || out_size == 0) {
+        return false;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+    int needed = vsnprintf(out, out_size, fmt, args);
+    va_end(args);
+    return needed >= 0 && (size_t)needed < out_size;
+}
+
 static int jw__mkdir_if_needed(const char *path, mode_t mode) {
     if (mkdir(path, mode) == 0 || errno == EEXIST) {
         return 0;
@@ -669,7 +681,9 @@ static char *jw__core_info_dir(const char *core_path) {
     }
 
     char core_dir[PATH_MAX];
-    snprintf(core_dir, sizeof(core_dir), "%s", core_path);
+    if (!jw__format_string(core_dir, sizeof(core_dir), "%s", core_path)) {
+        return NULL;
+    }
     char *slash = strrchr(core_dir, '/');
     if (!slash) {
         return NULL;
@@ -694,7 +708,9 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
 
     char sdroot_abs[PATH_MAX];
     if (!realpath(sdcard_root, sdroot_abs)) {
-        snprintf(sdroot_abs, sizeof(sdroot_abs), "%s", sdcard_root);
+        if (!jw__format_string(sdroot_abs, sizeof(sdroot_abs), "%s", sdcard_root)) {
+            return NULL;
+        }
     }
 
     if (jw__mkdir_child(sdroot_abs, "BIOS") != 0 ||
@@ -711,12 +727,18 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     char system_dir[PATH_MAX];
     char saves_dir[PATH_MAX];
     char states_dir[PATH_MAX];
-    snprintf(system_dir, sizeof(system_dir), "%s/BIOS", sdroot_abs);
-    snprintf(saves_dir, sizeof(saves_dir), "%s/Saves", sdroot_abs);
-    snprintf(states_dir, sizeof(states_dir), "%s/States", sdroot_abs);
+    if (!jw__format_string(system_dir, sizeof(system_dir), "%s/BIOS", sdroot_abs) ||
+        !jw__format_string(saves_dir, sizeof(saves_dir), "%s/Saves", sdroot_abs) ||
+        !jw__format_string(states_dir, sizeof(states_dir), "%s/States", sdroot_abs)) {
+        free(path);
+        return NULL;
+    }
 
     char core_dir[PATH_MAX];
-    snprintf(core_dir, sizeof(core_dir), "%s", core_path);
+    if (!jw__format_string(core_dir, sizeof(core_dir), "%s", core_path)) {
+        free(path);
+        return NULL;
+    }
     char *slash = strrchr(core_dir, '/');
     if (slash) {
         *slash = '\0';

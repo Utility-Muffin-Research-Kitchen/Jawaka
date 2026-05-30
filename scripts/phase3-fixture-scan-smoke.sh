@@ -18,6 +18,7 @@ mkdir -p \
     "$SD_ROOT/Roms/GBA" \
     "$SD_ROOT/Roms/ARCADE" \
     "$SD_ROOT/Roms/PS" \
+    "$SD_ROOT/Roms/PORTS" \
     "$SD_ROOT/Roms/UNKNOWN" \
     "$SD_ROOT/Images/MD"
 
@@ -32,6 +33,7 @@ printf 'archive\n' >"$SD_ROOT/Roms/GBA/Example.gba.zip"
 printf 'bios\n' >"$SD_ROOT/Roms/ARCADE/neogeo.zip"
 printf 'rom\n' >"$SD_ROOT/Roms/ARCADE/mslug.zip"
 printf 'disc\n' >"$SD_ROOT/Roms/PS/Game.m3u"
+printf 'echo test\n' >"$SD_ROOT/Roms/PORTS/Test.sh"
 printf 'ignore me\n' >"$SD_ROOT/Roms/UNKNOWN/readme.txt"
 : >"$SD_ROOT/Images/MD/Sonic.png"
 
@@ -49,9 +51,9 @@ grep -F $'game\tGBA\tExample\tRoms/GBA/Example.gba.zip\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tARCADE\tmslug\tRoms/ARCADE/mslug.zip\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPS\tGame\tRoms/PS/Game.m3u\t' "$OUT_PATH" >/dev/null
 
-if grep -E 'neogeo|UNKNOWN|readme' "$OUT_PATH" >/dev/null; then
+if grep -E 'neogeo|UNKNOWN|readme|PORTS|Test\.sh' "$OUT_PATH" >/dev/null; then
     cat "$OUT_PATH" >&2
-    echo "phase3 fixture scan included an ignored or unknown file" >&2
+    echo "phase3 fixture scan included an ignored, unknown, or unsupported file" >&2
     exit 1
 fi
 

@@ -516,7 +516,11 @@ static int jw__spawn_osd(jw_daemon_state *state) {
     }
 
     char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/jawaka-osd", state->bin_dir);
+    if (snprintf(path, sizeof(path), "%s/jawaka-osd", state->bin_dir) >=
+        (int)sizeof(path)) {
+        jw_log_warn("osd binary path too long: %s/jawaka-osd", state->bin_dir);
+        return -1;
+    }
     if (!jw__path_exists(path)) {
         jw_log_warn("osd binary missing: %s", path);
         return -1;
@@ -740,7 +744,11 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     }
 
     char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", state->bin_dir, name);
+    if (snprintf(path, sizeof(path), "%s/%s", state->bin_dir, name) >=
+        (int)sizeof(path)) {
+        jw_log_error("child binary path too long: %s/%s", state->bin_dir, name);
+        return -1;
+    }
     if (!jw__path_exists(path)) {
         jw_log_error("child binary missing: %s", path);
         return -1;

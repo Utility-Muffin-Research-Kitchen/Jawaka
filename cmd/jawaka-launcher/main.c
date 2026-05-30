@@ -134,6 +134,30 @@ typedef struct {
     bool               scan_ready;
 } jw_launcher_state;
 
+static void jw__set_launching_status(jw_launcher_state *state,
+                                     const char *name,
+                                     const char *fallback) {
+    if (!state) {
+        return;
+    }
+
+    const char *display = name && name[0] ? name : fallback;
+    if (!display || !display[0]) {
+        display = "item";
+    }
+
+    size_t max_name_len = 0;
+    if (sizeof(state->status) > sizeof("Launching ...")) {
+        max_name_len = sizeof(state->status) - sizeof("Launching ...");
+    }
+    if (max_name_len > (size_t)INT_MAX) {
+        max_name_len = (size_t)INT_MAX;
+    }
+
+    snprintf(state->status, sizeof(state->status), "Launching %.*s...",
+             (int)max_name_len, display);
+}
+
 /* ─── Flat list helpers ───────────────────────────────────────────────────── */
 
 static void jw__build_flat_list(jw_launcher_state *state) {
@@ -1585,7 +1609,7 @@ static int jw__launch_app_request(const char *socket_path, const char *name,
         return -1;
     }
 
-    snprintf(state->status, sizeof(state->status), "Launching %s...", name && name[0] ? name : "app");
+    jw__set_launching_status(state, name, "app");
     cat_request_frame();
     jw__render_launcher(state);
 
@@ -1606,7 +1630,7 @@ static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *
     }
 
     const jw_game_entry *game = &state->games[state->game_list.cursor];
-    snprintf(state->status, sizeof(state->status), "Launching %s...", game->name);
+    jw__set_launching_status(state, game->name, "game");
     cat_request_frame();
     jw__render_launcher(state);
 
@@ -1644,7 +1668,7 @@ static int jw__launch_selected_search_result(const char *socket_path,
         return jw__launch_app_request(socket_path, result->name, result->pak_dir, state, running);
     }
 
-    snprintf(state->status, sizeof(state->status), "Launching %s...", result->name);
+    jw__set_launching_status(state, result->name, "game");
     cat_request_frame();
     jw__render_launcher(state);
 
