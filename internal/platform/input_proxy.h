@@ -8,6 +8,7 @@
 #define JW_INPUT_PROXY_MAX_NAME 128
 
 typedef void (*jw_input_brightness_delta_cb)(void *userdata, int delta_percent);
+typedef void (*jw_input_volume_delta_cb)(void *userdata, int delta_percent);
 
 typedef struct {
     bool enabled;
@@ -16,11 +17,13 @@ typedef struct {
     char device_name[JW_INPUT_PROXY_MAX_NAME];
     void *backend_data;
     jw_input_brightness_delta_cb brightness_delta;
+    jw_input_volume_delta_cb volume_delta;
     void *userdata;
 } jw_input_proxy;
 
 int  jw_input_proxy_init(jw_input_proxy *proxy,
                          jw_input_brightness_delta_cb brightness_delta,
+                         jw_input_volume_delta_cb volume_delta,
                          void *userdata);
 int  jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy);
 void jw_input_proxy_tick(jw_input_proxy *proxy);

@@ -658,6 +658,62 @@ static void jw__apply_persisted_brightness(jw_daemon_state *state) {
     }
 }
 
+static int jw__osd_show_volume(jw_daemon_state *state, int percent) {
+    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
+        return -1;
+    }
+
+    if (state->osd_pid <= 0) {
+        jw__spawn_osd(state);
+    }
+
+    char request[128];
+    snprintf(request, sizeof(request),
+             "{\"type\":\"show-volume\",\"percent\":%d}", percent);
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        char *response = NULL;
+        size_t response_len = 0;
+        if (jw_ipc_request(state->osd_socket_path, request, strlen(request),
+                           &response, &response_len) == 0) {
+            free(response);
+            return 0;
+        }
+        free(response);
+        if (attempt == 0) {
+            usleep(100000);
+        }
+    }
+    jw_log_warn("osd volume request failed");
+    return -1;
+}
+
+static void jw__input_volume_delta(void *userdata, int delta_percent) {
+    jw_daemon_state *state = (jw_daemon_state *)userdata;
+    if (!state) {
+        return;
+    }
+
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+    int current = status.volume_percent >= 0 ? status.volume_percent : 50;
+
+    int target = current + delta_percent;
+    if (target < 0) target = 0;
+    if (target > 100) target = 100;
+
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_VOLUME,
+                               target, &result);
+    if (result.code == JW_PLATFORM_RESULT_OK) {
+        int resolved = result.has_value ? result.value : target;
+        jw__osd_show_volume(state, resolved);
+        jw_log_info("volume hotkey delta=%d value=%d", delta_percent, resolved);
+    } else {
+        jw_log_warn("volume hotkey failed: %s", result.message);
+    }
+}
+
 static void jw__input_brightness_delta(void *userdata, int delta_percent) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
     if (!state) {
@@ -1210,7 +1266,7 @@ int main(int argc, char *argv[]) {
     setenv("JAWAKA_SDCARD_ROOT", state.sdcard_root, 1);
     setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
 
-    if (jw_input_proxy_init(&state.input_proxy, jw__input_brightness_delta, &state) == 0 &&
+    if (jw_input_proxy_init(&state.input_proxy, jw__input_brightness_delta, jw__input_volume_delta, &state) == 0 &&
         state.input_proxy.enabled && state.input_proxy.virtual_event_path[0]) {
         setenv("CAT_INPUT_WAKE_EVENT", state.input_proxy.virtual_event_path, 1);
     }

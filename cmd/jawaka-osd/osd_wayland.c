@@ -31,6 +31,7 @@ typedef struct {
     int width;
     int height;
     int percent;
+    int mode;  /* 0 = brightness, 1 = volume */
     uint64_t hide_at;
     bool visible;
     bool configured;
@@ -158,6 +159,18 @@ static void jw__draw_sun(uint32_t *pixels, int width, int height,
     jw__fill_rect(pixels, width, height, cx + 12, cy - 2, 8, 4, color);
 }
 
+static void jw__draw_speaker(uint32_t *pixels, int width, int height,
+                             int cx, int cy, uint32_t color) {
+    /* Speaker body */
+    jw__fill_rect(pixels, width, height, cx - 12, cy - 6, 8, 12, color);
+    /* Speaker cone */
+    jw__fill_rect(pixels, width, height, cx - 4, cy - 12, 4, 24, color);
+    jw__fill_rect(pixels, width, height, cx,     cy - 16, 4, 32, color);
+    /* Sound waves */
+    jw__fill_rect(pixels, width, height, cx + 8,  cy - 4, 3, 8, color);
+    jw__fill_rect(pixels, width, height, cx + 14, cy - 8, 3, 16, color);
+}
+
 static void jw__draw_osd(void) {
     uint32_t *pixels = (uint32_t *)s_osd.pixels;
     memset(pixels, 0, s_osd.buffer_size);
@@ -176,7 +189,11 @@ static void jw__draw_osd(void) {
     uint32_t knob = jw__argb(255, 255, 240, 150);
 
     jw__fill_rect(pixels, s_osd.width, s_osd.height, x, y, toast_w, toast_h, bg);
-    jw__draw_sun(pixels, s_osd.width, s_osd.height, x + 44, y + 48, fill);
+    if (s_osd.mode == 1) {
+        jw__draw_speaker(pixels, s_osd.width, s_osd.height, x + 44, y + 48, fill);
+    } else {
+        jw__draw_sun(pixels, s_osd.width, s_osd.height, x + 44, y + 48, fill);
+    }
 
     int track_x = x + 88;
     int track_y = y + 44;
@@ -380,6 +397,16 @@ void jw_osd_backend_show_brightness(int percent, uint64_t now_ms) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     s_osd.percent = percent;
+    s_osd.mode = 0;
+    s_osd.hide_at = now_ms + JW_OSD_HIDE_AFTER_MS;
+    jw__show_surface();
+}
+
+void jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    s_osd.percent = percent;
+    s_osd.mode = 1;
     s_osd.hide_at = now_ms + JW_OSD_HIDE_AFTER_MS;
     jw__show_surface();
 }

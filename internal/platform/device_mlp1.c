@@ -10,6 +10,10 @@
 #define JW_MLP1_BACKLIGHT_ACTUAL JW_MLP1_BACKLIGHT_DIR "/actual_brightness"
 #define JW_MLP1_BACKLIGHT_MAX JW_MLP1_BACKLIGHT_DIR "/max_brightness"
 
+#define JW_MLP1_PACTL_GET_VOLUME "pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null"
+#define JW_MLP1_PACTL_SET_VOLUME "pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null"
+#define JW_MLP1_WIFI_PROC "/proc/net/wireless"
+
 static int (*s_event_opend)(const char *id);
 static bool s_loong_loaded;
 
@@ -70,6 +74,70 @@ static int jw__mlp1_get_brightness_percent(void) {
     return jw__brightness_raw_to_percent(raw, max_raw);
 }
 
+static int jw__mlp1_get_volume_percent(void) {
+    FILE *fp = popen(JW_MLP1_PACTL_GET_VOLUME, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    char line[256];
+    int percent = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        /* pactl output: "Volume: front-left: 41943 /  64% / -11.63 dB, ..." */
+        char *slash = strstr(line, "/");
+        while (slash) {
+            int val = 0;
+            if (sscanf(slash + 1, " %d%%", &val) == 1 && val >= 0 && val <= 150) {
+                percent = val > 100 ? 100 : val;
+                break;
+            }
+            slash = strstr(slash + 1, "/");
+        }
+        if (percent >= 0) break;
+    }
+    pclose(fp);
+    return percent;
+}
+
+static int jw__mlp1_set_volume_percent(int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), JW_MLP1_PACTL_SET_VOLUME, percent);
+    return system(cmd) == 0 ? 0 : -1;
+}
+
+static void jw__mlp1_get_wifi_status(jw_platform_status *out) {
+    FILE *fp = fopen(JW_MLP1_WIFI_PROC, "r");
+    if (!fp) {
+        return;
+    }
+
+    char line[256];
+    /* Skip header lines */
+    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return; }
+    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return; }
+
+    /* Data line: " wlan0: 0000   95.   23.    0. ..." */
+    if (fgets(line, sizeof(line), fp)) {
+        int link = 0;
+        if (sscanf(line, " %*[^:]: %*d %d.", &link) == 1) {
+            out->wifi_connected = (link > 0) ? 1 : 0;
+            if (link <= 0) {
+                out->wifi_strength = 0;
+            } else if (link < 40) {
+                out->wifi_strength = 1;
+            } else if (link < 70) {
+                out->wifi_strength = 2;
+            } else {
+                out->wifi_strength = 3;
+            }
+        }
+    }
+    fclose(fp);
+}
+
 static void jw__loong_load(void) {
     if (s_loong_loaded) {
         return;
@@ -108,6 +176,8 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
     }
 
     out->brightness_percent = jw__mlp1_get_brightness_percent();
+    out->volume_percent = jw__mlp1_get_volume_percent();
+    jw__mlp1_get_wifi_status(out);
 }
 
 static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
@@ -137,6 +207,21 @@ static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
 
 static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                     int value, jw_platform_result *out) {
+    if (action == JW_PLATFORM_ACTION_SET_VOLUME) {
+        int percent = value;
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
+        if (jw__mlp1_set_volume_percent(percent) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   "volume set failed");
+            return;
+        }
+        char message[JW_PLATFORM_MAX_MESSAGE];
+        snprintf(message, sizeof(message), "volume set to %d%%", percent);
+        jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, percent);
+        return;
+    }
+
     if (action != JW_PLATFORM_ACTION_SET_BRIGHTNESS) {
         jw_platform_result_unsupported(action, ctx ? ctx->platform_id : "mlp1", out);
         return;
@@ -169,6 +254,8 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .battery = true,
             .charging = true,
             .brightness = true,
+            .volume = true,
+            .wifi = true,
         },
         .get_status = jw__mlp1_get_status,
         .frontend_ready = jw__mlp1_frontend_ready,

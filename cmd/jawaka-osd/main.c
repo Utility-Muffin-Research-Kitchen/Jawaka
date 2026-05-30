@@ -78,6 +78,17 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
         return jw__reply_ok(client, "show-brightness");
     }
 
+    if (strcmp(type->valuestring, "show-volume") == 0) {
+        cJSON *percent = cJSON_GetObjectItemCaseSensitive(root, "percent");
+        if (!cJSON_IsNumber(percent)) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, "missing volume percent");
+        }
+        jw_osd_backend_show_volume(percent->valueint, jw__now_ms());
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "show-volume");
+    }
+
     if (strcmp(type->valuestring, "shutdown") == 0) {
         g_stop = 1;
         cJSON_Delete(root);

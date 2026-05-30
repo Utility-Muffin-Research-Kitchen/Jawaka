@@ -73,6 +73,11 @@ void jw_osd_backend_show_brightness(int percent, uint64_t now_ms) {
     jw__draw();
 }
 
+void jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
+    /* SDL backend reuses the same toast for now */
+    jw_osd_backend_show_brightness(percent, now_ms);
+}
+
 void jw_osd_backend_tick(uint64_t now_ms) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) { }

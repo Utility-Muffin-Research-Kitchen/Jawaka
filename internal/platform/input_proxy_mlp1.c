@@ -258,6 +258,15 @@ static bool jw__volume_key(uint16_t code) {
     return code == KEY_VOLUMEUP || code == KEY_VOLUMEDOWN;
 }
 
+static void jw__handle_volume_key(jw_input_proxy *proxy, uint16_t code, int32_t value) {
+    if (value <= 0 || !proxy->volume_delta) {
+        return;
+    }
+
+    int delta = (code == KEY_VOLUMEUP) ? 5 : -5;
+    proxy->volume_delta(proxy->userdata, delta);
+}
+
 static void jw__handle_brightness_key(jw_input_proxy *proxy, uint16_t code, int32_t value) {
     if (value <= 0 || !proxy->brightness_delta) {
         return;
@@ -298,9 +307,13 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
         }
     }
 
-    if (data->menu_held && jw__volume_key(ev->code)) {
-        data->chord_active = true;
-        jw__handle_brightness_key(proxy, ev->code, ev->value);
+    if (jw__volume_key(ev->code)) {
+        if (data->menu_held) {
+            data->chord_active = true;
+            jw__handle_brightness_key(proxy, ev->code, ev->value);
+        } else {
+            jw__handle_volume_key(proxy, ev->code, ev->value);
+        }
         return;
     }
 
@@ -312,12 +325,14 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
 
 int jw_input_proxy_init(jw_input_proxy *proxy,
                         jw_input_brightness_delta_cb brightness_delta,
+                        jw_input_volume_delta_cb volume_delta,
                         void *userdata) {
     if (!proxy) {
         return -1;
     }
     memset(proxy, 0, sizeof(*proxy));
     proxy->brightness_delta = brightness_delta;
+    proxy->volume_delta = volume_delta;
     proxy->userdata = userdata;
 
     const char *enabled = getenv("JAWAKA_INPUT_PROXY");
