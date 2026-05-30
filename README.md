@@ -127,8 +127,13 @@ mock-sdcard/
   Images/<SYSTEM_CODE>/<title>.png
   BIOS/
   Apps/<Name>.pak/
+    launch.sh
+    pak.json
   .jawaka/library.db
 ```
+
+For app paks, `pak.json` icon paths are relative to the containing `.pak`
+directory unless they are absolute.
 
 ## Plans
 

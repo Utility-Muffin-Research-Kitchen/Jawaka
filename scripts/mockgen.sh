@@ -88,15 +88,43 @@ open(sys.argv[1], 'wb').write(png)
     fi
 }
 
+write_tiny_png() {
+    local image_path="$1"
+    mkdir -p "$(dirname "$image_path")"
+    python3 - "$image_path" <<'PY'
+import struct
+import sys
+import zlib
+
+def chunk(t, data):
+    return struct.pack(">I", len(data)) + t + data + struct.pack(">I", zlib.crc32(t + data) & 0xffffffff)
+
+w = h = 32
+pixel = bytes((0x99, 0x3b, 0x41))
+rows = b"".join(b"\x00" + pixel * w for _ in range(h))
+png = (
+    b"\x89PNG\r\n\x1a\n"
+    + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+    + chunk(b"IDAT", zlib.compress(rows))
+    + chunk(b"IEND", b"")
+)
+open(sys.argv[1], "wb").write(png)
+PY
+}
+
 create_app() {
     local pak_dir="$1"
     local app_name="$2"
     local message="$3"
+    local icon="${4:-}"
 
     mkdir -p "$ROOT/Apps/$pak_dir"
     printf '#!/bin/sh\nprintf "%s\\n"\n' "$message" >"$ROOT/Apps/$pak_dir/launch.sh"
     chmod +x "$ROOT/Apps/$pak_dir/launch.sh"
-    printf '{ "name": "%s", "icon": "", "platform": "mac", "pak_version": "0.0.1", "min_jawaka_version": "0.0.1" }\n' "$app_name" >"$ROOT/Apps/$pak_dir/pak.json"
+    if [[ -n "$icon" ]]; then
+        write_tiny_png "$ROOT/Apps/$pak_dir/$icon"
+    fi
+    printf '{ "name": "%s", "icon": "%s", "platform": "mac", "pak_version": "0.0.1", "min_jawaka_version": "0.0.1" }\n' "$app_name" "$icon" >"$ROOT/Apps/$pak_dir/pak.json"
 }
 
 while IFS=: read -r sys ext titles; do
@@ -139,7 +167,7 @@ ARCADE:zip:1942|Street Fighter II|Final Fight|Cadillacs and Dinosaurs|Sunset Rid
 PORTS:sh:DOOM|Quake|OpenLara
 EOF
 
-create_app "HelloApp.pak" "Hello App" "Hello from a Jawaka mock pak!"
+create_app "HelloApp.pak" "Hello App" "Hello from a Jawaka mock pak!" "res/icon.png"
 create_app "Tools.pak" "Tools" "Tools placeholder"
 
 echo "mockgen: generated $ROM_COUNT fake ROMs across $SYSTEM_COUNT systems in $ROOT"

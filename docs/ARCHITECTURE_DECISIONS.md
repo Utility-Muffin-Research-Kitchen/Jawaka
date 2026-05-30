@@ -92,7 +92,7 @@ Apps/<Name>.pak/
 `pak.json` should include at least:
 
 - `name`
-- `icon`
+- `icon` (relative to the containing `.pak` directory unless absolute)
 - `platform`, such as `mac`, `tg5040`, etc.
 - `pak_version`
 - `min_jawaka_version`

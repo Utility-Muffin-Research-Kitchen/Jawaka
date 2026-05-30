@@ -111,6 +111,8 @@ typedef struct {
     char               game_system[64];
     bool               games_open;
     cat_list_state     game_list;
+    bool               apps_open;
+    cat_list_state     app_list;
     jw_search_result   search_results[JW_MAX_SEARCH_RESULTS];
     int                search_count;
     char               search_query[256];
@@ -133,6 +135,11 @@ typedef struct {
     char               status[256];
     bool               scan_ready;
 } jw_launcher_state;
+
+static void jw__draw_app_detail(const jw_launcher_state *state,
+                                const jw_app_entry *app,
+                                int detail_x, int detail_y,
+                                int detail_w, int detail_h);
 
 static void jw__set_launching_status(jw_launcher_state *state,
                                      const char *name,
@@ -433,7 +440,6 @@ static void jw__render_apps(const jw_launcher_state *state,
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
     int sw = cat_get_screen_width();
 
     int list_x = margin;
@@ -446,17 +452,12 @@ static void jw__render_apps(const jw_launcher_state *state,
     int art_w  = sw - art_x - margin;
     int art_h  = content_h - margin * 2;
 
-    cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
-        cat_hex_to_color("#ffffff18"));
-
     if (state->app_count > 0 && state->list.cursor < state->app_count) {
-        const char *name = state->apps[state->list.cursor].name;
-        int large_h = TTF_FontHeight(large);
-        int tw = cat_measure_text(large, name);
-        cat_draw_text_ellipsized(large, name,
-            art_x + (art_w - tw) / 2,
-            art_y + (art_h - large_h) / 2,
-            theme->hint, art_w - margin * 2);
+        jw__draw_app_detail(state, &state->apps[state->list.cursor],
+                            art_x, art_y, art_w, art_h);
+    } else {
+        cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
+            cat_hex_to_color("#ffffff18"));
     }
 
     if (state->app_count == 0) {
@@ -1154,6 +1155,91 @@ static void jw__draw_system_preview(int px, int py, int pw, int ph,
     }
 }
 
+static int jw__resolve_app_icon_path(const jw_launcher_state *state,
+                                     const jw_app_entry *app,
+                                     char *out, size_t out_size) {
+    if (!state || !app || !app->icon[0] || !out || out_size == 0) {
+        return -1;
+    }
+
+    if (app->icon[0] == '/') {
+        int needed = snprintf(out, out_size, "%s", app->icon);
+        return needed >= 0 && needed < (int)out_size ? 0 : -1;
+    }
+
+    char pak_abs[PATH_MAX];
+    if (jw__resolve_sdcard_path(state, app->pak_dir, pak_abs, sizeof(pak_abs)) != 0) {
+        return -1;
+    }
+
+    int needed = snprintf(out, out_size, "%s/%s", pak_abs, app->icon);
+    return needed >= 0 && needed < (int)out_size ? 0 : -1;
+}
+
+static void jw__draw_app_detail(const jw_launcher_state *state,
+                                const jw_app_entry *app,
+                                int detail_x, int detail_y,
+                                int detail_w, int detail_h) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int margin = CAT_S(16);
+
+    cat_draw_rounded_rect(detail_x, detail_y, detail_w, detail_h, CAT_S(8),
+                          cat_hex_to_color("#ffffff18"));
+
+    if (!app) {
+        return;
+    }
+
+    bool drew_icon = false;
+    char icon_abs[PATH_MAX];
+    int icon_w = 0;
+    int icon_h = 0;
+    if (jw__resolve_app_icon_path(state, app, icon_abs, sizeof(icon_abs)) == 0) {
+        SDL_Texture *tex = jw__load_cached_image(icon_abs, &icon_w, &icon_h);
+        if (tex) {
+            int art_x = detail_x + margin;
+            int art_y = detail_y + margin;
+            int art_w = detail_w - margin * 2;
+            int art_h = detail_h * 58 / 100;
+            jw__draw_image_fit(tex, icon_w, icon_h, art_x, art_y, art_w, art_h);
+
+            int text_y = art_y + art_h + CAT_S(12);
+            cat_draw_text_ellipsized(large, app->name,
+                                     detail_x + margin, text_y,
+                                     theme->text, detail_w - margin * 2);
+            cat_draw_text_ellipsized(small, app->pak_dir,
+                                     detail_x + margin,
+                                     text_y + TTF_FontHeight(large) + CAT_S(8),
+                                     theme->hint, detail_w - margin * 2);
+            drew_icon = true;
+        }
+    }
+
+    if (!drew_icon) {
+        int large_h = TTF_FontHeight(large);
+        int small_h = TTF_FontHeight(small);
+        int gap = CAT_S(8);
+        int block_h = large_h + gap + small_h;
+        int max_w = detail_w - margin * 2;
+        int y = detail_y + (detail_h - block_h) / 2;
+
+        int name_w = cat_measure_text(large, app->name);
+        if (name_w > max_w) name_w = max_w;
+        cat_draw_text_ellipsized(large, app->name,
+                                 detail_x + (detail_w - name_w) / 2,
+                                 y, theme->text, max_w);
+
+        int path_w = cat_measure_text(small, app->pak_dir);
+        if (path_w > max_w) path_w = max_w;
+        cat_draw_text_ellipsized(small, app->pak_dir,
+                                 detail_x + (detail_w - path_w) / 2,
+                                 y + large_h + gap,
+                                 theme->hint, max_w);
+    }
+}
+
 /* ─── Coverflow: animation helpers ───────────────────────────────────────── */
 
 static float jw__ease_out_cubic(float t) {
@@ -1419,6 +1505,66 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_present();
 }
 
+static void jw__render_app_browser(const jw_launcher_state *state) {
+    cat_clear_screen();
+    jw__draw_status_bar();
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
+
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    int fh = cat_get_footer_height();
+    int margin = CAT_S(12);
+    int header_h = CAT_DS(30);
+    int content_y = header_h + margin;
+    int content_h = sh - content_y - fh - margin;
+
+    cat_draw_text_ellipsized(large, "Apps", margin, CAT_S(6),
+                             theme->text, sw - margin * 2);
+
+    int list_x = margin;
+    int list_w = sw * 58 / 100;
+    int item_h = TTF_FontHeight(body) + CAT_S(12);
+    int detail_x = list_x + list_w + margin;
+    int detail_w = sw - detail_x - margin;
+
+    if (state->app_count == 0) {
+        cat_draw_text_wrapped(body,
+            state->scan_ready ? "No apps found" : "Scanning library...",
+            list_x + CAT_S(8), content_y + CAT_S(8),
+            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+    } else {
+        jw__apps_ctx ctx = { state->apps };
+        cat_draw_list_pane(list_x, content_y, list_w, content_h,
+            state->app_count, &state->app_list, item_h,
+            jw__draw_app_item, &ctx);
+    }
+
+    if (state->app_count > 0 && state->app_list.cursor < state->app_count) {
+        jw__draw_app_detail(state, &state->apps[state->app_list.cursor],
+                            detail_x, content_y, detail_w, content_h);
+    } else {
+        cat_draw_rounded_rect(detail_x, content_y, detail_w, content_h, CAT_S(8),
+            cat_hex_to_color("#ffffff10"));
+    }
+
+    int status_y = content_y + content_h - TTF_FontHeight(small);
+    cat_draw_text_ellipsized(small, state->status, margin, status_y,
+                             theme->hint, sw - margin * 2);
+
+    cat_footer_item footer[] = {
+        { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
+        { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+        { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
+        { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
+    };
+    cat_draw_footer(footer, 4);
+    cat_present();
+}
+
 static void jw__render_search(const jw_launcher_state *state) {
     cat_clear_screen();
     jw__draw_status_bar();
@@ -1521,6 +1667,11 @@ static void jw__render_launcher(jw_launcher_state *state) {
         return;
     }
 
+    if (state->apps_open) {
+        jw__render_app_browser(state);
+        return;
+    }
+
     const cat_stylesheet *ss = cat_get_stylesheet();
     switch (ss->launcher.layout) {
         case CAT_LAUNCHER_VERTICAL:   jw__render_vertical(state);   break;
@@ -1535,6 +1686,15 @@ static void jw__render_launcher(jw_launcher_state *state) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static int jw__game_browser_visible_rows(void) {
+    int fh = cat_get_footer_height();
+    int content_h = cat_get_screen_height() - CAT_DS(30) - CAT_S(24) - fh;
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int item_h = TTF_FontHeight(body) + CAT_S(12);
+    int visible = content_h / item_h;
+    return visible > 0 ? visible : 1;
+}
+
+static int jw__app_browser_visible_rows(void) {
     int fh = cat_get_footer_height();
     int content_h = cat_get_screen_height() - CAT_DS(30) - CAT_S(24) - fh;
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
@@ -1601,6 +1761,18 @@ static int jw__open_system_games(const char *db_path, const char *system,
     return 0;
 }
 
+static void jw__open_apps(jw_launcher_state *state) {
+    state->apps_open = true;
+    cat_list_state_init(&state->app_list, jw__app_browser_visible_rows());
+    cat_list_state_jump(&state->app_list, 0, state->app_count);
+    if (state->app_count > 0) {
+        snprintf(state->status, sizeof(state->status), "%d apps", state->app_count);
+    } else {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 state->scan_ready ? "No apps found" : "Scanning library...");
+    }
+}
+
 static int jw__launch_app_request(const char *socket_path, const char *name,
                                   const char *pak_dir, jw_launcher_state *state,
                                   bool *running) {
@@ -1620,6 +1792,17 @@ static int jw__launch_app_request(const char *socket_path, const char *name,
     cat_hide_window();
     *running = false;
     return 0;
+}
+
+static int jw__launch_app_at(const char *socket_path, jw_launcher_state *state,
+                             int cursor, bool *running) {
+    if (state->app_count <= 0 || cursor < 0 || cursor >= state->app_count) {
+        snprintf(state->status, sizeof(state->status), "%s", "No app selected");
+        return -1;
+    }
+
+    const jw_app_entry *app = &state->apps[cursor];
+    return jw__launch_app_request(socket_path, app->name, app->pak_dir, state, running);
 }
 
 static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *state,
@@ -1646,13 +1829,7 @@ static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *
 
 static int jw__launch_selected_app(const char *socket_path, jw_launcher_state *state,
                                    bool *running) {
-    if (state->app_count <= 0 || state->list.cursor >= state->app_count) {
-        snprintf(state->status, sizeof(state->status), "%s", "No app selected");
-        return -1;
-    }
-
-    const jw_app_entry *app = &state->apps[state->list.cursor];
-    return jw__launch_app_request(socket_path, app->name, app->pak_dir, state, running);
+    return jw__launch_app_at(socket_path, state, state->list.cursor, running);
 }
 
 static int jw__launch_selected_search_result(const char *socket_path,
@@ -1717,8 +1894,10 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
             break;
         case JW_FLAT_RECENTLY_PLAYED:
         case JW_FLAT_FAVORITES:
-        case JW_FLAT_APPS:
             snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
+            break;
+        case JW_FLAT_APPS:
+            jw__open_apps(state);
             break;
         case JW_FLAT_SYSTEM:
             jw__open_system_games(db_path, state->systems[it->system_idx].name, state);
@@ -1742,6 +1921,7 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
     cat_launcher_layout layout = ss->launcher.layout;
 
     state->tools_open = false;
+    state->apps_open = false;
     memset(&state->coverflow_anim, 0, sizeof(state->coverflow_anim));
 
     /* Refresh per-console color palette from the active theme stylesheet.
@@ -1833,6 +2013,34 @@ static void jw__handle_game_browser_input(const char *socket_path,
     }
 }
 
+static void jw__handle_app_browser_input(const char *socket_path,
+                                         jw_launcher_state *state,
+                                         cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_UP:
+            cat_list_state_move(&state->app_list, -1, state->app_count);
+            break;
+        case CAT_BTN_DOWN:
+            cat_list_state_move(&state->app_list, +1, state->app_count);
+            break;
+        case CAT_BTN_LEFT:
+            cat_list_state_page(&state->app_list, -1, state->app_count);
+            break;
+        case CAT_BTN_RIGHT:
+            cat_list_state_page(&state->app_list, +1, state->app_count);
+            break;
+        case CAT_BTN_A:
+            jw__launch_app_at(socket_path, state, state->app_list.cursor, running);
+            break;
+        case CAT_BTN_B:
+            state->apps_open = false;
+            state->status[0] = '\0';
+            break;
+        default:
+            break;
+    }
+}
+
 static void jw__handle_input(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, cat_button button, bool *running) {
     const cat_stylesheet *ss = cat_get_stylesheet();
@@ -1861,6 +2069,15 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         return;
     }
 
+    if (state->apps_open) {
+        if (button == CAT_BTN_X) {
+            jw__open_search(db_path, state);
+            return;
+        }
+        jw__handle_app_browser_input(socket_path, state, button, running);
+        return;
+    }
+
     /* Tools overlay captures all input first.
        Tools entries: 0=Recently Played, 1=Favorites, 2=Apps, 3=Settings */
     if (state->tools_open) {
@@ -1874,7 +2091,9 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                 break;
             case CAT_BTN_A:
                 state->tools_open = false;
-                if (state->tools_list.cursor == 3) {
+                if (state->tools_list.cursor == 2) {
+                    jw__open_apps(state);
+                } else if (state->tools_list.cursor == 3) {
                     jw_settings_ui_enter(&state->settings);
                 } else {
                     snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
