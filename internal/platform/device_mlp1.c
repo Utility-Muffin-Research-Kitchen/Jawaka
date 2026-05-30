@@ -5,6 +5,12 @@
 #include <stdio.h>
 #include <string.h>
 
+/* MLP1 backlight usable range: raw 61-135 out of 0-255.
+   Below 61 the screen goes black. Above 135 there is no visible change.
+   We remap the 0-100% OSD range onto this usable hardware range. */
+#define JW_MLP1_BACKLIGHT_RAW_MIN 61
+#define JW_MLP1_BACKLIGHT_RAW_MAX 135
+
 #define JW_MLP1_BACKLIGHT_DIR "/sys/class/backlight/backlight"
 #define JW_MLP1_BACKLIGHT_BRIGHTNESS JW_MLP1_BACKLIGHT_DIR "/brightness"
 #define JW_MLP1_BACKLIGHT_ACTUAL JW_MLP1_BACKLIGHT_DIR "/actual_brightness"
@@ -44,25 +50,27 @@ static int jw__write_int_file(const char *path, int value) {
     return rc;
 }
 
+/* Map raw backlight value (61-135) to 0-100% for the user-facing OSD. */
 static int jw__brightness_raw_to_percent(int raw, int max_raw) {
-    if (raw < 0 || max_raw <= 0) {
+    (void)max_raw;
+    if (raw < 0) {
         return -1;
     }
-    int percent = (raw * 100 + max_raw / 2) / max_raw;
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    return percent;
+    if (raw <= JW_MLP1_BACKLIGHT_RAW_MIN) return 0;
+    if (raw >= JW_MLP1_BACKLIGHT_RAW_MAX) return 100;
+
+    int range = JW_MLP1_BACKLIGHT_RAW_MAX - JW_MLP1_BACKLIGHT_RAW_MIN;
+    return ((raw - JW_MLP1_BACKLIGHT_RAW_MIN) * 100 + range / 2) / range;
 }
 
+/* Map 0-100% OSD value to the usable raw range (61-135). */
 static int jw__brightness_percent_to_raw(int percent, int max_raw) {
-    percent = jw_platform_clamp_brightness_percent(percent);
-    if (max_raw <= 0) {
-        return -1;
-    }
-    int raw = (percent * max_raw + 50) / 100;
-    if (raw < 1) raw = 1;
-    if (raw > max_raw) raw = max_raw;
-    return raw;
+    (void)max_raw;
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+
+    int range = JW_MLP1_BACKLIGHT_RAW_MAX - JW_MLP1_BACKLIGHT_RAW_MIN;
+    return JW_MLP1_BACKLIGHT_RAW_MIN + (percent * range + 50) / 100;
 }
 
 static int jw__mlp1_get_brightness_percent(void) {
