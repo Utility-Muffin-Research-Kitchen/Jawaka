@@ -15,6 +15,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if CAT_PLATFORM_IS_DEVICE
+#define JW_HINT(desktop_key) NULL
+#define JW_HINT_DEVICE(desktop_key, device_key) (device_key)
+#else
+#define JW_HINT(desktop_key) (desktop_key)
+#define JW_HINT_DEVICE(desktop_key, device_key) (desktop_key)
+#endif
+
 static const char *kMenuItems[] = {
     "Rescan Library",
     "Return to Launcher",
@@ -71,9 +79,9 @@ static void jw__render_menu(const jw_menu_state *state) {
     }
 
     cat_footer_item footer[] = {
-        { CAT_BTN_UP, "Navigate", false, "\xe2\x86\x91\xe2\x86\x93" },
-        { CAT_BTN_A,  "Select",   false, "A" },
-        { CAT_BTN_B,  "Back",     false, "B" },
+        { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
+        { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
+        { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
     };
     cat_draw_footer(footer, 3);
     cat_present();
