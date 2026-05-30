@@ -1059,7 +1059,9 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
        check and jawaka-menu EXIT_STOCK case. May be removed after testing. */
     if (strcmp(type->valuestring, "shutdown") == 0) {
         state->shutdown_requested = true;
-        unlink("/userdata/umrk-launcher-crash-state");
+        /* Path must match CRASH_STATE in loong_pangu.wrapper. */
+        static const char *crash_state = "/userdata/umrk-launcher-crash-state";
+        unlink(crash_state);
         /* Sentinel path must match loong_pangu.wrapper sentinel check. */
         static const char *exit_sentinel = "/tmp/umrk-exit-to-stock";
         FILE *fp = fopen(exit_sentinel, "w");
