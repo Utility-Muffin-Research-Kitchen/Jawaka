@@ -1324,6 +1324,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* Write clean-exit marker so the wrapper's crash-loop guard knows this
+       was an intentional shutdown, not a crash. The marker lives in /tmp so
+       it clears on reboot. See loong_pangu.wrapper check_crash_loop(). */
+    { FILE *fp = fopen("/tmp/umrk-clean-exit", "w"); if (fp) fclose(fp); }
+
     jw_log_info("jawakad exiting");
     jw__cleanup(&state);
     return 0;
