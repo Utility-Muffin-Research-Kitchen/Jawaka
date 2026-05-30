@@ -15,13 +15,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if CAT_PLATFORM_IS_DEVICE
-#define JW_HINT(desktop_key) NULL
-#define JW_HINT_DEVICE(desktop_key, device_key) (device_key)
-#else
-#define JW_HINT(desktop_key) (desktop_key)
-#define JW_HINT_DEVICE(desktop_key, device_key) (desktop_key)
-#endif
+static inline const char *jw_hint(const char *desktop_key) {
+    return CAT_PLATFORM_IS_DEVICE ? NULL : desktop_key;
+}
+static inline const char *jw_hint_device(const char *desktop_key, const char *device_key) {
+    return CAT_PLATFORM_IS_DEVICE ? device_key : desktop_key;
+}
+#define JW_HINT(dk)            jw_hint(dk)
+#define JW_HINT_DEVICE(dk, vk) jw_hint_device(dk, vk)
 
 static const char *kMenuItems[] = {
     "Rescan Library",

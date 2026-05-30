@@ -165,6 +165,21 @@ int jw_ipc_shutdown(const char *socket_path) {
     return rc;
 }
 
+int jw_ipc_platform_action(const char *socket_path, const char *action, int value) {
+    if (!action || !action[0]) {
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-action");
+    cJSON_AddStringToObject(req, "action", action);
+    cJSON_AddNumberToObject(req, "value", value);
+    cJSON *resp = NULL;
+    int rc = ipc__request(socket_path, req, &resp);
+    if (resp) cJSON_Delete(resp);
+    return rc;
+}
+
 int jw_ipc_frontend_ready(const char *socket_path, const char *role) {
     if (!role || !role[0]) {
         return -1;

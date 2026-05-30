@@ -1060,7 +1060,9 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     if (strcmp(type->valuestring, "shutdown") == 0) {
         state->shutdown_requested = true;
         unlink("/userdata/umrk-launcher-crash-state");
-        FILE *fp = fopen("/tmp/umrk-exit-to-stock", "w");
+        /* Sentinel path must match loong_pangu.wrapper sentinel check. */
+        static const char *exit_sentinel = "/tmp/umrk-exit-to-stock";
+        FILE *fp = fopen(exit_sentinel, "w");
         if (fp) fclose(fp);
         jw_log_info("shutdown requested — exiting to stock (this session only)");
         cJSON_Delete(root);

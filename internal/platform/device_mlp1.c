@@ -4,6 +4,9 @@
 #include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 /* MLP1 backlight usable range: raw 61-135 out of 0-255.
    Below 61 the screen goes black. Above 135 there is no visible change.
@@ -19,6 +22,32 @@
 #define JW_MLP1_PACTL_GET_VOLUME "pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null"
 #define JW_MLP1_PACTL_SET_VOLUME "pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null"
 #define JW_MLP1_WIFI_PROC "/proc/net/wireless"
+
+/* Run a command by path with fork/exec instead of system(). */
+static int jw__exec_command(const char *path) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execl(path, path, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+/* Run a shell command via /bin/sh -c (for commands with arguments/pipes). */
+static int jw__exec_shell(const char *cmd) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
 
 static int (*s_event_opend)(const char *id);
 static bool s_loong_loaded;
@@ -113,7 +142,7 @@ static int jw__mlp1_set_volume_percent(int percent) {
 
     char cmd[128];
     snprintf(cmd, sizeof(cmd), JW_MLP1_PACTL_SET_VOLUME, percent);
-    return system(cmd) == 0 ? 0 : -1;
+    return jw__exec_shell(cmd) == 0 ? 0 : -1;
 }
 
 static void jw__mlp1_get_wifi_status(jw_platform_status *out) {
@@ -215,6 +244,41 @@ static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
 
 static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                     int value, jw_platform_result *out) {
+    if (action == JW_PLATFORM_ACTION_POWEROFF) {
+        jw_log_info("platform: poweroff requested");
+        sync();
+        if (jw__exec_command("/usr/sbin/poweroff") != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "poweroff failed");
+            return;
+        }
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "powering off");
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_REBOOT) {
+        jw_log_info("platform: reboot requested");
+        sync();
+        if (jw__exec_command("/usr/sbin/reboot") != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "reboot failed");
+            return;
+        }
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "rebooting");
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SLEEP) {
+        jw_log_info("platform: sleep requested");
+        FILE *fp = fopen("/sys/power/state", "w");
+        if (fp) {
+            fprintf(fp, "mem\n");
+            fclose(fp);
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "suspending");
+        } else {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "sleep failed");
+        }
+        return;
+    }
+
     if (action == JW_PLATFORM_ACTION_SET_VOLUME) {
         int percent = value;
         if (percent < 0) percent = 0;
@@ -261,6 +325,9 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .capabilities = {
             .battery = true,
             .charging = true,
+            .sleep = true,
+            .poweroff = true,
+            .reboot = true,
             .brightness = true,
             .volume = true,
             .wifi = true,

@@ -27,16 +27,17 @@
 #define JW_MAX_GAMES   512
 #define JW_MAX_SEARCH_RESULTS 128
 
-/* Button hint text: on device, pass NULL so Catastrophe uses the canonical
+/* Button hint text: on device, return NULL so Catastrophe uses the canonical
  * button name (e.g. "L2", "MENU"). On desktop, show the keyboard shortcut.
- * JW_HINT_DEVICE provides a device-specific override (e.g. "L2/R2"). */
-#if CAT_PLATFORM_IS_DEVICE
-#define JW_HINT(desktop_key) NULL
-#define JW_HINT_DEVICE(desktop_key, device_key) (device_key)
-#else
-#define JW_HINT(desktop_key) (desktop_key)
-#define JW_HINT_DEVICE(desktop_key, device_key) (desktop_key)
-#endif
+ * Runtime check via cat_is_device() — no compile-flag branching. */
+static inline const char *jw_hint(const char *desktop_key) {
+    return CAT_PLATFORM_IS_DEVICE ? NULL : desktop_key;
+}
+static inline const char *jw_hint_device(const char *desktop_key, const char *device_key) {
+    return CAT_PLATFORM_IS_DEVICE ? device_key : desktop_key;
+}
+#define JW_HINT(dk)            jw_hint(dk)
+#define JW_HINT_DEVICE(dk, vk) jw_hint_device(dk, vk)
 
 /* ─── Status bar ─────────────────────────────────────────────────────────── */
 
