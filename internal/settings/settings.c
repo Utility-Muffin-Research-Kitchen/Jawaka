@@ -60,12 +60,6 @@ static const char *kHomeCategoryLabels[] = {
 #define JW_SETTINGS_CATEGORY_COUNT 5
 #define JW_SETTINGS_DISPLAY_COUNT 1
 
-static const char *kAppearLabels[] = {
-    "Theme",
-    "Colors",
-    "Layout",
-    "Status Bar",
-};
 
 /* ─── Helpers ──────────────────────────────────────────────────────────── */
 
@@ -503,9 +497,24 @@ static void jw__change_brightness(jw_settings_ui *ui, int delta,
 /* ─── Color picker helper ──────────────────────────────────────────────── */
 
 static bool jw__pick_color(jw_settings_ui *ui, ap_color *target,
-                           const char *db_key) {
+                           const char *db_key, int active_role) {
+    ap_theme *theme = cat_get_theme();
+    cat_color_picker_context context = {
+        .roles = {
+            { "Accent",     theme->accent },
+            { "Background", theme->background },
+            { "Text",       theme->text },
+            { "Selection",  theme->highlight },
+            { "Secondary",  theme->hint },
+            { "Btn Text",   theme->button_label },
+            { "Btn Bg",     theme->button_glyph_bg },
+        },
+        .role_count = JW_COLOR_ROW_COUNT,
+        .active_role = active_role,
+    };
+
     ap_color picked;
-    if (cat_color_picker(*target, &picked) == CAT_OK) {
+    if (cat_color_picker_ctx(*target, &picked, &context) == CAT_OK) {
         *target = picked;
         jw__persist_color(ui, db_key, picked);
         return true;
@@ -579,21 +588,21 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 ap_theme *t = cat_get_theme();
                 int row = ui->colors_list.cursor;
                 if (row == JW_COLOR_ACCENT) {
-                    if (jw__pick_color(ui, &t->accent, "accent_color"))
-                        cat_set_theme_color(NULL); /* force re-derive */
+                    if (jw__pick_color(ui, &t->accent, "accent_color", row))
+                        cat_set_theme_color(NULL);
                 } else if (row == JW_COLOR_TEXT) {
-                    if (jw__pick_color(ui, &t->text, "text_color"))
+                    if (jw__pick_color(ui, &t->text, "text_color", row))
                         t->highlighted_text = t->text;
                 } else if (row == JW_COLOR_HINT) {
-                    jw__pick_color(ui, &t->hint, "hint_color");
+                    jw__pick_color(ui, &t->hint, "hint_color", row);
                 } else if (row == JW_COLOR_HIGHLIGHT) {
-                    jw__pick_color(ui, &t->highlight, "highlight_color");
+                    jw__pick_color(ui, &t->highlight, "highlight_color", row);
                 } else if (row == JW_COLOR_BACKGROUND) {
-                    jw__pick_color(ui, &t->background, "bg_color");
+                    jw__pick_color(ui, &t->background, "bg_color", row);
                 } else if (row == JW_COLOR_BTN_TEXT) {
-                    jw__pick_color(ui, &t->button_label, "button_label_color");
+                    jw__pick_color(ui, &t->button_label, "button_label_color", row);
                 } else if (row == JW_COLOR_BTN_BG) {
-                    jw__pick_color(ui, &t->button_glyph_bg, "button_glyph_bg_color");
+                    jw__pick_color(ui, &t->button_glyph_bg, "button_glyph_bg_color", row);
                 }
                 break;
             }
