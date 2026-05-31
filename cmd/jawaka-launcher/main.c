@@ -2126,6 +2126,17 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
 
     /* Settings UI captures input when open. */
     if (jw_settings_ui_is_open(&state->settings)) {
+        /* MENU always opens the main menu, from any settings sub-screen and
+           any layout — it is a global action, not consumed by settings. */
+        if (button == CAT_BTN_MENU) {
+            if (jw_ipc_open_menu(socket_path) == 0) {
+                cat_hide_window();
+                *running = false;
+            } else {
+                snprintf(state->status, sizeof(state->status), "%s", "open-menu failed");
+            }
+            return;
+        }
         /* Tabbed mode: Settings is a tab, not an app. Triggers must escape
            it cleanly from any sub-screen, and B at Settings home is a no-op
            (the user leaves via L2/R2). jw__switch_tab closes Settings as a
