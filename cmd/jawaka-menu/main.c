@@ -11,10 +11,16 @@
 #include "internal/settings/theme_resolve.h"
 
 #include <SDL2/SDL.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 static inline const char *jw_hint(const char *desktop_key) {
     return CAT_PLATFORM_IS_DEVICE ? NULL : desktop_key;
@@ -24,6 +30,100 @@ static inline const char *jw_hint_device(const char *desktop_key, const char *de
 }
 #define JW_HINT(dk)            jw_hint(dk)
 #define JW_HINT_DEVICE(dk, vk) jw_hint_device(dk, vk)
+
+static long long jw__monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (long long)ts.tv_sec * 1000LL + (long long)(ts.tv_nsec / 1000000L);
+}
+
+/* Self-pipe used to wake the resident in-game menu when the daemon asks it to
+   show (SIGUSR1). Writing one byte from the async-signal-safe handler lets the
+   parked poll() in jw__menu_wait_for_show() return instantly. */
+static int g_show_pipe[2] = { -1, -1 };
+
+static void jw__menu_show_signal(int signo) {
+    (void)signo;
+    if (g_show_pipe[1] >= 0) {
+        const char b = 1;
+        ssize_t n = write(g_show_pipe[1], &b, 1);
+        (void)n;
+    }
+}
+
+/* Set when the daemon asks us to hide (Menu toggle closed, SIGUSR2). Checked by
+   the visible render loop so the menu drops back to standby. */
+static volatile sig_atomic_t g_hide_requested = 0;
+
+static void jw__menu_hide_signal(int signo) {
+    (void)signo;
+    g_hide_requested = 1;
+}
+
+/* Install the SIGUSR1 show handler and self-pipe. Call before cat_init so a
+   show request that races startup is buffered, not lost. When the daemon
+   spawned us for immediate display (JAWAKA_INGAME_AUTOSHOW=1, the on-demand
+   fallback) we pre-arm the pipe so the first wait returns at once. */
+static int jw__menu_init_show_signal(void) {
+    if (pipe(g_show_pipe) != 0) {
+        jw_log_error("in-game menu: show pipe failed: %s", strerror(errno));
+        return -1;
+    }
+    fcntl(g_show_pipe[0], F_SETFL, O_NONBLOCK);
+    fcntl(g_show_pipe[1], F_SETFL, O_NONBLOCK);
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = jw__menu_show_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART; /* keep SDL syscalls during cat_init from seeing EINTR */
+    if (sigaction(SIGUSR1, &sa, NULL) != 0) {
+        jw_log_error("in-game menu: sigaction failed: %s", strerror(errno));
+        return -1;
+    }
+
+    /* Hide signal: no SA_RESTART so it promptly interrupts the idle poll() in
+       cat_present() and the visible loop can re-check g_hide_requested. */
+    struct sigaction sh;
+    memset(&sh, 0, sizeof(sh));
+    sh.sa_handler = jw__menu_hide_signal;
+    sigemptyset(&sh.sa_mask);
+    sh.sa_flags = 0;
+    if (sigaction(SIGUSR2, &sh, NULL) != 0) {
+        jw_log_error("in-game menu: sigaction(USR2) failed: %s", strerror(errno));
+        return -1;
+    }
+
+    const char *autoshow = getenv("JAWAKA_INGAME_AUTOSHOW");
+    if (autoshow && strcmp(autoshow, "1") == 0) {
+        jw__menu_show_signal(SIGUSR1); /* pre-arm: reveal as soon as we are ready */
+    }
+    return 0;
+}
+
+/* Block at ~zero CPU until the daemon requests a show (SIGUSR1) or the autoshow
+   pre-arm fires, then drain the pipe and return. poll() is not restarted across
+   signals, so EINTR just re-enters the loop and finds the buffered byte. */
+static void jw__menu_wait_for_show(void) {
+    struct pollfd pfd = { .fd = g_show_pipe[0], .events = POLLIN, .revents = 0 };
+    for (;;) {
+        int rc = poll(&pfd, 1, -1);
+        if (rc < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            jw_log_warn("in-game menu: show wait poll failed: %s", strerror(errno));
+            return; /* fail open: reveal rather than hang */
+        }
+        if (rc > 0 && (pfd.revents & POLLIN)) {
+            char buf[64];
+            while (read(g_show_pipe[0], buf, sizeof(buf)) > 0) { }
+            return;
+        }
+    }
+}
 
 static const char *kMenuItems[] = {
     "Rescan Library",
@@ -67,6 +167,7 @@ typedef struct {
     char                            status[256];
     cat_status_bar_opts             status_bar;
     bool                            show_hints;
+    bool                            session_details_ready;
     jw_ipc_retroarch_session_info   session;
 } jw_ingame_state;
 
@@ -200,7 +301,7 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
     }
     out[0] = '\0';
 
-    if (!state->session.active) {
+    if (!state->session.active || !state->session_details_ready) {
         return;
     }
 
@@ -329,6 +430,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
 }
 
 static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) {
+    state->session_details_ready = false;
     if (jw_ipc_get_retroarch_session(socket_path, &state->session,
                                      state->status,
                                      sizeof(state->status)) != 0) {
@@ -338,8 +440,48 @@ static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) 
                      "RetroArch session unavailable");
         }
     } else if (state->session.active && state->session.command_ok) {
+        state->session_details_ready = true;
         state->status[0] = '\0';
     }
+}
+
+static void jw__copy_env_string(const char *name, char *out, size_t out_size) {
+    const char *value = getenv(name);
+    if (!out || out_size == 0) {
+        return;
+    }
+    if (!value) {
+        out[0] = '\0';
+        return;
+    }
+    snprintf(out, out_size, "%s", value);
+}
+
+static bool jw__prime_ingame_session_from_env(jw_ingame_state *state) {
+    const char *active = getenv("JAWAKA_INGAME_ACTIVE");
+    if (!state || !active || strcmp(active, "1") != 0) {
+        return false;
+    }
+
+    memset(&state->session, 0, sizeof(state->session));
+    state->session.active = true;
+    state->session.command_ok = true;
+    state->session.disk_count = 0;
+    state->session.disk_slot = -1;
+    state->session.state_slot = -1;
+    jw__copy_env_string("JAWAKA_INGAME_SYSTEM",
+                        state->session.system,
+                        sizeof(state->session.system));
+    jw__copy_env_string("JAWAKA_INGAME_ROM",
+                        state->session.rom_path,
+                        sizeof(state->session.rom_path));
+    jw__copy_env_string("JAWAKA_INGAME_CORE",
+                        state->session.core_path,
+                        sizeof(state->session.core_path));
+    snprintf(state->session.command_result,
+             sizeof(state->session.command_result), "%s", "pending");
+    state->status[0] = '\0';
+    return true;
 }
 
 static void jw__ingame_continue(const char *socket_path, jw_ingame_state *state,
@@ -459,28 +601,87 @@ static void jw__handle_ingame_input(const char *socket_path,
     }
 }
 
-static int jw__run_ingame_menu(const char *socket_path, const char *db_path) {
+static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
+                               long long process_start_ms) {
+    (void)process_start_ms;
     jw_ingame_state state;
     memset(&state, 0, sizeof(state));
-    cat_list_state_init(&state.list, JW_INGAME_COUNT);
     jw_settings_load_status_prefs(db_path, &state.status_bar, &state.show_hints);
-    jw__ingame_refresh(socket_path, &state);
 
-    bool running = true;
-    while (running) {
-        cat_input_event ev;
-        while (cat_poll_input(&ev)) {
-            if (!ev.pressed) continue;
-            jw__handle_ingame_input(socket_path, &state, ev.button, &running);
+    /* Resident loop: warm up once, then park hidden and reveal on demand. Each
+       Menu tap signals SIGUSR1 -> we show; Continue/Quit hides us back to the
+       wait. The process exits only when the daemon terminates it at game exit
+       (default SIGTERM disposition), so there is no normal loop exit. */
+    bool first_show = true;
+    for (;;) {
+        jw__menu_wait_for_show();
+
+        /* A close (SIGUSR2) can race the show (SIGUSR1) on a fast double-tap.
+           If one already arrived, the daemon has resumed the game and cleared
+           visibility, so skip showing entirely and go back to standby. */
+        if (g_hide_requested) {
+            g_hide_requested = 0;
+            continue;
         }
 
-        jw__render_ingame_menu(&state);
+        long long show_start_ms = jw__monotonic_ms();
+        cat_list_state_init(&state.list, JW_INGAME_COUNT);
+        state.status[0] = '\0';
+        bool primed = jw__prime_ingame_session_from_env(&state);
+
+        cat_show_window();
+        /* Drop controller input buffered while hidden so gameplay presses don't
+           fire as menu navigation on entry (input gating, defense in depth). */
+        SDL_PumpEvents();
+        SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+
+        if (primed) {
+            cat_request_frame();
+            jw__render_ingame_menu(&state);
+            jw_log_info("in-game menu show timings: show_ms=%lld primed=1 first=%d",
+                        jw__monotonic_ms() - show_start_ms, first_show);
+        }
+
+        long long refresh_start_ms = jw__monotonic_ms();
+        jw__ingame_refresh(socket_path, &state);
+        long long refresh_done_ms = jw__monotonic_ms();
+        if (!primed) {
+            cat_request_frame();
+            jw__render_ingame_menu(&state);
+            jw_log_info("in-game menu show timings: show_ms=%lld primed=0 first=%d",
+                        refresh_done_ms - show_start_ms, first_show);
+        }
+        jw_log_info("in-game menu refresh timings: refresh_ms=%lld command=%s",
+                    refresh_done_ms - refresh_start_ms,
+                    state.session.command_result);
+
+        bool running = true;
+        while (running && !g_hide_requested) {
+            /* Bound the idle poll() in cat_present() so a SIGUSR2 that lands in
+               the tiny window before poll() still gets noticed within ~100ms,
+               instead of sleeping to the next minute boundary. */
+            cat_request_frame_in(100);
+            cat_input_event ev;
+            while (cat_poll_input(&ev)) {
+                if (!ev.pressed) continue;
+                jw__handle_ingame_input(socket_path, &state, ev.button, &running);
+            }
+            jw__render_ingame_menu(&state);
+        }
+
+        /* Leave reason: running=false (Continue/Save/Load/Reset/Quit, daemon
+           already resumed) or g_hide_requested (Menu toggle closed, daemon
+           already resumed). Either way just hide back to standby. */
+        g_hide_requested = 0;
+        cat_hide_window();
+        first_show = false;
     }
 
     return 0;
 }
 
 int main(int argc, char **argv) {
+    long long process_start_ms = jw__monotonic_ms();
     bool in_game = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--in-game") == 0) {
@@ -499,9 +700,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    long long hello_start_ms = jw__monotonic_ms();
     if (jw_ipc_hello(socket_path, in_game ? "ingame-menu" : "menu") != 0) {
         jw_log_error("could not connect to jawakad at %s; is the daemon running?",
                      socket_path);
+        free(socket_path);
+        free(db_path);
+        return 1;
+    }
+    long long hello_done_ms = jw__monotonic_ms();
+
+    /* In-game menu runs as a resident warm standby: install the show signal
+       before cat_init so an early reveal request is buffered, and create the
+       window hidden so we never flash over RetroArch while warming up. */
+    if (in_game && jw__menu_init_show_signal() != 0) {
         free(socket_path);
         free(db_path);
         return 1;
@@ -511,16 +723,20 @@ int main(int argc, char **argv) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.window_title       = "Jawaka Menu";
     cfg.disable_background = true;
+    cfg.start_hidden       = in_game;
 
+    long long cat_start_ms = jw__monotonic_ms();
     if (cat_init(&cfg) != CAT_OK) {
         jw_log_error("catastrophe init failed: %s", cat_get_error());
         free(socket_path);
         free(db_path);
         return 1;
     }
+    long long cat_done_ms = jw__monotonic_ms();
 
     /* Resolve theme: env > DB > default Jawaka-Tabs.
        Matches launcher precedence so menu inherits whatever was last picked. */
+    long long theme_start_ms = jw__monotonic_ms();
     {
         char theme_name[256];
         jw_resolve_theme_name(db_path, theme_name, sizeof(theme_name));
@@ -532,11 +748,25 @@ int main(int argc, char **argv) {
            theme so the menu matches the launcher's customized appearance. */
         jw_settings_apply_persisted_overrides(db_path);
     }
+    long long theme_done_ms = jw__monotonic_ms();
 
-    cat_activate_window();
+    /* Frontend menu raises itself now; the in-game standby stays hidden until
+       cat_show_window() reveals (and raises) it on the first Menu tap. */
+    if (!in_game) {
+        cat_activate_window();
+    }
+    long long activated_ms = jw__monotonic_ms();
+    if (in_game) {
+        jw_log_info("menu startup timings: mode=in-game hello_ms=%lld cat_ms=%lld theme_ms=%lld activate_ms=%lld total_ms=%lld",
+                    hello_done_ms - hello_start_ms,
+                    cat_done_ms - cat_start_ms,
+                    theme_done_ms - theme_start_ms,
+                    activated_ms - theme_done_ms,
+                    activated_ms - process_start_ms);
+    }
 
     if (in_game) {
-        int rc = jw__run_ingame_menu(socket_path, db_path);
+        int rc = jw__run_ingame_menu(socket_path, db_path, process_start_ms);
         cat_quit();
         free(socket_path);
         free(db_path);

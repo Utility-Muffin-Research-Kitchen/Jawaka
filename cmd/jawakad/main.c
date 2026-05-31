@@ -53,8 +53,10 @@ typedef struct {
     jw_input_proxy input_proxy;
     pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
     jw_child_kind child_kind;
-    pid_t menu_pid;           /* transient in-game menu while RetroArch stays alive */
+    pid_t menu_pid;           /* resident warm-standby in-game menu while RetroArch is alive */
     bool menu_in_game;
+    bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
+    int menu_standby_attempts;/* respawn guard for a crashing standby within one session */
     bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
     int cached_brightness_percent;
@@ -71,6 +73,14 @@ typedef struct {
 } jw_daemon_state;
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
+
+static long long jw__monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (long long)ts.tv_sec * 1000LL + (long long)(ts.tv_nsec / 1000000L);
+}
 
 static void jw__handle_signal(int signo) {
     (void)signo;
@@ -257,11 +267,12 @@ static const char *jw__child_name(jw_child_kind kind) {
 }
 
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
-static int jw__spawn_in_game_menu(jw_daemon_state *state);
+static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now);
 static int jw__spawn_osd(jw_daemon_state *state);
 static int jw__spawn_retroarch(jw_daemon_state *state);
 static int jw__spawn_app(jw_daemon_state *state);
 static int jw__request_open_in_game_menu(jw_daemon_state *state);
+static int jw__request_close_in_game_menu(jw_daemon_state *state);
 
 static void jw__publish_retroarch_input_env(jw_daemon_state *state) {
     if (!state || !state->input_proxy.enabled ||
@@ -330,6 +341,10 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
     snprintf(session->config_path, sizeof(session->config_path), "%s",
              config_path ? config_path : "");
+
+    /* Fresh session: no menu shown yet, reset the standby respawn guard. */
+    state->menu_visible = false;
+    state->menu_standby_attempts = 0;
 
     jw_log_info("RetroArch session started pid=%d system=%s core=%s config=%s rom=%s",
                 (int)pid, session->system, session->core_path,
@@ -406,29 +421,74 @@ static int jw__request_open_menu(jw_daemon_state *state) {
 }
 
 static int jw__request_open_in_game_menu(jw_daemon_state *state) {
+    long long start_ms = jw__monotonic_ms();
     if (!state || !state->retroarch_session.active) {
         return -1;
     }
 
-    if (state->menu_pid > 0) {
+    /* Already showing: ignore the tap (the menu is closed with B/Continue). */
+    if (state->menu_visible) {
         return 0;
     }
 
     jw_ra_client client = jw_ra_client_default();
-    jw_ra_result pause_result = jw_ra_pause(&client);
+    long long pause_start_ms = jw__monotonic_ms();
+    jw_ra_result pause_result = jw_ra_pause_direct(&client);
+    long long pause_done_ms = jw__monotonic_ms();
     if (pause_result != JW_RA_OK) {
         jw_log_warn("in-game menu: pause failed result=%s",
                     jw_ra_result_string(pause_result));
         return -1;
     }
 
-    state->retroarch_resume_on_menu_exit = true;
-    if (jw__spawn_in_game_menu(state) != 0) {
-        state->retroarch_resume_on_menu_exit = false;
-        jw_ra_resume(&client);
+    bool warm = state->menu_pid > 0;
+    long long show_start_ms = jw__monotonic_ms();
+    if (warm) {
+        /* Warm standby is resident: reveal it with a show signal. Near-instant —
+           no fork/exec, no cat_init. This is the common path. */
+        state->menu_visible = true;
+        if (kill(state->menu_pid, SIGUSR1) != 0) {
+            jw_log_warn("in-game menu: show signal failed pid=%d: %s",
+                        (int)state->menu_pid, strerror(errno));
+            state->menu_visible = false;
+            jw_ra_resume_direct(&client);
+            return -1;
+        }
+    } else {
+        /* No standby (pre-spawn failed or it crashed): spawn on demand and let
+           it reveal itself once initialized. Pays the old cold-start cost, but
+           only in this rare fallback. */
+        if (jw__spawn_in_game_menu(state, true) != 0) {
+            jw_ra_resume_direct(&client);
+            return -1;
+        }
+        state->menu_visible = true;
+    }
+    long long done_ms = jw__monotonic_ms();
+    jw_log_info("in-game menu open timings: pause_ms=%lld show_ms=%lld total_ms=%lld standby=%d",
+                pause_done_ms - pause_start_ms,
+                done_ms - show_start_ms,
+                done_ms - start_ms,
+                warm);
+
+    return 0;
+}
+
+/* Close the visible standby menu (the Menu button toggles it shut): resume the
+   game and tell the menu to hide back to standby. Mirror image of the open
+   path; uses explicit UNPAUSE so the game always resumes. */
+static int jw__request_close_in_game_menu(jw_daemon_state *state) {
+    if (!state || !state->menu_visible) {
         return -1;
     }
 
+    jw_ra_client client = jw_ra_client_default();
+    jw_ra_resume_direct(&client);
+    state->menu_visible = false;
+    if (state->menu_pid > 0) {
+        kill(state->menu_pid, SIGUSR2);
+    }
+    jw_log_info("in-game menu closed via Menu toggle");
     return 0;
 }
 
@@ -913,6 +973,12 @@ static bool jw__input_menu_tap(void *userdata) {
         return false;
     }
 
+    /* Menu toggles: tap to open, tap again to close. */
+    if (state->menu_visible) {
+        jw__request_close_in_game_menu(state);
+        return true;
+    }
+
     if (jw__request_open_in_game_menu(state) != 0) {
         jw_log_warn("in-game menu: open request failed, forwarding Menu tap");
         return false;
@@ -985,7 +1051,10 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     return 0;
 }
 
-static int jw__spawn_in_game_menu(jw_daemon_state *state) {
+/* Spawn the in-game menu process. show_now=false parks it hidden as a warm
+   standby (revealed later by a SIGUSR1 show signal); show_now=true makes it
+   reveal itself as soon as it finishes cat_init (on-demand fallback path). */
+static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
     if (!state || state->menu_pid > 0) {
         return state && state->menu_pid > 0 ? 0 : -1;
     }
@@ -1009,6 +1078,13 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
+        if (state->retroarch_session.active) {
+            setenv("JAWAKA_INGAME_ACTIVE", "1", 1);
+            setenv("JAWAKA_INGAME_SYSTEM", state->retroarch_session.system, 1);
+            setenv("JAWAKA_INGAME_ROM", state->retroarch_session.rom_path, 1);
+            setenv("JAWAKA_INGAME_CORE", state->retroarch_session.core_path, 1);
+        }
+        setenv("JAWAKA_INGAME_AUTOSHOW", show_now ? "1" : "0", 1);
         char *const argv[] = { (char *)path, "--in-game", NULL };
         execv(path, argv);
         perror("execv");
@@ -1017,7 +1093,7 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state) {
 
     state->menu_pid = pid;
     state->menu_in_game = true;
-    jw_log_info("spawned in-game menu pid=%d", (int)pid);
+    jw_log_info("spawned in-game menu pid=%d standby=%d", (int)pid, !show_now);
     return 0;
 }
 
@@ -1160,6 +1236,13 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
     jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs, core, runtime_config);
 
+    /* Pre-spawn the in-game menu as a hidden warm standby so the first Menu
+       tap only has to pause + reveal an already-built window, not cold-start a
+       whole SDL/GL process. If this fails we fall back to on-demand spawn. */
+    if (jw__spawn_in_game_menu(state, false) != 0) {
+        jw_log_warn("could not pre-spawn standby in-game menu; will spawn on demand");
+    }
+
     free(retroarch);
     free(core);
     free(runtime_config);
@@ -1298,24 +1381,35 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
     jw_ra_result result = JW_RA_UNSUPPORTED;
 
     if (strcmp(action, "continue") == 0) {
-        result = jw_ra_resume(&ra);
+        /* Explicit UNPAUSE, symmetric with the explicit PAUSE on open. The
+           status-polling jw_ra_resume() could leave the game stuck paused when
+           GET_STATUS misreports (e.g. right after a state load). */
+        result = jw_ra_resume_direct(&ra);
         if (result == JW_RA_OK) {
             state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
         }
     } else if (strcmp(action, "settings") == 0) {
         result = jw_ra_open_menu(&ra);
         if (result == JW_RA_OK) {
             state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
         }
     } else if (strcmp(action, "quit") == 0) {
         result = jw_ra_quit(&ra);
         if (result == JW_RA_OK) {
             state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
         }
     } else if (strcmp(action, "reset") == 0) {
         result = jw_ra_reset(&ra);
         if (result == JW_RA_OK) {
-            state->retroarch_resume_on_menu_exit = true;
+            /* Reset/Save/Load close the menu (the UI sets running=false), so
+               resume the game now. The resident menu never exits, so the old
+               resume-on-menu-exit path can't do it for us. */
+            jw_ra_resume_direct(&ra);
+            state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
         }
     } else if (strcmp(action, "save-state") == 0) {
         if (has_value && value >= 0) {
@@ -1325,7 +1419,9 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             result = jw_ra_save_state(&ra);
         }
         if (result == JW_RA_OK) {
-            state->retroarch_resume_on_menu_exit = true;
+            jw_ra_resume_direct(&ra);
+            state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
         }
     } else if (strcmp(action, "load-state") == 0) {
         if (has_value && value >= 0) {
@@ -1335,7 +1431,9 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             result = jw_ra_load_state(&ra);
         }
         if (result == JW_RA_OK) {
-            state->retroarch_resume_on_menu_exit = true;
+            jw_ra_resume_direct(&ra);
+            state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
         }
     } else if (strcmp(action, "state-slot-prev") == 0) {
         result = jw__set_state_slot_delta(&ra, -1);
@@ -1567,6 +1665,7 @@ static void jw__clear_menu_tracking(jw_daemon_state *state) {
 
     state->menu_pid = -1;
     state->menu_in_game = false;
+    state->menu_visible = false;
     state->retroarch_resume_on_menu_exit = false;
 }
 
@@ -1708,9 +1807,12 @@ static void jw__handle_menu_exit(jw_daemon_state *state) {
         return;
     }
 
-    bool should_resume = state->menu_in_game &&
-                         state->retroarch_resume_on_menu_exit &&
-                         state->retroarch_session.active;
+    /* Reaching here means the standby exited on its own — i.e. it crashed,
+       because intentional teardown at game exit clears menu_pid in
+       jw__handle_child_exit before this runs. */
+    bool was_visible = state->menu_visible;
+    bool session_active = state->retroarch_session.active;
+    bool shutting = state->shutdown_requested || g_shutdown_requested;
     jw__clear_menu_tracking(state);
 
     if (WIFEXITED(status)) {
@@ -1721,13 +1823,35 @@ static void jw__handle_menu_exit(jw_daemon_state *state) {
         jw_log_warn("in-game menu changed state status=%d", status);
     }
 
-    if (should_resume) {
+    if (!session_active || shutting) {
+        return;
+    }
+
+    /* The game is still running. If the menu died while shown, RetroArch is
+       paused under it — resume so the player isn't stuck on a frozen frame. */
+    if (was_visible) {
         jw_ra_client client = jw_ra_client_default();
-        jw_ra_result result = jw_ra_resume(&client);
+        jw_ra_result result = jw_ra_resume_direct(&client);
         if (result != JW_RA_OK) {
-            jw_log_warn("in-game menu: resume failed result=%s",
+            jw_log_warn("in-game menu crash: resume failed result=%s",
                         jw_ra_result_string(result));
         }
+    }
+
+    /* Re-arm a hidden standby for the next Menu tap, with a per-session cap so
+       a menu that crashes on startup can't spin. Past the cap we leave menu_pid
+       clear and let the next tap take the on-demand fallback path. */
+    if (state->menu_standby_attempts < 3) {
+        state->menu_standby_attempts++;
+        if (jw__spawn_in_game_menu(state, false) != 0) {
+            jw_log_warn("standby in-game menu respawn failed (attempt %d/3)",
+                        state->menu_standby_attempts);
+        } else {
+            jw_log_info("standby in-game menu respawned (attempt %d/3)",
+                        state->menu_standby_attempts);
+        }
+    } else {
+        jw_log_warn("standby in-game menu respawn cap reached; on-demand fallback only");
     }
 }
 
