@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ─── Data tables ──────────────────────────────────────────────────────── */
+
 const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT] = {
     "Jawaka-Tabs",
     "Jawaka-Vertical",
@@ -48,7 +50,7 @@ const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT] = {
     "12 Hour (no AM/PM)",
 };
 
-static const char *kCategoryLabels[] = {
+static const char *kHomeCategoryLabels[] = {
     "Appearance",
     "Display",
     "Library",
@@ -56,10 +58,16 @@ static const char *kCategoryLabels[] = {
     "About",
 };
 #define JW_SETTINGS_CATEGORY_COUNT 5
-
 #define JW_SETTINGS_DISPLAY_COUNT 1
 
-/* ─── Lifecycle ──────────────────────────────────────────────────────────── */
+static const char *kAppearLabels[] = {
+    "Theme",
+    "Colors",
+    "Layout",
+    "Status Bar",
+};
+
+/* ─── Helpers ──────────────────────────────────────────────────────────── */
 
 static int jw__find_theme_index(const char *name) {
     if (!name || !name[0]) return 0;
@@ -70,37 +78,65 @@ static int jw__find_theme_index(const char *name) {
 }
 
 static void jw__refresh_brightness(jw_settings_ui *ui) {
-    if (!ui || !ui->socket_path[0]) {
-        return;
-    }
+    if (!ui || !ui->socket_path[0]) return;
     int percent = -1;
-    if (jw_ipc_platform_brightness(ui->socket_path, &percent) == 0 && percent >= 0) {
+    if (jw_ipc_platform_brightness(ui->socket_path, &percent) == 0 && percent >= 0)
         ui->brightness_percent = jw_platform_clamp_brightness_percent(percent);
-    }
 }
+
+static void jw__persist(const jw_settings_ui *ui, const char *key, const char *val) {
+    if (ui->db_path[0])
+        jw_db_set_setting(ui->db_path, key, val);
+}
+
+static void jw__persist_int(const jw_settings_ui *ui, const char *key, int val) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", val);
+    jw__persist(ui, key, buf);
+}
+
+static void jw__persist_bool(const jw_settings_ui *ui, const char *key, bool val) {
+    jw__persist(ui, key, val ? "1" : "0");
+}
+
+static void jw__persist_color(const jw_settings_ui *ui, const char *key, ap_color c) {
+    char hex[16];
+    snprintf(hex, sizeof(hex), "#%02X%02X%02X", c.r, c.g, c.b);
+    jw__persist(ui, key, hex);
+}
+
+/* ─── Lifecycle ────────────────────────────────────────────────────────── */
 
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                           const char *initial_theme_name,
                           const char *socket_path) {
     if (!ui) return;
     memset(ui, 0, sizeof(*ui));
-    ui->open    = false;
-    ui->screen  = JW_SETTINGS_HOME;
-    cat_list_state_init(&ui->home_list,        JW_SETTINGS_CATEGORY_COUNT);
-    cat_list_state_init(&ui->appearance_list,  JW_APPEARANCE_ROW_COUNT);
+    ui->open   = false;
+    ui->screen = JW_SETTINGS_HOME;
+    cat_list_state_init(&ui->home_list,       JW_SETTINGS_CATEGORY_COUNT);
+    cat_list_state_init(&ui->appearance_list,  JW_APPEAR_ROW_COUNT);
+    cat_list_state_init(&ui->colors_list,      JW_COLOR_ROW_COUNT);
+    cat_list_state_init(&ui->layout_list,      JW_LAYOUT_ROW_COUNT);
+    cat_list_state_init(&ui->statusbar_list,   JW_STATUSBAR_ROW_COUNT);
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
     cat_list_state_init(&ui->placeholder_list, 1);
-    ui->theme_index = jw__find_theme_index(initial_theme_name);
-    ui->pill_shape_index = 0;
-    ui->font_size_index = 1;  /* Default */
-    ui->show_hints = true;
-    ui->clock_style_index = 1;  /* 24 Hour default */
-    ui->show_battery = true;
-    ui->show_wifi = true;
+    ui->theme_index       = jw__find_theme_index(initial_theme_name);
+    ui->pill_shape_index  = 0;
+    ui->font_size_index   = 1;
+    ui->show_hints        = true;
+    ui->clock_style_index = 1;
+    ui->show_battery      = true;
+    ui->show_wifi         = true;
     ui->brightness_percent = 50;
 
-    /* Restore persisted appearance overrides. */
-    if (db_path && db_path[0]) {
+    if (db_path && db_path[0])
+        snprintf(ui->db_path, sizeof(ui->db_path), "%s", db_path);
+    if (socket_path && socket_path[0])
+        snprintf(ui->socket_path, sizeof(ui->socket_path), "%s", socket_path);
+
+    /* Restore persisted overrides. */
+    if (ui->db_path[0]) {
         char val[32];
         if (jw_db_get_setting(db_path, "pill_shape_index", val, sizeof(val)) == 0) {
             int idx = atoi(val);
@@ -109,9 +145,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 cat_get_theme()->pill_radius_ratio = kPillShapeValues[idx];
             }
         }
-        if (jw_db_get_setting(db_path, "accent_color", val, sizeof(val)) == 0 && val[0]) {
+        if (jw_db_get_setting(db_path, "accent_color", val, sizeof(val)) == 0 && val[0])
             cat_set_theme_color(val);
-        }
         if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0) {
             int idx = atoi(val);
             if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT) {
@@ -119,41 +154,33 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 cat_set_font_bump(kFontSizeValues[idx]);
             }
         }
-        if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0) {
+        if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0)
             ui->show_hints = (strcmp(val, "0") != 0);
-        }
         if (jw_db_get_setting(db_path, "clock_style_index", val, sizeof(val)) == 0) {
             int idx = atoi(val);
             if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
                 ui->clock_style_index = idx;
         }
-        if (jw_db_get_setting(db_path, "show_battery", val, sizeof(val)) == 0) {
+        if (jw_db_get_setting(db_path, "show_battery", val, sizeof(val)) == 0)
             ui->show_battery = (strcmp(val, "0") != 0);
-        }
-        if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0) {
+        if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
             ui->show_wifi = (strcmp(val, "0") != 0);
-        }
         if (jw_db_get_setting(db_path, "text_color", val, sizeof(val)) == 0 && val[0]) {
             ap_color c = cat_hex_to_color(val);
             ap_theme *t = cat_get_theme();
             t->text = c;
             t->highlighted_text = c;
         }
-        if (jw_db_get_setting(db_path, "bg_color", val, sizeof(val)) == 0 && val[0]) {
+        if (jw_db_get_setting(db_path, "bg_color", val, sizeof(val)) == 0 && val[0])
             cat_get_theme()->background = cat_hex_to_color(val);
-        }
     }
-    if (db_path && db_path[0])
-        snprintf(ui->db_path, sizeof(ui->db_path), "%s", db_path);
-    if (socket_path && socket_path[0])
-        snprintf(ui->socket_path, sizeof(ui->socket_path), "%s", socket_path);
+
     jw__refresh_brightness(ui);
 }
 
 void jw_settings_ui_enter(jw_settings_ui *ui) {
     if (!ui) return;
     ui->open = true;
-    /* Always re-enter at home; home cursor is preserved across enter/close. */
     ui->screen = JW_SETTINGS_HOME;
     jw__refresh_brightness(ui);
 }
@@ -181,7 +208,6 @@ void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *
         out->show_wifi = true;
         return;
     }
-    /* Clock style: 0=Off, 1=24h, 2=12h, 3=12h no AM/PM */
     if (ui->clock_style_index == 0) {
         out->show_clock = CAT_CLOCK_HIDE;
     } else {
@@ -193,52 +219,28 @@ void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *
     out->show_wifi = ui->show_wifi;
 }
 
-/* ─── Render ─────────────────────────────────────────────────────────────── */
+/* ─── Render helpers ───────────────────────────────────────────────────── */
 
 static void jw__draw_header(const char *title, int x, int y, int w) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
     int large_h = TTF_FontHeight(large);
     cat_draw_text_ellipsized(large, title, x + cat_scale(4), y, theme->text, w - cat_scale(8));
-    cat_draw_rect(x, y + large_h + cat_scale(4),
-                  w, 1, cat_hex_to_color("#ffffff20"));
+    cat_draw_rect(x, y + large_h + cat_scale(4), w, 1, cat_hex_to_color("#ffffff20"));
 }
 
-static void jw__render_home(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    ap_theme *theme = cat_get_theme();
-    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
-
-    jw__draw_header("Settings", x, y, w);
-    int header_h = TTF_FontHeight(large) + cat_scale(10);
-
-    int list_y = y + header_h;
-    int list_h = h - header_h;
-    int item_h = TTF_FontHeight(body) + cat_scale(12);
-
-    for (int i = 0; i < JW_SETTINGS_CATEGORY_COUNT; i++) {
-        int iy = list_y + i * item_h;
-        if (iy + item_h > list_y + list_h) break;
-        bool selected = (ui->home_list.cursor == i);
-        int pill_h = TTF_FontHeight(body) + cat_scale(6);
-        int pill_y = iy + (item_h - pill_h) / 2;
-        if (selected)
-            cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
-        ap_color tc = selected ? theme->highlighted_text : theme->text;
-        int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-        cat_draw_text_ellipsized(body, kCategoryLabels[i],
-                                  x + cat_scale(12), ty, tc, w - cat_scale(24));
-    }
+static int jw__header_h(void) {
+    return TTF_FontHeight(cat_get_font(CAT_FONT_LARGE)) + cat_scale(10);
 }
 
-static void jw__render_appearance_row(const jw_settings_ui *ui, int x, int y,
-                                      int w, int row, const char *label,
-                                      const char *value) {
+static void jw__render_list_row(const cat_list_state *list, int x, int y,
+                                int w, int row, const char *label,
+                                const char *value) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
     int iy = y + row * item_h;
-    bool selected = (ui->appearance_list.cursor == row);
+    bool selected = (list->cursor == row);
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (item_h - pill_h) / 2;
     if (selected)
@@ -251,112 +253,119 @@ static void jw__render_appearance_row(const jw_settings_ui *ui, int x, int y,
     cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
                               w / 2 - cat_scale(20));
 
-    char value_str[96];
-    snprintf(value_str, sizeof(value_str), "\xe2\x80\xb9 %s \xe2\x80\xba", value);
-    int vw = cat_measure_text(body, value_str);
-    int vx = x + w - vw - cat_scale(16);
-    if (vx < x + w / 2) vx = x + w / 2;
-    cat_draw_text(body, value_str, vx, ty, value_c);
+    if (value) {
+        char value_str[96];
+        snprintf(value_str, sizeof(value_str), "\xe2\x80\xb9 %s \xe2\x80\xba", value);
+        int vw = cat_measure_text(body, value_str);
+        int vx = x + w - vw - cat_scale(16);
+        if (vx < x + w / 2) vx = x + w / 2;
+        cat_draw_text(body, value_str, vx, ty, value_c);
+    }
+}
+
+static void jw__render_nav_row(const cat_list_state *list, int x, int y,
+                               int w, int row, const char *label) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    int iy = y + row * item_h;
+    bool selected = (list->cursor == row);
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (item_h - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
+
+    ap_color tc = selected ? theme->highlighted_text : theme->text;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, tc, w - cat_scale(24));
+}
+
+static void jw__render_color_swatch(int x, int list_y, int w, int row, ap_color c) {
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    int sz = cat_scale(14);
+    int sx = x + w - cat_scale(20) - sz;
+    int sy = list_y + row * item_h + (item_h - sz) / 2;
+    cat_draw_rect(sx, sy, sz, sz, c);
+}
+
+/* ─── Page renderers ───────────────────────────────────────────────────── */
+
+static void jw__render_home(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Settings", x, y, w);
+    int ly = y + jw__header_h();
+    for (int i = 0; i < JW_SETTINGS_CATEGORY_COUNT; i++)
+        jw__render_nav_row(&ui->home_list, x, ly, w, i, kHomeCategoryLabels[i]);
+    (void)h;
 }
 
 static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
     jw__draw_header("Appearance", x, y, w);
-    int header_h = TTF_FontHeight(large) + cat_scale(10);
-    int list_y = y + header_h;
+    int ly = y + jw__header_h();
+    jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_THEME,
+                        "Theme", kJawakaThemes[ui->theme_index]);
+    jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_COLORS, "Colors");
+    jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_LAYOUT, "Layout");
+    jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_STATUSBAR, "Status Bar");
+    (void)h;
+}
 
-    /* Row 0: Theme */
-    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_THEME,
-                              "Theme", kJawakaThemes[ui->theme_index]);
+static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    ap_theme *t = cat_get_theme();
+    jw__draw_header("Colors", x, y, w);
+    int ly = y + jw__header_h();
 
-    /* Row 1: Accent Color */
-    {
-        ap_theme *theme = cat_get_theme();
+    struct { const char *label; ap_color color; } rows[] = {
+        { "Accent",            t->accent },
+        { "Text",              t->text },
+        { "Secondary Text",    t->hint },
+        { "Selection",         t->highlight },
+        { "Background",        t->background },
+        { "Button Text",       t->button_label },
+        { "Button Background", t->button_glyph_bg },
+    };
+
+    for (int i = 0; i < JW_COLOR_ROW_COUNT; i++) {
         char hex[16];
         snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                 theme->accent.r, theme->accent.g, theme->accent.b);
-        jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_ACCENT,
-                                  "Accent Color", hex);
-
-        /* Draw a color swatch next to the value */
-        TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-        int item_h = TTF_FontHeight(body) + cat_scale(12);
-        int swatch_sz = cat_scale(14);
-        int swatch_x = x + w - cat_scale(20) - swatch_sz;
-        int swatch_y = list_y + JW_APPEARANCE_ACCENT * item_h +
-                       (item_h - swatch_sz) / 2;
-        cat_draw_rect(swatch_x, swatch_y, swatch_sz, swatch_sz, theme->accent);
+                 rows[i].color.r, rows[i].color.g, rows[i].color.b);
+        jw__render_list_row(&ui->colors_list, x, ly, w, i, rows[i].label, hex);
+        jw__render_color_swatch(x, ly, w, i, rows[i].color);
     }
+    (void)h;
+}
 
-    /* Row 2: List Style (pill shape) */
-    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_PILL_SHAPE,
-                              "List Style", kPillShapeLabels[ui->pill_shape_index]);
+static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Layout", x, y, w);
+    int ly = y + jw__header_h();
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
+                        "List Style", kPillShapeLabels[ui->pill_shape_index]);
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_SIZE,
+                        "Font Size", kFontSizeLabels[ui->font_size_index]);
+    (void)h;
+}
 
-    /* Row 3: Font Size */
-    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_FONT_SIZE,
-                              "Font Size", kFontSizeLabels[ui->font_size_index]);
-
-    /* Row 4: Show Hints */
-    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_SHOW_HINTS,
-                              "Button Hints", ui->show_hints ? "On" : "Off");
-
-    /* Row 5: Clock Style */
-    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_SHOW_CLOCK,
-                              "Clock", kClockStyleLabels[ui->clock_style_index]);
-
-    /* Row 6: Show Battery */
-    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_SHOW_BATTERY,
-                              "Show Battery", ui->show_battery ? "On" : "Off");
-
-    /* Row 7: Show Wifi */
-    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_SHOW_WIFI,
-                              "Show Wifi", ui->show_wifi ? "On" : "Off");
-
-    /* Row 8: Text Color */
-    {
-        ap_theme *t = cat_get_theme();
-        char hex[16];
-        snprintf(hex, sizeof(hex), "#%02X%02X%02X", t->text.r, t->text.g, t->text.b);
-        jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_TEXT_COLOR,
-                                  "Text Color", hex);
-        TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-        int item_h = TTF_FontHeight(body) + cat_scale(12);
-        int swatch_sz = cat_scale(14);
-        int swatch_x = x + w - cat_scale(20) - swatch_sz;
-        int swatch_y = list_y + JW_APPEARANCE_TEXT_COLOR * item_h +
-                       (item_h - swatch_sz) / 2;
-        cat_draw_rect(swatch_x, swatch_y, swatch_sz, swatch_sz, t->text);
-    }
-
-    /* Row 9: Background Color */
-    {
-        ap_theme *t = cat_get_theme();
-        char hex[16];
-        snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                 t->background.r, t->background.g, t->background.b);
-        jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_BG_COLOR,
-                                  "Background", hex);
-        TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-        int item_h = TTF_FontHeight(body) + cat_scale(12);
-        int swatch_sz = cat_scale(14);
-        int swatch_x = x + w - cat_scale(20) - swatch_sz;
-        int swatch_y = list_y + JW_APPEARANCE_BG_COLOR * item_h +
-                       (item_h - swatch_sz) / 2;
-        cat_draw_rect(swatch_x, swatch_y, swatch_sz, swatch_sz, t->background);
-    }
-
+static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Status Bar", x, y, w);
+    int ly = y + jw__header_h();
+    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_HINTS,
+                        "Button Hints", ui->show_hints ? "On" : "Off");
+    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_CLOCK,
+                        "Clock", kClockStyleLabels[ui->clock_style_index]);
+    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BATTERY,
+                        "Battery", ui->show_battery ? "On" : "Off");
+    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_WIFI,
+                        "Wifi", ui->show_wifi ? "On" : "Off");
     (void)h;
 }
 
 static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
-
     jw__draw_header("Display", x, y, w);
-    int header_h = TTF_FontHeight(large) + cat_scale(10);
+    int hh = jw__header_h();
     int item_h = TTF_FontHeight(body) + cat_scale(28);
-    int iy = y + header_h;
+    int iy = y + hh;
     bool selected = (ui->display_list.cursor == 0);
     int pill_h = item_h - cat_scale(6);
     int pill_y = iy + cat_scale(3);
@@ -386,49 +395,62 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
 
 static void jw__render_placeholder(const jw_settings_ui *ui, const char *title,
                                     int x, int y, int w, int h) {
-    ap_theme *theme = cat_get_theme();
-    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
-
     jw__draw_header(title, x, y, w);
-    int header_h = TTF_FontHeight(large) + cat_scale(10);
-
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int hh = jw__header_h();
     const char *msg = "Coming soon";
     int body_h = TTF_FontHeight(body);
     int mw = cat_measure_text(body, msg);
-    cat_draw_text(body, msg,
-                  x + (w - mw) / 2,
-                  y + header_h + (h - header_h - body_h) / 2,
-                  theme->hint);
+    cat_draw_text(body, msg, x + (w - mw) / 2,
+                  y + hh + (h - hh - body_h) / 2,
+                  cat_get_theme()->hint);
     (void)ui;
 }
 
+/* ─── Main render dispatch ─────────────────────────────────────────────── */
+
 void jw_settings_ui_render(const jw_settings_ui *ui,
                             int x, int y, int w, int h) {
-    if (!ui) return;
+    if (!ui || !ui->open) return;
     switch (ui->screen) {
-        case JW_SETTINGS_HOME:
-            jw__render_home(ui, x, y, w, h);
-            break;
-        case JW_SETTINGS_APPEARANCE:
-            jw__render_appearance(ui, x, y, w, h);
-            break;
-        case JW_SETTINGS_DISPLAY:
-            jw__render_display(ui, x, y, w, h);
-            break;
-        case JW_SETTINGS_LIBRARY:
-            jw__render_placeholder(ui, "Library", x, y, w, h);
-            break;
-        case JW_SETTINGS_BEHAVIOR:
-            jw__render_placeholder(ui, "Behavior", x, y, w, h);
-            break;
-        case JW_SETTINGS_ABOUT:
-            jw__render_placeholder(ui, "About", x, y, w, h);
-            break;
+        case JW_SETTINGS_HOME:       jw__render_home(ui, x, y, w, h);       break;
+        case JW_SETTINGS_APPEARANCE: jw__render_appearance(ui, x, y, w, h); break;
+        case JW_SETTINGS_COLORS:     jw__render_colors(ui, x, y, w, h);     break;
+        case JW_SETTINGS_LAYOUT:     jw__render_layout(ui, x, y, w, h);     break;
+        case JW_SETTINGS_STATUS_BAR: jw__render_statusbar(ui, x, y, w, h);  break;
+        case JW_SETTINGS_DISPLAY:    jw__render_display(ui, x, y, w, h);    break;
+        case JW_SETTINGS_LIBRARY:    jw__render_placeholder(ui, "Library", x, y, w, h);  break;
+        case JW_SETTINGS_BEHAVIOR:   jw__render_placeholder(ui, "Behavior", x, y, w, h); break;
+        case JW_SETTINGS_ABOUT:      jw__render_placeholder(ui, "About", x, y, w, h);    break;
     }
 }
 
-/* ─── Input handling ─────────────────────────────────────────────────────── */
+/* ─── Theme helpers ────────────────────────────────────────────────────── */
+
+static void jw__reapply_user_overrides(jw_settings_ui *ui) {
+    ap_theme *t = cat_get_theme();
+    t->pill_radius_ratio = kPillShapeValues[ui->pill_shape_index];
+
+    if (!ui->db_path[0]) return;
+
+    char val[32];
+    if (jw_db_get_setting(ui->db_path, "accent_color", val, sizeof(val)) == 0 && val[0])
+        t->accent = cat_hex_to_color(val);
+    if (jw_db_get_setting(ui->db_path, "text_color", val, sizeof(val)) == 0 && val[0]) {
+        t->text = cat_hex_to_color(val);
+        t->highlighted_text = t->text;
+    }
+    if (jw_db_get_setting(ui->db_path, "hint_color", val, sizeof(val)) == 0 && val[0])
+        t->hint = cat_hex_to_color(val);
+    if (jw_db_get_setting(ui->db_path, "highlight_color", val, sizeof(val)) == 0 && val[0])
+        t->highlight = cat_hex_to_color(val);
+    if (jw_db_get_setting(ui->db_path, "bg_color", val, sizeof(val)) == 0 && val[0])
+        t->background = cat_hex_to_color(val);
+    if (jw_db_get_setting(ui->db_path, "button_label_color", val, sizeof(val)) == 0 && val[0])
+        t->button_label = cat_hex_to_color(val);
+    if (jw_db_get_setting(ui->db_path, "button_glyph_bg_color", val, sizeof(val)) == 0 && val[0])
+        t->button_glyph_bg = cat_hex_to_color(val);
+}
 
 static bool jw__apply_theme(jw_settings_ui *ui, int new_index,
                              char *status_buf, size_t status_size,
@@ -443,12 +465,11 @@ static bool jw__apply_theme(jw_settings_ui *ui, int new_index,
         return false;
     }
 
-    /* Persist first only after a successful load. */
-    if (ui->db_path[0])
-        jw_db_set_setting(ui->db_path, "theme_name", name);
-
+    jw__persist(ui, "theme_name", name);
     cat_stylesheet_apply(&ss);
     ui->theme_index = new_index;
+
+    jw__reapply_user_overrides(ui);
 
     if (status_buf && status_size > 0)
         snprintf(status_buf, status_size, "theme: %s", name);
@@ -475,11 +496,24 @@ static void jw__change_brightness(jw_settings_ui *ui, int delta,
         ui->brightness_percent = jw_platform_clamp_brightness_percent(resolved);
         return;
     }
-
-    if (status_buf && status_size > 0) {
+    if (status_buf && status_size > 0)
         snprintf(status_buf, status_size, "%s", "brightness failed");
-    }
 }
+
+/* ─── Color picker helper ──────────────────────────────────────────────── */
+
+static bool jw__pick_color(jw_settings_ui *ui, ap_color *target,
+                           const char *db_key) {
+    ap_color picked;
+    if (cat_color_picker(*target, &picked) == CAT_OK) {
+        *target = picked;
+        jw__persist_color(ui, db_key, picked);
+        return true;
+    }
+    return false;
+}
+
+/* ─── Input dispatch ───────────────────────────────────────────────────── */
 
 bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                     char *status_buf, size_t status_size,
@@ -488,210 +522,178 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
     if (theme_changed) *theme_changed = false;
 
     switch (ui->screen) {
-        case JW_SETTINGS_HOME:
-            switch (button) {
-                case CAT_BTN_UP:
-                    cat_list_state_move(&ui->home_list, -1, JW_SETTINGS_CATEGORY_COUNT);
-                    break;
-                case CAT_BTN_DOWN:
-                    cat_list_state_move(&ui->home_list, +1, JW_SETTINGS_CATEGORY_COUNT);
-                    break;
-                case CAT_BTN_A: {
-                    int idx = ui->home_list.cursor;
-                    if (idx == 0) ui->screen = JW_SETTINGS_APPEARANCE;
-                    else if (idx == 1) ui->screen = JW_SETTINGS_DISPLAY;
-                    else if (idx == 2) ui->screen = JW_SETTINGS_LIBRARY;
-                    else if (idx == 3) ui->screen = JW_SETTINGS_BEHAVIOR;
-                    else if (idx == 4) ui->screen = JW_SETTINGS_ABOUT;
-                    break;
-                }
-                case CAT_BTN_B:
-                    jw_settings_ui_close(ui);
-                    return false;
-                default:
-                    break;
-            }
-            break;
 
-        case JW_SETTINGS_APPEARANCE:
-            switch (button) {
-                case CAT_BTN_UP:
-                    cat_list_state_move(&ui->appearance_list, -1, JW_APPEARANCE_ROW_COUNT);
-                    break;
-                case CAT_BTN_DOWN:
-                    cat_list_state_move(&ui->appearance_list, +1, JW_APPEARANCE_ROW_COUNT);
-                    break;
-                case CAT_BTN_LEFT:
-                case CAT_BTN_RIGHT: {
-                    int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
-                    int row = ui->appearance_list.cursor;
-                    if (row == JW_APPEARANCE_THEME) {
-                        jw__cycle_theme(ui, dir, status_buf, status_size, theme_changed);
-                        /* Reapply user overrides after theme change. */
-                        cat_get_theme()->pill_radius_ratio =
-                            kPillShapeValues[ui->pill_shape_index];
-                    } else if (row == JW_APPEARANCE_PILL_SHAPE) {
-                        int next = (ui->pill_shape_index + dir) % JW_SETTINGS_PILL_SHAPE_COUNT;
-                        if (next < 0) next += JW_SETTINGS_PILL_SHAPE_COUNT;
-                        ui->pill_shape_index = next;
-                        cat_get_theme()->pill_radius_ratio = kPillShapeValues[next];
-                        if (ui->db_path[0]) {
-                            char val[8];
-                            snprintf(val, sizeof(val), "%d", next);
-                            jw_db_set_setting(ui->db_path, "pill_shape_index", val);
-                        }
-                    } else if (row == JW_APPEARANCE_FONT_SIZE) {
-                        int next = (ui->font_size_index + dir) % JW_SETTINGS_FONT_SIZE_COUNT;
-                        if (next < 0) next += JW_SETTINGS_FONT_SIZE_COUNT;
-                        ui->font_size_index = next;
-                        cat_set_font_bump(kFontSizeValues[next]);
-                        if (ui->db_path[0]) {
-                            char val[8];
-                            snprintf(val, sizeof(val), "%d", next);
-                            jw_db_set_setting(ui->db_path, "font_size_index", val);
-                        }
-                    } else if (row == JW_APPEARANCE_SHOW_HINTS) {
-                        ui->show_hints = !ui->show_hints;
-                        if (ui->db_path[0])
-                            jw_db_set_setting(ui->db_path, "show_hints",
-                                              ui->show_hints ? "1" : "0");
-                    } else if (row == JW_APPEARANCE_SHOW_CLOCK) {
-                        int next = (ui->clock_style_index + dir + JW_SETTINGS_CLOCK_STYLE_COUNT) % JW_SETTINGS_CLOCK_STYLE_COUNT;
-                        ui->clock_style_index = next;
-                        if (ui->db_path[0]) {
-                            char val[8];
-                            snprintf(val, sizeof(val), "%d", next);
-                            jw_db_set_setting(ui->db_path, "clock_style_index", val);
-                        }
-                    } else if (row == JW_APPEARANCE_SHOW_BATTERY) {
-                        ui->show_battery = !ui->show_battery;
-                        if (ui->db_path[0])
-                            jw_db_set_setting(ui->db_path, "show_battery",
-                                              ui->show_battery ? "1" : "0");
-                    } else if (row == JW_APPEARANCE_SHOW_WIFI) {
-                        ui->show_wifi = !ui->show_wifi;
-                        if (ui->db_path[0])
-                            jw_db_set_setting(ui->db_path, "show_wifi",
-                                              ui->show_wifi ? "1" : "0");
-                    }
-                    break;
-                }
-                case CAT_BTN_A: {
-                    int row = ui->appearance_list.cursor;
-                    if (row == JW_APPEARANCE_THEME) {
-                        jw__cycle_theme(ui, +1, status_buf, status_size, theme_changed);
-                        cat_get_theme()->pill_radius_ratio =
-                            kPillShapeValues[ui->pill_shape_index];
-                    } else if (row == JW_APPEARANCE_ACCENT) {
-                        ap_color picked;
-                        if (cat_color_picker(cat_get_theme()->accent, &picked) == CAT_OK) {
-                            char hex[16];
-                            snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                     picked.r, picked.g, picked.b);
-                            cat_set_theme_color(hex);
-                            if (ui->db_path[0])
-                                jw_db_set_setting(ui->db_path, "accent_color", hex);
-                        }
-                    } else if (row == JW_APPEARANCE_PILL_SHAPE) {
-                        int next = (ui->pill_shape_index + 1) % JW_SETTINGS_PILL_SHAPE_COUNT;
-                        ui->pill_shape_index = next;
-                        cat_get_theme()->pill_radius_ratio = kPillShapeValues[next];
-                        if (ui->db_path[0]) {
-                            char val[8];
-                            snprintf(val, sizeof(val), "%d", next);
-                            jw_db_set_setting(ui->db_path, "pill_shape_index", val);
-                        }
-                    } else if (row == JW_APPEARANCE_FONT_SIZE) {
-                        int next = (ui->font_size_index + 1) % JW_SETTINGS_FONT_SIZE_COUNT;
-                        ui->font_size_index = next;
-                        cat_set_font_bump(kFontSizeValues[next]);
-                        if (ui->db_path[0]) {
-                            char val[8];
-                            snprintf(val, sizeof(val), "%d", next);
-                            jw_db_set_setting(ui->db_path, "font_size_index", val);
-                        }
-                    } else if (row == JW_APPEARANCE_SHOW_HINTS) {
-                        ui->show_hints = !ui->show_hints;
-                        if (ui->db_path[0])
-                            jw_db_set_setting(ui->db_path, "show_hints",
-                                              ui->show_hints ? "1" : "0");
-                    } else if (row == JW_APPEARANCE_SHOW_CLOCK) {
-                        int next = (ui->clock_style_index + 1) % JW_SETTINGS_CLOCK_STYLE_COUNT;
-                        ui->clock_style_index = next;
-                        if (ui->db_path[0]) {
-                            char val[8];
-                            snprintf(val, sizeof(val), "%d", next);
-                            jw_db_set_setting(ui->db_path, "clock_style_index", val);
-                        }
-                    } else if (row == JW_APPEARANCE_SHOW_BATTERY) {
-                        ui->show_battery = !ui->show_battery;
-                        if (ui->db_path[0])
-                            jw_db_set_setting(ui->db_path, "show_battery",
-                                              ui->show_battery ? "1" : "0");
-                    } else if (row == JW_APPEARANCE_SHOW_WIFI) {
-                        ui->show_wifi = !ui->show_wifi;
-                        if (ui->db_path[0])
-                            jw_db_set_setting(ui->db_path, "show_wifi",
-                                              ui->show_wifi ? "1" : "0");
-                    } else if (row == JW_APPEARANCE_TEXT_COLOR) {
-                        ap_color picked;
-                        if (cat_color_picker(cat_get_theme()->text, &picked) == CAT_OK) {
-                            char hex[16];
-                            snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                     picked.r, picked.g, picked.b);
-                            ap_theme *t = cat_get_theme();
-                            t->text = picked;
-                            t->highlighted_text = picked;
-                            if (ui->db_path[0])
-                                jw_db_set_setting(ui->db_path, "text_color", hex);
-                        }
-                    } else if (row == JW_APPEARANCE_BG_COLOR) {
-                        ap_color picked;
-                        if (cat_color_picker(cat_get_theme()->background, &picked) == CAT_OK) {
-                            char hex[16];
-                            snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                     picked.r, picked.g, picked.b);
-                            cat_get_theme()->background = picked;
-                            if (ui->db_path[0])
-                                jw_db_set_setting(ui->db_path, "bg_color", hex);
-                        }
-                    }
-                    break;
-                }
-                case CAT_BTN_B:
-                    ui->screen = JW_SETTINGS_HOME;
-                    break;
-                default:
-                    break;
+    /* ── Home ────────────────────────────────────────────────────────── */
+    case JW_SETTINGS_HOME:
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->home_list, -1, JW_SETTINGS_CATEGORY_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->home_list, +1, JW_SETTINGS_CATEGORY_COUNT); break;
+            case CAT_BTN_A: {
+                int idx = ui->home_list.cursor;
+                if (idx == 0) ui->screen = JW_SETTINGS_APPEARANCE;
+                else if (idx == 1) ui->screen = JW_SETTINGS_DISPLAY;
+                else if (idx == 2) ui->screen = JW_SETTINGS_LIBRARY;
+                else if (idx == 3) ui->screen = JW_SETTINGS_BEHAVIOR;
+                else if (idx == 4) ui->screen = JW_SETTINGS_ABOUT;
+                break;
             }
-            break;
+            case CAT_BTN_B:
+                jw_settings_ui_close(ui);
+                return false;
+            default: break;
+        }
+        break;
 
-        case JW_SETTINGS_DISPLAY:
-            switch (button) {
-                case CAT_BTN_LEFT:
-                    jw__change_brightness(ui, -JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
-                                          status_buf, status_size);
-                    break;
-                case CAT_BTN_RIGHT:
-                case CAT_BTN_A:
-                    jw__change_brightness(ui, JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
-                                          status_buf, status_size);
-                    break;
-                case CAT_BTN_B:
-                    ui->screen = JW_SETTINGS_HOME;
-                    break;
-                default:
-                    break;
+    /* ── Appearance sub-menu ─────────────────────────────────────────── */
+    case JW_SETTINGS_APPEARANCE:
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->appearance_list, -1, JW_APPEAR_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->appearance_list, +1, JW_APPEAR_ROW_COUNT); break;
+            case CAT_BTN_LEFT:
+                if (ui->appearance_list.cursor == JW_APPEAR_THEME)
+                    jw__cycle_theme(ui, -1, status_buf, status_size, theme_changed);
+                break;
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A: {
+                int row = ui->appearance_list.cursor;
+                if (row == JW_APPEAR_THEME)
+                    jw__cycle_theme(ui, +1, status_buf, status_size, theme_changed);
+                else if (row == JW_APPEAR_COLORS)   ui->screen = JW_SETTINGS_COLORS;
+                else if (row == JW_APPEAR_LAYOUT)   ui->screen = JW_SETTINGS_LAYOUT;
+                else if (row == JW_APPEAR_STATUSBAR) ui->screen = JW_SETTINGS_STATUS_BAR;
+                break;
             }
-            break;
-
-        case JW_SETTINGS_LIBRARY:
-        case JW_SETTINGS_BEHAVIOR:
-        case JW_SETTINGS_ABOUT:
-            if (button == CAT_BTN_B)
+            case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_HOME;
-            break;
+                break;
+            default: break;
+        }
+        break;
+
+    /* ── Colors ──────────────────────────────────────────────────────── */
+    case JW_SETTINGS_COLORS:
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->colors_list, -1, JW_COLOR_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->colors_list, +1, JW_COLOR_ROW_COUNT); break;
+            case CAT_BTN_A: {
+                ap_theme *t = cat_get_theme();
+                int row = ui->colors_list.cursor;
+                if (row == JW_COLOR_ACCENT) {
+                    if (jw__pick_color(ui, &t->accent, "accent_color"))
+                        cat_set_theme_color(NULL); /* force re-derive */
+                } else if (row == JW_COLOR_TEXT) {
+                    if (jw__pick_color(ui, &t->text, "text_color"))
+                        t->highlighted_text = t->text;
+                } else if (row == JW_COLOR_HINT) {
+                    jw__pick_color(ui, &t->hint, "hint_color");
+                } else if (row == JW_COLOR_HIGHLIGHT) {
+                    jw__pick_color(ui, &t->highlight, "highlight_color");
+                } else if (row == JW_COLOR_BACKGROUND) {
+                    jw__pick_color(ui, &t->background, "bg_color");
+                } else if (row == JW_COLOR_BTN_TEXT) {
+                    jw__pick_color(ui, &t->button_label, "button_label_color");
+                } else if (row == JW_COLOR_BTN_BG) {
+                    jw__pick_color(ui, &t->button_glyph_bg, "button_glyph_bg_color");
+                }
+                break;
+            }
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_APPEARANCE;
+                break;
+            default: break;
+        }
+        break;
+
+    /* ── Layout ──────────────────────────────────────────────────────── */
+    case JW_SETTINGS_LAYOUT:
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->layout_list, -1, JW_LAYOUT_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->layout_list, +1, JW_LAYOUT_ROW_COUNT); break;
+            case CAT_BTN_LEFT:
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A: {
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
+                int row = ui->layout_list.cursor;
+                if (row == JW_LAYOUT_PILL_SHAPE) {
+                    int next = (ui->pill_shape_index + dir + JW_SETTINGS_PILL_SHAPE_COUNT) % JW_SETTINGS_PILL_SHAPE_COUNT;
+                    ui->pill_shape_index = next;
+                    cat_get_theme()->pill_radius_ratio = kPillShapeValues[next];
+                    jw__persist_int(ui, "pill_shape_index", next);
+                } else if (row == JW_LAYOUT_FONT_SIZE) {
+                    int next = (ui->font_size_index + dir + JW_SETTINGS_FONT_SIZE_COUNT) % JW_SETTINGS_FONT_SIZE_COUNT;
+                    ui->font_size_index = next;
+                    cat_set_font_bump(kFontSizeValues[next]);
+                    jw__persist_int(ui, "font_size_index", next);
+                }
+                break;
+            }
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_APPEARANCE;
+                break;
+            default: break;
+        }
+        break;
+
+    /* ── Status Bar ──────────────────────────────────────────────────── */
+    case JW_SETTINGS_STATUS_BAR:
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->statusbar_list, -1, JW_STATUSBAR_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->statusbar_list, +1, JW_STATUSBAR_ROW_COUNT); break;
+            case CAT_BTN_LEFT:
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A: {
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
+                int row = ui->statusbar_list.cursor;
+                if (row == JW_STATUSBAR_HINTS) {
+                    ui->show_hints = !ui->show_hints;
+                    jw__persist_bool(ui, "show_hints", ui->show_hints);
+                } else if (row == JW_STATUSBAR_CLOCK) {
+                    int next = (ui->clock_style_index + dir + JW_SETTINGS_CLOCK_STYLE_COUNT) % JW_SETTINGS_CLOCK_STYLE_COUNT;
+                    ui->clock_style_index = next;
+                    jw__persist_int(ui, "clock_style_index", next);
+                } else if (row == JW_STATUSBAR_BATTERY) {
+                    ui->show_battery = !ui->show_battery;
+                    jw__persist_bool(ui, "show_battery", ui->show_battery);
+                } else if (row == JW_STATUSBAR_WIFI) {
+                    ui->show_wifi = !ui->show_wifi;
+                    jw__persist_bool(ui, "show_wifi", ui->show_wifi);
+                }
+                break;
+            }
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_APPEARANCE;
+                break;
+            default: break;
+        }
+        break;
+
+    /* ── Display (brightness) ────────────────────────────────────────── */
+    case JW_SETTINGS_DISPLAY:
+        switch (button) {
+            case CAT_BTN_LEFT:
+                jw__change_brightness(ui, -JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
+                                      status_buf, status_size);
+                break;
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A:
+                jw__change_brightness(ui, JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
+                                      status_buf, status_size);
+                break;
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default: break;
+        }
+        break;
+
+    /* ── Placeholders ────────────────────────────────────────────────── */
+    case JW_SETTINGS_LIBRARY:
+    case JW_SETTINGS_BEHAVIOR:
+    case JW_SETTINGS_ABOUT:
+        if (button == CAT_BTN_B)
+            ui->screen = JW_SETTINGS_HOME;
+        break;
     }
 
-    return true;
+    return ui->open;
 }
