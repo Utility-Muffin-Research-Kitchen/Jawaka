@@ -662,6 +662,48 @@ static void jw__apply_persisted_brightness(jw_daemon_state *state) {
     }
 }
 
+static void jw__persist_volume(jw_daemon_state *state, int percent) {
+    if (!state || !state->db_path) {
+        return;
+    }
+
+    char value[16];
+    snprintf(value, sizeof(value), "%d", percent);
+    if (jw_db_set_setting(state->db_path, "platform.volume_percent", value) != 0) {
+        jw_log_warn("could not persist volume setting");
+    }
+}
+
+static void jw__apply_persisted_volume(jw_daemon_state *state) {
+    char value[32];
+    if (!state || !state->db_path ||
+        jw_db_get_setting(state->db_path, "platform.volume_percent",
+                          value, sizeof(value)) != 0 ||
+        !value[0]) {
+        return;
+    }
+
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0')) {
+        jw_log_warn("ignoring invalid persisted volume: %s", value);
+        return;
+    }
+
+    int percent = (int)parsed;
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_VOLUME,
+                               percent, &result);
+    if (result.code == JW_PLATFORM_RESULT_OK) {
+        jw_log_info("applied persisted volume value=%d", result.has_value ? result.value : percent);
+    } else {
+        jw_log_warn("persisted volume apply failed: %s", result.message);
+    }
+}
+
 static int jw__osd_show_volume(jw_daemon_state *state, int percent) {
     if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
         return -1;
@@ -711,6 +753,7 @@ static void jw__input_volume_delta(void *userdata, int delta_percent) {
                                target, &result);
     if (result.code == JW_PLATFORM_RESULT_OK) {
         int resolved = result.has_value ? result.value : target;
+        jw__persist_volume(state, resolved);
         jw__osd_show_volume(state, resolved);
         jw_log_info("volume hotkey delta=%d value=%d", delta_percent, resolved);
     } else {
@@ -1036,6 +1079,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         jw_platform_result result;
         if (action == JW_PLATFORM_ACTION_SET_BRIGHTNESS) {
             jw__set_brightness(state, value, true, true, &result);
+        } else if (action == JW_PLATFORM_ACTION_SET_VOLUME) {
+            jw_platform_perform_action(&state->platform, action, value, &result);
+            if (result.code == JW_PLATFORM_RESULT_OK) {
+                int resolved = result.has_value ? result.value : value;
+                jw__persist_volume(state, resolved);
+            }
         } else {
             jw_platform_perform_action(&state->platform, action, value, &result);
         }
@@ -1273,6 +1322,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     jw__apply_persisted_brightness(&state);
+    jw__apply_persisted_volume(&state);
 
     if (jw_ipc_server_listen(state.socket_path, &state.server) != 0) {
         jw_log_error("could not bind socket: %s", state.socket_path);
