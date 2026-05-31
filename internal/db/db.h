@@ -12,7 +12,8 @@ typedef struct {
 } jw_library_summary;
 
 typedef struct {
-    char name[64];
+    char name[64];          /* system id / folder code, e.g. "FC" (used for DB queries) */
+    char display_name[64];  /* full name for display, e.g. "Famicom"; filled by the launcher */
     int  game_count;
 } jw_system_entry;
 

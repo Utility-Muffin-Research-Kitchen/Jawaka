@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 #include <limits.h>
 
@@ -100,7 +101,8 @@ typedef struct {
     int                app_count;
     jw_game_entry      games[JW_MAX_GAMES];
     int                game_count;
-    char               game_system[64];
+    char               game_system[64];          /* system id (for queries) */
+    char               game_system_display[64];  /* full name for the browser title */
     bool               games_open;
     bool               games_are_favorites;  /* browser is showing the Favorites list */
     cat_list_state     game_list;
@@ -140,6 +142,136 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
 /* Defined after the image helpers; used by the tabbed renderer above them. */
 static void jw__render_favorites(const jw_launcher_state *state,
                                  int content_y, int content_h, int margin);
+
+/* Strips trailing region/dump tags — " (USA)", " (E)", " [!]", etc. — from a
+   ROM name for display only. The stored name (derived from the filename) is
+   left intact so box-art matching and search keep working on the full name. */
+static void jw__clean_rom_name(const char *raw, char *out, size_t out_size) {
+    if (out_size == 0) return;
+    snprintf(out, out_size, "%s", raw ? raw : "");
+    int len = (int)strlen(out);
+    for (;;) {
+        while (len > 0 && (out[len - 1] == ' ' || out[len - 1] == '\t')) len--;
+        if (len == 0) break;
+        char close = out[len - 1];
+        char open = (close == ')') ? '(' : (close == ']') ? '[' : '\0';
+        if (open == '\0') break;              /* no trailing tag group */
+        int i = len - 2;
+        while (i >= 0 && out[i] != open) i--;
+        if (i < 0) break;                     /* unbalanced — leave as-is */
+        len = i;                              /* cut at the opening bracket */
+    }
+    while (len > 0 && (out[len - 1] == ' ' || out[len - 1] == '\t')) len--;
+    if (len <= 0) { snprintf(out, out_size, "%s", raw ? raw : ""); return; }
+    out[len] = '\0';
+}
+
+/* Draws a list-row name: the highlighted row scrolls its full name (looping
+   marquee) while every other row ellipsizes. Only one row is highlighted at a
+   time, so a single shared marquee state suffices; it resets whenever the
+   highlighted text changes (cursor move or switching lists). */
+static cat_marquee jw__row_marquee;
+static char        jw__row_marquee_text[256];
+static uint32_t    jw__row_marquee_ms;
+
+static void jw__draw_row_name(TTF_Font *font, const char *text, int x, int y,
+                              ap_color color, int max_w, bool selected) {
+    if (!selected) {
+        cat_draw_text_ellipsized(font, text, x, y, color, max_w);
+        return;
+    }
+    uint32_t now = SDL_GetTicks();
+    if (strcmp(text, jw__row_marquee_text) != 0) {
+        jw__row_marquee.elapsed_ms = 0;
+        snprintf(jw__row_marquee_text, sizeof(jw__row_marquee_text), "%s", text);
+        jw__row_marquee_ms = now;
+    }
+    uint32_t dt = (jw__row_marquee_ms == 0) ? 0u : (now - jw__row_marquee_ms);
+    jw__row_marquee_ms = now;
+    if (cat_draw_text_marquee(font, text, x, y, color, max_w, &jw__row_marquee, dt))
+        cat_request_frame();
+}
+
+/* Full console names for the system folder codes stored in the library. The
+   metadata catalog only carries terse labels and currently fails to load on
+   device (a core-less system row rejects the whole catalog), so display names
+   live here. Unknown ids fall back to the id itself. */
+static const struct { const char *id; const char *name; } kSystemDisplayNames[] = {
+    { "FC",      "Nintendo Entertainment System" },
+    { "NES",     "Nintendo Entertainment System" },
+    { "FDS",     "Famicom Disk System" },
+    { "SFC",     "Super Nintendo" },
+    { "SNES",    "Super Nintendo" },
+    { "SFC_JP",  "Super Famicom" },
+    { "N64",     "Nintendo 64" },
+    { "GB",      "Game Boy" },
+    { "GBC",     "Game Boy Color" },
+    { "GBA",     "Game Boy Advance" },
+    { "NDS",     "Nintendo DS" },
+    { "VB",      "Virtual Boy" },
+    { "MD",      "Sega Genesis" },
+    { "GENESIS", "Sega Genesis" },
+    { "MS",      "Sega Master System" },
+    { "GG",      "Game Gear" },
+    { "SEGACD",  "Sega CD" },
+    { "32X",     "Sega 32X" },
+    { "SATURN",  "Sega Saturn" },
+    { "DC",      "Dreamcast" },
+    { "SG1000",  "SG-1000" },
+    { "PCE",     "TurboGrafx-16" },
+    { "PCECD",   "TurboGrafx-CD" },
+    { "NEOGEO",  "Neo Geo" },
+    { "NGP",     "Neo Geo Pocket" },
+    { "NGPC",    "Neo Geo Pocket Color" },
+    { "WS",      "WonderSwan" },
+    { "WSC",     "WonderSwan Color" },
+    { "PS",      "PlayStation" },
+    { "PSX",     "PlayStation" },
+    { "PSP",     "PlayStation Portable" },
+    { "ATARI",   "Atari 2600" },
+    { "A2600",   "Atari 2600" },
+    { "A5200",   "Atari 5200" },
+    { "A7800",   "Atari 7800" },
+    { "SEVENTYEIGHTHUNDRED", "Atari 7800" },
+    { "LYNX",    "Atari Lynx" },
+    { "JAGUAR",  "Atari Jaguar" },
+    { "COLECO",  "ColecoVision" },
+    { "INTV",    "Intellivision" },
+    { "VECTREX", "Vectrex" },
+    { "C64",     "Commodore 64" },
+    { "AMIGA",   "Amiga" },
+    { "DOS",     "MS-DOS" },
+    { "MSX",     "MSX" },
+    { "ARCADE",  "Arcade" },
+    { "MAME",    "Arcade" },
+    { "FBNEO",   "Arcade" },
+    { "PORTS",   "Ports" },
+};
+
+/* Resolves a system id (folder code, e.g. "FC") to its full display name
+   (e.g. "Nintendo Entertainment System"). Falls back to the id when unknown. */
+static void jw__system_display_name(const jw_launcher_state *state, const char *id,
+                                    char *out, size_t out_size) {
+    (void)state;
+    if (out_size == 0) return;
+    snprintf(out, out_size, "%s", id ? id : "");
+    if (!id || !id[0]) return;
+    for (size_t i = 0; i < sizeof(kSystemDisplayNames) / sizeof(kSystemDisplayNames[0]); i++) {
+        if (strcasecmp(id, kSystemDisplayNames[i].id) == 0) {
+            snprintf(out, out_size, "%s", kSystemDisplayNames[i].name);
+            return;
+        }
+    }
+}
+
+/* Fills each listed system's display_name from the catalog after a scan/load. */
+static void jw__resolve_system_names(jw_launcher_state *state) {
+    for (int i = 0; i < state->system_count; i++) {
+        jw__system_display_name(state, state->systems[i].name,
+                                state->systems[i].display_name,
+                                sizeof(state->systems[i].display_name));
+    }
+}
 
 static void jw__draw_status_bar(const jw_launcher_state *state) {
     cat_status_bar_opts opts = {0};
@@ -208,7 +340,7 @@ static const char *jw__flat_label(const jw_launcher_state *state, int idx) {
     switch (it->kind) {
         case JW_FLAT_RECENTLY_PLAYED: return "Recently Played";
         case JW_FLAT_FAVORITES:       return "Favorites";
-        case JW_FLAT_SYSTEM:          return state->systems[it->system_idx].name;
+        case JW_FLAT_SYSTEM:          return state->systems[it->system_idx].display_name;
         case JW_FLAT_APPS:            return "Apps";
         case JW_FLAT_SETTINGS:        return "Settings";
         case JW_FLAT_TOOLS:           return "Tools";
@@ -243,6 +375,7 @@ static int jw__scan_library(const char *socket_path, const char *db_path,
     }
 
     jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
+    jw__resolve_system_names(state);
     jw_db_list_apps(db_path, state->apps, JW_MAX_APPS, &state->app_count);
 
     state->scan_ready = true;
@@ -308,8 +441,8 @@ static void jw__draw_game_item(int idx, int ix, int iy, int iw, int ih,
     int count_w  = cat_measure_text(small, count_str);
     int name_max = iw - count_w - CAT_S(24);
     int text_y   = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, ctx->systems[idx].name,
-        ix + CAT_S(10), text_y, name_c, name_max);
+    jw__draw_row_name(body, ctx->systems[idx].display_name,
+        ix + CAT_S(10), text_y, name_c, name_max, selected);
     int count_x = ix + iw - count_w - CAT_S(8);
     int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
     cat_draw_text(small, count_str, count_x, small_y, count_c);
@@ -328,8 +461,8 @@ static void jw__draw_app_item(int idx, int ix, int iy, int iw, int ih,
 
     ap_color name_c = selected ? theme->highlighted_text : theme->text;
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, ctx->apps[idx].name,
-        ix + CAT_S(10), text_y, name_c, iw - CAT_S(20));
+    jw__draw_row_name(body, ctx->apps[idx].name,
+        ix + CAT_S(10), text_y, name_c, iw - CAT_S(20), selected);
 }
 
 static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
@@ -337,7 +470,6 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
     jw__roms_ctx *ctx = (jw__roms_ctx *)user;
     ap_theme *theme   = cat_get_theme();
     TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small   = cat_get_font(CAT_FONT_SMALL);
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
@@ -345,17 +477,11 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
         cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
 
     ap_color name_c = selected ? theme->highlighted_text : theme->text;
-    ap_color path_c = selected ? theme->highlighted_text : theme->hint;
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
-    const char *name = ctx->games[idx].name;
-    const char *path = ctx->games[idx].rom_path;
-    int path_w = iw / 3;
-    int name_max = iw - path_w - CAT_S(32);
-    if (name_max < CAT_S(80)) {
-        path_w = 0;
-        name_max = iw - CAT_S(20);
-    }
+    char name[256];
+    jw__clean_rom_name(ctx->games[idx].name, name, sizeof(name));
+    int name_max = iw - CAT_S(20);
 
     int name_x = ix + CAT_S(10);
     if (ctx->games[idx].favorite) {
@@ -370,14 +496,7 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
         name_max -= advance;
     }
 
-    cat_draw_text_ellipsized(body, name, name_x, text_y, name_c, name_max);
-
-    if (path_w > 0 && path && path[0]) {
-        int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
-        cat_draw_text_ellipsized(small, path,
-            ix + iw - CAT_S(10) - path_w, small_y,
-            path_c, path_w);
-    }
+    jw__draw_row_name(body, name, name_x, text_y, name_c, name_max, selected);
 }
 
 static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
@@ -408,8 +527,12 @@ static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
     }
 
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, result->name,
-        ix + CAT_S(10), text_y, name_c, name_max);
+    char name[256];
+    if (result->kind == JW_SEARCH_APP)
+        snprintf(name, sizeof(name), "%s", result->name);
+    else
+        jw__clean_rom_name(result->name, name, sizeof(name));
+    jw__draw_row_name(body, name, ix + CAT_S(10), text_y, name_c, name_max, selected);
 
     int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
     if (meta_w > 0 && meta && meta[0]) {
@@ -456,7 +579,7 @@ static void jw__render_games(const jw_launcher_state *state,
     if (state->system_count > 0 && state->list.cursor < state->system_count) {
         const jw_system_entry *sys = &state->systems[state->list.cursor];
         jw__draw_system_preview(art_x, art_y, art_w, art_h,
-                                sys->name, sys->game_count);
+                                sys->display_name, sys->game_count);
     } else {
         cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
             cat_hex_to_color("#ffffff18"));
@@ -650,7 +773,7 @@ static void jw__draw_vert_item(int idx, int ix, int iy, int iw, int ih,
                  state->systems[it->system_idx].game_count);
         int count_w  = cat_measure_text(small, count_str);
         int name_max = iw - count_w - CAT_S(24);
-        cat_draw_text_ellipsized(body, label, ix + CAT_S(10), text_y, label_c, name_max);
+        jw__draw_row_name(body, label, ix + CAT_S(10), text_y, label_c, name_max, selected);
         int count_x = ix + iw - count_w - CAT_S(8);
         int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
         cat_draw_text(small, count_str, count_x, small_y, count_c);
@@ -675,7 +798,7 @@ static void jw__render_vertical_preview(const jw_launcher_state *state,
 
     if (it->kind == JW_FLAT_SYSTEM) {
         const jw_system_entry *sys = &state->systems[it->system_idx];
-        jw__draw_system_preview(px, py, pw, ph, sys->name, sys->game_count);
+        jw__draw_system_preview(px, py, pw, ph, sys->display_name, sys->game_count);
     } else {
         /* Non-system entries (Recents, Favorites, Apps, Settings): text only,
          * matches pre-icon behaviour. */
@@ -1488,8 +1611,34 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     if (state->games_are_favorites)
         snprintf(title, sizeof(title), "%s", "Favorites");
     else
-        snprintf(title, sizeof(title), "%s Games", state->game_system);
-    cat_draw_text_ellipsized(large, title, margin, CAT_S(6), theme->text, sw - margin * 2);
+        snprintf(title, sizeof(title), "%s", state->game_system_display);
+    /* Cap the title's visible width so it stops before the status bar
+       (top-right). Width adapts when the user hides battery/wifi/clock. */
+    cat_status_bar_opts title_sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &title_sb);
+    int title_max = sw - cat_get_status_bar_width(&title_sb) - margin * 3;
+    if (title_max < CAT_S(120)) title_max = CAT_S(120);
+
+    /* A title longer than title_max scrolls (looping marquee) instead of
+       truncating, so the full system name is always readable. State is
+       function-static (one browser at a time) and resets when the title
+       changes. */
+    {
+        static cat_marquee title_marquee;
+        static char        last_title[96] = "";
+        static uint32_t    last_ms = 0;
+        uint32_t now = SDL_GetTicks();
+        if (strcmp(title, last_title) != 0) {
+            title_marquee.elapsed_ms = 0;
+            snprintf(last_title, sizeof(last_title), "%s", title);
+            last_ms = now;
+        }
+        uint32_t dt = (last_ms == 0) ? 0u : (now - last_ms);
+        last_ms = now;
+        if (cat_draw_text_marquee(large, title, margin, CAT_S(6), theme->text,
+                                  title_max, &title_marquee, dt))
+            cat_request_frame();
+    }
 
     int list_x = margin;
     int list_w = sw * 58 / 100;
@@ -1513,6 +1662,8 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
     if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
         const jw_game_entry *game = &state->games[state->game_list.cursor];
+        char display[256];
+        jw__clean_rom_name(game->name, display, sizeof(display));
         bool drew_art = false;
         char image_abs[PATH_MAX];
         int image_w = 0;
@@ -1528,12 +1679,9 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
                 jw__draw_image_fit(tex, image_w, image_h, art_x, art_y, art_w, art_h);
 
                 int text_y = art_y + art_h + CAT_S(12);
-                cat_draw_text_ellipsized(large, game->name,
+                cat_draw_text_ellipsized(large, display,
                     detail_x + art_pad, text_y,
                     theme->text, detail_w - art_pad * 2);
-                cat_draw_text_ellipsized(small, game->rom_path,
-                    detail_x + art_pad, text_y + TTF_FontHeight(large) + CAT_S(8),
-                    theme->hint, detail_w - art_pad * 2);
                 drew_art = true;
             }
         }
@@ -1542,19 +1690,12 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
             int large_h = TTF_FontHeight(large);
             int max_w   = detail_w - margin * 2;
 
-            int name_w = cat_measure_text(large, game->name);
+            int name_w = cat_measure_text(large, display);
             if (name_w > max_w) name_w = max_w;
-            cat_draw_text_ellipsized(large, game->name,
+            cat_draw_text_ellipsized(large, display,
                 detail_x + (detail_w - name_w) / 2,
-                content_y + content_h / 2 - large_h,
+                content_y + content_h / 2 - large_h / 2,
                 theme->text, max_w);
-
-            int path_w = cat_measure_text(small, game->rom_path);
-            if (path_w > max_w) path_w = max_w;
-            cat_draw_text_ellipsized(small, game->rom_path,
-                detail_x + (detail_w - path_w) / 2,
-                content_y + content_h / 2 + CAT_S(8),
-                theme->hint, max_w);
         }
     }
 
@@ -1605,6 +1746,8 @@ static void jw__render_favorites(const jw_launcher_state *state,
 
     if (state->list.cursor >= state->favorites_count) return;
     const jw_game_entry *game = &state->favorites[state->list.cursor];
+    char display[256];
+    jw__clean_rom_name(game->name, display, sizeof(display));
 
     int art_pad = CAT_S(16);
     int art_h   = content_h * 68 / 100;
@@ -1617,7 +1760,7 @@ static void jw__render_favorites(const jw_launcher_state *state,
             jw__draw_image_fit(tex, image_w, image_h,
                 detail_x + art_pad, content_y + art_pad,
                 detail_w - art_pad * 2, art_h);
-            cat_draw_text_ellipsized(large, game->name,
+            cat_draw_text_ellipsized(large, display,
                 detail_x + art_pad, content_y + art_pad + art_h + CAT_S(12),
                 theme->text, detail_w - art_pad * 2);
             drew_art = true;
@@ -1626,9 +1769,9 @@ static void jw__render_favorites(const jw_launcher_state *state,
     if (!drew_art) {
         int large_h = TTF_FontHeight(large);
         int max_w   = detail_w - margin * 2;
-        int name_w  = cat_measure_text(large, game->name);
+        int name_w  = cat_measure_text(large, display);
         if (name_w > max_w) name_w = max_w;
-        cat_draw_text_ellipsized(large, game->name,
+        cat_draw_text_ellipsized(large, display,
             detail_x + (detail_w - name_w) / 2,
             content_y + content_h / 2 - large_h, theme->text, max_w);
     }
@@ -1882,6 +2025,8 @@ static int jw__open_system_games(const char *db_path, const char *system,
     }
 
     snprintf(state->game_system, sizeof(state->game_system), "%s", system);
+    jw__system_display_name(state, system, state->game_system_display,
+                            sizeof(state->game_system_display));
     state->games_are_favorites = false;
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
