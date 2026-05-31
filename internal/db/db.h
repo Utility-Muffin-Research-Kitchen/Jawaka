@@ -49,6 +49,12 @@ int  jw_db_apply_schema(sqlite3 *db);
 void jw_db_close(sqlite3 *db);
 
 int  jw_db_reset_library(sqlite3 *db);
+/* Non-destructive rescan helpers. scan_begin sets up per-scan "seen" tracking;
+   insert_game/insert_app upsert (preserving id) and record seen; scan_prune
+   removes only rows whose ROM/pak vanished plus any orphaned favorites/recents.
+   Call inside a transaction: scan_begin -> inserts... -> scan_prune. */
+int  jw_db_scan_begin(sqlite3 *db);
+int  jw_db_scan_prune(sqlite3 *db);
 int  jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path);
 int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version);
 int  jw_db_read_summary(const char *db_path, jw_library_summary *out);

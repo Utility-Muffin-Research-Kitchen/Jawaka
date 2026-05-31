@@ -613,9 +613,12 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
         return -1;
     }
 
-    if (jw_db_reset_library(db) != 0 ||
+    /* Non-destructive rescan: upsert keeps stable ids so favorites/recents
+       survive, then prune only the rows whose ROM/pak vanished from disk. */
+    if (jw_db_scan_begin(db) != 0 ||
         jw__scan_roms(db, sdcard_root, out) != 0 ||
         jw__scan_apps(db, sdcard_root, out) != 0 ||
+        jw_db_scan_prune(db) != 0 ||
         jw__exec(db, "COMMIT;") != 0) {
         jw__exec(db, "ROLLBACK;");
         return -1;

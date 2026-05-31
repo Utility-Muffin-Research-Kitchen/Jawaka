@@ -135,10 +135,30 @@ int jw_db_reset_library(sqlite3 *db) {
         "DELETE FROM apps; DELETE FROM games;");
 }
 
+/* Records a path in the per-scan "seen" temp table so jw_db_scan_prune can
+   later remove only the rows whose ROM/pak vanished from disk. The temp table
+   is created by jw_db_scan_begin. */
+static int jw__mark_seen(sqlite3 *db, const char *seen_sql, const char *path) {
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, seen_sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    return rc;
+}
+
 int jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path) {
+    /* Upsert keyed on the UNIQUE rom_path so an existing game keeps its id
+       across rescans (favorites/recents reference that id). Only the scanned
+       fields are updated; last_played and playtime_s are deliberately left
+       intact. */
     static const char *sql =
-        "INSERT OR REPLACE INTO games (system, name, rom_path, image_path) "
-        "VALUES (?, ?, ?, ?);";
+        "INSERT INTO games (system, name, rom_path, image_path) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(rom_path) DO UPDATE SET "
+        "system = excluded.system, name = excluded.name, image_path = excluded.image_path;";
     sqlite3_stmt *stmt = NULL;
 
     if (!db || !system || !name || !rom_path) {
@@ -160,13 +180,22 @@ int jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const c
 
     int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
     sqlite3_finalize(stmt);
-    return rc;
+    if (rc != 0) {
+        return -1;
+    }
+
+    return jw__mark_seen(db, "INSERT OR IGNORE INTO _seen_games (rom_path) VALUES (?);", rom_path);
 }
 
 int jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version) {
+    /* Upsert keyed on the UNIQUE pak_dir, mirroring jw_db_insert_game, so an
+       app keeps its id across rescans. */
     static const char *sql =
-        "INSERT OR REPLACE INTO apps (pak_dir, name, icon, platform, pak_version, min_jawaka_version) "
-        "VALUES (?, ?, ?, ?, ?, ?);";
+        "INSERT INTO apps (pak_dir, name, icon, platform, pak_version, min_jawaka_version) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(pak_dir) DO UPDATE SET "
+        "name = excluded.name, icon = excluded.icon, platform = excluded.platform, "
+        "pak_version = excluded.pak_version, min_jawaka_version = excluded.min_jawaka_version;";
     sqlite3_stmt *stmt = NULL;
 
     if (!db || !pak_dir || !name) {
@@ -186,7 +215,42 @@ int jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const c
 
     int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
     sqlite3_finalize(stmt);
-    return rc;
+    if (rc != 0) {
+        return -1;
+    }
+
+    return jw__mark_seen(db, "INSERT OR IGNORE INTO _seen_apps (pak_dir) VALUES (?);", pak_dir);
+}
+
+int jw_db_scan_begin(sqlite3 *db) {
+    if (!db) {
+        return -1;
+    }
+    /* Per-connection temp tables track which ROMs/paks the current scan saw.
+       Recreated-then-cleared each scan; dropped implicitly when the daemon
+       connection closes. */
+    return jw__exec(db,
+        "CREATE TEMP TABLE IF NOT EXISTS _seen_games (rom_path TEXT PRIMARY KEY);"
+        "CREATE TEMP TABLE IF NOT EXISTS _seen_apps (pak_dir TEXT PRIMARY KEY);"
+        "DELETE FROM _seen_games;"
+        "DELETE FROM _seen_apps;");
+}
+
+int jw_db_scan_prune(sqlite3 *db) {
+    if (!db) {
+        return -1;
+    }
+    /* Remove games/apps whose path was not seen this scan (deleted from disk);
+       the FTS delete triggers keep the search index in sync. Then drop any
+       favorites/recents that pointed at a now-removed row so they can never
+       resolve to the wrong entry after an id is later reused. */
+    return jw__exec(db,
+        "DELETE FROM games WHERE rom_path NOT IN (SELECT rom_path FROM _seen_games);"
+        "DELETE FROM apps WHERE pak_dir NOT IN (SELECT pak_dir FROM _seen_apps);"
+        "DELETE FROM favorites WHERE kind = 'game' AND target_id NOT IN (SELECT id FROM games);"
+        "DELETE FROM favorites WHERE kind = 'app'  AND target_id NOT IN (SELECT id FROM apps);"
+        "DELETE FROM recents   WHERE kind = 'game' AND target_id NOT IN (SELECT id FROM games);"
+        "DELETE FROM recents   WHERE kind = 'app'  AND target_id NOT IN (SELECT id FROM apps);");
 }
 
 static int jw__query_int(sqlite3 *db, const char *sql, int *out) {
