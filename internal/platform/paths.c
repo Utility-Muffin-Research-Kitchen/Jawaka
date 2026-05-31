@@ -274,6 +274,130 @@ static bool jw__retroarch_cfg_line_has_key(const char *line, size_t len, const c
     return len > 0 && *line == '=';
 }
 
+static bool jw__retroarch_cfg_line_key(const char *line, size_t len,
+                                       char *out, size_t out_size) {
+    if (!line || !out || out_size == 0) {
+        return false;
+    }
+
+    while (len > 0 && (*line == ' ' || *line == '\t')) {
+        line++;
+        len--;
+    }
+    if (len == 0 || *line == '#') {
+        return false;
+    }
+
+    const char *start = line;
+    size_t key_len = 0;
+    while (key_len < len && start[key_len] != '=' &&
+           start[key_len] != ' ' && start[key_len] != '\t') {
+        key_len++;
+    }
+    if (key_len == 0) {
+        return false;
+    }
+
+    const char *cursor = start + key_len;
+    size_t remain = len - key_len;
+    while (remain > 0 && (*cursor == ' ' || *cursor == '\t')) {
+        cursor++;
+        remain--;
+    }
+    if (remain == 0 || *cursor != '=') {
+        return false;
+    }
+
+    if (key_len >= out_size) {
+        key_len = out_size - 1u;
+    }
+    memcpy(out, start, key_len);
+    out[key_len] = '\0';
+    return true;
+}
+
+static bool jw__retroarch_cfg_key_is_protected(const char *key) {
+    static const char *protected_keys[] = {
+        "system_directory",
+        "savefile_directory",
+        "savestate_directory",
+        "libretro_directory",
+        "libretro_info_path",
+        "config_save_on_exit",
+        "network_cmd_enable",
+        "network_cmd_port",
+        "pause_nonactive",
+        "input_player1_joypad_index",
+    };
+
+    if (!key || !key[0]) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(protected_keys) / sizeof(protected_keys[0]); i++) {
+        if (strcmp(key, protected_keys[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool jw__retroarch_cfg_text_has_key(const char *text, const char *key) {
+    if (!text || !key || !key[0]) {
+        return false;
+    }
+
+    const char *line = text;
+    while (*line) {
+        const char *next = strchr(line, '\n');
+        size_t len = next ? (size_t)(next - line) : strlen(line);
+        if (jw__retroarch_cfg_line_has_key(line, len, key)) {
+            return true;
+        }
+        if (!next) {
+            break;
+        }
+        line = next + 1;
+    }
+    return false;
+}
+
+static int jw__write_retroarch_cfg_filtered(FILE *fp, const char *text,
+                                            const char *override_text,
+                                            bool dedupe) {
+    if (!fp || !text) {
+        return -1;
+    }
+
+    const char *line = text;
+    while (*line) {
+        const char *next = strchr(line, '\n');
+        size_t len = next ? (size_t)(next - line) : strlen(line);
+        char key[128];
+        bool has_key = jw__retroarch_cfg_line_key(line, len, key, sizeof(key));
+        bool skip = false;
+
+        if (has_key) {
+            skip = jw__retroarch_cfg_key_is_protected(key) ||
+                   (override_text && jw__retroarch_cfg_text_has_key(override_text, key)) ||
+                   (dedupe && next && jw__retroarch_cfg_text_has_key(next + 1, key));
+        } else if (len == strlen("# Jawaka protected runtime settings") &&
+                   strncmp(line, "# Jawaka protected runtime settings", len) == 0) {
+            skip = true;
+        }
+
+        if (!skip) {
+            fwrite(line, 1, len, fp);
+            fputc('\n', fp);
+        }
+        if (!next) {
+            break;
+        }
+        line = next + 1;
+    }
+
+    return ferror(fp) ? -1 : 0;
+}
+
 static int jw__write_text_file_contents_skip_key(FILE *fp, const char *path, const char *skip_key) {
     char *text = jw__read_text_file(path, 64u * 1024u);
     if (!text) {
@@ -304,6 +428,39 @@ static int jw__mkdir_child(const char *root, const char *name) {
         return -1;
     }
     return jw__mkdir_if_needed(path, 0755);
+}
+
+static int jw__copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        return -1;
+    }
+
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        return -1;
+    }
+
+    char buf[8192];
+    int failed = 0;
+    while (!feof(in)) {
+        size_t n = fread(buf, 1, sizeof(buf), in);
+        if (n > 0 && fwrite(buf, 1, n, out) != n) {
+            failed = 1;
+            break;
+        }
+        if (ferror(in)) {
+            failed = 1;
+            break;
+        }
+    }
+
+    if (fclose(out) != 0) {
+        failed = 1;
+    }
+    fclose(in);
+    return failed ? -1 : 0;
 }
 
 static const char *jw__username(void) {
@@ -424,6 +581,33 @@ char *jw_db_path(void) {
     char *db_path = jw__dup_printf("%s/library.db", state_dir);
     free(state_dir);
     return db_path;
+}
+
+char *jw_retroarch_state_dir(const char *sdcard_root) {
+    if (!sdcard_root || !sdcard_root[0]) {
+        return NULL;
+    }
+
+    char sdroot_abs[PATH_MAX];
+    if (!realpath(sdcard_root, sdroot_abs)) {
+        if (!jw__format_string(sdroot_abs, sizeof(sdroot_abs), "%s", sdcard_root)) {
+            return NULL;
+        }
+    }
+
+    if (jw__mkdir_child(sdroot_abs, ".umrk") != 0) {
+        return NULL;
+    }
+
+    char umrk_dir[PATH_MAX];
+    if (!jw__format_string(umrk_dir, sizeof(umrk_dir), "%s/.umrk", sdroot_abs)) {
+        return NULL;
+    }
+    if (jw__mkdir_child(umrk_dir, "retroarch") != 0) {
+        return NULL;
+    }
+
+    return jw__dup_printf("%s/retroarch", umrk_dir);
 }
 
 char *jw_retroarch_bin_path(void) {
@@ -698,6 +882,290 @@ static char *jw__core_info_dir(const char *core_path) {
     char *resolved = jw__dup_realpath_or_literal(info_dir);
     free(info_dir);
     return resolved;
+}
+
+static char *jw__default_info_dir(const char *sdcard_root, const char *core_dir) {
+    if (sdcard_root && sdcard_root[0]) {
+        char path[PATH_MAX];
+        if (jw__format_string(path, sizeof(path), "%s/UMRK/%s/info",
+                              sdcard_root, jw_platform_compiled_id()) &&
+            jw__is_directory(path)) {
+            return jw__dup_realpath_or_literal(path);
+        }
+    }
+
+    if (core_dir && core_dir[0]) {
+        char path[PATH_MAX];
+        if (jw__format_string(path, sizeof(path), "%s/../info", core_dir) &&
+            jw__is_directory(path)) {
+            return jw__dup_realpath_or_literal(path);
+        }
+    }
+
+    return NULL;
+}
+
+static char *jw__retroarch_shared_config_path(const char *sdcard_root) {
+    char *state_dir = jw_retroarch_state_dir(sdcard_root);
+    if (!state_dir) {
+        return NULL;
+    }
+
+    char *path = jw__dup_printf("%s/retroarch.cfg", state_dir);
+    free(state_dir);
+    return path;
+}
+
+static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs,
+                                                const char *core_path,
+                                                int player1_joypad_index,
+                                                bool persist_changes,
+                                                char *error, size_t error_size) {
+    if (!fp || !sdroot_abs || !sdroot_abs[0]) {
+        jw__set_error(error, error_size, "missing RetroArch config inputs");
+        return -1;
+    }
+
+    if (jw__mkdir_child(sdroot_abs, "BIOS") != 0 ||
+        jw__mkdir_child(sdroot_abs, "Saves") != 0 ||
+        jw__mkdir_child(sdroot_abs, "States") != 0) {
+        jw__set_error(error, error_size, "could not create RetroArch state folders");
+        return -1;
+    }
+
+    char system_dir[PATH_MAX];
+    char saves_dir[PATH_MAX];
+    char states_dir[PATH_MAX];
+    if (!jw__format_string(system_dir, sizeof(system_dir), "%s/BIOS", sdroot_abs) ||
+        !jw__format_string(saves_dir, sizeof(saves_dir), "%s/Saves", sdroot_abs) ||
+        !jw__format_string(states_dir, sizeof(states_dir), "%s/States", sdroot_abs)) {
+        jw__set_error(error, error_size, "RetroArch path too long");
+        return -1;
+    }
+
+    char core_dir_buf[PATH_MAX];
+    char *core_dir_alloc = NULL;
+    const char *core_dir = NULL;
+    if (core_path && core_path[0]) {
+        if (!jw__format_string(core_dir_buf, sizeof(core_dir_buf), "%s", core_path)) {
+            jw__set_error(error, error_size, "RetroArch core path too long");
+            return -1;
+        }
+        char *slash = strrchr(core_dir_buf, '/');
+        if (slash) {
+            *slash = '\0';
+        }
+        core_dir = core_dir_buf;
+    } else {
+        core_dir_alloc = jw__default_cores_dir();
+        core_dir = core_dir_alloc;
+    }
+
+    char *info_dir = NULL;
+    if (core_path && core_path[0]) {
+        info_dir = jw__core_info_dir(core_path);
+    } else {
+        info_dir = jw__default_info_dir(sdroot_abs, core_dir);
+    }
+
+    jw__retroarch_cfg_string(fp, "system_directory", system_dir);
+    jw__retroarch_cfg_string(fp, "savefile_directory", saves_dir);
+    jw__retroarch_cfg_string(fp, "savestate_directory", states_dir);
+    if (core_dir && core_dir[0]) {
+        jw__retroarch_cfg_string(fp, "libretro_directory", core_dir);
+    }
+    if (info_dir && jw__is_directory(info_dir)) {
+        jw__retroarch_cfg_string(fp, "libretro_info_path", info_dir);
+    }
+    jw__retroarch_cfg_string(fp, "config_save_on_exit", persist_changes ? "true" : "false");
+    jw__retroarch_cfg_string(fp, "network_cmd_enable", "true");
+    char command_port[16];
+    snprintf(command_port, sizeof(command_port), "%u", JW_RA_DEFAULT_PORT);
+    jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
+    jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
+    if (player1_joypad_index >= 0) {
+        char joypad_index[16];
+        snprintf(joypad_index, sizeof(joypad_index), "%d", player1_joypad_index);
+        jw__retroarch_cfg_string(fp, "input_player1_joypad_index", joypad_index);
+    }
+
+    free(core_dir_alloc);
+    free(info_dir);
+    return ferror(fp) ? -1 : 0;
+}
+
+char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_root,
+                                  const char *core_path, int player1_joypad_index,
+                                  bool persist_changes,
+                                  char *error, size_t error_size) {
+    jw__set_error(error, error_size, "");
+    if (!runtime_dir || !runtime_dir[0] || !sdcard_root || !sdcard_root[0]) {
+        jw__set_error(error, error_size, "missing RetroArch config inputs");
+        return NULL;
+    }
+
+    char sdroot_abs[PATH_MAX];
+    if (!realpath(sdcard_root, sdroot_abs)) {
+        if (!jw__format_string(sdroot_abs, sizeof(sdroot_abs), "%s", sdcard_root)) {
+            jw__set_error(error, error_size, "SD-card root path too long");
+            return NULL;
+        }
+    }
+
+    char *defaults_path = jw__platform_defaults_path(sdroot_abs, "retroarch.cfg");
+    char *shared_path = jw__retroarch_shared_config_path(sdroot_abs);
+    char *runtime_path = jw__dup_printf("%s/retroarch-current-%ld.cfg",
+                                        runtime_dir, (long)getpid());
+    char *defaults_text = NULL;
+    char *shared_text = NULL;
+    if (!shared_path || !runtime_path) {
+        free(defaults_path);
+        free(shared_path);
+        free(runtime_path);
+        jw__set_error(error, error_size, "could not resolve RetroArch config paths");
+        return NULL;
+    }
+
+    if (!jw__path_exists(shared_path) && defaults_path) {
+        if (jw__copy_file(defaults_path, shared_path) != 0) {
+            free(defaults_path);
+            free(shared_path);
+            free(runtime_path);
+            jw__set_error(error, error_size, "could not initialize shared RetroArch config");
+            return NULL;
+        }
+    }
+
+    if (defaults_path) {
+        defaults_text = jw__read_text_file(defaults_path, 256u * 1024u);
+    }
+    if (jw__path_exists(shared_path)) {
+        shared_text = jw__read_text_file(shared_path, 256u * 1024u);
+    }
+
+    FILE *fp = fopen(runtime_path, "wb");
+    if (!fp) {
+        free(defaults_path);
+        free(shared_path);
+        free(runtime_path);
+        free(defaults_text);
+        free(shared_text);
+        jw__set_error(error, error_size, "could not write RetroArch runtime config");
+        return NULL;
+    }
+
+    if (defaults_text) {
+        jw__write_retroarch_cfg_filtered(fp, defaults_text, shared_text, false);
+    }
+    if (shared_text) {
+        jw__write_retroarch_cfg_filtered(fp, shared_text, NULL, true);
+    }
+    fputs("\n# Jawaka protected runtime settings\n", fp);
+    int protected_rc = jw__write_retroarch_protected_config(fp, sdroot_abs, core_path,
+                                                           player1_joypad_index,
+                                                           persist_changes,
+                                                           error, error_size);
+
+    int failed = protected_rc != 0 || ferror(fp);
+    if (fclose(fp) != 0) {
+        failed = 1;
+    }
+
+    free(defaults_path);
+    free(shared_path);
+    free(defaults_text);
+    free(shared_text);
+    if (failed) {
+        unlink(runtime_path);
+        free(runtime_path);
+        if (error && error_size > 0 && !error[0]) {
+            jw__set_error(error, error_size, "could not finish RetroArch runtime config");
+        }
+        return NULL;
+    }
+
+    return runtime_path;
+}
+
+int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdcard_root,
+                               char *error, size_t error_size) {
+    jw__set_error(error, error_size, "");
+    if (!runtime_config_path || !runtime_config_path[0] ||
+        !sdcard_root || !sdcard_root[0]) {
+        jw__set_error(error, error_size, "missing RetroArch config backup inputs");
+        return -1;
+    }
+
+    char *shared_path = jw__retroarch_shared_config_path(sdcard_root);
+    if (!shared_path) {
+        jw__set_error(error, error_size, "could not resolve shared RetroArch config");
+        return -1;
+    }
+
+    char *runtime_text = jw__read_text_file(runtime_config_path, 256u * 1024u);
+    if (!runtime_text) {
+        free(shared_path);
+        jw__set_error(error, error_size, "could not read RetroArch runtime config");
+        return -1;
+    }
+
+    FILE *fp = fopen(shared_path, "wb");
+    if (!fp) {
+        free(runtime_text);
+        free(shared_path);
+        jw__set_error(error, error_size, "could not write shared RetroArch config");
+        return -1;
+    }
+
+    int rc = jw__write_retroarch_cfg_filtered(fp, runtime_text, NULL, true);
+    if (fclose(fp) != 0) {
+        rc = -1;
+    }
+    free(runtime_text);
+    free(shared_path);
+    if (rc != 0) {
+        jw__set_error(error, error_size, "could not save shared RetroArch config");
+        return -1;
+    }
+
+    return 0;
+}
+
+int jw_reset_retroarch_shared_config(const char *sdcard_root,
+                                     char *status, size_t status_size) {
+    jw__set_error(status, status_size, "");
+    if (!sdcard_root || !sdcard_root[0]) {
+        jw__set_error(status, status_size, "missing SD-card root");
+        return -1;
+    }
+
+    char sdroot_abs[PATH_MAX];
+    if (!realpath(sdcard_root, sdroot_abs)) {
+        if (!jw__format_string(sdroot_abs, sizeof(sdroot_abs), "%s", sdcard_root)) {
+            jw__set_error(status, status_size, "SD-card root path too long");
+            return -1;
+        }
+    }
+
+    char *defaults_path = jw__platform_defaults_path(sdroot_abs, "retroarch.cfg");
+    char *shared_path = jw__retroarch_shared_config_path(sdroot_abs);
+    if (!defaults_path || !shared_path) {
+        free(defaults_path);
+        free(shared_path);
+        jw__set_error(status, status_size, "packaged RetroArch defaults missing");
+        return -1;
+    }
+
+    int rc = jw__copy_file(defaults_path, shared_path);
+    free(defaults_path);
+    free(shared_path);
+    if (rc != 0) {
+        jw__set_error(status, status_size, "could not reset RetroArch config");
+        return -1;
+    }
+
+    jw__set_error(status, status_size, "RetroArch config reset");
+    return 0;
 }
 
 char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdcard_root,

@@ -28,6 +28,10 @@ int jw_ipc_launch_game(const char *socket_path, const char *system,
 int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
                       char *status, int status_len);
 
+/* Reset the shared RetroArch config back to packaged platform defaults. */
+int jw_ipc_reset_retroarch_config(const char *socket_path,
+                                  char *status, int status_len);
+
 /* Ask jawakad to shut down. Returns 0 on success. */
 int jw_ipc_shutdown(const char *socket_path);
 

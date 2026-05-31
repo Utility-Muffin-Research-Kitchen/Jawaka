@@ -114,6 +114,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->layout_list,      JW_LAYOUT_ROW_COUNT);
     cat_list_state_init(&ui->statusbar_list,   JW_STATUSBAR_ROW_COUNT);
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
+    cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
     cat_list_state_init(&ui->placeholder_list, 1);
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
     ui->pill_shape_index  = 0;
@@ -415,6 +416,14 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     (void)h;
 }
 
+static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Library", x, y, w);
+    int ly = y + jw__header_h();
+    jw__render_list_row(&ui->library_list, x, ly, w, JW_LIBRARY_RESET_RETROARCH,
+                        "Reset RetroArch Config", "Defaults");
+    (void)h;
+}
+
 static void jw__render_placeholder(const jw_settings_ui *ui, const char *title,
                                     int x, int y, int w, int h) {
     jw__draw_header(title, x, y, w);
@@ -441,7 +450,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_LAYOUT:     jw__render_layout(ui, x, y, w, h);     break;
         case JW_SETTINGS_STATUS_BAR: jw__render_statusbar(ui, x, y, w, h);  break;
         case JW_SETTINGS_DISPLAY:    jw__render_display(ui, x, y, w, h);    break;
-        case JW_SETTINGS_LIBRARY:    jw__render_placeholder(ui, "Library", x, y, w, h);  break;
+        case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_placeholder(ui, "Behavior", x, y, w, h); break;
         case JW_SETTINGS_ABOUT:      jw__render_placeholder(ui, "About", x, y, w, h);    break;
     }
@@ -569,6 +578,34 @@ static bool jw__pick_color(jw_settings_ui *ui, ap_color *target,
         return true;
     }
     return false;
+}
+
+static bool jw__confirm_retroarch_reset(void) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Reset", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = "Reset shared RetroArch config to packaged defaults?",
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static void jw__reset_retroarch_config(jw_settings_ui *ui,
+                                       char *status_buf, size_t status_size) {
+    if (!ui || !status_buf || status_size == 0) {
+        return;
+    }
+
+    if (!jw__confirm_retroarch_reset()) {
+        snprintf(status_buf, status_size, "%s", "RetroArch reset canceled");
+        return;
+    }
+
+    jw_ipc_reset_retroarch_config(ui->socket_path, status_buf, (int)status_size);
 }
 
 /* ─── Input dispatch ───────────────────────────────────────────────────── */
@@ -744,8 +781,29 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         }
         break;
 
-    /* ── Placeholders ────────────────────────────────────────────────── */
+    /* ── Library ─────────────────────────────────────────────────────── */
     case JW_SETTINGS_LIBRARY:
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->library_list, -1, JW_LIBRARY_ROW_COUNT);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->library_list, +1, JW_LIBRARY_ROW_COUNT);
+                break;
+            case CAT_BTN_A:
+                if (ui->library_list.cursor == JW_LIBRARY_RESET_RETROARCH) {
+                    jw__reset_retroarch_config(ui, status_buf, status_size);
+                }
+                break;
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default:
+                break;
+        }
+        break;
+
+    /* ── Placeholders ────────────────────────────────────────────────── */
     case JW_SETTINGS_BEHAVIOR:
     case JW_SETTINGS_ABOUT:
         if (button == CAT_BTN_B)

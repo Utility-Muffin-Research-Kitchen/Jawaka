@@ -36,7 +36,7 @@ typedef struct {
     char system[64];
     char rom_path[PATH_MAX];
     char core_path[PATH_MAX];
-    char append_config_path[PATH_MAX];
+    char config_path[PATH_MAX];
 } jw_retroarch_session;
 
 typedef struct {
@@ -227,6 +227,47 @@ static int jw__spawn_osd(jw_daemon_state *state);
 static int jw__spawn_retroarch(jw_daemon_state *state);
 static int jw__spawn_app(jw_daemon_state *state);
 
+static void jw__publish_retroarch_input_env(jw_daemon_state *state) {
+    if (!state || !state->input_proxy.enabled ||
+        !state->input_proxy.virtual_event_path[0]) {
+        unsetenv("CAT_INPUT_WAKE_EVENT");
+        unsetenv("JAWAKA_RETROARCH_VIRTUAL_EVENT");
+        unsetenv("JAWAKA_RETROARCH_INPUT_DEVICE");
+        unsetenv("JAWAKA_RETROARCH_JOYPAD_INDEX");
+        return;
+    }
+
+    setenv("CAT_INPUT_WAKE_EVENT", state->input_proxy.virtual_event_path, 1);
+    setenv("JAWAKA_RETROARCH_VIRTUAL_EVENT",
+           state->input_proxy.virtual_event_path, 1);
+    if (state->input_proxy.device_name[0]) {
+        setenv("JAWAKA_RETROARCH_INPUT_DEVICE",
+               state->input_proxy.device_name, 1);
+    } else {
+        unsetenv("JAWAKA_RETROARCH_INPUT_DEVICE");
+    }
+
+    int joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);
+    if (joypad_index >= 0) {
+        char joypad_text[16];
+        snprintf(joypad_text, sizeof(joypad_text), "%d", joypad_index);
+        setenv("JAWAKA_RETROARCH_JOYPAD_INDEX", joypad_text, 1);
+        jw_log_info("RetroArch input proxy env: virtual=%s joypad_index=%d",
+                    state->input_proxy.virtual_event_path, joypad_index);
+    } else {
+        unsetenv("JAWAKA_RETROARCH_JOYPAD_INDEX");
+        jw_log_warn("RetroArch input proxy env: could not resolve joypad index for %s",
+                    state->input_proxy.virtual_event_path);
+    }
+}
+
+static void jw__publish_direct_input_env(void) {
+    unsetenv("CAT_INPUT_WAKE_EVENT");
+    unsetenv("JAWAKA_RETROARCH_VIRTUAL_EVENT");
+    unsetenv("JAWAKA_RETROARCH_INPUT_DEVICE");
+    setenv("JAWAKA_RETROARCH_JOYPAD_INDEX", "0", 1);
+}
+
 static void jw__retroarch_session_clear(jw_retroarch_session *session) {
     if (!session) {
         return;
@@ -238,7 +279,7 @@ static void jw__retroarch_session_clear(jw_retroarch_session *session) {
 static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         const char *system, const char *rom_path,
                                         const char *core_path,
-                                        const char *append_config_path) {
+                                        const char *config_path) {
     if (!state || pid <= 0) {
         return;
     }
@@ -251,12 +292,12 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     snprintf(session->system, sizeof(session->system), "%s", system ? system : "");
     snprintf(session->rom_path, sizeof(session->rom_path), "%s", rom_path ? rom_path : "");
     snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
-    snprintf(session->append_config_path, sizeof(session->append_config_path), "%s",
-             append_config_path ? append_config_path : "");
+    snprintf(session->config_path, sizeof(session->config_path), "%s",
+             config_path ? config_path : "");
 
-    jw_log_info("RetroArch session started pid=%d system=%s core=%s append_config=%s rom=%s",
+    jw_log_info("RetroArch session started pid=%d system=%s core=%s config=%s rom=%s",
                 (int)pid, session->system, session->core_path,
-                session->append_config_path, session->rom_path);
+                session->config_path, session->rom_path);
 }
 
 static long jw__retroarch_session_runtime_s(const jw_retroarch_session *session) {
@@ -299,6 +340,17 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
     } else {
         jw_log_warn("RetroArch session changed state pid=%d runtime_s=%ld status=%d system=%s rom=%s",
                     (int)pid, runtime_s, status, session->system, session->rom_path);
+    }
+
+    if (session->config_path[0]) {
+        char error[256];
+        if (jw_backup_retroarch_config(session->config_path, state->sdcard_root,
+                                       error, sizeof(error)) != 0) {
+            jw_log_warn("RetroArch shared config backup failed: %s",
+                        error[0] ? error : session->config_path);
+        } else {
+            jw_log_info("RetroArch shared config backed up from %s", session->config_path);
+        }
     }
 
     jw__retroarch_session_clear(session);
@@ -780,6 +832,34 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
     }
 }
 
+static void jw__start_input_proxy(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+
+    if (state->input_proxy.enabled) {
+        jw__publish_retroarch_input_env(state);
+        return;
+    }
+
+    if (jw_input_proxy_init(&state->input_proxy, jw__input_brightness_delta,
+                            jw__input_volume_delta, state) == 0) {
+        jw__publish_retroarch_input_env(state);
+    }
+}
+
+static void jw__suspend_input_proxy_for_app(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+
+    if (state->input_proxy.enabled) {
+        jw_log_info("input proxy: releasing grab for app launch");
+        jw_input_proxy_shutdown(&state->input_proxy);
+    }
+    jw__publish_direct_input_env();
+}
+
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     const char *name = jw__child_name(kind);
     if (!state || !name || kind == JW_CHILD_RETROARCH || kind == JW_CHILD_APP) {
@@ -834,9 +914,12 @@ static int jw__spawn_app(jw_daemon_state *state) {
         return -1;
     }
 
+    jw__suspend_input_proxy_for_app(state);
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
+        jw__start_input_proxy(state);
         state->pending_app = false;
         return -1;
     }
@@ -873,7 +956,9 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
 
     char *retroarch = jw_retroarch_bin_path();
     char *core = jw_retroarch_core_path_for_system(state->pending_launch_system);
-    char *append_config = NULL;
+    char *runtime_config = NULL;
+
+    jw__publish_retroarch_input_env(state);
 
     if (!retroarch || !jw__path_exists(retroarch)) {
         jw_log_error("RetroArch binary missing: %s", retroarch ? retroarch : "(null)");
@@ -911,12 +996,17 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         }
     }
 
-    append_config = jw_write_retroarch_append_config(state->runtime_dir,
-                                                     state->sdcard_root,
-                                                     core,
-                                                     player1_joypad_index);
-    if (!append_config) {
-        jw_log_error("could not write RetroArch appendconfig");
+    char config_error[256];
+    runtime_config = jw_prepare_retroarch_config(state->runtime_dir,
+                                                state->sdcard_root,
+                                                core,
+                                                player1_joypad_index,
+                                                true,
+                                                config_error,
+                                                sizeof(config_error));
+    if (!runtime_config) {
+        jw_log_error("could not prepare RetroArch config: %s",
+                     config_error[0] ? config_error : "unknown error");
         goto fail;
     }
 
@@ -930,7 +1020,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         char *const argv[] = {
             retroarch,
             "-L", core,
-            "--appendconfig", append_config,
+            "--config", runtime_config,
             rom_abs,
             NULL
         };
@@ -943,11 +1033,11 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     state->child_kind = JW_CHILD_RETROARCH;
     state->pending_launch = false;
     jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
-    jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs, core, append_config);
+    jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs, core, runtime_config);
 
     free(retroarch);
     free(core);
-    free(append_config);
+    free(runtime_config);
     return 0;
 
 fail:
@@ -955,7 +1045,7 @@ fail:
     jw__retroarch_session_clear(&state->retroarch_session);
     free(retroarch);
     free(core);
-    free(append_config);
+    free(runtime_config);
     return -1;
 }
 
@@ -1044,6 +1134,19 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         jw_log_info("launch-app requested pak=%s", pak_dir->valuestring);
         cJSON_Delete(root);
         return jw__reply_ok(client, "launch-app", NULL);
+    }
+
+    if (strcmp(type->valuestring, "reset-retroarch-config") == 0) {
+        char status[256];
+        if (jw_reset_retroarch_shared_config(state->sdcard_root,
+                                             status, sizeof(status)) != 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, status[0] ? status : "reset failed");
+        }
+
+        jw_log_info("reset-retroarch-config requested");
+        cJSON_Delete(root);
+        return jw__reply_ok(client, status[0] ? status : "reset-retroarch-config", NULL);
     }
 
     if (strcmp(type->valuestring, "platform-status") == 0) {
@@ -1182,6 +1285,10 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
 
     if (state->shutdown_requested || g_shutdown_requested) {
         return;
+    }
+
+    if (exited_kind == JW_CHILD_APP) {
+        jw__start_input_proxy(state);
     }
 
     /* Spawn-on-exit model: the launcher sends a pending action, then exits
@@ -1334,11 +1441,15 @@ int main(int argc, char *argv[]) {
     setenv("JAWAKA_RUNTIME_DIR", state.runtime_dir, 1);
     setenv("JAWAKA_SDCARD_ROOT", state.sdcard_root, 1);
     setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
-
-    if (jw_input_proxy_init(&state.input_proxy, jw__input_brightness_delta, jw__input_volume_delta, &state) == 0 &&
-        state.input_proxy.enabled && state.input_proxy.virtual_event_path[0]) {
-        setenv("CAT_INPUT_WAKE_EVENT", state.input_proxy.virtual_event_path, 1);
+    {
+        char runner_path[PATH_MAX];
+        if (snprintf(runner_path, sizeof(runner_path), "%s/jawaka-retroarch-runner",
+                     state.bin_dir) < (int)sizeof(runner_path)) {
+            setenv("JAWAKA_RETROARCH_RUNNER", runner_path, 1);
+        }
     }
+
+    jw__start_input_proxy(&state);
 
     jw_log_info("jawakad starting");
     jw_log_info("runtime dir: %s", state.runtime_dir);

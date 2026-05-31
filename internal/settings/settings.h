@@ -68,6 +68,10 @@ typedef enum {
 #define JW_STATUSBAR_WIFI    3
 #define JW_STATUSBAR_ROW_COUNT 4
 
+/* Library page */
+#define JW_LIBRARY_RESET_RETROARCH 0
+#define JW_LIBRARY_ROW_COUNT 1
+
 /* ─── State ────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -79,6 +83,7 @@ typedef struct {
     cat_list_state     layout_list;
     cat_list_state     statusbar_list;
     cat_list_state     display_list;
+    cat_list_state     library_list;
     cat_list_state     placeholder_list;
     int                theme_index;
     int                pill_shape_index;

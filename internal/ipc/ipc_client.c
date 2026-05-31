@@ -156,6 +156,39 @@ int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
     return 0;
 }
 
+int jw_ipc_reset_retroarch_config(const char *socket_path,
+                                  char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "reset-retroarch-config");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "RetroArch reset failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status && status_len > 0) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "RetroArch reset failed: %s", message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "RetroArch reset failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (status && status_len > 0) {
+        snprintf(status, (size_t)status_len, "%s", "RetroArch config reset");
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
 int jw_ipc_shutdown(const char *socket_path) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "shutdown");
