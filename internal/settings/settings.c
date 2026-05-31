@@ -41,6 +41,13 @@ const int kFontSizeValues[JW_SETTINGS_FONT_SIZE_COUNT] = {
     5,
 };
 
+const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT] = {
+    "Off",
+    "24 Hour",
+    "12 Hour",
+    "12 Hour (no AM/PM)",
+};
+
 static const char *kCategoryLabels[] = {
     "Appearance",
     "Display",
@@ -87,6 +94,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->pill_shape_index = 0;
     ui->font_size_index = 1;  /* Default */
     ui->show_hints = true;
+    ui->clock_style_index = 1;  /* 24 Hour default */
+    ui->show_battery = true;
+    ui->show_wifi = true;
     ui->brightness_percent = 50;
 
     /* Restore persisted appearance overrides. */
@@ -111,6 +121,26 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
         }
         if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0) {
             ui->show_hints = (strcmp(val, "0") != 0);
+        }
+        if (jw_db_get_setting(db_path, "clock_style_index", val, sizeof(val)) == 0) {
+            int idx = atoi(val);
+            if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
+                ui->clock_style_index = idx;
+        }
+        if (jw_db_get_setting(db_path, "show_battery", val, sizeof(val)) == 0) {
+            ui->show_battery = (strcmp(val, "0") != 0);
+        }
+        if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0) {
+            ui->show_wifi = (strcmp(val, "0") != 0);
+        }
+        if (jw_db_get_setting(db_path, "text_color", val, sizeof(val)) == 0 && val[0]) {
+            ap_color c = cat_hex_to_color(val);
+            ap_theme *t = cat_get_theme();
+            t->text = c;
+            t->highlighted_text = c;
+        }
+        if (jw_db_get_setting(db_path, "bg_color", val, sizeof(val)) == 0 && val[0]) {
+            cat_get_theme()->background = cat_hex_to_color(val);
         }
     }
     if (db_path && db_path[0])
@@ -140,6 +170,27 @@ bool jw_settings_ui_is_open(const jw_settings_ui *ui) {
 
 bool jw_settings_show_hints(const jw_settings_ui *ui) {
     return !ui || ui->show_hints;
+}
+
+void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!ui) {
+        out->show_clock = CAT_CLOCK_AUTO;
+        out->show_battery = true;
+        out->show_wifi = true;
+        return;
+    }
+    /* Clock style: 0=Off, 1=24h, 2=12h, 3=12h no AM/PM */
+    if (ui->clock_style_index == 0) {
+        out->show_clock = CAT_CLOCK_HIDE;
+    } else {
+        out->show_clock = CAT_CLOCK_SHOW;
+        out->use_24h = (ui->clock_style_index == 1);
+        out->no_ampm = (ui->clock_style_index == 3);
+    }
+    out->show_battery = ui->show_battery;
+    out->show_wifi = ui->show_wifi;
 }
 
 /* ─── Render ─────────────────────────────────────────────────────────────── */
@@ -248,6 +299,51 @@ static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w,
     /* Row 4: Show Hints */
     jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_SHOW_HINTS,
                               "Button Hints", ui->show_hints ? "On" : "Off");
+
+    /* Row 5: Clock Style */
+    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_SHOW_CLOCK,
+                              "Clock", kClockStyleLabels[ui->clock_style_index]);
+
+    /* Row 6: Show Battery */
+    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_SHOW_BATTERY,
+                              "Show Battery", ui->show_battery ? "On" : "Off");
+
+    /* Row 7: Show Wifi */
+    jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_SHOW_WIFI,
+                              "Show Wifi", ui->show_wifi ? "On" : "Off");
+
+    /* Row 8: Text Color */
+    {
+        ap_theme *t = cat_get_theme();
+        char hex[16];
+        snprintf(hex, sizeof(hex), "#%02X%02X%02X", t->text.r, t->text.g, t->text.b);
+        jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_TEXT_COLOR,
+                                  "Text Color", hex);
+        TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+        int item_h = TTF_FontHeight(body) + cat_scale(12);
+        int swatch_sz = cat_scale(14);
+        int swatch_x = x + w - cat_scale(20) - swatch_sz;
+        int swatch_y = list_y + JW_APPEARANCE_TEXT_COLOR * item_h +
+                       (item_h - swatch_sz) / 2;
+        cat_draw_rect(swatch_x, swatch_y, swatch_sz, swatch_sz, t->text);
+    }
+
+    /* Row 9: Background Color */
+    {
+        ap_theme *t = cat_get_theme();
+        char hex[16];
+        snprintf(hex, sizeof(hex), "#%02X%02X%02X",
+                 t->background.r, t->background.g, t->background.b);
+        jw__render_appearance_row(ui, x, list_y, w, JW_APPEARANCE_BG_COLOR,
+                                  "Background", hex);
+        TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+        int item_h = TTF_FontHeight(body) + cat_scale(12);
+        int swatch_sz = cat_scale(14);
+        int swatch_x = x + w - cat_scale(20) - swatch_sz;
+        int swatch_y = list_y + JW_APPEARANCE_BG_COLOR * item_h +
+                       (item_h - swatch_sz) / 2;
+        cat_draw_rect(swatch_x, swatch_y, swatch_sz, swatch_sz, t->background);
+    }
 
     (void)h;
 }
@@ -459,6 +555,24 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                         if (ui->db_path[0])
                             jw_db_set_setting(ui->db_path, "show_hints",
                                               ui->show_hints ? "1" : "0");
+                    } else if (row == JW_APPEARANCE_SHOW_CLOCK) {
+                        int next = (ui->clock_style_index + dir + JW_SETTINGS_CLOCK_STYLE_COUNT) % JW_SETTINGS_CLOCK_STYLE_COUNT;
+                        ui->clock_style_index = next;
+                        if (ui->db_path[0]) {
+                            char val[8];
+                            snprintf(val, sizeof(val), "%d", next);
+                            jw_db_set_setting(ui->db_path, "clock_style_index", val);
+                        }
+                    } else if (row == JW_APPEARANCE_SHOW_BATTERY) {
+                        ui->show_battery = !ui->show_battery;
+                        if (ui->db_path[0])
+                            jw_db_set_setting(ui->db_path, "show_battery",
+                                              ui->show_battery ? "1" : "0");
+                    } else if (row == JW_APPEARANCE_SHOW_WIFI) {
+                        ui->show_wifi = !ui->show_wifi;
+                        if (ui->db_path[0])
+                            jw_db_set_setting(ui->db_path, "show_wifi",
+                                              ui->show_wifi ? "1" : "0");
                     }
                     break;
                 }
@@ -501,6 +615,46 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                         if (ui->db_path[0])
                             jw_db_set_setting(ui->db_path, "show_hints",
                                               ui->show_hints ? "1" : "0");
+                    } else if (row == JW_APPEARANCE_SHOW_CLOCK) {
+                        int next = (ui->clock_style_index + 1) % JW_SETTINGS_CLOCK_STYLE_COUNT;
+                        ui->clock_style_index = next;
+                        if (ui->db_path[0]) {
+                            char val[8];
+                            snprintf(val, sizeof(val), "%d", next);
+                            jw_db_set_setting(ui->db_path, "clock_style_index", val);
+                        }
+                    } else if (row == JW_APPEARANCE_SHOW_BATTERY) {
+                        ui->show_battery = !ui->show_battery;
+                        if (ui->db_path[0])
+                            jw_db_set_setting(ui->db_path, "show_battery",
+                                              ui->show_battery ? "1" : "0");
+                    } else if (row == JW_APPEARANCE_SHOW_WIFI) {
+                        ui->show_wifi = !ui->show_wifi;
+                        if (ui->db_path[0])
+                            jw_db_set_setting(ui->db_path, "show_wifi",
+                                              ui->show_wifi ? "1" : "0");
+                    } else if (row == JW_APPEARANCE_TEXT_COLOR) {
+                        ap_color picked;
+                        if (cat_color_picker(cat_get_theme()->text, &picked) == CAT_OK) {
+                            char hex[16];
+                            snprintf(hex, sizeof(hex), "#%02X%02X%02X",
+                                     picked.r, picked.g, picked.b);
+                            ap_theme *t = cat_get_theme();
+                            t->text = picked;
+                            t->highlighted_text = picked;
+                            if (ui->db_path[0])
+                                jw_db_set_setting(ui->db_path, "text_color", hex);
+                        }
+                    } else if (row == JW_APPEARANCE_BG_COLOR) {
+                        ap_color picked;
+                        if (cat_color_picker(cat_get_theme()->background, &picked) == CAT_OK) {
+                            char hex[16];
+                            snprintf(hex, sizeof(hex), "#%02X%02X%02X",
+                                     picked.r, picked.g, picked.b);
+                            cat_get_theme()->background = picked;
+                            if (ui->db_path[0])
+                                jw_db_set_setting(ui->db_path, "bg_color", hex);
+                        }
                     }
                     break;
                 }

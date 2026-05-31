@@ -25,12 +25,21 @@ typedef enum {
 } jw_settings_screen;
 
 /* Appearance page rows. */
-#define JW_APPEARANCE_THEME      0
-#define JW_APPEARANCE_ACCENT     1
-#define JW_APPEARANCE_PILL_SHAPE 2
-#define JW_APPEARANCE_FONT_SIZE  3
-#define JW_APPEARANCE_SHOW_HINTS 4
-#define JW_APPEARANCE_ROW_COUNT  5
+#define JW_APPEARANCE_THEME       0
+#define JW_APPEARANCE_ACCENT      1
+#define JW_APPEARANCE_PILL_SHAPE  2
+#define JW_APPEARANCE_FONT_SIZE   3
+#define JW_APPEARANCE_SHOW_HINTS  4
+/* Clock style presets. */
+#define JW_SETTINGS_CLOCK_STYLE_COUNT 4
+extern const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT];
+
+#define JW_APPEARANCE_SHOW_CLOCK  5
+#define JW_APPEARANCE_SHOW_BATTERY 6
+#define JW_APPEARANCE_SHOW_WIFI   7
+#define JW_APPEARANCE_TEXT_COLOR  8
+#define JW_APPEARANCE_BG_COLOR   9
+#define JW_APPEARANCE_ROW_COUNT  10
 
 /* Font size presets: maps to font_bump values (0 = auto, additive). */
 #define JW_SETTINGS_FONT_SIZE_COUNT 4
@@ -48,6 +57,9 @@ typedef struct {
     int                pill_shape_index;
     int                font_size_index;
     bool               show_hints;
+    int                clock_style_index;  /* 0=Off, 1=24h, 2=12h, 3=12h no AM/PM */
+    bool               show_battery;
+    bool               show_wifi;
     int                brightness_percent;
     char               db_path[1024];
     char               socket_path[1024];
@@ -61,6 +73,7 @@ void jw_settings_ui_enter(jw_settings_ui *ui);
 void jw_settings_ui_close(jw_settings_ui *ui);
 bool jw_settings_ui_is_open(const jw_settings_ui *ui);
 bool jw_settings_show_hints(const jw_settings_ui *ui);
+void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *out);
 
 /* Render. Draws into the rect (x, y, w, h). */
 void jw_settings_ui_render(const jw_settings_ui *ui,

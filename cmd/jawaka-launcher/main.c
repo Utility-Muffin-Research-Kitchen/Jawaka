@@ -39,17 +39,7 @@ static inline const char *jw_hint_device(const char *desktop_key, const char *de
 #define JW_HINT(dk)            jw_hint(dk)
 #define JW_HINT_DEVICE(dk, vk) jw_hint_device(dk, vk)
 
-/* ─── Status bar ─────────────────────────────────────────────────────────── */
-
-static void jw__draw_status_bar(void) {
-    cat_status_bar_opts opts = {
-        .show_clock   = CAT_CLOCK_AUTO,
-        .use_24h      = false,
-        .show_battery = true,
-        .show_wifi    = true,
-    };
-    cat_draw_status_bar(&opts);
-}
+/* ─── Status bar — see jw__draw_status_bar after jw_launcher_state ──────── */
 
 /* ─── Tabbed mode ─────────────────────────────────────────────────────────── */
 
@@ -140,6 +130,16 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
                                 const jw_app_entry *app,
                                 int detail_x, int detail_y,
                                 int detail_w, int detail_h);
+
+static void jw__draw_status_bar(const jw_launcher_state *state) {
+    cat_status_bar_opts opts = {0};
+    jw_settings_status_bar_opts(&state->settings, &opts);
+    cat_draw_status_bar(&opts);
+}
+
+static int jw__footer_height(const jw_launcher_state *state) {
+    return jw_settings_show_hints(&state->settings) ? cat_get_footer_height() : 0;
+}
 
 static void jw__draw_footer(const jw_launcher_state *state,
                             cat_footer_item *items, int count) {
@@ -437,7 +437,7 @@ static void jw__render_games(const jw_launcher_state *state,
     }
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
+    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
     (void)margin;
 }
 
@@ -479,7 +479,7 @@ static void jw__render_apps(const jw_launcher_state *state,
     }
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
+    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
     (void)margin;
 }
 
@@ -497,20 +497,29 @@ static void jw__render_settings(const jw_launcher_state *state,
     jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    cat_draw_text_ellipsized(small, state->status, sx, status_y, theme->hint, sw_inner);
+    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, sx, status_y, theme->hint, sw_inner);
 }
 
 static void jw__render_tabbed(const jw_launcher_state *state) {
     cat_clear_screen();
     int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
+    int fh = jw__footer_height(state);
     int header_h = cat_get_tab_bar_height();
 
     cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
-    /* TODO: status bar in tabbed layout needs Catastrophe support —
-       either a taller tab bar, an inline icon strip, or a combined
-       cat_draw_tab_bar_with_status API. The current pill is too tall
-       for the tab bar height. */
+    {
+        /* Inline status icons in the tab bar. The status bar internally
+           centers icons within pill_h at pill_y, so we set y_override
+           such that the icons land vertically centered in the tab bar. */
+        int bar_h = cat_get_tab_bar_height();
+        int pill_h = CAT_DS(CAT__PILL_SIZE);
+        cat_status_bar_opts sb = {0};
+        jw_settings_status_bar_opts(&state->settings, &sb);
+        sb.no_pill    = true;
+        sb.use_y      = true;
+        sb.y_position = (bar_h - pill_h) / 2;
+        cat_draw_status_bar(&sb);
+    }
 
     int content_y = header_h;
     int content_h = sh - header_h - fh;
@@ -638,7 +647,7 @@ static void jw__render_vertical_preview(const jw_launcher_state *state,
 
 static void jw__render_vertical(const jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar();
+    jw__draw_status_bar(state);
 
     const cat_stylesheet *ss = cat_get_stylesheet();
     ap_theme *theme = cat_get_theme();
@@ -647,7 +656,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
 
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
+    int fh = jw__footer_height(state);
     int sb_h = CAT_DS(20);
     int margin = CAT_S(10);
 
@@ -675,7 +684,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
 
     /* Status line at bottom-left */
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    cat_draw_text_ellipsized(small, state->status, margin, status_y,
+    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, list_w - margin);
 
     /* Settings overlay (dims background + draws panel) */
@@ -879,7 +888,7 @@ static void jw__draw_tools_menu(jw_launcher_state *state) {
 
 static void jw__render_horizontal(jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar();
+    jw__draw_status_bar(state);
 
     const cat_stylesheet *ss = cat_get_stylesheet();
     ap_theme *theme = cat_get_theme();
@@ -887,7 +896,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
 
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
+    int fh = jw__footer_height(state);
 
     int skew = ss->launcher.carousel_skew;
 
@@ -931,7 +940,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
 
     /* Status line */
     int status_y = sh - fh - TTF_FontHeight(small);
-    cat_draw_text_ellipsized(small, state->status, CAT_S(12), status_y,
+    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, CAT_S(12), status_y,
                              theme->hint, sw / 2);
 
     /* Tools overlay */
@@ -1277,7 +1286,7 @@ static void jw__coverflow_start_anim(jw_launcher_state *state, int new_cursor) {
 
 static void jw__render_coverflow(jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar();
+    jw__draw_status_bar(state);
 
     const cat_stylesheet *ss = cat_get_stylesheet();
     ap_theme *theme    = cat_get_theme();
@@ -1286,7 +1295,7 @@ static void jw__render_coverflow(jw_launcher_state *state) {
 
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
+    int fh = jw__footer_height(state);
 
     int icon_c  = CAT_S(ss->launcher.coverflow_icon_size);
     int icon_s  = CAT_S(ss->launcher.coverflow_side_size);
@@ -1411,7 +1420,7 @@ static void jw__render_coverflow(jw_launcher_state *state) {
 
 static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar();
+    jw__draw_status_bar(state);
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
@@ -1420,7 +1429,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
+    int fh = jw__footer_height(state);
     int margin = CAT_S(12);
     int header_h = CAT_DS(30);
     int content_y = header_h + margin;
@@ -1498,7 +1507,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     }
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    cat_draw_text_ellipsized(small, state->status, margin, status_y,
+    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, sw - margin * 2);
 
     cat_footer_item footer[] = {
@@ -1513,7 +1522,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
 static void jw__render_app_browser(const jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar();
+    jw__draw_status_bar(state);
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
@@ -1522,7 +1531,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
 
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
+    int fh = jw__footer_height(state);
     int margin = CAT_S(12);
     int header_h = CAT_DS(30);
     int content_y = header_h + margin;
@@ -1558,7 +1567,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
     }
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    cat_draw_text_ellipsized(small, state->status, margin, status_y,
+    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, sw - margin * 2);
 
     cat_footer_item footer[] = {
@@ -1573,7 +1582,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
 
 static void jw__render_search(const jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar();
+    jw__draw_status_bar(state);
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
@@ -1582,7 +1591,7 @@ static void jw__render_search(const jw_launcher_state *state) {
 
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
-    int fh = cat_get_footer_height();
+    int fh = jw__footer_height(state);
     int margin = CAT_S(12);
     int header_h = CAT_DS(34);
     int content_y = header_h + margin;
@@ -1645,7 +1654,7 @@ static void jw__render_search(const jw_launcher_state *state) {
     }
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
-    cat_draw_text_ellipsized(small, state->status, margin, status_y,
+    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, sw - margin * 2);
 
     cat_footer_item footer[] = {
@@ -1691,8 +1700,8 @@ static void jw__render_launcher(jw_launcher_state *state) {
  * ACTION + INPUT
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-static int jw__game_browser_visible_rows(void) {
-    int fh = cat_get_footer_height();
+static int jw__game_browser_visible_rows(const jw_launcher_state *state) {
+    int fh = jw__footer_height(state);
     int content_h = cat_get_screen_height() - CAT_DS(30) - CAT_S(24) - fh;
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + CAT_S(12);
@@ -1700,8 +1709,8 @@ static int jw__game_browser_visible_rows(void) {
     return visible > 0 ? visible : 1;
 }
 
-static int jw__app_browser_visible_rows(void) {
-    int fh = cat_get_footer_height();
+static int jw__app_browser_visible_rows(const jw_launcher_state *state) {
+    int fh = jw__footer_height(state);
     int content_h = cat_get_screen_height() - CAT_DS(30) - CAT_S(24) - fh;
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + CAT_S(12);
@@ -1709,8 +1718,8 @@ static int jw__app_browser_visible_rows(void) {
     return visible > 0 ? visible : 1;
 }
 
-static int jw__search_visible_rows(void) {
-    int fh = cat_get_footer_height();
+static int jw__search_visible_rows(const jw_launcher_state *state) {
+    int fh = jw__footer_height(state);
     int content_h = cat_get_screen_height() - CAT_DS(34) - CAT_S(24) - fh;
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + CAT_S(12);
@@ -1726,13 +1735,13 @@ static int jw__perform_search(const char *db_path, jw_launcher_state *state,
     if (jw_db_search_library(db_path, state->search_query, state->search_results,
                              JW_MAX_SEARCH_RESULTS, &state->search_count) != 0) {
         state->search_open = true;
-        cat_list_state_init(&state->search_list, jw__search_visible_rows());
+        cat_list_state_init(&state->search_list, jw__search_visible_rows(state));
         snprintf(state->status, sizeof(state->status), "%s", "search failed");
         return -1;
     }
 
     state->search_open = true;
-    cat_list_state_init(&state->search_list, jw__search_visible_rows());
+    cat_list_state_init(&state->search_list, jw__search_visible_rows(state));
     cat_list_state_jump(&state->search_list, 0, state->search_count);
     snprintf(state->status, sizeof(state->status), "%d results", state->search_count);
     return 0;
@@ -1760,7 +1769,7 @@ static int jw__open_system_games(const char *db_path, const char *system,
 
     snprintf(state->game_system, sizeof(state->game_system), "%s", system);
     state->games_open = true;
-    cat_list_state_init(&state->game_list, jw__game_browser_visible_rows());
+    cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     snprintf(state->status, sizeof(state->status), "%d %s games",
              state->game_count, system);
@@ -1769,7 +1778,7 @@ static int jw__open_system_games(const char *db_path, const char *system,
 
 static void jw__open_apps(jw_launcher_state *state) {
     state->apps_open = true;
-    cat_list_state_init(&state->app_list, jw__app_browser_visible_rows());
+    cat_list_state_init(&state->app_list, jw__app_browser_visible_rows(state));
     cat_list_state_jump(&state->app_list, 0, state->app_count);
     if (state->app_count > 0) {
         snprintf(state->status, sizeof(state->status), "%d apps", state->app_count);
@@ -1944,7 +1953,7 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         state->flat_count = 0;
     }
 
-    int fh        = cat_get_footer_height();
+    int fh        = jw__footer_height(state);
     int sb_h      = CAT_DS(20);
     int margin    = CAT_S(10);
     int content_h = cat_get_screen_height() - sb_h - margin - fh - margin;
