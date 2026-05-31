@@ -327,6 +327,8 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "network_cmd_enable",
         "network_cmd_port",
         "pause_nonactive",
+        "screenshot_directory",
+        "savestate_thumbnail_enable",
 #ifdef PLATFORM_MLP1
         "video_driver",
         "video_context_driver",
@@ -925,6 +927,7 @@ static char *jw__retroarch_shared_config_path(const char *sdcard_root) {
 
 static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs,
                                                 const char *core_path,
+                                                const char *screenshot_dir,
                                                 int player1_joypad_index,
                                                 bool persist_changes,
                                                 char *error, size_t error_size) {
@@ -978,6 +981,13 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "system_directory", system_dir);
     jw__retroarch_cfg_string(fp, "savefile_directory", saves_dir);
     jw__retroarch_cfg_string(fp, "savestate_directory", states_dir);
+    /* Emit a PNG next to each savestate so the in-game menu can preview slots. */
+    jw__retroarch_cfg_string(fp, "savestate_thumbnail_enable", "true");
+    /* Steer manual/command screenshots to an ephemeral tmpfs dir the in-game
+       menu reads to show the paused game behind itself. */
+    if (screenshot_dir && screenshot_dir[0]) {
+        jw__retroarch_cfg_string(fp, "screenshot_directory", screenshot_dir);
+    }
     if (core_dir && core_dir[0]) {
         jw__retroarch_cfg_string(fp, "libretro_directory", core_dir);
     }
@@ -1074,8 +1084,17 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
     if (shared_text) {
         jw__write_retroarch_cfg_filtered(fp, shared_text, NULL, true);
     }
+    /* Ephemeral tmpfs dir for paused-frame screenshots the in-game menu reads.
+       Best-effort: if it can't be made, screenshots simply won't be steered. */
+    char shots_dir[PATH_MAX];
+    shots_dir[0] = '\0';
+    if (jw__mkdir_child(runtime_dir, "shots") == 0) {
+        jw__format_string(shots_dir, sizeof(shots_dir), "%s/shots", runtime_dir);
+    }
+
     fputs("\n# Jawaka protected runtime settings\n", fp);
     int protected_rc = jw__write_retroarch_protected_config(fp, sdroot_abs, core_path,
+                                                           shots_dir,
                                                            player1_joypad_index,
                                                            persist_changes,
                                                            error, error_size);

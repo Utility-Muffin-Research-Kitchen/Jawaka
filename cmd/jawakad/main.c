@@ -8,6 +8,7 @@
 #include "internal/platform/paths.h"
 #include "internal/retroarch/command.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
@@ -420,6 +421,44 @@ static int jw__request_open_menu(jw_daemon_state *state) {
     return 0;
 }
 
+static void jw__ingame_shots_dir(const jw_daemon_state *state, char *out, size_t out_size) {
+    out[0] = '\0';
+    if (state && state->runtime_dir) {
+        snprintf(out, out_size, "%s/shots", state->runtime_dir);
+    }
+}
+
+static void jw__clear_dir_files(const char *dir) {
+    if (!dir || !dir[0]) {
+        return;
+    }
+    DIR *d = opendir(dir);
+    if (!d) {
+        return;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name) < (int)sizeof(path)) {
+            unlink(path);
+        }
+    }
+    closedir(d);
+}
+
+/* Best-effort: drop stale shots and ask RetroArch to capture the current
+   (paused) frame into screenshot_directory. The resident menu reads the PNG to
+   show the dimmed game behind itself. Must never fail the menu open. */
+static void jw__capture_game_still(jw_daemon_state *state, jw_ra_client *client) {
+    char shots_dir[PATH_MAX];
+    jw__ingame_shots_dir(state, shots_dir, sizeof(shots_dir));
+    jw__clear_dir_files(shots_dir);
+    jw_ra_screenshot(client);
+}
+
 static int jw__request_open_in_game_menu(jw_daemon_state *state) {
     long long start_ms = jw__monotonic_ms();
     if (!state || !state->retroarch_session.active) {
@@ -440,6 +479,10 @@ static int jw__request_open_in_game_menu(jw_daemon_state *state) {
                     jw_ra_result_string(pause_result));
         return -1;
     }
+
+    /* Capture the paused frame for the menu background. Async on RA's side, so
+       it does not delay the show signal below. */
+    jw__capture_game_still(state, &client);
 
     bool warm = state->menu_pid > 0;
     long long show_start_ms = jw__monotonic_ms();
@@ -1085,6 +1128,17 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
             setenv("JAWAKA_INGAME_CORE", state->retroarch_session.core_path, 1);
         }
         setenv("JAWAKA_INGAME_AUTOSHOW", show_now ? "1" : "0", 1);
+        char dir_buf[PATH_MAX];
+        if (state->runtime_dir &&
+            snprintf(dir_buf, sizeof(dir_buf), "%s/shots", state->runtime_dir) <
+                (int)sizeof(dir_buf)) {
+            setenv("JAWAKA_INGAME_SHOTDIR", dir_buf, 1);
+        }
+        if (state->sdcard_root &&
+            snprintf(dir_buf, sizeof(dir_buf), "%s/States", state->sdcard_root) <
+                (int)sizeof(dir_buf)) {
+            setenv("JAWAKA_INGAME_STATEDIR", dir_buf, 1);
+        }
         char *const argv[] = { (char *)path, "--in-game", NULL };
         execv(path, argv);
         perror("execv");

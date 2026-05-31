@@ -492,6 +492,10 @@ jw_ra_result jw_ra_reset(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "RESET");
 }
 
+jw_ra_result jw_ra_screenshot(const jw_ra_client *client) {
+    return jw_ra_send_raw(client, "SCREENSHOT");
+}
+
 jw_ra_result jw_ra_save_state(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "SAVE_STATE");
 }

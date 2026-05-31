@@ -11,14 +11,17 @@
 #include "internal/settings/theme_resolve.h"
 
 #include <SDL2/SDL.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -169,6 +172,11 @@ typedef struct {
     bool                            show_hints;
     bool                            session_details_ready;
     jw_ipc_retroarch_session_info   session;
+    SDL_Texture                    *still_tex;       /* paused-game still behind the menu */
+    uint32_t                        still_shown_ms;  /* ticks when the still first drew (fade) */
+    bool                            still_done;      /* still loaded, or gave up looking */
+    SDL_Texture                    *thumb_tex;       /* selected-slot savestate thumbnail */
+    int                             thumb_slot;      /* slot thumb_tex is for (INT_MIN = none) */
 } jw_ingame_state;
 
 static void jw__render_menu(const jw_menu_state *state) {
@@ -317,6 +325,185 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
     }
 }
 
+/* Newest *.png in dir (by mtime). RA writes one screenshot per open into the
+   daemon-cleared shots dir, so "newest" is the paused frame we want. */
+static bool jw__newest_png(const char *dir, char *out, size_t out_size) {
+    if (!dir || !dir[0]) {
+        return false;
+    }
+    DIR *d = opendir(dir);
+    if (!d) {
+        return false;
+    }
+    bool found = false;
+    time_t best = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t n = strlen(ent->d_name);
+        if (n < 4 || strcmp(ent->d_name + n - 4, ".png") != 0) {
+            continue;
+        }
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name) >= (int)sizeof(path)) {
+            continue;
+        }
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size == 0) {
+            continue; /* skip a screenshot RA hasn't started writing yet */
+        }
+        if (!found || st.st_mtime >= best) {
+            best = st.st_mtime;
+            snprintf(out, out_size, "%s", path);
+            found = true;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+static SDL_Texture *jw__load_blend_texture(const char *path) {
+    SDL_Texture *tex = cat_load_image(path);
+    if (tex) {
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    }
+    return tex;
+}
+
+/* Pick up the paused-game still RetroArch wrote to JAWAKA_INGAME_SHOTDIR. Polled
+   from the visible loop until loaded or a short grace period elapses. */
+static void jw__ingame_poll_still(jw_ingame_state *state, uint32_t show_ticks) {
+    if (state->still_done) {
+        return;
+    }
+    const char *dir = getenv("JAWAKA_INGAME_SHOTDIR");
+    if (!dir || !dir[0]) {
+        state->still_done = true;
+        return;
+    }
+    char path[PATH_MAX];
+    if (jw__newest_png(dir, path, sizeof(path))) {
+        SDL_Texture *tex = jw__load_blend_texture(path);
+        if (tex) {
+            unlink(path); /* one-shot: don't re-show it on the next open */
+            if (state->still_tex) {
+                SDL_DestroyTexture(state->still_tex);
+            }
+            state->still_tex = tex;
+            state->still_shown_ms = SDL_GetTicks();
+            state->still_done = true;
+            cat_request_frame();
+            return;
+        }
+        /* Caught the PNG mid-write: leave it in place and retry next poll. */
+    }
+    if (SDL_GetTicks() - show_ticks > 3000) {
+        state->still_done = true; /* capture disabled or failed: stay on dark bg */
+    }
+}
+
+/* Locate the savestate thumbnail PNG for the active slot. RetroArch sorts
+   savestates into per-core subfolders (e.g. States/Genesis Plus GX/<rom>.state1)
+   and the thumbnail sits beside the state as <state>.png. We don't know the
+   core's display-name folder from here, so try the flat layout first, then each
+   subdir. Returns an existing path. */
+static bool jw__slot_thumb_path(const jw_ingame_state *state, char *out, size_t out_size) {
+    const char *dir = getenv("JAWAKA_INGAME_STATEDIR");
+    if (!dir || !dir[0] || !state->session.rom_path[0]) {
+        return false;
+    }
+    const char *base = strrchr(state->session.rom_path, '/');
+    base = base ? base + 1 : state->session.rom_path;
+    char stem[sizeof(state->session.rom_path)];
+    snprintf(stem, sizeof(stem), "%s", base);
+    char *dot = strrchr(stem, '.');
+    if (dot) {
+        *dot = '\0';
+    }
+    char name[sizeof(stem) + 32];
+    int slot = state->session.state_slot;
+    if (slot < 0) {
+        snprintf(name, sizeof(name), "%s.state.auto.png", stem);
+    } else if (slot == 0) {
+        snprintf(name, sizeof(name), "%s.state.png", stem);
+    } else {
+        snprintf(name, sizeof(name), "%s.state%d.png", stem, slot);
+    }
+
+    struct stat st;
+    /* Flat layout. */
+    if (snprintf(out, out_size, "%s/%s", dir, name) < (int)out_size &&
+        stat(out, &st) == 0 && S_ISREG(st.st_mode)) {
+        return true;
+    }
+    /* Per-core subfolders. */
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *ent;
+        while ((ent = readdir(d)) != NULL) {
+            if (ent->d_name[0] == '.') {
+                continue;
+            }
+            char sub[PATH_MAX];
+            if (snprintf(sub, sizeof(sub), "%s/%s", dir, ent->d_name) >= (int)sizeof(sub)) {
+                continue;
+            }
+            if (stat(sub, &st) != 0 || !S_ISDIR(st.st_mode)) {
+                continue;
+            }
+            if (snprintf(out, out_size, "%s/%s/%s", dir, ent->d_name, name) <
+                    (int)out_size &&
+                stat(out, &st) == 0 && S_ISREG(st.st_mode)) {
+                closedir(d);
+                return true;
+            }
+        }
+        closedir(d);
+    }
+    return false;
+}
+
+/* Keep thumb_tex in sync with the selected slot while the cursor is on
+   Save/Load. Attempts each slot once (thumb_tex stays NULL = placeholder). */
+static void jw__ingame_update_thumb(jw_ingame_state *state) {
+    bool on_slot = (state->list.cursor == JW_INGAME_SAVE ||
+                    state->list.cursor == JW_INGAME_LOAD) &&
+                   state->session.savestate_supported;
+    if (!on_slot) {
+        if (state->thumb_tex) {
+            SDL_DestroyTexture(state->thumb_tex);
+            state->thumb_tex = NULL;
+        }
+        state->thumb_slot = INT_MIN;
+        return;
+    }
+    if (state->thumb_slot == state->session.state_slot) {
+        return; /* already attempted this slot */
+    }
+    if (state->thumb_tex) {
+        SDL_DestroyTexture(state->thumb_tex);
+        state->thumb_tex = NULL;
+    }
+    state->thumb_slot = state->session.state_slot;
+    char path[PATH_MAX];
+    if (jw__slot_thumb_path(state, path, sizeof(path))) {
+        state->thumb_tex = jw__load_blend_texture(path); /* NULL -> placeholder */
+    }
+}
+
+static void jw__ingame_free_imagery(jw_ingame_state *state) {
+    if (state->still_tex) {
+        SDL_DestroyTexture(state->still_tex);
+        state->still_tex = NULL;
+    }
+    if (state->thumb_tex) {
+        SDL_DestroyTexture(state->thumb_tex);
+        state->thumb_tex = NULL;
+    }
+    state->still_done = false;
+    state->still_shown_ms = 0;
+    state->thumb_slot = INT_MIN;
+}
+
 static void jw__render_ingame_menu(const jw_ingame_state *state) {
     ap_theme *theme     = cat_get_theme();
     TTF_Font *body_font = cat_get_font(CAT_FONT_MEDIUM);
@@ -325,6 +512,23 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     cat_status_bar_opts sb = state->status_bar;
 
     cat_clear_screen();
+    /* Allium-style backdrop: the captured paused frame, dimmed by a scrim, with
+       a brief fade-in the first time it appears. Falls back to the flat dark
+       background when no still was captured. */
+    if (state->still_tex) {
+        int sw = cat_get_screen_width();
+        int sh = cat_get_screen_height();
+        uint8_t a = 255;
+        uint32_t el = SDL_GetTicks() - state->still_shown_ms;
+        if (el < 220) {
+            a = (uint8_t)(255u * el / 220u);
+            cat_request_frame(); /* keep ~60fps while the still fades in */
+        }
+        SDL_SetTextureAlphaMod(state->still_tex, a);
+        cat_draw_image(state->still_tex, 0, 0, sw, sh);
+        ap_color scrim = { 0, 0, 0, 150 };
+        cat_draw_rect(0, 0, sw, sh, scrim);
+    }
     cat_draw_screen_title("In-Game Menu", &sb);
 
     SDL_Rect content = cat_get_content_rect(true, true, false);
@@ -346,6 +550,11 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     int item_w    = list_w * 62 / 100;
     int detail_x  = x + item_w + CAT_S(14);
     int detail_w  = right - detail_x;
+    /* On Save/Load the right column shows a slot thumbnail preview instead of
+       the inline slot text. */
+    bool preview_active = (state->list.cursor == JW_INGAME_SAVE ||
+                           state->list.cursor == JW_INGAME_LOAD) &&
+                          state->session.savestate_supported;
     if (show_command) {
         top_y += small_h + line_gap;
     }
@@ -399,15 +608,52 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
 
         char detail[64];
         jw__ingame_detail(state, i, detail, sizeof(detail));
-        int label_w = detail[0] && detail_w > CAT_S(40)
-                    ? detail_x - x - CAT_S(10) : list_w - CAT_S(8);
+        bool show_detail = !preview_active && detail[0] && detail_w > CAT_S(40);
+        int label_w = show_detail ? detail_x - x - CAT_S(10)
+                    : (preview_active ? item_w - CAT_S(10) : list_w - CAT_S(8));
         cat_draw_text_ellipsized(body_font, kInGameItems[i], x, text_y,
                                  col, label_w);
-        if (detail[0] && detail_w > CAT_S(40)) {
+        if (show_detail) {
             cat_draw_text_ellipsized(small, detail, detail_x,
                                      text_y + CAT_S(2),
                                      sel ? theme->highlighted_text : theme->hint,
                                      detail_w);
+        }
+    }
+
+    /* Slot thumbnail preview (Save/Load): the saved image in the selected slot,
+       or a placeholder when the slot is empty. */
+    if (preview_active) {
+        int pv_x   = detail_x;
+        int pv_w   = right - pv_x;
+        int avail  = bottom_y - top_y;
+        int cap_h  = small_h + CAT_S(8);
+        int pv_h   = pv_w * 3 / 4;
+        if (pv_h > avail - cap_h) {
+            pv_h = avail - cap_h;
+        }
+        /* Align with the top of the menu list rather than centering, so the
+           preview sits high next to the first rows. */
+        int pv_y = top_y;
+        if (pv_w > CAT_S(60) && pv_h > CAT_S(40)) {
+            ap_color frame = { 0, 0, 0, 180 };
+            cat_draw_rect(pv_x, pv_y, pv_w, pv_h, frame);
+            if (state->thumb_tex) {
+                cat_draw_image(state->thumb_tex, pv_x, pv_y, pv_w, pv_h);
+            } else {
+                cat_draw_text_ellipsized(small, "No save in this slot",
+                                         pv_x + CAT_S(8),
+                                         pv_y + pv_h / 2 - small_h / 2,
+                                         theme->hint, pv_w - CAT_S(16));
+            }
+            char cap[32];
+            if (state->session.state_slot < 0) {
+                snprintf(cap, sizeof(cap), "Slot Auto");
+            } else {
+                snprintf(cap, sizeof(cap), "Slot %d", state->session.state_slot);
+            }
+            cat_draw_text_ellipsized(small, cap, pv_x, pv_y + pv_h + CAT_S(4),
+                                     theme->text, pv_w);
         }
     }
 
@@ -607,6 +853,7 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
     jw_ingame_state state;
     memset(&state, 0, sizeof(state));
     jw_settings_load_status_prefs(db_path, &state.status_bar, &state.show_hints);
+    jw__ingame_free_imagery(&state); /* init texture/slot bookkeeping */
 
     /* Resident loop: warm up once, then park hidden and reveal on demand. Each
        Menu tap signals SIGUSR1 -> we show; Continue/Quit hides us back to the
@@ -625,8 +872,10 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
         }
 
         long long show_start_ms = jw__monotonic_ms();
+        uint32_t show_ticks = SDL_GetTicks();
         cat_list_state_init(&state.list, JW_INGAME_COUNT);
         state.status[0] = '\0';
+        state.still_done = false; /* poll for this open's fresh paused-frame still */
         bool primed = jw__prime_ingame_session_from_env(&state);
 
         cat_show_window();
@@ -666,6 +915,8 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
                 if (!ev.pressed) continue;
                 jw__handle_ingame_input(socket_path, &state, ev.button, &running);
             }
+            jw__ingame_poll_still(&state, show_ticks);
+            jw__ingame_update_thumb(&state);
             jw__render_ingame_menu(&state);
         }
 
@@ -674,6 +925,7 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
            already resumed). Either way just hide back to standby. */
         g_hide_requested = 0;
         cat_hide_window();
+        jw__ingame_free_imagery(&state); /* don't hold textures while parked */
         first_show = false;
     }
 
