@@ -46,12 +46,12 @@ typedef enum {
 #define JW_APPEAR_STATUSBAR 3
 #define JW_APPEAR_ROW_COUNT 4
 
-/* Colors page */
+/* Colors page — ordered by visual impact (most visible first). */
 #define JW_COLOR_ACCENT      0
-#define JW_COLOR_TEXT        1
-#define JW_COLOR_HINT        2
+#define JW_COLOR_BACKGROUND  1
+#define JW_COLOR_TEXT        2
 #define JW_COLOR_HIGHLIGHT   3
-#define JW_COLOR_BACKGROUND  4
+#define JW_COLOR_HINT        4
 #define JW_COLOR_BTN_TEXT    5
 #define JW_COLOR_BTN_BG     6
 #define JW_COLOR_ROW_COUNT   7

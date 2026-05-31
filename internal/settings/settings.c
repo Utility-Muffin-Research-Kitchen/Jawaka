@@ -317,10 +317,10 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
 
     struct { const char *label; ap_color color; } rows[] = {
         { "Accent",            t->accent },
-        { "Text",              t->text },
-        { "Secondary Text",    t->hint },
-        { "Selection",         t->highlight },
         { "Background",        t->background },
+        { "Text",              t->text },
+        { "Selection",         t->highlight },
+        { "Secondary Text",    t->hint },
         { "Button Text",       t->button_label },
         { "Button Background", t->button_glyph_bg },
     };
