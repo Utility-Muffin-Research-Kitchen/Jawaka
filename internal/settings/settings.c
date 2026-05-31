@@ -129,24 +129,20 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     if (socket_path && socket_path[0])
         snprintf(ui->socket_path, sizeof(ui->socket_path), "%s", socket_path);
 
-    /* Restore persisted overrides. */
+    /* Restore persisted overrides. The index reads below keep the settings
+       UI's own state in sync with the DB; the theme itself (all 7 colors,
+       pill shape, font size) is applied by the shared override helper. */
     if (ui->db_path[0]) {
         char val[32];
         if (jw_db_get_setting(db_path, "pill_shape_index", val, sizeof(val)) == 0) {
             int idx = atoi(val);
-            if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT) {
+            if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT)
                 ui->pill_shape_index = idx;
-                cat_get_theme()->pill_radius_ratio = kPillShapeValues[idx];
-            }
         }
-        if (jw_db_get_setting(db_path, "accent_color", val, sizeof(val)) == 0 && val[0])
-            cat_set_theme_color(val);
         if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0) {
             int idx = atoi(val);
-            if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT) {
+            if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
                 ui->font_size_index = idx;
-                cat_set_font_bump(kFontSizeValues[idx]);
-            }
         }
         if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0)
             ui->show_hints = (strcmp(val, "0") != 0);
@@ -159,14 +155,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             ui->show_battery = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
             ui->show_wifi = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "text_color", val, sizeof(val)) == 0 && val[0]) {
-            ap_color c = cat_hex_to_color(val);
-            ap_theme *t = cat_get_theme();
-            t->text = c;
-            t->highlighted_text = c;
-        }
-        if (jw_db_get_setting(db_path, "bg_color", val, sizeof(val)) == 0 && val[0])
-            cat_get_theme()->background = cat_hex_to_color(val);
+
+        jw_settings_apply_persisted_overrides(ui->db_path);
     }
 
     jw__refresh_brightness(ui);
@@ -211,6 +201,46 @@ void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *
     }
     out->show_battery = ui->show_battery;
     out->show_wifi = ui->show_wifi;
+}
+
+void jw_settings_load_status_prefs(const char *db_path,
+                                   cat_status_bar_opts *out_opts,
+                                   bool *out_show_hints) {
+    /* Defaults match jw_settings_ui_init: hints on, 24h clock, battery + wifi on. */
+    int  clock_style_index = 1;
+    bool show_battery      = true;
+    bool show_wifi         = true;
+    bool show_hints        = true;
+
+    if (db_path && db_path[0]) {
+        char val[32];
+        if (jw_db_get_setting(db_path, "clock_style_index", val, sizeof(val)) == 0 && val[0]) {
+            int idx = atoi(val);
+            if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
+                clock_style_index = idx;
+        }
+        if (jw_db_get_setting(db_path, "show_battery", val, sizeof(val)) == 0)
+            show_battery = (strcmp(val, "0") != 0);
+        if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
+            show_wifi = (strcmp(val, "0") != 0);
+        if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0)
+            show_hints = (strcmp(val, "0") != 0);
+    }
+
+    if (out_opts) {
+        memset(out_opts, 0, sizeof(*out_opts));
+        if (clock_style_index == 0) {
+            out_opts->show_clock = CAT_CLOCK_HIDE;
+        } else {
+            out_opts->show_clock = CAT_CLOCK_SHOW;
+            out_opts->use_24h = (clock_style_index == 1);
+            out_opts->no_ampm = (clock_style_index == 3);
+        }
+        out_opts->show_battery = show_battery;
+        out_opts->show_wifi = show_wifi;
+    }
+    if (out_show_hints)
+        *out_show_hints = show_hints;
 }
 
 /* ─── Render helpers ───────────────────────────────────────────────────── */
@@ -419,29 +449,42 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
 
 /* ─── Theme helpers ────────────────────────────────────────────────────── */
 
-static void jw__reapply_user_overrides(jw_settings_ui *ui) {
+void jw_settings_apply_persisted_overrides(const char *db_path) {
+    if (!db_path || !db_path[0]) return;
+
     ap_theme *t = cat_get_theme();
-    t->pill_radius_ratio = kPillShapeValues[ui->pill_shape_index];
-
-    if (!ui->db_path[0]) return;
-
     char val[32];
-    if (jw_db_get_setting(ui->db_path, "accent_color", val, sizeof(val)) == 0 && val[0])
+
+    if (jw_db_get_setting(db_path, "pill_shape_index", val, sizeof(val)) == 0 && val[0]) {
+        int idx = atoi(val);
+        if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT)
+            t->pill_radius_ratio = kPillShapeValues[idx];
+    }
+    if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0 && val[0]) {
+        int idx = atoi(val);
+        if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
+            cat_set_font_bump(kFontSizeValues[idx]);
+    }
+    if (jw_db_get_setting(db_path, "accent_color", val, sizeof(val)) == 0 && val[0])
         t->accent = cat_hex_to_color(val);
-    if (jw_db_get_setting(ui->db_path, "text_color", val, sizeof(val)) == 0 && val[0]) {
+    if (jw_db_get_setting(db_path, "text_color", val, sizeof(val)) == 0 && val[0]) {
         t->text = cat_hex_to_color(val);
         t->highlighted_text = t->text;
     }
-    if (jw_db_get_setting(ui->db_path, "hint_color", val, sizeof(val)) == 0 && val[0])
+    if (jw_db_get_setting(db_path, "hint_color", val, sizeof(val)) == 0 && val[0])
         t->hint = cat_hex_to_color(val);
-    if (jw_db_get_setting(ui->db_path, "highlight_color", val, sizeof(val)) == 0 && val[0])
+    if (jw_db_get_setting(db_path, "highlight_color", val, sizeof(val)) == 0 && val[0])
         t->highlight = cat_hex_to_color(val);
-    if (jw_db_get_setting(ui->db_path, "bg_color", val, sizeof(val)) == 0 && val[0])
+    if (jw_db_get_setting(db_path, "bg_color", val, sizeof(val)) == 0 && val[0])
         t->background = cat_hex_to_color(val);
-    if (jw_db_get_setting(ui->db_path, "button_label_color", val, sizeof(val)) == 0 && val[0])
+    if (jw_db_get_setting(db_path, "button_label_color", val, sizeof(val)) == 0 && val[0])
         t->button_label = cat_hex_to_color(val);
-    if (jw_db_get_setting(ui->db_path, "button_glyph_bg_color", val, sizeof(val)) == 0 && val[0])
+    if (jw_db_get_setting(db_path, "button_glyph_bg_color", val, sizeof(val)) == 0 && val[0])
         t->button_glyph_bg = cat_hex_to_color(val);
+}
+
+static void jw__reapply_user_overrides(jw_settings_ui *ui) {
+    jw_settings_apply_persisted_overrides(ui->db_path);
 }
 
 static bool jw__apply_theme(jw_settings_ui *ui, int new_index,

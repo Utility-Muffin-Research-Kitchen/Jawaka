@@ -7,6 +7,7 @@
 #include "internal/core/log.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/paths.h"
+#include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 
 #include <SDL2/SDL.h>
@@ -39,8 +40,10 @@ static const char *kMenuItems[] = {
 #define JW_MENU_POWEROFF    4
 
 typedef struct {
-    cat_list_state list;
-    char           status[256];
+    cat_list_state      list;
+    char                status[256];
+    cat_status_bar_opts status_bar;
+    bool                show_hints;
 } jw_menu_state;
 
 static void jw__render_menu(const jw_menu_state *state) {
@@ -48,10 +51,7 @@ static void jw__render_menu(const jw_menu_state *state) {
     TTF_Font *body_font = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small     = cat_get_font(CAT_FONT_SMALL);
 
-    cat_status_bar_opts sb;
-    memset(&sb, 0, sizeof(sb));
-    sb.show_clock   = CAT_CLOCK_AUTO;
-    sb.show_battery = true;
+    cat_status_bar_opts sb = state->status_bar;
 
     cat_clear_screen();
     cat_draw_screen_title("Menu", &sb);
@@ -77,18 +77,23 @@ static void jw__render_menu(const jw_menu_state *state) {
         cat_draw_text(body_font, kMenuItems[i], x, text_y, col);
     }
 
-    if (state->status[0]) {
+    /* Status line follows the same hints toggle as the footer: hidden when
+       hints are off, matching the launcher. Only carries real feedback now
+       (e.g. rescan results), so it stays empty until something sets it. */
+    if (state->show_hints && state->status[0]) {
         int status_y = content.y + content.h - CAT_S(28);
         cat_draw_text_ellipsized(small, state->status, x, status_y,
                                  theme->hint, item_w);
     }
 
-    cat_footer_item footer[] = {
-        { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
-        { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
-        { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
-    };
-    cat_draw_footer(footer, 3);
+    if (state->show_hints) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
+            { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
+            { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
+        };
+        cat_draw_footer(footer, 3);
+    }
     cat_present();
 }
 
@@ -180,6 +185,10 @@ int main(void) {
         cat_stylesheet ss;
         if (cat_stylesheet_load_theme(&ss, theme_name) == CAT_OK)
             cat_stylesheet_apply(&ss);
+
+        /* Apply the user's persisted color/layout overrides on top of the
+           theme so the menu matches the launcher's customized appearance. */
+        jw_settings_apply_persisted_overrides(db_path);
     }
 
     cat_activate_window();
@@ -187,7 +196,10 @@ int main(void) {
     jw_menu_state state;
     memset(&state, 0, sizeof(state));
     cat_list_state_init(&state.list, JW_MENU_COUNT);
-    snprintf(state.status, sizeof(state.status), "%s", "menu ready");
+    /* status stays empty (memset above); the line only shows real feedback. */
+
+    /* Inherit the launcher's status-bar and button-hint preferences. */
+    jw_settings_load_status_prefs(db_path, &state.status_bar, &state.show_hints);
 
     jw_autodemo demo;
     jw_autodemo_init(&demo);

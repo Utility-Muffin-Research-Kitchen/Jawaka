@@ -103,6 +103,20 @@ bool jw_settings_ui_is_open(const jw_settings_ui *ui);
 bool jw_settings_show_hints(const jw_settings_ui *ui);
 void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *out);
 
+/* Applies all persisted appearance overrides (the 7 color roles, list pill
+ * shape, and font size) from the SQLite DB onto the current Catastrophe theme.
+ * Shared by the launcher's settings UI and jawaka-menu so both render with the
+ * user's chosen colors and layout. db_path may be NULL/empty (no-op). */
+void jw_settings_apply_persisted_overrides(const char *db_path);
+
+/* Reads the persisted status-bar and button-hint preferences straight from the
+ * DB, for processes that don't own a jw_settings_ui (e.g. jawaka-menu). Either
+ * out param may be NULL. Missing keys fall back to the same defaults the
+ * settings UI uses. db_path may be NULL/empty (defaults only). */
+void jw_settings_load_status_prefs(const char *db_path,
+                                   cat_status_bar_opts *out_opts,
+                                   bool *out_show_hints);
+
 void jw_settings_ui_render(const jw_settings_ui *ui,
                             int x, int y, int w, int h);
 
