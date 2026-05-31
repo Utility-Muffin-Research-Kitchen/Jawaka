@@ -277,10 +277,11 @@ static void jw__render_nav_row(const cat_list_state *list, int x, int y,
 static void jw__render_color_swatch(int x, int list_y, int w, int row, ap_color c) {
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
-    int sz = cat_scale(14);
-    int sx = x + w - cat_scale(20) - sz;
-    int sy = list_y + row * item_h + (item_h - sz) / 2;
-    cat_draw_rect(sx, sy, sz, sz, c);
+    int swatch_w = cat_scale(48);
+    int swatch_h = cat_scale(14);
+    int sx = x + w - cat_scale(20) - swatch_w;
+    int sy = list_y + row * item_h + (item_h - swatch_h) / 2;
+    cat_draw_pill(sx, sy, swatch_w, swatch_h, c);
 }
 
 /* ─── Page renderers ───────────────────────────────────────────────────── */
@@ -320,10 +321,7 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
     };
 
     for (int i = 0; i < JW_COLOR_ROW_COUNT; i++) {
-        char hex[16];
-        snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                 rows[i].color.r, rows[i].color.g, rows[i].color.b);
-        jw__render_list_row(&ui->colors_list, x, ly, w, i, rows[i].label, hex);
+        jw__render_list_row(&ui->colors_list, x, ly, w, i, rows[i].label, NULL);
         jw__render_color_swatch(x, ly, w, i, rows[i].color);
     }
     (void)h;
