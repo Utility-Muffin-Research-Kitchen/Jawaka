@@ -426,7 +426,6 @@ static void jw__draw_game_item(int idx, int ix, int iy, int iw, int ih,
     jw__games_ctx *ctx = (jw__games_ctx *)user;
     ap_theme *theme    = cat_get_theme();
     TTF_Font *body     = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small    = cat_get_font(CAT_FONT_SMALL);
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
@@ -434,18 +433,10 @@ static void jw__draw_game_item(int idx, int ix, int iy, int iw, int ih,
         cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
 
     ap_color name_c  = selected ? theme->highlighted_text : theme->text;
-    ap_color count_c = selected ? theme->highlighted_text : theme->hint;
-
-    char count_str[16];
-    snprintf(count_str, sizeof(count_str), "%d", ctx->systems[idx].game_count);
-    int count_w  = cat_measure_text(small, count_str);
-    int name_max = iw - count_w - CAT_S(24);
+    int name_max = iw - CAT_S(20);
     int text_y   = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     jw__draw_row_name(body, ctx->systems[idx].display_name,
         ix + CAT_S(10), text_y, name_c, name_max, selected);
-    int count_x = ix + iw - count_w - CAT_S(8);
-    int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
-    cat_draw_text(small, count_str, count_x, small_y, count_c);
 }
 
 static void jw__draw_app_item(int idx, int ix, int iy, int iw, int ih,
@@ -579,7 +570,7 @@ static void jw__render_games(const jw_launcher_state *state,
     if (state->system_count > 0 && state->list.cursor < state->system_count) {
         const jw_system_entry *sys = &state->systems[state->list.cursor];
         jw__draw_system_preview(art_x, art_y, art_w, art_h,
-                                sys->display_name, sys->game_count);
+                                sys->name, sys->game_count);
     } else {
         cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
             cat_hex_to_color("#ffffff18"));
@@ -747,7 +738,6 @@ static void jw__draw_vert_item(int idx, int ix, int iy, int iw, int ih,
     const jw_launcher_state *state = ctx->state;
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
 
     const jw_flat_item *it = &state->flat_items[idx];
     bool is_section = (it->kind == JW_FLAT_RECENTLY_PLAYED ||
@@ -762,21 +752,13 @@ static void jw__draw_vert_item(int idx, int ix, int iy, int iw, int ih,
 
     ap_color label_c = selected ? theme->highlighted_text
                                 : (is_section ? theme->text : theme->text);
-    ap_color count_c = selected ? theme->highlighted_text : theme->hint;
 
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     const char *label = jw__flat_label(state, idx);
 
     if (it->kind == JW_FLAT_SYSTEM) {
-        char count_str[16];
-        snprintf(count_str, sizeof(count_str), "%d",
-                 state->systems[it->system_idx].game_count);
-        int count_w  = cat_measure_text(small, count_str);
-        int name_max = iw - count_w - CAT_S(24);
-        jw__draw_row_name(body, label, ix + CAT_S(10), text_y, label_c, name_max, selected);
-        int count_x = ix + iw - count_w - CAT_S(8);
-        int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
-        cat_draw_text(small, count_str, count_x, small_y, count_c);
+        jw__draw_row_name(body, label, ix + CAT_S(10), text_y, label_c,
+                          iw - CAT_S(20), selected);
     } else {
         /* section header: slightly muted when not selected */
         if (!selected)
@@ -798,7 +780,7 @@ static void jw__render_vertical_preview(const jw_launcher_state *state,
 
     if (it->kind == JW_FLAT_SYSTEM) {
         const jw_system_entry *sys = &state->systems[it->system_idx];
-        jw__draw_system_preview(px, py, pw, ph, sys->display_name, sys->game_count);
+        jw__draw_system_preview(px, py, pw, ph, sys->name, sys->game_count);
     } else {
         /* Non-system entries (Recents, Favorites, Apps, Settings): text only,
          * matches pre-icon behaviour. */
@@ -1286,9 +1268,7 @@ static SDL_Texture *jw__load_system_icon(const char *system_code,
 static void jw__draw_system_preview(int px, int py, int pw, int ph,
                                      const char *system_code, int game_count) {
     ap_theme *theme   = cat_get_theme();
-    TTF_Font *large   = cat_get_font(CAT_FONT_EXTRA_LARGE);
     TTF_Font *small   = cat_get_font(CAT_FONT_SMALL);
-    int margin        = CAT_S(16);
 
     cat_draw_rounded_rect(px, py, pw, ph, CAT_S(8),
                           cat_hex_to_color("#ffffff10"));
@@ -1299,46 +1279,30 @@ static void jw__draw_system_preview(int px, int py, int pw, int ph,
     if (icon_box > icon_max) icon_box = icon_max;
     if (icon_box > ph / 2)   icon_box = ph / 2;
 
-    int label_h = TTF_FontHeight(large);
-    int sub_h   = TTF_FontHeight(small);
-    int gap     = CAT_S(12);
-    int sub_gap = CAT_S(4);
-
-    /* Vertical stack: icon + name + (count). Center the block in the pane. */
-    int block_h = icon_box + gap + label_h
-                + ((game_count >= 0) ? (sub_gap + sub_h) : 0);
-    int top_y   = py + (ph - block_h) / 2;
+    int sub_h = TTF_FontHeight(small);
+    int gap   = CAT_S(12);
 
     SDL_Texture *tex = NULL;
     int tw = 0, th = 0;
     if (system_code && system_code[0])
         tex = jw__load_system_icon(system_code, &tw, &th);
 
+    /* Vertical stack: icon + count (no name), centered in the pane. */
+    int block_h = (tex ? icon_box : 0) + ((game_count >= 0) ? (gap + sub_h) : 0);
+    int top_y   = py + (ph - block_h) / 2;
+
+    int count_y = top_y;
     if (tex) {
         jw__draw_image_fit(tex, tw, th,
-                           px + (pw - icon_box) / 2, top_y,
-                           icon_box, icon_box);
-    } else {
-        /* No icon → collapse the icon slot so text sits centered */
-        top_y += icon_box / 2;
+                           px + (pw - icon_box) / 2, top_y, icon_box, icon_box);
+        count_y = top_y + icon_box + gap;
     }
 
-    /* System name */
-    int label_y = top_y + (tex ? (icon_box + gap) : 0);
-    int label_w = cat_measure_text(large, system_code ? system_code : "");
-    cat_draw_text_ellipsized(large, system_code ? system_code : "",
-                              px + (pw - label_w) / 2, label_y,
-                              theme->text, pw - margin * 2);
-
-    /* Game count */
     if (game_count >= 0) {
         char sub[32];
         snprintf(sub, sizeof(sub), "%d games", game_count);
         int subw = cat_measure_text(small, sub);
-        cat_draw_text(small, sub,
-                      px + (pw - subw) / 2,
-                      label_y + label_h + sub_gap,
-                      theme->hint);
+        cat_draw_text(small, sub, px + (pw - subw) / 2, count_y, theme->hint);
     }
 }
 
