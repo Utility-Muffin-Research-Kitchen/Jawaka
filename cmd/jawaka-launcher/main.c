@@ -25,6 +25,7 @@
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
 #define JW_MAX_GAMES   512
+#define JW_MAX_FAVORITES 256   /* newest-first; a heavier list is truncated */
 #define JW_MAX_SEARCH_RESULTS 128
 
 /* Button hint text: on device, return NULL so Catastrophe uses the canonical
@@ -45,13 +46,14 @@ static inline const char *jw_hint_device(const char *desktop_key, const char *de
 
 typedef enum {
     JW_TAB_RECENTS = 0,
+    JW_TAB_FAVORITES,
     JW_TAB_GAMES,
     JW_TAB_APPS,
     JW_TAB_SETTINGS,
     JW_TAB_COUNT
 } jw_tab;
 
-static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Games", "Apps", "Settings" };
+static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Favorites", "Games", "Apps", "Settings" };
 
 /* Forward declarations: shared preview helper used by Tabs games-tab and the
  * Vertical preview pane. Defined alongside jw__load_system_icon below. */
@@ -100,7 +102,11 @@ typedef struct {
     int                game_count;
     char               game_system[64];
     bool               games_open;
+    bool               games_are_favorites;  /* browser is showing the Favorites list */
     cat_list_state     game_list;
+    /* Favorites tab (tabbed layout): favorited games, reloaded on tab entry */
+    jw_game_entry      favorites[JW_MAX_FAVORITES];
+    int                favorites_count;
     bool               apps_open;
     cat_list_state     app_list;
     jw_search_result   search_results[JW_MAX_SEARCH_RESULTS];
@@ -130,6 +136,10 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
                                 const jw_app_entry *app,
                                 int detail_x, int detail_y,
                                 int detail_w, int detail_h);
+
+/* Defined after the image helpers; used by the tabbed renderer above them. */
+static void jw__render_favorites(const jw_launcher_state *state,
+                                 int content_y, int content_h, int margin);
 
 static void jw__draw_status_bar(const jw_launcher_state *state) {
     cat_status_bar_opts opts = {0};
@@ -210,11 +220,12 @@ static const char *jw__flat_label(const jw_launcher_state *state, int idx) {
 
 static int jw__tab_list_count(const jw_launcher_state *state) {
     switch (state->current_tab) {
-        case JW_TAB_RECENTS:  return 0;
-        case JW_TAB_GAMES:    return state->system_count;
-        case JW_TAB_APPS:     return state->app_count;
-        case JW_TAB_SETTINGS: return 0;  /* handled by jw_settings_ui */
-        default:              return 0;
+        case JW_TAB_RECENTS:   return 0;
+        case JW_TAB_FAVORITES: return state->favorites_count;
+        case JW_TAB_GAMES:     return state->system_count;
+        case JW_TAB_APPS:      return state->app_count;
+        case JW_TAB_SETTINGS:  return 0;  /* handled by jw_settings_ui */
+        default:               return 0;
     }
 }
 
@@ -244,11 +255,22 @@ static int jw__scan_library(const char *socket_path, const char *db_path,
  * TABBED RENDER
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-static void jw__switch_tab(jw_launcher_state *state, int direction) {
+static void jw__load_favorites_tab(const char *db_path, jw_launcher_state *state) {
+    if (!db_path || jw_db_list_favorite_games(db_path, state->favorites,
+                                              JW_MAX_FAVORITES,
+                                              &state->favorites_count) != 0) {
+        state->favorites_count = 0;
+    }
+}
+
+static void jw__switch_tab(jw_launcher_state *state, int direction, const char *db_path) {
     if (!state) return;
     int next = (state->current_tab + direction) % JW_TAB_COUNT;
     if (next < 0) next += JW_TAB_COUNT;
     state->current_tab = (jw_tab)next;
+    /* Favorites are reloaded on entry so newly toggled items appear. */
+    if (state->current_tab == JW_TAB_FAVORITES)
+        jw__load_favorites_tab(db_path, state);
     cat_list_state_jump(&state->list, 0, jw__tab_list_count(state));
     /* In tabbed mode, the Settings tab is owned by jw_settings_ui:
        auto-open on entry, close when navigating away. */
@@ -332,7 +354,20 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
         name_max = iw - CAT_S(20);
     }
 
-    cat_draw_text_ellipsized(body, name, ix + CAT_S(10), text_y, name_c, name_max);
+    int name_x = ix + CAT_S(10);
+    if (ctx->games[idx].favorite) {
+        /* Drawn star (not a font glyph — the body font lacks U+2605). Accent
+           colored, or highlighted_text on a selected row so it stays legible. */
+        ap_color star_c = selected ? theme->highlighted_text : theme->accent;
+        int body_h = TTF_FontHeight(body);
+        int star_r = body_h * 32 / 100;
+        cat_draw_star(name_x + star_r, text_y + body_h / 2, star_r, star_c);
+        int advance = star_r * 2 + CAT_S(6);
+        name_x += advance;
+        name_max -= advance;
+    }
+
+    cat_draw_text_ellipsized(body, name, name_x, text_y, name_c, name_max);
 
     if (path_w > 0 && path && path[0]) {
         int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
@@ -529,6 +564,9 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
         case JW_TAB_RECENTS:
             jw__render_recents(state, content_y, content_h, margin);
             break;
+        case JW_TAB_FAVORITES:
+            jw__render_favorites(state, content_y, content_h, margin);
+            break;
         case JW_TAB_GAMES:
             jw__render_games(state, content_y, content_h, margin);
             break;
@@ -549,6 +587,14 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 3);
+    } else if (state->current_tab == JW_TAB_FAVORITES) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
+            { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
+            { CAT_BTN_Y,  "Remove",   false, JW_HINT("Y") },
+            { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 4);
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_UP,   "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
@@ -1436,7 +1482,10 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     int content_h = sh - content_y - fh - margin;
 
     char title[96];
-    snprintf(title, sizeof(title), "%s Games", state->game_system);
+    if (state->games_are_favorites)
+        snprintf(title, sizeof(title), "%s", "Favorites");
+    else
+        snprintf(title, sizeof(title), "%s Games", state->game_system);
     cat_draw_text_ellipsized(large, title, margin, CAT_S(6), theme->text, sw - margin * 2);
 
     int list_x = margin;
@@ -1513,11 +1562,73 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_footer_item footer[] = {
         { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
         { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+        { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
         { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
-    jw__draw_footer(state, footer, 4);
+    jw__draw_footer(state, footer, 5);
     cat_present();
+}
+
+/* Favorites tab content (tabbed layout): a list of favorited games with the
+   star marker on the left and box art for the selected game on the right. */
+static void jw__render_favorites(const jw_launcher_state *state,
+                                 int content_y, int content_h, int margin) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
+    int sw = cat_get_screen_width();
+
+    int list_x   = margin;
+    int list_w   = sw * 58 / 100;
+    int item_h   = TTF_FontHeight(body) + CAT_S(12);
+    int detail_x = list_x + list_w + margin;
+    int detail_w = sw - detail_x - margin;
+
+    if (state->favorites_count == 0) {
+        cat_draw_text_wrapped(body,
+            "No favorites yet — open a game and press Y to add one",
+            list_x + CAT_S(8), content_y + CAT_S(8),
+            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+        return;
+    }
+
+    jw__roms_ctx ctx = { state->favorites };
+    cat_draw_list_pane(list_x, content_y, list_w, content_h,
+        state->favorites_count, &state->list, item_h, jw__draw_rom_item, &ctx);
+
+    cat_draw_rounded_rect(detail_x, content_y, detail_w, content_h, CAT_S(8),
+        cat_hex_to_color("#ffffff10"));
+
+    if (state->list.cursor >= state->favorites_count) return;
+    const jw_game_entry *game = &state->favorites[state->list.cursor];
+
+    int art_pad = CAT_S(16);
+    int art_h   = content_h * 68 / 100;
+    bool drew_art = false;
+    char image_abs[PATH_MAX];
+    int image_w = 0, image_h = 0;
+    if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0) {
+        SDL_Texture *tex = jw__load_cached_image(image_abs, &image_w, &image_h);
+        if (tex) {
+            jw__draw_image_fit(tex, image_w, image_h,
+                detail_x + art_pad, content_y + art_pad,
+                detail_w - art_pad * 2, art_h);
+            cat_draw_text_ellipsized(large, game->name,
+                detail_x + art_pad, content_y + art_pad + art_h + CAT_S(12),
+                theme->text, detail_w - art_pad * 2);
+            drew_art = true;
+        }
+    }
+    if (!drew_art) {
+        int large_h = TTF_FontHeight(large);
+        int max_w   = detail_w - margin * 2;
+        int name_w  = cat_measure_text(large, game->name);
+        if (name_w > max_w) name_w = max_w;
+        cat_draw_text_ellipsized(large, game->name,
+            detail_x + (detail_w - name_w) / 2,
+            content_y + content_h / 2 - large_h, theme->text, max_w);
+    }
 }
 
 static void jw__render_app_browser(const jw_launcher_state *state) {
@@ -1768,11 +1879,33 @@ static int jw__open_system_games(const char *db_path, const char *system,
     }
 
     snprintf(state->game_system, sizeof(state->game_system), "%s", system);
+    state->games_are_favorites = false;
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     snprintf(state->status, sizeof(state->status), "%d %s games",
              state->game_count, system);
+    return 0;
+}
+
+static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
+    if (jw_db_list_favorite_games(db_path, state->games, JW_MAX_GAMES,
+                                  &state->game_count) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s", "Could not load favorites");
+        return -1;
+    }
+
+    snprintf(state->game_system, sizeof(state->game_system), "%s", "Favorites");
+    state->games_are_favorites = true;
+    state->games_open = true;
+    cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
+    cat_list_state_jump(&state->game_list, 0, state->game_count);
+    if (state->game_count == 0) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "No favorites yet — press Y on a game to add one");
+    } else {
+        snprintf(state->status, sizeof(state->status), "%d favorites", state->game_count);
+    }
     return 0;
 }
 
@@ -1820,14 +1953,13 @@ static int jw__launch_app_at(const char *socket_path, jw_launcher_state *state,
     return jw__launch_app_request(socket_path, app->name, app->pak_dir, state, running);
 }
 
-static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *state,
-                                    bool *running) {
-    if (state->game_count <= 0 || state->game_list.cursor >= state->game_count) {
+static int jw__launch_game_entry(const char *socket_path, jw_launcher_state *state,
+                                 const jw_game_entry *game, bool *running) {
+    if (!game) {
         snprintf(state->status, sizeof(state->status), "%s", "No game selected");
         return -1;
     }
 
-    const jw_game_entry *game = &state->games[state->game_list.cursor];
     jw__set_launching_status(state, game->name, "game");
     cat_request_frame();
     jw__render_launcher(state);
@@ -1840,6 +1972,16 @@ static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *
     cat_hide_window();
     *running = false;
     return 0;
+}
+
+static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *state,
+                                    bool *running) {
+    if (state->game_count <= 0 || state->game_list.cursor >= state->game_count) {
+        snprintf(state->status, sizeof(state->status), "%s", "No game selected");
+        return -1;
+    }
+    return jw__launch_game_entry(socket_path, state,
+                                 &state->games[state->game_list.cursor], running);
 }
 
 static int jw__launch_selected_app(const char *socket_path, jw_launcher_state *state,
@@ -1877,6 +2019,12 @@ static int jw__launch_selected_search_result(const char *socket_path,
 static void jw__activate_tabbed(const char *socket_path, const char *db_path,
                                   jw_launcher_state *state, bool *running) {
     switch (state->current_tab) {
+        case JW_TAB_FAVORITES:
+            if (state->favorites_count > 0 && state->list.cursor < state->favorites_count) {
+                jw__launch_game_entry(socket_path, state,
+                                      &state->favorites[state->list.cursor], running);
+            }
+            break;
         case JW_TAB_GAMES:
             if (state->system_count > 0 && state->list.cursor < state->system_count) {
                 jw__open_system_games(db_path, state->systems[state->list.cursor].name, state);
@@ -1907,8 +2055,10 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
             state->tools_open = true;
             cat_list_state_init(&state->tools_list, 4);
             break;
-        case JW_FLAT_RECENTLY_PLAYED:
         case JW_FLAT_FAVORITES:
+            jw__open_favorites(db_path, state);
+            break;
+        case JW_FLAT_RECENTLY_PLAYED:
             snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
             break;
         case JW_FLAT_APPS:
@@ -1999,7 +2149,38 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
     }
 }
 
-static void jw__handle_game_browser_input(const char *socket_path,
+static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state *state) {
+    if (state->game_count <= 0 || state->game_list.cursor >= state->game_count) {
+        return;
+    }
+    jw_game_entry *game = &state->games[state->game_list.cursor];
+    int want_on = !game->favorite;
+
+    if (jw_db_set_favorite(db_path, "game", game->id, want_on) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s", "Favorite update failed");
+        return;
+    }
+    game->favorite = want_on;
+
+    /* When viewing the Favorites list, an unfavorite must drop the row, so
+       reload the list and keep the cursor near its prior position. */
+    if (state->games_are_favorites && !want_on) {
+        int prev_cursor = state->game_list.cursor;
+        jw__open_favorites(db_path, state);
+        if (state->game_count > 0) {
+            int c = prev_cursor >= state->game_count ? state->game_count - 1 : prev_cursor;
+            cat_list_state_jump(&state->game_list, c, state->game_count);
+        }
+        return;
+    }
+
+    /* Bound the name so the prefix + name always fit the status buffer; the
+       line is ellipsized on screen anyway. */
+    snprintf(state->status, sizeof(state->status), "%s %.200s",
+             want_on ? "Favorited" : "Unfavorited", game->name);
+}
+
+static void jw__handle_game_browser_input(const char *socket_path, const char *db_path,
                                           jw_launcher_state *state,
                                           cat_button button, bool *running) {
     switch (button) {
@@ -2018,8 +2199,12 @@ static void jw__handle_game_browser_input(const char *socket_path,
         case CAT_BTN_A:
             jw__launch_selected_game(socket_path, state, running);
             break;
+        case CAT_BTN_Y:
+            jw__toggle_favorite_selected(db_path, state);
+            break;
         case CAT_BTN_B:
             state->games_open = false;
+            state->games_are_favorites = false;
             state->game_count = 0;
             state->status[0] = '\0';
             break;
@@ -2079,8 +2264,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             jw__open_search(db_path, state);
             return;
         }
-        jw__handle_game_browser_input(socket_path, state, button, running);
-        (void)db_path;
+        jw__handle_game_browser_input(socket_path, db_path, state, button, running);
         return;
     }
 
@@ -2143,11 +2327,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
            side effect when moving off the tab. */
         if (layout == CAT_LAUNCHER_TABBED) {
             if (button == CAT_BTN_L2) {
-                jw__switch_tab(state, -1);
+                jw__switch_tab(state, -1, db_path);
                 return;
             }
             if (button == CAT_BTN_R2) {
-                jw__switch_tab(state, +1);
+                jw__switch_tab(state, +1, db_path);
                 return;
             }
         }
@@ -2216,11 +2400,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             break;
         case CAT_BTN_L2:
             if (layout == CAT_LAUNCHER_TABBED)
-                jw__switch_tab(state, -1);
+                jw__switch_tab(state, -1, db_path);
             break;
         case CAT_BTN_R2:
             if (layout == CAT_LAUNCHER_TABBED)
-                jw__switch_tab(state, +1);
+                jw__switch_tab(state, +1, db_path);
             break;
         case CAT_BTN_A:
             if (layout == CAT_LAUNCHER_TABBED)
@@ -2237,6 +2421,27 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             }
             break;
         case CAT_BTN_Y: {
+            /* On the Favorites tab, Y removes the selected favorite and reloads
+               the list; everywhere else Y rescans the library. */
+            if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_FAVORITES) {
+                if (state->favorites_count > 0 && state->list.cursor < state->favorites_count) {
+                    const jw_game_entry *fav = &state->favorites[state->list.cursor];
+                    if (jw_db_set_favorite(db_path, "game", fav->id, 0) == 0) {
+                        int prev_cursor = state->list.cursor;
+                        jw__load_favorites_tab(db_path, state);
+                        int c = prev_cursor >= state->favorites_count
+                                    ? state->favorites_count - 1 : prev_cursor;
+                        if (c < 0) c = 0;
+                        cat_list_state_jump(&state->list, c, jw__tab_list_count(state));
+                        snprintf(state->status, sizeof(state->status), "%s",
+                                 "Removed from favorites");
+                    } else {
+                        snprintf(state->status, sizeof(state->status), "%s",
+                                 "Favorite update failed");
+                    }
+                }
+                break;
+            }
             snprintf(state->status, sizeof(state->status), "%s", "rescanning...");
             cat_request_frame();
             jw__render_launcher(state);

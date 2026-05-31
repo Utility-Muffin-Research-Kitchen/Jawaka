@@ -109,7 +109,15 @@ int jw_db_open(const char *path, sqlite3 **out) {
     if (!path || !out) {
         return -1;
     }
-    return sqlite3_open(path, out) == SQLITE_OK ? 0 : -1;
+    if (sqlite3_open(path, out) != SQLITE_OK) {
+        return -1;
+    }
+    /* Launcher, menu, and daemon each open their own connection on the same
+       SQLite file. Without a busy timeout a write that collides with another
+       connection's lock (e.g. a favorite/recent write during a daemon scan)
+       fails immediately with SQLITE_BUSY. Wait briefly instead. */
+    sqlite3_busy_timeout(*out, 2000);
+    return 0;
 }
 
 int jw_db_apply_schema(sqlite3 *db) {
@@ -484,8 +492,9 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
     }
 
     static const char *sql =
-        "SELECT system, name, rom_path, COALESCE(image_path, '') "
-        "FROM games WHERE system = ? ORDER BY name LIMIT ?;";
+        "SELECT g.id, g.system, g.name, g.rom_path, COALESCE(g.image_path, ''), "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "FROM games g WHERE g.system = ? ORDER BY g.name LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -497,15 +506,93 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
     sqlite3_bind_int(stmt, 2, max_count);
 
     while (sqlite3_step(stmt) == SQLITE_ROW && *out_count < max_count) {
-        const unsigned char *system_text = sqlite3_column_text(stmt, 0);
-        const unsigned char *name_text = sqlite3_column_text(stmt, 1);
-        const unsigned char *rom_text = sqlite3_column_text(stmt, 2);
-        const unsigned char *image_text = sqlite3_column_text(stmt, 3);
+        const unsigned char *system_text = sqlite3_column_text(stmt, 1);
+        const unsigned char *name_text = sqlite3_column_text(stmt, 2);
+        const unsigned char *rom_text = sqlite3_column_text(stmt, 3);
+        const unsigned char *image_text = sqlite3_column_text(stmt, 4);
         int i = *out_count;
+        out[i].id = sqlite3_column_int(stmt, 0);
         if (system_text) snprintf(out[i].system, sizeof(out[i].system), "%s", system_text);
         if (name_text) snprintf(out[i].name, sizeof(out[i].name), "%s", name_text);
         if (rom_text) snprintf(out[i].rom_path, sizeof(out[i].rom_path), "%s", rom_text);
         if (image_text) snprintf(out[i].image_path, sizeof(out[i].image_path), "%s", image_text);
+        out[i].favorite = sqlite3_column_int(stmt, 5);
+        (*out_count)++;
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return 0;
+}
+
+int jw_db_set_favorite(const char *db_path, const char *kind, int target_id, int on) {
+    if (!db_path || !kind || target_id <= 0) {
+        return -1;
+    }
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    static const char *add_sql =
+        "INSERT OR IGNORE INTO favorites (kind, target_id, added_at) "
+        "VALUES (?, ?, strftime('%s','now'));";
+    static const char *del_sql =
+        "DELETE FROM favorites WHERE kind = ? AND target_id = ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, on ? add_sql : del_sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, target_id);
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
+                              int max_count, int *out_count) {
+    if (!db_path || !out || max_count <= 0 || !out_count) {
+        return -1;
+    }
+
+    *out_count = 0;
+    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    static const char *sql =
+        "SELECT g.id, g.system, g.name, g.rom_path, COALESCE(g.image_path, '') "
+        "FROM games g JOIN favorites f ON f.kind = 'game' AND f.target_id = g.id "
+        "ORDER BY f.added_at DESC, g.name LIMIT ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_count);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW && *out_count < max_count) {
+        const unsigned char *system_text = sqlite3_column_text(stmt, 1);
+        const unsigned char *name_text = sqlite3_column_text(stmt, 2);
+        const unsigned char *rom_text = sqlite3_column_text(stmt, 3);
+        const unsigned char *image_text = sqlite3_column_text(stmt, 4);
+        int i = *out_count;
+        out[i].id = sqlite3_column_int(stmt, 0);
+        if (system_text) snprintf(out[i].system, sizeof(out[i].system), "%s", system_text);
+        if (name_text) snprintf(out[i].name, sizeof(out[i].name), "%s", name_text);
+        if (rom_text) snprintf(out[i].rom_path, sizeof(out[i].rom_path), "%s", rom_text);
+        if (image_text) snprintf(out[i].image_path, sizeof(out[i].image_path), "%s", image_text);
+        out[i].favorite = 1;
         (*out_count)++;
     }
 

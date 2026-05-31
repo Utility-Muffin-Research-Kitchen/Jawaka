@@ -23,10 +23,12 @@ typedef struct {
 } jw_app_entry;
 
 typedef struct {
+    int  id;
     char system[64];
     char name[256];
     char rom_path[512];
     char image_path[512];
+    int  favorite;   /* 1 if present in favorites, else 0 */
 } jw_game_entry;
 
 typedef enum {
@@ -64,6 +66,13 @@ int  jw_db_list_games_for_system(const char *db_path, const char *system,
                                  jw_game_entry *out, int max_count, int *out_count);
 int  jw_db_search_library(const char *db_path, const char *query,
                           jw_search_result *out, int max_count, int *out_count);
+
+/* Favorites. kind is "game" or "app"; target_id is the games/apps id.
+   set_favorite adds (on != 0) or removes (on == 0); it is idempotent.
+   list_favorite_games returns favorited games newest-first (by added_at). */
+int  jw_db_set_favorite(const char *db_path, const char *kind, int target_id, int on);
+int  jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
+                               int max_count, int *out_count);
 
 int  jw_db_get_setting(const char *db_path, const char *key,
                         char *out, size_t out_size);

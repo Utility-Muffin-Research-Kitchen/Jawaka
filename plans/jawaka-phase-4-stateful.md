@@ -9,7 +9,11 @@ ids underpin favorites/recents/playtime, so that lands first.
   incremental-refresh item). Rescan no longer wipes and rebuilds the library —
   it upserts keyed on the UNIQUE `rom_path` / `pak_dir`, so a game/app keeps its
   id across refreshes, and prunes only entries whose path vanished from disk.
-- [ ] Favorites add/remove/list.
+- [x] **Favorites add/remove/list.** Toggle with Y in the game browser (drawn
+  accent star marks favorites); a Favorites tab (tabbed) and Favorites section
+  (vertical) list them. DB: `jw_db_set_favorite`, `jw_db_list_favorite_games`,
+  favorite flag via EXISTS on the games query. New `cat_draw_star` primitive in
+  Catastrophe (font-independent — the body font lacks U+2605).
 - [ ] Recents tracking on launch.
 - [ ] Playtime tracking.
 - [ ] Last-opened context restoration.
@@ -19,6 +23,15 @@ ids underpin favorites/recents/playtime, so that lands first.
   stable ids; revisit if other state is added.
 - [~] Launcher/menu/daemon handoff — menu + game launch handoff exist; richer
   state handoff pending.
+
+## Known issues (deferred)
+
+- **Tab label overruns the status bar at large fonts.** With the 5th tab
+  (Favorites added), at Large / Extra Large font sizes the tab labels run into
+  the inline status-bar icons in the tab bar (tabbed layout). The tab bar packs
+  labels + inline battery/wifi/clock into a fixed-height bar that doesn't scale
+  with the font bump. Fix later: scale the tab bar / status inset with the font
+  bump, shrink the tab label tier, or drop inline status when it would collide.
 
 ## Stable ids (done)
 
