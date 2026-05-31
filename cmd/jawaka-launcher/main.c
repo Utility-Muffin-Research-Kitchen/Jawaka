@@ -265,8 +265,11 @@ static void jw__load_favorites_tab(const char *db_path, jw_launcher_state *state
 
 static void jw__switch_tab(jw_launcher_state *state, int direction, const char *db_path) {
     if (!state) return;
-    int next = (state->current_tab + direction) % JW_TAB_COUNT;
-    if (next < 0) next += JW_TAB_COUNT;
+    /* Cast to int and add COUNT before the modulo: jw_tab is an unsigned enum
+       on the device toolchain, so (0u + -1) would wrap to UINT_MAX and
+       UINT_MAX % COUNT is 0, not COUNT-1 — breaking the backward wrap at the
+       first tab. Adding COUNT keeps the dividend non-negative for dir = +/-1. */
+    int next = ((int)state->current_tab + direction + JW_TAB_COUNT) % JW_TAB_COUNT;
     state->current_tab = (jw_tab)next;
     /* Favorites are reloaded on entry so newly toggled items appear. */
     if (state->current_tab == JW_TAB_FAVORITES)
