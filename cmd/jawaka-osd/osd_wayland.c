@@ -173,8 +173,6 @@ static void jw__draw_speaker(uint32_t *pixels, int width, int height,
 
 static void jw__draw_osd(void) {
     uint32_t *pixels = (uint32_t *)s_osd.pixels;
-    memset(pixels, 0, s_osd.buffer_size);
-
     int toast_w = 520;
     int toast_h = 96;
     if (toast_w > s_osd.width - 48) {
@@ -207,6 +205,19 @@ static void jw__draw_osd(void) {
                      x + toast_w - 82, y + 34, s_osd.percent, knob);
 }
 
+static void jw__toast_rect(int *out_x, int *out_y, int *out_w, int *out_h) {
+    int toast_w = 520;
+    int toast_h = 96;
+    if (toast_w > s_osd.width - 48) {
+        toast_w = s_osd.width - 48;
+    }
+
+    if (out_x) *out_x = (s_osd.width - toast_w) / 2;
+    if (out_y) *out_y = s_osd.height - toast_h - 48;
+    if (out_w) *out_w = toast_w;
+    if (out_h) *out_h = toast_h;
+}
+
 static void jw__destroy_surface(void) {
     if (s_osd.buffer) {
         wl_buffer_destroy(s_osd.buffer);
@@ -231,6 +242,17 @@ static void jw__destroy_surface(void) {
     }
     s_osd.visible = false;
     s_osd.configured = false;
+}
+
+static void jw__hide_surface(void) {
+    if (!s_osd.surface) {
+        return;
+    }
+
+    jw__destroy_surface();
+    if (s_osd.display) {
+        wl_display_flush(s_osd.display);
+    }
 }
 
 static void jw__xdg_wm_ping(void *data, struct xdg_wm_base *wm_base, uint32_t serial) {
@@ -325,11 +347,16 @@ static int jw__create_buffer(void) {
     s_osd.buffer = wl_shm_pool_create_buffer(pool, 0, s_osd.width, s_osd.height,
                                             s_osd.width * 4, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(pool);
+    if (s_osd.buffer) {
+        memset(s_osd.pixels, 0, s_osd.buffer_size);
+    }
     return s_osd.buffer ? 0 : -1;
 }
 
-static int jw__show_surface(void) {
-    jw__destroy_surface();
+static int jw__ensure_surface(void) {
+    if (s_osd.surface && s_osd.buffer && s_osd.pixels) {
+        return 0;
+    }
 
     s_osd.surface = wl_compositor_create_surface(s_osd.compositor);
     if (!s_osd.surface) {
@@ -351,14 +378,32 @@ static int jw__show_surface(void) {
     wl_surface_commit(s_osd.surface);
     wl_display_roundtrip(s_osd.display);
 
-    if (!s_osd.configured || jw__create_buffer() != 0) {
+    if (!s_osd.configured) {
         jw__destroy_surface();
+        return -1;
+    }
+
+    if (jw__create_buffer() != 0) {
+        jw__destroy_surface();
+        return -1;
+    }
+
+    return 0;
+}
+
+static int jw__show_surface(void) {
+    if (jw__ensure_surface() != 0) {
         return -1;
     }
 
     jw__draw_osd();
     wl_surface_attach(s_osd.surface, s_osd.buffer, 0, 0);
-    wl_surface_damage_buffer(s_osd.surface, 0, 0, s_osd.width, s_osd.height);
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+    jw__toast_rect(&x, &y, &w, &h);
+    wl_surface_damage_buffer(s_osd.surface, x, y, w, h);
     wl_surface_commit(s_osd.surface);
     wl_display_flush(s_osd.display);
     s_osd.visible = true;
@@ -417,10 +462,7 @@ void jw_osd_backend_tick(uint64_t now_ms) {
         wl_display_flush(s_osd.display);
     }
     if (s_osd.visible && now_ms >= s_osd.hide_at) {
-        jw__destroy_surface();
-        if (s_osd.display) {
-            wl_display_flush(s_osd.display);
-        }
+        jw__hide_surface();
     }
 }
 

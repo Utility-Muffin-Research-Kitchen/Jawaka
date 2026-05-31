@@ -53,6 +53,8 @@ typedef struct {
     pid_t child_pid;          /* exactly one daemon-owned child at a time */
     jw_child_kind child_kind;
     pid_t osd_pid;
+    int cached_brightness_percent;
+    int cached_volume_percent;
     jw_retroarch_session retroarch_session;
     bool pending_menu;
     bool pending_launch;
@@ -179,9 +181,37 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     return root;
 }
 
+static void jw__cache_platform_status(jw_daemon_state *state,
+                                      const jw_platform_status *status) {
+    if (!state || !status) {
+        return;
+    }
+    if (status->brightness_percent >= 0) {
+        state->cached_brightness_percent =
+            jw_platform_clamp_brightness_percent(status->brightness_percent);
+    }
+    if (status->volume_percent >= 0) {
+        int volume = status->volume_percent;
+        if (volume < 0) volume = 0;
+        if (volume > 100) volume = 100;
+        state->cached_volume_percent = volume;
+    }
+}
+
+static void jw__refresh_platform_cache(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+    jw__cache_platform_status(state, &status);
+}
+
 static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {
     jw_platform_status status;
     jw_platform_get_status(&state->platform, &status);
+    jw__cache_platform_status(state, &status);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "platform-status");
@@ -681,6 +711,7 @@ static int jw__set_brightness(jw_daemon_state *state, int percent,
     }
 
     int resolved = out->has_value ? out->value : clamped;
+    state->cached_brightness_percent = jw_platform_clamp_brightness_percent(resolved);
     if (persist) {
         jw__persist_brightness(state, resolved);
     }
@@ -750,7 +781,11 @@ static void jw__apply_persisted_volume(jw_daemon_state *state) {
     jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_VOLUME,
                                percent, &result);
     if (result.code == JW_PLATFORM_RESULT_OK) {
-        jw_log_info("applied persisted volume value=%d", result.has_value ? result.value : percent);
+        int resolved = result.has_value ? result.value : percent;
+        if (resolved < 0) resolved = 0;
+        if (resolved > 100) resolved = 100;
+        state->cached_volume_percent = resolved;
+        jw_log_info("applied persisted volume value=%d", resolved);
     } else {
         jw_log_warn("persisted volume apply failed: %s", result.message);
     }
@@ -792,9 +827,10 @@ static void jw__input_volume_delta(void *userdata, int delta_percent) {
         return;
     }
 
-    jw_platform_status status;
-    jw_platform_get_status(&state->platform, &status);
-    int current = status.volume_percent >= 0 ? status.volume_percent : 50;
+    if (state->cached_volume_percent < 0) {
+        jw__refresh_platform_cache(state);
+    }
+    int current = state->cached_volume_percent >= 0 ? state->cached_volume_percent : 50;
 
     int target = current + delta_percent;
     if (target < 0) target = 0;
@@ -805,6 +841,9 @@ static void jw__input_volume_delta(void *userdata, int delta_percent) {
                                target, &result);
     if (result.code == JW_PLATFORM_RESULT_OK) {
         int resolved = result.has_value ? result.value : target;
+        if (resolved < 0) resolved = 0;
+        if (resolved > 100) resolved = 100;
+        state->cached_volume_percent = resolved;
         jw__persist_volume(state, resolved);
         jw__osd_show_volume(state, resolved);
         jw_log_info("volume hotkey delta=%d value=%d", delta_percent, resolved);
@@ -819,9 +858,12 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
         return;
     }
 
-    jw_platform_status status;
-    jw_platform_get_status(&state->platform, &status);
-    int current = status.brightness_percent >= 0 ? status.brightness_percent : 50;
+    if (state->cached_brightness_percent < 0) {
+        jw__refresh_platform_cache(state);
+    }
+    int current = state->cached_brightness_percent >= 0
+                    ? state->cached_brightness_percent
+                    : 50;
 
     jw_platform_result result;
     if (jw__set_brightness(state, current + delta_percent, true, true, &result) == 0) {
@@ -1186,6 +1228,9 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
             jw_platform_perform_action(&state->platform, action, value, &result);
             if (result.code == JW_PLATFORM_RESULT_OK) {
                 int resolved = result.has_value ? result.value : value;
+                if (resolved < 0) resolved = 0;
+                if (resolved > 100) resolved = 100;
+                state->cached_volume_percent = resolved;
                 jw__persist_volume(state, resolved);
             }
         } else {
@@ -1378,6 +1423,8 @@ int main(int argc, char *argv[]) {
     memset(&state, 0, sizeof(state));
     state.child_pid = -1;
     state.osd_pid = -1;
+    state.cached_brightness_percent = -1;
+    state.cached_volume_percent = -1;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--daemon-only") == 0) {
@@ -1441,6 +1488,7 @@ int main(int argc, char *argv[]) {
     setenv("JAWAKA_RUNTIME_DIR", state.runtime_dir, 1);
     setenv("JAWAKA_SDCARD_ROOT", state.sdcard_root, 1);
     setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
+    setenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1", 0);
     {
         char runner_path[PATH_MAX];
         if (snprintf(runner_path, sizeof(runner_path), "%s/jawaka-retroarch-runner",
