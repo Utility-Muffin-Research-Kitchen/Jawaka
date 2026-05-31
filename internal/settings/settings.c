@@ -481,6 +481,14 @@ void jw_settings_apply_persisted_overrides(const char *db_path) {
         t->button_label = cat_hex_to_color(val);
     if (jw_db_get_setting(db_path, "button_glyph_bg_color", val, sizeof(val)) == 0 && val[0])
         t->button_glyph_bg = cat_hex_to_color(val);
+
+    /* Tab-bar text isn't its own color role (yet): derive it from the palette
+       so it tracks the user's picks — selected tab uses Text, inactive uses
+       Hint. (TODO: promote these to dedicated "Tab Text" roles in the Colors
+       page if finer control is wanted.) */
+    cat_set_tab_text_colors(
+        cat_color_rgba(t->hint.r, t->hint.g, t->hint.b, 0xFF),   /* inactive */
+        cat_color_rgba(t->text.r, t->text.g, t->text.b, 0xFF));  /* selected */
 }
 
 static void jw__reapply_user_overrides(jw_settings_ui *ui) {
