@@ -6,6 +6,7 @@
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/paths.h"
+#include "internal/retroarch/command.h"
 
 #include <errno.h>
 #include <libgen.h>
@@ -50,8 +51,11 @@ typedef struct {
     jw_ipc_server *server;
     jw_platform_context platform;
     jw_input_proxy input_proxy;
-    pid_t child_pid;          /* exactly one daemon-owned child at a time */
+    pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
     jw_child_kind child_kind;
+    pid_t menu_pid;           /* transient in-game menu while RetroArch stays alive */
+    bool menu_in_game;
+    bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
     int cached_brightness_percent;
     int cached_volume_percent;
@@ -253,9 +257,11 @@ static const char *jw__child_name(jw_child_kind kind) {
 }
 
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
+static int jw__spawn_in_game_menu(jw_daemon_state *state);
 static int jw__spawn_osd(jw_daemon_state *state);
 static int jw__spawn_retroarch(jw_daemon_state *state);
 static int jw__spawn_app(jw_daemon_state *state);
+static int jw__request_open_in_game_menu(jw_daemon_state *state);
 
 static void jw__publish_retroarch_input_env(jw_daemon_state *state) {
     if (!state || !state->input_proxy.enabled ||
@@ -396,6 +402,33 @@ static int jw__request_open_menu(jw_daemon_state *state) {
     }
 
     state->pending_menu = true;
+    return 0;
+}
+
+static int jw__request_open_in_game_menu(jw_daemon_state *state) {
+    if (!state || !state->retroarch_session.active) {
+        return -1;
+    }
+
+    if (state->menu_pid > 0) {
+        return 0;
+    }
+
+    jw_ra_client client = jw_ra_client_default();
+    jw_ra_result pause_result = jw_ra_pause(&client);
+    if (pause_result != JW_RA_OK) {
+        jw_log_warn("in-game menu: pause failed result=%s",
+                    jw_ra_result_string(pause_result));
+        return -1;
+    }
+
+    state->retroarch_resume_on_menu_exit = true;
+    if (jw__spawn_in_game_menu(state) != 0) {
+        state->retroarch_resume_on_menu_exit = false;
+        jw_ra_resume(&client);
+        return -1;
+    }
+
     return 0;
 }
 
@@ -874,6 +907,20 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
     }
 }
 
+static bool jw__input_menu_tap(void *userdata) {
+    jw_daemon_state *state = (jw_daemon_state *)userdata;
+    if (!state || !state->retroarch_session.active) {
+        return false;
+    }
+
+    if (jw__request_open_in_game_menu(state) != 0) {
+        jw_log_warn("in-game menu: open request failed, forwarding Menu tap");
+        return false;
+    }
+
+    return true;
+}
+
 static void jw__start_input_proxy(jw_daemon_state *state) {
     if (!state) {
         return;
@@ -885,7 +932,7 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
     }
 
     if (jw_input_proxy_init(&state->input_proxy, jw__input_brightness_delta,
-                            jw__input_volume_delta, state) == 0) {
+                            jw__input_volume_delta, jw__input_menu_tap, state) == 0) {
         jw__publish_retroarch_input_env(state);
     }
 }
@@ -935,6 +982,42 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     state->child_pid = pid;
     state->child_kind = kind;
     jw_log_info("spawned %s pid=%d", name, (int)pid);
+    return 0;
+}
+
+static int jw__spawn_in_game_menu(jw_daemon_state *state) {
+    if (!state || state->menu_pid > 0) {
+        return state && state->menu_pid > 0 ? 0 : -1;
+    }
+
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/jawaka-menu", state->bin_dir) >=
+        (int)sizeof(path)) {
+        jw_log_error("in-game menu binary path too long: %s/jawaka-menu",
+                     state->bin_dir);
+        return -1;
+    }
+    if (!jw__path_exists(path)) {
+        jw_log_error("in-game menu binary missing: %s", path);
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_log_error("in-game menu fork failed: %s", strerror(errno));
+        return -1;
+    }
+
+    if (pid == 0) {
+        char *const argv[] = { (char *)path, "--in-game", NULL };
+        execv(path, argv);
+        perror("execv");
+        _exit(127);
+    }
+
+    state->menu_pid = pid;
+    state->menu_in_game = true;
+    jw_log_info("spawned in-game menu pid=%d", (int)pid);
     return 0;
 }
 
@@ -1104,6 +1187,171 @@ static int jw__handle_scan(jw_daemon_state *state, jw_ipc_client *client) {
     return jw__reply_ok(client, "scan-library", &scan_result);
 }
 
+static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *client) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "retroarch-session");
+    cJSON_AddBoolToObject(root, "active",
+                          state && state->retroarch_session.active);
+
+    if (!state || !state->retroarch_session.active) {
+        cJSON_AddBoolToObject(root, "command_ok", false);
+        cJSON_AddStringToObject(root, "command_result", "inactive");
+        return jw__reply_json(client, root);
+    }
+
+    cJSON_AddStringToObject(root, "system", state->retroarch_session.system);
+    cJSON_AddStringToObject(root, "rom_path", state->retroarch_session.rom_path);
+    cJSON_AddStringToObject(root, "core_path", state->retroarch_session.core_path);
+
+    jw_ra_client ra = jw_ra_client_default();
+    jw_ra_info info;
+    jw_ra_result result = jw_ra_get_info(&ra, &info);
+    cJSON_AddBoolToObject(root, "command_ok", result == JW_RA_OK);
+    cJSON_AddStringToObject(root, "command_result", jw_ra_result_string(result));
+
+    if (result == JW_RA_OK) {
+        cJSON_AddNumberToObject(root, "disk_count", info.disk_count);
+        if (info.disk_slot >= 0) {
+            cJSON_AddNumberToObject(root, "disk_slot", info.disk_slot);
+        } else {
+            cJSON_AddNullToObject(root, "disk_slot");
+        }
+        cJSON_AddBoolToObject(root, "savestate_supported",
+                              info.savestate_supported);
+        cJSON_AddNumberToObject(root, "state_slot", info.state_slot);
+    }
+
+    return jw__reply_json(client, root);
+}
+
+static int jw__reply_retroarch_result(jw_ipc_client *client, const char *action,
+                                      jw_ra_result result) {
+    bool ok = result == JW_RA_OK;
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", ok ? "ok" : "error");
+    cJSON_AddStringToObject(root, "action", action ? action : "");
+    cJSON_AddStringToObject(root, "result", jw_ra_result_string(result));
+    cJSON_AddStringToObject(root, "message", jw_ra_result_string(result));
+    return jw__reply_json(client, root);
+}
+
+static jw_ra_result jw__set_state_slot_delta(const jw_ra_client *ra, int delta) {
+    int slot = -1;
+    bool supported = false;
+    jw_ra_result result = jw_ra_get_state_slot(ra, &slot, &supported);
+    if (result != JW_RA_OK) {
+        return result;
+    }
+    if (!supported) {
+        return JW_RA_UNSUPPORTED;
+    }
+
+    slot += delta;
+    if (slot < -1) {
+        slot = -1;
+    }
+    return jw_ra_set_state_slot(ra, slot);
+}
+
+static jw_ra_result jw__set_disk_slot_delta(const jw_ra_client *ra, int delta) {
+    int count = 0;
+    int slot = -1;
+    jw_ra_result result = jw_ra_get_disk_count(ra, &count);
+    if (result != JW_RA_OK) {
+        return result;
+    }
+    if (count <= 1) {
+        return JW_RA_UNSUPPORTED;
+    }
+
+    result = jw_ra_get_disk_slot(ra, &slot);
+    if (result != JW_RA_OK) {
+        return result;
+    }
+    if (slot < 0 || slot >= count) {
+        slot = 0;
+    }
+
+    int next = (slot + delta) % count;
+    if (next < 0) {
+        next += count;
+    }
+    return jw_ra_set_disk_slot(ra, next);
+}
+
+static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *client,
+                                       cJSON *root) {
+    cJSON *action_json = cJSON_GetObjectItemCaseSensitive(root, "action");
+    if (!cJSON_IsString(action_json) || !action_json->valuestring ||
+        !action_json->valuestring[0]) {
+        return jw__reply_error(client, "missing RetroArch action");
+    }
+    if (!state || !state->retroarch_session.active) {
+        return jw__reply_error(client, "no active RetroArch session");
+    }
+
+    const char *action = action_json->valuestring;
+    cJSON *value_json = cJSON_GetObjectItemCaseSensitive(root, "value");
+    bool has_value = cJSON_IsNumber(value_json);
+    int value = has_value ? value_json->valueint : 0;
+    jw_ra_client ra = jw_ra_client_default();
+    jw_ra_result result = JW_RA_UNSUPPORTED;
+
+    if (strcmp(action, "continue") == 0) {
+        result = jw_ra_resume(&ra);
+        if (result == JW_RA_OK) {
+            state->retroarch_resume_on_menu_exit = false;
+        }
+    } else if (strcmp(action, "settings") == 0) {
+        result = jw_ra_open_menu(&ra);
+        if (result == JW_RA_OK) {
+            state->retroarch_resume_on_menu_exit = false;
+        }
+    } else if (strcmp(action, "quit") == 0) {
+        result = jw_ra_quit(&ra);
+        if (result == JW_RA_OK) {
+            state->retroarch_resume_on_menu_exit = false;
+        }
+    } else if (strcmp(action, "reset") == 0) {
+        result = jw_ra_reset(&ra);
+        if (result == JW_RA_OK) {
+            state->retroarch_resume_on_menu_exit = true;
+        }
+    } else if (strcmp(action, "save-state") == 0) {
+        if (has_value && value >= 0) {
+            char reply[JW_RA_REPLY_MAX];
+            result = jw_ra_save_state_slot(&ra, value, reply, sizeof(reply));
+        } else {
+            result = jw_ra_save_state(&ra);
+        }
+        if (result == JW_RA_OK) {
+            state->retroarch_resume_on_menu_exit = true;
+        }
+    } else if (strcmp(action, "load-state") == 0) {
+        if (has_value && value >= 0) {
+            char reply[JW_RA_REPLY_MAX];
+            result = jw_ra_load_state_slot(&ra, value, reply, sizeof(reply));
+        } else {
+            result = jw_ra_load_state(&ra);
+        }
+        if (result == JW_RA_OK) {
+            state->retroarch_resume_on_menu_exit = true;
+        }
+    } else if (strcmp(action, "state-slot-prev") == 0) {
+        result = jw__set_state_slot_delta(&ra, -1);
+    } else if (strcmp(action, "state-slot-next") == 0) {
+        result = jw__set_state_slot_delta(&ra, +1);
+    } else if (strcmp(action, "disk-prev") == 0) {
+        result = jw__set_disk_slot_delta(&ra, -1);
+    } else if (strcmp(action, "disk-next") == 0) {
+        result = jw__set_disk_slot_delta(&ra, +1);
+    }
+
+    jw_log_info("retroarch-action requested action=%s result=%s",
+                action, jw_ra_result_string(result));
+    return jw__reply_retroarch_result(client, action, result);
+}
+
 static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, const char *body) {
     cJSON *root = cJSON_Parse(body);
     if (!root) {
@@ -1138,13 +1386,26 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     }
 
     if (strcmp(type->valuestring, "open-menu") == 0) {
-        if (jw__request_open_menu(state) != 0) {
+        bool in_game = state && state->retroarch_session.active;
+        if ((in_game ? jw__request_open_in_game_menu(state)
+                     : jw__request_open_menu(state)) != 0) {
             cJSON_Delete(root);
             return jw__reply_error(client, "open-menu failed");
         }
-        jw_log_info("open-menu requested");
+        jw_log_info("open-menu requested mode=%s", in_game ? "in-game" : "frontend");
         cJSON_Delete(root);
         return jw__reply_ok(client, "open-menu", NULL);
+    }
+
+    if (strcmp(type->valuestring, "retroarch-session") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_retroarch_session(state, client);
+    }
+
+    if (strcmp(type->valuestring, "retroarch-action") == 0) {
+        int rc = jw__handle_retroarch_action(state, client, root);
+        cJSON_Delete(root);
+        return rc;
     }
 
     if (strcmp(type->valuestring, "launch-game") == 0) {
@@ -1299,6 +1560,52 @@ static int jw__accept_and_process(jw_daemon_state *state) {
     return result == 0 ? 0 : -1;
 }
 
+static void jw__clear_menu_tracking(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+
+    state->menu_pid = -1;
+    state->menu_in_game = false;
+    state->retroarch_resume_on_menu_exit = false;
+}
+
+static void jw__terminate_menu_child(jw_daemon_state *state, bool force) {
+    if (!state || state->menu_pid <= 0) {
+        return;
+    }
+
+    pid_t pid = state->menu_pid;
+    kill(pid, SIGTERM);
+
+    int status = 0;
+    for (int attempt = 0; attempt < 5; attempt++) {
+        pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) {
+            jw_log_info("in-game menu exited during cleanup status=%d", status);
+            jw__clear_menu_tracking(state);
+            return;
+        }
+        if (waited < 0) {
+            if (errno != ECHILD) {
+                jw_log_warn("in-game menu cleanup wait failed: %s",
+                            strerror(errno));
+            }
+            jw__clear_menu_tracking(state);
+            return;
+        }
+        usleep(50000);
+    }
+
+    if (force) {
+        jw_log_warn("in-game menu did not exit on SIGTERM; forcing pid=%d",
+                    (int)pid);
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+        jw__clear_menu_tracking(state);
+    }
+}
+
 static void jw__handle_child_exit(jw_daemon_state *state) {
     if (!state || state->child_pid <= 0) {
         return;
@@ -1326,6 +1633,9 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
 
     if (exited_kind == JW_CHILD_RETROARCH) {
         jw__retroarch_session_finish(state, exited_pid, status);
+        if (state->menu_pid > 0) {
+            jw__terminate_menu_child(state, true);
+        }
     }
 
     if (state->shutdown_requested || g_shutdown_requested) {
@@ -1380,10 +1690,53 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     jw__spawn_child(state, JW_CHILD_LAUNCHER);
 }
 
+static void jw__handle_menu_exit(jw_daemon_state *state) {
+    if (!state || state->menu_pid <= 0) {
+        return;
+    }
+
+    int status = 0;
+    pid_t waited = waitpid(state->menu_pid, &status, WNOHANG);
+    if (waited == 0) {
+        return;
+    }
+    if (waited < 0) {
+        if (errno != ECHILD) {
+            jw_log_warn("in-game menu wait failed: %s", strerror(errno));
+        }
+        jw__clear_menu_tracking(state);
+        return;
+    }
+
+    bool should_resume = state->menu_in_game &&
+                         state->retroarch_resume_on_menu_exit &&
+                         state->retroarch_session.active;
+    jw__clear_menu_tracking(state);
+
+    if (WIFEXITED(status)) {
+        jw_log_info("in-game menu exited status=%d", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        jw_log_warn("in-game menu terminated signal=%d", WTERMSIG(status));
+    } else {
+        jw_log_warn("in-game menu changed state status=%d", status);
+    }
+
+    if (should_resume) {
+        jw_ra_client client = jw_ra_client_default();
+        jw_ra_result result = jw_ra_resume(&client);
+        if (result != JW_RA_OK) {
+            jw_log_warn("in-game menu: resume failed result=%s",
+                        jw_ra_result_string(result));
+        }
+    }
+}
+
 static void jw__cleanup(jw_daemon_state *state) {
     if (!state) {
         return;
     }
+
+    jw__terminate_menu_child(state, true);
 
     if (state->child_pid > 0) {
         pid_t child_pid = state->child_pid;
@@ -1422,6 +1775,7 @@ int main(int argc, char *argv[]) {
     jw_daemon_state state;
     memset(&state, 0, sizeof(state));
     state.child_pid = -1;
+    state.menu_pid = -1;
     state.osd_pid = -1;
     state.cached_brightness_percent = -1;
     state.cached_volume_percent = -1;
@@ -1526,15 +1880,20 @@ int main(int argc, char *argv[]) {
         }
 
         jw__handle_child_exit(&state);
+        jw__handle_menu_exit(&state);
         jw__handle_osd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
 
-        if (state.shutdown_requested && state.child_pid <= 0) {
+        if (state.shutdown_requested && state.child_pid <= 0 &&
+            state.menu_pid <= 0) {
             break;
         }
 
         if (state.shutdown_requested && state.child_pid > 0) {
             kill(state.child_pid, SIGTERM);
+        }
+        if (state.shutdown_requested && state.menu_pid > 0) {
+            kill(state.menu_pid, SIGTERM);
         }
 
         int rc = jw__accept_and_process(&state);

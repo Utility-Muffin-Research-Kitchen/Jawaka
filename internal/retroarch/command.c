@@ -61,10 +61,16 @@ static bool jw_ra__exact_supported(const char *command) {
         "DISK_PREV",
         "FPS_TOGGLE",
         "FULLSCREEN_TOGGLE",
+        "GET_DISK_COUNT",
+        "GET_DISK_SLOT",
+        "GET_INFO",
+        "GET_STATE_SLOT",
         "GET_STATUS",
         "LOAD_STATE",
         "MENU_TOGGLE",
         "MUTE",
+        "OPEN_MENU",
+        "PAUSE",
         "PAUSE_TOGGLE",
         "QUIT",
         "RESET",
@@ -72,6 +78,7 @@ static bool jw_ra__exact_supported(const char *command) {
         "SCREENSHOT",
         "STATE_SLOT_MINUS",
         "STATE_SLOT_PLUS",
+        "UNPAUSE",
         "VOLUME_DOWN",
         "VOLUME_UP",
     };
@@ -105,11 +112,15 @@ bool jw_ra_raw_command_supported(const char *command) {
     }
 
     return jw_ra__starts_with_word(command, "GET_CONFIG_PARAM") ||
+           jw_ra__starts_with_word(command, "GET_PATH") ||
            jw_ra__starts_with_word(command, "LOAD_CORE") ||
            jw_ra__starts_with_word(command, "LOAD_STATE_SLOT") ||
            jw_ra__starts_with_word(command, "PLAY_REPLAY_SLOT") ||
            jw_ra__starts_with_word(command, "READ_CORE_MEMORY") ||
            jw_ra__starts_with_word(command, "SEEK_REPLAY") ||
+           jw_ra__starts_with_word(command, "SAVE_STATE_SLOT") ||
+           jw_ra__starts_with_word(command, "SET_DISK_SLOT") ||
+           jw_ra__starts_with_word(command, "SET_STATE_SLOT") ||
            jw_ra__starts_with_word(command, "SHOW_MSG") ||
            jw_ra__starts_with_word(command, "WRITE_CORE_MEMORY");
 }
@@ -333,6 +344,82 @@ static jw_ra_result jw_ra__parse_status(const char *reply, jw_ra_status *status)
     return JW_RA_OK;
 }
 
+static jw_ra_result jw_ra__parse_prefixed_int(const char *reply,
+                                              const char *prefix,
+                                              int *out) {
+    char *end = NULL;
+    long value;
+    size_t prefix_len;
+
+    if (!reply || !prefix || !out) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    prefix_len = strlen(prefix);
+    if (strncmp(reply, prefix, prefix_len) != 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    errno = 0;
+    value = strtol(reply + prefix_len, &end, 10);
+    if (errno != 0 || end == reply + prefix_len ||
+        (end && *end != '\0' && *end != '\n' && *end != '\r')) {
+        return JW_RA_PARSE_ERROR;
+    }
+    if (value < -1 || value > 999999L) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    *out = (int)value;
+    return JW_RA_OK;
+}
+
+static jw_ra_result jw_ra__parse_info(const char *reply, jw_ra_info *info) {
+    char raw[JW_RA_REPLY_MAX];
+    char state_token[32];
+    int nread;
+
+    if (!reply || !info) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    memset(info, 0, sizeof(*info));
+    info->disk_count = 0;
+    info->disk_slot = 0;
+    info->savestate_supported = false;
+    info->state_slot = 0;
+    snprintf(info->raw, sizeof(info->raw), "%s", reply);
+    jw_ra__trim_line(info->raw);
+    snprintf(raw, sizeof(raw), "%s", info->raw);
+
+    nread = sscanf(raw, "GET_INFO %d %d %31s",
+                   &info->disk_count, &info->disk_slot, state_token);
+    if (nread != 3 || info->disk_count < 0 || info->disk_slot < 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    if (strcmp(state_token, "NO") == 0) {
+        info->savestate_supported = false;
+        info->state_slot = 0;
+        return JW_RA_OK;
+    }
+
+    {
+        char *end = NULL;
+        long value;
+        errno = 0;
+        value = strtol(state_token, &end, 10);
+        if (errno != 0 || end == state_token || (end && *end != '\0') ||
+            value < -1 || value > 999999L) {
+            return JW_RA_PARSE_ERROR;
+        }
+        info->savestate_supported = true;
+        info->state_slot = (int)value;
+    }
+
+    return JW_RA_OK;
+}
+
 jw_ra_result jw_ra_get_status(const jw_ra_client *client, jw_ra_status *status) {
     char reply[JW_RA_REPLY_MAX];
     jw_ra_result result = jw_ra_request_raw(client, "GET_STATUS", reply, sizeof(reply));
@@ -340,6 +427,15 @@ jw_ra_result jw_ra_get_status(const jw_ra_client *client, jw_ra_status *status) 
         return result;
     }
     return jw_ra__parse_status(reply, status);
+}
+
+jw_ra_result jw_ra_get_info(const jw_ra_client *client, jw_ra_info *info) {
+    char reply[JW_RA_REPLY_MAX];
+    jw_ra_result result = jw_ra_request_raw(client, "GET_INFO", reply, sizeof(reply));
+    if (result != JW_RA_OK) {
+        return result;
+    }
+    return jw_ra__parse_info(reply, info);
 }
 
 jw_ra_result jw_ra_pause(const jw_ra_client *client) {
@@ -372,12 +468,28 @@ jw_ra_result jw_ra_resume(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "PAUSE_TOGGLE");
 }
 
+jw_ra_result jw_ra_pause_direct(const jw_ra_client *client) {
+    return jw_ra_send_raw(client, "PAUSE");
+}
+
+jw_ra_result jw_ra_resume_direct(const jw_ra_client *client) {
+    return jw_ra_send_raw(client, "UNPAUSE");
+}
+
 jw_ra_result jw_ra_menu_toggle(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "MENU_TOGGLE");
 }
 
+jw_ra_result jw_ra_open_menu(const jw_ra_client *client) {
+    return jw_ra_send_raw(client, "OPEN_MENU");
+}
+
 jw_ra_result jw_ra_quit(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "QUIT");
+}
+
+jw_ra_result jw_ra_reset(const jw_ra_client *client) {
+    return jw_ra_send_raw(client, "RESET");
 }
 
 jw_ra_result jw_ra_save_state(const jw_ra_client *client) {
@@ -404,9 +516,64 @@ jw_ra_result jw_ra_load_state_slot(const jw_ra_client *client, int slot,
 }
 
 jw_ra_result jw_ra_set_state_slot(const jw_ra_client *client, int slot) {
-    (void)client;
-    (void)slot;
-    return JW_RA_UNSUPPORTED;
+    char command[64];
+    char reply[JW_RA_REPLY_MAX];
+    jw_ra_result result;
+
+    if (slot < -1) {
+        return JW_RA_UNSUPPORTED;
+    }
+
+    snprintf(command, sizeof(command), "SET_STATE_SLOT %d", slot);
+    result = jw_ra_request_raw(client, command, reply, sizeof(reply));
+    if (result != JW_RA_OK) {
+        return result;
+    }
+    return jw_ra__parse_prefixed_int(reply, "SET_STATE_SLOT ", &slot);
+}
+
+jw_ra_result jw_ra_get_state_slot(const jw_ra_client *client, int *out_slot,
+                                  bool *out_supported) {
+    char reply[JW_RA_REPLY_MAX];
+    jw_ra_result result;
+
+    if (out_slot) {
+        *out_slot = 0;
+    }
+    if (out_supported) {
+        *out_supported = false;
+    }
+
+    result = jw_ra_request_raw(client, "GET_STATE_SLOT", reply, sizeof(reply));
+    if (result != JW_RA_OK) {
+        return result;
+    }
+
+    jw_ra__trim_line(reply);
+    if (strcmp(reply, "GET_STATE_SLOT NO") == 0) {
+        return JW_RA_OK;
+    }
+
+    result = jw_ra__parse_prefixed_int(reply, "GET_STATE_SLOT ", out_slot);
+    if (result == JW_RA_OK && out_supported) {
+        *out_supported = true;
+    }
+    return result;
+}
+
+jw_ra_result jw_ra_save_state_slot(const jw_ra_client *client, int slot,
+                                   char *reply, size_t reply_size) {
+    char command[64];
+
+    if (slot < -1) {
+        return JW_RA_UNSUPPORTED;
+    }
+
+    snprintf(command, sizeof(command), "SAVE_STATE_SLOT %d", slot);
+    if (reply && reply_size > 0) {
+        return jw_ra_request_raw(client, command, reply, reply_size);
+    }
+    return jw_ra_send_raw(client, command);
 }
 
 jw_ra_result jw_ra_state_slot_plus(const jw_ra_client *client) {
@@ -415,6 +582,41 @@ jw_ra_result jw_ra_state_slot_plus(const jw_ra_client *client) {
 
 jw_ra_result jw_ra_state_slot_minus(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "STATE_SLOT_MINUS");
+}
+
+jw_ra_result jw_ra_get_disk_count(const jw_ra_client *client, int *out_count) {
+    char reply[JW_RA_REPLY_MAX];
+    jw_ra_result result = jw_ra_request_raw(client, "GET_DISK_COUNT", reply, sizeof(reply));
+    if (result != JW_RA_OK) {
+        return result;
+    }
+    return jw_ra__parse_prefixed_int(reply, "GET_DISK_COUNT ", out_count);
+}
+
+jw_ra_result jw_ra_get_disk_slot(const jw_ra_client *client, int *out_slot) {
+    char reply[JW_RA_REPLY_MAX];
+    jw_ra_result result = jw_ra_request_raw(client, "GET_DISK_SLOT", reply, sizeof(reply));
+    if (result != JW_RA_OK) {
+        return result;
+    }
+    return jw_ra__parse_prefixed_int(reply, "GET_DISK_SLOT ", out_slot);
+}
+
+jw_ra_result jw_ra_set_disk_slot(const jw_ra_client *client, int slot) {
+    char command[64];
+    char reply[JW_RA_REPLY_MAX];
+    jw_ra_result result;
+
+    if (slot < 0) {
+        return JW_RA_UNSUPPORTED;
+    }
+
+    snprintf(command, sizeof(command), "SET_DISK_SLOT %d", slot);
+    result = jw_ra_request_raw(client, command, reply, sizeof(reply));
+    if (result != JW_RA_OK) {
+        return result;
+    }
+    return jw_ra__parse_prefixed_int(reply, "SET_DISK_SLOT ", &slot);
 }
 
 jw_ra_result jw_ra_disk_eject_toggle(const jw_ra_client *client) {
@@ -427,6 +629,46 @@ jw_ra_result jw_ra_disk_next(const jw_ra_client *client) {
 
 jw_ra_result jw_ra_disk_prev(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "DISK_PREV");
+}
+
+jw_ra_result jw_ra_get_path(const jw_ra_client *client, const char *kind,
+                            char *out, size_t out_size) {
+    char command[64];
+    char reply[JW_RA_REPLY_MAX];
+    char prefix[96];
+    size_t prefix_len;
+    jw_ra_result result;
+    const char *value;
+
+    if (!kind || !kind[0] || !out || out_size == 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    out[0] = '\0';
+    if (snprintf(command, sizeof(command), "GET_PATH %s", kind) >= (int)sizeof(command) ||
+        snprintf(prefix, sizeof(prefix), "GET_PATH %s ", kind) >= (int)sizeof(prefix)) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    result = jw_ra_request_raw(client, command, reply, sizeof(reply));
+    if (result != JW_RA_OK) {
+        return result;
+    }
+
+    jw_ra__trim_line(reply);
+    prefix_len = strlen(prefix);
+    if (strncmp(reply, prefix, prefix_len) != 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    value = reply + prefix_len;
+    snprintf(out, out_size, "%s", value);
+    return out[0] ? JW_RA_OK : JW_RA_UNSUPPORTED;
+}
+
+jw_ra_result jw_ra_get_savestate_path(const jw_ra_client *client,
+                                      char *out, size_t out_size) {
+    return jw_ra_get_path(client, "savestate", out, out_size);
 }
 
 jw_ra_result jw_ra_show_message(const jw_ra_client *client, const char *message) {

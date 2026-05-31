@@ -4,6 +4,21 @@
 #include "internal/ipc/ipc.h"
 #include "internal/db/db.h"
 
+#include <stdbool.h>
+
+typedef struct {
+    bool active;
+    bool command_ok;
+    char command_result[32];
+    char system[64];
+    char rom_path[512];
+    char core_path[512];
+    int disk_count;
+    int disk_slot;
+    bool savestate_supported;
+    int state_slot;
+} jw_ipc_retroarch_session_info;
+
 /* Send a "hello" handshake to jawakad.
  * role: "launcher" or "menu".
  * Returns 0 on success, -1 on failure. */
@@ -27,6 +42,16 @@ int jw_ipc_launch_game(const char *socket_path, const char *system,
  * Populates status[status_len] with a human-readable result when provided. */
 int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
                       char *status, int status_len);
+
+/* Fetch the daemon-owned RetroArch session and command-interface state. */
+int jw_ipc_get_retroarch_session(const char *socket_path,
+                                 jw_ipc_retroarch_session_info *out,
+                                 char *status, int status_len);
+
+/* Ask jawakad to perform a RetroArch action for the active session.
+ * value is action-specific; pass 0 when unused. */
+int jw_ipc_retroarch_action(const char *socket_path, const char *action,
+                            int value, char *status, int status_len);
 
 /* Reset the shared RetroArch config back to packaged platform defaults. */
 int jw_ipc_reset_retroarch_config(const char *socket_path,

@@ -12,6 +12,8 @@ CORE_INFO="${CORE_INFO:-$WORKSPACE_ROOT/Cores-spruce/output/mlp1/info/2048_libre
 RUN_LOG="$REMOTE_DIR/logs/retroarch.log"
 CTL="$REMOTE_DIR/bin/jawaka-retroarchctl"
 PORT="${JAWAKA_RA_COMMAND_PORT:-55355}"
+VIDEO_DRIVER="${VIDEO_DRIVER:-gl}"
+VIDEO_CONTEXT_DRIVER="${VIDEO_CONTEXT_DRIVER:-}"
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
     make -C "$ROOT_DIR" mlp1
@@ -74,7 +76,8 @@ echo "Staging RetroArch command smoke to $REMOTE_DIR"
 
 "${ADB[@]}" shell "cat > '$REMOTE_DIR/retroarch.cfg' <<'CFG'
 config_save_on_exit = \"false\"
-video_driver = \"gl\"
+video_driver = \"$VIDEO_DRIVER\"
+video_context_driver = \"$VIDEO_CONTEXT_DRIVER\"
 audio_driver = \"alsa\"
 input_driver = \"sdl2\"
 input_joypad_driver = \"sdl2\"

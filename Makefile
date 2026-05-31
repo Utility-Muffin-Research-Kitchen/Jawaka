@@ -70,6 +70,7 @@ DAEMON_SRCS := \
 	$(INPUT_PROXY_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
+	internal/retroarch/command.c \
 	internal/db/db.c \
 	internal/discovery/discovery.c \
 	third_party/cjson/cJSON.c

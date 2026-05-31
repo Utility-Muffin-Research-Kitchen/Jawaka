@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,18 @@ struct jw_ipc_server {
 struct jw_ipc_client {
     int fd;
 };
+
+static void jw__set_cloexec(int fd) {
+    int flags;
+    if (fd < 0) {
+        return;
+    }
+
+    flags = fcntl(fd, F_GETFD);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    }
+}
 
 static int jw__write_all(int fd, const void *buf, size_t len) {
     const char *ptr = (const char *)buf;
@@ -88,6 +101,7 @@ int jw_ipc_server_listen(const char *socket_path, jw_ipc_server **out) {
     if (fd < 0) {
         return -1;
     }
+    jw__set_cloexec(fd);
 
     struct sockaddr_un addr;
     socklen_t addr_len = 0;
@@ -162,6 +176,7 @@ int jw_ipc_server_accept(jw_ipc_server *server, jw_ipc_client **out_client, int 
         }
         return -1;
     }
+    jw__set_cloexec(client_fd);
 
     jw_ipc_client *client = (jw_ipc_client *)calloc(1, sizeof(*client));
     if (!client) {
@@ -198,6 +213,7 @@ int jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out) {
     if (fd < 0) {
         return -1;
     }
+    jw__set_cloexec(fd);
 
     struct sockaddr_un addr;
     socklen_t addr_len = 0;

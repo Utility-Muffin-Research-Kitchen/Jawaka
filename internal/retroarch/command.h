@@ -37,6 +37,14 @@ typedef struct {
     char raw[JW_RA_REPLY_MAX];
 } jw_ra_status;
 
+typedef struct {
+    int disk_count;
+    int disk_slot;
+    bool savestate_supported;
+    int state_slot;
+    char raw[JW_RA_REPLY_MAX];
+} jw_ra_info;
+
 const char *jw_ra_result_string(jw_ra_result result);
 const char *jw_ra_play_state_string(jw_ra_play_state state);
 
@@ -48,20 +56,36 @@ jw_ra_result jw_ra_request_raw(const jw_ra_client *client, const char *command,
                                char *reply, size_t reply_size);
 
 jw_ra_result jw_ra_get_status(const jw_ra_client *client, jw_ra_status *status);
+jw_ra_result jw_ra_get_info(const jw_ra_client *client, jw_ra_info *info);
 jw_ra_result jw_ra_pause(const jw_ra_client *client);
 jw_ra_result jw_ra_resume(const jw_ra_client *client);
+jw_ra_result jw_ra_pause_direct(const jw_ra_client *client);
+jw_ra_result jw_ra_resume_direct(const jw_ra_client *client);
 jw_ra_result jw_ra_menu_toggle(const jw_ra_client *client);
+jw_ra_result jw_ra_open_menu(const jw_ra_client *client);
 jw_ra_result jw_ra_quit(const jw_ra_client *client);
+jw_ra_result jw_ra_reset(const jw_ra_client *client);
 jw_ra_result jw_ra_save_state(const jw_ra_client *client);
 jw_ra_result jw_ra_load_state(const jw_ra_client *client);
 jw_ra_result jw_ra_load_state_slot(const jw_ra_client *client, int slot,
                                    char *reply, size_t reply_size);
 jw_ra_result jw_ra_set_state_slot(const jw_ra_client *client, int slot);
+jw_ra_result jw_ra_get_state_slot(const jw_ra_client *client, int *out_slot,
+                                  bool *out_supported);
+jw_ra_result jw_ra_save_state_slot(const jw_ra_client *client, int slot,
+                                   char *reply, size_t reply_size);
 jw_ra_result jw_ra_state_slot_plus(const jw_ra_client *client);
 jw_ra_result jw_ra_state_slot_minus(const jw_ra_client *client);
+jw_ra_result jw_ra_get_disk_count(const jw_ra_client *client, int *out_count);
+jw_ra_result jw_ra_get_disk_slot(const jw_ra_client *client, int *out_slot);
+jw_ra_result jw_ra_set_disk_slot(const jw_ra_client *client, int slot);
 jw_ra_result jw_ra_disk_eject_toggle(const jw_ra_client *client);
 jw_ra_result jw_ra_disk_next(const jw_ra_client *client);
 jw_ra_result jw_ra_disk_prev(const jw_ra_client *client);
+jw_ra_result jw_ra_get_path(const jw_ra_client *client, const char *kind,
+                            char *out, size_t out_size);
+jw_ra_result jw_ra_get_savestate_path(const jw_ra_client *client,
+                                      char *out, size_t out_size);
 jw_ra_result jw_ra_show_message(const jw_ra_client *client, const char *message);
 
 #endif

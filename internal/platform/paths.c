@@ -327,6 +327,13 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "network_cmd_enable",
         "network_cmd_port",
         "pause_nonactive",
+#ifdef PLATFORM_MLP1
+        "video_driver",
+        "video_context_driver",
+        "aspect_ratio_index",
+        "video_force_aspect",
+        "video_scale_integer",
+#endif
         "input_player1_joypad_index",
     };
 
@@ -983,6 +990,13 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     snprintf(command_port, sizeof(command_port), "%u", JW_RA_DEFAULT_PORT);
     jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
     jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
+#ifdef PLATFORM_MLP1
+    jw__retroarch_cfg_string(fp, "video_driver", "gl");
+    jw__retroarch_cfg_string(fp, "video_context_driver", "sdl_gl");
+    jw__retroarch_cfg_string(fp, "aspect_ratio_index", "22");
+    jw__retroarch_cfg_string(fp, "video_force_aspect", "true");
+    jw__retroarch_cfg_string(fp, "video_scale_integer", "false");
+#endif
     if (player1_joypad_index >= 0) {
         char joypad_index[16];
         snprintf(joypad_index, sizeof(joypad_index), "%d", player1_joypad_index);
@@ -1244,6 +1258,13 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     snprintf(command_port, sizeof(command_port), "%u", JW_RA_DEFAULT_PORT);
     jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
     jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
+#ifdef PLATFORM_MLP1
+    jw__retroarch_cfg_string(fp, "video_driver", "gl");
+    jw__retroarch_cfg_string(fp, "video_context_driver", "sdl_gl");
+    jw__retroarch_cfg_string(fp, "aspect_ratio_index", "22");
+    jw__retroarch_cfg_string(fp, "video_force_aspect", "true");
+    jw__retroarch_cfg_string(fp, "video_scale_integer", "false");
+#endif
     if (player1_joypad_index >= 0) {
         char joypad_index[16];
         snprintf(joypad_index, sizeof(joypad_index), "%d", player1_joypad_index);

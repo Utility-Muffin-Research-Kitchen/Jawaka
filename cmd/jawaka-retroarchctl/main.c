@@ -17,19 +17,30 @@ static void jw__usage(FILE *stream) {
             "\n"
             "Commands:\n"
             "  status\n"
+            "  info\n"
             "  pause\n"
             "  resume\n"
+            "  pause-direct\n"
+            "  resume-direct\n"
             "  menu-toggle\n"
             "  quit\n"
+            "  reset\n"
             "  save-state\n"
             "  load-state\n"
             "  load-state-slot SLOT\n"
-            "  set-state-slot SLOT       currently reports unsupported unless adapter is added\n"
+            "  get-state-slot\n"
+            "  set-state-slot SLOT\n"
+            "  save-state-slot SLOT\n"
             "  state-slot-plus\n"
             "  state-slot-minus\n"
+            "  get-disk-count\n"
+            "  get-disk-slot\n"
+            "  set-disk-slot SLOT\n"
             "  disk-eject-toggle\n"
             "  disk-next\n"
             "  disk-prev\n"
+            "  get-path KIND\n"
+            "  savestate-path\n"
             "  show-message TEXT\n"
             "  raw-send COMMAND...\n"
             "  raw-request COMMAND...\n");
@@ -59,6 +70,21 @@ static int jw__parse_int(const char *text, int *out) {
     errno = 0;
     value = strtol(text, &end, 10);
     if (errno != 0 || !end || *end != '\0' || value < 0 || value > 9999) {
+        return -1;
+    }
+    *out = (int)value;
+    return 0;
+}
+
+static int jw__parse_slot(const char *text, int *out) {
+    char *end = NULL;
+    long value;
+    if (!text || !text[0] || !out) {
+        return -1;
+    }
+    errno = 0;
+    value = strtol(text, &end, 10);
+    if (errno != 0 || !end || *end != '\0' || value < -1 || value > 9999) {
         return -1;
     }
     *out = (int)value;
@@ -167,14 +193,35 @@ int main(int argc, char **argv) {
             return 0;
         }
         return jw__print_result(result);
+    } else if (strcmp(command, "info") == 0) {
+        jw_ra_info info;
+        result = jw_ra_get_info(&client, &info);
+        if (result == JW_RA_OK) {
+            printf("result=ok\n");
+            printf("disk_count=%d\n", info.disk_count);
+            printf("disk_slot=%d\n", info.disk_slot);
+            printf("savestate_supported=%d\n", info.savestate_supported ? 1 : 0);
+            if (info.savestate_supported) {
+                printf("state_slot=%d\n", info.state_slot);
+            }
+            printf("raw=%s\n", info.raw);
+            return 0;
+        }
+        return jw__print_result(result);
     } else if (strcmp(command, "pause") == 0) {
         result = jw_ra_pause(&client);
     } else if (strcmp(command, "resume") == 0) {
         result = jw_ra_resume(&client);
+    } else if (strcmp(command, "pause-direct") == 0) {
+        result = jw_ra_pause_direct(&client);
+    } else if (strcmp(command, "resume-direct") == 0) {
+        result = jw_ra_resume_direct(&client);
     } else if (strcmp(command, "menu-toggle") == 0) {
         result = jw_ra_menu_toggle(&client);
     } else if (strcmp(command, "quit") == 0) {
         result = jw_ra_quit(&client);
+    } else if (strcmp(command, "reset") == 0) {
+        result = jw_ra_reset(&client);
     } else if (strcmp(command, "save-state") == 0) {
         result = jw_ra_save_state(&client);
     } else if (strcmp(command, "load-state") == 0) {
@@ -193,23 +240,97 @@ int main(int argc, char **argv) {
             return 0;
         }
         return jw__print_result(result);
+    } else if (strcmp(command, "get-state-slot") == 0) {
+        int slot = 0;
+        bool supported = false;
+        result = jw_ra_get_state_slot(&client, &slot, &supported);
+        if (result == JW_RA_OK) {
+            printf("result=ok\n");
+            printf("savestate_supported=%d\n", supported ? 1 : 0);
+            if (supported) {
+                printf("state_slot=%d\n", slot);
+            }
+            return 0;
+        }
+        return jw__print_result(result);
     } else if (strcmp(command, "set-state-slot") == 0) {
         int slot;
-        if (argi >= argc || jw__parse_int(argv[argi], &slot) != 0) {
-            fprintf(stderr, "set-state-slot requires a non-negative slot\n");
+        if (argi >= argc || jw__parse_slot(argv[argi], &slot) != 0) {
+            fprintf(stderr, "set-state-slot requires a slot >= -1\n");
             return 4;
         }
         result = jw_ra_set_state_slot(&client, slot);
+    } else if (strcmp(command, "save-state-slot") == 0) {
+        int slot;
+        char reply[JW_RA_REPLY_MAX];
+        if (argi >= argc || jw__parse_slot(argv[argi], &slot) != 0) {
+            fprintf(stderr, "save-state-slot requires a slot >= -1\n");
+            return 4;
+        }
+        result = jw_ra_save_state_slot(&client, slot, reply, sizeof(reply));
+        if (result == JW_RA_OK) {
+            printf("result=ok\n");
+            printf("reply=%s\n", reply);
+            return 0;
+        }
+        return jw__print_result(result);
     } else if (strcmp(command, "state-slot-plus") == 0) {
         result = jw_ra_state_slot_plus(&client);
     } else if (strcmp(command, "state-slot-minus") == 0) {
         result = jw_ra_state_slot_minus(&client);
+    } else if (strcmp(command, "get-disk-count") == 0) {
+        int count = 0;
+        result = jw_ra_get_disk_count(&client, &count);
+        if (result == JW_RA_OK) {
+            printf("result=ok\n");
+            printf("disk_count=%d\n", count);
+            return 0;
+        }
+        return jw__print_result(result);
+    } else if (strcmp(command, "get-disk-slot") == 0) {
+        int slot = 0;
+        result = jw_ra_get_disk_slot(&client, &slot);
+        if (result == JW_RA_OK) {
+            printf("result=ok\n");
+            printf("disk_slot=%d\n", slot);
+            return 0;
+        }
+        return jw__print_result(result);
+    } else if (strcmp(command, "set-disk-slot") == 0) {
+        int slot;
+        if (argi >= argc || jw__parse_int(argv[argi], &slot) != 0) {
+            fprintf(stderr, "set-disk-slot requires a non-negative slot\n");
+            return 4;
+        }
+        result = jw_ra_set_disk_slot(&client, slot);
     } else if (strcmp(command, "disk-eject-toggle") == 0) {
         result = jw_ra_disk_eject_toggle(&client);
     } else if (strcmp(command, "disk-next") == 0) {
         result = jw_ra_disk_next(&client);
     } else if (strcmp(command, "disk-prev") == 0) {
         result = jw_ra_disk_prev(&client);
+    } else if (strcmp(command, "get-path") == 0) {
+        char path[JW_RA_REPLY_MAX];
+        if (argi >= argc) {
+            fprintf(stderr, "get-path requires a kind\n");
+            return 4;
+        }
+        result = jw_ra_get_path(&client, argv[argi], path, sizeof(path));
+        if (result == JW_RA_OK) {
+            printf("result=ok\n");
+            printf("path=%s\n", path);
+            return 0;
+        }
+        return jw__print_result(result);
+    } else if (strcmp(command, "savestate-path") == 0) {
+        char path[JW_RA_REPLY_MAX];
+        result = jw_ra_get_savestate_path(&client, path, sizeof(path));
+        if (result == JW_RA_OK) {
+            printf("result=ok\n");
+            printf("path=%s\n", path);
+            return 0;
+        }
+        return jw__print_result(result);
     } else if (strcmp(command, "show-message") == 0) {
         char message[JW_RA_REPLY_MAX];
         if (jw__join_args(argc, argv, argi, message, sizeof(message)) != 0) {

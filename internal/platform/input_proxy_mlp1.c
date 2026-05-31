@@ -298,7 +298,10 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
             if (data->menu_forwarded) {
                 jw__forward_event(data, ev);
             } else if (!data->chord_active) {
-                jw__emit_deferred_menu_tap(data);
+                bool handled = proxy->menu_tap && proxy->menu_tap(proxy->userdata);
+                if (!handled) {
+                    jw__emit_deferred_menu_tap(data);
+                }
             }
             data->menu_held = false;
             data->menu_forwarded = false;
@@ -326,6 +329,7 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
 int jw_input_proxy_init(jw_input_proxy *proxy,
                         jw_input_brightness_delta_cb brightness_delta,
                         jw_input_volume_delta_cb volume_delta,
+                        jw_input_menu_tap_cb menu_tap,
                         void *userdata) {
     if (!proxy) {
         return -1;
@@ -333,6 +337,7 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
     memset(proxy, 0, sizeof(*proxy));
     proxy->brightness_delta = brightness_delta;
     proxy->volume_delta = volume_delta;
+    proxy->menu_tap = menu_tap;
     proxy->userdata = userdata;
 
     const char *enabled = getenv("JAWAKA_INPUT_PROXY");

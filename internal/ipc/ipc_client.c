@@ -34,6 +34,13 @@ static int ipc__type_is(const cJSON *resp, const char *expected) {
            strcmp(t->valuestring, expected) == 0;
 }
 
+static void ipc__copy_string(char *out, size_t out_size, const char *value) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    snprintf(out, out_size, "%s", value ? value : "");
+}
+
 int jw_ipc_hello(const char *socket_path, const char *role) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "hello");
@@ -152,6 +159,140 @@ int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
     }
 
     if (status) snprintf(status, (size_t)status_len, "%s", "app launch requested");
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_get_retroarch_session(const char *socket_path,
+                                 jw_ipc_retroarch_session_info *out,
+                                 char *status, int status_len) {
+    if (!out) {
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->disk_count = 0;
+    out->disk_slot = -1;
+    out->state_slot = -1;
+    ipc__copy_string(out->command_result, sizeof(out->command_result), "unavailable");
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "retroarch-session");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "RetroArch session unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "retroarch-session")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status && status_len > 0) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "RetroArch session failed: %s",
+                         message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "RetroArch session failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    const cJSON *active = cJSON_GetObjectItemCaseSensitive(resp, "active");
+    const cJSON *command_ok = cJSON_GetObjectItemCaseSensitive(resp, "command_ok");
+    const cJSON *command_result = cJSON_GetObjectItemCaseSensitive(resp, "command_result");
+    const cJSON *system = cJSON_GetObjectItemCaseSensitive(resp, "system");
+    const cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(resp, "rom_path");
+    const cJSON *core_path = cJSON_GetObjectItemCaseSensitive(resp, "core_path");
+    const cJSON *disk_count = cJSON_GetObjectItemCaseSensitive(resp, "disk_count");
+    const cJSON *disk_slot = cJSON_GetObjectItemCaseSensitive(resp, "disk_slot");
+    const cJSON *savestate_supported =
+        cJSON_GetObjectItemCaseSensitive(resp, "savestate_supported");
+    const cJSON *state_slot = cJSON_GetObjectItemCaseSensitive(resp, "state_slot");
+
+    out->active = cJSON_IsTrue(active);
+    out->command_ok = cJSON_IsTrue(command_ok);
+    if (cJSON_IsString(command_result) && command_result->valuestring) {
+        ipc__copy_string(out->command_result, sizeof(out->command_result),
+                         command_result->valuestring);
+    }
+    if (cJSON_IsString(system) && system->valuestring) {
+        ipc__copy_string(out->system, sizeof(out->system), system->valuestring);
+    }
+    if (cJSON_IsString(rom_path) && rom_path->valuestring) {
+        ipc__copy_string(out->rom_path, sizeof(out->rom_path), rom_path->valuestring);
+    }
+    if (cJSON_IsString(core_path) && core_path->valuestring) {
+        ipc__copy_string(out->core_path, sizeof(out->core_path), core_path->valuestring);
+    }
+    if (cJSON_IsNumber(disk_count)) {
+        out->disk_count = disk_count->valueint;
+    }
+    if (cJSON_IsNumber(disk_slot)) {
+        out->disk_slot = disk_slot->valueint;
+    }
+    out->savestate_supported = cJSON_IsTrue(savestate_supported);
+    if (cJSON_IsNumber(state_slot)) {
+        out->state_slot = state_slot->valueint;
+    }
+
+    if (status && status_len > 0) {
+        snprintf(status, (size_t)status_len, "%s",
+                 out->active ? "RetroArch session active" : "No active RetroArch session");
+    }
+
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_retroarch_action(const char *socket_path, const char *action,
+                            int value, char *status, int status_len) {
+    if (!action || !action[0]) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "RetroArch action missing");
+        }
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "retroarch-action");
+    cJSON_AddStringToObject(req, "action", action);
+    cJSON_AddNumberToObject(req, "value", value);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "RetroArch action failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status && status_len > 0) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "RetroArch action failed: %s",
+                         message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "RetroArch action failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (status && status_len > 0) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "RetroArch action requested");
+        }
+    }
+
     cJSON_Delete(resp);
     return 0;
 }
