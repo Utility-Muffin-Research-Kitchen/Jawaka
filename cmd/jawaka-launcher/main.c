@@ -141,6 +141,12 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
                                 int detail_x, int detail_y,
                                 int detail_w, int detail_h);
 
+static void jw__draw_footer(const jw_launcher_state *state,
+                            cat_footer_item *items, int count) {
+    if (jw_settings_show_hints(&state->settings))
+        cat_draw_footer(items, count);
+}
+
 static void jw__set_launching_status(jw_launcher_state *state,
                                      const char *name,
                                      const char *fallback) {
@@ -533,7 +539,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
             { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 3);
+        jw__draw_footer(state, footer, 3);
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_UP,   "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
@@ -541,7 +547,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
             { CAT_BTN_X,    "Search",   false, JW_HINT("X") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 4);
+        jw__draw_footer(state, footer, 4);
     }
     cat_present();
 }
@@ -694,7 +700,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 3);
+        jw__draw_footer(state, footer, 3);
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_UP,   "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
@@ -703,7 +709,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
             { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 5);
+        jw__draw_footer(state, footer, 5);
     }
     cat_present();
 }
@@ -954,7 +960,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 3);
+        jw__draw_footer(state, footer, 3);
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_LEFT,  "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
@@ -963,7 +969,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
             { CAT_BTN_Y,     "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,     "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 5);
+        jw__draw_footer(state, footer, 5);
     }
     cat_present();
 }
@@ -1389,7 +1395,7 @@ static void jw__render_coverflow(jw_launcher_state *state) {
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 3);
+        jw__draw_footer(state, footer, 3);
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_LEFT, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
@@ -1398,7 +1404,7 @@ static void jw__render_coverflow(jw_launcher_state *state) {
             { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 5);
+        jw__draw_footer(state, footer, 5);
     }
     cat_present();
 }
@@ -1501,7 +1507,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
-    cat_draw_footer(footer, 4);
+    jw__draw_footer(state, footer, 4);
     cat_present();
 }
 
@@ -1648,7 +1654,7 @@ static void jw__render_search(const jw_launcher_state *state) {
         { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
-    cat_draw_footer(footer, 4);
+    jw__draw_footer(state, footer, 4);
     cat_present();
 }
 
