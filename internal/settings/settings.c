@@ -57,8 +57,8 @@ const int kFontSizeValues[JW_SETTINGS_FONT_SIZE_COUNT] = {
 const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT] = {
     "Off",
     "24 Hour",
+    "AM/PM",
     "12 Hour",
-    "12 Hour (no AM/PM)",
 };
 
 static const char *kHomeCategoryLabels[] = {
