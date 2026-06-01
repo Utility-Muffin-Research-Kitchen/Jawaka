@@ -652,8 +652,6 @@ static void jw__render_apps(const jw_launcher_state *state,
 
 static void jw__render_settings(const jw_launcher_state *state,
                                  int content_y, int content_h, int margin) {
-    ap_theme *theme = cat_get_theme();
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int sw = cat_get_screen_width();
 
     int sx = margin;
@@ -662,9 +660,6 @@ static void jw__render_settings(const jw_launcher_state *state,
     int sh_inner = content_h - CAT_S(28);
 
     jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
-
-    int status_y = content_y + content_h - TTF_FontHeight(small);
-    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, sx, status_y, theme->hint, sw_inner);
 }
 
 static void jw__render_tabbed(const jw_launcher_state *state) {
