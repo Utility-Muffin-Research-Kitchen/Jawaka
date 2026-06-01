@@ -1751,6 +1751,11 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
     int detail_x = list_x + list_w + margin;
     int detail_w = sw - detail_x - margin;
 
+    /* Inset the top by one margin so Recents/Favorites leave the same gap below
+       the tab bar as the Games/Apps tabs (bottom edge stays put). */
+    content_y += margin;
+    content_h -= margin;
+
     if (count == 0) {
         cat_draw_text_wrapped(body, empty_msg,
             list_x + CAT_S(8), content_y + CAT_S(8),
