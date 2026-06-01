@@ -569,7 +569,6 @@ static void jw__render_games(const jw_launcher_state *state,
                               int content_y, int content_h, int margin) {
     ap_theme *theme   = cat_get_theme();
     TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small   = cat_get_font(CAT_FONT_SMALL);
     int sw = cat_get_screen_width();
 
     int list_x  = margin;
@@ -577,6 +576,12 @@ static void jw__render_games(const jw_launcher_state *state,
     int body_h  = TTF_FontHeight(body);
     int item_h  = body_h + CAT_S(12);
     int list_h  = content_h - CAT_S(28);
+    /* When the list is full (scrollable), expand rows to fill the area so the
+       last row reaches the bottom instead of leaving a quantized gap (matches
+       the game browser; visible_rows was sized for this content area). */
+    int visible_rows = state->list.visible_rows;
+    if (visible_rows > 0 && state->system_count >= visible_rows)
+        item_h = (content_h - margin) / visible_rows;
     int art_x   = list_w + margin * 2;
     int art_y   = content_y + margin;
     int art_w   = sw - art_x - margin;
@@ -603,8 +608,6 @@ static void jw__render_games(const jw_launcher_state *state,
             jw__draw_game_item, &ctx);
     }
 
-    int status_y = content_y + content_h - TTF_FontHeight(small);
-    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
     (void)margin;
 }
 
@@ -612,7 +615,6 @@ static void jw__render_apps(const jw_launcher_state *state,
                              int content_y, int content_h, int margin) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int sw = cat_get_screen_width();
 
     int list_x = margin;
@@ -645,8 +647,6 @@ static void jw__render_apps(const jw_launcher_state *state,
             jw__draw_app_item, &ctx);
     }
 
-    int status_y = content_y + content_h - TTF_FontHeight(small);
-    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, list_x, status_y, theme->hint, list_w);
     (void)margin;
 }
 
@@ -1569,17 +1569,36 @@ static void jw__render_coverflow(jw_launcher_state *state) {
     cat_present();
 }
 
+/* Top header height of the system game browser: the tab bar + system-name
+   sub-header in the tabbed layout, otherwise a single title row. Shared by the
+   renderer and the visible-row count so the list never reports more rows than
+   actually fit (which would run the last selection pill off the bottom). */
+static int jw__game_browser_header_h(const jw_launcher_state *state) {
+    (void)state;
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED)
+        return cat_get_tab_bar_height() + CAT_S(2) +
+               TTF_FontHeight(cat_get_font(CAT_FONT_EXTRA_LARGE));
+    return CAT_DS(30);
+}
+
+/* Height of the list/art content area in the system game browser. Below it the
+   renderer reserves only the footer (jw__footer_height is 0 when hints are
+   off). Shared with the visible-row count so the list fills the area exactly —
+   no gap, no overflow. */
+static int jw__game_browser_content_h(const jw_launcher_state *state) {
+    int margin = CAT_S(12);
+    int fh     = jw__footer_height(state);
+    return cat_get_screen_height() - jw__game_browser_header_h(state) - margin - fh;
+}
+
 static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_clear_screen();
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
 
     int sw = cat_get_screen_width();
-    int sh = cat_get_screen_height();
-    int fh = jw__footer_height(state);
     int margin = CAT_S(12);
 
     /* In the tabbed layout, show the section tabs across the top (current
@@ -1604,11 +1623,11 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         cat_draw_status_bar(&sb);
 
         title_y   = bar_h + CAT_S(2);
-        header_h  = title_y + TTF_FontHeight(large);
+        header_h  = jw__game_browser_header_h(state);
         title_max = sw - margin * 2;
     } else {
         jw__draw_status_bar(state);
-        header_h = CAT_DS(30);
+        header_h = jw__game_browser_header_h(state);
         title_y  = CAT_S(6);
         /* Cap the title's visible width so it stops before the status bar
            (top-right). Width adapts when the user hides battery/wifi/clock. */
@@ -1619,7 +1638,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     }
 
     int content_y = header_h + margin;
-    int content_h = sh - content_y - fh - margin;
+    int content_h = jw__game_browser_content_h(state);
 
     char title[96];
     if (state->games_are_favorites)
@@ -1651,6 +1670,12 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     int list_x = margin;
     int list_w = sw * 58 / 100;
     int item_h = TTF_FontHeight(body) + CAT_S(12);
+    /* When the list is full (scrollable), expand the row height so the rows fill
+       the content area exactly — otherwise the quantized remainder leaves a gap
+       below the last row. Short lists keep the base spacing (no stretching). */
+    int visible_rows = state->game_list.visible_rows;
+    if (visible_rows > 0 && state->game_count >= visible_rows)
+        item_h = content_h / visible_rows;
     int detail_x = list_x + list_w + margin;
     int detail_w = sw - detail_x - margin;
 
@@ -1707,10 +1732,6 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         }
     }
 
-    int status_y = content_y + content_h - TTF_FontHeight(small);
-    if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
-                             theme->hint, sw - margin * 2);
-
     if (tabbed) {
         cat_footer_item footer[] = {
             { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
@@ -1755,6 +1776,12 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
        the tab bar as the Games/Apps tabs (bottom edge stays put). */
     content_y += margin;
     content_h -= margin;
+
+    /* When the list is full, expand rows to fill the area so the last row
+       reaches the bottom (matches Games/Apps and the game browser). */
+    int visible_rows = state->list.visible_rows;
+    if (visible_rows > 0 && count >= visible_rows)
+        item_h = content_h / visible_rows;
 
     if (count == 0) {
         cat_draw_text_wrapped(body, empty_msg,
@@ -1991,8 +2018,7 @@ static void jw__render_launcher(jw_launcher_state *state) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static int jw__game_browser_visible_rows(const jw_launcher_state *state) {
-    int fh = jw__footer_height(state);
-    int content_h = cat_get_screen_height() - CAT_DS(30) - CAT_S(24) - fh;
+    int content_h = jw__game_browser_content_h(state);
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + CAT_S(12);
     int visible = content_h / item_h;
@@ -2312,13 +2338,22 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         state->flat_count = 0;
     }
 
-    int fh        = jw__footer_height(state);
-    int sb_h      = CAT_DS(20);
-    int margin    = CAT_S(10);
-    int content_h = cat_get_screen_height() - sb_h - margin - fh - margin;
+    int fh         = jw__footer_height(state);
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int item_h    = TTF_FontHeight(body) + CAT_S(12);
-    int visible   = content_h / item_h;
+    int item_h     = TTF_FontHeight(body) + CAT_S(12);
+    int visible;
+    if (layout == CAT_LAUNCHER_TABBED) {
+        /* Tabbed content sits below the tab bar (+ one margin, as the tab
+           renderers inset) and above the footer; size to fit so the last row
+           never slips under the footer. */
+        int avail = cat_get_screen_height() - cat_get_tab_bar_height() - CAT_S(12) - fh;
+        visible = avail / item_h;
+    } else {
+        int sb_h      = CAT_DS(20);
+        int margin    = CAT_S(10);
+        int content_h = cat_get_screen_height() - sb_h - margin - fh - margin;
+        visible = content_h / item_h;
+    }
     if (visible < 1) visible = 1;
 
     int count = (layout == CAT_LAUNCHER_TABBED) ? jw__tab_list_count(state)
