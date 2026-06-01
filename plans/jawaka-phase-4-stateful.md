@@ -14,8 +14,13 @@ ids underpin favorites/recents/playtime, so that lands first.
   (vertical) list them. DB: `jw_db_set_favorite`, `jw_db_list_favorite_games`,
   favorite flag via EXISTS on the games query. New `cat_draw_star` primitive in
   Catastrophe (font-independent — the body font lacks U+2605).
-- [ ] Recents tracking on launch.
-- [ ] Playtime tracking.
+- [x] **Recents tracking on launch.** jawakad's `jw__retroarch_session_finish`
+  records the play (real sessions only, runtime_s > 0) → `jw_db_record_play`
+  upserts the recents row. Recents tab + vertical section list newest-first via
+  `jw_db_list_recent_games`. (Strips the absolute session path to the relative
+  `games.rom_path` for the id lookup.)
+- [x] **Playtime tracking.** Same hook bumps cumulative `games.playtime_s` +
+  `last_played`.
 - [ ] Last-opened context restoration.
 - [~] Index refresh — full rescan is now additive; targeted single-path
   incremental update still TODO.
