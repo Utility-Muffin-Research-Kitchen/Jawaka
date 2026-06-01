@@ -1571,7 +1571,6 @@ static void jw__render_coverflow(jw_launcher_state *state) {
 
 static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar(state);
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
@@ -1582,7 +1581,43 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     int sh = cat_get_screen_height();
     int fh = jw__footer_height(state);
     int margin = CAT_S(12);
-    int header_h = CAT_DS(30);
+
+    /* In the tabbed layout, show the section tabs across the top (current
+       section highlighted) so the user can tab to any section from within a
+       system's game list, with the status icons inline in the tab bar — the
+       same header as the tabbed home view. The system name drops to a
+       sub-header beneath the tabs. Other layouts keep the standalone title +
+       full status bar. */
+    bool tabbed = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED);
+    int header_h;
+    int title_y;
+    int title_max;
+    if (tabbed) {
+        int bar_h = cat_get_tab_bar_height();
+        cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
+        int pill_h = CAT_DS(CAT__PILL_SIZE);
+        cat_status_bar_opts sb = {0};
+        jw_settings_status_bar_opts(&state->settings, &sb);
+        sb.no_pill    = true;
+        sb.use_y      = true;
+        sb.y_position = (bar_h - pill_h) / 2;
+        cat_draw_status_bar(&sb);
+
+        title_y   = bar_h + CAT_S(2);
+        header_h  = title_y + TTF_FontHeight(large);
+        title_max = sw - margin * 2;
+    } else {
+        jw__draw_status_bar(state);
+        header_h = CAT_DS(30);
+        title_y  = CAT_S(6);
+        /* Cap the title's visible width so it stops before the status bar
+           (top-right). Width adapts when the user hides battery/wifi/clock. */
+        cat_status_bar_opts title_sb = {0};
+        jw_settings_status_bar_opts(&state->settings, &title_sb);
+        title_max = sw - cat_get_status_bar_width(&title_sb) - margin * 3;
+        if (title_max < CAT_S(120)) title_max = CAT_S(120);
+    }
+
     int content_y = header_h + margin;
     int content_h = sh - content_y - fh - margin;
 
@@ -1591,12 +1626,6 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         snprintf(title, sizeof(title), "%s", "Favorites");
     else
         snprintf(title, sizeof(title), "%s", state->game_system_display);
-    /* Cap the title's visible width so it stops before the status bar
-       (top-right). Width adapts when the user hides battery/wifi/clock. */
-    cat_status_bar_opts title_sb = {0};
-    jw_settings_status_bar_opts(&state->settings, &title_sb);
-    int title_max = sw - cat_get_status_bar_width(&title_sb) - margin * 3;
-    if (title_max < CAT_S(120)) title_max = CAT_S(120);
 
     /* A title longer than title_max scrolls (looping marquee) instead of
        truncating, so the full system name is always readable. State is
@@ -1614,7 +1643,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         }
         uint32_t dt = (last_ms == 0) ? 0u : (now - last_ms);
         last_ms = now;
-        if (cat_draw_text_marquee(large, title, margin, CAT_S(6), theme->text,
+        if (cat_draw_text_marquee(large, title, margin, title_y, theme->text,
                                   title_max, &title_marquee, dt))
             cat_request_frame();
     }
@@ -1682,14 +1711,26 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, sw - margin * 2);
 
-    cat_footer_item footer[] = {
-        { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
-        { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
-        { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
-        { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
-        { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
-    };
-    jw__draw_footer(state, footer, 5);
+    if (tabbed) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
+            { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
+            { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+            { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
+            { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
+            { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 6);
+    } else {
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
+            { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+            { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
+            { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
+            { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 5);
+    }
     cat_present();
 }
 
@@ -2423,6 +2464,18 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     }
 
     if (state->games_open) {
+        /* In the tabbed layout the section tabs sit above the game list, so
+           L2/R2 tabs away from the system — closing the browser and landing on
+           the adjacent section, exactly as on the tabbed home view. */
+        if (layout == CAT_LAUNCHER_TABBED &&
+            (button == CAT_BTN_L2 || button == CAT_BTN_R2)) {
+            state->games_open = false;
+            state->games_are_favorites = false;
+            state->game_count = 0;
+            state->status[0] = '\0';
+            jw__switch_tab(state, button == CAT_BTN_L2 ? -1 : +1, db_path);
+            return;
+        }
         if (button == CAT_BTN_X) {
             jw__open_search(db_path, state);
             return;
