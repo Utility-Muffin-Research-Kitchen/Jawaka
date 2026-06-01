@@ -240,7 +240,10 @@ static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
     out->rom_root = jw_ra_json_string(row, "rom_root");
     out->image_root = jw_ra_json_string(row, "image_root");
 
-    if (!out->id || !out->default_core || !out->id[0] || !out->default_core[0]) {
+    /* Only the id is required. A system may have no default_core (discovered
+       but not launchable on this device) — that's a launch-time concern, not a
+       reason to reject the row and nuke the whole catalog. */
+    if (!out->id || !out->id[0]) {
         return -1;
     }
     if (jw_ra_string_list_load(row, "patterns", &out->patterns) != 0 ||
@@ -509,27 +512,16 @@ static int jw_ra_validate_unique_systems(const jw_ra_catalog *catalog, char *err
 }
 
 static int jw_ra_validate_system_defaults(const jw_ra_catalog *catalog, char *error, size_t error_size) {
-    for (size_t i = 0; i < catalog->system_count; i++) {
-        const jw_ra_system *system = &catalog->systems[i];
-        const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
-        if (!core) {
-            char message[256];
-            snprintf(message, sizeof(message), "%s default core missing from RetroArch metadata: %s",
-                     system->id, system->default_core);
-            jw_ra_set_error(error, error_size, message);
-            return -1;
-        }
-        for (size_t j = 0; j < system->alternate_cores.count; j++) {
-            const char *alternate_core = system->alternate_cores.items[j];
-            if (!jw_ra_catalog_find_core(catalog, alternate_core)) {
-                char message[256];
-                snprintf(message, sizeof(message), "%s alternate core missing from RetroArch metadata: %s",
-                         system->id, alternate_core);
-                jw_ra_set_error(error, error_size, message);
-                return -1;
-            }
-        }
-    }
+    /* Core presence is a launch-time concern, not a catalog-validity one. A
+       system may have no default_core at all (discovered but not launchable), or
+       reference a default/alternate core that isn't packaged on this device.
+       None of that should reject the whole catalog and force discovery back to
+       the compatibility scanner — the launch path reports an unresolved core
+       gracefully when the user actually tries to play. So this validation is a
+       no-op; structural checks (unique cores/systems) still run. */
+    (void)catalog;
+    (void)error;
+    (void)error_size;
     return 0;
 }
 
@@ -637,7 +629,7 @@ int jw_ra_catalog_resolve_core_file(const jw_ra_catalog *catalog,
         if (default_unavailable) {
             char message[256];
             snprintf(message, sizeof(message), "default core %s unavailable; using alternate %s",
-                     system->default_core, alternate->id);
+                     system->default_core ? system->default_core : "(none)", alternate->id);
             jw_ra_set_error(diagnostic, diagnostic_size, message);
         }
         return 0;
