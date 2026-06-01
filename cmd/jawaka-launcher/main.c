@@ -572,7 +572,7 @@ static void jw__render_games(const jw_launcher_state *state,
     int sw = cat_get_screen_width();
 
     int list_x  = margin;
-    int list_w  = sw * 45 / 100;
+    int list_w  = sw * 58 / 100;   /* match the Recents/Favorites list/preview split */
     int body_h  = TTF_FontHeight(body);
     int item_h  = body_h + CAT_S(12);
     int list_h  = content_h - CAT_S(28);
@@ -618,7 +618,7 @@ static void jw__render_apps(const jw_launcher_state *state,
     int sw = cat_get_screen_width();
 
     int list_x = margin;
-    int list_w = sw * 45 / 100;
+    int list_w = sw * 58 / 100;   /* match the Recents/Favorites list/preview split */
     int body_h = TTF_FontHeight(body);
     int item_h = body_h + CAT_S(12);
     int list_h = content_h - CAT_S(28);
@@ -1286,9 +1286,11 @@ static void jw__draw_system_preview(int px, int py, int pw, int ph,
     cat_draw_rounded_rect(px, py, pw, ph, CAT_S(8),
                           cat_hex_to_color("#ffffff10"));
 
-    /* Icon: up to 40% of pane width or 192px, whichever is smaller */
+    /* Icon: up to 60% of pane width or 192px, whichever is smaller (the pane is
+       narrower now that the list/preview split matches the other tabs, so use a
+       larger fraction to keep the icon a similar size). */
     int icon_max = CAT_S(192);
-    int icon_box = pw * 40 / 100;
+    int icon_box = pw * 60 / 100;
     if (icon_box > icon_max) icon_box = icon_max;
     if (icon_box > ph / 2)   icon_box = ph / 2;
 
