@@ -668,11 +668,12 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     int fh = jw__footer_height(state);
     int header_h = cat_get_tab_bar_height();
 
-    cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
     {
         /* Inline status icons in the tab bar. The status bar internally
            centers icons within pill_h at pill_y, so we set y_override
-           such that the icons land vertically centered in the tab bar. */
+           such that the icons land vertically centered in the tab bar. Reserve
+           its width on the tab bar so wide tabs window (with < / >) instead of
+           running under the status icons. */
         int bar_h = cat_get_tab_bar_height();
         int pill_h = CAT_DS(CAT__PILL_SIZE);
         cat_status_bar_opts sb = {0};
@@ -680,6 +681,8 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
         sb.no_pill    = true;
         sb.use_y      = true;
         sb.y_position = (bar_h - pill_h) / 2;
+        cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
+        cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
         cat_draw_status_bar(&sb);
     }
 
@@ -1608,13 +1611,14 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     int title_max;
     if (tabbed) {
         int bar_h = cat_get_tab_bar_height();
-        cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
         int pill_h = CAT_DS(CAT__PILL_SIZE);
         cat_status_bar_opts sb = {0};
         jw_settings_status_bar_opts(&state->settings, &sb);
         sb.no_pill    = true;
         sb.use_y      = true;
         sb.y_position = (bar_h - pill_h) / 2;
+        cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
+        cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
         cat_draw_status_bar(&sb);
 
         title_y   = bar_h + CAT_S(2);
