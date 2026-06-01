@@ -88,6 +88,7 @@ typedef struct {
     cat_list_state     placeholder_list;
     cat_scroll_state   about_scroll;
     int                theme_index;
+    int                color_scheme_index;   /* -1 = custom (manually edited) */
     int                pill_shape_index;
     int                font_size_index;
     bool               show_hints;

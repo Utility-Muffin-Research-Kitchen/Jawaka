@@ -61,6 +61,25 @@ const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT] = {
     "12 Hour",
 };
 
+/* Curated color schemes selectable from the Appearance > Color Scheme row. Each
+   sets the seven color roles at once. Order: accent (chrome bars), background,
+   text, hint, selection (selected-row pill), button label, button glyph bg.
+   Selected-row text auto-contrasts against the selection pill at apply time. */
+typedef struct {
+    const char *name;
+    const char *accent, *bg, *text, *hint, *selection, *btn_label, *btn_bg;
+} jw__color_scheme;
+
+static const jw__color_scheme kColorSchemes[] = {
+    /* name      accent     bg         text       hint       selection  btn_label  btn_bg     */
+    { "Aurora",  "#173342", "#0E1822", "#E6F0F2", "#6E8898", "#3DDC97", "#0E1822", "#3DDC97" },
+    { "Ember",   "#3A2A22", "#1A1413", "#F2EAE2", "#A38A7A", "#FF8A4C", "#1A1413", "#FF8A4C" },
+    { "Orchid",  "#2E2240", "#181226", "#ECE4F2", "#8E7CB0", "#C792EA", "#181226", "#C792EA" },
+    { "Slate",   "#242A36", "#14171E", "#E4E7ED", "#7C828E", "#7AA2F7", "#14171E", "#7AA2F7" },
+    { "Rosé",    "#33222E", "#1C1620", "#F0E6EC", "#A88A98", "#EB6F92", "#1C1620", "#EB6F92" },
+};
+#define JW_COLOR_SCHEME_COUNT ((int)(sizeof(kColorSchemes) / sizeof(kColorSchemes[0])))
+
 static const char *kHomeCategoryLabels[] = {
     "Appearance",
     "Display",
@@ -129,6 +148,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->placeholder_list, 1);
     cat_scroll_state_init(&ui->about_scroll);
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
+    ui->color_scheme_index = -1;   /* custom until a scheme is loaded below */
     ui->pill_shape_index  = 0;
     ui->font_size_index   = 1;
     ui->show_hints        = true;
@@ -168,6 +188,11 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             ui->show_battery = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
             ui->show_wifi = (strcmp(val, "0") != 0);
+        if (jw_db_get_setting(db_path, "color_scheme_index", val, sizeof(val)) == 0 && val[0]) {
+            int idx = atoi(val);
+            if (idx >= 0 && idx < JW_COLOR_SCHEME_COUNT)
+                ui->color_scheme_index = idx;
+        }
 
         jw_settings_apply_persisted_overrides(ui->db_path);
     }
@@ -344,10 +369,13 @@ static void jw__render_home(const jw_settings_ui *ui, int x, int y, int w, int h
 static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Appearance", x, y, w);
     int ly = y + jw__header_h();
-    /* Theme switching is gated to Tabs (focus-on-Tabs), so the row shows a
-       plain "Disabled" instead of a cycler. */
+    /* Layout switching is gated to Tabs, so this row instead cycles the curated
+       color schemes (Aurora/Ember/…); "Custom" once colors are hand-edited. */
+    const char *scheme_name =
+        (ui->color_scheme_index >= 0 && ui->color_scheme_index < JW_COLOR_SCHEME_COUNT)
+        ? kColorSchemes[ui->color_scheme_index].name : "Custom";
     jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_THEME,
-                        "Theme", "Disabled", false);
+                        "Color Scheme", scheme_name, true);
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_COLORS, "Colors");
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_LAYOUT, "Layout");
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_STATUSBAR, "Status Bar");
@@ -695,10 +723,8 @@ void jw_settings_apply_persisted_overrides(const char *db_path) {
     }
     if (jw_db_get_setting(db_path, "accent_color", val, sizeof(val)) == 0 && val[0])
         t->accent = cat_hex_to_color(val);
-    if (jw_db_get_setting(db_path, "text_color", val, sizeof(val)) == 0 && val[0]) {
+    if (jw_db_get_setting(db_path, "text_color", val, sizeof(val)) == 0 && val[0])
         t->text = cat_hex_to_color(val);
-        t->highlighted_text = t->text;
-    }
     if (jw_db_get_setting(db_path, "hint_color", val, sizeof(val)) == 0 && val[0])
         t->hint = cat_hex_to_color(val);
     if (jw_db_get_setting(db_path, "highlight_color", val, sizeof(val)) == 0 && val[0])
@@ -709,6 +735,14 @@ void jw_settings_apply_persisted_overrides(const char *db_path) {
         t->button_label = cat_hex_to_color(val);
     if (jw_db_get_setting(db_path, "button_glyph_bg_color", val, sizeof(val)) == 0 && val[0])
         t->button_glyph_bg = cat_hex_to_color(val);
+
+    /* Selected-row text auto-contrasts against the selection pill: a bright pill
+       gets dark text (the background color), a dark pill keeps the light text —
+       readable either way, regardless of the chosen palette. */
+    {
+        int hl_lum = (t->highlight.r * 299 + t->highlight.g * 587 + t->highlight.b * 114) / 1000;
+        t->highlighted_text = (hl_lum > 140) ? t->background : t->text;
+    }
 
     /* Tab-bar text isn't its own color role (yet): derive it from the palette
        so it tracks the user's picks — selected tab uses Text, inactive uses
@@ -723,45 +757,30 @@ static void jw__reapply_user_overrides(jw_settings_ui *ui) {
     jw_settings_apply_persisted_overrides(ui->db_path);
 }
 
-static bool jw__apply_theme(jw_settings_ui *ui, int new_index,
-                             char *status_buf, size_t status_size,
-                             bool *theme_changed) {
-    if (new_index < 0 || new_index >= JW_SETTINGS_THEME_COUNT) return false;
-    if (!kJawakaThemeEnabled[new_index]) return false;   /* disabled layout */
-    const char *name = kJawakaThemes[new_index];
-
-    cat_stylesheet ss;
-    if (cat_stylesheet_load_theme(&ss, name) != CAT_OK) {
-        if (status_buf && status_size > 0)
-            snprintf(status_buf, status_size, "%s", "theme load failed");
-        return false;
-    }
-
-    jw__persist(ui, "theme_name", name);
-    cat_stylesheet_apply(&ss);
-    ui->theme_index = new_index;
-
+/* Apply a curated color scheme: write its seven color roles to the DB and
+   re-apply, so it takes effect live and persists across reboots. */
+static void jw__apply_color_scheme(jw_settings_ui *ui, int index, bool *theme_changed) {
+    if (index < 0 || index >= JW_COLOR_SCHEME_COUNT) return;
+    const jw__color_scheme *s = &kColorSchemes[index];
+    jw__persist(ui, "accent_color",           s->accent);
+    jw__persist(ui, "bg_color",               s->bg);
+    jw__persist(ui, "text_color",             s->text);
+    jw__persist(ui, "hint_color",             s->hint);
+    jw__persist(ui, "highlight_color",        s->selection);
+    jw__persist(ui, "button_label_color",     s->btn_label);
+    jw__persist(ui, "button_glyph_bg_color",  s->btn_bg);
+    jw__persist_int(ui, "color_scheme_index", index);
+    ui->color_scheme_index = index;
     jw__reapply_user_overrides(ui);
-
-    if (status_buf && status_size > 0)
-        snprintf(status_buf, status_size, "theme: %s", name);
     if (theme_changed) *theme_changed = true;
-    return true;
 }
 
-static void jw__cycle_theme(jw_settings_ui *ui, int direction,
-                             char *status_buf, size_t status_size,
-                             bool *theme_changed) {
-    /* Step to the next ENABLED theme, skipping disabled layouts so they can't
-       be selected. With only Tabs enabled this is a no-op. */
-    int n = JW_SETTINGS_THEME_COUNT;
-    int next = ui->theme_index;
-    for (int step = 0; step < n; step++) {
-        next = (next + direction + n) % n;
-        if (kJawakaThemeEnabled[next]) break;
-    }
-    if (next == ui->theme_index || !kJawakaThemeEnabled[next]) return;
-    jw__apply_theme(ui, next, status_buf, status_size, theme_changed);
+static void jw__cycle_color_scheme(jw_settings_ui *ui, int direction, bool *theme_changed) {
+    int n = JW_COLOR_SCHEME_COUNT;
+    int cur = ui->color_scheme_index;
+    int next = (cur < 0) ? (direction > 0 ? 0 : n - 1)
+                         : ((cur + direction + n) % n);
+    jw__apply_color_scheme(ui, next, theme_changed);
 }
 
 static void jw__change_brightness(jw_settings_ui *ui, int delta,
@@ -875,13 +894,13 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_DOWN: cat_list_state_move(&ui->appearance_list, +1, JW_APPEAR_ROW_COUNT); break;
             case CAT_BTN_LEFT:
                 if (ui->appearance_list.cursor == JW_APPEAR_THEME)
-                    jw__cycle_theme(ui, -1, status_buf, status_size, theme_changed);
+                    jw__cycle_color_scheme(ui, -1, theme_changed);
                 break;
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
                 int row = ui->appearance_list.cursor;
                 if (row == JW_APPEAR_THEME)
-                    jw__cycle_theme(ui, +1, status_buf, status_size, theme_changed);
+                    jw__cycle_color_scheme(ui, +1, theme_changed);
                 else if (row == JW_APPEAR_COLORS)   ui->screen = JW_SETTINGS_COLORS;
                 else if (row == JW_APPEAR_LAYOUT)   ui->screen = JW_SETTINGS_LAYOUT;
                 else if (row == JW_APPEAR_STATUSBAR) ui->screen = JW_SETTINGS_STATUS_BAR;
@@ -902,22 +921,33 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_A: {
                 ap_theme *t = cat_get_theme();
                 int row = ui->colors_list.cursor;
-                if (row == JW_COLOR_ACCENT) {
-                    if (jw__pick_color(ui, &t->accent, "accent_color", row))
+                bool changed = false;
+                if (row == JW_COLOR_ACCENT)
+                    changed = jw__pick_color(ui, &t->accent, "accent_color", row);
+                else if (row == JW_COLOR_TEXT)
+                    changed = jw__pick_color(ui, &t->text, "text_color", row);
+                else if (row == JW_COLOR_HINT)
+                    changed = jw__pick_color(ui, &t->hint, "hint_color", row);
+                else if (row == JW_COLOR_HIGHLIGHT)
+                    changed = jw__pick_color(ui, &t->highlight, "highlight_color", row);
+                else if (row == JW_COLOR_BACKGROUND)
+                    changed = jw__pick_color(ui, &t->background, "bg_color", row);
+                else if (row == JW_COLOR_BTN_TEXT)
+                    changed = jw__pick_color(ui, &t->button_label, "button_label_color", row);
+                else if (row == JW_COLOR_BTN_BG)
+                    changed = jw__pick_color(ui, &t->button_glyph_bg, "button_glyph_bg_color", row);
+                if (changed) {
+                    if (row == JW_COLOR_ACCENT)
                         cat_set_theme_color(NULL);
-                } else if (row == JW_COLOR_TEXT) {
-                    if (jw__pick_color(ui, &t->text, "text_color", row))
-                        t->highlighted_text = t->text;
-                } else if (row == JW_COLOR_HINT) {
-                    jw__pick_color(ui, &t->hint, "hint_color", row);
-                } else if (row == JW_COLOR_HIGHLIGHT) {
-                    jw__pick_color(ui, &t->highlight, "highlight_color", row);
-                } else if (row == JW_COLOR_BACKGROUND) {
-                    jw__pick_color(ui, &t->background, "bg_color", row);
-                } else if (row == JW_COLOR_BTN_TEXT) {
-                    jw__pick_color(ui, &t->button_label, "button_label_color", row);
-                } else if (row == JW_COLOR_BTN_BG) {
-                    jw__pick_color(ui, &t->button_glyph_bg, "button_glyph_bg_color", row);
+                    /* Keep selected-row text readable against the (maybe new) pill. */
+                    int hl_lum = (t->highlight.r * 299 + t->highlight.g * 587 +
+                                  t->highlight.b * 114) / 1000;
+                    t->highlighted_text = (hl_lum > 140) ? t->background : t->text;
+                    /* Hand-editing a color diverges from any preset → "Custom". */
+                    if (ui->color_scheme_index != -1) {
+                        ui->color_scheme_index = -1;
+                        jw__persist_int(ui, "color_scheme_index", -1);
+                    }
                 }
                 break;
             }
