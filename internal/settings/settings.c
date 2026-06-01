@@ -333,10 +333,11 @@ static void jw__render_color_swatch(int x, int list_y, int w, int row, ap_color 
 /* ─── Page renderers ───────────────────────────────────────────────────── */
 
 static void jw__render_home(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("Settings", x, y, w);
-    int ly = y + jw__header_h();
+    /* No "Settings" header — the tab bar above already names this screen, so the
+       category list starts at the top and reclaims that space. (Sub-screens keep
+       their headers since the tab bar still just says "Settings".) */
     for (int i = 0; i < JW_SETTINGS_CATEGORY_COUNT; i++)
-        jw__render_nav_row(&ui->home_list, x, ly, w, i, kHomeCategoryLabels[i]);
+        jw__render_nav_row(&ui->home_list, x, y, w, i, kHomeCategoryLabels[i]);
     (void)h;
 }
 
