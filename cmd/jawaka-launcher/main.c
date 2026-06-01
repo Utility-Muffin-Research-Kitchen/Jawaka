@@ -1789,7 +1789,10 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
     cat_draw_list_pane(list_x, content_y, list_w, content_h,
         count, &state->list, item_h, jw__draw_rom_item, &ctx);
 
-    cat_draw_rounded_rect(detail_x, content_y, detail_w, content_h, CAT_S(8),
+    /* The detail panel stops one margin short of the footer (the list keeps its
+       full height) so it leaves the same bottom gap as the Games/Apps preview. */
+    int panel_h = content_h - margin;
+    cat_draw_rounded_rect(detail_x, content_y, detail_w, panel_h, CAT_S(8),
         cat_hex_to_color("#ffffff10"));
 
     if (state->list.cursor >= count) return;
@@ -1798,7 +1801,7 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
     jw__clean_rom_name(game->name, display, sizeof(display));
 
     int art_pad = CAT_S(16);
-    int art_h   = content_h * 68 / 100;
+    int art_h   = panel_h * 68 / 100;
     bool drew_art = false;
     char image_abs[PATH_MAX];
     int image_w = 0, image_h = 0;
@@ -1821,7 +1824,7 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
         if (name_w > max_w) name_w = max_w;
         cat_draw_text_ellipsized(large, display,
             detail_x + (detail_w - name_w) / 2,
-            content_y + content_h / 2 - large_h, theme->text, max_w);
+            content_y + panel_h / 2 - large_h, theme->text, max_w);
     }
 }
 
