@@ -601,6 +601,107 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
     return 0;
 }
 
+int jw_db_record_play(const char *db_path, const char *rom_path, int duration_s) {
+    if (!db_path || !rom_path || !rom_path[0]) {
+        return -1;
+    }
+    if (duration_s < 0) duration_s = 0;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    /* Resolve the game's stable id from its rom_path. */
+    int id = -1;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT id FROM games WHERE rom_path = ?;", -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, rom_path, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) id = sqlite3_column_int(stmt, 0);
+        sqlite3_finalize(stmt);
+    }
+    if (id < 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    /* Cumulative playtime + last-played timestamp on the game row. */
+    if (sqlite3_prepare_v2(db,
+            "UPDATE games SET playtime_s = playtime_s + ?, last_played = strftime('%s','now') "
+            "WHERE id = ?;", -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, duration_s);
+        sqlite3_bind_int(stmt, 2, id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    /* Recents row: newest open wins; duration_s holds the last session length. */
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO recents (kind, target_id, last_opened, duration_s) "
+            "VALUES ('game', ?, strftime('%s','now'), ?) "
+            "ON CONFLICT(kind, target_id) DO UPDATE SET "
+            "last_opened = excluded.last_opened, duration_s = excluded.duration_s;",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, id);
+        sqlite3_bind_int(stmt, 2, duration_s);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    jw_db_close(db);
+    return 0;
+}
+
+int jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
+                            int max_count, int *out_count) {
+    if (!db_path || !out || max_count <= 0 || !out_count) {
+        return -1;
+    }
+
+    *out_count = 0;
+    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    /* Most-recently-opened first; carry the favorite flag so recents rows show
+       the star too. */
+    static const char *sql =
+        "SELECT g.id, g.system, g.name, g.rom_path, COALESCE(g.image_path, ''), "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "FROM games g JOIN recents r ON r.kind = 'game' AND r.target_id = g.id "
+        "ORDER BY r.last_opened DESC LIMIT ?;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_count);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW && *out_count < max_count) {
+        const unsigned char *system_text = sqlite3_column_text(stmt, 1);
+        const unsigned char *name_text = sqlite3_column_text(stmt, 2);
+        const unsigned char *rom_text = sqlite3_column_text(stmt, 3);
+        const unsigned char *image_text = sqlite3_column_text(stmt, 4);
+        int i = *out_count;
+        out[i].id = sqlite3_column_int(stmt, 0);
+        if (system_text) snprintf(out[i].system, sizeof(out[i].system), "%s", system_text);
+        if (name_text) snprintf(out[i].name, sizeof(out[i].name), "%s", name_text);
+        if (rom_text) snprintf(out[i].rom_path, sizeof(out[i].rom_path), "%s", rom_text);
+        if (image_text) snprintf(out[i].image_path, sizeof(out[i].image_path), "%s", image_text);
+        out[i].favorite = sqlite3_column_int(stmt, 5);
+        (*out_count)++;
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return 0;
+}
+
 static int jw__build_fts_query(const char *query, char *out, size_t out_size) {
     if (!query || !out || out_size == 0) {
         return -1;

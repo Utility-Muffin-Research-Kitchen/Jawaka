@@ -405,6 +405,24 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
         }
     }
 
+    /* Record recents + playtime for real sessions only. A crash at launch gives
+       runtime_s=0, so it never pollutes the list or playtime totals. The session
+       holds the absolute ROM path; games.rom_path is stored relative to the SD
+       root, so strip the prefix before the lookup. */
+    if (runtime_s > 0 && state->db_path && session->rom_path[0]) {
+        const char *rel = session->rom_path;
+        size_t root_len = state->sdcard_root ? strlen(state->sdcard_root) : 0;
+        if (root_len > 0 && strncmp(rel, state->sdcard_root, root_len) == 0) {
+            rel += root_len;
+            while (*rel == '/') rel++;
+        }
+        if (jw_db_record_play(state->db_path, rel, (int)runtime_s) == 0) {
+            jw_log_info("recorded play rom=%s duration_s=%ld", rel, runtime_s);
+        } else {
+            jw_log_warn("could not record play for rom=%s", rel);
+        }
+    }
+
     jw__retroarch_session_clear(session);
 }
 

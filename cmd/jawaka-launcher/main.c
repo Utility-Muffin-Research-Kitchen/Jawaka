@@ -27,6 +27,7 @@
 #define JW_MAX_APPS    64
 #define JW_MAX_GAMES   512
 #define JW_MAX_FAVORITES 256   /* newest-first; a heavier list is truncated */
+#define JW_MAX_RECENTS 64      /* most-recently-played first */
 #define JW_MAX_SEARCH_RESULTS 128
 
 /* Button hint text: on device, return NULL so Catastrophe uses the canonical
@@ -109,6 +110,9 @@ typedef struct {
     /* Favorites tab (tabbed layout): favorited games, reloaded on tab entry */
     jw_game_entry      favorites[JW_MAX_FAVORITES];
     int                favorites_count;
+    /* Recents tab: most-recently-played games, reloaded on load + tab entry */
+    jw_game_entry      recents[JW_MAX_RECENTS];
+    int                recents_count;
     bool               apps_open;
     cat_list_state     app_list;
     jw_search_result   search_results[JW_MAX_SEARCH_RESULTS];
@@ -142,6 +146,12 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
 /* Defined after the image helpers; used by the tabbed renderer above them. */
 static void jw__render_favorites(const jw_launcher_state *state,
                                  int content_y, int content_h, int margin);
+/* Shared list+art renderer for the Favorites and Recents tabs (uses the image
+   helpers, so it's defined late and forward-declared here). */
+static void jw__render_game_list_pane(const jw_launcher_state *state,
+                                      const jw_game_entry *entries, int count,
+                                      int content_y, int content_h, int margin,
+                                      const char *empty_msg);
 
 /* Strips trailing region/dump tags — " (USA)", " (E)", " [!]", etc. — from a
    ROM name for display only. The stored name (derived from the filename) is
@@ -352,7 +362,7 @@ static const char *jw__flat_label(const jw_launcher_state *state, int idx) {
 
 static int jw__tab_list_count(const jw_launcher_state *state) {
     switch (state->current_tab) {
-        case JW_TAB_RECENTS:   return 0;
+        case JW_TAB_RECENTS:   return state->recents_count;
         case JW_TAB_FAVORITES: return state->favorites_count;
         case JW_TAB_GAMES:     return state->system_count;
         case JW_TAB_APPS:      return state->app_count;
@@ -377,6 +387,10 @@ static int jw__scan_library(const char *socket_path, const char *db_path,
     jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
     jw__resolve_system_names(state);
     jw_db_list_apps(db_path, state->apps, JW_MAX_APPS, &state->app_count);
+    /* Recents is the default tab, so load it now (also reloaded on tab entry). */
+    if (jw_db_list_recent_games(db_path, state->recents, JW_MAX_RECENTS,
+                                &state->recents_count) != 0)
+        state->recents_count = 0;
 
     state->scan_ready = true;
     snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
@@ -396,6 +410,14 @@ static void jw__load_favorites_tab(const char *db_path, jw_launcher_state *state
     }
 }
 
+static void jw__load_recents_tab(const char *db_path, jw_launcher_state *state) {
+    if (!db_path || jw_db_list_recent_games(db_path, state->recents,
+                                            JW_MAX_RECENTS,
+                                            &state->recents_count) != 0) {
+        state->recents_count = 0;
+    }
+}
+
 static void jw__switch_tab(jw_launcher_state *state, int direction, const char *db_path) {
     if (!state) return;
     /* Cast to int and add COUNT before the modulo: jw_tab is an unsigned enum
@@ -404,9 +426,11 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
        first tab. Adding COUNT keeps the dividend non-negative for dir = +/-1. */
     int next = ((int)state->current_tab + direction + JW_TAB_COUNT) % JW_TAB_COUNT;
     state->current_tab = (jw_tab)next;
-    /* Favorites are reloaded on entry so newly toggled items appear. */
+    /* Favorites/Recents are reloaded on entry so newly toggled/played items appear. */
     if (state->current_tab == JW_TAB_FAVORITES)
         jw__load_favorites_tab(db_path, state);
+    else if (state->current_tab == JW_TAB_RECENTS)
+        jw__load_recents_tab(db_path, state);
     cat_list_state_jump(&state->list, 0, jw__tab_list_count(state));
     /* In tabbed mode, the Settings tab is owned by jw_settings_ui:
        auto-open on entry, close when navigating away. */
@@ -536,18 +560,9 @@ static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
 
 static void jw__render_recents(const jw_launcher_state *state,
                                 int content_y, int content_h, int margin) {
-    ap_theme *theme = cat_get_theme();
-    TTF_Font *large_font = cat_get_font(CAT_FONT_EXTRA_LARGE);
-    int sw = cat_get_screen_width();
-    const char *msg = "No recent games";
-    int large_h = TTF_FontHeight(large_font);
-    int tw = cat_measure_text(large_font, msg);
-    cat_draw_text(large_font, msg,
-        (sw - tw) / 2,
-        content_y + (content_h - large_h) / 2,
-        theme->hint);
-    (void)margin;
-    (void)state;
+    jw__render_game_list_pane(state, state->recents, state->recents_count,
+                              content_y, content_h, margin,
+                              "No recent games yet — play something and it'll show up here");
 }
 
 static void jw__render_games(const jw_launcher_state *state,
@@ -1678,10 +1693,12 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     cat_present();
 }
 
-/* Favorites tab content (tabbed layout): a list of favorited games with the
-   star marker on the left and box art for the selected game on the right. */
-static void jw__render_favorites(const jw_launcher_state *state,
-                                 int content_y, int content_h, int margin) {
+/* Shared tabbed-tab content for game lists (Favorites, Recents): the list with
+   star markers on the left and box art for the selected game on the right. */
+static void jw__render_game_list_pane(const jw_launcher_state *state,
+                                      const jw_game_entry *entries, int count,
+                                      int content_y, int content_h, int margin,
+                                      const char *empty_msg) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
@@ -1693,23 +1710,22 @@ static void jw__render_favorites(const jw_launcher_state *state,
     int detail_x = list_x + list_w + margin;
     int detail_w = sw - detail_x - margin;
 
-    if (state->favorites_count == 0) {
-        cat_draw_text_wrapped(body,
-            "No favorites yet — open a game and press Y to add one",
+    if (count == 0) {
+        cat_draw_text_wrapped(body, empty_msg,
             list_x + CAT_S(8), content_y + CAT_S(8),
             list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
         return;
     }
 
-    jw__roms_ctx ctx = { state->favorites };
+    jw__roms_ctx ctx = { entries };
     cat_draw_list_pane(list_x, content_y, list_w, content_h,
-        state->favorites_count, &state->list, item_h, jw__draw_rom_item, &ctx);
+        count, &state->list, item_h, jw__draw_rom_item, &ctx);
 
     cat_draw_rounded_rect(detail_x, content_y, detail_w, content_h, CAT_S(8),
         cat_hex_to_color("#ffffff10"));
 
-    if (state->list.cursor >= state->favorites_count) return;
-    const jw_game_entry *game = &state->favorites[state->list.cursor];
+    if (state->list.cursor >= count) return;
+    const jw_game_entry *game = &entries[state->list.cursor];
     char display[256];
     jw__clean_rom_name(game->name, display, sizeof(display));
 
@@ -1739,6 +1755,13 @@ static void jw__render_favorites(const jw_launcher_state *state,
             detail_x + (detail_w - name_w) / 2,
             content_y + content_h / 2 - large_h, theme->text, max_w);
     }
+}
+
+static void jw__render_favorites(const jw_launcher_state *state,
+                                 int content_y, int content_h, int margin) {
+    jw__render_game_list_pane(state, state->favorites, state->favorites_count,
+                              content_y, content_h, margin,
+                              "No favorites yet — open a game and press Y to add one");
 }
 
 static void jw__render_app_browser(const jw_launcher_state *state) {
@@ -2021,6 +2044,28 @@ static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
     return 0;
 }
 
+static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
+    if (jw_db_list_recent_games(db_path, state->games, JW_MAX_GAMES,
+                                &state->game_count) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s", "Could not load recents");
+        return -1;
+    }
+
+    snprintf(state->game_system, sizeof(state->game_system), "%s", "Recently Played");
+    snprintf(state->game_system_display, sizeof(state->game_system_display),
+             "%s", "Recently Played");
+    state->games_are_favorites = false;
+    state->games_open = true;
+    cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
+    cat_list_state_jump(&state->game_list, 0, state->game_count);
+    if (state->game_count == 0) {
+        snprintf(state->status, sizeof(state->status), "%s", "No recent games yet");
+    } else {
+        snprintf(state->status, sizeof(state->status), "%d recent", state->game_count);
+    }
+    return 0;
+}
+
 static void jw__open_apps(jw_launcher_state *state) {
     state->apps_open = true;
     cat_list_state_init(&state->app_list, jw__app_browser_visible_rows(state));
@@ -2131,6 +2176,12 @@ static int jw__launch_selected_search_result(const char *socket_path,
 static void jw__activate_tabbed(const char *socket_path, const char *db_path,
                                   jw_launcher_state *state, bool *running) {
     switch (state->current_tab) {
+        case JW_TAB_RECENTS:
+            if (state->recents_count > 0 && state->list.cursor < state->recents_count) {
+                jw__launch_game_entry(socket_path, state,
+                                      &state->recents[state->list.cursor], running);
+            }
+            break;
         case JW_TAB_FAVORITES:
             if (state->favorites_count > 0 && state->list.cursor < state->favorites_count) {
                 jw__launch_game_entry(socket_path, state,
@@ -2171,7 +2222,7 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
             jw__open_favorites(db_path, state);
             break;
         case JW_FLAT_RECENTLY_PLAYED:
-            snprintf(state->status, sizeof(state->status), "%s", "Coming soon");
+            jw__open_recents(db_path, state);
             break;
         case JW_FLAT_APPS:
             jw__open_apps(state);

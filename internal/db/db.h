@@ -75,6 +75,13 @@ int  jw_db_set_favorite(const char *db_path, const char *kind, int target_id, in
 int  jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
                                int max_count, int *out_count);
 
+/* Recents + playtime. record_play (called when a game session ends) bumps the
+   game's cumulative playtime_s + last_played and upserts its recents row.
+   list_recent_games returns games most-recently-opened first. */
+int  jw_db_record_play(const char *db_path, const char *rom_path, int duration_s);
+int  jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
+                             int max_count, int *out_count);
+
 int  jw_db_get_setting(const char *db_path, const char *key,
                         char *out, size_t out_size);
 int  jw_db_set_setting(const char *db_path, const char *key, const char *value);
