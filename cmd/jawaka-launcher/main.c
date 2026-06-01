@@ -1696,41 +1696,24 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
     if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
         const jw_game_entry *game = &state->games[state->game_list.cursor];
-        char display[256];
-        jw__clean_rom_name(game->name, display, sizeof(display));
-        bool drew_art = false;
+        /* Show the cover centered/fit in the panel — no name (it's in the list
+           on the left). When a game has no cover, fall back to the system icon
+           as a placeholder so the panel is never empty. */
+        int art_pad = CAT_S(16);
+        int art_x = detail_x + art_pad;
+        int art_y = content_y + art_pad;
+        int art_w = detail_w - art_pad * 2;
+        int art_h = content_h - art_pad * 2;
+
         char image_abs[PATH_MAX];
-        int image_w = 0;
-        int image_h = 0;
-        if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0) {
-            SDL_Texture *tex = jw__load_cached_image(image_abs, &image_w, &image_h);
-            if (tex) {
-                int art_pad = CAT_S(16);
-                int art_x = detail_x + art_pad;
-                int art_y = content_y + art_pad;
-                int art_w = detail_w - art_pad * 2;
-                int art_h = content_h * 68 / 100;
-                jw__draw_image_fit(tex, image_w, image_h, art_x, art_y, art_w, art_h);
-
-                int text_y = art_y + art_h + CAT_S(12);
-                cat_draw_text_ellipsized(large, display,
-                    detail_x + art_pad, text_y,
-                    theme->text, detail_w - art_pad * 2);
-                drew_art = true;
-            }
-        }
-
-        if (!drew_art) {
-            int large_h = TTF_FontHeight(large);
-            int max_w   = detail_w - margin * 2;
-
-            int name_w = cat_measure_text(large, display);
-            if (name_w > max_w) name_w = max_w;
-            cat_draw_text_ellipsized(large, display,
-                detail_x + (detail_w - name_w) / 2,
-                content_y + content_h / 2 - large_h / 2,
-                theme->text, max_w);
-        }
+        int iw = 0, ih = 0;
+        SDL_Texture *tex = NULL;
+        if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0)
+            tex = jw__load_cached_image(image_abs, &iw, &ih);
+        if (!tex)
+            tex = jw__load_system_icon(game->system, &iw, &ih);
+        if (tex)
+            jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
     }
 
     if (tabbed) {
@@ -1764,7 +1747,6 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
                                       const char *empty_msg) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
     int sw = cat_get_screen_width();
 
     int list_x   = margin;
@@ -1803,35 +1785,24 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
 
     if (state->list.cursor >= count) return;
     const jw_game_entry *game = &entries[state->list.cursor];
-    char display[256];
-    jw__clean_rom_name(game->name, display, sizeof(display));
 
+    /* Cover centered/fit in the panel — no name (it's in the list). When a game
+       has no cover, fall back to its system icon so the panel is never empty. */
     int art_pad = CAT_S(16);
-    int art_h   = panel_h * 68 / 100;
-    bool drew_art = false;
+    int art_x   = detail_x + art_pad;
+    int art_y   = content_y + art_pad;
+    int art_w   = detail_w - art_pad * 2;
+    int art_h   = panel_h - art_pad * 2;
+
     char image_abs[PATH_MAX];
-    int image_w = 0, image_h = 0;
-    if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0) {
-        SDL_Texture *tex = jw__load_cached_image(image_abs, &image_w, &image_h);
-        if (tex) {
-            jw__draw_image_fit(tex, image_w, image_h,
-                detail_x + art_pad, content_y + art_pad,
-                detail_w - art_pad * 2, art_h);
-            cat_draw_text_ellipsized(large, display,
-                detail_x + art_pad, content_y + art_pad + art_h + CAT_S(12),
-                theme->text, detail_w - art_pad * 2);
-            drew_art = true;
-        }
-    }
-    if (!drew_art) {
-        int large_h = TTF_FontHeight(large);
-        int max_w   = detail_w - margin * 2;
-        int name_w  = cat_measure_text(large, display);
-        if (name_w > max_w) name_w = max_w;
-        cat_draw_text_ellipsized(large, display,
-            detail_x + (detail_w - name_w) / 2,
-            content_y + panel_h / 2 - large_h, theme->text, max_w);
-    }
+    int iw = 0, ih = 0;
+    SDL_Texture *tex = NULL;
+    if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0)
+        tex = jw__load_cached_image(image_abs, &iw, &ih);
+    if (!tex)
+        tex = jw__load_system_icon(game->system, &iw, &ih);
+    if (tex)
+        jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
 }
 
 static void jw__render_favorites(const jw_launcher_state *state,
