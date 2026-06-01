@@ -14,6 +14,13 @@ static const char *jw_ra_platform_id(void) {
     return jw_platform_compiled_id();
 }
 
+static int jw_ra_platform_uses_dot_system(const char *platform_id) {
+    return platform_id &&
+           (strcmp(platform_id, "tg5040") == 0 ||
+            strcmp(platform_id, "tg5050") == 0 ||
+            strcmp(platform_id, "my355") == 0);
+}
+
 static void jw_ra_set_error(char *error, size_t error_size, const char *message) {
     if (error && error_size > 0) {
         snprintf(error, error_size, "%s", message ? message : "");
@@ -295,11 +302,29 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
         return NULL;
     }
 
+    const char *platform_path = getenv("UMRK_PLATFORM_PATH");
+    const char *system_path = getenv("SYSTEM_PATH");
     char defaults_dir[PATH_MAX];
-    if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/UMRK/%s/defaults",
-                 sdcard_root, jw_ra_platform_id()) >= (int)sizeof(defaults_dir)) {
-        jw_ra_set_error(error, error_size, "defaults path too long");
-        return NULL;
+    if (platform_path && platform_path[0]) {
+        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/defaults",
+                     platform_path) >= (int)sizeof(defaults_dir)) {
+            jw_ra_set_error(error, error_size, "defaults path too long");
+            return NULL;
+        }
+    } else if (system_path && system_path[0]) {
+        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/defaults",
+                     system_path) >= (int)sizeof(defaults_dir)) {
+            jw_ra_set_error(error, error_size, "defaults path too long");
+            return NULL;
+        }
+    } else {
+        const char *platform_id = jw_ra_platform_id();
+        const char *prefix = jw_ra_platform_uses_dot_system(platform_id) ? ".system" : "UMRK";
+        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/%s/%s/defaults",
+                     sdcard_root, prefix, platform_id) >= (int)sizeof(defaults_dir)) {
+            jw_ra_set_error(error, error_size, "defaults path too long");
+            return NULL;
+        }
     }
 
     char cores_path[PATH_MAX];

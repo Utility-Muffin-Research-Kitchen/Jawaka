@@ -1253,8 +1253,7 @@ static SDL_Texture *jw__load_system_icon(const char *system_code,
     }
 
     /* (3) shared baseline at <themes_dir_parent>/system_icons/<SYSTEM>.png.
-     * theme_dir is e.g. "./res/themes" or "/mnt/SDCARD/Themes"; the shared
-     * icons live next to it. */
+     * The shared icons live next to the active theme root. */
     if (theme_dir[0]) {
         snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
                  theme_dir, system_code);

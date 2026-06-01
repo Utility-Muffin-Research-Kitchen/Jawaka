@@ -58,6 +58,22 @@ static int jw__format_string(char *out, size_t out_size, const char *fmt, ...) {
     return needed >= 0 && (size_t)needed < out_size ? 0 : -1;
 }
 
+static const char *jw__env_value(const char *name) {
+    const char *value = getenv(name);
+    return (value && value[0]) ? value : NULL;
+}
+
+static int jw__sd_child_or_env(char *out, size_t out_size,
+                               const char *env_name,
+                               const char *sdcard_root,
+                               const char *child) {
+    const char *env = jw__env_value(env_name);
+    if (env) {
+        return jw__format_string(out, out_size, "%s", env);
+    }
+    return jw__format_string(out, out_size, "%s/%s", sdcard_root, child);
+}
+
 static void jw__lower_copy(const char *in, char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return;
@@ -254,6 +270,7 @@ static const char *jw__metadata_image_path(const jw_ra_system *system,
                                            const char *physical_folder,
                                            const char *title,
                                            const char *sdcard_root,
+                                           const char *images_root,
                                            char *image_abs,
                                            size_t image_abs_size,
                                            char *image_rel,
@@ -271,8 +288,8 @@ static const char *jw__metadata_image_path(const jw_ra_system *system,
     }
 
     if (physical_folder && physical_folder[0] &&
-        snprintf(image_abs, image_abs_size, "%s/Images/%s/%s.png",
-                 sdcard_root, physical_folder, title) < (int)image_abs_size &&
+        snprintf(image_abs, image_abs_size, "%s/%s/%s.png",
+                 images_root, physical_folder, title) < (int)image_abs_size &&
         snprintf(image_rel, image_rel_size, "Images/%s/%s.png",
                  physical_folder, title) < (int)image_rel_size &&
         jw__is_file(image_abs)) {
@@ -285,8 +302,10 @@ static const char *jw__metadata_image_path(const jw_ra_system *system,
 static int jw__scan_roms_compat(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     char roms_root[PATH_MAX];
     char images_root[PATH_MAX];
-    if (jw__format_string(roms_root, sizeof(roms_root), "%s/Roms", sdcard_root) != 0 ||
-        jw__format_string(images_root, sizeof(images_root), "%s/Images", sdcard_root) != 0) {
+    if (jw__sd_child_or_env(roms_root, sizeof(roms_root),
+                            "ROMS_PATH", sdcard_root, "Roms") != 0 ||
+        jw__sd_child_or_env(images_root, sizeof(images_root),
+                            "IMAGES_PATH", sdcard_root, "Images") != 0) {
         return -1;
     }
 
@@ -372,8 +391,11 @@ static int jw__scan_roms_metadata(sqlite3 *db,
                                   const jw_ra_catalog *catalog,
                                   jw_scan_result *out) {
     char roms_root[PATH_MAX];
-    if (snprintf(roms_root, sizeof(roms_root), "%s/Roms", sdcard_root) >=
-        (int)sizeof(roms_root)) {
+    char images_root[PATH_MAX];
+    if (jw__sd_child_or_env(roms_root, sizeof(roms_root),
+                            "ROMS_PATH", sdcard_root, "Roms") != 0 ||
+        jw__sd_child_or_env(images_root, sizeof(images_root),
+                            "IMAGES_PATH", sdcard_root, "Images") != 0) {
         return -1;
     }
 
@@ -458,6 +480,7 @@ static int jw__scan_roms_metadata(sqlite3 *db,
                                                  system_entry->d_name,
                                                  title,
                                                  sdcard_root,
+                                                 images_root,
                                                  image_abs,
                                                  sizeof(image_abs),
                                                  image_rel,
@@ -513,7 +536,8 @@ static void jw__trim_pak_suffix(const char *name, char *out, size_t out_size) {
 
 static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     char apps_root[PATH_MAX];
-    if (jw__format_string(apps_root, sizeof(apps_root), "%s/Apps", sdcard_root) != 0) {
+    if (jw__sd_child_or_env(apps_root, sizeof(apps_root),
+                            "APPS_PATH", sdcard_root, "Apps") != 0) {
         return -1;
     }
 

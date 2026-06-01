@@ -52,8 +52,10 @@ static int jw__env_int(const char *name, int fallback) {
     return (int)parsed;
 }
 
+#define JW_OSD_SHM_TEMPLATE "/tmp/jawaka-osd-shm-XXXXXX"
+
 static int jw__create_shm_file(size_t size) {
-    char template[] = "/tmp/jawaka-osd-shm-XXXXXX";
+    char template[] = JW_OSD_SHM_TEMPLATE;
     int fd = mkstemp(template);
     if (fd < 0) {
         return -1;

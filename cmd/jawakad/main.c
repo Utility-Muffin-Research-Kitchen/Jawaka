@@ -13,6 +13,7 @@
 #include <libgen.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,8 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#define JW_MLP1_INTERNAL_DATA_PATH "/userdata"
 
 typedef enum {
     JW_CHILD_NONE = 0,
@@ -93,6 +96,77 @@ static int jw__path_exists(const char *path) {
     return path && stat(path, &st) == 0;
 }
 
+static const char *jw__env_value(const char *name) {
+    const char *value = getenv(name);
+    return (value && value[0]) ? value : NULL;
+}
+
+static void jw__setenv_default(const char *name, const char *value) {
+    if (!name || !value || jw__env_value(name)) {
+        return;
+    }
+    setenv(name, value, 0);
+}
+
+static void jw__setenvf_default(const char *name, const char *fmt, ...) {
+    if (!name || jw__env_value(name) || !fmt) {
+        return;
+    }
+
+    char value[PATH_MAX];
+    va_list args;
+    va_start(args, fmt);
+    int needed = vsnprintf(value, sizeof(value), fmt, args);
+    va_end(args);
+    if (needed >= 0 && needed < (int)sizeof(value)) {
+        setenv(name, value, 0);
+    }
+}
+
+static bool jw__platform_uses_dot_system(const char *platform) {
+    return platform &&
+           (strcmp(platform, "tg5040") == 0 ||
+            strcmp(platform, "tg5050") == 0 ||
+            strcmp(platform, "my355") == 0);
+}
+
+static bool jw__format_default_system_path(char *out, size_t out_size,
+                                           const char *sdcard_root,
+                                           const char *platform) {
+    if (!out || out_size == 0 || !sdcard_root || !sdcard_root[0] ||
+        !platform || !platform[0]) {
+        return false;
+    }
+
+    const char *prefix = jw__platform_uses_dot_system(platform) ? ".system" : "UMRK";
+    int needed = snprintf(out, out_size, "%s/%s/%s", sdcard_root, prefix, platform);
+    return needed >= 0 && needed < (int)out_size;
+}
+
+static int jw__env_or_join(char *out, size_t out_size,
+                           const char *path_env,
+                           const char *base_env_a,
+                           const char *base_env_b,
+                           const char *fallback_base,
+                           const char *leaf) {
+    const char *path = jw__env_value(path_env);
+    if (path) {
+        return snprintf(out, out_size, "%s", path) < (int)out_size ? 0 : -1;
+    }
+
+    const char *base = jw__env_value(base_env_a);
+    if (!base && base_env_b) {
+        base = jw__env_value(base_env_b);
+    }
+    if (!base) {
+        base = fallback_base;
+    }
+    if (!base || !leaf) {
+        return -1;
+    }
+    return snprintf(out, out_size, "%s/%s", base, leaf) < (int)out_size ? 0 : -1;
+}
+
 static int jw__is_regular_file(const char *path) {
     struct stat st;
     return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
@@ -117,6 +191,73 @@ static int jw__set_bin_dir(char *argv0, char *out, size_t out_size) {
 
 static void jw__print_usage(FILE *stream) {
     fprintf(stream, "Usage: jawakad [--daemon-only] [--help]\n");
+}
+
+static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
+    if (!state || !state->runtime_dir || !state->sdcard_root) {
+        return;
+    }
+
+    const char *platform = state->platform.platform_id[0]
+        ? state->platform.platform_id
+        : "mac";
+
+    jw__setenv_default("UMRK_ENV_VERSION", "1");
+    jw__setenv_default("PLATFORM", platform);
+    jw__setenv_default("DEVICE", platform);
+    jw__setenv_default("SDCARD_PATH", state->sdcard_root);
+    jw__setenv_default("UMRK_RUNTIME_PATH", state->runtime_dir);
+    char system_path[PATH_MAX];
+    if (jw__format_default_system_path(system_path, sizeof(system_path),
+                                       state->sdcard_root, platform)) {
+        jw__setenv_default("SYSTEM_PATH", system_path);
+    }
+    if (getenv("SYSTEM_PATH")) {
+        jw__setenv_default("UMRK_PLATFORM_PATH", getenv("SYSTEM_PATH"));
+    }
+
+    char launcher_path[PATH_MAX];
+    if (snprintf(launcher_path, sizeof(launcher_path), "%s", state->bin_dir) <
+        (int)sizeof(launcher_path)) {
+        char *slash = strrchr(launcher_path, '/');
+        if (slash && strcmp(slash + 1, "bin") == 0) {
+            *slash = '\0';
+            jw__setenv_default("UMRK_LAUNCHER_PATH", launcher_path);
+        }
+    }
+    jw__setenv_default("UMRK_BIN_PATH", state->bin_dir);
+
+    jw__setenvf_default("USERDATA_PATH", "%s/.userdata/%s", state->sdcard_root, platform);
+    jw__setenvf_default("SHARED_USERDATA_PATH", "%s/.userdata/shared", state->sdcard_root);
+    if (getenv("USERDATA_PATH")) {
+        jw__setenvf_default("LOGS_PATH", "%s/logs", getenv("USERDATA_PATH"));
+    }
+    jw__setenvf_default("ROMS_PATH", "%s/Roms", state->sdcard_root);
+    jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
+    jw__setenvf_default("APPS_PATH", "%s/Apps", state->sdcard_root);
+    jw__setenvf_default("BIOS_PATH", "%s/BIOS", state->sdcard_root);
+    jw__setenvf_default("SAVES_PATH", "%s/Saves", state->sdcard_root);
+    jw__setenvf_default("STATES_PATH", "%s/States", state->sdcard_root);
+    jw__setenvf_default("CHEATS_PATH", "%s/Cheats", state->sdcard_root);
+    if (getenv("SYSTEM_PATH")) {
+        jw__setenvf_default("CORES_PATH", "%s/cores", getenv("SYSTEM_PATH"));
+        jw__setenvf_default("INFO_PATH", "%s/info", getenv("SYSTEM_PATH"));
+    }
+
+    char *retroarch_bin = jw_retroarch_bin_path();
+    if (retroarch_bin) {
+        jw__setenv_default("UMRK_RETROARCH_BIN", retroarch_bin);
+        free(retroarch_bin);
+    }
+
+    setenv("JAWAKA_RUNTIME_DIR", state->runtime_dir, 1);
+    setenv("JAWAKA_SDCARD_ROOT", state->sdcard_root, 1);
+    if (getenv("UMRK_RETROARCH_BIN")) {
+        setenv("JAWAKA_RETROARCH_BIN", getenv("UMRK_RETROARCH_BIN"), 1);
+    }
+    if (getenv("CORES_PATH")) {
+        setenv("JAWAKA_RETROARCH_CORES_DIR", getenv("CORES_PATH"), 1);
+    }
 }
 
 static int jw__reply_json(jw_ipc_client *client, cJSON *root) {
@@ -565,9 +706,20 @@ static int jw__resolve_app_launch_path(jw_daemon_state *state, const char *pak_d
         return -1;
     }
 
+    const char *apps_root = jw__env_value("APPS_PATH");
     char apps_candidate[PATH_MAX];
-    if (snprintf(apps_candidate, sizeof(apps_candidate), "%s/Apps", sdcard_abs) >= (int)sizeof(apps_candidate) ||
-        !realpath(apps_candidate, apps_abs)) {
+    if (apps_root) {
+        if (snprintf(apps_candidate, sizeof(apps_candidate), "%s", apps_root) >=
+            (int)sizeof(apps_candidate)) {
+            if (out_error) *out_error = "Apps path too long";
+            return -1;
+        }
+    } else if (snprintf(apps_candidate, sizeof(apps_candidate), "%s/Apps", sdcard_abs) >=
+               (int)sizeof(apps_candidate)) {
+        if (out_error) *out_error = "Apps path too long";
+        return -1;
+    }
+    if (!realpath(apps_candidate, apps_abs)) {
         if (out_error) *out_error = "Apps directory missing";
         return -1;
     }
@@ -575,7 +727,14 @@ static int jw__resolve_app_launch_path(jw_daemon_state *state, const char *pak_d
     char candidate[PATH_MAX];
     if (pak_dir[0] == '/') {
         snprintf(candidate, sizeof(candidate), "%s", pak_dir);
-    } else if (snprintf(candidate, sizeof(candidate), "%s/%s", sdcard_abs, pak_dir) >= (int)sizeof(candidate)) {
+    } else if (strncmp(pak_dir, "Apps/", 5) == 0) {
+        if (snprintf(candidate, sizeof(candidate), "%s/%s", apps_abs, pak_dir + 5) >=
+            (int)sizeof(candidate)) {
+            if (out_error) *out_error = "app path too long";
+            return -1;
+        }
+    } else if (snprintf(candidate, sizeof(candidate), "%s/%s", apps_abs, pak_dir) >=
+               (int)sizeof(candidate)) {
         if (out_error) *out_error = "app path too long";
         return -1;
     }
@@ -1113,8 +1272,13 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
                 (int)sizeof(dir_buf)) {
             setenv("JAWAKA_INGAME_SHOTDIR", dir_buf, 1);
         }
-        if (state->sdcard_root &&
-            snprintf(dir_buf, sizeof(dir_buf), "%s/States", state->sdcard_root) <
+        const char *states_dir = jw__env_value("STATES_PATH");
+        if (!states_dir) {
+            states_dir = state->sdcard_root;
+        }
+        if (states_dir && state->sdcard_root &&
+            snprintf(dir_buf, sizeof(dir_buf), "%s%s", states_dir,
+                     states_dir == state->sdcard_root ? "/States" : "") <
                 (int)sizeof(dir_buf)) {
             setenv("JAWAKA_INGAME_STATEDIR", dir_buf, 1);
         }
@@ -1652,17 +1816,25 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
 
     /* EXIT-TO-STOCK: temporary dev/test feature. Writes a sentinel so the
        wrapper falls back to stock for this session only. The sentinel lives
-       in /tmp and is cleared on reboot. See loong_pangu.wrapper sentinel
-       check and jawaka-menu EXIT_STOCK case. May be removed after testing. */
+       in tmpfs by default and is cleared on reboot. See loong_pangu.wrapper
+       sentinel check and jawaka-menu EXIT_STOCK case. May be removed after testing. */
     if (strcmp(type->valuestring, "shutdown") == 0) {
         state->shutdown_requested = true;
-        /* Path must match CRASH_STATE in loong_pangu.wrapper. */
-        static const char *crash_state = "/userdata/umrk-launcher-crash-state";
-        unlink(crash_state);
-        /* Sentinel path must match loong_pangu.wrapper sentinel check. */
-        static const char *exit_sentinel = "/tmp/umrk-exit-to-stock";
-        FILE *fp = fopen(exit_sentinel, "w");
-        if (fp) fclose(fp);
+        char crash_state[PATH_MAX];
+        if (jw__env_or_join(crash_state, sizeof(crash_state),
+                            "UMRK_CRASH_STATE",
+                            "UMRK_INTERNAL_DATA_PATH", "USERDATA_PATH",
+                            JW_MLP1_INTERNAL_DATA_PATH, "umrk-launcher-crash-state") == 0) {
+            unlink(crash_state);
+        }
+        char exit_sentinel[PATH_MAX];
+        if (jw__env_or_join(exit_sentinel, sizeof(exit_sentinel),
+                            "UMRK_EXIT_TO_STOCK_SENTINEL",
+                            "TMPDIR", NULL,
+                            "/tmp", "umrk-exit-to-stock") == 0) {
+            FILE *fp = fopen(exit_sentinel, "w");
+            if (fp) fclose(fp);
+        }
         jw_log_info("shutdown requested — exiting to stock (this session only)");
         cJSON_Delete(root);
         return jw__reply_ok(client, "shutdown", NULL);
@@ -1995,9 +2167,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Exported so child processes receive them via execv's inherited environment */
-    setenv("JAWAKA_RUNTIME_DIR", state.runtime_dir, 1);
-    setenv("JAWAKA_SDCARD_ROOT", state.sdcard_root, 1);
+    /* Exported so child processes receive them via execv's inherited environment. */
+    jw__publish_runtime_path_env(&state);
     setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
     setenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1", 0);
     {
@@ -2060,9 +2231,18 @@ int main(int argc, char *argv[]) {
     }
 
     /* Write clean-exit marker so the wrapper's crash-loop guard knows this
-       was an intentional shutdown, not a crash. The marker lives in /tmp so
-       it clears on reboot. See loong_pangu.wrapper check_crash_loop(). */
-    { FILE *fp = fopen("/tmp/umrk-clean-exit", "w"); if (fp) fclose(fp); }
+       was an intentional shutdown, not a crash. The marker lives in tmpfs by
+       default so it clears on reboot. See loong_pangu.wrapper check_crash_loop(). */
+    {
+        char clean_exit[PATH_MAX];
+        if (jw__env_or_join(clean_exit, sizeof(clean_exit),
+                            "UMRK_CLEAN_EXIT_SENTINEL",
+                            "TMPDIR", NULL,
+                            "/tmp", "umrk-clean-exit") == 0) {
+            FILE *fp = fopen(clean_exit, "w");
+            if (fp) fclose(fp);
+        }
+    }
 
     jw_log_info("jawakad exiting");
     jw__cleanup(&state);

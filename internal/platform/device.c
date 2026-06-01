@@ -5,6 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int jw__platform_uses_dot_system(const char *platform_id) {
+    return platform_id &&
+           (strcmp(platform_id, "tg5040") == 0 ||
+            strcmp(platform_id, "tg5050") == 0 ||
+            strcmp(platform_id, "my355") == 0);
+}
+
 void jw_platform_result_set(jw_platform_result *out,
                             jw_platform_result_code code,
                             const char *message) {
@@ -57,9 +64,16 @@ int jw_platform_init(jw_platform_context *ctx, const char *runtime_dir, const ch
     const char *script_env = getenv("JAWAKA_PLATFORM_SCRIPT_DIR");
     if (script_env && script_env[0]) {
         snprintf(ctx->script_dir, sizeof(ctx->script_dir), "%s", script_env);
+    } else if ((script_env = getenv("UMRK_PLATFORM_PATH")) && script_env[0]) {
+        snprintf(ctx->script_dir, sizeof(ctx->script_dir), "%s/platform.d", script_env);
+    } else if ((script_env = getenv("SYSTEM_PATH")) && script_env[0]) {
+        snprintf(ctx->script_dir, sizeof(ctx->script_dir), "%s/platform.d", script_env);
     } else {
-        snprintf(ctx->script_dir, sizeof(ctx->script_dir), "%s/UMRK/%s/platform.d",
-                 sdcard_root, ctx->platform_id);
+        const char *prefix = jw__platform_uses_dot_system(ctx->platform_id)
+            ? ".system"
+            : "UMRK";
+        snprintf(ctx->script_dir, sizeof(ctx->script_dir), "%s/%s/%s/platform.d",
+                 sdcard_root, prefix, ctx->platform_id);
     }
 
     if (backend->init && backend->init(ctx) != 0) {

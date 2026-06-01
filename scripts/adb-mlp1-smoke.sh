@@ -6,6 +6,9 @@ WORKSPACE_ROOT="$(cd "$ROOT_DIR/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/build/mlp1"
 BUNDLE_DIR="$ROOT_DIR/build/mlp1-adb-smoke/bundle"
 REMOTE_DIR="${JAWAKA_MLP1_REMOTE_DIR:-/tmp/jawaka-mlp1-smoke}"
+REMOTE_SDCARD_PATH="${REMOTE_SDCARD_PATH:-$REMOTE_DIR/sd}"
+REMOTE_RUNTIME_PATH="${REMOTE_RUNTIME_PATH:-$REMOTE_DIR/run}"
+REMOTE_LOGS_PATH="${REMOTE_LOGS_PATH:-$REMOTE_DIR/logs}"
 RUN_SECONDS="${JAWAKA_MLP1_SMOKE_SECONDS:-12}"
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
@@ -55,9 +58,9 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Deploying Jawaka smoke bundle to $REMOTE_DIR"
-"${ADB[@]}" shell "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR/bundle' '$REMOTE_DIR/sd/Roms/FC' '$REMOTE_DIR/sd/Images/FC' '$REMOTE_DIR/sd/Apps' '$REMOTE_DIR/sd/BIOS' '$REMOTE_DIR/sd/Saves' '$REMOTE_DIR/sd/States' '$REMOTE_DIR/run' '$REMOTE_DIR/logs'"
+"${ADB[@]}" shell "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR/bundle' '$REMOTE_SDCARD_PATH/Roms/FC' '$REMOTE_SDCARD_PATH/Images/FC' '$REMOTE_SDCARD_PATH/Apps' '$REMOTE_SDCARD_PATH/BIOS' '$REMOTE_SDCARD_PATH/Saves' '$REMOTE_SDCARD_PATH/States' '$REMOTE_RUNTIME_PATH' '$REMOTE_LOGS_PATH'"
 "${ADB[@]}" push "$BUNDLE_DIR/." "$REMOTE_DIR/bundle/" >/dev/null
-"${ADB[@]}" shell "chmod 755 '$REMOTE_DIR/bundle/bin/'* && printf 'mock rom\\n' > '$REMOTE_DIR/sd/Roms/FC/Smoke Test.zip'"
+"${ADB[@]}" shell "chmod 755 '$REMOTE_DIR/bundle/bin/'* && printf 'mock rom\\n' > '$REMOTE_SDCARD_PATH/Roms/FC/Smoke Test.zip'"
 
 if [ -n "${pangu_pid:-}" ]; then
     echo "Pausing stock loong_pangu pid $pangu_pid"
@@ -76,18 +79,20 @@ CAT_WINDOW_WIDTH=960 \
 CAT_WINDOW_HEIGHT=720 \
 CAT_THEMES_DIR='$REMOTE_DIR/bundle/res/themes' \
 CAT_FONTS_DIR='$REMOTE_DIR/bundle/res' \
-JAWAKA_SDCARD_ROOT='$REMOTE_DIR/sd' \
-JAWAKA_RUNTIME_DIR='$REMOTE_DIR/run' \
+SDCARD_PATH='$REMOTE_SDCARD_PATH' \
+UMRK_RUNTIME_PATH='$REMOTE_RUNTIME_PATH' \
+JAWAKA_SDCARD_ROOT='$REMOTE_SDCARD_PATH' \
+JAWAKA_RUNTIME_DIR='$REMOTE_RUNTIME_PATH' \
 JAWAKA_AUTODEMO=1 \
 JAWAKA_AUTODEMO_DELAY_MS=800 \
 JAWAKA_THEME=Jawaka-Tabs \
-timeout '$RUN_SECONDS' '$REMOTE_DIR/bundle/bin/jawakad' > '$REMOTE_DIR/logs/jawaka.log' 2>&1
+timeout '$RUN_SECONDS' '$REMOTE_DIR/bundle/bin/jawakad' > '$REMOTE_LOGS_PATH/jawaka.log' 2>&1
 "
 rc=$?
 set -e
 
 echo "Jawaka smoke log:"
-"${ADB[@]}" shell "tail -160 '$REMOTE_DIR/logs/jawaka.log' 2>/dev/null || true"
+"${ADB[@]}" shell "tail -160 '$REMOTE_LOGS_PATH/jawaka.log' 2>/dev/null || true"
 
 if [ "$rc" -ne 0 ]; then
     echo "Jawaka smoke exited with status $rc" >&2

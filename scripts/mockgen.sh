@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${JAWAKA_SDCARD_ROOT:-./mock-sdcard}"
+PLATFORM="${PLATFORM:-mac}"
+ROOT="${SDCARD_PATH:-${JAWAKA_SDCARD_ROOT:-./mock-sdcard}}"
+case "$PLATFORM" in
+    tg5040|tg5050|my355) DEFAULT_SYSTEM_ROOT="$ROOT/.system/$PLATFORM" ;;
+    *) DEFAULT_SYSTEM_ROOT="$ROOT/UMRK/$PLATFORM" ;;
+esac
+SYSTEM_ROOT="${UMRK_PLATFORM_PATH:-${SYSTEM_PATH:-$DEFAULT_SYSTEM_ROOT}}"
+ROMS_ROOT="${ROMS_PATH:-$ROOT/Roms}"
+IMAGES_ROOT="${IMAGES_PATH:-$ROOT/Images}"
+BIOS_ROOT="${BIOS_PATH:-$ROOT/BIOS}"
+APPS_ROOT="${APPS_PATH:-$ROOT/Apps}"
+SAVES_ROOT="${SAVES_PATH:-$ROOT/Saves}"
+STATES_ROOT="${STATES_PATH:-$ROOT/States}"
 FORCE="${FORCE:-0}"
 ROM_COUNT=0
 SYSTEM_COUNT=0
@@ -14,10 +26,10 @@ if [[ -d "$ROOT" ]]; then
     fi
 fi
 
-mkdir -p "$ROOT"/Roms "$ROOT"/Images "$ROOT"/BIOS "$ROOT"/Apps "$ROOT"/Saves "$ROOT"/States "$ROOT"/.umrk
-mkdir -p "$ROOT"/UMRK/mac/defaults
+mkdir -p "$ROMS_ROOT" "$IMAGES_ROOT" "$BIOS_ROOT" "$APPS_ROOT" "$SAVES_ROOT" "$STATES_ROOT" "$ROOT"/.umrk
+mkdir -p "$SYSTEM_ROOT/defaults"
 
-cat >"$ROOT/UMRK/mac/manifest.json" <<'JSON'
+cat >"$SYSTEM_ROOT/manifest.json" <<'JSON'
 {
   "platform": "mac",
   "version": "0.0.1",
@@ -35,7 +47,7 @@ cat >"$ROOT/UMRK/mac/manifest.json" <<'JSON'
 }
 JSON
 
-cat >"$ROOT/UMRK/mac/defaults/cores.json" <<'JSON'
+cat >"$SYSTEM_ROOT/defaults/cores.json" <<'JSON'
 {
   "platform": "mac",
   "systems": {
@@ -52,7 +64,7 @@ cat >"$ROOT/UMRK/mac/defaults/cores.json" <<'JSON'
 }
 JSON
 
-cat >"$ROOT/UMRK/mac/defaults/retroarch.cfg" <<'CFG'
+cat >"$SYSTEM_ROOT/defaults/retroarch.cfg" <<'CFG'
 config_save_on_exit = "false"
 libretro_directory = "cores"
 libretro_info_path = "info"
@@ -65,10 +77,10 @@ create_rom() {
     local sys="$1"
     local ext="$2"
     local title="$3"
-    local rom_path="$ROOT/Roms/$sys/$title.$ext"
-    local image_path="$ROOT/Images/$sys/$title.png"
+    local rom_path="$ROMS_ROOT/$sys/$title.$ext"
+    local image_path="$IMAGES_ROOT/$sys/$title.png"
 
-    mkdir -p "$ROOT/Roms/$sys" "$ROOT/Images/$sys"
+    mkdir -p "$ROMS_ROOT/$sys" "$IMAGES_ROOT/$sys"
 
     if [[ ! -f "$rom_path" ]]; then
         printf 'mock rom for %s\n' "$title" >"$rom_path"
@@ -118,13 +130,13 @@ create_app() {
     local message="$3"
     local icon="${4:-}"
 
-    mkdir -p "$ROOT/Apps/$pak_dir"
-    printf '#!/bin/sh\nprintf "%s\\n"\n' "$message" >"$ROOT/Apps/$pak_dir/launch.sh"
-    chmod +x "$ROOT/Apps/$pak_dir/launch.sh"
+    mkdir -p "$APPS_ROOT/$pak_dir"
+    printf '#!/bin/sh\nprintf "%s\\n"\n' "$message" >"$APPS_ROOT/$pak_dir/launch.sh"
+    chmod +x "$APPS_ROOT/$pak_dir/launch.sh"
     if [[ -n "$icon" ]]; then
-        write_tiny_png "$ROOT/Apps/$pak_dir/$icon"
+        write_tiny_png "$APPS_ROOT/$pak_dir/$icon"
     fi
-    printf '{ "name": "%s", "icon": "%s", "platform": "mac", "pak_version": "0.0.1", "min_jawaka_version": "0.0.1" }\n' "$app_name" "$icon" >"$ROOT/Apps/$pak_dir/pak.json"
+    printf '{ "name": "%s", "icon": "%s", "platform": "mac", "pak_version": "0.0.1", "min_jawaka_version": "0.0.1" }\n' "$app_name" "$icon" >"$APPS_ROOT/$pak_dir/pak.json"
 }
 
 while IFS=: read -r sys ext titles; do

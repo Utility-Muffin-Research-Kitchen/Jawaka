@@ -41,8 +41,7 @@ By default, the build will use `../Catastrophe` if it exists. Otherwise point
 it explicitly at a checkout:
 
 ```sh
-cd /Volumes/Storage/UMRK/Jawaka
-export CATASTROPHE_DIR=/Volumes/Storage/UMRK/Catastrophe
+export CATASTROPHE_DIR=../Catastrophe
 make mockgen
 make
 ```
@@ -109,10 +108,13 @@ Desktop testing follows Catastrophe's default desktop mapping:
 | Variable | Purpose |
 |----------|---------|
 | `CATASTROPHE_DIR` | local Catastrophe checkout used for build headers |
-| `JAWAKA_SDCARD_ROOT` | mock SD-card root, defaults to `./mock-sdcard` |
-| `JAWAKA_RUNTIME_DIR` | runtime socket dir, defaults to `/tmp/jawaka-$USER` |
+| `SDCARD_PATH` | mock or device SD-card root, defaults to `./mock-sdcard` for desktop |
+| `UMRK_RUNTIME_PATH` | runtime socket dir; `JAWAKA_RUNTIME_DIR` remains a compatibility alias |
+| `UMRK_PLATFORM_PATH` | platform payload root; defaults to `SYSTEM_PATH` |
 | `JAWAKA_AUTODEMO` | `1` enables the short automated launcher/menu flow |
 | `JAWAKA_AUTODEMO_DELAY_MS` | delay before auto actions, defaults to `1200` |
+
+See the umbrella `docs/runtime-paths.md` for the full runtime env contract.
 
 `build/bin/jawakad` also accepts `--daemon-only` to skip the initial
 launcher spawn when you want to attach `jawaka-launcher` manually.
@@ -139,7 +141,7 @@ directory unless they are absolute.
 
 - `docs/PLAN.md` mirrors the current broader Jawaka roadmap
 - `docs/ARCHITECTURE_DECISIONS.md` mirrors the binding architecture decisions
-- `/Volumes/Storage/UMRK/plans/jawaka-phase-0-1.md` remains the execution plan
+- umbrella `plans/jawaka-phase-0-1.md` remains the execution plan
 
 ## License
 

@@ -245,7 +245,7 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             return 0;
         case JW_MENU_EXIT_STOCK:
             /* EXIT-TO-STOCK: temporary dev/test feature. Sends shutdown IPC
-               which writes /tmp/umrk-exit-to-stock sentinel. See jawakad
+               which writes the exit-to-stock sentinel. See jawakad
                shutdown handler and loong_pangu.wrapper sentinel check. */
             jw_ipc_shutdown(socket_path);
             *running = false;
