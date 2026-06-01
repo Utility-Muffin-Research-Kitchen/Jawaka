@@ -3,6 +3,7 @@
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/device.h"
+#include "internal/platform/platform_id.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,6 +127,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
     cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
     cat_list_state_init(&ui->placeholder_list, 1);
+    cat_scroll_state_init(&ui->about_scroll);
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
     ui->pill_shape_index  = 0;
     ui->font_size_index   = 1;
@@ -466,40 +468,178 @@ static const jw__about_credit kAboutCredits[] = {
 };
 #define JW_ABOUT_CREDIT_COUNT ((int)(sizeof(kAboutCredits) / sizeof(kAboutCredits[0])))
 
+/* One row of the About content. The whole thing — identity, a System block, a
+   Library block, and the open-source components — is a flat list of these,
+   rendered inside one scroll view. */
+typedef enum {
+    JW_ABOUT_PLAIN,     /* single left label (identity)            */
+    JW_ABOUT_HEADING,   /* section heading (accent)                */
+    JW_ABOUT_FIELD,     /* field name (left, dim) : value (right)  */
+    JW_ABOUT_CREDIT     /* component (left) : license (right, dim) */
+} jw__about_kind;
+
+typedef struct {
+    jw__about_kind kind;
+    char label[48];
+    char value[72];
+} jw__about_row;
+
+#define JW_ABOUT_MAX_ROWS 64
+
+typedef struct {
+    const jw__about_row *rows;
+    int                  count;
+    TTF_Font            *font;
+    int                  row_h;
+} jw__about_ctx;
+
+/* cat_scroll_view content callback: lay out every row at its natural position.
+   Long labels/values marquee instead of truncating; the scroll view applies the
+   offset and clips. */
+static void jw__draw_about_rows(int x, int y, int w, void *user) {
+    const jw__about_ctx *ctx = (const jw__about_ctx *)user;
+    ap_theme *theme = cat_get_theme();
+    /* Per-row marquee state (only one About screen is live at a time). */
+    static cat_marquee label_mq[JW_ABOUT_MAX_ROWS];
+    static cat_marquee value_mq[JW_ABOUT_MAX_ROWS];
+    static uint32_t last_ms = 0;
+    uint32_t now = SDL_GetTicks();
+    uint32_t dt  = (last_ms == 0) ? 0u : (now - last_ms);
+    last_ms = now;
+
+    bool animating = false;
+    for (int i = 0; i < ctx->count && i < JW_ABOUT_MAX_ROWS; i++) {
+        const jw__about_row *r = &ctx->rows[i];
+        int row_y = y + i * ctx->row_h;
+        if (r->kind == JW_ABOUT_HEADING) {
+            if (cat_draw_text_marquee(ctx->font, r->label, x, row_y, theme->accent, w, &label_mq[i], dt))
+                animating = true;
+            continue;
+        }
+        if (r->kind == JW_ABOUT_PLAIN) {
+            if (cat_draw_text_marquee(ctx->font, r->label, x, row_y, theme->text, w, &label_mq[i], dt))
+                animating = true;
+            continue;
+        }
+        /* FIELD: dim label + bright value. CREDIT: bright name + dim license. */
+        int label_w, value_x;
+        ap_color label_col, value_col;
+        if (r->kind == JW_ABOUT_FIELD) {
+            label_w   = w * 40 / 100;
+            value_x   = x + w * 42 / 100;
+            label_col = theme->hint;
+            value_col = theme->text;
+        } else {
+            label_w   = w * 56 / 100;
+            value_x   = x + w * 60 / 100;
+            label_col = theme->text;
+            value_col = theme->hint;
+        }
+        int value_w = (x + w) - value_x;
+        /* Components ping-pong (they barely overflow, so a bounce reads better);
+           device-info values use the continuous loop. */
+        cat_marquee_mode mode = (r->kind == JW_ABOUT_CREDIT) ? CAT_MARQUEE_PINGPONG
+                                                             : CAT_MARQUEE_LOOP;
+        label_mq[i].mode = mode;
+        value_mq[i].mode = mode;
+        if (cat_draw_text_marquee(ctx->font, r->label, x, row_y, label_col, label_w, &label_mq[i], dt))
+            animating = true;
+        if (cat_draw_text_marquee(ctx->font, r->value, value_x, row_y, value_col, value_w, &value_mq[i], dt))
+            animating = true;
+    }
+    if (animating) cat_request_frame();
+}
+
+/* Append a row (no-op once full). */
+static void jw__about_push(jw__about_row *rows, int *n, jw__about_kind kind,
+                           const char *label, const char *value) {
+    if (*n >= JW_ABOUT_MAX_ROWS) return;
+    rows[*n].kind = kind;
+    snprintf(rows[*n].label, sizeof(rows[*n].label), "%s", label ? label : "");
+    snprintf(rows[*n].value, sizeof(rows[*n].value), "%s", value ? value : "");
+    (*n)++;
+}
+
 static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("About", x, y, w);
-    ap_theme *theme = cat_get_theme();
-    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int pad = cat_scale(6);
-    int cursor_y  = y + jw__header_h() + pad;
+    int top = y + jw__header_h() + pad;
 
-    /* Identity. */
-    cat_draw_text(body, "Jawaka", x + pad, cursor_y, theme->text);
-    cursor_y += TTF_FontHeight(body);
-    cat_draw_text(small, "Version " JW_ABOUT_VERSION, x + pad, cursor_y, theme->hint);
-    cursor_y += TTF_FontHeight(small) + pad * 2;
-
-    /* Open-source attributions: component name on the left, license on the
-       right. Drawn top-down and clipped to the content area (no scrolling for
-       now — the list fits the settings pane at normal font sizes). */
-    cat_draw_text(small, "Open-source components", x + pad, cursor_y, theme->hint);
-    cursor_y += TTF_FontHeight(small) + pad;
-
-    int row_h  = TTF_FontHeight(small) + cat_scale(6);
-    int bottom = y + h;
-    int col_w  = w - pad * 2;
-    for (int i = 0; i < JW_ABOUT_CREDIT_COUNT; i++) {
-        if (cursor_y + row_h > bottom) break;   /* clip rather than overflow the footer */
-        const jw__about_credit *c = &kAboutCredits[i];
-        cat_draw_text_ellipsized(small, c->name, x + pad, cursor_y, theme->text, col_w * 60 / 100);
-        int lic_w   = cat_measure_text(small, c->license);
-        int max_lic = col_w * 40 / 100;
-        if (lic_w > max_lic) lic_w = max_lic;
-        cat_draw_text_ellipsized(small, c->license, x + w - pad - lic_w, cursor_y, theme->hint, max_lic);
-        cursor_y += row_h;
+    /* Live system facts + library counts, refreshed about once a second while
+       the page is open (cheap reads; only one About screen is live at a time). */
+    static jw_system_info    info;
+    static jw_library_summary summary;
+    static uint32_t          last_refresh = 0;
+    static bool              have = false;
+    uint32_t now = SDL_GetTicks();
+    if (!have || now - last_refresh > 1000) {
+        jw_platform_system_info(ui->db_path, &info);
+        if (jw_db_read_summary(ui->db_path, &summary) != 0) memset(&summary, 0, sizeof(summary));
+        last_refresh = now;
+        have = true;
     }
-    (void)ui;
+
+    jw__about_row rows[JW_ABOUT_MAX_ROWS];
+    int n = 0;
+    char buf[72];
+
+    jw__about_push(rows, &n, JW_ABOUT_PLAIN, "Jawaka  v" JW_ABOUT_VERSION, "");
+
+    jw__about_push(rows, &n, JW_ABOUT_HEADING, "System", "");
+    snprintf(buf, sizeof(buf), "LoongOS %s", info.os_version[0] ? info.os_version : "?");
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Stock OS", buf);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Kernel", info.kernel[0] ? info.kernel : "—");
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Device", info.device[0] ? info.device : "—");
+    if (info.mem_total_kb > 0) {
+        snprintf(buf, sizeof(buf), "%ld / %ld MB", info.mem_avail_kb / 1024, info.mem_total_kb / 1024);
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Memory free", buf);
+    }
+    if (info.sd_total_mb > 0) {
+        snprintf(buf, sizeof(buf), "%ld / %ld GB", info.sd_free_mb / 1024, info.sd_total_mb / 1024);
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Storage free", buf);
+    }
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "IP", info.ip[0] ? info.ip : "—");
+    if (info.battery_percent >= 0) {
+        snprintf(buf, sizeof(buf), "%d%%%s", info.battery_percent, info.charging ? " (charging)" : "");
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Battery", buf);
+    }
+    if (info.cpu_temp_c > 0) {
+        snprintf(buf, sizeof(buf), "%d \xc2\xb0""C", info.cpu_temp_c);
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "CPU temp", buf);
+    }
+    if (info.uptime_s > 0) {
+        snprintf(buf, sizeof(buf), "%ldh %ldm", info.uptime_s / 3600, (info.uptime_s % 3600) / 60);
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Uptime", buf);
+    }
+
+    jw__about_push(rows, &n, JW_ABOUT_HEADING, "Library", "");
+    snprintf(buf, sizeof(buf), "%d", summary.game_count);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Games", buf);
+    snprintf(buf, sizeof(buf), "%d", summary.system_count);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Systems", buf);
+    snprintf(buf, sizeof(buf), "%d", summary.app_count);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Apps", buf);
+
+    jw__about_push(rows, &n, JW_ABOUT_HEADING, "Open-source components", "");
+    for (int i = 0; i < JW_ABOUT_CREDIT_COUNT; i++)
+        jw__about_push(rows, &n, JW_ABOUT_CREDIT, kAboutCredits[i].name, kAboutCredits[i].license);
+
+    /* Everything scrolls together in one (non-selectable) scroll view. Up/down
+       scroll; a scrollbar appears when the content outgrows the pane. The scroll
+       offset lives in ui->about_scroll — the settings render path is const by
+       convention, but the scroll view must persist its clamped offset across
+       frames, so this one field is the deliberate exception. */
+    int row_h     = TTF_FontHeight(small) + cat_scale(8);
+    int avail_h   = (y + h) - top;
+    int rows_fit  = avail_h / row_h;
+    if (rows_fit < 1) rows_fit = 1;
+    int view_h    = rows_fit * row_h;        /* row-aligned: never a partial row */
+    int content_h = n * row_h;
+    jw__about_ctx ctx = { rows, n, small, row_h };
+    cat_draw_scroll_view(x + pad, top, w - pad * 2, view_h, content_h,
+                         (cat_scroll_state *)&ui->about_scroll,
+                         jw__draw_about_rows, &ctx);
 }
 
 static void jw__render_placeholder(const jw_settings_ui *ui, const char *title,
@@ -714,7 +854,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 else if (idx == 1) ui->screen = JW_SETTINGS_DISPLAY;
                 else if (idx == 2) ui->screen = JW_SETTINGS_LIBRARY;
                 else if (idx == 3) ui->screen = JW_SETTINGS_BEHAVIOR;
-                else if (idx == 4) ui->screen = JW_SETTINGS_ABOUT;
+                else if (idx == 4) {
+                    ui->screen = JW_SETTINGS_ABOUT;
+                    cat_scroll_state_init(&ui->about_scroll);   /* start at top */
+                }
                 break;
             }
             case CAT_BTN_B:
@@ -888,9 +1031,20 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         }
         break;
 
+    /* ── About ───────────────────────────────────────────────────────── */
+    case JW_SETTINGS_ABOUT: {
+        int line_h = TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + cat_scale(8);
+        switch (button) {
+            case CAT_BTN_UP:   cat_scroll_state_move(&ui->about_scroll, -line_h); break;
+            case CAT_BTN_DOWN: cat_scroll_state_move(&ui->about_scroll, +line_h); break;
+            case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
+            default: break;
+        }
+        break;
+    }
+
     /* ── Placeholders ────────────────────────────────────────────────── */
     case JW_SETTINGS_BEHAVIOR:
-    case JW_SETTINGS_ABOUT:
         if (button == CAT_BTN_B)
             ui->screen = JW_SETTINGS_HOME;
         break;

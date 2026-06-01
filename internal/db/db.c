@@ -346,6 +346,7 @@ int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
     int rc = 0;
     rc |= jw__query_int(db, "SELECT COUNT(*) FROM games;", &out->game_count);
     rc |= jw__query_int(db, "SELECT COUNT(*) FROM apps;", &out->app_count);
+    rc |= jw__query_int(db, "SELECT COUNT(DISTINCT system) FROM games;", &out->system_count);
     rc |= jw__query_string(db,
         "SELECT group_concat(system, ', ') FROM ("
         "SELECT DISTINCT system FROM games ORDER BY system LIMIT 4"

@@ -7,6 +7,7 @@
 typedef struct {
     int game_count;
     int app_count;
+    int system_count;
     char systems_summary[256];
     char sample_summary[256];
 } jw_library_summary;

@@ -86,6 +86,7 @@ typedef struct {
     cat_list_state     display_list;
     cat_list_state     library_list;
     cat_list_state     placeholder_list;
+    cat_scroll_state   about_scroll;
     int                theme_index;
     int                pill_shape_index;
     int                font_size_index;

@@ -777,3 +777,19 @@ launcher preferences are in place.
 - Do not redesign daemon IPC as part of this work.
 - Do not let the theme setting accidentally trigger a library rescan.
 - Preserve current manual workflows by keeping `JAWAKA_THEME` as a fallback path.
+
+## About page (done, 2026-06-01)
+
+Settings → About is a real page (was a placeholder). Three sections in one
+scroll view: **System** (Stock OS via `/loong/loong_version`, kernel, device,
+memory, SD free, IP, battery, CPU temp, uptime), **Library** (game/system/app
+counts from `jw_db_read_summary`), and **Open-source components** (licenses).
+
+- Lower-layer facts come from a new platform helper: `jw_system_info` +
+  `jw_platform_system_info()` in `platform_id_mlp1.c` (pure libc/sysfs — also
+  compiles into jawakad), with a `platform_id_mock.c` stub for desktop.
+- Built on the new Catastrophe `cat_draw_scroll_view` (non-selectable scroll).
+  Long values marquee instead of truncating: device-info loops, components
+  ping-pong (`cat_marquee.mode`).
+- NOTE: the page is arguably overdone for an About screen — a future pass may
+  strip it back (fewer live fields, or drop the per-cell marquee).
