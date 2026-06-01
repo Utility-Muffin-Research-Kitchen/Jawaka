@@ -439,6 +439,69 @@ static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, in
     (void)h;
 }
 
+/* ─── About ────────────────────────────────────────────────────────────── */
+
+/* Bump alongside meaningful launcher releases. */
+#define JW_ABOUT_VERSION "0.0.1"
+
+typedef struct { const char *name; const char *license; } jw__about_credit;
+
+/* Third-party components shipped with / used by the CFW and their licenses.
+   Short names only — the full license texts ship with each component and live
+   in the respective repos. */
+static const jw__about_credit kAboutCredits[] = {
+    { "Jawaka + Catastrophe",                   "MIT" },
+    { "RetroArch",                              "GPLv3" },
+    { "Libretro cores",                         "GPL / per-core" },
+    { "SDL2 / SDL2_image / SDL2_ttf",           "Zlib" },
+    { "FreeType",                               "FreeType License" },
+    { "HarfBuzz",                               "MIT" },
+    { "libpng",                                 "libpng License" },
+    { "zlib",                                   "Zlib License" },
+    { "SQLite",                                 "Public Domain" },
+    { "cJSON",                                  "MIT" },
+    { "System icons (libretro Systematic)",     "CC BY-SA 4.0" },
+    { "Fonts (Space Grotesk, Source Han Sans)", "SIL OFL 1.1" },
+    { "Dropbear SSH",                           "MIT-style" },
+};
+#define JW_ABOUT_CREDIT_COUNT ((int)(sizeof(kAboutCredits) / sizeof(kAboutCredits[0])))
+
+static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("About", x, y, w);
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int pad = cat_scale(6);
+    int cursor_y  = y + jw__header_h() + pad;
+
+    /* Identity. */
+    cat_draw_text(body, "Jawaka", x + pad, cursor_y, theme->text);
+    cursor_y += TTF_FontHeight(body);
+    cat_draw_text(small, "Version " JW_ABOUT_VERSION, x + pad, cursor_y, theme->hint);
+    cursor_y += TTF_FontHeight(small) + pad * 2;
+
+    /* Open-source attributions: component name on the left, license on the
+       right. Drawn top-down and clipped to the content area (no scrolling for
+       now — the list fits the settings pane at normal font sizes). */
+    cat_draw_text(small, "Open-source components", x + pad, cursor_y, theme->hint);
+    cursor_y += TTF_FontHeight(small) + pad;
+
+    int row_h  = TTF_FontHeight(small) + cat_scale(6);
+    int bottom = y + h;
+    int col_w  = w - pad * 2;
+    for (int i = 0; i < JW_ABOUT_CREDIT_COUNT; i++) {
+        if (cursor_y + row_h > bottom) break;   /* clip rather than overflow the footer */
+        const jw__about_credit *c = &kAboutCredits[i];
+        cat_draw_text_ellipsized(small, c->name, x + pad, cursor_y, theme->text, col_w * 60 / 100);
+        int lic_w   = cat_measure_text(small, c->license);
+        int max_lic = col_w * 40 / 100;
+        if (lic_w > max_lic) lic_w = max_lic;
+        cat_draw_text_ellipsized(small, c->license, x + w - pad - lic_w, cursor_y, theme->hint, max_lic);
+        cursor_y += row_h;
+    }
+    (void)ui;
+}
+
 static void jw__render_placeholder(const jw_settings_ui *ui, const char *title,
                                     int x, int y, int w, int h) {
     jw__draw_header(title, x, y, w);
@@ -467,7 +530,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_DISPLAY:    jw__render_display(ui, x, y, w, h);    break;
         case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_placeholder(ui, "Behavior", x, y, w, h); break;
-        case JW_SETTINGS_ABOUT:      jw__render_placeholder(ui, "About", x, y, w, h);    break;
+        case JW_SETTINGS_ABOUT:      jw__render_about(ui, x, y, w, h);                   break;
     }
 }
 
