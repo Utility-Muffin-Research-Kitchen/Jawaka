@@ -11,6 +11,7 @@
 
 #define JW_SETTINGS_THEME_COUNT 4
 extern const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT];
+extern const bool        kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT];
 
 #define JW_SETTINGS_PILL_SHAPE_COUNT 3
 extern const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT];

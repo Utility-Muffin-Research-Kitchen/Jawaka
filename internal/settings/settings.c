@@ -17,6 +17,16 @@ const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT] = {
     "Jawaka-Coverflow",
 };
 
+/* Focus-on-Tabs: only Jawaka-Tabs is an actively-supported layout. The others
+   stay in the build but cannot be switched to from the theme picker — the
+   cycler skips them and jw__apply_theme refuses them. */
+const bool kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT] = {
+    true,   /* Jawaka-Tabs */
+    false,  /* Jawaka-Vertical */
+    false,  /* Jawaka-Horizontal */
+    false,  /* Jawaka-Coverflow */
+};
+
 const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT] = {
     "Rounded",
     "Squircle",
@@ -260,7 +270,7 @@ static int jw__header_h(void) {
 
 static void jw__render_list_row(const cat_list_state *list, int x, int y,
                                 int w, int row, const char *label,
-                                const char *value) {
+                                const char *value, bool cycler) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
@@ -280,7 +290,10 @@ static void jw__render_list_row(const cat_list_state *list, int x, int y,
 
     if (value) {
         char value_str[96];
-        snprintf(value_str, sizeof(value_str), "\xe2\x80\xb9 %s \xe2\x80\xba", value);
+        if (cycler)
+            snprintf(value_str, sizeof(value_str), "\xe2\x80\xb9 %s \xe2\x80\xba", value);
+        else
+            snprintf(value_str, sizeof(value_str), "%s", value);
         int vw = cat_measure_text(body, value_str);
         int vx = x + w - vw - cat_scale(16);
         if (vx < x + w / 2) vx = x + w / 2;
@@ -328,8 +341,10 @@ static void jw__render_home(const jw_settings_ui *ui, int x, int y, int w, int h
 static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Appearance", x, y, w);
     int ly = y + jw__header_h();
+    /* Theme switching is gated to Tabs (focus-on-Tabs), so the row shows a
+       plain "Disabled" instead of a cycler. */
     jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_THEME,
-                        "Theme", kJawakaThemes[ui->theme_index]);
+                        "Theme", "Disabled", false);
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_COLORS, "Colors");
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_LAYOUT, "Layout");
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_STATUSBAR, "Status Bar");
@@ -352,7 +367,7 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
     };
 
     for (int i = 0; i < JW_COLOR_ROW_COUNT; i++) {
-        jw__render_list_row(&ui->colors_list, x, ly, w, i, rows[i].label, NULL);
+        jw__render_list_row(&ui->colors_list, x, ly, w, i, rows[i].label, NULL, false);
         jw__render_color_swatch(x, ly, w, i, rows[i].color);
     }
     (void)h;
@@ -362,9 +377,9 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
     jw__draw_header("Layout", x, y, w);
     int ly = y + jw__header_h();
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
-                        "List Style", kPillShapeLabels[ui->pill_shape_index]);
+                        "List Style", kPillShapeLabels[ui->pill_shape_index], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_SIZE,
-                        "Font Size", kFontSizeLabels[ui->font_size_index]);
+                        "Font Size", kFontSizeLabels[ui->font_size_index], true);
     (void)h;
 }
 
@@ -372,13 +387,13 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
     jw__draw_header("Status Bar", x, y, w);
     int ly = y + jw__header_h();
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_HINTS,
-                        "Button Hints", ui->show_hints ? "On" : "Off");
+                        "Button Hints", ui->show_hints ? "On" : "Off", true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_CLOCK,
-                        "Clock", kClockStyleLabels[ui->clock_style_index]);
+                        "Clock", kClockStyleLabels[ui->clock_style_index], true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BATTERY,
-                        "Battery", ui->show_battery ? "On" : "Off");
+                        "Battery", ui->show_battery ? "On" : "Off", true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_WIFI,
-                        "Wifi", ui->show_wifi ? "On" : "Off");
+                        "Wifi", ui->show_wifi ? "On" : "Off", true);
     (void)h;
 }
 
@@ -420,7 +435,7 @@ static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, in
     jw__draw_header("Library", x, y, w);
     int ly = y + jw__header_h();
     jw__render_list_row(&ui->library_list, x, ly, w, JW_LIBRARY_RESET_RETROARCH,
-                        "Reset RetroArch Config", "Defaults");
+                        "Reset RetroArch Config", "Defaults", true);
     (void)h;
 }
 
@@ -508,6 +523,7 @@ static bool jw__apply_theme(jw_settings_ui *ui, int new_index,
                              char *status_buf, size_t status_size,
                              bool *theme_changed) {
     if (new_index < 0 || new_index >= JW_SETTINGS_THEME_COUNT) return false;
+    if (!kJawakaThemeEnabled[new_index]) return false;   /* disabled layout */
     const char *name = kJawakaThemes[new_index];
 
     cat_stylesheet ss;
@@ -532,9 +548,15 @@ static bool jw__apply_theme(jw_settings_ui *ui, int new_index,
 static void jw__cycle_theme(jw_settings_ui *ui, int direction,
                              char *status_buf, size_t status_size,
                              bool *theme_changed) {
-    int next = (ui->theme_index + direction) % JW_SETTINGS_THEME_COUNT;
-    if (next < 0) next += JW_SETTINGS_THEME_COUNT;
-    if (next == ui->theme_index) return;
+    /* Step to the next ENABLED theme, skipping disabled layouts so they can't
+       be selected. With only Tabs enabled this is a no-op. */
+    int n = JW_SETTINGS_THEME_COUNT;
+    int next = ui->theme_index;
+    for (int step = 0; step < n; step++) {
+        next = (next + direction + n) % n;
+        if (kJawakaThemeEnabled[next]) break;
+    }
+    if (next == ui->theme_index || !kJawakaThemeEnabled[next]) return;
     jw__apply_theme(ui, next, status_buf, status_size, theme_changed);
 }
 
