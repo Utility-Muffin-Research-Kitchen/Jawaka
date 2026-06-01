@@ -439,44 +439,6 @@ static int jw__request_open_menu(jw_daemon_state *state) {
     return 0;
 }
 
-static void jw__ingame_shots_dir(const jw_daemon_state *state, char *out, size_t out_size) {
-    out[0] = '\0';
-    if (state && state->runtime_dir) {
-        snprintf(out, out_size, "%s/shots", state->runtime_dir);
-    }
-}
-
-static void jw__clear_dir_files(const char *dir) {
-    if (!dir || !dir[0]) {
-        return;
-    }
-    DIR *d = opendir(dir);
-    if (!d) {
-        return;
-    }
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') {
-            continue;
-        }
-        char path[PATH_MAX];
-        if (snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name) < (int)sizeof(path)) {
-            unlink(path);
-        }
-    }
-    closedir(d);
-}
-
-/* Best-effort: drop stale shots and ask RetroArch to capture the current
-   (paused) frame into screenshot_directory. The resident menu reads the PNG to
-   show the dimmed game behind itself. Must never fail the menu open. */
-static void jw__capture_game_still(jw_daemon_state *state, jw_ra_client *client) {
-    char shots_dir[PATH_MAX];
-    jw__ingame_shots_dir(state, shots_dir, sizeof(shots_dir));
-    jw__clear_dir_files(shots_dir);
-    jw_ra_screenshot(client);
-}
-
 static int jw__request_open_in_game_menu(jw_daemon_state *state) {
     long long start_ms = jw__monotonic_ms();
     if (!state || !state->retroarch_session.active) {
@@ -498,10 +460,9 @@ static int jw__request_open_in_game_menu(jw_daemon_state *state) {
         return -1;
     }
 
-    /* Capture the paused frame for the menu background. Async on RA's side, so
-       it does not delay the show signal below. */
-    jw__capture_game_still(state, &client);
-
+    /* No screenshot round-trip: the resident menu grabs the paused frame itself
+       from the DRM scanout (kmsgrab) before it maps, so the background is in the
+       first visible frame. RetroArch is already paused above. */
     bool warm = state->menu_pid > 0;
     long long show_start_ms = jw__monotonic_ms();
     if (warm) {

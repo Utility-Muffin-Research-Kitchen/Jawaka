@@ -5,8 +5,10 @@
 
 #include "internal/core/autodemo.h"
 #include "internal/core/log.h"
+#include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/paths.h"
+#include "internal/retroarch/catalog.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 
@@ -166,15 +168,16 @@ typedef struct {
 } jw_menu_state;
 
 typedef struct {
+    const char                     *db_path;         /* library DB, for game-title lookup */
     cat_list_state                  list;
     char                            status[256];
+    char                            game_title[256]; /* header: resolved game name */
+    char                            console_title[96];/* subtitle: console display name */
     cat_status_bar_opts             status_bar;
     bool                            show_hints;
     bool                            session_details_ready;
     jw_ipc_retroarch_session_info   session;
     SDL_Texture                    *still_tex;       /* paused-game still behind the menu */
-    uint32_t                        still_shown_ms;  /* ticks when the still first drew (fade) */
-    bool                            still_done;      /* still loaded, or gave up looking */
     SDL_Texture                    *thumb_tex;       /* selected-slot savestate thumbnail */
     int                             thumb_slot;      /* slot thumb_tex is for (INT_MIN = none) */
 } jw_ingame_state;
@@ -286,6 +289,91 @@ static const char *jw__basename_const(const char *path) {
     return slash && slash[1] ? slash + 1 : (path ? path : "");
 }
 
+static void jw__title_from_filename(const char *path, char *out, size_t out_size) {
+    const char *base = jw__basename_const(path);
+    snprintf(out, out_size, "%s", base);
+    char *dot = strrchr(out, '.');
+    if (dot) {
+        *dot = '\0';
+    }
+}
+
+static int jw__db_game_name(sqlite3 *db, const char *rom_path,
+                            char *out, size_t out_size) {
+    if (!db || !rom_path || !rom_path[0]) {
+        return -1;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT name FROM games WHERE rom_path = ? LIMIT 1;",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, rom_path, -1, SQLITE_TRANSIENT);
+    int rc = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(stmt, 0);
+        if (name && name[0]) {
+            snprintf(out, out_size, "%s", name);
+            rc = 0;
+        }
+    }
+    sqlite3_finalize(stmt);
+    return rc;
+}
+
+/* Resolve the header game title and console subtitle for the active session.
+   Game title prefers the library name (games.name) keyed by rom_path, falling
+   back to a cleaned ROM basename; console prefers the RA catalog display name,
+   falling back to the raw system id. */
+static void jw__ingame_resolve_titles(jw_ingame_state *state) {
+    if (!state->session.active) {
+        snprintf(state->game_title, sizeof(state->game_title), "%s",
+                 "No active session");
+        state->console_title[0] = '\0';
+        return;
+    }
+
+    jw__title_from_filename(state->session.rom_path, state->game_title,
+                            sizeof(state->game_title));
+
+    sqlite3 *db = NULL;
+    if (state->db_path && jw_db_open(state->db_path, &db) == 0) {
+        char *sd_root = jw_sdcard_root();
+        if (sd_root && sd_root[0]) {
+            size_t root_len = strlen(sd_root);
+            if (strncmp(state->session.rom_path, sd_root, root_len) == 0 &&
+                state->session.rom_path[root_len] == '/') {
+                jw__db_game_name(db, state->session.rom_path + root_len + 1,
+                                 state->game_title, sizeof(state->game_title));
+            }
+        }
+        if (sd_root) {
+            free(sd_root);
+        }
+        jw__db_game_name(db, state->session.rom_path,
+                         state->game_title, sizeof(state->game_title));
+        jw_db_close(db);
+    }
+
+    snprintf(state->console_title, sizeof(state->console_title), "%s",
+             state->session.system[0] ? state->session.system : "");
+    char *sd_root = jw_sdcard_root();
+    if (sd_root) {
+        char error[256];
+        const jw_ra_catalog *catalog = jw_ra_catalog_get(sd_root, error, sizeof(error));
+        const jw_ra_system *system =
+            jw_ra_catalog_find_system(catalog, state->session.system);
+        if (!system) {
+            system = jw_ra_catalog_match_system_folder(catalog, state->session.system);
+        }
+        if (system && system->name && system->name[0]) {
+            snprintf(state->console_title, sizeof(state->console_title), "%s",
+                     system->name);
+        }
+        free(sd_root);
+    }
+}
+
 static void jw__slot_label(const jw_ingame_state *state, char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return;
@@ -325,40 +413,64 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
     }
 }
 
-/* Newest *.png in dir (by mtime). RA writes one screenshot per open into the
-   daemon-cleared shots dir, so "newest" is the paused frame we want. */
-static bool jw__newest_png(const char *dir, char *out, size_t out_size) {
-    if (!dir || !dir[0]) {
+/* ── Paused-frame capture ─────────────────────────────────────────────────
+   The IGM background is the live paused RetroArch frame, grabbed straight from
+   the DRM scanout with the on-device `kmsgrab` tool — no RetroArch screenshot,
+   no PNG, no filesystem polling. It is captured synchronously *before* the menu
+   window is mapped, so the very first visible frame already shows the game
+   behind the menu (no late "pop-in"). The scanout is the panel-native portrait
+   buffer (720x960, bytes B,G,R,X); we rotate it 90° CW into the menu's landscape
+   space and force opaque alpha while uploading the texture. */
+#define JW_KMS_PANEL_W 720
+#define JW_KMS_PANEL_H 960
+
+static int g_kms_crtc = -2; /* -2 = not probed, -1 = unavailable, else crtc id */
+
+/* `kmsgrab` with no --crtc prints "Valid crtcs: <id> ...". That probe is slow
+   (~2s), so it runs once at warm-up and is cached; falls back to the common MLP1
+   crtc id if parsing fails. */
+static int jw__kms_probe_crtc(void) {
+    int crtc = -1;
+    FILE *fp = popen("kmsgrab 2>&1", "r");
+    if (fp) {
+        char line[256];
+        while (fgets(line, sizeof(line), fp)) {
+            char *p = strstr(line, "Valid crtcs:");
+            if (!p) {
+                continue;
+            }
+            p += strlen("Valid crtcs:");
+            while (*p && (*p < '0' || *p > '9')) {
+                p++;
+            }
+            if (*p) {
+                crtc = (int)strtol(p, NULL, 10);
+            }
+            break;
+        }
+        pclose(fp);
+    }
+    return crtc >= 0 ? crtc : 85; /* MLP1 DSI-1 default */
+}
+
+/* Grab one raw scanout frame (JW_KMS_PANEL_W*H*4 bytes) into buf. */
+static bool jw__kms_read_raw(int crtc, uint8_t *buf, size_t buf_size) {
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "kmsgrab --crtc %d 2>/dev/null", crtc);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
         return false;
     }
-    DIR *d = opendir(dir);
-    if (!d) {
-        return false;
+    size_t got = 0;
+    while (got < buf_size) {
+        size_t n = fread(buf + got, 1, buf_size - got, fp);
+        if (n == 0) {
+            break;
+        }
+        got += n;
     }
-    bool found = false;
-    time_t best = 0;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t n = strlen(ent->d_name);
-        if (n < 4 || strcmp(ent->d_name + n - 4, ".png") != 0) {
-            continue;
-        }
-        char path[PATH_MAX];
-        if (snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name) >= (int)sizeof(path)) {
-            continue;
-        }
-        struct stat st;
-        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size == 0) {
-            continue; /* skip a screenshot RA hasn't started writing yet */
-        }
-        if (!found || st.st_mtime >= best) {
-            best = st.st_mtime;
-            snprintf(out, out_size, "%s", path);
-            found = true;
-        }
-    }
-    closedir(d);
-    return found;
+    pclose(fp);
+    return got >= buf_size;
 }
 
 static SDL_Texture *jw__load_blend_texture(const char *path) {
@@ -369,36 +481,63 @@ static SDL_Texture *jw__load_blend_texture(const char *path) {
     return tex;
 }
 
-/* Pick up the paused-game still RetroArch wrote to JAWAKA_INGAME_SHOTDIR. Polled
-   from the visible loop until loaded or a short grace period elapses. */
-static void jw__ingame_poll_still(jw_ingame_state *state, uint32_t show_ticks) {
-    if (state->still_done) {
+/* Capture the paused frame and build state->still_tex (960x720, opaque ARGB).
+   Synchronous; call before showing the window so the still is ready in the first
+   frame. On any failure still_tex stays NULL and the menu falls back to the flat
+   dark background. */
+static void jw__ingame_capture_still(jw_ingame_state *state) {
+    if (g_kms_crtc == -2) {
+        g_kms_crtc = jw__kms_probe_crtc();
+    }
+    if (g_kms_crtc < 0) {
         return;
     }
-    const char *dir = getenv("JAWAKA_INGAME_SHOTDIR");
-    if (!dir || !dir[0]) {
-        state->still_done = true;
+
+    const size_t raw_size = (size_t)JW_KMS_PANEL_W * JW_KMS_PANEL_H * 4;
+    uint8_t *raw = malloc(raw_size);
+    if (!raw) {
         return;
     }
-    char path[PATH_MAX];
-    if (jw__newest_png(dir, path, sizeof(path))) {
-        SDL_Texture *tex = jw__load_blend_texture(path);
-        if (tex) {
-            unlink(path); /* one-shot: don't re-show it on the next open */
-            if (state->still_tex) {
-                SDL_DestroyTexture(state->still_tex);
-            }
-            state->still_tex = tex;
-            state->still_shown_ms = SDL_GetTicks();
-            state->still_done = true;
-            cat_request_frame();
-            return;
+    if (!jw__kms_read_raw(g_kms_crtc, raw, raw_size)) {
+        free(raw);
+        return;
+    }
+
+    /* Rotate 90° CW into landscape: out(H-1-y, x) = in(x, y). Keep B,G,R and
+       force A=255 — ARGB8888 is B,G,R,A in little-endian memory, matching the
+       scanout's B,G,R,X byte order. */
+    const int iw = JW_KMS_PANEL_W, ih = JW_KMS_PANEL_H;
+    const int ow = ih, oh = iw; /* 960x720 */
+    uint8_t *out = malloc((size_t)ow * oh * 4);
+    if (!out) {
+        free(raw);
+        return;
+    }
+    for (int y = 0; y < ih; y++) {
+        const uint8_t *irow = raw + (size_t)y * iw * 4;
+        for (int x = 0; x < iw; x++) {
+            const uint8_t *ip = irow + (size_t)x * 4;
+            uint8_t *op = out + ((size_t)x * ow + (ih - 1 - y)) * 4;
+            op[0] = ip[0];
+            op[1] = ip[1];
+            op[2] = ip[2];
+            op[3] = 255;
         }
-        /* Caught the PNG mid-write: leave it in place and retry next poll. */
     }
-    if (SDL_GetTicks() - show_ticks > 3000) {
-        state->still_done = true; /* capture disabled or failed: stay on dark bg */
+    free(raw);
+
+    SDL_Texture *tex = SDL_CreateTexture(cat_get_renderer(),
+                                         SDL_PIXELFORMAT_ARGB8888,
+                                         SDL_TEXTUREACCESS_STREAMING, ow, oh);
+    if (tex) {
+        SDL_UpdateTexture(tex, NULL, out, ow * 4);
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+        if (state->still_tex) {
+            SDL_DestroyTexture(state->still_tex);
+        }
+        state->still_tex = tex;
     }
+    free(out);
 }
 
 /* Locate the savestate thumbnail PNG for the active slot. RetroArch sorts
@@ -499,8 +638,6 @@ static void jw__ingame_free_imagery(jw_ingame_state *state) {
         SDL_DestroyTexture(state->thumb_tex);
         state->thumb_tex = NULL;
     }
-    state->still_done = false;
-    state->still_shown_ms = 0;
     state->thumb_slot = INT_MIN;
 }
 
@@ -512,24 +649,18 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     cat_status_bar_opts sb = state->status_bar;
 
     cat_clear_screen();
-    /* Allium-style backdrop: the captured paused frame, dimmed by a scrim, with
-       a brief fade-in the first time it appears. Falls back to the flat dark
-       background when no still was captured. */
+    /* Allium-style backdrop: the paused frame captured at open, dimmed by a
+       scrim. The still is ready before the window is shown, so it is drawn at
+       full opacity from the first frame (no fade, no pop-in). Falls back to the
+       flat dark background when the capture failed. */
     if (state->still_tex) {
         int sw = cat_get_screen_width();
         int sh = cat_get_screen_height();
-        uint8_t a = 255;
-        uint32_t el = SDL_GetTicks() - state->still_shown_ms;
-        if (el < 220) {
-            a = (uint8_t)(255u * el / 220u);
-            cat_request_frame(); /* keep ~60fps while the still fades in */
-        }
-        SDL_SetTextureAlphaMod(state->still_tex, a);
         cat_draw_image(state->still_tex, 0, 0, sw, sh);
         ap_color scrim = { 0, 0, 0, 150 };
         cat_draw_rect(0, 0, sw, sh, scrim);
     }
-    cat_draw_screen_title("In-Game Menu", &sb);
+    cat_draw_screen_title(state->game_title[0] ? state->game_title : "Game", &sb);
 
     SDL_Rect content = cat_get_content_rect(true, true, false);
     int pad       = CAT_S(24);
@@ -570,21 +701,13 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     }
     int pill_w = list_w;
 
-    char session_line[384];
-    if (state->session.active) {
-        const char *rom = jw__basename_const(state->session.rom_path);
-        if (state->session.system[0]) {
-            snprintf(session_line, sizeof(session_line), "%s - %s",
-                     state->session.system, rom);
-        } else {
-            snprintf(session_line, sizeof(session_line), "%s", rom);
-        }
-    } else {
-        snprintf(session_line, sizeof(session_line), "%s",
-                 "No active RetroArch session");
+    const char *session_line = state->console_title[0]
+                             ? state->console_title
+                             : (state->session.active ? "" : "No active RetroArch session");
+    if (session_line[0]) {
+        cat_draw_text_ellipsized(small, session_line, x, meta_y,
+                                 theme->hint, list_w);
     }
-    cat_draw_text_ellipsized(small, session_line, x, meta_y,
-                             theme->hint, list_w);
 
     if (show_command) {
         char command_line[128];
@@ -689,6 +812,7 @@ static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) 
         state->session_details_ready = true;
         state->status[0] = '\0';
     }
+    jw__ingame_resolve_titles(state);
 }
 
 static void jw__copy_env_string(const char *name, char *out, size_t out_size) {
@@ -727,6 +851,7 @@ static bool jw__prime_ingame_session_from_env(jw_ingame_state *state) {
     snprintf(state->session.command_result,
              sizeof(state->session.command_result), "%s", "pending");
     state->status[0] = '\0';
+    jw__ingame_resolve_titles(state);
     return true;
 }
 
@@ -852,8 +977,10 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
     (void)process_start_ms;
     jw_ingame_state state;
     memset(&state, 0, sizeof(state));
+    state.db_path = db_path;
     jw_settings_load_status_prefs(db_path, &state.status_bar, &state.show_hints);
     jw__ingame_free_imagery(&state); /* init texture/slot bookkeeping */
+    g_kms_crtc = jw__kms_probe_crtc(); /* warm-up: pay the slow DRM probe once */
 
     /* Resident loop: warm up once, then park hidden and reveal on demand. Each
        Menu tap signals SIGUSR1 -> we show; Continue/Quit hides us back to the
@@ -872,11 +999,16 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
         }
 
         long long show_start_ms = jw__monotonic_ms();
-        uint32_t show_ticks = SDL_GetTicks();
         cat_list_state_init(&state.list, JW_INGAME_COUNT);
         state.status[0] = '\0';
-        state.still_done = false; /* poll for this open's fresh paused-frame still */
         bool primed = jw__prime_ingame_session_from_env(&state);
+
+        /* Grab the paused frame BEFORE mapping the window, so the first visible
+           frame already shows the game behind the menu (no late pop-in). */
+        long long cap_start_ms = jw__monotonic_ms();
+        jw__ingame_capture_still(&state);
+        jw_log_info("in-game menu capture timings: capture_ms=%lld",
+                    jw__monotonic_ms() - cap_start_ms);
 
         cat_show_window();
         /* Drop controller input buffered while hidden so gameplay presses don't
@@ -915,7 +1047,6 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
                 if (!ev.pressed) continue;
                 jw__handle_ingame_input(socket_path, &state, ev.button, &running);
             }
-            jw__ingame_poll_still(&state, show_ticks);
             jw__ingame_update_thumb(&state);
             jw__render_ingame_menu(&state);
         }
