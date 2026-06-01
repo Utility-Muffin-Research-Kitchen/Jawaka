@@ -4,13 +4,18 @@ The console icons in `system_icons/` (excluding `_tools.png` and `_default.png`)
 are derived from the libretro Systematic asset pack:
 
   Source:  https://git.libretro.com/libretro-assets/retroarch-assets
-  Path:    xmb/systematic/
+  Mirror:  https://github.com/libretro/retroarch-assets (same files; the GitHub
+           raw host is used for fetching because the upstream git.libretro.com
+           rate-limits bulk downloads)
+  Path:    xmb/systematic/png/
   Commit:  e11d6708b49a893f392b238effc713c6c7cfadef
   Licence: CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/)
 
 Original authors: libretro team and contributors. Files were renamed from
 their libretro display names to Jawaka short codes during import — see
-`scripts/fetch-coverflow-icons.sh` for the mapping.
+`scripts/fetch-system-icons.sh` for the mapping. Alias codes that share a
+console's artwork (e.g. NES/FC, SNES/SFC, GEN/GENESIS/MD, PSX/PS, TG16/PCE,
+MD32X/32X, the MAME variants) are local copies of the same Systematic icon.
 
 `_tools.png` and `_default.png` are original work, MIT-licensed under the
 top-level Jawaka LICENSE.
