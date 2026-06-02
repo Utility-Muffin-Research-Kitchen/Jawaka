@@ -65,6 +65,8 @@ typedef struct {
     pid_t osd_pid;
     int cached_brightness_percent;
     int cached_volume_percent;
+    jw_led_config cached_led;
+    bool led_configured;       /* true once a user LED setting has been persisted/applied */
     jw_retroarch_session retroarch_session;
     bool pending_menu;
     bool pending_launch;
@@ -376,7 +378,19 @@ static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *clie
     cJSON_AddStringToObject(root, "script_dir", state->platform.script_dir);
     cJSON_AddItemToObject(root, "capabilities",
                           jw__platform_capabilities_json(&state->platform.capabilities));
-    cJSON_AddItemToObject(root, "status", jw__platform_status_json(&status));
+    cJSON *status_json = jw__platform_status_json(&status);
+    if (state->led_configured) {
+        cJSON *led = cJSON_CreateObject();
+        cJSON_AddBoolToObject(led, "enabled", state->cached_led.enabled);
+        cJSON_AddStringToObject(led, "mode", jw_led_mode_name(state->cached_led.mode));
+        cJSON_AddNumberToObject(led, "r", state->cached_led.r);
+        cJSON_AddNumberToObject(led, "g", state->cached_led.g);
+        cJSON_AddNumberToObject(led, "b", state->cached_led.b);
+        cJSON_AddNumberToObject(led, "brightness", state->cached_led.brightness);
+        cJSON_AddNumberToObject(led, "speed", state->cached_led.speed);
+        cJSON_AddItemToObject(status_json, "led", led);
+    }
+    cJSON_AddItemToObject(root, "status", status_json);
     return jw__reply_json(client, root);
 }
 
@@ -1063,6 +1077,63 @@ static void jw__apply_persisted_volume(jw_daemon_state *state) {
     } else {
         jw_log_warn("persisted volume apply failed: %s", result.message);
     }
+}
+
+static void jw__persist_led(jw_daemon_state *state, const jw_led_config *led) {
+    if (!state || !state->db_path[0] || !led) {
+        return;
+    }
+    char vr[8], vg[8], vb[8], vbr[8], vsp[8];
+    snprintf(vr,  sizeof(vr),  "%u", (unsigned)led->r);
+    snprintf(vg,  sizeof(vg),  "%u", (unsigned)led->g);
+    snprintf(vb,  sizeof(vb),  "%u", (unsigned)led->b);
+    snprintf(vbr, sizeof(vbr), "%d", led->brightness);
+    snprintf(vsp, sizeof(vsp), "%d", led->speed);
+    const char *keys[] = {
+        "platform.led_enabled", "platform.led_mode", "platform.led_r",
+        "platform.led_g", "platform.led_b", "platform.led_brightness",
+        "platform.led_speed",
+    };
+    const char *vals[] = {
+        led->enabled ? "1" : "0", jw_led_mode_name(led->mode), vr, vg, vb, vbr, vsp,
+    };
+    if (jw_db_set_settings(state->db_path, keys, vals,
+                           (int)(sizeof(keys) / sizeof(keys[0]))) != 0) {
+        jw_log_warn("could not persist led settings");
+    }
+}
+
+static void jw__apply_persisted_led(jw_daemon_state *state) {
+    char value[32];
+    /* No persisted mode → user never configured the LED; leave stock behavior. */
+    if (!state || !state->db_path[0] ||
+        jw_db_get_setting(state->db_path, "platform.led_mode", value, sizeof(value)) != 0 ||
+        !value[0]) {
+        return;
+    }
+
+    jw_led_config led;
+    memset(&led, 0, sizeof(led));
+    led.mode = JW_LED_MODE_STATIC;
+    jw_led_mode_parse(value, &led.mode);
+    led.brightness = 5;
+    led.speed = 5;
+    if (jw_db_get_setting(state->db_path, "platform.led_enabled", value, sizeof(value)) == 0)
+        led.enabled = (strcmp(value, "0") != 0);
+    if (jw_db_get_setting(state->db_path, "platform.led_r", value, sizeof(value)) == 0) led.r = (unsigned char)atoi(value);
+    if (jw_db_get_setting(state->db_path, "platform.led_g", value, sizeof(value)) == 0) led.g = (unsigned char)atoi(value);
+    if (jw_db_get_setting(state->db_path, "platform.led_b", value, sizeof(value)) == 0) led.b = (unsigned char)atoi(value);
+    if (jw_db_get_setting(state->db_path, "platform.led_brightness", value, sizeof(value)) == 0) led.brightness = atoi(value);
+    if (jw_db_get_setting(state->db_path, "platform.led_speed", value, sizeof(value)) == 0) led.speed = atoi(value);
+
+    jw_platform_result result;
+    jw_platform_set_led(&state->platform, &led, &result);
+    state->cached_led = led;
+    state->led_configured = true;
+    if (result.code == JW_PLATFORM_RESULT_OK)
+        jw_log_info("applied persisted led mode=%s enabled=%d", jw_led_mode_name(led.mode), led.enabled);
+    else
+        jw_log_warn("persisted led apply failed: %s", result.message);
 }
 
 static int jw__osd_show_volume(jw_daemon_state *state, int percent) {
@@ -1800,6 +1871,37 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_platform_result(client, jw_platform_action_name(action), &result);
     }
 
+    if (strcmp(type->valuestring, "set-led") == 0) {
+        jw_led_config led;
+        memset(&led, 0, sizeof(led));
+        led.mode = JW_LED_MODE_STATIC;
+        led.brightness = 5;
+        led.speed = 5;
+        cJSON *v;
+        v = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+        led.enabled = v && (cJSON_IsTrue(v) || (cJSON_IsNumber(v) && v->valueint));
+        v = cJSON_GetObjectItemCaseSensitive(root, "mode");
+        if (cJSON_IsString(v)) jw_led_mode_parse(v->valuestring, &led.mode);
+        v = cJSON_GetObjectItemCaseSensitive(root, "r"); if (cJSON_IsNumber(v)) led.r = (unsigned char)v->valueint;
+        v = cJSON_GetObjectItemCaseSensitive(root, "g"); if (cJSON_IsNumber(v)) led.g = (unsigned char)v->valueint;
+        v = cJSON_GetObjectItemCaseSensitive(root, "b"); if (cJSON_IsNumber(v)) led.b = (unsigned char)v->valueint;
+        v = cJSON_GetObjectItemCaseSensitive(root, "brightness"); if (cJSON_IsNumber(v)) led.brightness = v->valueint;
+        v = cJSON_GetObjectItemCaseSensitive(root, "speed"); if (cJSON_IsNumber(v)) led.speed = v->valueint;
+
+        jw_platform_result result;
+        jw_platform_set_led(&state->platform, &led, &result);
+        if (result.code == JW_PLATFORM_RESULT_OK) {
+            state->cached_led = led;
+            state->led_configured = true;
+            jw__persist_led(state, &led);
+        }
+        jw_log_info("set-led mode=%s enabled=%d code=%s",
+                    jw_led_mode_name(led.mode), led.enabled,
+                    jw_platform_result_code_name(result.code));
+        cJSON_Delete(root);
+        return jw__reply_platform_result(client, "set-led", &result);
+    }
+
     if (strcmp(type->valuestring, "frontend-ready") == 0) {
         cJSON *role = cJSON_GetObjectItemCaseSensitive(root, "role");
         if (!cJSON_IsString(role) || !role->valuestring || !role->valuestring[0]) {
@@ -2109,6 +2211,7 @@ int main(int argc, char *argv[]) {
     state.osd_pid = -1;
     state.cached_brightness_percent = -1;
     state.cached_volume_percent = -1;
+    state.led_configured = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--daemon-only") == 0) {
@@ -2161,6 +2264,7 @@ int main(int argc, char *argv[]) {
     }
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
+    jw__apply_persisted_led(&state);
 
     if (jw_ipc_server_listen(state.socket_path, &state.server) != 0) {
         jw_log_error("could not bind socket: %s", state.socket_path);

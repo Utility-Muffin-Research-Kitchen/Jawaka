@@ -103,12 +103,19 @@ static const char *kStartupTabLabels[] = {
 static const char *kHomeCategoryLabels[] = {
     "Appearance",
     "Display & Sound",
+    "Lighting",
     "Library",
     "Behavior",
     "About",
 };
-#define JW_SETTINGS_CATEGORY_COUNT 5
+#define JW_SETTINGS_CATEGORY_COUNT 6
 #define JW_SETTINGS_DISPLAY_COUNT JW_DISPLAY_ROW_COUNT
+
+static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
+    "Static",
+    "Breath",
+    "Rainbow",
+};
 
 
 /* ─── Helpers ──────────────────────────────────────────────────────────── */
@@ -139,6 +146,41 @@ static void jw__refresh_volume(jw_settings_ui *ui) {
         if (percent > 100) percent = 100;
         ui->volume_percent = percent;
     }
+}
+
+/* Pull the current LED config from jawakad's cached state (set once the user has
+   configured it; otherwise the defaults stand and stock rainbow keeps running). */
+static void jw__refresh_led(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) return;
+    int enabled = ui->led_enabled ? 1 : 0;
+    int r = ui->led_color.r, g = ui->led_color.g, b = ui->led_color.b;
+    int brightness = ui->led_brightness, speed = ui->led_speed;
+    char mode[16] = "FOREVER";
+    if (jw_ipc_get_led(ui->socket_path, &enabled, mode, sizeof(mode),
+                       &r, &g, &b, &brightness, &speed) == 0) {
+        ui->led_enabled = enabled != 0;
+        jw_led_mode m = JW_LED_MODE_STATIC;
+        jw_led_mode_parse(mode, &m);
+        ui->led_mode = (int)m;
+        ui->led_color.r = (unsigned char)r;
+        ui->led_color.g = (unsigned char)g;
+        ui->led_color.b = (unsigned char)b;
+        ui->led_color.a = 255;
+        ui->led_brightness = brightness;
+        ui->led_speed = speed;
+    }
+}
+
+/* Push the current LED config to jawakad (applies to hardware + persists). */
+static void jw__apply_led(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) return;
+    char status[64];
+    int mode = ui->led_mode;
+    if (mode < 0 || mode >= JW_LED_MODE_COUNT) mode = 0;
+    jw_ipc_set_led(ui->socket_path, ui->led_enabled ? 1 : 0,
+                   jw_led_mode_name((jw_led_mode)mode),
+                   ui->led_color.r, ui->led_color.g, ui->led_color.b,
+                   ui->led_brightness, ui->led_speed, status, sizeof(status));
 }
 
 static void jw__persist(const jw_settings_ui *ui, const char *key, const char *val) {
@@ -177,6 +219,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->layout_list,      JW_LAYOUT_ROW_COUNT);
     cat_list_state_init(&ui->statusbar_list,   JW_STATUSBAR_ROW_COUNT);
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
+    cat_list_state_init(&ui->lighting_list,    JW_LIGHTING_ROW_COUNT);
     cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
     cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
     cat_list_state_init(&ui->placeholder_list, 1);
@@ -192,6 +235,11 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
     ui->brightness_percent = 50;
     ui->volume_percent     = 50;
+    ui->led_enabled    = false;
+    ui->led_mode       = 0;   /* static */
+    ui->led_color      = cat_hex_to_color("#FFFFFF");
+    ui->led_brightness = 5;
+    ui->led_speed      = 5;
 
     if (db_path && db_path[0])
         snprintf(ui->db_path, sizeof(ui->db_path), "%s", db_path);
@@ -240,6 +288,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
 
     jw__refresh_brightness(ui);
     jw__refresh_volume(ui);
+    jw__refresh_led(ui);
 }
 
 void jw_settings_ui_enter(jw_settings_ui *ui) {
@@ -248,6 +297,7 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     ui->screen = JW_SETTINGS_HOME;
     jw__refresh_brightness(ui);
     jw__refresh_volume(ui);
+    jw__refresh_led(ui);
 }
 
 void jw_settings_ui_close(jw_settings_ui *ui) {
@@ -267,6 +317,7 @@ bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui) {
 void jw_settings_ui_refresh_av(jw_settings_ui *ui) {
     jw__refresh_brightness(ui);
     jw__refresh_volume(ui);
+    jw__refresh_led(ui);
 }
 
 bool jw_settings_show_hints(const jw_settings_ui *ui) {
@@ -536,6 +587,28 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     (void)h;
 }
 
+static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Lighting", x, y, w);
+    int ly = y + jw__header_h();
+    int mode = (ui->led_mode >= 0 && ui->led_mode < JW_LED_MODE_COUNT) ? ui->led_mode : 0;
+    char bright[8], speed[8];
+    snprintf(bright, sizeof(bright), "%d", ui->led_brightness);
+    snprintf(speed,  sizeof(speed),  "%d", ui->led_speed);
+
+    jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_ENABLE,
+                        "Enable", ui->led_enabled ? "On" : "Off", true);
+    jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_MODE,
+                        "Mode", kLedModeLabels[mode], true);
+    jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_COLOR,
+                        "Color", NULL, false);
+    jw__render_color_swatch(x, ly, w, JW_LIGHTING_COLOR, ui->led_color);
+    jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_BRIGHTNESS,
+                        "Brightness", bright, true);
+    jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_SPEED,
+                        "Speed", speed, true);
+    (void)h;
+}
+
 static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Library", x, y, w);
     int ly = y + jw__header_h();
@@ -767,6 +840,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_LAYOUT:     jw__render_layout(ui, x, y, w, h);     break;
         case JW_SETTINGS_STATUS_BAR: jw__render_statusbar(ui, x, y, w, h);  break;
         case JW_SETTINGS_DISPLAY:    jw__render_display(ui, x, y, w, h);    break;
+        case JW_SETTINGS_LIGHTING:   jw__render_lighting(ui, x, y, w, h);   break;
         case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
         case JW_SETTINGS_ABOUT:      jw__render_about(ui, x, y, w, h);                   break;
@@ -985,9 +1059,13 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_brightness(ui);
                     jw__refresh_volume(ui);
                 }
-                else if (idx == 2) ui->screen = JW_SETTINGS_LIBRARY;
-                else if (idx == 3) ui->screen = JW_SETTINGS_BEHAVIOR;
-                else if (idx == 4) {
+                else if (idx == 2) {
+                    ui->screen = JW_SETTINGS_LIGHTING;
+                    jw__refresh_led(ui);
+                }
+                else if (idx == 3) ui->screen = JW_SETTINGS_LIBRARY;
+                else if (idx == 4) ui->screen = JW_SETTINGS_BEHAVIOR;
+                else if (idx == 5) {
                     ui->screen = JW_SETTINGS_ABOUT;
                     cat_scroll_state_init(&ui->about_scroll);   /* start at top */
                 }
@@ -1150,6 +1228,49 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 else if (ui->display_list.cursor == JW_DISPLAY_VOLUME)
                     jw__change_volume(ui, dir * JW_PLATFORM_VOLUME_STEP_PERCENT,
                                       status_buf, status_size);
+                break;
+            }
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default: break;
+        }
+        break;
+
+    /* ── Lighting (LED ring) ─────────────────────────────────────────── */
+    case JW_SETTINGS_LIGHTING:
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->lighting_list, -1, JW_LIGHTING_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->lighting_list, +1, JW_LIGHTING_ROW_COUNT); break;
+            case CAT_BTN_LEFT:
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A: {
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
+                int row = ui->lighting_list.cursor;
+                bool changed = true;
+                if (row == JW_LIGHTING_ENABLE) {
+                    ui->led_enabled = !ui->led_enabled;
+                } else if (row == JW_LIGHTING_MODE) {
+                    ui->led_mode = (ui->led_mode + dir + JW_LED_MODE_COUNT) % JW_LED_MODE_COUNT;
+                } else if (row == JW_LIGHTING_COLOR) {
+                    if (button == CAT_BTN_A)
+                        changed = jw__pick_color(ui, &ui->led_color, "led_color", -1);
+                    else
+                        changed = false;
+                } else if (row == JW_LIGHTING_BRIGHTNESS) {
+                    int next = ui->led_brightness + dir;
+                    if (next < 0) next = 0;
+                    if (next > JW_LED_BRIGHTNESS_MAX) next = JW_LED_BRIGHTNESS_MAX;
+                    changed = (next != ui->led_brightness);
+                    ui->led_brightness = next;
+                } else if (row == JW_LIGHTING_SPEED) {
+                    int next = ui->led_speed + dir;
+                    if (next < 0) next = 0;
+                    if (next > JW_LED_SPEED_MAX) next = JW_LED_SPEED_MAX;
+                    changed = (next != ui->led_speed);
+                    ui->led_speed = next;
+                }
+                if (changed) jw__apply_led(ui);
                 break;
             }
             case CAT_BTN_B:

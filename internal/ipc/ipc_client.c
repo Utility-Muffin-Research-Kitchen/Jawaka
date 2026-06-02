@@ -516,3 +516,55 @@ int jw_ipc_set_volume(const char *socket_path, int percent,
     cJSON_Delete(resp);
     return 0;
 }
+
+int jw_ipc_set_led(const char *socket_path, int enabled, const char *mode,
+                   int r, int g, int b, int brightness, int speed,
+                   char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "set-led");
+    cJSON_AddBoolToObject(req, "enabled", enabled ? 1 : 0);
+    cJSON_AddStringToObject(req, "mode", mode ? mode : "FOREVER");
+    cJSON_AddNumberToObject(req, "r", r);
+    cJSON_AddNumberToObject(req, "g", g);
+    cJSON_AddNumberToObject(req, "b", b);
+    cJSON_AddNumberToObject(req, "brightness", brightness);
+    cJSON_AddNumberToObject(req, "speed", speed);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0)
+            snprintf(status, (size_t)status_len, "%s", "led failed: daemon unavailable");
+        return -1;
+    }
+    int rc = ipc__type_is(resp, "ok") ? 0 : -1;
+    if (status && status_len > 0)
+        snprintf(status, (size_t)status_len, "%s", rc == 0 ? "led applied" : "led failed");
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_get_led(const char *socket_path, int *enabled, char *mode, int mode_len,
+                   int *r, int *g, int *b, int *brightness, int *speed) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) return -1;
+
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *led = cJSON_GetObjectItemCaseSensitive(status, "led");
+    int rc = -1;
+    if (cJSON_IsObject(led)) {
+        const cJSON *v;
+        if (enabled    && (v = cJSON_GetObjectItemCaseSensitive(led, "enabled")))    *enabled = cJSON_IsTrue(v) ? 1 : (cJSON_IsNumber(v) ? v->valueint : 0);
+        if (mode && mode_len > 0 && (v = cJSON_GetObjectItemCaseSensitive(led, "mode")) && cJSON_IsString(v)) snprintf(mode, (size_t)mode_len, "%s", v->valuestring);
+        if (r          && (v = cJSON_GetObjectItemCaseSensitive(led, "r")))           *r = v->valueint;
+        if (g          && (v = cJSON_GetObjectItemCaseSensitive(led, "g")))           *g = v->valueint;
+        if (b          && (v = cJSON_GetObjectItemCaseSensitive(led, "b")))           *b = v->valueint;
+        if (brightness && (v = cJSON_GetObjectItemCaseSensitive(led, "brightness")))  *brightness = v->valueint;
+        if (speed      && (v = cJSON_GetObjectItemCaseSensitive(led, "speed")))       *speed = v->valueint;
+        rc = 0;
+    }
+    cJSON_Delete(resp);
+    return rc;
+}

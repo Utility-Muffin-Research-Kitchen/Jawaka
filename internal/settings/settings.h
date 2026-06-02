@@ -34,6 +34,7 @@ typedef enum {
     JW_SETTINGS_LAYOUT,
     JW_SETTINGS_STATUS_BAR,
     JW_SETTINGS_DISPLAY,
+    JW_SETTINGS_LIGHTING,
     JW_SETTINGS_LIBRARY,
     JW_SETTINGS_BEHAVIOR,
     JW_SETTINGS_ABOUT,
@@ -75,6 +76,14 @@ typedef enum {
 #define JW_DISPLAY_VOLUME     1
 #define JW_DISPLAY_ROW_COUNT  2
 
+/* Lighting page (LED ring) */
+#define JW_LIGHTING_ENABLE     0
+#define JW_LIGHTING_MODE       1
+#define JW_LIGHTING_COLOR      2
+#define JW_LIGHTING_BRIGHTNESS 3
+#define JW_LIGHTING_SPEED      4
+#define JW_LIGHTING_ROW_COUNT  5
+
 /* Library page */
 #define JW_LIBRARY_RESET_RETROARCH 0
 #define JW_LIBRARY_ROW_COUNT 1
@@ -94,6 +103,7 @@ typedef struct {
     cat_list_state     layout_list;
     cat_list_state     statusbar_list;
     cat_list_state     display_list;
+    cat_list_state     lighting_list;
     cat_list_state     library_list;
     cat_list_state     behavior_list;
     cat_list_state     placeholder_list;
@@ -109,6 +119,11 @@ typedef struct {
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     int                brightness_percent;
     int                volume_percent;
+    bool               led_enabled;
+    int                led_mode;            /* jw_led_mode */
+    ap_color           led_color;
+    int                led_brightness;      /* 0..JW_LED_BRIGHTNESS_MAX */
+    int                led_speed;           /* 0..JW_LED_SPEED_MAX */
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;

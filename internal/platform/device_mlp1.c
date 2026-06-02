@@ -2,6 +2,8 @@
 #include "internal/core/log.h"
 
 #include <dlfcn.h>
+#include <dirent.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -22,6 +24,12 @@
 #define JW_MLP1_PACTL_GET_VOLUME "pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null"
 #define JW_MLP1_PACTL_SET_VOLUME "pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null"
 #define JW_MLP1_WIFI_PROC "/proc/net/wireless"
+
+/* The stock loong_light daemon owns the AW20036 LED ring. It reads this JSON
+   config and applies it on SIGUSR1 (write cfg, then signal). We cooperate with
+   it rather than fighting its refresh loop. */
+#define JW_MLP1_LED_CFG  "/oem/loong/record/config/loong_light.cfg"
+#define JW_MLP1_LED_DAEMON "loong_light"
 
 /* Run a command by path with fork/exec instead of system(). */
 static int jw__exec_command(const char *path) {
@@ -318,6 +326,69 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
     jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, percent);
 }
 
+/* Send a signal to every process whose /proc/<pid>/comm matches name.
+   Avoids a pgrep dependency. Returns the number of processes signalled. */
+static int jw__mlp1_signal_by_name(const char *name, int sig) {
+    DIR *proc = opendir("/proc");
+    if (!proc) return 0;
+    struct dirent *entry;
+    char path[300];
+    char comm[128];
+    int signalled = 0;
+    while ((entry = readdir(proc)) != NULL) {
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+        snprintf(path, sizeof(path), "/proc/%s/comm", entry->d_name);
+        FILE *fp = fopen(path, "r");
+        if (!fp) continue;
+        if (fgets(comm, sizeof(comm), fp)) {
+            comm[strcspn(comm, "\n")] = '\0';
+            if (strcmp(comm, name) == 0) {
+                if (kill((pid_t)atoi(entry->d_name), sig) == 0) signalled++;
+            }
+        }
+        fclose(fp);
+    }
+    closedir(proc);
+    return signalled;
+}
+
+static void jw__mlp1_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
+                             jw_platform_result *out) {
+    (void)ctx;
+    if (!cfg) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "no led config");
+        return;
+    }
+    int brightness = cfg->brightness;
+    if (brightness < 0) brightness = 0;
+    if (brightness > JW_LED_BRIGHTNESS_MAX) brightness = JW_LED_BRIGHTNESS_MAX;
+    int speed = cfg->speed;
+    if (speed < 0) speed = 0;
+    if (speed > JW_LED_SPEED_MAX) speed = JW_LED_SPEED_MAX;
+
+    FILE *fp = fopen(JW_MLP1_LED_CFG, "w");
+    if (!fp) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "led cfg write failed");
+        return;
+    }
+    /* colors is a JSON STRING holding an array of {a,r,g,b} (loong's schema). */
+    fprintf(fp,
+            "{\"brightness\":\"%d\","
+            "\"colors\":\"[{\\\"a\\\":0,\\\"b\\\":%u,\\\"g\\\":%u,\\\"r\\\":%u}]\","
+            "\"enable\":\"%d\",\"mode\":\"%s\",\"speed\":\"%d\"}",
+            brightness,
+            (unsigned)cfg->b, (unsigned)cfg->g, (unsigned)cfg->r,
+            cfg->enabled ? 1 : 0, jw_led_mode_name(cfg->mode), speed);
+    fclose(fp);
+
+    if (jw__mlp1_signal_by_name(JW_MLP1_LED_DAEMON, SIGUSR1) <= 0) {
+        /* cfg is written; daemon will pick it up on its next reload anyway. */
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "led cfg written (daemon not signalled)");
+        return;
+    }
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "led applied");
+}
+
 const jw_platform_backend *jw_platform_get_backend(void) {
     static const jw_platform_backend backend = {
         .platform_id = "mlp1",
@@ -331,10 +402,12 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .brightness = true,
             .volume = true,
             .wifi = true,
+            .led = true,
         },
         .get_status = jw__mlp1_get_status,
         .frontend_ready = jw__mlp1_frontend_ready,
         .perform_action = jw__mlp1_perform_action,
+        .set_led = jw__mlp1_set_led,
     };
     return &backend;
 }

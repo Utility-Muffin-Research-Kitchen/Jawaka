@@ -13,6 +13,24 @@
 #define JW_PLATFORM_BRIGHTNESS_STEP_PERCENT 5
 #define JW_PLATFORM_VOLUME_STEP_PERCENT 5
 
+#define JW_LED_BRIGHTNESS_MAX 10
+#define JW_LED_SPEED_MAX 10
+
+typedef enum {
+    JW_LED_MODE_STATIC = 0,   /* solid color (loong "FOREVER") */
+    JW_LED_MODE_BREATH,       /* pulse the color */
+    JW_LED_MODE_RAINBOW,      /* cycle hues (color ignored) */
+    JW_LED_MODE_COUNT
+} jw_led_mode;
+
+typedef struct {
+    bool enabled;
+    jw_led_mode mode;
+    unsigned char r, g, b;    /* color for static/breath */
+    int brightness;           /* 0..JW_LED_BRIGHTNESS_MAX */
+    int speed;                /* 0..JW_LED_SPEED_MAX (breath/rainbow) */
+} jw_led_config;
+
 typedef struct {
     bool battery;
     bool charging;
@@ -23,6 +41,7 @@ typedef struct {
     bool volume;
     bool wifi;
     bool bluetooth;
+    bool led;
 } jw_platform_capabilities;
 
 typedef struct {
@@ -84,5 +103,10 @@ const char *jw_platform_result_code_name(jw_platform_result_code code);
 int  jw_platform_clamp_brightness_percent(int percent);
 void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                 int value, jw_platform_result *out);
+
+const char *jw_led_mode_name(jw_led_mode mode);     /* "FOREVER"/"BREATH"/"RAINBOW" */
+bool        jw_led_mode_parse(const char *name, jw_led_mode *out);
+void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
+                         jw_platform_result *out);
 
 #endif /* JW_PLATFORM_DEVICE_H */

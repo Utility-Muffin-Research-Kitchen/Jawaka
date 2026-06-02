@@ -195,3 +195,17 @@ void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action act
 
     jw_platform_result_unsupported(action, ctx->platform_id, out);
 }
+
+void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
+                         jw_platform_result *out) {
+    if (!ctx) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "platform not initialized");
+        return;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->set_led) {
+        backend->set_led(ctx, cfg, out);
+        return;
+    }
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED, "led not supported");
+}
