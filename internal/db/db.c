@@ -435,6 +435,45 @@ int jw_db_set_setting(const char *db_path, const char *key, const char *value) {
     return rc;
 }
 
+int jw_db_set_settings(const char *db_path, const char *const *keys,
+                       const char *const *values, int count) {
+    if (!db_path || !keys || !values || count <= 0) return -1;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql =
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+    int rc = 0;
+    for (int i = 0; i < count; i++) {
+        if (!keys[i] || !values[i]) { rc = -1; break; }
+        sqlite3_bind_text(stmt, 1, keys[i],   -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, values[i], -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) != SQLITE_DONE) rc = -1;
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+        if (rc != 0) break;
+    }
+    sqlite3_exec(db, rc == 0 ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
 int jw_db_get_theme_name(const char *db_path, char *out, size_t out_size) {
     return jw_db_get_setting(db_path, "theme_name", out, out_size);
 }

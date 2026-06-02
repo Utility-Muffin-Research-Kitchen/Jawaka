@@ -86,6 +86,11 @@ int  jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
 int  jw_db_get_setting(const char *db_path, const char *key,
                         char *out, size_t out_size);
 int  jw_db_set_setting(const char *db_path, const char *key, const char *value);
+/* Write multiple key/value settings in a single open + transaction. Far cheaper
+   than N jw_db_set_setting() calls, each of which re-opens the DB and re-applies
+   the schema. keys[i]/values[i] are paired; count is the number of pairs. */
+int  jw_db_set_settings(const char *db_path, const char *const *keys,
+                        const char *const *values, int count);
 int  jw_db_get_theme_name(const char *db_path, char *out, size_t out_size);
 
 #endif

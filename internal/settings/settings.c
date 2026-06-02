@@ -705,6 +705,22 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
 
 /* ─── Theme helpers ────────────────────────────────────────────────────── */
 
+/* Derive the theme fields that aren't stored directly: selected-row text
+   auto-contrasts against the selection pill, and the tab-bar text colors track
+   the palette. Call after any change to the seven color roles. */
+static void jw__finalize_theme_colors(ap_theme *t) {
+    /* A bright selection pill gets dark text (the background color); a dark pill
+       keeps the light text — readable either way, regardless of palette. */
+    int hl_lum = (t->highlight.r * 299 + t->highlight.g * 587 + t->highlight.b * 114) / 1000;
+    t->highlighted_text = (hl_lum > 140) ? t->background : t->text;
+
+    /* Tab-bar text isn't its own color role (yet): selected tab uses Text,
+       inactive uses Hint, so it tracks the user's picks. */
+    cat_set_tab_text_colors(
+        cat_color_rgba(t->hint.r, t->hint.g, t->hint.b, 0xFF),   /* inactive */
+        cat_color_rgba(t->text.r, t->text.g, t->text.b, 0xFF));  /* selected */
+}
+
 void jw_settings_apply_persisted_overrides(const char *db_path) {
     if (!db_path || !db_path[0]) return;
 
@@ -736,43 +752,44 @@ void jw_settings_apply_persisted_overrides(const char *db_path) {
     if (jw_db_get_setting(db_path, "button_glyph_bg_color", val, sizeof(val)) == 0 && val[0])
         t->button_glyph_bg = cat_hex_to_color(val);
 
-    /* Selected-row text auto-contrasts against the selection pill: a bright pill
-       gets dark text (the background color), a dark pill keeps the light text —
-       readable either way, regardless of the chosen palette. */
-    {
-        int hl_lum = (t->highlight.r * 299 + t->highlight.g * 587 + t->highlight.b * 114) / 1000;
-        t->highlighted_text = (hl_lum > 140) ? t->background : t->text;
-    }
-
-    /* Tab-bar text isn't its own color role (yet): derive it from the palette
-       so it tracks the user's picks — selected tab uses Text, inactive uses
-       Hint. (TODO: promote these to dedicated "Tab Text" roles in the Colors
-       page if finer control is wanted.) */
-    cat_set_tab_text_colors(
-        cat_color_rgba(t->hint.r, t->hint.g, t->hint.b, 0xFF),   /* inactive */
-        cat_color_rgba(t->text.r, t->text.g, t->text.b, 0xFF));  /* selected */
+    jw__finalize_theme_colors(t);
 }
 
-static void jw__reapply_user_overrides(jw_settings_ui *ui) {
-    jw_settings_apply_persisted_overrides(ui->db_path);
-}
-
-/* Apply a curated color scheme: write its seven color roles to the DB and
-   re-apply, so it takes effect live and persists across reboots. */
+/* Apply a curated color scheme. The seven color roles are written straight into
+   the live theme in memory (instant — no per-key DB read-back), then all eight
+   keys persist in a single transaction. Cycling schemes used to cost ~18 DB
+   re-opens per press (8 writes + 10 read-backs); this is one open. */
 static void jw__apply_color_scheme(jw_settings_ui *ui, int index, bool *theme_changed) {
     if (index < 0 || index >= JW_COLOR_SCHEME_COUNT) return;
     const jw__color_scheme *s = &kColorSchemes[index];
-    jw__persist(ui, "accent_color",           s->accent);
-    jw__persist(ui, "bg_color",               s->bg);
-    jw__persist(ui, "text_color",             s->text);
-    jw__persist(ui, "hint_color",             s->hint);
-    jw__persist(ui, "highlight_color",        s->selection);
-    jw__persist(ui, "button_label_color",     s->btn_label);
-    jw__persist(ui, "button_glyph_bg_color",  s->btn_bg);
-    jw__persist_int(ui, "color_scheme_index", index);
+
+    ap_theme *t = cat_get_theme();
+    t->accent          = cat_hex_to_color(s->accent);
+    t->background      = cat_hex_to_color(s->bg);
+    t->text            = cat_hex_to_color(s->text);
+    t->hint            = cat_hex_to_color(s->hint);
+    t->highlight       = cat_hex_to_color(s->selection);
+    t->button_label    = cat_hex_to_color(s->btn_label);
+    t->button_glyph_bg = cat_hex_to_color(s->btn_bg);
+    jw__finalize_theme_colors(t);
+
     ui->color_scheme_index = index;
-    jw__reapply_user_overrides(ui);
     if (theme_changed) *theme_changed = true;
+
+    char idx_buf[16];
+    snprintf(idx_buf, sizeof(idx_buf), "%d", index);
+    const char *keys[] = {
+        "accent_color", "bg_color", "text_color", "hint_color",
+        "highlight_color", "button_label_color", "button_glyph_bg_color",
+        "color_scheme_index",
+    };
+    const char *vals[] = {
+        s->accent, s->bg, s->text, s->hint, s->selection,
+        s->btn_label, s->btn_bg, idx_buf,
+    };
+    if (ui->db_path[0])
+        jw_db_set_settings(ui->db_path, keys, vals,
+                           (int)(sizeof(keys) / sizeof(keys[0])));
 }
 
 static void jw__cycle_color_scheme(jw_settings_ui *ui, int direction, bool *theme_changed) {
