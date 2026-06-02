@@ -13,14 +13,13 @@
 extern const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT];
 extern const bool        kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT];
 
+/* Display labels live here; the matching value tables (radius, corner mask,
+   font bump) are the canonical ones in appearance.h, shared with the daemon. */
 #define JW_SETTINGS_PILL_SHAPE_COUNT 4
 extern const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT];
-extern const float       kPillShapeValues[JW_SETTINGS_PILL_SHAPE_COUNT];
-extern const int         kPillShapeCornerMask[JW_SETTINGS_PILL_SHAPE_COUNT];
 
 #define JW_SETTINGS_FONT_SIZE_COUNT 4
 extern const char *const kFontSizeLabels[JW_SETTINGS_FONT_SIZE_COUNT];
-extern const int         kFontSizeValues[JW_SETTINGS_FONT_SIZE_COUNT];
 
 #define JW_SETTINGS_CLOCK_STYLE_COUNT 4
 extern const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT];
@@ -60,9 +59,10 @@ typedef enum {
 #define JW_COLOR_ROW_COUNT   7
 
 /* Layout page */
-#define JW_LAYOUT_PILL_SHAPE 0
-#define JW_LAYOUT_FONT_SIZE  1
-#define JW_LAYOUT_ROW_COUNT  2
+#define JW_LAYOUT_PILL_SHAPE  0
+#define JW_LAYOUT_FONT_FAMILY 1
+#define JW_LAYOUT_FONT_SIZE   2
+#define JW_LAYOUT_ROW_COUNT   3
 
 /* Status Bar page */
 #define JW_STATUSBAR_HINTS   0
@@ -111,6 +111,7 @@ typedef struct {
     int                theme_index;
     int                color_scheme_index;   /* -1 = custom (manually edited) */
     int                pill_shape_index;
+    int                font_family_index;
     int                font_size_index;
     bool               show_hints;
     int                clock_style_index;
@@ -151,7 +152,7 @@ void jw_settings_toggle_led(jw_settings_ui *ui);
 void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *out);
 
 /* Applies all persisted appearance overrides (the 7 color roles, list pill
- * shape, and font size) from the SQLite DB onto the current Catastrophe theme.
+ * shape, font family, and font size) from the SQLite DB onto the current Catastrophe theme.
  * Shared by the launcher's settings UI and jawaka-menu so both render with the
  * user's chosen colors and layout. db_path may be NULL/empty (no-op). */
 void jw_settings_apply_persisted_overrides(const char *db_path);

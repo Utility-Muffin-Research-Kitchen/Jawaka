@@ -72,6 +72,8 @@ DAEMON_SRCS := \
 	internal/retroarch/catalog.c \
 	internal/retroarch/command.c \
 	internal/db/db.c \
+	internal/settings/appearance.c \
+	internal/settings/theme_resolve.c \
 	internal/discovery/discovery.c \
 	third_party/cjson/cJSON.c
 
@@ -124,6 +126,7 @@ UI_SRCS := \
 	internal/retroarch/catalog.c \
 	internal/db/db.c \
 	internal/launcher/console_colors.c \
+	internal/settings/appearance.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
 	third_party/cjson/cJSON.c

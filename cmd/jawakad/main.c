@@ -7,6 +7,7 @@
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/paths.h"
 #include "internal/retroarch/command.h"
+#include "internal/settings/appearance.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -903,6 +904,7 @@ static int jw__spawn_osd(jw_daemon_state *state) {
         return -1;
     }
     if (pid == 0) {
+        jw_appearance_export_env(state->db_path);
         char *const argv[] = { (char *)path, NULL };
         execv(path, argv);
         perror("execv");
@@ -1352,6 +1354,7 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     }
 
     if (pid == 0) {
+        jw_appearance_export_env(state->db_path);
         char *const argv[] = { (char *)path, NULL };
         execv(path, argv);
         perror("execv");
@@ -1391,6 +1394,7 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
     }
 
     if (pid == 0) {
+        jw_appearance_export_env(state->db_path);
         if (state->retroarch_session.active) {
             setenv("JAWAKA_INGAME_ACTIVE", "1", 1);
             setenv("JAWAKA_INGAME_SYSTEM", state->retroarch_session.system, 1);
@@ -1455,6 +1459,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
+        jw_appearance_export_env(state->db_path);
         if (chdir(pak_abs) != 0) {
             perror("chdir");
             _exit(127);

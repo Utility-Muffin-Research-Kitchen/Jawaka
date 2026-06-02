@@ -4,6 +4,7 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/device.h"
 #include "internal/platform/platform_id.h"
+#include "internal/settings/appearance.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,22 +36,6 @@ const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT] = {
     "Leaf",
 };
 
-const float kPillShapeValues[JW_SETTINGS_PILL_SHAPE_COUNT] = {
-    1.0f,
-    0.25f,
-    0.0f,
-    1.0f,   /* Leaf: full radius on its two rounded corners */
-};
-
-/* Which corners each shape rounds. Leaf rounds top-left + bottom-right only
-   (bottom-left + top-right stay sharp), for a directional highlight. */
-const int kPillShapeCornerMask[JW_SETTINGS_PILL_SHAPE_COUNT] = {
-    CAT_CORNER_ALL,
-    CAT_CORNER_ALL,
-    CAT_CORNER_ALL,
-    CAT_CORNER_TL | CAT_CORNER_BR,
-};
-
 const char *const kFontSizeLabels[JW_SETTINGS_FONT_SIZE_COUNT] = {
     "Small",
     "Default",
@@ -58,12 +43,13 @@ const char *const kFontSizeLabels[JW_SETTINGS_FONT_SIZE_COUNT] = {
     "Extra Large",
 };
 
-const int kFontSizeValues[JW_SETTINGS_FONT_SIZE_COUNT] = {
-    0,
-    2,
-    4,
-    5,
-};
+/* The value tables backing these labels (pill radius, corner mask, font bump)
+   are the canonical ones in appearance.c, shared with the daemon's env export.
+   Keep the label row counts locked to them. */
+_Static_assert(JW_SETTINGS_PILL_SHAPE_COUNT == JW_APPEARANCE_PILL_SHAPE_COUNT,
+               "pill shape label/value table counts out of sync");
+_Static_assert(JW_SETTINGS_FONT_SIZE_COUNT == JW_APPEARANCE_FONT_SIZE_COUNT,
+               "font size label/value table counts out of sync");
 
 const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT] = {
     "Off",
@@ -244,6 +230,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
     ui->color_scheme_index = -1;   /* custom until a scheme is loaded below */
     ui->pill_shape_index  = 0;
+    ui->font_family_index = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
     ui->font_size_index   = 1;
     ui->show_hints        = true;
     ui->clock_style_index = 1;
@@ -273,6 +260,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT)
                 ui->pill_shape_index = idx;
         }
+        ui->font_family_index = jw_appearance_font_family_index_from_db(db_path);
         if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0) {
             int idx = atoi(val);
             if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
@@ -548,6 +536,8 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
     int ly = y + jw__header_h();
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
                         "List Style", kPillShapeLabels[ui->pill_shape_index], true);
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_FAMILY,
+                        "Font", kJawakaFontFamilyLabels[ui->font_family_index], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_SIZE,
                         "Font Size", kFontSizeLabels[ui->font_size_index], true);
     (void)h;
@@ -662,7 +652,7 @@ static const jw__about_credit kAboutCredits[] = {
     { "SQLite",                                 "Public Domain" },
     { "cJSON",                                  "MIT" },
     { "System icons (libretro Systematic)",     "CC BY-SA 4.0" },
-    { "Fonts (Space Grotesk, Source Han Sans)", "SIL OFL 1.1" },
+    { "Fonts (Space Grotesk, Inter, Source Han Sans)", "SIL OFL 1.1" },
     { "Dropbear SSH",                           "MIT-style" },
 };
 #define JW_ABOUT_CREDIT_COUNT ((int)(sizeof(kAboutCredits) / sizeof(kAboutCredits[0])))
@@ -870,24 +860,6 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
     }
 }
 
-/* ─── Theme helpers ────────────────────────────────────────────────────── */
-
-/* Derive the theme fields that aren't stored directly: selected-row text
-   auto-contrasts against the selection pill, and the tab-bar text colors track
-   the palette. Call after any change to the seven color roles. */
-static void jw__finalize_theme_colors(ap_theme *t) {
-    /* A bright selection pill gets dark text (the background color); a dark pill
-       keeps the light text — readable either way, regardless of palette. */
-    int hl_lum = (t->highlight.r * 299 + t->highlight.g * 587 + t->highlight.b * 114) / 1000;
-    t->highlighted_text = (hl_lum > 140) ? t->background : t->text;
-
-    /* Tab-bar text isn't its own color role (yet): selected tab uses Text,
-       inactive uses Hint, so it tracks the user's picks. */
-    cat_set_tab_text_colors(
-        cat_color_rgba(t->hint.r, t->hint.g, t->hint.b, 0xFF),   /* inactive */
-        cat_color_rgba(t->text.r, t->text.g, t->text.b, 0xFF));  /* selected */
-}
-
 void jw_settings_apply_persisted_overrides(const char *db_path) {
     if (!db_path || !db_path[0]) return;
 
@@ -897,14 +869,34 @@ void jw_settings_apply_persisted_overrides(const char *db_path) {
     if (jw_db_get_setting(db_path, "pill_shape_index", val, sizeof(val)) == 0 && val[0]) {
         int idx = atoi(val);
         if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT) {
-            t->pill_radius_ratio = kPillShapeValues[idx];
-            t->pill_corner_mask  = kPillShapeCornerMask[idx];
+            t->pill_radius_ratio = kJawakaPillRadiusValues[idx];
+            t->pill_corner_mask  = kJawakaPillCornerMasks[idx];
         }
     }
-    if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0 && val[0]) {
-        int idx = atoi(val);
-        if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
-            cat_set_font_bump(kFontSizeValues[idx]);
+    /* Font size and family both reload the glyph atlas, so resolve them together
+       and reload at most once. cat_set_font_bump() reloads using the theme's
+       font_path, so point that at the persisted family first; if the bump is
+       unchanged it short-circuits and we issue the single reload ourselves.
+       Env-launched processes already had both applied by cat_init (via
+       CAT_FONT_PATH/CAT_FONT_BUMP), so there we only sync the bump. */
+    {
+        int bump = cat_get_font_bump();
+        if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0 && val[0]) {
+            int idx = atoi(val);
+            if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
+                bump = kJawakaFontSizeValues[idx];
+        }
+        if (getenv("CAT_FONT_PATH")) {
+            cat_set_font_bump(bump);
+        } else {
+            int fidx = jw_appearance_font_family_index_from_db(db_path);
+            snprintf(t->font_path, sizeof(t->font_path), "%s",
+                     jw_appearance_font_path_for_index(fidx));
+            if (bump != cat_get_font_bump())
+                cat_set_font_bump(bump);          /* one reload, at the new family path */
+            else
+                cat_reload_fonts(t->font_path);   /* bump unchanged: one reload for the family */
+        }
     }
     if (jw_db_get_setting(db_path, "accent_color", val, sizeof(val)) == 0 && val[0])
         t->accent = cat_hex_to_color(val);
@@ -921,7 +913,7 @@ void jw_settings_apply_persisted_overrides(const char *db_path) {
     if (jw_db_get_setting(db_path, "button_glyph_bg_color", val, sizeof(val)) == 0 && val[0])
         t->button_glyph_bg = cat_hex_to_color(val);
 
-    jw__finalize_theme_colors(t);
+    cat_finalize_theme_colors(t);
 }
 
 /* Apply a curated color scheme. The seven color roles are written straight into
@@ -940,7 +932,7 @@ static void jw__apply_color_scheme(jw_settings_ui *ui, int index, bool *theme_ch
     t->highlight       = cat_hex_to_color(s->selection);
     t->button_label    = cat_hex_to_color(s->btn_label);
     t->button_glyph_bg = cat_hex_to_color(s->btn_bg);
-    jw__finalize_theme_colors(t);
+    cat_finalize_theme_colors(t);
 
     ui->color_scheme_index = index;
     if (theme_changed) *theme_changed = true;
@@ -1153,10 +1145,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 if (changed) {
                     if (row == JW_COLOR_ACCENT)
                         cat_set_theme_color(NULL);
-                    /* Keep selected-row text readable against the (maybe new) pill. */
-                    int hl_lum = (t->highlight.r * 299 + t->highlight.g * 587 +
-                                  t->highlight.b * 114) / 1000;
-                    t->highlighted_text = (hl_lum > 140) ? t->background : t->text;
+                    cat_finalize_theme_colors(t);
                     /* Hand-editing a color diverges from any preset → "Custom". */
                     if (ui->color_scheme_index != -1) {
                         ui->color_scheme_index = -1;
@@ -1185,13 +1174,23 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 if (row == JW_LAYOUT_PILL_SHAPE) {
                     int next = (ui->pill_shape_index + dir + JW_SETTINGS_PILL_SHAPE_COUNT) % JW_SETTINGS_PILL_SHAPE_COUNT;
                     ui->pill_shape_index = next;
-                    cat_get_theme()->pill_radius_ratio = kPillShapeValues[next];
-                    cat_get_theme()->pill_corner_mask  = kPillShapeCornerMask[next];
+                    cat_get_theme()->pill_radius_ratio = kJawakaPillRadiusValues[next];
+                    cat_get_theme()->pill_corner_mask  = kJawakaPillCornerMasks[next];
                     jw__persist_int(ui, "pill_shape_index", next);
+                } else if (row == JW_LAYOUT_FONT_FAMILY) {
+                    int next = (ui->font_family_index + dir + JW_APPEARANCE_FONT_FAMILY_COUNT) %
+                               JW_APPEARANCE_FONT_FAMILY_COUNT;
+                    const char *path = jw_appearance_font_path_for_index(next);
+                    if (cat_reload_fonts(path) == CAT_OK) {
+                        ui->font_family_index = next;
+                        jw__persist_int(ui, "font_family_index", next);
+                    } else if (status_buf && status_size > 0) {
+                        snprintf(status_buf, status_size, "%s", "font load failed");
+                    }
                 } else if (row == JW_LAYOUT_FONT_SIZE) {
                     int next = (ui->font_size_index + dir + JW_SETTINGS_FONT_SIZE_COUNT) % JW_SETTINGS_FONT_SIZE_COUNT;
                     ui->font_size_index = next;
-                    cat_set_font_bump(kFontSizeValues[next]);
+                    cat_set_font_bump(kJawakaFontSizeValues[next]);
                     jw__persist_int(ui, "font_size_index", next);
                 }
                 break;
