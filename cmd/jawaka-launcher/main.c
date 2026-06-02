@@ -715,20 +715,20 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
 
     if (jw_settings_ui_is_open(&state->settings)) {
         cat_footer_item footer[] = {
-            { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
+            { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 2);
     } else if (state->current_tab == JW_TAB_FAVORITES) {
         cat_footer_item footer[] = {
-            { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
+            { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
             { CAT_BTN_Y,  "Remove",   false, JW_HINT("Y") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 3);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_L2,   "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
+            { CAT_BTN_L2,   "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
             { CAT_BTN_X,    "Search",   false, JW_HINT("X") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
@@ -1711,7 +1711,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
     if (tabbed) {
         cat_footer_item footer[] = {
-            { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
+            { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
             { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
@@ -2273,11 +2273,6 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
     (void)running;
 }
 
-static const char *jw__system_label_cb(int idx, void *user) {
-    const jw_system_entry *systems = (const jw_system_entry *)user;
-    return systems[idx].name;
-}
-
 /* Rebuild layout-dependent state. Call after the active stylesheet's
  * launcher.layout may have changed (theme switch) or at first startup. */
 static void jw__rebuild_for_layout(jw_launcher_state *state) {
@@ -2472,12 +2467,14 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
            L2/R2 tabs away from the system — closing the browser and landing on
            the adjacent section, exactly as on the tabbed home view. */
         if (layout == CAT_LAUNCHER_TABBED &&
-            (button == CAT_BTN_L2 || button == CAT_BTN_R2)) {
+            (button == CAT_BTN_L1 || button == CAT_BTN_L2 ||
+             button == CAT_BTN_R1 || button == CAT_BTN_R2)) {
+            bool back = (button == CAT_BTN_L1 || button == CAT_BTN_L2);
             state->games_open = false;
             state->games_are_favorites = false;
             state->game_count = 0;
             state->status[0] = '\0';
-            jw__switch_tab(state, button == CAT_BTN_L2 ? -1 : +1, db_path);
+            jw__switch_tab(state, back ? -1 : +1, db_path);
             return;
         }
         if (button == CAT_BTN_X) {
@@ -2546,11 +2543,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
            (the user leaves via L2/R2). jw__switch_tab closes Settings as a
            side effect when moving off the tab. */
         if (layout == CAT_LAUNCHER_TABBED) {
-            if (button == CAT_BTN_L2) {
+            if (button == CAT_BTN_L1 || button == CAT_BTN_L2) {
                 jw__switch_tab(state, -1, db_path);
                 return;
             }
-            if (button == CAT_BTN_R2) {
+            if (button == CAT_BTN_R1 || button == CAT_BTN_R2) {
                 jw__switch_tab(state, +1, db_path);
                 return;
             }
@@ -2608,20 +2605,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                 cat_list_state_page(&state->list, +1, count);
             }
             break;
-        case CAT_BTN_L1:
-            if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_GAMES)
-                cat_list_state_jump_letter(&state->list, jw__system_label_cb,
-                                           state->systems, state->system_count, -1);
-            break;
-        case CAT_BTN_R1:
-            if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_GAMES)
-                cat_list_state_jump_letter(&state->list, jw__system_label_cb,
-                                           state->systems, state->system_count, +1);
-            break;
+        case CAT_BTN_L1:   /* L1/R1 mirror L2/R2: tab between sections */
         case CAT_BTN_L2:
             if (layout == CAT_LAUNCHER_TABBED)
                 jw__switch_tab(state, -1, db_path);
             break;
+        case CAT_BTN_R1:
         case CAT_BTN_R2:
             if (layout == CAT_LAUNCHER_TABBED)
                 jw__switch_tab(state, +1, db_path);
