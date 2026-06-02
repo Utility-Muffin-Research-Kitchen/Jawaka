@@ -83,6 +83,7 @@ typedef struct {
 
 static const jw__color_scheme kColorSchemes[] = {
     /* name      accent     bg         text       hint       selection  btn_label  btn_bg     */
+    { "Leaf",    "#1E331E", "#0F160E", "#E8F1E3", "#7E9579", "#7FB069", "#0F160E", "#7FB069" },
     { "Aurora",  "#173342", "#0E1822", "#E6F0F2", "#6E8898", "#3DDC97", "#0E1822", "#3DDC97" },
     { "Ember",   "#3A2A22", "#1A1413", "#F2EAE2", "#A38A7A", "#FF8A4C", "#1A1413", "#FF8A4C" },
     { "Orchid",  "#2E2240", "#181226", "#ECE4F2", "#8E7CB0", "#C792EA", "#181226", "#C792EA" },
@@ -90,6 +91,9 @@ static const jw__color_scheme kColorSchemes[] = {
     { "Rosé",    "#33222E", "#1C1620", "#F0E6EC", "#A88A98", "#EB6F92", "#1C1620", "#EB6F92" },
 };
 #define JW_COLOR_SCHEME_COUNT ((int)(sizeof(kColorSchemes) / sizeof(kColorSchemes[0])))
+#define JW_COLOR_SCHEME_DEFAULT 0   /* Leaf — the Dweezil/Leaf identity theme */
+
+static void jw__apply_color_scheme(jw_settings_ui *ui, int index, bool *theme_changed);
 
 /* Startup-tab options for Settings > Behavior. Order and index MIRROR the
    launcher's jw_tab enum so the persisted "startup_tab_index" maps 1:1 to the
@@ -297,6 +301,12 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
         }
 
         jw_settings_apply_persisted_overrides(ui->db_path);
+
+        /* Fresh install (no color ever persisted) → default to the Leaf scheme,
+           the project's identity theme. Returning users keep their colors. */
+        char probe[32];
+        if (jw_db_get_setting(db_path, "accent_color", probe, sizeof(probe)) != 0 || !probe[0])
+            jw__apply_color_scheme(ui, JW_COLOR_SCHEME_DEFAULT, NULL);
     }
 
     jw__refresh_brightness(ui);
