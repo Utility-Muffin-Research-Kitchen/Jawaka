@@ -740,10 +740,12 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
         };
         jw__draw_footer(state, footer, 3);
     } else if (state->current_tab == JW_TAB_RECENTS) {
+        /* X still opens search (global handler) but its hint is dropped here so
+           the four shown actions fit without footer overflow. */
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_X,  "Remove",   false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
+            { CAT_BTN_B,  "Remove",   false, JW_HINT("B") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 4);
@@ -2618,12 +2620,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     }
 
     if (button == CAT_BTN_X) {
-        /* On the Recents tab X removes the selected entry; on every other tab it
-           opens search. */
-        if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_RECENTS)
-            jw__remove_selected_recent(db_path, state);
-        else
-            jw__open_search(db_path, state);
+        jw__open_search(db_path, state);
         return;
     }
 
@@ -2674,6 +2671,14 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                 jw__activate_tabbed(socket_path, db_path, state, running);
             else
                 jw__activate_flat(socket_path, db_path, state, running);
+            break;
+        case CAT_BTN_B:
+            /* B is unused on the home tabs (no "back" at the top level). On the
+               Recents tab it removes the selected entry. NOTE: this is a TEMPORARY
+               mapping — B is normally back/cancel, so the remove-from-recents
+               button is flagged for team review (see umrk-workspace plans). */
+            if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_RECENTS)
+                jw__remove_selected_recent(db_path, state);
             break;
         case CAT_BTN_MENU:
             if (jw_ipc_open_menu(socket_path) == 0) {
