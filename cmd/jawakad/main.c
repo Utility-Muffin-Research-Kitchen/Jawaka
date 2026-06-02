@@ -63,6 +63,7 @@ typedef struct {
     int menu_standby_attempts;/* respawn guard for a crashing standby within one session */
     bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
+    pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
     int cached_brightness_percent;
     int cached_volume_percent;
     jw_led_config cached_led;
@@ -1103,6 +1104,63 @@ static void jw__persist_led(jw_daemon_state *state, const jw_led_config *led) {
     }
 }
 
+static void jw__stop_ledd(jw_daemon_state *state) {
+    if (!state || state->ledd_pid <= 0) return;
+    kill(state->ledd_pid, SIGTERM);   /* ledd's handler thaws loong_light, then exits */
+    waitpid(state->ledd_pid, NULL, 0);
+    state->ledd_pid = -1;
+}
+
+static int jw__spawn_ledd(jw_daemon_state *state, const char *effect,
+                          int r, int g, int b, int brightness, int speed) {
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/jawaka-ledd", state->bin_dir) >= (int)sizeof(path)) {
+        jw_log_warn("ledd binary path too long");
+        return -1;
+    }
+    if (!jw__path_exists(path)) {
+        jw_log_warn("ledd binary missing: %s", path);
+        return -1;
+    }
+    char sr[8], sg[8], sb[8], sbr[8], ssp[8];
+    snprintf(sr,  sizeof(sr),  "%d", r);
+    snprintf(sg,  sizeof(sg),  "%d", g);
+    snprintf(sb,  sizeof(sb),  "%d", b);
+    snprintf(sbr, sizeof(sbr), "%d", brightness);
+    snprintf(ssp, sizeof(ssp), "%d", speed);
+    pid_t pid = fork();
+    if (pid < 0) { jw_log_warn("ledd fork failed: %s", strerror(errno)); return -1; }
+    if (pid == 0) {
+        char *const argv[] = { path, (char *)effect, sr, sg, sb, sbr, ssp, NULL };
+        execv(path, argv);
+        _exit(127);
+    }
+    state->ledd_pid = pid;
+    jw_log_info("spawned jawaka-ledd %s pid=%d", effect, (int)pid);
+    return 0;
+}
+
+/* Apply an LED config: stop any running effect (which thaws loong_light), write
+   the loong cfg as the baseline/fallback (forcing a static mode for effects so a
+   dead engine leaves a sane ring), then for an enabled custom effect spawn the
+   jawaka-ledd engine (which freezes loong_light and animates). */
+static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *led) {
+    if (!state || !led) return;
+    jw__stop_ledd(state);
+
+    jw_led_config base = *led;
+    if (jw_led_mode_is_effect(base.mode)) base.mode = JW_LED_MODE_STATIC;
+    jw_platform_result result;
+    jw_platform_set_led(&state->platform, &base, &result);
+
+    if (led->enabled && jw_led_mode_is_effect(led->mode)) {
+        jw__spawn_ledd(state, jw_led_mode_name(led->mode),
+                       led->r, led->g, led->b, led->brightness, led->speed);
+    }
+    state->cached_led = *led;
+    state->led_configured = true;
+}
+
 static void jw__apply_persisted_led(jw_daemon_state *state) {
     char value[32];
     /* No persisted mode → user never configured the LED; leave stock behavior. */
@@ -1126,14 +1184,9 @@ static void jw__apply_persisted_led(jw_daemon_state *state) {
     if (jw_db_get_setting(state->db_path, "platform.led_brightness", value, sizeof(value)) == 0) led.brightness = atoi(value);
     if (jw_db_get_setting(state->db_path, "platform.led_speed", value, sizeof(value)) == 0) led.speed = atoi(value);
 
-    jw_platform_result result;
-    jw_platform_set_led(&state->platform, &led, &result);
-    state->cached_led = led;
-    state->led_configured = true;
-    if (result.code == JW_PLATFORM_RESULT_OK)
-        jw_log_info("applied persisted led mode=%s enabled=%d", jw_led_mode_name(led.mode), led.enabled);
-    else
-        jw_log_warn("persisted led apply failed: %s", result.message);
+    jw__apply_led_config(state, &led);
+    jw_log_info("applied persisted led mode=%s enabled=%d",
+                jw_led_mode_name(led.mode), led.enabled);
 }
 
 static int jw__osd_show_volume(jw_daemon_state *state, int percent) {
@@ -1888,16 +1941,14 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         v = cJSON_GetObjectItemCaseSensitive(root, "brightness"); if (cJSON_IsNumber(v)) led.brightness = v->valueint;
         v = cJSON_GetObjectItemCaseSensitive(root, "speed"); if (cJSON_IsNumber(v)) led.speed = v->valueint;
 
+        jw__apply_led_config(state, &led);
+        jw__persist_led(state, &led);
+        jw_log_info("set-led mode=%s enabled=%d", jw_led_mode_name(led.mode), led.enabled);
         jw_platform_result result;
-        jw_platform_set_led(&state->platform, &led, &result);
-        if (result.code == JW_PLATFORM_RESULT_OK) {
-            state->cached_led = led;
-            state->led_configured = true;
-            jw__persist_led(state, &led);
-        }
-        jw_log_info("set-led mode=%s enabled=%d code=%s",
-                    jw_led_mode_name(led.mode), led.enabled,
-                    jw_platform_result_code_name(result.code));
+        result.code = JW_PLATFORM_RESULT_OK;
+        result.has_value = false;
+        result.value = 0;
+        snprintf(result.message, sizeof(result.message), "%s", "led applied");
         cJSON_Delete(root);
         return jw__reply_platform_result(client, "set-led", &result);
     }
@@ -2188,6 +2239,8 @@ static void jw__cleanup(jw_daemon_state *state) {
         state->osd_pid = -1;
     }
 
+    jw__stop_ledd(state);   /* thaw loong_light if a custom effect was running */
+
     jw_input_proxy_shutdown(&state->input_proxy);
     jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
@@ -2211,6 +2264,7 @@ int main(int argc, char *argv[]) {
     state.osd_pid = -1;
     state.cached_brightness_percent = -1;
     state.cached_volume_percent = -1;
+    state.ledd_pid = -1;
     state.led_configured = false;
 
     for (int i = 1; i < argc; i++) {

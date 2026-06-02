@@ -128,9 +128,9 @@ UI_SRCS := \
 	internal/settings/theme_resolve.c \
 	third_party/cjson/cJSON.c
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-platformctl jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
 
-all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu $(BUILD)/bin/jawaka-osd $(BUILD)/bin/jawaka-retroarchctl $(BUILD)/bin/jawaka-retroarch-runner $(BUILD)/bin/jawaka-platformctl
+all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu $(BUILD)/bin/jawaka-osd $(BUILD)/bin/jawaka-retroarchctl $(BUILD)/bin/jawaka-retroarch-runner $(BUILD)/bin/jawaka-platformctl $(BUILD)/bin/jawaka-ledd
 
 jawakad: $(BUILD)/bin/jawakad
 jawaka-launcher: $(BUILD)/bin/jawaka-launcher
@@ -139,6 +139,7 @@ jawaka-osd: $(BUILD)/bin/jawaka-osd
 jawaka-retroarchctl: $(BUILD)/bin/jawaka-retroarchctl
 jawaka-retroarch-runner: $(BUILD)/bin/jawaka-retroarch-runner
 jawaka-platformctl: $(BUILD)/bin/jawaka-platformctl
+jawaka-ledd: $(BUILD)/bin/jawaka-ledd
 jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 
 $(BUILD)/bin:
@@ -183,6 +184,9 @@ $(BUILD)/bin/jawaka-retroarch-runner: $(RETROARCH_RUNNER_SRCS) | $(BUILD)/bin
 
 $(BUILD)/bin/jawaka-platformctl: $(PLATFORM_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(PLATFORM_CTL_SRCS) $(LDLIBS_COMMON)
+
+$(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ cmd/jawaka-ledd/main.c
 
 $(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(SCAN_SMOKE_SRCS) $(LDLIBS_COMMON)

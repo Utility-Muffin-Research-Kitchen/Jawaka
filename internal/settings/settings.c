@@ -115,6 +115,10 @@ static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
     "Static",
     "Breath",
     "Rainbow",
+    "Comet",
+    "Sweep",
+    "Fountain",
+    "Hiccup",
 };
 
 

@@ -17,11 +17,20 @@
 #define JW_LED_SPEED_MAX 10
 
 typedef enum {
+    /* Stock modes — driven by the loong_light daemon (cfg + SIGUSR1). */
     JW_LED_MODE_STATIC = 0,   /* solid color (loong "FOREVER") */
     JW_LED_MODE_BREATH,       /* pulse the color */
     JW_LED_MODE_RAINBOW,      /* cycle hues (color ignored) */
+    /* Custom effects — driven by the jawaka-ledd engine (mode >= COMET). */
+    JW_LED_MODE_COMET,
+    JW_LED_MODE_SWEEP,
+    JW_LED_MODE_FOUNTAIN,
+    JW_LED_MODE_HICCUP,
     JW_LED_MODE_COUNT
 } jw_led_mode;
+
+/* True for the jawaka-ledd custom effects (vs the loong_light stock modes). */
+#define jw_led_mode_is_effect(m) ((m) >= JW_LED_MODE_COMET && (m) < JW_LED_MODE_COUNT)
 
 typedef struct {
     bool enabled;
