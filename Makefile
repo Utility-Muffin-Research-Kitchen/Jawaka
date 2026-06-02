@@ -71,6 +71,7 @@ DAEMON_SRCS := \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
 	internal/retroarch/command.c \
+	internal/storage/sources.c \
 	internal/db/db.c \
 	internal/settings/appearance.c \
 	internal/settings/theme_resolve.c \
@@ -114,6 +115,7 @@ SCAN_SMOKE_SRCS := \
 	internal/db/db.c \
 	internal/discovery/discovery.c \
 	internal/retroarch/catalog.c \
+	internal/storage/sources.c \
 	third_party/cjson/cJSON.c
 
 UI_SRCS := \
@@ -124,6 +126,7 @@ UI_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
+	internal/storage/sources.c \
 	internal/db/db.c \
 	internal/launcher/console_colors.c \
 	internal/settings/appearance.c \

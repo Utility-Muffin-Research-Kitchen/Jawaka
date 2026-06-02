@@ -196,6 +196,56 @@ void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action act
     jw_platform_result_unsupported(action, ctx->platform_id, out);
 }
 
+bool jw_platform_storage_tick(jw_platform_context *ctx) {
+    if (!ctx) {
+        return false;
+    }
+
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->storage_tick) {
+        return backend->storage_tick(ctx);
+    }
+    return false;
+}
+
+void jw_platform_get_storage_status(jw_platform_context *ctx, const char *source_id,
+                                    jw_platform_storage_status *out) {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    snprintf(out->source_id, sizeof(out->source_id), "%s",
+             source_id && source_id[0] ? source_id : "secondary_sd");
+    snprintf(out->label, sizeof(out->label), "%s", "Secondary SD");
+    snprintf(out->message, sizeof(out->message), "%s", "storage source unavailable");
+
+    if (!ctx) {
+        return;
+    }
+
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->get_storage_status) {
+        backend->get_storage_status(ctx, source_id, out);
+    }
+}
+
+void jw_platform_safe_unmount_storage(jw_platform_context *ctx, const char *source_id,
+                                      jw_platform_result *out) {
+    if (!ctx) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "platform not initialized");
+        return;
+    }
+
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->safe_unmount_storage) {
+        backend->safe_unmount_storage(ctx, source_id, out);
+        return;
+    }
+
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED,
+                           "storage source unavailable");
+}
+
 void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                          jw_platform_result *out) {
     if (!ctx) {

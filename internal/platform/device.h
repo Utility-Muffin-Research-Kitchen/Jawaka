@@ -74,6 +74,18 @@ typedef struct {
     int bluetooth_connected;   /* -1 unknown, 0 no, 1 yes */
 } jw_platform_status;
 
+typedef struct {
+    char source_id[32];
+    char label[64];
+    char mount_path[JW_PLATFORM_MAX_PATH];
+    char device_path[JW_PLATFORM_MAX_PATH];
+    char message[JW_PLATFORM_MAX_MESSAGE];
+    bool present;
+    bool mounted;
+    bool busy;
+    bool can_unmount;
+} jw_platform_storage_status;
+
 typedef enum {
     JW_PLATFORM_ACTION_SLEEP = 0,
     JW_PLATFORM_ACTION_POWEROFF,
@@ -112,6 +124,11 @@ const char *jw_platform_result_code_name(jw_platform_result_code code);
 int  jw_platform_clamp_brightness_percent(int percent);
 void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                 int value, jw_platform_result *out);
+bool jw_platform_storage_tick(jw_platform_context *ctx);
+void jw_platform_get_storage_status(jw_platform_context *ctx, const char *source_id,
+                                    jw_platform_storage_status *out);
+void jw_platform_safe_unmount_storage(jw_platform_context *ctx, const char *source_id,
+                                      jw_platform_result *out);
 
 const char *jw_led_mode_name(jw_led_mode mode);     /* "FOREVER"/"BREATH"/"RAINBOW" */
 bool        jw_led_mode_parse(const char *name, jw_led_mode *out);

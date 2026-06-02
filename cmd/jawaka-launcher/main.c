@@ -136,6 +136,8 @@ typedef struct {
     char               sdcard_root[PATH_MAX];
     char               status[256];
     bool               scan_ready;
+    int                library_generation;
+    uint32_t           next_library_generation_poll_ms;
 } jw_launcher_state;
 
 static void jw__draw_app_detail(const jw_launcher_state *state,
@@ -387,29 +389,151 @@ static int jw__tab_list_count(const jw_launcher_state *state) {
 
 /* ─── Library scan ────────────────────────────────────────────────────────── */
 
-static int jw__scan_library(const char *socket_path, const char *db_path,
-                             jw_launcher_state *state) {
-    int rc = jw_ipc_scan_library(socket_path, state->status, sizeof(state->status));
-    if (rc != 0) return -1;
+static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *state) {
+    if (!db_path || !state) {
+        return -1;
+    }
+
+    int tab_cursor = state->list.cursor;
+    int flat_cursor = state->list.cursor;
+    int game_cursor = state->game_list.cursor;
+    int app_cursor = state->app_list.cursor;
 
     if (jw_db_read_summary(db_path, &state->summary) != 0) {
-        snprintf(state->status, sizeof(state->status), "%s",
-                 "scan complete but summary load failed");
         return -1;
     }
 
     jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
     jw__resolve_system_names(state);
     jw_db_list_apps(db_path, state->apps, JW_MAX_APPS, &state->app_count);
-    /* Recents is the default tab, so load it now (also reloaded on tab entry). */
+
     if (jw_db_list_recent_games(db_path, state->recents, JW_MAX_RECENTS,
-                                &state->recents_count) != 0)
+                                &state->recents_count) != 0) {
         state->recents_count = 0;
+    }
+    if (jw_db_list_favorite_games(db_path, state->favorites, JW_MAX_FAVORITES,
+                                  &state->favorites_count) != 0) {
+        state->favorites_count = 0;
+    }
+
+    if (state->games_open) {
+        int rc = -1;
+        if (state->games_are_favorites) {
+            rc = jw_db_list_favorite_games(db_path, state->games, JW_MAX_GAMES,
+                                           &state->game_count);
+        } else if (strcmp(state->game_system, "Recently Played") == 0) {
+            rc = jw_db_list_recent_games(db_path, state->games, JW_MAX_GAMES,
+                                         &state->game_count);
+        } else if (state->game_system[0]) {
+            rc = jw_db_list_games_for_system(db_path, state->game_system,
+                                             state->games, JW_MAX_GAMES,
+                                             &state->game_count);
+        }
+        if (rc != 0 || state->game_count <= 0) {
+            state->games_open = false;
+            state->games_are_favorites = false;
+            state->game_count = 0;
+        } else {
+            if (game_cursor >= state->game_count) {
+                game_cursor = state->game_count - 1;
+            }
+            cat_list_state_jump(&state->game_list, game_cursor, state->game_count);
+        }
+    }
+
+    if (state->apps_open) {
+        if (state->app_count <= 0) {
+            state->apps_open = false;
+        } else {
+            if (app_cursor >= state->app_count) {
+                app_cursor = state->app_count - 1;
+            }
+            cat_list_state_jump(&state->app_list, app_cursor, state->app_count);
+        }
+    }
+
+    state->search_open = false;
+    state->search_count = 0;
+
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    cat_launcher_layout layout = ss->launcher.layout;
+    if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW) {
+        jw__build_carousel_list(state);
+        int count = state->flat_count;
+        if (flat_cursor >= count) {
+            flat_cursor = count > 0 ? count - 1 : 0;
+        }
+        cat_list_state_jump(&state->list, flat_cursor, count);
+    } else if (layout == CAT_LAUNCHER_VERTICAL) {
+        jw__build_flat_list(state);
+        int count = state->flat_count;
+        if (flat_cursor >= count) {
+            flat_cursor = count > 0 ? count - 1 : 0;
+        }
+        cat_list_state_jump(&state->list, flat_cursor, count);
+    } else {
+        int count = jw__tab_list_count(state);
+        if (tab_cursor >= count) {
+            tab_cursor = count > 0 ? count - 1 : 0;
+        }
+        cat_list_state_jump(&state->list, tab_cursor, count);
+    }
 
     state->scan_ready = true;
+    return 0;
+}
+
+static int jw__scan_library(const char *socket_path, const char *db_path,
+                             jw_launcher_state *state) {
+    int rc = jw_ipc_scan_library(socket_path, state->status, sizeof(state->status));
+    if (rc != 0) return -1;
+
+    if (jw__reload_library_from_db(db_path, state) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "scan complete but summary load failed");
+        return -1;
+    }
+
+    if (jw_ipc_library_status(socket_path, &state->library_generation) != 0) {
+        state->library_generation = -1;
+    }
     snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
         state->summary.game_count, state->system_count, state->summary.app_count);
     return 0;
+}
+
+static void jw__poll_library_generation(const char *socket_path,
+                                        const char *db_path,
+                                        jw_launcher_state *state) {
+    if (!socket_path || !db_path || !state) {
+        return;
+    }
+
+    uint32_t now = SDL_GetTicks();
+    if (state->next_library_generation_poll_ms &&
+        (int32_t)(now - state->next_library_generation_poll_ms) < 0) {
+        return;
+    }
+    state->next_library_generation_poll_ms = now + 1000;
+
+    int generation = 0;
+    if (jw_ipc_library_status(socket_path, &generation) != 0) {
+        return;
+    }
+    if (state->library_generation < 0) {
+        state->library_generation = generation;
+        return;
+    }
+    if (generation == state->library_generation) {
+        return;
+    }
+
+    if (jw__reload_library_from_db(db_path, state) == 0) {
+        state->library_generation = generation;
+        snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
+                 state->summary.game_count, state->system_count, state->summary.app_count);
+        cat_request_frame();
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -2798,6 +2922,7 @@ int main(void) {
 
     jw_launcher_state state;
     memset(&state, 0, sizeof(state));
+    state.library_generation = -1;
     /* Honor the persisted startup tab (Settings > Behavior > Startup Tab);
        default Games. Index mirrors the jw_tab enum. */
     state.current_tab = JW_TAB_GAMES;
@@ -2879,6 +3004,8 @@ int main(void) {
             jw_settings_ui_refresh_av(&state.settings);
             cat_request_frame_in(300);
         }
+
+        jw__poll_library_generation(socket_path, db_path, &state);
 
         /* Keep the status-bar speaker icon current. Volume lives in the daemon
            (unlike wifi/battery, which Catastrophe reads from sysfs), so poll it

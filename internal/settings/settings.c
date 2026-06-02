@@ -165,6 +165,24 @@ static void jw__refresh_led(jw_settings_ui *ui) {
     }
 }
 
+static void jw__refresh_secondary_sd_status(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+    snprintf(ui->secondary_sd_status, sizeof(ui->secondary_sd_status), "%s", "Unavailable");
+    if (!ui->socket_path[0]) {
+        return;
+    }
+
+    jw_ipc_storage_status_info storage;
+    if (jw_ipc_get_storage_status(ui->socket_path, "secondary_sd",
+                                  &storage, NULL, 0) != 0) {
+        return;
+    }
+    snprintf(ui->secondary_sd_status, sizeof(ui->secondary_sd_status), "%s",
+             storage.busy ? "Busy" : (storage.mounted ? "Mounted" : "Not mounted"));
+}
+
 /* Push the current LED config to jawakad (applies to hardware + persists). */
 static void jw__apply_led(jw_settings_ui *ui) {
     if (!ui || !ui->socket_path[0]) return;
@@ -246,6 +264,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->led_color      = cat_hex_to_color("#FFFFFF");
     ui->led_brightness = 5;
     ui->led_speed      = 5;
+    snprintf(ui->secondary_sd_status, sizeof(ui->secondary_sd_status), "%s",
+             "Unavailable");
 
     if (db_path && db_path[0])
         snprintf(ui->db_path, sizeof(ui->db_path), "%s", db_path);
@@ -306,6 +326,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     jw__refresh_brightness(ui);
     jw__refresh_volume(ui);
     jw__refresh_led(ui);
+    jw__refresh_secondary_sd_status(ui);
 }
 
 void jw_settings_ui_enter(jw_settings_ui *ui) {
@@ -315,6 +336,7 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     jw__refresh_brightness(ui);
     jw__refresh_volume(ui);
     jw__refresh_led(ui);
+    jw__refresh_secondary_sd_status(ui);
 }
 
 void jw_settings_ui_close(jw_settings_ui *ui) {
@@ -685,6 +707,10 @@ static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, in
     int ly = y + jw__header_h();
     jw__render_list_row(&ui->library_list, x, ly, w, JW_LIBRARY_RESET_RETROARCH,
                         "Reset RetroArch Config", "Defaults", true);
+    jw__render_list_row(&ui->library_list, x, ly, w, JW_LIBRARY_UNMOUNT_SECONDARY,
+                        "Unmount Secondary SD",
+                        ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
+                        true);
     (void)h;
 }
 
@@ -1128,6 +1154,41 @@ static void jw__reset_retroarch_config(jw_settings_ui *ui,
     jw_ipc_reset_retroarch_config(ui->socket_path, status_buf, (int)status_size);
 }
 
+static bool jw__confirm_secondary_unmount(void) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Unmount", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = "Safely unmount the secondary SD card?",
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static void jw__safe_unmount_secondary_sd(jw_settings_ui *ui,
+                                          char *status_buf, size_t status_size) {
+    if (!ui || !status_buf || status_size == 0) {
+        return;
+    }
+
+    if (!jw__confirm_secondary_unmount()) {
+        snprintf(status_buf, status_size, "%s", "Unmount canceled");
+        jw__refresh_secondary_sd_status(ui);
+        return;
+    }
+
+    status_buf[0] = '\0';
+    if (jw_ipc_safe_unmount_storage(ui->socket_path, "secondary_sd",
+                                    status_buf, (int)status_size) != 0 &&
+        !status_buf[0]) {
+        snprintf(status_buf, status_size, "%s", "Unmount failed");
+    }
+    jw__refresh_secondary_sd_status(ui);
+}
+
 /* ─── Input dispatch ───────────────────────────────────────────────────── */
 
 bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
@@ -1157,7 +1218,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->screen = JW_SETTINGS_LIGHTING;
                     jw__refresh_led(ui);
                 }
-                else if (idx == 3) ui->screen = JW_SETTINGS_LIBRARY;
+                else if (idx == 3) {
+                    ui->screen = JW_SETTINGS_LIBRARY;
+                    jw__refresh_secondary_sd_status(ui);
+                }
                 else if (idx == 4) ui->screen = JW_SETTINGS_BEHAVIOR;
                 else if (idx == 5) {
                     ui->screen = JW_SETTINGS_ABOUT;
@@ -1400,6 +1464,8 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_A:
                 if (ui->library_list.cursor == JW_LIBRARY_RESET_RETROARCH) {
                     jw__reset_retroarch_config(ui, status_buf, status_size);
+                } else if (ui->library_list.cursor == JW_LIBRARY_UNMOUNT_SECONDARY) {
+                    jw__safe_unmount_secondary_sd(ui, status_buf, status_size);
                 }
                 break;
             case CAT_BTN_B:

@@ -15,6 +15,11 @@ typedef struct {
                            jw_platform_result *out);
     void (*perform_action)(jw_platform_context *ctx, jw_platform_action action,
                            int value, jw_platform_result *out);
+    bool (*storage_tick)(jw_platform_context *ctx);
+    void (*get_storage_status)(jw_platform_context *ctx, const char *source_id,
+                               jw_platform_storage_status *out);
+    void (*safe_unmount_storage)(jw_platform_context *ctx, const char *source_id,
+                                 jw_platform_result *out);
     void (*set_led)(jw_platform_context *ctx, const jw_led_config *cfg,
                     jw_platform_result *out);
 } jw_platform_backend;

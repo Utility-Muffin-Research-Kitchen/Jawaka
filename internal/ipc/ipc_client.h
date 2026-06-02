@@ -19,6 +19,17 @@ typedef struct {
     int state_slot;
 } jw_ipc_retroarch_session_info;
 
+typedef struct {
+    bool present;
+    bool mounted;
+    bool busy;
+    bool can_unmount;
+    char source[32];
+    char label[64];
+    char mount_path[512];
+    char message[256];
+} jw_ipc_storage_status_info;
+
 /* Send a "hello" handshake to jawakad.
  * role: "launcher" or "menu".
  * Returns 0 on success, -1 on failure. */
@@ -27,6 +38,12 @@ int jw_ipc_hello(const char *socket_path, const char *role);
 /* Request a library rescan. Populates status[status_len] with a human-readable
  * result message. Returns 0 on success, -1 on failure. */
 int jw_ipc_scan_library(const char *socket_path, char *status, int status_len);
+int jw_ipc_library_status(const char *socket_path, int *out_generation);
+int jw_ipc_get_storage_status(const char *socket_path, const char *source,
+                              jw_ipc_storage_status_info *out,
+                              char *status, int status_len);
+int jw_ipc_safe_unmount_storage(const char *socket_path, const char *source,
+                                char *status, int status_len);
 
 /* Ask jawakad to show the menu overlay. Returns 0 on success, -1 on failure. */
 int jw_ipc_open_menu(const char *socket_path);

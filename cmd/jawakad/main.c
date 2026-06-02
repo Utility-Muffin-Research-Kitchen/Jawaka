@@ -8,6 +8,7 @@
 #include "internal/platform/paths.h"
 #include "internal/retroarch/command.h"
 #include "internal/settings/appearance.h"
+#include "internal/storage/sources.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -41,6 +42,8 @@ typedef struct {
     time_t started_at;
     char system[64];
     char rom_path[PATH_MAX];
+    char db_rom_path[PATH_MAX];
+    char source_root[PATH_MAX];
     char core_path[PATH_MAX];
     char config_path[PATH_MAX];
 } jw_retroarch_session;
@@ -70,6 +73,7 @@ typedef struct {
     jw_led_config cached_led;
     bool led_configured;       /* true once a user LED setting has been persisted/applied */
     jw_retroarch_session retroarch_session;
+    int library_generation;
     bool pending_menu;
     bool pending_launch;
     char pending_launch_system[64];
@@ -414,6 +418,120 @@ static int jw__reply_platform_result(jw_ipc_client *client, const char *action,
     return jw__reply_json(client, root);
 }
 
+static void jw__load_library_generation(jw_daemon_state *state) {
+    if (!state || !state->db_path) {
+        return;
+    }
+    char value[32];
+    if (jw_db_get_setting(state->db_path, "library.generation",
+                          value, sizeof(value)) == 0 && value[0]) {
+        state->library_generation = atoi(value);
+        if (state->library_generation < 0) {
+            state->library_generation = 0;
+        }
+    }
+}
+
+static void jw__persist_library_generation(jw_daemon_state *state) {
+    if (!state || !state->db_path) {
+        return;
+    }
+    char value[32];
+    snprintf(value, sizeof(value), "%d", state->library_generation);
+    if (jw_db_set_setting(state->db_path, "library.generation", value) != 0) {
+        jw_log_warn("could not persist library generation");
+    }
+}
+
+static void jw__bump_library_generation(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    state->library_generation += 1;
+    if (state->library_generation <= 0) {
+        state->library_generation = 1;
+    }
+    jw__persist_library_generation(state);
+}
+
+static int jw__scan_library_now(jw_daemon_state *state, jw_scan_result *out,
+                                const char *reason) {
+    if (!state) {
+        return -1;
+    }
+
+    jw_scan_result local_result;
+    jw_scan_result *scan_result = out ? out : &local_result;
+    if (jw_scan_library(state->db, state->sdcard_root, scan_result) != 0) {
+        jw_log_error("scan-library failed reason=%s", reason ? reason : "unknown");
+        return -1;
+    }
+
+    jw__bump_library_generation(state);
+    jw_log_info("scan-library %s", reason ? reason : "completed");
+    jw_log_info("scan-library indexed %d games across %d systems and %d apps generation=%d",
+                scan_result->game_count, scan_result->system_count,
+                scan_result->app_count, state->library_generation);
+    return 0;
+}
+
+static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *client) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "library-status");
+    cJSON_AddNumberToObject(root, "generation", state ? state->library_generation : 0);
+    return jw__reply_json(client, root);
+}
+
+static int jw__reply_storage_status(jw_daemon_state *state, jw_ipc_client *client,
+                                    const char *source_id) {
+    jw_platform_storage_status status;
+    jw_platform_get_storage_status(&state->platform, source_id, &status);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "storage-status");
+    cJSON_AddStringToObject(root, "source", status.source_id);
+    cJSON_AddStringToObject(root, "label", status.label);
+    cJSON_AddStringToObject(root, "mount_path", status.mount_path);
+    cJSON_AddStringToObject(root, "device_path", status.device_path);
+    cJSON_AddBoolToObject(root, "present", status.present);
+    cJSON_AddBoolToObject(root, "mounted", status.mounted);
+    cJSON_AddBoolToObject(root, "busy", status.busy);
+    cJSON_AddBoolToObject(root, "can_unmount", status.can_unmount);
+    cJSON_AddStringToObject(root, "message", status.message);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *client,
+                                     cJSON *root) {
+    cJSON *source_json = cJSON_GetObjectItemCaseSensitive(root, "source");
+    cJSON *action_json = cJSON_GetObjectItemCaseSensitive(root, "action");
+    const char *source = cJSON_IsString(source_json) && source_json->valuestring
+        ? source_json->valuestring
+        : "secondary_sd";
+    if (!cJSON_IsString(action_json) || !action_json->valuestring ||
+        strcmp(action_json->valuestring, "safe-unmount") != 0) {
+        return jw__reply_error(client, "missing storage action");
+    }
+
+    jw_platform_result result;
+    jw_platform_safe_unmount_storage(&state->platform, source, &result);
+    if (result.code == JW_PLATFORM_RESULT_OK) {
+        jw_scan_result scan_result;
+        if (jw__scan_library_now(state, &scan_result, "after safe-unmount") != 0) {
+            result.code = JW_PLATFORM_RESULT_FAILED;
+            result.has_value = false;
+            result.value = 0;
+            snprintf(result.message, sizeof(result.message), "%s",
+                     "Secondary SD unmounted; library rescan failed");
+        }
+    }
+
+    jw_log_info("storage-action requested source=%s action=%s code=%s",
+                source, action_json->valuestring,
+                jw_platform_result_code_name(result.code));
+    return jw__reply_platform_result(client, action_json->valuestring, &result);
+}
+
 static const char *jw__child_name(jw_child_kind kind) {
     switch (kind) {
         case JW_CHILD_LAUNCHER: return "jawaka-launcher";
@@ -483,6 +601,8 @@ static void jw__retroarch_session_clear(jw_retroarch_session *session) {
 
 static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         const char *system, const char *rom_path,
+                                        const char *db_rom_path,
+                                        const char *source_root,
                                         const char *core_path,
                                         const char *config_path) {
     if (!state || pid <= 0) {
@@ -496,6 +616,10 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     session->started_at = time(NULL);
     snprintf(session->system, sizeof(session->system), "%s", system ? system : "");
     snprintf(session->rom_path, sizeof(session->rom_path), "%s", rom_path ? rom_path : "");
+    snprintf(session->db_rom_path, sizeof(session->db_rom_path), "%s",
+             db_rom_path ? db_rom_path : "");
+    snprintf(session->source_root, sizeof(session->source_root), "%s",
+             source_root ? source_root : "");
     snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
     snprintf(session->config_path, sizeof(session->config_path), "%s",
              config_path ? config_path : "");
@@ -504,9 +628,9 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
 
-    jw_log_info("RetroArch session started pid=%d system=%s core=%s config=%s rom=%s",
-                (int)pid, session->system, session->core_path,
-                session->config_path, session->rom_path);
+    jw_log_info("RetroArch session started pid=%d system=%s source=%s core=%s config=%s rom=%s",
+                (int)pid, session->system, session->source_root,
+                session->core_path, session->config_path, session->rom_path);
 }
 
 static long jw__retroarch_session_runtime_s(const jw_retroarch_session *session) {
@@ -553,7 +677,10 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
 
     if (session->config_path[0]) {
         char error[256];
-        if (jw_backup_retroarch_config(session->config_path, state->sdcard_root,
+        const char *config_root = session->source_root[0]
+            ? session->source_root
+            : state->sdcard_root;
+        if (jw_backup_retroarch_config(session->config_path, config_root,
                                        error, sizeof(error)) != 0) {
             jw_log_warn("RetroArch shared config backup failed: %s",
                         error[0] ? error : session->config_path);
@@ -564,19 +691,15 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
 
     /* Record recents + playtime for real sessions only. A crash at launch gives
        runtime_s=0, so it never pollutes the list or playtime totals. The session
-       holds the absolute ROM path; games.rom_path is stored relative to the SD
-       root, so strip the prefix before the lookup. */
+       stores the same path form that games.rom_path used at launch. */
     if (runtime_s > 0 && state->db_path && session->rom_path[0]) {
-        const char *rel = session->rom_path;
-        size_t root_len = state->sdcard_root ? strlen(state->sdcard_root) : 0;
-        if (root_len > 0 && strncmp(rel, state->sdcard_root, root_len) == 0) {
-            rel += root_len;
-            while (*rel == '/') rel++;
-        }
-        if (jw_db_record_play(state->db_path, rel, (int)runtime_s) == 0) {
-            jw_log_info("recorded play rom=%s duration_s=%ld", rel, runtime_s);
+        const char *db_rom = session->db_rom_path[0]
+            ? session->db_rom_path
+            : session->rom_path;
+        if (jw_db_record_play(state->db_path, db_rom, (int)runtime_s) == 0) {
+            jw_log_info("recorded play rom=%s duration_s=%ld", db_rom, runtime_s);
         } else {
-            jw_log_warn("could not record play for rom=%s", rel);
+            jw_log_warn("could not record play for rom=%s", db_rom);
         }
     }
 
@@ -697,6 +820,72 @@ static int jw__resolve_rom_path(jw_daemon_state *state, const char *rom_path,
     return 0;
 }
 
+static int jw__storage_sources(jw_daemon_state *state, jw_storage_source_list *out) {
+    if (!state || !out) {
+        return -1;
+    }
+    return jw_storage_sources_resolve(state->sdcard_root, out);
+}
+
+static void jw__publish_source_content_env(const jw_storage_source *source) {
+    if (!source) {
+        return;
+    }
+    setenv("SDCARD_PATH", source->root, 1);
+    setenv("JAWAKA_SDCARD_ROOT", source->root, 1);
+    setenv("ROMS_PATH", source->roms_path, 1);
+    setenv("IMAGES_PATH", source->images_path, 1);
+    setenv("APPS_PATH", source->apps_path, 1);
+    setenv("BIOS_PATH", source->bios_path, 1);
+    setenv("SAVES_PATH", source->saves_path, 1);
+    setenv("STATES_PATH", source->states_path, 1);
+    setenv("CHEATS_PATH", source->cheats_path, 1);
+}
+
+typedef struct {
+    const char *name;
+    char *value;
+    bool had_value;
+} jw_saved_env;
+
+static void jw__save_env(jw_saved_env *saved, const char *name) {
+    if (!saved || !name) {
+        return;
+    }
+    saved->name = name;
+    const char *value = getenv(name);
+    saved->had_value = value != NULL;
+    saved->value = value ? strdup(value) : NULL;
+}
+
+static void jw__restore_env(jw_saved_env *saved, int count) {
+    if (!saved || count <= 0) {
+        return;
+    }
+    for (int i = count - 1; i >= 0; i--) {
+        if (!saved[i].name) {
+            continue;
+        }
+        if (saved[i].had_value) {
+            setenv(saved[i].name, saved[i].value ? saved[i].value : "", 1);
+        } else {
+            unsetenv(saved[i].name);
+        }
+        free(saved[i].value);
+        saved[i].value = NULL;
+        saved[i].had_value = false;
+    }
+}
+
+static void jw__publish_retroarch_source_dirs(const jw_storage_source *source) {
+    if (!source) {
+        return;
+    }
+    setenv("BIOS_PATH", source->bios_path, 1);
+    setenv("SAVES_PATH", source->saves_path, 1);
+    setenv("STATES_PATH", source->states_path, 1);
+}
+
 static int jw__path_is_within(const char *path, const char *root) {
     if (!path || !root) {
         return 0;
@@ -715,49 +904,46 @@ static int jw__resolve_app_launch_path(jw_daemon_state *state, const char *pak_d
         return -1;
     }
 
-    char sdcard_abs[PATH_MAX];
-    char apps_abs[PATH_MAX];
-    if (!realpath(state->sdcard_root, sdcard_abs)) {
-        if (out_error) *out_error = "SD-card root missing";
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0) {
+        if (out_error) *out_error = "storage sources unavailable";
         return -1;
     }
-
-    const char *apps_root = jw__env_value("APPS_PATH");
-    char apps_candidate[PATH_MAX];
-    if (apps_root) {
-        if (snprintf(apps_candidate, sizeof(apps_candidate), "%s", apps_root) >=
-            (int)sizeof(apps_candidate)) {
-            if (out_error) *out_error = "Apps path too long";
-            return -1;
-        }
-    } else if (snprintf(apps_candidate, sizeof(apps_candidate), "%s/Apps", sdcard_abs) >=
-               (int)sizeof(apps_candidate)) {
-        if (out_error) *out_error = "Apps path too long";
-        return -1;
-    }
-    if (!realpath(apps_candidate, apps_abs)) {
-        if (out_error) *out_error = "Apps directory missing";
-        return -1;
-    }
-
+    const jw_storage_source *source = NULL;
     char candidate[PATH_MAX];
     if (pak_dir[0] == '/') {
         snprintf(candidate, sizeof(candidate), "%s", pak_dir);
-    } else if (strncmp(pak_dir, "Apps/", 5) == 0) {
-        if (snprintf(candidate, sizeof(candidate), "%s/%s", apps_abs, pak_dir + 5) >=
+    } else {
+        source = jw_storage_sources_primary(&sources);
+        if (!source) {
+            if (out_error) *out_error = "primary storage source missing";
+            return -1;
+        }
+        const char *rel = strncmp(pak_dir, "Apps/", 5) == 0 ? pak_dir + 5 : pak_dir;
+        if (snprintf(candidate, sizeof(candidate), "%s/%s", source->apps_path, rel) >=
             (int)sizeof(candidate)) {
             if (out_error) *out_error = "app path too long";
             return -1;
         }
-    } else if (snprintf(candidate, sizeof(candidate), "%s/%s", apps_abs, pak_dir) >=
-               (int)sizeof(candidate)) {
-        if (out_error) *out_error = "app path too long";
-        return -1;
     }
 
     char resolved_pak[PATH_MAX];
     if (!realpath(candidate, resolved_pak)) {
         if (out_error) *out_error = "app pak missing";
+        return -1;
+    }
+
+    if (!source) {
+        source = jw_storage_sources_find_for_path(&sources, resolved_pak);
+    }
+    if (!source) {
+        if (out_error) *out_error = "app storage source missing";
+        return -1;
+    }
+
+    char apps_abs[PATH_MAX];
+    if (!realpath(source->apps_path, apps_abs)) {
+        if (out_error) *out_error = "Apps directory missing";
         return -1;
     }
 
@@ -1408,14 +1594,20 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
                 (int)sizeof(dir_buf)) {
             setenv("JAWAKA_INGAME_SHOTDIR", dir_buf, 1);
         }
+        const char *state_root = state->retroarch_session.source_root[0]
+            ? state->retroarch_session.source_root
+            : state->sdcard_root;
         const char *states_dir = jw__env_value("STATES_PATH");
-        if (!states_dir) {
-            states_dir = state->sdcard_root;
-        }
-        if (states_dir && state->sdcard_root &&
-            snprintf(dir_buf, sizeof(dir_buf), "%s%s", states_dir,
-                     states_dir == state->sdcard_root ? "/States" : "") <
-                (int)sizeof(dir_buf)) {
+        if (state->retroarch_session.source_root[0] ||
+            !states_dir || strcmp(states_dir, state->sdcard_root) == 0) {
+            if (state_root &&
+                snprintf(dir_buf, sizeof(dir_buf), "%s/States", state_root) <
+                    (int)sizeof(dir_buf)) {
+                setenv("JAWAKA_INGAME_STATEDIR", dir_buf, 1);
+            }
+        } else if (states_dir &&
+            snprintf(dir_buf, sizeof(dir_buf), "%s", states_dir) <
+                    (int)sizeof(dir_buf)) {
             setenv("JAWAKA_INGAME_STATEDIR", dir_buf, 1);
         }
         char *const argv[] = { (char *)path, "--in-game", NULL };
@@ -1448,6 +1640,12 @@ static int jw__spawn_app(jw_daemon_state *state) {
         return -1;
     }
 
+    jw_storage_source_list sources;
+    const jw_storage_source *app_source = NULL;
+    if (jw__storage_sources(state, &sources) == 0) {
+        app_source = jw_storage_sources_find_for_path(&sources, pak_abs);
+    }
+
     jw__suspend_input_proxy_for_app(state);
 
     pid_t pid = fork();
@@ -1460,6 +1658,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
 
     if (pid == 0) {
         jw_appearance_export_env(state->db_path);
+        jw__publish_source_content_env(app_source);
         if (chdir(pak_abs) != 0) {
             perror("chdir");
             _exit(127);
@@ -1487,6 +1686,17 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         jw_log_error("could not resolve ROM path: %s", state->pending_launch_rom_path);
         state->pending_launch = false;
         return -1;
+    }
+    jw_storage_source_list sources;
+    const jw_storage_source *rom_source = NULL;
+    if (jw__storage_sources(state, &sources) == 0) {
+        rom_source = jw_storage_sources_find_for_path(&sources, rom_abs);
+    }
+    char source_root[PATH_MAX];
+    if (rom_source) {
+        snprintf(source_root, sizeof(source_root), "%s", rom_source->root);
+    } else {
+        snprintf(source_root, sizeof(source_root), "%s", state->sdcard_root);
     }
 
     char *retroarch = jw_retroarch_bin_path();
@@ -1531,14 +1741,27 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         }
     }
 
+    jw_saved_env storage_env[] = {
+        { .name = NULL, .value = NULL, .had_value = false },
+        { .name = NULL, .value = NULL, .had_value = false },
+        { .name = NULL, .value = NULL, .had_value = false },
+    };
+    if (rom_source) {
+        jw__save_env(&storage_env[0], "BIOS_PATH");
+        jw__save_env(&storage_env[1], "SAVES_PATH");
+        jw__save_env(&storage_env[2], "STATES_PATH");
+        jw__publish_retroarch_source_dirs(rom_source);
+    }
+
     char config_error[256];
     runtime_config = jw_prepare_retroarch_config(state->runtime_dir,
-                                                state->sdcard_root,
+                                                source_root,
                                                 core,
                                                 player1_joypad_index,
                                                 true,
                                                 config_error,
                                                 sizeof(config_error));
+    jw__restore_env(storage_env, 3);
     if (!runtime_config) {
         jw_log_error("could not prepare RetroArch config: %s",
                      config_error[0] ? config_error : "unknown error");
@@ -1568,7 +1791,9 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     state->child_kind = JW_CHILD_RETROARCH;
     state->pending_launch = false;
     jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
-    jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs, core, runtime_config);
+    jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs,
+                                state->pending_launch_rom_path, source_root,
+                                core, runtime_config);
 
     /* Pre-spawn the in-game menu as a hidden warm standby so the first Menu
        tap only has to pause + reveal an already-built window, not cold-start a
@@ -1593,14 +1818,10 @@ fail:
 
 static int jw__handle_scan(jw_daemon_state *state, jw_ipc_client *client) {
     jw_scan_result scan_result;
-    if (jw_scan_library(state->db, state->sdcard_root, &scan_result) != 0) {
-        jw_log_error("scan-library failed");
+    if (jw__scan_library_now(state, &scan_result, "requested") != 0) {
         return jw__reply_error(client, "scan-library failed");
     }
 
-    jw_log_info("scan-library requested");
-    jw_log_info("scan-library indexed %d games across %d systems and %d apps",
-        scan_result.game_count, scan_result.system_count, scan_result.app_count);
     return jw__reply_ok(client, "scan-library", &scan_result);
 }
 
@@ -1815,6 +2036,27 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     if (strcmp(type->valuestring, "scan-library") == 0) {
         cJSON_Delete(root);
         return jw__handle_scan(state, client);
+    }
+
+    if (strcmp(type->valuestring, "library-status") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_library_status(state, client);
+    }
+
+    if (strcmp(type->valuestring, "storage-status") == 0) {
+        cJSON *source_json = cJSON_GetObjectItemCaseSensitive(root, "source");
+        char source[32] = "";
+        if (cJSON_IsString(source_json) && source_json->valuestring) {
+            snprintf(source, sizeof(source), "%s", source_json->valuestring);
+        }
+        cJSON_Delete(root);
+        return jw__reply_storage_status(state, client, source[0] ? source : NULL);
+    }
+
+    if (strcmp(type->valuestring, "storage-action") == 0) {
+        int rc = jw__handle_storage_action(state, client, root);
+        cJSON_Delete(root);
+        return rc;
     }
 
     if (strcmp(type->valuestring, "open-menu") == 0) {
@@ -2329,6 +2571,7 @@ int main(int argc, char *argv[]) {
         jw__cleanup(&state);
         return 1;
     }
+    jw__load_library_generation(&state);
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
     jw__apply_persisted_led(&state);
@@ -2383,6 +2626,12 @@ int main(int argc, char *argv[]) {
         jw__handle_menu_exit(&state);
         jw__handle_osd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
+        if (jw_platform_storage_tick(&state.platform)) {
+            jw_scan_result scan_result;
+            if (jw__scan_library_now(&state, &scan_result, "after storage change") != 0) {
+                jw_log_warn("storage hotplug: library rescan failed");
+            }
+        }
 
         if (state.shutdown_requested && state.child_pid <= 0 &&
             state.menu_pid <= 0) {

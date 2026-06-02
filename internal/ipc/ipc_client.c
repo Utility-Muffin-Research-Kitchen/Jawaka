@@ -83,6 +83,104 @@ int jw_ipc_scan_library(const char *socket_path, char *status, int status_len) {
     return 0;
 }
 
+int jw_ipc_library_status(const char *socket_path, int *out_generation) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "library-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    if (!ipc__type_is(resp, "library-status")) {
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    const cJSON *generation = cJSON_GetObjectItemCaseSensitive(resp, "generation");
+    if (out_generation) {
+        *out_generation = cJSON_IsNumber(generation) ? generation->valueint : 0;
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_get_storage_status(const char *socket_path, const char *source,
+                              jw_ipc_storage_status_info *out,
+                              char *status, int status_len) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "storage-status");
+    cJSON_AddStringToObject(req, "source", source && source[0] ? source : "secondary_sd");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status) snprintf(status, (size_t)status_len, "%s", "storage status unavailable");
+        return -1;
+    }
+    if (!ipc__type_is(resp, "storage-status")) {
+        if (status) snprintf(status, (size_t)status_len, "%s", "storage status failed");
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (out) {
+        const cJSON *v = NULL;
+        v = cJSON_GetObjectItemCaseSensitive(resp, "source");
+        if (cJSON_IsString(v)) ipc__copy_string(out->source, sizeof(out->source), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "label");
+        if (cJSON_IsString(v)) ipc__copy_string(out->label, sizeof(out->label), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "mount_path");
+        if (cJSON_IsString(v)) ipc__copy_string(out->mount_path, sizeof(out->mount_path), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(v)) ipc__copy_string(out->message, sizeof(out->message), v->valuestring);
+        out->present = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "present"));
+        out->mounted = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "mounted"));
+        out->busy = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "busy"));
+        out->can_unmount = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "can_unmount"));
+    }
+    if (status) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "storage status ready");
+        }
+    }
+
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_safe_unmount_storage(const char *socket_path, const char *source,
+                                char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "storage-action");
+    cJSON_AddStringToObject(req, "source", source && source[0] ? source : "secondary_sd");
+    cJSON_AddStringToObject(req, "action", "safe-unmount");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status) snprintf(status, (size_t)status_len, "%s", "unmount failed: daemon unavailable");
+        return -1;
+    }
+
+    bool ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s",
+                     ok ? "Secondary SD unmounted" : "unmount failed");
+        }
+    }
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
 int jw_ipc_open_menu(const char *socket_path) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "open-menu");

@@ -87,7 +87,8 @@ typedef enum {
 
 /* Library page */
 #define JW_LIBRARY_RESET_RETROARCH 0
-#define JW_LIBRARY_ROW_COUNT 1
+#define JW_LIBRARY_UNMOUNT_SECONDARY 1
+#define JW_LIBRARY_ROW_COUNT 2
 
 /* Behavior page */
 #define JW_BEHAVIOR_STARTUP_TAB 0
@@ -128,6 +129,7 @@ typedef struct {
     ap_color           led_color;
     int                led_brightness;      /* 0..JW_LED_BRIGHTNESS_MAX */
     int                led_speed;           /* 0..JW_LED_SPEED_MAX */
+    char               secondary_sd_status[32];
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;

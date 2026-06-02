@@ -3,6 +3,7 @@
 #include "cJSON.h"
 #include "internal/db/db.h"
 #include "internal/retroarch/catalog.h"
+#include "internal/storage/sources.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -56,22 +57,6 @@ static int jw__format_string(char *out, size_t out_size, const char *fmt, ...) {
     int needed = vsnprintf(out, out_size, fmt, args);
     va_end(args);
     return needed >= 0 && (size_t)needed < out_size ? 0 : -1;
-}
-
-static const char *jw__env_value(const char *name) {
-    const char *value = getenv(name);
-    return (value && value[0]) ? value : NULL;
-}
-
-static int jw__sd_child_or_env(char *out, size_t out_size,
-                               const char *env_name,
-                               const char *sdcard_root,
-                               const char *child) {
-    const char *env = jw__env_value(env_name);
-    if (env) {
-        return jw__format_string(out, out_size, "%s", env);
-    }
-    return jw__format_string(out, out_size, "%s/%s", sdcard_root, child);
 }
 
 static void jw__lower_copy(const char *in, char *out, size_t out_size) {
@@ -267,10 +252,9 @@ static int jw__metadata_system_has_packaged_retroarch_core(const jw_ra_catalog *
 }
 
 static const char *jw__metadata_image_path(const jw_ra_system *system,
+                                           const jw_storage_source *source,
                                            const char *physical_folder,
                                            const char *title,
-                                           const char *sdcard_root,
-                                           const char *images_root,
                                            char *image_abs,
                                            size_t image_abs_size,
                                            char *image_rel,
@@ -280,36 +264,46 @@ static const char *jw__metadata_image_path(const jw_ra_system *system,
         : NULL;
     if (canonical_root &&
         snprintf(image_abs, image_abs_size, "%s/%s/%s.png",
-                 sdcard_root, canonical_root, title) < (int)image_abs_size &&
+                 source->root, canonical_root, title) < (int)image_abs_size &&
         snprintf(image_rel, image_rel_size, "%s/%s.png",
                  canonical_root, title) < (int)image_rel_size &&
         jw__is_file(image_abs)) {
-        return image_rel;
+        return jw_storage_db_path_for_source(source, image_rel, image_abs,
+                                             image_rel, image_rel_size) == 0
+            ? image_rel
+            : NULL;
     }
 
     if (physical_folder && physical_folder[0] &&
         snprintf(image_abs, image_abs_size, "%s/%s/%s.png",
-                 images_root, physical_folder, title) < (int)image_abs_size &&
+                 source->images_path, physical_folder, title) < (int)image_abs_size &&
         snprintf(image_rel, image_rel_size, "Images/%s/%s.png",
                  physical_folder, title) < (int)image_rel_size &&
         jw__is_file(image_abs)) {
-        return image_rel;
+        return jw_storage_db_path_for_source(source, image_rel, image_abs,
+                                             image_rel, image_rel_size) == 0
+            ? image_rel
+            : NULL;
+    }
+
+    if (physical_folder && physical_folder[0] &&
+        snprintf(image_abs, image_abs_size, "%s/%s/Imgs/%s.png",
+                 source->roms_path, physical_folder, title) < (int)image_abs_size &&
+        snprintf(image_rel, image_rel_size, "Roms/%s/Imgs/%s.png",
+                 physical_folder, title) < (int)image_rel_size &&
+        jw__is_file(image_abs)) {
+        return jw_storage_db_path_for_source(source, image_rel, image_abs,
+                                             image_rel, image_rel_size) == 0
+            ? image_rel
+            : NULL;
     }
 
     return NULL;
 }
 
-static int jw__scan_roms_compat(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
-    char roms_root[PATH_MAX];
-    char images_root[PATH_MAX];
-    if (jw__sd_child_or_env(roms_root, sizeof(roms_root),
-                            "ROMS_PATH", sdcard_root, "Roms") != 0 ||
-        jw__sd_child_or_env(images_root, sizeof(images_root),
-                            "IMAGES_PATH", sdcard_root, "Images") != 0) {
-        return -1;
-    }
-
-    DIR *systems = opendir(roms_root);
+static int jw__scan_roms_compat(sqlite3 *db, const jw_storage_source *source,
+                                jw_scan_result *out) {
+    DIR *systems = opendir(source->roms_path);
     if (!systems) {
         return 0;
     }
@@ -322,7 +316,7 @@ static int jw__scan_roms_compat(sqlite3 *db, const char *sdcard_root, jw_scan_re
 
         char system_dir[PATH_MAX];
         if (snprintf(system_dir, sizeof(system_dir), "%s/%s",
-                     roms_root, system_entry->d_name) >= (int)sizeof(system_dir)) {
+                     source->roms_path, system_entry->d_name) >= (int)sizeof(system_dir)) {
             continue;
         }
         if (!jw__is_directory(system_dir)) {
@@ -357,15 +351,29 @@ static int jw__scan_roms_compat(sqlite3 *db, const char *sdcard_root, jw_scan_re
             const char *image_path = NULL;
 
             jw__title_from_filename(file_entry->d_name, title, sizeof(title));
-            if (snprintf(rom_rel, sizeof(rom_rel), "Roms/%s/%s",
-                         system_entry->d_name, file_entry->d_name) >= (int)sizeof(rom_rel)) {
+            char rom_rel_candidate[PATH_MAX];
+            if (snprintf(rom_rel_candidate, sizeof(rom_rel_candidate), "Roms/%s/%s",
+                         system_entry->d_name, file_entry->d_name) >=
+                (int)sizeof(rom_rel_candidate) ||
+                jw_storage_db_path_for_source(source, rom_rel_candidate, rom_abs,
+                                              rom_rel, sizeof(rom_rel)) != 0) {
                 continue;
             }
             if (jw__format_string(image_abs, sizeof(image_abs), "%s/%s/%s.png",
-                                  images_root, system_entry->d_name, title) == 0 &&
+                                  source->images_path, system_entry->d_name, title) == 0 &&
                 jw__format_string(image_rel, sizeof(image_rel), "Images/%s/%s.png",
                                   system_entry->d_name, title) == 0 &&
-                jw__is_file(image_abs)) {
+                jw__is_file(image_abs) &&
+                jw_storage_db_path_for_source(source, image_rel, image_abs,
+                                              image_rel, sizeof(image_rel)) == 0) {
+                image_path = image_rel;
+            } else if (jw__format_string(image_abs, sizeof(image_abs), "%s/%s/Imgs/%s.png",
+                                         source->roms_path, system_entry->d_name, title) == 0 &&
+                       jw__format_string(image_rel, sizeof(image_rel), "Roms/%s/Imgs/%s.png",
+                                         system_entry->d_name, title) == 0 &&
+                       jw__is_file(image_abs) &&
+                       jw_storage_db_path_for_source(source, image_rel, image_abs,
+                                                     image_rel, sizeof(image_rel)) == 0) {
                 image_path = image_rel;
             }
 
@@ -459,19 +467,10 @@ static int jw__name_is_m3u_member(const char *name, char members[][JW_M3U_MEMBER
 }
 
 static int jw__scan_roms_metadata(sqlite3 *db,
-                                  const char *sdcard_root,
+                                  const jw_storage_source *source,
                                   const jw_ra_catalog *catalog,
                                   jw_scan_result *out) {
-    char roms_root[PATH_MAX];
-    char images_root[PATH_MAX];
-    if (jw__sd_child_or_env(roms_root, sizeof(roms_root),
-                            "ROMS_PATH", sdcard_root, "Roms") != 0 ||
-        jw__sd_child_or_env(images_root, sizeof(images_root),
-                            "IMAGES_PATH", sdcard_root, "Images") != 0) {
-        return -1;
-    }
-
-    DIR *systems = opendir(roms_root);
+    DIR *systems = opendir(source->roms_path);
     if (!systems) {
         return 0;
     }
@@ -486,7 +485,7 @@ static int jw__scan_roms_metadata(sqlite3 *db,
 
         char system_dir[PATH_MAX];
         if (snprintf(system_dir, sizeof(system_dir), "%s/%s",
-                     roms_root, system_entry->d_name) >= (int)sizeof(system_dir)) {
+                     source->roms_path, system_entry->d_name) >= (int)sizeof(system_dir)) {
             continue;
         }
         if (!jw__is_directory(system_dir)) {
@@ -562,15 +561,18 @@ static int jw__scan_roms_metadata(sqlite3 *db,
             const char *image_path = NULL;
 
             jw__title_from_metadata_filename(system, file_entry->d_name, title, sizeof(title));
-            if (snprintf(rom_rel, sizeof(rom_rel), "Roms/%s/%s",
-                         system_entry->d_name, file_entry->d_name) >= (int)sizeof(rom_rel)) {
+            char rom_rel_candidate[PATH_MAX];
+            if (snprintf(rom_rel_candidate, sizeof(rom_rel_candidate), "Roms/%s/%s",
+                         system_entry->d_name, file_entry->d_name) >=
+                (int)sizeof(rom_rel_candidate) ||
+                jw_storage_db_path_for_source(source, rom_rel_candidate, rom_abs,
+                                              rom_rel, sizeof(rom_rel)) != 0) {
                 continue;
             }
             image_path = jw__metadata_image_path(system,
+                                                 source,
                                                  system_entry->d_name,
                                                  title,
-                                                 sdcard_root,
-                                                 images_root,
                                                  image_abs,
                                                  sizeof(image_abs),
                                                  image_rel,
@@ -594,10 +596,20 @@ static int jw__scan_roms_metadata(sqlite3 *db,
 }
 
 static int jw__scan_roms(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
+    jw_storage_source_list sources;
+    if (jw_storage_sources_resolve(sdcard_root, &sources) != 0) {
+        return -1;
+    }
+
     const char *disable_v2 = getenv("JAWAKA_DISABLE_RETROARCH_V2");
     if (disable_v2 && strcmp(disable_v2, "1") == 0) {
         fprintf(stderr, "RetroArch discovery: metadata disabled, using compatibility scanner\n");
-        return jw__scan_roms_compat(db, sdcard_root, out);
+        for (int i = 0; i < sources.count; i++) {
+            if (jw__scan_roms_compat(db, &sources.sources[i], out) != 0) {
+                return -1;
+            }
+        }
+        return 0;
     }
 
     char error[256];
@@ -605,10 +617,20 @@ static int jw__scan_roms(sqlite3 *db, const char *sdcard_root, jw_scan_result *o
     if (!catalog) {
         fprintf(stderr, "RetroArch discovery: metadata unavailable (%s), using compatibility scanner\n",
                 error[0] ? error : "unknown error");
-        return jw__scan_roms_compat(db, sdcard_root, out);
+        for (int i = 0; i < sources.count; i++) {
+            if (jw__scan_roms_compat(db, &sources.sources[i], out) != 0) {
+                return -1;
+            }
+        }
+        return 0;
     }
 
-    return jw__scan_roms_metadata(db, sdcard_root, catalog, out);
+    for (int i = 0; i < sources.count; i++) {
+        if (jw__scan_roms_metadata(db, &sources.sources[i], catalog, out) != 0) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static void jw__trim_pak_suffix(const char *name, char *out, size_t out_size) {
@@ -624,14 +646,9 @@ static void jw__trim_pak_suffix(const char *name, char *out, size_t out_size) {
     }
 }
 
-static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
-    char apps_root[PATH_MAX];
-    if (jw__sd_child_or_env(apps_root, sizeof(apps_root),
-                            "APPS_PATH", sdcard_root, "Apps") != 0) {
-        return -1;
-    }
-
-    DIR *apps = opendir(apps_root);
+static int jw__scan_apps_source(sqlite3 *db, const jw_storage_source *source,
+                                jw_scan_result *out) {
+    DIR *apps = opendir(source->apps_path);
     if (!apps) {
         return 0;
     }
@@ -644,7 +661,7 @@ static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *o
 
         char pak_abs[PATH_MAX];
         if (jw__format_string(pak_abs, sizeof(pak_abs), "%s/%s",
-                              apps_root, entry->d_name) != 0) {
+                              source->apps_path, entry->d_name) != 0) {
             continue;
         }
         if (!jw__is_directory(pak_abs)) {
@@ -652,8 +669,12 @@ static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *o
         }
 
         char pak_rel[PATH_MAX];
+        char pak_rel_candidate[PATH_MAX];
         char default_name[256];
-        if (jw__format_string(pak_rel, sizeof(pak_rel), "Apps/%s", entry->d_name) != 0) {
+        if (jw__format_string(pak_rel_candidate, sizeof(pak_rel_candidate),
+                              "Apps/%s", entry->d_name) != 0 ||
+            jw_storage_db_path_for_source(source, pak_rel_candidate, pak_abs,
+                                          pak_rel, sizeof(pak_rel)) != 0) {
             continue;
         }
         jw__trim_pak_suffix(entry->d_name, default_name, sizeof(default_name));
@@ -716,6 +737,33 @@ static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *o
     return 0;
 }
 
+static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
+    jw_storage_source_list sources;
+    if (jw_storage_sources_resolve(sdcard_root, &sources) != 0) {
+        return -1;
+    }
+    for (int i = 0; i < sources.count; i++) {
+        if (jw__scan_apps_source(db, &sources.sources[i], out) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void jw__refresh_result_counts(sqlite3 *db, jw_scan_result *out) {
+    if (!db || !out) {
+        return;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(DISTINCT system) FROM games;",
+                           -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            out->system_count = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+}
+
 int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     if (!db || !sdcard_root || !out) {
         return -1;
@@ -732,8 +780,14 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     if (jw_db_scan_begin(db) != 0 ||
         jw__scan_roms(db, sdcard_root, out) != 0 ||
         jw__scan_apps(db, sdcard_root, out) != 0 ||
-        jw_db_scan_prune(db) != 0 ||
-        jw__exec(db, "COMMIT;") != 0) {
+        jw_db_scan_prune(db) != 0) {
+        jw__exec(db, "ROLLBACK;");
+        return -1;
+    }
+
+    jw__refresh_result_counts(db, out);
+
+    if (jw__exec(db, "COMMIT;") != 0) {
         jw__exec(db, "ROLLBACK;");
         return -1;
     }
