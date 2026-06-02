@@ -226,6 +226,75 @@ int jw_ipc_launch_game(const char *socket_path, const char *system,
     return 0;
 }
 
+int jw_ipc_open_switcher(const char *socket_path, char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "open-switcher");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status) snprintf(status, (size_t)status_len, "%s",
+                             "open-switcher failed: daemon unavailable");
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "open-switcher failed: %s",
+                         message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "open-switcher failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (status) snprintf(status, (size_t)status_len, "%s", "switcher requested");
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_switch_game(const char *socket_path, const char *system,
+                       const char *rom_path, char *status, int status_len) {
+    if (!system || !system[0] || !rom_path || !rom_path[0]) {
+        if (status) snprintf(status, (size_t)status_len, "%s",
+                             "switch failed: missing game");
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "switch-game");
+    cJSON_AddStringToObject(req, "system", system);
+    cJSON_AddStringToObject(req, "rom_path", rom_path);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status) snprintf(status, (size_t)status_len, "%s",
+                             "switch failed: daemon unavailable");
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "switch failed: %s",
+                         message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "switch failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (status) snprintf(status, (size_t)status_len, "%s", "switch requested");
+    cJSON_Delete(resp);
+    return 0;
+}
+
 int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
                       char *status, int status_len) {
     if (!pak_dir || !pak_dir[0]) {

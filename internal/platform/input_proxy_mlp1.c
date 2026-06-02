@@ -27,6 +27,8 @@ typedef struct {
     bool menu_held;
     bool menu_forwarded;
     bool chord_active;
+    bool select_chord_consumed;   /* a Menu+Select chord ate the Select press;
+                                     swallow its matching release too */
     bool deferred_menu_release;
     uint64_t deferred_menu_release_at_ms;
     uint64_t last_brightness_ms;
@@ -310,6 +312,28 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
         }
     }
 
+    /* Menu + Select: open the in-game switcher. Mirrors Menu + Volume — the
+       chord is consumed by jawakad and neither Menu nor Select reaches the
+       running game. */
+    if (ev->code == BTN_SELECT) {
+        /* Swallow the release that pairs with a consumed chord press. */
+        if (ev->value == 0 && data->select_chord_consumed) {
+            data->select_chord_consumed = false;
+            return;
+        }
+        if (ev->value > 0 && data->menu_held && !data->menu_forwarded) {
+            bool handled = proxy->game_switcher &&
+                           proxy->game_switcher(proxy->userdata);
+            if (handled) {
+                data->chord_active = true;          /* suppress the Menu tap */
+                data->select_chord_consumed = true; /* suppress Select release */
+                return; /* keep the deferred Menu unflushed; drop Select press */
+            }
+            /* Not handled: fall through so the deferred Menu flushes and Select
+               forwards as an ordinary Menu+key chord. */
+        }
+    }
+
     if (jw__volume_key(ev->code)) {
         if (data->menu_held) {
             data->chord_active = true;
@@ -330,6 +354,7 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
                         jw_input_brightness_delta_cb brightness_delta,
                         jw_input_volume_delta_cb volume_delta,
                         jw_input_menu_tap_cb menu_tap,
+                        jw_input_game_switcher_cb game_switcher,
                         void *userdata) {
     if (!proxy) {
         return -1;
@@ -338,6 +363,7 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
     proxy->brightness_delta = brightness_delta;
     proxy->volume_delta = volume_delta;
     proxy->menu_tap = menu_tap;
+    proxy->game_switcher = game_switcher;
     proxy->userdata = userdata;
 
     const char *enabled = getenv("JAWAKA_INPUT_PROXY");

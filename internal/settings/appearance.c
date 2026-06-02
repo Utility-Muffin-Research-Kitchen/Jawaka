@@ -4,7 +4,6 @@
 #include "internal/settings/theme_resolve.h"
 
 #include <stdio.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -77,18 +76,6 @@ static void jw__read_setting_or_default(const char *db_path, const char *key,
     snprintf(out, out_size, "%s", fallback ? fallback : "");
 }
 
-static int jw__setenvf(const char *name, const char *fmt, ...) {
-    if (!name || !fmt) return -1;
-
-    char value[256];
-    va_list args;
-    va_start(args, fmt);
-    int needed = vsnprintf(value, sizeof(value), fmt, args);
-    va_end(args);
-    if (needed < 0 || needed >= (int)sizeof(value)) return -1;
-    return setenv(name, value, 1);
-}
-
 int jw_appearance_font_family_index_from_db(const char *db_path) {
     return jw__read_index(db_path, "font_family_index",
                           JW_APPEARANCE_FONT_FAMILY_COUNT,
@@ -101,46 +88,59 @@ const char *jw_appearance_font_path_for_index(int index) {
     return kJawakaFontFamilyPaths[index];
 }
 
-int jw_appearance_export_env(const char *db_path) {
-    char theme_name[256];
-    char accent[JW_COLOR_BUF_LEN];
-    char bg[JW_COLOR_BUF_LEN];
-    char text[JW_COLOR_BUF_LEN];
-    char hint[JW_COLOR_BUF_LEN];
-    char highlight[JW_COLOR_BUF_LEN];
-    char btn_label[JW_COLOR_BUF_LEN];
-    char btn_bg[JW_COLOR_BUF_LEN];
+void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
+    if (!out) return;
 
     int font_idx = jw_appearance_font_family_index_from_db(db_path);
     int font_size_idx = jw__read_index(db_path, "font_size_index", JW_APPEARANCE_FONT_SIZE_COUNT, 1);
     int pill_idx = jw__read_index(db_path, "pill_shape_index", JW_APPEARANCE_PILL_SHAPE_COUNT, 0);
 
-    if (jw_resolve_theme_name(db_path, theme_name, sizeof(theme_name)) != 0)
-        snprintf(theme_name, sizeof(theme_name), "%s", "Jawaka-Tabs");
+    if (jw_resolve_theme_name(db_path, out->theme_name, sizeof(out->theme_name)) != 0)
+        snprintf(out->theme_name, sizeof(out->theme_name), "%s", "Jawaka-Tabs");
+
+    /* The font path table is static const, so the pointer stays valid across a
+       later fork()/execv() in the child. */
+    out->font_path = jw_appearance_font_path_for_index(font_idx);
+
+    /* Pre-format the numeric values here in the parent so the child only has to
+       call setenv (no vsnprintf) after fork(). */
+    snprintf(out->font_bump, sizeof(out->font_bump), "%d", kJawakaFontSizeValues[font_size_idx]);
+    snprintf(out->pill_radius_ratio, sizeof(out->pill_radius_ratio), "%.2f", kJawakaPillRadiusValues[pill_idx]);
+    snprintf(out->pill_corner_mask, sizeof(out->pill_corner_mask), "%d", kJawakaPillCornerMasks[pill_idx]);
 
     /* Defaults mirror Settings' Leaf scheme so apps inherit the identity theme
        even before the first settings session persists color rows. */
-    jw__read_setting_or_default(db_path, "accent_color", "#1E331E", accent, sizeof(accent));
-    jw__read_setting_or_default(db_path, "bg_color", "#0F160E", bg, sizeof(bg));
-    jw__read_setting_or_default(db_path, "text_color", "#E8F1E3", text, sizeof(text));
-    jw__read_setting_or_default(db_path, "hint_color", "#7E9579", hint, sizeof(hint));
-    jw__read_setting_or_default(db_path, "highlight_color", "#7FB069", highlight, sizeof(highlight));
-    jw__read_setting_or_default(db_path, "button_label_color", "#0F160E", btn_label, sizeof(btn_label));
-    jw__read_setting_or_default(db_path, "button_glyph_bg_color", "#7FB069", btn_bg, sizeof(btn_bg));
+    jw__read_setting_or_default(db_path, "accent_color", "#1E331E", out->accent, sizeof(out->accent));
+    jw__read_setting_or_default(db_path, "bg_color", "#0F160E", out->bg, sizeof(out->bg));
+    jw__read_setting_or_default(db_path, "text_color", "#E8F1E3", out->text, sizeof(out->text));
+    jw__read_setting_or_default(db_path, "hint_color", "#7E9579", out->hint, sizeof(out->hint));
+    jw__read_setting_or_default(db_path, "highlight_color", "#7FB069", out->highlight, sizeof(out->highlight));
+    jw__read_setting_or_default(db_path, "button_label_color", "#0F160E", out->button_label, sizeof(out->button_label));
+    jw__read_setting_or_default(db_path, "button_glyph_bg_color", "#7FB069", out->button_glyph_bg, sizeof(out->button_glyph_bg));
+}
+
+int jw_appearance_apply_env(const jw_appearance_env *env) {
+    if (!env) return -1;
 
     int rc = 0;
-    rc |= setenv("CAT_THEME_NAME", theme_name, 1);
-    rc |= setenv("CAT_FONT_PATH", jw_appearance_font_path_for_index(font_idx), 1);
-    rc |= jw__setenvf("CAT_FONT_BUMP", "%d", kJawakaFontSizeValues[font_size_idx]);
-    rc |= jw__setenvf("CAT_PILL_RADIUS_RATIO", "%.2f", kJawakaPillRadiusValues[pill_idx]);
-    rc |= jw__setenvf("CAT_PILL_CORNER_MASK", "%d", kJawakaPillCornerMasks[pill_idx]);
-    rc |= setenv("CAT_COLOR_ACCENT", accent, 1);
-    rc |= setenv("CAT_COLOR_BACKGROUND", bg, 1);
-    rc |= setenv("CAT_COLOR_TEXT", text, 1);
-    rc |= setenv("CAT_COLOR_HINT", hint, 1);
-    rc |= setenv("CAT_COLOR_HIGHLIGHT", highlight, 1);
-    rc |= setenv("CAT_COLOR_BUTTON_LABEL", btn_label, 1);
-    rc |= setenv("CAT_COLOR_BUTTON_GLYPH_BG", btn_bg, 1);
+    rc |= setenv("CAT_THEME_NAME", env->theme_name, 1);
+    rc |= setenv("CAT_FONT_PATH", env->font_path ? env->font_path : "", 1);
+    rc |= setenv("CAT_FONT_BUMP", env->font_bump, 1);
+    rc |= setenv("CAT_PILL_RADIUS_RATIO", env->pill_radius_ratio, 1);
+    rc |= setenv("CAT_PILL_CORNER_MASK", env->pill_corner_mask, 1);
+    rc |= setenv("CAT_COLOR_ACCENT", env->accent, 1);
+    rc |= setenv("CAT_COLOR_BACKGROUND", env->bg, 1);
+    rc |= setenv("CAT_COLOR_TEXT", env->text, 1);
+    rc |= setenv("CAT_COLOR_HINT", env->hint, 1);
+    rc |= setenv("CAT_COLOR_HIGHLIGHT", env->highlight, 1);
+    rc |= setenv("CAT_COLOR_BUTTON_LABEL", env->button_label, 1);
+    rc |= setenv("CAT_COLOR_BUTTON_GLYPH_BG", env->button_glyph_bg, 1);
 
     return rc == 0 ? 0 : -1;
+}
+
+int jw_appearance_export_env(const char *db_path) {
+    jw_appearance_env env;
+    jw_appearance_resolve(db_path, &env);
+    return jw_appearance_apply_env(&env);
 }

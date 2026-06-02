@@ -10,6 +10,7 @@
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
+#include "internal/launcher/game_switcher.h"
 #include "internal/platform/paths.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
@@ -130,6 +131,10 @@ typedef struct {
     jw_coverflow_anim  coverflow_anim;
     /* curated per-console colors (Horizontal carousel; loaded from active theme) */
     jw_console_color_table console_colors;
+    /* Game switcher: a dedicated recents/resume carousel opened with Select.
+       Overlays the current layout; closing restores the prior view as-is. */
+    bool               switcher_open;
+    jw_game_switcher   switcher;
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
     /* status line */
@@ -2099,7 +2104,46 @@ static void jw__render_search(const jw_launcher_state *state) {
  * DISPATCH
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* Dedicated Select-opened switcher view: a focused recents carousel with its
+   own title/footer, drawn over whatever home layout was active. */
+static void jw__render_switcher(jw_launcher_state *state) {
+    cat_clear_screen();
+
+    cat_status_bar_opts sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &sb);
+    cat_draw_screen_title("Switcher", &sb);
+
+    bool hints = jw_settings_show_hints(&state->settings);
+    SDL_Rect content = cat_get_content_rect(true, hints, false);
+    int margin = CAT_S(12);
+    jw_game_switcher_render(&state->switcher,
+                            content.x + margin, content.y,
+                            content.w - margin * 2, content.h);
+
+    if (state->status[0]) {
+        TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+        cat_draw_text_ellipsized(small, state->status,
+                                 content.x + margin,
+                                 content.y + content.h - TTF_FontHeight(small) - CAT_S(4),
+                                 cat_get_theme()->hint, content.w - margin * 2);
+    }
+
+    cat_footer_item footer[] = {
+        { CAT_BTN_Y,      "Remove", false, JW_HINT("Y") },
+        { CAT_BTN_SELECT, "Close",  false, JW_HINT("Space") },
+        { CAT_BTN_B,      "Back",   true,  JW_HINT("B") },
+        { CAT_BTN_A,      "Launch", true,  JW_HINT("A") },
+    };
+    jw__draw_footer(state, footer, 4);
+    cat_present();
+}
+
 static void jw__render_launcher(jw_launcher_state *state) {
+    if (state->switcher_open) {
+        jw__render_switcher(state);
+        return;
+    }
+
     if (state->search_open) {
         jw__render_search(state);
         return;
@@ -2616,6 +2660,89 @@ static void jw__handle_app_browser_input(const char *socket_path,
     }
 }
 
+/* Open the Select switcher: a fresh load of Recents in carousel form. The
+   underlying layout state is untouched, so closing just clears the flag. */
+static void jw__open_switcher(const char *db_path, jw_launcher_state *state) {
+    /* RetroArch States/ root for savestate thumbnails: prefer the explicit
+       STATES_PATH from env.sh, else the default <sdcard>/States layout. */
+    const char *states = getenv("STATES_PATH");
+    char states_buf[PATH_MAX + 16];
+    if (!states || !states[0]) {
+        snprintf(states_buf, sizeof(states_buf), "%s/States", state->sdcard_root);
+        states = states_buf;
+    }
+    jw_game_switcher_reset(&state->switcher, false, state->sdcard_root, states);
+    jw_game_switcher_load(&state->switcher, db_path);
+    jw_game_switcher_resolve_thumbnails(&state->switcher);
+    state->switcher_open = true;
+    state->status[0] = '\0';
+}
+
+/* Y in the switcher: drop the selected game from Recents only (id, artwork,
+   favorite, and the game itself are untouched), then refresh both the carousel
+   and the Recents tab list so they stay consistent. */
+static void jw__switcher_remove_selected(const char *db_path, jw_launcher_state *state) {
+    const jw_game_entry *sel = jw_game_switcher_selected(&state->switcher);
+    if (!sel || sel->id < 0) {
+        return;
+    }
+    char removed_name[256];
+    snprintf(removed_name, sizeof(removed_name), "%.200s", sel->name);
+
+    if (jw_db_remove_recent(db_path, "game", sel->id) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s", "Remove failed");
+        return;
+    }
+
+    jw_game_switcher_remove_selected(&state->switcher);
+
+    /* Keep the Recents tab in sync (it also reloads on tab entry). */
+    jw__load_recents_tab(db_path, state);
+    if (state->current_tab == JW_TAB_RECENTS) {
+        int c = state->list.cursor;
+        if (c >= state->recents_count) {
+            c = state->recents_count > 0 ? state->recents_count - 1 : 0;
+        }
+        cat_list_state_jump(&state->list, c, jw__tab_list_count(state));
+    }
+
+    snprintf(state->status, sizeof(state->status), "Removed %.200s", removed_name);
+}
+
+static void jw__handle_switcher_input(const char *socket_path, const char *db_path,
+                                      jw_launcher_state *state,
+                                      cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_LEFT:
+        case CAT_BTN_UP:        /* alias Up/Down to the carousel for desktop ease */
+            jw_game_switcher_move(&state->switcher, -1);
+            break;
+        case CAT_BTN_RIGHT:
+        case CAT_BTN_DOWN:
+            jw_game_switcher_move(&state->switcher, +1);
+            break;
+        case CAT_BTN_A:
+        case CAT_BTN_START: {
+            const jw_game_entry *sel = jw_game_switcher_selected(&state->switcher);
+            if (sel) {
+                state->switcher_open = false;
+                jw__launch_game_entry(socket_path, state, sel, running);
+            }
+            break;
+        }
+        case CAT_BTN_Y:
+            jw__switcher_remove_selected(db_path, state);
+            break;
+        case CAT_BTN_B:
+        case CAT_BTN_SELECT:
+            state->switcher_open = false;
+            state->status[0] = '\0';
+            break;
+        default:
+            break;
+    }
+}
+
 static void jw__handle_input(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, cat_button button, bool *running) {
     const cat_stylesheet *ss = cat_get_stylesheet();
@@ -2632,6 +2759,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     /* Analog-stick click is a global shortcut: toggle the LED ring on/off. */
     if (button == CAT_BTN_STICK) {
         jw_settings_toggle_led(&state->settings);
+        return;
+    }
+
+    /* The switcher overlay captures all input while open. */
+    if (state->switcher_open) {
+        jw__handle_switcher_input(socket_path, db_path, state, button, running);
         return;
     }
 
@@ -2745,6 +2878,13 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
 
     if (button == CAT_BTN_X) {
         jw__open_search(db_path, state);
+        return;
+    }
+
+    /* Select opens the dedicated switcher from any home layout/tab (desktop:
+       Space). It is launcher-local; the daemon stays out of it. */
+    if (button == CAT_BTN_SELECT) {
+        jw__open_switcher(db_path, state);
         return;
     }
 

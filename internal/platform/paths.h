@@ -9,6 +9,10 @@ char *jw_sdcard_root(void);
 char *jw_state_dir(void);
 char *jw_socket_path(void);
 char *jw_osd_socket_path(void);
+/* Runtime file selecting which surface the resident in-game UI shows on its
+   next reveal: contents are "menu" (default) or "switcher". Written by the
+   daemon before SIGUSR1, read by jawaka-menu --in-game on each show. */
+char *jw_ingame_ui_mode_path(void);
 char *jw_db_path(void);
 char *jw_retroarch_bin_path(void);
 char *jw_retroarch_core_path_for_system(const char *system);

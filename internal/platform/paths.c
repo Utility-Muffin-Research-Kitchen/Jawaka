@@ -711,6 +711,17 @@ char *jw_osd_socket_path(void) {
     return path;
 }
 
+char *jw_ingame_ui_mode_path(void) {
+    char *runtime_dir = jw_runtime_dir();
+    if (!runtime_dir) {
+        return NULL;
+    }
+
+    char *path = jw__dup_printf("%s/ingame-ui-mode", runtime_dir);
+    free(runtime_dir);
+    return path;
+}
+
 char *jw_db_path(void) {
     char *state_dir = jw_state_dir();
     if (!state_dir) {

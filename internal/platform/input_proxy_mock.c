@@ -6,6 +6,7 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
                         jw_input_brightness_delta_cb brightness_delta,
                         jw_input_volume_delta_cb volume_delta,
                         jw_input_menu_tap_cb menu_tap,
+                        jw_input_game_switcher_cb game_switcher,
                         void *userdata) {
     if (!proxy) {
         return -1;
@@ -14,6 +15,7 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
     proxy->brightness_delta = brightness_delta;
     proxy->volume_delta = volume_delta;
     proxy->menu_tap = menu_tap;
+    proxy->game_switcher = game_switcher;
     proxy->userdata = userdata;
     return 0;
 }

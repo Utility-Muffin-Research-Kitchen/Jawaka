@@ -60,6 +60,17 @@ int jw_ipc_launch_game(const char *socket_path, const char *system,
 int jw_ipc_launch_app(const char *socket_path, const char *pak_dir,
                       char *status, int status_len);
 
+/* Ask jawakad to open the in-game game switcher overlay for the active RetroArch
+ * session. Reversible: the daemon pauses + overlays only; it does not save or
+ * quit. Replies error when there is no active session. */
+int jw_ipc_open_switcher(const char *socket_path, char *status, int status_len);
+
+/* Commit a switch from the in-game switcher to a different game: jawakad saves
+ * the current game when supported, quits it, and spawns the selected game
+ * directly (no launcher in between). Requires an active RetroArch session. */
+int jw_ipc_switch_game(const char *socket_path, const char *system,
+                       const char *rom_path, char *status, int status_len);
+
 /* Fetch the daemon-owned RetroArch session and command-interface state. */
 int jw_ipc_get_retroarch_session(const char *socket_path,
                                  jw_ipc_retroarch_session_info *out,

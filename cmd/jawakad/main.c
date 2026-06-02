@@ -548,6 +548,7 @@ static int jw__spawn_osd(jw_daemon_state *state);
 static int jw__spawn_retroarch(jw_daemon_state *state);
 static int jw__spawn_app(jw_daemon_state *state);
 static int jw__request_open_in_game_menu(jw_daemon_state *state);
+static int jw__request_open_in_game_switcher(jw_daemon_state *state);
 static int jw__request_close_in_game_menu(jw_daemon_state *state);
 
 static void jw__publish_retroarch_input_env(jw_daemon_state *state) {
@@ -719,13 +720,36 @@ static int jw__request_open_menu(jw_daemon_state *state) {
     return 0;
 }
 
-static int jw__request_open_in_game_menu(jw_daemon_state *state) {
+/* Select which surface the resident in-game UI shows on its next reveal. The
+   menu process reads this on each show wake; missing/invalid defaults to "menu".
+   Written before SIGUSR1 (and before a cold spawn) so the reveal picks it up. */
+static void jw__write_ingame_ui_mode(const char *mode) {
+    char *path = jw_ingame_ui_mode_path();
+    if (!path) {
+        return;
+    }
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fputs(mode, f);
+        fclose(f);
+    } else {
+        jw_log_warn("in-game ui: could not write mode file %s: %s",
+                    path, strerror(errno));
+    }
+    free(path);
+}
+
+/* Reveal the resident in-game UI in either "menu" or "switcher" mode. Pauses
+   RetroArch, records the desired mode, then reveals the warm standby (SIGUSR1)
+   or cold-spawns it. Reversible: this never saves or quits. */
+static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode) {
     long long start_ms = jw__monotonic_ms();
     if (!state || !state->retroarch_session.active) {
         return -1;
     }
 
-    /* Already showing: ignore the tap (the menu is closed with B/Continue). */
+    /* Already showing: ignore the request (the surface is closed with B/Continue
+       or the Menu toggle). */
     if (state->menu_visible) {
         return 0;
     }
@@ -739,6 +763,9 @@ static int jw__request_open_in_game_menu(jw_daemon_state *state) {
                     jw_ra_result_string(pause_result));
         return -1;
     }
+
+    /* Tell the resident UI which surface to show before we wake it. */
+    jw__write_ingame_ui_mode(mode);
 
     /* No screenshot round-trip: the resident menu grabs the paused frame itself
        from the DRM scanout (kmsgrab) before it maps, so the background is in the
@@ -767,13 +794,22 @@ static int jw__request_open_in_game_menu(jw_daemon_state *state) {
         state->menu_visible = true;
     }
     long long done_ms = jw__monotonic_ms();
-    jw_log_info("in-game menu open timings: pause_ms=%lld show_ms=%lld total_ms=%lld standby=%d",
+    jw_log_info("in-game ui open timings: mode=%s pause_ms=%lld show_ms=%lld total_ms=%lld standby=%d",
+                mode,
                 pause_done_ms - pause_start_ms,
                 done_ms - show_start_ms,
                 done_ms - start_ms,
                 warm);
 
     return 0;
+}
+
+static int jw__request_open_in_game_menu(jw_daemon_state *state) {
+    return jw__request_open_in_game_ui(state, "menu");
+}
+
+static int jw__request_open_in_game_switcher(jw_daemon_state *state) {
+    return jw__request_open_in_game_ui(state, "switcher");
 }
 
 /* Close the visible standby menu (the Menu button toggles it shut): resume the
@@ -1041,6 +1077,78 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
     return 0;
 }
 
+/* True when system + ROM basename match the running session — used so a
+   switch-game request targeting the current game resumes instead of switching. */
+static bool jw__is_current_session_game(const jw_daemon_state *state,
+                                        const char *system, const char *rom_path) {
+    if (!state || !state->retroarch_session.active || !rom_path) {
+        return false;
+    }
+    const jw_retroarch_session *s = &state->retroarch_session;
+    if (system && system[0] && s->system[0] && strcmp(system, s->system) != 0) {
+        return false;
+    }
+    const char *a = strrchr(rom_path, '/');
+    a = a && a[1] ? a + 1 : rom_path;
+    const char *b = strrchr(s->rom_path, '/');
+    b = b && b[1] ? b + 1 : s->rom_path;
+    return strcmp(a, b) == 0;
+}
+
+/* Commit a switch from the in-game switcher: save the current game (when the
+   core supports states; failure is logged but never blocks), queue the selected
+   game, clear menu visibility so nothing resumes RetroArch, then quit. The
+   child-exit handler records the old game's playtime and spawns the queued game
+   directly — no launcher flash in between. */
+static int jw__request_switch_game(jw_daemon_state *state, const char *system,
+                                   const char *rom_path, const char **out_error) {
+    if (!state || !state->retroarch_session.active) {
+        if (out_error) *out_error = "no active RetroArch session";
+        return -1;
+    }
+    if (jw__validate_launch_request(state, system, rom_path, out_error) != 0) {
+        return -1;
+    }
+
+    /* Selecting the running game is a resume, not a switch. */
+    if (jw__is_current_session_game(state, system, rom_path)) {
+        jw__request_close_in_game_menu(state);
+        return 0;
+    }
+
+    jw_ra_client ra = jw_ra_client_default();
+
+    jw_ra_info info;
+    memset(&info, 0, sizeof(info));
+    if (jw_ra_get_info(&ra, &info) == JW_RA_OK && info.savestate_supported) {
+        jw_ra_result sv = jw_ra_save_state(&ra);
+        if (sv != JW_RA_OK) {
+            jw_log_warn("switch-game: save-state failed result=%s (continuing)",
+                        jw_ra_result_string(sv));
+        } else {
+            jw_log_info("switch-game: saved current game state");
+        }
+    }
+
+    snprintf(state->pending_launch_system, sizeof(state->pending_launch_system),
+             "%s", system);
+    snprintf(state->pending_launch_rom_path, sizeof(state->pending_launch_rom_path),
+             "%s", rom_path);
+    state->pending_launch = true;
+    state->retroarch_resume_on_menu_exit = false;
+    state->menu_visible = false; /* committed: do not resume the old game */
+
+    jw_ra_result q = jw_ra_quit(&ra);
+    if (q != JW_RA_OK) {
+        jw_log_error("switch-game: quit failed result=%s", jw_ra_result_string(q));
+        state->pending_launch = false;
+        if (out_error) *out_error = "RetroArch quit failed";
+        return -1;
+    }
+
+    return 0;
+}
+
 static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
                                   const char **out_error) {
     char pak_abs[PATH_MAX];
@@ -1084,13 +1192,18 @@ static int jw__spawn_osd(jw_daemon_state *state) {
         return -1;
     }
 
+    /* Resolve appearance from the DB here in the parent — opening SQLite between
+       fork() and execv() is not fork-safe on macOS (os_log landmine). */
+    jw_appearance_env appearance;
+    jw_appearance_resolve(state->db_path, &appearance);
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_warn("osd fork failed: %s", strerror(errno));
         return -1;
     }
     if (pid == 0) {
-        jw_appearance_export_env(state->db_path);
+        jw_appearance_apply_env(&appearance);
         char *const argv[] = { (char *)path, NULL };
         execv(path, argv);
         perror("execv");
@@ -1488,6 +1601,29 @@ static bool jw__input_menu_tap(void *userdata) {
     return true;
 }
 
+/* Menu + Select chord (input proxy): open the reversible in-game switcher
+   overlay. Returns false when there is no game to switch in, so the proxy
+   forwards the events normally. Opening only pauses + overlays — it never saves
+   or quits. */
+static bool jw__input_game_switcher(void *userdata) {
+    jw_daemon_state *state = (jw_daemon_state *)userdata;
+    if (!state || !state->retroarch_session.active) {
+        return false;
+    }
+
+    /* A surface is already up: swallow the chord rather than stacking. */
+    if (state->menu_visible) {
+        return true;
+    }
+
+    if (jw__request_open_in_game_switcher(state) != 0) {
+        jw_log_warn("in-game switcher: open request failed, forwarding chord");
+        return false;
+    }
+
+    return true;
+}
+
 static void jw__start_input_proxy(jw_daemon_state *state) {
     if (!state) {
         return;
@@ -1499,7 +1635,8 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
     }
 
     if (jw_input_proxy_init(&state->input_proxy, jw__input_brightness_delta,
-                            jw__input_volume_delta, jw__input_menu_tap, state) == 0) {
+                            jw__input_volume_delta, jw__input_menu_tap,
+                            jw__input_game_switcher, state) == 0) {
         jw__publish_retroarch_input_env(state);
     }
 }
@@ -1533,6 +1670,11 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
         return -1;
     }
 
+    /* Resolve appearance from the DB here in the parent — opening SQLite between
+       fork() and execv() is not fork-safe on macOS (os_log landmine). */
+    jw_appearance_env appearance;
+    jw_appearance_resolve(state->db_path, &appearance);
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
@@ -1540,7 +1682,7 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     }
 
     if (pid == 0) {
-        jw_appearance_export_env(state->db_path);
+        jw_appearance_apply_env(&appearance);
         char *const argv[] = { (char *)path, NULL };
         execv(path, argv);
         perror("execv");
@@ -1573,6 +1715,11 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
         return -1;
     }
 
+    /* Resolve appearance from the DB here in the parent — opening SQLite between
+       fork() and execv() is not fork-safe on macOS (os_log landmine). */
+    jw_appearance_env appearance;
+    jw_appearance_resolve(state->db_path, &appearance);
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("in-game menu fork failed: %s", strerror(errno));
@@ -1580,7 +1727,7 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
     }
 
     if (pid == 0) {
-        jw_appearance_export_env(state->db_path);
+        jw_appearance_apply_env(&appearance);
         if (state->retroarch_session.active) {
             setenv("JAWAKA_INGAME_ACTIVE", "1", 1);
             setenv("JAWAKA_INGAME_SYSTEM", state->retroarch_session.system, 1);
@@ -1648,6 +1795,11 @@ static int jw__spawn_app(jw_daemon_state *state) {
 
     jw__suspend_input_proxy_for_app(state);
 
+    /* Resolve appearance from the DB here in the parent — opening SQLite between
+       fork() and execv() is not fork-safe on macOS (os_log landmine). */
+    jw_appearance_env appearance;
+    jw_appearance_resolve(state->db_path, &appearance);
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
@@ -1657,7 +1809,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
-        jw_appearance_export_env(state->db_path);
+        jw_appearance_apply_env(&appearance);
         jw__publish_source_content_env(app_source);
         if (chdir(pak_abs) != 0) {
             perror("chdir");
@@ -2071,6 +2223,37 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_ok(client, "open-menu", NULL);
     }
 
+    if (strcmp(type->valuestring, "open-switcher") == 0) {
+        bool in_game = state && state->retroarch_session.active;
+        if (!in_game || jw__request_open_in_game_switcher(state) != 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client,
+                in_game ? "open-switcher failed" : "no active RetroArch session");
+        }
+        jw_log_info("open-switcher requested");
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "open-switcher", NULL);
+    }
+
+    if (strcmp(type->valuestring, "switch-game") == 0) {
+        cJSON *system = cJSON_GetObjectItemCaseSensitive(root, "system");
+        cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(root, "rom_path");
+        const char *error_message = NULL;
+        if (!cJSON_IsString(system) || !system->valuestring ||
+            !cJSON_IsString(rom_path) || !rom_path->valuestring ||
+            jw__request_switch_game(state, system->valuestring,
+                                    rom_path->valuestring, &error_message) != 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client,
+                error_message ? error_message : "switch-game failed");
+        }
+
+        jw_log_info("switch-game requested system=%s rom=%s",
+                    system->valuestring, rom_path->valuestring);
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "switch-game", NULL);
+    }
+
     if (strcmp(type->valuestring, "retroarch-session") == 0) {
         cJSON_Delete(root);
         return jw__reply_retroarch_session(state, client);
@@ -2357,6 +2540,19 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
 
     if (exited_kind == JW_CHILD_APP) {
         jw__start_input_proxy(state);
+    }
+
+    /* Switch-game: the old RetroArch quit with a game already queued, so spawn
+     * the selected game directly instead of returning to the launcher. The
+     * session finish above already recorded the old game's playtime/recents. */
+    if (exited_kind == JW_CHILD_RETROARCH && state->pending_launch) {
+        if (jw__spawn_retroarch(state) != 0) {
+            jw_log_warn("switch-game: next game spawn failed; returning to launcher");
+            if (!state->daemon_only) {
+                jw__spawn_child(state, JW_CHILD_LAUNCHER);
+            }
+        }
+        return;
     }
 
     /* Spawn-on-exit model: the launcher sends a pending action, then exits

@@ -126,9 +126,11 @@ UI_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
+	internal/retroarch/states.c \
 	internal/storage/sources.c \
 	internal/db/db.c \
 	internal/launcher/console_colors.c \
+	internal/launcher/game_switcher.c \
 	internal/settings/appearance.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \

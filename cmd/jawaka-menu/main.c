@@ -7,8 +7,10 @@
 #include "internal/core/log.h"
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
+#include "internal/launcher/game_switcher.h"
 #include "internal/platform/paths.h"
 #include "internal/retroarch/catalog.h"
+#include "internal/retroarch/states.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 
@@ -539,65 +541,12 @@ static void jw__ingame_capture_still(jw_ingame_state *state) {
     free(out);
 }
 
-/* Locate the savestate thumbnail PNG for the active slot. RetroArch sorts
-   savestates into per-core subfolders (e.g. States/Genesis Plus GX/<rom>.state1)
-   and the thumbnail sits beside the state as <state>.png. We don't know the
-   core's display-name folder from here, so try the flat layout first, then each
-   subdir. Returns an existing path. */
+/* Locate the savestate thumbnail PNG for the active slot via the shared
+   RetroArch states helper (flat layout first, then per-core subfolders). */
 static bool jw__slot_thumb_path(const jw_ingame_state *state, char *out, size_t out_size) {
-    const char *dir = getenv("JAWAKA_INGAME_STATEDIR");
-    if (!dir || !dir[0] || !state->session.rom_path[0]) {
-        return false;
-    }
-    const char *base = strrchr(state->session.rom_path, '/');
-    base = base ? base + 1 : state->session.rom_path;
-    char stem[sizeof(state->session.rom_path)];
-    snprintf(stem, sizeof(stem), "%s", base);
-    char *dot = strrchr(stem, '.');
-    if (dot) {
-        *dot = '\0';
-    }
-    char name[sizeof(stem) + 32];
-    int slot = state->session.state_slot;
-    if (slot < 0) {
-        snprintf(name, sizeof(name), "%s.state.auto.png", stem);
-    } else if (slot == 0) {
-        snprintf(name, sizeof(name), "%s.state.png", stem);
-    } else {
-        snprintf(name, sizeof(name), "%s.state%d.png", stem, slot);
-    }
-
-    struct stat st;
-    /* Flat layout. */
-    if (snprintf(out, out_size, "%s/%s", dir, name) < (int)out_size &&
-        stat(out, &st) == 0 && S_ISREG(st.st_mode)) {
-        return true;
-    }
-    /* Per-core subfolders. */
-    DIR *d = opendir(dir);
-    if (d) {
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL) {
-            if (ent->d_name[0] == '.') {
-                continue;
-            }
-            char sub[PATH_MAX];
-            if (snprintf(sub, sizeof(sub), "%s/%s", dir, ent->d_name) >= (int)sizeof(sub)) {
-                continue;
-            }
-            if (stat(sub, &st) != 0 || !S_ISDIR(st.st_mode)) {
-                continue;
-            }
-            if (snprintf(out, out_size, "%s/%s/%s", dir, ent->d_name, name) <
-                    (int)out_size &&
-                stat(out, &st) == 0 && S_ISREG(st.st_mode)) {
-                closedir(d);
-                return true;
-            }
-        }
-        closedir(d);
-    }
-    return false;
+    return jw_ra_find_slot_thumb(getenv("JAWAKA_INGAME_STATEDIR"),
+                                 state->session.rom_path,
+                                 state->session.state_slot, out, out_size);
 }
 
 /* Keep thumb_tex in sync with the selected slot while the cursor is on
@@ -971,6 +920,178 @@ static void jw__handle_ingame_input(const char *socket_path,
     }
 }
 
+/* ── In-game game switcher overlay ────────────────────────────────────────
+   The resident in-game process serves two surfaces depending on a runtime
+   mode file the daemon writes before each reveal: the regular in-game menu, or
+   this recents/resume carousel. Both share the paused-frame backdrop and the
+   warm-standby show/hide path. */
+
+static bool jw__ingame_ui_mode_is_switcher(void) {
+    char *path = jw_ingame_ui_mode_path();
+    if (!path) {
+        return false; /* default to menu */
+    }
+    bool is_switcher = false;
+    FILE *f = fopen(path, "r");
+    if (f) {
+        char buf[32] = {0};
+        if (fgets(buf, sizeof(buf), f)) {
+            buf[strcspn(buf, "\r\n")] = '\0';
+            is_switcher = strcmp(buf, "switcher") == 0;
+        }
+        fclose(f);
+    }
+    free(path);
+    return is_switcher;
+}
+
+static void jw__render_ingame_switcher(const jw_ingame_state *state,
+                                       jw_game_switcher *switcher) {
+    cat_status_bar_opts sb = state->status_bar;
+
+    cat_clear_screen();
+    /* Same paused-frame backdrop + scrim as the in-game menu. */
+    if (state->still_tex) {
+        int sw = cat_get_screen_width();
+        int sh = cat_get_screen_height();
+        cat_draw_image(state->still_tex, 0, 0, sw, sh);
+        ap_color scrim = { 0, 0, 0, 150 };
+        cat_draw_rect(0, 0, sw, sh, scrim);
+    }
+    cat_draw_screen_title("Switcher", &sb);
+
+    SDL_Rect content = cat_get_content_rect(true, state->show_hints, false);
+    int margin = cat_scale(12);
+    jw_game_switcher_render(switcher, content.x + margin, content.y,
+                            content.w - margin * 2, content.h);
+
+    if (state->show_hints) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_Y,      "Remove", false, JW_HINT("Y") },
+            { CAT_BTN_SELECT, "Resume", false, JW_HINT("Space") },
+            { CAT_BTN_B,      "Resume", true,  JW_HINT("B") },
+            { CAT_BTN_A,      "Switch", true,  JW_HINT("A") },
+        };
+        cat_draw_footer(footer, 4);
+    }
+    cat_present();
+}
+
+/* Resume the running game and drop the overlay back to standby. */
+static void jw__ingame_switcher_resume(const char *socket_path,
+                                       jw_ingame_state *state, bool *running) {
+    if (jw_ipc_retroarch_action(socket_path, "continue", 0,
+                                state->status, sizeof(state->status)) == 0) {
+        *running = false;
+    }
+}
+
+static void jw__handle_ingame_switcher_input(const char *socket_path,
+                                             const char *db_path,
+                                             jw_ingame_state *state,
+                                             jw_game_switcher *switcher,
+                                             cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_LEFT:
+        case CAT_BTN_UP:
+            jw_game_switcher_move(switcher, -1);
+            break;
+        case CAT_BTN_RIGHT:
+        case CAT_BTN_DOWN:
+            jw_game_switcher_move(switcher, +1);
+            break;
+        case CAT_BTN_A:
+        case CAT_BTN_START: {
+            const jw_game_entry *sel = jw_game_switcher_selected(switcher);
+            if (!sel) {
+                break;
+            }
+            if (jw_game_switcher_selected_is_current(switcher)) {
+                jw__ingame_switcher_resume(socket_path, state, running);
+            } else if (jw_ipc_switch_game(socket_path, sel->system, sel->rom_path,
+                                          state->status, sizeof(state->status)) == 0) {
+                /* The daemon now saves+quits the current game and spawns the
+                   selected one; it terminates this process when RetroArch exits.
+                   Stop the visible loop so we hide cleanly in the meantime. */
+                *running = false;
+            }
+            break;
+        }
+        case CAT_BTN_B:
+        case CAT_BTN_SELECT:
+            jw__ingame_switcher_resume(socket_path, state, running);
+            break;
+        case CAT_BTN_Y: {
+            if (jw_game_switcher_selected_is_current(switcher)) {
+                break; /* never remove the running game from the overlay */
+            }
+            const jw_game_entry *sel = jw_game_switcher_selected(switcher);
+            if (sel && sel->id >= 0 &&
+                jw_db_remove_recent(db_path, "game", sel->id) == 0) {
+                jw_game_switcher_remove_selected(switcher);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void jw__ingame_show_switcher(const char *socket_path, const char *db_path,
+                                     jw_ingame_state *state) {
+    state->status[0] = '\0';
+    jw__prime_ingame_session_from_env(state);
+    jw__ingame_resolve_titles(state);
+
+    char *sd_root = jw_sdcard_root();
+    /* States/ root for savestate thumbnails: the daemon hands us a source-aware
+       JAWAKA_INGAME_STATEDIR; fall back to STATES_PATH, then <sdcard>/States. */
+    const char *states = getenv("JAWAKA_INGAME_STATEDIR");
+    char states_buf[PATH_MAX];
+    if (!states || !states[0]) {
+        const char *sp = getenv("STATES_PATH");
+        if (sp && sp[0]) {
+            states = sp;
+        } else if (sd_root && sd_root[0]) {
+            snprintf(states_buf, sizeof(states_buf), "%s/States", sd_root);
+            states = states_buf;
+        } else {
+            states = NULL;
+        }
+    }
+
+    jw_game_switcher switcher;
+    jw_game_switcher_reset(&switcher, true, sd_root ? sd_root : "", states);
+    jw_game_switcher_load(&switcher, db_path);
+    if (state->session.active && state->session.rom_path[0]) {
+        jw_game_switcher_set_current(&switcher, state->session.system,
+                                     state->session.rom_path,
+                                     state->game_title, NULL);
+    }
+    jw_game_switcher_resolve_thumbnails(&switcher);
+    free(sd_root);
+
+    /* Grab the paused frame before mapping so the game shows behind the
+       carousel from the first visible frame (mirrors the in-game menu). */
+    jw__ingame_capture_still(state);
+
+    cat_show_window();
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+
+    bool running = true;
+    while (running && !g_hide_requested) {
+        cat_request_frame_in(100);
+        cat_input_event ev;
+        while (cat_poll_input(&ev)) {
+            if (!ev.pressed) continue;
+            jw__handle_ingame_switcher_input(socket_path, db_path, state,
+                                             &switcher, ev.button, &running);
+        }
+        jw__render_ingame_switcher(state, &switcher);
+    }
+}
+
 static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
                                long long process_start_ms) {
     (void)process_start_ms;
@@ -997,6 +1118,10 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
             continue;
         }
 
+        /* The daemon picks the surface for this reveal via the UI-mode file. */
+        if (jw__ingame_ui_mode_is_switcher()) {
+            jw__ingame_show_switcher(socket_path, db_path, &state);
+        } else {
         long long show_start_ms = jw__monotonic_ms();
         cat_list_state_init(&state.list, JW_INGAME_COUNT);
         state.status[0] = '\0';
@@ -1048,6 +1173,7 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
             }
             jw__ingame_update_thumb(&state);
             jw__render_ingame_menu(&state);
+        }
         }
 
         /* Leave reason: running=false (Continue/Save/Load/Reset/Quit, daemon

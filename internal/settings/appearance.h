@@ -22,6 +22,41 @@ extern const int   kJawakaFontSizeValues[JW_APPEARANCE_FONT_SIZE_COUNT];
 
 int jw_appearance_font_family_index_from_db(const char *db_path);
 const char *jw_appearance_font_path_for_index(int index);
+
+/* Pre-resolved appearance environment, holding the final CAT_* env values as
+ * ready-to-export strings. Filled by jw_appearance_resolve() (which touches the
+ * SQLite DB) and consumed by jw_appearance_apply_env() (which only calls
+ * setenv). The split exists so the DB read happens in the parent before fork(),
+ * never between fork() and execv() — opening SQLite there is not fork-safe on
+ * macOS (it reaches into libsystem_trace/os_log and intermittently crashes the
+ * forked child). See the spawn helpers in cmd/jawakad/main.c. */
+typedef struct jw_appearance_env {
+    char theme_name[256];
+    const char *font_path;        /* points into static kJawakaFontFamilyPaths */
+    char font_bump[16];
+    char pill_radius_ratio[16];
+    char pill_corner_mask[16];
+    char accent[16];
+    char bg[16];
+    char text[16];
+    char hint[16];
+    char highlight[16];
+    char button_label[16];
+    char button_glyph_bg[16];
+} jw_appearance_env;
+
+/* Parent-side: read the DB (and env) and resolve every appearance value into
+ * `out`. Always fully populates `out` (falling back to defaults). Safe to call
+ * anywhere a normal SQLite open is safe — but NOT between fork() and execv(). */
+void jw_appearance_resolve(const char *db_path, jw_appearance_env *out);
+
+/* Child-side: export a resolved appearance into the environment with setenv
+ * only — no allocation beyond setenv's own, no DB/SQLite. Safe to call in a
+ * forked child before execv(). Returns 0 on success, -1 if any setenv failed. */
+int jw_appearance_apply_env(const jw_appearance_env *env);
+
+/* Convenience: resolve + apply in one call. Equivalent to the original export
+ * path; only use where fork()/execv() is not involved. */
 int jw_appearance_export_env(const char *db_path);
 
 #endif
