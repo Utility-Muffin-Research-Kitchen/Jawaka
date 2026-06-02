@@ -594,6 +594,31 @@ int jw_db_set_favorite(const char *db_path, const char *kind, int target_id, int
     return rc;
 }
 
+int jw_db_remove_recent(const char *db_path, const char *kind, int target_id) {
+    if (!db_path || !kind || target_id <= 0) {
+        return -1;
+    }
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    static const char *del_sql =
+        "DELETE FROM recents WHERE kind = ? AND target_id = ?;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, del_sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, target_id);
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
 int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
                               int max_count, int *out_count) {
     if (!db_path || !out || max_count <= 0 || !out_count) {

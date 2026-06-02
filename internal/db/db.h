@@ -82,6 +82,10 @@ int  jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
 int  jw_db_record_play(const char *db_path, const char *rom_path, int duration_s);
 int  jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
                              int max_count, int *out_count);
+/* Drop a single play-history row (kind 'game'/'app'). Does not touch the
+   game/app itself or its favorite; the game just leaves the Recents list.
+   Idempotent — removing an absent row succeeds. */
+int  jw_db_remove_recent(const char *db_path, const char *kind, int target_id);
 
 int  jw_db_get_setting(const char *db_path, const char *key,
                         char *out, size_t out_size);

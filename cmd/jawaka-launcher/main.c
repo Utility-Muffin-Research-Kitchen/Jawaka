@@ -742,7 +742,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     } else if (state->current_tab == JW_TAB_RECENTS) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+            { CAT_BTN_X,  "Remove",   false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
@@ -2404,6 +2404,31 @@ static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state 
              want_on ? "Favorited" : "Unfavorited", game->name);
 }
 
+/* Drop the selected game from the Recents tab's play-history and reload the list,
+   keeping the cursor near its prior spot. The game and any favorite are untouched
+   — it just leaves Recents. */
+static void jw__remove_selected_recent(const char *db_path, jw_launcher_state *state) {
+    if (state->recents_count <= 0 || state->list.cursor >= state->recents_count) {
+        return;
+    }
+    const jw_game_entry *rec = &state->recents[state->list.cursor];
+    int   rec_id = rec->id;
+    char  removed_name[256];
+    snprintf(removed_name, sizeof(removed_name), "%.200s", rec->name);
+
+    if (jw_db_remove_recent(db_path, "game", rec_id) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s", "Remove failed");
+        return;
+    }
+
+    int prev_cursor = state->list.cursor;
+    jw__load_recents_tab(db_path, state);
+    int c = prev_cursor >= state->recents_count ? state->recents_count - 1 : prev_cursor;
+    if (c < 0) c = 0;
+    cat_list_state_jump(&state->list, c, jw__tab_list_count(state));
+    snprintf(state->status, sizeof(state->status), "Removed %.200s", removed_name);
+}
+
 static void jw__handle_game_browser_input(const char *socket_path, const char *db_path,
                                           jw_launcher_state *state,
                                           cat_button button, bool *running) {
@@ -2593,7 +2618,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     }
 
     if (button == CAT_BTN_X) {
-        jw__open_search(db_path, state);
+        /* On the Recents tab X removes the selected entry; on every other tab it
+           opens search. */
+        if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_RECENTS)
+            jw__remove_selected_recent(db_path, state);
+        else
+            jw__open_search(db_path, state);
         return;
     }
 
