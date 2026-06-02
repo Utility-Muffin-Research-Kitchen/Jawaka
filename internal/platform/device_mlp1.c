@@ -29,6 +29,20 @@
 
 #define JW_MLP1_PACTL_GET_VOLUME "pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null"
 #define JW_MLP1_PACTL_SET_VOLUME "pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null"
+
+/* The rk817 DAC (ALSA numid=16) is the dominant hardware loudness control and is
+   pinned to a fixed level at boot (platform.d/00-audio-init.sh). The user-facing
+   volume runs through PulseAudio's software sink volume above. PulseAudio can,
+   however, drift this hardware element low (we have seen it stuck at 0 = muted
+   and at ~167 = barely audible), leaving the speaker silent no matter the sink %.
+   This self-heal re-asserts the pin whenever it has fallen below it. Keep the
+   value (210) in sync with 00-audio-init.sh. */
+#define JW_MLP1_DAC_PIN 210
+#define JW_MLP1_ENSURE_DAC_FLOOR \
+    "v=$(amixer -c 1 cget numid=16 2>/dev/null | " \
+    "sed -n 's/.*: values=\\([0-9]*\\).*/\\1/p' | head -1); " \
+    "if [ -n \"$v\" ] && [ \"$v\" -lt 210 ]; then " \
+    "amixer -c 1 cset numid=16 210,210 >/dev/null 2>&1; fi"
 #define JW_MLP1_WIFI_PROC "/proc/net/wireless"
 #define JW_MLP1_SECONDARY_SOURCE_ID "secondary_sd"
 #define JW_MLP1_SECONDARY_LABEL "Secondary SD"
@@ -308,7 +322,15 @@ static int jw__mlp1_set_volume_percent(int percent) {
 
     char cmd[128];
     snprintf(cmd, sizeof(cmd), JW_MLP1_PACTL_SET_VOLUME, percent);
-    return jw__exec_shell(cmd) == 0 ? 0 : -1;
+    int rc = jw__exec_shell(cmd);
+
+    /* Safety net: ensure the hardware DAC has not been left stuck low/muted,
+       which would silence the speaker regardless of the sink %. Re-assert the
+       boot pin if it has drifted below it. Best-effort; its result does not
+       affect whether the volume change itself succeeded. */
+    (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
+
+    return rc == 0 ? 0 : -1;
 }
 
 static void jw__mlp1_get_wifi_status(jw_platform_status *out) {
