@@ -238,7 +238,8 @@ static const struct { const char *id; const char *name; } kSystemDisplayNames[] 
     { "PS",      "PlayStation" },
     { "PSX",     "PlayStation" },
     { "PSP",     "PlayStation Portable" },
-    { "ATARI",   "Atari 2600" },
+    { "ATARI",     "Atari 2600" },
+    { "ATARI2600", "Atari 2600" },
     { "A2600",   "Atari 2600" },
     { "A5200",   "Atari 5200" },
     { "A7800",   "Atari 7800" },
@@ -500,9 +501,11 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
 
     int name_x = ix + CAT_S(10);
     if (ctx->games[idx].favorite) {
-        /* Drawn star (not a font glyph — the body font lacks U+2605). Accent
-           colored, or highlighted_text on a selected row so it stays legible. */
-        ap_color star_c = selected ? theme->highlighted_text : theme->accent;
+        /* Drawn star (not a font glyph — the body font lacks U+2605). Use the
+           bright selection-pill color on a normal row (the accent/chrome tone is
+           too dark to read on the row bg), and highlighted_text on a selected
+           row so it stays legible against the pill. */
+        ap_color star_c = selected ? theme->highlighted_text : theme->highlight;
         int body_h = TTF_FontHeight(body);
         int star_r = body_h * 32 / 100;
         cat_draw_star(name_x + star_r, text_y + body_h / 2, star_r, star_c);
@@ -712,27 +715,24 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
 
     if (jw_settings_ui_is_open(&state->settings)) {
         cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 3);
+        jw__draw_footer(state, footer, 2);
     } else if (state->current_tab == JW_TAB_FAVORITES) {
         cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
             { CAT_BTN_Y,  "Remove",   false, JW_HINT("Y") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 4);
+        jw__draw_footer(state, footer, 3);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_UP,   "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_L2,   "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
             { CAT_BTN_X,    "Search",   false, JW_HINT("X") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 4);
+        jw__draw_footer(state, footer, 3);
     }
     cat_present();
 }
@@ -872,20 +872,18 @@ static void jw__render_vertical(const jw_launcher_state *state) {
                                ow - CAT_S(24), oh - CAT_S(16));
 
         cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 3);
+        jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_UP,   "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_X,    "Search",   false, JW_HINT("X") },
             { CAT_BTN_MENU, "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 5);
+        jw__draw_footer(state, footer, 4);
     }
     cat_present();
 }
@@ -1132,20 +1130,18 @@ static void jw__render_horizontal(jw_launcher_state *state) {
                                ow - CAT_S(24), oh - CAT_S(16));
 
         cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 3);
+        jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_LEFT,  "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
             { CAT_BTN_X,     "Search",   false, JW_HINT("X") },
             { CAT_BTN_MENU,  "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,     "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,     "Select",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 5);
+        jw__draw_footer(state, footer, 4);
     }
     cat_present();
 }
@@ -1550,20 +1546,18 @@ static void jw__render_coverflow(jw_launcher_state *state) {
                                ow - CAT_S(24), oh - CAT_S(16));
 
         cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 3);
+        jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_LEFT, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
             { CAT_BTN_X,    "Search",   false, JW_HINT("X") },
             { CAT_BTN_MENU, "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 5);
+        jw__draw_footer(state, footer, 4);
     }
     cat_present();
 }
@@ -1717,23 +1711,21 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
 
     if (tabbed) {
         cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_L2, "Tab",      false, JW_HINT_DEVICE(";/t", "L2/R2") },
             { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 6);
+        jw__draw_footer(state, footer, 5);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 5);
+        jw__draw_footer(state, footer, 4);
     }
     cat_present();
 }
@@ -1862,12 +1854,11 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
                              theme->hint, sw - margin * 2);
 
     cat_footer_item footer[] = {
-        { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
         { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
         { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
-    cat_draw_footer(footer, 4);
+    cat_draw_footer(footer, 3);
     cat_present();
 }
 
@@ -1949,12 +1940,11 @@ static void jw__render_search(const jw_launcher_state *state) {
                              theme->hint, sw - margin * 2);
 
     cat_footer_item footer[] = {
-        { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
         { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
         { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
-    jw__draw_footer(state, footer, 4);
+    jw__draw_footer(state, footer, 3);
     cat_present();
 }
 

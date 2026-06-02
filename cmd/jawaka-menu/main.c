@@ -224,11 +224,10 @@ static void jw__render_menu(const jw_menu_state *state) {
 
     if (state->show_hints) {
         cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Navigate", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 3);
+        cat_draw_footer(footer, 2);
     }
     cat_present();
 }
