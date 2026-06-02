@@ -54,6 +54,12 @@ int jw_ipc_open_menu(const char *socket_path);
 int jw_ipc_launch_game(const char *socket_path, const char *system,
                        const char *rom_path, char *status, int status_len);
 
+/* Same launch request, but asks jawakad to resume the switcher-preferred state
+ * after RetroArch starts. Normal game browser launches should not use this. */
+int jw_ipc_launch_game_switcher(const char *socket_path, const char *system,
+                                const char *rom_path, char *status,
+                                int status_len);
+
 /* Ask jawakad to launch an app pak as a foreground child.
  * pak_dir may be absolute or relative to the SD-card root.
  * Populates status[status_len] with a human-readable result when provided. */

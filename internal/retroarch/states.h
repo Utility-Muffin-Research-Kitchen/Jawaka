@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#define JW_RA_AUTO_STATE_SLOT (-1)
+#define JW_RA_GAME_SWITCHER_STATE_SLOT 99
+
 /* RetroArch savestate thumbnail lookup.
 
    RetroArch writes a PNG beside each savestate (e.g. <rom>.state1.png, and
@@ -19,6 +22,19 @@
 bool jw_ra_find_slot_thumb(const char *states_dir, const char *rom_path,
                            int slot, char *out, size_t out_size);
 
+/* Slot-specific savestate lookup. slot < 0 = the auto slot, 0 = ".state",
+   N = ".stateN". Searches states_dir flat, then one level of per-core
+   subfolders. Writes an existing path to out and returns true, else false. */
+bool jw_ra_find_slot_state(const char *states_dir, const char *rom_path,
+                           int slot, char *out, size_t out_size);
+
+/* Find the state the switcher should resume. preferred_slot wins when present;
+   otherwise the newest existing state for the ROM is selected. Writes the
+   resolved slot and path when found. */
+bool jw_ra_find_resume_state(const char *states_dir, const char *rom_path,
+                             int preferred_slot, int *out_slot,
+                             char *out, size_t out_size);
+
 /* Thumbnail index: scans a States/ root once (flat + one level of subfolders)
    so the carousel can look up many ROMs without re-walking the tree per game. */
 typedef struct jw_state_thumb_index jw_state_thumb_index;
@@ -27,8 +43,8 @@ jw_state_thumb_index *jw_state_thumb_index_build(const char *states_dir);
 void jw_state_thumb_index_free(jw_state_thumb_index *idx);
 
 /* Find any savestate thumbnail for the ROM (matched by filename stem; the slot
-   is unknown). Prefers the auto slot. Writes the path to out and returns true
-   when one exists. */
+   is unknown). Prefers the game-switcher slot, then the newest thumbnail. Writes
+   the path to out and returns true when one exists. */
 bool jw_state_thumb_index_find(const jw_state_thumb_index *idx,
                                const char *rom_path, char *out, size_t out_size);
 

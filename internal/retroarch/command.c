@@ -508,8 +508,17 @@ jw_ra_result jw_ra_load_state_slot(const jw_ra_client *client, int slot,
                                    char *reply, size_t reply_size) {
     char command[64];
 
-    if (slot < 0) {
+    if (slot < -1) {
         return JW_RA_UNSUPPORTED;
+    }
+    if (slot == -1) {
+        jw_ra_result result = jw_ra_set_state_slot(client, -1);
+        if (result != JW_RA_OK) {
+            return result;
+        }
+        (void)reply;
+        (void)reply_size;
+        return jw_ra_load_state(client);
     }
 
     snprintf(command, sizeof(command), "LOAD_STATE_SLOT %d", slot);

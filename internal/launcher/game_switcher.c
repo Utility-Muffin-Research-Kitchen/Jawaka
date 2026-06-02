@@ -7,6 +7,7 @@
 #include <SDL2/SDL.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Slide animation: short ease-out so left/right feels snappy but not instant.
@@ -83,11 +84,41 @@ static const char *jw__switcher_basename(const char *path) {
     return slash && slash[1] ? slash + 1 : path;
 }
 
-/* A recents entry is the running game when the system matches and the ROM file
-   names match. The in-game caller only has the absolute session ROM path while
-   recents store the SD-relative form, so compare by basename rather than full
-   path. */
-static bool jw__switcher_same_game(const jw_game_entry *entry,
+static bool jw__switcher_resolve_rom(const jw_game_switcher *sw,
+                                     const char *path,
+                                     char *out,
+                                     size_t out_size) {
+    if (!path || !path[0] || !out || out_size == 0) {
+        return false;
+    }
+
+    char candidate[PATH_MAX];
+    if (path[0] == '/') {
+        snprintf(candidate, sizeof(candidate), "%s", path);
+    } else if (sw && sw->sdcard_root[0]) {
+        if (snprintf(candidate, sizeof(candidate), "%s/%s",
+                     sw->sdcard_root, path) >= (int)sizeof(candidate)) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    char resolved[PATH_MAX];
+    if (!realpath(candidate, resolved)) {
+        return false;
+    }
+    if (snprintf(out, out_size, "%s", resolved) >= (int)out_size) {
+        return false;
+    }
+    return true;
+}
+
+/* A recents entry is the running game when the system and resolved ROM path
+   match. Basename matching made sibling folders with the same ROM filename look
+   like the current game, so only exact path identity is accepted now. */
+static bool jw__switcher_same_game(const jw_game_switcher *sw,
+                                   const jw_game_entry *entry,
                                    const char *system, const char *rom_path) {
     if (!entry || !system || !rom_path) {
         return false;
@@ -95,8 +126,13 @@ static bool jw__switcher_same_game(const jw_game_entry *entry,
     if (entry->system[0] && system[0] && strcmp(entry->system, system) != 0) {
         return false;
     }
-    return strcmp(jw__switcher_basename(entry->rom_path),
-                  jw__switcher_basename(rom_path)) == 0;
+    char entry_abs[PATH_MAX];
+    char current_abs[PATH_MAX];
+    if (jw__switcher_resolve_rom(sw, entry->rom_path, entry_abs, sizeof(entry_abs)) &&
+        jw__switcher_resolve_rom(sw, rom_path, current_abs, sizeof(current_abs))) {
+        return strcmp(entry_abs, current_abs) == 0;
+    }
+    return strcmp(entry->rom_path, rom_path) == 0;
 }
 
 void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
@@ -107,7 +143,7 @@ void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
     }
 
     for (int i = 0; i < sw->count; i++) {
-        if (jw__switcher_same_game(&sw->entries[i], system, rom_path)) {
+        if (jw__switcher_same_game(sw, &sw->entries[i], system, rom_path)) {
             sw->current_index = i;
             sw->cursor = i;
             sw->anim_active = false;

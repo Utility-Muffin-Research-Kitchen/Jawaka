@@ -70,6 +70,8 @@ jw_ra_result jw_ra_reset(const jw_ra_client *client);
 jw_ra_result jw_ra_screenshot(const jw_ra_client *client);
 jw_ra_result jw_ra_save_state(const jw_ra_client *client);
 jw_ra_result jw_ra_load_state(const jw_ra_client *client);
+/* slot == -1 loads RetroArch's auto state by selecting slot -1, then using
+ * LOAD_STATE. slot >= 0 uses LOAD_STATE_SLOT. */
 jw_ra_result jw_ra_load_state_slot(const jw_ra_client *client, int slot,
                                    char *reply, size_t reply_size);
 jw_ra_result jw_ra_set_state_slot(const jw_ra_client *client, int slot);

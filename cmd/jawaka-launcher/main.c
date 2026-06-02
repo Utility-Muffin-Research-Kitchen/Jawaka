@@ -2130,7 +2130,7 @@ static void jw__render_switcher(jw_launcher_state *state) {
 
     cat_footer_item footer[] = {
         { CAT_BTN_Y,      "Remove", false, JW_HINT("Y") },
-        { CAT_BTN_SELECT, "Close",  false, JW_HINT("Space") },
+        { CAT_BTN_SELECT, "Launch", false, JW_HINT("Space") },
         { CAT_BTN_B,      "Back",   true,  JW_HINT("B") },
         { CAT_BTN_A,      "Launch", true,  JW_HINT("A") },
     };
@@ -2337,8 +2337,11 @@ static int jw__launch_app_at(const char *socket_path, jw_launcher_state *state,
     return jw__launch_app_request(socket_path, app->name, app->pak_dir, state, running);
 }
 
-static int jw__launch_game_entry(const char *socket_path, jw_launcher_state *state,
-                                 const jw_game_entry *game, bool *running) {
+static int jw__launch_game_entry_with_mode(const char *socket_path,
+                                           jw_launcher_state *state,
+                                           const jw_game_entry *game,
+                                           bool switcher_resume,
+                                           bool *running) {
     if (!game) {
         snprintf(state->status, sizeof(state->status), "%s", "No game selected");
         return -1;
@@ -2348,14 +2351,23 @@ static int jw__launch_game_entry(const char *socket_path, jw_launcher_state *sta
     cat_request_frame();
     jw__render_launcher(state);
 
-    if (jw_ipc_launch_game(socket_path, game->system, game->rom_path,
-                           state->status, sizeof(state->status)) != 0) {
+    int rc = switcher_resume
+        ? jw_ipc_launch_game_switcher(socket_path, game->system, game->rom_path,
+                                      state->status, sizeof(state->status))
+        : jw_ipc_launch_game(socket_path, game->system, game->rom_path,
+                             state->status, sizeof(state->status));
+    if (rc != 0) {
         return -1;
     }
 
     cat_hide_window();
     *running = false;
     return 0;
+}
+
+static int jw__launch_game_entry(const char *socket_path, jw_launcher_state *state,
+                                 const jw_game_entry *game, bool *running) {
+    return jw__launch_game_entry_with_mode(socket_path, state, game, false, running);
 }
 
 static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *state,
@@ -2722,11 +2734,12 @@ static void jw__handle_switcher_input(const char *socket_path, const char *db_pa
             jw_game_switcher_move(&state->switcher, +1);
             break;
         case CAT_BTN_A:
+        case CAT_BTN_SELECT:
         case CAT_BTN_START: {
             const jw_game_entry *sel = jw_game_switcher_selected(&state->switcher);
             if (sel) {
                 state->switcher_open = false;
-                jw__launch_game_entry(socket_path, state, sel, running);
+                jw__launch_game_entry_with_mode(socket_path, state, sel, true, running);
             }
             break;
         }
@@ -2734,7 +2747,6 @@ static void jw__handle_switcher_input(const char *socket_path, const char *db_pa
             jw__switcher_remove_selected(db_path, state);
             break;
         case CAT_BTN_B:
-        case CAT_BTN_SELECT:
             state->switcher_open = false;
             state->status[0] = '\0';
             break;

@@ -1,11 +1,13 @@
 #include "internal/retroarch/states.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -35,6 +37,32 @@ static bool jw__states_try(const char *dir, const char *name,
            jw__states_is_regular(out);
 }
 
+static bool jw__states_try_stat(const char *dir, const char *name,
+                                char *out, size_t out_size, struct stat *out_st) {
+    if (snprintf(out, out_size, "%s/%s", dir, name) >= (int)out_size) {
+        return false;
+    }
+    struct stat st;
+    if (stat(out, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return false;
+    }
+    if (out_st) {
+        *out_st = st;
+    }
+    return true;
+}
+
+static void jw__states_slot_name(const char *stem, int slot, bool thumb,
+                                 char *out, size_t out_size) {
+    if (slot < 0) {
+        snprintf(out, out_size, thumb ? "%s.state.auto.png" : "%s.state.auto", stem);
+    } else if (slot == 0) {
+        snprintf(out, out_size, thumb ? "%s.state.png" : "%s.state", stem);
+    } else {
+        snprintf(out, out_size, thumb ? "%s.state%d.png" : "%s.state%d", stem, slot);
+    }
+}
+
 bool jw_ra_find_slot_thumb(const char *states_dir, const char *rom_path,
                            int slot, char *out, size_t out_size) {
     if (!states_dir || !states_dir[0] || !rom_path || !rom_path[0] ||
@@ -45,13 +73,7 @@ bool jw_ra_find_slot_thumb(const char *states_dir, const char *rom_path,
     char stem[512];
     jw__states_rom_stem(rom_path, stem, sizeof(stem));
     char name[576];
-    if (slot < 0) {
-        snprintf(name, sizeof(name), "%s.state.auto.png", stem);
-    } else if (slot == 0) {
-        snprintf(name, sizeof(name), "%s.state.png", stem);
-    } else {
-        snprintf(name, sizeof(name), "%s.state%d.png", stem, slot);
-    }
+    jw__states_slot_name(stem, slot, true, name, sizeof(name));
 
     /* Flat layout first. */
     if (jw__states_try(states_dir, name, out, out_size)) {
@@ -86,12 +108,225 @@ bool jw_ra_find_slot_thumb(const char *states_dir, const char *rom_path,
     return found;
 }
 
+bool jw_ra_find_slot_state(const char *states_dir, const char *rom_path,
+                           int slot, char *out, size_t out_size) {
+    if (!states_dir || !states_dir[0] || !rom_path || !rom_path[0] ||
+        !out || out_size == 0) {
+        return false;
+    }
+
+    char stem[512];
+    jw__states_rom_stem(rom_path, stem, sizeof(stem));
+    char name[576];
+    jw__states_slot_name(stem, slot, false, name, sizeof(name));
+
+    if (jw__states_try(states_dir, name, out, out_size)) {
+        return true;
+    }
+
+    DIR *d = opendir(states_dir);
+    if (!d) {
+        return false;
+    }
+    struct dirent *ent;
+    bool found = false;
+    while (!found && (ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+        char sub[PATH_MAX];
+        if (snprintf(sub, sizeof(sub), "%s/%s", states_dir, ent->d_name) >=
+                (int)sizeof(sub)) {
+            continue;
+        }
+        struct stat st;
+        if (stat(sub, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            continue;
+        }
+        if (jw__states_try(sub, name, out, out_size)) {
+            found = true;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+static bool jw__states_parse_suffix(const char *suffix, bool thumb, int *out_slot) {
+    if (!suffix || !out_slot) {
+        return false;
+    }
+
+    if (thumb) {
+        if (strcmp(suffix, ".png") == 0) {
+            *out_slot = 0;
+            return true;
+        }
+        if (strcmp(suffix, ".auto.png") == 0) {
+            *out_slot = JW_RA_AUTO_STATE_SLOT;
+            return true;
+        }
+    } else {
+        if (suffix[0] == '\0') {
+            *out_slot = 0;
+            return true;
+        }
+        if (strcmp(suffix, ".auto") == 0) {
+            *out_slot = JW_RA_AUTO_STATE_SLOT;
+            return true;
+        }
+    }
+
+    const char *digits = suffix;
+    if (!thumb && *digits == '\0') {
+        return false;
+    }
+    if (!isdigit((unsigned char)*digits)) {
+        return false;
+    }
+
+    long value = 0;
+    while (isdigit((unsigned char)*digits)) {
+        value = value * 10L + (long)(*digits - '0');
+        if (value > 999999L) {
+            return false;
+        }
+        digits++;
+    }
+
+    if (thumb) {
+        if (strcmp(digits, ".png") != 0) {
+            return false;
+        }
+    } else if (*digits != '\0') {
+        return false;
+    }
+
+    *out_slot = (int)value;
+    return true;
+}
+
+static bool jw__states_match_slot_name(const char *name, const char *stem,
+                                       bool thumb, int *out_slot) {
+    if (!name || !stem || !stem[0] || !out_slot) {
+        return false;
+    }
+    char prefix[576];
+    int plen = snprintf(prefix, sizeof(prefix), "%s.state", stem);
+    if (plen <= (int)sizeof(".state") - 1 || plen >= (int)sizeof(prefix)) {
+        return false;
+    }
+    if (strncmp(name, prefix, (size_t)plen) != 0) {
+        return false;
+    }
+    return jw__states_parse_suffix(name + plen, thumb, out_slot);
+}
+
+typedef struct {
+    bool found;
+    int slot;
+    time_t mtime;
+    char path[PATH_MAX];
+} jw__state_candidate;
+
+static void jw__states_consider_resume(jw__state_candidate *best,
+                                       const char *dir,
+                                       const char *name,
+                                       const char *stem) {
+    int slot = 0;
+    if (!jw__states_match_slot_name(name, stem, false, &slot)) {
+        return;
+    }
+
+    char full[PATH_MAX];
+    struct stat st;
+    if (!jw__states_try_stat(dir, name, full, sizeof(full), &st)) {
+        return;
+    }
+
+    if (!best->found || st.st_mtime > best->mtime) {
+        best->found = true;
+        best->slot = slot;
+        best->mtime = st.st_mtime;
+        snprintf(best->path, sizeof(best->path), "%s", full);
+    }
+}
+
+static void jw__states_scan_resume_dir(jw__state_candidate *best,
+                                       const char *dir,
+                                       const char *stem,
+                                       bool recurse) {
+    DIR *d = opendir(dir);
+    if (!d) {
+        return;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+        char sub[PATH_MAX];
+        if (snprintf(sub, sizeof(sub), "%s/%s", dir, ent->d_name) >=
+                (int)sizeof(sub)) {
+            continue;
+        }
+        struct stat st;
+        if (stat(sub, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (recurse) {
+                jw__states_scan_resume_dir(best, sub, stem, false);
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            jw__states_consider_resume(best, dir, ent->d_name, stem);
+        }
+    }
+    closedir(d);
+}
+
+bool jw_ra_find_resume_state(const char *states_dir, const char *rom_path,
+                             int preferred_slot, int *out_slot,
+                             char *out, size_t out_size) {
+    if (!states_dir || !states_dir[0] || !rom_path || !rom_path[0] ||
+        !out_slot || !out || out_size == 0) {
+        return false;
+    }
+
+    char preferred[PATH_MAX];
+    if (jw_ra_find_slot_state(states_dir, rom_path, preferred_slot,
+                              preferred, sizeof(preferred))) {
+        *out_slot = preferred_slot;
+        snprintf(out, out_size, "%s", preferred);
+        return true;
+    }
+
+    char stem[512];
+    jw__states_rom_stem(rom_path, stem, sizeof(stem));
+    jw__state_candidate best;
+    memset(&best, 0, sizeof(best));
+    best.slot = 0;
+
+    jw__states_scan_resume_dir(&best, states_dir, stem, true);
+    if (!best.found) {
+        return false;
+    }
+
+    *out_slot = best.slot;
+    snprintf(out, out_size, "%s", best.path);
+    return true;
+}
+
 /* ── Thumbnail index ──────────────────────────────────────────────────────── */
 
+typedef struct {
+    char *path;
+    time_t mtime;
+} jw_state_thumb_entry;
+
 struct jw_state_thumb_index {
-    char **paths;
-    int    count;
-    int    cap;
+    jw_state_thumb_entry *entries;
+    int                   count;
+    int                   cap;
 };
 
 /* Accept only savestate thumbnails: a name ending in ".png" that contains
@@ -112,21 +347,24 @@ static void jw__index_add(jw_state_thumb_index *idx, const char *dir, const char
         return;
     }
     char full[PATH_MAX];
-    if (snprintf(full, sizeof(full), "%s/%s", dir, name) >= (int)sizeof(full)) {
+    struct stat st;
+    if (!jw__states_try_stat(dir, name, full, sizeof(full), &st)) {
         return;
     }
     if (idx->count == idx->cap) {
         int ncap = idx->cap ? idx->cap * 2 : 32;
-        char **np = realloc(idx->paths, (size_t)ncap * sizeof(*np));
+        jw_state_thumb_entry *np = realloc(idx->entries, (size_t)ncap * sizeof(*np));
         if (!np) {
             return;
         }
-        idx->paths = np;
+        idx->entries = np;
         idx->cap = ncap;
     }
     char *dup = strdup(full);
     if (dup) {
-        idx->paths[idx->count++] = dup;
+        idx->entries[idx->count].path = dup;
+        idx->entries[idx->count].mtime = st.st_mtime;
+        idx->count++;
     }
 }
 
@@ -176,26 +414,10 @@ void jw_state_thumb_index_free(jw_state_thumb_index *idx) {
         return;
     }
     for (int i = 0; i < idx->count; i++) {
-        free(idx->paths[i]);
+        free(idx->entries[i].path);
     }
-    free(idx->paths);
+    free(idx->entries);
     free(idx);
-}
-
-/* True when `rest` (the part of a filename after "<stem>.state") is a valid slot
-   suffix: ".png" (slot 0), ".auto.png" (auto), or "<digits>.png" (slot N). This
-   stops "<stem>" from matching a different ROM that merely shares the prefix. */
-static bool jw__states_rest_is_slot(const char *rest) {
-    if (strcmp(rest, ".png") == 0 || strcmp(rest, ".auto.png") == 0) {
-        return true;
-    }
-    if (*rest < '0' || *rest > '9') {
-        return false;
-    }
-    while (*rest >= '0' && *rest <= '9') {
-        rest++;
-    }
-    return strcmp(rest, ".png") == 0;
 }
 
 bool jw_state_thumb_index_find(const jw_state_thumb_index *idx,
@@ -205,30 +427,26 @@ bool jw_state_thumb_index_find(const jw_state_thumb_index *idx,
     }
     char stem[512];
     jw__states_rom_stem(rom_path, stem, sizeof(stem));
-    char prefix[576];
-    int plen = snprintf(prefix, sizeof(prefix), "%s.state", stem);
-    if (plen <= (int)sizeof(".state") - 1 || plen >= (int)sizeof(prefix)) {
-        return false; /* empty stem */
-    }
 
-    const char *best = NULL;
+    const jw_state_thumb_entry *best = NULL;
     for (int i = 0; i < idx->count; i++) {
-        const char *name = jw__states_basename(idx->paths[i]);
-        if (strncmp(name, prefix, (size_t)plen) != 0) {
+        const jw_state_thumb_entry *entry = &idx->entries[i];
+        const char *name = jw__states_basename(entry->path);
+        int slot = 0;
+        if (!jw__states_match_slot_name(name, stem, true, &slot)) {
             continue;
         }
-        const char *rest = name + plen;
-        if (!jw__states_rest_is_slot(rest)) {
-            continue;
+        if (slot == JW_RA_GAME_SWITCHER_STATE_SLOT) {
+            best = entry;
+            break;
         }
-        best = idx->paths[i];
-        if (strcmp(rest, ".auto.png") == 0) {
-            break; /* prefer the autosave thumbnail */
+        if (!best || entry->mtime > best->mtime) {
+            best = entry;
         }
     }
     if (!best) {
         return false;
     }
-    snprintf(out, out_size, "%s", best);
+    snprintf(out, out_size, "%s", best->path);
     return true;
 }

@@ -190,8 +190,9 @@ int jw_ipc_open_menu(const char *socket_path) {
     return rc;
 }
 
-int jw_ipc_launch_game(const char *socket_path, const char *system,
-                       const char *rom_path, char *status, int status_len) {
+static int ipc__launch_game(const char *socket_path, const char *system,
+                            const char *rom_path, const char *resume_policy,
+                            char *status, int status_len) {
     if (!system || !system[0] || !rom_path || !rom_path[0]) {
         if (status) snprintf(status, (size_t)status_len, "%s", "launch failed: missing game");
         return -1;
@@ -201,6 +202,9 @@ int jw_ipc_launch_game(const char *socket_path, const char *system,
     cJSON_AddStringToObject(req, "type", "launch-game");
     cJSON_AddStringToObject(req, "system", system);
     cJSON_AddStringToObject(req, "rom_path", rom_path);
+    if (resume_policy && resume_policy[0]) {
+        cJSON_AddStringToObject(req, "resume_policy", resume_policy);
+    }
 
     cJSON *resp = NULL;
     if (ipc__request(socket_path, req, &resp) != 0) {
@@ -224,6 +228,18 @@ int jw_ipc_launch_game(const char *socket_path, const char *system,
     if (status) snprintf(status, (size_t)status_len, "%s", "launch requested");
     cJSON_Delete(resp);
     return 0;
+}
+
+int jw_ipc_launch_game(const char *socket_path, const char *system,
+                       const char *rom_path, char *status, int status_len) {
+    return ipc__launch_game(socket_path, system, rom_path, NULL, status, status_len);
+}
+
+int jw_ipc_launch_game_switcher(const char *socket_path, const char *system,
+                                const char *rom_path, char *status,
+                                int status_len) {
+    return ipc__launch_game(socket_path, system, rom_path, "switcher-latest",
+                            status, status_len);
 }
 
 int jw_ipc_open_switcher(const char *socket_path, char *status, int status_len) {

@@ -71,6 +71,7 @@ DAEMON_SRCS := \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
 	internal/retroarch/command.c \
+	internal/retroarch/states.c \
 	internal/storage/sources.c \
 	internal/db/db.c \
 	internal/settings/appearance.c \
