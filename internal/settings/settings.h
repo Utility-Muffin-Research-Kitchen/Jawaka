@@ -13,9 +13,10 @@
 extern const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT];
 extern const bool        kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT];
 
-#define JW_SETTINGS_PILL_SHAPE_COUNT 3
+#define JW_SETTINGS_PILL_SHAPE_COUNT 4
 extern const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT];
 extern const float       kPillShapeValues[JW_SETTINGS_PILL_SHAPE_COUNT];
+extern const int         kPillShapeCornerMask[JW_SETTINGS_PILL_SHAPE_COUNT];
 
 #define JW_SETTINGS_FONT_SIZE_COUNT 4
 extern const char *const kFontSizeLabels[JW_SETTINGS_FONT_SIZE_COUNT];

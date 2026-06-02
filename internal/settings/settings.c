@@ -32,12 +32,23 @@ const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT] = {
     "Rounded",
     "Squircle",
     "Square",
+    "Leaf",
 };
 
 const float kPillShapeValues[JW_SETTINGS_PILL_SHAPE_COUNT] = {
     1.0f,
     0.25f,
     0.0f,
+    1.0f,   /* Leaf: full radius on its two rounded corners */
+};
+
+/* Which corners each shape rounds. Leaf rounds bottom-left + top-right only
+   (the other two stay sharp), for a directional highlight. */
+const int kPillShapeCornerMask[JW_SETTINGS_PILL_SHAPE_COUNT] = {
+    CAT_CORNER_ALL,
+    CAT_CORNER_ALL,
+    CAT_CORNER_ALL,
+    CAT_CORNER_BL | CAT_CORNER_TR,
 };
 
 const char *const kFontSizeLabels[JW_SETTINGS_FONT_SIZE_COUNT] = {
@@ -788,8 +799,10 @@ void jw_settings_apply_persisted_overrides(const char *db_path) {
 
     if (jw_db_get_setting(db_path, "pill_shape_index", val, sizeof(val)) == 0 && val[0]) {
         int idx = atoi(val);
-        if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT)
+        if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT) {
             t->pill_radius_ratio = kPillShapeValues[idx];
+            t->pill_corner_mask  = kPillShapeCornerMask[idx];
+        }
     }
     if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0 && val[0]) {
         int idx = atoi(val);
@@ -1072,6 +1085,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     int next = (ui->pill_shape_index + dir + JW_SETTINGS_PILL_SHAPE_COUNT) % JW_SETTINGS_PILL_SHAPE_COUNT;
                     ui->pill_shape_index = next;
                     cat_get_theme()->pill_radius_ratio = kPillShapeValues[next];
+                    cat_get_theme()->pill_corner_mask  = kPillShapeCornerMask[next];
                     jw__persist_int(ui, "pill_shape_index", next);
                 } else if (row == JW_LAYOUT_FONT_SIZE) {
                     int next = (ui->font_size_index + dir + JW_SETTINGS_FONT_SIZE_COUNT) % JW_SETTINGS_FONT_SIZE_COUNT;
