@@ -739,6 +739,14 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 3);
+    } else if (state->current_tab == JW_TAB_RECENTS) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
+            { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+            { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
+            { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 4);
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_L1,   "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
@@ -2646,8 +2654,25 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             }
             break;
         case CAT_BTN_Y: {
-            /* On the Favorites tab, Y removes the selected favorite and reloads
-               the list; everywhere else Y rescans the library. */
+            /* On the Recents tab, Y toggles the favorite of the selected game
+               (the row's star updates in place); on the Favorites tab, Y removes
+               the selected favorite and reloads the list; everywhere else Y
+               rescans the library. */
+            if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_RECENTS) {
+                if (state->recents_count > 0 && state->list.cursor < state->recents_count) {
+                    jw_game_entry *rec = &state->recents[state->list.cursor];
+                    int want_on = !rec->favorite;
+                    if (jw_db_set_favorite(db_path, "game", rec->id, want_on) == 0) {
+                        rec->favorite = want_on;
+                        snprintf(state->status, sizeof(state->status), "%s %.200s",
+                                 want_on ? "Favorited" : "Unfavorited", rec->name);
+                    } else {
+                        snprintf(state->status, sizeof(state->status), "%s",
+                                 "Favorite update failed");
+                    }
+                }
+                break;
+            }
             if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_FAVORITES) {
                 if (state->favorites_count > 0 && state->list.cursor < state->favorites_count) {
                     const jw_game_entry *fav = &state->favorites[state->list.cursor];
