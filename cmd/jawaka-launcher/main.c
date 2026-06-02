@@ -275,12 +275,25 @@ static void jw__system_display_name(const jw_launcher_state *state, const char *
     }
 }
 
-/* Fills each listed system's display_name from the catalog after a scan/load. */
+/* Sort the systems list alphabetically by display name (the DB returns them
+   ordered by folder-code id, e.g. FC/MD/SFC, which isn't the user-facing order). */
+static int jw__system_cmp_display(const void *a, const void *b) {
+    const jw_system_entry *sa = (const jw_system_entry *)a;
+    const jw_system_entry *sb = (const jw_system_entry *)b;
+    return strcasecmp(sa->display_name, sb->display_name);
+}
+
+/* Fills each listed system's display_name from the catalog after a scan/load,
+   then sorts the list alphabetically by that display name. */
 static void jw__resolve_system_names(jw_launcher_state *state) {
     for (int i = 0; i < state->system_count; i++) {
         jw__system_display_name(state, state->systems[i].name,
                                 state->systems[i].display_name,
                                 sizeof(state->systems[i].display_name));
+    }
+    if (state->system_count > 1) {
+        qsort(state->systems, (size_t)state->system_count,
+              sizeof(state->systems[0]), jw__system_cmp_display);
     }
 }
 
