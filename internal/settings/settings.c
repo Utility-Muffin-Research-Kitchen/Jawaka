@@ -42,13 +42,13 @@ const float kPillShapeValues[JW_SETTINGS_PILL_SHAPE_COUNT] = {
     1.0f,   /* Leaf: full radius on its two rounded corners */
 };
 
-/* Which corners each shape rounds. Leaf rounds bottom-left + top-right only
-   (the other two stay sharp), for a directional highlight. */
+/* Which corners each shape rounds. Leaf rounds top-left + bottom-right only
+   (bottom-left + top-right stay sharp), for a directional highlight. */
 const int kPillShapeCornerMask[JW_SETTINGS_PILL_SHAPE_COUNT] = {
     CAT_CORNER_ALL,
     CAT_CORNER_ALL,
     CAT_CORNER_ALL,
-    CAT_CORNER_BL | CAT_CORNER_TR,
+    CAT_CORNER_TL | CAT_CORNER_BR,
 };
 
 const char *const kFontSizeLabels[JW_SETTINGS_FONT_SIZE_COUNT] = {
