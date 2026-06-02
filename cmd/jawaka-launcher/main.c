@@ -2810,6 +2810,13 @@ int main(void) {
             cat_request_frame_in(300);
         }
 
+        /* Keep the status bar live while idle: the launcher only renders on
+           input or a requested frame, so without this a wifi connect / charger
+           plug-in / clock tick wouldn't show until the next button press. ~1s
+           is responsive and cheap (the earliest pending frame request wins, so
+           shorter ticks above still fire sooner). */
+        cat_request_frame_in(1000);
+
         jw__render_launcher(&state);
     }
 
