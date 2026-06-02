@@ -386,6 +386,78 @@ static int jw__scan_roms_compat(sqlite3 *db, const char *sdcard_root, jw_scan_re
     return 0;
 }
 
+#define JW_M3U_MAX_MEMBERS 128
+#define JW_M3U_MEMBER_LEN  512
+
+/* Collect the disc files (.cue/.iso/.chd basenames) referenced by every .m3u in
+   a system dir. Those member discs are then hidden from the game list so only
+   the .m3u shows — one entry per game, and the m3u drives in-game disc swapping.
+   Handles single-disc-with-m3u and multi-disc sets alike. */
+static void jw__collect_m3u_members(const jw_ra_system *system, const char *system_dir,
+                                    char members[][JW_M3U_MEMBER_LEN], int *member_count) {
+    *member_count = 0;
+    if (!system->playlist_extensions.count) {
+        return;
+    }
+    DIR *dir = opendir(system_dir);
+    if (!dir) {
+        return;
+    }
+    struct dirent *entry;
+    char ext[16];
+    while ((entry = readdir(dir)) != NULL) {
+        if (jw__is_hidden(entry->d_name)) {
+            continue;
+        }
+        jw__extension_lower(entry->d_name, ext, sizeof(ext));
+        if (!jw_ra_string_list_contains_casefold(&system->playlist_extensions, ext)) {
+            continue;
+        }
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", system_dir, entry->d_name) >= (int)sizeof(path)) {
+            continue;
+        }
+        FILE *fp = fopen(path, "r");
+        if (!fp) {
+            continue;
+        }
+        char line[512];
+        while (fgets(line, sizeof(line), fp) != NULL) {
+            char *s = line;
+            while (*s == ' ' || *s == '\t') s++;
+            size_t n = strlen(s);
+            while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' ||
+                             s[n - 1] == ' '  || s[n - 1] == '\t')) {
+                s[--n] = '\0';
+            }
+            if (!s[0] || s[0] == '#') {
+                continue;
+            }
+            /* Take the basename — m3u entries may be bare names or relative paths. */
+            char *base = s;
+            for (char *p = s; *p; p++) {
+                if (*p == '/' || *p == '\\') base = p + 1;
+            }
+            if (base[0] && *member_count < JW_M3U_MAX_MEMBERS) {
+                snprintf(members[*member_count], JW_M3U_MEMBER_LEN, "%s", base);
+                (*member_count)++;
+            }
+        }
+        fclose(fp);
+    }
+    closedir(dir);
+}
+
+static int jw__name_is_m3u_member(const char *name, char members[][JW_M3U_MEMBER_LEN],
+                                  int member_count) {
+    for (int i = 0; i < member_count; i++) {
+        if (strcasecmp(name, members[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int jw__scan_roms_metadata(sqlite3 *db,
                                   const char *sdcard_root,
                                   const jw_ra_catalog *catalog,
@@ -443,6 +515,13 @@ static int jw__scan_roms_metadata(sqlite3 *db,
         int system_has_games = 0;
         int logged_archive_policy = 0;
         int logged_m3u_policy = 0;
+
+        /* Pre-pass: gather disc files referenced by any .m3u so they can be
+           hidden below (one entry per game; the m3u handles disc swapping). */
+        char m3u_members[JW_M3U_MAX_MEMBERS][JW_M3U_MEMBER_LEN];
+        int m3u_member_count = 0;
+        jw__collect_m3u_members(system, system_dir, m3u_members, &m3u_member_count);
+
         struct dirent *file_entry;
         while ((file_entry = readdir(files)) != NULL) {
             if (jw__is_hidden(file_entry->d_name) ||
@@ -463,6 +542,17 @@ static int jw__scan_roms_metadata(sqlite3 *db,
                                           &logged_archive_policy,
                                           &logged_m3u_policy)) {
                 continue;
+            }
+
+            /* Hide disc files (.cue/.iso/.chd) that an .m3u references — the
+               .m3u is the single list entry for that game / multi-disc set. */
+            if (m3u_member_count > 0) {
+                char this_ext[16];
+                jw__extension_lower(file_entry->d_name, this_ext, sizeof(this_ext));
+                if (!jw_ra_string_list_contains_casefold(&system->playlist_extensions, this_ext) &&
+                    jw__name_is_m3u_member(file_entry->d_name, m3u_members, m3u_member_count)) {
+                    continue;
+                }
             }
 
             char title[PATH_MAX];
