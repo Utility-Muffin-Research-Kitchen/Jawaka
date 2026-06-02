@@ -744,8 +744,8 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
            the four shown actions fit without footer overflow. */
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_B,  "Remove",   false, JW_HINT("B") },
+            { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 4);
