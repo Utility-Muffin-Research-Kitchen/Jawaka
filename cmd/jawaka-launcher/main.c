@@ -2457,6 +2457,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         return;
     }
 
+    /* Analog-stick click is a global shortcut: toggle the LED ring on/off. */
+    if (button == CAT_BTN_STICK) {
+        jw_settings_toggle_led(&state->settings);
+        return;
+    }
+
     if (state->search_open) {
         jw__handle_search_input(socket_path, db_path, state, button, running);
         return;

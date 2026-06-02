@@ -144,6 +144,10 @@ bool jw_settings_show_hints(const jw_settings_ui *ui);
    those events). */
 bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_av(jw_settings_ui *ui);
+
+/* Flip the LED on/off and apply immediately (e.g. a stick-press shortcut from
+   the launcher). No-op if the platform has no LED. */
+void jw_settings_toggle_led(jw_settings_ui *ui);
 void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *out);
 
 /* Applies all persisted appearance overrides (the 7 color roles, list pill

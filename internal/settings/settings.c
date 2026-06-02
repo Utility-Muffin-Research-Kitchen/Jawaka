@@ -183,6 +183,15 @@ static void jw__apply_led(jw_settings_ui *ui) {
                    ui->led_brightness, ui->led_speed, status, sizeof(status));
 }
 
+void jw_settings_toggle_led(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) return;
+    /* Reflect the daemon's current state first so the toggle is correct even if
+       it was last changed elsewhere, then flip and apply. */
+    jw__refresh_led(ui);
+    ui->led_enabled = !ui->led_enabled;
+    jw__apply_led(ui);
+}
+
 static void jw__persist(const jw_settings_ui *ui, const char *key, const char *val) {
     if (ui->db_path[0])
         jw_db_set_setting(ui->db_path, key, val);
