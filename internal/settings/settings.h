@@ -69,7 +69,8 @@ typedef enum {
 #define JW_STATUSBAR_CLOCK   1
 #define JW_STATUSBAR_BATTERY 2   /* 4-way cycler: Off / Icon / Percent / Both */
 #define JW_STATUSBAR_WIFI    3
-#define JW_STATUSBAR_ROW_COUNT 4
+#define JW_STATUSBAR_VOLUME  4
+#define JW_STATUSBAR_ROW_COUNT 5
 
 /* Display & Sound page */
 #define JW_DISPLAY_BRIGHTNESS 0
@@ -118,6 +119,7 @@ typedef struct {
     bool               show_battery;
     bool               show_battery_level;  /* numeric % next to the battery icon */
     bool               show_wifi;
+    bool               show_volume;         /* speaker icon in the status bar */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     int                brightness_percent;
     int                volume_percent;
@@ -146,6 +148,13 @@ bool jw_settings_show_hints(const jw_settings_ui *ui);
    those events). */
 bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_av(jw_settings_ui *ui);
+
+/* True if the status-bar speaker icon is enabled. The launcher uses this to
+ * decide whether to keep volume polled on the home screen. */
+bool jw_settings_show_volume(const jw_settings_ui *ui);
+/* Poll the current volume via IPC into ui->volume_percent (a lighter subset of
+ * refresh_av) so the status-bar speaker icon stays current while idle. */
+void jw_settings_ui_refresh_volume(jw_settings_ui *ui);
 
 /* Flip the LED on/off and apply immediately (e.g. a stick-press shortcut from
    the launcher). No-op if the platform has no LED. */

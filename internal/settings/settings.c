@@ -237,6 +237,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->show_battery      = true;
     ui->show_battery_level = false;
     ui->show_wifi         = true;
+    ui->show_volume       = true;
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
     ui->brightness_percent = 50;
     ui->volume_percent     = 50;
@@ -280,6 +281,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             ui->show_battery_level = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
             ui->show_wifi = (strcmp(val, "0") != 0);
+        if (jw_db_get_setting(db_path, "show_volume", val, sizeof(val)) == 0)
+            ui->show_volume = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "color_scheme_index", val, sizeof(val)) == 0 && val[0]) {
             int idx = atoi(val);
             if (idx >= 0 && idx < JW_COLOR_SCHEME_COUNT)
@@ -357,6 +360,16 @@ void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *
     out->show_battery = ui->show_battery;
     out->show_battery_level = ui->show_battery_level;
     out->show_wifi = ui->show_wifi;
+    out->show_volume = ui->show_volume;
+    out->volume_percent = ui->show_volume ? ui->volume_percent : -1;
+}
+
+bool jw_settings_show_volume(const jw_settings_ui *ui) {
+    return ui && ui->show_volume;
+}
+
+void jw_settings_ui_refresh_volume(jw_settings_ui *ui) {
+    jw__refresh_volume(ui);
 }
 
 void jw_settings_load_status_prefs(const char *db_path,
@@ -367,6 +380,8 @@ void jw_settings_load_status_prefs(const char *db_path,
     bool show_battery      = true;
     bool show_battery_level = false;
     bool show_wifi         = true;
+    bool show_volume       = true;
+    int  volume_percent    = -1;
     bool show_hints        = true;
 
     if (db_path && db_path[0]) {
@@ -382,6 +397,11 @@ void jw_settings_load_status_prefs(const char *db_path,
             show_battery_level = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
             show_wifi = (strcmp(val, "0") != 0);
+        if (jw_db_get_setting(db_path, "show_volume", val, sizeof(val)) == 0)
+            show_volume = (strcmp(val, "0") != 0);
+        /* The menu has no live volume poll; use the daemon's last persisted value. */
+        if (jw_db_get_setting(db_path, "platform.volume_percent", val, sizeof(val)) == 0 && val[0])
+            volume_percent = atoi(val);
         if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0)
             show_hints = (strcmp(val, "0") != 0);
     }
@@ -398,6 +418,8 @@ void jw_settings_load_status_prefs(const char *db_path,
         out_opts->show_battery = show_battery;
         out_opts->show_battery_level = show_battery_level;
         out_opts->show_wifi = show_wifi;
+        out_opts->show_volume = show_volume;
+        out_opts->volume_percent = show_volume ? volume_percent : -1;
     }
     if (out_show_hints)
         *out_show_hints = show_hints;
@@ -588,6 +610,8 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
                         true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_WIFI,
                         "Wifi", ui->show_wifi ? "On" : "Off", true);
+    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_VOLUME,
+                        "Volume", ui->show_volume ? "On" : "Off", true);
     (void)h;
 }
 
@@ -1283,6 +1307,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 } else if (row == JW_STATUSBAR_WIFI) {
                     ui->show_wifi = !ui->show_wifi;
                     jw__persist_bool(ui, "show_wifi", ui->show_wifi);
+                } else if (row == JW_STATUSBAR_VOLUME) {
+                    ui->show_volume = !ui->show_volume;
+                    jw__persist_bool(ui, "show_volume", ui->show_volume);
+                    if (ui->show_volume) jw__refresh_volume(ui);
                 }
                 break;
             }

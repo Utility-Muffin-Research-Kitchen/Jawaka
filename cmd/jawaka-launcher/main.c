@@ -2880,6 +2880,20 @@ int main(void) {
             cat_request_frame_in(300);
         }
 
+        /* Keep the status-bar speaker icon current. Volume lives in the daemon
+           (unlike wifi/battery, which Catastrophe reads from sysfs), so poll it
+           at the idle status cadence when the icon is on and the A/V page isn't
+           already polling it. */
+        if (jw_settings_show_volume(&state.settings) &&
+            !jw_settings_ui_wants_av_poll(&state.settings)) {
+            static uint32_t last_volume_poll = 0;
+            uint32_t now = SDL_GetTicks();
+            if (last_volume_poll == 0 || now - last_volume_poll >= 1000) {
+                jw_settings_ui_refresh_volume(&state.settings);
+                last_volume_poll = now;
+            }
+        }
+
         /* Keep the status bar live while idle: the launcher only renders on
            input or a requested frame, so without this a wifi connect / charger
            plug-in / clock tick wouldn't show until the next button press. ~1s
