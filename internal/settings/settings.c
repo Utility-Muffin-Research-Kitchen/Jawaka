@@ -551,6 +551,30 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
     (void)h;
 }
 
+/* The Status Bar "Battery" row cycles four display modes. They're stored as the
+   two persisted bools show_battery (icon) + show_battery_level (number), so the
+   mode is just a UI view over that pair. */
+enum {
+    JW_BATTERY_OFF = 0,   /* neither icon nor number */
+    JW_BATTERY_ICON,      /* icon only */
+    JW_BATTERY_PERCENT,   /* number only */
+    JW_BATTERY_BOTH,      /* icon + number */
+    JW_BATTERY_MODE_COUNT
+};
+static const char *const kBatteryModeLabels[JW_BATTERY_MODE_COUNT] = {
+    "Off", "Icon", "Percent", "Both"
+};
+static int jw__battery_mode(bool icon, bool number) {
+    if (icon && number) return JW_BATTERY_BOTH;
+    if (number)         return JW_BATTERY_PERCENT;
+    if (icon)           return JW_BATTERY_ICON;
+    return JW_BATTERY_OFF;
+}
+static void jw__battery_mode_to_flags(int mode, bool *icon, bool *number) {
+    *icon   = (mode == JW_BATTERY_ICON || mode == JW_BATTERY_BOTH);
+    *number = (mode == JW_BATTERY_PERCENT || mode == JW_BATTERY_BOTH);
+}
+
 static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Status Bar", x, y, w);
     int ly = y + jw__header_h();
@@ -559,9 +583,9 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_CLOCK,
                         "Clock", kClockStyleLabels[ui->clock_style_index], true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BATTERY,
-                        "Battery", ui->show_battery ? "On" : "Off", true);
-    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BATTERY_PCT,
-                        "Battery %", ui->show_battery_level ? "On" : "Off", true);
+                        "Battery",
+                        kBatteryModeLabels[jw__battery_mode(ui->show_battery, ui->show_battery_level)],
+                        true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_WIFI,
                         "Wifi", ui->show_wifi ? "On" : "Off", true);
     (void)h;
@@ -1251,10 +1275,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->clock_style_index = next;
                     jw__persist_int(ui, "clock_style_index", next);
                 } else if (row == JW_STATUSBAR_BATTERY) {
-                    ui->show_battery = !ui->show_battery;
+                    int mode = jw__battery_mode(ui->show_battery, ui->show_battery_level);
+                    mode = (mode + dir + JW_BATTERY_MODE_COUNT) % JW_BATTERY_MODE_COUNT;
+                    jw__battery_mode_to_flags(mode, &ui->show_battery, &ui->show_battery_level);
                     jw__persist_bool(ui, "show_battery", ui->show_battery);
-                } else if (row == JW_STATUSBAR_BATTERY_PCT) {
-                    ui->show_battery_level = !ui->show_battery_level;
                     jw__persist_bool(ui, "show_battery_level", ui->show_battery_level);
                 } else if (row == JW_STATUSBAR_WIFI) {
                     ui->show_wifi = !ui->show_wifi;

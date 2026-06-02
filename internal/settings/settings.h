@@ -65,12 +65,11 @@ typedef enum {
 #define JW_LAYOUT_ROW_COUNT   3
 
 /* Status Bar page */
-#define JW_STATUSBAR_HINTS       0
-#define JW_STATUSBAR_CLOCK       1
-#define JW_STATUSBAR_BATTERY     2
-#define JW_STATUSBAR_BATTERY_PCT 3
-#define JW_STATUSBAR_WIFI        4
-#define JW_STATUSBAR_ROW_COUNT   5
+#define JW_STATUSBAR_HINTS   0
+#define JW_STATUSBAR_CLOCK   1
+#define JW_STATUSBAR_BATTERY 2   /* 4-way cycler: Off / Icon / Percent / Both */
+#define JW_STATUSBAR_WIFI    3
+#define JW_STATUSBAR_ROW_COUNT 4
 
 /* Display & Sound page */
 #define JW_DISPLAY_BRIGHTNESS 0
