@@ -73,6 +73,10 @@ typedef enum {
 #define JW_LIBRARY_RESET_RETROARCH 0
 #define JW_LIBRARY_ROW_COUNT 1
 
+/* Behavior page */
+#define JW_BEHAVIOR_STARTUP_TAB 0
+#define JW_BEHAVIOR_ROW_COUNT   1
+
 /* ─── State ────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -85,6 +89,7 @@ typedef struct {
     cat_list_state     statusbar_list;
     cat_list_state     display_list;
     cat_list_state     library_list;
+    cat_list_state     behavior_list;
     cat_list_state     placeholder_list;
     cat_scroll_state   about_scroll;
     int                theme_index;
@@ -95,6 +100,7 @@ typedef struct {
     int                clock_style_index;
     bool               show_battery;
     bool               show_wifi;
+    int                startup_tab_index;   /* jw_tab the launcher opens on */
     int                brightness_percent;
     char               db_path[1024];
     char               socket_path[1024];

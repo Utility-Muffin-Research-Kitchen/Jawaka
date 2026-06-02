@@ -80,6 +80,15 @@ static const jw__color_scheme kColorSchemes[] = {
 };
 #define JW_COLOR_SCHEME_COUNT ((int)(sizeof(kColorSchemes) / sizeof(kColorSchemes[0])))
 
+/* Startup-tab options for Settings > Behavior. Order and index MIRROR the
+   launcher's jw_tab enum so the persisted "startup_tab_index" maps 1:1 to the
+   tab the launcher opens on boot. */
+static const char *kStartupTabLabels[] = {
+    "Recents", "Favorites", "Games", "Apps", "Settings",
+};
+#define JW_STARTUP_TAB_COUNT ((int)(sizeof(kStartupTabLabels) / sizeof(kStartupTabLabels[0])))
+#define JW_STARTUP_TAB_DEFAULT 2   /* Games */
+
 static const char *kHomeCategoryLabels[] = {
     "Appearance",
     "Display",
@@ -145,6 +154,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->statusbar_list,   JW_STATUSBAR_ROW_COUNT);
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
     cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
+    cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
     cat_list_state_init(&ui->placeholder_list, 1);
     cat_scroll_state_init(&ui->about_scroll);
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
@@ -155,6 +165,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->clock_style_index = 1;
     ui->show_battery      = true;
     ui->show_wifi         = true;
+    ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
     ui->brightness_percent = 50;
 
     if (db_path && db_path[0])
@@ -192,6 +203,11 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             int idx = atoi(val);
             if (idx >= 0 && idx < JW_COLOR_SCHEME_COUNT)
                 ui->color_scheme_index = idx;
+        }
+        if (jw_db_get_setting(db_path, "startup_tab_index", val, sizeof(val)) == 0 && val[0]) {
+            int idx = atoi(val);
+            if (idx >= 0 && idx < JW_STARTUP_TAB_COUNT)
+                ui->startup_tab_index = idx;
         }
 
         jw_settings_apply_persisted_overrides(ui->db_path);
@@ -316,15 +332,28 @@ static void jw__render_list_row(const cat_list_state *list, int x, int y,
                               w / 2 - cat_scale(20));
 
     if (value) {
-        char value_str[96];
-        if (cycler)
-            snprintf(value_str, sizeof(value_str), "\xe2\x80\xb9 %s \xe2\x80\xba", value);
-        else
-            snprintf(value_str, sizeof(value_str), "%s", value);
-        int vw = cat_measure_text(body, value_str);
-        int vx = x + w - vw - cat_scale(16);
-        if (vx < x + w / 2) vx = x + w / 2;
-        cat_draw_text(body, value_str, vx, ty, value_c);
+        int body_h = TTF_FontHeight(body);
+        int vw = cat_measure_text(body, value);
+        if (cycler) {
+            /* Solid triangles flank the value, matching the tab-switcher
+               affordance: ◀ value ▶. Triangles are sized to the text cap and
+               vertically centered. */
+            int tri_h = body_h / 2;
+            int tri_w = tri_h * 3 / 4;
+            int gap   = cat_scale(8);
+            int total = tri_w + gap + vw + gap + tri_w;
+            int rx    = x + w - total - cat_scale(16);
+            if (rx < x + w / 2) rx = x + w / 2;
+            int tri_y = ty + (body_h - tri_h) / 2;
+            cat_draw_triangle(rx, tri_y, tri_w, tri_h, CAT_DIR_LEFT, value_c);
+            cat_draw_text(body, value, rx + tri_w + gap, ty, value_c);
+            cat_draw_triangle(rx + tri_w + gap + vw + gap, tri_y, tri_w, tri_h,
+                              CAT_DIR_RIGHT, value_c);
+        } else {
+            int vx = x + w - vw - cat_scale(16);
+            if (vx < x + w / 2) vx = x + w / 2;
+            cat_draw_text(body, value, vx, ty, value_c);
+        }
     }
 }
 
@@ -671,18 +700,14 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
                          jw__draw_about_rows, &ctx);
 }
 
-static void jw__render_placeholder(const jw_settings_ui *ui, const char *title,
-                                    int x, int y, int w, int h) {
-    jw__draw_header(title, x, y, w);
-    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int hh = jw__header_h();
-    const char *msg = "Coming soon";
-    int body_h = TTF_FontHeight(body);
-    int mw = cat_measure_text(body, msg);
-    cat_draw_text(body, msg, x + (w - mw) / 2,
-                  y + hh + (h - hh - body_h) / 2,
-                  cat_get_theme()->hint);
-    (void)ui;
+static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Behavior", x, y, w);
+    int ly = y + jw__header_h();
+    int tab = (ui->startup_tab_index >= 0 && ui->startup_tab_index < JW_STARTUP_TAB_COUNT)
+              ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_STARTUP_TAB,
+                        "Startup Tab", kStartupTabLabels[tab], true);
+    (void)h;
 }
 
 /* ─── Main render dispatch ─────────────────────────────────────────────── */
@@ -698,7 +723,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_STATUS_BAR: jw__render_statusbar(ui, x, y, w, h);  break;
         case JW_SETTINGS_DISPLAY:    jw__render_display(ui, x, y, w, h);    break;
         case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
-        case JW_SETTINGS_BEHAVIOR:   jw__render_placeholder(ui, "Behavior", x, y, w, h); break;
+        case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
         case JW_SETTINGS_ABOUT:      jw__render_about(ui, x, y, w, h);                   break;
     }
 }
@@ -1091,10 +1116,28 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         break;
     }
 
-    /* ── Placeholders ────────────────────────────────────────────────── */
+    /* ── Behavior ────────────────────────────────────────────────────── */
     case JW_SETTINGS_BEHAVIOR:
-        if (button == CAT_BTN_B)
-            ui->screen = JW_SETTINGS_HOME;
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->behavior_list, -1, JW_BEHAVIOR_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->behavior_list, +1, JW_BEHAVIOR_ROW_COUNT); break;
+            case CAT_BTN_LEFT:
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A: {
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
+                if (ui->behavior_list.cursor == JW_BEHAVIOR_STARTUP_TAB) {
+                    int next = (ui->startup_tab_index + dir + JW_STARTUP_TAB_COUNT)
+                               % JW_STARTUP_TAB_COUNT;
+                    ui->startup_tab_index = next;
+                    jw__persist_int(ui, "startup_tab_index", next);
+                }
+                break;
+            }
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default: break;
+        }
         break;
     }
 

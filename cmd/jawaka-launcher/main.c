@@ -2722,7 +2722,18 @@ int main(void) {
 
     jw_launcher_state state;
     memset(&state, 0, sizeof(state));
+    /* Honor the persisted startup tab (Settings > Behavior > Startup Tab);
+       default Games. Index mirrors the jw_tab enum. */
     state.current_tab = JW_TAB_GAMES;
+    {
+        char startup_buf[16];
+        if (jw_db_get_setting(db_path, "startup_tab_index", startup_buf,
+                              sizeof(startup_buf)) == 0 && startup_buf[0]) {
+            int idx = atoi(startup_buf);
+            if (idx >= 0 && idx < JW_TAB_COUNT)
+                state.current_tab = (jw_tab)idx;
+        }
+    }
     snprintf(state.sdcard_root, sizeof(state.sdcard_root), "%s", sdcard_root);
     snprintf(state.status, sizeof(state.status), "%s", "scanning library...");
 
@@ -2739,6 +2750,19 @@ int main(void) {
 
     /* Init settings UI with the currently-active theme */
     jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
+
+    /* Prime the startup tab's lazily-loaded contents so the first frame is
+       correct (Favorites/Recents are normally loaded on tab entry, and the
+       Settings tab is owned by jw_settings_ui). Tabbed layout only — other
+       layouts use flat/carousel lists, not per-tab state. */
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED) {
+        if (state.current_tab == JW_TAB_FAVORITES)
+            jw__load_favorites_tab(db_path, &state);
+        else if (state.current_tab == JW_TAB_RECENTS)
+            jw__load_recents_tab(db_path, &state);
+        else if (state.current_tab == JW_TAB_SETTINGS)
+            jw_settings_ui_enter(&state.settings);
+    }
 
     jw__rebuild_for_layout(&state);
 
