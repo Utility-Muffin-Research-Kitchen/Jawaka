@@ -1788,6 +1788,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
                 if (resolved > 100) resolved = 100;
                 state->cached_volume_percent = resolved;
                 jw__persist_volume(state, resolved);
+                jw__osd_show_volume(state, resolved);
             }
         } else {
             jw_platform_perform_action(&state->platform, action, value, &result);

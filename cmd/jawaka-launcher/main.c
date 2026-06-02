@@ -2796,6 +2796,14 @@ int main(void) {
             }
         }
 
+        /* While the Display & Sound page is open, poll live brightness/volume so
+           the sliders follow the hardware volume keys (jawakad's input proxy
+           consumes those events, so the UI can only observe the result). */
+        if (jw_settings_ui_wants_av_poll(&state.settings)) {
+            jw_settings_ui_refresh_av(&state.settings);
+            cat_request_frame_in(300);
+        }
+
         jw__render_launcher(&state);
     }
 

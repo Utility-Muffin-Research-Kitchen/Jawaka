@@ -91,13 +91,13 @@ static const char *kStartupTabLabels[] = {
 
 static const char *kHomeCategoryLabels[] = {
     "Appearance",
-    "Display",
+    "Display & Sound",
     "Library",
     "Behavior",
     "About",
 };
 #define JW_SETTINGS_CATEGORY_COUNT 5
-#define JW_SETTINGS_DISPLAY_COUNT 1
+#define JW_SETTINGS_DISPLAY_COUNT JW_DISPLAY_ROW_COUNT
 
 
 /* ─── Helpers ──────────────────────────────────────────────────────────── */
@@ -115,6 +115,19 @@ static void jw__refresh_brightness(jw_settings_ui *ui) {
     int percent = -1;
     if (jw_ipc_platform_brightness(ui->socket_path, &percent) == 0 && percent >= 0)
         ui->brightness_percent = jw_platform_clamp_brightness_percent(percent);
+}
+
+/* Pull the live volume from the platform (pactl-backed). Re-querying keeps the
+   settings value tied to reality, so OSD/hardware-key changes made outside
+   settings aren't stale here and a subsequent step adjusts the true value. */
+static void jw__refresh_volume(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) return;
+    int percent = -1;
+    if (jw_ipc_platform_volume(ui->socket_path, &percent) == 0 && percent >= 0) {
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
+        ui->volume_percent = percent;
+    }
 }
 
 static void jw__persist(const jw_settings_ui *ui, const char *key, const char *val) {
@@ -167,6 +180,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->show_wifi         = true;
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
     ui->brightness_percent = 50;
+    ui->volume_percent     = 50;
 
     if (db_path && db_path[0])
         snprintf(ui->db_path, sizeof(ui->db_path), "%s", db_path);
@@ -214,6 +228,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     }
 
     jw__refresh_brightness(ui);
+    jw__refresh_volume(ui);
 }
 
 void jw_settings_ui_enter(jw_settings_ui *ui) {
@@ -221,6 +236,7 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     ui->open = true;
     ui->screen = JW_SETTINGS_HOME;
     jw__refresh_brightness(ui);
+    jw__refresh_volume(ui);
 }
 
 void jw_settings_ui_close(jw_settings_ui *ui) {
@@ -231,6 +247,15 @@ void jw_settings_ui_close(jw_settings_ui *ui) {
 
 bool jw_settings_ui_is_open(const jw_settings_ui *ui) {
     return ui && ui->open;
+}
+
+bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui) {
+    return ui && ui->open && ui->screen == JW_SETTINGS_DISPLAY;
+}
+
+void jw_settings_ui_refresh_av(jw_settings_ui *ui) {
+    jw__refresh_brightness(ui);
+    jw__refresh_volume(ui);
 }
 
 bool jw_settings_show_hints(const jw_settings_ui *ui) {
@@ -457,14 +482,14 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
     (void)h;
 }
 
-static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
+/* One labelled slider row (Brightness / Volume) on the Display & Sound page. */
+static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int w,
+                                int row, const char *label, int percent) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    jw__draw_header("Display", x, y, w);
-    int hh = jw__header_h();
     int item_h = TTF_FontHeight(body) + cat_scale(28);
-    int iy = y + hh;
-    bool selected = (ui->display_list.cursor == 0);
+    int iy = y_base + row * item_h;
+    bool selected = (ui->display_list.cursor == row);
     int pill_h = item_h - cat_scale(6);
     int pill_y = iy + cat_scale(3);
     if (selected)
@@ -474,20 +499,29 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     ap_color value_c = selected ? theme->highlighted_text : theme->hint;
     int ty = pill_y + cat_scale(8);
 
-    cat_draw_text_ellipsized(body, "Brightness", x + cat_scale(12), ty, label_c,
+    cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
                               w / 2 - cat_scale(20));
 
     char value_str[32];
-    snprintf(value_str, sizeof(value_str), "%d%%", ui->brightness_percent);
+    snprintf(value_str, sizeof(value_str), "%d%%", percent);
     int vw = cat_measure_text(body, value_str);
     cat_draw_text(body, value_str, x + w - vw - cat_scale(16), ty, value_c);
 
     int track_x = x + cat_scale(12);
     int track_y = pill_y + pill_h - cat_scale(16);
     int track_w = w - cat_scale(32);
-    int fill_w = (track_w * ui->brightness_percent) / 100;
+    int fill_w = (track_w * percent) / 100;
     cat_draw_rect(track_x, track_y, track_w, cat_scale(4), cat_hex_to_color("#ffffff33"));
     cat_draw_rect(track_x, track_y, fill_w, cat_scale(4), value_c);
+}
+
+static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Display & Sound", x, y, w);
+    int y_base = y + jw__header_h();
+    jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
+                        ui->brightness_percent);
+    jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
+                        ui->volume_percent);
     (void)h;
 }
 
@@ -839,6 +873,24 @@ static void jw__change_brightness(jw_settings_ui *ui, int delta,
         snprintf(status_buf, status_size, "%s", "brightness failed");
 }
 
+static void jw__change_volume(jw_settings_ui *ui, int delta,
+                              char *status_buf, size_t status_size) {
+    int next = ui->volume_percent + delta;
+    if (next < 0) next = 0;
+    if (next > 100) next = 100;
+    int resolved = next;
+    if (ui->socket_path[0] &&
+        jw_ipc_set_volume(ui->socket_path, next, &resolved, status_buf,
+                          (int)status_size) == 0) {
+        if (resolved < 0) resolved = 0;
+        if (resolved > 100) resolved = 100;
+        ui->volume_percent = resolved;
+        return;
+    }
+    if (status_buf && status_size > 0)
+        snprintf(status_buf, status_size, "%s", "volume failed");
+}
+
 /* ─── Color picker helper ──────────────────────────────────────────────── */
 
 static bool jw__pick_color(jw_settings_ui *ui, ap_color *target,
@@ -913,7 +965,13 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_A: {
                 int idx = ui->home_list.cursor;
                 if (idx == 0) ui->screen = JW_SETTINGS_APPEARANCE;
-                else if (idx == 1) ui->screen = JW_SETTINGS_DISPLAY;
+                else if (idx == 1) {
+                    ui->screen = JW_SETTINGS_DISPLAY;
+                    /* Re-sync to live values so an OSD/hardware change made
+                       outside settings isn't stale before we adjust. */
+                    jw__refresh_brightness(ui);
+                    jw__refresh_volume(ui);
+                }
                 else if (idx == 2) ui->screen = JW_SETTINGS_LIBRARY;
                 else if (idx == 3) ui->screen = JW_SETTINGS_BEHAVIOR;
                 else if (idx == 4) {
@@ -1063,18 +1121,23 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         }
         break;
 
-    /* ── Display (brightness) ────────────────────────────────────────── */
+    /* ── Display & Sound (brightness + volume) ───────────────────────── */
     case JW_SETTINGS_DISPLAY:
         switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->display_list, -1, JW_DISPLAY_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->display_list, +1, JW_DISPLAY_ROW_COUNT); break;
             case CAT_BTN_LEFT:
-                jw__change_brightness(ui, -JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
-                                      status_buf, status_size);
-                break;
             case CAT_BTN_RIGHT:
-            case CAT_BTN_A:
-                jw__change_brightness(ui, JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
+            case CAT_BTN_A: {
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
+                if (ui->display_list.cursor == JW_DISPLAY_BRIGHTNESS)
+                    jw__change_brightness(ui, dir * JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
+                                          status_buf, status_size);
+                else if (ui->display_list.cursor == JW_DISPLAY_VOLUME)
+                    jw__change_volume(ui, dir * JW_PLATFORM_VOLUME_STEP_PERCENT,
                                       status_buf, status_size);
                 break;
+            }
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_HOME;
                 break;

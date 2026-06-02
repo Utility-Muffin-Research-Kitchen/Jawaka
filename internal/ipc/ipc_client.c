@@ -444,3 +444,75 @@ int jw_ipc_set_brightness(const char *socket_path, int percent,
     cJSON_Delete(resp);
     return 0;
 }
+
+int jw_ipc_platform_volume(const char *socket_path, int *out_percent) {
+    if (out_percent) {
+        *out_percent = -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    int rc = -1;
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *volume = cJSON_GetObjectItemCaseSensitive(status, "volume_percent");
+    if (cJSON_IsNumber(volume)) {
+        if (out_percent) {
+            *out_percent = volume->valueint;
+        }
+        rc = 0;
+    }
+
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_set_volume(const char *socket_path, int percent,
+                      int *out_percent, char *status, int status_len) {
+    if (out_percent) {
+        *out_percent = -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-action");
+    cJSON_AddStringToObject(req, "action", "set-volume");
+    cJSON_AddNumberToObject(req, "value", percent);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "volume failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status && status_len > 0) {
+            if (cJSON_IsString(message) && message->valuestring) {
+                snprintf(status, (size_t)status_len, "volume failed: %s", message->valuestring);
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "volume failed");
+            }
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(resp, "value");
+    int resolved = cJSON_IsNumber(value) ? value->valueint : percent;
+    if (out_percent) {
+        *out_percent = resolved;
+    }
+    if (status && status_len > 0) {
+        snprintf(status, (size_t)status_len, "volume: %d%%", resolved);
+    }
+
+    cJSON_Delete(resp);
+    return 0;
+}

@@ -69,6 +69,11 @@ typedef enum {
 #define JW_STATUSBAR_WIFI    3
 #define JW_STATUSBAR_ROW_COUNT 4
 
+/* Display & Sound page */
+#define JW_DISPLAY_BRIGHTNESS 0
+#define JW_DISPLAY_VOLUME     1
+#define JW_DISPLAY_ROW_COUNT  2
+
 /* Library page */
 #define JW_LIBRARY_RESET_RETROARCH 0
 #define JW_LIBRARY_ROW_COUNT 1
@@ -102,6 +107,7 @@ typedef struct {
     bool               show_wifi;
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     int                brightness_percent;
+    int                volume_percent;
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;
@@ -115,6 +121,13 @@ void jw_settings_ui_enter(jw_settings_ui *ui);
 void jw_settings_ui_close(jw_settings_ui *ui);
 bool jw_settings_ui_is_open(const jw_settings_ui *ui);
 bool jw_settings_show_hints(const jw_settings_ui *ui);
+
+/* True while the Display & Sound page is showing. The launcher polls this and
+   calls jw_settings_ui_refresh_av() so the sliders track hardware volume/
+   brightness keys (which jawakad's input proxy consumes — the UI never sees
+   those events). */
+bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui);
+void jw_settings_ui_refresh_av(jw_settings_ui *ui);
 void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *out);
 
 /* Applies all persisted appearance overrides (the 7 color roles, list pill

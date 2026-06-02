@@ -72,4 +72,8 @@ int jw_ipc_platform_brightness(const char *socket_path, int *out_percent);
 int jw_ipc_set_brightness(const char *socket_path, int percent,
                           int *out_percent, char *status, int status_len);
 
+int jw_ipc_platform_volume(const char *socket_path, int *out_percent);
+int jw_ipc_set_volume(const char *socket_path, int percent,
+                      int *out_percent, char *status, int status_len);
+
 #endif /* JW_IPC_CLIENT_H */
