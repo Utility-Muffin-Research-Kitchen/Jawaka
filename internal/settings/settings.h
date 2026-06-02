@@ -65,11 +65,12 @@ typedef enum {
 #define JW_LAYOUT_ROW_COUNT   3
 
 /* Status Bar page */
-#define JW_STATUSBAR_HINTS   0
-#define JW_STATUSBAR_CLOCK   1
-#define JW_STATUSBAR_BATTERY 2
-#define JW_STATUSBAR_WIFI    3
-#define JW_STATUSBAR_ROW_COUNT 4
+#define JW_STATUSBAR_HINTS       0
+#define JW_STATUSBAR_CLOCK       1
+#define JW_STATUSBAR_BATTERY     2
+#define JW_STATUSBAR_BATTERY_PCT 3
+#define JW_STATUSBAR_WIFI        4
+#define JW_STATUSBAR_ROW_COUNT   5
 
 /* Display & Sound page */
 #define JW_DISPLAY_BRIGHTNESS 0
@@ -116,6 +117,7 @@ typedef struct {
     bool               show_hints;
     int                clock_style_index;
     bool               show_battery;
+    bool               show_battery_level;  /* numeric % next to the battery icon */
     bool               show_wifi;
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     int                brightness_percent;

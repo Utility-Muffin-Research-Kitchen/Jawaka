@@ -235,6 +235,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->show_hints        = true;
     ui->clock_style_index = 1;
     ui->show_battery      = true;
+    ui->show_battery_level = false;
     ui->show_wifi         = true;
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
     ui->brightness_percent = 50;
@@ -275,6 +276,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
         }
         if (jw_db_get_setting(db_path, "show_battery", val, sizeof(val)) == 0)
             ui->show_battery = (strcmp(val, "0") != 0);
+        if (jw_db_get_setting(db_path, "show_battery_level", val, sizeof(val)) == 0)
+            ui->show_battery_level = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
             ui->show_wifi = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "color_scheme_index", val, sizeof(val)) == 0 && val[0]) {
@@ -352,6 +355,7 @@ void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *
         out->no_ampm = (ui->clock_style_index == 3);
     }
     out->show_battery = ui->show_battery;
+    out->show_battery_level = ui->show_battery_level;
     out->show_wifi = ui->show_wifi;
 }
 
@@ -361,6 +365,7 @@ void jw_settings_load_status_prefs(const char *db_path,
     /* Defaults match jw_settings_ui_init: hints on, 24h clock, battery + wifi on. */
     int  clock_style_index = 1;
     bool show_battery      = true;
+    bool show_battery_level = false;
     bool show_wifi         = true;
     bool show_hints        = true;
 
@@ -373,6 +378,8 @@ void jw_settings_load_status_prefs(const char *db_path,
         }
         if (jw_db_get_setting(db_path, "show_battery", val, sizeof(val)) == 0)
             show_battery = (strcmp(val, "0") != 0);
+        if (jw_db_get_setting(db_path, "show_battery_level", val, sizeof(val)) == 0)
+            show_battery_level = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
             show_wifi = (strcmp(val, "0") != 0);
         if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0)
@@ -389,6 +396,7 @@ void jw_settings_load_status_prefs(const char *db_path,
             out_opts->no_ampm = (clock_style_index == 3);
         }
         out_opts->show_battery = show_battery;
+        out_opts->show_battery_level = show_battery_level;
         out_opts->show_wifi = show_wifi;
     }
     if (out_show_hints)
@@ -552,6 +560,8 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
                         "Clock", kClockStyleLabels[ui->clock_style_index], true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BATTERY,
                         "Battery", ui->show_battery ? "On" : "Off", true);
+    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BATTERY_PCT,
+                        "Battery %", ui->show_battery_level ? "On" : "Off", true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_WIFI,
                         "Wifi", ui->show_wifi ? "On" : "Off", true);
     (void)h;
@@ -1243,6 +1253,9 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 } else if (row == JW_STATUSBAR_BATTERY) {
                     ui->show_battery = !ui->show_battery;
                     jw__persist_bool(ui, "show_battery", ui->show_battery);
+                } else if (row == JW_STATUSBAR_BATTERY_PCT) {
+                    ui->show_battery_level = !ui->show_battery_level;
+                    jw__persist_bool(ui, "show_battery_level", ui->show_battery_level);
                 } else if (row == JW_STATUSBAR_WIFI) {
                     ui->show_wifi = !ui->show_wifi;
                     jw__persist_bool(ui, "show_wifi", ui->show_wifi);
