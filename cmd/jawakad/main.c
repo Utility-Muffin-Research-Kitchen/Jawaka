@@ -1162,30 +1162,38 @@ static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *le
 }
 
 static void jw__apply_persisted_led(jw_daemon_state *state) {
-    char value[32];
-    /* No persisted mode → user never configured the LED; leave stock behavior. */
-    if (!state || !state->db_path[0] ||
-        jw_db_get_setting(state->db_path, "platform.led_mode", value, sizeof(value)) != 0 ||
-        !value[0]) {
-        return;
-    }
+    if (!state || !state->db_path[0]) return;
 
+    char value[32];
     jw_led_config led;
     memset(&led, 0, sizeof(led));
-    led.mode = JW_LED_MODE_STATIC;
-    jw_led_mode_parse(value, &led.mode);
-    led.brightness = 5;
-    led.speed = 5;
-    if (jw_db_get_setting(state->db_path, "platform.led_enabled", value, sizeof(value)) == 0)
-        led.enabled = (strcmp(value, "0") != 0);
-    if (jw_db_get_setting(state->db_path, "platform.led_r", value, sizeof(value)) == 0) led.r = (unsigned char)atoi(value);
-    if (jw_db_get_setting(state->db_path, "platform.led_g", value, sizeof(value)) == 0) led.g = (unsigned char)atoi(value);
-    if (jw_db_get_setting(state->db_path, "platform.led_b", value, sizeof(value)) == 0) led.b = (unsigned char)atoi(value);
-    if (jw_db_get_setting(state->db_path, "platform.led_brightness", value, sizeof(value)) == 0) led.brightness = atoi(value);
-    if (jw_db_get_setting(state->db_path, "platform.led_speed", value, sizeof(value)) == 0) led.speed = atoi(value);
+
+    if (jw_db_get_setting(state->db_path, "platform.led_mode", value, sizeof(value)) == 0 && value[0]) {
+        /* Restore the user's saved LED config. */
+        led.mode = JW_LED_MODE_STATIC;
+        jw_led_mode_parse(value, &led.mode);
+        led.brightness = 5;
+        led.speed = 5;
+        if (jw_db_get_setting(state->db_path, "platform.led_enabled", value, sizeof(value)) == 0)
+            led.enabled = (strcmp(value, "0") != 0);
+        if (jw_db_get_setting(state->db_path, "platform.led_r", value, sizeof(value)) == 0) led.r = (unsigned char)atoi(value);
+        if (jw_db_get_setting(state->db_path, "platform.led_g", value, sizeof(value)) == 0) led.g = (unsigned char)atoi(value);
+        if (jw_db_get_setting(state->db_path, "platform.led_b", value, sizeof(value)) == 0) led.b = (unsigned char)atoi(value);
+        if (jw_db_get_setting(state->db_path, "platform.led_brightness", value, sizeof(value)) == 0) led.brightness = atoi(value);
+        if (jw_db_get_setting(state->db_path, "platform.led_speed", value, sizeof(value)) == 0) led.speed = atoi(value);
+    } else {
+        /* Fresh install → the Leaf identity intro: a dim, fast breathing green.
+           Persist it so it becomes the user's setting and shows in Lighting. */
+        led.enabled = true;
+        led.mode = JW_LED_MODE_BREATH;
+        led.r = 0x30; led.g = 0xA2; led.b = 0x00;   /* #30A200 */
+        led.brightness = 1;
+        led.speed = 10;
+        jw__persist_led(state, &led);
+    }
 
     jw__apply_led_config(state, &led);
-    jw_log_info("applied persisted led mode=%s enabled=%d",
+    jw_log_info("applied led mode=%s enabled=%d",
                 jw_led_mode_name(led.mode), led.enabled);
 }
 
