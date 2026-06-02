@@ -30,7 +30,7 @@ const bool kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT] = {
 
 const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT] = {
     "Rounded",
-    "Squircle",
+    "Soft",
     "Square",
     "Leaf",
 };
