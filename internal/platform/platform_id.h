@@ -7,7 +7,11 @@ const char *jw_platform_compiled_id(void);
 typedef struct {
     char os_version[48];   /* stock OS version string, e.g. "1.3.0.32" */
     char kernel[64];       /* uname release, e.g. "5.10.209" */
-    char device[80];       /* board/SoC model */
+    char device[80];       /* raw device-tree model, e.g. "Rockchip RK3566 RK817 MANGMI LP4X Board" */
+    char soc[48];          /* parsed SoC marketing name, e.g. "Rockchip RK3566"; "" if unknown */
+    char pmic[24];         /* parsed power-management IC, e.g. "RK817"; "" if unknown */
+    char board[24];        /* parsed board / ODM name, e.g. "MANGMI"; "" if unknown */
+    char ram_type[16];     /* parsed memory technology, e.g. "LPDDR4X"; "" if unknown */
     char ip[40];           /* primary non-loopback IPv4, prefers wlan; "" if none */
     long mem_total_kb;     /* -1 if unknown */
     long mem_avail_kb;     /* -1 if unknown */

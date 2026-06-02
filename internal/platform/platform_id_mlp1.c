@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <dirent.h>
 #include <sys/utsname.h>
 #include <sys/statvfs.h>
@@ -110,6 +111,52 @@ static void jw__read_ip(char *out, size_t out_size) {
     freeifaddrs(ifaces);
 }
 
+/* DT memory shorthand → marketing name (e.g. "LP4X" → "LPDDR4X"). */
+static void jw__expand_ram_type(const char *token, char *out, size_t out_size) {
+    if      (strcasecmp(token, "LP4X") == 0) snprintf(out, out_size, "LPDDR4X");
+    else if (strcasecmp(token, "LP4")  == 0) snprintf(out, out_size, "LPDDR4");
+    else if (strcasecmp(token, "LP5X") == 0) snprintf(out, out_size, "LPDDR5X");
+    else if (strcasecmp(token, "LP5")  == 0) snprintf(out, out_size, "LPDDR5");
+    else                                     snprintf(out, out_size, "%s", token);
+}
+
+/* Parse the device-tree model string (e.g. "Rockchip RK3566 RK817 MANGMI LP4X
+ * Board") into friendly hardware fields. Tokens are classified by shape:
+ * "Rockchip" is the SoC vendor, RK3xxx is the SoC, RK8xx is the PMIC, LP4X/etc.
+ * is the RAM type, "Board"/"Tablet" are filler, and the first leftover token is
+ * the board / ODM name. Any field left empty means "not recognized" — the About
+ * page then falls back to showing the raw model line. */
+static void jw__parse_dt_model(const char *model, jw_system_info *out) {
+    if (!model || !model[0]) return;
+    char vendor[24] = "";
+    char chip[24]   = "";
+    char copy[80];
+    snprintf(copy, sizeof(copy), "%s", model);
+    for (char *token = strtok(copy, " \t"); token; token = strtok(NULL, " \t")) {
+        int is_rk = (token[0] == 'R' || token[0] == 'r') &&
+                    (token[1] == 'K' || token[1] == 'k');
+        if (strcasecmp(token, "Rockchip") == 0) {
+            snprintf(vendor, sizeof(vendor), "%s", token);
+        } else if (is_rk && token[2] == '3') {
+            snprintf(chip, sizeof(chip), "%s", token);                  /* SoC, e.g. RK3566 */
+        } else if (is_rk && token[2] == '8') {
+            snprintf(out->pmic, sizeof(out->pmic), "%s", token);        /* PMIC, e.g. RK817 */
+        } else if (strncasecmp(token, "LP", 2) == 0 ||
+                   strncasecmp(token, "DDR", 3) == 0) {
+            jw__expand_ram_type(token, out->ram_type, sizeof(out->ram_type));
+        } else if (strcasecmp(token, "Board") == 0 ||
+                   strcasecmp(token, "Tablet") == 0) {
+            /* filler — ignore */
+        } else if (!out->board[0]) {
+            snprintf(out->board, sizeof(out->board), "%s", token);      /* board / ODM name */
+        }
+    }
+    if (chip[0]) {
+        if (vendor[0]) snprintf(out->soc, sizeof(out->soc), "%s %s", vendor, chip);
+        else           snprintf(out->soc, sizeof(out->soc), "%s", chip);
+    }
+}
+
 void jw_platform_system_info(const char *fs_path, jw_system_info *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
@@ -128,6 +175,7 @@ void jw_platform_system_info(const char *fs_path, jw_system_info *out) {
         snprintf(out->kernel, sizeof(out->kernel), "%.63s", uts.release);
 
     jw__read_file_trim("/proc/device-tree/model", out->device, sizeof(out->device));
+    jw__parse_dt_model(out->device, out);
 
     jw__read_meminfo(&out->mem_total_kb, &out->mem_avail_kb);
 

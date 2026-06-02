@@ -779,7 +779,28 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
     snprintf(buf, sizeof(buf), "LoongOS %s", info.os_version[0] ? info.os_version : "?");
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "Stock OS", buf);
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "Kernel", info.kernel[0] ? info.kernel : "—");
-    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Device", info.device[0] ? info.device : "—");
+    /* Hardware: prefer the parsed labeled lines (SoC / Power / Board / RAM);
+       fall back to the raw device-tree model when nothing parsed. */
+    if (info.soc[0] || info.pmic[0] || info.board[0]) {
+        if (info.soc[0])
+            jw__about_push(rows, &n, JW_ABOUT_FIELD, "SoC", info.soc);
+        if (info.pmic[0]) {
+            snprintf(buf, sizeof(buf), "%s PMIC", info.pmic);
+            jw__about_push(rows, &n, JW_ABOUT_FIELD, "Power", buf);
+        }
+        if (info.board[0])
+            jw__about_push(rows, &n, JW_ABOUT_FIELD, "Board", info.board);
+        if (info.ram_type[0] && info.mem_total_kb > 0) {
+            long ram_gb = (info.mem_total_kb + 524288) / 1048576;   /* round kB → GB */
+            if (ram_gb < 1) ram_gb = 1;
+            snprintf(buf, sizeof(buf), "%ld GB %s", ram_gb, info.ram_type);
+            jw__about_push(rows, &n, JW_ABOUT_FIELD, "RAM", buf);
+        } else if (info.ram_type[0]) {
+            jw__about_push(rows, &n, JW_ABOUT_FIELD, "RAM", info.ram_type);
+        }
+    } else {
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Device", info.device[0] ? info.device : "—");
+    }
     if (info.mem_total_kb > 0) {
         snprintf(buf, sizeof(buf), "%ld / %ld MB", info.mem_avail_kb / 1024, info.mem_total_kb / 1024);
         jw__about_push(rows, &n, JW_ABOUT_FIELD, "Memory free", buf);
