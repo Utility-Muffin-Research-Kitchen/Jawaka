@@ -42,6 +42,7 @@ static void jw__usage(FILE *stream) {
             "  get-path KIND\n"
             "  savestate-path\n"
             "  show-message TEXT\n"
+            "  load-content-current-core PATH\n"
             "  raw-send COMMAND...\n"
             "  raw-request COMMAND...\n");
 }
@@ -338,6 +339,20 @@ int main(int argc, char **argv) {
             return 4;
         }
         result = jw_ra_show_message(&client, message);
+    } else if (strcmp(command, "load-content-current-core") == 0) {
+        char path[JW_RA_REPLY_MAX];
+        char reply[JW_RA_REPLY_MAX];
+        if (jw__join_args(argc, argv, argi, path, sizeof(path)) != 0) {
+            fprintf(stderr, "load-content-current-core requires a path\n");
+            return 4;
+        }
+        result = jw_ra_load_content_current_core(&client, path, reply, sizeof(reply));
+        if (result == JW_RA_OK) {
+            printf("result=ok\n");
+            printf("reply=%s\n", reply);
+            return 0;
+        }
+        return jw__print_result(result);
     } else if (strcmp(command, "raw-send") == 0 || strcmp(command, "raw-request") == 0) {
         char raw[JW_RA_REPLY_MAX];
         if (jw__join_args(argc, argv, argi, raw, sizeof(raw)) != 0) {

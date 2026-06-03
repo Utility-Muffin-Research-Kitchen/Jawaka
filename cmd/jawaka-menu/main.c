@@ -1008,9 +1008,9 @@ static void jw__handle_ingame_switcher_input(const char *socket_path,
                 jw__ingame_switcher_resume(socket_path, state, running);
             } else if (jw_ipc_switch_game(socket_path, sel->system, sel->rom_path,
                                           state->status, sizeof(state->status)) == 0) {
-                /* The daemon now saves+quits the current game and spawns the
-                   selected one; it terminates this process when RetroArch exits.
-                   Stop the visible loop so we hide cleanly in the meantime. */
+                /* The daemon either switches in-process or falls back to
+                   save+quit+spawn. Stop the visible loop so we hide cleanly in
+                   the meantime. */
                 *running = false;
             }
             break;
@@ -1037,8 +1037,7 @@ static void jw__handle_ingame_switcher_input(const char *socket_path,
 static void jw__ingame_show_switcher(const char *socket_path, const char *db_path,
                                      jw_ingame_state *state) {
     state->status[0] = '\0';
-    jw__prime_ingame_session_from_env(state);
-    jw__ingame_resolve_titles(state);
+    jw__ingame_refresh(socket_path, state);
 
     char *sd_root = jw_sdcard_root();
     /* States/ root for savestate thumbnails: the daemon hands us a source-aware

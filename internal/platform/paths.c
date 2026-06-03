@@ -461,6 +461,10 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "check_firmware_before_loading",
         "load_dummy_on_core_shutdown",
         "menu_show_load_content_animation",
+        "notification_show_autoconfig",
+        "notification_show_autoconfig_fails",
+        "notification_show_config_override_load",
+        "input_max_users",
         "savestate_file_compression",
         "video_threaded",
         "video_driver",
@@ -1220,6 +1224,10 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
     jw__retroarch_cfg_string(fp, "builtin_imageviewer_enable", "false");
     jw__retroarch_cfg_string(fp, "load_dummy_on_core_shutdown", "true");
+    jw__retroarch_cfg_string(fp, "notification_show_autoconfig", "false");
+    jw__retroarch_cfg_string(fp, "notification_show_autoconfig_fails", "false");
+    jw__retroarch_cfg_string(fp, "notification_show_config_override_load", "false");
+    jw__retroarch_cfg_string(fp, "input_max_users", "1");
     jw__retroarch_cfg_string(fp, "savestate_file_compression", "false");
     jw__retroarch_cfg_string(fp, "video_driver", "gl");
     jw__retroarch_cfg_string(fp, "video_context_driver", "sdl_gl");
@@ -1526,6 +1534,19 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
     jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
 #ifdef PLATFORM_MLP1
+    jw__retroarch_cfg_string(fp, "audio_latency", "128");
+    jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
+    jw__retroarch_cfg_string(fp, "video_threaded", "false");
+    jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
+    jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
+    jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
+    jw__retroarch_cfg_string(fp, "builtin_imageviewer_enable", "false");
+    jw__retroarch_cfg_string(fp, "load_dummy_on_core_shutdown", "true");
+    jw__retroarch_cfg_string(fp, "notification_show_autoconfig", "false");
+    jw__retroarch_cfg_string(fp, "notification_show_autoconfig_fails", "false");
+    jw__retroarch_cfg_string(fp, "notification_show_config_override_load", "false");
+    jw__retroarch_cfg_string(fp, "input_max_users", "1");
+    jw__retroarch_cfg_string(fp, "savestate_file_compression", "false");
     jw__retroarch_cfg_string(fp, "video_driver", "gl");
     jw__retroarch_cfg_string(fp, "video_context_driver", "sdl_gl");
     jw__retroarch_cfg_string(fp, "aspect_ratio_index", "22");
