@@ -2057,18 +2057,16 @@ static void jw__render_search(const jw_launcher_state *state) {
 
     if (state->search_count > 0 && state->search_list.cursor < state->search_count) {
         const jw_search_result *result = &state->search_results[state->search_list.cursor];
-        const char *line_one = result->kind == JW_SEARCH_APP ? result->pak_dir : result->system;
-        const char *line_two = result->kind == JW_SEARCH_APP ? "launch.sh" : result->rom_path;
 
+        /* Cover art only — the name is already in the list rows. Game cover (its
+           system icon as a fallback) or an app's icon, centered/fit in the pane,
+           exactly like the Recents/Favorites detail panes. */
         int art_pad = CAT_S(16);
         int art_x   = detail_x + art_pad;
         int art_y   = content_y + art_pad;
         int art_w   = detail_w - art_pad * 2;
-        int art_h   = content_h * 52 / 100;
+        int art_h   = content_h - art_pad * 2;
 
-        /* Box art for the selected result: a game's cover (its system icon as a
-           fallback) or an app's icon — mirroring the Recents/Favorites/Apps
-           detail panes. */
         char img_abs[PATH_MAX];
         int iw = 0, ih = 0;
         SDL_Texture *tex = NULL;
@@ -2088,24 +2086,6 @@ static void jw__render_search(const jw_launcher_state *state) {
         }
         if (tex)
             jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
-
-        /* Name (centered) + two source lines, stacked below the art. */
-        int large_h = TTF_FontHeight(large);
-        int small_h = TTF_FontHeight(small);
-        int max_w   = detail_w - art_pad * 2;
-        int ty      = art_y + art_h + CAT_S(10);
-
-        int name_w = cat_measure_text(large, result->name);
-        if (name_w > max_w) name_w = max_w;
-        cat_draw_text_ellipsized(large, result->name,
-            detail_x + (detail_w - name_w) / 2, ty, theme->text, max_w);
-        ty += large_h + CAT_S(6);
-
-        cat_draw_text_ellipsized(small, line_one,
-            detail_x + art_pad, ty, theme->hint, max_w);
-        ty += small_h + CAT_S(4);
-        cat_draw_text_ellipsized(small, line_two,
-            detail_x + art_pad, ty, theme->hint, max_w);
     }
 
     int status_y = content_y + content_h - TTF_FontHeight(small);
