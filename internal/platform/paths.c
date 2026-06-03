@@ -666,31 +666,19 @@ char *jw_state_dir(void) {
         return NULL;
     }
 
-    char *primary = jw__dup_printf("%s/.umrk", sdcard_root);
-    char *legacy = jw__dup_printf("%s/.jawaka", sdcard_root);
-    if (!primary || !legacy) {
-        free(primary);
-        free(legacy);
+    char *state_dir = jw__dup_printf("%s/.umrk", sdcard_root);
+    if (!state_dir) {
         free(sdcard_root);
         return NULL;
     }
 
-    char *selected = NULL;
-    if (jw__is_directory(primary)) {
-        selected = primary;
-        primary = NULL;
-    } else if (jw__is_directory(legacy)) {
-        selected = legacy;
-        legacy = NULL;
-    } else if (jw__mkdir_if_needed(primary, 0755) == 0) {
-        selected = primary;
-        primary = NULL;
+    if (jw__mkdir_if_needed(state_dir, 0755) != 0) {
+        free(state_dir);
+        state_dir = NULL;
     }
 
-    free(primary);
-    free(legacy);
     free(sdcard_root);
-    return selected;
+    return state_dir;
 }
 
 char *jw_socket_path(void) {
@@ -1264,16 +1252,30 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
         return NULL;
     }
 
-    char sdroot_abs[PATH_MAX];
-    if (!realpath(sdcard_root, sdroot_abs)) {
-        if (!jw__format_string(sdroot_abs, sizeof(sdroot_abs), "%s", sdcard_root)) {
+    char content_sdroot_abs[PATH_MAX];
+    if (!realpath(sdcard_root, content_sdroot_abs)) {
+        if (!jw__format_string(content_sdroot_abs, sizeof(content_sdroot_abs), "%s", sdcard_root)) {
             jw__set_error(error, error_size, "SD-card root path too long");
             return NULL;
         }
     }
 
-    char *defaults_path = jw__platform_defaults_path(sdroot_abs, "retroarch.cfg");
-    char *shared_path = jw__retroarch_shared_config_path(sdroot_abs);
+    char *config_root = jw_sdcard_root();
+    char config_sdroot_abs[PATH_MAX];
+    if (!config_root) {
+        jw__set_error(error, error_size, "could not resolve primary SD-card root");
+        return NULL;
+    }
+    if (!realpath(config_root, config_sdroot_abs)) {
+        if (!jw__format_string(config_sdroot_abs, sizeof(config_sdroot_abs), "%s", config_root)) {
+            free(config_root);
+            jw__set_error(error, error_size, "primary SD-card root path too long");
+            return NULL;
+        }
+    }
+
+    char *defaults_path = jw__platform_defaults_path(config_sdroot_abs, "retroarch.cfg");
+    char *shared_path = jw__retroarch_shared_config_path(config_sdroot_abs);
     char *runtime_path = jw__dup_printf("%s/retroarch-current-%ld.cfg",
                                         runtime_dir, (long)getpid());
     char *defaults_text = NULL;
@@ -1282,6 +1284,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
         free(defaults_path);
         free(shared_path);
         free(runtime_path);
+        free(config_root);
         jw__set_error(error, error_size, "could not resolve RetroArch config paths");
         return NULL;
     }
@@ -1291,6 +1294,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
             free(defaults_path);
             free(shared_path);
             free(runtime_path);
+            free(config_root);
             jw__set_error(error, error_size, "could not initialize shared RetroArch config");
             return NULL;
         }
@@ -1310,6 +1314,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
         free(runtime_path);
         free(defaults_text);
         free(shared_text);
+        free(config_root);
         jw__set_error(error, error_size, "could not write RetroArch runtime config");
         return NULL;
     }
@@ -1329,7 +1334,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
     }
 
     fputs("\n# Jawaka protected runtime settings\n", fp);
-    int protected_rc = jw__write_retroarch_protected_config(fp, sdroot_abs, core_path,
+    int protected_rc = jw__write_retroarch_protected_config(fp, content_sdroot_abs, core_path,
                                                            shots_dir,
                                                            player1_joypad_index,
                                                            persist_changes,
@@ -1344,6 +1349,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
     free(shared_path);
     free(defaults_text);
     free(shared_text);
+    free(config_root);
     if (failed) {
         unlink(runtime_path);
         free(runtime_path);

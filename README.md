@@ -131,7 +131,7 @@ mock-sdcard/
   Apps/<Name>.pak/
     launch.sh
     pak.json
-  .jawaka/library.db
+  .umrk/library.db
 ```
 
 For app paks, `pak.json` icon paths are relative to the containing `.pak`

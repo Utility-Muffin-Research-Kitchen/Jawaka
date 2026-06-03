@@ -59,14 +59,16 @@ does not contain the requested system, Jawaka falls back to the compiled demo
 map. It is deliberately outside the manifest so core selection can evolve
 without changing the platform descriptor schema.
 
-`defaults/retroarch.cfg` contains portable defaults only. Absolute `BIOS`,
-`Saves`, and `States` paths are written per launch through RetroArch
-`--appendconfig`, based on the active SD root.
+`defaults/retroarch.cfg` contains portable defaults only. The shared editable
+RetroArch config is stored under the primary SD state root, while absolute
+`BIOS`, `Saves`, and `States` paths are written per launch based on the active
+ROM source root.
 
 ## State And Upgrades
 
-The launcher state directory is `.umrk/`. For one transition window Jawaka
-falls back to `.jawaka/` if `.umrk/` is absent and `.jawaka/` already exists.
+The launcher state directory is `.umrk/`. Jawaka does not automatically select
+legacy `.jawaka/` state; old data remains untouched unless an explicit migration
+is run.
 
 Reinstalling a platform payload may fully replace `UMRK/<platform>/`.
 Assemblers must not delete `.umrk/`, `Roms/`, `Images/`, `Apps/`, `BIOS/`,

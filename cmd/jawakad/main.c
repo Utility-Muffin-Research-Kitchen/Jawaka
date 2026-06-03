@@ -27,7 +27,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define JW_MLP1_INTERNAL_DATA_PATH "/userdata"
 #define JW_SWITCHER_RESUME_RETRY_MS 100LL
 #define JW_SWITCHER_RESUME_MAX_ATTEMPTS 40
 
@@ -247,6 +246,7 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     jw__setenvf_default("SHARED_USERDATA_PATH", "%s/.userdata/shared", state->sdcard_root);
     if (getenv("USERDATA_PATH")) {
         jw__setenvf_default("LOGS_PATH", "%s/logs", getenv("USERDATA_PATH"));
+        jw__setenv_default("UMRK_INTERNAL_DATA_PATH", getenv("USERDATA_PATH"));
     }
     jw__setenvf_default("ROMS_PATH", "%s/Roms", state->sdcard_root);
     jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
@@ -689,10 +689,7 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
     bool switcher_transition = state->pending_launch && state->pending_launch_resume_switcher;
     if (session->config_path[0] && session->persist_config && !switcher_transition) {
         char error[256];
-        const char *config_root = session->source_root[0]
-            ? session->source_root
-            : state->sdcard_root;
-        if (jw_backup_retroarch_config(session->config_path, config_root,
+        if (jw_backup_retroarch_config(session->config_path, state->sdcard_root,
                                        error, sizeof(error)) != 0) {
             jw_log_warn("RetroArch shared config backup failed: %s",
                         error[0] ? error : session->config_path);
@@ -884,8 +881,8 @@ static void jw__publish_source_content_env(const jw_storage_source *source) {
     if (!source) {
         return;
     }
-    setenv("SDCARD_PATH", source->root, 1);
-    setenv("JAWAKA_SDCARD_ROOT", source->root, 1);
+    /* Keep SDCARD_PATH/JAWAKA_SDCARD_ROOT pointed at the primary card so app
+       durable state follows USERDATA_PATH. Only content roots become source-specific. */
     setenv("ROMS_PATH", source->roms_path, 1);
     setenv("IMAGES_PATH", source->images_path, 1);
     setenv("APPS_PATH", source->apps_path, 1);
@@ -2567,7 +2564,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         if (jw__env_or_join(crash_state, sizeof(crash_state),
                             "UMRK_CRASH_STATE",
                             "UMRK_INTERNAL_DATA_PATH", "USERDATA_PATH",
-                            JW_MLP1_INTERNAL_DATA_PATH, "umrk-launcher-crash-state") == 0) {
+                            NULL, "umrk-launcher-crash-state") == 0) {
             unlink(crash_state);
         }
         char exit_sentinel[PATH_MAX];
