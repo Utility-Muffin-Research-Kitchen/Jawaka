@@ -1480,13 +1480,12 @@ static void jw__draw_system_preview(int px, int py, int pw, int ph,
     cat_draw_rounded_rect(px, py, pw, ph, CAT_S(8),
                           cat_hex_to_color("#ffffff10"));
 
-    /* Icon: up to 60% of pane width or 192px, whichever is smaller (the pane is
-       narrower now that the list/preview split matches the other tabs, so use a
-       larger fraction to keep the icon a similar size). */
-    int icon_max = CAT_S(192);
-    int icon_box = pw * 60 / 100;
-    if (icon_box > icon_max) icon_box = icon_max;
-    if (icon_box > ph / 2)   icon_box = ph / 2;
+    /* Icon: up to 88% of pane width or 340px, whichever is smaller, and never
+       more than 72% of the pane height (leaves room for the count below). */
+    int icon_max = CAT_S(340);
+    int icon_box = pw * 88 / 100;
+    if (icon_box > icon_max)    icon_box = icon_max;
+    if (icon_box > ph * 72 / 100) icon_box = ph * 72 / 100;
 
     int sub_h = TTF_FontHeight(small);
     int gap   = CAT_S(12);
@@ -1551,10 +1550,10 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
     }
 
     /* Icon sizing mirrors jw__draw_system_preview so both panes match. */
-    int icon_max = CAT_S(192);
-    int icon_box = detail_w * 60 / 100;
-    if (icon_box > icon_max)     icon_box = icon_max;
-    if (icon_box > detail_h / 2) icon_box = detail_h / 2;
+    int icon_max = CAT_S(340);
+    int icon_box = detail_w * 88 / 100;
+    if (icon_box > icon_max)           icon_box = icon_max;
+    if (icon_box > detail_h * 72 / 100) icon_box = detail_h * 72 / 100;
 
     int sub_h = TTF_FontHeight(small);
     int gap   = CAT_S(12);
