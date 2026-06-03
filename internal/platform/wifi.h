@@ -31,6 +31,7 @@ typedef struct {
     int  strength;   /* 0..3, same thresholds as the status icon */
     bool secured;    /* WPA/WPA2/WPA3/WEP present in the flags */
     bool current;    /* matches the currently-connected SSID */
+    bool saved;      /* a saved wpa_supplicant profile exists for this SSID */
 } jw_wifi_network_t;
 
 /* Kick off a background scan (`wpa_cli scan`); results land over the next ~1-3s.
@@ -62,5 +63,15 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured);
  * still returns OK here (the association request was sent) — the caller watches
  * the live status to detect auth failure. (Phase 4) */
 jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk);
+
+/* ── Manage (Phase 5) ────────────────────────────────────────────────────── */
+
+/* Remove the saved profile for ssid (`remove_network` + `save_config`, persisted
+ * to the durable conf). Returns 0 on success, -1 if no saved profile / error. */
+int jw_wifi_forget(const char *ssid);
+
+/* Disconnect from the current network (`wpa_cli disconnect`). It will not
+ * auto-reconnect until a network is selected again. Returns 0/-1. */
+int jw_wifi_disconnect(void);
 
 #endif /* JW_PLATFORM_WIFI_H */

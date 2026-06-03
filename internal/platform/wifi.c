@@ -7,6 +7,10 @@
 #include <sys/wait.h>
 
 #define JW_WIFI_IFACE       "wlan0"
+/* save_config writes the running (ephemeral) conf; boot restores from the
+ * durable one, so we mirror saved networks there for reboot persistence. */
+#define JW_WIFI_CONF_LIVE   "/tmp/wpa_supplicant.conf"
+#define JW_WIFI_CONF_DURABLE "/etc/wpa_supplicant.conf"
 
 /* Run `wpa_cli -i wlan0 <args...>` and capture stdout into buf (NUL-terminated).
  * fork/exec + pipe — no system(). Returns bytes read (>=0), or -1 on failure. */
@@ -161,6 +165,30 @@ static int jw__wifi_net_cmp(const void *a, const void *b) {
     return nb->rssi - na->rssi;   /* strongest first */
 }
 
+/* Collect saved-profile SSIDs from `list_networks` (col 2). Returns count. */
+static int jw__wifi_saved_ssids(char out[][64], int max) {
+    char dump[4096];
+    if (jw__wifi_wpa_cli("list_networks", dump, sizeof(dump)) < 0) {
+        return 0;
+    }
+    int count = 0;
+    char *save_line = NULL;
+    char *line = strtok_r(dump, "\n", &save_line);   /* header */
+    if (line) {
+        line = strtok_r(NULL, "\n", &save_line);
+    }
+    for (; line && count < max; line = strtok_r(NULL, "\n", &save_line)) {
+        char *st = NULL;
+        char *id   = strtok_r(line, "\t", &st);
+        char *name = id ? strtok_r(NULL, "\t", &st) : NULL;
+        if (name && name[0]) {
+            snprintf(out[count], 64, "%s", name);
+            count++;
+        }
+    }
+    return count;
+}
+
 int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int max) {
     if (!out || max <= 0) {
         return -1;
@@ -220,6 +248,15 @@ int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int m
                       strcmp(current_ssid, ssid) == 0);
     }
 
+    /* Mark networks that have a saved profile (for the Forget action + marker). */
+    char saved[JW_WIFI_MAX_NETWORKS][64];
+    int nsaved = jw__wifi_saved_ssids(saved, JW_WIFI_MAX_NETWORKS);
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < nsaved; j++) {
+            if (strcmp(out[i].ssid, saved[j]) == 0) { out[i].saved = true; break; }
+        }
+    }
+
     qsort(out, (size_t)count, sizeof(out[0]), jw__wifi_net_cmp);
     return count;
 }
@@ -267,6 +304,30 @@ static void jw__wifi_dhcp(void) {
     waitpid(pid, &status, 0);   /* reap the intermediate child only */
 }
 
+/* Mirror the freshly-saved live conf to the durable one so saved networks
+ * survive a reboot (boot restores wpa_supplicant's conf from the durable copy).
+ * Best-effort: plain C file copy, no shell. */
+static void jw__wifi_persist(void) {
+    FILE *src = fopen(JW_WIFI_CONF_LIVE, "rb");
+    if (!src) {
+        return;
+    }
+    FILE *dst = fopen(JW_WIFI_CONF_DURABLE, "wb");
+    if (!dst) {
+        fclose(src);
+        return;
+    }
+    char buf[1024];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+        if (fwrite(buf, 1, n, dst) != n) {
+            break;
+        }
+    }
+    fclose(src);
+    fclose(dst);
+}
+
 jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
     if (!ssid || !ssid[0]) {
         return JW_WIFI_CONNECT_FAILED;
@@ -311,6 +372,7 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
 
     const char *save[] = { "save_config" };
     (void)jw__wifi_run(save, 1, buf, sizeof(buf));   /* best-effort persistence */
+    jw__wifi_persist();
 
     jw__wifi_dhcp();
     return JW_WIFI_CONNECT_OK;
@@ -355,7 +417,35 @@ jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
 
     const char *save2[] = { "save_config" };
     (void)jw__wifi_run(save2, 1, buf, sizeof(buf));
+    jw__wifi_persist();
 
     jw__wifi_dhcp();
     return JW_WIFI_CONNECT_OK;
+}
+
+int jw_wifi_forget(const char *ssid) {
+    if (!ssid || !ssid[0]) {
+        return -1;
+    }
+    int id = jw__wifi_saved_id(ssid);
+    if (id < 0) {
+        return -1;
+    }
+    char idbuf[16];
+    char buf[64];
+    snprintf(idbuf, sizeof(idbuf), "%d", id);
+    const char *rm[] = { "remove_network", idbuf };
+    if (jw__wifi_run(rm, 2, buf, sizeof(buf)) < 0) {
+        return -1;
+    }
+    const char *save[] = { "save_config" };
+    (void)jw__wifi_run(save, 1, buf, sizeof(buf));
+    jw__wifi_persist();
+    return 0;
+}
+
+int jw_wifi_disconnect(void) {
+    char buf[64];
+    const char *cmd[] = { "disconnect" };
+    return jw__wifi_run(cmd, 1, buf, sizeof(buf)) < 0 ? -1 : 0;
 }

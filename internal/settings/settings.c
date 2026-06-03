@@ -795,14 +795,14 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
     cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
                              iw / 2);
 
-    /* Right: signal word, plus "Open" for unsecured networks. */
+    /* Right: signal word, "Open" prefix for unsecured nets, "saved" suffix for
+       networks with a stored profile (other than the connected one). */
     const char *word = (net->strength >= 3) ? "Strong" :
                        (net->strength == 2) ? "Good"   : "Weak";
-    char value[32];
-    if (net->secured)
-        snprintf(value, sizeof(value), "%s", word);
-    else
-        snprintf(value, sizeof(value), "Open  %s", word);
+    const char *open_prefix = net->secured ? "" : "Open  ";
+    const char *saved_suffix = (net->saved && !net->current) ? "  saved" : "";
+    char value[56];
+    snprintf(value, sizeof(value), "%s%s%s", open_prefix, word, saved_suffix);
     int vw = cat_measure_text(body, value);
     cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
 }
@@ -881,7 +881,13 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
         int list_h = JW_WIFI_LIST_ROWS * item_h;
         cat_draw_list_pane(x, dy, w, list_h, ui->wifi_network_count,
                            &ui->network_list, item_h, jw__draw_wifi_item, &ctx);
+        dy += list_h + cat_scale(6);
     }
+
+    /* Controls hint (settings pages have no per-page footer of their own). */
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    cat_draw_text(small, "A: Connect / Disconnect    Y: Forget    X: Rescan",
+                  x + cat_scale(12), dy, theme->hint);
 
     (void)h;
 }
@@ -1641,9 +1647,16 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     &ui->wifi_networks[ui->network_list.cursor];
 
                 if (net->current && ui->wifi.connected) {
-                    snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
-                             "Already connected to %s", net->ssid);
+                    /* A on the connected network disconnects it. */
+                    if (jw_wifi_disconnect() == 0)
+                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                 "Disconnected from %s", net->ssid);
+                    else
+                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                 "Could not disconnect");
+                    ui->wifi_attempt_ssid[0] = '\0';
                     snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                    ui->wifi_next_poll_ms = SDL_GetTicks();
                     break;
                 }
 
@@ -1677,6 +1690,30 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 }
                 snprintf(status_buf, status_size, "%s", ui->wifi_msg);
                 ui->wifi_next_poll_ms = SDL_GetTicks();   /* poll right away */
+                break;
+            }
+            case CAT_BTN_Y: {
+                /* Forget the selected network's saved profile. */
+                if (ui->wifi_network_count > 0 &&
+                    ui->network_list.cursor < ui->wifi_network_count) {
+                    const jw_wifi_network_t *net =
+                        &ui->wifi_networks[ui->network_list.cursor];
+                    if (net->saved) {
+                        if (jw_wifi_forget(net->ssid) == 0)
+                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                     "Forgot %s", net->ssid);
+                        else
+                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                     "Could not forget %s", net->ssid);
+                        jw_wifi_scan_start();
+                        jw__refresh_wifi(ui);
+                        jw__refresh_wifi_scan(ui);
+                    } else {
+                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                 "%s isn't saved", net->ssid);
+                    }
+                    snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                }
                 break;
             }
             case CAT_BTN_X:

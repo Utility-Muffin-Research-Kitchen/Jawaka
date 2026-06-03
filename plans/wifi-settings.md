@@ -31,7 +31,14 @@ networks, so users don't need SSH/ADB to get online.
 - Phase 2 — Scan + list — **DONE** (scrollable, deduped, sorted, secured/current markers).
 - Phase 3 — Connect open/saved — **DONE** (A connects; udhcpc kicked; feedback line).
 - Phase 4 — Password entry — **DONE** (cat_keyboard PSK; wrong-password via 12s poll timeout; verified persisting to saved list).
-- Phase 5 — Manage/persist — **TODO** (forget, disconnect, Wi-Fi on/off, reboot persistence — needs the /tmp-vs-/etc conf resolution + a reboot test; good point to loop in Kevin).
+- Phase 5 — Manage/persist — **DONE** (Y forgets a saved profile; A on the connected
+  network disconnects; "saved" markers in the list; controls hint line). Reboot
+  persistence: save_config writes the ephemeral /tmp/wpa_supplicant.conf, so after
+  every save we mirror it to the durable /etc/wpa_supplicant.conf (jw__wifi_persist,
+  plain C copy). ⚠ STILL NEEDS A REBOOT TEST to confirm boot restores from /etc and
+  saved networks survive — and Kevin's eyes on whether /etc is the right durable
+  target on stock. Wi-Fi radio on/off (rfkill/ip link) intentionally deferred: it's
+  untestable over ADB-Wi-Fi and lower value than disconnect.
 
 ## Phases (each independently testable on-device + mergeable)
 
