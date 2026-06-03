@@ -29,6 +29,8 @@
 
 #define JW_SWITCHER_RESUME_RETRY_MS 100LL
 #define JW_SWITCHER_RESUME_MAX_ATTEMPTS 40
+#define JW_INGAME_MENU_PREWARM_DELAY_MS 1200LL
+#define JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS 250LL
 
 typedef enum {
     JW_CHILD_NONE = 0,
@@ -85,6 +87,8 @@ typedef struct {
     bool post_launch_resume_pending;
     int post_launch_resume_attempts;
     long long post_launch_resume_next_ms;
+    bool in_game_menu_prewarm_pending;
+    long long in_game_menu_prewarm_next_ms;
     bool pending_app;
     char pending_app_pak_dir[PATH_MAX];
     bool daemon_only;
@@ -559,6 +563,48 @@ static int jw__request_open_in_game_menu(jw_daemon_state *state);
 static int jw__request_open_in_game_switcher(jw_daemon_state *state);
 static int jw__request_close_in_game_menu(jw_daemon_state *state);
 
+static void jw__schedule_in_game_menu_prewarm(jw_daemon_state *state,
+                                              long long delay_ms) {
+    if (!state || state->menu_pid > 0) {
+        return;
+    }
+    state->in_game_menu_prewarm_pending = true;
+    state->in_game_menu_prewarm_next_ms = jw__monotonic_ms() + delay_ms;
+    jw_log_info("scheduled in-game menu prewarm delay_ms=%lld", delay_ms);
+}
+
+static void jw__cancel_in_game_menu_prewarm(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    state->in_game_menu_prewarm_pending = false;
+    state->in_game_menu_prewarm_next_ms = 0;
+}
+
+static void jw__tick_in_game_menu_prewarm(jw_daemon_state *state) {
+    if (!state || !state->in_game_menu_prewarm_pending) {
+        return;
+    }
+    if (!state->retroarch_session.active || state->child_kind != JW_CHILD_RETROARCH) {
+        jw__cancel_in_game_menu_prewarm(state);
+        return;
+    }
+    if (state->menu_pid > 0) {
+        jw__cancel_in_game_menu_prewarm(state);
+        return;
+    }
+
+    long long now = jw__monotonic_ms();
+    if (state->in_game_menu_prewarm_next_ms > now) {
+        return;
+    }
+
+    jw__cancel_in_game_menu_prewarm(state);
+    if (jw__spawn_in_game_menu(state, false) != 0) {
+        jw_log_warn("could not pre-spawn standby in-game menu; will spawn on demand");
+    }
+}
+
 static void jw__publish_retroarch_input_env(jw_daemon_state *state) {
     if (!state || !state->input_proxy.enabled ||
         !state->input_proxy.virtual_event_path[0]) {
@@ -660,6 +706,8 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
     if (!state) {
         return;
     }
+
+    jw__cancel_in_game_menu_prewarm(state);
 
     jw_retroarch_session *session = &state->retroarch_session;
     if (!session->active) {
@@ -1882,6 +1930,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     if (!state || !state->pending_launch) {
         return -1;
     }
+    long long launch_start_ms = jw__monotonic_ms();
     bool switcher_resume = state->pending_launch_resume_switcher;
 
     char rom_abs[PATH_MAX];
@@ -1959,6 +2008,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
 
     char config_error[256];
     bool persist_config = !switcher_resume;
+    long long config_start_ms = jw__monotonic_ms();
     runtime_config = jw_prepare_retroarch_config(state->runtime_dir,
                                                 source_root,
                                                 core,
@@ -1972,7 +2022,44 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                      config_error[0] ? config_error : "unknown error");
         goto fail;
     }
+    long long config_done_ms = jw__monotonic_ms();
 
+    bool entryslot_resume = false;
+    int entryslot = JW_RA_GAME_SWITCHER_STATE_SLOT;
+    char entryslot_arg[16];
+    char entry_state_path[PATH_MAX];
+    entryslot_arg[0] = '\0';
+    entry_state_path[0] = '\0';
+    long long state_resolve_start_ms = jw__monotonic_ms();
+    if (switcher_resume) {
+        char states_dir[PATH_MAX];
+        int resolved_slot = 0;
+        char resolved_path[PATH_MAX];
+        resolved_path[0] = '\0';
+        if (snprintf(states_dir, sizeof(states_dir), "%s/States", source_root) <
+                (int)sizeof(states_dir) &&
+            jw_ra_find_resume_state(states_dir, rom_abs,
+                                    JW_RA_GAME_SWITCHER_STATE_SLOT,
+                                    &resolved_slot,
+                                    resolved_path, sizeof(resolved_path))) {
+            if (resolved_slot >= 0 && resolved_slot <= 999) {
+                entryslot_resume = true;
+                entryslot = resolved_slot;
+                snprintf(entryslot_arg, sizeof(entryslot_arg), "%d", entryslot);
+                snprintf(entry_state_path, sizeof(entry_state_path), "%s", resolved_path);
+                jw_log_info("switcher resume: using RetroArch entryslot=%d path=%s",
+                            entryslot, entry_state_path);
+            } else {
+                jw_log_info("switcher resume: state slot=%d path=%s requires command fallback",
+                            resolved_slot, resolved_path);
+            }
+        } else {
+            jw_log_info("switcher resume: no prelaunch state found for %s", rom_abs);
+        }
+    }
+    long long state_resolve_done_ms = jw__monotonic_ms();
+
+    long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
@@ -1980,17 +2067,24 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
-        char *const argv[] = {
-            retroarch,
-            "-L", core,
-            "--config", runtime_config,
-            rom_abs,
-            NULL
-        };
+        char *argv[9];
+        int argc = 0;
+        argv[argc++] = retroarch;
+        argv[argc++] = (char *)"-L";
+        argv[argc++] = core;
+        argv[argc++] = (char *)"--config";
+        argv[argc++] = runtime_config;
+        if (entryslot_resume) {
+            argv[argc++] = (char *)"-e";
+            argv[argc++] = entryslot_arg;
+        }
+        argv[argc++] = rom_abs;
+        argv[argc] = NULL;
         execv(retroarch, argv);
         perror("execv");
         _exit(127);
     }
+    long long fork_done_ms = jw__monotonic_ms();
 
     state->child_pid = pid;
     state->child_kind = JW_CHILD_RETROARCH;
@@ -2000,18 +2094,29 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs,
                                 state->pending_launch_rom_path, source_root,
                                 core, runtime_config, persist_config);
-    if (switcher_resume) {
+    bool post_launch_resume = switcher_resume && !entryslot_resume;
+    if (post_launch_resume) {
         state->post_launch_resume_pending = true;
         state->post_launch_resume_attempts = 0;
         state->post_launch_resume_next_ms = jw__monotonic_ms();
+    } else {
+        state->post_launch_resume_pending = false;
+        state->post_launch_resume_attempts = 0;
+        state->post_launch_resume_next_ms = 0;
     }
 
-    /* Pre-spawn the in-game menu as a hidden warm standby so the first Menu
-       tap only has to pause + reveal an already-built window, not cold-start a
-       whole SDL/GL process. If this fails we fall back to on-demand spawn. */
-    if (jw__spawn_in_game_menu(state, false) != 0) {
-        jw_log_warn("could not pre-spawn standby in-game menu; will spawn on demand");
+    /* Let RetroArch own the first startup window before cold-starting the
+       hidden standby menu's SDL/GL/input stack. */
+    if (!post_launch_resume) {
+        jw__schedule_in_game_menu_prewarm(state, JW_INGAME_MENU_PREWARM_DELAY_MS);
     }
+    jw_log_info("RetroArch launch timings: total_ms=%lld config_ms=%lld state_resolve_ms=%lld fork_ms=%lld entryslot=%s post_resume=%s",
+                fork_done_ms - launch_start_ms,
+                config_done_ms - config_start_ms,
+                state_resolve_done_ms - state_resolve_start_ms,
+                fork_done_ms - fork_start_ms,
+                entryslot_resume ? entryslot_arg : "none",
+                post_launch_resume ? "true" : "false");
 
     free(retroarch);
     free(core);
@@ -2022,6 +2127,7 @@ fail:
     state->pending_launch = false;
     state->pending_launch_resume_switcher = false;
     state->post_launch_resume_pending = false;
+    jw__cancel_in_game_menu_prewarm(state);
     jw__retroarch_session_clear(&state->retroarch_session);
     free(retroarch);
     free(core);
@@ -2036,6 +2142,7 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
     if (!state->retroarch_session.active || state->child_kind != JW_CHILD_RETROARCH) {
         state->post_launch_resume_pending = false;
         state->post_launch_resume_attempts = 0;
+        state->post_launch_resume_next_ms = 0;
         return;
     }
 
@@ -2057,6 +2164,9 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
                         jw_ra_result_string(info_result));
             state->post_launch_resume_pending = false;
             state->post_launch_resume_attempts = 0;
+            state->post_launch_resume_next_ms = 0;
+            jw__schedule_in_game_menu_prewarm(state,
+                                              JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
         } else {
             state->post_launch_resume_next_ms = now + JW_SWITCHER_RESUME_RETRY_MS;
         }
@@ -2065,9 +2175,12 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
 
     state->post_launch_resume_pending = false;
     state->post_launch_resume_attempts = 0;
+    state->post_launch_resume_next_ms = 0;
 
     if (!info.savestate_supported) {
         jw_log_warn("switcher resume: core does not support savestates");
+        jw__schedule_in_game_menu_prewarm(state,
+                                          JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
         return;
     }
 
@@ -2079,6 +2192,8 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
         snprintf(states_dir, sizeof(states_dir), "%s/States", source_root) >=
             (int)sizeof(states_dir)) {
         jw_log_warn("switcher resume: states path unavailable");
+        jw__schedule_in_game_menu_prewarm(state,
+                                          JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
         return;
     }
 
@@ -2089,6 +2204,8 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
                                  &slot, state_path, sizeof(state_path))) {
         jw_log_info("switcher resume: no state found for %s",
                     state->retroarch_session.rom_path);
+        jw__schedule_in_game_menu_prewarm(state,
+                                          JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
         return;
     }
 
@@ -2097,11 +2214,15 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
     if (load != JW_RA_OK) {
         jw_log_warn("switcher resume: load failed slot=%d path=%s result=%s",
                     slot, state_path, jw_ra_result_string(load));
+        jw__schedule_in_game_menu_prewarm(state,
+                                          JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
         return;
     }
 
     jw_ra_resume_direct(&ra);
     jw_log_info("switcher resume: loaded slot=%d path=%s", slot, state_path);
+    jw__schedule_in_game_menu_prewarm(state,
+                                      JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
 }
 
 static int jw__handle_scan(jw_daemon_state *state, jw_ipc_client *client) {
@@ -2968,6 +3089,7 @@ int main(int argc, char *argv[]) {
 
         jw__handle_child_exit(&state);
         jw__tick_post_launch_resume(&state);
+        jw__tick_in_game_menu_prewarm(&state);
         jw__handle_menu_exit(&state);
         jw__handle_osd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
