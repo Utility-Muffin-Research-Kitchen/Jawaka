@@ -145,9 +145,11 @@ typedef struct {
     jw_wifi_network_t  wifi_networks[JW_WIFI_MAX_NETWORKS];  /* latest scan results */
     int                wifi_network_count;
     unsigned           wifi_next_scan_ms;   /* throttle for triggering a new scan */
-    char               wifi_msg[128];       /* last Network-page action feedback */
+    char               wifi_msg[128];       /* last Network-page action feedback (toast) */
+    unsigned           wifi_msg_ms;         /* when wifi_msg was set (0 = none); auto-expires */
     char               wifi_attempt_ssid[64];  /* network we're trying to join ("" = none) */
     unsigned           wifi_attempt_ms;     /* when the join attempt started */
+    int                wifi_monitor_fd;     /* wpa event-socket fd during a join (-1 = none) */
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;

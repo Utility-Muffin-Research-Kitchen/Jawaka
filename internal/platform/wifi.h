@@ -64,17 +64,35 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured);
  * jw_wifi_join_state_for() to detect success vs. a wrong key. (Phase 4) */
 jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk);
 
-/* Outcome of an in-flight join attempt, polled after a connect. */
-typedef enum {
-    JW_WIFI_JOIN_PENDING = 0,  /* still associating */
-    JW_WIFI_JOIN_CONNECTED,    /* COMPLETED on the target SSID */
-    JW_WIFI_JOIN_WRONG_KEY,    /* wpa temp-disabled the target (auth failure) */
-} jw_wifi_join_state;
+/* ── Join monitoring via the wpa control-event socket ────────────────────────
+ * Wrong-PSK is only reliably signalled by wpa_supplicant's CTRL-EVENT stream
+ * (reason=WRONG_KEY); it does NOT show up in `status`/`list_networks` polling.
+ * So a connect attempt attaches to the event socket and watches it. */
 
-/* Poll the join state for ssid: CONNECTED if associated to it; WRONG_KEY if
- * wpa_supplicant temporarily disabled it (the standard wrong-PSK signal); else
- * PENDING. Caller applies its own overall timeout for "couldn't connect". */
-jw_wifi_join_state jw_wifi_join_state_for(const char *ssid);
+/* Attach to the wpa event socket. Returns an fd to pass to the poll/close calls,
+ * or -1 on failure. Open it right when a connect attempt starts. */
+int  jw_wifi_monitor_open(void);
+
+/* Result of draining the event socket during a join attempt. This hardware does
+ * NOT emit reason=WRONG_KEY (esp. on SAE/WPA3, where a bad key fails at the auth
+ * phase), so we distinguish a definitive wrong key from a generic auth failure. */
+typedef enum {
+    JW_WIFI_EVT_NONE = 0,    /* nothing conclusive yet */
+    JW_WIFI_EVT_WRONG_KEY,   /* explicit WRONG_KEY (plain WPA2-PSK 4-way failure) */
+    JW_WIFI_EVT_AUTH_FAIL,   /* auth timed out / assoc-reject — likely bad key, not certain */
+} jw_wifi_evt;
+
+/* Drain buffered events (non-blocking) and report the strongest failure seen.
+ * Success is detected separately via status COMPLETED on the target SSID. */
+jw_wifi_evt jw_wifi_monitor_poll(int fd);
+
+/* Detach + close the monitor fd (and clean up its local socket). */
+void jw_wifi_monitor_close(int fd);
+
+/* Recover connectivity after a failed attempt: a connect uses select_network,
+ * which disables the previously-connected network, so on failure re-enable all
+ * saved networks and reconnect (wpa picks the best reachable one). */
+void jw_wifi_recover(void);
 
 /* ── Manage (Phase 5) ────────────────────────────────────────────────────── */
 

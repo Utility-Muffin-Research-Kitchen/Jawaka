@@ -6,6 +6,7 @@
 #include "internal/platform/platform_id.h"
 #include "internal/settings/appearance.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -241,6 +242,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     memset(ui, 0, sizeof(*ui));
     ui->open   = false;
     ui->screen = JW_SETTINGS_HOME;
+    ui->wifi_monitor_fd = -1;
     cat_list_state_init(&ui->home_list,       JW_SETTINGS_CATEGORY_COUNT);
     cat_list_state_init(&ui->appearance_list,  JW_APPEAR_ROW_COUNT);
     cat_list_state_init(&ui->colors_list,      JW_COLOR_ROW_COUNT);
@@ -739,40 +741,86 @@ static void jw__refresh_wifi_scan(jw_settings_ui *ui) {
     }
 }
 
+/* Set the Network-page feedback toast (timestamped so it auto-expires). */
+static void jw__wifi_msg(jw_settings_ui *ui, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(ui->wifi_msg, sizeof(ui->wifi_msg), fmt, ap);
+    va_end(ap);
+    ui->wifi_msg_ms = SDL_GetTicks();
+    if (ui->wifi_msg_ms == 0) ui->wifi_msg_ms = 1;   /* 0 means "none" */
+}
+
+/* Begin a join attempt: record it and attach to the wpa event socket so we can
+   catch a WRONG_KEY auth failure (the only reliable wrong-password signal). */
+static void jw__wifi_attempt_begin(jw_settings_ui *ui, const char *ssid) {
+    snprintf(ui->wifi_attempt_ssid, sizeof(ui->wifi_attempt_ssid), "%s", ssid);
+    ui->wifi_attempt_ms = SDL_GetTicks();
+    if (ui->wifi_monitor_fd >= 0) {
+        jw_wifi_monitor_close(ui->wifi_monitor_fd);
+    }
+    ui->wifi_monitor_fd = jw_wifi_monitor_open();
+}
+
+static void jw__wifi_attempt_clear(jw_settings_ui *ui) {
+    ui->wifi_attempt_ssid[0] = '\0';
+    if (ui->wifi_monitor_fd >= 0) {
+        jw_wifi_monitor_close(ui->wifi_monitor_fd);
+        ui->wifi_monitor_fd = -1;
+    }
+}
+
 void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
     if (!ui) {
         return;
     }
-    /* Self-throttle: re-poll at most ~every 2s; each poll forks wpa_cli. */
+    /* Expire the feedback toast so it doesn't linger after the action is over. */
+    if (ui->wifi_msg_ms && (int)(SDL_GetTicks() - ui->wifi_msg_ms) > 6000) {
+        ui->wifi_msg[0] = '\0';
+        ui->wifi_msg_ms = 0;
+    }
+    /* Drain the event socket every frame (cheap, non-blocking) so a fast auth
+       failure isn't missed between the throttled wpa_cli polls below. */
+    jw_wifi_evt evt = ui->wifi_attempt_ssid[0] ? jw_wifi_monitor_poll(ui->wifi_monitor_fd)
+                                               : JW_WIFI_EVT_NONE;
+
+    /* Self-throttle the wpa_cli polls to ~2s; each forks wpa_cli. */
     unsigned now = SDL_GetTicks();
-    if (ui->wifi_next_poll_ms != 0 && (int)(now - ui->wifi_next_poll_ms) < 0) {
+    if (evt == JW_WIFI_EVT_NONE && ui->wifi_next_poll_ms != 0 &&
+        (int)(now - ui->wifi_next_poll_ms) < 0) {
         return;
     }
     jw__refresh_wifi(ui);
     jw__refresh_wifi_scan(ui);
 
-    /* Resolve a pending connect attempt using wpa_supplicant's actual join state:
-       CONNECTED on success, WRONG_KEY when it auth-fails (temp-disabled), else a
-       generic timeout. On a wrong key, forget the bad profile so it is never saved
-       or retried. */
+    /* Resolve a pending connect attempt:
+       - success: associated (COMPLETED) on the target SSID;
+       - WRONG_KEY event: definitive wrong password;
+       - auth-fail event (SAE/WPA3 bad key, assoc reject): likely wrong password;
+       - timeout (12s): neither.
+       On any failure, forget the bad profile and recover the prior network — a
+       connect uses select_network, which disabled it. The monitor is closed on
+       resolve, so recovery's own churn events are never misread. */
     if (ui->wifi_attempt_ssid[0]) {
-        jw_wifi_join_state js = jw_wifi_join_state_for(ui->wifi_attempt_ssid);
-        if (js == JW_WIFI_JOIN_CONNECTED) {
-            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg), "Connected to %s",
+        bool connected = ui->wifi.connected &&
+                         strcmp(ui->wifi.ssid, ui->wifi_attempt_ssid) == 0;
+        bool failed = (evt != JW_WIFI_EVT_NONE) ||
+                      (int)(now - ui->wifi_attempt_ms) > 12000;
+        if (connected) {
+            jw__wifi_msg(ui, "Connected to %s",
                      ui->wifi_attempt_ssid);
-            ui->wifi_attempt_ssid[0] = '\0';
-        } else if (js == JW_WIFI_JOIN_WRONG_KEY) {
+            jw__wifi_attempt_clear(ui);
+        } else if (failed) {
             char bad[64];
             snprintf(bad, sizeof(bad), "%s", ui->wifi_attempt_ssid);
-            jw_wifi_forget(bad);   /* drop the wrong-key profile */
-            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
-                     "Wrong password for %s", bad);
-            ui->wifi_attempt_ssid[0] = '\0';
+            if (evt == JW_WIFI_EVT_WRONG_KEY)
+                jw__wifi_msg(ui, "Wrong password");
+            else
+                jw__wifi_msg(ui, "Couldn't connect — check password");
+            jw_wifi_forget(bad);   /* never keep a failed/wrong-key profile */
+            jw_wifi_recover();     /* restore the network we were kicked off */
+            jw__wifi_attempt_clear(ui);
             jw__refresh_wifi_scan(ui);
-        } else if ((int)(now - ui->wifi_attempt_ms) > 30000) {
-            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
-                     "Couldn't connect to %s", ui->wifi_attempt_ssid);
-            ui->wifi_attempt_ssid[0] = '\0';
         }
     }
 
@@ -1430,7 +1478,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->network_list.cursor = 0;
                     ui->network_list.scroll_offset = 0;
                     ui->wifi_msg[0] = '\0';
-                    ui->wifi_attempt_ssid[0] = '\0';
+                    jw__wifi_attempt_clear(ui);
                     jw__refresh_wifi(ui);          /* show status immediately */
                     jw_wifi_scan_start();          /* kick a scan */
                     jw__refresh_wifi_scan(ui);     /* show any cached results now */
@@ -1656,12 +1704,12 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 if (net->current && ui->wifi.connected) {
                     /* A on the connected network disconnects it. */
                     if (jw_wifi_disconnect() == 0)
-                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                        jw__wifi_msg(ui,
                                  "Disconnected from %s", net->ssid);
                     else
-                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                        jw__wifi_msg(ui,
                                  "Could not disconnect");
-                    ui->wifi_attempt_ssid[0] = '\0';
+                    jw__wifi_attempt_clear(ui);
                     snprintf(status_buf, status_size, "%s", ui->wifi_msg);
                     ui->wifi_next_poll_ms = SDL_GetTicks();
                     break;
@@ -1677,22 +1725,20 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                         kb.text[0]) {
                         r = jw_wifi_connect_psk(net->ssid, kb.text);
                     } else {
-                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg), "Cancelled");
+                        jw__wifi_msg(ui, "Cancelled");
                         snprintf(status_buf, status_size, "%s", ui->wifi_msg);
                         break;
                     }
                 }
 
                 if (r == JW_WIFI_CONNECT_OK) {
-                    snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                    jw__wifi_msg(ui,
                              "Connecting to %s…", net->ssid);
-                    /* Track the attempt so the poll can confirm success or flag a
-                       likely wrong password. */
-                    snprintf(ui->wifi_attempt_ssid, sizeof(ui->wifi_attempt_ssid),
-                             "%s", net->ssid);
-                    ui->wifi_attempt_ms = SDL_GetTicks();
+                    /* Track the attempt + attach the event monitor so the poll can
+                       confirm success or catch a WRONG_KEY auth failure. */
+                    jw__wifi_attempt_begin(ui, net->ssid);
                 } else {
-                    snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                    jw__wifi_msg(ui,
                              "Could not connect to %s", net->ssid);
                 }
                 snprintf(status_buf, status_size, "%s", ui->wifi_msg);
@@ -1707,16 +1753,16 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                         &ui->wifi_networks[ui->network_list.cursor];
                     if (net->saved) {
                         if (jw_wifi_forget(net->ssid) == 0)
-                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                            jw__wifi_msg(ui,
                                      "Forgot %s", net->ssid);
                         else
-                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                            jw__wifi_msg(ui,
                                      "Could not forget %s", net->ssid);
                         jw_wifi_scan_start();
                         jw__refresh_wifi(ui);
                         jw__refresh_wifi_scan(ui);
                     } else {
-                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                        jw__wifi_msg(ui,
                                  "%s isn't saved", net->ssid);
                     }
                     snprintf(status_buf, status_size, "%s", ui->wifi_msg);
@@ -1728,7 +1774,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 jw__refresh_wifi(ui);
                 jw__refresh_wifi_scan(ui);
                 ui->wifi_next_scan_ms = SDL_GetTicks() + JW_WIFI_SCAN_INTERVAL_MS;
-                snprintf(ui->wifi_msg, sizeof(ui->wifi_msg), "Scanning Wi-Fi…");
+                jw__wifi_msg(ui, "Scanning Wi-Fi…");
                 snprintf(status_buf, status_size, "Scanning Wi-Fi…");
                 break;
             case CAT_BTN_B:

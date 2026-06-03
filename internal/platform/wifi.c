@@ -6,10 +6,15 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/time.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <limits.h>
 
 #define JW_WIFI_IFACE       "wlan0"
+#define JW_WIFI_CTRL_SOCK   "/var/run/wpa_supplicant/" JW_WIFI_IFACE
 
 /* Run `wpa_cli -i wlan0 <args...>` and capture stdout into buf (NUL-terminated).
  * fork/exec + pipe — no system(). Returns bytes read (>=0), or -1 on failure. */
@@ -293,7 +298,9 @@ static void jw__wifi_dhcp(void) {
     if (pid == 0) {
         pid_t grandchild = fork();
         if (grandchild == 0) {
-            execlp("udhcpc", "udhcpc", "-t", "5", "-n", "-i", JW_WIFI_IFACE,
+            /* -t 20: keep sending DISCOVERs (~60s) so we don't give up before the
+               (re)association finishes — the stock 5-try -n gave up too early. */
+            execlp("udhcpc", "udhcpc", "-t", "20", "-n", "-i", JW_WIFI_IFACE,
                    (char *)NULL);
             _exit(127);
         }
@@ -583,46 +590,104 @@ int jw_wifi_disconnect(void) {
     return jw__wifi_run(cmd, 1, buf, sizeof(buf)) < 0 ? -1 : 0;
 }
 
-jw_wifi_join_state jw_wifi_join_state_for(const char *ssid) {
-    if (!ssid || !ssid[0]) {
-        return JW_WIFI_JOIN_PENDING;
+static void jw__wifi_monitor_local_path(char *out, size_t n) {
+    snprintf(out, n, "/tmp/umrk-wpa-mon-%d", (int)getpid());
+}
+
+int jw_wifi_monitor_open(void) {
+    int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    char local_path[64];
+    jw__wifi_monitor_local_path(local_path, sizeof(local_path));
+    unlink(local_path);
+
+    struct sockaddr_un local;
+    memset(&local, 0, sizeof(local));
+    local.sun_family = AF_UNIX;
+    snprintf(local.sun_path, sizeof(local.sun_path), "%s", local_path);
+    if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
+        close(fd);
+        return -1;
+    }
+    struct sockaddr_un dest;
+    memset(&dest, 0, sizeof(dest));
+    dest.sun_family = AF_UNIX;
+    snprintf(dest.sun_path, sizeof(dest.sun_path), "%s", JW_WIFI_CTRL_SOCK);
+    if (connect(fd, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
+        close(fd);
+        unlink(local_path);
+        return -1;
     }
 
-    /* Associated to the target? */
-    char dump[2048];
-    if (jw__wifi_wpa_cli("status", dump, sizeof(dump)) >= 0) {
-        char state[24] = { 0 };
-        char cur[64] = { 0 };
-        jw__wifi_field(dump, "wpa_state", state, sizeof(state));
-        jw__wifi_field(dump, "ssid", cur, sizeof(cur));
-        if (strcmp(state, "COMPLETED") == 0 && strcmp(cur, ssid) == 0) {
-            return JW_WIFI_JOIN_CONNECTED;
-        }
+    /* Attach for unsolicited events; wait briefly for the OK reply. */
+    struct timeval tv = { 1, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (send(fd, "ATTACH", 6, 0) < 0) {
+        close(fd);
+        unlink(local_path);
+        return -1;
     }
+    char reply[16] = { 0 };
+    ssize_t rn = recv(fd, reply, sizeof(reply) - 1, 0);   /* expect "OK\n" */
+    if (rn > 0) reply[rn] = '\0';
 
-    /* Wrong key? On a failed PSK handshake wpa_supplicant temporarily disables
-       the network (reason=WRONG_KEY) — it shows TEMP-DISABLED in list_networks. */
-    char nets[4096];
-    if (jw__wifi_wpa_cli("list_networks", nets, sizeof(nets)) >= 0) {
-        char *save_line = NULL;
-        char *line = strtok_r(nets, "\n", &save_line);   /* header */
-        if (line) {
-            line = strtok_r(NULL, "\n", &save_line);
+    (void)reply;
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+    return fd;
+}
+
+jw_wifi_evt jw_wifi_monitor_poll(int fd) {
+    if (fd < 0) {
+        return JW_WIFI_EVT_NONE;
+    }
+    jw_wifi_evt result = JW_WIFI_EVT_NONE;
+    char buf[512];
+    for (;;) {
+        ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+        if (n <= 0) {
+            break;   /* drained (EAGAIN) or closed */
         }
-        for (; line; line = strtok_r(NULL, "\n", &save_line)) {
-            char *st = NULL;
-            char *id    = strtok_r(line, "\t", &st);
-            char *name  = id   ? strtok_r(NULL, "\t", &st) : NULL;
-            char *bssid = name ? strtok_r(NULL, "\t", &st) : NULL;
-            char *flags = bssid ? strtok_r(NULL, "\t", &st) : NULL;
-            (void)id; (void)bssid;
-            if (name && strcmp(name, ssid) == 0 &&
-                flags && strstr(flags, "TEMP-DISABLED") != NULL) {
-                return JW_WIFI_JOIN_WRONG_KEY;
-            }
+        buf[n] = '\0';
+        /* Definitive wrong key (WPA2-PSK 4-way handshake failure). */
+        if (strstr(buf, "WRONG_KEY") != NULL) {
+            result = JW_WIFI_EVT_WRONG_KEY;   /* strongest; keep draining */
+        } else if (result != JW_WIFI_EVT_WRONG_KEY &&
+                   ((strstr(buf, "Authentication") && strstr(buf, "timed out")) ||
+                    strstr(buf, "CTRL-EVENT-ASSOC-REJECT") != NULL)) {
+            /* SAE/WPA3 bad key, or assoc rejected — likely-but-not-certain bad key.
+               A clean successful connect never emits these, so it's safe to act on
+               within the attempt (the monitor is closed before recovery churn). */
+            result = JW_WIFI_EVT_AUTH_FAIL;
         }
     }
-    return JW_WIFI_JOIN_PENDING;
+    return result;
+}
+
+void jw_wifi_monitor_close(int fd) {
+    if (fd < 0) {
+        return;
+    }
+    (void)send(fd, "DETACH", 6, 0);
+    close(fd);
+    char local_path[64];
+    jw__wifi_monitor_local_path(local_path, sizeof(local_path));
+    unlink(local_path);
+}
+
+void jw_wifi_recover(void) {
+    char buf[64];
+    const char *enable_all[] = { "enable_network", "all" };
+    const char *reconnect[]  = { "reconnect" };
+    (void)jw__wifi_run(enable_all, 2, buf, sizeof(buf));
+    (void)jw__wifi_run(reconnect, 1, buf, sizeof(buf));
+    /* Reassociating alone leaves us with no IP (the failed connect's select_network
+       tore down the lease) — kick DHCP like the connect path does. */
+    jw__wifi_dhcp();
 }
 
 /* Add (but don't select) a profile: add_network + ssid + psk/open + enable. */

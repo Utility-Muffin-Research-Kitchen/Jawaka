@@ -37,6 +37,29 @@ and <sdcard>/.umrk/wifi.conf both hold only hashed keys. NOTE: jw__wifi_run
 returns BYTES READ (>=0) on success / -1 on error — check `< 0` / `>= 0`, never
 `== 0` (that bug initially made harden silently no-op).
 
+## Wrong-password detection — what this hardware actually does (verified via /proc + event capture)
+- There is **NO `reason=WRONG_KEY`** on this device. Captured the wpa control-event
+  stream during a real wrong-password attempt: a bad key on a WPA2-PSK**+SAE** net
+  (ReinFiGuest) fails at the *auth* phase — `Associated` → `Authentication ... timed
+  out` → `CTRL-EVENT-DISCONNECTED reason=3 locally_generated=1` → `CTRL-EVENT-ASSOC-
+  REJECT status_code=1` / `CTRL-EVENT-NETWORK-NOT-FOUND`. The WPA2 4-way handshake
+  (which would emit WRONG_KEY) never happens.
+- `status`/`list_networks` polling can't see it either: state just cycles
+  `SCANNING`↔`INACTIVE`; the network flag stays `[CURRENT]`/`[DISABLED]`, never
+  `[TEMP-DISABLED]` at 1s granularity.
+- So detection MUST read the **event socket** (`/var/run/wpa_supplicant/wlan0`,
+  AF_UNIX dgram, send `ATTACH`). jw_wifi_monitor_{open,poll,close} do this.
+  `WRONG_KEY` → "Wrong password" (plain WPA2 nets); `Authentication…timed out` /
+  `ASSOC-REJECT` → honest "Couldn't connect — check password" (can't *prove* it's
+  the password on SAE). A clean successful connect emits none of these, so acting
+  on them within the attempt is safe; the monitor is closed on resolve so recovery
+  churn isn't misread.
+- **Stranding fix**: a connect uses `select_network` (disables the prior net), so a
+  failure kicks you off Wi-Fi. jw_wifi_recover() = `enable_network all` + `reconnect`
+  + DHCP. DHCP needed `udhcpc -t 20` (the stock `-t 5 -n` gave up before the
+  re-association finished → connected-but-no-IP).
+- Toast messages auto-expire (~6s) and are kept short (long SSID truncated off-screen).
+
 ## Progress
 - Phase 1 — Status page — **DONE** (live status: state/SSID/RSSI-signal/IP).
 - Phase 2 — Scan + list — **DONE** (scrollable, deduped, sorted, secured/current markers).
