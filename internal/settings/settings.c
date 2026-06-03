@@ -358,6 +358,10 @@ bool jw_settings_ui_is_open(const jw_settings_ui *ui) {
     return ui && ui->open;
 }
 
+jw_settings_screen jw_settings_ui_screen(const jw_settings_ui *ui) {
+    return ui ? ui->screen : JW_SETTINGS_HOME;
+}
+
 bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui) {
     return ui && ui->open && ui->screen == JW_SETTINGS_DISPLAY;
 }
@@ -881,13 +885,7 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
         int list_h = JW_WIFI_LIST_ROWS * item_h;
         cat_draw_list_pane(x, dy, w, list_h, ui->wifi_network_count,
                            &ui->network_list, item_h, jw__draw_wifi_item, &ctx);
-        dy += list_h + cat_scale(6);
     }
-
-    /* Controls hint (settings pages have no per-page footer of their own). */
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-    cat_draw_text(small, "A: Connect / Disconnect    Y: Forget    X: Rescan",
-                  x + cat_scale(12), dy, theme->hint);
 
     (void)h;
 }

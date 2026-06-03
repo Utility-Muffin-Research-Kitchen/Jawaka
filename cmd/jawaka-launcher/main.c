@@ -903,11 +903,21 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     }
 
     if (jw_settings_ui_is_open(&state->settings)) {
-        cat_footer_item footer[] = {
-            { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
-        };
-        jw__draw_footer(state, footer, 2);
+        if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_NETWORK) {
+            cat_footer_item footer[] = {
+                { CAT_BTN_X, "Rescan",  false, JW_HINT("X") },
+                { CAT_BTN_Y, "Forget",  false, JW_HINT("Y") },
+                { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
+                { CAT_BTN_A, "Connect", true,  JW_HINT("A") },
+            };
+            jw__draw_footer(state, footer, 4);
+        } else {
+            cat_footer_item footer[] = {
+                { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
+                { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
+            };
+            jw__draw_footer(state, footer, 2);
+        }
     } else if (state->current_tab == JW_TAB_FAVORITES) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
@@ -3186,6 +3196,10 @@ int main(void) {
 
     /* Init settings UI with the currently-active theme */
     jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
+
+    /* Re-add Wi-Fi networks saved in our durable store but missing from the
+       (tmpfs, reboot-wiped) live wpa config. Idempotent; runs once at startup. */
+    (void)jw_wifi_restore();
 
     /* Prime the startup tab's lazily-loaded contents so the first frame is
        correct (Favorites/Recents are normally loaded on tab entry, and the

@@ -1,16 +1,15 @@
 #include "internal/platform/wifi.h"
+#include "internal/platform/paths.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <dirent.h>
+#include <limits.h>
 
 #define JW_WIFI_IFACE       "wlan0"
-/* save_config writes the running (ephemeral) conf; boot restores from the
- * durable one, so we mirror saved networks there for reboot persistence. */
-#define JW_WIFI_CONF_LIVE   "/tmp/wpa_supplicant.conf"
-#define JW_WIFI_CONF_DURABLE "/etc/wpa_supplicant.conf"
 
 /* Run `wpa_cli -i wlan0 <args...>` and capture stdout into buf (NUL-terminated).
  * fork/exec + pipe — no system(). Returns bytes read (>=0), or -1 on failure. */
@@ -304,28 +303,93 @@ static void jw__wifi_dhcp(void) {
     waitpid(pid, &status, 0);   /* reap the intermediate child only */
 }
 
-/* Mirror the freshly-saved live conf to the durable one so saved networks
- * survive a reboot (boot restores wpa_supplicant's conf from the durable copy).
- * Best-effort: plain C file copy, no shell. */
-static void jw__wifi_persist(void) {
-    FILE *src = fopen(JW_WIFI_CONF_LIVE, "rb");
-    if (!src) {
+/* Durable store on the SD card (survives reboots, unlike the tmpfs wpa conf). */
+static int jw__wifi_durable_path(char *out, size_t out_size) {
+    char *root = jw_sdcard_root();
+    if (!root) {
+        return -1;
+    }
+    int r = snprintf(out, out_size, "%s/.umrk/wifi.conf", root);
+    free(root);
+    return (r > 0 && (size_t)r < out_size) ? 0 : -1;
+}
+
+/* The live wpa_supplicant config file = the running process's -c argument. We
+ * discover it (rather than hardcode /tmp vs /var/run) since stock varies it. */
+static int jw__wifi_live_conf_path(char *out, size_t out_size) {
+    DIR *proc = opendir("/proc");
+    if (!proc) {
+        return -1;
+    }
+    int found = -1;
+    struct dirent *e;
+    while ((e = readdir(proc)) != NULL) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') {
+            continue;
+        }
+        char path[PATH_MAX];
+        char comm[64] = { 0 };
+        snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+        FILE *cf = fopen(path, "r");
+        if (!cf) {
+            continue;
+        }
+        if (!fgets(comm, sizeof(comm), cf)) { fclose(cf); continue; }
+        fclose(cf);
+        if (strncmp(comm, "wpa_supplicant", 14) != 0) {
+            continue;
+        }
+        snprintf(path, sizeof(path), "/proc/%s/cmdline", e->d_name);
+        FILE *xf = fopen(path, "r");
+        if (!xf) {
+            continue;
+        }
+        char buf[1024];
+        size_t len = fread(buf, 1, sizeof(buf) - 1, xf);
+        fclose(xf);
+        buf[len] = '\0';
+        for (size_t i = 0; i < len; ) {
+            size_t al = strlen(buf + i);
+            if (strcmp(buf + i, "-c") == 0 && i + al + 1 < len) {
+                snprintf(out, out_size, "%s", buf + i + al + 1);
+                found = 0;
+                break;
+            }
+            i += al + 1;
+        }
+        break;
+    }
+    closedir(proc);
+    return found;
+}
+
+/* Copy the live wpa conf (all saved networks) to the durable SD store after a
+ * change, so they can be restored on next boot. Best-effort, plain C copy. */
+static void jw__wifi_export(void) {
+    char src[PATH_MAX];
+    char dst[PATH_MAX];
+    if (jw__wifi_live_conf_path(src, sizeof(src)) != 0 ||
+        jw__wifi_durable_path(dst, sizeof(dst)) != 0) {
         return;
     }
-    FILE *dst = fopen(JW_WIFI_CONF_DURABLE, "wb");
-    if (!dst) {
-        fclose(src);
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        return;
+    }
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
         return;
     }
     char buf[1024];
     size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
-        if (fwrite(buf, 1, n, dst) != n) {
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
             break;
         }
     }
-    fclose(src);
-    fclose(dst);
+    fclose(in);
+    fclose(out);
 }
 
 jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
@@ -372,7 +436,7 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
 
     const char *save[] = { "save_config" };
     (void)jw__wifi_run(save, 1, buf, sizeof(buf));   /* best-effort persistence */
-    jw__wifi_persist();
+    jw__wifi_export();
 
     jw__wifi_dhcp();
     return JW_WIFI_CONNECT_OK;
@@ -417,7 +481,7 @@ jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
 
     const char *save2[] = { "save_config" };
     (void)jw__wifi_run(save2, 1, buf, sizeof(buf));
-    jw__wifi_persist();
+    jw__wifi_export();
 
     jw__wifi_dhcp();
     return JW_WIFI_CONNECT_OK;
@@ -440,7 +504,7 @@ int jw_wifi_forget(const char *ssid) {
     }
     const char *save[] = { "save_config" };
     (void)jw__wifi_run(save, 1, buf, sizeof(buf));
-    jw__wifi_persist();
+    jw__wifi_export();
     return 0;
 }
 
@@ -448,4 +512,97 @@ int jw_wifi_disconnect(void) {
     char buf[64];
     const char *cmd[] = { "disconnect" };
     return jw__wifi_run(cmd, 1, buf, sizeof(buf)) < 0 ? -1 : 0;
+}
+
+/* Add (but don't select) a profile: add_network + ssid + psk/open + enable. */
+static int jw__wifi_add_profile(const char *ssid, const char *psk) {
+    char buf[128];
+    char idbuf[16];
+    const char *add[] = { "add_network" };
+    if (jw__wifi_run(add, 1, buf, sizeof(buf)) < 0) {
+        return -1;
+    }
+    int id = atoi(buf);
+    if (id < 0) {
+        return -1;
+    }
+    snprintf(idbuf, sizeof(idbuf), "%d", id);
+
+    char qssid[72];
+    snprintf(qssid, sizeof(qssid), "\"%s\"", ssid);
+    const char *set_ssid[] = { "set_network", idbuf, "ssid", qssid };
+    if (jw__wifi_run(set_ssid, 4, buf, sizeof(buf)) < 0) {
+        return -1;
+    }
+    if (psk && psk[0]) {
+        char qpsk[140];
+        snprintf(qpsk, sizeof(qpsk), "\"%s\"", psk);
+        const char *set_psk[] = { "set_network", idbuf, "psk", qpsk };
+        if (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) < 0) {
+            return -1;
+        }
+    } else {
+        const char *set_open[] = { "set_network", idbuf, "key_mgmt", "NONE" };
+        if (jw__wifi_run(set_open, 4, buf, sizeof(buf)) < 0) {
+            return -1;
+        }
+    }
+    const char *enable[] = { "enable_network", idbuf };
+    (void)jw__wifi_run(enable, 2, buf, sizeof(buf));
+    return 0;
+}
+
+int jw_wifi_restore(void) {
+    char path[PATH_MAX];
+    if (jw__wifi_durable_path(path, sizeof(path)) != 0) {
+        return -1;
+    }
+    int added = 0;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        char line[256];
+        char ssid[64] = { 0 };
+        char psk[128] = { 0 };
+        int in_block = 0;
+        while (fgets(line, sizeof(line), f)) {
+            if (strstr(line, "network={")) {
+                in_block = 1;
+                ssid[0] = '\0';
+                psk[0] = '\0';
+                continue;
+            }
+            if (in_block && strchr(line, '}')) {
+                if (ssid[0] && jw__wifi_saved_id(ssid) < 0) {
+                    if (jw__wifi_add_profile(ssid, psk[0] ? psk : NULL) == 0) {
+                        added++;
+                    }
+                }
+                in_block = 0;
+                continue;
+            }
+            if (in_block) {
+                char *p;
+                if ((p = strstr(line, "ssid=\"")) != NULL) {
+                    sscanf(p, "ssid=\"%63[^\"]\"", ssid);
+                } else if ((p = strstr(line, "psk=\"")) != NULL) {
+                    sscanf(p, "psk=\"%127[^\"]\"", psk);
+                }
+            }
+        }
+        fclose(f);
+
+        if (added > 0) {
+            char buf[64];
+            const char *save[] = { "save_config" };
+            (void)jw__wifi_run(save, 1, buf, sizeof(buf));
+            const char *reconnect[] = { "reconnect" };
+            (void)jw__wifi_run(reconnect, 1, buf, sizeof(buf));
+        }
+    }
+
+    /* Always refresh the durable store from the current live config, so it
+       captures whatever is saved right now — this seeds it on first run (when no
+       store exists yet) and keeps it current after adds. */
+    jw__wifi_export();
+    return added;
 }

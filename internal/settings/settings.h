@@ -160,6 +160,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
 void jw_settings_ui_enter(jw_settings_ui *ui);
 void jw_settings_ui_close(jw_settings_ui *ui);
 bool jw_settings_ui_is_open(const jw_settings_ui *ui);
+/* Current sub-page, so the launcher can pick page-specific footer hints. */
+jw_settings_screen jw_settings_ui_screen(const jw_settings_ui *ui);
 bool jw_settings_show_hints(const jw_settings_ui *ui);
 
 /* True while the Display & Sound page is showing. The launcher polls this and

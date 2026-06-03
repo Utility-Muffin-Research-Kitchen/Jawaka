@@ -74,4 +74,11 @@ int jw_wifi_forget(const char *ssid);
  * auto-reconnect until a network is selected again. Returns 0/-1. */
 int jw_wifi_disconnect(void);
 
+/* Re-add any saved networks from the durable SD store (<sdcard>/.umrk/wifi.conf)
+ * that the running wpa_supplicant doesn't already know — used at startup so
+ * networks survive a reboot (the live wpa conf is on tmpfs and is wiped). Adds
+ * missing profiles, saves, re-exports, and reconnects. Returns the number added
+ * (0 if none/no store), -1 on error. Idempotent. */
+int jw_wifi_restore(void);
+
 #endif /* JW_PLATFORM_WIFI_H */

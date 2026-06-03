@@ -31,14 +31,19 @@ networks, so users don't need SSH/ADB to get online.
 - Phase 2 — Scan + list — **DONE** (scrollable, deduped, sorted, secured/current markers).
 - Phase 3 — Connect open/saved — **DONE** (A connects; udhcpc kicked; feedback line).
 - Phase 4 — Password entry — **DONE** (cat_keyboard PSK; wrong-password via 12s poll timeout; verified persisting to saved list).
-- Phase 5 — Manage/persist — **DONE** (Y forgets a saved profile; A on the connected
-  network disconnects; "saved" markers in the list; controls hint line). Reboot
-  persistence: save_config writes the ephemeral /tmp/wpa_supplicant.conf, so after
-  every save we mirror it to the durable /etc/wpa_supplicant.conf (jw__wifi_persist,
-  plain C copy). ⚠ STILL NEEDS A REBOOT TEST to confirm boot restores from /etc and
-  saved networks survive — and Kevin's eyes on whether /etc is the right durable
-  target on stock. Wi-Fi radio on/off (rfkill/ip link) intentionally deferred: it's
-  untestable over ADB-Wi-Fi and lower value than disconnect.
+- Phase 5 — Manage/persist — **DONE**. Y forgets a saved profile; A on the connected
+  network disconnects; "saved" markers in the list; controls moved to the normal
+  footer hints (A Connect / Y Forget / X Rescan / B Back via jw_settings_ui_screen).
+  PERSISTENCE (corrected): the live wpa conf lives on **tmpfs** (path is the running
+  process's -c arg, /var/run or /tmp) and is wiped on reboot; /etc is NOT the boot
+  source for networks (the old /etc mirror was ineffective and was removed). Instead
+  we keep a durable store at **<sdcard>/.umrk/wifi.conf**: jw__wifi_export() copies
+  the live conf there after every connect/forget, and jw_wifi_restore() runs once at
+  launcher startup to re-add any saved networks missing from the live conf (then
+  save_config + reconnect), and re-seeds the store from the current live conf. Verified
+  the store is written with the connected network. ⚠ STILL WANTS A REAL REBOOT TEST to
+  confirm networks survive end-to-end. Wi-Fi radio on/off (rfkill/ip link) deferred:
+  untestable over ADB-Wi-Fi, lower value than disconnect.
 
 ## Phases (each independently testable on-device + mergeable)
 
