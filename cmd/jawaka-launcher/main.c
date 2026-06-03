@@ -1409,6 +1409,36 @@ static void jw__draw_image_fit(SDL_Texture *tex, int tex_w, int tex_h,
     cat_draw_image(tex, draw_x, draw_y, draw_w, draw_h);
 }
 
+/* Like jw__draw_image_fit, but clips the image to the same rounded-corner shape
+   as the list pills (theme pill radius + pill_corner_mask), so cover art matches
+   the current List Style setting. Used ONLY for real box art — never icons. */
+static void jw__draw_cover_fit(SDL_Texture *tex, int tex_w, int tex_h,
+                               int x, int y, int w, int h) {
+    if (!tex || tex_w <= 0 || tex_h <= 0 || w <= 0 || h <= 0) {
+        return;
+    }
+
+    int draw_w = w;
+    int draw_h = (tex_h * draw_w) / tex_w;
+    if (draw_h > h) {
+        draw_h = h;
+        draw_w = (tex_w * draw_h) / tex_h;
+    }
+    int draw_x = x + (w - draw_w) / 2;
+    int draw_y = y + (h - draw_h) / 2;
+
+    /* Round in proportion to the cover (scaled by the List Style ratio, so a sharp
+       style stays square) and keep the style's corner mask. Tied to the image size
+       so the curve reads the same on big and small art. */
+    const ap_theme *theme = cat_get_theme();
+    int smaller = draw_w < draw_h ? draw_w : draw_h;
+    int radius = (int)(theme->pill_radius_ratio * smaller * 0.26f + 0.5f);
+    unsigned corners = (unsigned)theme->pill_corner_mask;
+    if (corners == 0) corners = CAT_CORNER_ALL;
+
+    cat_draw_image_rounded_ex(tex, draw_x, draw_y, draw_w, draw_h, radius, corners);
+}
+
 /* ─── System icon loader (shared across themes) ──────────────────────────── */
 
 /* Loader order:
@@ -1880,13 +1910,23 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         char image_abs[PATH_MAX];
         int iw = 0, ih = 0;
         SDL_Texture *tex = NULL;
-        if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0)
+        bool is_cover = false;
+        if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0) {
             tex = jw__load_cached_image(image_abs, &iw, &ih);
+            is_cover = (tex != NULL);
+        }
         if (!tex)
             tex = jw__load_system_icon(game->system, &iw, &ih);
-        if (tex)
-            jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
-                               image.w - art_pad * 2, image.h - art_pad * 2);
+        if (tex) {
+            /* Round real box art to match the list style; leave the icon
+               fallback square. */
+            if (is_cover)
+                jw__draw_cover_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+                                   image.w - art_pad * 2, image.h - art_pad * 2);
+            else
+                jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+                                   image.w - art_pad * 2, image.h - art_pad * 2);
+        }
     }
 
     if (tabbed) {
@@ -1948,13 +1988,22 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
     char image_abs[PATH_MAX];
     int iw = 0, ih = 0;
     SDL_Texture *tex = NULL;
-    if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0)
+    bool is_cover = false;
+    if (jw__resolve_sdcard_path(state, game->image_path, image_abs, sizeof(image_abs)) == 0) {
         tex = jw__load_cached_image(image_abs, &iw, &ih);
+        is_cover = (tex != NULL);
+    }
     if (!tex)
         tex = jw__load_system_icon(game->system, &iw, &ih);
-    if (tex)
-        jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
-                           image.w - art_pad * 2, image.h - art_pad * 2);
+    if (tex) {
+        /* Round real box art to match the list style; icon fallback stays square. */
+        if (is_cover)
+            jw__draw_cover_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+                               image.w - art_pad * 2, image.h - art_pad * 2);
+        else
+            jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+                               image.w - art_pad * 2, image.h - art_pad * 2);
+    }
 }
 
 static void jw__render_favorites(const jw_launcher_state *state,
@@ -2093,10 +2142,13 @@ static void jw__render_search(const jw_launcher_state *state) {
         char img_abs[PATH_MAX];
         int iw = 0, ih = 0;
         SDL_Texture *tex = NULL;
+        bool is_cover = false;
         if (result->kind == JW_SEARCH_GAME) {
             if (result->image_path[0] &&
-                jw__resolve_sdcard_path(state, result->image_path, img_abs, sizeof(img_abs)) == 0)
+                jw__resolve_sdcard_path(state, result->image_path, img_abs, sizeof(img_abs)) == 0) {
                 tex = jw__load_cached_image(img_abs, &iw, &ih);
+                is_cover = (tex != NULL);
+            }
             if (!tex)
                 tex = jw__load_system_icon(result->system, &iw, &ih);
         } else {
@@ -2107,8 +2159,13 @@ static void jw__render_search(const jw_launcher_state *state) {
             if (jw__resolve_app_icon_path(state, &app, img_abs, sizeof(img_abs)) == 0)
                 tex = jw__load_cached_image(img_abs, &iw, &ih);
         }
-        if (tex)
-            jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
+        if (tex) {
+            /* Round real box art to match the list style; icons stay square. */
+            if (is_cover)
+                jw__draw_cover_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
+            else
+                jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
+        }
     }
 
     /* Results-count ("N results") line at the bottom — commented out for now per request.
