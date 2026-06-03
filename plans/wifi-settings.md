@@ -26,6 +26,17 @@ networks, so users don't need SSH/ADB to get online.
   if the stock path doesn't already pick it up.
 - Keep all parsing in the module; the UI consumes structs only.
 
+## Security: PSK hashing (done)
+Keys are stored as the derived **PMK hash**, never the plaintext passphrase
+(true secrecy isn't possible on a rooted device w/ removable SD + no keystore;
+this stops leaking the *reusable* passphrase). jw__wifi_derive_psk shells to
+`wpa_passphrase` to get the 64-hex PMK; jw_wifi_connect_psk stores the hex
+(unquoted). jw_wifi_harden() runs at startup and rewrites any pre-existing
+plaintext `psk="..."` to its hash (save_config + re-export). Verified: live conf
+and <sdcard>/.umrk/wifi.conf both hold only hashed keys. NOTE: jw__wifi_run
+returns BYTES READ (>=0) on success / -1 on error — check `< 0` / `>= 0`, never
+`== 0` (that bug initially made harden silently no-op).
+
 ## Progress
 - Phase 1 — Status page — **DONE** (live status: state/SSID/RSSI-signal/IP).
 - Phase 2 — Scan + list — **DONE** (scrollable, deduped, sorted, secured/current markers).

@@ -392,6 +392,62 @@ static void jw__wifi_export(void) {
     fclose(out);
 }
 
+/* Derive the wpa PMK hex for (ssid, passphrase) via `wpa_passphrase`, so we can
+ * store the network-specific hash instead of the reusable passphrase. Writes the
+ * 64-hex PMK to out. Returns 0 on success, -1 otherwise. */
+static int jw__wifi_derive_psk(const char *ssid, const char *passphrase,
+                               char *out, size_t out_size) {
+    if (!ssid || !passphrase || !out || out_size == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execlp("wpa_passphrase", "wpa_passphrase", ssid, passphrase, (char *)NULL);
+        _exit(127);
+    }
+    close(pipefd[1]);
+    char dump[512];
+    size_t total = 0;
+    ssize_t n;
+    while (total + 1 < sizeof(dump) &&
+           (n = read(pipefd[0], dump + total, sizeof(dump) - 1 - total)) > 0) {
+        total += (size_t)n;
+    }
+    dump[total] = '\0';
+    close(pipefd[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+        return -1;
+    }
+
+    /* Output has a commented "#psk=\"...\"" line and the real "psk=<hex>" line.
+       Take the uncommented, unquoted psk= line. */
+    char *save = NULL;
+    for (char *ln = strtok_r(dump, "\n", &save); ln; ln = strtok_r(NULL, "\n", &save)) {
+        while (*ln == ' ' || *ln == '\t') ln++;
+        if (strncmp(ln, "psk=", 4) == 0 && ln[4] != '"') {
+            snprintf(out, out_size, "%s", ln + 4);
+            return (out[0] != '\0') ? 0 : -1;
+        }
+    }
+    return -1;
+}
+
 jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
     if (!ssid || !ssid[0]) {
         return JW_WIFI_CONNECT_FAILED;
@@ -462,14 +518,27 @@ jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
     snprintf(idbuf, sizeof(idbuf), "%d", id);
 
     char qssid[72];
-    char qpsk[140];
     snprintf(qssid, sizeof(qssid), "\"%s\"", ssid);
-    snprintf(qpsk, sizeof(qpsk), "\"%s\"", psk);
     const char *set_ssid[] = { "set_network", idbuf, "ssid", qssid };
-    const char *set_psk[]  = { "set_network", idbuf, "psk", qpsk };
-    if (jw__wifi_run(set_ssid, 4, buf, sizeof(buf)) < 0 ||
-        jw__wifi_run(set_psk, 4, buf, sizeof(buf)) < 0) {
+    if (jw__wifi_run(set_ssid, 4, buf, sizeof(buf)) < 0) {
         return JW_WIFI_CONNECT_FAILED;
+    }
+
+    /* Store the derived PMK hash, never the plaintext passphrase. Fall back to
+       the passphrase only if wpa_passphrase is somehow unavailable. */
+    char hex[80];
+    if (jw__wifi_derive_psk(ssid, psk, hex, sizeof(hex)) == 0) {
+        const char *set_psk[] = { "set_network", idbuf, "psk", hex };
+        if (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) < 0) {
+            return JW_WIFI_CONNECT_FAILED;
+        }
+    } else {
+        char qpsk[140];
+        snprintf(qpsk, sizeof(qpsk), "\"%s\"", psk);
+        const char *set_psk[] = { "set_network", idbuf, "psk", qpsk };
+        if (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) < 0) {
+            return JW_WIFI_CONNECT_FAILED;
+        }
     }
 
     const char *enable[] = { "enable_network", idbuf };
@@ -605,4 +674,68 @@ int jw_wifi_restore(void) {
        store exists yet) and keeps it current after adds. */
     jw__wifi_export();
     return added;
+}
+
+int jw_wifi_harden(void) {
+    char path[PATH_MAX];
+    if (jw__wifi_live_conf_path(path, sizeof(path)) != 0) {
+        return -1;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return -1;
+    }
+    char line[256];
+    char ssid[64] = { 0 };
+    char pass[128] = { 0 };
+    int in_block = 0;
+    int has_plaintext = 0;
+    int migrated = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, "network={")) {
+            in_block = 1;
+            ssid[0] = '\0';
+            pass[0] = '\0';
+            has_plaintext = 0;
+            continue;
+        }
+        if (in_block && strchr(line, '}')) {
+            if (ssid[0] && has_plaintext) {
+                char hex[80];
+                int id = jw__wifi_saved_id(ssid);
+                if (id >= 0 &&
+                    jw__wifi_derive_psk(ssid, pass, hex, sizeof(hex)) == 0) {
+                    char idbuf[16];
+                    char buf[64];
+                    snprintf(idbuf, sizeof(idbuf), "%d", id);
+                    const char *set_psk[] = { "set_network", idbuf, "psk", hex };
+                    /* jw__wifi_run returns bytes read (>=0) on success, -1 on error. */
+                    if (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) >= 0) {
+                        migrated++;
+                    }
+                }
+            }
+            in_block = 0;
+            continue;
+        }
+        if (in_block) {
+            char *p;
+            if ((p = strstr(line, "ssid=\"")) != NULL) {
+                sscanf(p, "ssid=\"%63[^\"]\"", ssid);
+            } else if ((p = strstr(line, "psk=\"")) != NULL) {
+                /* Quoted psk = a plaintext passphrase that needs hashing. */
+                sscanf(p, "psk=\"%127[^\"]\"", pass);
+                has_plaintext = 1;
+            }
+        }
+    }
+    fclose(f);
+
+    if (migrated > 0) {
+        char buf[64];
+        const char *save[] = { "save_config" };
+        (void)jw__wifi_run(save, 1, buf, sizeof(buf));
+        jw__wifi_export();
+    }
+    return migrated;
 }

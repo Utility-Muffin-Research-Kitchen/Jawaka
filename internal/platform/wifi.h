@@ -81,4 +81,10 @@ int jw_wifi_disconnect(void);
  * (0 if none/no store), -1 on error. Idempotent. */
 int jw_wifi_restore(void);
 
+/* Rewrite any saved networks whose key is stored as a plaintext passphrase into
+ * the derived PMK hash (via wpa_passphrase), so the reusable passphrase never
+ * sits on disk. Runs at startup after restore; saves + re-exports. Returns the
+ * number migrated (0 if none), -1 on error. Idempotent (hashed entries skipped). */
+int jw_wifi_harden(void);
+
 #endif /* JW_PLATFORM_WIFI_H */

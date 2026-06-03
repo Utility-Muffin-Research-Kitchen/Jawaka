@@ -3198,8 +3198,10 @@ int main(void) {
     jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
 
     /* Re-add Wi-Fi networks saved in our durable store but missing from the
-       (tmpfs, reboot-wiped) live wpa config. Idempotent; runs once at startup. */
+       (tmpfs, reboot-wiped) live wpa config, then rewrite any plaintext keys to
+       their PMK hash so passphrases never sit on disk. Idempotent; once at start. */
     (void)jw_wifi_restore();
+    (void)jw_wifi_harden();
 
     /* Prime the startup tab's lazily-loaded contents so the first frame is
        correct (Favorites/Recents are normally loaded on tab entry, and the
