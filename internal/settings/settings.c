@@ -95,10 +95,11 @@ static const char *kHomeCategoryLabels[] = {
     "Display & Sound",
     "Lighting",
     "Library",
+    "Accounts",
     "Behavior",
     "About",
 };
-#define JW_SETTINGS_CATEGORY_COUNT 6
+#define JW_SETTINGS_CATEGORY_COUNT 7
 #define JW_SETTINGS_DISPLAY_COUNT JW_DISPLAY_ROW_COUNT
 
 static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
@@ -242,6 +243,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
     cat_list_state_init(&ui->lighting_list,    JW_LIGHTING_ROW_COUNT);
     cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
+    cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
     cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
     cat_list_state_init(&ui->placeholder_list, 1);
     cat_scroll_state_init(&ui->about_scroll);
@@ -714,6 +716,18 @@ static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, in
     (void)h;
 }
 
+static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Accounts", x, y, w);
+    int ly = y + jw__header_h();
+    /* Placeholders — sign-in is not wired up yet, so both rows report the
+       not-signed-in state and do nothing on press. */
+    jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_SCREENSCRAPER,
+                        "ScreenScraper.fr", "Not signed in", false);
+    jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_RETROACHIEVEMENTS,
+                        "RetroAchievements", "Not signed in", false);
+    (void)h;
+}
+
 /* ─── About ────────────────────────────────────────────────────────────── */
 
 /* Bump alongside meaningful launcher releases. */
@@ -960,6 +974,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_DISPLAY:    jw__render_display(ui, x, y, w, h);    break;
         case JW_SETTINGS_LIGHTING:   jw__render_lighting(ui, x, y, w, h);   break;
         case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
+        case JW_SETTINGS_ACCOUNTS:   jw__render_accounts(ui, x, y, w, h);                break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
         case JW_SETTINGS_ABOUT:      jw__render_about(ui, x, y, w, h);                   break;
     }
@@ -1222,8 +1237,9 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->screen = JW_SETTINGS_LIBRARY;
                     jw__refresh_secondary_sd_status(ui);
                 }
-                else if (idx == 4) ui->screen = JW_SETTINGS_BEHAVIOR;
-                else if (idx == 5) {
+                else if (idx == 4) ui->screen = JW_SETTINGS_ACCOUNTS;
+                else if (idx == 5) ui->screen = JW_SETTINGS_BEHAVIOR;
+                else if (idx == 6) {
                     ui->screen = JW_SETTINGS_ABOUT;
                     cat_scroll_state_init(&ui->about_scroll);   /* start at top */
                 }
@@ -1467,6 +1483,27 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 } else if (ui->library_list.cursor == JW_LIBRARY_UNMOUNT_SECONDARY) {
                     jw__safe_unmount_secondary_sd(ui, status_buf, status_size);
                 }
+                break;
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default:
+                break;
+        }
+        break;
+
+    /* ── Accounts (placeholder) ──────────────────────────────────────── */
+    case JW_SETTINGS_ACCOUNTS:
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->accounts_list, -1, JW_ACCOUNTS_ROW_COUNT);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->accounts_list, +1, JW_ACCOUNTS_ROW_COUNT);
+                break;
+            case CAT_BTN_A:
+                /* Sign-in not implemented yet — report it instead of pretending. */
+                snprintf(status_buf, status_size, "Sign-in coming soon");
                 break;
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_HOME;

@@ -35,6 +35,7 @@ typedef enum {
     JW_SETTINGS_DISPLAY,
     JW_SETTINGS_LIGHTING,
     JW_SETTINGS_LIBRARY,
+    JW_SETTINGS_ACCOUNTS,
     JW_SETTINGS_BEHAVIOR,
     JW_SETTINGS_ABOUT,
 } jw_settings_screen;
@@ -90,6 +91,11 @@ typedef enum {
 #define JW_LIBRARY_UNMOUNT_SECONDARY 1
 #define JW_LIBRARY_ROW_COUNT 2
 
+/* Accounts page (placeholders — sign-in not yet implemented) */
+#define JW_ACCOUNTS_SCREENSCRAPER     0
+#define JW_ACCOUNTS_RETROACHIEVEMENTS 1
+#define JW_ACCOUNTS_ROW_COUNT         2
+
 /* Behavior page */
 #define JW_BEHAVIOR_STARTUP_TAB 0
 #define JW_BEHAVIOR_ROW_COUNT   1
@@ -107,6 +113,7 @@ typedef struct {
     cat_list_state     display_list;
     cat_list_state     lighting_list;
     cat_list_state     library_list;
+    cat_list_state     accounts_list;
     cat_list_state     behavior_list;
     cat_list_state     placeholder_list;
     cat_scroll_state   about_scroll;
