@@ -2222,12 +2222,11 @@ static void jw__render_switcher(jw_launcher_state *state) {
     }
 
     cat_footer_item footer[] = {
-        { CAT_BTN_Y,      "Remove", false, JW_HINT("Y") },
-        { CAT_BTN_SELECT, "Launch", false, JW_HINT("Space") },
-        { CAT_BTN_B,      "Back",   true,  JW_HINT("B") },
-        { CAT_BTN_A,      "Launch", true,  JW_HINT("A") },
+        { CAT_BTN_Y, "Remove", false, JW_HINT("Y") },
+        { CAT_BTN_B, "Back",   true,  JW_HINT("B") },
+        { CAT_BTN_A, "Launch", true,  JW_HINT("A") },
     };
-    jw__draw_footer(state, footer, 4);
+    jw__draw_footer(state, footer, 3);
     cat_present();
 }
 
@@ -2826,9 +2825,7 @@ static void jw__handle_switcher_input(const char *socket_path, const char *db_pa
         case CAT_BTN_DOWN:
             jw_game_switcher_move(&state->switcher, +1);
             break;
-        case CAT_BTN_A:
-        case CAT_BTN_SELECT:
-        case CAT_BTN_START: {
+        case CAT_BTN_A: {
             const jw_game_entry *sel = jw_game_switcher_selected(&state->switcher);
             if (sel) {
                 state->switcher_open = false;

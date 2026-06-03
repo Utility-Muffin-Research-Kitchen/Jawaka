@@ -51,9 +51,10 @@ void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
                                   const char *rom_path, const char *name,
                                   const char *image_path);
 
-/* Prefer a savestate thumbnail over the cover for any entry that has one. Builds
-   the states_dir index once and rewrites matching entries' image to the
-   thumbnail. Call after load (and set_current) so every entry is considered. */
+/* Prefer a savestate thumbnail over the cover for any entry that has one. Uses
+   the resolved storage sources when available so recents from secondary cards
+   search their own States/ root first. Call after load (and set_current) so
+   every entry is considered. */
 void jw_game_switcher_resolve_thumbnails(jw_game_switcher *sw);
 
 /* Move the selection by delta with wrap-around, animating the slide. */

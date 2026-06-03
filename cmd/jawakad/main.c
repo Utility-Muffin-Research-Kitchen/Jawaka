@@ -49,6 +49,7 @@ typedef struct {
     char source_root[PATH_MAX];
     char core_path[PATH_MAX];
     char config_path[PATH_MAX];
+    bool persist_config;
 } jw_retroarch_session;
 
 typedef struct {
@@ -612,7 +613,8 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         const char *db_rom_path,
                                         const char *source_root,
                                         const char *core_path,
-                                        const char *config_path) {
+                                        const char *config_path,
+                                        bool persist_config) {
     if (!state || pid <= 0) {
         return;
     }
@@ -631,6 +633,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
     snprintf(session->config_path, sizeof(session->config_path), "%s",
              config_path ? config_path : "");
+    session->persist_config = persist_config;
 
     /* Fresh session: no menu shown yet, reset the standby respawn guard. */
     state->menu_visible = false;
@@ -683,7 +686,8 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
                     (int)pid, runtime_s, status, session->system, session->rom_path);
     }
 
-    if (session->config_path[0]) {
+    bool switcher_transition = state->pending_launch && state->pending_launch_resume_switcher;
+    if (session->config_path[0] && session->persist_config && !switcher_transition) {
         char error[256];
         const char *config_root = session->source_root[0]
             ? session->source_root
@@ -695,6 +699,10 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
         } else {
             jw_log_info("RetroArch shared config backed up from %s", session->config_path);
         }
+    } else if (session->config_path[0]) {
+        jw_log_info("RetroArch shared config backup skipped persist=%s switcher_transition=%s",
+                    session->persist_config ? "true" : "false",
+                    switcher_transition ? "true" : "false");
     }
 
     /* Record recents + playtime for real sessions only. A crash at launch gives
@@ -1953,11 +1961,12 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
 
     char config_error[256];
+    bool persist_config = !switcher_resume;
     runtime_config = jw_prepare_retroarch_config(state->runtime_dir,
                                                 source_root,
                                                 core,
                                                 player1_joypad_index,
-                                                true,
+                                                persist_config,
                                                 config_error,
                                                 sizeof(config_error));
     jw__restore_env(storage_env, 3);
@@ -1993,7 +2002,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
     jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs,
                                 state->pending_launch_rom_path, source_root,
-                                core, runtime_config);
+                                core, runtime_config, persist_config);
     if (switcher_resume) {
         state->post_launch_resume_pending = true;
         state->post_launch_resume_attempts = 0;

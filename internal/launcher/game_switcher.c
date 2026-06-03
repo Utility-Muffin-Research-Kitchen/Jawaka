@@ -1,6 +1,7 @@
 #include "internal/launcher/game_switcher.h"
 
 #include "internal/retroarch/states.h"
+#include "internal/storage/sources.h"
 
 #include "catastrophe.h"
 
@@ -14,6 +15,11 @@
    Self-contained here (not tied to the launcher coverflow stylesheet fields) so
    the in-game overlay animates identically without depending on a theme. */
 #define JW_SWITCHER_ANIM_MS 160u
+
+typedef struct {
+    const jw_storage_source *source;
+    jw_state_thumb_index    *index;
+} jw_switcher_thumb_source;
 
 void jw_game_switcher_reset(jw_game_switcher *sw, bool in_game,
                             const char *sdcard_root, const char *states_dir) {
@@ -31,29 +37,99 @@ void jw_game_switcher_reset(jw_game_switcher *sw, bool in_game,
     }
 }
 
+static bool jw__switcher_set_thumb(jw_game_entry *entry, const char *thumb) {
+    if (!entry || !thumb || !thumb[0]) {
+        return false;
+    }
+    size_t tlen = strlen(thumb);
+    if (tlen >= sizeof(entry->image_path)) {
+        return false;
+    }
+    memcpy(entry->image_path, thumb, tlen + 1);
+    return true;
+}
+
+static bool jw__switcher_find_thumb_in_index(jw_state_thumb_index *idx,
+                                             jw_game_entry *entry) {
+    if (!idx || !entry) {
+        return false;
+    }
+    char thumb[PATH_MAX];
+    if (!jw_state_thumb_index_find(idx, entry->rom_path, thumb, sizeof(thumb))) {
+        return false;
+    }
+    return jw__switcher_set_thumb(entry, thumb);
+}
+
 void jw_game_switcher_resolve_thumbnails(jw_game_switcher *sw) {
-    if (!sw || !sw->states_dir[0] || sw->count <= 0) {
+    if (!sw || sw->count <= 0) {
         return;
     }
-    jw_state_thumb_index *idx = jw_state_thumb_index_build(sw->states_dir);
-    if (!idx) {
+
+    jw_storage_source_list sources;
+    bool have_sources = jw_storage_sources_resolve(sw->sdcard_root, &sources) == 0;
+    jw_switcher_thumb_source thumbs[JW_STORAGE_MAX_SOURCES + 1];
+    int thumb_count = 0;
+
+    if (have_sources) {
+        for (int i = 0; i < sources.count && thumb_count < JW_STORAGE_MAX_SOURCES; i++) {
+            if (!sources.sources[i].states_path[0]) {
+                continue;
+            }
+            jw_state_thumb_index *idx =
+                jw_state_thumb_index_build(sources.sources[i].states_path);
+            if (!idx) {
+                continue;
+            }
+            thumbs[thumb_count].source = &sources.sources[i];
+            thumbs[thumb_count].index = idx;
+            thumb_count++;
+        }
+    }
+
+    if (thumb_count == 0 && sw->states_dir[0]) {
+        jw_state_thumb_index *idx = jw_state_thumb_index_build(sw->states_dir);
+        if (idx) {
+            thumbs[thumb_count].source = NULL;
+            thumbs[thumb_count].index = idx;
+            thumb_count++;
+        }
+    }
+
+    if (thumb_count == 0) {
         return;
     }
+
     for (int i = 0; i < sw->count; i++) {
-        char thumb[PATH_MAX];
-        if (!jw_state_thumb_index_find(idx, sw->entries[i].rom_path,
-                                       thumb, sizeof(thumb))) {
-            continue;
+        jw_game_entry *entry = &sw->entries[i];
+        bool found = false;
+
+        if (have_sources) {
+            const jw_storage_source *entry_source =
+                jw_storage_sources_find_for_path(&sources, entry->rom_path);
+            if (entry_source) {
+                for (int t = 0; t < thumb_count; t++) {
+                    if (thumbs[t].source != entry_source) {
+                        continue;
+                    }
+                    found = jw__switcher_find_thumb_in_index(thumbs[t].index, entry);
+                    break;
+                }
+            }
         }
-        /* The carousel prefers whatever image_path points at; swapping in the
-           absolute thumbnail path is exactly "thumbnail over cover". Guarded
-           copy so a long path is skipped rather than truncated. */
-        size_t tlen = strlen(thumb);
-        if (tlen < sizeof(sw->entries[i].image_path)) {
-            memcpy(sw->entries[i].image_path, thumb, tlen + 1);
+
+        if (!found) {
+            for (int t = 0; t < thumb_count; t++) {
+                if (jw__switcher_find_thumb_in_index(thumbs[t].index, entry)) {
+                    break;
+                }
+            }
         }
     }
-    jw_state_thumb_index_free(idx);
+
+    for (int t = 0; t < thumb_count; t++) {
+        jw_state_thumb_index_free(thumbs[t].index);
+    }
 }
 
 int jw_game_switcher_load(jw_game_switcher *sw, const char *db_path) {

@@ -967,12 +967,11 @@ static void jw__render_ingame_switcher(const jw_ingame_state *state,
 
     if (state->show_hints) {
         cat_footer_item footer[] = {
-            { CAT_BTN_Y,      "Remove", false, JW_HINT("Y") },
-            { CAT_BTN_SELECT, "Choose", false, JW_HINT("Space") },
-            { CAT_BTN_B,      "Resume", true,  JW_HINT("B") },
-            { CAT_BTN_A,      "Switch", true,  JW_HINT("A") },
+            { CAT_BTN_Y, "Remove", false, JW_HINT("Y") },
+            { CAT_BTN_B, "Resume", true,  JW_HINT("B") },
+            { CAT_BTN_A, "Switch", true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 4);
+        cat_draw_footer(footer, 3);
     }
     cat_present();
 }
@@ -1000,9 +999,7 @@ static void jw__handle_ingame_switcher_input(const char *socket_path,
         case CAT_BTN_DOWN:
             jw_game_switcher_move(switcher, +1);
             break;
-        case CAT_BTN_A:
-        case CAT_BTN_SELECT:
-        case CAT_BTN_START: {
+        case CAT_BTN_A: {
             const jw_game_entry *sel = jw_game_switcher_selected(switcher);
             if (!sel) {
                 break;

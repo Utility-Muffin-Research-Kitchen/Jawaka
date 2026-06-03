@@ -454,6 +454,15 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "savestate_thumbnail_enable",
         "joypad_autoconfig_dir",
 #ifdef PLATFORM_MLP1
+        "audio_block_frames",
+        "audio_latency",
+        "builtin_imageviewer_enable",
+        "builtin_mediaplayer_enable",
+        "check_firmware_before_loading",
+        "load_dummy_on_core_shutdown",
+        "menu_show_load_content_animation",
+        "savestate_file_compression",
+        "video_threaded",
         "video_driver",
         "video_context_driver",
         "aspect_ratio_index",
@@ -1215,6 +1224,15 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
     jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
 #ifdef PLATFORM_MLP1
+    jw__retroarch_cfg_string(fp, "audio_latency", "128");
+    jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
+    jw__retroarch_cfg_string(fp, "video_threaded", "false");
+    jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
+    jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
+    jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
+    jw__retroarch_cfg_string(fp, "builtin_imageviewer_enable", "false");
+    jw__retroarch_cfg_string(fp, "load_dummy_on_core_shutdown", "true");
+    jw__retroarch_cfg_string(fp, "savestate_file_compression", "false");
     jw__retroarch_cfg_string(fp, "video_driver", "gl");
     jw__retroarch_cfg_string(fp, "video_context_driver", "sdl_gl");
     jw__retroarch_cfg_string(fp, "aspect_ratio_index", "22");
