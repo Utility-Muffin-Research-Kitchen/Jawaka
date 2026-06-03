@@ -3,6 +3,7 @@
 
 #include "catastrophe.h"
 #include "catastrophe_widgets.h"
+#include "internal/platform/wifi.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -33,6 +34,7 @@ typedef enum {
     JW_SETTINGS_LAYOUT,
     JW_SETTINGS_STATUS_BAR,
     JW_SETTINGS_DISPLAY,
+    JW_SETTINGS_NETWORK,
     JW_SETTINGS_LIGHTING,
     JW_SETTINGS_LIBRARY,
     JW_SETTINGS_ACCOUNTS,
@@ -111,6 +113,7 @@ typedef struct {
     cat_list_state     layout_list;
     cat_list_state     statusbar_list;
     cat_list_state     display_list;
+    cat_list_state     network_list;
     cat_list_state     lighting_list;
     cat_list_state     library_list;
     cat_list_state     accounts_list;
@@ -137,6 +140,8 @@ typedef struct {
     int                led_brightness;      /* 0..JW_LED_BRIGHTNESS_MAX */
     int                led_speed;           /* 0..JW_LED_SPEED_MAX */
     char               secondary_sd_status[32];
+    jw_wifi_status_t   wifi;                /* last-read Wi-Fi status (Network page) */
+    unsigned           wifi_next_poll_ms;   /* throttle for the live Network poll */
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;
@@ -157,6 +162,13 @@ bool jw_settings_show_hints(const jw_settings_ui *ui);
    those events). */
 bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_av(jw_settings_ui *ui);
+
+/* True while the Network page is open. The launcher calls
+ * jw_settings_ui_refresh_wifi() each frame so the status follows live changes;
+ * the refresh self-throttles (re-polls at most every ~2s) so it never forks
+ * wpa_cli every frame. */
+bool jw_settings_ui_wants_wifi_poll(const jw_settings_ui *ui);
+void jw_settings_ui_refresh_wifi(jw_settings_ui *ui);
 
 /* True if the status-bar speaker icon is enabled. The launcher uses this to
  * decide whether to keep volume polled on the home screen. */

@@ -126,6 +126,7 @@ UI_SRCS := \
 	$(PLATFORM_COMMON_SRC) \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
+	internal/platform/wifi.c \
 	internal/retroarch/catalog.c \
 	internal/retroarch/states.c \
 	internal/storage/sources.c \

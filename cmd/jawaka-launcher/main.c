@@ -3240,6 +3240,13 @@ int main(void) {
             cat_request_frame_in(300);
         }
 
+        /* While the Network page is open, keep the Wi-Fi status live (the refresh
+           self-throttles to ~2s so it isn't forking wpa_cli every frame). */
+        if (jw_settings_ui_wants_wifi_poll(&state.settings)) {
+            jw_settings_ui_refresh_wifi(&state.settings);
+            cat_request_frame_in(2000);
+        }
+
         jw__poll_library_generation(socket_path, db_path, &state);
 
         /* Keep the status-bar speaker icon current. Volume lives in the daemon
