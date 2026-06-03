@@ -845,6 +845,13 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     cat_draw_text(body, line, x + cat_scale(12), dy, theme->hint);
     dy += line_h + cat_scale(6);
 
+    /* Action feedback (always visible, regardless of the hint setting). */
+    if (ui->wifi_msg[0]) {
+        cat_draw_text_ellipsized(body, ui->wifi_msg, x + cat_scale(12), dy,
+                                 theme->accent, w - cat_scale(24));
+        dy += line_h + cat_scale(6);
+    }
+
     /* ── Available networks (scanned list) ── */
     cat_draw_text(body, "Available networks", x + cat_scale(12), dy, theme->hint);
     dy += line_h;
@@ -1392,6 +1399,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->screen = JW_SETTINGS_NETWORK;
                     ui->network_list.cursor = 0;
                     ui->network_list.scroll_offset = 0;
+                    ui->wifi_msg[0] = '\0';
                     jw__refresh_wifi(ui);          /* show status immediately */
                     jw_wifi_scan_start();          /* kick a scan */
                     jw__refresh_wifi_scan(ui);     /* show any cached results now */
@@ -1595,7 +1603,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         }
         break;
 
-    /* ── Network (Wi-Fi status + scan — read-only, Phases 1-2) ───────── */
+    /* ── Network (Wi-Fi: status + scan + connect, Phases 1-3) ────────── */
     case JW_SETTINGS_NETWORK:
         switch (button) {
             case CAT_BTN_UP:
@@ -1604,12 +1612,42 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_DOWN:
                 cat_list_state_move(&ui->network_list, +1, ui->wifi_network_count);
                 break;
-            case CAT_BTN_A:
-                /* Re-scan now (connect comes in Phase 3). */
+            case CAT_BTN_A: {
+                /* Connect to the selected network (open or already-saved). */
+                if (ui->wifi_network_count > 0 &&
+                    ui->network_list.cursor < ui->wifi_network_count) {
+                    const jw_wifi_network_t *net =
+                        &ui->wifi_networks[ui->network_list.cursor];
+                    if (net->current && ui->wifi.connected) {
+                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                 "Already connected to %s", net->ssid);
+                    } else {
+                        jw_wifi_connect_result r =
+                            jw_wifi_connect(net->ssid, net->secured);
+                        if (r == JW_WIFI_CONNECT_OK)
+                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                     "Connecting to %s…", net->ssid);
+                        else if (r == JW_WIFI_CONNECT_NEED_PASSWORD)
+                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                     "%s needs a password (coming in an update)",
+                                     net->ssid);
+                        else
+                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                                     "Could not connect to %s", net->ssid);
+                    }
+                    /* Mirror to the (hint-gated) status line too. */
+                    snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                    /* Poll right away so the state transition shows. */
+                    ui->wifi_next_poll_ms = SDL_GetTicks();
+                }
+                break;
+            }
+            case CAT_BTN_X:
                 jw_wifi_scan_start();
                 jw__refresh_wifi(ui);
                 jw__refresh_wifi_scan(ui);
                 ui->wifi_next_scan_ms = SDL_GetTicks() + JW_WIFI_SCAN_INTERVAL_MS;
+                snprintf(ui->wifi_msg, sizeof(ui->wifi_msg), "Scanning Wi-Fi…");
                 snprintf(status_buf, status_size, "Scanning Wi-Fi…");
                 break;
             case CAT_BTN_B:

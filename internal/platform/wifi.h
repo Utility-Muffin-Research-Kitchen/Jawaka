@@ -43,4 +43,18 @@ int jw_wifi_scan_start(void);
  * written (0..max), or -1 on failure. */
 int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int max);
 
+/* ── Connect (Phase 3) ───────────────────────────────────────────────────── */
+
+typedef enum {
+    JW_WIFI_CONNECT_OK = 0,         /* association requested (watch status to confirm) */
+    JW_WIFI_CONNECT_NEED_PASSWORD,  /* secured network with no saved profile (Phase 4) */
+    JW_WIFI_CONNECT_FAILED,         /* wpa_cli error */
+} jw_wifi_connect_result;
+
+/* Connect by SSID. If a saved profile exists, re-selects it. Else if the network
+ * is open, creates an open profile and connects. A secured network with no saved
+ * profile returns NEED_PASSWORD without changing anything (Phase 4 supplies the
+ * key). On OK, a DHCP client is kicked for the interface. */
+jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured);
+
 #endif /* JW_PLATFORM_WIFI_H */

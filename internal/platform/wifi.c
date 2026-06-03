@@ -8,9 +8,10 @@
 
 #define JW_WIFI_IFACE       "wlan0"
 
-/* Run `wpa_cli -i wlan0 <arg>` and capture stdout into buf (NUL-terminated).
+/* Run `wpa_cli -i wlan0 <args...>` and capture stdout into buf (NUL-terminated).
  * fork/exec + pipe — no system(). Returns bytes read (>=0), or -1 on failure. */
-static int jw__wifi_wpa_cli(const char *arg, char *buf, size_t buf_size) {
+static int jw__wifi_run(const char *const *args, int nargs,
+                        char *buf, size_t buf_size) {
     if (!buf || buf_size == 0) {
         return -1;
     }
@@ -32,7 +33,16 @@ static int jw__wifi_wpa_cli(const char *arg, char *buf, size_t buf_size) {
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
-        execlp("wpa_cli", "wpa_cli", "-i", JW_WIFI_IFACE, arg, (char *)NULL);
+        char *argv[16];
+        int a = 0;
+        argv[a++] = "wpa_cli";
+        argv[a++] = "-i";
+        argv[a++] = (char *)JW_WIFI_IFACE;
+        for (int i = 0; i < nargs && a < 15; i++) {
+            argv[a++] = (char *)args[i];
+        }
+        argv[a] = NULL;
+        execvp("wpa_cli", argv);
         _exit(127);
     }
 
@@ -61,6 +71,12 @@ static int jw__wifi_wpa_cli(const char *arg, char *buf, size_t buf_size) {
         return -1;
     }
     return (int)total;
+}
+
+/* Convenience: single-argument wpa_cli command. */
+static int jw__wifi_wpa_cli(const char *arg, char *buf, size_t buf_size) {
+    const char *args[1] = { arg };
+    return jw__wifi_run(args, 1, buf, buf_size);
 }
 
 /* Copy the value following "key=" on its line in a wpa_cli status dump. */
@@ -206,4 +222,96 @@ int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int m
 
     qsort(out, (size_t)count, sizeof(out[0]), jw__wifi_net_cmp);
     return count;
+}
+
+/* Saved-profile network id for ssid, or -1 if none. Parses `list_networks`:
+ *   network id / ssid / bssid / flags   (tab-separated, header line first) */
+static int jw__wifi_saved_id(const char *ssid) {
+    char dump[4096];
+    if (jw__wifi_wpa_cli("list_networks", dump, sizeof(dump)) < 0) {
+        return -1;
+    }
+    char *save_line = NULL;
+    char *line = strtok_r(dump, "\n", &save_line);   /* header */
+    if (line) {
+        line = strtok_r(NULL, "\n", &save_line);
+    }
+    for (; line; line = strtok_r(NULL, "\n", &save_line)) {
+        char *save_tok = NULL;
+        char *id   = strtok_r(line, "\t", &save_tok);
+        char *name = id ? strtok_r(NULL, "\t", &save_tok) : NULL;
+        if (id && name && strcmp(name, ssid) == 0) {
+            return atoi(id);
+        }
+    }
+    return -1;
+}
+
+/* Kick a DHCP client for the interface, fire-and-forget (double-fork so we leave
+ * no zombie). Mirrors the stock `udhcpc -t 5 -n -i wlan0` invocation. */
+static void jw__wifi_dhcp(void) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        return;
+    }
+    if (pid == 0) {
+        pid_t grandchild = fork();
+        if (grandchild == 0) {
+            execlp("udhcpc", "udhcpc", "-t", "5", "-n", "-i", JW_WIFI_IFACE,
+                   (char *)NULL);
+            _exit(127);
+        }
+        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);   /* reap the intermediate child only */
+}
+
+jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
+    if (!ssid || !ssid[0]) {
+        return JW_WIFI_CONNECT_FAILED;
+    }
+    char buf[128];
+    char idbuf[16];
+    int id = jw__wifi_saved_id(ssid);
+
+    if (id < 0) {
+        /* No saved profile. Only open networks can connect without a password. */
+        if (secured) {
+            return JW_WIFI_CONNECT_NEED_PASSWORD;
+        }
+        const char *add[] = { "add_network" };
+        if (jw__wifi_run(add, 1, buf, sizeof(buf)) < 0) {
+            return JW_WIFI_CONNECT_FAILED;
+        }
+        id = atoi(buf);
+        if (id < 0) {
+            return JW_WIFI_CONNECT_FAILED;
+        }
+        snprintf(idbuf, sizeof(idbuf), "%d", id);
+
+        char qssid[72];
+        snprintf(qssid, sizeof(qssid), "\"%s\"", ssid);
+        const char *set_ssid[] = { "set_network", idbuf, "ssid", qssid };
+        const char *set_open[] = { "set_network", idbuf, "key_mgmt", "NONE" };
+        if (jw__wifi_run(set_ssid, 4, buf, sizeof(buf)) < 0 ||
+            jw__wifi_run(set_open, 4, buf, sizeof(buf)) < 0) {
+            return JW_WIFI_CONNECT_FAILED;
+        }
+    } else {
+        snprintf(idbuf, sizeof(idbuf), "%d", id);
+    }
+
+    const char *enable[] = { "enable_network", idbuf };
+    const char *select[] = { "select_network", idbuf };
+    if (jw__wifi_run(enable, 2, buf, sizeof(buf)) < 0 ||
+        jw__wifi_run(select, 2, buf, sizeof(buf)) < 0) {
+        return JW_WIFI_CONNECT_FAILED;
+    }
+
+    const char *save[] = { "save_config" };
+    (void)jw__wifi_run(save, 1, buf, sizeof(buf));   /* best-effort persistence */
+
+    jw__wifi_dhcp();
+    return JW_WIFI_CONNECT_OK;
 }
