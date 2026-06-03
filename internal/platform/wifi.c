@@ -310,14 +310,16 @@ static void jw__wifi_dhcp(void) {
     waitpid(pid, &status, 0);   /* reap the intermediate child only */
 }
 
-/* Durable store on the SD card (survives reboots, unlike the tmpfs wpa conf). */
+/* Durable store on the SD card (survives reboots, unlike the tmpfs wpa conf).
+ * Lives in the canonical durable-state dir (jw_state_dir = <primary SD>/.umrk,
+ * auto-created), so it routes to the first SD like the rest of our state. */
 static int jw__wifi_durable_path(char *out, size_t out_size) {
-    char *root = jw_sdcard_root();
-    if (!root) {
+    char *dir = jw_state_dir();
+    if (!dir) {
         return -1;
     }
-    int r = snprintf(out, out_size, "%s/.umrk/wifi.conf", root);
-    free(root);
+    int r = snprintf(out, out_size, "%s/wifi.conf", dir);
+    free(dir);
     return (r > 0 && (size_t)r < out_size) ? 0 : -1;
 }
 
