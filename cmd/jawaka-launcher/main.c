@@ -332,6 +332,70 @@ static int jw__footer_height(const jw_launcher_state *state) {
     return jw_settings_show_hints(&state->settings) ? cat_get_footer_height() : 0;
 }
 
+/* ─── Browse-page box model ──────────────────────────────────────────────────
+ * The single layout used by every list-left / image-right page (Recents,
+ * Favorites, Games, the in-system game browser, search). Built on Catastrophe's
+ * cat_box (see Catastrophe plans/BOX_MODEL.md): carve the header off the top and
+ * the hint bar off the bottom, inset the remaining content box by one base pad
+ * on every side, and split it into a list column and an image column sharing one
+ * gutter. The list and image come out as the SAME box height, so their gaps to
+ * the chrome match by construction — on every page, at any font size.
+ *
+ * header_h is the page's full header height (tab bar; plus the sub-header where
+ * present). All heights are queried live, so the layout tracks font size and the
+ * on/off hint bar automatically. */
+#define JW_BROWSE_PAD 12   /* base pad, unscaled (see padding rule in BOX_MODEL.md) */
+
+static int jw__browse_base_item_h(void) {
+    return TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + CAT_S(12);
+}
+
+static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
+                             int item_count, int visible_rows,
+                             SDL_Rect *list, SDL_Rect *image, int *item_h) {
+    int pad     = CAT_S(JW_BROWSE_PAD);
+    int hints_h = jw__footer_height(state);
+    cat_box content = {
+        0, header_h, cat_get_screen_width(),
+        cat_get_screen_height() - header_h - hints_h,
+        pad, pad, pad, pad
+    };
+    int list_w = cat_box_content(&content).w * 58 / 100;
+    cat_box lb, ib;
+    cat_box_split_cols(&content, list_w, pad, &lb, &ib);
+    SDL_Rect lr = cat_box_content(&lb);
+    SDL_Rect ir = cat_box_content(&ib);
+    int ih = jw__browse_base_item_h();
+    if (visible_rows > 0 && item_count >= visible_rows && lr.h > 0) {
+        /* Rows are a fixed height, so box_h/visible_rows truncates and leaves a
+           remainder. Snap BOTH panes to the exact rendered list height
+           (visible_rows * item_h) so their bottoms land on the same line. */
+        ih = lr.h / visible_rows;
+        int filled = ih * visible_rows;
+        lr.h = filled;
+        ir.h = filled;
+    }
+    /* The row pill is centered in its cell (pill_h = body + CAT_S(6); see
+       jw__draw_rom_item), so the first/last pills sit inset from the cell edges by
+       (ih - pill_h)/2. Inset the icon box by that same amount so its top and
+       bottom line up with the pills, not the bare cell edges. */
+    int pad_v = (ih - (jw__browse_base_item_h() - CAT_S(6))) / 2;
+    if (pad_v > 0) { ir.y += pad_v; ir.h -= pad_v * 2; }
+    if (list)   *list   = lr;
+    if (image)  *image  = ir;
+    if (item_h) *item_h = ih;
+}
+
+/* Rows that fit the list column for the given header — used at list-init so the
+ * stored visible_rows matches the renderer's box exactly. */
+static int jw__browse_visible_rows(const jw_launcher_state *state, int header_h) {
+    SDL_Rect list;
+    jw__browse_boxes(state, header_h, 0, 0, &list, NULL, NULL);
+    int base = jw__browse_base_item_h();
+    int v = (base > 0) ? list.h / base : 1;
+    return v > 0 ? v : 1;
+}
+
 static void jw__draw_footer(const jw_launcher_state *state,
                             cat_footer_item *items, int count) {
     if (jw_settings_show_hints(&state->settings))
@@ -730,48 +794,35 @@ static void jw__render_recents(const jw_launcher_state *state,
 
 static void jw__render_games(const jw_launcher_state *state,
                               int content_y, int content_h, int margin) {
-    ap_theme *theme   = cat_get_theme();
-    TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
-    int sw = cat_get_screen_width();
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    (void)content_h;
 
-    int list_x  = margin;
-    int list_w  = sw * 58 / 100;   /* match the Recents/Favorites list/preview split */
-    int body_h  = TTF_FontHeight(body);
-    int item_h  = body_h + CAT_S(12);
-    int list_h  = content_h - CAT_S(28);
-    /* When the list is full (scrollable), expand rows to fill the area so the
-       last row reaches the bottom instead of leaving a quantized gap (matches
-       the game browser; visible_rows was sized for this content area). */
-    int visible_rows = state->list.visible_rows;
-    if (visible_rows > 0 && state->system_count >= visible_rows)
-        item_h = (content_h - margin) / visible_rows;
-    int art_x   = list_w + margin * 2;
-    int art_y   = content_y + margin;
-    int art_w   = sw - art_x - margin;
-    int art_h   = content_h - margin * 2;
+    SDL_Rect list, image;
+    int item_h;
+    jw__browse_boxes(state, content_y, state->system_count,
+                     state->list.visible_rows, &list, &image, &item_h);
 
     if (state->system_count > 0 && state->list.cursor < state->system_count) {
         const jw_system_entry *sys = &state->systems[state->list.cursor];
-        jw__draw_system_preview(art_x, art_y, art_w, art_h,
+        jw__draw_system_preview(image.x, image.y, image.w, image.h,
                                 sys->name, sys->game_count);
     } else {
-        cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
+        cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
             cat_hex_to_color("#ffffff18"));
     }
 
     if (state->system_count == 0) {
         cat_draw_text_wrapped(body,
             state->scan_ready ? "No games found" : "Scanning library...",
-            list_x + CAT_S(8), content_y + margin + CAT_S(8),
-            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+            list.x + CAT_S(8), list.y + CAT_S(8),
+            list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__games_ctx ctx = { state->systems };
-        cat_draw_list_pane(list_x, content_y + margin, list_w, list_h,
+        cat_draw_list_pane(list.x, list.y, list.w, list.h,
             state->system_count, &state->list, item_h,
             jw__draw_game_item, &ctx);
     }
-
-    (void)margin;
 }
 
 static void jw__render_apps(const jw_launcher_state *state,
@@ -1726,14 +1777,15 @@ static int jw__game_browser_header_h(const jw_launcher_state *state) {
     return CAT_DS(30);
 }
 
-/* Height of the list/art content area in the system game browser. Below it the
-   renderer reserves only the footer (jw__footer_height is 0 when hints are
-   off). Shared with the visible-row count so the list fills the area exactly —
-   no gap, no overflow. */
-static int jw__game_browser_content_h(const jw_launcher_state *state) {
-    int margin = CAT_S(12);
-    int fh     = jw__footer_height(state);
-    return cat_get_screen_height() - jw__game_browser_header_h(state) - margin - fh;
+/* Header height for the search page: tab bar + "Search:" sub-header in tabbed
+   mode, or the standalone title bar otherwise. Shared by the renderer and the
+   visible-row count so the box model and row count never disagree. */
+static int jw__search_header_h(const jw_launcher_state *state) {
+    (void)state;
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED)
+        return cat_get_tab_bar_height() + CAT_S(2) +
+               TTF_FontHeight(cat_get_font(CAT_FONT_EXTRA_LARGE));
+    return CAT_DS(34);
 }
 
 static void jw__render_game_browser(const jw_launcher_state *state) {
@@ -1783,8 +1835,8 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         if (title_max < CAT_S(120)) title_max = CAT_S(120);
     }
 
-    int content_y = header_h + margin;
-    int content_h = jw__game_browser_content_h(state);
+    int region_y = header_h;
+    int region_h = cat_get_screen_height() - header_h - jw__footer_height(state);
 
     char title[96];
     if (state->games_are_favorites)
@@ -1813,30 +1865,24 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
             cat_request_frame();
     }
 
-    int list_x = margin;
-    int list_w = sw * 58 / 100;
-    int item_h = TTF_FontHeight(body) + CAT_S(12);
-    /* When the list is full (scrollable), expand the row height so the rows fill
-       the content area exactly — otherwise the quantized remainder leaves a gap
-       below the last row. Short lists keep the base spacing (no stretching). */
-    int visible_rows = state->game_list.visible_rows;
-    if (visible_rows > 0 && state->game_count >= visible_rows)
-        item_h = content_h / visible_rows;
-    int detail_x = list_x + list_w + margin;
-    int detail_w = sw - detail_x - margin;
+    (void)region_h;
+    SDL_Rect list, image;
+    int item_h;
+    jw__browse_boxes(state, region_y, state->game_count,
+                     state->game_list.visible_rows, &list, &image, &item_h);
 
     if (state->game_count == 0) {
         cat_draw_text_wrapped(body, "No games found",
-            list_x + CAT_S(8), content_y + CAT_S(8),
-            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+            list.x + CAT_S(8), list.y + CAT_S(8),
+            list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__roms_ctx ctx = { state->games };
-        cat_draw_list_pane(list_x, content_y, list_w, content_h,
+        cat_draw_list_pane(list.x, list.y, list.w, list.h,
             state->game_count, &state->game_list, item_h,
             jw__draw_rom_item, &ctx);
     }
 
-    cat_draw_rounded_rect(detail_x, content_y, detail_w, content_h, CAT_S(8),
+    cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
         cat_hex_to_color("#ffffff10"));
 
     if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
@@ -1845,11 +1891,6 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
            on the left). When a game has no cover, fall back to the system icon
            as a placeholder so the panel is never empty. */
         int art_pad = CAT_S(16);
-        int art_x = detail_x + art_pad;
-        int art_y = content_y + art_pad;
-        int art_w = detail_w - art_pad * 2;
-        int art_h = content_h - art_pad * 2;
-
         char image_abs[PATH_MAX];
         int iw = 0, ih = 0;
         SDL_Texture *tex = NULL;
@@ -1858,7 +1899,8 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         if (!tex)
             tex = jw__load_system_icon(game->system, &iw, &ih);
         if (tex)
-            jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
+            jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+                               image.w - art_pad * 2, image.h - art_pad * 2);
     }
 
     if (tabbed) {
@@ -1890,40 +1932,25 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
                                       const char *empty_msg) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-    int sw = cat_get_screen_width();
+    (void)content_h;
 
-    int list_x   = margin;
-    int list_w   = sw * 58 / 100;
-    int item_h   = TTF_FontHeight(body) + CAT_S(12);
-    int detail_x = list_x + list_w + margin;
-    int detail_w = sw - detail_x - margin;
-
-    /* Inset the top by one margin so Recents/Favorites leave the same gap below
-       the tab bar as the Games/Apps tabs (bottom edge stays put). */
-    content_y += margin;
-    content_h -= margin;
-
-    /* When the list is full, expand rows to fill the area so the last row
-       reaches the bottom (matches Games/Apps and the game browser). */
-    int visible_rows = state->list.visible_rows;
-    if (visible_rows > 0 && count >= visible_rows)
-        item_h = content_h / visible_rows;
+    SDL_Rect list, image;
+    int item_h;
+    jw__browse_boxes(state, content_y, count, state->list.visible_rows,
+                     &list, &image, &item_h);
 
     if (count == 0) {
         cat_draw_text_wrapped(body, empty_msg,
-            list_x + CAT_S(8), content_y + CAT_S(8),
-            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+            list.x + CAT_S(8), list.y + CAT_S(8),
+            list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
         return;
     }
 
     jw__roms_ctx ctx = { entries };
-    cat_draw_list_pane(list_x, content_y, list_w, content_h,
+    cat_draw_list_pane(list.x, list.y, list.w, list.h,
         count, &state->list, item_h, jw__draw_rom_item, &ctx);
 
-    /* The detail panel stops one margin short of the footer (the list keeps its
-       full height) so it leaves the same bottom gap as the Games/Apps preview. */
-    int panel_h = content_h - margin;
-    cat_draw_rounded_rect(detail_x, content_y, detail_w, panel_h, CAT_S(8),
+    cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
         cat_hex_to_color("#ffffff10"));
 
     if (state->list.cursor >= count) return;
@@ -1932,11 +1959,6 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
     /* Cover centered/fit in the panel — no name (it's in the list). When a game
        has no cover, fall back to its system icon so the panel is never empty. */
     int art_pad = CAT_S(16);
-    int art_x   = detail_x + art_pad;
-    int art_y   = content_y + art_pad;
-    int art_w   = detail_w - art_pad * 2;
-    int art_h   = panel_h - art_pad * 2;
-
     char image_abs[PATH_MAX];
     int iw = 0, ih = 0;
     SDL_Texture *tex = NULL;
@@ -1945,7 +1967,8 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
     if (!tex)
         tex = jw__load_system_icon(game->system, &iw, &ih);
     if (tex)
-        jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
+        jw__draw_image_fit(tex, iw, ih, image.x + art_pad, image.y + art_pad,
+                           image.w - art_pad * 2, image.h - art_pad * 2);
 }
 
 static void jw__render_favorites(const jw_launcher_state *state,
@@ -2019,7 +2042,7 @@ static void jw__render_search(const jw_launcher_state *state) {
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    /* TTF_Font *small = cat_get_font(CAT_FONT_SMALL); — for the commented-out results line below */
     TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
 
     int sw = cat_get_screen_width();
@@ -2027,37 +2050,46 @@ static void jw__render_search(const jw_launcher_state *state) {
     int fh = jw__footer_height(state);
     int margin = CAT_S(12);
 
-    /* Same header as the home tabs / game browser: the section tab bar with the
-       status icons inline. The "Search: <query>" line drops to a sub-header
-       beneath the tabs (matching the browser's system-name placement). */
-    int bar_h     = jw__draw_tab_header(state);
-    int title_y   = bar_h + CAT_S(2);
-    int header_h  = title_y + TTF_FontHeight(large);
-    int content_y = header_h + margin;
-    int content_h = sh - content_y - fh - margin;
+    /* Same header as the home tabs / game browser: in tabbed layout, the section
+       tab bar with status icons inline, and "Search: <query>" as a sub-header
+       beneath it (so L1/R1 can tab away). Other layouts keep the standalone
+       status pill + title. */
+    bool tabbed = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED);
+    int title_y;
+    if (tabbed) {
+        title_y = jw__draw_tab_header(state) + CAT_S(2);
+    } else {
+        jw__draw_status_bar(state);
+        title_y = CAT_S(6);
+    }
+    int region_y = jw__search_header_h(state);   /* shared with jw__search_visible_rows */
+    (void)fh; (void)sh;
 
     char title[320];
-    snprintf(title, sizeof(title), "Search: %s", state->search_query[0] ? state->search_query : "(empty)");
+    if (state->search_query[0])
+        snprintf(title, sizeof(title), "Search: %s  (%d %s)", state->search_query,
+                 state->search_count, state->search_count == 1 ? "result" : "results");
+    else
+        snprintf(title, sizeof(title), "%s", "Search: (empty)");
     cat_draw_text_ellipsized(large, title, margin, title_y, theme->text, sw - margin * 2);
 
-    int list_x = margin;
-    int list_w = sw * 58 / 100;
-    int item_h = TTF_FontHeight(body) + CAT_S(12);
-    int detail_x = list_x + list_w + margin;
-    int detail_w = sw - detail_x - margin;
+    SDL_Rect list, image;
+    int item_h;
+    jw__browse_boxes(state, region_y, state->search_count,
+                     state->search_list.visible_rows, &list, &image, &item_h);
 
     if (state->search_count == 0) {
         cat_draw_text_wrapped(body, "No results",
-            list_x + CAT_S(8), content_y + CAT_S(8),
-            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+            list.x + CAT_S(8), list.y + CAT_S(8),
+            list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__search_ctx ctx = { state->search_results };
-        cat_draw_list_pane(list_x, content_y, list_w, content_h,
+        cat_draw_list_pane(list.x, list.y, list.w, list.h,
             state->search_count, &state->search_list, item_h,
             jw__draw_search_item, &ctx);
     }
 
-    cat_draw_rounded_rect(detail_x, content_y, detail_w, content_h, CAT_S(8),
+    cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
         cat_hex_to_color("#ffffff10"));
 
     if (state->search_count > 0 && state->search_list.cursor < state->search_count) {
@@ -2067,10 +2099,10 @@ static void jw__render_search(const jw_launcher_state *state) {
            system icon as a fallback) or an app's icon, centered/fit in the pane,
            exactly like the Recents/Favorites detail panes. */
         int art_pad = CAT_S(16);
-        int art_x   = detail_x + art_pad;
-        int art_y   = content_y + art_pad;
-        int art_w   = detail_w - art_pad * 2;
-        int art_h   = content_h - art_pad * 2;
+        int art_x   = image.x + art_pad;
+        int art_y   = image.y + art_pad;
+        int art_w   = image.w - art_pad * 2;
+        int art_h   = image.h - art_pad * 2;
 
         char img_abs[PATH_MAX];
         int iw = 0, ih = 0;
@@ -2093,9 +2125,11 @@ static void jw__render_search(const jw_launcher_state *state) {
             jw__draw_image_fit(tex, iw, ih, art_x, art_y, art_w, art_h);
     }
 
+    /* Results-count ("N results") line at the bottom — commented out for now per request.
     int status_y = content_y + content_h - TTF_FontHeight(small);
     if (jw_settings_show_hints(&state->settings)) cat_draw_text_ellipsized(small, state->status, margin, status_y,
                              theme->hint, sw - margin * 2);
+    */
 
     cat_footer_item footer[] = {
         { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
@@ -2179,11 +2213,7 @@ static void jw__render_launcher(jw_launcher_state *state) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 static int jw__game_browser_visible_rows(const jw_launcher_state *state) {
-    int content_h = jw__game_browser_content_h(state);
-    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int item_h = TTF_FontHeight(body) + CAT_S(12);
-    int visible = content_h / item_h;
-    return visible > 0 ? visible : 1;
+    return jw__browse_visible_rows(state, jw__game_browser_header_h(state));
 }
 
 static int jw__app_browser_visible_rows(const jw_launcher_state *state) {
@@ -2196,12 +2226,7 @@ static int jw__app_browser_visible_rows(const jw_launcher_state *state) {
 }
 
 static int jw__search_visible_rows(const jw_launcher_state *state) {
-    int fh = jw__footer_height(state);
-    int content_h = cat_get_screen_height() - CAT_DS(34) - CAT_S(24) - fh;
-    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int item_h = TTF_FontHeight(body) + CAT_S(12);
-    int visible = content_h / item_h;
-    return visible > 0 ? visible : 1;
+    return jw__browse_visible_rows(state, jw__search_header_h(state));
 }
 
 static int jw__perform_search(const char *db_path, jw_launcher_state *state,
@@ -2511,11 +2536,9 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
     int item_h     = TTF_FontHeight(body) + CAT_S(12);
     int visible;
     if (layout == CAT_LAUNCHER_TABBED) {
-        /* Tabbed content sits below the tab bar (+ one margin, as the tab
-           renderers inset) and above the footer; size to fit so the last row
-           never slips under the footer. */
-        int avail = cat_get_screen_height() - cat_get_tab_bar_height() - CAT_S(12) - fh;
-        visible = avail / item_h;
+        /* Tab pages use the shared box model with a tab-bar-only header (no
+           sub-header), so the row count matches the renderer exactly. */
+        visible = jw__browse_visible_rows(state, cat_get_tab_bar_height());
     } else {
         int sb_h      = CAT_DS(20);
         int margin    = CAT_S(10);
@@ -2555,6 +2578,17 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
             break;
         case CAT_BTN_X:
             jw__open_search(db_path, state);
+            break;
+        case CAT_BTN_L1:
+        case CAT_BTN_R1:
+            /* The search header shows the section tabs, so L1/R1 tabs away —
+               closing search and landing on the adjacent section, like the game
+               browser. Tabbed layout only. */
+            if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED) {
+                state->search_open = false;
+                state->status[0] = '\0';
+                jw__switch_tab(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
+            }
             break;
         default:
             break;
