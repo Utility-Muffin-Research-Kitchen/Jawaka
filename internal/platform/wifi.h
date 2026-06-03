@@ -60,9 +60,21 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured);
 
 /* Connect to a secured network with the given pre-shared key: creates (or reuses)
  * a profile, sets ssid + psk, connects, saves config, and kicks DHCP. A wrong key
- * still returns OK here (the association request was sent) — the caller watches
- * the live status to detect auth failure. (Phase 4) */
+ * still returns OK here (the association request was sent) — the caller polls
+ * jw_wifi_join_state_for() to detect success vs. a wrong key. (Phase 4) */
 jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk);
+
+/* Outcome of an in-flight join attempt, polled after a connect. */
+typedef enum {
+    JW_WIFI_JOIN_PENDING = 0,  /* still associating */
+    JW_WIFI_JOIN_CONNECTED,    /* COMPLETED on the target SSID */
+    JW_WIFI_JOIN_WRONG_KEY,    /* wpa temp-disabled the target (auth failure) */
+} jw_wifi_join_state;
+
+/* Poll the join state for ssid: CONNECTED if associated to it; WRONG_KEY if
+ * wpa_supplicant temporarily disabled it (the standard wrong-PSK signal); else
+ * PENDING. Caller applies its own overall timeout for "couldn't connect". */
+jw_wifi_join_state jw_wifi_join_state_for(const char *ssid);
 
 /* ── Manage (Phase 5) ────────────────────────────────────────────────────── */
 

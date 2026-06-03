@@ -751,18 +751,27 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
     jw__refresh_wifi(ui);
     jw__refresh_wifi_scan(ui);
 
-    /* Resolve a pending connect attempt: confirm success, or flag a likely wrong
-       password once it has clearly failed to associate. */
+    /* Resolve a pending connect attempt using wpa_supplicant's actual join state:
+       CONNECTED on success, WRONG_KEY when it auth-fails (temp-disabled), else a
+       generic timeout. On a wrong key, forget the bad profile so it is never saved
+       or retried. */
     if (ui->wifi_attempt_ssid[0]) {
-        if (ui->wifi.connected &&
-            strcmp(ui->wifi.ssid, ui->wifi_attempt_ssid) == 0) {
+        jw_wifi_join_state js = jw_wifi_join_state_for(ui->wifi_attempt_ssid);
+        if (js == JW_WIFI_JOIN_CONNECTED) {
             snprintf(ui->wifi_msg, sizeof(ui->wifi_msg), "Connected to %s",
                      ui->wifi_attempt_ssid);
             ui->wifi_attempt_ssid[0] = '\0';
-        } else if ((int)(now - ui->wifi_attempt_ms) > 12000) {
+        } else if (js == JW_WIFI_JOIN_WRONG_KEY) {
+            char bad[64];
+            snprintf(bad, sizeof(bad), "%s", ui->wifi_attempt_ssid);
+            jw_wifi_forget(bad);   /* drop the wrong-key profile */
             snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
-                     "Couldn't connect to %s — check password",
-                     ui->wifi_attempt_ssid);
+                     "Wrong password for %s", bad);
+            ui->wifi_attempt_ssid[0] = '\0';
+            jw__refresh_wifi_scan(ui);
+        } else if ((int)(now - ui->wifi_attempt_ms) > 30000) {
+            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                     "Couldn't connect to %s", ui->wifi_attempt_ssid);
             ui->wifi_attempt_ssid[0] = '\0';
         }
     }

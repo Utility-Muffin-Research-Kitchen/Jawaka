@@ -583,6 +583,48 @@ int jw_wifi_disconnect(void) {
     return jw__wifi_run(cmd, 1, buf, sizeof(buf)) < 0 ? -1 : 0;
 }
 
+jw_wifi_join_state jw_wifi_join_state_for(const char *ssid) {
+    if (!ssid || !ssid[0]) {
+        return JW_WIFI_JOIN_PENDING;
+    }
+
+    /* Associated to the target? */
+    char dump[2048];
+    if (jw__wifi_wpa_cli("status", dump, sizeof(dump)) >= 0) {
+        char state[24] = { 0 };
+        char cur[64] = { 0 };
+        jw__wifi_field(dump, "wpa_state", state, sizeof(state));
+        jw__wifi_field(dump, "ssid", cur, sizeof(cur));
+        if (strcmp(state, "COMPLETED") == 0 && strcmp(cur, ssid) == 0) {
+            return JW_WIFI_JOIN_CONNECTED;
+        }
+    }
+
+    /* Wrong key? On a failed PSK handshake wpa_supplicant temporarily disables
+       the network (reason=WRONG_KEY) — it shows TEMP-DISABLED in list_networks. */
+    char nets[4096];
+    if (jw__wifi_wpa_cli("list_networks", nets, sizeof(nets)) >= 0) {
+        char *save_line = NULL;
+        char *line = strtok_r(nets, "\n", &save_line);   /* header */
+        if (line) {
+            line = strtok_r(NULL, "\n", &save_line);
+        }
+        for (; line; line = strtok_r(NULL, "\n", &save_line)) {
+            char *st = NULL;
+            char *id    = strtok_r(line, "\t", &st);
+            char *name  = id   ? strtok_r(NULL, "\t", &st) : NULL;
+            char *bssid = name ? strtok_r(NULL, "\t", &st) : NULL;
+            char *flags = bssid ? strtok_r(NULL, "\t", &st) : NULL;
+            (void)id; (void)bssid;
+            if (name && strcmp(name, ssid) == 0 &&
+                flags && strstr(flags, "TEMP-DISABLED") != NULL) {
+                return JW_WIFI_JOIN_WRONG_KEY;
+            }
+        }
+    }
+    return JW_WIFI_JOIN_PENDING;
+}
+
 /* Add (but don't select) a profile: add_network + ssid + psk/open + enable. */
 static int jw__wifi_add_profile(const char *ssid, const char *psk) {
     char buf[128];

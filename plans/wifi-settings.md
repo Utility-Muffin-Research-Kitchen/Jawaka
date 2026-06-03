@@ -41,7 +41,7 @@ returns BYTES READ (>=0) on success / -1 on error — check `< 0` / `>= 0`, neve
 - Phase 1 — Status page — **DONE** (live status: state/SSID/RSSI-signal/IP).
 - Phase 2 — Scan + list — **DONE** (scrollable, deduped, sorted, secured/current markers).
 - Phase 3 — Connect open/saved — **DONE** (A connects; udhcpc kicked; feedback line).
-- Phase 4 — Password entry — **DONE** (cat_keyboard PSK; wrong-password via 12s poll timeout; verified persisting to saved list).
+- Phase 4 — Password entry — **DONE** (cat_keyboard PSK; wrong-password via wpa TEMP-DISABLED detection (jw_wifi_join_state_for); bad profile auto-forgotten; verified persisting to saved list).
 - Phase 5 — Manage/persist — **DONE**. Y forgets a saved profile; A on the connected
   network disconnects; "saved" markers in the list; controls moved to the normal
   footer hints (A Connect / Y Forget / X Rescan / B Back via jw_settings_ui_screen).
