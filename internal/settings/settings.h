@@ -142,6 +142,9 @@ typedef struct {
     char               secondary_sd_status[32];
     jw_wifi_status_t   wifi;                /* last-read Wi-Fi status (Network page) */
     unsigned           wifi_next_poll_ms;   /* throttle for the live Network poll */
+    jw_wifi_network_t  wifi_networks[JW_WIFI_MAX_NETWORKS];  /* latest scan results */
+    int                wifi_network_count;
+    unsigned           wifi_next_scan_ms;   /* throttle for triggering a new scan */
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;

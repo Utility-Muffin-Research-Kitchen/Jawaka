@@ -101,6 +101,11 @@ static const char *kHomeCategoryLabels[] = {
     "About",
 };
 #define JW_SETTINGS_CATEGORY_COUNT 8
+
+/* Visible rows in the Network page's scanned-network list (scrolls beyond). */
+#define JW_WIFI_LIST_ROWS 6
+/* Re-trigger a background scan at most this often while the page is open. */
+#define JW_WIFI_SCAN_INTERVAL_MS 6000
 #define JW_SETTINGS_DISPLAY_COUNT JW_DISPLAY_ROW_COUNT
 
 static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
@@ -242,7 +247,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->layout_list,      JW_LAYOUT_ROW_COUNT);
     cat_list_state_init(&ui->statusbar_list,   JW_STATUSBAR_ROW_COUNT);
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
-    cat_list_state_init(&ui->network_list,     1);
+    cat_list_state_init(&ui->network_list,     JW_WIFI_LIST_ROWS);
     cat_list_state_init(&ui->lighting_list,    JW_LIGHTING_ROW_COUNT);
     cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
     cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
@@ -719,17 +724,70 @@ bool jw_settings_ui_wants_wifi_poll(const jw_settings_ui *ui) {
     return ui && ui->open && ui->screen == JW_SETTINGS_NETWORK;
 }
 
+/* Re-read the cached scan results into the ui (deduped/sorted by the module). */
+static void jw__refresh_wifi_scan(jw_settings_ui *ui) {
+    int n = jw_wifi_scan_results(ui->wifi.ssid, ui->wifi_networks,
+                                 JW_WIFI_MAX_NETWORKS);
+    ui->wifi_network_count = (n > 0) ? n : 0;
+    if (ui->network_list.cursor >= ui->wifi_network_count) {
+        ui->network_list.cursor = ui->wifi_network_count > 0
+                                  ? ui->wifi_network_count - 1 : 0;
+    }
+}
+
 void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
     if (!ui) {
         return;
     }
-    /* Self-throttle: re-poll at most ~every 2s; each poll forks wpa_cli twice. */
+    /* Self-throttle: re-poll at most ~every 2s; each poll forks wpa_cli. */
     unsigned now = SDL_GetTicks();
     if (ui->wifi_next_poll_ms != 0 && (int)(now - ui->wifi_next_poll_ms) < 0) {
         return;
     }
     jw__refresh_wifi(ui);
+    jw__refresh_wifi_scan(ui);
+    /* Trigger a fresh scan on a slower cadence than the result re-read. */
+    if (ui->wifi_next_scan_ms == 0 || (int)(now - ui->wifi_next_scan_ms) >= 0) {
+        jw_wifi_scan_start();
+        ui->wifi_next_scan_ms = now + JW_WIFI_SCAN_INTERVAL_MS;
+    }
     ui->wifi_next_poll_ms = now + 2000;
+}
+
+typedef struct { const jw_wifi_network_t *nets; } jw__wifi_list_ctx;
+
+static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
+                               bool selected, void *user) {
+    const jw__wifi_list_ctx *ctx = (const jw__wifi_list_ctx *)user;
+    const jw_wifi_network_t *net = &ctx->nets[idx];
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
+
+    ap_color label_c = selected ? theme->highlighted_text : theme->text;
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    /* Left: SSID, with a leading "* " on the connected network. */
+    char label[80];
+    snprintf(label, sizeof(label), "%s%s", net->current ? "* " : "", net->ssid);
+    cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
+                             iw / 2);
+
+    /* Right: signal word, plus "Open" for unsecured networks. */
+    const char *word = (net->strength >= 3) ? "Strong" :
+                       (net->strength == 2) ? "Good"   : "Weak";
+    char value[32];
+    if (net->secured)
+        snprintf(value, sizeof(value), "%s", word);
+    else
+        snprintf(value, sizeof(value), "Open  %s", word);
+    int vw = cat_measure_text(body, value);
+    cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
 }
 
 static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, int h) {
@@ -764,12 +822,14 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
         snprintf(signal_val, sizeof(signal_val), "%s", "—");
     }
 
-    jw__render_list_row(&ui->network_list, x, ly, w, 0, "Status", status_val, false);
-
-    /* Detail lines below the row (no selection — informational only). */
-    int dy = ly + item_h + cat_scale(6);
+    /* ── Current-connection summary (informational lines) ── */
     int line_h = TTF_FontHeight(body) + cat_scale(8);
-    char line[128];
+    int dy = ly;
+    char line[160];
+
+    snprintf(line, sizeof(line), "Status: %s", status_val);
+    cat_draw_text(body, line, x + cat_scale(12), dy, theme->text);
+    dy += line_h;
 
     snprintf(line, sizeof(line), "Network: %s",
              (wifi->valid && wifi->ssid[0]) ? wifi->ssid : "—");
@@ -783,6 +843,21 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     snprintf(line, sizeof(line), "IP: %s",
              (wifi->valid && wifi->ip[0]) ? wifi->ip : "—");
     cat_draw_text(body, line, x + cat_scale(12), dy, theme->hint);
+    dy += line_h + cat_scale(6);
+
+    /* ── Available networks (scanned list) ── */
+    cat_draw_text(body, "Available networks", x + cat_scale(12), dy, theme->hint);
+    dy += line_h;
+
+    if (ui->wifi_network_count <= 0) {
+        cat_draw_text(body, wifi->valid ? "Scanning…" : "Wi-Fi unavailable",
+                      x + cat_scale(12), dy, theme->hint);
+    } else {
+        jw__wifi_list_ctx ctx = { ui->wifi_networks };
+        int list_h = JW_WIFI_LIST_ROWS * item_h;
+        cat_draw_list_pane(x, dy, w, list_h, ui->wifi_network_count,
+                           &ui->network_list, item_h, jw__draw_wifi_item, &ctx);
+    }
 
     (void)h;
 }
@@ -1315,8 +1390,14 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 }
                 else if (idx == 2) {
                     ui->screen = JW_SETTINGS_NETWORK;
-                    jw__refresh_wifi(ui);          /* show something immediately */
-                    ui->wifi_next_poll_ms = SDL_GetTicks() + 2000;  /* then live every ~2s */
+                    ui->network_list.cursor = 0;
+                    ui->network_list.scroll_offset = 0;
+                    jw__refresh_wifi(ui);          /* show status immediately */
+                    jw_wifi_scan_start();          /* kick a scan */
+                    jw__refresh_wifi_scan(ui);     /* show any cached results now */
+                    unsigned now = SDL_GetTicks();
+                    ui->wifi_next_poll_ms = now + 2000;            /* then live every ~2s */
+                    ui->wifi_next_scan_ms = now + JW_WIFI_SCAN_INTERVAL_MS;
                 }
                 else if (idx == 3) {
                     ui->screen = JW_SETTINGS_LIGHTING;
@@ -1514,12 +1595,22 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         }
         break;
 
-    /* ── Network (Wi-Fi status — read-only, Phase 1) ─────────────────── */
+    /* ── Network (Wi-Fi status + scan — read-only, Phases 1-2) ───────── */
     case JW_SETTINGS_NETWORK:
         switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->network_list, -1, ui->wifi_network_count);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->network_list, +1, ui->wifi_network_count);
+                break;
             case CAT_BTN_A:
-                jw__refresh_wifi(ui);   /* manual re-poll */
-                snprintf(status_buf, status_size, "Wi-Fi status refreshed");
+                /* Re-scan now (connect comes in Phase 3). */
+                jw_wifi_scan_start();
+                jw__refresh_wifi(ui);
+                jw__refresh_wifi_scan(ui);
+                ui->wifi_next_scan_ms = SDL_GetTicks() + JW_WIFI_SCAN_INTERVAL_MS;
+                snprintf(status_buf, status_size, "Scanning Wi-Fi…");
                 break;
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_HOME;

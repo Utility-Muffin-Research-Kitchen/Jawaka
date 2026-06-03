@@ -21,4 +21,26 @@ typedef struct {
  * nothing usable (out is still zeroed with valid = false). */
 int jw_wifi_status(jw_wifi_status_t *out);
 
+/* ── Scanning (Phase 2) ──────────────────────────────────────────────────── */
+
+#define JW_WIFI_MAX_NETWORKS 32
+
+typedef struct {
+    char ssid[64];
+    int  rssi;       /* dBm */
+    int  strength;   /* 0..3, same thresholds as the status icon */
+    bool secured;    /* WPA/WPA2/WPA3/WEP present in the flags */
+    bool current;    /* matches the currently-connected SSID */
+} jw_wifi_network_t;
+
+/* Kick off a background scan (`wpa_cli scan`); results land over the next ~1-3s.
+ * Returns 0 if the command was accepted, -1 otherwise. */
+int jw_wifi_scan_start(void);
+
+/* Read the latest scan results (`wpa_cli scan_results`) into out[]: blank SSIDs
+ * skipped, deduped by SSID keeping the strongest, sorted by signal descending.
+ * current_ssid (may be NULL/"") flags the in-use network. Returns the count
+ * written (0..max), or -1 on failure. */
+int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int max);
+
 #endif /* JW_PLATFORM_WIFI_H */

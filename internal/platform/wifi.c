@@ -132,3 +132,78 @@ int jw_wifi_status(jw_wifi_status_t *out) {
     out->valid = true;
     return 0;
 }
+
+int jw_wifi_scan_start(void) {
+    char buf[64];
+    /* "OK" / "FAIL-BUSY" — either way the command reached wpa_supplicant. */
+    return jw__wifi_wpa_cli("scan", buf, sizeof(buf)) < 0 ? -1 : 0;
+}
+
+static int jw__wifi_net_cmp(const void *a, const void *b) {
+    const jw_wifi_network_t *na = (const jw_wifi_network_t *)a;
+    const jw_wifi_network_t *nb = (const jw_wifi_network_t *)b;
+    return nb->rssi - na->rssi;   /* strongest first */
+}
+
+int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int max) {
+    if (!out || max <= 0) {
+        return -1;
+    }
+    char dump[8192];
+    if (jw__wifi_wpa_cli("scan_results", dump, sizeof(dump)) < 0) {
+        return -1;
+    }
+
+    int count = 0;
+    char *save_line = NULL;
+    /* Header: "bssid / frequency / signal level / flags / ssid". Skip it. */
+    char *line = strtok_r(dump, "\n", &save_line);
+    if (line) {
+        line = strtok_r(NULL, "\n", &save_line);
+    }
+    for (; line; line = strtok_r(NULL, "\n", &save_line)) {
+        /* Tab-separated: bssid, freq, signal(dBm), flags, ssid (rest). */
+        char *save_tok = NULL;
+        char *bssid = strtok_r(line, "\t", &save_tok);
+        char *freq  = bssid ? strtok_r(NULL, "\t", &save_tok) : NULL;
+        char *sig   = freq  ? strtok_r(NULL, "\t", &save_tok) : NULL;
+        char *flags = sig   ? strtok_r(NULL, "\t", &save_tok) : NULL;
+        char *ssid  = flags ? strtok_r(NULL, "\t", &save_tok) : NULL;
+        (void)bssid; (void)freq;
+        if (!sig || !flags || !ssid || ssid[0] == '\0') {
+            continue;
+        }
+        int rssi = atoi(sig);
+        bool secured = (strstr(flags, "WPA") != NULL) ||
+                       (strstr(flags, "WEP") != NULL) ||
+                       (strstr(flags, "WPA3") != NULL);
+
+        /* Dedup by SSID, keeping the strongest signal. */
+        int found = -1;
+        for (int i = 0; i < count; i++) {
+            if (strcmp(out[i].ssid, ssid) == 0) { found = i; break; }
+        }
+        if (found >= 0) {
+            if (rssi > out[found].rssi) {
+                out[found].rssi = rssi;
+                out[found].strength = jw__wifi_strength(rssi);
+                out[found].secured = secured;
+            }
+            continue;
+        }
+        if (count >= max) {
+            continue;
+        }
+        jw_wifi_network_t *n = &out[count++];
+        memset(n, 0, sizeof(*n));
+        snprintf(n->ssid, sizeof(n->ssid), "%s", ssid);
+        n->rssi = rssi;
+        n->strength = jw__wifi_strength(rssi);
+        n->secured = secured;
+        n->current = (current_ssid && current_ssid[0] &&
+                      strcmp(current_ssid, ssid) == 0);
+    }
+
+    qsort(out, (size_t)count, sizeof(out[0]), jw__wifi_net_cmp);
+    return count;
+}
