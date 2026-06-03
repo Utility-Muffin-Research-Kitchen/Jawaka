@@ -315,3 +315,47 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
     jw__wifi_dhcp();
     return JW_WIFI_CONNECT_OK;
 }
+
+jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
+    if (!ssid || !ssid[0] || !psk) {
+        return JW_WIFI_CONNECT_FAILED;
+    }
+    char buf[128];
+    char idbuf[16];
+    int id = jw__wifi_saved_id(ssid);
+    if (id < 0) {
+        const char *add[] = { "add_network" };
+        if (jw__wifi_run(add, 1, buf, sizeof(buf)) < 0) {
+            return JW_WIFI_CONNECT_FAILED;
+        }
+        id = atoi(buf);
+        if (id < 0) {
+            return JW_WIFI_CONNECT_FAILED;
+        }
+    }
+    snprintf(idbuf, sizeof(idbuf), "%d", id);
+
+    char qssid[72];
+    char qpsk[140];
+    snprintf(qssid, sizeof(qssid), "\"%s\"", ssid);
+    snprintf(qpsk, sizeof(qpsk), "\"%s\"", psk);
+    const char *set_ssid[] = { "set_network", idbuf, "ssid", qssid };
+    const char *set_psk[]  = { "set_network", idbuf, "psk", qpsk };
+    if (jw__wifi_run(set_ssid, 4, buf, sizeof(buf)) < 0 ||
+        jw__wifi_run(set_psk, 4, buf, sizeof(buf)) < 0) {
+        return JW_WIFI_CONNECT_FAILED;
+    }
+
+    const char *enable[] = { "enable_network", idbuf };
+    const char *select[] = { "select_network", idbuf };
+    if (jw__wifi_run(enable, 2, buf, sizeof(buf)) < 0 ||
+        jw__wifi_run(select, 2, buf, sizeof(buf)) < 0) {
+        return JW_WIFI_CONNECT_FAILED;
+    }
+
+    const char *save2[] = { "save_config" };
+    (void)jw__wifi_run(save2, 1, buf, sizeof(buf));
+
+    jw__wifi_dhcp();
+    return JW_WIFI_CONNECT_OK;
+}

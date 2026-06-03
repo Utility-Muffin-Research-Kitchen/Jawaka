@@ -146,6 +146,8 @@ typedef struct {
     int                wifi_network_count;
     unsigned           wifi_next_scan_ms;   /* throttle for triggering a new scan */
     char               wifi_msg[128];       /* last Network-page action feedback */
+    char               wifi_attempt_ssid[64];  /* network we're trying to join ("" = none) */
+    unsigned           wifi_attempt_ms;     /* when the join attempt started */
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;

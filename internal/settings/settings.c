@@ -746,6 +746,23 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
     }
     jw__refresh_wifi(ui);
     jw__refresh_wifi_scan(ui);
+
+    /* Resolve a pending connect attempt: confirm success, or flag a likely wrong
+       password once it has clearly failed to associate. */
+    if (ui->wifi_attempt_ssid[0]) {
+        if (ui->wifi.connected &&
+            strcmp(ui->wifi.ssid, ui->wifi_attempt_ssid) == 0) {
+            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg), "Connected to %s",
+                     ui->wifi_attempt_ssid);
+            ui->wifi_attempt_ssid[0] = '\0';
+        } else if ((int)(now - ui->wifi_attempt_ms) > 12000) {
+            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                     "Couldn't connect to %s — check password",
+                     ui->wifi_attempt_ssid);
+            ui->wifi_attempt_ssid[0] = '\0';
+        }
+    }
+
     /* Trigger a fresh scan on a slower cadence than the result re-read. */
     if (ui->wifi_next_scan_ms == 0 || (int)(now - ui->wifi_next_scan_ms) >= 0) {
         jw_wifi_scan_start();
@@ -1400,6 +1417,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->network_list.cursor = 0;
                     ui->network_list.scroll_offset = 0;
                     ui->wifi_msg[0] = '\0';
+                    ui->wifi_attempt_ssid[0] = '\0';
                     jw__refresh_wifi(ui);          /* show status immediately */
                     jw_wifi_scan_start();          /* kick a scan */
                     jw__refresh_wifi_scan(ui);     /* show any cached results now */
@@ -1613,33 +1631,52 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 cat_list_state_move(&ui->network_list, +1, ui->wifi_network_count);
                 break;
             case CAT_BTN_A: {
-                /* Connect to the selected network (open or already-saved). */
-                if (ui->wifi_network_count > 0 &&
-                    ui->network_list.cursor < ui->wifi_network_count) {
-                    const jw_wifi_network_t *net =
-                        &ui->wifi_networks[ui->network_list.cursor];
-                    if (net->current && ui->wifi.connected) {
-                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
-                                 "Already connected to %s", net->ssid);
-                    } else {
-                        jw_wifi_connect_result r =
-                            jw_wifi_connect(net->ssid, net->secured);
-                        if (r == JW_WIFI_CONNECT_OK)
-                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
-                                     "Connecting to %s…", net->ssid);
-                        else if (r == JW_WIFI_CONNECT_NEED_PASSWORD)
-                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
-                                     "%s needs a password (coming in an update)",
-                                     net->ssid);
-                        else
-                            snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
-                                     "Could not connect to %s", net->ssid);
-                    }
-                    /* Mirror to the (hint-gated) status line too. */
-                    snprintf(status_buf, status_size, "%s", ui->wifi_msg);
-                    /* Poll right away so the state transition shows. */
-                    ui->wifi_next_poll_ms = SDL_GetTicks();
+                /* Connect to the selected network. Open/saved connect directly;
+                   a secured network with no saved profile prompts for the key. */
+                if (!(ui->wifi_network_count > 0 &&
+                      ui->network_list.cursor < ui->wifi_network_count)) {
+                    break;
                 }
+                const jw_wifi_network_t *net =
+                    &ui->wifi_networks[ui->network_list.cursor];
+
+                if (net->current && ui->wifi.connected) {
+                    snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                             "Already connected to %s", net->ssid);
+                    snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                    break;
+                }
+
+                jw_wifi_connect_result r = jw_wifi_connect(net->ssid, net->secured);
+                if (r == JW_WIFI_CONNECT_NEED_PASSWORD) {
+                    cat_keyboard_result kb;
+                    char prompt[96];
+                    snprintf(prompt, sizeof(prompt), "Password for %s | B: Cancel",
+                             net->ssid);
+                    if (cat_keyboard("", prompt, CAT_KB_GENERAL, &kb) == CAT_OK &&
+                        kb.text[0]) {
+                        r = jw_wifi_connect_psk(net->ssid, kb.text);
+                    } else {
+                        snprintf(ui->wifi_msg, sizeof(ui->wifi_msg), "Cancelled");
+                        snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                        break;
+                    }
+                }
+
+                if (r == JW_WIFI_CONNECT_OK) {
+                    snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                             "Connecting to %s…", net->ssid);
+                    /* Track the attempt so the poll can confirm success or flag a
+                       likely wrong password. */
+                    snprintf(ui->wifi_attempt_ssid, sizeof(ui->wifi_attempt_ssid),
+                             "%s", net->ssid);
+                    ui->wifi_attempt_ms = SDL_GetTicks();
+                } else {
+                    snprintf(ui->wifi_msg, sizeof(ui->wifi_msg),
+                             "Could not connect to %s", net->ssid);
+                }
+                snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                ui->wifi_next_poll_ms = SDL_GetTicks();   /* poll right away */
                 break;
             }
             case CAT_BTN_X:

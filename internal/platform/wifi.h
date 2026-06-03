@@ -57,4 +57,10 @@ typedef enum {
  * key). On OK, a DHCP client is kicked for the interface. */
 jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured);
 
+/* Connect to a secured network with the given pre-shared key: creates (or reuses)
+ * a profile, sets ssid + psk, connects, saves config, and kicks DHCP. A wrong key
+ * still returns OK here (the association request was sent) — the caller watches
+ * the live status to detect auth failure. (Phase 4) */
+jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk);
+
 #endif /* JW_PLATFORM_WIFI_H */
