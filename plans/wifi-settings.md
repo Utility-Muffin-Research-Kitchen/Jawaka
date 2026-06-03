@@ -26,6 +26,13 @@ networks, so users don't need SSH/ADB to get online.
   if the stock path doesn't already pick it up.
 - Keep all parsing in the module; the UI consumes structs only.
 
+## Progress
+- Phase 1 — Status page — **DONE** (live status: state/SSID/RSSI-signal/IP).
+- Phase 2 — Scan + list — **DONE** (scrollable, deduped, sorted, secured/current markers).
+- Phase 3 — Connect open/saved — **DONE** (A connects; udhcpc kicked; feedback line).
+- Phase 4 — Password entry — **DONE** (cat_keyboard PSK; wrong-password via 12s poll timeout; verified persisting to saved list).
+- Phase 5 — Manage/persist — **TODO** (forget, disconnect, Wi-Fi on/off, reboot persistence — needs the /tmp-vs-/etc conf resolution + a reboot test; good point to loop in Kevin).
+
 ## Phases (each independently testable on-device + mergeable)
 
 ### Phase 1 — Status page (read-only)  ← start here
