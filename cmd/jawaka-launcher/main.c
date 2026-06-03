@@ -310,6 +310,24 @@ static void jw__draw_status_bar(const jw_launcher_state *state) {
     cat_draw_status_bar(&opts);
 }
 
+/* Draws the shared header used by the home tabs, the game browser, and search:
+   the section tab bar (current section highlighted) with the status icons inline
+   on the right. Returns the tab bar height so callers can place a sub-header /
+   content beneath it. */
+static int jw__draw_tab_header(const jw_launcher_state *state) {
+    int bar_h  = cat_get_tab_bar_height();
+    int pill_h = CAT_DS(CAT__PILL_SIZE);
+    cat_status_bar_opts sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &sb);
+    sb.no_pill    = true;
+    sb.use_y      = true;
+    sb.y_position = (bar_h - pill_h) / 2;
+    cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
+    cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
+    cat_draw_status_bar(&sb);
+    return bar_h;
+}
+
 static int jw__footer_height(const jw_launcher_state *state) {
     return jw_settings_show_hints(&state->settings) ? cat_get_footer_height() : 0;
 }
@@ -811,25 +829,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     cat_clear_screen();
     int sh = cat_get_screen_height();
     int fh = jw__footer_height(state);
-    int header_h = cat_get_tab_bar_height();
-
-    {
-        /* Inline status icons in the tab bar. The status bar internally
-           centers icons within pill_h at pill_y, so we set y_override
-           such that the icons land vertically centered in the tab bar. Reserve
-           its width on the tab bar so wide tabs window (with < / >) instead of
-           running under the status icons. */
-        int bar_h = cat_get_tab_bar_height();
-        int pill_h = CAT_DS(CAT__PILL_SIZE);
-        cat_status_bar_opts sb = {0};
-        jw_settings_status_bar_opts(&state->settings, &sb);
-        sb.no_pill    = true;
-        sb.use_y      = true;
-        sb.y_position = (bar_h - pill_h) / 2;
-        cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
-        cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
-        cat_draw_status_bar(&sb);
-    }
+    int header_h = jw__draw_tab_header(state);
 
     int content_y = header_h;
     int content_h = sh - header_h - fh;
@@ -2016,7 +2016,6 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
 
 static void jw__render_search(const jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar(state);
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
@@ -2027,13 +2026,19 @@ static void jw__render_search(const jw_launcher_state *state) {
     int sh = cat_get_screen_height();
     int fh = jw__footer_height(state);
     int margin = CAT_S(12);
-    int header_h = CAT_DS(34);
+
+    /* Same header as the home tabs / game browser: the section tab bar with the
+       status icons inline. The "Search: <query>" line drops to a sub-header
+       beneath the tabs (matching the browser's system-name placement). */
+    int bar_h     = jw__draw_tab_header(state);
+    int title_y   = bar_h + CAT_S(2);
+    int header_h  = title_y + TTF_FontHeight(large);
     int content_y = header_h + margin;
     int content_h = sh - content_y - fh - margin;
 
     char title[320];
     snprintf(title, sizeof(title), "Search: %s", state->search_query[0] ? state->search_query : "(empty)");
-    cat_draw_text_ellipsized(large, title, margin, CAT_S(6), theme->text, sw - margin * 2);
+    cat_draw_text_ellipsized(large, title, margin, title_y, theme->text, sw - margin * 2);
 
     int list_x = margin;
     int list_w = sw * 58 / 100;
