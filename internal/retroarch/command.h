@@ -92,5 +92,8 @@ jw_ra_result jw_ra_get_path(const jw_ra_client *client, const char *kind,
 jw_ra_result jw_ra_get_savestate_path(const jw_ra_client *client,
                                       char *out, size_t out_size);
 jw_ra_result jw_ra_show_message(const jw_ra_client *client, const char *message);
+jw_ra_result jw_ra_load_content_current_core(const jw_ra_client *client,
+                                             const char *content_path,
+                                             char *reply, size_t reply_size);
 
 #endif

@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -113,6 +114,7 @@ bool jw_ra_raw_command_supported(const char *command) {
 
     return jw_ra__starts_with_word(command, "GET_CONFIG_PARAM") ||
            jw_ra__starts_with_word(command, "GET_PATH") ||
+           jw_ra__starts_with_word(command, "JAWAKA_LOAD_CONTENT") ||
            jw_ra__starts_with_word(command, "LOAD_CORE") ||
            jw_ra__starts_with_word(command, "LOAD_STATE_SLOT") ||
            jw_ra__starts_with_word(command, "PLAY_REPLAY_SLOT") ||
@@ -693,4 +695,41 @@ jw_ra_result jw_ra_show_message(const jw_ra_client *client, const char *message)
         return JW_RA_PARSE_ERROR;
     }
     return jw_ra_send_raw(client, command);
+}
+
+jw_ra_result jw_ra_load_content_current_core(const jw_ra_client *client,
+                                             const char *content_path,
+                                             char *reply, size_t reply_size) {
+    char command[PATH_MAX + 64];
+    char local_reply[JW_RA_REPLY_MAX];
+    const char *ok_prefix = "JAWAKA_LOAD_CONTENT OK";
+    char *reply_buf = reply;
+    size_t reply_buf_size = reply_size;
+    jw_ra_result result;
+
+    if (!content_path || !content_path[0]) {
+        return JW_RA_PARSE_ERROR;
+    }
+    if (snprintf(command, sizeof(command), "JAWAKA_LOAD_CONTENT %s",
+                 content_path) >= (int)sizeof(command)) {
+        return JW_RA_PARSE_ERROR;
+    }
+
+    if (!reply_buf || reply_buf_size == 0) {
+        reply_buf = local_reply;
+        reply_buf_size = sizeof(local_reply);
+    }
+
+    result = jw_ra_request_raw(client, command, reply_buf, reply_buf_size);
+    if (result != JW_RA_OK) {
+        return result;
+    }
+
+    jw_ra__trim_line(reply_buf);
+    if (strncmp(reply_buf, ok_prefix, strlen(ok_prefix)) == 0 &&
+        (reply_buf[strlen(ok_prefix)] == '\0' ||
+         isspace((unsigned char)reply_buf[strlen(ok_prefix)]))) {
+        return JW_RA_OK;
+    }
+    return JW_RA_UNSUPPORTED;
 }

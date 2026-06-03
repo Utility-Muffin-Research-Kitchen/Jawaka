@@ -31,6 +31,10 @@
 #define JW_SWITCHER_RESUME_MAX_ATTEMPTS 40
 #define JW_INGAME_MENU_PREWARM_DELAY_MS 1200LL
 #define JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS 250LL
+#define JW_RETROARCH_QUIT_GRACE_MS 700LL
+#define JW_RETROARCH_KILL_GRACE_MS 700LL
+#define JW_RESIDENT_SWITCH_MAX_DEFAULT (-1)
+#define JW_RESIDENT_SWITCH_MAX_DEFAULT_LABEL "unlimited"
 
 typedef enum {
     JW_CHILD_NONE = 0,
@@ -50,6 +54,7 @@ typedef struct {
     char source_root[PATH_MAX];
     char core_path[PATH_MAX];
     char config_path[PATH_MAX];
+    int resident_switches;
     bool persist_config;
 } jw_retroarch_session;
 
@@ -113,6 +118,36 @@ static void jw__handle_signal(int signo) {
 static int jw__path_exists(const char *path) {
     struct stat st;
     return path && stat(path, &st) == 0;
+}
+
+static int jw__resident_switch_max(void) {
+    static bool cached = false;
+    static int max_switches = JW_RESIDENT_SWITCH_MAX_DEFAULT;
+
+    if (cached) {
+        return max_switches;
+    }
+    cached = true;
+
+    const char *value = getenv("JAWAKA_RESIDENT_SWITCH_MAX");
+    if (!value || !value[0]) {
+        return max_switches;
+    }
+    if (strcmp(value, "unlimited") == 0 || strcmp(value, "-1") == 0) {
+        max_switches = -1;
+        return max_switches;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (errno == 0 && end && *end == '\0' && parsed >= 0 && parsed <= 1000000L) {
+        max_switches = (int)parsed;
+    } else {
+        jw_log_warn("invalid JAWAKA_RESIDENT_SWITCH_MAX=%s; using default=%s",
+                    value, JW_RESIDENT_SWITCH_MAX_DEFAULT_LABEL);
+    }
+    return max_switches;
 }
 
 static const char *jw__env_value(const char *name) {
@@ -562,6 +597,7 @@ static int jw__spawn_app(jw_daemon_state *state);
 static int jw__request_open_in_game_menu(jw_daemon_state *state);
 static int jw__request_open_in_game_switcher(jw_daemon_state *state);
 static int jw__request_close_in_game_menu(jw_daemon_state *state);
+static void jw__handle_child_exit(jw_daemon_state *state);
 
 static void jw__schedule_in_game_menu_prewarm(jw_daemon_state *state,
                                               long long delay_ms) {
@@ -702,6 +738,62 @@ static long jw__retroarch_session_runtime_s(const jw_retroarch_session *session)
     return (long)(ended_at - session->started_at);
 }
 
+static void jw__retroarch_session_record_play(jw_daemon_state *state,
+                                              const jw_retroarch_session *session,
+                                              long runtime_s) {
+    if (!state || !session || runtime_s <= 0 ||
+        !state->db_path || !session->rom_path[0]) {
+        return;
+    }
+
+    const char *db_rom = session->db_rom_path[0]
+        ? session->db_rom_path
+        : session->rom_path;
+    if (jw_db_record_play(state->db_path, db_rom, (int)runtime_s) == 0) {
+        jw_log_info("recorded play rom=%s duration_s=%ld", db_rom, runtime_s);
+    } else {
+        jw_log_warn("could not record play for rom=%s", db_rom);
+    }
+}
+
+static void jw__retroarch_session_retarget(jw_daemon_state *state,
+                                           const char *system,
+                                           const char *rom_path,
+                                           const char *db_rom_path,
+                                           const char *source_root,
+                                           const char *core_path) {
+    if (!state || !state->retroarch_session.active) {
+        return;
+    }
+
+    jw_retroarch_session *session = &state->retroarch_session;
+    long runtime_s = jw__retroarch_session_runtime_s(session);
+    jw__retroarch_session_record_play(state, session, runtime_s);
+    int resident_switches = session->resident_switches + 1;
+
+    session->started_at = time(NULL);
+    snprintf(session->system, sizeof(session->system), "%s", system ? system : "");
+    snprintf(session->rom_path, sizeof(session->rom_path), "%s", rom_path ? rom_path : "");
+    snprintf(session->db_rom_path, sizeof(session->db_rom_path), "%s",
+             db_rom_path ? db_rom_path : "");
+    snprintf(session->source_root, sizeof(session->source_root), "%s",
+             source_root ? source_root : "");
+    snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
+    session->resident_switches = resident_switches;
+
+    state->post_launch_resume_pending = false;
+    state->post_launch_resume_attempts = 0;
+    state->post_launch_resume_next_ms = 0;
+    state->retroarch_resume_on_menu_exit = false;
+    state->menu_visible = false;
+    state->menu_standby_attempts = 0;
+
+    jw_log_info("RetroArch session retargeted in-process pid=%d runtime_s=%ld resident_switches=%d system=%s source=%s core=%s rom=%s",
+                (int)session->pid, runtime_s, session->resident_switches,
+                session->system, session->source_root,
+                session->core_path, session->rom_path);
+}
+
 static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int status) {
     if (!state) {
         return;
@@ -753,16 +845,7 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
     /* Record recents + playtime for real sessions only. A crash at launch gives
        runtime_s=0, so it never pollutes the list or playtime totals. The session
        stores the same path form that games.rom_path used at launch. */
-    if (runtime_s > 0 && state->db_path && session->rom_path[0]) {
-        const char *db_rom = session->db_rom_path[0]
-            ? session->db_rom_path
-            : session->rom_path;
-        if (jw_db_record_play(state->db_path, db_rom, (int)runtime_s) == 0) {
-            jw_log_info("recorded play rom=%s duration_s=%ld", db_rom, runtime_s);
-        } else {
-            jw_log_warn("could not record play for rom=%s", db_rom);
-        }
-    }
+    jw__retroarch_session_record_play(state, session, runtime_s);
 
     state->post_launch_resume_pending = false;
     state->post_launch_resume_attempts = 0;
@@ -923,6 +1006,52 @@ static int jw__storage_sources(jw_daemon_state *state, jw_storage_source_list *o
         return -1;
     }
     return jw_storage_sources_resolve(state->sdcard_root, out);
+}
+
+static bool jw__same_resolved_path(const char *a, const char *b) {
+    if (!a || !b || !a[0] || !b[0]) {
+        return false;
+    }
+    if (strcmp(a, b) == 0) {
+        return true;
+    }
+
+    char real_a[PATH_MAX];
+    char real_b[PATH_MAX];
+    if (realpath(a, real_a) && realpath(b, real_b)) {
+        return strcmp(real_a, real_b) == 0;
+    }
+    return false;
+}
+
+static int jw__wait_for_retroarch_content(const jw_ra_client *ra,
+                                          const char *rom_abs,
+                                          long long timeout_ms) {
+    if (!ra || !rom_abs || !rom_abs[0]) {
+        return -1;
+    }
+
+    long long deadline = jw__monotonic_ms() + timeout_ms;
+    for (;;) {
+        jw_ra_client poll = *ra;
+        poll.timeout_ms = 100u;
+
+        char content[PATH_MAX];
+        jw_ra_result result = jw_ra_get_path(&poll, "content",
+                                             content, sizeof(content));
+        if (result == JW_RA_OK && jw__same_resolved_path(content, rom_abs)) {
+            return 0;
+        }
+
+        long long now = jw__monotonic_ms();
+        if (now >= deadline) {
+            jw_log_warn("resident switch: content wait timed out target=%s last_result=%s last_content=%s",
+                        rom_abs, jw_ra_result_string(result),
+                        result == JW_RA_OK ? content : "");
+            return -1;
+        }
+        usleep(50000);
+    }
 }
 
 static void jw__publish_source_content_env(const jw_storage_source *source) {
@@ -1142,6 +1271,46 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
     return 0;
 }
 
+static bool jw__wait_for_tracked_child_exit(jw_daemon_state *state, pid_t pid,
+                                            long long timeout_ms) {
+    if (!state || pid <= 0) {
+        return true;
+    }
+
+    long long deadline = jw__monotonic_ms() + timeout_ms;
+    for (;;) {
+        jw__handle_child_exit(state);
+        if (state->child_pid != pid || state->child_kind != JW_CHILD_RETROARCH) {
+            return true;
+        }
+
+        long long now = jw__monotonic_ms();
+        if (now >= deadline) {
+            return false;
+        }
+        usleep(50000);
+    }
+}
+
+static bool jw__force_retroarch_exit_if_needed(jw_daemon_state *state, pid_t pid,
+                                               const char *reason) {
+    if (jw__wait_for_tracked_child_exit(state, pid,
+                                        JW_RETROARCH_QUIT_GRACE_MS)) {
+        return true;
+    }
+
+    jw_log_warn("%s: RetroArch did not exit after QUIT; forcing pid=%d",
+                reason ? reason : "retroarch", (int)pid);
+    if (kill(pid, SIGKILL) != 0 && errno != ESRCH) {
+        jw_log_warn("%s: SIGKILL failed pid=%d: %s",
+                    reason ? reason : "retroarch", (int)pid,
+                    strerror(errno));
+    }
+
+    return jw__wait_for_tracked_child_exit(state, pid,
+                                           JW_RETROARCH_KILL_GRACE_MS);
+}
+
 /* True when system + resolved ROM path match the running session — used so a
    switch-game request targeting the current game resumes instead of switching. */
 static bool jw__is_current_session_game(const jw_daemon_state *state,
@@ -1166,9 +1335,10 @@ static bool jw__is_current_session_game(const jw_daemon_state *state,
 }
 
 /* Commit a switch from the in-game switcher: save the current game into the
-   reserved switcher slot, queue the selected game, then quit. The child-exit
-   handler records the old game's playtime and spawns the queued game directly
-   — no launcher flash in between. */
+   reserved switcher slot, then prefer an in-process same-core/same-source
+   content load. If RetroArch cannot do that, queue the selected game and quit;
+   the child-exit handler records the old game's playtime and spawns the queued
+   game directly — no launcher flash in between. */
 static int jw__request_switch_game(jw_daemon_state *state, const char *system,
                                    const char *rom_path, const char **out_error) {
     if (!state || !state->retroarch_session.active) {
@@ -1226,6 +1396,117 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     jw_log_info("switch-game: saved current game state slot=%d",
                 JW_RA_GAME_SWITCHER_STATE_SLOT);
 
+    char target_rom_abs[PATH_MAX];
+    target_rom_abs[0] = '\0';
+    char target_source_root[PATH_MAX];
+    target_source_root[0] = '\0';
+    char *target_core = NULL;
+    bool resident_eligible = false;
+    int resident_switch_max = jw__resident_switch_max();
+
+    if (jw__resolve_rom_path(state, rom_path,
+                             target_rom_abs, sizeof(target_rom_abs)) == 0) {
+        jw_storage_source_list sources;
+        const jw_storage_source *target_source = NULL;
+        if (jw__storage_sources(state, &sources) == 0) {
+            target_source = jw_storage_sources_find_for_path(&sources,
+                                                             target_rom_abs);
+        }
+        if (target_source) {
+            snprintf(target_source_root, sizeof(target_source_root), "%s",
+                     target_source->root);
+        } else {
+            snprintf(target_source_root, sizeof(target_source_root), "%s",
+                     state->sdcard_root ? state->sdcard_root : "");
+        }
+
+        target_core = jw_retroarch_core_path_for_system(system);
+        resident_eligible =
+            target_core && target_core[0] &&
+            (resident_switch_max < 0 ||
+             state->retroarch_session.resident_switches < resident_switch_max) &&
+            state->retroarch_session.core_path[0] &&
+            strcmp(target_core, state->retroarch_session.core_path) == 0 &&
+            target_source_root[0] &&
+            state->retroarch_session.source_root[0] &&
+            strcmp(target_source_root, state->retroarch_session.source_root) == 0;
+    }
+
+    if (resident_eligible) {
+        long long resident_start_ms = jw__monotonic_ms();
+        char load_reply[JW_RA_REPLY_MAX];
+        jw_ra_result load_content =
+            jw_ra_load_content_current_core(&ra, target_rom_abs,
+                                            load_reply, sizeof(load_reply));
+        if (load_content == JW_RA_OK &&
+            jw__wait_for_retroarch_content(&ra, target_rom_abs, 2500LL) == 0) {
+            int slot = 0;
+            char state_path[PATH_MAX];
+            char states_dir[PATH_MAX];
+            bool have_resume_state = false;
+            state_path[0] = '\0';
+
+            if (snprintf(states_dir, sizeof(states_dir), "%s/States",
+                         target_source_root) < (int)sizeof(states_dir)) {
+                have_resume_state =
+                    jw_ra_find_resume_state(states_dir, target_rom_abs,
+                                            JW_RA_GAME_SWITCHER_STATE_SLOT,
+                                            &slot,
+                                            state_path, sizeof(state_path));
+            }
+
+            jw__retroarch_session_retarget(state, system, target_rom_abs,
+                                           rom_path, target_source_root,
+                                           target_core);
+
+            if (have_resume_state) {
+                char load_state_reply[JW_RA_REPLY_MAX];
+                jw_ra_result load_state =
+                    jw_ra_load_state_slot(&ra, slot,
+                                          load_state_reply,
+                                          sizeof(load_state_reply));
+                if (load_state == JW_RA_OK) {
+                    jw_log_info("resident switch: loaded slot=%d path=%s",
+                                slot, state_path);
+                } else {
+                    jw_log_warn("resident switch: state load failed slot=%d path=%s result=%s",
+                                slot, state_path,
+                                jw_ra_result_string(load_state));
+                }
+            } else {
+                jw_log_info("resident switch: no resume state found for %s",
+                            target_rom_abs);
+            }
+
+            jw_ra_resume_direct(&ra);
+            state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
+            jw_log_info("resident switch timings: total_ms=%lld rom=%s",
+                        jw__monotonic_ms() - resident_start_ms,
+                        target_rom_abs);
+            free(target_core);
+            return 0;
+        }
+
+        jw_log_warn("resident switch unavailable result=%s reply=%s; falling back to cold switch",
+                    jw_ra_result_string(load_content),
+                    load_content == JW_RA_OK ? load_reply : "");
+    } else {
+        jw_log_info("resident switch skipped: eligible=%s resident_switches=%d resident_switch_max=%d target_source=%s target_core=%s current_source=%s current_core=%s",
+                    resident_eligible ? "true" : "false",
+                    state->retroarch_session.resident_switches,
+                    resident_switch_max,
+                    target_source_root[0] ? target_source_root : "(unknown)",
+                    target_core ? target_core : "(unknown)",
+                    state->retroarch_session.source_root[0]
+                        ? state->retroarch_session.source_root
+                        : "(unknown)",
+                    state->retroarch_session.core_path[0]
+                        ? state->retroarch_session.core_path
+                        : "(unknown)");
+    }
+    free(target_core);
+
     snprintf(state->pending_launch_system, sizeof(state->pending_launch_system),
              "%s", system);
     snprintf(state->pending_launch_rom_path, sizeof(state->pending_launch_rom_path),
@@ -1233,12 +1514,22 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     state->pending_launch_resume_switcher = true;
     state->pending_launch = true;
 
+    pid_t old_retroarch_pid = state->child_pid;
     jw_ra_result q = jw_ra_quit(&ra);
     if (q != JW_RA_OK) {
         jw_log_error("switch-game: quit failed result=%s", jw_ra_result_string(q));
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
         if (out_error) *out_error = "RetroArch quit failed";
+        return -1;
+    }
+    if (!jw__force_retroarch_exit_if_needed(state, old_retroarch_pid,
+                                            "switch-game")) {
+        jw_log_error("switch-game: RetroArch did not exit after forced kill pid=%d",
+                     (int)old_retroarch_pid);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        if (out_error) *out_error = "RetroArch exit failed";
         return -1;
     }
 
@@ -2239,6 +2530,8 @@ static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *cl
     cJSON_AddStringToObject(root, "type", "retroarch-session");
     cJSON_AddBoolToObject(root, "active",
                           state && state->retroarch_session.active);
+    cJSON_AddNumberToObject(root, "resident_switch_max",
+                            jw__resident_switch_max());
 
     if (!state || !state->retroarch_session.active) {
         cJSON_AddBoolToObject(root, "command_ok", false);
@@ -2249,6 +2542,8 @@ static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *cl
     cJSON_AddStringToObject(root, "system", state->retroarch_session.system);
     cJSON_AddStringToObject(root, "rom_path", state->retroarch_session.rom_path);
     cJSON_AddStringToObject(root, "core_path", state->retroarch_session.core_path);
+    cJSON_AddNumberToObject(root, "resident_switches",
+                            state->retroarch_session.resident_switches);
 
     jw_ra_client ra = jw_ra_client_default();
     jw_ra_info info;
