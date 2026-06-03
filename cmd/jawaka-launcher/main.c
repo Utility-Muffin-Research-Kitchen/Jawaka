@@ -355,10 +355,13 @@ static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
                              SDL_Rect *list, SDL_Rect *image, int *item_h) {
     int pad     = CAT_S(JW_BROWSE_PAD);
     int hints_h = jw__footer_height(state);
+    /* The content box owns no bottom padding; the gap above the hint bar is the
+       hint box's own top padding, so it disappears with the hints. */
+    int hint_pad = (hints_h > 0) ? pad : 0;
     cat_box content = {
         0, header_h, cat_get_screen_width(),
-        cat_get_screen_height() - header_h - hints_h,
-        pad, pad, pad, pad
+        cat_get_screen_height() - header_h - hints_h - hint_pad,
+        pad, pad, 0, pad
     };
     int list_w = cat_box_content(&content).w * 58 / 100;
     cat_box lb, ib;
@@ -829,39 +832,32 @@ static void jw__render_apps(const jw_launcher_state *state,
                              int content_y, int content_h, int margin) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-    int sw = cat_get_screen_width();
+    (void)content_h;
 
-    int list_x = margin;
-    int list_w = sw * 58 / 100;   /* match the Recents/Favorites list/preview split */
-    int body_h = TTF_FontHeight(body);
-    int item_h = body_h + CAT_S(12);
-    int list_h = content_h - CAT_S(28);
-    int art_x  = list_w + margin * 2;
-    int art_y  = content_y + margin;
-    int art_w  = sw - art_x - margin;
-    int art_h  = content_h - margin * 2;
+    SDL_Rect list, image;
+    int item_h;
+    jw__browse_boxes(state, content_y, state->app_count,
+                     state->list.visible_rows, &list, &image, &item_h);
 
     if (state->app_count > 0 && state->list.cursor < state->app_count) {
         jw__draw_app_detail(state, &state->apps[state->list.cursor],
-                            art_x, art_y, art_w, art_h);
+                            image.x, image.y, image.w, image.h);
     } else {
-        cat_draw_rounded_rect(art_x, art_y, art_w, art_h, CAT_S(8),
+        cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
             cat_hex_to_color("#ffffff18"));
     }
 
     if (state->app_count == 0) {
         cat_draw_text_wrapped(body,
             state->scan_ready ? "No apps found" : "Scanning library...",
-            list_x + CAT_S(8), content_y + margin + CAT_S(8),
-            list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+            list.x + CAT_S(8), list.y + CAT_S(8),
+            list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__apps_ctx ctx = { state->apps };
-        cat_draw_list_pane(list_x, content_y + margin, list_w, list_h,
+        cat_draw_list_pane(list.x, list.y, list.w, list.h,
             state->app_count, &state->list, item_h,
             jw__draw_app_item, &ctx);
     }
-
-    (void)margin;
 }
 
 static void jw__render_settings(const jw_launcher_state *state,
@@ -1545,63 +1541,54 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
                                 int detail_x, int detail_y,
                                 int detail_w, int detail_h) {
     ap_theme *theme = cat_get_theme();
-    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-    int margin = CAT_S(16);
 
     cat_draw_rounded_rect(detail_x, detail_y, detail_w, detail_h, CAT_S(8),
-                          cat_hex_to_color("#ffffff18"));
+                          cat_hex_to_color("#ffffff10"));
 
     if (!app) {
         return;
     }
 
-    bool drew_icon = false;
+    /* Icon sizing mirrors jw__draw_system_preview so both panes match. */
+    int icon_max = CAT_S(192);
+    int icon_box = detail_w * 60 / 100;
+    if (icon_box > icon_max)     icon_box = icon_max;
+    if (icon_box > detail_h / 2) icon_box = detail_h / 2;
+
+    int sub_h = TTF_FontHeight(small);
+    int gap   = CAT_S(12);
+
+    SDL_Texture *tex = NULL;
+    int icon_w = 0, icon_h = 0;
     char icon_abs[PATH_MAX];
-    int icon_w = 0;
-    int icon_h = 0;
     if (jw__resolve_app_icon_path(state, app, icon_abs, sizeof(icon_abs)) == 0) {
-        SDL_Texture *tex = jw__load_cached_image(icon_abs, &icon_w, &icon_h);
-        if (tex) {
-            int art_x = detail_x + margin;
-            int art_y = detail_y + margin;
-            int art_w = detail_w - margin * 2;
-            int art_h = detail_h * 58 / 100;
-            jw__draw_image_fit(tex, icon_w, icon_h, art_x, art_y, art_w, art_h);
-
-            int text_y = art_y + art_h + CAT_S(12);
-            cat_draw_text_ellipsized(large, app->name,
-                                     detail_x + margin, text_y,
-                                     theme->text, detail_w - margin * 2);
-            cat_draw_text_ellipsized(small, app->pak_dir,
-                                     detail_x + margin,
-                                     text_y + TTF_FontHeight(large) + CAT_S(8),
-                                     theme->hint, detail_w - margin * 2);
-            drew_icon = true;
-        }
+        tex = jw__load_cached_image(icon_abs, &icon_w, &icon_h);
+    }
+    if (!tex) {
+        /* Apps that ship no icon fall back to the Leaf badge. */
+        tex = jw__load_system_icon("_apps", &icon_w, &icon_h);
     }
 
-    if (!drew_icon) {
-        int large_h = TTF_FontHeight(large);
-        int small_h = TTF_FontHeight(small);
-        int gap = CAT_S(8);
-        int block_h = large_h + gap + small_h;
-        int max_w = detail_w - margin * 2;
-        int y = detail_y + (detail_h - block_h) / 2;
+    /* Vertical stack: icon + name, centered in the pane (matches the system
+       preview's icon + count layout). */
+    int block_h = (tex ? icon_box : 0) + gap + sub_h;
+    int top_y   = detail_y + (detail_h - block_h) / 2;
 
-        int name_w = cat_measure_text(large, app->name);
-        if (name_w > max_w) name_w = max_w;
-        cat_draw_text_ellipsized(large, app->name,
-                                 detail_x + (detail_w - name_w) / 2,
-                                 y, theme->text, max_w);
-
-        int path_w = cat_measure_text(small, app->pak_dir);
-        if (path_w > max_w) path_w = max_w;
-        cat_draw_text_ellipsized(small, app->pak_dir,
-                                 detail_x + (detail_w - path_w) / 2,
-                                 y + large_h + gap,
-                                 theme->hint, max_w);
+    int label_y = top_y;
+    if (tex) {
+        jw__draw_image_fit(tex, icon_w, icon_h,
+                           detail_x + (detail_w - icon_box) / 2, top_y,
+                           icon_box, icon_box);
+        label_y = top_y + icon_box + gap;
     }
+
+    int max_w  = detail_w - CAT_S(16) * 2;
+    int name_w = cat_measure_text(small, app->name);
+    if (name_w > max_w) name_w = max_w;
+    cat_draw_text_ellipsized(small, app->name,
+                             detail_x + (detail_w - name_w) / 2, label_y,
+                             theme->hint, max_w);
 }
 
 /* ─── Coverflow: animation helpers ───────────────────────────────────────── */
