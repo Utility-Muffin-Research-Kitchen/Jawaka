@@ -181,13 +181,6 @@ static void jw__setenvf_default(const char *name, const char *fmt, ...) {
     }
 }
 
-static bool jw__platform_uses_dot_system(const char *platform) {
-    return platform &&
-           (strcmp(platform, "tg5040") == 0 ||
-            strcmp(platform, "tg5050") == 0 ||
-            strcmp(platform, "my355") == 0);
-}
-
 static bool jw__format_default_system_path(char *out, size_t out_size,
                                            const char *sdcard_root,
                                            const char *platform) {
@@ -196,8 +189,8 @@ static bool jw__format_default_system_path(char *out, size_t out_size,
         return false;
     }
 
-    const char *prefix = jw__platform_uses_dot_system(platform) ? ".system" : "UMRK";
-    int needed = snprintf(out, out_size, "%s/%s/%s", sdcard_root, prefix, platform);
+    int needed = snprintf(out, out_size, "%s/.system/leaf/platforms/%s",
+                          sdcard_root, platform);
     return needed >= 0 && needed < (int)out_size;
 }
 
@@ -285,12 +278,15 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     }
     jw__setenv_default("UMRK_BIN_PATH", state->bin_dir);
 
-    jw__setenvf_default("USERDATA_PATH", "%s/.userdata/%s", state->sdcard_root, platform);
-    jw__setenvf_default("SHARED_USERDATA_PATH", "%s/.userdata/shared", state->sdcard_root);
+    jw__setenvf_default("USERDATA_PATH", "%s/.system/leaf/userdata/%s",
+                        state->sdcard_root, platform);
+    jw__setenvf_default("SHARED_USERDATA_PATH", "%s/.system/leaf/userdata/shared",
+                        state->sdcard_root);
     if (getenv("USERDATA_PATH")) {
         jw__setenvf_default("LOGS_PATH", "%s/logs", getenv("USERDATA_PATH"));
-        jw__setenv_default("UMRK_INTERNAL_DATA_PATH", getenv("USERDATA_PATH"));
     }
+    jw__setenvf_default("UMRK_INTERNAL_DATA_PATH", "%s/.system/leaf/state",
+                        state->sdcard_root);
     jw__setenvf_default("ROMS_PATH", "%s/Roms", state->sdcard_root);
     jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
     jw__setenvf_default("APPS_PATH", "%s/Apps", state->sdcard_root);

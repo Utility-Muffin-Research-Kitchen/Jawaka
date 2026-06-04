@@ -3,10 +3,7 @@ set -euo pipefail
 
 PLATFORM="${PLATFORM:-mac}"
 ROOT="${SDCARD_PATH:-${JAWAKA_SDCARD_ROOT:-./mock-sdcard}}"
-case "$PLATFORM" in
-    tg5040|tg5050|my355) DEFAULT_SYSTEM_ROOT="$ROOT/.system/$PLATFORM" ;;
-    *) DEFAULT_SYSTEM_ROOT="$ROOT/UMRK/$PLATFORM" ;;
-esac
+DEFAULT_SYSTEM_ROOT="$ROOT/.system/leaf/platforms/$PLATFORM"
 SYSTEM_ROOT="${UMRK_PLATFORM_PATH:-${SYSTEM_PATH:-$DEFAULT_SYSTEM_ROOT}}"
 ROMS_ROOT="${ROMS_PATH:-$ROOT/Roms}"
 IMAGES_ROOT="${IMAGES_PATH:-$ROOT/Images}"
@@ -26,7 +23,7 @@ if [[ -d "$ROOT" ]]; then
     fi
 fi
 
-mkdir -p "$ROMS_ROOT" "$IMAGES_ROOT" "$BIOS_ROOT" "$APPS_ROOT" "$SAVES_ROOT" "$STATES_ROOT" "$ROOT"/.umrk
+mkdir -p "$ROMS_ROOT" "$IMAGES_ROOT" "$BIOS_ROOT" "$APPS_ROOT" "$SAVES_ROOT" "$STATES_ROOT" "$ROOT"/.system/leaf/state
 mkdir -p "$SYSTEM_ROOT/defaults"
 
 cat >"$SYSTEM_ROOT/manifest.json" <<'JSON'

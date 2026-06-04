@@ -192,13 +192,6 @@ static const char *jw__env_value(const char *env_name) {
     return NULL;
 }
 
-static bool jw__platform_uses_dot_system(const char *platform) {
-    return platform &&
-           (strcmp(platform, "tg5040") == 0 ||
-            strcmp(platform, "tg5050") == 0 ||
-            strcmp(platform, "my355") == 0);
-}
-
 static bool jw__format_default_system_path(char *out, size_t out_size,
                                            const char *sdcard_root,
                                            const char *platform) {
@@ -207,8 +200,8 @@ static bool jw__format_default_system_path(char *out, size_t out_size,
         return false;
     }
 
-    const char *prefix = jw__platform_uses_dot_system(platform) ? ".system" : "UMRK";
-    return jw__format_string(out, out_size, "%s/%s/%s", sdcard_root, prefix, platform);
+    return jw__format_string(out, out_size, "%s/.system/leaf/platforms/%s",
+                             sdcard_root, platform);
 }
 
 static bool jw__format_default_system_child(char *out, size_t out_size,
@@ -665,12 +658,25 @@ char *jw_sdcard_root(void) {
 }
 
 char *jw_state_dir(void) {
+    const char *env = jw__env_value("UMRK_INTERNAL_DATA_PATH");
+    if (env && env[0]) {
+        char *state_dir = jw__dup_realpath_or_literal(env);
+        if (!state_dir) {
+            return NULL;
+        }
+        if (jw__mkdir_if_needed(state_dir, 0755) != 0) {
+            free(state_dir);
+            return NULL;
+        }
+        return state_dir;
+    }
+
     char *sdcard_root = jw_sdcard_root();
     if (!sdcard_root) {
         return NULL;
     }
 
-    char *state_dir = jw__dup_printf("%s/.umrk", sdcard_root);
+    char *state_dir = jw__dup_printf("%s/.system/leaf/state", sdcard_root);
     if (!state_dir) {
         free(sdcard_root);
         return NULL;
@@ -746,19 +752,25 @@ char *jw_retroarch_state_dir(const char *sdcard_root) {
         }
     }
 
-    if (jw__mkdir_child(sdroot_abs, ".umrk") != 0) {
+    const char *internal = jw__env_value("UMRK_INTERNAL_DATA_PATH");
+    char state_root[PATH_MAX];
+    if (internal && internal[0]) {
+        if (!jw__format_string(state_root, sizeof(state_root), "%s", internal)) {
+            return NULL;
+        }
+    } else if (!jw__format_string(state_root, sizeof(state_root),
+                                  "%s/.system/leaf/state", sdroot_abs)) {
+        return NULL;
+    }
+    if (jw__mkdir_if_needed(state_root, 0755) != 0) {
         return NULL;
     }
 
-    char umrk_dir[PATH_MAX];
-    if (!jw__format_string(umrk_dir, sizeof(umrk_dir), "%s/.umrk", sdroot_abs)) {
-        return NULL;
-    }
-    if (jw__mkdir_child(umrk_dir, "retroarch") != 0) {
+    if (jw__mkdir_child(state_root, "retroarch") != 0) {
         return NULL;
     }
 
-    return jw__dup_printf("%s/retroarch", umrk_dir);
+    return jw__dup_printf("%s/retroarch", state_root);
 }
 
 char *jw_retroarch_bin_path(void) {

@@ -15,7 +15,7 @@ OUT_PATH="$TMP_ROOT/scan.tsv"
 OUT_PRUNE_PATH="$TMP_ROOT/scan-prune.tsv"
 
 mkdir -p \
-    "$SD_ROOT/UMRK/mlp1/defaults" \
+    "$SD_ROOT/.system/leaf/platforms/mlp1/defaults" \
     "$SD_ROOT/Roms/MD" \
     "$SD_ROOT/Roms/GBA" \
     "$SD_ROOT/Roms/ARCADE" \
@@ -26,9 +26,9 @@ mkdir -p \
     "$SECONDARY_ROOT/Roms/GBA/Imgs"
 
 cp "$UMRK_ROOT/miniloong-launcher-switcher/device/mlp1/defaults/cores.json" \
-   "$SD_ROOT/UMRK/mlp1/defaults/cores.json"
+   "$SD_ROOT/.system/leaf/platforms/mlp1/defaults/cores.json"
 cp "$UMRK_ROOT/miniloong-launcher-switcher/device/mlp1/defaults/systems.json" \
-   "$SD_ROOT/UMRK/mlp1/defaults/systems.json"
+   "$SD_ROOT/.system/leaf/platforms/mlp1/defaults/systems.json"
 
 printf 'rom\n' >"$SD_ROOT/Roms/MD/Sonic.md"
 printf 'archive\n' >"$SD_ROOT/Roms/MD/Sonic.md.zip"
