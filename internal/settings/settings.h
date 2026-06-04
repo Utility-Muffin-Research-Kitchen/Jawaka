@@ -150,6 +150,7 @@ typedef struct {
     char               wifi_attempt_ssid[64];  /* network we're trying to join ("" = none) */
     unsigned           wifi_attempt_ms;     /* when the join attempt started */
     int                wifi_monitor_fd;     /* wpa event-socket fd during a join (-1 = none) */
+    bool               wifi_radio_on;       /* wlan0 up? (the Wi-Fi on/off toggle state) */
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;

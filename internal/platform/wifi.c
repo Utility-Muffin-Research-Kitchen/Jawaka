@@ -9,12 +9,36 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/time.h>
+#include <sys/select.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <limits.h>
+#include <errno.h>
+#include <signal.h>
+#include <dlfcn.h>
+#include <sys/stat.h>
+
+#define JW_WIFI_CMD_TIMEOUT_MS 6000   /* hard cap so a stuck wpa_cli can't freeze the UI */
 
 #define JW_WIFI_IFACE       "wlan0"
-#define JW_WIFI_CTRL_SOCK   "/var/run/wpa_supplicant/" JW_WIFI_IFACE
+#define JW_WIFI_CTRL_DIR    "/var/run/wpa_supplicant"
+#define JW_WIFI_CTRL_SOCK   JW_WIFI_CTRL_DIR "/" JW_WIFI_IFACE
+#define JW_WIFI_FLAGS_PATH  "/sys/class/net/" JW_WIFI_IFACE "/flags"
+
+/* Exactly how stock loong launches the supplicant at boot (captured from the
+   running process): wpa_supplicant -B -i wlan0 -c <conf> -P <pidfile>. We
+   replicate it on the radio-on path because loong's *live* enable only re-ups
+   the interface — it doesn't (re)start the supplicant the way boot init does. */
+#define JW_WIFI_SUPPLICANT_BIN "/usr/sbin/wpa_supplicant"
+#define JW_WIFI_CONF_PATH      JW_WIFI_CTRL_DIR "/wpa_supplicant.conf"
+#define JW_WIFI_PIDFILE        "/run/wpa_supplicant.wlan0.pid"
+
+/* Loong's persisted settings store (plain SQLite). WIFI_PARAM = {"enable":0|1}
+   is the authoritative radio-enable flag — what loong honors at boot and what
+   WriteConfig updates. We read it (rather than the wlan0 IFF_UP bit) because
+   loong's watchdog keeps the interface up even when the radio is meant to be
+   off, so IFF_UP can lie. */
+#define JW_LOONG_DB_PATH "/oem/loong/loong.db"
 
 /* Run `wpa_cli -i wlan0 <args...>` and capture stdout into buf (NUL-terminated).
  * fork/exec + pipe — no system(). Returns bytes read (>=0), or -1 on failure. */
@@ -54,19 +78,37 @@ static int jw__wifi_run(const char *const *args, int nargs,
         _exit(127);
     }
 
-    /* Parent: read the child's stdout. */
+    /* Parent: read the child's stdout with a hard deadline. wpa_cli can block
+       indefinitely when the interface/wpa is in a bad state; without this the
+       whole UI freezes (the rescan-while-off lockup). */
     close(pipefd[1]);
+    fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
     size_t total = 0;
-    for (;;) {
-        if (total + 1 >= buf_size) {
-            break;
-        }
-        ssize_t n = read(pipefd[0], buf + total, buf_size - 1 - total);
-        if (n > 0) {
-            total += (size_t)n;
-        } else if (n == 0) {
-            break;
-        } else {
+    int elapsed_ms = 0;
+    int timed_out = 0;
+    while (total + 1 < buf_size) {
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(pipefd[0], &rf);
+        struct timeval tv = { 0, 200000 };   /* 200ms slices */
+        int s = select(pipefd[0] + 1, &rf, NULL, NULL, &tv);
+        if (s > 0) {
+            ssize_t n = read(pipefd[0], buf + total, buf_size - 1 - total);
+            if (n > 0) {
+                total += (size_t)n;
+            } else if (n == 0) {
+                break;            /* child closed stdout */
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                break;
+            }
+        } else if (s == 0) {
+            elapsed_ms += 200;
+            if (elapsed_ms >= JW_WIFI_CMD_TIMEOUT_MS) {
+                kill(pid, SIGKILL);
+                timed_out = 1;
+                break;
+            }
+        } else if (errno != EINTR) {
             break;
         }
     }
@@ -75,7 +117,7 @@ static int jw__wifi_run(const char *const *args, int nargs,
 
     int status = 0;
     waitpid(pid, &status, 0);
-    if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+    if (timed_out || !(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
         return -1;
     }
     return (int)total;
@@ -507,6 +549,33 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
     return JW_WIFI_CONNECT_OK;
 }
 
+/* Does the SSID advertise SAE (WPA3) in the latest scan? 1=yes, 0=secured but no
+ * SAE, -1=not found. SAE can't use a stored PMK hash — it needs the passphrase —
+ * so we only hash when this returns 0 (confirmed WPA2-only). */
+static int jw__wifi_ssid_sae(const char *ssid) {
+    char dump[8192];
+    if (jw__wifi_wpa_cli("scan_results", dump, sizeof(dump)) < 0) {
+        return -1;
+    }
+    char *save_line = NULL;
+    char *line = strtok_r(dump, "\n", &save_line);   /* header */
+    if (line) {
+        line = strtok_r(NULL, "\n", &save_line);
+    }
+    for (; line; line = strtok_r(NULL, "\n", &save_line)) {
+        char *st = NULL;
+        char *bssid = strtok_r(line, "\t", &st);
+        char *freq  = bssid ? strtok_r(NULL, "\t", &st) : NULL;
+        char *sig   = freq  ? strtok_r(NULL, "\t", &st) : NULL;
+        char *flags = sig   ? strtok_r(NULL, "\t", &st) : NULL;
+        char *name  = flags ? strtok_r(NULL, "\t", &st) : NULL;
+        if (name && strcmp(name, ssid) == 0) {
+            return (flags && strstr(flags, "SAE") != NULL) ? 1 : 0;
+        }
+    }
+    return -1;
+}
+
 jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
     if (!ssid || !ssid[0] || !psk) {
         return JW_WIFI_CONNECT_FAILED;
@@ -533,15 +602,20 @@ jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
         return JW_WIFI_CONNECT_FAILED;
     }
 
-    /* Store the derived PMK hash, never the plaintext passphrase. Fall back to
-       the passphrase only if wpa_passphrase is somehow unavailable. */
+    /* Key storage depends on the security type:
+       - confirmed WPA2-only (sae==0): store the derived PMK hash, so the reusable
+         passphrase never hits disk (the security win).
+       - SAE/WPA3 (sae==1) or unknown (-1): SAE cannot use a stored PMK hash — it
+         needs the actual passphrase — so store it quoted. (Unavoidable plaintext
+         for SAE; only applies to WPA3 networks.) */
     char hex[80];
-    if (jw__wifi_derive_psk(ssid, psk, hex, sizeof(hex)) == 0) {
+    bool stored = false;
+    if (jw__wifi_ssid_sae(ssid) == 0 &&
+        jw__wifi_derive_psk(ssid, psk, hex, sizeof(hex)) == 0) {
         const char *set_psk[] = { "set_network", idbuf, "psk", hex };
-        if (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) < 0) {
-            return JW_WIFI_CONNECT_FAILED;
-        }
-    } else {
+        stored = (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) >= 0);
+    }
+    if (!stored) {
         char qpsk[140];
         snprintf(qpsk, sizeof(qpsk), "\"%s\"", psk);
         const char *set_psk[] = { "set_network", idbuf, "psk", qpsk };
@@ -681,6 +755,245 @@ void jw_wifi_monitor_close(int fd) {
     unlink(local_path);
 }
 
+
+/* True if the wlan0 interface carries the IFF_UP bit. Used only as a fallback
+   when loong's enable flag can't be read. */
+static bool jw__wifi_iface_up(void) {
+    FILE *f = fopen(JW_WIFI_FLAGS_PATH, "r");
+    if (!f) {
+        return false;   /* no interface = module unloaded / radio off */
+    }
+    unsigned flags = 0;
+    int ok = fscanf(f, "%x", &flags);
+    fclose(f);
+    return ok == 1 && (flags & 0x1u) != 0;   /* IFF_UP */
+}
+
+/* Read loong's persisted WIFI_PARAM enable flag from loong.db via the sqlite3
+   CLI (fork/exec, no system()). Returns 1=on, 0=off, -1 if it can't be read
+   (DB locked/missing/sqlite3 absent) so the caller can fall back. */
+static int jw__wifi_read_enable_flag(void) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        /* .timeout rides out a brief writer lock from loong; the query returns
+           the raw JSON value, e.g. {"enable":1}. */
+        execlp("sqlite3", "sqlite3", "-cmd", ".timeout 1000", JW_LOONG_DB_PATH,
+               "select value from system_config where param='WIFI_PARAM';",
+               (char *)NULL);
+        _exit(127);
+    }
+    close(pipefd[1]);
+    fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+
+    char buf[128];
+    size_t total = 0;
+    int elapsed_ms = 0;
+    int timed_out = 0;
+    while (total + 1 < sizeof(buf)) {
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(pipefd[0], &rf);
+        struct timeval tv = { 0, 200000 };
+        int s = select(pipefd[0] + 1, &rf, NULL, NULL, &tv);
+        if (s > 0) {
+            ssize_t n = read(pipefd[0], buf + total, sizeof(buf) - 1 - total);
+            if (n > 0) {
+                total += (size_t)n;
+            } else {
+                break;
+            }
+        } else if (s == 0) {
+            elapsed_ms += 200;
+            if (elapsed_ms >= 2000) {
+                kill(pid, SIGKILL);
+                timed_out = 1;
+                break;
+            }
+        } else if (errno != EINTR) {
+            break;
+        }
+    }
+    buf[total] = '\0';
+    close(pipefd[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (timed_out || !(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+        return -1;
+    }
+
+    /* Parse the first 0/1 after "enable". */
+    const char *p = strstr(buf, "enable");
+    if (!p) {
+        return -1;
+    }
+    p += 6;
+    while (*p && *p != '0' && *p != '1') {
+        p++;
+    }
+    if (*p == '0') return 0;
+    if (*p == '1') return 1;
+    return -1;
+}
+
+bool jw_wifi_radio_is_on(void) {
+    /* Loong's persisted enable flag is the source of truth (matches boot
+       behavior and the last toggle). Fall back to the interface flag only if
+       the DB can't be read. */
+    int flag = jw__wifi_read_enable_flag();
+    if (flag >= 0) {
+        return flag != 0;
+    }
+    return jw__wifi_iface_up();
+}
+
+/* Loong's generic system_config writer from libloong_sdk. Driving WIFI_PARAM
+   through it is exactly how stock toggles the radio: loong applies it live AND
+   persists to loong.db, and its watchdog honors the new isEnable state — whereas
+   ifconfig is reverted by that watchdog. Signature confirmed by disassembly:
+   int WriteConfig(const char *param, const char *value, const char *backup, bool). */
+typedef int (*jw_writeconfig_fn)(const char *, const char *, const char *, int);
+static jw_writeconfig_fn jw__loong_writeconfig(void) {
+    static jw_writeconfig_fn fn = NULL;
+    static int tried = 0;
+    if (!tried) {
+        tried = 1;
+        void *h = dlopen("/usr/lib/libloong_sdk.so", RTLD_NOW | RTLD_GLOBAL);
+        if (h) {
+            /* dlsym returns void*; the *(void**)& idiom avoids the ISO-C
+               object->function pointer cast warning (matches device_mlp1.c). */
+            *(void **)(&fn) = dlsym(h, "WriteConfig");
+        }
+    }
+    return fn;
+}
+
+/* PID of the running wpa_supplicant, or -1 if none. (Scans /proc by comm.) */
+static int jw__wifi_supplicant_pid(void) {
+    DIR *proc = opendir("/proc");
+    if (!proc) {
+        return -1;
+    }
+    int found = -1;
+    struct dirent *e;
+    while ((e = readdir(proc)) != NULL) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') {
+            continue;
+        }
+        char path[PATH_MAX];
+        char comm[64] = { 0 };
+        snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+        FILE *cf = fopen(path, "r");
+        if (!cf) {
+            continue;
+        }
+        int hit = (fgets(comm, sizeof(comm), cf) &&
+                   strncmp(comm, "wpa_supplicant", 14) == 0);
+        fclose(cf);
+        if (hit) {
+            found = atoi(e->d_name);
+            break;
+        }
+    }
+    closedir(proc);
+    return found;
+}
+
+/* Ensure the wpa conf exists with at least ctrl_interface + update_config, so a
+   freshly-started supplicant exposes its control socket and can save networks.
+   loong recreates this at boot, but if the radio booted off it may be absent. */
+static void jw__wifi_ensure_conf(void) {
+    if (access(JW_WIFI_CONF_PATH, F_OK) == 0) {
+        return;
+    }
+    mkdir(JW_WIFI_CTRL_DIR, 0755);   /* best-effort; may already exist */
+    FILE *f = fopen(JW_WIFI_CONF_PATH, "w");
+    if (!f) {
+        return;
+    }
+    fputs("ctrl_interface=" JW_WIFI_CTRL_DIR "\nupdate_config=1\n", f);
+    fclose(f);
+}
+
+/* Start wpa_supplicant the way stock loong does, if it isn't already running,
+   and wait briefly for its control socket to appear. No-op if already up. */
+static void jw__wifi_start_supplicant(void) {
+    if (jw__wifi_supplicant_pid() >= 0) {
+        return;   /* already running (loong's or ours) */
+    }
+    jw__wifi_ensure_conf();
+    pid_t pid = fork();
+    if (pid < 0) {
+        return;
+    }
+    if (pid == 0) {
+        execl(JW_WIFI_SUPPLICANT_BIN, "wpa_supplicant", "-B",
+              "-i", JW_WIFI_IFACE, "-c", JW_WIFI_CONF_PATH,
+              "-P", JW_WIFI_PIDFILE, (char *)NULL);
+        /* Fall back to a PATH lookup if the absolute path differs on a unit. */
+        execlp("wpa_supplicant", "wpa_supplicant", "-B",
+               "-i", JW_WIFI_IFACE, "-c", JW_WIFI_CONF_PATH,
+               "-P", JW_WIFI_PIDFILE, (char *)NULL);
+        _exit(127);
+    }
+    /* -B daemonizes: our direct child returns once backgrounded — reap it. */
+    int status = 0;
+    waitpid(pid, &status, 0);
+    /* Give the control socket up to ~2s to appear before issuing wpa_cli cmds. */
+    for (int i = 0; i < 20; i++) {
+        if (access(JW_WIFI_CTRL_SOCK, F_OK) == 0) {
+            break;
+        }
+        usleep(100 * 1000);
+    }
+}
+
+/* Bring wlan0 up (aligns with loong's enable intent, so the watchdog won't
+   fight it — unlike `ifconfig down`, which it reverts). */
+static void jw__wifi_iface_set_up(void) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        return;
+    }
+    if (pid == 0) {
+        execlp("ifconfig", "ifconfig", JW_WIFI_IFACE, "up", (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+}
+
+int jw_wifi_set_radio(bool on) {
+    jw_writeconfig_fn WriteConfig = jw__loong_writeconfig();
+    if (!WriteConfig) {
+        return -1;
+    }
+    int rc = WriteConfig("WIFI_PARAM", on ? "{\"enable\":1}" : "{\"enable\":0}", "", 1);
+    if (on) {
+        /* loong sets the enable flag and re-ups the interface, but its LIVE
+           enable path does not (re)start wpa_supplicant the way its boot init
+           does — so the radio reads "on" yet there's no scan/SSIDs/IP. Bring the
+           interface up, start the supplicant ourselves if absent, then re-add
+           saved networks and (re)connect with DHCP. */
+        jw__wifi_iface_set_up();
+        jw__wifi_start_supplicant();
+        jw_wifi_restore();
+        jw_wifi_recover();
+    }
+    return rc < 0 ? -1 : 0;
+}
+
 void jw_wifi_recover(void) {
     char buf[64];
     const char *enable_all[] = { "enable_network", "all" };
@@ -809,10 +1122,12 @@ int jw_wifi_harden(void) {
             continue;
         }
         if (in_block && strchr(line, '}')) {
+            /* Only hash networks we can CONFIRM are WPA2-only (sae==0). SAE/WPA3
+               or unknown stays plaintext — hashing would break SAE auth. */
             if (ssid[0] && has_plaintext) {
                 char hex[80];
                 int id = jw__wifi_saved_id(ssid);
-                if (id >= 0 &&
+                if (id >= 0 && jw__wifi_ssid_sae(ssid) == 0 &&
                     jw__wifi_derive_psk(ssid, pass, hex, sizeof(hex)) == 0) {
                     char idbuf[16];
                     char buf[64];

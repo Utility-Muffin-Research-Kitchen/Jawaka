@@ -790,6 +790,14 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
         (int)(now - ui->wifi_next_poll_ms) < 0) {
         return;
     }
+    ui->wifi_radio_on = jw_wifi_radio_is_on();
+    if (!ui->wifi_radio_on) {
+        /* Radio off — nothing to poll or scan; clear stale state. */
+        memset(&ui->wifi, 0, sizeof(ui->wifi));
+        ui->wifi_network_count = 0;
+        ui->wifi_next_poll_ms = now + 2000;
+        return;
+    }
     jw__refresh_wifi(ui);
     jw__refresh_wifi_scan(ui);
 
@@ -811,16 +819,21 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
                      ui->wifi_attempt_ssid);
             jw__wifi_attempt_clear(ui);
         } else if (failed) {
-            char bad[64];
-            snprintf(bad, sizeof(bad), "%s", ui->wifi_attempt_ssid);
-            if (evt == JW_WIFI_EVT_WRONG_KEY)
+            if (evt == JW_WIFI_EVT_WRONG_KEY) {
+                /* Only a DEFINITIVE wrong key forgets the profile — never a
+                   generic/timeout failure, which on this flaky radio can hit a
+                   perfectly-good saved network and would otherwise destroy a
+                   correct saved password. */
+                char bad[64];
+                snprintf(bad, sizeof(bad), "%s", ui->wifi_attempt_ssid);
+                jw_wifi_forget(bad);
                 jw__wifi_msg(ui, "Wrong password");
-            else
+                jw__refresh_wifi_scan(ui);
+            } else {
                 jw__wifi_msg(ui, "Couldn't connect — check password");
-            jw_wifi_forget(bad);   /* never keep a failed/wrong-key profile */
+            }
             jw_wifi_recover();     /* restore the network we were kicked off */
             jw__wifi_attempt_clear(ui);
-            jw__refresh_wifi_scan(ui);
         }
     }
 
@@ -832,12 +845,12 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
     ui->wifi_next_poll_ms = now + 2000;
 }
 
-typedef struct { const jw_wifi_network_t *nets; } jw__wifi_list_ctx;
+/* Row 0 is the Wi-Fi on/off toggle; rows 1.. are scanned networks. */
+typedef struct { const jw_wifi_network_t *nets; bool radio_on; } jw__wifi_list_ctx;
 
 static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
                                bool selected, void *user) {
     const jw__wifi_list_ctx *ctx = (const jw__wifi_list_ctx *)user;
-    const jw_wifi_network_t *net = &ctx->nets[idx];
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
 
@@ -849,6 +862,19 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
     ap_color label_c = selected ? theme->highlighted_text : theme->text;
     ap_color value_c = selected ? theme->highlighted_text : theme->hint;
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    if (idx == 0) {
+        /* The on/off toggle row. */
+        cat_draw_text(body, "Wi-Fi", ix + cat_scale(12), ty, label_c);
+        /* Action verb (what A will do), not a bare state word — "Turn On" when
+           the radio is off, "Turn Off" when it's on, so the button is unambiguous. */
+        const char *action = ctx->radio_on ? "Turn Off" : "Turn On";
+        int vw = cat_measure_text(body, action);
+        cat_draw_text(body, action, ix + iw - vw - cat_scale(16), ty, value_c);
+        return;
+    }
+
+    const jw_wifi_network_t *net = &ctx->nets[idx - 1];
 
     /* Left: SSID, with a leading "* " on the connected network. */
     char label[80];
@@ -877,10 +903,12 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
 
     const jw_wifi_status_t *wifi = &ui->wifi;
 
-    /* Read-only status rows (Phase 1). Scanning and connecting come later. */
     char status_val[48];
     char signal_val[32];
-    if (!wifi->valid) {
+    if (!ui->wifi_radio_on) {
+        snprintf(status_val, sizeof(status_val), "%s", "Off");
+        snprintf(signal_val, sizeof(signal_val), "%s", "—");
+    } else if (!wifi->valid) {
         snprintf(status_val, sizeof(status_val), "%s", "Unavailable");
         snprintf(signal_val, sizeof(signal_val), "%s", "—");
     } else if (wifi->connected) {
@@ -930,18 +958,14 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
         dy += line_h + cat_scale(6);
     }
 
-    /* ── Available networks (scanned list) ── */
-    cat_draw_text(body, "Available networks", x + cat_scale(12), dy, theme->hint);
-    dy += line_h;
-
-    if (ui->wifi_network_count <= 0) {
-        cat_draw_text(body, wifi->valid ? "Scanning…" : "Wi-Fi unavailable",
-                      x + cat_scale(12), dy, theme->hint);
-    } else {
-        jw__wifi_list_ctx ctx = { ui->wifi_networks };
-        int list_h = JW_WIFI_LIST_ROWS * item_h;
-        cat_draw_list_pane(x, dy, w, list_h, ui->wifi_network_count,
-                           &ui->network_list, item_h, jw__draw_wifi_item, &ctx);
+    /* ── List: row 0 = Wi-Fi on/off toggle, rows 1.. = scanned networks ── */
+    int count = ui->wifi_radio_on ? ui->wifi_network_count + 1 : 1;
+    jw__wifi_list_ctx ctx = { ui->wifi_networks, ui->wifi_radio_on };
+    int list_h = JW_WIFI_LIST_ROWS * item_h;
+    cat_draw_list_pane(x, dy, w, list_h, count, &ui->network_list, item_h,
+                       jw__draw_wifi_item, &ctx);
+    if (ui->wifi_radio_on && ui->wifi_network_count == 0) {
+        cat_draw_text(body, "Scanning…", x + cat_scale(12), dy + item_h, theme->hint);
     }
 
     (void)h;
@@ -1683,23 +1707,38 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         break;
 
     /* ── Network (Wi-Fi: status + scan + connect, Phases 1-3) ────────── */
-    case JW_SETTINGS_NETWORK:
+    case JW_SETTINGS_NETWORK: {
+        /* Row 0 is the Wi-Fi on/off toggle; rows 1.. are scanned networks. */
+        int row_count = ui->wifi_radio_on ? ui->wifi_network_count + 1 : 1;
         switch (button) {
             case CAT_BTN_UP:
-                cat_list_state_move(&ui->network_list, -1, ui->wifi_network_count);
+                cat_list_state_move(&ui->network_list, -1, row_count);
                 break;
             case CAT_BTN_DOWN:
-                cat_list_state_move(&ui->network_list, +1, ui->wifi_network_count);
+                cat_list_state_move(&ui->network_list, +1, row_count);
                 break;
             case CAT_BTN_A: {
-                /* Connect to the selected network. Open/saved connect directly;
-                   a secured network with no saved profile prompts for the key. */
-                if (!(ui->wifi_network_count > 0 &&
-                      ui->network_list.cursor < ui->wifi_network_count)) {
+                /* Row 0: toggle the radio. (Blocks briefly; turning OFF will drop
+                   an ADB-over-Wi-Fi session — expected.) */
+                if (ui->network_list.cursor == 0) {
+                    bool turning_on = !ui->wifi_radio_on;
+                    jw__wifi_msg(ui, turning_on ? "Turning Wi-Fi on…"
+                                                : "Turning Wi-Fi off…");
+                    snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                    jw__wifi_attempt_clear(ui);
+                    jw_wifi_set_radio(turning_on);
+                    ui->wifi_radio_on = jw_wifi_radio_is_on();
+                    ui->network_list.cursor = 0;
+                    ui->wifi_next_poll_ms = SDL_GetTicks();
                     break;
                 }
-                const jw_wifi_network_t *net =
-                    &ui->wifi_networks[ui->network_list.cursor];
+                /* Rows 1..: connect the selected network (open/saved direct; a
+                   secured network with no saved profile prompts for the key). */
+                int ni = ui->network_list.cursor - 1;
+                if (!ui->wifi_radio_on || ni < 0 || ni >= ui->wifi_network_count) {
+                    break;
+                }
+                const jw_wifi_network_t *net = &ui->wifi_networks[ni];
 
                 if (net->current && ui->wifi.connected) {
                     /* A on the connected network disconnects it. */
@@ -1746,11 +1785,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 break;
             }
             case CAT_BTN_Y: {
-                /* Forget the selected network's saved profile. */
-                if (ui->wifi_network_count > 0 &&
-                    ui->network_list.cursor < ui->wifi_network_count) {
-                    const jw_wifi_network_t *net =
-                        &ui->wifi_networks[ui->network_list.cursor];
+                /* Forget the selected network's saved profile (rows 1.. only). */
+                int ni = ui->network_list.cursor - 1;
+                if (ui->wifi_radio_on && ni >= 0 && ni < ui->wifi_network_count) {
+                    const jw_wifi_network_t *net = &ui->wifi_networks[ni];
                     if (net->saved) {
                         if (jw_wifi_forget(net->ssid) == 0)
                             jw__wifi_msg(ui,
@@ -1770,6 +1808,9 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 break;
             }
             case CAT_BTN_X:
+                if (!ui->wifi_radio_on) {
+                    break;   /* nothing to scan with the radio off */
+                }
                 jw_wifi_scan_start();
                 jw__refresh_wifi(ui);
                 jw__refresh_wifi_scan(ui);
@@ -1783,6 +1824,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             default: break;
         }
         break;
+    }
 
     /* ── Lighting (LED ring) ─────────────────────────────────────────── */
     case JW_SETTINGS_LIGHTING:

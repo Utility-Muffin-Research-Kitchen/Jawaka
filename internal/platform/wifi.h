@@ -94,6 +94,20 @@ void jw_wifi_monitor_close(int fd);
  * saved networks and reconnect (wpa picks the best reachable one). */
 void jw_wifi_recover(void);
 
+/* ── Radio on/off ────────────────────────────────────────────────────────────
+ * Stock owns the radio via loong_service; the real enable knob is the loong.db
+ * WIFI_PARAM flag, which we drive through libloong_sdk's WriteConfig (the same
+ * call stock uses). ifconfig/rfkill don't stick — loong's watchdog reverts them. */
+
+/* True if the radio is enabled, read from loong's persisted WIFI_PARAM.enable
+ * (falls back to the wlan0 IFF_UP bit only if the DB can't be read). */
+bool jw_wifi_radio_is_on(void);
+
+/* Toggle the radio. ON: WriteConfig enable:1, bring wlan0 up, (re)start
+ * wpa_supplicant if loong's live-enable didn't, then restore saved networks +
+ * reconnect with DHCP. OFF: WriteConfig enable:0. Returns 0 on success. */
+int  jw_wifi_set_radio(bool on);
+
 /* ── Manage (Phase 5) ────────────────────────────────────────────────────── */
 
 /* Remove the saved profile for ssid (`remove_network` + `save_config`, persisted
