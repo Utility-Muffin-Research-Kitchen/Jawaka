@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define JW_INPUT_PROXY_MAX_PATH 256
 #define JW_INPUT_PROXY_MAX_NAME 128
@@ -37,5 +38,12 @@ int  jw_input_proxy_init(jw_input_proxy *proxy,
 int  jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy);
 void jw_input_proxy_tick(jw_input_proxy *proxy);
 void jw_input_proxy_shutdown(jw_input_proxy *proxy);
+
+/* Milliseconds since the last physical button input (for auto-sleep idle
+ * tracking). Counts EV_KEY only — stick drift (EV_ABS) doesn't reset it. */
+uint64_t jw_input_proxy_idle_ms(const jw_input_proxy *proxy);
+/* Reset the idle timer to "now" (e.g. after resuming from suspend, whose wake
+ * key arrives outside the proxied input device). */
+void     jw_input_proxy_mark_activity(jw_input_proxy *proxy);
 
 #endif /* JW_PLATFORM_INPUT_PROXY_H */

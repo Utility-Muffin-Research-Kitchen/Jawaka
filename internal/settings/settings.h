@@ -100,7 +100,8 @@ typedef enum {
 
 /* Behavior page */
 #define JW_BEHAVIOR_STARTUP_TAB 0
-#define JW_BEHAVIOR_ROW_COUNT   1
+#define JW_BEHAVIOR_AUTO_SLEEP  1
+#define JW_BEHAVIOR_ROW_COUNT   2
 
 /* ─── State ────────────────────────────────────────────────────────────── */
 
@@ -132,6 +133,7 @@ typedef struct {
     bool               show_wifi;
     bool               show_volume;         /* speaker icon in the status bar */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
+    int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
     int                brightness_percent;
     int                volume_percent;
     bool               led_enabled;

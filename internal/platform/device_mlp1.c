@@ -24,6 +24,10 @@
 
 #define JW_MLP1_BACKLIGHT_DIR "/sys/class/backlight/backlight"
 #define JW_MLP1_BACKLIGHT_BRIGHTNESS JW_MLP1_BACKLIGHT_DIR "/brightness"
+/* FB_BLANK control: 0 = unblank (on), 4 = powerdown (off). Independent of the
+   brightness value, so blanking/unblanking preserves the user's brightness and
+   loong_power doesn't fight it (unlike direct brightness writes to 0). */
+#define JW_MLP1_BACKLIGHT_BL_POWER JW_MLP1_BACKLIGHT_DIR "/bl_power"
 #define JW_MLP1_BACKLIGHT_ACTUAL JW_MLP1_BACKLIGHT_DIR "/actual_brightness"
 #define JW_MLP1_BACKLIGHT_MAX JW_MLP1_BACKLIGHT_DIR "/max_brightness"
 
@@ -91,6 +95,12 @@ typedef struct {
 } jw_mlp1_platform_data;
 
 static int (*s_event_opend)(const char *id);
+/* loong::PowerApi singleton accessor + standby method (C++ symbols; the method
+   takes the singleton `this`). Used so suspend goes through loong's own power
+   path — keeps loong_power in sync so the power button wakes on a single press
+   (vs. our raw `echo mem`, which loong re-suspends on the first wake press). */
+static void *(*s_power_get)(void);
+static void  (*s_power_standby)(void *self);
 static bool s_loong_loaded;
 
 static long long jw__monotonic_ms(void) {
@@ -379,6 +389,28 @@ static void jw__loong_load(void) {
     if (!s_event_opend) {
         jw_log_error("loong: EventOpend symbol not found: %s", dlerror());
     }
+
+    *(void **)(&s_power_get)     = dlsym(handle, "_ZN5loong8PowerApi3getEv");
+    *(void **)(&s_power_standby) = dlsym(handle, "_ZN5loong8PowerApi12powerStandbyEv");
+    if (!s_power_get || !s_power_standby) {
+        jw_log_warn("loong: PowerApi standby symbols not found (will fall back to echo mem)");
+    }
+}
+
+/* Suspend via loong's own PowerApi so loong_power owns the sleep and the wake is
+   consistent (single power press). Returns 0 if the call was made, -1 if the
+   symbols are unavailable so the caller can fall back to the kernel write. */
+static int jw__loong_standby(void) {
+    jw__loong_load();
+    if (!s_power_get || !s_power_standby) {
+        return -1;
+    }
+    void *api = s_power_get();
+    if (!api) {
+        return -1;
+    }
+    s_power_standby(api);
+    return 0;
 }
 
 static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *out) {
@@ -456,6 +488,12 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_SLEEP) {
         jw_log_info("platform: sleep requested");
+        /* Prefer loong's own standby so loong_power stays in sync (single-press
+           wake). Fall back to the raw kernel write if the SDK symbols are absent. */
+        if (jw__loong_standby() == 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "suspending (loong)");
+            return;
+        }
         FILE *fp = fopen("/sys/power/state", "w");
         if (fp) {
             fprintf(fp, "mem\n");
@@ -464,6 +502,19 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         } else {
             jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "sleep failed");
         }
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SCREEN_OFF ||
+        action == JW_PLATFORM_ACTION_SCREEN_ON) {
+        int blank = (action == JW_PLATFORM_ACTION_SCREEN_OFF) ? 4 : 0;
+        if (jw__write_int_file(JW_MLP1_BACKLIGHT_BL_POWER, blank) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   "backlight blank write failed");
+            return;
+        }
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                               blank ? "screen off" : "screen on");
         return;
     }
 

@@ -29,6 +29,15 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
     (void)proxy;
 }
 
+uint64_t jw_input_proxy_idle_ms(const jw_input_proxy *proxy) {
+    (void)proxy;
+    return 0;   /* mock: never idle (auto-sleep is a no-op off-device) */
+}
+
+void jw_input_proxy_mark_activity(jw_input_proxy *proxy) {
+    (void)proxy;
+}
+
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     if (proxy) {
         memset(proxy, 0, sizeof(*proxy));

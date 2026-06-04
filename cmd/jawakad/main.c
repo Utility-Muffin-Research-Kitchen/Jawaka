@@ -98,6 +98,10 @@ typedef struct {
     char pending_app_pak_dir[PATH_MAX];
     bool daemon_only;
     bool shutdown_requested;
+    /* Auto-sleep: idle → screen off (bl_power) → suspend (mem). */
+    int       autosleep_timeout_s;        /* cached from DB; 0 = disabled */
+    long long autosleep_setting_next_ms;  /* throttle for re-reading the DB setting */
+    bool      autosleep_screen_off;       /* currently in the screen-off (pre-suspend) stage */
 } jw_daemon_state;
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
@@ -2426,6 +2430,91 @@ fail:
     return -1;
 }
 
+/* ── Auto-sleep ───────────────────────────────────────────────────────────
+   Idle (no button input, tracked globally by the input proxy so it covers games
+   too) → blank the screen → suspend-to-RAM. Tiered: the screen-off stage wakes
+   on any button; the suspend stage wakes on the power button. */
+#define JW_AUTOSLEEP_DEFAULT_S        120     /* 2 min when the setting is unset */
+#define JW_AUTOSLEEP_SUSPEND_GRACE_MS 30000   /* screen-off → suspend after this much more idle */
+#define JW_AUTOSLEEP_SETTING_POLL_MS  2000    /* re-read the DB setting at most this often */
+
+static int jw__autosleep_read_timeout_s(jw_daemon_state *state) {
+    if (!state->db_path) {
+        return JW_AUTOSLEEP_DEFAULT_S;
+    }
+    char val[32];
+    if (jw_db_get_setting(state->db_path, "auto_sleep_seconds", val, sizeof(val)) == 0 &&
+        val[0]) {
+        int seconds = atoi(val);
+        return seconds > 0 ? seconds : 0;   /* 0 = explicitly off */
+    }
+    return JW_AUTOSLEEP_DEFAULT_S;
+}
+
+static void jw__screen_set(jw_daemon_state *state, bool on) {
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform,
+                               on ? JW_PLATFORM_ACTION_SCREEN_ON
+                                  : JW_PLATFORM_ACTION_SCREEN_OFF,
+                               0, &result);
+}
+
+static void jw__tick_auto_sleep(jw_daemon_state *state) {
+    long long now = jw__monotonic_ms();
+
+    if (now >= state->autosleep_setting_next_ms) {
+        state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
+        state->autosleep_setting_next_ms = now + JW_AUTOSLEEP_SETTING_POLL_MS;
+    }
+
+    /* Disabled or shutting down: ensure the screen is on and bail. */
+    if (state->autosleep_timeout_s <= 0 || state->shutdown_requested) {
+        if (state->autosleep_screen_off) {
+            jw__screen_set(state, true);
+            state->autosleep_screen_off = false;
+        }
+        return;
+    }
+
+    uint64_t idle_ms = jw_input_proxy_idle_ms(&state->input_proxy);
+    uint64_t screen_off_at = (uint64_t)state->autosleep_timeout_s * 1000u;
+    uint64_t suspend_at = screen_off_at + JW_AUTOSLEEP_SUSPEND_GRACE_MS;
+
+    if (idle_ms < screen_off_at) {
+        /* Active: undo a prior blank. */
+        if (state->autosleep_screen_off) {
+            jw__screen_set(state, true);
+            state->autosleep_screen_off = false;
+        }
+        return;
+    }
+
+    if (idle_ms < suspend_at) {
+        /* Stage 1 — blank the backlight. Any button resets the idle timer
+           (proxy stamps EV_KEY), so the next tick restores the screen. */
+        if (!state->autosleep_screen_off) {
+            jw_log_info("auto-sleep: screen off (idle %llums)",
+                        (unsigned long long)idle_ms);
+            jw__screen_set(state, false);
+            state->autosleep_screen_off = true;
+        }
+        return;
+    }
+
+    /* Stage 2 — suspend-to-RAM. The platform write blocks until the power
+       button resumes us; on return, treat the wake as fresh activity (the wake
+       key arrives outside the proxied gamepad, so the idle timer is stale) and
+       restore the screen. */
+    jw_log_info("auto-sleep: suspending (idle %llums)", (unsigned long long)idle_ms);
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SLEEP, 0, &result);
+    jw_log_info("auto-sleep: resumed from suspend");
+    jw__screen_set(state, true);
+    state->autosleep_screen_off = false;
+    jw_input_proxy_mark_activity(&state->input_proxy);
+    state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
+}
+
 static void jw__tick_post_launch_resume(jw_daemon_state *state) {
     if (!state || !state->post_launch_resume_pending) {
         return;
@@ -3388,6 +3477,7 @@ int main(int argc, char *argv[]) {
         jw__handle_menu_exit(&state);
         jw__handle_osd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
+        jw__tick_auto_sleep(&state);
         if (jw_platform_storage_tick(&state.platform)) {
             jw_scan_result scan_result;
             if (jw__scan_library_now(&state, &scan_result, "after storage change") != 0) {

@@ -147,6 +147,10 @@ bool jw_platform_parse_action(const char *name, jw_platform_action *out) {
         *out = JW_PLATFORM_ACTION_BLUETOOTH_ON;
     } else if (strcmp(name, "bluetooth-off") == 0) {
         *out = JW_PLATFORM_ACTION_BLUETOOTH_OFF;
+    } else if (strcmp(name, "screen-off") == 0) {
+        *out = JW_PLATFORM_ACTION_SCREEN_OFF;
+    } else if (strcmp(name, "screen-on") == 0) {
+        *out = JW_PLATFORM_ACTION_SCREEN_ON;
     } else {
         return false;
     }
@@ -165,6 +169,8 @@ const char *jw_platform_action_name(jw_platform_action action) {
         case JW_PLATFORM_ACTION_WIFI_OFF: return "wifi-off";
         case JW_PLATFORM_ACTION_BLUETOOTH_ON: return "bluetooth-on";
         case JW_PLATFORM_ACTION_BLUETOOTH_OFF: return "bluetooth-off";
+        case JW_PLATFORM_ACTION_SCREEN_OFF: return "screen-off";
+        case JW_PLATFORM_ACTION_SCREEN_ON: return "screen-on";
         default: return "unknown";
     }
 }

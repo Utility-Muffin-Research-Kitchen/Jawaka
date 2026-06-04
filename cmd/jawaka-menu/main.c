@@ -135,16 +135,18 @@ static void jw__menu_wait_for_show(void) {
 static const char *kMenuItems[] = {
     "Rescan Library",
     "Return to Launcher",
+    "Sleep",
     "Exit to Stock",
     "Reboot",
     "Power Off",
 };
-#define JW_MENU_COUNT       5
+#define JW_MENU_COUNT       6
 #define JW_MENU_RESCAN      0
 #define JW_MENU_RETURN      1
-#define JW_MENU_EXIT_STOCK  2
-#define JW_MENU_REBOOT      3
-#define JW_MENU_POWEROFF    4
+#define JW_MENU_SLEEP       2
+#define JW_MENU_EXIT_STOCK  3
+#define JW_MENU_REBOOT      4
+#define JW_MENU_POWEROFF    5
 
 static const char *kInGameItems[] = {
     "Continue",
@@ -243,6 +245,16 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             return jw_ipc_scan_library(socket_path, state->status, sizeof(state->status));
         case JW_MENU_RETURN:
             *running = false;
+            return 0;
+        case JW_MENU_SLEEP:
+            /* The platform "sleep" write to /sys/power/state blocks until the
+               system resumes, so this call returns after wake. Keep the menu
+               open so the user lands back where they were. */
+            snprintf(state->status, sizeof(state->status), "%s", "Sleeping…");
+            cat_request_frame();
+            jw__render_menu(state);
+            jw_ipc_platform_action(socket_path, "sleep", 0);
+            state->status[0] = '\0';
             return 0;
         case JW_MENU_EXIT_STOCK:
             /* EXIT-TO-STOCK: temporary dev/test feature. Sends shutdown IPC

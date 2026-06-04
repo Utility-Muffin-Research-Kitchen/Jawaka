@@ -91,6 +91,14 @@ static const char *kStartupTabLabels[] = {
 #define JW_STARTUP_TAB_COUNT ((int)(sizeof(kStartupTabLabels) / sizeof(kStartupTabLabels[0])))
 #define JW_STARTUP_TAB_DEFAULT 2   /* Games */
 
+/* Auto-sleep options for Settings > Behavior. The label index is persisted as
+   "auto_sleep_seconds" (the value, not the index) so the daemon reads seconds
+   directly with no shared table. */
+static const char *kAutoSleepLabels[]  = { "Off", "15 sec", "30 sec", "45 sec", "1 min", "2 min", "5 min", "10 min" };
+static const int   kAutoSleepSeconds[] = {     0,       15,       30,       45,      60,     120,     300,      600 };
+#define JW_AUTO_SLEEP_COUNT   ((int)(sizeof(kAutoSleepLabels) / sizeof(kAutoSleepLabels[0])))
+#define JW_AUTO_SLEEP_DEFAULT 5   /* 2 min (index into the tables above) */
+
 static const char *kHomeCategoryLabels[] = {
     "Appearance",
     "Display & Sound",
@@ -268,6 +276,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->show_wifi         = true;
     ui->show_volume       = true;
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
+    ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
     ui->brightness_percent = 50;
     ui->volume_percent     = 50;
     ui->led_enabled    = false;
@@ -323,6 +332,13 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             int idx = atoi(val);
             if (idx >= 0 && idx < JW_STARTUP_TAB_COUNT)
                 ui->startup_tab_index = idx;
+        }
+        /* Stored as seconds (what the daemon reads); map back to the label index. */
+        if (jw_db_get_setting(db_path, "auto_sleep_seconds", val, sizeof(val)) == 0 && val[0]) {
+            int seconds = atoi(val);
+            for (int i = 0; i < JW_AUTO_SLEEP_COUNT; i++) {
+                if (kAutoSleepSeconds[i] == seconds) { ui->auto_sleep_index = i; break; }
+            }
         }
 
         jw_settings_apply_persisted_overrides(ui->db_path);
@@ -1241,6 +1257,10 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
               ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_STARTUP_TAB,
                         "Startup Tab", kStartupTabLabels[tab], true);
+    int sleep_idx = (ui->auto_sleep_index >= 0 && ui->auto_sleep_index < JW_AUTO_SLEEP_COUNT)
+                    ? ui->auto_sleep_index : JW_AUTO_SLEEP_DEFAULT;
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_AUTO_SLEEP,
+                        "Auto Sleep", kAutoSleepLabels[sleep_idx], true);
     (void)h;
 }
 
@@ -1957,6 +1977,12 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                % JW_STARTUP_TAB_COUNT;
                     ui->startup_tab_index = next;
                     jw__persist_int(ui, "startup_tab_index", next);
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
+                    int next = (ui->auto_sleep_index + dir + JW_AUTO_SLEEP_COUNT)
+                               % JW_AUTO_SLEEP_COUNT;
+                    ui->auto_sleep_index = next;
+                    /* Persist the seconds value (the daemon reads it directly). */
+                    jw__persist_int(ui, "auto_sleep_seconds", kAutoSleepSeconds[next]);
                 }
                 break;
             }

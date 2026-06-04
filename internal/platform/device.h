@@ -95,7 +95,9 @@ typedef enum {
     JW_PLATFORM_ACTION_WIFI_ON,
     JW_PLATFORM_ACTION_WIFI_OFF,
     JW_PLATFORM_ACTION_BLUETOOTH_ON,
-    JW_PLATFORM_ACTION_BLUETOOTH_OFF
+    JW_PLATFORM_ACTION_BLUETOOTH_OFF,
+    JW_PLATFORM_ACTION_SCREEN_OFF,   /* blank the backlight (display stays composed) */
+    JW_PLATFORM_ACTION_SCREEN_ON     /* unblank the backlight */
 } jw_platform_action;
 
 typedef enum {

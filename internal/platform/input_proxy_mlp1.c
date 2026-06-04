@@ -17,12 +17,14 @@
 #include <unistd.h>
 
 #define JW_MLP1_INPUT_NAME "Loong Gamepad"
+#define JW_MLP1_PWRKEY_NAME "rk805 pwrkey"   /* physical power button (KEY_POWER) */
 #define JW_MLP1_BRIGHTNESS_REPEAT_MS 120u
 #define JW_MLP1_MENU_TAP_MS 80u
 
 typedef struct {
     int input_fd;
     int uinput_fd;
+    int power_fd;     /* physical power key, watched read-only for auto-sleep wake (-1 = none) */
     char physical_path[JW_INPUT_PROXY_MAX_PATH];
     bool menu_held;
     bool menu_forwarded;
@@ -32,6 +34,7 @@ typedef struct {
     bool deferred_menu_release;
     uint64_t deferred_menu_release_at_ms;
     uint64_t last_brightness_ms;
+    uint64_t last_activity_ms;     /* monotonic ms of the last EV_KEY (auto-sleep) */
 } jw_mlp1_input_proxy_data;
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
@@ -68,6 +71,25 @@ static int jw__open_loong_gamepad(char *out_path, size_t out_size) {
 
         if (jw__event_name_matches(fd, JW_MLP1_INPUT_NAME)) {
             snprintf(out_path, out_size, "%s", path);
+            return fd;
+        }
+        close(fd);
+    }
+    return -1;
+}
+
+/* Open the physical power key read-only (no grab — stock loong_power still owns
+   it). We only watch it so a power press counts as activity and wakes the
+   auto-sleep screen-off stage. Returns fd or -1 if not present. */
+static int jw__open_power_key(void) {
+    for (int i = 0; i < 32; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        if (jw__event_name_matches(fd, JW_MLP1_PWRKEY_NAME)) {
             return fd;
         }
         close(fd);
@@ -378,6 +400,8 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
     }
     data->input_fd = -1;
     data->uinput_fd = -1;
+    data->power_fd = -1;
+    data->last_activity_ms = jw__monotonic_ms();   /* don't count boot as idle */
 
     data->input_fd = jw__open_loong_gamepad(data->physical_path, sizeof(data->physical_path));
     if (data->input_fd < 0) {
@@ -411,6 +435,12 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
         free(data);
         return 0;
     }
+
+    /* Watch the power key read-only (best-effort) so a power press counts as
+       activity for auto-sleep — wakes the screen-off stage like any button. */
+    data->power_fd = jw__open_power_key();
+    jw_log_info("input proxy: power key %s",
+                data->power_fd >= 0 ? "watched" : "not found");
 
     proxy->backend_data = data;
     proxy->enabled = true;
@@ -475,11 +505,48 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
         }
 
         if (ev.type == EV_KEY) {
+            data->last_activity_ms = jw__monotonic_ms();   /* auto-sleep idle reset */
             jw__handle_key(proxy, &ev);
         } else {
+            /* The d-pad is an EV_ABS hat (ABS_HAT0X/Y) — count it as activity so
+               menu navigation resets the idle timer. The analog stick (ABS_X/Y)
+               is deliberately NOT counted, so stick drift can't block sleep. */
+            if (ev.type == EV_ABS &&
+                (ev.code == ABS_HAT0X || ev.code == ABS_HAT0Y) && ev.value != 0) {
+                data->last_activity_ms = jw__monotonic_ms();
+            }
             jw__forward_event(data, &ev);
         }
     }
+
+    /* Drain the power key (watched read-only): a press counts as activity so it
+       wakes the auto-sleep screen-off stage. We don't forward it (stock owns it). */
+    if (data->power_fd >= 0) {
+        struct input_event pev;
+        while (read(data->power_fd, &pev, sizeof(pev)) == (ssize_t)sizeof(pev)) {
+            if (pev.type == EV_KEY && pev.code == KEY_POWER && pev.value != 0) {
+                data->last_activity_ms = jw__monotonic_ms();
+            }
+        }
+    }
+}
+
+uint64_t jw_input_proxy_idle_ms(const jw_input_proxy *proxy) {
+    if (!proxy || !proxy->backend_data) {
+        return 0;
+    }
+    const jw_mlp1_input_proxy_data *data =
+        (const jw_mlp1_input_proxy_data *)proxy->backend_data;
+    uint64_t now = jw__monotonic_ms();
+    return (now > data->last_activity_ms) ? (now - data->last_activity_ms) : 0;
+}
+
+void jw_input_proxy_mark_activity(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->backend_data) {
+        return;
+    }
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    data->last_activity_ms = jw__monotonic_ms();
 }
 
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
@@ -497,6 +564,9 @@ void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     if (data->uinput_fd >= 0) {
         ioctl(data->uinput_fd, UI_DEV_DESTROY);
         close(data->uinput_fd);
+    }
+    if (data->power_fd >= 0) {
+        close(data->power_fd);
     }
     free(data);
     memset(proxy, 0, sizeof(*proxy));
