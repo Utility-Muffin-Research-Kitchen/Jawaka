@@ -1095,6 +1095,12 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
     memset(&state, 0, sizeof(state));
     state.db_path = db_path;
     jw_settings_load_status_prefs(db_path, &state.status_bar, &state.show_hints);
+    /* Supply the wifi strength ourselves (one-shot for the menu's lifetime) so
+       Catastrophe doesn't shell out for it — same source as the launcher. */
+    if (state.status_bar.show_wifi) {
+        state.status_bar.wifi_supplied = true;
+        state.status_bar.wifi_strength = jw_wifi_strength_now();
+    }
     jw__ingame_free_imagery(&state); /* init texture/slot bookkeeping */
     g_kms_crtc = jw__kms_probe_crtc(); /* warm-up: pay the slow DRM probe once */
 
@@ -1284,6 +1290,12 @@ int main(int argc, char **argv) {
 
     /* Inherit the launcher's status-bar and button-hint preferences. */
     jw_settings_load_status_prefs(db_path, &state.status_bar, &state.show_hints);
+    /* Supply the wifi strength ourselves (one-shot) so Catastrophe doesn't shell
+       out for it — same source as the launcher. */
+    if (state.status_bar.show_wifi) {
+        state.status_bar.wifi_supplied = true;
+        state.status_bar.wifi_strength = jw_wifi_strength_now();
+    }
 
     jw_autodemo demo;
     jw_autodemo_init(&demo);

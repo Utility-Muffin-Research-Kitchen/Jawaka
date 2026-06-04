@@ -151,6 +151,7 @@ typedef struct {
     unsigned           wifi_attempt_ms;     /* when the join attempt started */
     int                wifi_monitor_fd;     /* wpa event-socket fd during a join (-1 = none) */
     bool               wifi_radio_on;       /* wlan0 up? (the Wi-Fi on/off toggle state) */
+    int                wifi_strength_cached;/* 0..3 for the status-bar icon; polled on a throttle */
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;
@@ -180,6 +181,13 @@ void jw_settings_ui_refresh_av(jw_settings_ui *ui);
  * wpa_cli every frame. */
 bool jw_settings_ui_wants_wifi_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_wifi(jw_settings_ui *ui);
+
+/* True if the status-bar wifi icon is enabled. The launcher uses this to decide
+ * whether to keep the wifi strength polled on the home screen. */
+bool jw_settings_show_wifi(const jw_settings_ui *ui);
+/* Poll live wifi strength into ui->wifi_strength_cached (forks wpa_cli) so the
+ * status-bar icon stays current while idle. Call on a throttle. */
+void jw_settings_ui_refresh_wifi_strength(jw_settings_ui *ui);
 
 /* True if the status-bar speaker icon is enabled. The launcher uses this to
  * decide whether to keep volume polled on the home screen. */

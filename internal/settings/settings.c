@@ -397,6 +397,11 @@ void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *
     out->show_battery = ui->show_battery;
     out->show_battery_level = ui->show_battery_level;
     out->show_wifi = ui->show_wifi;
+    /* We own the radio read (jw_wifi_*), so feed the icon our value rather than
+       letting Catastrophe shell out itself — keeps the icon and Network page on
+       one source. */
+    out->wifi_supplied = true;
+    out->wifi_strength = ui->show_wifi ? ui->wifi_strength_cached : 0;
     out->show_volume = ui->show_volume;
     out->volume_percent = ui->show_volume ? ui->volume_percent : -1;
 }
@@ -407,6 +412,16 @@ bool jw_settings_show_volume(const jw_settings_ui *ui) {
 
 void jw_settings_ui_refresh_volume(jw_settings_ui *ui) {
     jw__refresh_volume(ui);
+}
+
+bool jw_settings_show_wifi(const jw_settings_ui *ui) {
+    return ui && ui->show_wifi;
+}
+
+void jw_settings_ui_refresh_wifi_strength(jw_settings_ui *ui) {
+    if (ui) {
+        ui->wifi_strength_cached = jw_wifi_strength_now();
+    }
 }
 
 void jw_settings_load_status_prefs(const char *db_path,
@@ -724,6 +739,8 @@ static void jw__refresh_wifi(jw_settings_ui *ui) {
     if (jw_wifi_status(&ui->wifi) != 0) {
         /* jw_wifi_status already zeroed the struct (valid = false). */
     }
+    /* Keep the status-bar icon in sync with the page's own reading. */
+    ui->wifi_strength_cached = ui->wifi.connected ? ui->wifi.strength : 0;
 }
 
 bool jw_settings_ui_wants_wifi_poll(const jw_settings_ui *ui) {

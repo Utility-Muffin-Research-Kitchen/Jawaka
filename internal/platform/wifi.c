@@ -178,6 +178,13 @@ static int jw__wifi_strength(int rssi) {
     return 1;
 }
 
+int jw_wifi_strength_now(void) {
+    /* Live 0..3 strength from the same RSSI source the Network page uses, so the
+       status-bar icon (which renders this) and the page can never disagree.
+       Bounded by jw__wifi_run's timeout; 0 when disconnected/radio off. */
+    return jw__wifi_strength(jw__wifi_rssi());
+}
+
 int jw_wifi_status(jw_wifi_status_t *out) {
     if (!out) {
         return -1;

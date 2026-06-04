@@ -21,6 +21,11 @@ typedef struct {
  * nothing usable (out is still zeroed with valid = false). */
 int jw_wifi_status(jw_wifi_status_t *out);
 
+/* Live signal strength 0..3 (none/weak/good/strong) from the same RSSI source as
+ * jw_wifi_status, for feeding the status-bar wifi icon. 0 when disconnected/off.
+ * Forks wpa_cli — call on a throttle, not every frame. */
+int jw_wifi_strength_now(void);
+
 /* ── Scanning (Phase 2) ──────────────────────────────────────────────────── */
 
 #define JW_WIFI_MAX_NETWORKS 32

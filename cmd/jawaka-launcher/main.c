@@ -3262,10 +3262,9 @@ int main(void) {
 
         jw__poll_library_generation(socket_path, db_path, &state);
 
-        /* Keep the status-bar speaker icon current. Volume lives in the daemon
-           (unlike wifi/battery, which Catastrophe reads from sysfs), so poll it
-           at the idle status cadence when the icon is on and the A/V page isn't
-           already polling it. */
+        /* Keep the status-bar speaker icon current. Volume lives in the daemon,
+           so poll it at the idle status cadence when the icon is on and the A/V
+           page isn't already polling it. */
         if (jw_settings_show_volume(&state.settings) &&
             !jw_settings_ui_wants_av_poll(&state.settings)) {
             static uint32_t last_volume_poll = 0;
@@ -3273,6 +3272,20 @@ int main(void) {
             if (last_volume_poll == 0 || now - last_volume_poll >= 1000) {
                 jw_settings_ui_refresh_volume(&state.settings);
                 last_volume_poll = now;
+            }
+        }
+
+        /* Keep the status-bar wifi icon current. We own the radio read (so the
+           icon and the Network page share one source), so poll the strength on a
+           slow cadence — RSSI drifts gradually — unless the Network page is
+           already polling it. */
+        if (jw_settings_show_wifi(&state.settings) &&
+            !jw_settings_ui_wants_wifi_poll(&state.settings)) {
+            static uint32_t last_wifi_poll = 0;
+            uint32_t now = SDL_GetTicks();
+            if (last_wifi_poll == 0 || now - last_wifi_poll >= 5000) {
+                jw_settings_ui_refresh_wifi_strength(&state.settings);
+                last_wifi_poll = now;
             }
         }
 
