@@ -100,6 +100,7 @@ typedef struct {
     bool shutdown_requested;
     /* Auto-sleep: idle → screen off (bl_power) → suspend (mem). */
     int       autosleep_timeout_s;        /* cached from DB; 0 = disabled */
+    int       autosleep_platform_synced_s;/* last value mirrored to stock power policy */
     long long autosleep_setting_next_ms;  /* throttle for re-reading the DB setting */
     bool      autosleep_screen_off;       /* currently in the screen-off (pre-suspend) stage */
 } jw_daemon_state;
@@ -2455,12 +2456,33 @@ static void jw__screen_set(jw_daemon_state *state, bool on) {
                                0, &result);
 }
 
+static void jw__autosleep_sync_platform(jw_daemon_state *state) {
+    if (!state || state->autosleep_platform_synced_s == state->autosleep_timeout_s) {
+        return;
+    }
+
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_AUTO_SLEEP,
+                               state->autosleep_timeout_s, &result);
+    if (result.code == JW_PLATFORM_RESULT_OK) {
+        jw_log_info("auto-sleep: synced stock power timeout to %ds",
+                    state->autosleep_timeout_s);
+    } else if (result.code != JW_PLATFORM_RESULT_UNSUPPORTED) {
+        jw_log_warn("auto-sleep: stock power sync failed: %s",
+                    result.message[0] ? result.message
+                                      : jw_platform_result_code_name(result.code));
+        return;
+    }
+    state->autosleep_platform_synced_s = state->autosleep_timeout_s;
+}
+
 static void jw__tick_auto_sleep(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
 
     if (now >= state->autosleep_setting_next_ms) {
         state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
         state->autosleep_setting_next_ms = now + JW_AUTOSLEEP_SETTING_POLL_MS;
+        jw__autosleep_sync_platform(state);
     }
 
     /* Disabled or shutting down: ensure the screen is on and bail. */
@@ -3366,6 +3388,7 @@ int main(int argc, char *argv[]) {
     state.cached_volume_percent = -1;
     state.ledd_pid = -1;
     state.led_configured = false;
+    state.autosleep_platform_synced_s = -1;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--daemon-only") == 0) {

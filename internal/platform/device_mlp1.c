@@ -1,3 +1,4 @@
+#include "cJSON.h"
 #include "internal/platform/device_backend.h"
 #include "internal/core/log.h"
 
@@ -7,6 +8,7 @@
 #include <dlfcn.h>
 #include <dirent.h>
 #include <signal.h>
+#include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -30,6 +32,9 @@
 #define JW_MLP1_BACKLIGHT_BL_POWER JW_MLP1_BACKLIGHT_DIR "/bl_power"
 #define JW_MLP1_BACKLIGHT_ACTUAL JW_MLP1_BACKLIGHT_DIR "/actual_brightness"
 #define JW_MLP1_BACKLIGHT_MAX JW_MLP1_BACKLIGHT_DIR "/max_brightness"
+
+#define JW_MLP1_LOONG_DB_PATH "/oem/loong/loong.db"
+#define JW_MLP1_POWER_CFG "/oem/loong/record/config/loong_power.cfg"
 
 #define JW_MLP1_PACTL_GET_VOLUME "pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null"
 #define JW_MLP1_PACTL_SET_VOLUME "pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null"
@@ -101,6 +106,8 @@ static int (*s_event_opend)(const char *id);
    (vs. our raw `echo mem`, which loong re-suspends on the first wake press). */
 static void *(*s_power_get)(void);
 static void  (*s_power_standby)(void *self);
+static int   (*s_write_config)(const char *param, const char *value,
+                               const char *backup, int persist);
 static bool s_loong_loaded;
 
 static long long jw__monotonic_ms(void) {
@@ -395,6 +402,11 @@ static void jw__loong_load(void) {
     if (!s_power_get || !s_power_standby) {
         jw_log_warn("loong: PowerApi standby symbols not found (will fall back to echo mem)");
     }
+
+    *(void **)(&s_write_config) = dlsym(handle, "WriteConfig");
+    if (!s_write_config) {
+        jw_log_warn("loong: WriteConfig symbol not found (stock settings sync will use DB fallback)");
+    }
 }
 
 /* Suspend via loong's own PowerApi so loong_power owns the sleep and the wake is
@@ -411,6 +423,274 @@ static int jw__loong_standby(void) {
     }
     s_power_standby(api);
     return 0;
+}
+
+static char *jw__read_text_file(const char *path, long max_bytes) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return NULL;
+    }
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+    long len = ftell(fp);
+    if (len < 0 || len > max_bytes || fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+    char *buf = (char *)malloc((size_t)len + 1);
+    if (!buf) {
+        fclose(fp);
+        return NULL;
+    }
+    size_t got = fread(buf, 1, (size_t)len, fp);
+    fclose(fp);
+    buf[got] = '\0';
+    return buf;
+}
+
+static int jw__write_text_file_atomic(const char *path, const char *text) {
+    char tmp[512];
+    int needed = snprintf(tmp, sizeof(tmp), "%s.umrk.%ld", path, (long)getpid());
+    if (needed < 0 || needed >= (int)sizeof(tmp)) {
+        return -1;
+    }
+
+    FILE *fp = fopen(tmp, "w");
+    if (!fp) {
+        return -1;
+    }
+    int ok = fputs(text, fp) >= 0 && fputc('\n', fp) != EOF;
+    ok = fclose(fp) == 0 && ok;
+    if (!ok) {
+        unlink(tmp);
+        return -1;
+    }
+    chmod(tmp, 0644);
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+static int jw__json_put_string(cJSON *object, const char *key, const char *value) {
+    if (!object || !key || !value) {
+        return -1;
+    }
+    cJSON *item = cJSON_CreateString(value);
+    if (!item) {
+        return -1;
+    }
+    if (cJSON_GetObjectItemCaseSensitive(object, key)) {
+        if (!cJSON_ReplaceItemInObjectCaseSensitive(object, key, item)) {
+            cJSON_Delete(item);
+            return -1;
+        }
+        return 0;
+    }
+    if (!cJSON_AddItemToObject(object, key, item)) {
+        cJSON_Delete(item);
+        return -1;
+    }
+    return 0;
+}
+
+static int jw__json_put_number(cJSON *object, const char *key, int value) {
+    if (!object || !key) {
+        return -1;
+    }
+    cJSON *item = cJSON_CreateNumber(value);
+    if (!item) {
+        return -1;
+    }
+    if (cJSON_GetObjectItemCaseSensitive(object, key)) {
+        if (!cJSON_ReplaceItemInObjectCaseSensitive(object, key, item)) {
+            cJSON_Delete(item);
+            return -1;
+        }
+        return 0;
+    }
+    if (!cJSON_AddItemToObject(object, key, item)) {
+        cJSON_Delete(item);
+        return -1;
+    }
+    return 0;
+}
+
+static int jw__json_ensure_number(cJSON *object, const char *key, int value) {
+    return cJSON_GetObjectItemCaseSensitive(object, key)
+               ? 0
+               : jw__json_put_number(object, key, value);
+}
+
+static int jw__json_ensure_string(cJSON *object, const char *key, const char *value) {
+    return cJSON_GetObjectItemCaseSensitive(object, key)
+               ? 0
+               : jw__json_put_string(object, key, value);
+}
+
+static cJSON *jw__load_json_object_file(const char *path, long max_bytes) {
+    char *text = jw__read_text_file(path, max_bytes);
+    cJSON *root = text ? cJSON_Parse(text) : NULL;
+    free(text);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        root = cJSON_CreateObject();
+    }
+    return root;
+}
+
+static int jw__mlp1_update_power_cfg(int seconds) {
+    if (seconds < 0) seconds = 0;
+    if (seconds > 86400) seconds = 86400;
+
+    cJSON *root = jw__load_json_object_file(JW_MLP1_POWER_CFG, 4096);
+    if (!root) {
+        return -1;
+    }
+
+    bool disabled = seconds <= 0;
+    long timeout_ms = disabled ? 0L : (long)seconds * 1000L;
+    char timeout[32];
+    snprintf(timeout, sizeof(timeout), "%ld", timeout_ms);
+
+    int rc = 0;
+    rc |= jw__json_ensure_string(root, "autoOffLight", "20");
+    rc |= jw__json_put_string(root, "hibernateDisable", disabled ? "1" : "0");
+    rc |= jw__json_put_string(root, "screenLockDisable", disabled ? "1" : "0");
+    rc |= jw__json_put_string(root, "screenLockTimeout", timeout);
+    rc |= jw__json_ensure_string(root, "standbyMuteDisable", "0");
+
+    char *printed = rc == 0 ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+    if (!printed) {
+        return -1;
+    }
+
+    rc = jw__write_text_file_atomic(JW_MLP1_POWER_CFG, printed);
+    cJSON_free(printed);
+    if (rc == 0) {
+        sync();
+    }
+    return rc;
+}
+
+static char *jw__mlp1_read_system_config(const char *param) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open(JW_MLP1_LOONG_DB_PATH, &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return NULL;
+    }
+    sqlite3_busy_timeout(db, 1000);
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT value FROM system_config WHERE param = ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        sqlite3_close(db);
+        return NULL;
+    }
+    sqlite3_bind_text(stmt, 1, param, -1, SQLITE_TRANSIENT);
+
+    char *out = NULL;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *text = sqlite3_column_text(stmt, 0);
+        if (text) {
+            out = strdup((const char *)text);
+        }
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return out;
+}
+
+static int jw__mlp1_write_system_config(const char *param, const char *json) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open(JW_MLP1_LOONG_DB_PATH, &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return -1;
+    }
+    sqlite3_busy_timeout(db, 1000);
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "INSERT INTO system_config (param, value, backup) VALUES (?, ?, ?) "
+        "ON CONFLICT(param) DO UPDATE SET value = excluded.value, backup = excluded.backup;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        sqlite3_close(db);
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, param, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, json, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, json, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return rc;
+}
+
+static char *jw__mlp1_make_display_param(int seconds) {
+    if (seconds < 0) seconds = 0;
+    if (seconds > 86400) seconds = 86400;
+
+    char *current = jw__mlp1_read_system_config("DISPLAY_PARAM");
+    cJSON *root = current ? cJSON_Parse(current) : NULL;
+    free(current);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        root = cJSON_CreateObject();
+    }
+    if (!root) {
+        return NULL;
+    }
+
+    int rc = 0;
+    rc |= jw__json_ensure_number(root, "dark", 1);
+    rc |= jw__json_ensure_number(root, "color", 0);
+    rc |= jw__json_ensure_number(root, "temperature", 10);
+    rc |= jw__json_ensure_number(root, "brightness", 7);
+    rc |= jw__json_put_number(root, "lock", seconds > 0 ? seconds : 0);
+
+    char *printed = rc == 0 ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+    return printed;
+}
+
+static int jw__mlp1_update_display_param(int seconds) {
+    char *json = jw__mlp1_make_display_param(seconds);
+    if (!json) {
+        return -1;
+    }
+
+    jw__loong_load();
+    if (s_write_config) {
+        (void)s_write_config("DISPLAY_PARAM", json, json, 1);
+    }
+    int rc = jw__mlp1_write_system_config("DISPLAY_PARAM", json);
+    cJSON_free(json);
+    return rc;
+}
+
+static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
+    if (seconds < 0) seconds = 0;
+    if (seconds > 86400) seconds = 86400;
+
+    int display_rc = jw__mlp1_update_display_param(seconds);
+    int power_rc = jw__mlp1_update_power_cfg(seconds);
+    if (display_rc != 0 || power_rc != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                               "stock auto-sleep sync failed");
+        return;
+    }
+
+    char message[JW_PLATFORM_MAX_MESSAGE];
+    if (seconds <= 0) {
+        snprintf(message, sizeof(message), "stock auto-sleep disabled");
+    } else {
+        snprintf(message, sizeof(message), "stock auto-sleep set to %ds", seconds);
+    }
+    jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, seconds);
 }
 
 static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *out) {
@@ -515,6 +795,11 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
                                blank ? "screen off" : "screen on");
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SET_AUTO_SLEEP) {
+        jw__mlp1_set_auto_sleep(value, out);
         return;
     }
 
