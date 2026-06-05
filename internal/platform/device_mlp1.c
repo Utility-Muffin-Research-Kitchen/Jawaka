@@ -605,8 +605,7 @@ static int jw__mlp1_set_adb_intent(jw_platform_context *ctx, bool enabled) {
 
 static bool jw__mlp1_adb_supported(void) {
     return access(JW_MLP1_ADBD, X_OK) == 0 &&
-           access(JW_MLP1_USB_GADGET, X_OK) == 0 &&
-           access(JW_MLP1_USB_CONFIG, F_OK) == 0;
+           access(JW_MLP1_USB_GADGET, X_OK) == 0;
 }
 
 static bool jw__mlp1_usb_config_is_adb(void) {
