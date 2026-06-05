@@ -94,6 +94,9 @@ int jw_ipc_reset_retroarch_config(const char *socket_path,
 /* Ask jawakad to shut down. Returns 0 on success. */
 int jw_ipc_shutdown(const char *socket_path);
 
+/* Ask jawakad to exit Leaf mode and pass this boot to the stock launcher. */
+int jw_ipc_exit_stock(const char *socket_path);
+
 /* Notify jawakad that a frontend process has rendered enough to be considered
  * ready. role is usually "launcher" or "menu". Returns 0 on success. */
 int jw_ipc_frontend_ready(const char *socket_path, const char *role);

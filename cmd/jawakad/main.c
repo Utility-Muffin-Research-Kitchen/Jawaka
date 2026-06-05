@@ -3077,11 +3077,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_platform_result(client, "frontend-ready", &result);
     }
 
-    /* EXIT-TO-STOCK: temporary dev/test feature. Writes a sentinel so the
-       wrapper falls back to stock for this session only. The sentinel lives
-       in tmpfs by default and is cleared on reboot. See loong_pangu.wrapper
-       sentinel check and jawaka-menu EXIT_STOCK case. May be removed after testing. */
-    if (strcmp(type->valuestring, "shutdown") == 0) {
+    if (strcmp(type->valuestring, "exit-stock") == 0) {
         state->shutdown_requested = true;
         char crash_state[PATH_MAX];
         if (jw__env_or_join(crash_state, sizeof(crash_state),
@@ -3098,7 +3094,14 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
             FILE *fp = fopen(exit_sentinel, "w");
             if (fp) fclose(fp);
         }
-        jw_log_info("shutdown requested — exiting to stock (this session only)");
+        jw_log_info("exit-stock requested - passing this boot to stock");
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "exit-stock", NULL);
+    }
+
+    if (strcmp(type->valuestring, "shutdown") == 0) {
+        state->shutdown_requested = true;
+        jw_log_info("shutdown requested");
         cJSON_Delete(root);
         return jw__reply_ok(client, "shutdown", NULL);
     }
@@ -3511,9 +3514,22 @@ int main(int argc, char *argv[]) {
 
         if (state.shutdown_requested && state.child_pid > 0) {
             kill(state.child_pid, SIGTERM);
+            usleep(50000);
+            if (kill(state.child_pid, 0) == 0) {
+                kill(state.child_pid, SIGKILL);
+            }
         }
         if (state.shutdown_requested && state.menu_pid > 0) {
             kill(state.menu_pid, SIGTERM);
+            usleep(50000);
+            if (kill(state.menu_pid, 0) == 0) {
+                kill(state.menu_pid, SIGKILL);
+            }
+        }
+
+        if (state.shutdown_requested) {
+            usleep(50000);
+            continue;
         }
 
         int rc = jw__accept_and_process(&state);
@@ -3522,9 +3538,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* Write clean-exit marker so the wrapper's crash-loop guard knows this
-       was an intentional shutdown, not a crash. The marker lives in tmpfs by
-       default so it clears on reboot. See loong_pangu.wrapper check_crash_loop(). */
+    /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
+       knows this was an intentional shutdown, not a crash. The marker lives in
+       tmpfs by default so it clears on reboot. */
     {
         char clean_exit[PATH_MAX];
         if (jw__env_or_join(clean_exit, sizeof(clean_exit),

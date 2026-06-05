@@ -91,6 +91,12 @@ static int jw__exec_shell(const char *cmd) {
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
 }
 
+static bool jw__env_truthy(const char *name) {
+    const char *value = getenv(name);
+    return value && value[0] && strcmp(value, "0") != 0 &&
+           strcmp(value, "false") != 0 && strcmp(value, "no") != 0;
+}
+
 typedef struct {
     int uevent_fd;
     int last_present;
@@ -991,6 +997,34 @@ static int jw__mlp1_signal_by_name(const char *name, int sig) {
     return signalled;
 }
 
+static int jw__mlp1_spawn_loong_light(void) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        chdir("/loong");
+        const char *old_ld = getenv("LD_LIBRARY_PATH");
+        char ld[512];
+        if (old_ld && old_ld[0]) {
+            snprintf(ld, sizeof(ld), "./:%s", old_ld);
+        } else {
+            snprintf(ld, sizeof(ld), "%s", "./");
+        }
+        setenv("LD_LIBRARY_PATH", ld, 1);
+        execl("/loong/loong_light", "loong_light", (char *)NULL);
+        _exit(127);
+    }
+    return 0;
+}
+
+static int jw__mlp1_restart_leaf_loong_light(void) {
+    int signalled = jw__mlp1_signal_by_name(JW_MLP1_LED_DAEMON, SIGTERM);
+    if (signalled > 0) {
+        usleep(300000);
+        jw__mlp1_signal_by_name(JW_MLP1_LED_DAEMON, SIGKILL);
+    }
+    return jw__mlp1_spawn_loong_light();
+}
+
 static void jw__mlp1_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                              jw_platform_result *out) {
     (void)ctx;
@@ -1019,6 +1053,17 @@ static void jw__mlp1_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
             (unsigned)cfg->b, (unsigned)cfg->g, (unsigned)cfg->r,
             cfg->enabled ? 1 : 0, jw_led_mode_name(cfg->mode), speed);
     fclose(fp);
+
+    if (jw__env_truthy("UMRK_LEAF_MODE")) {
+        if (jw__mlp1_restart_leaf_loong_light() == 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                                   "led cfg written (daemon restarted)");
+        } else {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   "led daemon restart failed");
+        }
+        return;
+    }
 
     if (jw__mlp1_signal_by_name(JW_MLP1_LED_DAEMON, SIGUSR1) <= 0) {
         /* cfg is written; daemon will pick it up on its next reload anyway. */

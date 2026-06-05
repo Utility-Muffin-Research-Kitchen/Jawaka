@@ -522,6 +522,15 @@ int jw_ipc_shutdown(const char *socket_path) {
     return rc;
 }
 
+int jw_ipc_exit_stock(const char *socket_path) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "exit-stock");
+    cJSON *resp = NULL;
+    int rc = ipc__request(socket_path, req, &resp);
+    if (resp) cJSON_Delete(resp);
+    return rc;
+}
+
 int jw_ipc_platform_action(const char *socket_path, const char *action, int value) {
     if (!action || !action[0]) {
         return -1;
