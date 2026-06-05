@@ -185,6 +185,9 @@ int jw_wifi_strength_now(void) {
     return jw__wifi_strength(jw__wifi_rssi());
 }
 
+static int jw__wifi_saved_id(const char *ssid);
+static bool jw__wifi_saved_profile_has_security(int id);
+
 int jw_wifi_status(jw_wifi_status_t *out) {
     if (!out) {
         return -1;
@@ -301,12 +304,18 @@ int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int m
                       strcmp(current_ssid, ssid) == 0);
     }
 
-    /* Mark networks that have a saved profile (for the Forget action + marker). */
+    /* Mark networks that have a usable saved profile. A secured AP with a stale
+       open profile must prompt for a password instead of looking saved. */
     char saved[JW_WIFI_MAX_NETWORKS][64];
     int nsaved = jw__wifi_saved_ssids(saved, JW_WIFI_MAX_NETWORKS);
     for (int i = 0; i < count; i++) {
         for (int j = 0; j < nsaved; j++) {
-            if (strcmp(out[i].ssid, saved[j]) == 0) { out[i].saved = true; break; }
+            if (strcmp(out[i].ssid, saved[j]) == 0) {
+                int id = jw__wifi_saved_id(out[i].ssid);
+                out[i].saved = (id >= 0 &&
+                                (!out[i].secured || jw__wifi_saved_profile_has_security(id)));
+                break;
+            }
         }
     }
 
@@ -335,6 +344,65 @@ static int jw__wifi_saved_id(const char *ssid) {
         }
     }
     return -1;
+}
+
+static void jw__wifi_trim_line(char *s) {
+    if (!s) {
+        return;
+    }
+    size_t n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' ||
+                     s[n - 1] == ' ' || s[n - 1] == '\t')) {
+        s[--n] = '\0';
+    }
+}
+
+static int jw__wifi_run_ok(const char *const *args, int nargs) {
+    char buf[128];
+    if (jw__wifi_run(args, nargs, buf, sizeof(buf)) < 0) {
+        return -1;
+    }
+    jw__wifi_trim_line(buf);
+    return strncmp(buf, "FAIL", 4) == 0 ? -1 : 0;
+}
+
+static int jw__wifi_get_network(int id, const char *field,
+                                char *out, size_t out_size) {
+    if (!out || out_size == 0 || !field) {
+        return -1;
+    }
+    out[0] = '\0';
+    char idbuf[16];
+    snprintf(idbuf, sizeof(idbuf), "%d", id);
+    const char *args[] = { "get_network", idbuf, field };
+    if (jw__wifi_run(args, 3, out, out_size) < 0) {
+        return -1;
+    }
+    jw__wifi_trim_line(out);
+    if (out[0] == '\0' || strncmp(out, "FAIL", 4) == 0) {
+        out[0] = '\0';
+        return -1;
+    }
+    return 0;
+}
+
+static bool jw__wifi_saved_profile_has_security(int id) {
+    char psk[160];
+    if (jw__wifi_get_network(id, "psk", psk, sizeof(psk)) == 0 && psk[0]) {
+        return true;
+    }
+
+    char wep[160];
+    if (jw__wifi_get_network(id, "wep_key0", wep, sizeof(wep)) == 0 && wep[0]) {
+        return true;
+    }
+
+    char key_mgmt[128];
+    if (jw__wifi_get_network(id, "key_mgmt", key_mgmt, sizeof(key_mgmt)) == 0 &&
+        strstr(key_mgmt, "NONE") == NULL) {
+        return true;
+    }
+    return false;
 }
 
 /* Kick a DHCP client for the interface, fire-and-forget (double-fork so we leave
@@ -506,6 +574,20 @@ static int jw__wifi_derive_psk(const char *ssid, const char *passphrase,
     return -1;
 }
 
+static bool jw__wifi_psk_is_pmk(const char *psk) {
+    if (!psk || strlen(psk) != 64) {
+        return false;
+    }
+    for (const char *p = psk; *p; p++) {
+        if (!((*p >= '0' && *p <= '9') ||
+              (*p >= 'a' && *p <= 'f') ||
+              (*p >= 'A' && *p <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
     if (!ssid || !ssid[0]) {
         return JW_WIFI_CONNECT_FAILED;
@@ -538,6 +620,9 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
             return JW_WIFI_CONNECT_FAILED;
         }
     } else {
+        if (secured && !jw__wifi_saved_profile_has_security(id)) {
+            return JW_WIFI_CONNECT_NEED_PASSWORD;
+        }
         snprintf(idbuf, sizeof(idbuf), "%d", id);
     }
 
@@ -583,6 +668,19 @@ static int jw__wifi_ssid_sae(const char *ssid) {
     return -1;
 }
 
+static int jw__wifi_set_secured_key_mgmt(const char *idbuf, int sae) {
+    const char *primary = (sae == 1) ? "WPA-PSK SAE" : "WPA-PSK";
+    const char *set_primary[] = { "set_network", idbuf, "key_mgmt", primary };
+    if (jw__wifi_run_ok(set_primary, 4) == 0) {
+        return 0;
+    }
+    if (sae == 1) {
+        const char *set_fallback[] = { "set_network", idbuf, "key_mgmt", "WPA-PSK" };
+        return jw__wifi_run_ok(set_fallback, 4);
+    }
+    return -1;
+}
+
 jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
     if (!ssid || !ssid[0] || !psk) {
         return JW_WIFI_CONNECT_FAILED;
@@ -609,6 +707,11 @@ jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
         return JW_WIFI_CONNECT_FAILED;
     }
 
+    int sae = jw__wifi_ssid_sae(ssid);
+    if (jw__wifi_set_secured_key_mgmt(idbuf, sae) < 0) {
+        return JW_WIFI_CONNECT_FAILED;
+    }
+
     /* Key storage depends on the security type:
        - confirmed WPA2-only (sae==0): store the derived PMK hash, so the reusable
          passphrase never hits disk (the security win).
@@ -617,16 +720,15 @@ jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
          for SAE; only applies to WPA3 networks.) */
     char hex[80];
     bool stored = false;
-    if (jw__wifi_ssid_sae(ssid) == 0 &&
-        jw__wifi_derive_psk(ssid, psk, hex, sizeof(hex)) == 0) {
+    if (sae == 0 && jw__wifi_derive_psk(ssid, psk, hex, sizeof(hex)) == 0) {
         const char *set_psk[] = { "set_network", idbuf, "psk", hex };
-        stored = (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) >= 0);
+        stored = (jw__wifi_run_ok(set_psk, 4) == 0);
     }
     if (!stored) {
         char qpsk[140];
         snprintf(qpsk, sizeof(qpsk), "\"%s\"", psk);
         const char *set_psk[] = { "set_network", idbuf, "psk", qpsk };
-        if (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) < 0) {
+        if (jw__wifi_run_ok(set_psk, 4) < 0) {
             return JW_WIFI_CONNECT_FAILED;
         }
     }
@@ -1033,15 +1135,25 @@ static int jw__wifi_add_profile(const char *ssid, const char *psk) {
         return -1;
     }
     if (psk && psk[0]) {
-        char qpsk[140];
-        snprintf(qpsk, sizeof(qpsk), "\"%s\"", psk);
-        const char *set_psk[] = { "set_network", idbuf, "psk", qpsk };
-        if (jw__wifi_run(set_psk, 4, buf, sizeof(buf)) < 0) {
+        if (jw__wifi_set_secured_key_mgmt(idbuf, jw__wifi_ssid_sae(ssid)) < 0) {
             return -1;
+        }
+        if (jw__wifi_psk_is_pmk(psk)) {
+            const char *set_psk[] = { "set_network", idbuf, "psk", psk };
+            if (jw__wifi_run_ok(set_psk, 4) < 0) {
+                return -1;
+            }
+        } else {
+            char qpsk[140];
+            snprintf(qpsk, sizeof(qpsk), "\"%s\"", psk);
+            const char *set_psk[] = { "set_network", idbuf, "psk", qpsk };
+            if (jw__wifi_run_ok(set_psk, 4) < 0) {
+                return -1;
+            }
         }
     } else {
         const char *set_open[] = { "set_network", idbuf, "key_mgmt", "NONE" };
-        if (jw__wifi_run(set_open, 4, buf, sizeof(buf)) < 0) {
+        if (jw__wifi_run_ok(set_open, 4) < 0) {
             return -1;
         }
     }
@@ -1084,6 +1196,19 @@ int jw_wifi_restore(void) {
                     sscanf(p, "ssid=\"%63[^\"]\"", ssid);
                 } else if ((p = strstr(line, "psk=\"")) != NULL) {
                     sscanf(p, "psk=\"%127[^\"]\"", psk);
+                } else if ((p = strstr(line, "psk=")) != NULL) {
+                    p += 4;
+                    while (*p == ' ' || *p == '\t') p++;
+                    if (*p && *p != '"') {
+                        size_t i = 0;
+                        while (p[i] && p[i] != '\n' && p[i] != '\r' &&
+                               p[i] != ' ' && p[i] != '\t' &&
+                               i + 1 < sizeof(psk)) {
+                            psk[i] = p[i];
+                            i++;
+                        }
+                        psk[i] = '\0';
+                    }
                 }
             }
         }

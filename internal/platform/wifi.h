@@ -57,10 +57,10 @@ typedef enum {
     JW_WIFI_CONNECT_FAILED,         /* wpa_cli error */
 } jw_wifi_connect_result;
 
-/* Connect by SSID. If a saved profile exists, re-selects it. Else if the network
- * is open, creates an open profile and connects. A secured network with no saved
- * profile returns NEED_PASSWORD without changing anything (Phase 4 supplies the
- * key). On OK, a DHCP client is kicked for the interface. */
+/* Connect by SSID. If a usable saved profile exists, re-selects it. Else if the
+ * network is open, creates an open profile and connects. A secured network with
+ * no saved key returns NEED_PASSWORD without changing anything (Phase 4 supplies
+ * the key). On OK, a DHCP client is kicked for the interface. */
 jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured);
 
 /* Connect to a secured network with the given pre-shared key: creates (or reuses)
