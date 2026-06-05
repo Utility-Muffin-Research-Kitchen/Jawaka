@@ -113,6 +113,11 @@ int jw_ipc_platform_volume(const char *socket_path, int *out_percent);
 int jw_ipc_set_volume(const char *socket_path, int percent,
                       int *out_percent, char *status, int status_len);
 
+int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
+                   int *out_intent_enabled);
+int jw_ipc_set_adb(const char *socket_path, int enabled,
+                   char *status, int status_len);
+
 /* LED ring. set-led applies + persists in jawakad; get-led reads the cached
    state back from platform-status. mode is "FOREVER"/"BREATH"/"RAINBOW". */
 int jw_ipc_set_led(const char *socket_path, int enabled, const char *mode,

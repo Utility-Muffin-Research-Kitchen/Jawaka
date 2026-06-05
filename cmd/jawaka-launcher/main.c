@@ -908,7 +908,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
                 { CAT_BTN_X, "Rescan",  false, JW_HINT("X") },
                 { CAT_BTN_Y, "Forget",  false, JW_HINT("Y") },
                 { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
-                { CAT_BTN_A, "Connect", true,  JW_HINT("A") },
+                { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
             };
             jw__draw_footer(state, footer, 4);
         } else {

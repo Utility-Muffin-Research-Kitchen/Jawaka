@@ -374,6 +374,8 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "volume", cap && cap->volume);
     cJSON_AddBoolToObject(root, "wifi", cap && cap->wifi);
     cJSON_AddBoolToObject(root, "bluetooth", cap && cap->bluetooth);
+    cJSON_AddBoolToObject(root, "adb", cap && cap->adb);
+    cJSON_AddBoolToObject(root, "led", cap && cap->led);
     return root;
 }
 
@@ -390,6 +392,8 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "wifi_connected", status->wifi_connected);
     jw__json_add_int_or_null(root, "wifi_strength", status->wifi_strength);
     jw__json_add_int_or_null(root, "bluetooth_connected", status->bluetooth_connected);
+    jw__json_add_int_or_null(root, "adb_enabled", status->adb_enabled);
+    jw__json_add_int_or_null(root, "adb_intent_enabled", status->adb_intent_enabled);
     return root;
 }
 

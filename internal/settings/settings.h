@@ -154,6 +154,8 @@ typedef struct {
     int                wifi_monitor_fd;     /* wpa event-socket fd during a join (-1 = none) */
     bool               wifi_radio_on;       /* wlan0 up? (the Wi-Fi on/off toggle state) */
     int                wifi_strength_cached;/* 0..3 for the status-bar icon; polled on a throttle */
+    int                adb_enabled;         /* -1 unavailable, 0 disabled, 1 pinned */
+    int                adb_intent_enabled;  /* -1 unavailable, 0 no boot restore, 1 restore at boot */
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;

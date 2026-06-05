@@ -50,6 +50,7 @@ typedef struct {
     bool volume;
     bool wifi;
     bool bluetooth;
+    bool adb;
     bool led;
 } jw_platform_capabilities;
 
@@ -72,6 +73,8 @@ typedef struct {
     int wifi_connected;        /* -1 unknown, 0 no, 1 yes */
     int wifi_strength;         /* -1 unknown, 0 off/disconnected, 1..3 strength */
     int bluetooth_connected;   /* -1 unknown, 0 no, 1 yes */
+    int adb_enabled;           /* -1 unknown/unavailable, 0 no, 1 yes */
+    int adb_intent_enabled;    /* -1 unknown/unavailable, 0 no, 1 yes */
 } jw_platform_status;
 
 typedef struct {
@@ -98,7 +101,9 @@ typedef enum {
     JW_PLATFORM_ACTION_BLUETOOTH_OFF,
     JW_PLATFORM_ACTION_SET_AUTO_SLEEP,
     JW_PLATFORM_ACTION_SCREEN_OFF,   /* blank the backlight (display stays composed) */
-    JW_PLATFORM_ACTION_SCREEN_ON     /* unblank the backlight */
+    JW_PLATFORM_ACTION_SCREEN_ON,    /* unblank the backlight */
+    JW_PLATFORM_ACTION_ENABLE_ADB,
+    JW_PLATFORM_ACTION_DISABLE_ADB
 } jw_platform_action;
 
 typedef enum {

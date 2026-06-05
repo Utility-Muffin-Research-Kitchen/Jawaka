@@ -102,6 +102,8 @@ void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out) {
     out->wifi_connected = -1;
     out->wifi_strength = -1;
     out->bluetooth_connected = -1;
+    out->adb_enabled = -1;
+    out->adb_intent_enabled = -1;
 
     const jw_platform_backend *backend = jw_platform_get_backend();
     if (backend && backend->get_status) {
@@ -153,6 +155,10 @@ bool jw_platform_parse_action(const char *name, jw_platform_action *out) {
         *out = JW_PLATFORM_ACTION_SCREEN_OFF;
     } else if (strcmp(name, "screen-on") == 0) {
         *out = JW_PLATFORM_ACTION_SCREEN_ON;
+    } else if (strcmp(name, "enable-adb") == 0) {
+        *out = JW_PLATFORM_ACTION_ENABLE_ADB;
+    } else if (strcmp(name, "disable-adb") == 0) {
+        *out = JW_PLATFORM_ACTION_DISABLE_ADB;
     } else {
         return false;
     }
@@ -174,6 +180,8 @@ const char *jw_platform_action_name(jw_platform_action action) {
         case JW_PLATFORM_ACTION_SET_AUTO_SLEEP: return "set-auto-sleep";
         case JW_PLATFORM_ACTION_SCREEN_OFF: return "screen-off";
         case JW_PLATFORM_ACTION_SCREEN_ON: return "screen-on";
+        case JW_PLATFORM_ACTION_ENABLE_ADB: return "enable-adb";
+        case JW_PLATFORM_ACTION_DISABLE_ADB: return "disable-adb";
         default: return "unknown";
     }
 }

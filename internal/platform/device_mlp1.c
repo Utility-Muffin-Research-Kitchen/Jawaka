@@ -65,6 +65,21 @@
 #define JW_MLP1_LED_CFG  "/oem/loong/record/config/loong_light.cfg"
 #define JW_MLP1_LED_DAEMON "loong_light"
 
+#define JW_MLP1_ADBD "/usr/bin/adbd"
+#define JW_MLP1_USB_CONFIG "/etc/.usb_config"
+#define JW_MLP1_USB_GADGET "/etc/init.d/S50usb-gadget.sh"
+#define JW_MLP1_ADB_MARKER_FILE "adb-enabled"
+#define JW_MLP1_ADB_ENABLE_CMD \
+    "chattr -i " JW_MLP1_USB_CONFIG " >/dev/null 2>&1 || true; " \
+    "printf 'usb_adb_en\\n' >" JW_MLP1_USB_CONFIG " && " \
+    "chattr +i " JW_MLP1_USB_CONFIG " && sync"
+#define JW_MLP1_ADB_DISABLE_CMD \
+    "chattr -i " JW_MLP1_USB_CONFIG " >/dev/null 2>&1 || true; " \
+    "printf 'usb_mtp_en\\n' >" JW_MLP1_USB_CONFIG " && sync"
+#define JW_MLP1_USB_RESTART_CMD \
+    JW_MLP1_USB_GADGET " restart >/dev/null 2>&1 || " \
+    JW_MLP1_USB_GADGET " start >/dev/null 2>&1"
+
 /* Run a command by path with fork/exec instead of system(). */
 static int jw__exec_command(const char *path) {
     pid_t pid = fork();
@@ -481,6 +496,214 @@ static int jw__write_text_file_atomic(const char *path, const char *text) {
     return 0;
 }
 
+static int jw__mkdir_p(const char *dir) {
+    if (!dir || !dir[0]) {
+        return -1;
+    }
+
+    char tmp[JW_PLATFORM_MAX_PATH];
+    int needed = snprintf(tmp, sizeof(tmp), "%s", dir);
+    if (needed < 0 || needed >= (int)sizeof(tmp)) {
+        return -1;
+    }
+
+    size_t len = strlen(tmp);
+    while (len > 1 && tmp[len - 1] == '/') {
+        tmp[--len] = '\0';
+    }
+
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p != '/') {
+            continue;
+        }
+        *p = '\0';
+        if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+            *p = '/';
+            return -1;
+        }
+        *p = '/';
+    }
+
+    return (mkdir(tmp, 0755) == 0 || errno == EEXIST) ? 0 : -1;
+}
+
+static int jw__mkdir_parent(const char *path) {
+    if (!path || !path[0]) {
+        return -1;
+    }
+
+    char dir[JW_PLATFORM_MAX_PATH];
+    int needed = snprintf(dir, sizeof(dir), "%s", path);
+    if (needed < 0 || needed >= (int)sizeof(dir)) {
+        return -1;
+    }
+
+    char *slash = strrchr(dir, '/');
+    if (!slash) {
+        return 0;
+    }
+    if (slash == dir) {
+        slash[1] = '\0';
+    } else {
+        *slash = '\0';
+    }
+    return jw__mkdir_p(dir);
+}
+
+static int jw__mlp1_adb_marker_path(jw_platform_context *ctx,
+                                    char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return -1;
+    }
+
+    const char *override = getenv("UMRK_ADB_MARKER_PATH");
+    if (override && override[0]) {
+        int needed = snprintf(out, out_size, "%s", override);
+        return needed >= 0 && needed < (int)out_size ? 0 : -1;
+    }
+
+    const char *state = getenv("UMRK_INTERNAL_DATA_PATH");
+    if (state && state[0]) {
+        int needed = snprintf(out, out_size, "%s/%s", state,
+                              JW_MLP1_ADB_MARKER_FILE);
+        return needed >= 0 && needed < (int)out_size ? 0 : -1;
+    }
+
+    const char *sd = (ctx && ctx->sdcard_root[0]) ? ctx->sdcard_root : "/mnt/sdcard";
+    int needed = snprintf(out, out_size, "%s/.system/leaf/state/%s",
+                          sd, JW_MLP1_ADB_MARKER_FILE);
+    return needed >= 0 && needed < (int)out_size ? 0 : -1;
+}
+
+static bool jw__mlp1_adb_intent_enabled(jw_platform_context *ctx) {
+    char path[JW_PLATFORM_MAX_PATH];
+    return jw__mlp1_adb_marker_path(ctx, path, sizeof(path)) == 0 &&
+           access(path, F_OK) == 0;
+}
+
+static int jw__mlp1_set_adb_intent(jw_platform_context *ctx, bool enabled) {
+    char path[JW_PLATFORM_MAX_PATH];
+    if (jw__mlp1_adb_marker_path(ctx, path, sizeof(path)) != 0) {
+        return -1;
+    }
+
+    if (!enabled) {
+        return (unlink(path) == 0 || errno == ENOENT) ? 0 : -1;
+    }
+
+    if (jw__mkdir_parent(path) != 0) {
+        return -1;
+    }
+
+    FILE *fp = fopen(path, "w");
+    if (!fp) {
+        return -1;
+    }
+    int ok = fputs("1\n", fp) >= 0;
+    return fclose(fp) == 0 && ok ? 0 : -1;
+}
+
+static bool jw__mlp1_adb_supported(void) {
+    return access(JW_MLP1_ADBD, X_OK) == 0 &&
+           access(JW_MLP1_USB_GADGET, X_OK) == 0 &&
+           access(JW_MLP1_USB_CONFIG, F_OK) == 0;
+}
+
+static bool jw__mlp1_usb_config_is_adb(void) {
+    char *text = jw__read_text_file(JW_MLP1_USB_CONFIG, 64);
+    if (!text) {
+        return false;
+    }
+    text[strcspn(text, "\r\n")] = '\0';
+    bool result = strcmp(text, "usb_adb_en") == 0;
+    free(text);
+    return result;
+}
+
+static bool jw__mlp1_usb_config_is_immutable(void) {
+    FILE *fp = popen("lsattr " JW_MLP1_USB_CONFIG " 2>/dev/null", "r");
+    if (!fp) {
+        return false;
+    }
+
+    char line[128];
+    bool immutable = false;
+    if (fgets(line, sizeof(line), fp)) {
+        char attrs[64];
+        if (sscanf(line, "%63s", attrs) == 1 && strchr(attrs, 'i')) {
+            immutable = true;
+        }
+    }
+    pclose(fp);
+    return immutable;
+}
+
+static bool jw__mlp1_adb_is_pinned(void) {
+    return jw__mlp1_adb_supported() &&
+           jw__mlp1_usb_config_is_adb() &&
+           jw__mlp1_usb_config_is_immutable();
+}
+
+static void jw__mlp1_enable_adb(jw_platform_context *ctx,
+                                jw_platform_result *out) {
+    if (!jw__mlp1_adb_supported()) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
+                               "ADB support unavailable");
+        return;
+    }
+
+    if (jw__exec_shell(JW_MLP1_ADB_ENABLE_CMD) != 0 ||
+        !jw__mlp1_adb_is_pinned()) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                               "ADB pin failed");
+        return;
+    }
+
+    if (jw__mlp1_set_adb_intent(ctx, true) != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                               "ADB enabled, restore marker failed");
+        return;
+    }
+
+    if (jw__exec_shell(JW_MLP1_USB_RESTART_CMD) != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                               "ADB enabled; USB restart failed");
+        return;
+    }
+
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "ADB enabled");
+}
+
+static void jw__mlp1_disable_adb(jw_platform_context *ctx,
+                                 jw_platform_result *out) {
+    if (!jw__mlp1_adb_supported()) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
+                               "ADB support unavailable");
+        return;
+    }
+
+    if (jw__exec_shell(JW_MLP1_ADB_DISABLE_CMD) != 0 ||
+        jw__mlp1_adb_is_pinned()) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                               "ADB disable failed");
+        return;
+    }
+
+    if (jw__mlp1_set_adb_intent(ctx, false) != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                               "ADB disabled, marker removal failed");
+        return;
+    }
+
+    if (jw__exec_shell(JW_MLP1_USB_RESTART_CMD) != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                               "ADB disabled; USB restart failed");
+        return;
+    }
+
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "ADB disabled");
+}
+
 static int jw__json_put_string(cJSON *object, const char *key, const char *value) {
     if (!object || !key || !value) {
         return -1;
@@ -700,7 +923,6 @@ static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
 }
 
 static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *out) {
-    (void)ctx;
     if (!out) {
         return;
     }
@@ -721,6 +943,11 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
     out->brightness_percent = jw__mlp1_get_brightness_percent();
     out->volume_percent = jw__mlp1_get_volume_percent();
     jw__mlp1_get_wifi_status(out);
+
+    if (jw__mlp1_adb_supported()) {
+        out->adb_enabled = jw__mlp1_adb_is_pinned() ? 1 : 0;
+        out->adb_intent_enabled = jw__mlp1_adb_intent_enabled(ctx) ? 1 : 0;
+    }
 }
 
 static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
@@ -821,6 +1048,16 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         char message[JW_PLATFORM_MAX_MESSAGE];
         snprintf(message, sizeof(message), "volume set to %d%%", percent);
         jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, percent);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_ENABLE_ADB) {
+        jw__mlp1_enable_adb(ctx, out);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_DISABLE_ADB) {
+        jw__mlp1_disable_adb(ctx, out);
         return;
     }
 
@@ -1086,6 +1323,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .brightness = true,
             .volume = true,
             .wifi = true,
+            .adb = true,
             .led = true,
         },
         .init = jw__mlp1_init,
