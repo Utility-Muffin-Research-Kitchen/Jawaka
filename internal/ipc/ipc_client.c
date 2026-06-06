@@ -927,6 +927,76 @@ int jw_ipc_set_adb(const char *socket_path, int enabled,
     return ok ? 0 : -1;
 }
 
+int jw_ipc_get_boot_splash(const char *socket_path, int *out_enabled,
+                           bool *out_supported) {
+    if (out_enabled) {
+        *out_enabled = -1;
+    }
+    if (out_supported) {
+        *out_supported = false;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    int rc = -1;
+    const cJSON *capabilities = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
+    const cJSON *splash_cap = cJSON_GetObjectItemCaseSensitive(capabilities, "boot_splash");
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(status, "boot_splash_enabled");
+    if (out_supported) {
+        *out_supported = cJSON_IsTrue(splash_cap);
+    }
+    if (cJSON_IsNumber(enabled)) {
+        if (out_enabled) {
+            *out_enabled = enabled->valueint;
+        }
+        rc = 0;
+    } else if (cJSON_IsBool(splash_cap)) {
+        rc = 0;
+    }
+
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
+                           char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-action");
+    cJSON_AddStringToObject(req, "action", "set-boot-splash");
+    cJSON_AddNumberToObject(req, "value", enabled ? 1 : 0);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "boot splash failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    bool ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s",
+                     ok ? (enabled ? "boot splash enabled" : "boot splash disabled")
+                        : "boot splash failed");
+        }
+    }
+
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
 int jw_ipc_set_led(const char *socket_path, int enabled, const char *mode,
                    int r, int g, int b, int brightness, int speed,
                    char *status, int status_len) {

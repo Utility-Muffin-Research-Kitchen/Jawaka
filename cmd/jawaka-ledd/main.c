@@ -12,7 +12,7 @@
  * the clean "stop the effect" operation: death itself thaws the daemon.
  *
  * Usage: jawaka-ledd <effect> <r> <g> <b> <brightness 0-10> <speed 0-10>
- *   effects: comet sweep fountain hiccup
+ *   effects: off static breath rainbow comet sweep fountain hiccup
  *
  * Standalone + MLP1-specific (like device_mlp1.c): pure libc + sysfs, no deps.
  */
@@ -110,6 +110,50 @@ typedef struct {
     int alpha_max;      /* 0..255 from brightness */
     int tail_sub;       /* comet/sweep tail length, in sub-LED units (0 = bare dot) */
 } jw_effect_params;
+
+static void jw__fx_fill(uint32_t out[JW_LED_COUNT], int a, int r, int g, int b) {
+    uint32_t c = jw__argb(a, r, g, b);
+    for (int i = 0; i < JW_LED_COUNT; i++) out[i] = c;
+}
+
+static uint32_t jw__wheel(int pos, int alpha) {
+    pos &= 255;
+    if (pos < 85) {
+        return jw__argb(alpha, 255 - pos * 3, pos * 3, 0);
+    }
+    if (pos < 170) {
+        pos -= 85;
+        return jw__argb(alpha, 0, 255 - pos * 3, pos * 3);
+    }
+    pos -= 170;
+    return jw__argb(alpha, pos * 3, 0, 255 - pos * 3);
+}
+
+static void jw__fx_breath(uint32_t out[JW_LED_COUNT], int t,
+                          const jw_effect_params *p, int speed) {
+    int period = 96 - speed * 7;
+    if (period < 24) period = 24;
+    int phase = t % period;
+    int half = period / 2;
+    int pulse;
+    if (phase < half) {
+        pulse = half > 0 ? phase * 255 / half : 255;
+    } else {
+        int down = period - phase;
+        int span = period - half;
+        pulse = span > 0 ? down * 255 / span : 0;
+    }
+    jw__fx_fill(out, p->alpha_max * pulse / 255, p->r, p->g, p->b);
+}
+
+static void jw__fx_rainbow(uint32_t out[JW_LED_COUNT], int t,
+                           const jw_effect_params *p, int speed) {
+    int advance = 1 + speed * 2;
+    int offset = (t * advance) & 255;
+    for (int i = 0; i < JW_LED_COUNT; i++) {
+        out[i] = jw__wheel(offset + i * 256 / JW_LED_COUNT, p->alpha_max);
+    }
+}
 
 /* Comet (bg white) / Sweep (bg off): a smoothly gliding color dot with an
    optional fading tail. `head` is a sub-LED position so the dot's glow splits
@@ -218,7 +262,11 @@ int main(int argc, char **argv) {
     int t = 0;
     long head = 0;
     while (g_running) {
-        if (strcmp(effect, "comet") == 0)         jw__fx_comet(frame, head, &p, 1);
+        if (strcmp(effect, "off") == 0)           jw__fx_fill(frame, 0, 0, 0, 0);
+        else if (strcmp(effect, "static") == 0)   jw__fx_fill(frame, p.alpha_max, p.r, p.g, p.b);
+        else if (strcmp(effect, "breath") == 0)   jw__fx_breath(frame, t, &p, speed);
+        else if (strcmp(effect, "rainbow") == 0)  jw__fx_rainbow(frame, t, &p, speed);
+        else if (strcmp(effect, "comet") == 0)    jw__fx_comet(frame, head, &p, 1);
         else if (strcmp(effect, "sweep") == 0)    jw__fx_comet(frame, head, &p, 0);
         else if (strcmp(effect, "fountain") == 0) jw__fx_fountain(frame, t, &p, speed);
         else if (strcmp(effect, "hiccup") == 0)   jw__fx_hiccup(frame, t, &p, speed);

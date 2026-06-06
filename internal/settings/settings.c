@@ -246,6 +246,25 @@ static void jw__refresh_adb(jw_settings_ui *ui) {
     }
 }
 
+static void jw__refresh_boot_splash(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+    ui->boot_splash_supported = false;
+    if (!ui->socket_path[0]) {
+        return;
+    }
+
+    int enabled = -1;
+    bool supported = false;
+    if (jw_ipc_get_boot_splash(ui->socket_path, &enabled, &supported) == 0) {
+        ui->boot_splash_supported = supported;
+        if (enabled >= 0) {
+            ui->boot_splash_enabled = enabled != 0;
+        }
+    }
+}
+
 static int jw__bt_row_count(const jw_settings_ui *ui) {
     if (!ui || !ui->bt_radio_on) {
         return JW_BLUETOOTH_FIXED_ROWS;
@@ -592,6 +611,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->show_volume       = true;
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
+    ui->boot_splash_enabled = true;
+    ui->boot_splash_supported = false;
     ui->brightness_percent = 50;
     ui->volume_percent     = 50;
     ui->audio_output       = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
@@ -661,6 +682,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 if (kAutoSleepSeconds[i] == seconds) { ui->auto_sleep_index = i; break; }
             }
         }
+        if (jw_db_get_setting(db_path, "boot_splash_enabled", val, sizeof(val)) == 0 && val[0])
+            ui->boot_splash_enabled = (strcmp(val, "0") != 0);
 
         jw_settings_apply_persisted_overrides(ui->db_path);
 
@@ -676,6 +699,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     jw__refresh_audio_status(ui);
     jw__refresh_led(ui);
     jw__refresh_adb(ui);
+    jw__refresh_boot_splash(ui);
     jw__refresh_secondary_sd_status(ui);
 }
 
@@ -688,6 +712,7 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     jw__refresh_audio_status(ui);
     jw__refresh_led(ui);
     jw__refresh_adb(ui);
+    jw__refresh_boot_splash(ui);
     jw__refresh_secondary_sd_status(ui);
 }
 
@@ -1822,6 +1847,11 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                     ? ui->auto_sleep_index : JW_AUTO_SLEEP_DEFAULT;
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_AUTO_SLEEP,
                         "Auto Sleep", kAutoSleepLabels[sleep_idx], true);
+    const char *splash = ui->boot_splash_supported
+                         ? (ui->boot_splash_enabled ? "On" : "Off")
+                         : "Unavailable";
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
+                        "Boot Splash", splash, ui->boot_splash_supported);
     (void)h;
 }
 
@@ -2177,6 +2207,28 @@ static void jw__set_adb(jw_settings_ui *ui, bool enabled,
                  enabled ? "ADB enable failed" : "ADB disable failed");
     }
     jw__refresh_adb(ui);
+}
+
+static void jw__set_boot_splash(jw_settings_ui *ui, bool enabled,
+                                char *status_buf, size_t status_size) {
+    if (!ui || !status_buf || status_size == 0) {
+        return;
+    }
+
+    if (!ui->boot_splash_supported) {
+        snprintf(status_buf, status_size, "%s", "boot splash unavailable on this platform");
+        return;
+    }
+
+    status_buf[0] = '\0';
+    if (jw_ipc_set_boot_splash(ui->socket_path, enabled ? 1 : 0,
+                               status_buf, (int)status_size) != 0 &&
+        !status_buf[0]) {
+        snprintf(status_buf, status_size, "%s",
+                 enabled ? "boot splash enable failed" : "boot splash disable failed");
+    }
+    jw__refresh_boot_splash(ui);
+    jw__persist_bool(ui, "boot_splash_enabled", ui->boot_splash_enabled);
 }
 
 static void jw__safe_unmount_secondary_sd(jw_settings_ui *ui,
@@ -2849,6 +2901,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->auto_sleep_index = next;
                     /* Persist the seconds value (the daemon reads it directly). */
                     jw__persist_int(ui, "auto_sleep_seconds", kAutoSleepSeconds[next]);
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_BOOT_SPLASH) {
+                    (void)dir;
+                    jw__set_boot_splash(ui, !ui->boot_splash_enabled,
+                                        status_buf, status_size);
                 }
                 break;
             }

@@ -3229,6 +3229,7 @@ int main(void) {
     jw_autodemo_init(&demo);
     bool running = true;
 
+    cat_request_frame();
     jw__render_launcher(&state);
 
     /* First frame is on screen; jawakad owns any platform-specific readiness

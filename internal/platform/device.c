@@ -108,6 +108,7 @@ static void jw__platform_status_init(jw_platform_status *out) {
     out->bluetooth_connected = -1;
     out->adb_enabled = -1;
     out->adb_intent_enabled = -1;
+    out->boot_splash_enabled = -1;
 }
 
 void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out) {
@@ -188,6 +189,8 @@ bool jw_platform_parse_action(const char *name, jw_platform_action *out) {
         *out = JW_PLATFORM_ACTION_ENABLE_ADB;
     } else if (strcmp(name, "disable-adb") == 0) {
         *out = JW_PLATFORM_ACTION_DISABLE_ADB;
+    } else if (strcmp(name, "set-boot-splash") == 0) {
+        *out = JW_PLATFORM_ACTION_SET_BOOT_SPLASH;
     } else {
         return false;
     }
@@ -212,6 +215,7 @@ const char *jw_platform_action_name(jw_platform_action action) {
         case JW_PLATFORM_ACTION_SCREEN_ON: return "screen-on";
         case JW_PLATFORM_ACTION_ENABLE_ADB: return "enable-adb";
         case JW_PLATFORM_ACTION_DISABLE_ADB: return "disable-adb";
+        case JW_PLATFORM_ACTION_SET_BOOT_SPLASH: return "set-boot-splash";
         default: return "unknown";
     }
 }

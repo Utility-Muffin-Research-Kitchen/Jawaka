@@ -132,6 +132,10 @@ int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
                    int *out_intent_enabled, bool *out_supported);
 int jw_ipc_set_adb(const char *socket_path, int enabled,
                    char *status, int status_len);
+int jw_ipc_get_boot_splash(const char *socket_path, int *out_enabled,
+                           bool *out_supported);
+int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
+                           char *status, int status_len);
 
 /* LED ring. set-led applies + persists in jawakad; get-led reads the cached
    state back from platform-status. mode is "FOREVER"/"BREATH"/"RAINBOW". */

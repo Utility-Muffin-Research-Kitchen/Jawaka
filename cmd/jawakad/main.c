@@ -387,6 +387,7 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "wifi", cap && cap->wifi);
     cJSON_AddBoolToObject(root, "bluetooth", cap && cap->bluetooth);
     cJSON_AddBoolToObject(root, "adb", cap && cap->adb);
+    cJSON_AddBoolToObject(root, "boot_splash", cap && cap->boot_splash);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
     return root;
 }
@@ -436,6 +437,7 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "bluetooth_connected", status->bluetooth_connected);
     jw__json_add_int_or_null(root, "adb_enabled", status->adb_enabled);
     jw__json_add_int_or_null(root, "adb_intent_enabled", status->adb_intent_enabled);
+    jw__json_add_int_or_null(root, "boot_splash_enabled", status->boot_splash_enabled);
     return root;
 }
 
@@ -1643,6 +1645,12 @@ static bool jw__env_is_disabled(const char *name) {
     return value && strcmp(value, "0") == 0;
 }
 
+static bool jw__env_is_truthy(const char *name) {
+    const char *value = getenv(name);
+    return value && value[0] && strcmp(value, "0") != 0 &&
+           strcmp(value, "false") != 0 && strcmp(value, "no") != 0;
+}
+
 static int jw__spawn_osd(jw_daemon_state *state) {
     if (!state || state->osd_pid > 0 || jw__env_is_disabled("JAWAKA_OSD")) {
         return 0;
@@ -1908,6 +1916,19 @@ static int jw__spawn_ledd(jw_daemon_state *state, const char *effect,
     return 0;
 }
 
+static const char *jw__leaf_ledd_effect_name(const jw_led_config *led) {
+    if (!led || !jw__env_is_truthy("UMRK_LEAF_MODE")) return NULL;
+    if (!led->enabled) return "off";
+
+    switch (led->mode) {
+        case JW_LED_MODE_STATIC:  return "static";
+        case JW_LED_MODE_BREATH:  return "breath";
+        case JW_LED_MODE_RAINBOW: return "rainbow";
+        default:
+            return jw_led_mode_is_effect(led->mode) ? jw_led_mode_name(led->mode) : NULL;
+    }
+}
+
 /* Apply an LED config: stop any running effect, write the platform baseline
    config, then spawn the custom effect engine when the selected mode needs it. */
 static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *led) {
@@ -1919,7 +1940,11 @@ static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *le
     jw_platform_result result;
     jw_platform_set_led(&state->platform, &base, &result);
 
-    if (led->enabled && jw_led_mode_is_effect(led->mode)) {
+    const char *leaf_effect = jw__leaf_ledd_effect_name(led);
+    if (leaf_effect) {
+        jw__spawn_ledd(state, leaf_effect,
+                       led->r, led->g, led->b, led->brightness, led->speed);
+    } else if (led->enabled && jw_led_mode_is_effect(led->mode)) {
         jw__spawn_ledd(state, jw_led_mode_name(led->mode),
                        led->r, led->g, led->b, led->brightness, led->speed);
     }

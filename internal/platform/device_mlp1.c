@@ -83,6 +83,7 @@
 #define JW_MLP1_USB_CONFIG "/etc/.usb_config"
 #define JW_MLP1_USB_GADGET "/etc/init.d/S50usb-gadget.sh"
 #define JW_MLP1_ADB_MARKER_FILE "adb-enabled"
+#define JW_MLP1_BOOT_SPLASH_DISABLED_FILE "boot-splash-disabled"
 #define JW_MLP1_ROOTFS_RW_CMD \
     "(mount -o remount,rw / >/dev/null 2>&1 || " \
     "mount -o remount,rw /dev/root / >/dev/null 2>&1)"
@@ -646,13 +647,15 @@ static int jw__mkdir_parent(const char *path) {
     return jw__mkdir_p(dir);
 }
 
-static int jw__mlp1_adb_marker_path(jw_platform_context *ctx,
-                                    char *out, size_t out_size) {
+static int jw__mlp1_state_marker_path(jw_platform_context *ctx,
+                                      const char *override_env,
+                                      const char *file_name,
+                                      char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return -1;
     }
 
-    const char *override = getenv("UMRK_ADB_MARKER_PATH");
+    const char *override = override_env ? getenv(override_env) : NULL;
     if (override && override[0]) {
         int needed = snprintf(out, out_size, "%s", override);
         return needed >= 0 && needed < (int)out_size ? 0 : -1;
@@ -660,8 +663,7 @@ static int jw__mlp1_adb_marker_path(jw_platform_context *ctx,
 
     const char *state = getenv("UMRK_INTERNAL_DATA_PATH");
     if (state && state[0]) {
-        int needed = snprintf(out, out_size, "%s/%s", state,
-                              JW_MLP1_ADB_MARKER_FILE);
+        int needed = snprintf(out, out_size, "%s/%s", state, file_name);
         return needed >= 0 && needed < (int)out_size ? 0 : -1;
     }
 
@@ -671,14 +673,21 @@ static int jw__mlp1_adb_marker_path(jw_platform_context *ctx,
     }
     if (platform_root && platform_root[0]) {
         int needed = snprintf(out, out_size, "%s/state/%s", platform_root,
-                              JW_MLP1_ADB_MARKER_FILE);
+                              file_name);
         return needed >= 0 && needed < (int)out_size ? 0 : -1;
     }
 
     const char *sd = (ctx && ctx->sdcard_root[0]) ? ctx->sdcard_root : "/mnt/sdcard";
     int needed = snprintf(out, out_size, "%s/.system/leaf/platforms/mlp1/state/%s",
-                          sd, JW_MLP1_ADB_MARKER_FILE);
+                          sd, file_name);
     return needed >= 0 && needed < (int)out_size ? 0 : -1;
+}
+
+static int jw__mlp1_adb_marker_path(jw_platform_context *ctx,
+                                    char *out, size_t out_size) {
+    return jw__mlp1_state_marker_path(ctx, "UMRK_ADB_MARKER_PATH",
+                                      JW_MLP1_ADB_MARKER_FILE,
+                                      out, out_size);
 }
 
 static bool jw__mlp1_adb_intent_enabled(jw_platform_context *ctx) {
@@ -694,6 +703,43 @@ static int jw__mlp1_set_adb_intent(jw_platform_context *ctx, bool enabled) {
     }
 
     if (!enabled) {
+        return (unlink(path) == 0 || errno == ENOENT) ? 0 : -1;
+    }
+
+    if (jw__mkdir_parent(path) != 0) {
+        return -1;
+    }
+
+    FILE *fp = fopen(path, "w");
+    if (!fp) {
+        return -1;
+    }
+    int ok = fputs("1\n", fp) >= 0;
+    return fclose(fp) == 0 && ok ? 0 : -1;
+}
+
+static int jw__mlp1_boot_splash_disabled_path(jw_platform_context *ctx,
+                                              char *out, size_t out_size) {
+    return jw__mlp1_state_marker_path(ctx, "UMRK_BOOT_SPLASH_DISABLED_PATH",
+                                      JW_MLP1_BOOT_SPLASH_DISABLED_FILE,
+                                      out, out_size);
+}
+
+static bool jw__mlp1_boot_splash_enabled(jw_platform_context *ctx) {
+    char path[JW_PLATFORM_MAX_PATH];
+    if (jw__mlp1_boot_splash_disabled_path(ctx, path, sizeof(path)) != 0) {
+        return true;
+    }
+    return access(path, F_OK) != 0;
+}
+
+static int jw__mlp1_set_boot_splash(jw_platform_context *ctx, bool enabled) {
+    char path[JW_PLATFORM_MAX_PATH];
+    if (jw__mlp1_boot_splash_disabled_path(ctx, path, sizeof(path)) != 0) {
+        return -1;
+    }
+
+    if (enabled) {
         return (unlink(path) == 0 || errno == ENOENT) ? 0 : -1;
     }
 
@@ -1384,6 +1430,7 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
         out->adb_enabled = jw__mlp1_adb_is_pinned() ? 1 : 0;
         out->adb_intent_enabled = jw__mlp1_adb_intent_enabled(ctx) ? 1 : 0;
     }
+    out->boot_splash_enabled = jw__mlp1_boot_splash_enabled(ctx) ? 1 : 0;
 }
 
 static void jw__mlp1_get_audio_status(jw_platform_context *ctx, jw_platform_status *out) {
@@ -1413,6 +1460,15 @@ static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
         return;
     }
 
+    if (jw__env_truthy("UMRK_LEAF_MODE")) {
+        (void)jw__exec_shell("killall loong_transition >/dev/null 2>&1 || true");
+        jw_log_info("loong: dismissed Leaf boot transition");
+        ctx->home_ready_sent = true;
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                               "leaf boot transition dismissed");
+        return;
+    }
+
     jw__loong_load();
     if (!s_event_opend) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
@@ -1422,6 +1478,7 @@ static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
 
     int rc = s_event_opend("HOME");
     jw_log_info("loong: EventOpend(\"HOME\") -> %d (dismissing boot transition)", rc);
+    (void)jw__exec_shell("killall loong_transition >/dev/null 2>&1 || true");
     ctx->home_ready_sent = true;
     jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "home ready sent");
 }
@@ -1528,6 +1585,20 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_DISABLE_ADB) {
         jw__mlp1_disable_adb(ctx, out);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SET_BOOT_SPLASH) {
+        bool enabled = value != 0;
+        if (jw__mlp1_set_boot_splash(ctx, enabled) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   enabled ? "boot splash enable failed"
+                                           : "boot splash disable failed");
+            return;
+        }
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                               enabled ? "boot splash enabled"
+                                       : "boot splash disabled");
         return;
     }
 
@@ -1704,25 +1775,6 @@ static int jw__mlp1_signal_by_name(const char *name, int sig) {
     return signalled;
 }
 
-static int jw__mlp1_spawn_loong_light(void) {
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        chdir("/loong");
-        const char *old_ld = getenv("LD_LIBRARY_PATH");
-        char ld[512];
-        if (old_ld && old_ld[0]) {
-            snprintf(ld, sizeof(ld), "./:%s", old_ld);
-        } else {
-            snprintf(ld, sizeof(ld), "%s", "./");
-        }
-        setenv("LD_LIBRARY_PATH", ld, 1);
-        execl("/loong/loong_light", "loong_light", (char *)NULL);
-        _exit(127);
-    }
-    return 0;
-}
-
 static int jw__mlp1_spawn_loong_power(void) {
     pid_t pid = fork();
     if (pid < 0) return -1;
@@ -1763,15 +1815,6 @@ static int jw__mlp1_apply_power_cfg_live(void) {
     return 0;
 }
 
-static int jw__mlp1_restart_leaf_loong_light(void) {
-    int signalled = jw__mlp1_signal_by_name(JW_MLP1_LED_DAEMON, SIGTERM);
-    if (signalled > 0) {
-        usleep(300000);
-        jw__mlp1_signal_by_name(JW_MLP1_LED_DAEMON, SIGKILL);
-    }
-    return jw__mlp1_spawn_loong_light();
-}
-
 static void jw__mlp1_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                              jw_platform_result *out) {
     (void)ctx;
@@ -1802,13 +1845,8 @@ static void jw__mlp1_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
     fclose(fp);
 
     if (jw__env_truthy("UMRK_LEAF_MODE")) {
-        if (jw__mlp1_restart_leaf_loong_light() == 0) {
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
-                                   "led cfg written (daemon restarted)");
-        } else {
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                                   "led daemon restart failed");
-        }
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                               "led cfg written (leaf driver owns live state)");
         return;
     }
 
@@ -1835,6 +1873,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .wifi = true,
             .bluetooth = true,
             .adb = true,
+            .boot_splash = true,
             .led = true,
         },
         .init = jw__mlp1_init,
