@@ -6,6 +6,7 @@
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/paths.h"
+#include "internal/platform/wifi.h"
 #include "internal/retroarch/command.h"
 #include "internal/retroarch/states.h"
 #include "internal/settings/appearance.h"
@@ -3576,6 +3577,15 @@ int main(int argc, char *argv[]) {
     /* Exported so child processes receive them via execv's inherited environment. */
     jw__publish_runtime_path_env(&state);
     jw__publish_audio_env(&state);
+
+    {
+        long long wifi_start_ms = jw__monotonic_ms();
+        int restored = jw_wifi_restore();
+        int hardened = jw_wifi_harden();
+        jw_log_info("wifi startup maintenance restore=%d harden=%d total_ms=%lld",
+                    restored, hardened, jw__monotonic_ms() - wifi_start_ms);
+    }
+
     setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
     setenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1", 0);
     {
@@ -3598,6 +3608,17 @@ int main(int argc, char *argv[]) {
     jw_log_info("platform script dir: %s", state.platform.script_dir);
     if (state.daemon_only) {
         jw_log_info("daemon-only mode enabled");
+    }
+
+    {
+        jw_scan_result scan_result;
+        long long scan_start_ms = jw__monotonic_ms();
+        if (jw__scan_library_now(&state, &scan_result, "at startup") != 0) {
+            jw_log_warn("startup library scan failed; launcher will use existing cache if available");
+        } else {
+            jw_log_info("startup library scan timings: total_ms=%lld",
+                        jw__monotonic_ms() - scan_start_ms);
+        }
     }
 
     jw__spawn_osd(&state);

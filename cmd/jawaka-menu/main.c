@@ -1300,17 +1300,32 @@ int main(int argc, char **argv) {
     /* status stays empty (memset above); the line only shows real feedback. */
 
     /* Inherit the launcher's status-bar and button-hint preferences. */
+    long long status_start_ms = jw__monotonic_ms();
     jw_settings_load_status_prefs(db_path, &state.status_bar, &state.show_hints);
-    /* Supply the wifi strength ourselves (one-shot) so Catastrophe doesn't shell
-       out for it — same source as the launcher. */
+    /* Do not block menu open on a live radio read. Supplying "unknown" keeps
+       Catastrophe from doing its own synchronous status-bar Wi-Fi probe. */
     if (state.status_bar.show_wifi) {
         state.status_bar.wifi_supplied = true;
-        state.status_bar.wifi_strength = jw_wifi_strength_now();
+        state.status_bar.wifi_strength = -1;
     }
+    long long status_done_ms = jw__monotonic_ms();
 
     jw_autodemo demo;
     jw_autodemo_init(&demo);
     bool running = true;
+
+    long long frame_start_ms = jw__monotonic_ms();
+    cat_request_frame();
+    jw__render_menu(&state);
+    long long frame_done_ms = jw__monotonic_ms();
+    jw_log_info("menu startup timings: mode=frontend hello_ms=%lld cat_ms=%lld theme_ms=%lld activate_ms=%lld status_ms=%lld first_frame_ms=%lld total_ms=%lld",
+                hello_done_ms - hello_start_ms,
+                cat_done_ms - cat_start_ms,
+                theme_done_ms - theme_start_ms,
+                activated_ms - theme_done_ms,
+                status_done_ms - status_start_ms,
+                frame_done_ms - frame_start_ms,
+                frame_done_ms - process_start_ms);
 
     while (running) {
         cat_input_event ev;

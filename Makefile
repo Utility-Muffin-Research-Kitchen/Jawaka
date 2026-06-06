@@ -70,6 +70,7 @@ DAEMON_SRCS := \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
 	$(BLUETOOTH_SRC) \
+	$(WIFI_SRC) \
 	$(PLATFORM_BACKEND_SRC) \
 	$(PLATFORM_ID_SRC) \
 	$(INPUT_PROXY_SRC) \

@@ -406,6 +406,60 @@ int jw_db_get_setting(const char *db_path, const char *key,
     return 0;
 }
 
+int jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,
+                       int count) {
+    if (!db_path || !queries || count < 0) return -1;
+
+    for (int i = 0; i < count; i++) {
+        queries[i].found = 0;
+        if (queries[i].out && queries[i].out_size > 0)
+            queries[i].out[0] = '\0';
+    }
+    if (count == 0) return 0;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql = "SELECT value FROM settings WHERE key = ?;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    int ok = 1;
+    for (int i = 0; i < count; i++) {
+        if (!queries[i].key || !queries[i].out || queries[i].out_size == 0) {
+            continue;
+        }
+
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+        sqlite3_bind_text(stmt, 1, queries[i].key, -1, SQLITE_TRANSIENT);
+
+        int rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            const unsigned char *text = sqlite3_column_text(stmt, 0);
+            if (text) {
+                snprintf(queries[i].out, queries[i].out_size, "%s", text);
+                queries[i].found = 1;
+            }
+        } else if (rc != SQLITE_DONE) {
+            ok = 0;
+            break;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return ok ? 0 : -1;
+}
+
 int jw_db_set_setting(const char *db_path, const char *key, const char *value) {
     if (!db_path || !key || !value) return -1;
 

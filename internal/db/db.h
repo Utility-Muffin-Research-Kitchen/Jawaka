@@ -87,8 +87,17 @@ int  jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
    Idempotent — removing an absent row succeeds. */
 int  jw_db_remove_recent(const char *db_path, const char *kind, int target_id);
 
+typedef struct {
+    const char *key;
+    char       *out;
+    size_t      out_size;
+    int         found;
+} jw_db_setting_query;
+
 int  jw_db_get_setting(const char *db_path, const char *key,
                         char *out, size_t out_size);
+int  jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,
+                        int count);
 int  jw_db_set_setting(const char *db_path, const char *key, const char *value);
 /* Write multiple key/value settings in a single open + transaction. Far cheaper
    than N jw_db_set_setting() calls, each of which re-opens the DB and re-applies
