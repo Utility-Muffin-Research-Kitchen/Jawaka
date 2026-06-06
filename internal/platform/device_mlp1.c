@@ -658,8 +658,18 @@ static int jw__mlp1_adb_marker_path(jw_platform_context *ctx,
         return needed >= 0 && needed < (int)out_size ? 0 : -1;
     }
 
+    const char *platform_root = getenv("UMRK_PLATFORM_PATH");
+    if (!platform_root || !platform_root[0]) {
+        platform_root = getenv("SYSTEM_PATH");
+    }
+    if (platform_root && platform_root[0]) {
+        int needed = snprintf(out, out_size, "%s/state/%s", platform_root,
+                              JW_MLP1_ADB_MARKER_FILE);
+        return needed >= 0 && needed < (int)out_size ? 0 : -1;
+    }
+
     const char *sd = (ctx && ctx->sdcard_root[0]) ? ctx->sdcard_root : "/mnt/sdcard";
-    int needed = snprintf(out, out_size, "%s/.system/leaf/state/%s",
+    int needed = snprintf(out, out_size, "%s/.system/leaf/platforms/mlp1/state/%s",
                           sd, JW_MLP1_ADB_MARKER_FILE);
     return needed >= 0 && needed < (int)out_size ? 0 : -1;
 }

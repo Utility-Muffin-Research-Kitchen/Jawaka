@@ -134,7 +134,7 @@ mock-sdcard/
   Apps/shared/<Name>.pak/
     launch.sh
     pak.json
-  .system/leaf/state/library.db
+  .system/leaf/platforms/<platform>/state/library.db
 ```
 
 For app paks, `pak.json.platform` must match the containing platform directory

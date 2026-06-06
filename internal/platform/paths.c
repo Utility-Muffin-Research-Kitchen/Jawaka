@@ -678,7 +678,14 @@ char *jw_state_dir(void) {
         return NULL;
     }
 
-    char *state_dir = jw__dup_printf("%s/.system/leaf/state", sdcard_root);
+    char state_path[PATH_MAX];
+    if (!jw__format_default_system_child(state_path, sizeof(state_path),
+                                         sdcard_root, "state")) {
+        free(sdcard_root);
+        return NULL;
+    }
+
+    char *state_dir = jw__dup_printf("%s", state_path);
     if (!state_dir) {
         free(sdcard_root);
         return NULL;
@@ -760,8 +767,8 @@ char *jw_retroarch_state_dir(const char *sdcard_root) {
         if (!jw__format_string(state_root, sizeof(state_root), "%s", internal)) {
             return NULL;
         }
-    } else if (!jw__format_string(state_root, sizeof(state_root),
-                                  "%s/.system/leaf/state", sdroot_abs)) {
+    } else if (!jw__format_default_system_child(state_root, sizeof(state_root),
+                                                sdroot_abs, "state")) {
         return NULL;
     }
     if (jw__mkdir_if_needed(state_root, 0755) != 0) {

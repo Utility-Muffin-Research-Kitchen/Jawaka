@@ -278,16 +278,28 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
         }
     }
     jw__setenv_default("UMRK_BIN_PATH", state->bin_dir);
+    if (getenv("UMRK_LAUNCHER_PATH")) {
+        jw__setenvf_default("UMRK_ENV_FILE", "%s/env.sh",
+                            getenv("UMRK_LAUNCHER_PATH"));
+    }
 
-    jw__setenvf_default("USERDATA_PATH", "%s/.system/leaf/userdata/%s",
-                        state->sdcard_root, platform);
-    jw__setenvf_default("SHARED_USERDATA_PATH", "%s/.system/leaf/userdata/shared",
+    if (getenv("SYSTEM_PATH")) {
+        jw__setenvf_default("USERDATA_PATH", "%s/userdata",
+                            getenv("SYSTEM_PATH"));
+        jw__setenvf_default("UMRK_INTERNAL_DATA_PATH", "%s/state",
+                            getenv("SYSTEM_PATH"));
+        jw__setenvf_default("UMRK_MARKER_PATH", "%s/enabled",
+                            getenv("SYSTEM_PATH"));
+    }
+    jw__setenvf_default("SHARED_USERDATA_PATH", "%s/.system/leaf/shared/userdata",
                         state->sdcard_root);
     if (getenv("USERDATA_PATH")) {
         jw__setenvf_default("LOGS_PATH", "%s/logs", getenv("USERDATA_PATH"));
     }
-    jw__setenvf_default("UMRK_INTERNAL_DATA_PATH", "%s/.system/leaf/state",
-                        state->sdcard_root);
+    if (getenv("UMRK_INTERNAL_DATA_PATH")) {
+        jw__setenvf_default("UMRK_ADB_MARKER_PATH", "%s/adb-enabled",
+                            getenv("UMRK_INTERNAL_DATA_PATH"));
+    }
     jw__setenvf_default("ROMS_PATH", "%s/Roms", state->sdcard_root);
     jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
     jw__setenvf_default("APPS_PATH", "%s/Apps", state->sdcard_root);

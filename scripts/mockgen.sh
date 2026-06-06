@@ -25,8 +25,8 @@ if [[ -d "$ROOT" ]]; then
     fi
 fi
 
-mkdir -p "$ROMS_ROOT" "$IMAGES_ROOT" "$BIOS_ROOT" "$PLATFORM_APPS_ROOT" "$SHARED_APPS_ROOT" "$SAVES_ROOT" "$STATES_ROOT" "$ROOT"/.system/leaf/state
-mkdir -p "$SYSTEM_ROOT/defaults"
+mkdir -p "$ROMS_ROOT" "$IMAGES_ROOT" "$BIOS_ROOT" "$PLATFORM_APPS_ROOT" "$SHARED_APPS_ROOT" "$SAVES_ROOT" "$STATES_ROOT"
+mkdir -p "$SYSTEM_ROOT/defaults" "$SYSTEM_ROOT/state" "$SYSTEM_ROOT/userdata" "$ROOT/.system/leaf/shared/userdata"
 
 cat >"$SYSTEM_ROOT/manifest.json" <<'JSON'
 {
