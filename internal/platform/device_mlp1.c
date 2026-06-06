@@ -36,6 +36,7 @@
 
 #define JW_MLP1_LOONG_DB_PATH "/oem/loong/loong.db"
 #define JW_MLP1_POWER_CFG "/oem/loong/record/config/loong_power.cfg"
+#define JW_MLP1_POWER_DAEMON "loong_power"
 
 #define JW_MLP1_PACTL_GET_VOLUME "pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null"
 #define JW_MLP1_PACTL_SET_VOLUME "pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null"
@@ -157,6 +158,7 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
 static void jw__mlp1_sync_sound_volume(jw_platform_audio_output output, int percent);
 static int jw__mlp1_get_bluealsa_volume_percent(void);
 static int jw__mlp1_set_bluealsa_volume_percent(int percent);
+static int jw__mlp1_apply_power_cfg_live(void);
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -1340,7 +1342,8 @@ static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
 
     int display_rc = jw__mlp1_update_display_param(seconds);
     int power_rc = jw__mlp1_update_power_cfg(seconds);
-    if (display_rc != 0 || power_rc != 0) {
+    int live_rc = (display_rc == 0 && power_rc == 0) ? jw__mlp1_apply_power_cfg_live() : 0;
+    if (display_rc != 0 || power_rc != 0 || live_rc != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
                                "stock auto-sleep sync failed");
         return;
@@ -1717,6 +1720,46 @@ static int jw__mlp1_spawn_loong_light(void) {
         execl("/loong/loong_light", "loong_light", (char *)NULL);
         _exit(127);
     }
+    return 0;
+}
+
+static int jw__mlp1_spawn_loong_power(void) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        chdir("/loong");
+        const char *old_ld = getenv("LD_LIBRARY_PATH");
+        char ld[512];
+        if (old_ld && old_ld[0]) {
+            snprintf(ld, sizeof(ld), "./:%s", old_ld);
+        } else {
+            snprintf(ld, sizeof(ld), "%s", "./");
+        }
+        setenv("LD_LIBRARY_PATH", ld, 1);
+        execl("/loong/loong_power", "loong_power", JW_MLP1_POWER_CFG, (char *)NULL);
+        _exit(127);
+    }
+    return 0;
+}
+
+static int jw__mlp1_restart_leaf_loong_power(void) {
+    int signalled = jw__mlp1_signal_by_name(JW_MLP1_POWER_DAEMON, SIGTERM);
+    if (signalled > 0) {
+        usleep(300000);
+        jw__mlp1_signal_by_name(JW_MLP1_POWER_DAEMON, SIGKILL);
+    }
+    return jw__mlp1_spawn_loong_power();
+}
+
+static int jw__mlp1_apply_power_cfg_live(void) {
+    if (!jw__env_truthy("UMRK_LEAF_MODE")) {
+        return 0;
+    }
+    if (jw__mlp1_restart_leaf_loong_power() != 0) {
+        jw_log_warn("loong_power: restart failed after power cfg update");
+        return -1;
+    }
+    jw_log_info("loong_power: restarted after power cfg update");
     return 0;
 }
 
