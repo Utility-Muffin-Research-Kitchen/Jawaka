@@ -389,6 +389,36 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "charging", status->charging);
     jw__json_add_int_or_null(root, "brightness_percent", status->brightness_percent);
     jw__json_add_int_or_null(root, "volume_percent", status->volume_percent);
+    if (status->audio_output >= 0 &&
+        status->audio_output < JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
+        cJSON_AddStringToObject(root, "audio_output",
+                                jw_platform_audio_output_name(status->audio_output));
+    } else {
+        cJSON_AddNullToObject(root, "audio_output");
+    }
+    cJSON *audio_outputs = cJSON_CreateArray();
+    if (audio_outputs) {
+        for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+            if (status->audio_available_outputs & JW_PLATFORM_AUDIO_OUTPUT_BIT(i)) {
+                cJSON_AddItemToArray(audio_outputs,
+                                     cJSON_CreateString(jw_platform_audio_output_name((jw_platform_audio_output)i)));
+            }
+        }
+        cJSON_AddItemToObject(root, "audio_available_outputs", audio_outputs);
+    }
+    cJSON *audio_volumes = cJSON_CreateObject();
+    if (audio_volumes) {
+        for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+            const char *name = jw_platform_audio_output_name((jw_platform_audio_output)i);
+            if (status->audio_volume_percent[i] >= 0) {
+                cJSON_AddNumberToObject(audio_volumes, name,
+                                        status->audio_volume_percent[i]);
+            } else {
+                cJSON_AddNullToObject(audio_volumes, name);
+            }
+        }
+        cJSON_AddItemToObject(root, "audio_volumes", audio_volumes);
+    }
     jw__json_add_int_or_null(root, "wifi_connected", status->wifi_connected);
     jw__json_add_int_or_null(root, "wifi_strength", status->wifi_strength);
     jw__json_add_int_or_null(root, "bluetooth_connected", status->bluetooth_connected);
@@ -424,6 +454,28 @@ static void jw__refresh_platform_cache(jw_daemon_state *state) {
     jw__cache_platform_status(state, &status);
 }
 
+static void jw__publish_audio_env(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    jw_platform_status status;
+    jw_platform_get_audio_status(&state->platform, &status);
+    jw__cache_platform_status(state, &status);
+
+    jw_platform_audio_output output = status.audio_output;
+    if (output < 0 || output >= JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
+        output = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    }
+    const char *name = jw_platform_audio_output_name(output);
+    const char *device = (output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH)
+                         ? "bluealsa"
+                         : "default";
+    setenv("UMRK_AUDIO_OUTPUT", name, 1);
+    setenv("JAWAKA_AUDIO_OUTPUT", name, 1);
+    setenv("UMRK_AUDIO_DEVICE", device, 1);
+    setenv("JAWAKA_AUDIO_DEVICE", device, 1);
+}
+
 static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {
     jw_platform_status status;
     jw_platform_get_status(&state->platform, &status);
@@ -449,6 +501,17 @@ static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *clie
         cJSON_AddItemToObject(status_json, "led", led);
     }
     cJSON_AddItemToObject(root, "status", status_json);
+    return jw__reply_json(client, root);
+}
+
+static int jw__reply_platform_audio_status(jw_daemon_state *state, jw_ipc_client *client) {
+    jw_platform_status status;
+    jw_platform_get_audio_status(&state->platform, &status);
+    jw__cache_platform_status(state, &status);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "platform-audio-status");
+    cJSON_AddItemToObject(root, "status", jw__platform_status_json(&status));
     return jw__reply_json(client, root);
 }
 
@@ -2188,6 +2251,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     jw__suspend_input_proxy_for_app(state);
+    jw__publish_audio_env(state);
 
     /* Resolve appearance from the DB here in the parent — opening SQLite between
        fork() and execv() is not fork-safe on macOS (os_log landmine). */
@@ -2253,6 +2317,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     char *runtime_config = NULL;
 
     jw__publish_retroarch_input_env(state);
+    jw__publish_audio_env(state);
 
     if (!retroarch || !jw__path_exists(retroarch)) {
         jw_log_error("RetroArch binary missing: %s", retroarch ? retroarch : "(null)");
@@ -2989,6 +3054,11 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_platform_status(state, client);
     }
 
+    if (strcmp(type->valuestring, "platform-audio-status") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_platform_audio_status(state, client);
+    }
+
     if (strcmp(type->valuestring, "platform-action") == 0) {
         cJSON *action_json = cJSON_GetObjectItemCaseSensitive(root, "action");
         if (!cJSON_IsString(action_json) || !action_json->valuestring) {
@@ -3013,6 +3083,14 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         if (cJSON_IsNumber(value_json)) {
             value = value_json->valueint;
         }
+        if (action == JW_PLATFORM_ACTION_SET_AUDIO_OUTPUT) {
+            cJSON *output_json = cJSON_GetObjectItemCaseSensitive(root, "output");
+            jw_platform_audio_output parsed_output;
+            if (cJSON_IsString(output_json) && output_json->valuestring &&
+                jw_platform_parse_audio_output(output_json->valuestring, &parsed_output)) {
+                value = (int)parsed_output;
+            }
+        }
 
         jw_platform_result result;
         if (action == JW_PLATFORM_ACTION_SET_BRIGHTNESS) {
@@ -3026,6 +3104,11 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
                 state->cached_volume_percent = resolved;
                 jw__persist_volume(state, resolved);
                 jw__osd_show_volume(state, resolved);
+            }
+        } else if (action == JW_PLATFORM_ACTION_SET_AUDIO_OUTPUT) {
+            jw_platform_perform_action(&state->platform, action, value, &result);
+            if (result.code == JW_PLATFORM_RESULT_OK) {
+                jw__publish_audio_env(state);
             }
         } else {
             jw_platform_perform_action(&state->platform, action, value, &result);
@@ -3459,6 +3542,7 @@ int main(int argc, char *argv[]) {
 
     /* Exported so child processes receive them via execv's inherited environment. */
     jw__publish_runtime_path_env(&state);
+    jw__publish_audio_env(&state);
     setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
     setenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1", 0);
     {

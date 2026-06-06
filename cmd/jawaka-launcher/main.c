@@ -911,6 +911,14 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
                 { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
             };
             jw__draw_footer(state, footer, 4);
+        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_BLUETOOTH) {
+            cat_footer_item footer[] = {
+                { CAT_BTN_X, "Scan",    false, JW_HINT("X") },
+                { CAT_BTN_Y, "Unpair",  false, JW_HINT("Y") },
+                { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
+                { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
+            };
+            jw__draw_footer(state, footer, 4);
         } else {
             cat_footer_item footer[] = {
                 { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
@@ -3258,6 +3266,11 @@ int main(void) {
         if (jw_settings_ui_wants_wifi_poll(&state.settings)) {
             jw_settings_ui_refresh_wifi(&state.settings);
             cat_request_frame_in(2000);
+        }
+
+        if (jw_settings_ui_wants_bluetooth_poll(&state.settings)) {
+            jw_settings_ui_refresh_bluetooth(&state.settings);
+            cat_request_frame_in(250);
         }
 
         jw__poll_library_generation(socket_path, db_path, &state);

@@ -11,6 +11,7 @@ typedef struct {
     int  (*init)(jw_platform_context *ctx);
     void (*shutdown)(jw_platform_context *ctx);
     void (*get_status)(jw_platform_context *ctx, jw_platform_status *out);
+    void (*get_audio_status)(jw_platform_context *ctx, jw_platform_status *out);
     void (*frontend_ready)(jw_platform_context *ctx, const char *role,
                            jw_platform_result *out);
     void (*perform_action)(jw_platform_context *ctx, jw_platform_action action,

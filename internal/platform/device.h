@@ -16,6 +16,8 @@
 #define JW_LED_BRIGHTNESS_MAX 10
 #define JW_LED_SPEED_MAX 10
 
+#define JW_PLATFORM_AUDIO_OUTPUT_COUNT 4
+
 typedef enum {
     /* Stock modes — driven by the loong_light daemon (cfg + SIGUSR1). */
     JW_LED_MODE_STATIC = 0,   /* solid color (loong "FOREVER") */
@@ -31,6 +33,16 @@ typedef enum {
 
 /* True for the jawaka-ledd custom effects (vs the loong_light stock modes). */
 #define jw_led_mode_is_effect(m) ((m) >= JW_LED_MODE_COMET && (m) < JW_LED_MODE_COUNT)
+
+typedef enum {
+    JW_PLATFORM_AUDIO_OUTPUT_UNKNOWN = -1,
+    JW_PLATFORM_AUDIO_OUTPUT_SPEAKER = 0,
+    JW_PLATFORM_AUDIO_OUTPUT_HEADSET,
+    JW_PLATFORM_AUDIO_OUTPUT_HDMI,
+    JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH
+} jw_platform_audio_output;
+
+#define JW_PLATFORM_AUDIO_OUTPUT_BIT(o) (1u << (unsigned)(o))
 
 typedef struct {
     bool enabled;
@@ -70,6 +82,9 @@ typedef struct {
     int charging;              /* -1 unknown, 0 no, 1 yes */
     int brightness_percent;    /* -1 when unknown */
     int volume_percent;        /* -1 when unknown */
+    jw_platform_audio_output audio_output;
+    unsigned audio_available_outputs;  /* bitmask of JW_PLATFORM_AUDIO_OUTPUT_BIT(output) */
+    int audio_volume_percent[JW_PLATFORM_AUDIO_OUTPUT_COUNT]; /* -1 when unknown */
     int wifi_connected;        /* -1 unknown, 0 no, 1 yes */
     int wifi_strength;         /* -1 unknown, 0 off/disconnected, 1..3 strength */
     int bluetooth_connected;   /* -1 unknown, 0 no, 1 yes */
@@ -99,6 +114,7 @@ typedef enum {
     JW_PLATFORM_ACTION_WIFI_OFF,
     JW_PLATFORM_ACTION_BLUETOOTH_ON,
     JW_PLATFORM_ACTION_BLUETOOTH_OFF,
+    JW_PLATFORM_ACTION_SET_AUDIO_OUTPUT,
     JW_PLATFORM_ACTION_SET_AUTO_SLEEP,
     JW_PLATFORM_ACTION_SCREEN_OFF,   /* blank the backlight (display stays composed) */
     JW_PLATFORM_ACTION_SCREEN_ON,    /* unblank the backlight */
@@ -124,10 +140,14 @@ typedef struct {
 int  jw_platform_init(jw_platform_context *ctx, const char *runtime_dir, const char *sdcard_root);
 void jw_platform_shutdown(jw_platform_context *ctx);
 void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out);
+void jw_platform_get_audio_status(jw_platform_context *ctx, jw_platform_status *out);
 void jw_platform_frontend_ready(jw_platform_context *ctx, const char *role, jw_platform_result *out);
 
 bool jw_platform_parse_action(const char *name, jw_platform_action *out);
 const char *jw_platform_action_name(jw_platform_action action);
+bool jw_platform_parse_audio_output(const char *name, jw_platform_audio_output *out);
+const char *jw_platform_audio_output_name(jw_platform_audio_output output);
+const char *jw_platform_audio_output_label(jw_platform_audio_output output);
 const char *jw_platform_result_code_name(jw_platform_result_code code);
 int  jw_platform_clamp_brightness_percent(int percent);
 void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action action,

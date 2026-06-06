@@ -3,6 +3,7 @@
 
 #include "internal/ipc/ipc.h"
 #include "internal/db/db.h"
+#include "internal/platform/device.h"
 
 #include <stdbool.h>
 
@@ -18,6 +19,12 @@ typedef struct {
     bool savestate_supported;
     int state_slot;
 } jw_ipc_retroarch_session_info;
+
+typedef struct {
+    jw_platform_audio_output output;
+    unsigned available_outputs;
+    int volume_percent[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
+} jw_ipc_audio_status;
 
 typedef struct {
     bool present;
@@ -112,6 +119,11 @@ int jw_ipc_set_brightness(const char *socket_path, int percent,
 int jw_ipc_platform_volume(const char *socket_path, int *out_percent);
 int jw_ipc_set_volume(const char *socket_path, int percent,
                       int *out_percent, char *status, int status_len);
+int jw_ipc_platform_audio_status(const char *socket_path,
+                                 jw_ipc_audio_status *out_status);
+int jw_ipc_set_audio_output(const char *socket_path,
+                            jw_platform_audio_output output,
+                            char *status, int status_len);
 
 int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
                    int *out_intent_enabled);

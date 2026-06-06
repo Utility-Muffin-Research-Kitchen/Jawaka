@@ -29,6 +29,44 @@ bool jw_led_mode_parse(const char *name, jw_led_mode *out) {
     return false;
 }
 
+bool jw_platform_parse_audio_output(const char *name, jw_platform_audio_output *out) {
+    if (!name || !out) return false;
+    if (strcmp(name, "SPEAKER") == 0 || strcmp(name, "speaker") == 0) {
+        *out = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    } else if (strcmp(name, "HEADSET") == 0 || strcmp(name, "headset") == 0 ||
+               strcmp(name, "HEADPHONE") == 0 || strcmp(name, "headphone") == 0) {
+        *out = JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
+    } else if (strcmp(name, "HDMI") == 0 || strcmp(name, "hdmi") == 0) {
+        *out = JW_PLATFORM_AUDIO_OUTPUT_HDMI;
+    } else if (strcmp(name, "BLUETOOTH") == 0 || strcmp(name, "bluetooth") == 0 ||
+               strcmp(name, "BT") == 0 || strcmp(name, "bt") == 0) {
+        *out = JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+const char *jw_platform_audio_output_name(jw_platform_audio_output output) {
+    switch (output) {
+        case JW_PLATFORM_AUDIO_OUTPUT_SPEAKER: return "SPEAKER";
+        case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return "HEADSET";
+        case JW_PLATFORM_AUDIO_OUTPUT_HDMI: return "HDMI";
+        case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH: return "BLUETOOTH";
+        default: return "UNKNOWN";
+    }
+}
+
+const char *jw_platform_audio_output_label(jw_platform_audio_output output) {
+    switch (output) {
+        case JW_PLATFORM_AUDIO_OUTPUT_SPEAKER: return "Speaker";
+        case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return "Headset";
+        case JW_PLATFORM_AUDIO_OUTPUT_HDMI: return "HDMI";
+        case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH: return "Bluetooth";
+        default: return "Unknown";
+    }
+}
+
 int jw_platform_clamp_brightness_percent(int percent) {
     if (percent < JW_PLATFORM_BRIGHTNESS_MIN_PERCENT) {
         return JW_PLATFORM_BRIGHTNESS_MIN_PERCENT;

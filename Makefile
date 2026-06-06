@@ -65,6 +65,7 @@ DAEMON_SRCS := \
 	internal/ipc/ipc_client.c \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
+	internal/platform/bluetooth.c \
 	$(PLATFORM_BACKEND_SRC) \
 	$(PLATFORM_ID_SRC) \
 	$(INPUT_PROXY_SRC) \
@@ -126,6 +127,7 @@ UI_SRCS := \
 	$(PLATFORM_COMMON_SRC) \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
+	internal/platform/bluetooth.c \
 	internal/platform/wifi.c \
 	internal/retroarch/catalog.c \
 	internal/retroarch/states.c \

@@ -89,24 +89,51 @@ void jw_platform_shutdown(jw_platform_context *ctx) {
     }
 }
 
-void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out) {
-    if (!ctx || !out) {
+static void jw__platform_status_init(jw_platform_status *out) {
+    if (!out) {
         return;
     }
-
     memset(out, 0, sizeof(*out));
     out->battery_percent = -1;
     out->charging = -1;
     out->brightness_percent = -1;
     out->volume_percent = -1;
+    out->audio_output = JW_PLATFORM_AUDIO_OUTPUT_UNKNOWN;
+    out->audio_available_outputs = 0;
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        out->audio_volume_percent[i] = -1;
+    }
     out->wifi_connected = -1;
     out->wifi_strength = -1;
     out->bluetooth_connected = -1;
     out->adb_enabled = -1;
     out->adb_intent_enabled = -1;
+}
+
+void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out) {
+    if (!ctx || !out) {
+        return;
+    }
+
+    jw__platform_status_init(out);
 
     const jw_platform_backend *backend = jw_platform_get_backend();
     if (backend && backend->get_status) {
+        backend->get_status(ctx, out);
+    }
+}
+
+void jw_platform_get_audio_status(jw_platform_context *ctx, jw_platform_status *out) {
+    if (!ctx || !out) {
+        return;
+    }
+
+    jw__platform_status_init(out);
+
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->get_audio_status) {
+        backend->get_audio_status(ctx, out);
+    } else if (backend && backend->get_status) {
         backend->get_status(ctx, out);
     }
 }
@@ -149,6 +176,8 @@ bool jw_platform_parse_action(const char *name, jw_platform_action *out) {
         *out = JW_PLATFORM_ACTION_BLUETOOTH_ON;
     } else if (strcmp(name, "bluetooth-off") == 0) {
         *out = JW_PLATFORM_ACTION_BLUETOOTH_OFF;
+    } else if (strcmp(name, "set-audio-output") == 0) {
+        *out = JW_PLATFORM_ACTION_SET_AUDIO_OUTPUT;
     } else if (strcmp(name, "set-auto-sleep") == 0) {
         *out = JW_PLATFORM_ACTION_SET_AUTO_SLEEP;
     } else if (strcmp(name, "screen-off") == 0) {
@@ -177,6 +206,7 @@ const char *jw_platform_action_name(jw_platform_action action) {
         case JW_PLATFORM_ACTION_WIFI_OFF: return "wifi-off";
         case JW_PLATFORM_ACTION_BLUETOOTH_ON: return "bluetooth-on";
         case JW_PLATFORM_ACTION_BLUETOOTH_OFF: return "bluetooth-off";
+        case JW_PLATFORM_ACTION_SET_AUDIO_OUTPUT: return "set-audio-output";
         case JW_PLATFORM_ACTION_SET_AUTO_SLEEP: return "set-auto-sleep";
         case JW_PLATFORM_ACTION_SCREEN_OFF: return "screen-off";
         case JW_PLATFORM_ACTION_SCREEN_ON: return "screen-on";

@@ -3,6 +3,8 @@
 
 #include "catastrophe.h"
 #include "catastrophe_widgets.h"
+#include "internal/platform/bluetooth.h"
+#include "internal/platform/device.h"
 #include "internal/platform/wifi.h"
 
 #include <stdbool.h>
@@ -35,6 +37,7 @@ typedef enum {
     JW_SETTINGS_STATUS_BAR,
     JW_SETTINGS_DISPLAY,
     JW_SETTINGS_NETWORK,
+    JW_SETTINGS_BLUETOOTH,
     JW_SETTINGS_LIGHTING,
     JW_SETTINGS_LIBRARY,
     JW_SETTINGS_ACCOUNTS,
@@ -77,8 +80,15 @@ typedef enum {
 
 /* Display & Sound page */
 #define JW_DISPLAY_BRIGHTNESS 0
-#define JW_DISPLAY_VOLUME     1
-#define JW_DISPLAY_ROW_COUNT  2
+#define JW_DISPLAY_OUTPUT     1
+#define JW_DISPLAY_VOLUME     2
+#define JW_DISPLAY_ROW_COUNT  3
+
+/* Bluetooth page */
+#define JW_BLUETOOTH_ROW_POWER 0
+#define JW_BLUETOOTH_ROW_NAME  1
+#define JW_BLUETOOTH_FIXED_ROWS 2
+#define JW_BLUETOOTH_LIST_ROWS 8
 
 /* Lighting page (LED ring) */
 #define JW_LIGHTING_ENABLE     0
@@ -115,6 +125,7 @@ typedef struct {
     cat_list_state     statusbar_list;
     cat_list_state     display_list;
     cat_list_state     network_list;
+    cat_list_state     bluetooth_list;
     cat_list_state     lighting_list;
     cat_list_state     library_list;
     cat_list_state     accounts_list;
@@ -136,6 +147,9 @@ typedef struct {
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
     int                brightness_percent;
     int                volume_percent;
+    jw_platform_audio_output audio_output;
+    unsigned           audio_available_outputs;
+    int                audio_volumes[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
     bool               led_enabled;
     int                led_mode;            /* jw_led_mode */
     ap_color           led_color;
@@ -156,6 +170,18 @@ typedef struct {
     int                wifi_strength_cached;/* 0..3 for the status-bar icon; polled on a throttle */
     int                adb_enabled;         /* -1 unavailable, 0 disabled, 1 pinned */
     int                adb_intent_enabled;  /* -1 unavailable, 0 no boot restore, 1 restore at boot */
+    jw_bt_status_t     bt_status;           /* last-read Bluetooth status */
+    bool               bt_radio_on;
+    jw_bt_device_t     bt_paired[JW_BT_MAX_DEVICES];
+    int                bt_paired_count;
+    jw_bt_device_t     bt_nearby[JW_BT_MAX_DEVICES];
+    int                bt_nearby_count;
+    unsigned           bt_next_poll_ms;
+    unsigned           bt_next_scan_ms;
+    char               bt_msg[128];
+    unsigned           bt_msg_ms;
+    jw_bt_operation_kind bt_op;
+    bool               bt_op_manual;
     char               db_path[1024];
     char               socket_path[1024];
 } jw_settings_ui;
@@ -185,6 +211,12 @@ void jw_settings_ui_refresh_av(jw_settings_ui *ui);
  * wpa_cli every frame. */
 bool jw_settings_ui_wants_wifi_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_wifi(jw_settings_ui *ui);
+
+/* True while the Bluetooth page is open. The launcher calls the refresh every
+ * frame; it self-throttles ordinary status/list polling and only polls async
+ * scan/connect workers every frame. */
+bool jw_settings_ui_wants_bluetooth_poll(const jw_settings_ui *ui);
+void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui);
 
 /* True if the status-bar wifi icon is enabled. The launcher uses this to decide
  * whether to keep the wifi strength polled on the home screen. */

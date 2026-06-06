@@ -709,6 +709,114 @@ int jw_ipc_set_volume(const char *socket_path, int percent,
     return 0;
 }
 
+static void ipc__audio_status_init(jw_ipc_audio_status *out_status) {
+    if (!out_status) {
+        return;
+    }
+    out_status->output = JW_PLATFORM_AUDIO_OUTPUT_UNKNOWN;
+    out_status->available_outputs = 0;
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        out_status->volume_percent[i] = -1;
+    }
+}
+
+int jw_ipc_platform_audio_status(const char *socket_path,
+                                 jw_ipc_audio_status *out_status) {
+    ipc__audio_status_init(out_status);
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-audio-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    int rc = -1;
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    if (cJSON_IsObject(status)) {
+        const cJSON *output = cJSON_GetObjectItemCaseSensitive(status, "audio_output");
+        jw_platform_audio_output parsed = JW_PLATFORM_AUDIO_OUTPUT_UNKNOWN;
+        if (cJSON_IsString(output) && output->valuestring &&
+            jw_platform_parse_audio_output(output->valuestring, &parsed)) {
+            out_status->output = parsed;
+        }
+
+        const cJSON *available = cJSON_GetObjectItemCaseSensitive(status,
+                                                                  "audio_available_outputs");
+        if (cJSON_IsArray(available)) {
+            const cJSON *item = NULL;
+            cJSON_ArrayForEach(item, available) {
+                if (!cJSON_IsString(item) || !item->valuestring) {
+                    continue;
+                }
+                if (jw_platform_parse_audio_output(item->valuestring, &parsed) &&
+                    parsed >= 0 && parsed < JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
+                    out_status->available_outputs |= JW_PLATFORM_AUDIO_OUTPUT_BIT(parsed);
+                }
+            }
+        }
+
+        const cJSON *volumes = cJSON_GetObjectItemCaseSensitive(status, "audio_volumes");
+        if (cJSON_IsObject(volumes)) {
+            for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+                const char *name = jw_platform_audio_output_name((jw_platform_audio_output)i);
+                const cJSON *v = cJSON_GetObjectItemCaseSensitive(volumes, name);
+                if (cJSON_IsNumber(v)) {
+                    int percent = v->valueint;
+                    if (percent < 0) percent = 0;
+                    if (percent > 100) percent = 100;
+                    out_status->volume_percent[i] = percent;
+                }
+            }
+        }
+
+        rc = 0;
+    }
+
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_set_audio_output(const char *socket_path,
+                            jw_platform_audio_output output,
+                            char *status, int status_len) {
+    if (output < 0 || output >= JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "audio output invalid");
+        }
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-action");
+    cJSON_AddStringToObject(req, "action", "set-audio-output");
+    cJSON_AddStringToObject(req, "output", jw_platform_audio_output_name(output));
+    cJSON_AddNumberToObject(req, "value", (int)output);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "audio output failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    int ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s",
+                     ok ? "audio output set" : "audio output failed");
+        }
+    }
+
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
 int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
                    int *out_intent_enabled) {
     if (out_enabled) {

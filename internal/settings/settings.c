@@ -103,13 +103,14 @@ static const char *kHomeCategoryLabels[] = {
     "Appearance",
     "Display & Sound",
     "Network",
+    "Bluetooth",
     "Lighting",
     "Library",
     "Accounts",
     "Behavior",
     "About",
 };
-#define JW_SETTINGS_CATEGORY_COUNT 8
+#define JW_SETTINGS_CATEGORY_COUNT 9
 
 /* Visible rows in the Network page's scanned-network list (scrolls beyond). */
 #define JW_WIFI_LIST_ROWS 6
@@ -118,6 +119,8 @@ static const char *kHomeCategoryLabels[] = {
 #define JW_NETWORK_FIXED_ROWS 2
 /* Re-trigger a background scan at most this often while the page is open. */
 #define JW_WIFI_SCAN_INTERVAL_MS 6000
+#define JW_BT_POLL_INTERVAL_MS 2000
+#define JW_BT_SCAN_INTERVAL_MS 12000
 #define JW_SETTINGS_DISPLAY_COUNT JW_DISPLAY_ROW_COUNT
 
 static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
@@ -158,6 +161,25 @@ static void jw__refresh_volume(jw_settings_ui *ui) {
         if (percent < 0) percent = 0;
         if (percent > 100) percent = 100;
         ui->volume_percent = percent;
+    }
+}
+
+static void jw__refresh_audio_status(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) return;
+    jw_ipc_audio_status status;
+    if (jw_ipc_platform_audio_status(ui->socket_path, &status) != 0) {
+        return;
+    }
+
+    ui->audio_output = status.output;
+    ui->audio_available_outputs = status.available_outputs;
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        ui->audio_volumes[i] = status.volume_percent[i];
+    }
+    if (ui->audio_output >= 0 &&
+        ui->audio_output < JW_PLATFORM_AUDIO_OUTPUT_COUNT &&
+        ui->audio_volumes[ui->audio_output] >= 0) {
+        ui->volume_percent = ui->audio_volumes[ui->audio_output];
     }
 }
 
@@ -220,6 +242,137 @@ static void jw__refresh_adb(jw_settings_ui *ui) {
     }
 }
 
+static int jw__bt_row_count(const jw_settings_ui *ui) {
+    if (!ui || !ui->bt_radio_on) {
+        return JW_BLUETOOTH_FIXED_ROWS;
+    }
+    /* Power + name + Paired header + paired devices + Nearby header + nearby devices. */
+    return JW_BLUETOOTH_FIXED_ROWS + 2 + ui->bt_paired_count + ui->bt_nearby_count;
+}
+
+static void jw__bt_msg(jw_settings_ui *ui, const char *fmt, ...) {
+    if (!ui) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(ui->bt_msg, sizeof(ui->bt_msg), fmt, ap);
+    va_end(ap);
+    ui->bt_msg_ms = SDL_GetTicks();
+    if (ui->bt_msg_ms == 0) {
+        ui->bt_msg_ms = 1;
+    }
+}
+
+static void jw__refresh_bluetooth_lists(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+
+    memset(&ui->bt_status, 0, sizeof(ui->bt_status));
+    if (jw_bt_status(&ui->bt_status) != 0) {
+        ui->bt_radio_on = false;
+        ui->bt_paired_count = 0;
+        ui->bt_nearby_count = 0;
+    } else {
+        ui->bt_radio_on = ui->bt_status.powered || jw_bt_radio_is_on();
+        if (ui->bt_radio_on) {
+            int n = jw_bt_list_paired(ui->bt_paired, JW_BT_MAX_DEVICES);
+            ui->bt_paired_count = n > 0 ? n : 0;
+            n = jw_bt_list_nearby(ui->bt_nearby, JW_BT_MAX_DEVICES);
+            ui->bt_nearby_count = n > 0 ? n : 0;
+        } else {
+            ui->bt_paired_count = 0;
+            ui->bt_nearby_count = 0;
+        }
+    }
+
+    int rows = jw__bt_row_count(ui);
+    if (rows < 1) {
+        rows = 1;
+    }
+    if (ui->bluetooth_list.cursor >= rows) {
+        ui->bluetooth_list.cursor = rows - 1;
+    }
+}
+
+static bool jw__bt_scan_start(jw_settings_ui *ui, bool manual) {
+    if (!ui || ui->bt_op != JW_BT_OP_NONE) {
+        return false;
+    }
+    if (!ui->bt_radio_on) {
+        if (manual) {
+            jw__bt_msg(ui, "Bluetooth is off");
+        }
+        return false;
+    }
+    if (jw_bt_scan_start() != 0) {
+        if (manual) {
+            jw__bt_msg(ui, "Could not start Bluetooth scan");
+        }
+        return false;
+    }
+    ui->bt_op = JW_BT_OP_SCAN;
+    ui->bt_op_manual = manual;
+    ui->bt_next_scan_ms = SDL_GetTicks() + JW_BT_SCAN_INTERVAL_MS;
+    if (manual) {
+        jw__bt_msg(ui, "Scanning Bluetooth...");
+    }
+    cat_request_frame_in(250);
+    return true;
+}
+
+bool jw_settings_ui_wants_bluetooth_poll(const jw_settings_ui *ui) {
+    return ui && ui->open && ui->screen == JW_SETTINGS_BLUETOOTH;
+}
+
+void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+
+    if (ui->bt_msg_ms && (int)(SDL_GetTicks() - ui->bt_msg_ms) > 6000) {
+        ui->bt_msg[0] = '\0';
+        ui->bt_msg_ms = 0;
+    }
+
+    if (ui->bt_op != JW_BT_OP_NONE) {
+        char message[128] = { 0 };
+        jw_bt_operation_status st =
+            (ui->bt_op == JW_BT_OP_SCAN)
+            ? jw_bt_scan_poll(message, sizeof(message))
+            : jw_bt_connect_poll(message, sizeof(message));
+        if (st == JW_BT_OP_RUNNING) {
+            cat_request_frame_in(250);
+            return;
+        }
+        if (st == JW_BT_OP_OK || st == JW_BT_OP_FAILED || st == JW_BT_OP_TIMEOUT) {
+            bool quiet_auto_scan = (ui->bt_op == JW_BT_OP_SCAN && !ui->bt_op_manual);
+            if (!quiet_auto_scan) {
+                jw__bt_msg(ui, "%s", message[0] ? message :
+                           (st == JW_BT_OP_OK ? "Bluetooth done" : "Bluetooth failed"));
+            }
+            ui->bt_op = JW_BT_OP_NONE;
+            ui->bt_op_manual = false;
+            jw__refresh_bluetooth_lists(ui);
+            ui->bt_next_poll_ms = SDL_GetTicks() + JW_BT_POLL_INTERVAL_MS;
+            cat_request_frame();
+            return;
+        }
+    }
+
+    unsigned now = SDL_GetTicks();
+    if (ui->bt_next_poll_ms == 0 || (int)(now - ui->bt_next_poll_ms) >= 0) {
+        jw__refresh_bluetooth_lists(ui);
+        ui->bt_next_poll_ms = now + JW_BT_POLL_INTERVAL_MS;
+    }
+
+    if (ui->bt_radio_on &&
+        (ui->bt_next_scan_ms == 0 || (int)(now - ui->bt_next_scan_ms) >= 0)) {
+        (void)jw__bt_scan_start(ui, false);
+    }
+}
+
 /* Push the current LED config to jawakad (applies to hardware + persists). */
 static void jw__apply_led(jw_settings_ui *ui) {
     if (!ui || !ui->socket_path[0]) return;
@@ -274,6 +427,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->wifi_monitor_fd = -1;
     ui->adb_enabled = -1;
     ui->adb_intent_enabled = -1;
+    ui->bt_op = JW_BT_OP_NONE;
+    ui->bt_op_manual = false;
     cat_list_state_init(&ui->home_list,       JW_SETTINGS_CATEGORY_COUNT);
     cat_list_state_init(&ui->appearance_list,  JW_APPEAR_ROW_COUNT);
     cat_list_state_init(&ui->colors_list,      JW_COLOR_ROW_COUNT);
@@ -281,6 +436,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->statusbar_list,   JW_STATUSBAR_ROW_COUNT);
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
     cat_list_state_init(&ui->network_list,     JW_WIFI_LIST_ROWS);
+    cat_list_state_init(&ui->bluetooth_list,   JW_BLUETOOTH_LIST_ROWS);
     cat_list_state_init(&ui->lighting_list,    JW_LIGHTING_ROW_COUNT);
     cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
     cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
@@ -302,6 +458,12 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
     ui->brightness_percent = 50;
     ui->volume_percent     = 50;
+    ui->audio_output       = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    ui->audio_available_outputs = JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_SPEAKER);
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        ui->audio_volumes[i] = -1;
+    }
+    ui->audio_volumes[JW_PLATFORM_AUDIO_OUTPUT_SPEAKER] = ui->volume_percent;
     ui->led_enabled    = false;
     ui->led_mode       = 0;   /* static */
     ui->led_color      = cat_hex_to_color("#FFFFFF");
@@ -375,8 +537,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
 
     jw__refresh_brightness(ui);
     jw__refresh_volume(ui);
+    jw__refresh_audio_status(ui);
     jw__refresh_led(ui);
     jw__refresh_adb(ui);
+    jw__refresh_bluetooth_lists(ui);
     jw__refresh_secondary_sd_status(ui);
 }
 
@@ -386,13 +550,20 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     ui->screen = JW_SETTINGS_HOME;
     jw__refresh_brightness(ui);
     jw__refresh_volume(ui);
+    jw__refresh_audio_status(ui);
     jw__refresh_led(ui);
     jw__refresh_adb(ui);
+    jw__refresh_bluetooth_lists(ui);
     jw__refresh_secondary_sd_status(ui);
 }
 
 void jw_settings_ui_close(jw_settings_ui *ui) {
     if (!ui) return;
+    if (ui->bt_op != JW_BT_OP_NONE) {
+        jw_bt_cancel_operation();
+        ui->bt_op = JW_BT_OP_NONE;
+        ui->bt_op_manual = false;
+    }
     ui->open = false;
     ui->screen = JW_SETTINGS_HOME;
 }
@@ -412,6 +583,7 @@ bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui) {
 void jw_settings_ui_refresh_av(jw_settings_ui *ui) {
     jw__refresh_brightness(ui);
     jw__refresh_volume(ui);
+    jw__refresh_audio_status(ui);
     jw__refresh_led(ui);
 }
 
@@ -741,11 +913,21 @@ static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int
     cat_draw_rect(track_x, track_y, fill_w, cat_scale(4), value_c);
 }
 
+static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_base, int w) {
+    jw_platform_audio_output output = ui->audio_output;
+    if (output < 0 || output >= JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
+        output = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    }
+    jw__render_list_row(&ui->display_list, x, y_base, w, JW_DISPLAY_OUTPUT,
+                        "Output", jw_platform_audio_output_label(output), true);
+}
+
 static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Display & Sound", x, y, w);
     int y_base = y + jw__header_h();
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
                         ui->brightness_percent);
+    jw__draw_audio_output_row(ui, x, y_base, w);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
                         ui->volume_percent);
     (void)h;
@@ -1065,6 +1247,155 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     (void)h;
 }
 
+typedef struct {
+    const jw_settings_ui *ui;
+} jw__bt_list_ctx;
+
+static const jw_bt_device_t *jw__bt_row_device(const jw_settings_ui *ui, int row,
+                                               bool *out_paired) {
+    if (out_paired) {
+        *out_paired = false;
+    }
+    if (!ui || !ui->bt_radio_on || row < JW_BLUETOOTH_FIXED_ROWS + 1) {
+        return NULL;
+    }
+
+    int paired_start = JW_BLUETOOTH_FIXED_ROWS + 1;
+    int paired_end = paired_start + ui->bt_paired_count;
+    if (row >= paired_start && row < paired_end) {
+        if (out_paired) {
+            *out_paired = true;
+        }
+        return &ui->bt_paired[row - paired_start];
+    }
+
+    int nearby_header = paired_end;
+    int nearby_start = nearby_header + 1;
+    int nearby_end = nearby_start + ui->bt_nearby_count;
+    if (row >= nearby_start && row < nearby_end) {
+        return &ui->bt_nearby[row - nearby_start];
+    }
+    return NULL;
+}
+
+static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
+                             bool selected, void *user) {
+    const jw__bt_list_ctx *ctx = (const jw__bt_list_ctx *)user;
+    const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    bool paired_device = false;
+    const jw_bt_device_t *dev = jw__bt_row_device(ui, idx, &paired_device);
+
+    if (ui && ui->bt_radio_on &&
+        (idx == JW_BLUETOOTH_FIXED_ROWS ||
+         idx == JW_BLUETOOTH_FIXED_ROWS + 1 + ui->bt_paired_count)) {
+        const char *label = (idx == JW_BLUETOOTH_FIXED_ROWS) ? "Paired" : "Nearby";
+        const char *value = NULL;
+        if (idx == JW_BLUETOOTH_FIXED_ROWS && ui->bt_paired_count == 0) {
+            value = "None";
+        } else if (idx != JW_BLUETOOTH_FIXED_ROWS && ui->bt_nearby_count == 0) {
+            value = (ui->bt_op == JW_BT_OP_SCAN) ? "Scanning" : "None";
+        }
+        cat_draw_text(body, label, ix + cat_scale(12), ty, theme->accent);
+        if (value) {
+            int vw = cat_measure_text(body, value);
+            cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, theme->hint);
+        }
+        return;
+    }
+
+    if (selected) {
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
+    }
+    ap_color label_c = selected ? theme->highlighted_text : theme->text;
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+
+    if (idx == JW_BLUETOOTH_ROW_POWER) {
+        const char *value = "Unavailable";
+        if (ui && ui->bt_status.available) {
+            value = ui->bt_radio_on ? "Turn Off" : "Turn On";
+        }
+        cat_draw_text(body, "Bluetooth", ix + cat_scale(12), ty, label_c);
+        int vw = cat_measure_text(body, value);
+        cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+        return;
+    }
+
+    if (idx == JW_BLUETOOTH_ROW_NAME) {
+        const char *name = (ui && ui->bt_status.local_name[0])
+                         ? ui->bt_status.local_name : "-";
+        cat_draw_text(body, "Bluetooth Name", ix + cat_scale(12), ty, label_c);
+        int vw = cat_measure_text(body, name);
+        int vx = ix + iw - vw - cat_scale(16);
+        if (vx < ix + iw / 2) {
+            cat_draw_text_ellipsized(body, name, ix + iw / 2, ty, value_c,
+                                     iw / 2 - cat_scale(16));
+        } else {
+            cat_draw_text(body, name, vx, ty, value_c);
+        }
+        return;
+    }
+
+    if (!dev) {
+        return;
+    }
+
+    const char *label = dev->name[0] ? dev->name : dev->mac;
+    cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
+                             iw / 2);
+
+    const char *value = paired_device
+        ? (dev->connected ? "Connected" : "Paired")
+        : jw_bt_device_kind_name(dev->kind);
+    int vw = cat_measure_text(body, value);
+    cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+}
+
+static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    jw__draw_header("Bluetooth", x, y, w);
+    int ly = y + jw__header_h();
+    int line_h = TTF_FontHeight(body) + cat_scale(8);
+    int dy = ly;
+
+    const char *status = "Unavailable";
+    if (ui->bt_status.available) {
+        status = ui->bt_radio_on ? "On" : "Off";
+    }
+    char line[160];
+    snprintf(line, sizeof(line), "Status: %s", status);
+    cat_draw_text(body, line, x + cat_scale(12), dy, theme->text);
+    dy += line_h;
+
+    snprintf(line, sizeof(line), "Connected: %s",
+             (ui->bt_status.available && ui->bt_status.any_connected) ? "Yes" : "No");
+    cat_draw_text(body, line, x + cat_scale(12), dy, theme->hint);
+    dy += line_h;
+
+    if (ui->bt_msg[0]) {
+        cat_draw_text_ellipsized(body, ui->bt_msg, x + cat_scale(12), dy,
+                                 theme->accent, w - cat_scale(24));
+        dy += line_h + cat_scale(6);
+    } else {
+        dy += cat_scale(6);
+    }
+
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    int rows = jw__bt_row_count(ui);
+    jw__bt_list_ctx ctx = { ui };
+    cat_draw_list_pane(x, dy, w, JW_BLUETOOTH_LIST_ROWS * item_h,
+                       rows, &ui->bluetooth_list, item_h,
+                       jw__draw_bt_item, &ctx);
+    (void)h;
+}
+
 static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Library", x, y, w);
     int ly = y + jw__header_h();
@@ -1338,6 +1669,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_STATUS_BAR: jw__render_statusbar(ui, x, y, w, h);  break;
         case JW_SETTINGS_DISPLAY:    jw__render_display(ui, x, y, w, h);    break;
         case JW_SETTINGS_NETWORK:    jw__render_network(ui, x, y, w, h);    break;
+        case JW_SETTINGS_BLUETOOTH:  jw__render_bluetooth(ui, x, y, w, h);  break;
         case JW_SETTINGS_LIGHTING:   jw__render_lighting(ui, x, y, w, h);   break;
         case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
         case JW_SETTINGS_ACCOUNTS:   jw__render_accounts(ui, x, y, w, h);                break;
@@ -1473,10 +1805,64 @@ static void jw__change_volume(jw_settings_ui *ui, int delta,
         if (resolved < 0) resolved = 0;
         if (resolved > 100) resolved = 100;
         ui->volume_percent = resolved;
+        if (ui->audio_output >= 0 &&
+            ui->audio_output < JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
+            ui->audio_volumes[ui->audio_output] = resolved;
+        }
         return;
     }
     if (status_buf && status_size > 0)
         snprintf(status_buf, status_size, "%s", "volume failed");
+}
+
+static bool jw__audio_output_available(const jw_settings_ui *ui,
+                                       jw_platform_audio_output output) {
+    return ui && output >= 0 && output < JW_PLATFORM_AUDIO_OUTPUT_COUNT &&
+           (ui->audio_available_outputs & JW_PLATFORM_AUDIO_OUTPUT_BIT(output));
+}
+
+static jw_platform_audio_output jw__next_audio_output(const jw_settings_ui *ui,
+                                                      int direction) {
+    jw_platform_audio_output choices[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
+    int count = 0;
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        jw_platform_audio_output output = (jw_platform_audio_output)i;
+        if (jw__audio_output_available(ui, output)) {
+            choices[count++] = output;
+        }
+    }
+    if (count == 0) {
+        return JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    }
+
+    int current = 0;
+    for (int i = 0; i < count; i++) {
+        if (choices[i] == ui->audio_output) {
+            current = i;
+            break;
+        }
+    }
+
+    int next = direction < 0
+        ? (current + count - 1) % count
+        : (current + 1) % count;
+    return choices[next];
+}
+
+static void jw__set_audio_output(jw_settings_ui *ui, jw_platform_audio_output output,
+                                 char *status_buf, size_t status_size) {
+    if (!ui || !ui->socket_path[0]) {
+        if (status_buf && status_size > 0)
+            snprintf(status_buf, status_size, "%s", "audio output failed");
+        return;
+    }
+    if (jw_ipc_set_audio_output(ui->socket_path, output, status_buf,
+                                (int)status_size) == 0) {
+        ui->audio_output = output;
+        jw__refresh_audio_status(ui);
+        return;
+    }
+    jw__refresh_audio_status(ui);
 }
 
 /* ─── Color picker helper ──────────────────────────────────────────────── */
@@ -1577,6 +1963,22 @@ static bool jw__confirm_adb_disable(void) {
     return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
+static bool jw__confirm_bt_unpair(const char *name) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Unpair", .is_confirm = true },
+    };
+    char message[160];
+    snprintf(message, sizeof(message), "Unpair %s?", name && name[0] ? name : "device");
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
 static void jw__set_adb(jw_settings_ui *ui, bool enabled,
                         char *status_buf, size_t status_size) {
     if (!ui || !status_buf || status_size == 0) {
@@ -1648,6 +2050,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                        outside settings isn't stale before we adjust. */
                     jw__refresh_brightness(ui);
                     jw__refresh_volume(ui);
+                    jw__refresh_audio_status(ui);
                 }
                 else if (idx == 2) {
                     ui->screen = JW_SETTINGS_NETWORK;
@@ -1664,16 +2067,29 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->wifi_next_scan_ms = now + JW_WIFI_SCAN_INTERVAL_MS;
                 }
                 else if (idx == 3) {
+                    ui->screen = JW_SETTINGS_BLUETOOTH;
+                    ui->bluetooth_list.cursor = 0;
+                    ui->bluetooth_list.scroll_offset = 0;
+                    ui->bt_msg[0] = '\0';
+                    ui->bt_op = JW_BT_OP_NONE;
+                    ui->bt_op_manual = false;
+                    jw__refresh_bluetooth_lists(ui);
+                    unsigned now = SDL_GetTicks();
+                    ui->bt_next_poll_ms = now + JW_BT_POLL_INTERVAL_MS;
+                    ui->bt_next_scan_ms = now + JW_BT_SCAN_INTERVAL_MS;
+                    (void)jw__bt_scan_start(ui, false);
+                }
+                else if (idx == 4) {
                     ui->screen = JW_SETTINGS_LIGHTING;
                     jw__refresh_led(ui);
                 }
-                else if (idx == 4) {
+                else if (idx == 5) {
                     ui->screen = JW_SETTINGS_LIBRARY;
                     jw__refresh_secondary_sd_status(ui);
                 }
-                else if (idx == 5) ui->screen = JW_SETTINGS_ACCOUNTS;
-                else if (idx == 6) ui->screen = JW_SETTINGS_BEHAVIOR;
-                else if (idx == 7) {
+                else if (idx == 6) ui->screen = JW_SETTINGS_ACCOUNTS;
+                else if (idx == 7) ui->screen = JW_SETTINGS_BEHAVIOR;
+                else if (idx == 8) {
                     ui->screen = JW_SETTINGS_ABOUT;
                     cat_scroll_state_init(&ui->about_scroll);   /* start at top */
                 }
@@ -1847,6 +2263,9 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 if (ui->display_list.cursor == JW_DISPLAY_BRIGHTNESS)
                     jw__change_brightness(ui, dir * JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
                                           status_buf, status_size);
+                else if (ui->display_list.cursor == JW_DISPLAY_OUTPUT)
+                    jw__set_audio_output(ui, jw__next_audio_output(ui, dir),
+                                         status_buf, status_size);
                 else if (ui->display_list.cursor == JW_DISPLAY_VOLUME)
                     jw__change_volume(ui, dir * JW_PLATFORM_VOLUME_STEP_PERCENT,
                                       status_buf, status_size);
@@ -1984,6 +2403,140 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 ui->screen = JW_SETTINGS_HOME;
                 break;
             default: break;
+        }
+        break;
+    }
+
+    /* -- Bluetooth (scan/pair/connect/manage) ------------------------- */
+    case JW_SETTINGS_BLUETOOTH: {
+        int row_count = jw__bt_row_count(ui);
+        if (row_count < 1) {
+            row_count = 1;
+        }
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->bluetooth_list, -1, row_count);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->bluetooth_list, +1, row_count);
+                break;
+            case CAT_BTN_A: {
+                if (ui->bt_op != JW_BT_OP_NONE) {
+                    jw__bt_msg(ui, "Bluetooth is busy");
+                    if (status_buf && status_size > 0)
+                        snprintf(status_buf, status_size, "%s", ui->bt_msg);
+                    break;
+                }
+
+                int row = ui->bluetooth_list.cursor;
+                if (row == JW_BLUETOOTH_ROW_POWER) {
+                    bool turning_on = !ui->bt_radio_on;
+                    jw__bt_msg(ui, turning_on ? "Turning Bluetooth on..."
+                                               : "Turning Bluetooth off...");
+                    if (status_buf && status_size > 0)
+                        snprintf(status_buf, status_size, "%s", ui->bt_msg);
+                    if (jw_bt_set_radio(turning_on) != 0) {
+                        jw__bt_msg(ui, turning_on ? "Bluetooth on failed"
+                                                  : "Bluetooth off failed");
+                    } else {
+                        jw__bt_msg(ui, turning_on ? "Bluetooth on"
+                                                  : "Bluetooth off");
+                    }
+                    jw__refresh_bluetooth_lists(ui);
+                    unsigned now = SDL_GetTicks();
+                    ui->bt_next_poll_ms = now + JW_BT_POLL_INTERVAL_MS;
+                    ui->bt_next_scan_ms = now + JW_BT_SCAN_INTERVAL_MS;
+                    if (ui->bt_radio_on) {
+                        (void)jw__bt_scan_start(ui, false);
+                    }
+                    break;
+                }
+
+                if (row == JW_BLUETOOTH_ROW_NAME) {
+                    jw__bt_msg(ui, "Bluetooth name is read-only");
+                    if (status_buf && status_size > 0)
+                        snprintf(status_buf, status_size, "%s", ui->bt_msg);
+                    break;
+                }
+
+                bool paired_device = false;
+                const jw_bt_device_t *dev = jw__bt_row_device(ui, row, &paired_device);
+                if (!dev) {
+                    break;
+                }
+
+                if (paired_device && dev->connected) {
+                    if (jw_bt_disconnect(dev->mac) == 0)
+                        jw__bt_msg(ui, "Disconnected %s", dev->name);
+                    else
+                        jw__bt_msg(ui, "Disconnect failed");
+                    jw__refresh_bluetooth_lists(ui);
+                    if (status_buf && status_size > 0)
+                        snprintf(status_buf, status_size, "%s", ui->bt_msg);
+                    break;
+                }
+
+                bool pair_if_needed = !paired_device;
+                if (jw_bt_connect_start(dev->mac, pair_if_needed) != 0) {
+                    jw__bt_msg(ui, "Could not start Bluetooth connect");
+                } else {
+                    ui->bt_op = pair_if_needed ? JW_BT_OP_PAIR_CONNECT : JW_BT_OP_CONNECT;
+                    ui->bt_op_manual = true;
+                    jw__bt_msg(ui, pair_if_needed ? "Pairing %s..."
+                                                  : "Connecting %s...",
+                               dev->name[0] ? dev->name : dev->mac);
+                    cat_request_frame_in(250);
+                }
+                if (status_buf && status_size > 0)
+                    snprintf(status_buf, status_size, "%s", ui->bt_msg);
+                break;
+            }
+            case CAT_BTN_Y: {
+                if (ui->bt_op != JW_BT_OP_NONE) {
+                    jw__bt_msg(ui, "Bluetooth is busy");
+                    if (status_buf && status_size > 0)
+                        snprintf(status_buf, status_size, "%s", ui->bt_msg);
+                    break;
+                }
+                bool paired_device = false;
+                const jw_bt_device_t *dev =
+                    jw__bt_row_device(ui, ui->bluetooth_list.cursor, &paired_device);
+                if (!dev || !paired_device) {
+                    break;
+                }
+                const char *name = dev->name[0] ? dev->name : dev->mac;
+                if (!jw__confirm_bt_unpair(name)) {
+                    jw__bt_msg(ui, "Unpair canceled");
+                    break;
+                }
+                if (jw_bt_forget(dev->mac) == 0)
+                    jw__bt_msg(ui, "Unpaired %s", name);
+                else
+                    jw__bt_msg(ui, "Unpair failed");
+                jw__refresh_bluetooth_lists(ui);
+                if (status_buf && status_size > 0)
+                    snprintf(status_buf, status_size, "%s", ui->bt_msg);
+                break;
+            }
+            case CAT_BTN_X:
+                if (ui->bt_op != JW_BT_OP_NONE) {
+                    jw__bt_msg(ui, "Bluetooth is busy");
+                    break;
+                }
+                (void)jw__bt_scan_start(ui, true);
+                if (status_buf && status_size > 0)
+                    snprintf(status_buf, status_size, "%s", ui->bt_msg);
+                break;
+            case CAT_BTN_B:
+                if (ui->bt_op != JW_BT_OP_NONE) {
+                    jw_bt_cancel_operation();
+                    ui->bt_op = JW_BT_OP_NONE;
+                    ui->bt_op_manual = false;
+                }
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default:
+                break;
         }
         break;
     }

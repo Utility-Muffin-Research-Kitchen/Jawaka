@@ -447,6 +447,8 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "savestate_thumbnail_enable",
         "joypad_autoconfig_dir",
 #ifdef PLATFORM_MLP1
+        "audio_device",
+        "audio_driver",
         "audio_block_frames",
         "audio_latency",
         "builtin_imageviewer_enable",
@@ -1059,6 +1061,28 @@ static void jw__retroarch_cfg_string(FILE *fp, const char *key, const char *valu
     fprintf(fp, "\"\n");
 }
 
+#ifdef PLATFORM_MLP1
+static void jw__mlp1_retroarch_audio_cfg(FILE *fp) {
+    const char *output = jw__env_value("JAWAKA_AUDIO_OUTPUT");
+    if (!output || !output[0]) {
+        output = jw__env_value("UMRK_AUDIO_OUTPUT");
+    }
+    const char *device = jw__env_value("JAWAKA_AUDIO_DEVICE");
+    if (!device || !device[0]) {
+        device = jw__env_value("UMRK_AUDIO_DEVICE");
+    }
+
+    jw__retroarch_cfg_string(fp, "audio_driver", "alsa");
+    if (output && strcmp(output, "BLUETOOTH") == 0) {
+        jw__retroarch_cfg_string(fp, "audio_device", "bluealsa");
+    } else if (device && device[0]) {
+        jw__retroarch_cfg_string(fp, "audio_device", device);
+    } else {
+        jw__retroarch_cfg_string(fp, "audio_device", "default");
+    }
+}
+#endif
+
 static char *jw__core_info_dir(const char *core_path) {
     if (!core_path) {
         return NULL;
@@ -1228,6 +1252,7 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
     jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
 #ifdef PLATFORM_MLP1
+    jw__mlp1_retroarch_audio_cfg(fp);
     jw__retroarch_cfg_string(fp, "audio_latency", "128");
     jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
     jw__retroarch_cfg_string(fp, "video_threaded", "false");
@@ -1546,6 +1571,7 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
     jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
 #ifdef PLATFORM_MLP1
+    jw__mlp1_retroarch_audio_cfg(fp);
     jw__retroarch_cfg_string(fp, "audio_latency", "128");
     jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
     jw__retroarch_cfg_string(fp, "video_threaded", "false");

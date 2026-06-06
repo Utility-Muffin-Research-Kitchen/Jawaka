@@ -1,5 +1,6 @@
 #include "cJSON.h"
 #include "internal/platform/device_backend.h"
+#include "internal/platform/bluetooth.h"
 #include "internal/core/log.h"
 
 #include <errno.h>
@@ -38,6 +39,18 @@
 
 #define JW_MLP1_PACTL_GET_VOLUME "pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null"
 #define JW_MLP1_PACTL_SET_VOLUME "pactl set-sink-volume @DEFAULT_SINK@ %d%% 2>/dev/null"
+#define JW_MLP1_PACTL_GET_DEFAULT_SINK "pactl get-default-sink 2>/dev/null"
+#define JW_MLP1_PACTL_SET_DEFAULT_RK817 \
+    "pactl set-default-sink alsa_output.platform-rk817-sound.stereo-fallback 2>/dev/null"
+#define JW_MLP1_PACTL_SET_DEFAULT_HDMI \
+    "pactl set-default-sink alsa_output.platform-hdmi-sound.stereo-fallback 2>/dev/null"
+#define JW_MLP1_PACTL_RK817_SINK "alsa_output.platform-rk817-sound.stereo-fallback"
+#define JW_MLP1_PACTL_HDMI_SINK "alsa_output.platform-hdmi-sound.stereo-fallback"
+#define JW_MLP1_PLAYBACK_PATH_CMD "amixer -c 1 cget numid=13 2>/dev/null"
+#define JW_MLP1_PLAYBACK_PATH_SPK "amixer -c 1 cset numid=13 2 >/dev/null 2>&1"
+#define JW_MLP1_PLAYBACK_PATH_HP  "amixer -c 1 cset numid=13 3 >/dev/null 2>&1"
+#define JW_MLP1_PLAYBACK_PATH_BT  "amixer -c 1 cset numid=13 5 >/dev/null 2>&1"
+#define JW_MLP1_HDMI_STATUS "/sys/class/drm/card0-HDMI-A-1/status"
 
 /* The rk817 DAC (ALSA numid=16) is the dominant hardware loudness control and is
    pinned to a fixed level at boot (platform.d/00-audio-init.sh). The user-facing
@@ -130,6 +143,15 @@ static void  (*s_power_standby)(void *self);
 static int   (*s_write_config)(const char *param, const char *value,
                                const char *backup, int persist);
 static bool s_loong_loaded;
+
+static jw_platform_audio_output jw__mlp1_get_audio_output(void);
+static unsigned jw__mlp1_get_audio_available_outputs(void);
+static void jw__mlp1_get_audio_volumes(int out[JW_PLATFORM_AUDIO_OUTPUT_COUNT]);
+static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
+                                     jw_platform_result *out);
+static void jw__mlp1_sync_sound_volume(jw_platform_audio_output output, int percent);
+static int jw__mlp1_get_bluealsa_volume_percent(void);
+static int jw__mlp1_set_bluealsa_volume_percent(int percent);
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -329,7 +351,61 @@ static int jw__mlp1_get_brightness_percent(void) {
     return jw__brightness_raw_to_percent(raw, max_raw);
 }
 
+static int jw__read_command_line(const char *cmd, char *out, size_t out_size) {
+    if (!cmd || !out || out_size == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return -1;
+    }
+    char *line = fgets(out, (int)out_size, fp);
+    int close_rc = pclose(fp);
+    if (!line || close_rc == -1) {
+        out[0] = '\0';
+        return -1;
+    }
+    out[strcspn(out, "\r\n")] = '\0';
+    return out[0] ? 0 : -1;
+}
+
+static int jw__parse_percent_from_stream(FILE *fp) {
+    if (!fp) {
+        return -1;
+    }
+
+    char line[256];
+    int percent = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        char *cursor = line;
+        while ((cursor = strchr(cursor, '[')) != NULL) {
+            int val = 0;
+            if (sscanf(cursor, "[%d%%]", &val) == 1 && val >= 0 && val <= 150) {
+                percent = val > 100 ? 100 : val;
+                break;
+            }
+            cursor++;
+        }
+        if (percent >= 0) {
+            break;
+        }
+    }
+    return percent;
+}
+
 static int jw__mlp1_get_volume_percent(void) {
+    jw_platform_audio_output output = jw__mlp1_get_audio_output();
+    if (output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
+        int bt_percent = jw__mlp1_get_bluealsa_volume_percent();
+        if (bt_percent >= 0) {
+            return bt_percent;
+        }
+        int volumes[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
+        jw__mlp1_get_audio_volumes(volumes);
+        return volumes[JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH];
+    }
+
     FILE *fp = popen(JW_MLP1_PACTL_GET_VOLUME, "r");
     if (!fp) {
         return -1;
@@ -358,9 +434,19 @@ static int jw__mlp1_set_volume_percent(int percent) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
 
+    jw_platform_audio_output output = jw__mlp1_get_audio_output();
+    int rc;
+    if (output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
+        rc = jw__mlp1_set_bluealsa_volume_percent(percent);
+        if (rc == 0) {
+            jw__mlp1_sync_sound_volume(output, percent);
+        }
+        return rc == 0 ? 0 : -1;
+    }
+
     char cmd[128];
     snprintf(cmd, sizeof(cmd), JW_MLP1_PACTL_SET_VOLUME, percent);
-    int rc = jw__exec_shell(cmd);
+    rc = jw__exec_shell(cmd);
 
     /* Safety net: ensure the hardware DAC has not been left stuck low/muted,
        which would silence the speaker regardless of the sink %. Re-assert the
@@ -368,6 +454,9 @@ static int jw__mlp1_set_volume_percent(int percent) {
        affect whether the volume change itself succeeded. */
     (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
 
+    if (rc == 0) {
+        jw__mlp1_sync_sound_volume(output, percent);
+    }
     return rc == 0 ? 0 : -1;
 }
 
@@ -900,6 +989,336 @@ static int jw__mlp1_update_display_param(int seconds) {
     return rc;
 }
 
+static const char *jw__mlp1_sound_output_key(jw_platform_audio_output output) {
+    switch (output) {
+        case JW_PLATFORM_AUDIO_OUTPUT_SPEAKER: return "SPEAKER";
+        case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return "HEADSET";
+        case JW_PLATFORM_AUDIO_OUTPUT_HDMI: return "HDMI";
+        case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH: return "BLUETOOTH";
+        default: return NULL;
+    }
+}
+
+static int jw__mlp1_percent_to_stock_level(int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    return (percent + 5) / 10;
+}
+
+static int jw__mlp1_stock_level_to_percent(int level) {
+    if (level < 0) level = 0;
+    if (level > 10) level = 10;
+    return level * 10;
+}
+
+static cJSON *jw__mlp1_load_sound_param(void) {
+    char *current = jw__mlp1_read_system_config("SOUND_PARAM");
+    cJSON *root = current ? cJSON_Parse(current) : NULL;
+    free(current);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        root = cJSON_CreateObject();
+    }
+    if (!root) {
+        return NULL;
+    }
+
+    (void)jw__json_ensure_number(root, "bgm", 0);
+    (void)jw__json_ensure_number(root, "sysVolume", 10);
+    (void)jw__json_ensure_number(root, "toneVolume", 10);
+    cJSON *devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
+    if (!cJSON_IsObject(devices)) {
+        cJSON_DeleteItemFromObjectCaseSensitive(root, "devices");
+        devices = cJSON_CreateObject();
+        if (!devices || !cJSON_AddItemToObject(root, "devices", devices)) {
+            cJSON_Delete(devices);
+            cJSON_Delete(root);
+            return NULL;
+        }
+    }
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        const char *key = jw__mlp1_sound_output_key((jw_platform_audio_output)i);
+        if (key) {
+            (void)jw__json_ensure_number(devices, key, 10);
+        }
+    }
+    return root;
+}
+
+static int jw__mlp1_write_sound_param(cJSON *root) {
+    if (!root) {
+        return -1;
+    }
+    char *printed = cJSON_PrintUnformatted(root);
+    if (!printed) {
+        return -1;
+    }
+
+    jw__loong_load();
+    if (s_write_config) {
+        (void)s_write_config("SOUND_PARAM", printed, printed, 1);
+    }
+    int rc = jw__mlp1_write_system_config("SOUND_PARAM", printed);
+    cJSON_free(printed);
+    return rc;
+}
+
+static void jw__mlp1_get_audio_volumes(int out[JW_PLATFORM_AUDIO_OUTPUT_COUNT]) {
+    if (!out) {
+        return;
+    }
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        out[i] = -1;
+    }
+
+    cJSON *root = jw__mlp1_load_sound_param();
+    if (!root) {
+        return;
+    }
+    cJSON *devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        const char *key = jw__mlp1_sound_output_key((jw_platform_audio_output)i);
+        const cJSON *level = key ? cJSON_GetObjectItemCaseSensitive(devices, key) : NULL;
+        if (cJSON_IsNumber(level)) {
+            out[i] = jw__mlp1_stock_level_to_percent(level->valueint);
+        }
+    }
+    cJSON_Delete(root);
+}
+
+static void jw__mlp1_sync_sound_volume(jw_platform_audio_output output, int percent) {
+    const char *key = jw__mlp1_sound_output_key(output);
+    if (!key) {
+        return;
+    }
+    cJSON *root = jw__mlp1_load_sound_param();
+    if (!root) {
+        return;
+    }
+    cJSON *devices = cJSON_GetObjectItemCaseSensitive(root, "devices");
+    if (cJSON_IsObject(devices)) {
+        (void)jw__json_put_number(devices, key,
+                                  jw__mlp1_percent_to_stock_level(percent));
+    }
+    (void)jw__mlp1_write_sound_param(root);
+    cJSON_Delete(root);
+}
+
+static int jw__mlp1_playback_path(void) {
+    FILE *fp = popen(JW_MLP1_PLAYBACK_PATH_CMD, "r");
+    if (!fp) {
+        return -1;
+    }
+    char line[256];
+    int value = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        if (sscanf(line, " : values=%d", &value) == 1 ||
+            sscanf(line, "  : values=%d", &value) == 1 ||
+            sscanf(line, ": values=%d", &value) == 1) {
+            break;
+        }
+    }
+    pclose(fp);
+    return value;
+}
+
+static bool jw__mlp1_pulse_sink_exists(const char *needle) {
+    if (!needle || !needle[0]) {
+        return false;
+    }
+    FILE *fp = popen("pactl list short sinks 2>/dev/null", "r");
+    if (!fp) {
+        return false;
+    }
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, needle)) {
+            found = true;
+            break;
+        }
+    }
+    pclose(fp);
+    return found;
+}
+
+static bool jw__mlp1_hdmi_connected(void) {
+    char *text = jw__read_text_file(JW_MLP1_HDMI_STATUS, 64);
+    if (!text) {
+        return false;
+    }
+    text[strcspn(text, "\r\n")] = '\0';
+    bool connected = strcmp(text, "connected") == 0;
+    free(text);
+    return connected;
+}
+
+static bool jw__mlp1_bluealsa_control(char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    FILE *fp = popen("amixer -D bluealsa scontrols 2>/dev/null", "r");
+    if (!fp) {
+        return false;
+    }
+    char line[256];
+    bool ok = false;
+    while (fgets(line, sizeof(line), fp)) {
+        char ctl[128];
+        if (sscanf(line, "Simple mixer control '%127[^']'", ctl) != 1) {
+            continue;
+        }
+        bool safe = true;
+        for (const char *p = ctl; *p; p++) {
+            if (!( (*p >= 'A' && *p <= 'Z') ||
+                   (*p >= 'a' && *p <= 'z') ||
+                   (*p >= '0' && *p <= '9') ||
+                   *p == ':' || *p == '_' || *p == '-' || *p == '.' || *p == ' ')) {
+                safe = false;
+                break;
+            }
+        }
+        if (safe) {
+            snprintf(out, out_size, "%s", ctl);
+            ok = true;
+            break;
+        }
+    }
+    pclose(fp);
+    return ok;
+}
+
+static int jw__mlp1_get_bluealsa_volume_percent(void) {
+    char ctl[128];
+    if (!jw__mlp1_bluealsa_control(ctl, sizeof(ctl))) {
+        return -1;
+    }
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "amixer -D bluealsa sget '%s' 2>/dev/null", ctl);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return -1;
+    }
+    int percent = jw__parse_percent_from_stream(fp);
+    pclose(fp);
+    return percent;
+}
+
+static int jw__mlp1_set_bluealsa_volume_percent(int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    char ctl[128];
+    if (!jw__mlp1_bluealsa_control(ctl, sizeof(ctl))) {
+        return -1;
+    }
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "amixer -D bluealsa sset '%s' %d%% >/dev/null 2>&1",
+             ctl, percent);
+    return jw__exec_shell(cmd);
+}
+
+static unsigned jw__mlp1_get_audio_available_outputs(void) {
+    unsigned mask = JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_SPEAKER) |
+                    JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_HEADSET);
+    if (jw__mlp1_hdmi_connected() &&
+        jw__mlp1_pulse_sink_exists(JW_MLP1_PACTL_HDMI_SINK)) {
+        mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_HDMI);
+    }
+    if (jw_bt_audio_connected() == 1) {
+        mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH);
+    }
+    return mask;
+}
+
+static jw_platform_audio_output jw__mlp1_get_audio_output(void) {
+    int path = jw__mlp1_playback_path();
+    if (path == 5) {
+        return JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
+    }
+
+    char sink[256];
+    if (jw__read_command_line(JW_MLP1_PACTL_GET_DEFAULT_SINK, sink, sizeof(sink)) == 0 &&
+        strstr(sink, "hdmi")) {
+        return JW_PLATFORM_AUDIO_OUTPUT_HDMI;
+    }
+
+    if (path == 3 || path == 4) {
+        return JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
+    }
+    return JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+}
+
+static int jw__mlp1_apply_stored_audio_volume(jw_platform_audio_output output) {
+    int volumes[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
+    jw__mlp1_get_audio_volumes(volumes);
+    int percent = (output >= 0 && output < JW_PLATFORM_AUDIO_OUTPUT_COUNT)
+                    ? volumes[output]
+                    : -1;
+    if (percent < 0) {
+        return 0;
+    }
+    if (output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
+        (void)jw__mlp1_set_bluealsa_volume_percent(percent);
+        return 0;
+    }
+    return jw__mlp1_set_volume_percent(percent);
+}
+
+static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
+                                     jw_platform_result *out) {
+    if (output < 0 || output >= JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID,
+                               "audio output invalid");
+        return -1;
+    }
+
+    unsigned available = jw__mlp1_get_audio_available_outputs();
+    if ((available & JW_PLATFORM_AUDIO_OUTPUT_BIT(output)) == 0) {
+        char message[JW_PLATFORM_MAX_MESSAGE];
+        snprintf(message, sizeof(message), "%s output unavailable",
+                 jw_platform_audio_output_label(output));
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE, message);
+        return -1;
+    }
+
+    int rc = -1;
+    switch (output) {
+        case JW_PLATFORM_AUDIO_OUTPUT_SPEAKER:
+            rc = jw__exec_shell(JW_MLP1_PACTL_SET_DEFAULT_RK817 " && "
+                                JW_MLP1_PLAYBACK_PATH_SPK " && "
+                                JW_MLP1_ENSURE_DAC_FLOOR);
+            break;
+        case JW_PLATFORM_AUDIO_OUTPUT_HEADSET:
+            rc = jw__exec_shell(JW_MLP1_PACTL_SET_DEFAULT_RK817 " && "
+                                JW_MLP1_PLAYBACK_PATH_HP " && "
+                                JW_MLP1_ENSURE_DAC_FLOOR);
+            break;
+        case JW_PLATFORM_AUDIO_OUTPUT_HDMI:
+            rc = jw__exec_shell(JW_MLP1_PACTL_SET_DEFAULT_HDMI);
+            break;
+        case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH:
+            rc = jw__exec_shell(JW_MLP1_PLAYBACK_PATH_BT);
+            break;
+        default:
+            break;
+    }
+
+    if (rc != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                               "audio output route failed");
+        return -1;
+    }
+
+    (void)jw__mlp1_apply_stored_audio_volume(output);
+    char message[JW_PLATFORM_MAX_MESSAGE];
+    snprintf(message, sizeof(message), "audio output: %s",
+             jw_platform_audio_output_label(output));
+    jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, (int)output);
+    return 0;
+}
+
 static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
     if (seconds < 0) seconds = 0;
     if (seconds > 86400) seconds = 86400;
@@ -946,6 +1365,21 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
     if (jw__mlp1_adb_supported()) {
         out->adb_enabled = jw__mlp1_adb_is_pinned() ? 1 : 0;
         out->adb_intent_enabled = jw__mlp1_adb_intent_enabled(ctx) ? 1 : 0;
+    }
+}
+
+static void jw__mlp1_get_audio_status(jw_platform_context *ctx, jw_platform_status *out) {
+    (void)ctx;
+    if (!out) {
+        return;
+    }
+    out->volume_percent = jw__mlp1_get_volume_percent();
+    out->audio_output = jw__mlp1_get_audio_output();
+    out->audio_available_outputs = jw__mlp1_get_audio_available_outputs();
+    jw__mlp1_get_audio_volumes(out->audio_volume_percent);
+    if (out->audio_output >= 0 && out->audio_output < JW_PLATFORM_AUDIO_OUTPUT_COUNT &&
+        out->volume_percent >= 0) {
+        out->audio_volume_percent[out->audio_output] = out->volume_percent;
     }
 }
 
@@ -1047,6 +1481,25 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         char message[JW_PLATFORM_MAX_MESSAGE];
         snprintf(message, sizeof(message), "volume set to %d%%", percent);
         jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, percent);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SET_AUDIO_OUTPUT) {
+        (void)jw__mlp1_set_audio_output((jw_platform_audio_output)value, out);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_BLUETOOTH_ON ||
+        action == JW_PLATFORM_ACTION_BLUETOOTH_OFF) {
+        bool on = (action == JW_PLATFORM_ACTION_BLUETOOTH_ON);
+        if (jw_bt_set_radio(on) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   on ? "bluetooth enable failed"
+                                      : "bluetooth disable failed");
+            return;
+        }
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                               on ? "bluetooth enabled" : "bluetooth disabled");
         return;
     }
 
@@ -1322,12 +1775,14 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .brightness = true,
             .volume = true,
             .wifi = true,
+            .bluetooth = true,
             .adb = true,
             .led = true,
         },
         .init = jw__mlp1_init,
         .shutdown = jw__mlp1_shutdown,
         .get_status = jw__mlp1_get_status,
+        .get_audio_status = jw__mlp1_get_audio_status,
         .frontend_ready = jw__mlp1_frontend_ready,
         .perform_action = jw__mlp1_perform_action,
         .storage_tick = jw__mlp1_storage_tick,
