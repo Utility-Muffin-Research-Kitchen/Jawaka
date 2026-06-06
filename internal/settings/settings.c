@@ -82,6 +82,89 @@ static const jw__color_scheme kColorSchemes[] = {
 
 static void jw__apply_color_scheme(jw_settings_ui *ui, int index, bool *theme_changed);
 
+#define JW_SETTINGS_VALUE_MAX 64
+typedef enum {
+    JW_SETTING_PILL_SHAPE_INDEX = 0,
+    JW_SETTING_FONT_FAMILY_INDEX,
+    JW_SETTING_FONT_SIZE_INDEX,
+    JW_SETTING_SHOW_HINTS,
+    JW_SETTING_CLOCK_STYLE_INDEX,
+    JW_SETTING_SHOW_BATTERY,
+    JW_SETTING_SHOW_BATTERY_LEVEL,
+    JW_SETTING_SHOW_WIFI,
+    JW_SETTING_SHOW_VOLUME,
+    JW_SETTING_COLOR_SCHEME_INDEX,
+    JW_SETTING_STARTUP_TAB_INDEX,
+    JW_SETTING_AUTO_SLEEP_SECONDS,
+    JW_SETTING_BOOT_SPLASH_ENABLED,
+    JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT,
+    JW_SETTING_PLATFORM_VOLUME_PERCENT,
+    JW_SETTING_ACCENT_COLOR,
+    JW_SETTING_BG_COLOR,
+    JW_SETTING_TEXT_COLOR,
+    JW_SETTING_HINT_COLOR,
+    JW_SETTING_HIGHLIGHT_COLOR,
+    JW_SETTING_BUTTON_LABEL_COLOR,
+    JW_SETTING_BUTTON_GLYPH_BG_COLOR,
+    JW_SETTING_COUNT,
+} jw__setting_key;
+
+static const char *const kSettingKeys[JW_SETTING_COUNT] = {
+    [JW_SETTING_PILL_SHAPE_INDEX] = "pill_shape_index",
+    [JW_SETTING_FONT_FAMILY_INDEX] = "font_family_index",
+    [JW_SETTING_FONT_SIZE_INDEX] = "font_size_index",
+    [JW_SETTING_SHOW_HINTS] = "show_hints",
+    [JW_SETTING_CLOCK_STYLE_INDEX] = "clock_style_index",
+    [JW_SETTING_SHOW_BATTERY] = "show_battery",
+    [JW_SETTING_SHOW_BATTERY_LEVEL] = "show_battery_level",
+    [JW_SETTING_SHOW_WIFI] = "show_wifi",
+    [JW_SETTING_SHOW_VOLUME] = "show_volume",
+    [JW_SETTING_COLOR_SCHEME_INDEX] = "color_scheme_index",
+    [JW_SETTING_STARTUP_TAB_INDEX] = "startup_tab_index",
+    [JW_SETTING_AUTO_SLEEP_SECONDS] = "auto_sleep_seconds",
+    [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
+    [JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT] = "platform.brightness_percent",
+    [JW_SETTING_PLATFORM_VOLUME_PERCENT] = "platform.volume_percent",
+    [JW_SETTING_ACCENT_COLOR] = "accent_color",
+    [JW_SETTING_BG_COLOR] = "bg_color",
+    [JW_SETTING_TEXT_COLOR] = "text_color",
+    [JW_SETTING_HINT_COLOR] = "hint_color",
+    [JW_SETTING_HIGHLIGHT_COLOR] = "highlight_color",
+    [JW_SETTING_BUTTON_LABEL_COLOR] = "button_label_color",
+    [JW_SETTING_BUTTON_GLYPH_BG_COLOR] = "button_glyph_bg_color",
+};
+
+static bool jw__setting_has(char values[JW_SETTING_COUNT][JW_SETTINGS_VALUE_MAX],
+                            const unsigned char found[JW_SETTING_COUNT],
+                            jw__setting_key key) {
+    return found[key] && values[key][0];
+}
+
+static int jw__load_setting_values(const char *db_path,
+                                   char values[JW_SETTING_COUNT][JW_SETTINGS_VALUE_MAX],
+                                   unsigned char found[JW_SETTING_COUNT]) {
+    memset(values, 0, sizeof(char) * JW_SETTING_COUNT * JW_SETTINGS_VALUE_MAX);
+    memset(found, 0, sizeof(unsigned char) * JW_SETTING_COUNT);
+    if (!db_path || !db_path[0]) {
+        return -1;
+    }
+
+    jw_db_setting_query queries[JW_SETTING_COUNT];
+    for (int i = 0; i < JW_SETTING_COUNT; i++) {
+        queries[i].key = kSettingKeys[i];
+        queries[i].out = values[i];
+        queries[i].out_size = JW_SETTINGS_VALUE_MAX;
+        queries[i].found = 0;
+    }
+    if (jw_db_get_settings(db_path, queries, JW_SETTING_COUNT) != 0) {
+        return -1;
+    }
+    for (int i = 0; i < JW_SETTING_COUNT; i++) {
+        found[i] = queries[i].found ? 1 : 0;
+    }
+    return 0;
+}
+
 /* Startup-tab options for Settings > Behavior. Order and index MIRROR the
    launcher's jw_tab enum so the persisted "startup_tab_index" maps 1:1 to the
    tab the launcher opens on boot. */
@@ -540,6 +623,65 @@ static void jw__apply_led(jw_settings_ui *ui) {
                    ui->led_brightness, ui->led_speed, status, sizeof(status));
 }
 
+static void jw__apply_persisted_overrides_from_values(
+        char values[JW_SETTING_COUNT][JW_SETTINGS_VALUE_MAX],
+        const unsigned char found[JW_SETTING_COUNT]) {
+    ap_theme *t = cat_get_theme();
+
+    if (jw__setting_has(values, found, JW_SETTING_PILL_SHAPE_INDEX)) {
+        int idx = atoi(values[JW_SETTING_PILL_SHAPE_INDEX]);
+        if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT) {
+            t->pill_radius_ratio = kJawakaPillRadiusValues[idx];
+            t->pill_corner_mask  = kJawakaPillCornerMasks[idx];
+        }
+    }
+
+    /* Font size and family can reload the glyph atlas; keep the same behavior
+       as jw_settings_apply_persisted_overrides(), but use the already-loaded
+       setting values instead of re-opening SQLite for each key. */
+    {
+        int bump = cat_get_font_bump();
+        if (jw__setting_has(values, found, JW_SETTING_FONT_SIZE_INDEX)) {
+            int idx = atoi(values[JW_SETTING_FONT_SIZE_INDEX]);
+            if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
+                bump = kJawakaFontSizeValues[idx];
+        }
+        if (getenv("CAT_FONT_PATH")) {
+            cat_set_font_bump(bump);
+        } else {
+            int fidx = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
+            if (jw__setting_has(values, found, JW_SETTING_FONT_FAMILY_INDEX)) {
+                int idx = atoi(values[JW_SETTING_FONT_FAMILY_INDEX]);
+                if (idx >= 0 && idx < JW_APPEARANCE_FONT_FAMILY_COUNT)
+                    fidx = idx;
+            }
+            snprintf(t->font_path, sizeof(t->font_path), "%s",
+                     jw_appearance_font_path_for_index(fidx));
+            if (bump != cat_get_font_bump())
+                cat_set_font_bump(bump);
+            else
+                cat_reload_fonts(t->font_path);
+        }
+    }
+
+    if (jw__setting_has(values, found, JW_SETTING_ACCENT_COLOR))
+        t->accent = cat_hex_to_color(values[JW_SETTING_ACCENT_COLOR]);
+    if (jw__setting_has(values, found, JW_SETTING_TEXT_COLOR))
+        t->text = cat_hex_to_color(values[JW_SETTING_TEXT_COLOR]);
+    if (jw__setting_has(values, found, JW_SETTING_HINT_COLOR))
+        t->hint = cat_hex_to_color(values[JW_SETTING_HINT_COLOR]);
+    if (jw__setting_has(values, found, JW_SETTING_HIGHLIGHT_COLOR))
+        t->highlight = cat_hex_to_color(values[JW_SETTING_HIGHLIGHT_COLOR]);
+    if (jw__setting_has(values, found, JW_SETTING_BG_COLOR))
+        t->background = cat_hex_to_color(values[JW_SETTING_BG_COLOR]);
+    if (jw__setting_has(values, found, JW_SETTING_BUTTON_LABEL_COLOR))
+        t->button_label = cat_hex_to_color(values[JW_SETTING_BUTTON_LABEL_COLOR]);
+    if (jw__setting_has(values, found, JW_SETTING_BUTTON_GLYPH_BG_COLOR))
+        t->button_glyph_bg = cat_hex_to_color(values[JW_SETTING_BUTTON_GLYPH_BG_COLOR]);
+
+    cat_finalize_theme_colors(t);
+}
+
 void jw_settings_toggle_led(jw_settings_ui *ui) {
     if (!ui || !ui->socket_path[0]) return;
     /* Reflect the daemon's current state first so the toggle is correct even if
@@ -638,69 +780,77 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
        UI's own state in sync with the DB; the theme itself (all 7 colors,
        pill shape, font size) is applied by the shared override helper. */
     if (ui->db_path[0]) {
-        char val[32];
-        if (jw_db_get_setting(db_path, "pill_shape_index", val, sizeof(val)) == 0) {
-            int idx = atoi(val);
-            if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT)
-                ui->pill_shape_index = idx;
-        }
-        ui->font_family_index = jw_appearance_font_family_index_from_db(db_path);
-        if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0) {
-            int idx = atoi(val);
-            if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
-                ui->font_size_index = idx;
-        }
-        if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0)
-            ui->show_hints = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "clock_style_index", val, sizeof(val)) == 0) {
-            int idx = atoi(val);
-            if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
-                ui->clock_style_index = idx;
-        }
-        if (jw_db_get_setting(db_path, "show_battery", val, sizeof(val)) == 0)
-            ui->show_battery = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "show_battery_level", val, sizeof(val)) == 0)
-            ui->show_battery_level = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
-            ui->show_wifi = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "show_volume", val, sizeof(val)) == 0)
-            ui->show_volume = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "color_scheme_index", val, sizeof(val)) == 0 && val[0]) {
-            int idx = atoi(val);
-            if (idx >= 0 && idx < JW_COLOR_SCHEME_COUNT)
-                ui->color_scheme_index = idx;
-        }
-        if (jw_db_get_setting(db_path, "startup_tab_index", val, sizeof(val)) == 0 && val[0]) {
-            int idx = atoi(val);
-            if (idx >= 0 && idx < JW_STARTUP_TAB_COUNT)
-                ui->startup_tab_index = idx;
-        }
-        /* Stored as seconds (what the daemon reads); map back to the label index. */
-        if (jw_db_get_setting(db_path, "auto_sleep_seconds", val, sizeof(val)) == 0 && val[0]) {
-            int seconds = atoi(val);
-            for (int i = 0; i < JW_AUTO_SLEEP_COUNT; i++) {
-                if (kAutoSleepSeconds[i] == seconds) { ui->auto_sleep_index = i; break; }
+        char values[JW_SETTING_COUNT][JW_SETTINGS_VALUE_MAX];
+        unsigned char found[JW_SETTING_COUNT];
+        if (jw__load_setting_values(db_path, values, found) == 0) {
+            if (jw__setting_has(values, found, JW_SETTING_PILL_SHAPE_INDEX)) {
+                int idx = atoi(values[JW_SETTING_PILL_SHAPE_INDEX]);
+                if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT)
+                    ui->pill_shape_index = idx;
             }
+            if (jw__setting_has(values, found, JW_SETTING_FONT_FAMILY_INDEX)) {
+                int idx = atoi(values[JW_SETTING_FONT_FAMILY_INDEX]);
+                if (idx >= 0 && idx < JW_APPEARANCE_FONT_FAMILY_COUNT)
+                    ui->font_family_index = idx;
+            }
+            if (jw__setting_has(values, found, JW_SETTING_FONT_SIZE_INDEX)) {
+                int idx = atoi(values[JW_SETTING_FONT_SIZE_INDEX]);
+                if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
+                    ui->font_size_index = idx;
+            }
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_HINTS))
+                ui->show_hints = (strcmp(values[JW_SETTING_SHOW_HINTS], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_CLOCK_STYLE_INDEX)) {
+                int idx = atoi(values[JW_SETTING_CLOCK_STYLE_INDEX]);
+                if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
+                    ui->clock_style_index = idx;
+            }
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
+                ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
+                ui->show_battery_level = (strcmp(values[JW_SETTING_SHOW_BATTERY_LEVEL], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_WIFI))
+                ui->show_wifi = (strcmp(values[JW_SETTING_SHOW_WIFI], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_VOLUME))
+                ui->show_volume = (strcmp(values[JW_SETTING_SHOW_VOLUME], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_COLOR_SCHEME_INDEX)) {
+                int idx = atoi(values[JW_SETTING_COLOR_SCHEME_INDEX]);
+                if (idx >= 0 && idx < JW_COLOR_SCHEME_COUNT)
+                    ui->color_scheme_index = idx;
+            }
+            if (jw__setting_has(values, found, JW_SETTING_STARTUP_TAB_INDEX)) {
+                int idx = atoi(values[JW_SETTING_STARTUP_TAB_INDEX]);
+                if (idx >= 0 && idx < JW_STARTUP_TAB_COUNT)
+                    ui->startup_tab_index = idx;
+            }
+            /* Stored as seconds (what the daemon reads); map back to the label index. */
+            if (jw__setting_has(values, found, JW_SETTING_AUTO_SLEEP_SECONDS)) {
+                int seconds = atoi(values[JW_SETTING_AUTO_SLEEP_SECONDS]);
+                for (int i = 0; i < JW_AUTO_SLEEP_COUNT; i++) {
+                    if (kAutoSleepSeconds[i] == seconds) { ui->auto_sleep_index = i; break; }
+                }
+            }
+            if (jw__setting_has(values, found, JW_SETTING_BOOT_SPLASH_ENABLED))
+                ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT))
+                ui->brightness_percent = jw_platform_clamp_brightness_percent(
+                    atoi(values[JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT]));
+            if (jw__setting_has(values, found, JW_SETTING_PLATFORM_VOLUME_PERCENT)) {
+                int volume = atoi(values[JW_SETTING_PLATFORM_VOLUME_PERCENT]);
+                if (volume < 0) volume = 0;
+                if (volume > 100) volume = 100;
+                ui->volume_percent = volume;
+                ui->audio_volumes[JW_PLATFORM_AUDIO_OUTPUT_SPEAKER] = volume;
+            }
+
+            jw__apply_persisted_overrides_from_values(values, found);
+
+            /* Fresh install (no color ever persisted) → default to the Leaf scheme,
+               the project's identity theme. Returning users keep their colors. */
+            if (!jw__setting_has(values, found, JW_SETTING_ACCENT_COLOR))
+                jw__apply_color_scheme(ui, JW_COLOR_SCHEME_DEFAULT, NULL);
         }
-        if (jw_db_get_setting(db_path, "boot_splash_enabled", val, sizeof(val)) == 0 && val[0])
-            ui->boot_splash_enabled = (strcmp(val, "0") != 0);
-
-        jw_settings_apply_persisted_overrides(ui->db_path);
-
-        /* Fresh install (no color ever persisted) → default to the Leaf scheme,
-           the project's identity theme. Returning users keep their colors. */
-        char probe[32];
-        if (jw_db_get_setting(db_path, "accent_color", probe, sizeof(probe)) != 0 || !probe[0])
-            jw__apply_color_scheme(ui, JW_COLOR_SCHEME_DEFAULT, NULL);
     }
-
-    jw__refresh_brightness(ui);
-    jw__refresh_volume(ui);
-    jw__refresh_audio_status(ui);
-    jw__refresh_led(ui);
-    jw__refresh_adb(ui);
-    jw__refresh_boot_splash(ui);
-    jw__refresh_secondary_sd_status(ui);
 }
 
 void jw_settings_ui_enter(jw_settings_ui *ui) {
@@ -809,25 +959,28 @@ void jw_settings_load_status_prefs(const char *db_path,
     bool show_hints        = true;
 
     if (db_path && db_path[0]) {
-        char val[32];
-        if (jw_db_get_setting(db_path, "clock_style_index", val, sizeof(val)) == 0 && val[0]) {
-            int idx = atoi(val);
-            if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
-                clock_style_index = idx;
+        char values[JW_SETTING_COUNT][JW_SETTINGS_VALUE_MAX];
+        unsigned char found[JW_SETTING_COUNT];
+        if (jw__load_setting_values(db_path, values, found) == 0) {
+            if (jw__setting_has(values, found, JW_SETTING_CLOCK_STYLE_INDEX)) {
+                int idx = atoi(values[JW_SETTING_CLOCK_STYLE_INDEX]);
+                if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
+                    clock_style_index = idx;
+            }
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
+                show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
+                show_battery_level = (strcmp(values[JW_SETTING_SHOW_BATTERY_LEVEL], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_WIFI))
+                show_wifi = (strcmp(values[JW_SETTING_SHOW_WIFI], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_VOLUME))
+                show_volume = (strcmp(values[JW_SETTING_SHOW_VOLUME], "0") != 0);
+            /* The menu has no live volume poll; use the daemon's last persisted value. */
+            if (jw__setting_has(values, found, JW_SETTING_PLATFORM_VOLUME_PERCENT))
+                volume_percent = atoi(values[JW_SETTING_PLATFORM_VOLUME_PERCENT]);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_HINTS))
+                show_hints = (strcmp(values[JW_SETTING_SHOW_HINTS], "0") != 0);
         }
-        if (jw_db_get_setting(db_path, "show_battery", val, sizeof(val)) == 0)
-            show_battery = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "show_battery_level", val, sizeof(val)) == 0)
-            show_battery_level = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "show_wifi", val, sizeof(val)) == 0)
-            show_wifi = (strcmp(val, "0") != 0);
-        if (jw_db_get_setting(db_path, "show_volume", val, sizeof(val)) == 0)
-            show_volume = (strcmp(val, "0") != 0);
-        /* The menu has no live volume poll; use the daemon's last persisted value. */
-        if (jw_db_get_setting(db_path, "platform.volume_percent", val, sizeof(val)) == 0 && val[0])
-            volume_percent = atoi(val);
-        if (jw_db_get_setting(db_path, "show_hints", val, sizeof(val)) == 0)
-            show_hints = (strcmp(val, "0") != 0);
     }
 
     if (out_opts) {
@@ -1880,57 +2033,10 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
 void jw_settings_apply_persisted_overrides(const char *db_path) {
     if (!db_path || !db_path[0]) return;
 
-    ap_theme *t = cat_get_theme();
-    char val[32];
-
-    if (jw_db_get_setting(db_path, "pill_shape_index", val, sizeof(val)) == 0 && val[0]) {
-        int idx = atoi(val);
-        if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT) {
-            t->pill_radius_ratio = kJawakaPillRadiusValues[idx];
-            t->pill_corner_mask  = kJawakaPillCornerMasks[idx];
-        }
-    }
-    /* Font size and family both reload the glyph atlas, so resolve them together
-       and reload at most once. cat_set_font_bump() reloads using the theme's
-       font_path, so point that at the persisted family first; if the bump is
-       unchanged it short-circuits and we issue the single reload ourselves.
-       Env-launched processes already had both applied by cat_init (via
-       CAT_FONT_PATH/CAT_FONT_BUMP), so there we only sync the bump. */
-    {
-        int bump = cat_get_font_bump();
-        if (jw_db_get_setting(db_path, "font_size_index", val, sizeof(val)) == 0 && val[0]) {
-            int idx = atoi(val);
-            if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
-                bump = kJawakaFontSizeValues[idx];
-        }
-        if (getenv("CAT_FONT_PATH")) {
-            cat_set_font_bump(bump);
-        } else {
-            int fidx = jw_appearance_font_family_index_from_db(db_path);
-            snprintf(t->font_path, sizeof(t->font_path), "%s",
-                     jw_appearance_font_path_for_index(fidx));
-            if (bump != cat_get_font_bump())
-                cat_set_font_bump(bump);          /* one reload, at the new family path */
-            else
-                cat_reload_fonts(t->font_path);   /* bump unchanged: one reload for the family */
-        }
-    }
-    if (jw_db_get_setting(db_path, "accent_color", val, sizeof(val)) == 0 && val[0])
-        t->accent = cat_hex_to_color(val);
-    if (jw_db_get_setting(db_path, "text_color", val, sizeof(val)) == 0 && val[0])
-        t->text = cat_hex_to_color(val);
-    if (jw_db_get_setting(db_path, "hint_color", val, sizeof(val)) == 0 && val[0])
-        t->hint = cat_hex_to_color(val);
-    if (jw_db_get_setting(db_path, "highlight_color", val, sizeof(val)) == 0 && val[0])
-        t->highlight = cat_hex_to_color(val);
-    if (jw_db_get_setting(db_path, "bg_color", val, sizeof(val)) == 0 && val[0])
-        t->background = cat_hex_to_color(val);
-    if (jw_db_get_setting(db_path, "button_label_color", val, sizeof(val)) == 0 && val[0])
-        t->button_label = cat_hex_to_color(val);
-    if (jw_db_get_setting(db_path, "button_glyph_bg_color", val, sizeof(val)) == 0 && val[0])
-        t->button_glyph_bg = cat_hex_to_color(val);
-
-    cat_finalize_theme_colors(t);
+    char values[JW_SETTING_COUNT][JW_SETTINGS_VALUE_MAX];
+    unsigned char found[JW_SETTING_COUNT];
+    if (jw__load_setting_values(db_path, values, found) == 0)
+        jw__apply_persisted_overrides_from_values(values, found);
 }
 
 /* Apply a curated color scheme. The seven color roles are written straight into

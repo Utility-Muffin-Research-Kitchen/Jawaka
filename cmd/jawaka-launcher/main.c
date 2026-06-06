@@ -24,6 +24,7 @@
 #include <strings.h>
 #include <ctype.h>
 #include <limits.h>
+#include <time.h>
 
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
@@ -31,6 +32,14 @@
 #define JW_MAX_FAVORITES 256   /* newest-first; a heavier list is truncated */
 #define JW_MAX_RECENTS 64      /* most-recently-played first */
 #define JW_MAX_SEARCH_RESULTS 128
+
+static long long jw__monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (long long)ts.tv_sec * 1000LL + (long long)(ts.tv_nsec / 1000000L);
+}
 
 /* Button hint text: on device, return NULL so Catastrophe uses the canonical
  * button name (e.g. "L2", "MENU"). On desktop, show the keyboard shortcut.
@@ -582,6 +591,22 @@ static int jw__scan_library(const char *socket_path, const char *db_path,
     if (jw__reload_library_from_db(db_path, state) != 0) {
         snprintf(state->status, sizeof(state->status), "%s",
                  "scan complete but summary load failed");
+        return -1;
+    }
+
+    if (jw_ipc_library_status(socket_path, &state->library_generation) != 0) {
+        state->library_generation = -1;
+    }
+    snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
+        state->summary.game_count, state->system_count, state->summary.app_count);
+    return 0;
+}
+
+static int jw__load_library_cache(const char *socket_path, const char *db_path,
+                                  jw_launcher_state *state) {
+    if (jw__reload_library_from_db(db_path, state) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "library cache unavailable");
         return -1;
     }
 
@@ -3124,6 +3149,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 int main(void) {
+    long long process_start_ms = jw__monotonic_ms();
     char *socket_path = jw_socket_path();
     char *db_path     = jw_db_path();
     char *sdcard_root = jw_sdcard_root();
@@ -3135,6 +3161,7 @@ int main(void) {
         return 1;
     }
 
+    long long hello_start_ms = jw__monotonic_ms();
     if (jw_ipc_hello(socket_path, "launcher") != 0) {
         jw_log_error("could not connect to jawakad at %s; is the daemon running?",
                      socket_path);
@@ -3143,12 +3170,14 @@ int main(void) {
         free(sdcard_root);
         return 1;
     }
+    long long hello_done_ms = jw__monotonic_ms();
 
     cat_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.window_title       = "Jawaka Launcher";
     cfg.disable_background = true;
 
+    long long cat_start_ms = jw__monotonic_ms();
     if (cat_init(&cfg) != CAT_OK) {
         jw_log_error("catastrophe init failed: %s", cat_get_error());
         free(socket_path);
@@ -3157,8 +3186,10 @@ int main(void) {
         return 1;
     }
     jw_cat_services_install(socket_path);
+    long long cat_done_ms = jw__monotonic_ms();
 
     /* Resolve theme: env > DB > default Jawaka-Tabs */
+    long long theme_start_ms = jw__monotonic_ms();
     char theme_name_buf[256];
     jw_resolve_theme_name(db_path, theme_name_buf, sizeof(theme_name_buf));
     const char *theme_name = theme_name_buf;
@@ -3169,6 +3200,7 @@ int main(void) {
         else
             jw_log_error("theme '%s' not found, using defaults", theme_name);
     }
+    long long theme_done_ms = jw__monotonic_ms();
 
     cat_activate_window();
 
@@ -3188,10 +3220,14 @@ int main(void) {
         }
     }
     snprintf(state.sdcard_root, sizeof(state.sdcard_root), "%s", sdcard_root);
-    snprintf(state.status, sizeof(state.status), "%s", "scanning library...");
+    snprintf(state.status, sizeof(state.status), "%s", "loading library...");
 
-    /* Scan first so flat lists can be built */
-    jw__scan_library(socket_path, db_path, &state);
+    long long cache_start_ms = jw__monotonic_ms();
+    if (jw__load_library_cache(socket_path, db_path, &state) != 0) {
+        snprintf(state.status, sizeof(state.status), "%s", "scanning library...");
+        jw__scan_library(socket_path, db_path, &state);
+    }
+    long long cache_done_ms = jw__monotonic_ms();
 
     const cat_stylesheet *ss = cat_get_stylesheet();
     cat_launcher_layout layout = ss->launcher.layout;
@@ -3202,13 +3238,9 @@ int main(void) {
     jw_log_info("launcher layout: %s (theme=%s)", layout_name, theme_name);
 
     /* Init settings UI with the currently-active theme */
+    long long settings_start_ms = jw__monotonic_ms();
     jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
-
-    /* Re-add Wi-Fi networks saved in our durable store but missing from the
-       (tmpfs, reboot-wiped) live wpa config, then rewrite any plaintext keys to
-       their PMK hash so passphrases never sit on disk. Idempotent; once at start. */
-    (void)jw_wifi_restore();
-    (void)jw_wifi_harden();
+    long long settings_done_ms = jw__monotonic_ms();
 
     /* Prime the startup tab's lazily-loaded contents so the first frame is
        correct (Favorites/Recents are normally loaded on tab entry, and the
@@ -3229,14 +3261,27 @@ int main(void) {
     jw_autodemo_init(&demo);
     bool running = true;
 
+    long long first_frame_start_ms = jw__monotonic_ms();
     cat_request_frame();
     jw__render_launcher(&state);
+    long long first_frame_done_ms = jw__monotonic_ms();
 
     /* First frame is on screen; jawakad owns any platform-specific readiness
      * side effects such as dismissing the MLP1 stock boot transition. */
+    long long ready_start_ms = jw__monotonic_ms();
     if (jw_ipc_frontend_ready(socket_path, "launcher") != 0) {
         jw_log_warn("frontend-ready notification failed");
     }
+    long long ready_done_ms = jw__monotonic_ms();
+    jw_log_info("launcher startup timings: hello_ms=%lld cat_ms=%lld theme_ms=%lld cache_ms=%lld settings_ms=%lld first_frame_ms=%lld ready_ms=%lld total_ms=%lld",
+                hello_done_ms - hello_start_ms,
+                cat_done_ms - cat_start_ms,
+                theme_done_ms - theme_start_ms,
+                cache_done_ms - cache_start_ms,
+                settings_done_ms - settings_start_ms,
+                first_frame_done_ms - first_frame_start_ms,
+                ready_done_ms - ready_start_ms,
+                ready_done_ms - process_start_ms);
 
     while (running) {
         cat_input_event ev;
