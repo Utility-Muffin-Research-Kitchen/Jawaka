@@ -12,7 +12,9 @@ typedef struct {
     char pmic[24];         /* parsed power-management IC, e.g. "RK817"; "" if unknown */
     char board[24];        /* parsed board / ODM name, e.g. "MANGMI"; "" if unknown */
     char ram_type[16];     /* parsed memory technology, e.g. "LPDDR4X"; "" if unknown */
-    char ip[40];           /* primary non-loopback IPv4, prefers wlan; "" if none */
+    char ip[40];           /* legacy alias for ipv4; "" if none */
+    char ipv4[40];         /* primary non-loopback IPv4, prefers wlan; "" if none */
+    char ipv6[72];         /* primary non-loopback IPv6; link-local includes %iface */
     long mem_total_kb;     /* -1 if unknown */
     long mem_avail_kb;     /* -1 if unknown */
     long sd_total_mb;      /* -1 if unknown */

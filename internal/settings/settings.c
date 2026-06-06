@@ -1766,7 +1766,9 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
         snprintf(buf, sizeof(buf), "%ld / %ld GB", info.sd_free_mb / 1024, info.sd_total_mb / 1024);
         jw__about_push(rows, &n, JW_ABOUT_FIELD, "Storage free", buf);
     }
-    jw__about_push(rows, &n, JW_ABOUT_FIELD, "IP", info.ip[0] ? info.ip : "—");
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "IPv4",
+                   info.ipv4[0] ? info.ipv4 : (info.ip[0] ? info.ip : "—"));
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "IPv6", info.ipv6[0] ? info.ipv6 : "—");
     if (info.battery_percent >= 0) {
         snprintf(buf, sizeof(buf), "%d%%%s", info.battery_percent, info.charging ? " (charging)" : "");
         jw__about_push(rows, &n, JW_ABOUT_FIELD, "Battery", buf);

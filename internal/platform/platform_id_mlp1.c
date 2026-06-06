@@ -8,6 +8,7 @@
 #include <sys/utsname.h>
 #include <sys/statvfs.h>
 #include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -97,16 +98,53 @@ static void jw__read_battery(int *percent, int *charging) {
     closedir(d);
 }
 
-static void jw__read_ip(char *out, size_t out_size) {
-    if (out_size) out[0] = '\0';
+static void jw__maybe_take_addr(char *out, size_t out_size, int *best_score,
+                                const char *addr, int score) {
+    if (!out || out_size == 0 || !best_score || !addr || !addr[0]) return;
+    if (score <= *best_score) return;
+    snprintf(out, out_size, "%s", addr);
+    *best_score = score;
+}
+
+static void jw__read_ips(char *ipv4, size_t ipv4_size, char *ipv6, size_t ipv6_size) {
+    if (ipv4 && ipv4_size) ipv4[0] = '\0';
+    if (ipv6 && ipv6_size) ipv6[0] = '\0';
     struct ifaddrs *ifaces = NULL;
     if (getifaddrs(&ifaces) != 0) return;
+    int best_v4 = -1;
+    int best_v6 = -1;
     for (struct ifaddrs *p = ifaces; p; p = p->ifa_next) {
-        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET || !p->ifa_name) continue;
-        if (strncmp(p->ifa_name, "lo", 2) == 0) continue;
-        struct sockaddr_in *addr = (struct sockaddr_in *)p->ifa_addr;
-        inet_ntop(AF_INET, &addr->sin_addr, out, (socklen_t)out_size);
-        if (strncmp(p->ifa_name, "wlan", 4) == 0) break;   /* prefer Wi-Fi */
+        if (!p->ifa_addr || !p->ifa_name) continue;
+        if ((p->ifa_flags & IFF_LOOPBACK) || strncmp(p->ifa_name, "lo", 2) == 0) continue;
+
+        int is_wlan = (strncmp(p->ifa_name, "wlan", 4) == 0);
+        if (p->ifa_addr->sa_family == AF_INET) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)p->ifa_addr;
+            if (addr->sin_addr.s_addr == htonl(INADDR_ANY) ||
+                addr->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
+                continue;
+            }
+            char candidate[INET_ADDRSTRLEN];
+            if (!inet_ntop(AF_INET, &addr->sin_addr, candidate, sizeof(candidate))) continue;
+            jw__maybe_take_addr(ipv4, ipv4_size, &best_v4, candidate, 10 + is_wlan);
+        } else if (p->ifa_addr->sa_family == AF_INET6) {
+            struct sockaddr_in6 *addr = (struct sockaddr_in6 *)p->ifa_addr;
+            if (IN6_IS_ADDR_UNSPECIFIED(&addr->sin6_addr) ||
+                IN6_IS_ADDR_LOOPBACK(&addr->sin6_addr) ||
+                IN6_IS_ADDR_MULTICAST(&addr->sin6_addr)) {
+                continue;
+            }
+            int is_link_local = IN6_IS_ADDR_LINKLOCAL(&addr->sin6_addr);
+            char text[INET6_ADDRSTRLEN];
+            if (!inet_ntop(AF_INET6, &addr->sin6_addr, text, sizeof(text))) continue;
+            char candidate[72];
+            if (is_link_local)
+                snprintf(candidate, sizeof(candidate), "%s%%%s", text, p->ifa_name);
+            else
+                snprintf(candidate, sizeof(candidate), "%s", text);
+            jw__maybe_take_addr(ipv6, ipv6_size, &best_v6, candidate,
+                                (is_link_local ? 0 : 10) + is_wlan);
+        }
     }
     freeifaddrs(ifaces);
 }
@@ -188,7 +226,8 @@ void jw_platform_system_info(const char *fs_path, jw_system_info *out) {
         }
     }
 
-    jw__read_ip(out->ip, sizeof(out->ip));
+    jw__read_ips(out->ipv4, sizeof(out->ipv4), out->ipv6, sizeof(out->ipv6));
+    snprintf(out->ip, sizeof(out->ip), "%s", out->ipv4);
     jw__read_battery(&out->battery_percent, &out->charging);
 
     long milli = jw__read_long_file("/sys/class/thermal/thermal_zone0/temp");
