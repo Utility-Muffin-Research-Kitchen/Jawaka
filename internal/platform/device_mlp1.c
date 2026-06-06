@@ -82,11 +82,16 @@
 #define JW_MLP1_USB_CONFIG "/etc/.usb_config"
 #define JW_MLP1_USB_GADGET "/etc/init.d/S50usb-gadget.sh"
 #define JW_MLP1_ADB_MARKER_FILE "adb-enabled"
+#define JW_MLP1_ROOTFS_RW_CMD \
+    "(mount -o remount,rw / >/dev/null 2>&1 || " \
+    "mount -o remount,rw /dev/root / >/dev/null 2>&1)"
 #define JW_MLP1_ADB_ENABLE_CMD \
+    JW_MLP1_ROOTFS_RW_CMD " || exit 1; " \
     "chattr -i " JW_MLP1_USB_CONFIG " >/dev/null 2>&1 || true; " \
     "printf 'usb_adb_en\\n' >" JW_MLP1_USB_CONFIG " && " \
     "chattr +i " JW_MLP1_USB_CONFIG " && sync"
 #define JW_MLP1_ADB_DISABLE_CMD \
+    JW_MLP1_ROOTFS_RW_CMD " || exit 1; " \
     "chattr -i " JW_MLP1_USB_CONFIG " >/dev/null 2>&1 || true; " \
     "printf 'usb_mtp_en\\n' >" JW_MLP1_USB_CONFIG " && sync"
 #define JW_MLP1_USB_RESTART_CMD \
