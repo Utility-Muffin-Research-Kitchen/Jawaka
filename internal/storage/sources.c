@@ -52,9 +52,13 @@ static void jw__source_id_for_root(int index, const char *root,
     if (!out || out_size == 0) {
         return;
     }
+    const char *secondary_root = jw__env_value("UMRK_SECONDARY_SDCARD_PATH");
+    if (!secondary_root) {
+        secondary_root = jw__env_value("SECONDARY_SDCARD_PATH");
+    }
     if (index == 0) {
         snprintf(out, out_size, "%s", "primary");
-    } else if (root && strcmp(root, "/media/sdcard1") == 0) {
+    } else if (root && secondary_root && strcmp(root, secondary_root) == 0) {
         snprintf(out, out_size, "%s", "secondary_sd");
     } else {
         snprintf(out, out_size, "source%d", index + 1);

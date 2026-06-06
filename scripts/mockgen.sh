@@ -9,6 +9,8 @@ ROMS_ROOT="${ROMS_PATH:-$ROOT/Roms}"
 IMAGES_ROOT="${IMAGES_PATH:-$ROOT/Images}"
 BIOS_ROOT="${BIOS_PATH:-$ROOT/BIOS}"
 APPS_ROOT="${APPS_PATH:-$ROOT/Apps}"
+PLATFORM_APPS_ROOT="$APPS_ROOT/$PLATFORM"
+SHARED_APPS_ROOT="$APPS_ROOT/shared"
 SAVES_ROOT="${SAVES_PATH:-$ROOT/Saves}"
 STATES_ROOT="${STATES_PATH:-$ROOT/States}"
 FORCE="${FORCE:-0}"
@@ -23,7 +25,7 @@ if [[ -d "$ROOT" ]]; then
     fi
 fi
 
-mkdir -p "$ROMS_ROOT" "$IMAGES_ROOT" "$BIOS_ROOT" "$APPS_ROOT" "$SAVES_ROOT" "$STATES_ROOT" "$ROOT"/.system/leaf/state
+mkdir -p "$ROMS_ROOT" "$IMAGES_ROOT" "$BIOS_ROOT" "$PLATFORM_APPS_ROOT" "$SHARED_APPS_ROOT" "$SAVES_ROOT" "$STATES_ROOT" "$ROOT"/.system/leaf/state
 mkdir -p "$SYSTEM_ROOT/defaults"
 
 cat >"$SYSTEM_ROOT/manifest.json" <<'JSON'
@@ -126,14 +128,16 @@ create_app() {
     local app_name="$2"
     local message="$3"
     local icon="${4:-}"
+    local platform="${5:-$PLATFORM}"
+    local app_root="$APPS_ROOT/$platform"
 
-    mkdir -p "$APPS_ROOT/$pak_dir"
-    printf '#!/bin/sh\nprintf "%s\\n"\n' "$message" >"$APPS_ROOT/$pak_dir/launch.sh"
-    chmod +x "$APPS_ROOT/$pak_dir/launch.sh"
+    mkdir -p "$app_root/$pak_dir"
+    printf '#!/bin/sh\nprintf "%s\\n"\n' "$message" >"$app_root/$pak_dir/launch.sh"
+    chmod +x "$app_root/$pak_dir/launch.sh"
     if [[ -n "$icon" ]]; then
-        write_tiny_png "$APPS_ROOT/$pak_dir/$icon"
+        write_tiny_png "$app_root/$pak_dir/$icon"
     fi
-    printf '{ "name": "%s", "icon": "%s", "platform": "mac", "pak_version": "0.0.1", "min_jawaka_version": "0.0.1" }\n' "$app_name" "$icon" >"$APPS_ROOT/$pak_dir/pak.json"
+    printf '{ "name": "%s", "icon": "%s", "platform": "%s", "pak_version": "0.0.1", "min_jawaka_version": "0.0.1" }\n' "$app_name" "$icon" "$platform" >"$app_root/$pak_dir/pak.json"
 }
 
 while IFS=: read -r sys ext titles; do
@@ -176,7 +180,7 @@ ARCADE:zip:1942|Street Fighter II|Final Fight|Cadillacs and Dinosaurs|Sunset Rid
 PORTS:sh:DOOM|Quake|OpenLara
 EOF
 
-create_app "HelloApp.pak" "Hello App" "Hello from a Jawaka mock pak!" "res/icon.png"
-create_app "Tools.pak" "Tools" "Tools placeholder"
+create_app "HelloApp.pak" "Hello App" "Hello from a Jawaka mock pak!" "res/icon.png" "$PLATFORM"
+create_app "Tools.pak" "Tools" "Tools placeholder" "" "shared"
 
 echo "mockgen: generated $ROM_COUNT fake ROMs across $SYSTEM_COUNT systems in $ROOT"

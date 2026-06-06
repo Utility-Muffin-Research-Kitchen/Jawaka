@@ -2,6 +2,7 @@
 
 #include "cJSON.h"
 #include "internal/db/db.h"
+#include "internal/platform/platform_id.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/storage/sources.h"
 
@@ -646,9 +647,97 @@ static void jw__trim_pak_suffix(const char *name, char *out, size_t out_size) {
     }
 }
 
-static int jw__scan_apps_source(sqlite3 *db, const jw_storage_source *source,
-                                jw_scan_result *out) {
-    DIR *apps = opendir(source->apps_path);
+static const char *jw__scan_platform(void) {
+    const char *platform = getenv("PLATFORM");
+    if (platform && platform[0]) {
+        return platform;
+    }
+    platform = jw_platform_compiled_id();
+    return (platform && platform[0]) ? platform : "mac";
+}
+
+static bool jw__load_pak_manifest(const char *pak_abs,
+                                  char *name_buf,
+                                  size_t name_size,
+                                  char *icon_buf,
+                                  size_t icon_size,
+                                  char *platform_buf,
+                                  size_t platform_size,
+                                  char *pak_version_buf,
+                                  size_t pak_version_size,
+                                  char *min_version_buf,
+                                  size_t min_version_size) {
+    char pak_json_path[PATH_MAX];
+    if (jw__format_string(pak_json_path, sizeof(pak_json_path), "%s/pak.json", pak_abs) != 0 ||
+        !jw__is_file(pak_json_path)) {
+        fprintf(stderr, "App discovery: skipping %s (missing pak.json)\n", pak_abs);
+        return false;
+    }
+
+    FILE *fp = fopen(pak_json_path, "rb");
+    if (!fp) {
+        fprintf(stderr, "App discovery: skipping %s (cannot open pak.json)\n", pak_abs);
+        return false;
+    }
+
+    bool ok = false;
+    if (fseek(fp, 0, SEEK_END) == 0) {
+        long size = ftell(fp);
+        if (size > 0 && fseek(fp, 0, SEEK_SET) == 0) {
+            char *json = (char *)malloc((size_t)size + 1u);
+            if (json) {
+                size_t read_count = fread(json, 1, (size_t)size, fp);
+                json[read_count] = '\0';
+                cJSON *root = cJSON_Parse(json);
+                if (root) {
+                    cJSON *item = NULL;
+                    item = cJSON_GetObjectItem(root, "name");
+                    if (cJSON_IsString(item) && item->valuestring) {
+                        snprintf(name_buf, name_size, "%s", item->valuestring);
+                    }
+                    item = cJSON_GetObjectItem(root, "icon");
+                    if (cJSON_IsString(item) && item->valuestring) {
+                        snprintf(icon_buf, icon_size, "%s", item->valuestring);
+                    }
+                    item = cJSON_GetObjectItem(root, "platform");
+                    if (cJSON_IsString(item) && item->valuestring) {
+                        snprintf(platform_buf, platform_size, "%s", item->valuestring);
+                    }
+                    item = cJSON_GetObjectItem(root, "pak_version");
+                    if (cJSON_IsString(item) && item->valuestring) {
+                        snprintf(pak_version_buf, pak_version_size, "%s", item->valuestring);
+                    }
+                    item = cJSON_GetObjectItem(root, "min_jawaka_version");
+                    if (cJSON_IsString(item) && item->valuestring) {
+                        snprintf(min_version_buf, min_version_size, "%s", item->valuestring);
+                    }
+                    ok = platform_buf[0] != '\0';
+                    cJSON_Delete(root);
+                }
+                free(json);
+            }
+        }
+    }
+    fclose(fp);
+
+    if (!ok) {
+        fprintf(stderr, "App discovery: skipping %s (missing or invalid platform in pak.json)\n",
+                pak_abs);
+    }
+    return ok;
+}
+
+static int jw__scan_apps_dir(sqlite3 *db, const jw_storage_source *source,
+                             const char *platform_dir,
+                             const char *expected_platform,
+                             jw_scan_result *out) {
+    char apps_path[PATH_MAX];
+    if (jw__format_string(apps_path, sizeof(apps_path), "%s/%s",
+                          source->apps_path, platform_dir) != 0) {
+        return -1;
+    }
+
+    DIR *apps = opendir(apps_path);
     if (!apps) {
         return 0;
     }
@@ -661,7 +750,7 @@ static int jw__scan_apps_source(sqlite3 *db, const jw_storage_source *source,
 
         char pak_abs[PATH_MAX];
         if (jw__format_string(pak_abs, sizeof(pak_abs), "%s/%s",
-                              source->apps_path, entry->d_name) != 0) {
+                              apps_path, entry->d_name) != 0) {
             continue;
         }
         if (!jw__is_directory(pak_abs)) {
@@ -672,16 +761,12 @@ static int jw__scan_apps_source(sqlite3 *db, const jw_storage_source *source,
         char pak_rel_candidate[PATH_MAX];
         char default_name[256];
         if (jw__format_string(pak_rel_candidate, sizeof(pak_rel_candidate),
-                              "Apps/%s", entry->d_name) != 0 ||
+                              "Apps/%s/%s", platform_dir, entry->d_name) != 0 ||
             jw_storage_db_path_for_source(source, pak_rel_candidate, pak_abs,
                                           pak_rel, sizeof(pak_rel)) != 0) {
             continue;
         }
         jw__trim_pak_suffix(entry->d_name, default_name, sizeof(default_name));
-
-        char pak_json_path[PATH_MAX];
-        int has_pak_json_path =
-            jw__format_string(pak_json_path, sizeof(pak_json_path), "%s/pak.json", pak_abs) == 0;
 
         char name_buf[256];
         char icon_buf[256];
@@ -695,37 +780,20 @@ static int jw__scan_apps_source(sqlite3 *db, const jw_storage_source *source,
         pak_version_buf[0] = '\0';
         min_version_buf[0] = '\0';
 
-        if (has_pak_json_path && jw__is_file(pak_json_path)) {
-            FILE *fp = fopen(pak_json_path, "rb");
-            if (fp) {
-                fseek(fp, 0, SEEK_END);
-                long size = ftell(fp);
-                fseek(fp, 0, SEEK_SET);
-                if (size > 0) {
-                    char *json = (char *)malloc((size_t)size + 1u);
-                    if (json) {
-                        size_t read_count = fread(json, 1, (size_t)size, fp);
-                        json[read_count] = '\0';
-                        cJSON *root = cJSON_Parse(json);
-                        if (root) {
-                            cJSON *item = NULL;
-                            item = cJSON_GetObjectItem(root, "name");
-                            if (cJSON_IsString(item) && item->valuestring) snprintf(name_buf, sizeof(name_buf), "%s", item->valuestring);
-                            item = cJSON_GetObjectItem(root, "icon");
-                            if (cJSON_IsString(item) && item->valuestring) snprintf(icon_buf, sizeof(icon_buf), "%s", item->valuestring);
-                            item = cJSON_GetObjectItem(root, "platform");
-                            if (cJSON_IsString(item) && item->valuestring) snprintf(platform_buf, sizeof(platform_buf), "%s", item->valuestring);
-                            item = cJSON_GetObjectItem(root, "pak_version");
-                            if (cJSON_IsString(item) && item->valuestring) snprintf(pak_version_buf, sizeof(pak_version_buf), "%s", item->valuestring);
-                            item = cJSON_GetObjectItem(root, "min_jawaka_version");
-                            if (cJSON_IsString(item) && item->valuestring) snprintf(min_version_buf, sizeof(min_version_buf), "%s", item->valuestring);
-                            cJSON_Delete(root);
-                        }
-                        free(json);
-                    }
-                }
-                fclose(fp);
-            }
+        if (!jw__load_pak_manifest(pak_abs,
+                                   name_buf, sizeof(name_buf),
+                                   icon_buf, sizeof(icon_buf),
+                                   platform_buf, sizeof(platform_buf),
+                                   pak_version_buf, sizeof(pak_version_buf),
+                                   min_version_buf, sizeof(min_version_buf))) {
+            continue;
+        }
+
+        if (strcmp(platform_buf, expected_platform) != 0) {
+            fprintf(stderr,
+                    "App discovery: skipping %s (manifest platform=%s, expected=%s)\n",
+                    pak_abs, platform_buf, expected_platform);
+            continue;
         }
 
         if (jw_db_insert_app(db, pak_rel, name_buf, icon_buf, platform_buf, pak_version_buf, min_version_buf) == 0) {
@@ -737,13 +805,27 @@ static int jw__scan_apps_source(sqlite3 *db, const jw_storage_source *source,
     return 0;
 }
 
+static int jw__scan_apps_source(sqlite3 *db, const jw_storage_source *source,
+                                const char *platform,
+                                jw_scan_result *out) {
+    if (jw__scan_apps_dir(db, source, platform, platform, out) != 0) {
+        return -1;
+    }
+    if (strcmp(platform, "shared") != 0 &&
+        jw__scan_apps_dir(db, source, "shared", "shared", out) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int jw__scan_apps(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     jw_storage_source_list sources;
     if (jw_storage_sources_resolve(sdcard_root, &sources) != 0) {
         return -1;
     }
+    const char *platform = jw__scan_platform();
     for (int i = 0; i < sources.count; i++) {
-        if (jw__scan_apps_source(db, &sources.sources[i], out) != 0) {
+        if (jw__scan_apps_source(db, &sources.sources[i], platform, out) != 0) {
             return -1;
         }
     }

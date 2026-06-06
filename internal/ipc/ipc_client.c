@@ -592,6 +592,42 @@ int jw_ipc_platform_brightness(const char *socket_path, int *out_percent) {
     return rc;
 }
 
+int jw_ipc_platform_power_status(const char *socket_path,
+                                 int *out_battery_percent,
+                                 int *out_charging) {
+    if (out_battery_percent) {
+        *out_battery_percent = -1;
+    }
+    if (out_charging) {
+        *out_charging = -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    int rc = -1;
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *battery = cJSON_GetObjectItemCaseSensitive(status, "battery_percent");
+    const cJSON *charging = cJSON_GetObjectItemCaseSensitive(status, "charging");
+    if (cJSON_IsNumber(battery) || cJSON_IsNumber(charging)) {
+        if (out_battery_percent) {
+            *out_battery_percent = cJSON_IsNumber(battery) ? battery->valueint : -1;
+        }
+        if (out_charging) {
+            *out_charging = cJSON_IsNumber(charging) ? charging->valueint : -1;
+        }
+        rc = 0;
+    }
+
+    cJSON_Delete(resp);
+    return rc;
+}
+
 int jw_ipc_set_brightness(const char *socket_path, int percent,
                           int *out_percent, char *status, int status_len) {
     if (out_percent) {
@@ -818,12 +854,15 @@ int jw_ipc_set_audio_output(const char *socket_path,
 }
 
 int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
-                   int *out_intent_enabled) {
+                   int *out_intent_enabled, bool *out_supported) {
     if (out_enabled) {
         *out_enabled = -1;
     }
     if (out_intent_enabled) {
         *out_intent_enabled = -1;
+    }
+    if (out_supported) {
+        *out_supported = false;
     }
 
     cJSON *req = cJSON_CreateObject();
@@ -835,9 +874,14 @@ int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
     }
 
     int rc = -1;
+    const cJSON *capabilities = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
+    const cJSON *adb_cap = cJSON_GetObjectItemCaseSensitive(capabilities, "adb");
     const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
     const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(status, "adb_enabled");
     const cJSON *intent = cJSON_GetObjectItemCaseSensitive(status, "adb_intent_enabled");
+    if (out_supported) {
+        *out_supported = cJSON_IsTrue(adb_cap);
+    }
     if (cJSON_IsNumber(enabled) || cJSON_IsNumber(intent)) {
         if (out_enabled) {
             *out_enabled = cJSON_IsNumber(enabled) ? enabled->valueint : -1;
@@ -845,6 +889,8 @@ int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
         if (out_intent_enabled) {
             *out_intent_enabled = cJSON_IsNumber(intent) ? intent->valueint : -1;
         }
+        rc = 0;
+    } else if (cJSON_IsBool(adb_cap)) {
         rc = 0;
     }
 

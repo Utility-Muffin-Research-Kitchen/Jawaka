@@ -43,6 +43,8 @@ LDLIBS_DAEMON += -ldl
 PLATFORM_BACKEND_SRC := internal/platform/device_mlp1.c
 PLATFORM_ID_SRC := internal/platform/platform_id_mlp1.c
 INPUT_PROXY_SRC := internal/platform/input_proxy_mlp1.c
+BLUETOOTH_SRC := internal/platform/bluetooth_mlp1.c
+WIFI_SRC := internal/platform/wifi_mlp1.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_wayland.c $(BUILD)/generated/xdg-shell-protocol.c
 OSD_DEPS := $(BUILD)/generated/xdg-shell-client-protocol.h
 OSD_CFLAGS := $(CFLAGS_COMMON) $(WAYLAND_CFLAGS) -I$(BUILD)/generated
@@ -51,6 +53,8 @@ else
 PLATFORM_BACKEND_SRC := internal/platform/device_mock.c
 PLATFORM_ID_SRC := internal/platform/platform_id_mock.c
 INPUT_PROXY_SRC := internal/platform/input_proxy_mock.c
+BLUETOOTH_SRC := internal/platform/bluetooth_unsupported.c
+WIFI_SRC := internal/platform/wifi_unsupported.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_sdl.c
 OSD_DEPS :=
 OSD_CFLAGS := $(CFLAGS_UI)
@@ -65,7 +69,7 @@ DAEMON_SRCS := \
 	internal/ipc/ipc_client.c \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
-	internal/platform/bluetooth.c \
+	$(BLUETOOTH_SRC) \
 	$(PLATFORM_BACKEND_SRC) \
 	$(PLATFORM_ID_SRC) \
 	$(INPUT_PROXY_SRC) \
@@ -126,9 +130,10 @@ UI_SRCS := \
 	internal/ipc/ipc_client.c \
 	$(PLATFORM_COMMON_SRC) \
 	$(PLATFORM_ID_SRC) \
+	internal/platform/cat_services.c \
 	internal/platform/paths.c \
-	internal/platform/bluetooth.c \
-	internal/platform/wifi.c \
+	$(BLUETOOTH_SRC) \
+	$(WIFI_SRC) \
 	internal/retroarch/catalog.c \
 	internal/retroarch/states.c \
 	internal/storage/sources.c \
@@ -140,9 +145,22 @@ UI_SRCS := \
 	internal/settings/theme_resolve.c \
 	third_party/cjson/cJSON.c
 
+ALL_BINS := \
+	$(BUILD)/bin/jawakad \
+	$(BUILD)/bin/jawaka-launcher \
+	$(BUILD)/bin/jawaka-menu \
+	$(BUILD)/bin/jawaka-osd \
+	$(BUILD)/bin/jawaka-retroarchctl \
+	$(BUILD)/bin/jawaka-retroarch-runner \
+	$(BUILD)/bin/jawaka-platformctl
+
+ifeq ($(PLATFORM),mlp1)
+ALL_BINS += $(BUILD)/bin/jawaka-ledd
+endif
+
 .PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
 
-all: $(BUILD)/bin/jawakad $(BUILD)/bin/jawaka-launcher $(BUILD)/bin/jawaka-menu $(BUILD)/bin/jawaka-osd $(BUILD)/bin/jawaka-retroarchctl $(BUILD)/bin/jawaka-retroarch-runner $(BUILD)/bin/jawaka-platformctl $(BUILD)/bin/jawaka-ledd
+all: $(ALL_BINS)
 
 jawakad: $(BUILD)/bin/jawakad
 jawaka-launcher: $(BUILD)/bin/jawaka-launcher
@@ -151,7 +169,13 @@ jawaka-osd: $(BUILD)/bin/jawaka-osd
 jawaka-retroarchctl: $(BUILD)/bin/jawaka-retroarchctl
 jawaka-retroarch-runner: $(BUILD)/bin/jawaka-retroarch-runner
 jawaka-platformctl: $(BUILD)/bin/jawaka-platformctl
+ifeq ($(PLATFORM),mlp1)
 jawaka-ledd: $(BUILD)/bin/jawaka-ledd
+else
+jawaka-ledd:
+	@echo "jawaka-ledd is MLP1-only; build with PLATFORM=mlp1." >&2
+	@exit 1
+endif
 jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 
 $(BUILD)/bin:
@@ -197,11 +221,13 @@ $(BUILD)/bin/jawaka-retroarch-runner: $(RETROARCH_RUNNER_SRCS) | $(BUILD)/bin
 $(BUILD)/bin/jawaka-platformctl: $(PLATFORM_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(PLATFORM_CTL_SRCS) $(LDLIBS_COMMON)
 
-$(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ cmd/jawaka-ledd/main.c
-
 $(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(SCAN_SMOKE_SRCS) $(LDLIBS_COMMON)
+
+ifeq ($(PLATFORM),mlp1)
+$(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ cmd/jawaka-ledd/main.c
+endif
 
 phase3-fixture-scan-smoke:
 	scripts/phase3-fixture-scan-smoke.sh

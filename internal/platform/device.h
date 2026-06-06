@@ -19,11 +19,11 @@
 #define JW_PLATFORM_AUDIO_OUTPUT_COUNT 4
 
 typedef enum {
-    /* Stock modes — driven by the loong_light daemon (cfg + SIGUSR1). */
-    JW_LED_MODE_STATIC = 0,   /* solid color (loong "FOREVER") */
+    /* Stock modes are driven by the active platform LED backend. */
+    JW_LED_MODE_STATIC = 0,   /* solid color */
     JW_LED_MODE_BREATH,       /* pulse the color */
     JW_LED_MODE_RAINBOW,      /* cycle hues (color ignored) */
-    /* Custom effects — driven by the jawaka-ledd engine (mode >= COMET). */
+    /* Custom effects may be driven by a platform-specific helper. */
     JW_LED_MODE_COMET,
     JW_LED_MODE_SWEEP,
     JW_LED_MODE_FOUNTAIN,
@@ -31,7 +31,7 @@ typedef enum {
     JW_LED_MODE_COUNT
 } jw_led_mode;
 
-/* True for the jawaka-ledd custom effects (vs the loong_light stock modes). */
+/* True for custom effects rather than stock platform LED modes. */
 #define jw_led_mode_is_effect(m) ((m) >= JW_LED_MODE_COMET && (m) < JW_LED_MODE_COUNT)
 
 typedef enum {

@@ -113,6 +113,9 @@ int jw_ipc_frontend_ready(const char *socket_path, const char *role);
 int jw_ipc_platform_action(const char *socket_path, const char *action, int value);
 
 int jw_ipc_platform_brightness(const char *socket_path, int *out_percent);
+int jw_ipc_platform_power_status(const char *socket_path,
+                                 int *out_battery_percent,
+                                 int *out_charging);
 int jw_ipc_set_brightness(const char *socket_path, int percent,
                           int *out_percent, char *status, int status_len);
 
@@ -126,7 +129,7 @@ int jw_ipc_set_audio_output(const char *socket_path,
                             char *status, int status_len);
 
 int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
-                   int *out_intent_enabled);
+                   int *out_intent_enabled, bool *out_supported);
 int jw_ipc_set_adb(const char *socket_path, int enabled,
                    char *status, int status_len);
 

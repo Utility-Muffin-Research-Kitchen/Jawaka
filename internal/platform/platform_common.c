@@ -2,8 +2,8 @@
 
 #include <string.h>
 
-/* Stock modes map to loong_light's cfg names; effects map to jawaka-ledd's
-   effect argument. Both travel over the same IPC "mode" string. */
+/* Stock modes map to platform cfg names; effects map to helper command names.
+   Both travel over the same IPC "mode" string. */
 const char *jw_led_mode_name(jw_led_mode mode) {
     switch (mode) {
         case JW_LED_MODE_BREATH:   return "BREATH";

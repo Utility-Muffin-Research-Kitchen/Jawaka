@@ -231,13 +231,16 @@ static void jw__refresh_adb(jw_settings_ui *ui) {
     }
     ui->adb_enabled = -1;
     ui->adb_intent_enabled = -1;
+    ui->adb_supported = false;
     if (!ui->socket_path[0]) {
         return;
     }
 
     int enabled = -1;
     int intent = -1;
-    if (jw_ipc_get_adb(ui->socket_path, &enabled, &intent) == 0) {
+    bool supported = false;
+    if (jw_ipc_get_adb(ui->socket_path, &enabled, &intent, &supported) == 0) {
+        ui->adb_supported = supported;
         ui->adb_enabled = enabled;
         ui->adb_intent_enabled = intent;
     }
@@ -355,6 +358,16 @@ static void jw__refresh_bluetooth_lists(jw_settings_ui *ui) {
         return;
     }
 
+    if (!jw_bt_available()) {
+        memset(&ui->bt_status, 0, sizeof(ui->bt_status));
+        ui->bt_radio_on = false;
+        ui->bt_paired_count = 0;
+        ui->bt_nearby_count = 0;
+        ui->bluetooth_list.cursor = 0;
+        ui->bluetooth_list.scroll_offset = 0;
+        return;
+    }
+
     int rows = 0;
     jw_bt_status_t status;
     if (jw_bt_status(&status) != 0) {
@@ -410,6 +423,12 @@ static bool jw__bt_scan_start(jw_settings_ui *ui, bool manual) {
     if (!ui || ui->bt_op != JW_BT_OP_NONE) {
         return false;
     }
+    if (!jw_bt_available()) {
+        if (manual) {
+            jw__bt_msg(ui, "Bluetooth unavailable");
+        }
+        return false;
+    }
     if (!ui->bt_radio_on) {
         if (manual) {
             jw__bt_msg(ui, "Bluetooth is off");
@@ -438,6 +457,13 @@ bool jw_settings_ui_wants_bluetooth_poll(const jw_settings_ui *ui) {
 
 void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui) {
     if (!ui) {
+        return;
+    }
+
+    if (!jw_bt_available()) {
+        ui->bt_op = JW_BT_OP_NONE;
+        ui->bt_op_manual = false;
+        jw__refresh_bluetooth_lists(ui);
         return;
     }
 
@@ -1067,6 +1093,11 @@ static void jw__refresh_wifi(jw_settings_ui *ui) {
     if (!ui) {
         return;
     }
+    if (!jw_wifi_available()) {
+        memset(&ui->wifi, 0, sizeof(ui->wifi));
+        ui->wifi_strength_cached = 0;
+        return;
+    }
     if (jw_wifi_status(&ui->wifi) != 0) {
         /* jw_wifi_status already zeroed the struct (valid = false). */
     }
@@ -1080,6 +1111,13 @@ bool jw_settings_ui_wants_wifi_poll(const jw_settings_ui *ui) {
 
 /* Re-read the cached scan results into the ui (deduped/sorted by the module). */
 static void jw__refresh_wifi_scan(jw_settings_ui *ui) {
+    if (!jw_wifi_available()) {
+        ui->wifi_network_count = 0;
+        if (ui->network_list.cursor >= JW_NETWORK_FIXED_ROWS) {
+            ui->network_list.cursor = JW_NETWORK_ROW_WIFI;
+        }
+        return;
+    }
     int n = jw_wifi_scan_results(ui->wifi.ssid, ui->wifi_networks,
                                  JW_WIFI_MAX_NETWORKS);
     ui->wifi_network_count = (n > 0) ? n : 0;
@@ -1131,12 +1169,23 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
         ui->wifi_msg[0] = '\0';
         ui->wifi_msg_ms = 0;
     }
-    /* Drain the event socket every frame (cheap, non-blocking) so a fast auth
-       failure isn't missed between the throttled wpa_cli polls below. */
+
+    if (!jw_wifi_available()) {
+        jw__refresh_adb(ui);
+        memset(&ui->wifi, 0, sizeof(ui->wifi));
+        ui->wifi_radio_on = false;
+        ui->wifi_strength_cached = 0;
+        ui->wifi_network_count = 0;
+        ui->wifi_next_poll_ms = SDL_GetTicks() + 2000;
+        return;
+    }
+
+    /* Drain the platform event source every frame (cheap, non-blocking) so a
+       fast auth failure isn't missed between the throttled platform polls. */
     jw_wifi_evt evt = ui->wifi_attempt_ssid[0] ? jw_wifi_monitor_poll(ui->wifi_monitor_fd)
                                                : JW_WIFI_EVT_NONE;
 
-    /* Self-throttle the wpa_cli polls to ~2s; each forks wpa_cli. */
+    /* Self-throttle the platform Wi-Fi polls to ~2s. */
     unsigned now = SDL_GetTicks();
     if (evt == JW_WIFI_EVT_NONE && ui->wifi_next_poll_ms != 0 &&
         (int)(now - ui->wifi_next_poll_ms) < 0) {
@@ -1204,9 +1253,11 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
 /* Fixed rows: Wi-Fi toggle, ADB action; scanned networks follow. */
 typedef struct {
     const jw_wifi_network_t *nets;
+    bool wifi_available;
     bool radio_on;
     int adb_enabled;
     int adb_intent_enabled;
+    bool adb_supported;
 } jw__wifi_list_ctx;
 
 static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
@@ -1229,19 +1280,21 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
         cat_draw_text(body, "Wi-Fi", ix + cat_scale(12), ty, label_c);
         /* Action verb (what A will do), not a bare state word — "Turn On" when
            the radio is off, "Turn Off" when it's on, so the button is unambiguous. */
-        const char *action = ctx->radio_on ? "Turn Off" : "Turn On";
+        const char *action = ctx->wifi_available
+            ? (ctx->radio_on ? "Turn Off" : "Turn On")
+            : "Unavailable";
         int vw = cat_measure_text(body, action);
         cat_draw_text(body, action, ix + iw - vw - cat_scale(16), ty, value_c);
         return;
     }
 
     if (idx == JW_NETWORK_ROW_ADB) {
-        const char *value = "Unavailable";
-        if (ctx->adb_enabled == 1) {
+        const char *value = ctx->adb_supported ? "Unavailable" : "Unsupported";
+        if (ctx->adb_supported && ctx->adb_enabled == 1) {
             value = "Enabled";
-        } else if (ctx->adb_intent_enabled == 1) {
+        } else if (ctx->adb_supported && ctx->adb_intent_enabled == 1) {
             value = "Repair";
-        } else if (ctx->adb_enabled == 0) {
+        } else if (ctx->adb_supported && ctx->adb_enabled == 0) {
             value = "Enable";
         }
 
@@ -1282,7 +1335,11 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
 
     char status_val[48];
     char signal_val[32];
-    if (!ui->wifi_radio_on) {
+    bool wifi_available = jw_wifi_available();
+    if (!wifi_available) {
+        snprintf(status_val, sizeof(status_val), "%s", "Unavailable");
+        snprintf(signal_val, sizeof(signal_val), "%s", "—");
+    } else if (!ui->wifi_radio_on) {
         snprintf(status_val, sizeof(status_val), "%s", "Off");
         snprintf(signal_val, sizeof(signal_val), "%s", "—");
     } else if (!wifi->valid) {
@@ -1337,17 +1394,19 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
 
     /* ── List: fixed controls first, then scanned networks ── */
     int count = JW_NETWORK_FIXED_ROWS +
-                (ui->wifi_radio_on ? ui->wifi_network_count : 0);
+                ((wifi_available && ui->wifi_radio_on) ? ui->wifi_network_count : 0);
     jw__wifi_list_ctx ctx = {
         ui->wifi_networks,
+        wifi_available,
         ui->wifi_radio_on,
         ui->adb_enabled,
         ui->adb_intent_enabled,
+        ui->adb_supported,
     };
     int list_h = JW_WIFI_LIST_ROWS * item_h;
     cat_draw_list_pane(x, dy, w, list_h, count, &ui->network_list, item_h,
                        jw__draw_wifi_item, &ctx);
-    if (ui->wifi_radio_on && ui->wifi_network_count == 0) {
+    if (wifi_available && ui->wifi_radio_on && ui->wifi_network_count == 0) {
         cat_draw_text(body, "Scanning…", x + cat_scale(12),
                       dy + item_h * JW_NETWORK_FIXED_ROWS, theme->hint);
     }
@@ -1674,8 +1733,8 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
     jw__about_push(rows, &n, JW_ABOUT_PLAIN, "Jawaka  v" JW_ABOUT_VERSION, "");
 
     jw__about_push(rows, &n, JW_ABOUT_HEADING, "System", "");
-    snprintf(buf, sizeof(buf), "LoongOS %s", info.os_version[0] ? info.os_version : "?");
-    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Stock OS", buf);
+    snprintf(buf, sizeof(buf), "%s", info.os_version[0] ? info.os_version : "?");
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "OS", buf);
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "Kernel", info.kernel[0] ? info.kernel : "—");
     /* Hardware: prefer the parsed labeled lines (SoC / Power / Board / RAM);
        fall back to the raw device-tree model when nothing parsed. */
@@ -2093,6 +2152,11 @@ static void jw__set_adb(jw_settings_ui *ui, bool enabled,
         return;
     }
 
+    if (!ui->adb_supported || ui->adb_enabled < 0) {
+        snprintf(status_buf, status_size, "%s", "ADB unavailable on this platform");
+        return;
+    }
+
     if (enabled) {
         if (!jw__confirm_adb_enable()) {
             snprintf(status_buf, status_size, "%s", "ADB enable canceled");
@@ -2387,8 +2451,9 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
 
     /* ── Network (Wi-Fi scan/connect + ADB access) ───────────────────── */
     case JW_SETTINGS_NETWORK: {
+        bool wifi_available = jw_wifi_available();
         int row_count = JW_NETWORK_FIXED_ROWS +
-                        (ui->wifi_radio_on ? ui->wifi_network_count : 0);
+                        ((wifi_available && ui->wifi_radio_on) ? ui->wifi_network_count : 0);
         switch (button) {
             case CAT_BTN_UP:
                 cat_list_state_move(&ui->network_list, -1, row_count);
@@ -2400,6 +2465,13 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 /* Row 0: toggle the radio. (Blocks briefly; turning OFF will drop
                    an ADB-over-Wi-Fi session — expected.) */
                 if (ui->network_list.cursor == JW_NETWORK_ROW_WIFI) {
+                    if (!wifi_available) {
+                        jw__wifi_msg(ui, "Wi-Fi unavailable on this platform");
+                        if (status_buf && status_size > 0) {
+                            snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                        }
+                        break;
+                    }
                     bool turning_on = !ui->wifi_radio_on;
                     jw__wifi_msg(ui, turning_on ? "Turning Wi-Fi on…"
                                                 : "Turning Wi-Fi off…");
@@ -2413,6 +2485,13 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 }
 
                 if (ui->network_list.cursor == JW_NETWORK_ROW_ADB) {
+                    if (!ui->adb_supported || ui->adb_enabled < 0) {
+                        jw__wifi_msg(ui, "ADB unavailable on this platform");
+                        if (status_buf && status_size > 0) {
+                            snprintf(status_buf, status_size, "%s", ui->wifi_msg);
+                        }
+                        break;
+                    }
                     bool enable = !(ui->adb_enabled == 1);
                     jw__set_adb(ui, enable, status_buf, status_size);
                     jw__wifi_msg(ui, "%s", status_buf && status_buf[0]

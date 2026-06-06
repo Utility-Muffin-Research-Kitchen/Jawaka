@@ -8,6 +8,7 @@
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/game_switcher.h"
+#include "internal/platform/cat_services.h"
 #include "internal/platform/paths.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/retroarch/states.h"
@@ -1251,6 +1252,7 @@ int main(int argc, char **argv) {
         free(db_path);
         return 1;
     }
+    jw_cat_services_install(socket_path);
     long long cat_done_ms = jw__monotonic_ms();
 
     /* Resolve theme: env > DB > default Jawaka-Tabs.

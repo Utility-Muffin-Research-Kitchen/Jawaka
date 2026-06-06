@@ -20,6 +20,10 @@
 #define JW_BT_CONNECT_TIMEOUT_MS  45000
 #define JW_LOONG_DB_PATH "/oem/loong/loong.db"
 
+bool jw_bt_available(void) {
+    return true;
+}
+
 typedef int (*jw_writeconfig_fn)(const char *, const char *, const char *, int);
 
 typedef struct {

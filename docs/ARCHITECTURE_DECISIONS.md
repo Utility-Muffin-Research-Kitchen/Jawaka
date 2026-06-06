@@ -79,15 +79,21 @@ Skip file-based per-game metadata for now, at least until a scraper or stronger 
 
 ## 9. `Apps/` pak convention
 
-Use the `Apps/<Name>.pak/` convention:
+Use the platform-guarded `Apps/<platform>/<Name>.pak/` convention, plus
+`Apps/shared/<Name>.pak/` for wrappers that delegate to platform payloads:
 
 ```text
-Apps/<Name>.pak/
-├── launch.sh
-└── pak.json
+Apps/
+├── mlp1/<Name>.pak/
+│   ├── launch.sh
+│   └── pak.json
+└── shared/<Name>.pak/
+    ├── launch.sh
+    └── pak.json
 ```
 
-`jawakad` should discover these apps, and `jawaka-launcher` should list them.
+`jawakad` should discover only apps under the compiled platform directory and
+`shared`; flat `Apps/<Name>.pak/` entries are ignored.
 
 `pak.json` should include at least:
 
@@ -96,6 +102,9 @@ Apps/<Name>.pak/
 - `platform`, such as `mac`, `tg5040`, etc.
 - `pak_version`
 - `min_jawaka_version`
+
+`pak.json.platform` must match the containing platform directory, or be
+`shared` for apps under `Apps/shared/`.
 
 ## 10. Mock SD-card root
 

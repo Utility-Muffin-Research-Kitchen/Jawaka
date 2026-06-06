@@ -18,6 +18,10 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 
+bool jw_wifi_available(void) {
+    return true;
+}
+
 #define JW_WIFI_CMD_TIMEOUT_MS 6000   /* hard cap so a stuck wpa_cli can't freeze the UI */
 
 #define JW_WIFI_IFACE       "wlan0"

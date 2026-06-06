@@ -76,7 +76,7 @@ static int jw__joypad_index_from_virtual_event(void) {
         return -1;
     }
     if (!device_name || !device_name[0]) {
-        device_name = "Loong Gamepad";
+        return -1;
     }
 
     for (int i = 0; i < 64; i++) {

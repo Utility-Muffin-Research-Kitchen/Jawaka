@@ -128,14 +128,18 @@ mock-sdcard/
   Roms/<SYSTEM_CODE>/<title>.<ext>
   Images/<SYSTEM_CODE>/<title>.png
   BIOS/
-  Apps/<Name>.pak/
+  Apps/<platform>/<Name>.pak/
     launch.sh
     pak.json
-  .umrk/library.db
+  Apps/shared/<Name>.pak/
+    launch.sh
+    pak.json
+  .system/leaf/state/library.db
 ```
 
-For app paks, `pak.json` icon paths are relative to the containing `.pak`
-directory unless they are absolute.
+For app paks, `pak.json.platform` must match the containing platform directory
+or be `shared`. Icon paths are relative to the containing `.pak` directory
+unless they are absolute.
 
 ## Plans
 

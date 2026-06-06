@@ -64,6 +64,10 @@ typedef struct {
     bool has_hid;
 } jw_bt_device_t;
 
+/* Platform capability guard. When false, other jw_bt_* calls are safe but
+ * report unavailable/no-op behavior. */
+bool jw_bt_available(void);
+
 bool jw_bt_mac_valid(const char *mac);
 void jw_bt_mac_canonical(const char *mac, char out[JW_BT_MAC_LEN]);
 

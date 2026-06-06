@@ -166,8 +166,9 @@ typedef struct {
     char               wifi_attempt_ssid[64];  /* network we're trying to join ("" = none) */
     unsigned           wifi_attempt_ms;     /* when the join attempt started */
     int                wifi_monitor_fd;     /* wpa event-socket fd during a join (-1 = none) */
-    bool               wifi_radio_on;       /* wlan0 up? (the Wi-Fi on/off toggle state) */
+    bool               wifi_radio_on;       /* Wi-Fi on/off toggle state */
     int                wifi_strength_cached;/* 0..3 for the status-bar icon; polled on a throttle */
+    bool               adb_supported;       /* platform advertises ADB control */
     int                adb_enabled;         /* -1 unavailable, 0 disabled, 1 pinned */
     int                adb_intent_enabled;  /* -1 unavailable, 0 no boot restore, 1 restore at boot */
     jw_bt_status_t     bt_status;           /* last-read Bluetooth status */
@@ -208,7 +209,7 @@ void jw_settings_ui_refresh_av(jw_settings_ui *ui);
 /* True while the Network page is open. The launcher calls
  * jw_settings_ui_refresh_wifi() each frame so the status follows live changes;
  * the refresh self-throttles (re-polls at most every ~2s) so it never forks
- * wpa_cli every frame. */
+ * platform Wi-Fi every frame. */
 bool jw_settings_ui_wants_wifi_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_wifi(jw_settings_ui *ui);
 
@@ -221,8 +222,8 @@ void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui);
 /* True if the status-bar wifi icon is enabled. The launcher uses this to decide
  * whether to keep the wifi strength polled on the home screen. */
 bool jw_settings_show_wifi(const jw_settings_ui *ui);
-/* Poll live wifi strength into ui->wifi_strength_cached (forks wpa_cli) so the
- * status-bar icon stays current while idle. Call on a throttle. */
+/* Poll live wifi strength into ui->wifi_strength_cached so the status-bar icon
+ * stays current while idle. Call on a throttle. */
 void jw_settings_ui_refresh_wifi_strength(jw_settings_ui *ui);
 
 /* True if the status-bar speaker icon is enabled. The launcher uses this to

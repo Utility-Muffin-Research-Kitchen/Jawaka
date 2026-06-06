@@ -467,9 +467,7 @@ static void jw__publish_audio_env(jw_daemon_state *state) {
         output = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
     }
     const char *name = jw_platform_audio_output_name(output);
-    const char *device = (output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH)
-                         ? "bluealsa"
-                         : "default";
+    const char *device = "default";
     setenv("UMRK_AUDIO_OUTPUT", name, 1);
     setenv("JAWAKA_AUDIO_OUTPUT", name, 1);
     setenv("UMRK_AUDIO_DEVICE", device, 1);
@@ -1864,7 +1862,7 @@ static void jw__persist_led(jw_daemon_state *state, const jw_led_config *led) {
 
 static void jw__stop_ledd(jw_daemon_state *state) {
     if (!state || state->ledd_pid <= 0) return;
-    kill(state->ledd_pid, SIGTERM);   /* ledd's handler thaws loong_light, then exits */
+    kill(state->ledd_pid, SIGTERM);   /* ledd's handler restores platform LED ownership */
     waitpid(state->ledd_pid, NULL, 0);
     state->ledd_pid = -1;
 }
@@ -1898,10 +1896,8 @@ static int jw__spawn_ledd(jw_daemon_state *state, const char *effect,
     return 0;
 }
 
-/* Apply an LED config: stop any running effect (which thaws loong_light), write
-   the loong cfg as the baseline/fallback (forcing a static mode for effects so a
-   dead engine leaves a sane ring), then for an enabled custom effect spawn the
-   jawaka-ledd engine (which freezes loong_light and animates). */
+/* Apply an LED config: stop any running effect, write the platform baseline
+   config, then spawn the custom effect engine when the selected mode needs it. */
 static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *led) {
     if (!state || !led) return;
     jw__stop_ledd(state);
@@ -3451,7 +3447,7 @@ static void jw__cleanup(jw_daemon_state *state) {
         state->osd_pid = -1;
     }
 
-    jw__stop_ledd(state);   /* thaw loong_light if a custom effect was running */
+    jw__stop_ledd(state);
 
     jw_input_proxy_shutdown(&state->input_proxy);
     jw_platform_shutdown(&state->platform);

@@ -11,6 +11,7 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/game_switcher.h"
+#include "internal/platform/cat_services.h"
 #include "internal/platform/paths.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
@@ -3155,6 +3156,7 @@ int main(void) {
         free(sdcard_root);
         return 1;
     }
+    jw_cat_services_install(socket_path);
 
     /* Resolve theme: env > DB > default Jawaka-Tabs */
     char theme_name_buf[256];
@@ -3262,7 +3264,7 @@ int main(void) {
         }
 
         /* While the Network page is open, keep the Wi-Fi status live (the refresh
-           self-throttles to ~2s so it isn't forking wpa_cli every frame). */
+           self-throttles so platform Wi-Fi is not polled every frame). */
         if (jw_settings_ui_wants_wifi_poll(&state.settings)) {
             jw_settings_ui_refresh_wifi(&state.settings);
             cat_request_frame_in(2000);

@@ -30,6 +30,32 @@ static int jw__print_games(sqlite3 *db) {
     return 0;
 }
 
+static int jw__print_apps(sqlite3 *db) {
+    static const char *sql =
+        "SELECT name, pak_dir, platform, COALESCE(icon, '') "
+        "FROM apps ORDER BY pak_dir;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "prepare failed: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(stmt, 0);
+        const unsigned char *pak_dir = sqlite3_column_text(stmt, 1);
+        const unsigned char *platform = sqlite3_column_text(stmt, 2);
+        const unsigned char *icon = sqlite3_column_text(stmt, 3);
+        printf("app\t%s\t%s\t%s\t%s\n",
+               name ? (const char *)name : "",
+               pak_dir ? (const char *)pak_dir : "",
+               platform ? (const char *)platform : "",
+               icon ? (const char *)icon : "");
+    }
+
+    sqlite3_finalize(stmt);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "usage: %s <sdcard-root> <db-path>\n", argv[0]);
@@ -52,6 +78,9 @@ int main(int argc, char **argv) {
         printf("summary\tgames=%d\tsystems=%d\tapps=%d\n",
                result.game_count, result.system_count, result.app_count);
         if (jw__print_games(db) != 0) {
+            rc = 1;
+        }
+        if (jw__print_apps(db) != 0) {
             rc = 1;
         }
     }
