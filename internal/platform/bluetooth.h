@@ -75,6 +75,10 @@ int  jw_bt_audio_connected(void);
 
 int jw_bt_list_paired(jw_bt_device_t *out, int max);
 int jw_bt_list_nearby(jw_bt_device_t *out, int max);
+int jw_bt_list_paired_summary(jw_bt_device_t *out, int max);
+int jw_bt_list_nearby_summary(jw_bt_device_t *out, int max);
+int jw_bt_list_summaries(jw_bt_device_t *paired, int paired_max, int *paired_count,
+                         jw_bt_device_t *nearby, int nearby_max, int *nearby_count);
 int jw_bt_refresh_device(const char *mac, jw_bt_device_t *out);
 
 int jw_bt_scan_start(void);

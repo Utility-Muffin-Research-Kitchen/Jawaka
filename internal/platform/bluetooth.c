@@ -475,6 +475,55 @@ static bool jw__bt_parse_device_line(const char *line,
     return true;
 }
 
+static bool jw__bt_mac_in_set(const char mac[JW_BT_MAC_LEN],
+                              char set[][JW_BT_MAC_LEN], int count) {
+    if (!mac) {
+        return false;
+    }
+    for (int i = 0; i < count; i++) {
+        if (strcmp(mac, set[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void jw__bt_add_mac_to_set(const char mac[JW_BT_MAC_LEN],
+                                  char set[][JW_BT_MAC_LEN], int *count, int max) {
+    if (!mac || !count || *count >= max || jw__bt_mac_in_set(mac, set, *count)) {
+        return;
+    }
+    jw__bt_copy(set[*count], JW_BT_MAC_LEN, mac);
+    (*count)++;
+}
+
+static void jw__bt_summary_device(jw_bt_device_t *dev,
+                                  const char mac[JW_BT_MAC_LEN],
+                                  const char *name,
+                                  bool paired, bool connected) {
+    if (!dev) {
+        return;
+    }
+    memset(dev, 0, sizeof(*dev));
+    jw__bt_copy(dev->mac, sizeof(dev->mac), mac);
+    jw__bt_copy(dev->name, sizeof(dev->name), name && name[0] ? name : mac);
+    jw__bt_copy(dev->alias, sizeof(dev->alias), dev->name);
+    dev->paired = paired;
+    dev->bonded = paired;
+    dev->connected = connected;
+    dev->battery_percent = -1;
+    jw__bt_classify(dev);
+}
+
+static int jw__bt_devices_dump(const char *filter, char *buf, size_t buf_size) {
+    if (filter) {
+        return jw__btctl(buf, buf_size, JW_BT_CMD_TIMEOUT_MS,
+                         "devices", filter, NULL);
+    }
+    return jw__btctl(buf, buf_size, JW_BT_CMD_TIMEOUT_MS,
+                     "devices", NULL, NULL);
+}
+
 int jw_bt_refresh_device(const char *mac, jw_bt_device_t *out) {
     if (!out || !jw_bt_mac_valid(mac)) {
         return -1;
@@ -609,6 +658,111 @@ int jw_bt_list_paired(jw_bt_device_t *out, int max) {
 
 int jw_bt_list_nearby(jw_bt_device_t *out, int max) {
     return jw__bt_list_devices(NULL, out, max, true);
+}
+
+int jw_bt_list_summaries(jw_bt_device_t *paired, int paired_max, int *paired_count,
+                         jw_bt_device_t *nearby, int nearby_max, int *nearby_count) {
+    if (paired_count) {
+        *paired_count = 0;
+    }
+    if (nearby_count) {
+        *nearby_count = 0;
+    }
+
+    bool want_paired = paired && paired_max > 0;
+    bool want_nearby = nearby && nearby_max > 0;
+    if (!want_paired && !want_nearby) {
+        return 0;
+    }
+
+    char paired_dump[8192];
+    char connected_dump[8192];
+    if (jw__bt_devices_dump("Paired", paired_dump, sizeof(paired_dump)) < 0 ||
+        jw__bt_devices_dump("Connected", connected_dump, sizeof(connected_dump)) < 0) {
+        return -1;
+    }
+
+    char connected_macs[JW_BT_MAX_DEVICES][JW_BT_MAC_LEN];
+    int connected_count = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(connected_dump, "\n", &save);
+         line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char mac[JW_BT_MAC_LEN];
+        char name[JW_BT_NAME_LEN];
+        if (jw__bt_parse_device_line(line, mac, name)) {
+            jw__bt_add_mac_to_set(mac, connected_macs, &connected_count,
+                                  JW_BT_MAX_DEVICES);
+        }
+    }
+
+    char paired_macs[JW_BT_MAX_DEVICES][JW_BT_MAC_LEN];
+    int paired_set_count = 0;
+    int out_paired_count = 0;
+    save = NULL;
+    for (char *line = strtok_r(paired_dump, "\n", &save);
+         line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char mac[JW_BT_MAC_LEN];
+        char name[JW_BT_NAME_LEN];
+        if (!jw__bt_parse_device_line(line, mac, name)) {
+            continue;
+        }
+        jw__bt_add_mac_to_set(mac, paired_macs, &paired_set_count, JW_BT_MAX_DEVICES);
+        if (want_paired && out_paired_count < paired_max) {
+            jw__bt_summary_device(&paired[out_paired_count], mac, name, true,
+                                  jw__bt_mac_in_set(mac, connected_macs,
+                                                    connected_count));
+            out_paired_count++;
+        }
+    }
+    if (paired_count) {
+        *paired_count = out_paired_count;
+    }
+
+    if (want_nearby) {
+        char all_dump[8192];
+        if (jw__bt_devices_dump(NULL, all_dump, sizeof(all_dump)) < 0) {
+            return -1;
+        }
+        int out_nearby_count = 0;
+        save = NULL;
+        for (char *line = strtok_r(all_dump, "\n", &save);
+             line && out_nearby_count < nearby_max;
+             line = strtok_r(NULL, "\n", &save)) {
+            char mac[JW_BT_MAC_LEN];
+            char name[JW_BT_NAME_LEN];
+            if (!jw__bt_parse_device_line(line, mac, name) ||
+                jw__bt_mac_in_set(mac, paired_macs, paired_set_count)) {
+                continue;
+            }
+            jw__bt_summary_device(&nearby[out_nearby_count], mac, name, false,
+                                  jw__bt_mac_in_set(mac, connected_macs,
+                                                    connected_count));
+            out_nearby_count++;
+        }
+        if (nearby_count) {
+            *nearby_count = out_nearby_count;
+        }
+    }
+
+    return 0;
+}
+
+int jw_bt_list_paired_summary(jw_bt_device_t *out, int max) {
+    int count = 0;
+    if (jw_bt_list_summaries(out, max, &count, NULL, 0, NULL) != 0) {
+        return -1;
+    }
+    return count;
+}
+
+int jw_bt_list_nearby_summary(jw_bt_device_t *out, int max) {
+    int count = 0;
+    if (jw_bt_list_summaries(NULL, 0, NULL, out, max, &count) != 0) {
+        return -1;
+    }
+    return count;
 }
 
 int jw_bt_any_connected(void) {

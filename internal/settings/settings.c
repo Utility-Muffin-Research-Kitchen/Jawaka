@@ -121,6 +121,7 @@ static const char *kHomeCategoryLabels[] = {
 #define JW_WIFI_SCAN_INTERVAL_MS 6000
 #define JW_BT_POLL_INTERVAL_MS 2000
 #define JW_BT_SCAN_INTERVAL_MS 12000
+#define JW_BT_ENTRY_DEFER_MS 250
 #define JW_SETTINGS_DISPLAY_COUNT JW_DISPLAY_ROW_COUNT
 
 static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
@@ -264,30 +265,139 @@ static void jw__bt_msg(jw_settings_ui *ui, const char *fmt, ...) {
     }
 }
 
+static const jw_bt_device_t *jw__bt_cached_device_in_lists(
+        const jw_bt_device_t *paired, int paired_count,
+        const jw_bt_device_t *nearby, int nearby_count,
+        const char *mac) {
+    if (!mac || !jw_bt_mac_valid(mac)) {
+        return NULL;
+    }
+    for (int i = 0; paired && i < paired_count; i++) {
+        if (strcmp(paired[i].mac, mac) == 0) {
+            return &paired[i];
+        }
+    }
+    for (int i = 0; nearby && i < nearby_count; i++) {
+        if (strcmp(nearby[i].mac, mac) == 0) {
+            return &nearby[i];
+        }
+    }
+    return NULL;
+}
+
+static bool jw__bt_name_is_mac(const char *name) {
+    return name && jw_bt_mac_valid(name);
+}
+
+static void jw__bt_merge_summary_device(const jw_bt_device_t *old_paired,
+                                        int old_paired_count,
+                                        const jw_bt_device_t *old_nearby,
+                                        int old_nearby_count,
+                                        const jw_bt_device_t *summary,
+                                        jw_bt_device_t *out) {
+    if (!summary || !out) {
+        return;
+    }
+
+    const jw_bt_device_t *cached = jw__bt_cached_device_in_lists(
+        old_paired, old_paired_count, old_nearby, old_nearby_count, summary->mac);
+    if (cached) {
+        *out = *cached;
+    } else {
+        *out = *summary;
+    }
+
+    if (summary->name[0] &&
+        (!out->name[0] || jw__bt_name_is_mac(out->name) ||
+         !jw__bt_name_is_mac(summary->name))) {
+        snprintf(out->name, sizeof(out->name), "%s", summary->name);
+    }
+    if (summary->alias[0] &&
+        (!out->alias[0] || jw__bt_name_is_mac(out->alias) ||
+         !jw__bt_name_is_mac(summary->alias))) {
+        snprintf(out->alias, sizeof(out->alias), "%s", summary->alias);
+    }
+    if ((out->kind == JW_BT_DEVICE_UNKNOWN || out->kind == JW_BT_DEVICE_OTHER) &&
+        summary->kind != JW_BT_DEVICE_UNKNOWN &&
+        summary->kind != JW_BT_DEVICE_OTHER) {
+        out->kind = summary->kind;
+    }
+
+    snprintf(out->mac, sizeof(out->mac), "%s", summary->mac);
+    out->paired = summary->paired;
+    out->connected = summary->connected;
+}
+
+static void jw__bt_merge_summary_list(const jw_bt_device_t *old_paired,
+                                      int old_paired_count,
+                                      const jw_bt_device_t *old_nearby,
+                                      int old_nearby_count,
+                                      jw_bt_device_t *dst,
+                                      int *dst_count,
+                                      const jw_bt_device_t *summary,
+                                      int summary_count) {
+    if (!dst || !dst_count || !summary || summary_count < 0) {
+        return;
+    }
+    int count = summary_count > JW_BT_MAX_DEVICES ? JW_BT_MAX_DEVICES : summary_count;
+    jw_bt_device_t merged[JW_BT_MAX_DEVICES];
+    for (int i = 0; i < count; i++) {
+        jw__bt_merge_summary_device(old_paired, old_paired_count,
+                                    old_nearby, old_nearby_count,
+                                    &summary[i], &merged[i]);
+    }
+    memcpy(dst, merged, sizeof(jw_bt_device_t) * (size_t)count);
+    *dst_count = count;
+}
+
 static void jw__refresh_bluetooth_lists(jw_settings_ui *ui) {
     if (!ui) {
         return;
     }
 
-    memset(&ui->bt_status, 0, sizeof(ui->bt_status));
-    if (jw_bt_status(&ui->bt_status) != 0) {
-        ui->bt_radio_on = false;
-        ui->bt_paired_count = 0;
-        ui->bt_nearby_count = 0;
-    } else {
-        ui->bt_radio_on = ui->bt_status.powered || jw_bt_radio_is_on();
-        if (ui->bt_radio_on) {
-            int n = jw_bt_list_paired(ui->bt_paired, JW_BT_MAX_DEVICES);
-            ui->bt_paired_count = n > 0 ? n : 0;
-            n = jw_bt_list_nearby(ui->bt_nearby, JW_BT_MAX_DEVICES);
-            ui->bt_nearby_count = n > 0 ? n : 0;
-        } else {
-            ui->bt_paired_count = 0;
-            ui->bt_nearby_count = 0;
+    int rows = 0;
+    jw_bt_status_t status;
+    if (jw_bt_status(&status) != 0) {
+        if (!ui->bt_status.available &&
+            ui->bt_paired_count == 0 &&
+            ui->bt_nearby_count == 0) {
+            ui->bt_radio_on = false;
         }
+        goto clamp_cursor;
     }
 
-    int rows = jw__bt_row_count(ui);
+    ui->bt_status = status;
+    ui->bt_radio_on = ui->bt_status.powered || jw_bt_radio_is_on();
+    if (!ui->bt_radio_on) {
+        ui->bt_paired_count = 0;
+        ui->bt_nearby_count = 0;
+        goto clamp_cursor;
+    }
+
+    jw_bt_device_t paired[JW_BT_MAX_DEVICES];
+    jw_bt_device_t nearby[JW_BT_MAX_DEVICES];
+    int paired_count = 0;
+    int nearby_count = 0;
+    if (jw_bt_list_summaries(paired, JW_BT_MAX_DEVICES, &paired_count,
+                             nearby, JW_BT_MAX_DEVICES, &nearby_count) == 0) {
+        jw_bt_device_t old_paired[JW_BT_MAX_DEVICES];
+        jw_bt_device_t old_nearby[JW_BT_MAX_DEVICES];
+        int old_paired_count = ui->bt_paired_count;
+        int old_nearby_count = ui->bt_nearby_count;
+        memcpy(old_paired, ui->bt_paired, sizeof(old_paired));
+        memcpy(old_nearby, ui->bt_nearby, sizeof(old_nearby));
+        jw__bt_merge_summary_list(old_paired, old_paired_count,
+                                  old_nearby, old_nearby_count,
+                                  ui->bt_paired, &ui->bt_paired_count,
+                                  paired, paired_count);
+        jw__bt_merge_summary_list(old_paired, old_paired_count,
+                                  old_nearby, old_nearby_count,
+                                  ui->bt_nearby, &ui->bt_nearby_count,
+                                  nearby, nearby_count);
+    }
+
+clamp_cursor:
+    rows = jw__bt_row_count(ui);
     if (rows < 1) {
         rows = 1;
     }
@@ -540,7 +650,6 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     jw__refresh_audio_status(ui);
     jw__refresh_led(ui);
     jw__refresh_adb(ui);
-    jw__refresh_bluetooth_lists(ui);
     jw__refresh_secondary_sd_status(ui);
 }
 
@@ -553,7 +662,6 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     jw__refresh_audio_status(ui);
     jw__refresh_led(ui);
     jw__refresh_adb(ui);
-    jw__refresh_bluetooth_lists(ui);
     jw__refresh_secondary_sd_status(ui);
 }
 
@@ -2073,11 +2181,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->bt_msg[0] = '\0';
                     ui->bt_op = JW_BT_OP_NONE;
                     ui->bt_op_manual = false;
-                    jw__refresh_bluetooth_lists(ui);
                     unsigned now = SDL_GetTicks();
-                    ui->bt_next_poll_ms = now + JW_BT_POLL_INTERVAL_MS;
-                    ui->bt_next_scan_ms = now + JW_BT_SCAN_INTERVAL_MS;
-                    (void)jw__bt_scan_start(ui, false);
+                    ui->bt_next_poll_ms = now + JW_BT_ENTRY_DEFER_MS;
+                    ui->bt_next_scan_ms = now + JW_BT_ENTRY_DEFER_MS;
+                    cat_request_frame_in(JW_BT_ENTRY_DEFER_MS);
                 }
                 else if (idx == 4) {
                     ui->screen = JW_SETTINGS_LIGHTING;
