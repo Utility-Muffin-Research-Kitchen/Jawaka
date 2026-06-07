@@ -3,6 +3,7 @@
 
 #include "catastrophe.h"
 #include "catastrophe_widgets.h"
+#include "internal/ipc/ipc_client.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
 #include "internal/platform/wifi.h"
@@ -42,6 +43,8 @@ typedef enum {
     JW_SETTINGS_LIBRARY,
     JW_SETTINGS_ACCOUNTS,
     JW_SETTINGS_BEHAVIOR,
+    JW_SETTINGS_UPDATE,
+    JW_SETTINGS_UPDATE_PICKER,
     JW_SETTINGS_ABOUT,
 } jw_settings_screen;
 
@@ -114,6 +117,14 @@ typedef enum {
 #define JW_BEHAVIOR_BOOT_SPLASH 2
 #define JW_BEHAVIOR_ROW_COUNT   3
 
+/* System Update page */
+#define JW_UPDATE_ROW_CHECK     0
+#define JW_UPDATE_ROW_DOWNLOAD  1
+#define JW_UPDATE_ROW_INSTALL   2
+#define JW_UPDATE_ROW_CURRENT   3
+#define JW_UPDATE_ROW_AVAILABLE 4
+#define JW_UPDATE_ROW_COUNT     5
+
 /* ─── State ────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -131,6 +142,8 @@ typedef struct {
     cat_list_state     library_list;
     cat_list_state     accounts_list;
     cat_list_state     behavior_list;
+    cat_list_state     update_list;
+    cat_list_state     update_picker_list;
     cat_list_state     placeholder_list;
     cat_scroll_state   about_scroll;
     int                theme_index;
@@ -174,6 +187,11 @@ typedef struct {
     bool               adb_supported;       /* platform advertises ADB control */
     int                adb_enabled;         /* -1 unavailable, 0 disabled, 1 pinned */
     int                adb_intent_enabled;  /* -1 unavailable, 0 no boot restore, 1 restore at boot */
+    jw_ipc_update_status_info update;
+    bool               update_have_status;
+    unsigned           update_next_poll_ms;
+    char               update_msg[192];
+    unsigned           update_msg_ms;
     jw_bt_status_t     bt_status;           /* last-read Bluetooth status */
     bool               bt_radio_on;
     jw_bt_device_t     bt_paired[JW_BT_MAX_DEVICES];
@@ -221,6 +239,8 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui);
  * scan/connect workers every frame. */
 bool jw_settings_ui_wants_bluetooth_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui);
+bool jw_settings_ui_wants_update_poll(const jw_settings_ui *ui);
+void jw_settings_ui_refresh_update(jw_settings_ui *ui);
 
 /* True if the status-bar wifi icon is enabled. The launcher uses this to decide
  * whether to keep the wifi strength polled on the home screen. */

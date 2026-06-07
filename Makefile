@@ -26,6 +26,8 @@ WAYLAND_CFLAGS := $(shell pkg-config --cflags wayland-client 2>/dev/null)
 WAYLAND_LDFLAGS := $(shell pkg-config --libs wayland-client 2>/dev/null)
 WAYLAND_PROTOCOLS_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols 2>/dev/null)
 WAYLAND_SCANNER ?= wayland-scanner
+CURL_CFLAGS := $(shell pkg-config --cflags libcurl 2>/dev/null)
+CURL_LDFLAGS := $(shell pkg-config --libs libcurl 2>/dev/null)
 
 CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
@@ -37,6 +39,11 @@ ifeq ($(shell uname -s),Darwin)
 LDLIBS_UI += -lobjc
 endif
 ifeq ($(PLATFORM),mlp1)
+ifeq ($(strip $(CURL_LDFLAGS)),)
+$(error PLATFORM=mlp1 requires libcurl in the toolchain; rebuild mlp1-toolchain)
+endif
+CFLAGS_DAEMON += -DJW_UPDATE_USE_LIBCURL=1 $(CURL_CFLAGS)
+LDLIBS_DAEMON += $(CURL_LDFLAGS)
 # MLP1 dismisses the stock boot transition from jawakad's platform backend by
 # dlopen-ing libloong_sdk.so at runtime, which needs libdl.
 LDLIBS_DAEMON += -ldl
@@ -79,6 +86,8 @@ DAEMON_SRCS := \
 	internal/retroarch/command.c \
 	internal/retroarch/states.c \
 	internal/storage/sources.c \
+	internal/update/update.c \
+	internal/update/sha256.c \
 	internal/db/db.c \
 	internal/settings/appearance.c \
 	internal/settings/theme_resolve.c \
@@ -95,6 +104,11 @@ RETROARCH_RUNNER_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
+	third_party/cjson/cJSON.c
+
+UPDATE_RUNNER_SRCS := \
+	cmd/jawaka-update-runner/main.c \
+	internal/update/sha256.c \
 	third_party/cjson/cJSON.c
 
 PLATFORM_CTL_SRCS := \
@@ -153,13 +167,14 @@ ALL_BINS := \
 	$(BUILD)/bin/jawaka-osd \
 	$(BUILD)/bin/jawaka-retroarchctl \
 	$(BUILD)/bin/jawaka-retroarch-runner \
+	$(BUILD)/bin/jawaka-update-runner \
 	$(BUILD)/bin/jawaka-platformctl
 
 ifeq ($(PLATFORM),mlp1)
 ALL_BINS += $(BUILD)/bin/jawaka-ledd
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
 
 all: $(ALL_BINS)
 
@@ -169,6 +184,7 @@ jawaka-menu: $(BUILD)/bin/jawaka-menu
 jawaka-osd: $(BUILD)/bin/jawaka-osd
 jawaka-retroarchctl: $(BUILD)/bin/jawaka-retroarchctl
 jawaka-retroarch-runner: $(BUILD)/bin/jawaka-retroarch-runner
+jawaka-update-runner: $(BUILD)/bin/jawaka-update-runner
 jawaka-platformctl: $(BUILD)/bin/jawaka-platformctl
 ifeq ($(PLATFORM),mlp1)
 jawaka-ledd: $(BUILD)/bin/jawaka-ledd
@@ -218,6 +234,9 @@ $(BUILD)/bin/jawaka-retroarchctl: $(RETROARCH_CTL_SRCS) | $(BUILD)/bin
 
 $(BUILD)/bin/jawaka-retroarch-runner: $(RETROARCH_RUNNER_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(RETROARCH_RUNNER_SRCS)
+
+$(BUILD)/bin/jawaka-update-runner: $(UPDATE_RUNNER_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(UPDATE_RUNNER_SRCS)
 
 $(BUILD)/bin/jawaka-platformctl: $(PLATFORM_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(PLATFORM_CTL_SRCS) $(LDLIBS_COMMON)
@@ -318,6 +337,7 @@ help:
 	@echo "  make jawaka-osd              Build the daemon-owned brightness OSD"
 	@echo "  make jawaka-platformctl      Build platform status/control helper"
 	@echo "  make jawaka-retroarch-runner Build RetroArch app/config runner"
+	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"
 	@echo "  make tg5050        Placeholder cross-compile target"

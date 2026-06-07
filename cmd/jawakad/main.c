@@ -11,6 +11,7 @@
 #include "internal/retroarch/states.h"
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
+#include "internal/update/update.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -65,6 +66,7 @@ typedef struct {
     char *socket_path;
     char *osd_socket_path;
     char *db_path;
+    char *state_dir;
     char  bin_dir[PATH_MAX];
     sqlite3 *db;
     jw_ipc_server *server;
@@ -104,6 +106,9 @@ typedef struct {
     int       autosleep_platform_synced_s;/* last value mirrored to stock power policy */
     long long autosleep_setting_next_ms;  /* throttle for re-reading the DB setting */
     bool      autosleep_screen_off;       /* currently in the screen-off (pre-suspend) stage */
+    jw_update_status update_status;
+    jw_update_download_job update_download_job;
+    jw_update_install_job update_install_job;
 } jw_daemon_state;
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
@@ -525,6 +530,192 @@ static int jw__reply_platform_audio_status(jw_daemon_state *state, jw_ipc_client
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "platform-audio-status");
     cJSON_AddItemToObject(root, "status", jw__platform_status_json(&status));
+    return jw__reply_json(client, root);
+}
+
+static int jw__reply_update_status(jw_daemon_state *state, jw_ipc_client *client) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw_update_refresh_installed(&state->update_status, state->state_dir);
+    if (!state->update_install_job.active) {
+        jw_update_refresh_install_result(&state->update_status, state->state_dir,
+                                         state->sdcard_root);
+    }
+    cJSON *root = jw_update_status_to_json(&state->update_status);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_update_check(jw_daemon_state *state,
+                                   jw_ipc_client *client,
+                                   cJSON *request) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    if (state->update_download_job.active) {
+        cJSON *reply = jw_update_status_to_json(&state->update_status);
+        return jw__reply_json(client, reply);
+    }
+    if (state->update_install_job.active) {
+        cJSON *reply = jw_update_status_to_json(&state->update_status);
+        return jw__reply_json(client, reply);
+    }
+
+    cJSON *manifest_json = cJSON_GetObjectItemCaseSensitive(request, "manifest_path");
+    const char *manifest_path = NULL;
+    if (cJSON_IsString(manifest_json) && manifest_json->valuestring &&
+        manifest_json->valuestring[0]) {
+        manifest_path = manifest_json->valuestring;
+    } else {
+        const char *env = getenv("JAWAKA_UPDATE_MANIFEST");
+        if (env && env[0]) {
+            manifest_path = env;
+        }
+    }
+
+    if (manifest_path && manifest_path[0]) {
+        jw_update_check_local_manifest(&state->update_status,
+                                       state->state_dir,
+                                       state->platform.platform_id,
+                                       manifest_path);
+    } else {
+        jw_update_check_github(&state->update_status,
+                               state->state_dir,
+                               state->platform.platform_id);
+    }
+    cJSON *root = jw_update_status_to_json(&state->update_status);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_update_download(jw_daemon_state *state,
+                                      jw_ipc_client *client) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    if (!state->update_download_job.active &&
+        !state->update_install_job.active &&
+        state->update_status.status != JW_UPDATE_STATUS_DOWNLOADED) {
+        jw_update_download_start(&state->update_status,
+                                 &state->update_download_job,
+                                 state->state_dir);
+    }
+    cJSON *root = jw_update_status_to_json(&state->update_status);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_update_select(jw_daemon_state *state,
+                                    jw_ipc_client *client,
+                                    cJSON *request) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    if (state->update_download_job.active || state->update_install_job.active) {
+        cJSON *root = jw_update_status_to_json(&state->update_status);
+        return jw__reply_json(client, root);
+    }
+
+    const cJSON *index_json = cJSON_GetObjectItemCaseSensitive(request, "option_index");
+    int option_index = cJSON_IsNumber(index_json) ? index_json->valueint : -1;
+    jw_update_select_option(&state->update_status, option_index);
+    cJSON *root = jw_update_status_to_json(&state->update_status);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_update_cancel(jw_daemon_state *state,
+                                    jw_ipc_client *client) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw_update_download_cancel(&state->update_status, &state->update_download_job);
+    cJSON *root = jw_update_status_to_json(&state->update_status);
+    return jw__reply_json(client, root);
+}
+
+static bool jw__update_install_idle(const jw_daemon_state *state) {
+    if (!state) {
+        return false;
+    }
+    if (state->shutdown_requested ||
+        state->pending_launch ||
+        state->pending_app ||
+        state->post_launch_resume_pending ||
+        state->in_game_menu_prewarm_pending ||
+        state->retroarch_session.active ||
+        state->menu_in_game ||
+        state->menu_visible ||
+        state->update_download_job.active ||
+        state->update_install_job.active) {
+        return false;
+    }
+
+    return state->child_kind == JW_CHILD_NONE ||
+           state->child_kind == JW_CHILD_LAUNCHER ||
+           state->child_kind == JW_CHILD_MENU;
+}
+
+static int jw__handle_update_install_preflight(jw_daemon_state *state,
+                                               jw_ipc_client *client,
+                                               cJSON *request) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+
+    bool confirm_unknown_battery =
+        cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request,
+                                                      "confirm_unknown_battery"));
+    jw_platform_status platform_status;
+    jw_platform_get_status(&state->platform, &platform_status);
+    jw__cache_platform_status(state, &platform_status);
+
+    jw_update_install_preflight(&state->update_status,
+                                state->state_dir,
+                                state->sdcard_root,
+                                jw__update_install_idle(state),
+                                platform_status.battery_percent,
+                                platform_status.charging,
+                                confirm_unknown_battery);
+    cJSON *root = jw_update_status_to_json(&state->update_status);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_update_install(jw_daemon_state *state,
+                                     jw_ipc_client *client,
+                                     cJSON *request) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    if (state->update_install_job.active) {
+        cJSON *root = jw_update_status_to_json(&state->update_status);
+        return jw__reply_json(client, root);
+    }
+
+    bool confirm_unknown_battery =
+        cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request,
+                                                      "confirm_unknown_battery"));
+    jw_platform_status platform_status;
+    jw_platform_get_status(&state->platform, &platform_status);
+    jw__cache_platform_status(state, &platform_status);
+
+    jw_update_install_preflight(&state->update_status,
+                                state->state_dir,
+                                state->sdcard_root,
+                                jw__update_install_idle(state),
+                                platform_status.battery_percent,
+                                platform_status.charging,
+                                confirm_unknown_battery);
+
+    if (state->update_status.install_ready) {
+        char runner_path[PATH_MAX];
+        if (snprintf(runner_path, sizeof(runner_path),
+                     "%s/jawaka-update-runner", state->bin_dir) <
+            (int)sizeof(runner_path)) {
+            jw_update_install_start(&state->update_status,
+                                    &state->update_install_job,
+                                    state->state_dir,
+                                    state->sdcard_root,
+                                    runner_path);
+        } else {
+            state->update_status.status = JW_UPDATE_STATUS_ERROR;
+            snprintf(state->update_status.message,
+                     sizeof(state->update_status.message),
+                     "%s", "Update runner path is too long");
+        }
+    }
+
+    cJSON *root = jw_update_status_to_json(&state->update_status);
     return jw__reply_json(client, root);
 }
 
@@ -3093,6 +3284,45 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_platform_audio_status(state, client);
     }
 
+    if (strcmp(type->valuestring, "update-status") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_update_status(state, client);
+    }
+
+    if (strcmp(type->valuestring, "update-check") == 0) {
+        int rc = jw__handle_update_check(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "update-download") == 0) {
+        cJSON_Delete(root);
+        return jw__handle_update_download(state, client);
+    }
+
+    if (strcmp(type->valuestring, "update-select") == 0) {
+        int rc = jw__handle_update_select(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "update-cancel") == 0) {
+        cJSON_Delete(root);
+        return jw__handle_update_cancel(state, client);
+    }
+
+    if (strcmp(type->valuestring, "update-install-preflight") == 0) {
+        int rc = jw__handle_update_install_preflight(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "update-install") == 0) {
+        int rc = jw__handle_update_install(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
     if (strcmp(type->valuestring, "platform-action") == 0) {
         cJSON *action_json = cJSON_GetObjectItemCaseSensitive(root, "action");
         if (!cJSON_IsString(action_json) || !action_json->valuestring) {
@@ -3488,6 +3718,9 @@ static void jw__cleanup(jw_daemon_state *state) {
     jw__stop_ledd(state);
 
     jw_input_proxy_shutdown(&state->input_proxy);
+    if (state->update_download_job.active) {
+        jw_update_download_cancel(&state->update_status, &state->update_download_job);
+    }
     jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
@@ -3496,6 +3729,7 @@ static void jw__cleanup(jw_daemon_state *state) {
     free(state->socket_path);
     free(state->osd_socket_path);
     free(state->db_path);
+    free(state->state_dir);
 }
 
 int main(int argc, char *argv[]) {
@@ -3513,6 +3747,8 @@ int main(int argc, char *argv[]) {
     state.ledd_pid = -1;
     state.led_configured = false;
     state.autosleep_platform_synced_s = -1;
+    jw_update_download_job_init(&state.update_download_job);
+    jw_update_install_job_init(&state.update_install_job);
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--daemon-only") == 0) {
@@ -3539,8 +3775,9 @@ int main(int argc, char *argv[]) {
     state.socket_path = jw_socket_path();
     state.osd_socket_path = jw_osd_socket_path();
     state.db_path = jw_db_path();
+    state.state_dir = jw_state_dir();
     if (!state.runtime_dir || !state.sdcard_root || !state.socket_path ||
-        !state.osd_socket_path || !state.db_path) {
+        !state.osd_socket_path || !state.db_path || !state.state_dir) {
         jw_log_error("could not resolve runtime paths");
         jw__cleanup(&state);
         return 1;
@@ -3551,6 +3788,8 @@ int main(int argc, char *argv[]) {
         jw__cleanup(&state);
         return 1;
     }
+    jw_update_status_init(&state.update_status, state.platform.platform_id,
+                          state.state_dir);
 
     if (!jw__path_exists(state.sdcard_root)) {
         jw_log_error("sdcard root missing: %s (run 'make mockgen')", state.sdcard_root);
@@ -3635,6 +3874,8 @@ int main(int argc, char *argv[]) {
             state.shutdown_requested = true;
         }
 
+        jw_update_download_poll(&state.update_status, &state.update_download_job);
+        jw_update_install_poll(&state.update_status, &state.update_install_job);
         jw__handle_child_exit(&state);
         jw__tick_post_launch_resume(&state);
         jw__tick_in_game_menu_prewarm(&state);

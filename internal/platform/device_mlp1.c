@@ -327,6 +327,19 @@ static int jw__write_int_file(const char *path, int value) {
     return rc;
 }
 
+static int jw__write_text_file(const char *path, const char *value) {
+    FILE *fp = fopen(path, "w");
+    if (!fp) {
+        return -1;
+    }
+
+    int rc = fputs(value ? value : "", fp) >= 0 ? 0 : -1;
+    if (fclose(fp) != 0) {
+        rc = -1;
+    }
+    return rc;
+}
+
 /* Map raw backlight value (61-135) to 0-100% for the user-facing OSD. */
 static int jw__brightness_raw_to_percent(int raw, int max_raw) {
     (void)max_raw;
@@ -540,6 +553,23 @@ static int jw__loong_standby(void) {
         return -1;
     }
     s_power_standby(api);
+    return 0;
+}
+
+static int jw__mlp1_reboot_async(void) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        usleep(250000);
+        sync();
+        (void)jw__write_text_file("/proc/sys/kernel/sysrq", "1\n");
+        (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");
+        sleep(1);
+        (void)jw__write_text_file("/proc/sysrq-trigger", "b\n");
+        _exit(0);
+    }
     return 0;
 }
 
@@ -1498,8 +1528,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_REBOOT) {
         jw_log_info("platform: reboot requested");
-        sync();
-        if (jw__exec_command("/usr/sbin/reboot") != 0) {
+        if (jw__mlp1_reboot_async() != 0) {
             jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "reboot failed");
             return;
         }

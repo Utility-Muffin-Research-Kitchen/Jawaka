@@ -41,6 +41,156 @@ static void ipc__copy_string(char *out, size_t out_size, const char *value) {
     snprintf(out, out_size, "%s", value ? value : "");
 }
 
+static long long ipc__json_ll(const cJSON *obj, const char *name) {
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, name);
+    return cJSON_IsNumber(item) ? (long long)item->valuedouble : 0;
+}
+
+static void ipc__parse_update_status(const cJSON *resp,
+                                     jw_ipc_update_status_info *out) {
+    if (!out) {
+        return;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->download_percent = -1;
+    out->install_battery_percent = -1;
+    out->install_charging = -1;
+    out->install_available_free = -1;
+    out->selected_option = -1;
+    const cJSON *v = NULL;
+    v = cJSON_GetObjectItemCaseSensitive(resp, "state");
+    if (cJSON_IsString(v)) ipc__copy_string(out->state, sizeof(out->state), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(resp, "platform_id");
+    if (cJSON_IsString(v)) ipc__copy_string(out->platform_id, sizeof(out->platform_id), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (cJSON_IsString(v)) ipc__copy_string(out->message, sizeof(out->message), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(resp, "source_manifest");
+    if (cJSON_IsString(v)) ipc__copy_string(out->source_manifest, sizeof(out->source_manifest), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(resp, "manifest_url");
+    if (cJSON_IsString(v)) ipc__copy_string(out->manifest_url, sizeof(out->manifest_url), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(resp, "artifact_url");
+    if (cJSON_IsString(v)) ipc__copy_string(out->artifact_url, sizeof(out->artifact_url), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(resp, "recovery_name");
+    if (cJSON_IsString(v)) ipc__copy_string(out->recovery_name, sizeof(out->recovery_name), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(resp, "recovery_url");
+    if (cJSON_IsString(v)) ipc__copy_string(out->recovery_url, sizeof(out->recovery_url), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(resp, "download_path");
+    if (cJSON_IsString(v)) ipc__copy_string(out->download_path, sizeof(out->download_path), v->valuestring);
+
+    out->compatible = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "compatible"));
+    out->has_update = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "has_update"));
+    out->downloaded = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "downloaded"));
+    out->download_active = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "download_active"));
+    out->download_received = ipc__json_ll(resp, "download_received");
+    out->download_total = ipc__json_ll(resp, "download_total");
+    v = cJSON_GetObjectItemCaseSensitive(resp, "download_percent");
+    out->download_percent = cJSON_IsNumber(v) ? v->valueint : -1;
+    out->managed_apps_count = (int)ipc__json_ll(resp, "managed_apps_count");
+    out->migrations_count = (int)ipc__json_ll(resp, "migrations_count");
+    v = cJSON_GetObjectItemCaseSensitive(resp, "selected_option");
+    if (cJSON_IsNumber(v)) out->selected_option = v->valueint;
+
+    const cJSON *options = cJSON_GetObjectItemCaseSensitive(resp, "options");
+    if (cJSON_IsArray(options)) {
+        int count = cJSON_GetArraySize(options);
+        if (count > JW_IPC_UPDATE_MAX_OPTIONS) {
+            count = JW_IPC_UPDATE_MAX_OPTIONS;
+        }
+        out->option_count = count;
+        for (int i = 0; i < count; i++) {
+            const cJSON *item = cJSON_GetArrayItem(options, i);
+            jw_ipc_update_option_info *option = &out->options[i];
+            option->index = i;
+            v = cJSON_GetObjectItemCaseSensitive(item, "index");
+            if (cJSON_IsNumber(v)) option->index = v->valueint;
+            option->selected = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(item, "selected"));
+            option->installed = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(item, "installed"));
+            v = cJSON_GetObjectItemCaseSensitive(item, "release_id");
+            if (cJSON_IsString(v)) ipc__copy_string(option->release_id, sizeof(option->release_id), v->valuestring);
+            v = cJSON_GetObjectItemCaseSensitive(item, "version");
+            if (cJSON_IsString(v)) ipc__copy_string(option->version, sizeof(option->version), v->valuestring);
+            v = cJSON_GetObjectItemCaseSensitive(item, "published_at");
+            if (cJSON_IsString(v)) ipc__copy_string(option->published_at, sizeof(option->published_at), v->valuestring);
+            v = cJSON_GetObjectItemCaseSensitive(item, "notes_url");
+            if (cJSON_IsString(v)) ipc__copy_string(option->notes_url, sizeof(option->notes_url), v->valuestring);
+            v = cJSON_GetObjectItemCaseSensitive(item, "artifact_kind");
+            if (cJSON_IsString(v)) ipc__copy_string(option->artifact_kind, sizeof(option->artifact_kind), v->valuestring);
+            v = cJSON_GetObjectItemCaseSensitive(item, "artifact_name");
+            if (cJSON_IsString(v)) ipc__copy_string(option->artifact_name, sizeof(option->artifact_name), v->valuestring);
+            option->artifact_size = ipc__json_ll(item, "artifact_size");
+            option->installed_size = ipc__json_ll(item, "installed_size");
+        }
+    }
+
+    const cJSON *current = cJSON_GetObjectItemCaseSensitive(resp, "current");
+    out->current_unknown = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(current, "unknown"));
+    out->installed_schema = (int)ipc__json_ll(current, "schema");
+    v = cJSON_GetObjectItemCaseSensitive(current, "release_id");
+    if (cJSON_IsString(v)) ipc__copy_string(out->current_release_id, sizeof(out->current_release_id), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(current, "version");
+    if (cJSON_IsString(v)) ipc__copy_string(out->current_version, sizeof(out->current_version), v->valuestring);
+
+    const cJSON *candidate = cJSON_GetObjectItemCaseSensitive(resp, "candidate");
+    v = cJSON_GetObjectItemCaseSensitive(candidate, "release_id");
+    if (cJSON_IsString(v)) ipc__copy_string(out->release_id, sizeof(out->release_id), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(candidate, "version");
+    if (cJSON_IsString(v)) ipc__copy_string(out->version, sizeof(out->version), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(candidate, "published_at");
+    if (cJSON_IsString(v)) ipc__copy_string(out->published_at, sizeof(out->published_at), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(candidate, "notes_url");
+    if (cJSON_IsString(v)) ipc__copy_string(out->notes_url, sizeof(out->notes_url), v->valuestring);
+
+    const cJSON *artifact = cJSON_GetObjectItemCaseSensitive(resp, "artifact");
+    v = cJSON_GetObjectItemCaseSensitive(artifact, "kind");
+    if (cJSON_IsString(v)) ipc__copy_string(out->artifact_kind, sizeof(out->artifact_kind), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(artifact, "name");
+    if (cJSON_IsString(v)) ipc__copy_string(out->artifact_name, sizeof(out->artifact_name), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(artifact, "sha256");
+    if (cJSON_IsString(v)) ipc__copy_string(out->artifact_sha256, sizeof(out->artifact_sha256), v->valuestring);
+    out->artifact_size = ipc__json_ll(artifact, "size");
+    out->installed_size = ipc__json_ll(artifact, "installed_size");
+
+    const cJSON *handoff = cJSON_GetObjectItemCaseSensitive(resp, "handoff");
+    v = cJSON_GetObjectItemCaseSensitive(handoff, "type");
+    if (cJSON_IsString(v)) ipc__copy_string(out->handoff_type, sizeof(out->handoff_type), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(handoff, "completion");
+    if (cJSON_IsString(v)) ipc__copy_string(out->handoff_completion, sizeof(out->handoff_completion), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(handoff, "trigger_file");
+    if (cJSON_IsString(v)) ipc__copy_string(out->handoff_trigger_file, sizeof(out->handoff_trigger_file), v->valuestring);
+
+    const cJSON *install = cJSON_GetObjectItemCaseSensitive(resp, "install");
+    out->install_ready = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(install, "ready"));
+    out->install_blocked = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(install, "blocked"));
+    out->install_needs_confirmation =
+        cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(install, "needs_confirmation"));
+    out->install_active = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(install, "active"));
+    out->install_armed = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(install, "armed"));
+    out->install_idle = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(install, "idle"));
+    v = cJSON_GetObjectItemCaseSensitive(install, "battery_percent");
+    if (cJSON_IsNumber(v)) out->install_battery_percent = v->valueint;
+    v = cJSON_GetObjectItemCaseSensitive(install, "charging");
+    if (cJSON_IsNumber(v)) out->install_charging = v->valueint;
+    v = cJSON_GetObjectItemCaseSensitive(install, "required_free");
+    if (cJSON_IsNumber(v)) out->install_required_free = (long long)v->valuedouble;
+    v = cJSON_GetObjectItemCaseSensitive(install, "available_free");
+    if (cJSON_IsNumber(v)) out->install_available_free = (long long)v->valuedouble;
+    v = cJSON_GetObjectItemCaseSensitive(install, "result_state");
+    if (cJSON_IsString(v)) ipc__copy_string(out->install_result_state, sizeof(out->install_result_state), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(install, "result_release_id");
+    if (cJSON_IsString(v)) ipc__copy_string(out->install_result_release_id, sizeof(out->install_result_release_id), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(install, "result_message");
+    if (cJSON_IsString(v)) ipc__copy_string(out->install_result_message, sizeof(out->install_result_message), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(install, "request_path");
+    if (cJSON_IsString(v)) ipc__copy_string(out->install_request_path, sizeof(out->install_request_path), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(install, "result_path");
+    if (cJSON_IsString(v)) ipc__copy_string(out->install_result_path, sizeof(out->install_result_path), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(install, "reason");
+    if (cJSON_IsString(v)) ipc__copy_string(out->install_reason, sizeof(out->install_reason), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(install, "message");
+    if (cJSON_IsString(v)) ipc__copy_string(out->install_message, sizeof(out->install_message), v->valuestring);
+}
+
 int jw_ipc_hello(const char *socket_path, const char *role) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "hello");
@@ -849,6 +999,281 @@ int jw_ipc_set_audio_output(const char *socket_path,
         }
     }
 
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
+static int ipc__update_request(const char *socket_path,
+                               const char *manifest_path,
+                               bool check,
+                               jw_ipc_update_status_info *out,
+                               char *status,
+                               int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", check ? "update-check" : "update-status");
+    if (check && manifest_path && manifest_path[0]) {
+        cJSON_AddStringToObject(req, "manifest_path", manifest_path);
+    }
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update status unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "update-status")) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update status failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    ipc__parse_update_status(resp, out);
+    if (status && status_len > 0) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "update status ready");
+        }
+    }
+
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_update_status(const char *socket_path,
+                         jw_ipc_update_status_info *out,
+                         char *status,
+                         int status_len) {
+    return ipc__update_request(socket_path, NULL, false, out, status, status_len);
+}
+
+int jw_ipc_update_check(const char *socket_path,
+                        const char *manifest_path,
+                        jw_ipc_update_status_info *out,
+                        char *status,
+                        int status_len) {
+    return ipc__update_request(socket_path, manifest_path, true, out, status, status_len);
+}
+
+int jw_ipc_update_select(const char *socket_path,
+                         int option_index,
+                         jw_ipc_update_status_info *out,
+                         char *status,
+                         int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "update-select");
+    cJSON_AddNumberToObject(req, "option_index", option_index);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update selection unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "update-status")) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update selection failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    ipc__parse_update_status(resp, out);
+    if (status && status_len > 0) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "update selected");
+        }
+    }
+
+    bool ok = out && out->compatible && out->artifact_name[0];
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
+int jw_ipc_update_download(const char *socket_path,
+                           jw_ipc_update_status_info *out,
+                           char *status,
+                           int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "update-download");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update download unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "update-status")) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update download failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    ipc__parse_update_status(resp, out);
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "update download finished");
+        }
+    }
+
+    bool ok = false;
+    const cJSON *state = cJSON_GetObjectItemCaseSensitive(resp, "state");
+    if (cJSON_IsString(state) && state->valuestring &&
+        (strcmp(state->valuestring, "downloaded") == 0 ||
+         strcmp(state->valuestring, "downloading") == 0)) {
+        ok = true;
+    }
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
+int jw_ipc_update_cancel(const char *socket_path,
+                         jw_ipc_update_status_info *out,
+                         char *status,
+                         int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "update-cancel");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update cancel unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "update-status")) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update cancel failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    ipc__parse_update_status(resp, out);
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "update download cancelled");
+        }
+    }
+
+    const cJSON *state = cJSON_GetObjectItemCaseSensitive(resp, "state");
+    bool ok = cJSON_IsString(state) && state->valuestring &&
+              strcmp(state->valuestring, "cancelled") == 0;
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
+int jw_ipc_update_install_preflight(const char *socket_path,
+                                    bool confirm_unknown_battery,
+                                    jw_ipc_update_status_info *out,
+                                    char *status,
+                                    int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "update-install-preflight");
+    if (confirm_unknown_battery) {
+        cJSON_AddBoolToObject(req, "confirm_unknown_battery", true);
+    }
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update ready check unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "update-status")) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update ready check failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    ipc__parse_update_status(resp, out);
+    if (status && status_len > 0) {
+        const cJSON *install = cJSON_GetObjectItemCaseSensitive(resp, "install");
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(install, "message");
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "update ready check complete");
+        }
+    }
+
+    bool ok = out && (out->install_ready ||
+                      out->install_blocked ||
+                      out->install_needs_confirmation);
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
+int jw_ipc_update_install(const char *socket_path,
+                          bool confirm_unknown_battery,
+                          jw_ipc_update_status_info *out,
+                          char *status,
+                          int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "update-install");
+    if (confirm_unknown_battery) {
+        cJSON_AddBoolToObject(req, "confirm_unknown_battery", true);
+    }
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update install unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "update-status")) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update install failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    ipc__parse_update_status(resp, out);
+    if (status && status_len > 0) {
+        const cJSON *install = cJSON_GetObjectItemCaseSensitive(resp, "install");
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(install, "message");
+        const cJSON *top_message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else if (cJSON_IsString(top_message) && top_message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", top_message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "update install started");
+        }
+    }
+
+    bool ok = out && (out->install_active ||
+                      out->install_armed ||
+                      out->install_blocked ||
+                      out->install_needs_confirmation);
     cJSON_Delete(resp);
     return ok ? 0 : -1;
 }

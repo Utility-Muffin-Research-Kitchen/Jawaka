@@ -191,9 +191,10 @@ static const char *kHomeCategoryLabels[] = {
     "Library",
     "Accounts",
     "Behavior",
+    "System Update",
     "About",
 };
-#define JW_SETTINGS_CATEGORY_COUNT 9
+#define JW_SETTINGS_CATEGORY_COUNT 10
 
 /* Visible rows in the Network page's scanned-network list (scrolls beyond). */
 #define JW_WIFI_LIST_ROWS 6
@@ -206,6 +207,7 @@ static const char *kHomeCategoryLabels[] = {
 #define JW_BT_SCAN_INTERVAL_MS 12000
 #define JW_BT_ENTRY_DEFER_MS 250
 #define JW_SETTINGS_DISPLAY_COUNT JW_DISPLAY_ROW_COUNT
+#define JW_UPDATE_PICKER_VISIBLE_ROWS 7
 
 static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
     "Static",
@@ -345,6 +347,76 @@ static void jw__refresh_boot_splash(jw_settings_ui *ui) {
         if (enabled >= 0) {
             ui->boot_splash_enabled = enabled != 0;
         }
+    }
+}
+
+static void jw__update_msg(jw_settings_ui *ui, const char *fmt, ...) {
+    if (!ui) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(ui->update_msg, sizeof(ui->update_msg), fmt ? fmt : "", ap);
+    va_end(ap);
+    ui->update_msg_ms = SDL_GetTicks();
+    if (ui->update_msg_ms == 0) {
+        ui->update_msg_ms = 1;
+    }
+}
+
+static void jw__refresh_update_status(jw_settings_ui *ui, bool quiet) {
+    if (!ui) {
+        return;
+    }
+    if (!ui->socket_path[0]) {
+        ui->update_have_status = false;
+        if (!quiet) {
+            jw__update_msg(ui, "Update service unavailable");
+        }
+        return;
+    }
+
+    char status[192] = { 0 };
+    if (jw_ipc_update_status(ui->socket_path, &ui->update,
+                             status, sizeof(status)) == 0) {
+        ui->update_have_status = true;
+        if (!quiet && status[0]) {
+            jw__update_msg(ui, "%s", status);
+        }
+    } else {
+        ui->update_have_status = false;
+        if (!quiet) {
+            jw__update_msg(ui, "%s", status[0] ? status : "Update status unavailable");
+        }
+    }
+}
+
+bool jw_settings_ui_wants_update_poll(const jw_settings_ui *ui) {
+    return ui && ui->open && ui->screen == JW_SETTINGS_UPDATE &&
+           (ui->update.download_active || ui->update.install_active);
+}
+
+void jw_settings_ui_refresh_update(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+
+    if (ui->update_msg_ms && (int)(SDL_GetTicks() - ui->update_msg_ms) > 8000) {
+        ui->update_msg[0] = '\0';
+        ui->update_msg_ms = 0;
+    }
+
+    unsigned now = SDL_GetTicks();
+    if (ui->update_next_poll_ms != 0 &&
+        (int)(now - ui->update_next_poll_ms) < 0) {
+        return;
+    }
+
+    jw__refresh_update_status(ui, true);
+    ui->update_next_poll_ms =
+        now + (jw_settings_ui_wants_update_poll(ui) ? 500u : 3000u);
+    if (jw_settings_ui_wants_update_poll(ui)) {
+        cat_request_frame_in(250);
     }
 }
 
@@ -724,6 +796,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->wifi_monitor_fd = -1;
     ui->adb_enabled = -1;
     ui->adb_intent_enabled = -1;
+    ui->update_have_status = false;
+    ui->update_next_poll_ms = 0;
     ui->bt_op = JW_BT_OP_NONE;
     ui->bt_op_manual = false;
     cat_list_state_init(&ui->home_list,       JW_SETTINGS_CATEGORY_COUNT);
@@ -738,6 +812,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
     cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
     cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
+    cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
+    cat_list_state_init(&ui->update_picker_list, JW_UPDATE_PICKER_VISIBLE_ROWS);
     cat_list_state_init(&ui->placeholder_list, 1);
     cat_scroll_state_init(&ui->about_scroll);
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
@@ -2008,6 +2084,342 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
     (void)h;
 }
 
+static void jw__format_update_size(long long bytes, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    if (bytes <= 0) {
+        snprintf(out, out_size, "%s", "-");
+        return;
+    }
+    if (bytes >= 1024LL * 1024LL * 1024LL) {
+        snprintf(out, out_size, "%.1f GB",
+                 (double)bytes / (double)(1024LL * 1024LL * 1024LL));
+    } else if (bytes >= 1024LL * 1024LL) {
+        snprintf(out, out_size, "%.1f MB",
+                 (double)bytes / (double)(1024LL * 1024LL));
+    } else {
+        snprintf(out, out_size, "%.1f KB", (double)bytes / 1024.0);
+    }
+}
+
+static const char *jw__update_state_label(const jw_ipc_update_status_info *u) {
+    if (!u || !u->state[0]) {
+        return "Idle";
+    }
+    if (strcmp(u->state, "up-to-date") == 0) return "Up to date";
+    if (strcmp(u->state, "available") == 0) return "Available";
+    if (strcmp(u->state, "downloading") == 0) return "Downloading";
+    if (strcmp(u->state, "downloaded") == 0) return "Downloaded";
+    if (strcmp(u->state, "installing") == 0) return "Installing";
+    if (strcmp(u->state, "armed") == 0) return "Restart needed";
+    if (strcmp(u->state, "cancelled") == 0) return "Cancelled";
+    if (strcmp(u->state, "incompatible") == 0) return "Incompatible";
+    if (strcmp(u->state, "error") == 0) return "Error";
+    return "Idle";
+}
+
+static void jw__update_download_label(const jw_settings_ui *ui,
+                                      char *out,
+                                      size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    const jw_ipc_update_status_info *u = ui ? &ui->update : NULL;
+    if (!ui || !ui->update_have_status) {
+        snprintf(out, out_size, "%s", "Unavailable");
+    } else if (u->download_active) {
+        if (u->download_percent >= 0) {
+            snprintf(out, out_size, "Cancel %d%%", u->download_percent);
+        } else {
+            snprintf(out, out_size, "%s", "Cancel");
+        }
+    } else if (u->downloaded) {
+        snprintf(out, out_size, "%s", "Verified");
+    } else if (u->compatible && u->artifact_name[0]) {
+        snprintf(out, out_size, "%s", "Download");
+    } else {
+        snprintf(out, out_size, "%s", "Unavailable");
+    }
+}
+
+static const char *jw__update_blocked_label(const char *reason) {
+    if (!reason || !reason[0]) return "Blocked";
+    if (strcmp(reason, "install_again") == 0) return "Install Again";
+    if (strcmp(reason, "primary_slot_needed") == 0) return "Primary Slot";
+    if (strcmp(reason, "not_idle") == 0) return "Close Apps";
+    if (strcmp(reason, "space_low") == 0) return "No Space";
+    if (strcmp(reason, "battery_low") == 0) return "Battery Low";
+    if (strcmp(reason, "download_active") == 0) return "Downloading";
+    if (strcmp(reason, "not_downloaded") == 0) return "Download First";
+    if (strcmp(reason, "download_missing") == 0) return "Missing";
+    if (strcmp(reason, "unsupported_handoff") == 0) return "Unsupported";
+    if (strcmp(reason, "unsupported_artifact") == 0) return "Unsupported";
+    return "Blocked";
+}
+
+static void jw__update_install_label(const jw_settings_ui *ui,
+                                     char *out,
+                                     size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    const jw_ipc_update_status_info *u = ui ? &ui->update : NULL;
+    if (!ui || !ui->update_have_status) {
+        snprintf(out, out_size, "%s", "Unavailable");
+    } else if (u->install_active) {
+        snprintf(out, out_size, "%s", "Installing");
+    } else if (u->install_armed) {
+        snprintf(out, out_size, "%s", "Restart");
+    } else if (u->install_ready) {
+        snprintf(out, out_size, "%s", "Install");
+    } else if (u->install_needs_confirmation) {
+        snprintf(out, out_size, "%s", "Confirm");
+    } else if (u->install_blocked) {
+        snprintf(out, out_size, "%s",
+                 jw__update_blocked_label(u->install_reason));
+    } else if (u->downloaded) {
+        snprintf(out, out_size, "%s", "Ready Check");
+    } else if (u->install_result_state[0]) {
+        if (strcmp(u->install_result_state, "installed") == 0) {
+            snprintf(out, out_size, "%s", "Installed");
+        } else if (strcmp(u->install_result_state, "armed") == 0) {
+            snprintf(out, out_size, "%s", "Restart Needed");
+        } else if (strcmp(u->install_result_state, "error") == 0) {
+            snprintf(out, out_size, "%s", "Failed");
+        } else {
+            snprintf(out, out_size, "%s", u->install_result_state);
+        }
+    } else {
+        snprintf(out, out_size, "%s", "Unavailable");
+    }
+}
+
+static void jw__draw_update_progress(const jw_settings_ui *ui,
+                                     int x, int y, int w) {
+    if (!ui || !ui->update.download_active || ui->update.download_percent < 0) {
+        return;
+    }
+    ap_theme *theme = cat_get_theme();
+    int track_h = cat_scale(5);
+    int fill_w = (w * ui->update.download_percent) / 100;
+    cat_draw_rect(x, y, w, track_h, cat_hex_to_color("#ffffff33"));
+    cat_draw_rect(x, y, fill_w, track_h, theme->accent);
+}
+
+static void jw__draw_update_activity(const jw_settings_ui *ui,
+                                     int x, int y, int w) {
+    if (!ui || !ui->update.install_active || w <= 0) {
+        return;
+    }
+    ap_theme *theme = cat_get_theme();
+    int track_h = cat_scale(5);
+    int segment_w = w / 3;
+    int min_segment = cat_scale(28);
+    if (segment_w < min_segment) {
+        segment_w = min_segment;
+    }
+    if (segment_w > w) {
+        segment_w = w;
+    }
+
+    int travel = w + segment_w;
+    int pos = (int)((SDL_GetTicks() / 8u) % (unsigned)travel) - segment_w;
+    int fill_x = x + pos;
+    int fill_w = segment_w;
+    if (fill_x < x) {
+        fill_w -= x - fill_x;
+        fill_x = x;
+    }
+    if (fill_x + fill_w > x + w) {
+        fill_w = x + w - fill_x;
+    }
+
+    cat_draw_rect(x, y, w, track_h, cat_hex_to_color("#ffffff33"));
+    if (fill_w > 0) {
+        cat_draw_rect(fill_x, y, fill_w, track_h, theme->accent);
+    }
+}
+
+static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("System Update", x, y, w);
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int line_h = TTF_FontHeight(small) + cat_scale(8);
+    int dy = y + jw__header_h() + cat_scale(6);
+
+    const jw_ipc_update_status_info *u = &ui->update;
+    char message[320];
+    if (ui->update_have_status && u->install_active && u->install_message[0]) {
+        snprintf(message, sizeof(message), "%s", u->install_message);
+    } else if (ui->update_msg[0]) {
+        snprintf(message, sizeof(message), "%s", ui->update_msg);
+    } else if (ui->update_have_status) {
+        if (u->install_message[0] &&
+            (u->install_active || u->install_armed ||
+             u->install_blocked || u->install_needs_confirmation ||
+             u->install_ready)) {
+            snprintf(message, sizeof(message), "%s", u->install_message);
+        } else if (u->message[0]) {
+            snprintf(message, sizeof(message), "%s", u->message);
+        } else if (u->install_result_message[0]) {
+            snprintf(message, sizeof(message), "Last update: %s",
+                     u->install_result_message);
+        } else {
+            snprintf(message, sizeof(message), "%s", jw__update_state_label(u));
+        }
+    } else {
+        snprintf(message, sizeof(message), "%s", "Update status unavailable");
+    }
+
+    cat_draw_text_ellipsized(small, message, x + cat_scale(12), dy,
+                             theme->hint, w - cat_scale(24));
+    dy += line_h;
+
+    if (ui->update.download_active) {
+        jw__draw_update_progress(ui, x + cat_scale(12), dy + cat_scale(2),
+                                 w - cat_scale(24));
+        dy += cat_scale(12);
+    } else if (ui->update.install_active) {
+        jw__draw_update_activity(ui, x + cat_scale(12), dy + cat_scale(2),
+                                 w - cat_scale(24));
+        dy += cat_scale(12);
+    }
+
+    int ly = dy + cat_scale(2);
+    char download_value[48];
+    char install_value[64];
+    char current_value[128];
+    char candidate_value[224];
+    char check_value[64];
+    char size_value[64];
+    jw__update_download_label(ui, download_value, sizeof(download_value));
+    jw__update_install_label(ui, install_value, sizeof(install_value));
+
+    snprintf(check_value, sizeof(check_value), "%s", jw__update_state_label(u));
+    snprintf(current_value, sizeof(current_value), "%s",
+             (ui->update_have_status && u->current_release_id[0])
+             ? u->current_release_id
+             : (ui->update_have_status && u->current_unknown ? "Unknown" : "-"));
+    if (ui->update_have_status && u->release_id[0]) {
+        jw__format_update_size(u->artifact_size, size_value, sizeof(size_value));
+        snprintf(candidate_value, sizeof(candidate_value), "%s (%s)",
+                 u->release_id, size_value);
+    } else if (ui->update_have_status && u->install_result_release_id[0]) {
+        snprintf(candidate_value, sizeof(candidate_value), "Last: %s",
+                 u->install_result_release_id);
+    } else if (ui->update_have_status && strcmp(u->state, "up-to-date") == 0) {
+        snprintf(candidate_value, sizeof(candidate_value), "%s", "None");
+    } else {
+        snprintf(candidate_value, sizeof(candidate_value), "%s", "-");
+    }
+
+    jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_CHECK,
+                        "Check Releases", check_value, false);
+    jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_DOWNLOAD,
+                        "Download", download_value, false);
+    jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_INSTALL,
+                        "Install", install_value, false);
+    jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_CURRENT,
+                        "Current", current_value, false);
+    jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_AVAILABLE,
+                        "Available", candidate_value, false);
+
+    (void)h;
+}
+
+typedef struct {
+    const jw_settings_ui *ui;
+} jw__update_picker_ctx;
+
+static const char *jw__update_option_badge(const jw_ipc_update_option_info *option,
+                                           int idx) {
+    if (!option) {
+        return "";
+    }
+    if (option->selected) {
+        return "Selected";
+    }
+    if (option->installed) {
+        return "Installed";
+    }
+    return idx == 0 ? "Latest" : "Older";
+}
+
+static void jw__draw_update_option_item(int idx, int ix, int iy, int iw, int ih,
+                                        bool selected, void *user) {
+    jw__update_picker_ctx *ctx = (jw__update_picker_ctx *)user;
+    const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
+    if (!ui || idx < 0 || idx >= ui->update.option_count ||
+        idx >= JW_IPC_UPDATE_MAX_OPTIONS) {
+        return;
+    }
+
+    const jw_ipc_update_option_info *option = &ui->update.options[idx];
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int pad = cat_scale(10);
+    int pill_h = ih - cat_scale(4);
+    int pill_y = iy + cat_scale(2);
+    if (selected) {
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
+    }
+
+    ap_color main_color = selected ? theme->highlighted_text : theme->text;
+    ap_color hint_color = selected ? theme->highlighted_text : theme->hint;
+    const char *label = option->release_id[0] ? option->release_id : "Leaf update";
+    char detail[320];
+    char size[64];
+    jw__format_update_size(option->artifact_size, size, sizeof(size));
+    snprintf(detail, sizeof(detail), "%s%s%s",
+             option->artifact_name[0] ? option->artifact_name : option->artifact_kind,
+             size[0] && strcmp(size, "-") != 0 ? "  " : "",
+             size[0] && strcmp(size, "-") != 0 ? size : "");
+
+    int badge_w = cat_scale(92);
+    cat_draw_text_ellipsized(body, label, ix + pad, iy + cat_scale(5),
+                             main_color, iw - pad * 2 - badge_w);
+    cat_draw_text_ellipsized(small, detail, ix + pad,
+                             iy + cat_scale(5) + TTF_FontHeight(body),
+                             hint_color, iw - pad * 2 - badge_w);
+    cat_draw_text_ellipsized(small, jw__update_option_badge(option, idx),
+                             ix + iw - badge_w - pad, iy + cat_scale(8),
+                             hint_color, badge_w);
+}
+
+static void jw__render_update_picker(const jw_settings_ui *ui,
+                                      int x, int y, int w, int h) {
+    jw__draw_header("Pick Update", x, y, w);
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int dy = y + jw__header_h() + cat_scale(6);
+    int count = ui ? ui->update.option_count : 0;
+    if (count > JW_IPC_UPDATE_MAX_OPTIONS) {
+        count = JW_IPC_UPDATE_MAX_OPTIONS;
+    }
+
+    const char *message = count > 0
+        ? "Compatible releases"
+        : "Check releases first";
+    cat_draw_text_ellipsized(small, message, x + cat_scale(12), dy,
+                             theme->hint, w - cat_scale(24));
+    dy += TTF_FontHeight(small) + cat_scale(8);
+
+    if (count > 0) {
+        int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) +
+                     TTF_FontHeight(small) + cat_scale(16);
+        int list_h = h - (dy - y);
+        if (list_h < item_h) {
+            list_h = item_h;
+        }
+        jw__update_picker_ctx ctx = { ui };
+        cat_draw_list_pane(x, dy, w, list_h, count,
+                           &ui->update_picker_list, item_h,
+                           jw__draw_update_option_item, &ctx);
+    }
+}
+
 /* ─── Main render dispatch ─────────────────────────────────────────────── */
 
 void jw_settings_ui_render(const jw_settings_ui *ui,
@@ -2026,6 +2438,8 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
         case JW_SETTINGS_ACCOUNTS:   jw__render_accounts(ui, x, y, w, h);                break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
+        case JW_SETTINGS_UPDATE:     jw__render_update(ui, x, y, w, h);                  break;
+        case JW_SETTINGS_UPDATE_PICKER: jw__render_update_picker(ui, x, y, w, h);        break;
         case JW_SETTINGS_ABOUT:      jw__render_about(ui, x, y, w, h);                   break;
     }
 }
@@ -2268,6 +2682,53 @@ static bool jw__confirm_adb_disable(void) {
     return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
+static bool jw__confirm_update_install(const char *release_id) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Install", .is_confirm = true },
+    };
+    char message[192];
+    snprintf(message, sizeof(message), "Install Leaf %s?",
+             release_id && release_id[0] ? release_id : "update");
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static bool jw__confirm_update_unknown_preflight(const char *message) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Continue", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message && message[0]
+                   ? message
+                   : "Install update even though checks are incomplete?",
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static bool jw__confirm_update_reboot(void) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Later", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Restart", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = "Restart now to finish installing?",
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
 static bool jw__confirm_bt_unpair(const char *name) {
     cat_footer_item footer[] = {
         { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
@@ -2282,6 +2743,332 @@ static bool jw__confirm_bt_unpair(const char *name) {
     };
     cat_confirm_result result;
     return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static void jw__copy_status(char *status_buf, size_t status_size,
+                            const char *value) {
+    if (status_buf && status_size > 0) {
+        snprintf(status_buf, status_size, "%s", value ? value : "");
+    }
+}
+
+static void jw__settings_update_from_ipc(jw_settings_ui *ui,
+                                         const jw_ipc_update_status_info *info,
+                                         const char *message) {
+    if (!ui) {
+        return;
+    }
+    if (info) {
+        ui->update = *info;
+        ui->update_have_status = true;
+        int count = ui->update.option_count;
+        if (count > JW_IPC_UPDATE_MAX_OPTIONS) {
+            count = JW_IPC_UPDATE_MAX_OPTIONS;
+        }
+        if (count > 0) {
+            int cursor = ui->update.selected_option >= 0
+                ? ui->update.selected_option
+                : ui->update_picker_list.cursor;
+            if (cursor < 0) cursor = 0;
+            if (cursor >= count) cursor = count - 1;
+            ui->update_picker_list.cursor = cursor;
+            if (ui->update_picker_list.scroll_offset > cursor) {
+                ui->update_picker_list.scroll_offset = cursor;
+            }
+        } else {
+            ui->update_picker_list.cursor = 0;
+            ui->update_picker_list.scroll_offset = 0;
+        }
+    }
+    if (message && message[0]) {
+        jw__update_msg(ui, "%s", message);
+    }
+    ui->update_next_poll_ms = SDL_GetTicks() +
+        (jw_settings_ui_wants_update_poll(ui) ? 500u : 3000u);
+}
+
+static int jw__update_option_count(const jw_settings_ui *ui) {
+    if (!ui) {
+        return 0;
+    }
+    int count = ui->update.option_count;
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > JW_IPC_UPDATE_MAX_OPTIONS) {
+        count = JW_IPC_UPDATE_MAX_OPTIONS;
+    }
+    return count;
+}
+
+static void jw__update_check_releases(jw_settings_ui *ui,
+                                      char *status_buf,
+                                      size_t status_size);
+
+static bool jw__confirm_update_picker_choice(const jw_settings_ui *ui,
+                                             const jw_ipc_update_option_info *option,
+                                             int idx) {
+    if (!option) {
+        return false;
+    }
+    if (!option->installed && idx == 0) {
+        return true;
+    }
+
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Pick", .is_confirm = true },
+    };
+    char message[192];
+    if (option->installed) {
+        snprintf(message, sizeof(message), "Pick installed Leaf %s again?",
+                 option->release_id[0] ? option->release_id : "release");
+    } else {
+        snprintf(message, sizeof(message), "Pick older Leaf %s?",
+                 option->release_id[0] ? option->release_id : "release");
+    }
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    (void)ui;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static void jw__open_update_picker(jw_settings_ui *ui,
+                                   char *status_buf,
+                                   size_t status_size) {
+    if (!ui) {
+        return;
+    }
+    if (jw__update_option_count(ui) <= 0) {
+        jw__update_check_releases(ui, status_buf, status_size);
+    }
+    int count = jw__update_option_count(ui);
+    if (count <= 0) {
+        jw__copy_status(status_buf, status_size,
+                        ui->update_msg[0] ? ui->update_msg : "No releases available");
+        return;
+    }
+    if (ui->update_picker_list.cursor < 0 ||
+        ui->update_picker_list.cursor >= count) {
+        ui->update_picker_list.cursor =
+            ui->update.selected_option >= 0 && ui->update.selected_option < count
+            ? ui->update.selected_option
+            : 0;
+    }
+    ui->screen = JW_SETTINGS_UPDATE_PICKER;
+}
+
+static void jw__select_update_picker_choice(jw_settings_ui *ui,
+                                            char *status_buf,
+                                            size_t status_size) {
+    if (!ui || !ui->socket_path[0]) {
+        jw__copy_status(status_buf, status_size, "Update service unavailable");
+        if (ui) jw__update_msg(ui, "Update service unavailable");
+        return;
+    }
+
+    int count = jw__update_option_count(ui);
+    int idx = ui->update_picker_list.cursor;
+    if (idx < 0 || idx >= count) {
+        jw__copy_status(status_buf, status_size, "No update release selected");
+        jw__update_msg(ui, "No update release selected");
+        return;
+    }
+
+    const jw_ipc_update_option_info *option = &ui->update.options[idx];
+    if (!jw__confirm_update_picker_choice(ui, option, idx)) {
+        jw__copy_status(status_buf, status_size, "Update selection canceled");
+        jw__update_msg(ui, "Update selection canceled");
+        return;
+    }
+
+    jw_ipc_update_status_info info;
+    memset(&info, 0, sizeof(info));
+    char status[192] = { 0 };
+    if (jw_ipc_update_select(ui->socket_path, option->index,
+                             &info, status, sizeof(status)) == 0) {
+        jw__settings_update_from_ipc(ui, &info, status);
+        jw__copy_status(status_buf, status_size, status);
+        ui->screen = JW_SETTINGS_UPDATE;
+    } else {
+        jw__settings_update_from_ipc(ui, &info,
+                                    status[0] ? status : "Update selection failed");
+        jw__copy_status(status_buf, status_size,
+                        status[0] ? status : "Update selection failed");
+    }
+}
+
+static void jw__update_check_releases(jw_settings_ui *ui,
+                                      char *status_buf,
+                                      size_t status_size) {
+    if (!ui || !ui->socket_path[0]) {
+        jw__copy_status(status_buf, status_size, "Update service unavailable");
+        if (ui) jw__update_msg(ui, "Update service unavailable");
+        return;
+    }
+
+    jw_ipc_update_status_info info;
+    memset(&info, 0, sizeof(info));
+    char status[192] = { 0 };
+    if (jw_ipc_update_check(ui->socket_path, NULL, &info,
+                            status, sizeof(status)) == 0) {
+        jw__settings_update_from_ipc(ui, &info, status);
+        jw__copy_status(status_buf, status_size, status);
+    } else {
+        jw__settings_update_from_ipc(ui, &info,
+                                    status[0] ? status : "Update check failed");
+        jw__copy_status(status_buf, status_size,
+                        status[0] ? status : "Update check failed");
+    }
+}
+
+static void jw__update_download_or_cancel(jw_settings_ui *ui,
+                                          char *status_buf,
+                                          size_t status_size) {
+    if (!ui || !ui->socket_path[0]) {
+        jw__copy_status(status_buf, status_size, "Update service unavailable");
+        if (ui) jw__update_msg(ui, "Update service unavailable");
+        return;
+    }
+
+    jw_ipc_update_status_info info;
+    memset(&info, 0, sizeof(info));
+    char status[192] = { 0 };
+    int rc = 0;
+    if (ui->update.download_active) {
+        rc = jw_ipc_update_cancel(ui->socket_path, &info, status, sizeof(status));
+    } else if (ui->update.downloaded) {
+        jw__copy_status(status_buf, status_size, "Update already downloaded");
+        jw__update_msg(ui, "Update already downloaded");
+        return;
+    } else if (ui->update.compatible && ui->update.artifact_name[0]) {
+        rc = jw_ipc_update_download(ui->socket_path, &info, status, sizeof(status));
+    } else {
+        jw__copy_status(status_buf, status_size, "Check for updates first");
+        jw__update_msg(ui, "Check for updates first");
+        return;
+    }
+
+    if (rc == 0) {
+        jw__settings_update_from_ipc(ui, &info, status);
+        jw__copy_status(status_buf, status_size, status);
+    } else {
+        jw__settings_update_from_ipc(ui, &info,
+                                    status[0] ? status : "Update download failed");
+        jw__copy_status(status_buf, status_size,
+                        status[0] ? status : "Update download failed");
+    }
+}
+
+static void jw__update_install_or_reboot(jw_settings_ui *ui,
+                                         char *status_buf,
+                                         size_t status_size) {
+    if (!ui || !ui->socket_path[0]) {
+        jw__copy_status(status_buf, status_size, "Update service unavailable");
+        if (ui) jw__update_msg(ui, "Update service unavailable");
+        return;
+    }
+
+    if (ui->update.install_armed) {
+        if (!jw__confirm_update_reboot()) {
+            jw__copy_status(status_buf, status_size, "Restart canceled");
+            jw__update_msg(ui, "Restart canceled");
+            return;
+        }
+        if (jw_ipc_platform_action(ui->socket_path, "reboot", 0) == 0) {
+            jw__copy_status(status_buf, status_size, "Restarting");
+            jw__update_msg(ui, "Restarting");
+        } else {
+            jw__copy_status(status_buf, status_size, "Restart failed");
+            jw__update_msg(ui, "Restart failed");
+        }
+        return;
+    }
+
+    if (ui->update.install_active) {
+        jw__refresh_update_status(ui, false);
+        jw__copy_status(status_buf, status_size,
+                        ui->update_msg[0] ? ui->update_msg : "Install in progress");
+        return;
+    }
+
+    if (ui->update.install_blocked) {
+        const char *msg = ui->update.install_message[0]
+            ? ui->update.install_message
+            : "Update install blocked";
+        jw__copy_status(status_buf, status_size, msg);
+        jw__update_msg(ui, "%s", msg);
+        return;
+    }
+
+    if (!ui->update.downloaded) {
+        jw__copy_status(status_buf, status_size, "Download update first");
+        jw__update_msg(ui, "Download update first");
+        return;
+    }
+
+    jw_ipc_update_status_info info;
+    memset(&info, 0, sizeof(info));
+    char status[192] = { 0 };
+    if (jw_ipc_update_install_preflight(ui->socket_path, false, &info,
+                                        status, sizeof(status)) != 0) {
+        jw__settings_update_from_ipc(ui, &info,
+                                    status[0] ? status : "Update ready check failed");
+        jw__copy_status(status_buf, status_size,
+                        status[0] ? status : "Update ready check failed");
+        return;
+    }
+    jw__settings_update_from_ipc(ui, &info, status);
+
+    if (ui->update.install_blocked) {
+        const char *msg = ui->update.install_message[0]
+            ? ui->update.install_message
+            : "Update install blocked";
+        jw__copy_status(status_buf, status_size, msg);
+        jw__update_msg(ui, "%s", msg);
+        return;
+    }
+
+    bool confirm_unknown_battery = false;
+    if (ui->update.install_needs_confirmation) {
+        const char *msg = ui->update.install_message[0]
+            ? ui->update.install_message
+            : "Install update even though checks are incomplete?";
+        if (!jw__confirm_update_unknown_preflight(msg)) {
+            jw__copy_status(status_buf, status_size, "Update install canceled");
+            jw__update_msg(ui, "Update install canceled");
+            return;
+        }
+        confirm_unknown_battery = true;
+    } else if (!ui->update.install_ready) {
+        jw__copy_status(status_buf, status_size, "Update is not ready to install");
+        jw__update_msg(ui, "Update is not ready to install");
+        return;
+    }
+
+    if (!jw__confirm_update_install(ui->update.release_id)) {
+        jw__copy_status(status_buf, status_size, "Update install canceled");
+        jw__update_msg(ui, "Update install canceled");
+        return;
+    }
+
+    memset(&info, 0, sizeof(info));
+    status[0] = '\0';
+    if (jw_ipc_update_install(ui->socket_path, confirm_unknown_battery,
+                              &info, status, sizeof(status)) == 0) {
+        jw__settings_update_from_ipc(ui, &info, status);
+        jw__copy_status(status_buf, status_size, status);
+        cat_request_frame_in(500);
+    } else {
+        jw__settings_update_from_ipc(ui, &info,
+                                    status[0] ? status : "Update install failed");
+        jw__copy_status(status_buf, status_size,
+                        status[0] ? status : "Update install failed");
+    }
 }
 
 static void jw__set_adb(jw_settings_ui *ui, bool enabled,
@@ -2421,6 +3208,15 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 else if (idx == 6) ui->screen = JW_SETTINGS_ACCOUNTS;
                 else if (idx == 7) ui->screen = JW_SETTINGS_BEHAVIOR;
                 else if (idx == 8) {
+                    ui->screen = JW_SETTINGS_UPDATE;
+                    ui->update_list.cursor = 0;
+                    ui->update_list.scroll_offset = 0;
+                    ui->update_msg[0] = '\0';
+                    ui->update_msg_ms = 0;
+                    jw__refresh_update_status(ui, false);
+                    ui->update_next_poll_ms = SDL_GetTicks() + 1000;
+                }
+                else if (idx == 9) {
                     ui->screen = JW_SETTINGS_ABOUT;
                     cat_scroll_state_init(&ui->about_scroll);   /* start at top */
                 }
@@ -2974,6 +3770,70 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 break;
         }
         break;
+
+    /* ── System Update ───────────────────────────────────────────────── */
+    case JW_SETTINGS_UPDATE:
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->update_list, -1, JW_UPDATE_ROW_COUNT);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->update_list, +1, JW_UPDATE_ROW_COUNT);
+                break;
+            case CAT_BTN_X:
+                if (ui->update.download_active) {
+                    jw__update_download_or_cancel(ui, status_buf, status_size);
+                } else {
+                    jw__open_update_picker(ui, status_buf, status_size);
+                }
+                break;
+            case CAT_BTN_A:
+                if (ui->update_list.cursor == JW_UPDATE_ROW_CHECK) {
+                    jw__update_check_releases(ui, status_buf, status_size);
+                } else if (ui->update_list.cursor == JW_UPDATE_ROW_DOWNLOAD) {
+                    jw__update_download_or_cancel(ui, status_buf, status_size);
+                } else if (ui->update_list.cursor == JW_UPDATE_ROW_INSTALL) {
+                    jw__update_install_or_reboot(ui, status_buf, status_size);
+                } else if (ui->update_list.cursor == JW_UPDATE_ROW_AVAILABLE) {
+                    jw__open_update_picker(ui, status_buf, status_size);
+                } else {
+                    jw__refresh_update_status(ui, false);
+                    jw__copy_status(status_buf, status_size,
+                                    ui->update_msg[0] ? ui->update_msg : "Update status refreshed");
+                }
+                break;
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default:
+                break;
+        }
+        break;
+
+    /* ── System Update picker ─────────────────────────────────────────── */
+    case JW_SETTINGS_UPDATE_PICKER: {
+        int count = jw__update_option_count(ui);
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->update_picker_list, -1, count);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->update_picker_list, +1, count);
+                break;
+            case CAT_BTN_A:
+                jw__select_update_picker_choice(ui, status_buf, status_size);
+                break;
+            case CAT_BTN_X:
+                jw__update_check_releases(ui, status_buf, status_size);
+                break;
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_UPDATE;
+                break;
+            default:
+                break;
+        }
+        break;
+    }
 
     /* ── About ───────────────────────────────────────────────────────── */
     case JW_SETTINGS_ABOUT: {

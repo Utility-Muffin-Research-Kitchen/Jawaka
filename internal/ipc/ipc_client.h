@@ -7,6 +7,8 @@
 
 #include <stdbool.h>
 
+#define JW_IPC_UPDATE_MAX_OPTIONS 20
+
 typedef struct {
     bool active;
     bool command_ok;
@@ -36,6 +38,77 @@ typedef struct {
     char mount_path[512];
     char message[256];
 } jw_ipc_storage_status_info;
+
+typedef struct {
+    int index;
+    bool selected;
+    bool installed;
+    char release_id[128];
+    char version[128];
+    char published_at[64];
+    char notes_url[512];
+    char artifact_kind[64];
+    char artifact_name[256];
+    long long artifact_size;
+    long long installed_size;
+} jw_ipc_update_option_info;
+
+typedef struct {
+    char state[32];
+    bool compatible;
+    bool has_update;
+    bool current_unknown;
+    int installed_schema;
+    char platform_id[32];
+    char current_release_id[128];
+    char current_version[128];
+    char release_id[128];
+    char version[128];
+    char published_at[64];
+    char source_manifest[512];
+    char manifest_url[1024];
+    char notes_url[512];
+    char artifact_kind[64];
+    char artifact_name[256];
+    char artifact_url[1024];
+    char artifact_sha256[65];
+    long long artifact_size;
+    long long installed_size;
+    bool downloaded;
+    bool download_active;
+    long long download_received;
+    long long download_total;
+    int download_percent;
+    char download_path[512];
+    char handoff_type[64];
+    char handoff_completion[64];
+    char handoff_trigger_file[256];
+    char recovery_name[256];
+    char recovery_url[1024];
+    int managed_apps_count;
+    int migrations_count;
+    bool install_ready;
+    bool install_blocked;
+    bool install_needs_confirmation;
+    bool install_active;
+    bool install_armed;
+    bool install_idle;
+    int install_battery_percent;
+    int install_charging;
+    long long install_required_free;
+    long long install_available_free;
+    char install_result_state[64];
+    char install_result_release_id[128];
+    char install_result_message[256];
+    char install_request_path[512];
+    char install_result_path[512];
+    char install_reason[64];
+    char install_message[256];
+    char message[256];
+    int selected_option;
+    int option_count;
+    jw_ipc_update_option_info options[JW_IPC_UPDATE_MAX_OPTIONS];
+} jw_ipc_update_status_info;
 
 /* Send a "hello" handshake to jawakad.
  * role: "launcher" or "menu".
@@ -127,6 +200,32 @@ int jw_ipc_platform_audio_status(const char *socket_path,
 int jw_ipc_set_audio_output(const char *socket_path,
                             jw_platform_audio_output output,
                             char *status, int status_len);
+
+int jw_ipc_update_status(const char *socket_path,
+                         jw_ipc_update_status_info *out,
+                         char *status, int status_len);
+int jw_ipc_update_check(const char *socket_path,
+                        const char *manifest_path,
+                        jw_ipc_update_status_info *out,
+                        char *status, int status_len);
+int jw_ipc_update_select(const char *socket_path,
+                         int option_index,
+                         jw_ipc_update_status_info *out,
+                         char *status, int status_len);
+int jw_ipc_update_download(const char *socket_path,
+                           jw_ipc_update_status_info *out,
+                           char *status, int status_len);
+int jw_ipc_update_cancel(const char *socket_path,
+                         jw_ipc_update_status_info *out,
+                         char *status, int status_len);
+int jw_ipc_update_install_preflight(const char *socket_path,
+                                    bool confirm_unknown_battery,
+                                    jw_ipc_update_status_info *out,
+                                    char *status, int status_len);
+int jw_ipc_update_install(const char *socket_path,
+                          bool confirm_unknown_battery,
+                          jw_ipc_update_status_info *out,
+                          char *status, int status_len);
 
 int jw_ipc_get_adb(const char *socket_path, int *out_enabled,
                    int *out_intent_enabled, bool *out_supported);
