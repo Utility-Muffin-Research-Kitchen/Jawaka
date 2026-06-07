@@ -1,14 +1,30 @@
-## Catastrophe submodule
+# Jawaka Third-Party Dependencies
 
-Once Jawaka has a git origin configured, add Catastrophe as a submodule:
+Jawaka keeps small vendored dependencies here when they are part of the current
+build contract.
+
+## Current Contents
+
+- `cjson/` is vendored and compiled into the Jawaka binaries.
+- `catastrophe/` is a placeholder for a future submodule, but the active local
+  workflow uses an adjacent `../Catastrophe` checkout or an explicit
+  `CATASTROPHE_DIR`.
+
+## Catastrophe Checkout
+
+The root Makefile resolves Catastrophe in this order:
+
+1. `CATASTROPHE_DIR`, when set.
+2. `../Catastrophe`, when present.
+3. `third_party/catastrophe`, for a future submodule checkout.
+
+For normal UMRK sibling workspaces, no submodule setup is required:
 
 ```sh
-git submodule add <CATASTROPHE_REPO_URL> third_party/catastrophe
-git submodule update --init --recursive
+export CATASTROPHE_DIR=../Catastrophe
+make
 ```
 
-Until then, developers should point the Makefile at a local checkout by
-exporting `CATASTROPHE_DIR=/path/to/Catastrophe` before invoking `make`.
-Phase 0+1 already uses Catastrophe for minimal launcher/menu surfaces, so
-`CATASTROPHE_DIR` is part of the expected developer setup until the submodule
-can be added for real.
+If this repo is ever used outside the umbrella workspace, either set
+`CATASTROPHE_DIR=/path/to/Catastrophe` or populate `third_party/catastrophe`
+with the Catastrophe source.

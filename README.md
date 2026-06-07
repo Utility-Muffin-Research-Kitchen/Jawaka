@@ -1,44 +1,37 @@
 # Jawaka
 
-Jawaka is the planned launcher repo for UMRK. This repository currently
-implements the first honest desktop slice of the architecture:
+Jawaka is the UMRK launcher stack built on Catastrophe. The normal entrypoint is
+`jawakad`, a long-lived coordinator that owns scanning, launch requests, platform
+control, process handoff, and the IPC socket. The foreground UI processes are
+`jawaka-launcher` and `jawaka-menu`.
 
-- `jawakad` as the long-lived coordinator
-- `jawaka-launcher` as the full launcher surface
-- `jawaka-menu` as the daemon-invoked contextual menu
+Primary target today is the Miniloong Pocket 1 (MLP1). macOS remains the fast
+local preview loop with a generated mock SD-card tree.
 
-Phase 0 + 1 is intentionally small, but real. The daemon owns startup and
-scanning, SQLite opens and is populated from a mock SD-card tree, and the
-launcher/menu render minimal Catastrophe-backed UI shells on macOS.
+## What Exists
 
-## Status
-
-Current scope:
-
-- Makefile-driven macOS build
-- Unix domain socket IPC with length-prefixed JSON
-- SQLite schema with FTS5
-- mock SD-card generator
-- real game/app scan into the database
-- search over indexed games and apps
-- local game box art in game detail views
-- daemon-owned game and app launch requests
-- minimal launcher and menu surfaces
-
-Deferred:
-
-- richer Catastrophe widgets
-- polished browsing UX
-- scraper/downloader work
-- handheld cross-compilation
+- `jawakad` daemon with Unix-domain-socket, length-prefixed JSON IPC.
+- Catastrophe launcher/menu UIs with Recents, Favorites, Games, Apps, and
+  Settings surfaces.
+- SQLite library database with FTS search, games, apps, recents, favorites, and
+  persisted settings.
+- Filesystem scanner for `Roms/`, `Images/`, and platform-guarded `Apps/`
+  paks.
+- Local box art, system icons, multiple launcher themes, game search, and a
+  Select-driven game switcher.
+- MLP1 platform integration for launch lifecycle, brightness, volume, audio
+  output, Wi-Fi, Bluetooth, ADB pin control, boot splash, secondary SD unmount,
+  LEDs, sleep, reboot, power off, and Exit to Stock.
+- RetroArch helpers: `jawaka-retroarch-runner`, `jawaka-retroarchctl`, metadata
+  catalog support, shared config reset, command-menu integration, and in-game
+  menu flow.
+- Support helpers: `jawaka-osd`, `jawaka-platformctl`, `jawaka-ledd`, and
+  `jawaka-scan-smoke`.
 
 ## Build
 
-Jawaka expects Catastrophe to be available locally while the future submodule is
-still pending.
-
-By default, the build will use `../Catastrophe` if it exists. Otherwise point
-it explicitly at a checkout:
+Jawaka expects Catastrophe to be available locally. The Makefile uses
+`../Catastrophe` when it exists; otherwise set `CATASTROPHE_DIR`.
 
 ```sh
 export CATASTROPHE_DIR=../Catastrophe
@@ -46,107 +39,190 @@ make mockgen
 make
 ```
 
-Run `./scripts/fetch-system-icons.sh` once to populate console icons (shared by Tabs, Vertical, and Coverflow themes).
+Run this once after clone if system icons are missing:
 
-## Run
+```sh
+./scripts/fetch-system-icons.sh
+```
+
+MLP1 build:
+
+```sh
+make mlp1
+```
+
+Other device Makefile targets (`tg5040`, `tg5050`, `my355`) are placeholders.
+
+## Run On macOS
+
+The daemon-owned path is the main local workflow:
 
 ```sh
 make run-daemon
 ```
 
-`run-daemon` defaults to a short phase-0/1 auto-demo so the full
-daemon -> launcher -> menu -> shutdown flow completes on its own. Override that
-for manual interaction:
+`run-daemon` runs a short automated demo. For manual testing:
 
 ```sh
-JAWAKA_AUTODEMO=0 make run-daemon
+make run-daemon-interactive
 ```
 
-To keep `jawakad` running without auto-spawning a UI, use daemon-only mode:
+To keep only `jawakad` running and attach UI processes yourself:
 
 ```sh
 make run-daemon-only
+make run-launcher
+make run-menu
 ```
 
-Then start the launcher separately against that daemon:
+Useful smoke/debug targets:
 
 ```sh
-make run-launcher
+make phase3-fixture-scan-smoke
+make mlp1-adb-smoke
+make mlp1-adb-input-capture
+make mlp1-adb-ra-command-smoke
 ```
 
-## Keyboard controls
+## Stage To MLP1
 
-Desktop testing follows Catastrophe's default desktop mapping:
+Device staging is owned by the sibling `Leaf` repo. From `../Leaf`:
 
-- arrows = d-pad navigation
-- `A` = face button A
-- `B` = face button B (back/close within overlays; no-op at launcher root)
-- `Y` = face button Y
-- `Enter` = Start
-- `Space` = Select
-- `H` = Menu
-- `;` / `t` = L2 / R2 (triggers — tab switching in tabbed mode)
-- `Q` = quit launcher (desktop only — calls daemon shutdown; not mapped on device)
+```sh
+make stage-jawaka DEVICE=mlp1       # launcher payload only
+make stage DEVICE=mlp1              # launcher + RetroArch/cores + apps
+make stage-refresh DEVICE=mlp1      # full stage, then restart GUI stack
+make refresh-jawaka DEVICE=mlp1     # restart GUI stack only
+```
 
-### Launcher
-
-- `Up` / `Down` navigate systems
-- `H` open the menu through the daemon
-- `X` open launcher search
-- `Y` rescan the mock SD-card library
-- `;` / `t` switch tabs in tabbed mode (works from inside Settings too)
-- `Q` desktop-only shortcut to request daemon shutdown
-
-### Menu
-
-- `Up` / `Down` move between menu items
-- `A` or `Enter` activate the highlighted item
-- `B` close the menu and return to the launcher
-
-## Environment
-
-| Variable | Purpose |
-|----------|---------|
-| `CATASTROPHE_DIR` | local Catastrophe checkout used for build headers |
-| `SDCARD_PATH` | mock or device SD-card root, defaults to `./mock-sdcard` for desktop |
-| `UMRK_RUNTIME_PATH` | runtime socket dir; `JAWAKA_RUNTIME_DIR` remains a compatibility alias |
-| `UMRK_PLATFORM_PATH` | platform payload root; defaults to `SYSTEM_PATH` |
-| `JAWAKA_AUTODEMO` | `1` enables the short automated launcher/menu flow |
-| `JAWAKA_AUTODEMO_DELAY_MS` | delay before auto actions, defaults to `1200` |
-
-See the umbrella `docs/runtime-paths.md` for the full runtime env contract.
-
-`build/bin/jawakad` also accepts `--daemon-only` to skip the initial
-launcher spawn when you want to attach `jawaka-launcher` manually.
-
-## Layout
-
-Phase 0 + 1 targets a Done Set Three-inspired content tree:
+Leaf assembles Jawaka into:
 
 ```text
-mock-sdcard/
-  Roms/<SYSTEM_CODE>/<title>.<ext>
-  Images/<SYSTEM_CODE>/<title>.png
-  BIOS/
-  Apps/<platform>/<Name>.pak/
-    launch.sh
-    pak.json
-  Apps/shared/<Name>.pak/
-    launch.sh
-    pak.json
-  .system/leaf/platforms/<platform>/state/library.db
+$SDCARD_PATH/.system/leaf/platforms/mlp1/launcher/
+  env.sh
+  bin/loong_pangu              # staged jawakad
+  bin/jawaka-launcher
+  bin/jawaka-menu
+  bin/jawaka-osd
+  bin/jawaka-platformctl
+  bin/jawaka-retroarchctl
+  bin/jawaka-retroarch-runner
+  bin/jawaka-ledd
+  res/
+```
+
+Activation is controlled by:
+
+```text
+$SDCARD_PATH/.system/leaf/platforms/mlp1/enabled
+```
+
+Jawaka's ADB restore intent marker lives at:
+
+```text
+$SDCARD_PATH/.system/leaf/platforms/mlp1/state/adb-enabled
+```
+
+## Controls
+
+Desktop testing follows Catastrophe's default mapping:
+
+```text
+Arrows       d-pad navigation
+A           face button A / select
+B           face button B / back
+X           search or context action
+Y           refresh/rescan or secondary action
+Enter       Start
+Space       Select / game switcher
+H           Menu
+; / t       L2 / R2 tab switching
+Q           desktop-only daemon shutdown
+```
+
+On MLP1, Jawaka reads the Loong Gamepad through its platform input proxy.
+
+## Runtime Environment
+
+Jawaka consumes the shared Leaf runtime contract from:
+
+```text
+$SDCARD_PATH/.system/leaf/platforms/$PLATFORM/launcher/env.sh
+```
+
+Important variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `CATASTROPHE_DIR` | Catastrophe checkout used by local builds |
+| `PLATFORM` / `DEVICE` | platform id, usually `mac` or `mlp1` |
+| `SDCARD_PATH` | mock or device SD-card root |
+| `SDCARD_PATHS` | colon-separated SD roots, primary first |
+| `ROMS_PATHS`, `IMAGES_PATHS`, `APPS_PATHS` | plural content roots scanned by Jawaka |
+| `UMRK_RUNTIME_PATH` | runtime socket and scratch directory |
+| `UMRK_PLATFORM_PATH` / `SYSTEM_PATH` | platform payload root |
+| `UMRK_INTERNAL_DATA_PATH` | launcher-owned state root |
+| `UMRK_LAUNCHER_PATH` | launcher bundle root |
+| `UMRK_RETROARCH_BIN`, `CORES_PATH`, `INFO_PATH` | RetroArch runtime paths |
+| `JAWAKA_THEME` | local preview theme override |
+| `JAWAKA_AUTODEMO` | `1` enables the short automated run-daemon flow |
+| `JAWAKA_AUTODEMO_DELAY_MS` | auto-demo delay, default `1200` |
+
+`JAWAKA_SDCARD_ROOT`, `JAWAKA_RUNTIME_DIR`, `JAWAKA_RETROARCH_BIN`, and
+`JAWAKA_RETROARCH_CORES_DIR` remain compatibility aliases. New scripts and docs
+should prefer the `SDCARD_PATH` / `UMRK_*` variables from the umbrella runtime
+contract.
+
+## SD Layout
+
+Jawaka scans content from the Leaf/UMRK SD shape:
+
+```text
+Roms/<SYSTEM_CODE>/<title>.<ext>
+Images/<SYSTEM_CODE>/<title>.png
+Apps/<platform>/<Name>.pak/
+Apps/shared/<Name>.pak/
+BIOS/
+Saves/
+States/
+Cheats/
+.system/leaf/platforms/<platform>/state/library.db
 ```
 
 For app paks, `pak.json.platform` must match the containing platform directory
 or be `shared`. Icon paths are relative to the containing `.pak` directory
-unless they are absolute.
+unless they are absolute. Flat `Apps/<Name>.pak/` entries are ignored.
 
-## Plans
+## Settings
 
-- `docs/PLAN.md` mirrors the current broader Jawaka roadmap
-- `docs/ARCHITECTURE_DECISIONS.md` mirrors the binding architecture decisions
-- umbrella `plans/jawaka-phase-0-1.md` remains the execution plan
+The current Settings tree includes:
+
+```text
+Appearance       theme, color scheme, layout, status bar, fonts, pill shape
+Display & Sound brightness, audio output, volume
+Network          Wi-Fi scan/connect/forget and ADB enable/disable
+Bluetooth        scan, pair/connect, disconnect/forget
+Lighting         MLP1 LED enable/mode/color/brightness/speed
+Library          reset RetroArch config, unmount secondary SD
+Accounts         placeholders for future service sign-in
+Behavior         startup tab, auto-sleep, boot splash
+About            system/library facts and open-source component credits
+```
+
+Jawaka exports Catastrophe `CAT_*` appearance variables before launching
+`jawaka-launcher`, `jawaka-menu`, and Catastrophe-based `.pak` apps. Apps should
+consume the inherited environment rather than read Jawaka's SQLite DB.
+
+## Repo Notes
+
+- `scripts/mockgen.sh` creates the local mock SD-card tree.
+- `third_party/cjson/` is vendored and used by the IPC/config paths.
+- `third_party/catastrophe/` is still a placeholder; use `CATASTROPHE_DIR` or an
+  adjacent `../Catastrophe` checkout.
+- `docs/PLAN.md` and `docs/ARCHITECTURE_DECISIONS.md` are historical planning
+  docs. Current behavior is best reflected by this README, the Makefile, and
+  the implementation under `cmd/` and `internal/`.
 
 ## License
 
-Jawaka is released under the MIT License. See [LICENSE](LICENSE).
+Jawaka is released under the MIT License. See `LICENSE`.
