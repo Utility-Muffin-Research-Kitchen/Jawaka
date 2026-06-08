@@ -1140,12 +1140,38 @@ static void jw__wifi_stop_supplicant(void) {
     kill(pid, SIGKILL);
 }
 
+/* Persist the Wi-Fi off-intent so a reboot keeps the radio off. Stock S40network
+   re-ups wlan0 on every boot regardless of the last toggle, so without this the
+   radio always comes back on. The boot hook (00-wifi-dhcpv4.sh) honors this
+   marker and brings the interface back down. Lives in the platform state dir,
+   like the other Leaf markers (adb-enabled, boot-splash-disabled). */
+static void jw__wifi_set_disabled_marker(bool disabled) {
+    const char *dir = getenv("UMRK_INTERNAL_DATA_PATH");
+    if (!dir || !dir[0]) {
+        return;
+    }
+    char path[512];
+    int n = snprintf(path, sizeof(path), "%s/wifi-disabled", dir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        return;
+    }
+    if (disabled) {
+        FILE *fp = fopen(path, "w");
+        if (fp) {
+            fclose(fp);
+        }
+    } else {
+        unlink(path);
+    }
+}
+
 int jw_wifi_set_radio(bool on) {
     jw_writeconfig_fn WriteConfig = jw__loong_writeconfig();
     if (!WriteConfig) {
         return -1;
     }
     int rc = WriteConfig("WIFI_PARAM", on ? "{\"enable\":1}" : "{\"enable\":0}", "", 1);
+    jw__wifi_set_disabled_marker(!on);
     if (on) {
         /* loong sets the enable flag and re-ups the interface, but its LIVE
            enable path does not (re)start wpa_supplicant the way its boot init
