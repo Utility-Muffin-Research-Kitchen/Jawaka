@@ -117,6 +117,34 @@ static bool jw__is_file(const char *path) {
     return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+/* True only if `path` is the mount target of a real mounted filesystem (listed
+   in /proc/mounts), not merely an existing directory. The MLP1 has two SD slots;
+   the second slot's mountpoint (/media/sdcard1) exists as an empty directory on
+   the read-only rootfs even when no card is inserted. Arming a stock trigger
+   there is impossible (rootfs is ro) and must not be attempted — so candidate SD
+   roots are gated on being actually mounted, not just present. */
+static bool jw__path_is_mounted(const char *path) {
+    if (!path || !path[0]) return false;
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) return false;
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), fp)) {
+        char *mp = strchr(line, ' ');          /* skip the device field */
+        if (!mp) continue;
+        mp++;
+        char *end = strchr(mp, ' ');           /* mountpoint ends at next space */
+        if (!end) continue;
+        *end = '\0';
+        if (strcmp(mp, path) == 0) {
+            found = true;
+            break;
+        }
+    }
+    fclose(fp);
+    return found;
+}
+
 static const char *jw__json_string(const cJSON *obj, const char *name) {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, name);
     return cJSON_IsString(item) && item->valuestring ? item->valuestring : NULL;
@@ -767,7 +795,7 @@ static int jw__stock_loong_prepare(const jw_update_request *req,
     }
     for (size_t i = 0; i < sizeof(kStockSdRoots) / sizeof(kStockSdRoots[0]); i++) {
         if (!jw__stock_root_seen(roots, root_count, kStockSdRoots[i]) &&
-            jw__is_dir(kStockSdRoots[i])) {
+            jw__path_is_mounted(kStockSdRoots[i])) {
             roots[root_count++] = kStockSdRoots[i];
         }
     }
@@ -777,13 +805,20 @@ static int jw__stock_loong_prepare(const jw_update_request *req,
     jw__write_result(req, "installing", "Preparing restart step");
     for (size_t i = 0; i < root_count; i++) {
         const char *root = roots[i];
-        if (!jw__same_path(root, req->sdcard_root)) {
+        /* The primary root (where the payload was just copied) is mandatory; a
+           genuine second SD is best-effort so an unwritable/odd secondary can
+           never abort an otherwise-good install. */
+        bool primary = jw__same_path(root, req->sdcard_root);
+        if (!primary) {
             if (jw__copy_stock_helper(stage_dir, root,
                                       "umrk-launcher-install.sh", 0755) != 0 ||
                 jw__copy_stock_helper(stage_dir, root,
-                                      "launcher_probe.bin", 0644) != 0) {
-                return -1;
+                                      "launcher_probe.bin", 0644) != 0 ||
+                jw__copy_stock_helper(stage_dir, root,
+                                      req->trigger_file, 0755) != 0) {
+                jw__log_msg(req, "secondary SD root %s not armable; skipping", root);
             }
+            continue;
         }
         if (jw__copy_stock_helper(stage_dir, root, req->trigger_file, 0755) != 0) {
             return -1;
