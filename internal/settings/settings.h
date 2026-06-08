@@ -20,6 +20,7 @@ extern const bool        kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT];
 /* Display labels live here; the matching value tables (radius, corner mask,
    font bump) are the canonical ones in appearance.h, shared with the daemon. */
 #define JW_SETTINGS_PILL_SHAPE_COUNT 4
+#define JW_SETTINGS_PILL_SHAPE_DEFAULT 3   /* "Leaf" — the default list style */
 extern const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT];
 
 #define JW_SETTINGS_FONT_SIZE_COUNT 4

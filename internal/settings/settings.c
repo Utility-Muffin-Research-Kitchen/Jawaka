@@ -702,8 +702,10 @@ static void jw__apply_persisted_overrides_from_values(
         const unsigned char found[JW_SETTING_COUNT]) {
     ap_theme *t = cat_get_theme();
 
-    if (jw__setting_has(values, found, JW_SETTING_PILL_SHAPE_INDEX)) {
-        int idx = atoi(values[JW_SETTING_PILL_SHAPE_INDEX]);
+    {
+        int idx = jw__setting_has(values, found, JW_SETTING_PILL_SHAPE_INDEX)
+                  ? atoi(values[JW_SETTING_PILL_SHAPE_INDEX])
+                  : JW_SETTINGS_PILL_SHAPE_DEFAULT;   /* fresh install → Leaf */
         if (idx >= 0 && idx < JW_SETTINGS_PILL_SHAPE_COUNT) {
             t->pill_radius_ratio = kJawakaPillRadiusValues[idx];
             t->pill_corner_mask  = kJawakaPillCornerMasks[idx];
@@ -820,7 +822,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_scroll_state_init(&ui->about_scroll);
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
     ui->color_scheme_index = -1;   /* custom until a scheme is loaded below */
-    ui->pill_shape_index  = 0;
+    ui->pill_shape_index  = JW_SETTINGS_PILL_SHAPE_DEFAULT;
     ui->font_family_index = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
     ui->font_size_index   = 1;
     ui->show_hints        = true;

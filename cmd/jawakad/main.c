@@ -2165,10 +2165,10 @@ static void jw__apply_persisted_led(jw_daemon_state *state) {
         if (jw_db_get_setting(state->db_path, "platform.led_brightness", value, sizeof(value)) == 0) led.brightness = atoi(value);
         if (jw_db_get_setting(state->db_path, "platform.led_speed", value, sizeof(value)) == 0) led.speed = atoi(value);
     } else {
-        /* Fresh install → the Leaf identity intro: a dim, fast breathing green.
+        /* Fresh install → the Leaf identity intro: a dim, fast green sweep.
            Persist it so it becomes the user's setting and shows in Lighting. */
         led.enabled = true;
-        led.mode = JW_LED_MODE_BREATH;
+        led.mode = JW_LED_MODE_SWEEP;
         led.r = 0x30; led.g = 0xA2; led.b = 0x00;   /* #30A200 */
         led.brightness = 1;
         led.speed = 10;
