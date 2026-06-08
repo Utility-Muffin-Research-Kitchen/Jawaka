@@ -672,15 +672,32 @@ static int jw__wifi_ssid_sae(const char *ssid) {
     return -1;
 }
 
+/* Management-frame protection. WPA2/WPA3 transition APs advertise PMF-capable;
+   if the client leaves ieee80211w unset, wpa_supplicant defaults PMF off and the
+   AP silently drops data frames after a SAE association (associates fine, then
+   DHCP gets no reply). ieee80211w=1 (optional) negotiates PMF with SAE yet still
+   lets a pure WPA2-PSK AP associate without it — so it is safe for every secured
+   network. =2 (required) would break the WPA2 fallback, so we never use it. */
+static void jw__wifi_set_pmf(const char *idbuf, int mode) {
+    char val[4];
+    snprintf(val, sizeof(val), "%d", mode);
+    const char *set_pmf[] = { "set_network", idbuf, "ieee80211w", val };
+    (void)jw__wifi_run_ok(set_pmf, 4);
+}
+
 static int jw__wifi_set_secured_key_mgmt(const char *idbuf, int sae) {
     const char *primary = (sae == 1) ? "WPA-PSK SAE" : "WPA-PSK";
     const char *set_primary[] = { "set_network", idbuf, "key_mgmt", primary };
     if (jw__wifi_run_ok(set_primary, 4) == 0) {
+        jw__wifi_set_pmf(idbuf, sae == 1 ? 1 : 0);
         return 0;
     }
     if (sae == 1) {
         const char *set_fallback[] = { "set_network", idbuf, "key_mgmt", "WPA-PSK" };
-        return jw__wifi_run_ok(set_fallback, 4);
+        if (jw__wifi_run_ok(set_fallback, 4) == 0) {
+            jw__wifi_set_pmf(idbuf, 0);
+            return 0;
+        }
     }
     return -1;
 }
@@ -961,14 +978,17 @@ static int jw__wifi_read_enable_flag(void) {
 }
 
 bool jw_wifi_radio_is_on(void) {
-    /* Loong's persisted enable flag is the source of truth (matches boot
-       behavior and the last toggle). Fall back to the interface flag only if
-       the DB can't be read. */
-    int flag = jw__wifi_read_enable_flag();
-    if (flag >= 0) {
-        return flag != 0;
+    /* In Leaf mode we bring wlan0 up/down ourselves on every radio toggle, and no
+       stock loong daemon runs to keep loong's persisted WIFI_PARAM flag in sync —
+       so that flag goes stale (e.g. it stays "1" after an off-toggle, leaving the
+       UI stuck showing "on"/"unavailable"). The interface IFF_UP bit reflects the
+       real radio state and is authoritative whenever it can be read; fall back to
+       the persisted flag only if the interface flags are entirely unreadable. */
+    if (access(JW_WIFI_FLAGS_PATH, R_OK) == 0) {
+        return jw__wifi_iface_up();
     }
-    return jw__wifi_iface_up();
+    int flag = jw__wifi_read_enable_flag();
+    return flag > 0;
 }
 
 /* Loong's generic system_config writer from libloong_sdk. Driving WIFI_PARAM
@@ -1087,6 +1107,39 @@ static void jw__wifi_iface_set_up(void) {
     waitpid(pid, &status, 0);
 }
 
+/* Bring wlan0 down. In Leaf mode stock loong_service (and its wifi watchdog) is
+   not running, so nothing reverts this — unlike on stock. */
+static void jw__wifi_iface_set_down(void) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        return;
+    }
+    if (pid == 0) {
+        execlp("ifconfig", "ifconfig", JW_WIFI_IFACE, "down", (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+}
+
+/* Stop wpa_supplicant so the radio stops scanning and won't reconnect. In Leaf
+   mode no stock daemon restarts it, so the radio stays off until the next
+   jw_wifi_set_radio(true). */
+static void jw__wifi_stop_supplicant(void) {
+    int pid = jw__wifi_supplicant_pid();
+    if (pid <= 0) {
+        return;
+    }
+    kill(pid, SIGTERM);
+    for (int i = 0; i < 20; i++) {
+        if (jw__wifi_supplicant_pid() != pid) {
+            return;
+        }
+        usleep(100 * 1000);
+    }
+    kill(pid, SIGKILL);
+}
+
 int jw_wifi_set_radio(bool on) {
     jw_writeconfig_fn WriteConfig = jw__loong_writeconfig();
     if (!WriteConfig) {
@@ -1103,6 +1156,16 @@ int jw_wifi_set_radio(bool on) {
         jw__wifi_start_supplicant();
         jw_wifi_restore();
         jw_wifi_recover();
+    } else {
+        /* WriteConfig persists enable:0 to loong.db, but in Leaf mode no stock
+           loong daemon is running to act on it live — so the radio would stay on.
+           Turn it off ourselves: drop the connection, stop the supplicant, and
+           bring the interface down. With stock loong_service absent there is no
+           watchdog to revert the interface-down. */
+        const char *disconnect[] = { "disconnect" };
+        (void)jw__wifi_run_ok(disconnect, 1);
+        jw__wifi_stop_supplicant();
+        jw__wifi_iface_set_down();
     }
     return rc < 0 ? -1 : 0;
 }
