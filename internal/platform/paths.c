@@ -1079,13 +1079,32 @@ static void jw__mlp1_retroarch_audio_cfg(FILE *fp) {
         device = jw__env_value("UMRK_AUDIO_DEVICE");
     }
 
-    jw__retroarch_cfg_string(fp, "audio_driver", "alsa");
     if (output && strcmp(output, "BLUETOOTH") == 0) {
+        /* Bluetooth is served by BlueALSA (a2dp-source), which exposes a raw
+           ALSA `bluealsa` pcm and is *not* a PulseAudio sink. Keep the ALSA
+           driver for this path so BT playback keeps working. */
+        jw__retroarch_cfg_string(fp, "audio_driver", "alsa");
         jw__retroarch_cfg_string(fp, "audio_device", "bluealsa");
-    } else if (device && device[0]) {
+        return;
+    }
+
+    /* Speaker/HDMI: play through PulseAudio natively. The rk817 codec is owned
+       by the PulseAudio daemon; routing through the ALSA `default` pcm (the
+       libasound pulse plugin) gave RetroArch bogus buffer-fill readings, so its
+       audio sync / dynamic-rate-control mis-corrected after every savestate
+       load and left the game running with laggy, desynced audio. The native
+       pulse driver queries real PA latency and survives state loads. */
+    jw__retroarch_cfg_string(fp, "audio_driver", "pulse");
+
+    /* With the pulse driver, audio_device names a PulseAudio *sink*, not an
+       ALSA pcm. Honor an explicit sink name from the env, but ignore the
+       "default" sentinel (an ALSA pcm name that PA only tolerates by luck) and
+       fall through to PA's real default sink — what the launcher's volume
+       buttons (pactl set-sink-volume) operate on. */
+    if (device && device[0] && strcmp(device, "default") != 0) {
         jw__retroarch_cfg_string(fp, "audio_device", device);
     } else {
-        jw__retroarch_cfg_string(fp, "audio_device", "default");
+        jw__retroarch_cfg_string(fp, "audio_device", "");
     }
 }
 #endif
