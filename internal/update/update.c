@@ -221,6 +221,17 @@ static bool jw__ascii_equal_ci(const char *a, const char *b) {
     return *a == '\0' && *b == '\0';
 }
 
+#ifdef JW_UPDATE_USE_LIBCURL
+static bool jw__env_truthy(const char *name) {
+    const char *value = getenv(name);
+    return value && value[0] &&
+           !jw__ascii_equal_ci(value, "0") &&
+           !jw__ascii_equal_ci(value, "false") &&
+           !jw__ascii_equal_ci(value, "no") &&
+           !jw__ascii_equal_ci(value, "off");
+}
+#endif
+
 static int jw__download_with_libcurl(const char *url,
                                      const char *out_path,
                                      const char *accept,
@@ -330,7 +341,7 @@ static int jw__download_with_libcurl(const char *url,
     }
 
     /* Developer escape hatch only; normal builds verify TLS. */
-    if (getenv("JAWAKA_UPDATE_INSECURE_TLS")) {
+    if (jw__env_truthy("JAWAKA_UPDATE_INSECURE_TLS")) {
         JW_CURL_SET(CURLOPT_SSL_VERIFYPEER, 0L);
         JW_CURL_SET(CURLOPT_SSL_VERIFYHOST, 0L);
     }

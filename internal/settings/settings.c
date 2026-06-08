@@ -938,13 +938,6 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     if (!ui) return;
     ui->open = true;
     ui->screen = JW_SETTINGS_HOME;
-    jw__refresh_brightness(ui);
-    jw__refresh_volume(ui);
-    jw__refresh_audio_status(ui);
-    jw__refresh_led(ui);
-    jw__refresh_adb(ui);
-    jw__refresh_boot_splash(ui);
-    jw__refresh_secondary_sd_status(ui);
 }
 
 void jw_settings_ui_close(jw_settings_ui *ui) {
@@ -1572,11 +1565,11 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
                              iw / 2);
 
     /* Right: signal word, "Open" prefix for unsecured nets, "saved" suffix for
-       networks with a stored profile (other than the connected one). */
+       networks with a stored profile. */
     const char *word = (net->strength >= 3) ? "Strong" :
                        (net->strength == 2) ? "Good"   : "Weak";
     const char *open_prefix = net->secured ? "" : "Open  ";
-    const char *saved_suffix = (net->saved && !net->current) ? "  saved" : "";
+    const char *saved_suffix = net->saved ? "  saved" : "";
     char value[56];
     snprintf(value, sizeof(value), "%s%s%s", open_prefix, word, saved_suffix);
     int vw = cat_measure_text(body, value);
@@ -3223,9 +3216,14 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->wifi_msg[0] = '\0';
                     jw__wifi_attempt_clear(ui);
                     jw__refresh_adb(ui);
+                    ui->wifi_radio_on = jw_wifi_available() && jw_wifi_radio_is_on();
                     jw__refresh_wifi(ui);          /* show status immediately */
-                    jw_wifi_scan_start();          /* kick a scan */
-                    jw__refresh_wifi_scan(ui);     /* show any cached results now */
+                    if (ui->wifi_radio_on) {
+                        jw_wifi_scan_start();      /* kick a scan */
+                        jw__refresh_wifi_scan(ui); /* show any cached results now */
+                    } else {
+                        ui->wifi_network_count = 0;
+                    }
                     unsigned now = SDL_GetTicks();
                     ui->wifi_next_poll_ms = now + 2000;            /* then live every ~2s */
                     ui->wifi_next_scan_ms = now + JW_WIFI_SCAN_INTERVAL_MS;
@@ -3251,7 +3249,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_secondary_sd_status(ui);
                 }
                 else if (idx == 6) ui->screen = JW_SETTINGS_ACCOUNTS;
-                else if (idx == 7) ui->screen = JW_SETTINGS_BEHAVIOR;
+                else if (idx == 7) {
+                    ui->screen = JW_SETTINGS_BEHAVIOR;
+                    jw__refresh_boot_splash(ui);
+                }
                 else if (idx == 8) {
                     ui->screen = JW_SETTINGS_UPDATE;
                     ui->update_list.cursor = 0;

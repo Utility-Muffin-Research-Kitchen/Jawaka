@@ -249,6 +249,19 @@ static int jw__wifi_saved_ssids(char out[][64], int max) {
     return count;
 }
 
+/* The launcher can open the Network page while boot Wi-Fi is still settling.
+   Try one SD-backed restore from the UI process too, so a temporarily-empty
+   live tmpfs config doesn't make saved networks look unsaved. */
+static void jw__wifi_restore_once(void) {
+    static int restored = 0;
+    if (restored) {
+        return;
+    }
+    if (jw_wifi_restore() >= 0) {
+        restored = 1;
+    }
+}
+
 int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int max) {
     if (!out || max <= 0) {
         return -1;
@@ -310,6 +323,7 @@ int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int m
 
     /* Mark networks that have a usable saved profile. A secured AP with a stale
        open profile must prompt for a password instead of looking saved. */
+    jw__wifi_restore_once();
     char saved[JW_WIFI_MAX_NETWORKS][64];
     int nsaved = jw__wifi_saved_ssids(saved, JW_WIFI_MAX_NETWORKS);
     for (int i = 0; i < count; i++) {
@@ -599,6 +613,10 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
     char buf[128];
     char idbuf[16];
     int id = jw__wifi_saved_id(ssid);
+    if (id < 0 && secured) {
+        jw_wifi_restore();
+        id = jw__wifi_saved_id(ssid);
+    }
 
     if (id < 0) {
         /* No saved profile. Only open networks can connect without a password. */
@@ -689,13 +707,13 @@ static int jw__wifi_set_secured_key_mgmt(const char *idbuf, int sae) {
     const char *primary = (sae == 1) ? "WPA-PSK SAE" : "WPA-PSK";
     const char *set_primary[] = { "set_network", idbuf, "key_mgmt", primary };
     if (jw__wifi_run_ok(set_primary, 4) == 0) {
-        jw__wifi_set_pmf(idbuf, sae == 1 ? 1 : 0);
+        jw__wifi_set_pmf(idbuf, 1);
         return 0;
     }
     if (sae == 1) {
         const char *set_fallback[] = { "set_network", idbuf, "key_mgmt", "WPA-PSK" };
         if (jw__wifi_run_ok(set_fallback, 4) == 0) {
-            jw__wifi_set_pmf(idbuf, 0);
+            jw__wifi_set_pmf(idbuf, 1);
             return 0;
         }
     }
@@ -1261,6 +1279,8 @@ int jw_wifi_restore(void) {
         return -1;
     }
     int added = 0;
+    int failed = 0;
+    int stored_networks = 0;
     FILE *f = fopen(path, "rb");
     if (f) {
         char line[256];
@@ -1275,9 +1295,14 @@ int jw_wifi_restore(void) {
                 continue;
             }
             if (in_block && strchr(line, '}')) {
-                if (ssid[0] && jw__wifi_saved_id(ssid) < 0) {
-                    if (jw__wifi_add_profile(ssid, psk[0] ? psk : NULL) == 0) {
-                        added++;
+                if (ssid[0]) {
+                    stored_networks++;
+                    if (jw__wifi_saved_id(ssid) < 0) {
+                        if (jw__wifi_add_profile(ssid, psk[0] ? psk : NULL) == 0) {
+                            added++;
+                        } else {
+                            failed++;
+                        }
                     }
                 }
                 in_block = 0;
@@ -1316,11 +1341,14 @@ int jw_wifi_restore(void) {
         }
     }
 
-    /* Always refresh the durable store from the current live config, so it
-       captures whatever is saved right now — this seeds it on first run (when no
-       store exists yet) and keeps it current after adds. */
-    jw__wifi_export();
-    return added;
+    /* Seed a missing/empty durable store from live config, and refresh after a
+       complete restore. If the SD store had profiles but live restore failed,
+       never export the live tmpfs config back over the durable copy; at boot
+       that live file may simply not be ready yet. */
+    if (!f || stored_networks == 0 || (added > 0 && failed == 0)) {
+        jw__wifi_export();
+    }
+    return failed > 0 ? -1 : added;
 }
 
 int jw_wifi_harden(void) {
