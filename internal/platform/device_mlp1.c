@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -99,19 +100,6 @@
 #define JW_MLP1_USB_RESTART_CMD \
     JW_MLP1_USB_GADGET " restart >/dev/null 2>&1 || " \
     JW_MLP1_USB_GADGET " start >/dev/null 2>&1"
-
-/* Run a command by path with fork/exec instead of system(). */
-static int jw__exec_command(const char *path) {
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        execl(path, path, (char *)NULL);
-        _exit(127);
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
-}
 
 /* Run a shell command via /bin/sh -c (for commands with arguments/pipes). */
 static int jw__exec_shell(const char *cmd) {
@@ -556,18 +544,29 @@ static int jw__loong_standby(void) {
     return 0;
 }
 
-static int jw__mlp1_reboot_async(void) {
+/* Reboot or power off via the reboot(2) syscall directly.
+   The stock busybox reboot/poweroff applets signal PID 1, but in Leaf mode init
+   is blocked in rcS (the umrk-leaf-session supervisor holds the boot), so those
+   signals are never serviced and nothing happens. Magic SysRq is also disabled
+   by default (/proc/sys/kernel/sysrq = 0). reboot(2) goes straight to the kernel
+   and works regardless of init state (we run as root with CAP_SYS_BOOT).
+   Done in a forked child after a short delay so the IPC reply reaches the menu
+   before the system goes down. cmd is RB_AUTOBOOT or RB_POWER_OFF. */
+static int jw__mlp1_power_transition_async(int cmd) {
     pid_t pid = fork();
     if (pid < 0) {
         return -1;
     }
     if (pid == 0) {
-        usleep(250000);
+        usleep(250000);   /* let the IPC reply flush and the menu close */
         sync();
+        reboot(cmd);
+        /* reboot(2) only returns on failure; fall back to magic SysRq. */
         (void)jw__write_text_file("/proc/sys/kernel/sysrq", "1\n");
         (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");
         sleep(1);
-        (void)jw__write_text_file("/proc/sysrq-trigger", "b\n");
+        (void)jw__write_text_file("/proc/sysrq-trigger",
+                                  cmd == RB_POWER_OFF ? "o\n" : "b\n");
         _exit(0);
     }
     return 0;
@@ -1517,8 +1516,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
                                     int value, jw_platform_result *out) {
     if (action == JW_PLATFORM_ACTION_POWEROFF) {
         jw_log_info("platform: poweroff requested");
-        sync();
-        if (jw__exec_command("/usr/sbin/poweroff") != 0) {
+        if (jw__mlp1_power_transition_async(RB_POWER_OFF) != 0) {
             jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "poweroff failed");
             return;
         }
@@ -1528,7 +1526,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_REBOOT) {
         jw_log_info("platform: reboot requested");
-        if (jw__mlp1_reboot_async() != 0) {
+        if (jw__mlp1_power_transition_async(RB_AUTOBOOT) != 0) {
             jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "reboot failed");
             return;
         }
