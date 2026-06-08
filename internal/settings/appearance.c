@@ -93,7 +93,8 @@ void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
 
     int font_idx = jw_appearance_font_family_index_from_db(db_path);
     int font_size_idx = jw__read_index(db_path, "font_size_index", JW_APPEARANCE_FONT_SIZE_COUNT, 1);
-    int pill_idx = jw__read_index(db_path, "pill_shape_index", JW_APPEARANCE_PILL_SHAPE_COUNT, 0);
+    int pill_idx = jw__read_index(db_path, "pill_shape_index", JW_APPEARANCE_PILL_SHAPE_COUNT,
+                                  JW_APPEARANCE_PILL_SHAPE_DEFAULT);
 
     if (jw_resolve_theme_name(db_path, out->theme_name, sizeof(out->theme_name)) != 0)
         snprintf(out->theme_name, sizeof(out->theme_name), "%s", "Jawaka-Tabs");
@@ -117,6 +118,10 @@ void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
     jw__read_setting_or_default(db_path, "highlight_color", "#7FB069", out->highlight, sizeof(out->highlight));
     jw__read_setting_or_default(db_path, "button_label_color", "#0F160E", out->button_label, sizeof(out->button_label));
     jw__read_setting_or_default(db_path, "button_glyph_bg_color", "#7FB069", out->button_glyph_bg, sizeof(out->button_glyph_bg));
+
+    /* Button-hints visibility ("0"/"1"), so apps hide their footers when the
+       user turned hints off in the launcher. Default on. */
+    jw__read_setting_or_default(db_path, "show_hints", "1", out->show_hints, sizeof(out->show_hints));
 }
 
 int jw_appearance_apply_env(const jw_appearance_env *env) {
@@ -135,6 +140,7 @@ int jw_appearance_apply_env(const jw_appearance_env *env) {
     rc |= setenv("CAT_COLOR_HIGHLIGHT", env->highlight, 1);
     rc |= setenv("CAT_COLOR_BUTTON_LABEL", env->button_label, 1);
     rc |= setenv("CAT_COLOR_BUTTON_GLYPH_BG", env->button_glyph_bg, 1);
+    rc |= setenv("CAT_SHOW_HINTS", env->show_hints[0] ? env->show_hints : "1", 1);
 
     return rc == 0 ? 0 : -1;
 }

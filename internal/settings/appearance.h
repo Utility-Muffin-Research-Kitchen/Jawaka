@@ -14,6 +14,10 @@ extern const char *const kJawakaFontFamilyPaths[JW_APPEARANCE_FONT_FAMILY_COUNT]
    the settings UI share a single source of truth. settings.c owns the matching
    display labels and static-asserts its row counts against these. */
 #define JW_APPEARANCE_PILL_SHAPE_COUNT 4
+/* Default list/pill style when nothing is persisted — "Leaf" (index 3). Must
+   match settings.c's JW_SETTINGS_PILL_SHAPE_DEFAULT so the launcher and the
+   appearance env exported to apps agree on a fresh install. */
+#define JW_APPEARANCE_PILL_SHAPE_DEFAULT 3
 #define JW_APPEARANCE_FONT_SIZE_COUNT  4
 
 extern const float kJawakaPillRadiusValues[JW_APPEARANCE_PILL_SHAPE_COUNT];
@@ -43,6 +47,7 @@ typedef struct jw_appearance_env {
     char highlight[16];
     char button_label[16];
     char button_glyph_bg[16];
+    char show_hints[8];           /* "0"/"1" — exported as CAT_SHOW_HINTS */
 } jw_appearance_env;
 
 /* Parent-side: read the DB (and env) and resolve every appearance value into
