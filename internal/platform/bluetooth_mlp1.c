@@ -1,4 +1,5 @@
 #include "internal/platform/bluetooth.h"
+#include "internal/platform/paths.h"
 
 #include "cJSON.h"
 
@@ -412,6 +413,7 @@ int jw_bt_status(jw_bt_status_t *out) {
     }
 
     out->any_connected = jw_bt_any_connected() == 1;
+    (void)jw_bt_sync_stock_saved_list();
     return 0;
 }
 
@@ -1111,6 +1113,20 @@ int jw_bt_sync_stock_saved_list(void) {
     cJSON_Delete(root);
     if (!json) {
         return -1;
+    }
+    char *state_dir = jw_state_dir();
+    if (state_dir) {
+        char path[512];
+        int needed = snprintf(path, sizeof(path), "%s/bluetooth.json", state_dir);
+        if (needed > 0 && (size_t)needed < sizeof(path)) {
+            FILE *fp = fopen(path, "wb");
+            if (fp) {
+                fputs(json, fp);
+                fputc('\n', fp);
+                fclose(fp);
+            }
+        }
+        free(state_dir);
     }
     int rc = jw__bt_write_stock("BLUETOOTH_SAVED_LIST", json);
     cJSON_free(json);

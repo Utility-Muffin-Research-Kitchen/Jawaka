@@ -17,6 +17,9 @@
 #define JW_LED_SPEED_MAX 10
 
 #define JW_PLATFORM_AUDIO_OUTPUT_COUNT 4
+#define JW_PLATFORM_PERF_DOMAIN_COUNT 3
+#define JW_PLATFORM_PERF_VALUE_MAX 64
+#define JW_PLATFORM_PERF_LIST_MAX 512
 
 typedef enum {
     /* Stock modes are driven by the active platform LED backend. */
@@ -65,6 +68,7 @@ typedef struct {
     bool adb;
     bool boot_splash;
     bool led;
+    bool performance;
 } jw_platform_capabilities;
 
 typedef struct {
@@ -105,6 +109,49 @@ typedef struct {
     bool busy;
     bool can_unmount;
 } jw_platform_storage_status;
+
+typedef enum {
+    JW_PLATFORM_PERF_DOMAIN_CPU = 0,
+    JW_PLATFORM_PERF_DOMAIN_GPU,
+    JW_PLATFORM_PERF_DOMAIN_DMC
+} jw_platform_perf_domain;
+
+typedef enum {
+    JW_PLATFORM_PERF_PROFILE_AUTO = 0,
+    JW_PLATFORM_PERF_PROFILE_FRONTEND,
+    JW_PLATFORM_PERF_PROFILE_BALANCED,
+    JW_PLATFORM_PERF_PROFILE_PERFORMANCE,
+    JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER,
+    JW_PLATFORM_PERF_PROFILE_SLEEP,
+    JW_PLATFORM_PERF_PROFILE_CUSTOM,
+    JW_PLATFORM_PERF_PROFILE_COUNT
+} jw_platform_perf_profile;
+
+typedef struct {
+    bool supported;
+    char name[JW_PLATFORM_PERF_VALUE_MAX];
+    char governor[JW_PLATFORM_PERF_VALUE_MAX];
+    int current_freq;
+    int set_freq;
+    char available_governors[JW_PLATFORM_PERF_LIST_MAX];
+    char available_frequencies[JW_PLATFORM_PERF_LIST_MAX];
+} jw_platform_perf_domain_status;
+
+typedef struct {
+    bool supported;
+    int soc_temp_c;
+    char message[JW_PLATFORM_MAX_MESSAGE];
+    jw_platform_perf_domain_status domains[JW_PLATFORM_PERF_DOMAIN_COUNT];
+} jw_platform_perf_status;
+
+typedef struct {
+    char governor[JW_PLATFORM_PERF_VALUE_MAX];
+    int frequency; /* -1 = no explicit userspace frequency */
+} jw_platform_perf_domain_request;
+
+typedef struct {
+    jw_platform_perf_domain_request domains[JW_PLATFORM_PERF_DOMAIN_COUNT];
+} jw_platform_perf_request;
 
 typedef enum {
     JW_PLATFORM_ACTION_SLEEP = 0,
@@ -151,10 +198,18 @@ const char *jw_platform_action_name(jw_platform_action action);
 bool jw_platform_parse_audio_output(const char *name, jw_platform_audio_output *out);
 const char *jw_platform_audio_output_name(jw_platform_audio_output output);
 const char *jw_platform_audio_output_label(jw_platform_audio_output output);
+bool jw_platform_parse_perf_profile(const char *name, jw_platform_perf_profile *out);
+const char *jw_platform_perf_profile_name(jw_platform_perf_profile profile);
+const char *jw_platform_perf_profile_label(jw_platform_perf_profile profile);
 const char *jw_platform_result_code_name(jw_platform_result_code code);
 int  jw_platform_clamp_brightness_percent(int percent);
 void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                 int value, jw_platform_result *out);
+void jw_platform_get_performance_status(jw_platform_context *ctx,
+                                        jw_platform_perf_status *out);
+void jw_platform_apply_performance(jw_platform_context *ctx,
+                                   const jw_platform_perf_request *request,
+                                   jw_platform_result *out);
 bool jw_platform_storage_tick(jw_platform_context *ctx);
 void jw_platform_get_storage_status(jw_platform_context *ctx, const char *source_id,
                                     jw_platform_storage_status *out);

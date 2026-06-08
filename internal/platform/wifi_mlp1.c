@@ -1,5 +1,6 @@
 #include "internal/platform/wifi.h"
 #include "internal/platform/paths.h"
+#include "cJSON.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +18,7 @@
 #include <signal.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <sqlite3.h>
 
 bool jw_wifi_available(void) {
     return true;
@@ -191,6 +193,10 @@ int jw_wifi_strength_now(void) {
 
 static int jw__wifi_saved_id(const char *ssid);
 static bool jw__wifi_saved_profile_has_security(int id);
+static int jw__wifi_sync_stock_profile(const char *ssid, const char *password,
+                                       bool secured, bool connected);
+static int jw__wifi_remove_stock_profile(const char *ssid);
+static int jw__wifi_write_stock(const char *param, const char *value);
 
 int jw_wifi_status(jw_wifi_status_t *out) {
     if (!out) {
@@ -658,6 +664,7 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
     const char *save[] = { "save_config" };
     (void)jw__wifi_run(save, 1, buf, sizeof(buf));   /* best-effort persistence */
     jw__wifi_export();
+    (void)jw__wifi_sync_stock_profile(ssid, NULL, secured, true);
 
     jw__wifi_dhcp();
     return JW_WIFI_CONNECT_OK;
@@ -782,6 +789,7 @@ jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
     const char *save2[] = { "save_config" };
     (void)jw__wifi_run(save2, 1, buf, sizeof(buf));
     jw__wifi_export();
+    (void)jw__wifi_sync_stock_profile(ssid, psk, true, true);
 
     jw__wifi_dhcp();
     return JW_WIFI_CONNECT_OK;
@@ -805,6 +813,7 @@ int jw_wifi_forget(const char *ssid) {
     const char *save[] = { "save_config" };
     (void)jw__wifi_run(save, 1, buf, sizeof(buf));
     jw__wifi_export();
+    (void)jw__wifi_remove_stock_profile(ssid);
     return 0;
 }
 
@@ -1028,6 +1037,17 @@ static jw_writeconfig_fn jw__loong_writeconfig(void) {
         }
     }
     return fn;
+}
+
+static int jw__wifi_write_stock(const char *param, const char *value) {
+    if (!param || !value) {
+        return -1;
+    }
+    jw_writeconfig_fn WriteConfig = jw__loong_writeconfig();
+    if (!WriteConfig) {
+        return -1;
+    }
+    return WriteConfig(param, value, "", 1) < 0 ? -1 : 0;
 }
 
 /* PID of the running wpa_supplicant, or -1 if none. (Scans /proc by comm.) */
@@ -1273,6 +1293,191 @@ static int jw__wifi_add_profile(const char *ssid, const char *psk) {
     return 0;
 }
 
+static char *jw__wifi_loong_saved_json(void) {
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    char *copy = NULL;
+
+    if (sqlite3_open_v2(JW_LOONG_DB_PATH, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        goto done;
+    }
+    if (sqlite3_prepare_v2(db,
+                           "SELECT value FROM system_config "
+                           "WHERE param='WIFI_NETWORK_SAVED_LIST' LIMIT 1;",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        goto done;
+    }
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *text = sqlite3_column_text(stmt, 0);
+        if (text && text[0]) {
+            copy = strdup((const char *)text);
+        }
+    }
+
+done:
+    if (stmt) {
+        sqlite3_finalize(stmt);
+    }
+    if (db) {
+        sqlite3_close(db);
+    }
+    return copy;
+}
+
+static cJSON *jw__wifi_stock_saved_root(void) {
+    char *json = jw__wifi_loong_saved_json();
+    cJSON *root = json ? cJSON_Parse(json) : NULL;
+    free(json);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        root = cJSON_CreateObject();
+    }
+    return root;
+}
+
+static const char *jw__wifi_stock_key_type(bool secured) {
+    return secured ? "WPA2" : "OPEN";
+}
+
+static int jw__wifi_write_stock_saved_root(cJSON *root) {
+    if (!root) {
+        return -1;
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    if (!json) {
+        return -1;
+    }
+    int rc = jw__wifi_write_stock("WIFI_NETWORK_SAVED_LIST", json);
+    cJSON_free(json);
+    return rc;
+}
+
+static int jw__wifi_sync_stock_profile(const char *ssid, const char *password,
+                                       bool secured, bool connected) {
+    if (!ssid || !ssid[0]) {
+        return -1;
+    }
+
+    cJSON *root = jw__wifi_stock_saved_root();
+    if (!root) {
+        return -1;
+    }
+
+    for (cJSON *other = root->child; other; other = other->next) {
+        if (!cJSON_IsObject(other)) {
+            continue;
+        }
+        cJSON_DeleteItemFromObjectCaseSensitive(other, "connected");
+        cJSON_AddNumberToObject(other, "connected", 0);
+    }
+
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(root, ssid);
+    if (!cJSON_IsObject(item)) {
+        cJSON_DeleteItemFromObjectCaseSensitive(root, ssid);
+        item = cJSON_CreateObject();
+        if (!item) {
+            cJSON_Delete(root);
+            return -1;
+        }
+        cJSON_AddItemToObject(root, ssid, item);
+    }
+
+    cJSON_DeleteItemFromObjectCaseSensitive(item, "connected");
+    cJSON_AddNumberToObject(item, "connected", connected ? 1 : 0);
+    if (!cJSON_GetObjectItemCaseSensitive(item, "hide")) {
+        cJSON_AddBoolToObject(item, "hide", false);
+    }
+    cJSON_DeleteItemFromObjectCaseSensitive(item, "keyType");
+    cJSON_AddStringToObject(item, "keyType", jw__wifi_stock_key_type(secured));
+    if (password && password[0]) {
+        cJSON_DeleteItemFromObjectCaseSensitive(item, "password");
+        cJSON_AddStringToObject(item, "password", password);
+    } else if (!secured && !cJSON_GetObjectItemCaseSensitive(item, "password")) {
+        cJSON_AddStringToObject(item, "password", "");
+    }
+    cJSON_DeleteItemFromObjectCaseSensitive(item, "saved");
+    cJSON_AddBoolToObject(item, "saved", true);
+    cJSON_DeleteItemFromObjectCaseSensitive(item, "signal");
+    cJSON_AddNumberToObject(item, "signal", 100);
+    cJSON_DeleteItemFromObjectCaseSensitive(item, "ssid");
+    cJSON_AddStringToObject(item, "ssid", ssid);
+
+    int rc = jw__wifi_write_stock_saved_root(root);
+    cJSON_Delete(root);
+    return rc;
+}
+
+static int jw__wifi_remove_stock_profile(const char *ssid) {
+    if (!ssid || !ssid[0]) {
+        return -1;
+    }
+    cJSON *root = jw__wifi_stock_saved_root();
+    if (!root) {
+        return -1;
+    }
+    cJSON_DeleteItemFromObjectCaseSensitive(root, ssid);
+    int rc = jw__wifi_write_stock_saved_root(root);
+    cJSON_Delete(root);
+    return rc;
+}
+
+static int jw__wifi_import_loong_saved(void) {
+    char *json = jw__wifi_loong_saved_json();
+    if (!json) {
+        return 0;
+    }
+
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return 0;
+    }
+
+    int added = 0;
+    for (cJSON *item = root->child; item; item = item->next) {
+        if (!cJSON_IsObject(item)) {
+            continue;
+        }
+
+        cJSON *saved = cJSON_GetObjectItemCaseSensitive(item, "saved");
+        if (cJSON_IsBool(saved) && !cJSON_IsTrue(saved)) {
+            continue;
+        }
+
+        cJSON *ssid_item = cJSON_GetObjectItemCaseSensitive(item, "ssid");
+        const char *ssid = cJSON_IsString(ssid_item) ? ssid_item->valuestring : item->string;
+        if (!ssid || !ssid[0] || jw__wifi_saved_id(ssid) >= 0) {
+            continue;
+        }
+
+        cJSON *password = cJSON_GetObjectItemCaseSensitive(item, "password");
+        const char *psk = (cJSON_IsString(password) && password->valuestring[0])
+                              ? password->valuestring
+                              : NULL;
+        cJSON *key_type = cJSON_GetObjectItemCaseSensitive(item, "keyType");
+        bool open = cJSON_IsString(key_type) &&
+                    strcmp(key_type->valuestring, "OPEN") == 0;
+        if (!psk && !open) {
+            continue;
+        }
+
+        if (jw__wifi_add_profile(ssid, psk) == 0) {
+            added++;
+        }
+    }
+    cJSON_Delete(root);
+
+    if (added > 0) {
+        char buf[64];
+        const char *save[] = { "save_config" };
+        (void)jw__wifi_run(save, 1, buf, sizeof(buf));
+        const char *reconnect[] = { "reconnect" };
+        (void)jw__wifi_run(reconnect, 1, buf, sizeof(buf));
+    }
+    return added;
+}
+
 int jw_wifi_restore(void) {
     char path[PATH_MAX];
     if (jw__wifi_durable_path(path, sizeof(path)) != 0) {
@@ -1339,6 +1544,11 @@ int jw_wifi_restore(void) {
             const char *reconnect[] = { "reconnect" };
             (void)jw__wifi_run(reconnect, 1, buf, sizeof(buf));
         }
+    }
+
+    int imported = jw__wifi_import_loong_saved();
+    if (imported > 0) {
+        added += imported;
     }
 
     /* Seed a missing/empty durable store from live config, and refresh after a

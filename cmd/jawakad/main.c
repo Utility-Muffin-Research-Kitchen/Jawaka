@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -37,6 +38,7 @@
 #define JW_RETROARCH_KILL_GRACE_MS 700LL
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT (-1)
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT_LABEL "unlimited"
+#define JW_PERF_SETTING_KEY "platform.performance.game_profile"
 
 typedef enum {
     JW_CHILD_NONE = 0,
@@ -106,6 +108,13 @@ typedef struct {
     int       autosleep_platform_synced_s;/* last value mirrored to stock power policy */
     long long autosleep_setting_next_ms;  /* throttle for re-reading the DB setting */
     bool      autosleep_screen_off;       /* currently in the screen-off (pre-suspend) stage */
+    jw_platform_perf_profile perf_global_profile;
+    jw_platform_perf_profile perf_active_profile;
+    jw_platform_perf_profile perf_session_profile;
+    bool perf_session_override;
+    bool perf_custom_valid;
+    jw_platform_perf_request perf_custom_request;
+    char perf_last_error[JW_PLATFORM_MAX_MESSAGE];
     jw_update_status update_status;
     jw_update_download_job update_download_job;
     jw_update_install_job update_install_job;
@@ -395,6 +404,7 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "adb", cap && cap->adb);
     cJSON_AddBoolToObject(root, "boot_splash", cap && cap->boot_splash);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
+    cJSON_AddBoolToObject(root, "performance", cap && cap->performance);
     return root;
 }
 
@@ -445,6 +455,357 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "adb_intent_enabled", status->adb_intent_enabled);
     jw__json_add_int_or_null(root, "boot_splash_enabled", status->boot_splash_enabled);
     return root;
+}
+
+static void jw__perf_request_init(jw_platform_perf_request *request) {
+    if (!request) {
+        return;
+    }
+    memset(request, 0, sizeof(*request));
+    for (int i = 0; i < JW_PLATFORM_PERF_DOMAIN_COUNT; i++) {
+        request->domains[i].frequency = -1;
+    }
+}
+
+static void jw__perf_request_set(jw_platform_perf_request *request,
+                                 jw_platform_perf_domain domain,
+                                 const char *governor,
+                                 int frequency) {
+    if (!request || domain < 0 || domain >= JW_PLATFORM_PERF_DOMAIN_COUNT) {
+        return;
+    }
+    jw_platform_perf_domain_request *d = &request->domains[domain];
+    snprintf(d->governor, sizeof(d->governor), "%s", governor ? governor : "");
+    d->frequency = frequency;
+}
+
+static void jw__perf_request_for_profile(jw_platform_perf_profile profile,
+                                         jw_platform_perf_request *request) {
+    jw__perf_request_init(request);
+    switch (profile) {
+        case JW_PLATFORM_PERF_PROFILE_PERFORMANCE:
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_CPU,
+                                 "performance", -1);
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_GPU,
+                                 "performance", -1);
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_DMC,
+                                 "performance", -1);
+            break;
+        case JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER:
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_CPU,
+                                 "userspace", 600000);
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_GPU,
+                                 "userspace", 300000000);
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_DMC,
+                                 "userspace", 528000000);
+            break;
+        case JW_PLATFORM_PERF_PROFILE_SLEEP:
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_CPU,
+                                 "powersave", -1);
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_GPU,
+                                 "powersave", -1);
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_DMC,
+                                 "powersave", -1);
+            break;
+        case JW_PLATFORM_PERF_PROFILE_FRONTEND:
+        case JW_PLATFORM_PERF_PROFILE_BALANCED:
+        case JW_PLATFORM_PERF_PROFILE_AUTO:
+        case JW_PLATFORM_PERF_PROFILE_CUSTOM:
+        default:
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_CPU,
+                                 "schedutil", -1);
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_GPU,
+                                 "simple_ondemand", -1);
+            jw__perf_request_set(request, JW_PLATFORM_PERF_DOMAIN_DMC,
+                                 "dmc_ondemand", -1);
+            break;
+    }
+}
+
+static bool jw__perf_system_prefers_performance(const char *system) {
+    if (!system || !system[0]) {
+        return false;
+    }
+    return strcasecmp(system, "N64") == 0 ||
+           strcasecmp(system, "PSP") == 0 ||
+           strcasecmp(system, "DC") == 0 ||
+           strcasecmp(system, "DREAMCAST") == 0 ||
+           strcasecmp(system, "SATURN") == 0 ||
+           strcasecmp(system, "NDS") == 0;
+}
+
+static jw_platform_perf_profile jw__perf_resolve_game_profile(
+        const jw_daemon_state *state,
+        jw_platform_perf_profile profile,
+        const char *system) {
+    (void)state;
+    if (profile != JW_PLATFORM_PERF_PROFILE_AUTO) {
+        return profile;
+    }
+    return jw__perf_system_prefers_performance(system)
+        ? JW_PLATFORM_PERF_PROFILE_PERFORMANCE
+        : JW_PLATFORM_PERF_PROFILE_BALANCED;
+}
+
+static jw_platform_perf_profile jw__perf_current_requested_profile(
+        const jw_daemon_state *state) {
+    if (!state) {
+        return JW_PLATFORM_PERF_PROFILE_AUTO;
+    }
+    return state->perf_session_override
+        ? state->perf_session_profile
+        : state->perf_global_profile;
+}
+
+static int jw__perf_apply_profile(jw_daemon_state *state,
+                                  jw_platform_perf_profile requested,
+                                  const char *system,
+                                  const char *reason) {
+    if (!state || !state->platform.capabilities.performance) {
+        return 0;
+    }
+
+    jw_platform_perf_profile profile =
+        jw__perf_resolve_game_profile(state, requested, system);
+    jw_platform_perf_request request;
+    if (profile == JW_PLATFORM_PERF_PROFILE_CUSTOM && state->perf_custom_valid) {
+        request = state->perf_custom_request;
+    } else {
+        if (profile == JW_PLATFORM_PERF_PROFILE_CUSTOM) {
+            profile = JW_PLATFORM_PERF_PROFILE_BALANCED;
+        }
+        jw__perf_request_for_profile(profile, &request);
+    }
+
+    jw_platform_result result;
+    jw_platform_apply_performance(&state->platform, &request, &result);
+    if (result.code == JW_PLATFORM_RESULT_OK) {
+        state->perf_active_profile = profile;
+        state->perf_last_error[0] = '\0';
+        jw_log_info("performance: applied profile=%s requested=%s reason=%s system=%s",
+                    jw_platform_perf_profile_name(profile),
+                    jw_platform_perf_profile_name(requested),
+                    reason ? reason : "unknown",
+                    system && system[0] ? system : "(none)");
+        return 0;
+    }
+
+    snprintf(state->perf_last_error, sizeof(state->perf_last_error), "%s",
+             result.message[0] ? result.message
+                               : jw_platform_result_code_name(result.code));
+    jw_log_warn("performance: apply failed profile=%s reason=%s: %s",
+                jw_platform_perf_profile_name(profile),
+                reason ? reason : "unknown",
+                state->perf_last_error);
+    return -1;
+}
+
+static int jw__perf_apply_game(jw_daemon_state *state, const char *system,
+                               const char *reason) {
+    return jw__perf_apply_profile(state,
+                                  jw__perf_current_requested_profile(state),
+                                  system, reason);
+}
+
+static int jw__perf_apply_frontend(jw_daemon_state *state, const char *reason) {
+    return jw__perf_apply_profile(state, JW_PLATFORM_PERF_PROFILE_FRONTEND,
+                                  NULL, reason);
+}
+
+static int jw__perf_apply_current_context(jw_daemon_state *state,
+                                          const char *reason) {
+    if (state && state->retroarch_session.active) {
+        return jw__perf_apply_game(state, state->retroarch_session.system, reason);
+    }
+    return jw__perf_apply_frontend(state, reason);
+}
+
+static void jw__perf_load_global(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    state->perf_global_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
+    char value[64];
+    if (state->db_path &&
+        jw_db_get_setting(state->db_path, JW_PERF_SETTING_KEY,
+                          value, sizeof(value)) == 0 &&
+        value[0]) {
+        jw_platform_perf_profile parsed;
+        if (jw_platform_parse_perf_profile(value, &parsed) &&
+            parsed != JW_PLATFORM_PERF_PROFILE_CUSTOM &&
+            parsed != JW_PLATFORM_PERF_PROFILE_SLEEP &&
+            parsed != JW_PLATFORM_PERF_PROFILE_FRONTEND) {
+            state->perf_global_profile = parsed;
+        }
+    }
+}
+
+static int jw__perf_persist_global(jw_daemon_state *state,
+                                   jw_platform_perf_profile profile) {
+    if (!state || !state->db_path) {
+        return -1;
+    }
+    return jw_db_set_setting(state->db_path, JW_PERF_SETTING_KEY,
+                             jw_platform_perf_profile_name(profile));
+}
+
+static cJSON *jw__perf_domain_json(const jw_platform_perf_domain_status *domain) {
+    cJSON *root = cJSON_CreateObject();
+    if (!domain) {
+        return root;
+    }
+    cJSON_AddBoolToObject(root, "supported", domain->supported);
+    cJSON_AddStringToObject(root, "name", domain->name);
+    cJSON_AddStringToObject(root, "governor", domain->governor);
+    jw__json_add_int_or_null(root, "current_freq", domain->current_freq);
+    jw__json_add_int_or_null(root, "set_freq", domain->set_freq);
+    cJSON_AddStringToObject(root, "available_governors",
+                            domain->available_governors);
+    cJSON_AddStringToObject(root, "available_frequencies",
+                            domain->available_frequencies);
+    return root;
+}
+
+static int jw__reply_performance_status(jw_daemon_state *state,
+                                        jw_ipc_client *client) {
+    jw_platform_perf_status status;
+    jw_platform_get_performance_status(&state->platform, &status);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "performance-status");
+    cJSON_AddBoolToObject(root, "supported", status.supported);
+    cJSON_AddStringToObject(root, "active_profile",
+                            jw_platform_perf_profile_name(state->perf_active_profile));
+    cJSON_AddStringToObject(root, "global_profile",
+                            jw_platform_perf_profile_name(state->perf_global_profile));
+    cJSON_AddStringToObject(root, "session_profile",
+                            jw_platform_perf_profile_name(state->perf_session_profile));
+    cJSON_AddBoolToObject(root, "session_override", state->perf_session_override);
+    cJSON_AddStringToObject(root, "message", status.message);
+    cJSON_AddStringToObject(root, "last_error", state->perf_last_error);
+    jw__json_add_int_or_null(root, "soc_temp_c", status.soc_temp_c);
+
+    cJSON *domains = cJSON_CreateObject();
+    if (domains) {
+        cJSON_AddItemToObject(domains, "cpu",
+                              jw__perf_domain_json(&status.domains[JW_PLATFORM_PERF_DOMAIN_CPU]));
+        cJSON_AddItemToObject(domains, "gpu",
+                              jw__perf_domain_json(&status.domains[JW_PLATFORM_PERF_DOMAIN_GPU]));
+        cJSON_AddItemToObject(domains, "dmc",
+                              jw__perf_domain_json(&status.domains[JW_PLATFORM_PERF_DOMAIN_DMC]));
+        cJSON_AddItemToObject(root, "domains", domains);
+    }
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_performance_set_profile(jw_daemon_state *state,
+                                              jw_ipc_client *client,
+                                              cJSON *root) {
+    cJSON *profile_json = cJSON_GetObjectItemCaseSensitive(root, "profile");
+    if (!cJSON_IsString(profile_json) || !profile_json->valuestring) {
+        return jw__reply_error(client, "missing performance profile");
+    }
+
+    jw_platform_perf_profile profile;
+    if (!jw_platform_parse_perf_profile(profile_json->valuestring, &profile)) {
+        return jw__reply_error(client, "unknown performance profile");
+    }
+
+    cJSON *scope_json = cJSON_GetObjectItemCaseSensitive(root, "scope");
+    const char *scope = cJSON_IsString(scope_json) && scope_json->valuestring
+                      ? scope_json->valuestring
+                      : "session";
+
+    if (strcmp(scope, "global") == 0) {
+        if (profile == JW_PLATFORM_PERF_PROFILE_CUSTOM ||
+            profile == JW_PLATFORM_PERF_PROFILE_SLEEP ||
+            profile == JW_PLATFORM_PERF_PROFILE_FRONTEND) {
+            return jw__reply_error(client, "profile cannot be global");
+        }
+        state->perf_global_profile = profile;
+        (void)jw__perf_persist_global(state, profile);
+        if (state->retroarch_session.active && !state->perf_session_override) {
+            (void)jw__perf_apply_game(state, state->retroarch_session.system,
+                                      "global-profile");
+        }
+        return jw__reply_ok(client, "performance-set-profile", NULL);
+    }
+
+    if (strcmp(scope, "session") != 0) {
+        return jw__reply_error(client, "unknown performance scope");
+    }
+    if (profile == JW_PLATFORM_PERF_PROFILE_FRONTEND ||
+        profile == JW_PLATFORM_PERF_PROFILE_SLEEP) {
+        return jw__reply_error(client, "profile cannot be a session override");
+    }
+    state->perf_session_profile = profile;
+    state->perf_session_override = true;
+    state->perf_custom_valid = state->perf_custom_valid &&
+                               profile == JW_PLATFORM_PERF_PROFILE_CUSTOM;
+    if (state->retroarch_session.active) {
+        (void)jw__perf_apply_game(state, state->retroarch_session.system,
+                                  "session-profile");
+    }
+    return jw__reply_ok(client, "performance-set-profile", NULL);
+}
+
+static void jw__perf_parse_domain_request(cJSON *root,
+                                          const char *prefix,
+                                          jw_platform_perf_domain_request *out) {
+    if (!root || !prefix || !out) {
+        return;
+    }
+    char key[64];
+    snprintf(key, sizeof(key), "%s_governor", prefix);
+    cJSON *governor = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (cJSON_IsString(governor) && governor->valuestring) {
+        snprintf(out->governor, sizeof(out->governor), "%s", governor->valuestring);
+    }
+    snprintf(key, sizeof(key), "%s_frequency", prefix);
+    cJSON *frequency = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (cJSON_IsNumber(frequency)) {
+        out->frequency = frequency->valueint;
+    }
+}
+
+static int jw__handle_performance_set_custom(jw_daemon_state *state,
+                                             jw_ipc_client *client,
+                                             cJSON *root) {
+    jw_platform_perf_request request;
+    jw__perf_request_init(&request);
+    jw__perf_parse_domain_request(root, "cpu",
+                                  &request.domains[JW_PLATFORM_PERF_DOMAIN_CPU]);
+    jw__perf_parse_domain_request(root, "gpu",
+                                  &request.domains[JW_PLATFORM_PERF_DOMAIN_GPU]);
+    jw__perf_parse_domain_request(root, "dmc",
+                                  &request.domains[JW_PLATFORM_PERF_DOMAIN_DMC]);
+    state->perf_custom_request = request;
+    state->perf_custom_valid = true;
+    state->perf_session_profile = JW_PLATFORM_PERF_PROFILE_CUSTOM;
+    state->perf_session_override = true;
+    if (state->retroarch_session.active) {
+        (void)jw__perf_apply_game(state, state->retroarch_session.system,
+                                  "session-custom");
+    }
+    return jw__reply_ok(client, "performance-set-custom", NULL);
+}
+
+static int jw__handle_performance_reset_session(jw_daemon_state *state,
+                                                jw_ipc_client *client) {
+    state->perf_session_override = false;
+    state->perf_session_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
+    state->perf_custom_valid = false;
+    jw__perf_request_init(&state->perf_custom_request);
+    (void)jw__perf_apply_current_context(state, "session-reset");
+    return jw__reply_ok(client, "performance-reset-session", NULL);
+}
+
+static void jw__platform_sleep_with_performance(jw_daemon_state *state,
+                                               jw_platform_result *out) {
+    (void)jw__perf_apply_profile(state, JW_PLATFORM_PERF_PROFILE_SLEEP,
+                                 NULL, "sleep");
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SLEEP, 0, out);
+    (void)jw__perf_apply_current_context(state, "wake");
 }
 
 static void jw__cache_platform_status(jw_daemon_state *state,
@@ -1122,6 +1483,13 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
     state->post_launch_resume_pending = false;
     state->post_launch_resume_attempts = 0;
     jw__retroarch_session_clear(session);
+    if (!state->pending_launch) {
+        state->perf_session_override = false;
+        state->perf_session_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
+        state->perf_custom_valid = false;
+        jw__perf_request_init(&state->perf_custom_request);
+        (void)jw__perf_apply_frontend(state, "retroarch-exit");
+    }
 }
 
 static int jw__request_open_menu(jw_daemon_state *state) {
@@ -1705,6 +2073,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     }
 
     if (resident_eligible) {
+        (void)jw__perf_apply_game(state, system, "resident-switch");
         long long resident_start_ms = jw__monotonic_ms();
         char load_reply[JW_RA_REPLY_MAX];
         jw_ra_result load_content =
@@ -2477,6 +2846,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
 
     jw__suspend_input_proxy_for_app(state);
     jw__publish_audio_env(state);
+    (void)jw__perf_apply_frontend(state, "app-launch");
 
     /* Resolve appearance from the DB here in the parent — opening SQLite between
        fork() and execv() is not fork-safe on macOS (os_log landmine). */
@@ -2644,6 +3014,9 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         }
     }
     long long state_resolve_done_ms = jw__monotonic_ms();
+
+    (void)jw__perf_apply_game(state, state->pending_launch_system,
+                              "retroarch-launch");
 
     long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
@@ -2821,7 +3194,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
        restore the screen. */
     jw_log_info("auto-sleep: suspending (idle %llums)", (unsigned long long)idle_ms);
     jw_platform_result result;
-    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SLEEP, 0, &result);
+    jw__platform_sleep_with_performance(state, &result);
     jw_log_info("auto-sleep: resumed from suspend");
     jw__screen_set(state, true);
     state->autosleep_screen_off = false;
@@ -3286,6 +3659,28 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_platform_audio_status(state, client);
     }
 
+    if (strcmp(type->valuestring, "performance-status") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_performance_status(state, client);
+    }
+
+    if (strcmp(type->valuestring, "performance-set-profile") == 0) {
+        int rc = jw__handle_performance_set_profile(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "performance-set-custom") == 0) {
+        int rc = jw__handle_performance_set_custom(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "performance-reset-session") == 0) {
+        cJSON_Delete(root);
+        return jw__handle_performance_reset_session(state, client);
+    }
+
     if (strcmp(type->valuestring, "update-status") == 0) {
         cJSON_Delete(root);
         return jw__reply_update_status(state, client);
@@ -3376,6 +3771,8 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
             if (result.code == JW_PLATFORM_RESULT_OK) {
                 jw__publish_audio_env(state);
             }
+        } else if (action == JW_PLATFORM_ACTION_SLEEP) {
+            jw__platform_sleep_with_performance(state, &result);
         } else {
             jw_platform_perform_action(&state->platform, action, value, &result);
         }
@@ -3749,6 +4146,10 @@ int main(int argc, char *argv[]) {
     state.ledd_pid = -1;
     state.led_configured = false;
     state.autosleep_platform_synced_s = -1;
+    state.perf_global_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
+    state.perf_active_profile = JW_PLATFORM_PERF_PROFILE_FRONTEND;
+    state.perf_session_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
+    jw__perf_request_init(&state.perf_custom_request);
     jw_update_download_job_init(&state.update_download_job);
     jw_update_install_job_init(&state.update_install_job);
 
@@ -3805,6 +4206,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     jw__load_library_generation(&state);
+    jw__perf_load_global(&state);
+    (void)jw__perf_apply_frontend(&state, "startup");
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
     jw__apply_persisted_led(&state);

@@ -1003,6 +1003,237 @@ int jw_ipc_set_audio_output(const char *socket_path,
     return ok ? 0 : -1;
 }
 
+static void ipc__performance_status_init(jw_ipc_performance_status_info *out) {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->soc_temp_c = -1;
+    for (int i = 0; i < JW_PLATFORM_PERF_DOMAIN_COUNT; i++) {
+        out->domains[i].current_freq = -1;
+        out->domains[i].set_freq = -1;
+    }
+}
+
+static void ipc__parse_performance_domain(const cJSON *domains,
+                                          const char *key,
+                                          jw_ipc_performance_domain_status *out) {
+    if (!domains || !key || !out) {
+        return;
+    }
+    const cJSON *domain = cJSON_GetObjectItemCaseSensitive(domains, key);
+    if (!cJSON_IsObject(domain)) {
+        return;
+    }
+    const cJSON *v = NULL;
+    out->supported = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(domain, "supported"));
+    v = cJSON_GetObjectItemCaseSensitive(domain, "name");
+    if (cJSON_IsString(v)) ipc__copy_string(out->name, sizeof(out->name), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(domain, "governor");
+    if (cJSON_IsString(v)) ipc__copy_string(out->governor, sizeof(out->governor), v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(domain, "current_freq");
+    out->current_freq = cJSON_IsNumber(v) ? v->valueint : -1;
+    v = cJSON_GetObjectItemCaseSensitive(domain, "set_freq");
+    out->set_freq = cJSON_IsNumber(v) ? v->valueint : -1;
+    v = cJSON_GetObjectItemCaseSensitive(domain, "available_governors");
+    if (cJSON_IsString(v)) {
+        ipc__copy_string(out->available_governors,
+                         sizeof(out->available_governors), v->valuestring);
+    }
+    v = cJSON_GetObjectItemCaseSensitive(domain, "available_frequencies");
+    if (cJSON_IsString(v)) {
+        ipc__copy_string(out->available_frequencies,
+                         sizeof(out->available_frequencies), v->valuestring);
+    }
+}
+
+int jw_ipc_get_performance_status(const char *socket_path,
+                                  jw_ipc_performance_status_info *out,
+                                  char *status, int status_len) {
+    ipc__performance_status_init(out);
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "performance-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "performance status unavailable");
+        }
+        return -1;
+    }
+    if (!ipc__type_is(resp, "performance-status")) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "performance status failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (out) {
+        const cJSON *v = NULL;
+        out->supported = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "supported"));
+        out->session_override =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "session_override"));
+        v = cJSON_GetObjectItemCaseSensitive(resp, "active_profile");
+        if (cJSON_IsString(v)) ipc__copy_string(out->active_profile, sizeof(out->active_profile), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "global_profile");
+        if (cJSON_IsString(v)) ipc__copy_string(out->global_profile, sizeof(out->global_profile), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "session_profile");
+        if (cJSON_IsString(v)) ipc__copy_string(out->session_profile, sizeof(out->session_profile), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "soc_temp_c");
+        out->soc_temp_c = cJSON_IsNumber(v) ? v->valueint : -1;
+        v = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(v)) ipc__copy_string(out->message, sizeof(out->message), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "last_error");
+        if (cJSON_IsString(v)) ipc__copy_string(out->last_error, sizeof(out->last_error), v->valuestring);
+
+        const cJSON *domains = cJSON_GetObjectItemCaseSensitive(resp, "domains");
+        ipc__parse_performance_domain(domains, "cpu",
+                                      &out->domains[JW_PLATFORM_PERF_DOMAIN_CPU]);
+        ipc__parse_performance_domain(domains, "gpu",
+                                      &out->domains[JW_PLATFORM_PERF_DOMAIN_GPU]);
+        ipc__parse_performance_domain(domains, "dmc",
+                                      &out->domains[JW_PLATFORM_PERF_DOMAIN_DMC]);
+    }
+
+    if (status && status_len > 0) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s", "performance status ready");
+        }
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_set_performance_profile(const char *socket_path,
+                                   const char *scope,
+                                   const char *profile,
+                                   char *status, int status_len) {
+    if (!profile || !profile[0]) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "performance profile missing");
+        }
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "performance-set-profile");
+    cJSON_AddStringToObject(req, "scope", scope && scope[0] ? scope : "session");
+    cJSON_AddStringToObject(req, "profile", profile);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "performance profile failed: daemon unavailable");
+        }
+        return -1;
+    }
+    int ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s",
+                     ok ? "performance profile set" : "performance profile failed");
+        }
+    }
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
+static void ipc__add_perf_domain_request(cJSON *req,
+                                         const char *prefix,
+                                         const jw_platform_perf_domain_request *domain) {
+    if (!req || !prefix || !domain) {
+        return;
+    }
+    char key[64];
+    if (domain->governor[0]) {
+        snprintf(key, sizeof(key), "%s_governor", prefix);
+        cJSON_AddStringToObject(req, key, domain->governor);
+    }
+    if (domain->frequency >= 0) {
+        snprintf(key, sizeof(key), "%s_frequency", prefix);
+        cJSON_AddNumberToObject(req, key, domain->frequency);
+    }
+}
+
+int jw_ipc_set_performance_custom(const char *socket_path,
+                                  const jw_platform_perf_request *request,
+                                  char *status, int status_len) {
+    if (!request) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "performance custom missing");
+        }
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "performance-set-custom");
+    ipc__add_perf_domain_request(req, "cpu",
+                                 &request->domains[JW_PLATFORM_PERF_DOMAIN_CPU]);
+    ipc__add_perf_domain_request(req, "gpu",
+                                 &request->domains[JW_PLATFORM_PERF_DOMAIN_GPU]);
+    ipc__add_perf_domain_request(req, "dmc",
+                                 &request->domains[JW_PLATFORM_PERF_DOMAIN_DMC]);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "performance custom failed: daemon unavailable");
+        }
+        return -1;
+    }
+    int ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s",
+                     ok ? "performance custom set" : "performance custom failed");
+        }
+    }
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
+int jw_ipc_reset_performance_session(const char *socket_path,
+                                     char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "performance-reset-session");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "performance reset failed: daemon unavailable");
+        }
+        return -1;
+    }
+    int ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s",
+                     ok ? "performance reset" : "performance reset failed");
+        }
+    }
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
 static int ipc__update_request(const char *socket_path,
                                const char *manifest_path,
                                bool check,

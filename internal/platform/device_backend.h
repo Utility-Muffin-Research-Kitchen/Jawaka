@@ -16,6 +16,11 @@ typedef struct {
                            jw_platform_result *out);
     void (*perform_action)(jw_platform_context *ctx, jw_platform_action action,
                            int value, jw_platform_result *out);
+    void (*get_performance_status)(jw_platform_context *ctx,
+                                   jw_platform_perf_status *out);
+    void (*apply_performance)(jw_platform_context *ctx,
+                              const jw_platform_perf_request *request,
+                              jw_platform_result *out);
     bool (*storage_tick)(jw_platform_context *ctx);
     void (*get_storage_status)(jw_platform_context *ctx, const char *source_id,
                                jw_platform_storage_status *out);

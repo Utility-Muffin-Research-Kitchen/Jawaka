@@ -247,6 +247,60 @@ void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action act
     jw_platform_result_unsupported(action, ctx->platform_id, out);
 }
 
+static void jw__platform_perf_status_init(jw_platform_perf_status *out) {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->soc_temp_c = -1;
+    const char *names[JW_PLATFORM_PERF_DOMAIN_COUNT] = { "CPU", "GPU", "DMC" };
+    for (int i = 0; i < JW_PLATFORM_PERF_DOMAIN_COUNT; i++) {
+        snprintf(out->domains[i].name, sizeof(out->domains[i].name), "%s", names[i]);
+        out->domains[i].current_freq = -1;
+        out->domains[i].set_freq = -1;
+    }
+    snprintf(out->message, sizeof(out->message), "%s", "performance unsupported");
+}
+
+void jw_platform_get_performance_status(jw_platform_context *ctx,
+                                        jw_platform_perf_status *out) {
+    if (!out) {
+        return;
+    }
+    jw__platform_perf_status_init(out);
+    if (!ctx) {
+        snprintf(out->message, sizeof(out->message), "%s", "platform not initialized");
+        return;
+    }
+
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->get_performance_status) {
+        backend->get_performance_status(ctx, out);
+    }
+}
+
+void jw_platform_apply_performance(jw_platform_context *ctx,
+                                   const jw_platform_perf_request *request,
+                                   jw_platform_result *out) {
+    if (!ctx) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "platform not initialized");
+        return;
+    }
+    if (!request) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "missing performance request");
+        return;
+    }
+
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->apply_performance) {
+        backend->apply_performance(ctx, request, out);
+        return;
+    }
+
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED,
+                           "performance unsupported");
+}
+
 bool jw_platform_storage_tick(jw_platform_context *ctx) {
     if (!ctx) {
         return false;

@@ -98,6 +98,7 @@ typedef enum {
     JW_SETTING_STARTUP_TAB_INDEX,
     JW_SETTING_AUTO_SLEEP_SECONDS,
     JW_SETTING_BOOT_SPLASH_ENABLED,
+    JW_SETTING_GAME_PERFORMANCE_PROFILE,
     JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT,
     JW_SETTING_PLATFORM_VOLUME_PERCENT,
     JW_SETTING_ACCENT_COLOR,
@@ -124,6 +125,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_STARTUP_TAB_INDEX] = "startup_tab_index",
     [JW_SETTING_AUTO_SLEEP_SECONDS] = "auto_sleep_seconds",
     [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
+    [JW_SETTING_GAME_PERFORMANCE_PROFILE] = "platform.performance.game_profile",
     [JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT] = "platform.brightness_percent",
     [JW_SETTING_PLATFORM_VOLUME_PERCENT] = "platform.volume_percent",
     [JW_SETTING_ACCENT_COLOR] = "accent_color",
@@ -184,6 +186,25 @@ static const int   kAutoSleepSeconds[] = {     0,       15,       30,       45, 
 #define JW_AUTO_SLEEP_DEFAULT 0   /* Off by default (index into the tables above).
                                      Deep-suspend wake is not yet reliable, so
                                      auto-sleep stays opt-in until that is solid. */
+
+static const jw_platform_perf_profile kGamePerfProfiles[] = {
+    JW_PLATFORM_PERF_PROFILE_AUTO,
+    JW_PLATFORM_PERF_PROFILE_BALANCED,
+    JW_PLATFORM_PERF_PROFILE_PERFORMANCE,
+    JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER,
+};
+#define JW_GAME_PERF_PROFILE_COUNT \
+    ((int)(sizeof(kGamePerfProfiles) / sizeof(kGamePerfProfiles[0])))
+#define JW_GAME_PERF_PROFILE_DEFAULT 0
+
+static int jw__game_perf_index_for_profile(jw_platform_perf_profile profile) {
+    for (int i = 0; i < JW_GAME_PERF_PROFILE_COUNT; i++) {
+        if (kGamePerfProfiles[i] == profile) {
+            return i;
+        }
+    }
+    return JW_GAME_PERF_PROFILE_DEFAULT;
+}
 
 static const char *kHomeCategoryLabels[] = {
     "Appearance",
@@ -350,6 +371,26 @@ static void jw__refresh_boot_splash(jw_settings_ui *ui) {
         if (enabled >= 0) {
             ui->boot_splash_enabled = enabled != 0;
         }
+    }
+}
+
+static void jw__refresh_performance(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+    ui->performance_supported = false;
+    if (!ui->socket_path[0]) {
+        return;
+    }
+
+    jw_ipc_performance_status_info status;
+    if (jw_ipc_get_performance_status(ui->socket_path, &status, NULL, 0) != 0) {
+        return;
+    }
+    ui->performance_supported = status.supported;
+    jw_platform_perf_profile profile;
+    if (jw_platform_parse_perf_profile(status.global_profile, &profile)) {
+        ui->game_perf_profile = jw__game_perf_index_for_profile(profile);
     }
 }
 
@@ -836,6 +877,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
+    ui->game_perf_profile = JW_GAME_PERF_PROFILE_DEFAULT;
+    ui->performance_supported = false;
     ui->brightness_percent = 50;
     ui->volume_percent     = 50;
     ui->audio_output       = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
@@ -913,6 +956,13 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             }
             if (jw__setting_has(values, found, JW_SETTING_BOOT_SPLASH_ENABLED))
                 ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_GAME_PERFORMANCE_PROFILE)) {
+                jw_platform_perf_profile profile;
+                if (jw_platform_parse_perf_profile(
+                        values[JW_SETTING_GAME_PERFORMANCE_PROFILE], &profile)) {
+                    ui->game_perf_profile = jw__game_perf_index_for_profile(profile);
+                }
+            }
             if (jw__setting_has(values, found, JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT))
                 ui->brightness_percent = jw_platform_clamp_brightness_percent(
                     atoi(values[JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT]));
@@ -2119,6 +2169,15 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                          : "Unavailable";
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
                         "Boot Splash", splash, ui->boot_splash_supported);
+    int perf_idx = (ui->game_perf_profile >= 0 &&
+                    ui->game_perf_profile < JW_GAME_PERF_PROFILE_COUNT)
+                 ? ui->game_perf_profile
+                 : JW_GAME_PERF_PROFILE_DEFAULT;
+    const char *perf = ui->performance_supported
+                     ? jw_platform_perf_profile_label(kGamePerfProfiles[perf_idx])
+                     : "Unavailable";
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_PERFORMANCE,
+                        "Game Performance", perf, ui->performance_supported);
     (void)h;
 }
 
@@ -3252,6 +3311,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 else if (idx == 7) {
                     ui->screen = JW_SETTINGS_BEHAVIOR;
                     jw__refresh_boot_splash(ui);
+                    jw__refresh_performance(ui);
                 }
                 else if (idx == 8) {
                     ui->screen = JW_SETTINGS_UPDATE;
@@ -3917,6 +3977,32 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     (void)dir;
                     jw__set_boot_splash(ui, !ui->boot_splash_enabled,
                                         status_buf, status_size);
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_PERFORMANCE) {
+                    if (!ui->performance_supported) {
+                        if (status_buf && status_size > 0) {
+                            snprintf(status_buf, (size_t)status_size, "%s",
+                                     "performance unavailable");
+                        }
+                        break;
+                    }
+                    int next = (ui->game_perf_profile + dir + JW_GAME_PERF_PROFILE_COUNT)
+                               % JW_GAME_PERF_PROFILE_COUNT;
+                    jw_platform_perf_profile profile = kGamePerfProfiles[next];
+                    char status[128] = "";
+                    if (jw_ipc_set_performance_profile(
+                            ui->socket_path, "global",
+                            jw_platform_perf_profile_name(profile),
+                            status, sizeof(status)) == 0) {
+                        ui->game_perf_profile = next;
+                        jw__persist(ui, "platform.performance.game_profile",
+                                    jw_platform_perf_profile_name(profile));
+                        if (status_buf && status_size > 0) {
+                            snprintf(status_buf, (size_t)status_size, "%s", status);
+                        }
+                    } else if (status_buf && status_size > 0) {
+                        snprintf(status_buf, (size_t)status_size, "%s",
+                                 status[0] ? status : "performance failed");
+                    }
                 }
                 break;
             }

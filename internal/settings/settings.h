@@ -116,7 +116,8 @@ typedef enum {
 #define JW_BEHAVIOR_STARTUP_TAB 0
 #define JW_BEHAVIOR_AUTO_SLEEP  1
 #define JW_BEHAVIOR_BOOT_SPLASH 2
-#define JW_BEHAVIOR_ROW_COUNT   3
+#define JW_BEHAVIOR_PERFORMANCE 3
+#define JW_BEHAVIOR_ROW_COUNT   4
 
 /* System Update page */
 #define JW_UPDATE_ROW_CHECK     0
@@ -162,6 +163,8 @@ typedef struct {
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;
+    int                game_perf_profile;   /* Settings > Behavior game profile */
+    bool               performance_supported;
     int                brightness_percent;
     int                volume_percent;
     jw_platform_audio_output audio_output;

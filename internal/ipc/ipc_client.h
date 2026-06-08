@@ -29,6 +29,28 @@ typedef struct {
 } jw_ipc_audio_status;
 
 typedef struct {
+    bool supported;
+    char name[JW_PLATFORM_PERF_VALUE_MAX];
+    char governor[JW_PLATFORM_PERF_VALUE_MAX];
+    int current_freq;
+    int set_freq;
+    char available_governors[JW_PLATFORM_PERF_LIST_MAX];
+    char available_frequencies[JW_PLATFORM_PERF_LIST_MAX];
+} jw_ipc_performance_domain_status;
+
+typedef struct {
+    bool supported;
+    char active_profile[JW_PLATFORM_PERF_VALUE_MAX];
+    char global_profile[JW_PLATFORM_PERF_VALUE_MAX];
+    char session_profile[JW_PLATFORM_PERF_VALUE_MAX];
+    bool session_override;
+    int soc_temp_c;
+    char message[256];
+    char last_error[256];
+    jw_ipc_performance_domain_status domains[JW_PLATFORM_PERF_DOMAIN_COUNT];
+} jw_ipc_performance_status_info;
+
+typedef struct {
     bool present;
     bool mounted;
     bool busy;
@@ -200,6 +222,19 @@ int jw_ipc_platform_audio_status(const char *socket_path,
 int jw_ipc_set_audio_output(const char *socket_path,
                             jw_platform_audio_output output,
                             char *status, int status_len);
+
+int jw_ipc_get_performance_status(const char *socket_path,
+                                  jw_ipc_performance_status_info *out,
+                                  char *status, int status_len);
+int jw_ipc_set_performance_profile(const char *socket_path,
+                                   const char *scope,
+                                   const char *profile,
+                                   char *status, int status_len);
+int jw_ipc_set_performance_custom(const char *socket_path,
+                                  const jw_platform_perf_request *request,
+                                  char *status, int status_len);
+int jw_ipc_reset_performance_session(const char *socket_path,
+                                     char *status, int status_len);
 
 int jw_ipc_update_status(const char *socket_path,
                          jw_ipc_update_status_info *out,

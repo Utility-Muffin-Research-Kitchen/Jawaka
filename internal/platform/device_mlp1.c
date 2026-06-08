@@ -3,6 +3,7 @@
 #include "internal/platform/bluetooth.h"
 #include "internal/core/log.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/netlink.h>
@@ -34,6 +35,11 @@
 #define JW_MLP1_BACKLIGHT_BL_POWER JW_MLP1_BACKLIGHT_DIR "/bl_power"
 #define JW_MLP1_BACKLIGHT_ACTUAL JW_MLP1_BACKLIGHT_DIR "/actual_brightness"
 #define JW_MLP1_BACKLIGHT_MAX JW_MLP1_BACKLIGHT_DIR "/max_brightness"
+
+#define JW_MLP1_CPUFREQ_POLICY "/sys/devices/system/cpu/cpufreq/policy0"
+#define JW_MLP1_GPU_DEVFREQ "/sys/devices/platform/fde60000.gpu/devfreq/fde60000.gpu"
+#define JW_MLP1_DMC_DEVFREQ "/sys/devices/platform/dmc/devfreq/dmc"
+#define JW_MLP1_SOC_TEMP "/sys/class/thermal/thermal_zone0/temp"
 
 #define JW_MLP1_LOONG_DB_PATH "/oem/loong/loong.db"
 #define JW_MLP1_POWER_CFG "/oem/loong/record/config/loong_power.cfg"
@@ -326,6 +332,260 @@ static int jw__write_text_file(const char *path, const char *value) {
         rc = -1;
     }
     return rc;
+}
+
+static void jw__trim_line(char *s) {
+    if (!s) {
+        return;
+    }
+    size_t len = strlen(s);
+    while (len > 0 &&
+           (s[len - 1] == '\n' || s[len - 1] == '\r' ||
+            s[len - 1] == ' ' || s[len - 1] == '\t')) {
+        s[--len] = '\0';
+    }
+    char *start = s;
+    while (*start == ' ' || *start == '\t') {
+        start++;
+    }
+    if (start != s) {
+        memmove(s, start, strlen(start) + 1);
+    }
+}
+
+static int jw__read_line_file(const char *path, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return -1;
+    }
+    if (!fgets(out, (int)out_size, fp)) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    jw__trim_line(out);
+    return 0;
+}
+
+static int jw__join_sysfs_path(char *out, size_t out_size,
+                               const char *base, const char *leaf) {
+    if (!out || out_size == 0 || !base || !leaf) {
+        return -1;
+    }
+    int n = snprintf(out, out_size, "%s/%s", base, leaf);
+    return (n > 0 && n < (int)out_size) ? 0 : -1;
+}
+
+static bool jw__token_list_has(const char *list, const char *token) {
+    if (!list || !token || !token[0]) {
+        return false;
+    }
+    size_t token_len = strlen(token);
+    const char *p = list;
+    while (*p) {
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        const char *start = p;
+        while (*p && !isspace((unsigned char)*p)) {
+            p++;
+        }
+        size_t len = (size_t)(p - start);
+        if (len == token_len && strncmp(start, token, token_len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool jw__freq_list_has(const char *list, int freq) {
+    char token[32];
+    snprintf(token, sizeof(token), "%d", freq);
+    return jw__token_list_has(list, token);
+}
+
+static void jw__mlp1_perf_domain_status(jw_platform_perf_domain domain,
+                                        const char *base,
+                                        jw_platform_perf_domain_status *out) {
+    if (!out) {
+        return;
+    }
+
+    const char *name = "CPU";
+    const char *governor_leaf = "scaling_governor";
+    const char *cur_leaf = "scaling_cur_freq";
+    const char *set_leaf = "scaling_setspeed";
+    const char *available_freq_leaf = "scaling_available_frequencies";
+    const char *available_governor_leaf = "scaling_available_governors";
+    if (domain == JW_PLATFORM_PERF_DOMAIN_GPU) {
+        name = "GPU";
+        governor_leaf = "governor";
+        cur_leaf = "cur_freq";
+        set_leaf = "userspace/set_freq";
+        available_freq_leaf = "available_frequencies";
+        available_governor_leaf = "available_governors";
+    } else if (domain == JW_PLATFORM_PERF_DOMAIN_DMC) {
+        name = "DMC";
+        governor_leaf = "governor";
+        cur_leaf = "cur_freq";
+        set_leaf = "userspace/set_freq";
+        available_freq_leaf = "available_frequencies";
+        available_governor_leaf = "available_governors";
+    }
+
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", name);
+    out->current_freq = -1;
+    out->set_freq = -1;
+
+    char path[PATH_MAX];
+    if (!base || jw__join_sysfs_path(path, sizeof(path), base, governor_leaf) != 0 ||
+        access(path, R_OK) != 0) {
+        return;
+    }
+
+    out->supported = true;
+    (void)jw__read_line_file(path, out->governor, sizeof(out->governor));
+    if (jw__join_sysfs_path(path, sizeof(path), base, cur_leaf) == 0) {
+        out->current_freq = jw__read_int_file(path);
+    }
+    if (jw__join_sysfs_path(path, sizeof(path), base, set_leaf) == 0) {
+        out->set_freq = jw__read_int_file(path);
+    }
+    if (jw__join_sysfs_path(path, sizeof(path), base, available_governor_leaf) == 0) {
+        (void)jw__read_line_file(path, out->available_governors,
+                                 sizeof(out->available_governors));
+    }
+    if (jw__join_sysfs_path(path, sizeof(path), base, available_freq_leaf) == 0) {
+        (void)jw__read_line_file(path, out->available_frequencies,
+                                 sizeof(out->available_frequencies));
+    }
+}
+
+static const char *jw__mlp1_perf_base(jw_platform_perf_domain domain) {
+    switch (domain) {
+        case JW_PLATFORM_PERF_DOMAIN_GPU: return JW_MLP1_GPU_DEVFREQ;
+        case JW_PLATFORM_PERF_DOMAIN_DMC: return JW_MLP1_DMC_DEVFREQ;
+        case JW_PLATFORM_PERF_DOMAIN_CPU:
+        default: return JW_MLP1_CPUFREQ_POLICY;
+    }
+}
+
+static void jw__mlp1_get_performance_status(jw_platform_context *ctx,
+                                            jw_platform_perf_status *out) {
+    (void)ctx;
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->soc_temp_c = -1;
+    for (int i = 0; i < JW_PLATFORM_PERF_DOMAIN_COUNT; i++) {
+        jw__mlp1_perf_domain_status((jw_platform_perf_domain)i,
+                                    jw__mlp1_perf_base((jw_platform_perf_domain)i),
+                                    &out->domains[i]);
+    }
+
+    int temp = jw__read_int_file(JW_MLP1_SOC_TEMP);
+    if (temp >= 1000) {
+        out->soc_temp_c = temp / 1000;
+    } else if (temp >= 0) {
+        out->soc_temp_c = temp;
+    }
+
+    out->supported = out->domains[JW_PLATFORM_PERF_DOMAIN_CPU].supported &&
+                     out->domains[JW_PLATFORM_PERF_DOMAIN_GPU].supported &&
+                     out->domains[JW_PLATFORM_PERF_DOMAIN_DMC].supported;
+    snprintf(out->message, sizeof(out->message), "%s",
+             out->supported ? "performance ready" : "performance partially unavailable");
+}
+
+static int jw__mlp1_apply_perf_domain(jw_platform_perf_domain domain,
+                                      const jw_platform_perf_domain_request *request,
+                                      char *message,
+                                      size_t message_size) {
+    if (!request || !request->governor[0]) {
+        return 0;
+    }
+
+    const char *base = jw__mlp1_perf_base(domain);
+    jw_platform_perf_domain_status status;
+    jw__mlp1_perf_domain_status(domain, base, &status);
+    if (!status.supported) {
+        snprintf(message, message_size, "%s performance unavailable", status.name);
+        return -1;
+    }
+    if (!jw__token_list_has(status.available_governors, request->governor)) {
+        snprintf(message, message_size, "%s governor unsupported: %s",
+                 status.name, request->governor);
+        return -1;
+    }
+    if (request->frequency >= 0) {
+        if (strcmp(request->governor, "userspace") != 0) {
+            snprintf(message, message_size, "%s fixed frequency requires userspace governor",
+                     status.name);
+            return -1;
+        }
+        if (!jw__freq_list_has(status.available_frequencies, request->frequency)) {
+            snprintf(message, message_size, "%s frequency unsupported: %d",
+                     status.name, request->frequency);
+            return -1;
+        }
+    }
+
+    char path[PATH_MAX];
+    char value[JW_PLATFORM_PERF_VALUE_MAX + 4];
+    const char *governor_leaf = (domain == JW_PLATFORM_PERF_DOMAIN_CPU)
+                              ? "scaling_governor"
+                              : "governor";
+    if (jw__join_sysfs_path(path, sizeof(path), base, governor_leaf) != 0) {
+        snprintf(message, message_size, "%s governor path invalid", status.name);
+        return -1;
+    }
+    snprintf(value, sizeof(value), "%s\n", request->governor);
+    if (jw__write_text_file(path, value) != 0) {
+        snprintf(message, message_size, "%s governor write failed: %s",
+                 status.name, strerror(errno));
+        return -1;
+    }
+
+    if (request->frequency >= 0) {
+        const char *set_leaf = (domain == JW_PLATFORM_PERF_DOMAIN_CPU)
+                             ? "scaling_setspeed"
+                             : "userspace/set_freq";
+        if (jw__join_sysfs_path(path, sizeof(path), base, set_leaf) != 0) {
+            snprintf(message, message_size, "%s frequency path invalid", status.name);
+            return -1;
+        }
+        if (jw__write_int_file(path, request->frequency) != 0) {
+            snprintf(message, message_size, "%s frequency write failed: %s",
+                     status.name, strerror(errno));
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static void jw__mlp1_apply_performance(jw_platform_context *ctx,
+                                       const jw_platform_perf_request *request,
+                                       jw_platform_result *out) {
+    (void)ctx;
+    char message[JW_PLATFORM_MAX_MESSAGE];
+    for (int i = 0; i < JW_PLATFORM_PERF_DOMAIN_COUNT; i++) {
+        message[0] = '\0';
+        if (jw__mlp1_apply_perf_domain((jw_platform_perf_domain)i,
+                                       &request->domains[i],
+                                       message, sizeof(message)) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   message[0] ? message : "performance apply failed");
+            return;
+        }
+    }
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "performance applied");
 }
 
 /* Map raw backlight value (61-135) to 0-100% for the user-facing OSD. */
@@ -1902,6 +2162,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .adb = true,
             .boot_splash = true,
             .led = true,
+            .performance = true,
         },
         .init = jw__mlp1_init,
         .shutdown = jw__mlp1_shutdown,
@@ -1909,6 +2170,8 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .get_audio_status = jw__mlp1_get_audio_status,
         .frontend_ready = jw__mlp1_frontend_ready,
         .perform_action = jw__mlp1_perform_action,
+        .get_performance_status = jw__mlp1_get_performance_status,
+        .apply_performance = jw__mlp1_apply_performance,
         .storage_tick = jw__mlp1_storage_tick,
         .get_storage_status = jw__mlp1_get_storage_status,
         .safe_unmount_storage = jw__mlp1_safe_unmount_storage,

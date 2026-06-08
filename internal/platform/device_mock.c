@@ -6,6 +6,8 @@
 
 typedef struct {
     int brightness_percent;
+    char perf_governor[JW_PLATFORM_PERF_DOMAIN_COUNT][JW_PLATFORM_PERF_VALUE_MAX];
+    int perf_freq[JW_PLATFORM_PERF_DOMAIN_COUNT];
 } jw_mock_platform_data;
 
 static int jw__env_int(const char *name, int min_value, int max_value) {
@@ -40,6 +42,15 @@ static int jw__mock_init(jw_platform_context *ctx) {
     if (data->brightness_percent < 0) {
         data->brightness_percent = 50;
     }
+    snprintf(data->perf_governor[JW_PLATFORM_PERF_DOMAIN_CPU],
+             sizeof(data->perf_governor[JW_PLATFORM_PERF_DOMAIN_CPU]), "%s", "schedutil");
+    snprintf(data->perf_governor[JW_PLATFORM_PERF_DOMAIN_GPU],
+             sizeof(data->perf_governor[JW_PLATFORM_PERF_DOMAIN_GPU]), "%s", "simple_ondemand");
+    snprintf(data->perf_governor[JW_PLATFORM_PERF_DOMAIN_DMC],
+             sizeof(data->perf_governor[JW_PLATFORM_PERF_DOMAIN_DMC]), "%s", "dmc_ondemand");
+    data->perf_freq[JW_PLATFORM_PERF_DOMAIN_CPU] = 1608000;
+    data->perf_freq[JW_PLATFORM_PERF_DOMAIN_GPU] = 400000000;
+    data->perf_freq[JW_PLATFORM_PERF_DOMAIN_DMC] = 528000000;
     ctx->backend_data = data;
     return 0;
 }
@@ -94,6 +105,86 @@ static void jw__mock_perform_action(jw_platform_context *ctx, jw_platform_action
     jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, percent);
 }
 
+static const char *jw__mock_perf_name(jw_platform_perf_domain domain) {
+    switch (domain) {
+        case JW_PLATFORM_PERF_DOMAIN_GPU: return "GPU";
+        case JW_PLATFORM_PERF_DOMAIN_DMC: return "DMC";
+        case JW_PLATFORM_PERF_DOMAIN_CPU:
+        default: return "CPU";
+    }
+}
+
+static const char *jw__mock_perf_governors(jw_platform_perf_domain domain) {
+    switch (domain) {
+        case JW_PLATFORM_PERF_DOMAIN_GPU:
+        case JW_PLATFORM_PERF_DOMAIN_DMC:
+            return "dmc_ondemand vdec2_ondemand userspace powersave performance simple_ondemand";
+        case JW_PLATFORM_PERF_DOMAIN_CPU:
+        default:
+            return "interactive conservative ondemand userspace powersave performance schedutil";
+    }
+}
+
+static const char *jw__mock_perf_freqs(jw_platform_perf_domain domain) {
+    switch (domain) {
+        case JW_PLATFORM_PERF_DOMAIN_GPU:
+            return "800000000 700000000 600000000 400000000 300000000 200000000";
+        case JW_PLATFORM_PERF_DOMAIN_DMC:
+            return "324000000 528000000 780000000 1056000000";
+        case JW_PLATFORM_PERF_DOMAIN_CPU:
+        default:
+            return "408000 600000 816000 1104000 1416000 1608000 1800000 1992000";
+    }
+}
+
+static void jw__mock_get_performance_status(jw_platform_context *ctx,
+                                            jw_platform_perf_status *out) {
+    jw_mock_platform_data *data = jw__mock_data(ctx);
+    if (!data || !out) {
+        return;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->supported = true;
+    out->soc_temp_c = 42;
+    snprintf(out->message, sizeof(out->message), "%s", "performance preview ready");
+    for (int i = 0; i < JW_PLATFORM_PERF_DOMAIN_COUNT; i++) {
+        jw_platform_perf_domain domain = (jw_platform_perf_domain)i;
+        jw_platform_perf_domain_status *d = &out->domains[i];
+        d->supported = true;
+        snprintf(d->name, sizeof(d->name), "%s", jw__mock_perf_name(domain));
+        snprintf(d->governor, sizeof(d->governor), "%s", data->perf_governor[i]);
+        d->current_freq = data->perf_freq[i];
+        d->set_freq = strcmp(data->perf_governor[i], "userspace") == 0
+                    ? data->perf_freq[i]
+                    : -1;
+        snprintf(d->available_governors, sizeof(d->available_governors),
+                 "%s", jw__mock_perf_governors(domain));
+        snprintf(d->available_frequencies, sizeof(d->available_frequencies),
+                 "%s", jw__mock_perf_freqs(domain));
+    }
+}
+
+static void jw__mock_apply_performance(jw_platform_context *ctx,
+                                       const jw_platform_perf_request *request,
+                                       jw_platform_result *out) {
+    jw_mock_platform_data *data = jw__mock_data(ctx);
+    if (!data || !request) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "platform not initialized");
+        return;
+    }
+    for (int i = 0; i < JW_PLATFORM_PERF_DOMAIN_COUNT; i++) {
+        if (request->domains[i].governor[0]) {
+            snprintf(data->perf_governor[i], sizeof(data->perf_governor[i]),
+                     "%s", request->domains[i].governor);
+        }
+        if (request->domains[i].frequency >= 0) {
+            data->perf_freq[i] = request->domains[i].frequency;
+        }
+    }
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "performance preview applied");
+}
+
 const jw_platform_backend *jw_platform_get_backend(void) {
     static const jw_platform_backend backend = {
         .platform_id = "mac",
@@ -102,12 +193,15 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .battery = true,
             .charging = true,
             .brightness = true,
+            .performance = true,
         },
         .init = jw__mock_init,
         .shutdown = jw__mock_shutdown,
         .get_status = jw__mock_get_status,
         .frontend_ready = jw__mock_frontend_ready,
         .perform_action = jw__mock_perform_action,
+        .get_performance_status = jw__mock_get_performance_status,
+        .apply_performance = jw__mock_apply_performance,
     };
     return &backend;
 }

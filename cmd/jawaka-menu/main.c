@@ -154,16 +154,77 @@ static const char *kInGameItems[] = {
     "Save State",
     "Load State",
     "Reset",
+    "Performance",
     "RetroArch Settings",
     "Quit",
 };
-#define JW_INGAME_COUNT     6
+#define JW_INGAME_COUNT     7
 #define JW_INGAME_CONTINUE  0
 #define JW_INGAME_SAVE      1
 #define JW_INGAME_LOAD      2
 #define JW_INGAME_RESET     3
-#define JW_INGAME_SETTINGS  4
-#define JW_INGAME_QUIT      5
+#define JW_INGAME_PERF      4
+#define JW_INGAME_SETTINGS  5
+#define JW_INGAME_QUIT      6
+
+#define JW_INGAME_PERF_ROWS 5
+#define JW_INGAME_PERF_PROFILE 0
+#define JW_INGAME_PERF_CPU     1
+#define JW_INGAME_PERF_GPU     2
+#define JW_INGAME_PERF_DMC     3
+#define JW_INGAME_PERF_RESET   4
+
+typedef struct {
+    const char *label;
+    const char *governor;
+    int frequency;
+} jw_perf_option;
+
+static const jw_platform_perf_profile kInGamePerfProfiles[] = {
+    JW_PLATFORM_PERF_PROFILE_AUTO,
+    JW_PLATFORM_PERF_PROFILE_BALANCED,
+    JW_PLATFORM_PERF_PROFILE_PERFORMANCE,
+    JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER,
+    JW_PLATFORM_PERF_PROFILE_CUSTOM,
+};
+#define JW_INGAME_PERF_PROFILE_COUNT \
+    ((int)(sizeof(kInGamePerfProfiles) / sizeof(kInGamePerfProfiles[0])))
+
+static const jw_perf_option kCpuPerfOptions[] = {
+    { "Balanced", "schedutil", -1 },
+    { "Performance", "performance", -1 },
+    { "600 MHz", "userspace", 600000 },
+    { "816 MHz", "userspace", 816000 },
+    { "1.10 GHz", "userspace", 1104000 },
+    { "1.42 GHz", "userspace", 1416000 },
+    { "1.61 GHz", "userspace", 1608000 },
+    { "1.80 GHz", "userspace", 1800000 },
+    { "1.99 GHz", "userspace", 1992000 },
+};
+
+static const jw_perf_option kGpuPerfOptions[] = {
+    { "Balanced", "simple_ondemand", -1 },
+    { "Performance", "performance", -1 },
+    { "200 MHz", "userspace", 200000000 },
+    { "300 MHz", "userspace", 300000000 },
+    { "400 MHz", "userspace", 400000000 },
+    { "600 MHz", "userspace", 600000000 },
+    { "700 MHz", "userspace", 700000000 },
+    { "800 MHz", "userspace", 800000000 },
+};
+
+static const jw_perf_option kDmcPerfOptions[] = {
+    { "Balanced", "dmc_ondemand", -1 },
+    { "Performance", "performance", -1 },
+    { "324 MHz", "userspace", 324000000 },
+    { "528 MHz", "userspace", 528000000 },
+    { "780 MHz", "userspace", 780000000 },
+    { "1.06 GHz", "userspace", 1056000000 },
+};
+
+#define JW_CPU_PERF_OPTION_COUNT ((int)(sizeof(kCpuPerfOptions) / sizeof(kCpuPerfOptions[0])))
+#define JW_GPU_PERF_OPTION_COUNT ((int)(sizeof(kGpuPerfOptions) / sizeof(kGpuPerfOptions[0])))
+#define JW_DMC_PERF_OPTION_COUNT ((int)(sizeof(kDmcPerfOptions) / sizeof(kDmcPerfOptions[0])))
 
 typedef struct {
     cat_list_state      list;
@@ -181,6 +242,12 @@ typedef struct {
     cat_status_bar_opts             status_bar;
     bool                            show_hints;
     bool                            session_details_ready;
+    bool                            perf_ready;
+    jw_ipc_performance_status_info  perf;
+    int                             perf_profile_index;
+    int                             perf_cpu_index;
+    int                             perf_gpu_index;
+    int                             perf_dmc_index;
     jw_ipc_retroarch_session_info   session;
     SDL_Texture                    *still_tex;       /* paused-game still behind the menu */
     SDL_Texture                    *thumb_tex;       /* selected-slot savestate thumbnail */
@@ -401,6 +468,103 @@ static void jw__slot_label(const jw_ingame_state *state, char *out, size_t out_s
     }
 }
 
+static int jw__ingame_perf_profile_index(const char *name) {
+    jw_platform_perf_profile profile;
+    if (!jw_platform_parse_perf_profile(name, &profile)) {
+        return 0;
+    }
+    for (int i = 0; i < JW_INGAME_PERF_PROFILE_COUNT; i++) {
+        if (kInGamePerfProfiles[i] == profile) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+static int jw__ingame_perf_match_option(
+        const jw_ipc_performance_domain_status *domain,
+        const jw_perf_option *options,
+        int count) {
+    if (!domain || !options || count <= 0) {
+        return 0;
+    }
+    int freq = domain->set_freq >= 0 ? domain->set_freq : domain->current_freq;
+    for (int i = 0; i < count; i++) {
+        if (strcmp(domain->governor, options[i].governor) != 0) {
+            continue;
+        }
+        if (options[i].frequency < 0 ||
+            (strcmp(options[i].governor, "userspace") == 0 &&
+             options[i].frequency == freq)) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+static void jw__ingame_perf_sync_indices(jw_ingame_state *state) {
+    if (!state || !state->perf_ready) {
+        return;
+    }
+    state->perf_profile_index = jw__ingame_perf_profile_index(
+        state->perf.session_override ? state->perf.session_profile
+                                     : state->perf.global_profile);
+    state->perf_cpu_index = jw__ingame_perf_match_option(
+        &state->perf.domains[JW_PLATFORM_PERF_DOMAIN_CPU],
+        kCpuPerfOptions, JW_CPU_PERF_OPTION_COUNT);
+    state->perf_gpu_index = jw__ingame_perf_match_option(
+        &state->perf.domains[JW_PLATFORM_PERF_DOMAIN_GPU],
+        kGpuPerfOptions, JW_GPU_PERF_OPTION_COUNT);
+    state->perf_dmc_index = jw__ingame_perf_match_option(
+        &state->perf.domains[JW_PLATFORM_PERF_DOMAIN_DMC],
+        kDmcPerfOptions, JW_DMC_PERF_OPTION_COUNT);
+}
+
+static void jw__ingame_perf_refresh(const char *socket_path,
+                                    jw_ingame_state *state) {
+    if (!state) {
+        return;
+    }
+    state->perf_ready = false;
+    if (jw_ipc_get_performance_status(socket_path, &state->perf,
+                                      NULL, 0) == 0) {
+        state->perf_ready = true;
+        jw__ingame_perf_sync_indices(state);
+    }
+}
+
+static const char *jw__ingame_perf_active_label(const jw_ingame_state *state) {
+    if (!state || !state->perf_ready || !state->perf.supported) {
+        return "Unavailable";
+    }
+    jw_platform_perf_profile profile;
+    if (jw_platform_parse_perf_profile(state->perf.active_profile, &profile)) {
+        return jw_platform_perf_profile_label(profile);
+    }
+    return "Unknown";
+}
+
+static void jw__perf_request_init(jw_platform_perf_request *request) {
+    if (!request) {
+        return;
+    }
+    memset(request, 0, sizeof(*request));
+    for (int i = 0; i < JW_PLATFORM_PERF_DOMAIN_COUNT; i++) {
+        request->domains[i].frequency = -1;
+    }
+}
+
+static void jw__perf_request_set_option(jw_platform_perf_request *request,
+                                        jw_platform_perf_domain domain,
+                                        const jw_perf_option *option) {
+    if (!request || !option || domain < 0 || domain >= JW_PLATFORM_PERF_DOMAIN_COUNT) {
+        return;
+    }
+    jw_platform_perf_domain_request *d = &request->domains[domain];
+    snprintf(d->governor, sizeof(d->governor), "%s", option->governor);
+    d->frequency = option->frequency;
+}
+
 static void jw__ingame_detail(const jw_ingame_state *state, int item,
                               char *out, size_t out_size) {
     if (!out || out_size == 0) {
@@ -421,6 +585,14 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
 
     if (item == JW_INGAME_SAVE || item == JW_INGAME_LOAD) {
         jw__slot_label(state, out, out_size);
+    } else if (item == JW_INGAME_PERF) {
+        if (state->perf_ready && state->perf.supported && state->perf.soc_temp_c >= 0) {
+            snprintf(out, out_size, "%s, %d C",
+                     jw__ingame_perf_active_label(state),
+                     state->perf.soc_temp_c);
+        } else {
+            snprintf(out, out_size, "%s", jw__ingame_perf_active_label(state));
+        }
     }
 }
 
@@ -756,6 +928,253 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     cat_present();
 }
 
+static const char *jw__ingame_perf_profile_label_for_index(int index) {
+    if (index < 0 || index >= JW_INGAME_PERF_PROFILE_COUNT) {
+        index = 0;
+    }
+    return jw_platform_perf_profile_label(kInGamePerfProfiles[index]);
+}
+
+static void jw__ingame_perf_apply_profile(const char *socket_path,
+                                          jw_ingame_state *state) {
+    if (!state) {
+        return;
+    }
+    if (!state->perf_ready || !state->perf.supported) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "Performance unavailable");
+        return;
+    }
+    jw_platform_perf_profile profile = kInGamePerfProfiles[state->perf_profile_index];
+    if (profile == JW_PLATFORM_PERF_PROFILE_CUSTOM) {
+        jw_platform_perf_request request;
+        jw__perf_request_init(&request);
+        jw__perf_request_set_option(&request, JW_PLATFORM_PERF_DOMAIN_CPU,
+                                    &kCpuPerfOptions[state->perf_cpu_index]);
+        jw__perf_request_set_option(&request, JW_PLATFORM_PERF_DOMAIN_GPU,
+                                    &kGpuPerfOptions[state->perf_gpu_index]);
+        jw__perf_request_set_option(&request, JW_PLATFORM_PERF_DOMAIN_DMC,
+                                    &kDmcPerfOptions[state->perf_dmc_index]);
+        if (jw_ipc_set_performance_custom(socket_path, &request,
+                                          state->status,
+                                          sizeof(state->status)) == 0) {
+            jw__ingame_perf_refresh(socket_path, state);
+        }
+        return;
+    }
+    if (jw_ipc_set_performance_profile(socket_path, "session",
+            jw_platform_perf_profile_name(profile),
+            state->status, sizeof(state->status)) == 0) {
+        jw__ingame_perf_refresh(socket_path, state);
+    }
+}
+
+static void jw__ingame_perf_apply_custom(const char *socket_path,
+                                         jw_ingame_state *state) {
+    if (!state) {
+        return;
+    }
+    state->perf_profile_index =
+        jw__ingame_perf_profile_index(jw_platform_perf_profile_name(
+            JW_PLATFORM_PERF_PROFILE_CUSTOM));
+    jw__ingame_perf_apply_profile(socket_path, state);
+}
+
+static void jw__ingame_perf_reset(const char *socket_path,
+                                  jw_ingame_state *state) {
+    if (!state) {
+        return;
+    }
+    if (jw_ipc_reset_performance_session(socket_path, state->status,
+                                         sizeof(state->status)) == 0) {
+        jw__ingame_perf_refresh(socket_path, state);
+    }
+}
+
+static void jw__ingame_perf_adjust(const char *socket_path,
+                                   jw_ingame_state *state,
+                                   cat_list_state *list,
+                                   int delta) {
+    if (!state || !list) {
+        return;
+    }
+    if (!state->perf_ready || !state->perf.supported) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "Performance unavailable");
+        return;
+    }
+    switch (list->cursor) {
+        case JW_INGAME_PERF_PROFILE:
+            state->perf_profile_index =
+                (state->perf_profile_index + delta + JW_INGAME_PERF_PROFILE_COUNT) %
+                JW_INGAME_PERF_PROFILE_COUNT;
+            jw__ingame_perf_apply_profile(socket_path, state);
+            break;
+        case JW_INGAME_PERF_CPU:
+            state->perf_cpu_index =
+                (state->perf_cpu_index + delta + JW_CPU_PERF_OPTION_COUNT) %
+                JW_CPU_PERF_OPTION_COUNT;
+            jw__ingame_perf_apply_custom(socket_path, state);
+            break;
+        case JW_INGAME_PERF_GPU:
+            state->perf_gpu_index =
+                (state->perf_gpu_index + delta + JW_GPU_PERF_OPTION_COUNT) %
+                JW_GPU_PERF_OPTION_COUNT;
+            jw__ingame_perf_apply_custom(socket_path, state);
+            break;
+        case JW_INGAME_PERF_DMC:
+            state->perf_dmc_index =
+                (state->perf_dmc_index + delta + JW_DMC_PERF_OPTION_COUNT) %
+                JW_DMC_PERF_OPTION_COUNT;
+            jw__ingame_perf_apply_custom(socket_path, state);
+            break;
+        default:
+            break;
+    }
+}
+
+static void jw__render_ingame_performance(const jw_ingame_state *state,
+                                          const cat_list_state *list) {
+    ap_theme *theme     = cat_get_theme();
+    TTF_Font *body_font = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small     = cat_get_font(CAT_FONT_SMALL);
+    cat_status_bar_opts sb = state->status_bar;
+
+    cat_clear_screen();
+    if (state->still_tex) {
+        int sw = cat_get_screen_width();
+        int sh = cat_get_screen_height();
+        cat_draw_image(state->still_tex, 0, 0, sw, sh);
+        ap_color scrim = { 0, 0, 0, 165 };
+        cat_draw_rect(0, 0, sw, sh, scrim);
+    }
+    cat_draw_screen_title("Performance", &sb);
+
+    SDL_Rect content = cat_get_content_rect(true, true, false);
+    int pad = CAT_S(24);
+    int x = content.x + pad;
+    int right = content.x + content.w - pad;
+    int list_w = right - x;
+    int body_h = TTF_FontHeight(body_font);
+    int small_h = TTF_FontHeight(small);
+    int item_h = body_h + CAT_S(12);
+    int top_y = content.y + CAT_S(18);
+    int pill_h = item_h - CAT_S(4);
+    int detail_x = x + list_w * 48 / 100;
+    int detail_w = right - detail_x;
+
+    const char *labels[JW_INGAME_PERF_ROWS] = {
+        "Profile", "CPU", "GPU", "DMC", "Reset Override",
+    };
+    const char *values[JW_INGAME_PERF_ROWS] = {
+        jw__ingame_perf_profile_label_for_index(state->perf_profile_index),
+        kCpuPerfOptions[state->perf_cpu_index].label,
+        kGpuPerfOptions[state->perf_gpu_index].label,
+        kDmcPerfOptions[state->perf_dmc_index].label,
+        state->perf.session_override ? "Active" : "None",
+    };
+
+    if (state->perf_ready && state->perf.supported) {
+        char line[128];
+        if (state->perf.soc_temp_c >= 0) {
+            snprintf(line, sizeof(line), "Active: %s  Temp: %d C",
+                     jw__ingame_perf_active_label(state),
+                     state->perf.soc_temp_c);
+        } else {
+            snprintf(line, sizeof(line), "Active: %s",
+                     jw__ingame_perf_active_label(state));
+        }
+        cat_draw_text_ellipsized(small, line, x, top_y,
+                                 theme->hint, list_w);
+        top_y += small_h + CAT_S(12);
+    } else {
+        cat_draw_text_ellipsized(small, "Performance unavailable", x, top_y,
+                                 theme->hint, list_w);
+        top_y += small_h + CAT_S(12);
+    }
+
+    for (int i = 0; i < JW_INGAME_PERF_ROWS; i++) {
+        int iy = top_y + i * item_h;
+        int pill_y = iy + (item_h - pill_h) / 2;
+        bool sel = list && i == list->cursor;
+        if (sel) {
+            cat_draw_pill(x - CAT_S(10), pill_y, list_w, pill_h, theme->highlight);
+        }
+        ap_color col = sel ? theme->highlighted_text : theme->text;
+        int text_y = pill_y + (pill_h - body_h) / 2;
+        cat_draw_text_ellipsized(body_font, labels[i], x, text_y,
+                                 col, detail_x - x - CAT_S(10));
+        cat_draw_text_ellipsized(small, values[i], detail_x,
+                                 text_y + CAT_S(2),
+                                 sel ? theme->highlighted_text : theme->hint,
+                                 detail_w);
+    }
+
+    if (state->show_hints && state->status[0]) {
+        int y = content.y + content.h - small_h - CAT_S(10);
+        cat_draw_text_ellipsized(small, state->status, x, y, theme->hint, list_w);
+    }
+    if (state->show_hints) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_LEFT, "Adjust", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
+            { CAT_BTN_B,  "Back", true, JW_HINT("B") },
+            { CAT_BTN_A,  "Apply", true, JW_HINT("A") },
+        };
+        cat_draw_footer(footer, 3);
+    }
+    cat_present();
+}
+
+static void jw__ingame_show_performance(const char *socket_path,
+                                        jw_ingame_state *state) {
+    if (!state) {
+        return;
+    }
+    jw__ingame_perf_refresh(socket_path, state);
+    cat_list_state list;
+    cat_list_state_init(&list, JW_INGAME_PERF_ROWS);
+    state->status[0] = '\0';
+
+    bool running = true;
+    while (running && !g_hide_requested) {
+        cat_request_frame_in(100);
+        cat_input_event ev;
+        while (cat_poll_input(&ev)) {
+            if (!ev.pressed) continue;
+            switch (ev.button) {
+                case CAT_BTN_UP:
+                    cat_list_state_move(&list, -1, JW_INGAME_PERF_ROWS);
+                    break;
+                case CAT_BTN_DOWN:
+                    cat_list_state_move(&list, +1, JW_INGAME_PERF_ROWS);
+                    break;
+                case CAT_BTN_LEFT:
+                    jw__ingame_perf_adjust(socket_path, state, &list, -1);
+                    break;
+                case CAT_BTN_RIGHT:
+                    jw__ingame_perf_adjust(socket_path, state, &list, +1);
+                    break;
+                case CAT_BTN_A:
+                case CAT_BTN_START:
+                    if (list.cursor == JW_INGAME_PERF_RESET) {
+                        jw__ingame_perf_reset(socket_path, state);
+                    } else if (list.cursor == JW_INGAME_PERF_PROFILE) {
+                        jw__ingame_perf_apply_profile(socket_path, state);
+                    } else {
+                        jw__ingame_perf_apply_custom(socket_path, state);
+                    }
+                    break;
+                case CAT_BTN_B:
+                    running = false;
+                    break;
+                default:
+                    break;
+            }
+        }
+        jw__render_ingame_performance(state, &list);
+    }
+}
+
 static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) {
     state->session_details_ready = false;
     if (jw_ipc_get_retroarch_session(socket_path, &state->session,
@@ -771,6 +1190,7 @@ static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) 
         state->status[0] = '\0';
     }
     jw__ingame_resolve_titles(state);
+    jw__ingame_perf_refresh(socket_path, state);
 }
 
 static void jw__copy_env_string(const char *name, char *out, size_t out_size) {
@@ -863,6 +1283,9 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
         case JW_INGAME_RESET:
             action = "reset";
             break;
+        case JW_INGAME_PERF:
+            jw__ingame_show_performance(socket_path, state);
+            return 0;
         case JW_INGAME_SETTINGS:
             action = "settings";
             break;
@@ -890,6 +1313,20 @@ static void jw__ingame_adjust(const char *socket_path, jw_ingame_state *state,
                 state->list.cursor == JW_INGAME_LOAD) &&
                state->session.savestate_supported) {
         action = delta < 0 ? "state-slot-prev" : "state-slot-next";
+    } else if (state->list.cursor == JW_INGAME_PERF) {
+        if (!state->perf_ready) {
+            jw__ingame_perf_refresh(socket_path, state);
+        }
+        if (!state->perf_ready || !state->perf.supported) {
+            snprintf(state->status, sizeof(state->status), "%s",
+                     "Performance unavailable");
+            return;
+        }
+        int quick_count = JW_INGAME_PERF_PROFILE_COUNT - 1; /* keep Custom in the tuner */
+        state->perf_profile_index =
+            (state->perf_profile_index + delta + quick_count) % quick_count;
+        jw__ingame_perf_apply_profile(socket_path, state);
+        return;
     }
 
     if (!action) {
