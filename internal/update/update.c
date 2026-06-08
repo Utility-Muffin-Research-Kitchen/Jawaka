@@ -314,6 +314,27 @@ static int jw__download_with_libcurl(const char *url,
     JW_CURL_SET(CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
 #endif
 
+    /* Verify TLS against the launcher's bundled Mozilla CA roots when present.
+       Relying on libcurl's compiled-in default is not safe here: some stock
+       LoongOS libcurl builds default to a CA path that does not exist on the
+       device (/run/libreelec/cacert.pem), which fails every HTTPS request. The
+       bundled file makes verification independent of the firmware's CA store. */
+    {
+        const char *bundle = getenv("UMRK_LAUNCHER_PATH");
+        char ca_path[PATH_MAX];
+        if (bundle && bundle[0] &&
+            jw__join_path(ca_path, sizeof(ca_path), bundle, "res/certs/cacert.pem") &&
+            jw__file_exists(ca_path)) {
+            JW_CURL_SET(CURLOPT_CAINFO, ca_path);
+        }
+    }
+
+    /* Developer escape hatch only; normal builds verify TLS. */
+    if (getenv("JAWAKA_UPDATE_INSECURE_TLS")) {
+        JW_CURL_SET(CURLOPT_SSL_VERIFYPEER, 0L);
+        JW_CURL_SET(CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+
 #undef JW_CURL_SET
 
     rc = curl_easy_perform(easy);
