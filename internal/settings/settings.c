@@ -180,7 +180,9 @@ static const char *kStartupTabLabels[] = {
 static const char *kAutoSleepLabels[]  = { "Off", "15 sec", "30 sec", "45 sec", "1 min", "2 min", "5 min", "10 min" };
 static const int   kAutoSleepSeconds[] = {     0,       15,       30,       45,      60,     120,     300,      600 };
 #define JW_AUTO_SLEEP_COUNT   ((int)(sizeof(kAutoSleepLabels) / sizeof(kAutoSleepLabels[0])))
-#define JW_AUTO_SLEEP_DEFAULT 5   /* 2 min (index into the tables above) */
+#define JW_AUTO_SLEEP_DEFAULT 0   /* Off by default (index into the tables above).
+                                     Deep-suspend wake is not yet reliable, so
+                                     auto-sleep stays opt-in until that is solid. */
 
 static const char *kHomeCategoryLabels[] = {
     "Appearance",

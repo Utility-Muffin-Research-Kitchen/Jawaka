@@ -2725,7 +2725,9 @@ fail:
    Idle (no button input, tracked globally by the input proxy so it covers games
    too) → blank the screen → suspend-to-RAM. Tiered: the screen-off stage wakes
    on any button; the suspend stage wakes on the power button. */
-#define JW_AUTOSLEEP_DEFAULT_S        120     /* 2 min when the setting is unset */
+#define JW_AUTOSLEEP_DEFAULT_S        0       /* Off when the setting is unset.
+                                                 Deep-suspend wake is not yet
+                                                 reliable; auto-sleep is opt-in. */
 #define JW_AUTOSLEEP_SUSPEND_GRACE_MS 30000   /* screen-off → suspend after this much more idle */
 #define JW_AUTOSLEEP_SETTING_POLL_MS  2000    /* re-read the DB setting at most this often */
 
