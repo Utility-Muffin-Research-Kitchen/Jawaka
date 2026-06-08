@@ -5,6 +5,7 @@
 #include "internal/platform/device.h"
 #include "internal/platform/platform_id.h"
 #include "internal/settings/appearance.h"
+#include "cJSON.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -1847,9 +1848,6 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
 
 /* ─── About ────────────────────────────────────────────────────────────── */
 
-/* Bump alongside meaningful launcher releases. */
-#define JW_ABOUT_VERSION "0.0.1"
-
 typedef struct { const char *name; const char *license; } jw__about_credit;
 
 /* Third-party components shipped with / used by the CFW and their licenses.
@@ -1964,6 +1962,39 @@ static void jw__about_push(jw__about_row *rows, int *n, jw__about_kind kind,
     (*n)++;
 }
 
+/* Read the installed Leaf release from release.json (written by the installer /
+   OTA runner). Fills version and release_id; either may stay empty. Returns true
+   if at least one was found. The version is the canonical "current installed
+   version" shown in About; per the OTA contract an absent file means an older
+   install and is shown as "Unknown" rather than blocking anything. */
+static bool jw__read_installed_release(char *version, size_t version_size,
+                                       char *release_id, size_t release_id_size) {
+    if (version_size) version[0] = '\0';
+    if (release_id_size) release_id[0] = '\0';
+    const char *internal = getenv("UMRK_INTERNAL_DATA_PATH");
+    if (!internal || !internal[0]) return false;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/release.json", internal);
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return false;
+    char buf[1024];
+    size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[got] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) return false;
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(root, "version");
+    cJSON *r = cJSON_GetObjectItemCaseSensitive(root, "release_id");
+    if (version_size && cJSON_IsString(v) && v->valuestring)
+        snprintf(version, version_size, "%s", v->valuestring);
+    if (release_id_size && cJSON_IsString(r) && r->valuestring)
+        snprintf(release_id, release_id_size, "%s", r->valuestring);
+    cJSON_Delete(root);
+    return version[0] || release_id[0];
+}
+
 static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("About", x, y, w);
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
@@ -1988,9 +2019,19 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
     int n = 0;
     char buf[72];
 
-    jw__about_push(rows, &n, JW_ABOUT_PLAIN, "Jawaka  v" JW_ABOUT_VERSION, "");
+    char leaf_version[64], leaf_release_id[128];
+    bool have_release = jw__read_installed_release(leaf_version, sizeof(leaf_version),
+                                                   leaf_release_id, sizeof(leaf_release_id));
+    char identity[96];
+    snprintf(identity, sizeof(identity), "Leaf  %s",
+             (have_release && leaf_version[0]) ? leaf_version : "Unknown");
+    jw__about_push(rows, &n, JW_ABOUT_PLAIN, identity, "");
 
     jw__about_push(rows, &n, JW_ABOUT_HEADING, "System", "");
+    /* Release id pins the exact installed artifact; show it when it adds info
+       beyond the version string (per the OTA installed-version contract). */
+    if (have_release && leaf_release_id[0] && strcmp(leaf_release_id, leaf_version) != 0)
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Release", leaf_release_id);
     snprintf(buf, sizeof(buf), "%s", info.os_version[0] ? info.os_version : "?");
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "OS", buf);
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "Kernel", info.kernel[0] ? info.kernel : "—");
