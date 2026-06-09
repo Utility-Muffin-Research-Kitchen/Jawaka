@@ -3199,6 +3199,9 @@ int main(void) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.window_title       = "Jawaka Launcher";
     cfg.disable_background = true;
+    /* The joystick scan costs ~200ms on MLP1; run it after the first frame is
+       on screen (below, right after frontend-ready) instead of before it. */
+    cfg.defer_input_init   = true;
 
     long long cat_start_ms = jw__monotonic_ms();
     if (cat_init(&cfg) != CAT_OK) {
@@ -3296,6 +3299,7 @@ int main(void) {
         jw_log_warn("frontend-ready notification failed");
     }
     long long ready_done_ms = jw__monotonic_ms();
+    cat_init_input();
     jw_log_info("launcher startup timings: hello_ms=%lld cat_ms=%lld theme_ms=%lld cache_ms=%lld settings_ms=%lld first_frame_ms=%lld ready_ms=%lld total_ms=%lld",
                 hello_done_ms - hello_start_ms,
                 cat_done_ms - cat_start_ms,
