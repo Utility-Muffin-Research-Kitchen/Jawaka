@@ -1246,6 +1246,38 @@ static int jw__mlp1_update_power_cfg(int seconds) {
     return rc;
 }
 
+static bool jw__mlp1_json_string_equals(const cJSON *object, const char *key,
+                                        const char *expected) {
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+    return cJSON_IsString(item) && item->valuestring &&
+           strcmp(item->valuestring, expected) == 0;
+}
+
+/* True when the on-disk power cfg already encodes `seconds`, so the rewrite
+   (and the loong_power restart it forces) can be skipped. Fields written by
+   jw__mlp1_update_power_cfg must match exactly; ensure-only fields just need
+   to exist. Missing/corrupt cfg yields false and falls back to the write path. */
+static bool jw__mlp1_power_cfg_matches(int seconds) {
+    cJSON *root = jw__load_json_object_file(JW_MLP1_POWER_CFG, 4096);
+    if (!root) {
+        return false;
+    }
+
+    bool disabled = seconds <= 0;
+    char timeout[32];
+    snprintf(timeout, sizeof(timeout), "%ld",
+             disabled ? 0L : (long)seconds * 1000L);
+
+    bool matches =
+        cJSON_GetObjectItemCaseSensitive(root, "autoOffLight") != NULL &&
+        cJSON_GetObjectItemCaseSensitive(root, "standbyMuteDisable") != NULL &&
+        jw__mlp1_json_string_equals(root, "hibernateDisable", disabled ? "1" : "0") &&
+        jw__mlp1_json_string_equals(root, "screenLockDisable", disabled ? "1" : "0") &&
+        jw__mlp1_json_string_equals(root, "screenLockTimeout", timeout);
+    cJSON_Delete(root);
+    return matches;
+}
+
 static char *jw__mlp1_read_system_config(const char *param) {
     sqlite3 *db = NULL;
     if (sqlite3_open(JW_MLP1_LOONG_DB_PATH, &db) != SQLITE_OK) {
@@ -1324,6 +1356,32 @@ static char *jw__mlp1_make_display_param(int seconds) {
     char *printed = rc == 0 ? cJSON_PrintUnformatted(root) : NULL;
     cJSON_Delete(root);
     return printed;
+}
+
+/* Counterpart of jw__mlp1_power_cfg_matches for the loong DISPLAY_PARAM row:
+   `lock` (the only field jw__mlp1_make_display_param overwrites) must equal
+   `seconds`; the ensure-only fields just need to exist. */
+static bool jw__mlp1_display_param_matches(int seconds) {
+    if (seconds < 0) seconds = 0;
+    if (seconds > 86400) seconds = 86400;
+
+    char *current = jw__mlp1_read_system_config("DISPLAY_PARAM");
+    cJSON *root = current ? cJSON_Parse(current) : NULL;
+    free(current);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    const cJSON *lock = cJSON_GetObjectItemCaseSensitive(root, "lock");
+    bool matches =
+        cJSON_IsNumber(lock) && lock->valueint == (seconds > 0 ? seconds : 0) &&
+        cJSON_GetObjectItemCaseSensitive(root, "dark") != NULL &&
+        cJSON_GetObjectItemCaseSensitive(root, "color") != NULL &&
+        cJSON_GetObjectItemCaseSensitive(root, "temperature") != NULL &&
+        cJSON_GetObjectItemCaseSensitive(root, "brightness") != NULL;
+    cJSON_Delete(root);
+    return matches;
 }
 
 static int jw__mlp1_update_display_param(int seconds) {
@@ -1674,6 +1732,22 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
 static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
     if (seconds < 0) seconds = 0;
     if (seconds > 86400) seconds = 86400;
+
+    /* Boot-time sync calls this with an unchanged setting on every boot; when
+       the stock stores already match, skip the rewrites and especially the
+       loong_power restart, which otherwise lands while the launcher is waiting
+       on its hello and adds ~300ms to time-to-first-frame. */
+    if (jw__mlp1_display_param_matches(seconds) && jw__mlp1_power_cfg_matches(seconds)) {
+        jw_log_info("stock auto-sleep already in sync (%ds)", seconds);
+        char synced[JW_PLATFORM_MAX_MESSAGE];
+        if (seconds <= 0) {
+            snprintf(synced, sizeof(synced), "stock auto-sleep disabled");
+        } else {
+            snprintf(synced, sizeof(synced), "stock auto-sleep set to %ds", seconds);
+        }
+        jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, synced, seconds);
+        return;
+    }
 
     int display_rc = jw__mlp1_update_display_param(seconds);
     int power_rc = jw__mlp1_update_power_cfg(seconds);

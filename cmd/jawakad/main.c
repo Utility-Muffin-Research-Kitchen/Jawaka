@@ -39,6 +39,8 @@
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT (-1)
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT_LABEL "unlimited"
 #define JW_PERF_SETTING_KEY "platform.performance.game_profile"
+#define JW_STARTUP_MAINT_GRACE_MS 500LL    /* after frontend-ready */
+#define JW_STARTUP_MAINT_FALLBACK_MS 15000LL /* if frontend-ready never arrives */
 
 typedef enum {
     JW_CHILD_NONE = 0,
@@ -89,6 +91,14 @@ typedef struct {
     bool led_configured;       /* true once a user LED setting has been persisted/applied */
     jw_retroarch_session retroarch_session;
     int library_generation;
+    /* Startup maintenance (wifi restore/harden + library scan) deferred past
+       the launcher's first frame so it doesn't sit between boot animation and
+       launcher; phase 0 = wifi, phase 1 = scan, fired on separate loop
+       iterations so a queued launcher IPC poll can drain between them. */
+    bool startup_maintenance_pending;
+    int startup_maintenance_phase;
+    long long startup_maintenance_next_ms;
+    bool library_scanned_since_boot;
     bool pending_menu;
     bool pending_launch;
     char pending_launch_system[64];
@@ -1148,6 +1158,7 @@ static int jw__scan_library_now(jw_daemon_state *state, jw_scan_result *out,
     }
 
     jw__bump_library_generation(state);
+    state->library_scanned_since_boot = true;
     jw_log_info("scan-library %s", reason ? reason : "completed");
     jw_log_info("scan-library indexed %d games across %d systems and %d apps generation=%d",
                 scan_result->game_count, scan_result->system_count,
@@ -3312,6 +3323,51 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
                                       JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
 }
 
+/* One-shot startup maintenance, armed before the launcher spawns and pulled
+   forward by the frontend-ready handler (fallback deadline covers a launcher
+   that never reports ready). Runs in the IPC loop, so each phase blocks
+   clients for its duration — phase 0 (wifi, ~400ms) and phase 1 (library
+   scan, ~1s) fire on separate iterations so a queued poll drains between. */
+static void jw__tick_startup_maintenance(jw_daemon_state *state) {
+    if (!state || !state->startup_maintenance_pending) {
+        return;
+    }
+    if (state->shutdown_requested) {
+        state->startup_maintenance_pending = false;
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    if (state->startup_maintenance_next_ms > now) {
+        return;
+    }
+
+    if (state->startup_maintenance_phase == 0) {
+        long long wifi_start_ms = jw__monotonic_ms();
+        int restored = jw_wifi_restore();
+        int hardened = jw_wifi_harden();
+        jw_log_info("wifi startup maintenance restore=%d harden=%d total_ms=%lld",
+                    restored, hardened, jw__monotonic_ms() - wifi_start_ms);
+        state->startup_maintenance_phase = 1;
+        state->startup_maintenance_next_ms = jw__monotonic_ms();
+        return;
+    }
+
+    state->startup_maintenance_pending = false;
+    if (state->library_scanned_since_boot) {
+        jw_log_info("startup library scan skipped; library already scanned this boot");
+        return;
+    }
+
+    jw_scan_result scan_result;
+    long long scan_start_ms = jw__monotonic_ms();
+    if (jw__scan_library_now(state, &scan_result, "at startup (deferred)") != 0) {
+        jw_log_warn("startup library scan failed; launcher will use existing cache if available");
+    } else {
+        jw_log_info("startup library scan timings: total_ms=%lld",
+                    jw__monotonic_ms() - scan_start_ms);
+    }
+}
+
 static int jw__handle_scan(jw_daemon_state *state, jw_ipc_client *client) {
     jw_scan_result scan_result;
     if (jw__scan_library_now(state, &scan_result, "requested") != 0) {
@@ -3872,6 +3928,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         jw_platform_frontend_ready(&state->platform, role->valuestring, &result);
         jw_log_info("frontend-ready role=%s code=%s",
                     role->valuestring, jw_platform_result_code_name(result.code));
+        if (state->startup_maintenance_pending) {
+            long long accel = jw__monotonic_ms() + JW_STARTUP_MAINT_GRACE_MS;
+            if (accel < state->startup_maintenance_next_ms) {
+                state->startup_maintenance_next_ms = accel;
+            }
+        }
         cJSON_Delete(root);
         return jw__reply_platform_result(client, "frontend-ready", &result);
     }
@@ -4271,14 +4333,6 @@ int main(int argc, char *argv[]) {
     jw__publish_runtime_path_env(&state);
     jw__publish_audio_env(&state);
 
-    {
-        long long wifi_start_ms = jw__monotonic_ms();
-        int restored = jw_wifi_restore();
-        int hardened = jw_wifi_harden();
-        jw_log_info("wifi startup maintenance restore=%d harden=%d total_ms=%lld",
-                    restored, hardened, jw__monotonic_ms() - wifi_start_ms);
-    }
-
     setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
     setenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1", 0);
     {
@@ -4303,16 +4357,37 @@ int main(int argc, char *argv[]) {
         jw_log_info("daemon-only mode enabled");
     }
 
+    /* Scan synchronously before the launcher spawns only when the cache can't
+       carry the first frame (fresh or wiped DB) — otherwise defer the scan
+       (and wifi maintenance) past frontend-ready so the boot animation ends
+       ~1.4s sooner. The launcher polls the library generation every second
+       and reloads from the DB when the deferred scan bumps it. */
     {
-        jw_scan_result scan_result;
-        long long scan_start_ms = jw__monotonic_ms();
-        if (jw__scan_library_now(&state, &scan_result, "at startup") != 0) {
-            jw_log_warn("startup library scan failed; launcher will use existing cache if available");
+        bool need_initial_scan = state.library_generation <= 0;
+        if (!need_initial_scan) {
+            jw_library_summary summary;
+            need_initial_scan = jw_db_read_summary(state.db_path, &summary) != 0 ||
+                                (summary.game_count <= 0 && summary.app_count <= 0);
+        }
+        if (need_initial_scan) {
+            jw_scan_result scan_result;
+            long long scan_start_ms = jw__monotonic_ms();
+            if (jw__scan_library_now(&state, &scan_result, "at startup") != 0) {
+                jw_log_warn("startup library scan failed; launcher will use existing cache if available");
+            } else {
+                jw_log_info("startup library scan timings: total_ms=%lld",
+                            jw__monotonic_ms() - scan_start_ms);
+            }
         } else {
-            jw_log_info("startup library scan timings: total_ms=%lld",
-                        jw__monotonic_ms() - scan_start_ms);
+            jw_log_info("startup library scan deferred (generation=%d)",
+                        state.library_generation);
         }
     }
+
+    state.startup_maintenance_pending = true;
+    state.startup_maintenance_phase = 0;
+    state.startup_maintenance_next_ms = jw__monotonic_ms() +
+        (state.daemon_only ? 0 : JW_STARTUP_MAINT_FALLBACK_MS);
 
     jw__spawn_osd(&state);
 
@@ -4343,6 +4418,7 @@ int main(int argc, char *argv[]) {
                 jw_log_warn("storage hotplug: library rescan failed");
             }
         }
+        jw__tick_startup_maintenance(&state);
 
         if (state.shutdown_requested && state.child_pid <= 0 &&
             state.menu_pid <= 0) {

@@ -637,7 +637,12 @@ static void jw__poll_library_generation(const char *socket_path,
         return;
     }
     if (state->library_generation < 0) {
-        state->library_generation = generation;
+        /* The startup status query failed, so the cached library may predate a
+           scan that completed in the meantime — reload before adopting. */
+        if (jw__reload_library_from_db(db_path, state) == 0) {
+            state->library_generation = generation;
+            cat_request_frame();
+        }
         return;
     }
     if (generation == state->library_generation) {
