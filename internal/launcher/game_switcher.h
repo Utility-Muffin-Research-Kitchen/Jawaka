@@ -24,6 +24,10 @@ typedef struct {
     int           cursor;          /* logical selected index */
     bool          in_game;         /* true = in-game overlay, false = launcher view */
     int           current_index;   /* index of the running game, or -1 when none */
+    /* Borrowed (not owned) texture used as the current game's tile art — the
+       in-game overlay passes its live paused-frame still here so the current
+       tile shows a real screenshot instantly. NULL falls back to cover/thumb. */
+    struct SDL_Texture *current_tex;
     char          sdcard_root[PATH_MAX];
     char          states_dir[PATH_MAX]; /* RetroArch States/ root for thumbnails */
     /* Carousel slide animation (logical cursor lerps to the new selection). */
@@ -50,6 +54,14 @@ int  jw_game_switcher_load(jw_game_switcher *sw, const char *db_path);
 void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
                                   const char *rom_path, const char *name,
                                   const char *image_path);
+
+/* Provide a borrowed texture (not owned by the switcher) to render as the
+   current game's tile art, overriding cover/savestate-thumb art for that tile.
+   The in-game overlay passes its captured paused-frame still so the current tile
+   shows the live game instantly. Pass NULL to clear. The caller keeps ownership
+   and must outlive the switcher's use of it. */
+void jw_game_switcher_set_current_texture(jw_game_switcher *sw,
+                                          struct SDL_Texture *tex);
 
 /* Prefer a savestate thumbnail over the cover for any entry that has one. Uses
    the resolved storage sources when available so recents from secondary cards

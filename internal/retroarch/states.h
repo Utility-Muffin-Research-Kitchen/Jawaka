@@ -48,4 +48,27 @@ void jw_state_thumb_index_free(jw_state_thumb_index *idx);
 bool jw_state_thumb_index_find(const jw_state_thumb_index *idx,
                                const char *rom_path, char *out, size_t out_size);
 
+/* ── Slot enumeration + switcher-slot promotion (in-game slot picker) ──────── */
+
+typedef struct {
+    int  slot;   /* JW_RA_AUTO_STATE_SLOT (auto), 0..N, or the game-switcher slot */
+    long mtime;  /* unix mtime of the savestate file */
+} jw_ra_slot_info;
+
+/* Enumerate existing savestates for the ROM (flat layout + one level of per-core
+   subfolders). Fills out[] with up to max {slot, mtime} entries and writes the
+   count to *count. Includes the auto slot and the game-switcher slot when they
+   exist; duplicates across flat/subfolder keep the newest mtime. The caller
+   decides how to present (e.g. hide the switcher slot). Returns true on success. */
+bool jw_ra_list_slots(const char *states_dir, const char *rom_path,
+                      jw_ra_slot_info *out, int max, int *count);
+
+/* Promote the game-switcher quicksave into a permanent numbered slot: copies
+   <rom>.state<99> (and its .png) to the lowest free slot in 0..9 (overwriting
+   the oldest numbered slot when all are taken), in the same directory the source
+   lives. Writes the chosen slot to *out_slot. Returns false when no switcher
+   save exists or the copy fails. */
+bool jw_ra_promote_switcher_slot(const char *states_dir, const char *rom_path,
+                                 int *out_slot);
+
 #endif /* JW_RETROARCH_STATES_H */

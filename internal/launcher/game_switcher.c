@@ -254,6 +254,13 @@ void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
     sw->anim_active = false;
 }
 
+void jw_game_switcher_set_current_texture(jw_game_switcher *sw, SDL_Texture *tex) {
+    if (!sw) {
+        return;
+    }
+    sw->current_tex = tex; /* borrowed; caller retains ownership */
+}
+
 static float jw__switcher_visual_cursor(const jw_game_switcher *sw) {
     if (!sw->anim_active) {
         return (float)sw->cursor;
@@ -377,15 +384,43 @@ static void jw__switcher_draw_image_fit(SDL_Texture *tex, int tex_w, int tex_h,
     SDL_SetTextureAlphaMod(tex, 255);
 }
 
+/* Draw a texture filling the square tile, center-cropped to the tile's aspect.
+   Used for the live paused-frame current tile so a landscape frame fills the
+   tile cleanly instead of letterboxing. */
+static void jw__switcher_draw_tex_fill(SDL_Texture *tex, int x, int y, int box,
+                                       uint8_t alpha) {
+    if (!tex || box <= 0) {
+        return;
+    }
+    int tw = 0, th = 0;
+    if (SDL_QueryTexture(tex, NULL, NULL, &tw, &th) != 0 || tw <= 0 || th <= 0) {
+        return;
+    }
+    int side = tw < th ? tw : th; /* square crop source for the square tile */
+    SDL_Rect src = { (tw - side) / 2, (th - side) / 2, side, side };
+    SDL_Rect dst = { x, y, box, box };
+    SDL_SetTextureAlphaMod(tex, alpha);
+    SDL_RenderCopy(cat_get_renderer(), tex, &src, &dst);
+    SDL_SetTextureAlphaMod(tex, 255);
+}
+
 /* One carousel tile: cover art when available, otherwise a neutral placeholder
    card with the system code centered so missing art still reads as a game. */
 static void jw__switcher_draw_tile(const jw_game_switcher *sw,
                                    const jw_game_entry *entry,
-                                   int cx, int cy, int size, uint8_t alpha) {
+                                   int cx, int cy, int size, uint8_t alpha,
+                                   bool is_current) {
     ap_theme *theme = cat_get_theme();
     int box = size;
     int x = cx - box / 2;
     int y = cy - box / 2;
+
+    /* The running game's tile prefers the live paused-frame still (instant, a
+       real screenshot) over cover art / savestate thumbnail. */
+    if (is_current && sw->current_tex) {
+        jw__switcher_draw_tex_fill(sw->current_tex, x, y, box, alpha);
+        return;
+    }
 
     int tw = 0, th = 0;
     SDL_Texture *tex = jw__switcher_cover(sw, entry, &tw, &th);
@@ -465,7 +500,8 @@ void jw_game_switcher_render(jw_game_switcher *sw, int x, int y, int w, int h) {
             int size_px = (int)((1.0f - c) * (float)side_size + c * (float)center_size);
             uint8_t alpha = (uint8_t)((1.0f - c) * 110.0f + c * 255.0f);
             int cx = cx0 + (int)(dist * (float)spacing);
-            jw__switcher_draw_tile(sw, &sw->entries[i], cx, cy, size_px, alpha);
+            jw__switcher_draw_tile(sw, &sw->entries[i], cx, cy, size_px, alpha,
+                                   i == sw->current_index);
         }
     }
 

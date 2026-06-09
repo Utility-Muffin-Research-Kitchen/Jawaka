@@ -2912,6 +2912,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     char *retroarch = jw_retroarch_bin_path();
     char *core = jw_retroarch_core_path_for_system(state->pending_launch_system);
     char *runtime_config = NULL;
+    char *ra_home = NULL;
 
     jw__publish_retroarch_input_env(state);
     jw__publish_audio_env(state);
@@ -3020,6 +3021,18 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     (void)jw__perf_apply_game(state, state->pending_launch_system,
                               "retroarch-launch");
 
+    /* RetroArch resolves its config dir / per-core option files (e.g.
+       FCEUmm.opt) under $HOME. Point HOME at the SD state dir the runner uses so
+       all RA config lives on the SD card jawaka launched from, not on device
+       internal storage. Computed here (it mkdir's) and applied in the child only
+       — setting it on the daemon parent would change HOME for every later child.
+       Uses sdcard_root so all games share one canonical RA config location. */
+    ra_home = jw_retroarch_state_dir(state->sdcard_root);
+    if (!ra_home) {
+        jw_log_warn("could not resolve RA HOME (SD state dir); RetroArch config "
+                    "may fall back to device internal storage");
+    }
+
     long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
     if (pid < 0) {
@@ -3028,6 +3041,9 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
+        if (ra_home && ra_home[0]) {
+            setenv("HOME", ra_home, 1);
+        }
         char *argv[9];
         int argc = 0;
         argv[argc++] = retroarch;
@@ -3082,6 +3098,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     free(retroarch);
     free(core);
     free(runtime_config);
+    free(ra_home);
     return 0;
 
 fail:
@@ -3093,6 +3110,7 @@ fail:
     free(retroarch);
     free(core);
     free(runtime_config);
+    free(ra_home);
     return -1;
 }
 
@@ -3438,6 +3456,33 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             state->retroarch_resume_on_menu_exit = false;
             state->menu_visible = false;
         }
+    } else if (strcmp(action, "save-and-quit") == 0) {
+        /* Snapshot into the reserved game-switcher slot so the game returns to
+           the switcher/Recents resumable and with a screenshot, then quit. The
+           save is best-effort: if savestates are unsupported or the save fails,
+           quit anyway so the user is never stranded. Mirrors the save block in
+           jw__request_switch_game. */
+        jw_ra_info info;
+        memset(&info, 0, sizeof(info));
+        if (jw_ra_get_info(&ra, &info) == JW_RA_OK && info.savestate_supported) {
+            char reply[JW_RA_REPLY_MAX];
+            jw_ra_result sv = jw_ra_save_state_slot(
+                &ra, JW_RA_GAME_SWITCHER_STATE_SLOT, reply, sizeof(reply));
+            if (sv != JW_RA_OK) {
+                jw_log_warn("save-and-quit: slot %d save failed result=%s; quitting anyway",
+                            JW_RA_GAME_SWITCHER_STATE_SLOT, jw_ra_result_string(sv));
+            } else {
+                jw_log_info("save-and-quit: saved state slot=%d",
+                            JW_RA_GAME_SWITCHER_STATE_SLOT);
+            }
+        } else {
+            jw_log_info("save-and-quit: savestates unavailable; quitting without save");
+        }
+        result = jw_ra_quit(&ra);
+        if (result == JW_RA_OK) {
+            state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
+        }
     } else if (strcmp(action, "reset") == 0) {
         result = jw_ra_reset(&ra);
         if (result == JW_RA_OK) {
@@ -3449,7 +3494,8 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             state->menu_visible = false;
         }
     } else if (strcmp(action, "save-state") == 0) {
-        if (has_value && value >= 0) {
+        if (has_value) {
+            /* value >= -1: the slot variant handles the auto slot (-1) too. */
             char reply[JW_RA_REPLY_MAX];
             result = jw_ra_save_state_slot(&ra, value, reply, sizeof(reply));
         } else {
@@ -3461,7 +3507,8 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             state->menu_visible = false;
         }
     } else if (strcmp(action, "load-state") == 0) {
-        if (has_value && value >= 0) {
+        if (has_value) {
+            /* value >= -1: the slot variant handles the auto slot (-1) too. */
             char reply[JW_RA_REPLY_MAX];
             result = jw_ra_load_state_slot(&ra, value, reply, sizeof(reply));
         } else {

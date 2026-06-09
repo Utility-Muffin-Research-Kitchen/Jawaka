@@ -450,3 +450,205 @@ bool jw_state_thumb_index_find(const jw_state_thumb_index *idx,
     snprintf(out, out_size, "%s", best->path);
     return true;
 }
+
+/* ── Slot enumeration + switcher-slot promotion ───────────────────────────── */
+
+static void jw__states_collect_slot(jw_ra_slot_info *out, int max, int *count,
+                                    const char *dir, const char *name,
+                                    const char *stem) {
+    int slot = 0;
+    if (!jw__states_match_slot_name(name, stem, false, &slot)) {
+        return;
+    }
+    char full[PATH_MAX];
+    struct stat st;
+    if (!jw__states_try_stat(dir, name, full, sizeof(full), &st)) {
+        return;
+    }
+    /* Merge duplicates across flat + per-core subfolder: keep the newest mtime. */
+    for (int i = 0; i < *count; i++) {
+        if (out[i].slot == slot) {
+            if ((long)st.st_mtime > out[i].mtime) {
+                out[i].mtime = (long)st.st_mtime;
+            }
+            return;
+        }
+    }
+    if (*count >= max) {
+        return;
+    }
+    out[*count].slot = slot;
+    out[*count].mtime = (long)st.st_mtime;
+    (*count)++;
+}
+
+static void jw__states_scan_slots_dir(jw_ra_slot_info *out, int max, int *count,
+                                      const char *dir, const char *stem,
+                                      bool recurse) {
+    DIR *d = opendir(dir);
+    if (!d) {
+        return;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+        char sub[PATH_MAX];
+        if (snprintf(sub, sizeof(sub), "%s/%s", dir, ent->d_name) >=
+                (int)sizeof(sub)) {
+            continue;
+        }
+        struct stat st;
+        if (stat(sub, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (recurse) {
+                jw__states_scan_slots_dir(out, max, count, sub, stem, false);
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            jw__states_collect_slot(out, max, count, dir, ent->d_name, stem);
+        }
+    }
+    closedir(d);
+}
+
+bool jw_ra_list_slots(const char *states_dir, const char *rom_path,
+                      jw_ra_slot_info *out, int max, int *count) {
+    if (!states_dir || !states_dir[0] || !rom_path || !rom_path[0] ||
+        !out || max <= 0 || !count) {
+        return false;
+    }
+    *count = 0;
+    char stem[512];
+    jw__states_rom_stem(rom_path, stem, sizeof(stem));
+    jw__states_scan_slots_dir(out, max, count, states_dir, stem, true);
+    return true;
+}
+
+static void jw__states_dirname(const char *path, char *out, size_t out_size) {
+    const char *slash = strrchr(path, '/');
+    if (!slash) {
+        snprintf(out, out_size, ".");
+        return;
+    }
+    size_t len = (size_t)(slash - path);
+    if (len >= out_size) {
+        len = out_size - 1;
+    }
+    memcpy(out, path, len);
+    out[len] = '\0';
+}
+
+static bool jw__copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        return false;
+    }
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        return false;
+    }
+    char buf[64 * 1024];
+    size_t n;
+    bool ok = true;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            ok = false;
+            break;
+        }
+    }
+    if (ferror(in)) {
+        ok = false;
+    }
+    fclose(in);
+    if (fclose(out) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        remove(dst);
+    }
+    return ok;
+}
+
+bool jw_ra_promote_switcher_slot(const char *states_dir, const char *rom_path,
+                                 int *out_slot) {
+    if (!states_dir || !states_dir[0] || !rom_path || !rom_path[0]) {
+        return false;
+    }
+
+    char src_state[PATH_MAX];
+    if (!jw_ra_find_slot_state(states_dir, rom_path,
+                               JW_RA_GAME_SWITCHER_STATE_SLOT,
+                               src_state, sizeof(src_state))) {
+        return false;
+    }
+
+    jw_ra_slot_info slots[64];
+    int n = 0;
+    jw_ra_list_slots(states_dir, rom_path, slots, 64, &n);
+
+    /* Lowest free numbered slot 0..9; if all are taken, overwrite the oldest. */
+    int dest = -1;
+    for (int s = 0; s <= 9; s++) {
+        bool used = false;
+        for (int i = 0; i < n; i++) {
+            if (slots[i].slot == s) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) {
+            dest = s;
+            break;
+        }
+    }
+    if (dest < 0) {
+        long oldest = LONG_MAX;
+        int oldest_slot = 0;
+        for (int i = 0; i < n; i++) {
+            if (slots[i].slot >= 0 && slots[i].slot <= 9 &&
+                slots[i].mtime < oldest) {
+                oldest = slots[i].mtime;
+                oldest_slot = slots[i].slot;
+            }
+        }
+        dest = oldest_slot;
+    }
+
+    char dir[PATH_MAX];
+    jw__states_dirname(src_state, dir, sizeof(dir));
+    char stem[512];
+    jw__states_rom_stem(rom_path, stem, sizeof(stem));
+
+    char name[576];
+    char dst_state[PATH_MAX];
+    jw__states_slot_name(stem, dest, false, name, sizeof(name));
+    if (snprintf(dst_state, sizeof(dst_state), "%s/%s", dir, name) >=
+            (int)sizeof(dst_state)) {
+        return false;
+    }
+    if (!jw__copy_file(src_state, dst_state)) {
+        return false;
+    }
+
+    /* Best-effort thumbnail copy so the promoted slot keeps its screenshot. */
+    char src_thumb[PATH_MAX];
+    if (jw_ra_find_slot_thumb(states_dir, rom_path,
+                              JW_RA_GAME_SWITCHER_STATE_SLOT,
+                              src_thumb, sizeof(src_thumb))) {
+        char dst_thumb[PATH_MAX];
+        jw__states_slot_name(stem, dest, true, name, sizeof(name));
+        if (snprintf(dst_thumb, sizeof(dst_thumb), "%s/%s", dir, name) <
+                (int)sizeof(dst_thumb)) {
+            jw__copy_file(src_thumb, dst_thumb);
+        }
+    }
+
+    if (out_slot) {
+        *out_slot = dest;
+    }
+    return true;
+}

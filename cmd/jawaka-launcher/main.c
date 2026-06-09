@@ -980,7 +980,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
             { CAT_BTN_B,  "Remove",   false, JW_HINT("B") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
-            { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
+            { CAT_BTN_A,  "Resume",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 4);
     } else {
@@ -2272,7 +2272,7 @@ static void jw__render_switcher(jw_launcher_state *state) {
     cat_footer_item footer[] = {
         { CAT_BTN_Y, "Remove", false, JW_HINT("Y") },
         { CAT_BTN_B, "Back",   true,  JW_HINT("B") },
-        { CAT_BTN_A, "Launch", true,  JW_HINT("A") },
+        { CAT_BTN_A, "Resume", true,  JW_HINT("A") },
     };
     jw__draw_footer(state, footer, 3);
     cat_present();
@@ -2548,8 +2548,12 @@ static void jw__activate_tabbed(const char *socket_path, const char *db_path,
     switch (state->current_tab) {
         case JW_TAB_RECENTS:
             if (state->recents_count > 0 && state->list.cursor < state->recents_count) {
-                jw__launch_game_entry(socket_path, state,
-                                      &state->recents[state->list.cursor], running);
+                /* Recents resumes: the daemon loads the newest state (preferring
+                   the game-switcher slot) when one exists and cold-launches
+                   otherwise, so no per-entry state probe is needed here. */
+                jw__launch_game_entry_with_mode(socket_path, state,
+                                                &state->recents[state->list.cursor],
+                                                true, running);
             }
             break;
         case JW_TAB_FAVORITES:

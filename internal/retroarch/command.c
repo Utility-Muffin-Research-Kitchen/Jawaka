@@ -583,6 +583,17 @@ jw_ra_result jw_ra_save_state_slot(const jw_ra_client *client, int slot,
     if (slot < -1) {
         return JW_RA_UNSUPPORTED;
     }
+    if (slot == -1) {
+        /* The auto slot has no "SAVE_STATE_SLOT -1" form; select it, then save.
+           Mirrors jw_ra_load_state_slot's handling of the auto slot. */
+        jw_ra_result result = jw_ra_set_state_slot(client, -1);
+        if (result != JW_RA_OK) {
+            return result;
+        }
+        (void)reply;
+        (void)reply_size;
+        return jw_ra_save_state(client);
+    }
 
     snprintf(command, sizeof(command), "SAVE_STATE_SLOT %d", slot);
     if (reply && reply_size > 0) {

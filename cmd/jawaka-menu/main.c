@@ -252,6 +252,19 @@ typedef struct {
     SDL_Texture                    *still_tex;       /* paused-game still behind the menu */
     SDL_Texture                    *thumb_tex;       /* selected-slot savestate thumbnail */
     int                             thumb_slot;      /* slot thumb_tex is for (INT_MIN = none) */
+    bool                            quit_save;       /* Quit row armed to Save & Quit (default) */
+    /* Decoupled Save/Load slot selection (Item 3): the menu drives explicit
+       slots rather than RetroArch's single shared slot. Save is a numeric target
+       (Auto + 0–9, slot 99 hidden); Load browses existing saves newest-first,
+       with the switcher quicksave surfaced as a "Latest" entry when it's newest. */
+    int                             save_slot;       /* -1 = auto, 0..9 (skips 99) */
+    int                             load_index;      /* selection in the Load list */
+    int                             load_count;      /* entries in load_entries */
+    struct {
+        int  slot;                                   /* -1 auto, 0..9, or switcher slot */
+        long mtime;
+        bool is_latest;                              /* switcher quicksave ("Latest") */
+    }                               load_entries[32];
 } jw_ingame_state;
 
 static void jw__render_menu(const jw_menu_state *state) {
@@ -452,20 +465,207 @@ static void jw__ingame_resolve_titles(jw_ingame_state *state) {
     }
 }
 
-static void jw__slot_label(const jw_ingame_state *state, char *out, size_t out_size) {
-    if (!out || out_size == 0) {
+/* ── Decoupled Save/Load slot selection (Item 3) ──────────────────────────── */
+
+/* Resolve the in-game States/ root like the switcher overlay: the daemon's
+   source-aware dir, then STATES_PATH, then <sdcard>/States. */
+static bool jw__ingame_states_dir(char *out, size_t out_size) {
+    const char *states = getenv("JAWAKA_INGAME_STATEDIR");
+    if (states && states[0]) {
+        snprintf(out, out_size, "%s", states);
+        return true;
+    }
+    const char *sp = getenv("STATES_PATH");
+    if (sp && sp[0]) {
+        snprintf(out, out_size, "%s", sp);
+        return true;
+    }
+    char *sd = jw_sdcard_root();
+    bool ok = false;
+    if (sd && sd[0]) {
+        snprintf(out, out_size, "%s/States", sd);
+        ok = true;
+    }
+    free(sd);
+    if (!ok) {
+        out[0] = '\0';
+    }
+    return ok;
+}
+
+static void jw__rel_time(long mtime, char *out, size_t out_size) {
+    if (mtime <= 0) {
+        out[0] = '\0';
         return;
     }
-    if (!state->session.active || !state->session.command_ok ||
-        !state->session.savestate_supported) {
-        snprintf(out, out_size, "%s", "No states");
-        return;
-    }
-    if (state->session.state_slot < 0) {
-        snprintf(out, out_size, "%s", "Slot Auto");
+    long d = (long)time(NULL) - mtime;
+    if (d < 0) d = 0;
+    if (d < 60) {
+        snprintf(out, out_size, "just now");
+    } else if (d < 3600) {
+        snprintf(out, out_size, "%ldm ago", d / 60);
+    } else if (d < 86400) {
+        snprintf(out, out_size, "%ldh ago", d / 3600);
     } else {
-        snprintf(out, out_size, "Slot %d", state->session.state_slot);
+        snprintf(out, out_size, "%ldd ago", d / 86400);
     }
+}
+
+static void jw__slot_name(int slot, char *out, size_t out_size) {
+    if (slot < 0) {
+        snprintf(out, out_size, "Slot Auto");
+    } else {
+        snprintf(out, out_size, "Slot %d", slot);
+    }
+}
+
+/* Slot the selected Save/Load row acts on, for the thumbnail preview.
+   INT_MIN = nothing to preview. */
+static int jw__ingame_selected_slot(const jw_ingame_state *state) {
+    if (state->list.cursor == JW_INGAME_SAVE) {
+        return state->save_slot;
+    }
+    if (state->list.cursor == JW_INGAME_LOAD &&
+        state->load_count > 0 && state->load_index >= 0 &&
+        state->load_index < state->load_count) {
+        return state->load_entries[state->load_index].slot;
+    }
+    return INT_MIN;
+}
+
+static void jw__save_caption(const jw_ingame_state *state, char *out, size_t out_size) {
+    bool exists = false;
+    for (int i = 0; i < state->load_count; i++) {
+        if (!state->load_entries[i].is_latest &&
+            state->load_entries[i].slot == state->save_slot) {
+            exists = true;
+            break;
+        }
+    }
+    char name[16];
+    jw__slot_name(state->save_slot, name, sizeof(name));
+    snprintf(out, out_size, "%s \xc2\xb7 %s", name, exists ? "overwrites" : "empty");
+}
+
+/* Load row caption: a main label plus a recency sub-line (newest/oldest marker,
+   relative time, and position) so "sorted by last created" reads clearly. */
+static void jw__load_caption(const jw_ingame_state *state,
+                             char *main, size_t main_size,
+                             char *sub, size_t sub_size) {
+    main[0] = '\0';
+    sub[0] = '\0';
+    if (state->load_count <= 0) {
+        snprintf(main, main_size, "No saves yet");
+        return;
+    }
+    int idx = state->load_index;
+    if (idx < 0) idx = 0;
+    if (idx >= state->load_count) idx = state->load_count - 1;
+    char rel[24];
+    jw__rel_time(state->load_entries[idx].mtime, rel, sizeof(rel));
+    const char *order = (idx == 0) ? "newest"
+                      : (idx == state->load_count - 1 ? "oldest" : "");
+    if (state->load_entries[idx].is_latest) {
+        snprintf(main, main_size, "Latest");
+        if (rel[0]) {
+            snprintf(sub, sub_size, "unsaved \xc2\xb7 %s \xc2\xb7 %d of %d",
+                     rel, idx + 1, state->load_count);
+        } else {
+            snprintf(sub, sub_size, "unsaved \xc2\xb7 %d of %d",
+                     idx + 1, state->load_count);
+        }
+        return;
+    }
+    jw__slot_name(state->load_entries[idx].slot, main, main_size);
+    if (order[0] && rel[0]) {
+        snprintf(sub, sub_size, "%s \xc2\xb7 %s \xc2\xb7 %d of %d",
+                 order, rel, idx + 1, state->load_count);
+    } else if (rel[0]) {
+        snprintf(sub, sub_size, "%s \xc2\xb7 %d of %d", rel, idx + 1, state->load_count);
+    } else {
+        snprintf(sub, sub_size, "%d of %d", idx + 1, state->load_count);
+    }
+}
+
+/* Rebuild the Load list for the active ROM: existing saves newest-first, the
+   switcher slot (99) hidden as a number but surfaced as a "Latest" entry when it
+   is newer than every numbered save. Called on open and after a Keep. */
+static void jw__ingame_rebuild_slots(jw_ingame_state *state) {
+    state->load_count = 0;
+    state->load_index = 0;
+    state->thumb_slot = INT_MIN; /* force preview refresh */
+    if (!state->session.rom_path[0]) {
+        return;
+    }
+    char dir[PATH_MAX];
+    if (!jw__ingame_states_dir(dir, sizeof(dir))) {
+        return;
+    }
+
+    jw_ra_slot_info raw[64];
+    int n = 0;
+    jw_ra_list_slots(dir, state->session.rom_path, raw, 64, &n);
+
+    long switcher_mtime = 0;
+    bool has_switcher = false;
+    jw_ra_slot_info nums[64];
+    int nc = 0;
+    for (int i = 0; i < n; i++) {
+        if (raw[i].slot == JW_RA_GAME_SWITCHER_STATE_SLOT) {
+            has_switcher = true;
+            switcher_mtime = raw[i].mtime;
+        } else {
+            nums[nc++] = raw[i];
+        }
+    }
+    for (int i = 1; i < nc; i++) { /* insertion sort, newest-first */
+        jw_ra_slot_info key = nums[i];
+        int j = i - 1;
+        while (j >= 0 && nums[j].mtime < key.mtime) {
+            nums[j + 1] = nums[j];
+            j--;
+        }
+        nums[j + 1] = key;
+    }
+    bool latest = has_switcher && (nc == 0 || switcher_mtime > nums[0].mtime);
+
+    int cap = (int)(sizeof(state->load_entries) / sizeof(state->load_entries[0]));
+    int idx = 0;
+    if (latest && idx < cap) {
+        state->load_entries[idx].slot = JW_RA_GAME_SWITCHER_STATE_SLOT;
+        state->load_entries[idx].mtime = switcher_mtime;
+        state->load_entries[idx].is_latest = true;
+        idx++;
+    }
+    for (int i = 0; i < nc && idx < cap; i++) {
+        state->load_entries[idx].slot = nums[i].slot;
+        state->load_entries[idx].mtime = nums[i].mtime;
+        state->load_entries[idx].is_latest = false;
+        idx++;
+    }
+    state->load_count = idx;
+    state->load_index = 0;
+}
+
+/* Default the Save target to the lowest free numbered slot (avoid clobbering an
+   existing save); fall back to 0 when 0–9 are all taken. */
+static void jw__ingame_init_save_slot(jw_ingame_state *state) {
+    int slot = 0;
+    for (int s = 0; s <= 9; s++) {
+        bool used = false;
+        for (int i = 0; i < state->load_count; i++) {
+            if (!state->load_entries[i].is_latest &&
+                state->load_entries[i].slot == s) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) {
+            slot = s;
+            break;
+        }
+    }
+    state->save_slot = slot;
 }
 
 static int jw__ingame_perf_profile_index(const char *name) {
@@ -583,8 +783,27 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
         return;
     }
 
-    if (item == JW_INGAME_SAVE || item == JW_INGAME_LOAD) {
-        jw__slot_label(state, out, out_size);
+    if (item == JW_INGAME_SAVE) {
+        if (!state->session.savestate_supported) {
+            snprintf(out, out_size, "%s", "No states");
+        } else {
+            jw__slot_name(state->save_slot, out, out_size);
+        }
+    } else if (item == JW_INGAME_LOAD) {
+        if (!state->session.savestate_supported) {
+            snprintf(out, out_size, "%s", "No states");
+        } else if (state->load_count <= 0) {
+            snprintf(out, out_size, "%s", "No saves");
+        } else {
+            int idx = state->load_index;
+            if (idx < 0) idx = 0;
+            if (idx >= state->load_count) idx = state->load_count - 1;
+            if (state->load_entries[idx].is_latest) {
+                snprintf(out, out_size, "%s", "Latest");
+            } else {
+                jw__slot_name(state->load_entries[idx].slot, out, out_size);
+            }
+        }
     } else if (item == JW_INGAME_PERF) {
         if (state->perf_ready && state->perf.supported && state->perf.soc_temp_c >= 0) {
             snprintf(out, out_size, "%s, %d C",
@@ -725,10 +944,14 @@ static void jw__ingame_capture_still(jw_ingame_state *state) {
 
 /* Locate the savestate thumbnail PNG for the active slot via the shared
    RetroArch states helper (flat layout first, then per-core subfolders). */
-static bool jw__slot_thumb_path(const jw_ingame_state *state, char *out, size_t out_size) {
-    return jw_ra_find_slot_thumb(getenv("JAWAKA_INGAME_STATEDIR"),
-                                 state->session.rom_path,
-                                 state->session.state_slot, out, out_size);
+static bool jw__slot_thumb_path(const jw_ingame_state *state, int slot,
+                                char *out, size_t out_size) {
+    char dir[PATH_MAX];
+    if (!jw__ingame_states_dir(dir, sizeof(dir))) {
+        return false;
+    }
+    return jw_ra_find_slot_thumb(dir, state->session.rom_path, slot,
+                                 out, out_size);
 }
 
 /* Keep thumb_tex in sync with the selected slot while the cursor is on
@@ -737,7 +960,8 @@ static void jw__ingame_update_thumb(jw_ingame_state *state) {
     bool on_slot = (state->list.cursor == JW_INGAME_SAVE ||
                     state->list.cursor == JW_INGAME_LOAD) &&
                    state->session.savestate_supported;
-    if (!on_slot) {
+    int slot = on_slot ? jw__ingame_selected_slot(state) : INT_MIN;
+    if (slot == INT_MIN) {
         if (state->thumb_tex) {
             SDL_DestroyTexture(state->thumb_tex);
             state->thumb_tex = NULL;
@@ -745,16 +969,16 @@ static void jw__ingame_update_thumb(jw_ingame_state *state) {
         state->thumb_slot = INT_MIN;
         return;
     }
-    if (state->thumb_slot == state->session.state_slot) {
+    if (state->thumb_slot == slot) {
         return; /* already attempted this slot */
     }
     if (state->thumb_tex) {
         SDL_DestroyTexture(state->thumb_tex);
         state->thumb_tex = NULL;
     }
-    state->thumb_slot = state->session.state_slot;
+    state->thumb_slot = slot;
     char path[PATH_MAX];
-    if (jw__slot_thumb_path(state, path, sizeof(path))) {
+    if (jw__slot_thumb_path(state, slot, path, sizeof(path))) {
         state->thumb_tex = jw__load_blend_texture(path); /* NULL -> placeholder */
     }
 }
@@ -864,7 +1088,12 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
         bool show_detail = !preview_active && detail[0] && detail_w > CAT_S(40);
         int label_w = show_detail ? detail_x - x - CAT_S(10)
                     : (preview_active ? item_w - CAT_S(10) : list_w - CAT_S(8));
-        cat_draw_text_ellipsized(body_font, kInGameItems[i], x, text_y,
+        /* The Quit row label tracks the armed mode (Save & Quit by default;
+           Left/Right toggles to a plain discard Quit). */
+        const char *label = (i == JW_INGAME_QUIT)
+                          ? (state->quit_save ? "Save & Quit" : "Quit")
+                          : kInGameItems[i];
+        cat_draw_text_ellipsized(body_font, label, x, text_y,
                                  col, label_w);
         if (show_detail) {
             cat_draw_text_ellipsized(small, detail, detail_x,
@@ -880,7 +1109,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
         int pv_x   = detail_x;
         int pv_w   = right - pv_x;
         int avail  = bottom_y - top_y;
-        int cap_h  = small_h + CAT_S(8);
+        int cap_h  = small_h * 2 + CAT_S(10); /* caption + recency sub-line */
         int pv_h   = pv_w * 3 / 4;
         if (pv_h > avail - cap_h) {
             pv_h = avail - cap_h;
@@ -899,31 +1128,60 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
                                          pv_y + pv_h / 2 - small_h / 2,
                                          theme->hint, pv_w - CAT_S(16));
             }
-            char cap[32];
-            if (state->session.state_slot < 0) {
-                snprintf(cap, sizeof(cap), "Slot Auto");
+            char cap[64];
+            char cap_sub[64];
+            cap[0] = cap_sub[0] = '\0';
+            if (state->list.cursor == JW_INGAME_SAVE) {
+                jw__save_caption(state, cap, sizeof(cap));
             } else {
-                snprintf(cap, sizeof(cap), "Slot %d", state->session.state_slot);
+                jw__load_caption(state, cap, sizeof(cap), cap_sub, sizeof(cap_sub));
             }
-            cat_draw_text_ellipsized(small, cap, pv_x, pv_y + pv_h + CAT_S(4),
-                                     theme->text, pv_w);
+            int cap_y = pv_y + pv_h + CAT_S(4);
+            cat_draw_text_ellipsized(small, cap, pv_x, cap_y, theme->text, pv_w);
+            if (cap_sub[0]) {
+                cat_draw_text_ellipsized(small, cap_sub, pv_x,
+                                         cap_y + small_h + CAT_S(2),
+                                         theme->hint, pv_w);
+            }
         }
     }
 
-    if (state->show_hints && state->status[0]) {
+    /* On the "Latest" Load entry, explain what it is and how to act on it. */
+    const char *status_text = state->status;
+    char latest_hint[112];
+    bool on_latest = (state->list.cursor == JW_INGAME_LOAD &&
+                      state->session.savestate_supported &&
+                      state->load_count > 0 &&
+                      state->load_entries[state->load_index].is_latest);
+    if (!status_text[0] && on_latest) {
+        snprintf(latest_hint, sizeof(latest_hint),
+                 "Save & Quit quicksave \xe2\x80\x94 A resumes, Y keeps it as a slot");
+        status_text = latest_hint;
+    }
+    if (state->show_hints && status_text[0]) {
         int status_y = content.y + content.h - small_h - CAT_S(10);
-        cat_draw_text_ellipsized(small, state->status, x, status_y,
+        cat_draw_text_ellipsized(small, status_text, x, status_y,
                                  theme->hint, list_w);
     }
 
     if (state->show_hints) {
-        cat_footer_item footer[] = {
-            { CAT_BTN_UP, "Move", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
-            { CAT_BTN_LEFT, "Adjust", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
-            { CAT_BTN_B,  "Resume", true,  JW_HINT("B") },
-            { CAT_BTN_A,  "OK",     true,  JW_HINT("A") },
-        };
-        cat_draw_footer(footer, 4);
+        if (on_latest) {
+            cat_footer_item footer[] = {
+                { CAT_BTN_LEFT, "Browse", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
+                { CAT_BTN_Y,  "Keep",   false, JW_HINT("Y") },
+                { CAT_BTN_B,  "Resume", true,  JW_HINT("B") },
+                { CAT_BTN_A,  "Load",   true,  JW_HINT("A") },
+            };
+            cat_draw_footer(footer, 4);
+        } else {
+            cat_footer_item footer[] = {
+                { CAT_BTN_UP, "Move", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
+                { CAT_BTN_LEFT, "Adjust", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
+                { CAT_BTN_B,  "Resume", true,  JW_HINT("B") },
+                { CAT_BTN_A,  "OK",     true,  JW_HINT("A") },
+            };
+            cat_draw_footer(footer, 4);
+        }
     }
     cat_present();
 }
@@ -1269,7 +1527,7 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
                 return -1;
             }
             action = "save-state";
-            value = state->session.state_slot;
+            value = state->save_slot; /* -1 = auto; daemon writes the explicit slot */
             break;
         case JW_INGAME_LOAD:
             if (!state->session.savestate_supported) {
@@ -1277,8 +1535,13 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
                          "Savestates are not available");
                 return -1;
             }
+            if (state->load_count <= 0) {
+                snprintf(state->status, sizeof(state->status), "%s",
+                         "No saves to load");
+                return -1;
+            }
             action = "load-state";
-            value = state->session.state_slot;
+            value = state->load_entries[state->load_index].slot; /* 99 for Latest */
             break;
         case JW_INGAME_RESET:
             action = "reset";
@@ -1290,7 +1553,7 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
             action = "settings";
             break;
         case JW_INGAME_QUIT:
-            action = "quit";
+            action = state->quit_save ? "save-and-quit" : "quit";
             break;
         default:
             return 0;
@@ -1306,13 +1569,35 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
 static void jw__ingame_adjust(const char *socket_path, jw_ingame_state *state,
                               int delta) {
     const char *action = NULL;
+    if (state->list.cursor == JW_INGAME_QUIT) {
+        /* Left/Right toggles the quit mode between Save & Quit (default) and a
+           plain discard Quit; no IPC until A confirms. */
+        state->quit_save = !state->quit_save;
+        return;
+    }
     if (state->list.cursor == JW_INGAME_CONTINUE &&
         state->session.disk_count > 1) {
         action = delta < 0 ? "disk-prev" : "disk-next";
-    } else if ((state->list.cursor == JW_INGAME_SAVE ||
-                state->list.cursor == JW_INGAME_LOAD) &&
+    } else if (state->list.cursor == JW_INGAME_SAVE &&
                state->session.savestate_supported) {
-        action = delta < 0 ? "state-slot-prev" : "state-slot-next";
+        /* Cycle the Save target Auto(-1) → 0 → … → 9, wrapping; slot 99 is never
+           in this set (hidden from regular use). Local only — no IPC. */
+        int s = state->save_slot + delta;
+        if (s < -1) s = 9;
+        if (s > 9) s = -1;
+        state->save_slot = s;
+        return;
+    } else if (state->list.cursor == JW_INGAME_LOAD &&
+               state->session.savestate_supported) {
+        /* Browse existing saves newest-first (the "Latest" switcher entry, when
+           present, sits at index 0). Local only — no IPC. */
+        if (state->load_count > 0) {
+            int i = state->load_index + delta;
+            if (i < 0) i = state->load_count - 1;
+            if (i >= state->load_count) i = 0;
+            state->load_index = i;
+        }
+        return;
     } else if (state->list.cursor == JW_INGAME_PERF) {
         if (!state->perf_ready) {
             jw__ingame_perf_refresh(socket_path, state);
@@ -1361,6 +1646,28 @@ static void jw__handle_ingame_input(const char *socket_path,
             break;
         case CAT_BTN_B:
             jw__ingame_continue(socket_path, state, running);
+            break;
+        case CAT_BTN_Y:
+            /* Keep: promote the switcher quicksave (the "Latest" Load entry) into
+               a permanent numbered slot. File copy via the states helper — does
+               not disturb the running game. */
+            if (state->list.cursor == JW_INGAME_LOAD &&
+                state->session.savestate_supported &&
+                state->load_count > 0 &&
+                state->load_entries[state->load_index].is_latest) {
+                char dir[PATH_MAX];
+                int kept = -1;
+                if (jw__ingame_states_dir(dir, sizeof(dir)) &&
+                    jw_ra_promote_switcher_slot(dir, state->session.rom_path,
+                                                &kept)) {
+                    snprintf(state->status, sizeof(state->status),
+                             "Kept as Slot %d", kept);
+                    jw__ingame_rebuild_slots(state);
+                } else {
+                    snprintf(state->status, sizeof(state->status), "%s",
+                             "Keep failed");
+                }
+            }
             break;
         default:
             break;
@@ -1518,6 +1825,11 @@ static void jw__ingame_show_switcher(const char *socket_path, const char *db_pat
        carousel from the first visible frame (mirrors the in-game menu). */
     jw__ingame_capture_still(state);
 
+    /* Reuse that same still as the running game's carousel tile so the current
+       tile shows a real screenshot instantly, even before any save exists.
+       Borrowed — state->still_tex stays owned/freed by jw__ingame_free_imagery. */
+    jw_game_switcher_set_current_texture(&switcher, state->still_tex);
+
     cat_show_window();
     SDL_PumpEvents();
     SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
@@ -1574,6 +1886,7 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
         long long show_start_ms = jw__monotonic_ms();
         cat_list_state_init(&state.list, JW_INGAME_COUNT);
         state.status[0] = '\0';
+        state.quit_save = true; /* Save & Quit is the default Quit action */
         bool primed = jw__prime_ingame_session_from_env(&state);
 
         /* Grab the paused frame BEFORE mapping the window, so the first visible
@@ -1599,6 +1912,11 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
         long long refresh_start_ms = jw__monotonic_ms();
         jw__ingame_refresh(socket_path, &state);
         long long refresh_done_ms = jw__monotonic_ms();
+
+        /* Build the decoupled Save/Load slot lists for this session (existing
+           saves newest-first; switcher slot surfaced as "Latest"). */
+        jw__ingame_rebuild_slots(&state);
+        jw__ingame_init_save_slot(&state);
         if (!primed) {
             cat_request_frame();
             jw__render_ingame_menu(&state);
