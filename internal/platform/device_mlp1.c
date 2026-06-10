@@ -819,11 +819,24 @@ static int jw__mlp1_power_transition_async(int cmd) {
     }
     if (pid == 0) {
         usleep(250000);   /* let the IPC reply flush and the menu close */
-        sync();
-        reboot(cmd);
-        /* reboot(2) only returns on failure; fall back to magic SysRq. */
+
+        /* Take the filesystems down cleanly before the abrupt reboot(2). The SD
+           is FAT32 and busy — our own binary executes from it and the library DB
+           is open — so `mount -o remount,ro` returns EBUSY. The kernel's
+           emergency remount-ro (magic SysRq 'u') forces every mounted fs
+           read-only regardless of open files, flushing the FAT and directory
+           entries so an immediate reboot/power-off can't corrupt the card.
+           Without this, repeated reboots have produced FAT32 corruption.
+           Sequence mirrors REISUB's tail: enable sysrq, Sync, Unmount(ro), Sync. */
         (void)jw__write_text_file("/proc/sys/kernel/sysrq", "1\n");
-        (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");
+        sync();
+        (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
+        (void)jw__write_text_file("/proc/sysrq-trigger", "u\n");   /* remount-ro all */
+        (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
+        usleep(400000);   /* let the emergency remount-ro and flush settle */
+
+        reboot(cmd);
+        /* reboot(2) only returns on failure; fall back to a magic SysRq reboot. */
         sleep(1);
         (void)jw__write_text_file("/proc/sysrq-trigger",
                                   cmd == RB_POWER_OFF ? "o\n" : "b\n");
