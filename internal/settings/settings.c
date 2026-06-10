@@ -109,6 +109,7 @@ typedef enum {
     JW_SETTING_HIGHLIGHT_COLOR,
     JW_SETTING_BUTTON_LABEL_COLOR,
     JW_SETTING_BUTTON_GLYPH_BG_COLOR,
+    JW_SETTING_TIMEZONE,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -137,7 +138,62 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_HIGHLIGHT_COLOR] = "highlight_color",
     [JW_SETTING_BUTTON_LABEL_COLOR] = "button_label_color",
     [JW_SETTING_BUTTON_GLYPH_BG_COLOR] = "button_glyph_bg_color",
+    [JW_SETTING_TIMEZONE] = "timezone",
 };
+
+/* Curated time-zone list for Settings > Behavior > Time Zone. Each entry maps a
+   friendly label to an IANA zone id, exported as the TZ environment variable. The
+   clock uses localtime(), which honors TZ, so picking a zone corrects the clock
+   instantly and flows to launched apps. zoneinfo for every entry ships in the
+   rootfs (/usr/share/zoneinfo), so no data needs bundling. ASCII labels only
+   (the launcher font subset has no extended-Latin glyphs). */
+/* Ordered by UTC (standard-time) offset, the convention OS time-zone pickers use.
+   `off` is the displayed base offset (DST shifts it at runtime); ASCII only. */
+typedef struct { const char *label; const char *tz; const char *off; } jw__timezone_entry;
+static const jw__timezone_entry kTimeZones[] = {
+    { "US Hawaii",          "Pacific/Honolulu",    "UTC-10"   },
+    { "US Alaska",          "America/Anchorage",   "UTC-9"    },
+    { "US Pacific",         "America/Los_Angeles", "UTC-8"    },
+    { "US Mountain",        "America/Denver",      "UTC-7"    },
+    { "US Arizona",         "America/Phoenix",     "UTC-7"    },
+    { "US Central",         "America/Chicago",     "UTC-6"    },
+    { "US Eastern",         "America/New_York",    "UTC-5"    },
+    { "Brazil (East)",      "America/Sao_Paulo",   "UTC-3"    },
+    { "UTC",                "UTC",                 "UTC"      },
+    { "UK / Ireland",       "Europe/London",       "UTC+0"    },
+    { "Central Europe",     "Europe/Paris",        "UTC+1"    },
+    { "Eastern Europe",     "Europe/Athens",       "UTC+2"    },
+    { "India",              "Asia/Kolkata",        "UTC+5:30" },
+    { "China",              "Asia/Shanghai",       "UTC+8"    },
+    { "Japan / Korea",      "Asia/Tokyo",          "UTC+9"    },
+    { "Sydney",             "Australia/Sydney",    "UTC+10"   },
+};
+#define JW_TIMEZONE_COUNT ((int)(sizeof(kTimeZones) / sizeof(kTimeZones[0])))
+/* Rows visible at once in the picker pane (the list scrolls past this). Matches
+   the System Update picker, which uses the same two-line item height + pane. */
+#define JW_TIMEZONE_VISIBLE_ROWS 7
+
+static const char *jw__timezone_label(const char *tz) {
+    if (!tz || !tz[0]) return "System default";
+    for (int i = 0; i < JW_TIMEZONE_COUNT; ++i)
+        if (strcmp(kTimeZones[i].tz, tz) == 0) return kTimeZones[i].label;
+    return tz;   /* unknown id: show the raw zone */
+}
+
+static int jw__timezone_index_of(const char *tz) {
+    if (tz && tz[0])
+        for (int i = 0; i < JW_TIMEZONE_COUNT; ++i)
+            if (strcmp(kTimeZones[i].tz, tz) == 0) return i;
+    return 0;
+}
+
+/* Set TZ and refresh libc's timezone state so the very next localtime() (the
+   status-bar clock) reflects the new zone without a restart. Empty tz leaves the
+   system default in place. */
+static void jw__apply_timezone(const char *tz) {
+    if (tz && tz[0]) setenv("TZ", tz, 1);
+    tzset();
+}
 
 static bool jw__setting_has(char values[JW_SETTING_COUNT][JW_SETTINGS_VALUE_MAX],
                             const unsigned char found[JW_SETTING_COUNT],
@@ -800,6 +856,11 @@ static void jw__apply_persisted_overrides_from_values(
         t->button_glyph_bg = cat_hex_to_color(values[JW_SETTING_BUTTON_GLYPH_BG_COLOR]);
 
     cat_finalize_theme_colors(t);
+
+    /* Apply the persisted time zone so the clock is correct from launch. */
+    if (jw__setting_has(values, found, JW_SETTING_TIMEZONE) &&
+        values[JW_SETTING_TIMEZONE][0])
+        jw__apply_timezone(values[JW_SETTING_TIMEZONE]);
 }
 
 void jw_settings_toggle_led(jw_settings_ui *ui) {
@@ -862,12 +923,14 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
     cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
     cat_list_state_init(&ui->update_picker_list, JW_UPDATE_PICKER_VISIBLE_ROWS);
+    cat_list_state_init(&ui->timezone_picker_list, JW_TIMEZONE_VISIBLE_ROWS);
     cat_list_state_init(&ui->placeholder_list, 1);
     cat_scroll_state_init(&ui->about_scroll);
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
     ui->color_scheme_index = -1;   /* custom until a scheme is loaded below */
     ui->pill_shape_index  = JW_SETTINGS_PILL_SHAPE_DEFAULT;
     ui->font_family_index = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
+    ui->timezone[0]       = '\0';  /* "" = follow system tz until the user picks */
     ui->font_size_index   = 1;
     ui->show_hints        = true;
     ui->clock_style_index = 1;
@@ -932,6 +995,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
                     ui->clock_style_index = idx;
             }
+            if (jw__setting_has(values, found, JW_SETTING_TIMEZONE))
+                snprintf(ui->timezone, sizeof(ui->timezone), "%s",
+                         values[JW_SETTING_TIMEZONE]);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
                 ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
@@ -2217,6 +2283,8 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                      : "Unavailable";
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_PERFORMANCE,
                         "Game Performance", perf, ui->performance_supported);
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_TIMEZONE,
+                        "Time Zone", jw__timezone_label(ui->timezone), true);
     (void)h;
 }
 
@@ -2556,6 +2624,70 @@ static void jw__render_update_picker(const jw_settings_ui *ui,
     }
 }
 
+typedef struct {
+    const jw_settings_ui *ui;
+} jw__timezone_picker_ctx;
+
+/* Single-line row: friendly label on the left ("* " marks the current zone),
+   IANA id on the right in hint color — mirrors the Network/Bluetooth list rows. */
+static void jw__draw_timezone_item(int idx, int ix, int iy, int iw, int ih,
+                                   bool selected, void *user) {
+    jw__timezone_picker_ctx *ctx = (jw__timezone_picker_ctx *)user;
+    const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
+    if (idx < 0 || idx >= JW_TIMEZONE_COUNT) {
+        return;
+    }
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected) {
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
+    }
+    ap_color label_c = selected ? theme->highlighted_text : theme->text;
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    const char *cur = ui ? ui->timezone : "";
+    bool is_current = (cur[0] && strcmp(cur, kTimeZones[idx].tz) == 0);
+    char label[48];
+    snprintf(label, sizeof(label), "%s%s", is_current ? "* " : "",
+             kTimeZones[idx].label);
+    cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c, iw / 2);
+
+    int vw = cat_measure_text(body, kTimeZones[idx].off);
+    cat_draw_text(body, kTimeZones[idx].off, ix + iw - vw - cat_scale(16), ty, value_c);
+}
+
+static void jw__render_timezone_picker(const jw_settings_ui *ui,
+                                       int x, int y, int w, int h) {
+    jw__draw_header("Time Zone", x, y, w);
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int dy = y + jw__header_h() + cat_scale(6);
+    cat_draw_text_ellipsized(small, "Set your local time zone", x + cat_scale(12), dy,
+                             theme->hint, w - cat_scale(24));
+    dy += TTF_FontHeight(small) + cat_scale(10);
+
+    /* Size the visible-row count to whatever fits below the header so the list
+       fills the page and scrolls — like the browse and Network/Bluetooth lists.
+       (render takes ui const by convention; visible_rows is a layout-fit detail
+       of an otherwise-mutable widget owned by the launcher.) */
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    int avail = h - (dy - y);
+    int vis = avail / item_h;
+    if (vis < 1) vis = 1;
+    if (vis > JW_TIMEZONE_COUNT) vis = JW_TIMEZONE_COUNT;
+    ((cat_list_state *)&ui->timezone_picker_list)->visible_rows = vis;
+
+    jw__timezone_picker_ctx ctx = { ui };
+    cat_draw_list_pane(x, dy, w, vis * item_h, JW_TIMEZONE_COUNT,
+                       &ui->timezone_picker_list, item_h,
+                       jw__draw_timezone_item, &ctx);
+}
+
 /* ─── Main render dispatch ─────────────────────────────────────────────── */
 
 void jw_settings_ui_render(const jw_settings_ui *ui,
@@ -2576,6 +2708,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
         case JW_SETTINGS_UPDATE:     jw__render_update(ui, x, y, w, h);                  break;
         case JW_SETTINGS_UPDATE_PICKER: jw__render_update_picker(ui, x, y, w, h);        break;
+        case JW_SETTINGS_TIMEZONE_PICKER: jw__render_timezone_picker(ui, x, y, w, h);   break;
         case JW_SETTINGS_ABOUT:      jw__render_about(ui, x, y, w, h);                   break;
     }
 }
@@ -4052,11 +4185,51 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                         snprintf(status_buf, (size_t)status_size, "%s",
                                  status[0] ? status : "performance failed");
                     }
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_TIMEZONE) {
+                    /* Open the picker (A / Right); a long list isn't a cycler. */
+                    if (button == CAT_BTN_A || button == CAT_BTN_RIGHT) {
+                        int cur = jw__timezone_index_of(ui->timezone);
+                        ui->timezone_picker_list.cursor = cur;
+                        /* Scroll so the current zone is on screen when it opens. */
+                        int off = cur - (JW_TIMEZONE_VISIBLE_ROWS - 1);
+                        ui->timezone_picker_list.scroll_offset = off > 0 ? off : 0;
+                        ui->screen = JW_SETTINGS_TIMEZONE_PICKER;
+                    }
                 }
                 break;
             }
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_HOME;
+                break;
+            default: break;
+        }
+        break;
+
+    /* ── Time Zone picker ─────────────────────────────────────────────── */
+    case JW_SETTINGS_TIMEZONE_PICKER:
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->timezone_picker_list, -1, JW_TIMEZONE_COUNT);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->timezone_picker_list, +1, JW_TIMEZONE_COUNT);
+                break;
+            case CAT_BTN_A: {
+                int idx = ui->timezone_picker_list.cursor;
+                if (idx >= 0 && idx < JW_TIMEZONE_COUNT) {
+                    snprintf(ui->timezone, sizeof(ui->timezone), "%s",
+                             kTimeZones[idx].tz);
+                    jw__persist(ui, "timezone", ui->timezone);
+                    jw__apply_timezone(ui->timezone);   /* clock updates immediately */
+                    if (status_buf && status_size > 0)
+                        snprintf(status_buf, (size_t)status_size, "Time zone: %s",
+                                 kTimeZones[idx].label);
+                }
+                ui->screen = JW_SETTINGS_BEHAVIOR;
+                break;
+            }
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_BEHAVIOR;
                 break;
             default: break;
         }

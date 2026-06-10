@@ -4333,6 +4333,18 @@ int main(int argc, char *argv[]) {
     jw__publish_runtime_path_env(&state);
     jw__publish_audio_env(&state);
 
+    /* Export the user's time zone so launched apps (and the daemon's own
+       localtime) use it. The launcher re-applies it live when changed. */
+    {
+        char tz[64] = "";
+        if (state.db_path[0] &&
+            jw_db_get_setting(state.db_path, "timezone", tz, sizeof(tz)) == 0 &&
+            tz[0]) {
+            setenv("TZ", tz, 1);
+            tzset();
+        }
+    }
+
     setenv("JAWAKA_OSD_SOCKET", state.osd_socket_path, 1);
     setenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1", 0);
     {

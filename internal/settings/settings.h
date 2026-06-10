@@ -46,6 +46,7 @@ typedef enum {
     JW_SETTINGS_BEHAVIOR,
     JW_SETTINGS_UPDATE,
     JW_SETTINGS_UPDATE_PICKER,
+    JW_SETTINGS_TIMEZONE_PICKER,
     JW_SETTINGS_ABOUT,
 } jw_settings_screen;
 
@@ -118,7 +119,8 @@ typedef enum {
 #define JW_BEHAVIOR_AUTO_SLEEP  1
 #define JW_BEHAVIOR_BOOT_SPLASH 2
 #define JW_BEHAVIOR_PERFORMANCE 3
-#define JW_BEHAVIOR_ROW_COUNT   4
+#define JW_BEHAVIOR_TIMEZONE    4   /* opens the Time Zone picker screen */
+#define JW_BEHAVIOR_ROW_COUNT   5
 
 /* System Update page */
 #define JW_UPDATE_ROW_CHECK     0
@@ -147,6 +149,7 @@ typedef struct {
     cat_list_state     behavior_list;
     cat_list_state     update_list;
     cat_list_state     update_picker_list;
+    cat_list_state     timezone_picker_list;
     cat_list_state     placeholder_list;
     cat_scroll_state   about_scroll;
     int                theme_index;
@@ -161,6 +164,7 @@ typedef struct {
     bool               show_wifi;
     bool               show_bluetooth;      /* bluetooth icon in the status bar */
     bool               show_volume;         /* speaker icon in the status bar */
+    char               timezone[64];        /* IANA zone id exported as TZ; "" = system default */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
