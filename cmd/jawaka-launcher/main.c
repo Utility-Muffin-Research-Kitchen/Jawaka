@@ -1600,6 +1600,31 @@ static void jw__cover_loader_ensure(void) {
     }
 }
 
+static void jw__cover_loader_shutdown(void) {
+    jw_cover_loader *L = &jw__cover_loader;
+    if (!L->started) return;
+
+    pthread_mutex_lock(&L->lock);
+    L->stop = true;
+    pthread_cond_signal(&L->cond);
+    pthread_mutex_unlock(&L->lock);
+
+    pthread_join(L->thread, NULL);
+
+    pthread_mutex_lock(&L->lock);
+    if (L->done_surf) {
+        SDL_FreeSurface(L->done_surf);
+        L->done_surf = NULL;
+    }
+    L->has_done = false;
+    L->has_req = false;
+    L->q_head = 0;
+    L->q_count = 0;
+    L->stop = false;
+    L->started = false;
+    pthread_mutex_unlock(&L->lock);
+}
+
 /* If a decoded surface for `path` is ready, consume it into *out and return true.
    Otherwise set `path` as the priority request (newest wins) and return false. */
 static bool jw__cover_async_take(const char *path, const char *thumb, SDL_Surface **out) {
@@ -3690,6 +3715,7 @@ int main(void) {
         jw__render_launcher(&state);
     }
 
+    jw__cover_loader_shutdown();
     cat_quit();
     free(socket_path);
     free(db_path);

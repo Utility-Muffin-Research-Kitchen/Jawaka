@@ -48,6 +48,13 @@ typedef struct jw_appearance_env {
     char button_label[16];
     char button_glyph_bg[16];
     char show_hints[8];           /* "0"/"1" — exported as CAT_SHOW_HINTS */
+    char status_show_wifi[8];     /* CAT_STATUS_SHOW_WIFI */
+    char status_show_battery[8];  /* CAT_STATUS_SHOW_BATTERY */
+    char status_show_battery_level[8]; /* CAT_STATUS_SHOW_BATTERY_LEVEL */
+    char status_show_bluetooth[8];/* CAT_STATUS_SHOW_BLUETOOTH */
+    char status_clock[16];        /* CAT_STATUS_CLOCK: hide / 12 / 24 / no-ampm */
+    char status_bt_state[8];      /* CAT_STATUS_BT_STATE: 0 off, 1 on, 2 connected */
+    char timezone[64];            /* TZ override for launched apps; empty = inherit */
 } jw_appearance_env;
 
 /* Parent-side: read the DB (and env) and resolve every appearance value into
