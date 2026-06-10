@@ -418,12 +418,15 @@ int jw_bt_status(jw_bt_status_t *out) {
 }
 
 bool jw_bt_radio_is_on(void) {
-    int flag = jw__bt_read_enable_flag();
-    if (flag >= 0) {
-        return flag != 0;
-    }
+    /* Source of truth is the actual adapter state (BlueZ "Powered"), not the
+       stock BLUETOOTH_PARAM enable flag: in Leaf mode no stock daemon keeps that
+       flag in sync, so it goes stale and the UI can't see the radio turn off.
+       Fall back to the stock flag only if the adapter can't be queried. */
     jw_bt_status_t status;
-    return jw_bt_status(&status) == 0 && status.powered;
+    if (jw_bt_status(&status) == 0) {
+        return status.powered;
+    }
+    return jw__bt_read_enable_flag() > 0;
 }
 
 static void jw__bt_try_start_stack(void) {

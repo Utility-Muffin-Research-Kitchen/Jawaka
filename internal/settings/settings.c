@@ -54,7 +54,7 @@ _Static_assert(JW_SETTINGS_FONT_SIZE_COUNT == JW_APPEARANCE_FONT_SIZE_COUNT,
                "font size label/value table counts out of sync");
 
 const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT] = {
-    "Off",
+    "Hidden",
     "24 Hour",
     "AM/PM",
     "12 Hour",
@@ -93,6 +93,7 @@ typedef enum {
     JW_SETTING_SHOW_BATTERY,
     JW_SETTING_SHOW_BATTERY_LEVEL,
     JW_SETTING_SHOW_WIFI,
+    JW_SETTING_SHOW_BLUETOOTH,
     JW_SETTING_SHOW_VOLUME,
     JW_SETTING_COLOR_SCHEME_INDEX,
     JW_SETTING_STARTUP_TAB_INDEX,
@@ -120,6 +121,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_SHOW_BATTERY] = "show_battery",
     [JW_SETTING_SHOW_BATTERY_LEVEL] = "show_battery_level",
     [JW_SETTING_SHOW_WIFI] = "show_wifi",
+    [JW_SETTING_SHOW_BLUETOOTH] = "show_bluetooth",
     [JW_SETTING_SHOW_VOLUME] = "show_volume",
     [JW_SETTING_COLOR_SCHEME_INDEX] = "color_scheme_index",
     [JW_SETTING_STARTUP_TAB_INDEX] = "startup_tab_index",
@@ -872,6 +874,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->show_battery      = true;
     ui->show_battery_level = false;
     ui->show_wifi         = true;
+    ui->show_bluetooth    = true;
     ui->show_volume       = true;
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
@@ -935,6 +938,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 ui->show_battery_level = (strcmp(values[JW_SETTING_SHOW_BATTERY_LEVEL], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_WIFI))
                 ui->show_wifi = (strcmp(values[JW_SETTING_SHOW_WIFI], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_BLUETOOTH))
+                ui->show_bluetooth = (strcmp(values[JW_SETTING_SHOW_BLUETOOTH], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_VOLUME))
                 ui->show_volume = (strcmp(values[JW_SETTING_SHOW_VOLUME], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_COLOR_SCHEME_INDEX)) {
@@ -1048,6 +1053,8 @@ void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *
        one source. */
     out->wifi_supplied = true;
     out->wifi_strength = ui->show_wifi ? ui->wifi_strength_cached : 0;
+    out->show_bluetooth = ui->show_bluetooth;
+    out->bt_state = ui->show_bluetooth ? ui->bt_state_cached : 0;
     out->show_volume = ui->show_volume;
     out->volume_percent = ui->show_volume ? ui->volume_percent : -1;
 }
@@ -1070,6 +1077,18 @@ void jw_settings_ui_refresh_wifi_strength(jw_settings_ui *ui) {
     }
 }
 
+/* 0=off, 1=on (no device), 2=connected. */
+static int jw__bt_state_now(void) {
+    if (!jw_bt_radio_is_on()) return 0;
+    return (jw_bt_any_connected() == 1) ? 2 : 1;
+}
+
+void jw_settings_ui_refresh_bt_state(jw_settings_ui *ui) {
+    if (ui) {
+        ui->bt_state_cached = jw__bt_state_now();
+    }
+}
+
 void jw_settings_load_status_prefs(const char *db_path,
                                    cat_status_bar_opts *out_opts,
                                    bool *out_show_hints) {
@@ -1078,6 +1097,7 @@ void jw_settings_load_status_prefs(const char *db_path,
     bool show_battery      = true;
     bool show_battery_level = false;
     bool show_wifi         = true;
+    bool show_bluetooth    = true;
     bool show_volume       = true;
     int  volume_percent    = -1;
     bool show_hints        = true;
@@ -1097,6 +1117,8 @@ void jw_settings_load_status_prefs(const char *db_path,
                 show_battery_level = (strcmp(values[JW_SETTING_SHOW_BATTERY_LEVEL], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_WIFI))
                 show_wifi = (strcmp(values[JW_SETTING_SHOW_WIFI], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SHOW_BLUETOOTH))
+                show_bluetooth = (strcmp(values[JW_SETTING_SHOW_BLUETOOTH], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_VOLUME))
                 show_volume = (strcmp(values[JW_SETTING_SHOW_VOLUME], "0") != 0);
             /* The menu has no live volume poll; use the daemon's last persisted value. */
@@ -1119,6 +1141,8 @@ void jw_settings_load_status_prefs(const char *db_path,
         out_opts->show_battery = show_battery;
         out_opts->show_battery_level = show_battery_level;
         out_opts->show_wifi = show_wifi;
+        out_opts->show_bluetooth = show_bluetooth;
+        out_opts->bt_state = show_bluetooth ? jw__bt_state_now() : 0;
         out_opts->show_volume = show_volume;
         out_opts->volume_percent = show_volume ? volume_percent : -1;
     }
@@ -1285,7 +1309,7 @@ enum {
     JW_BATTERY_MODE_COUNT
 };
 static const char *const kBatteryModeLabels[JW_BATTERY_MODE_COUNT] = {
-    "Off", "Icon", "Percent", "Both"
+    "Hidden", "Icon", "Percent", "Both"
 };
 static int jw__battery_mode(bool icon, bool number) {
     if (icon && number) return JW_BATTERY_BOTH;
@@ -1298,11 +1322,16 @@ static void jw__battery_mode_to_flags(int mode, bool *icon, bool *number) {
     *number = (mode == JW_BATTERY_PERCENT || mode == JW_BATTERY_BOTH);
 }
 
+/* Status-bar visibility toggles read as Visible/Hidden rather than On/Off. */
+static inline const char *jw__vis_label(bool visible) {
+    return visible ? "Visible" : "Hidden";
+}
+
 static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Status Bar", x, y, w);
     int ly = y + jw__header_h();
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_HINTS,
-                        "Button Hints", ui->show_hints ? "On" : "Off", true);
+                        "Button Hints", jw__vis_label(ui->show_hints), true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_CLOCK,
                         "Clock", kClockStyleLabels[ui->clock_style_index], true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BATTERY,
@@ -1310,9 +1339,11 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
                         kBatteryModeLabels[jw__battery_mode(ui->show_battery, ui->show_battery_level)],
                         true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_WIFI,
-                        "Wifi", ui->show_wifi ? "On" : "Off", true);
+                        "Wifi", jw__vis_label(ui->show_wifi), true);
+    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BLUETOOTH,
+                        "Bluetooth", jw__vis_label(ui->show_bluetooth), true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_VOLUME,
-                        "Volume", ui->show_volume ? "On" : "Off", true);
+                        "Volume", jw__vis_label(ui->show_volume), true);
     (void)h;
 }
 
@@ -1719,6 +1750,14 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
 typedef struct {
     const jw_settings_ui *ui;
 } jw__bt_list_ctx;
+
+/* The "Paired"/"Nearby" rows are section labels, not selectable items — the
+   cursor must skip over them during navigation. */
+static bool jw__bt_row_is_header(const jw_settings_ui *ui, int row) {
+    if (!ui || !ui->bt_radio_on) return false;
+    return row == JW_BLUETOOTH_FIXED_ROWS ||
+           row == JW_BLUETOOTH_FIXED_ROWS + 1 + ui->bt_paired_count;
+}
 
 static const jw_bt_device_t *jw__bt_row_device(const jw_settings_ui *ui, int row,
                                                bool *out_paired) {
@@ -3470,6 +3509,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 } else if (row == JW_STATUSBAR_WIFI) {
                     ui->show_wifi = !ui->show_wifi;
                     jw__persist_bool(ui, "show_wifi", ui->show_wifi);
+                } else if (row == JW_STATUSBAR_BLUETOOTH) {
+                    ui->show_bluetooth = !ui->show_bluetooth;
+                    jw__persist_bool(ui, "show_bluetooth", ui->show_bluetooth);
+                    if (ui->show_bluetooth) jw_settings_ui_refresh_bt_state(ui);
                 } else if (row == JW_STATUSBAR_VOLUME) {
                     ui->show_volume = !ui->show_volume;
                     jw__persist_bool(ui, "show_volume", ui->show_volume);
@@ -3664,9 +3707,15 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         switch (button) {
             case CAT_BTN_UP:
                 cat_list_state_move(&ui->bluetooth_list, -1, row_count);
+                for (int g = 0; g < row_count &&
+                     jw__bt_row_is_header(ui, ui->bluetooth_list.cursor); g++)
+                    cat_list_state_move(&ui->bluetooth_list, -1, row_count);
                 break;
             case CAT_BTN_DOWN:
                 cat_list_state_move(&ui->bluetooth_list, +1, row_count);
+                for (int g = 0; g < row_count &&
+                     jw__bt_row_is_header(ui, ui->bluetooth_list.cursor); g++)
+                    cat_list_state_move(&ui->bluetooth_list, +1, row_count);
                 break;
             case CAT_BTN_A: {
                 if (ui->bt_op != JW_BT_OP_NONE) {

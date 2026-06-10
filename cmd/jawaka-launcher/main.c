@@ -3382,6 +3382,17 @@ int main(void) {
             }
         }
 
+        /* Bluetooth status-bar icon: poll the radio/connection state on the same
+           slow cadence as wifi (the read shells out, so never per-frame). */
+        if (state.settings.show_bluetooth) {
+            static uint32_t last_bt_poll = 0;
+            uint32_t now = SDL_GetTicks();
+            if (last_bt_poll == 0 || now - last_bt_poll >= 5000) {
+                jw_settings_ui_refresh_bt_state(&state.settings);
+                last_bt_poll = now;
+            }
+        }
+
         /* Keep the status bar live while idle: the launcher only renders on
            input or a requested frame, so without this a wifi connect / charger
            plug-in / clock tick wouldn't show until the next button press. ~1s

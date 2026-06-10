@@ -79,8 +79,9 @@ typedef enum {
 #define JW_STATUSBAR_CLOCK   1
 #define JW_STATUSBAR_BATTERY 2   /* 4-way cycler: Off / Icon / Percent / Both */
 #define JW_STATUSBAR_WIFI    3
-#define JW_STATUSBAR_VOLUME  4
-#define JW_STATUSBAR_ROW_COUNT 5
+#define JW_STATUSBAR_BLUETOOTH 4
+#define JW_STATUSBAR_VOLUME  5
+#define JW_STATUSBAR_ROW_COUNT 6
 
 /* Display & Sound page */
 #define JW_DISPLAY_BRIGHTNESS 0
@@ -158,6 +159,7 @@ typedef struct {
     bool               show_battery;
     bool               show_battery_level;  /* numeric % next to the battery icon */
     bool               show_wifi;
+    bool               show_bluetooth;      /* bluetooth icon in the status bar */
     bool               show_volume;         /* speaker icon in the status bar */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
@@ -188,6 +190,7 @@ typedef struct {
     int                wifi_monitor_fd;     /* wpa event-socket fd during a join (-1 = none) */
     bool               wifi_radio_on;       /* Wi-Fi on/off toggle state */
     int                wifi_strength_cached;/* 0..3 for the status-bar icon; polled on a throttle */
+    int                bt_state_cached;     /* 0=off,1=on,2=connected for the status-bar icon; throttled */
     bool               adb_supported;       /* platform advertises ADB control */
     int                adb_enabled;         /* -1 unavailable, 0 disabled, 1 pinned */
     int                adb_intent_enabled;  /* -1 unavailable, 0 no boot restore, 1 restore at boot */
@@ -252,6 +255,10 @@ bool jw_settings_show_wifi(const jw_settings_ui *ui);
 /* Poll live wifi strength into ui->wifi_strength_cached so the status-bar icon
  * stays current while idle. Call on a throttle. */
 void jw_settings_ui_refresh_wifi_strength(jw_settings_ui *ui);
+
+/* Poll live Bluetooth state into ui->bt_state_cached (0=off,1=on,2=connected)
+   so the status-bar icon reflects the radio without shelling out every frame. */
+void jw_settings_ui_refresh_bt_state(jw_settings_ui *ui);
 
 /* True if the status-bar speaker icon is enabled. The launcher uses this to
  * decide whether to keep volume polled on the home screen. */
