@@ -45,5 +45,14 @@ uint64_t jw_input_proxy_idle_ms(const jw_input_proxy *proxy);
 /* Reset the idle timer to "now" (e.g. after resuming from suspend, whose wake
  * key arrives outside the proxied input device). */
 void     jw_input_proxy_mark_activity(jw_input_proxy *proxy);
+/* Discard any pending input without forwarding it (e.g. on resume from suspend,
+ * to drop button/d-pad presses that queued while asleep so they don't replay into
+ * the launcher on wake). Safe to call when disabled. */
+void     jw_input_proxy_flush(jw_input_proxy *proxy);
+/* While "swallow" is on (the auto-sleep screen-off stage), gamepad input still
+ * resets the idle timer (so a press wakes the screen) but is NOT forwarded to the
+ * launcher — so the wake press only wakes the screen instead of also firing a
+ * navigation action. Turn it off once the screen is back on. */
+void     jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow);
 
 #endif /* JW_PLATFORM_INPUT_PROXY_H */

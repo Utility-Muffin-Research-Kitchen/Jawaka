@@ -3156,24 +3156,28 @@ static void jw__screen_set(jw_daemon_state *state, bool on) {
                                0, &result);
 }
 
+/* Keep STOCK loong_power's auto-sleep DISABLED. jawakad owns auto-sleep through the
+   input proxy, which tracks the gamepad input our EVIOCGRAB hides from stock. If we
+   mirrored our timeout into stock, stock would auto-suspend on its own timer that
+   never sees button/d-pad presses, so the device would sleep regardless of input
+   (the bug). We therefore always force stock to 0 and govern sleep ourselves. */
 static void jw__autosleep_sync_platform(jw_daemon_state *state) {
-    if (!state || state->autosleep_platform_synced_s == state->autosleep_timeout_s) {
-        return;
+    if (!state || state->autosleep_platform_synced_s == 0) {
+        return;   /* stock auto-sleep already disabled */
     }
 
     jw_platform_result result;
     jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_AUTO_SLEEP,
-                               state->autosleep_timeout_s, &result);
+                               0, &result);
     if (result.code == JW_PLATFORM_RESULT_OK) {
-        jw_log_info("auto-sleep: synced stock power timeout to %ds",
-                    state->autosleep_timeout_s);
+        jw_log_info("auto-sleep: stock power auto-sleep disabled (jawakad governs)");
     } else if (result.code != JW_PLATFORM_RESULT_UNSUPPORTED) {
-        jw_log_warn("auto-sleep: stock power sync failed: %s",
+        jw_log_warn("auto-sleep: disabling stock power auto-sleep failed: %s",
                     result.message[0] ? result.message
                                       : jw_platform_result_code_name(result.code));
         return;
     }
-    state->autosleep_platform_synced_s = state->autosleep_timeout_s;
+    state->autosleep_platform_synced_s = 0;
 }
 
 static void jw__tick_auto_sleep(jw_daemon_state *state) {
@@ -3199,21 +3203,25 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     uint64_t suspend_at = screen_off_at + JW_AUTOSLEEP_SUSPEND_GRACE_MS;
 
     if (idle_ms < screen_off_at) {
-        /* Active: undo a prior blank. */
+        /* Active: undo a prior blank and resume forwarding input. */
         if (state->autosleep_screen_off) {
             jw__screen_set(state, true);
+            jw_input_proxy_set_swallow(&state->input_proxy, false);
             state->autosleep_screen_off = false;
         }
         return;
     }
 
     if (idle_ms < suspend_at) {
-        /* Stage 1 — blank the backlight. Any button resets the idle timer
-           (proxy stamps EV_KEY), so the next tick restores the screen. */
+        /* Stage 1 — blank the backlight. The proxy swallows input while blanked:
+           a press resets the idle timer (waking the screen next tick) but is NOT
+           forwarded, so the wake press only wakes the screen instead of also
+           firing a navigation action. */
         if (!state->autosleep_screen_off) {
             jw_log_info("auto-sleep: screen off (idle %llums)",
                         (unsigned long long)idle_ms);
             jw__screen_set(state, false);
+            jw_input_proxy_set_swallow(&state->input_proxy, true);
             state->autosleep_screen_off = true;
         }
         return;
@@ -3228,7 +3236,12 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     jw__platform_sleep_with_performance(state, &result);
     jw_log_info("auto-sleep: resumed from suspend");
     jw__screen_set(state, true);
+    jw_input_proxy_set_swallow(&state->input_proxy, false);
     state->autosleep_screen_off = false;
+    /* Discard any button/d-pad presses that queued while suspended so they don't
+       replay into the launcher on wake (the power-button wake is the only intended
+       input here). */
+    jw_input_proxy_flush(&state->input_proxy);
     jw_input_proxy_mark_activity(&state->input_proxy);
     state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
 }

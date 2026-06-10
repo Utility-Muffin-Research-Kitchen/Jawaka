@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/netlink.h>
+#include <linux/input.h>
+#include <sys/ioctl.h>
 #include <dlfcn.h>
 #include <dirent.h>
 #include <signal.h>
@@ -139,8 +141,6 @@ static int (*s_event_opend)(const char *id);
    takes the singleton `this`). Used so suspend goes through loong's own power
    path — keeps loong_power in sync so the power button wakes on a single press
    (vs. our raw `echo mem`, which loong re-suspends on the first wake press). */
-static void *(*s_power_get)(void);
-static void  (*s_power_standby)(void *self);
 static int   (*s_write_config)(const char *param, const char *value,
                                const char *backup, int persist);
 static bool s_loong_loaded;
@@ -776,32 +776,32 @@ static void jw__loong_load(void) {
         jw_log_error("loong: EventOpend symbol not found: %s", dlerror());
     }
 
-    *(void **)(&s_power_get)     = dlsym(handle, "_ZN5loong8PowerApi3getEv");
-    *(void **)(&s_power_standby) = dlsym(handle, "_ZN5loong8PowerApi12powerStandbyEv");
-    if (!s_power_get || !s_power_standby) {
-        jw_log_warn("loong: PowerApi standby symbols not found (will fall back to echo mem)");
-    }
-
     *(void **)(&s_write_config) = dlsym(handle, "WriteConfig");
     if (!s_write_config) {
         jw_log_warn("loong: WriteConfig symbol not found (stock settings sync will use DB fallback)");
     }
 }
 
-/* Suspend via loong's own PowerApi so loong_power owns the sleep and the wake is
-   consistent (single power press). Returns 0 if the call was made, -1 if the
-   symbols are unavailable so the caller can fall back to the kernel write. */
-static int jw__loong_standby(void) {
-    jw__loong_load();
-    if (!s_power_get || !s_power_standby) {
-        return -1;
+/* Open the power-key evdev device (rk805 pwrkey, KEY_POWER) read-only and
+   non-blocking. Used to exclusively grab the power key across a suspend so stock
+   loong_power doesn't see the wake press and re-suspend us. -1 if not found. */
+#define JW_MLP1_PWRKEY_NAME "rk805 pwrkey"
+static int jw__mlp1_open_power_key(void) {
+    for (int i = 0; i < 32; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/dev/input/event%d", i);
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        char name[128] = {0};
+        if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
+            strcmp(name, JW_MLP1_PWRKEY_NAME) == 0) {
+            return fd;
+        }
+        close(fd);
     }
-    void *api = s_power_get();
-    if (!api) {
-        return -1;
-    }
-    s_power_standby(api);
-    return 0;
+    return -1;
 }
 
 /* Reboot or power off via the reboot(2) syscall directly.
@@ -1882,21 +1882,42 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
     }
 
     if (action == JW_PLATFORM_ACTION_SLEEP) {
-        jw_log_info("platform: sleep requested");
-        /* Prefer loong's own standby so loong_power stays in sync (single-press
-           wake). Fall back to the raw kernel write if the SDK symbols are absent. */
-        if (jw__loong_standby() == 0) {
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "suspending (loong)");
-            return;
+        jw_log_info("platform: sleep -> real suspend-to-RAM");
+        /* Real deep suspend via `echo mem`. The earlier loong PowerApi::powerStandby()
+           path (ed16b43) only blanked the screen — the system never actually
+           suspended — so we go back to the kernel write that genuinely suspends.
+           Stock loong_power also holds the power key and would re-suspend us on the
+           first wake press (the two-press-wake gotcha), so we EVIOCGRAB the power
+           key across the suspend: only we get the wake press, loong_power never
+           sees it, and the PMIC wake source (rk805-pwrkey) still resumes the kernel
+           on a single press. The write blocks here until we resume. */
+        int pk = jw__mlp1_open_power_key();
+        bool grabbed = (pk >= 0 && ioctl(pk, EVIOCGRAB, 1) == 0);
+        jw_log_info("platform: power-key %s (fd=%d) for single-press wake",
+                    grabbed ? "grabbed" : (pk >= 0 ? "GRAB FAILED (loong_power holds it?)"
+                                                    : "not found"), pk);
+
+        int sfd = open("/sys/power/state", O_WRONLY | O_CLOEXEC);
+        int rc = -1;
+        if (sfd >= 0) {
+            rc = (write(sfd, "mem\n", 4) == 4) ? 0 : -1;   /* blocks until resume */
+            close(sfd);
         }
-        FILE *fp = fopen("/sys/power/state", "w");
-        if (fp) {
-            fprintf(fp, "mem\n");
-            fclose(fp);
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "suspending");
-        } else {
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "sleep failed");
+
+        if (pk >= 0) {
+            if (grabbed) {
+                struct input_event ev;
+                while (read(pk, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+                    /* drain the wake press(es) so loong_power can't act on them */
+                }
+                ioctl(pk, EVIOCGRAB, 0);
+            }
+            close(pk);
         }
+
+        jw_platform_result_set(out,
+                               rc == 0 ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED,
+                               rc == 0 ? "suspended" : "sleep failed");
         return;
     }
 

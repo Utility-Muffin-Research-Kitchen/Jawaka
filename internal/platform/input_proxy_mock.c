@@ -38,6 +38,15 @@ void jw_input_proxy_mark_activity(jw_input_proxy *proxy) {
     (void)proxy;
 }
 
+void jw_input_proxy_flush(jw_input_proxy *proxy) {
+    (void)proxy;
+}
+
+void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
+    (void)proxy;
+    (void)swallow;
+}
+
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     if (proxy) {
         memset(proxy, 0, sizeof(*proxy));

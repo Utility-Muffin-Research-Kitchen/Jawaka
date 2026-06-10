@@ -35,6 +35,7 @@ typedef struct {
     uint64_t deferred_menu_release_at_ms;
     uint64_t last_brightness_ms;
     uint64_t last_activity_ms;     /* monotonic ms of the last EV_KEY (auto-sleep) */
+    bool swallow;                  /* screen-off stage: wake on input but don't forward it */
 } jw_mlp1_input_proxy_data;
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
@@ -504,6 +505,16 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
             return;
         }
 
+        if (data->swallow) {
+            /* Screen-off stage: a press should wake the screen (reset idle) but not
+               also fire a navigation action, so stamp activity and discard. */
+            if (ev.type == EV_KEY ||
+                (ev.type == EV_ABS &&
+                 (ev.code == ABS_HAT0X || ev.code == ABS_HAT0Y) && ev.value != 0)) {
+                data->last_activity_ms = jw__monotonic_ms();
+            }
+            continue;
+        }
         if (ev.type == EV_KEY) {
             data->last_activity_ms = jw__monotonic_ms();   /* auto-sleep idle reset */
             jw__handle_key(proxy, &ev);
@@ -547,6 +558,33 @@ void jw_input_proxy_mark_activity(jw_input_proxy *proxy) {
     }
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
     data->last_activity_ms = jw__monotonic_ms();
+}
+
+void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
+    if (!proxy || !proxy->backend_data) {
+        return;
+    }
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    data->swallow = swallow;
+}
+
+void jw_input_proxy_flush(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data) {
+        return;
+    }
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    /* Drain the physical gamepad without forwarding — drops presses that queued
+       while suspended so they don't replay into the launcher on wake. */
+    struct input_event ev;
+    while (read(data->input_fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+        /* discard */
+    }
+    if (data->power_fd >= 0) {
+        struct input_event pev;
+        while (read(data->power_fd, &pev, sizeof(pev)) == (ssize_t)sizeof(pev)) {
+            /* discard */
+        }
+    }
 }
 
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
