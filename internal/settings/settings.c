@@ -822,22 +822,24 @@ static void jw__apply_persisted_overrides_from_values(
             if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
                 bump = kJawakaFontSizeValues[idx];
         }
-        if (getenv("CAT_FONT_PATH")) {
-            cat_set_font_bump(bump);
-        } else {
-            int fidx = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
-            if (jw__setting_has(values, found, JW_SETTING_FONT_FAMILY_INDEX)) {
-                int idx = atoi(values[JW_SETTING_FONT_FAMILY_INDEX]);
-                if (idx >= 0 && idx < JW_APPEARANCE_FONT_FAMILY_COUNT)
-                    fidx = idx;
-            }
-            snprintf(t->font_path, sizeof(t->font_path), "%s",
-                     jw_appearance_font_path_for_index(fidx));
-            if (bump != cat_get_font_bump())
-                cat_set_font_bump(bump);
-            else
-                cat_reload_fonts(t->font_path);
+        /* Always resolve and apply the selected family explicitly. We used to
+           short-circuit when CAT_FONT_PATH was inherited from the daemon and only
+           set the bump — but cat_set_font_bump reloads via theme.font_path, which
+           can be empty here, so a font-size change fell back through the candidate
+           list to res/font.ttf and clobbered the family to the rounded default.
+           Setting the path first keeps both family and bump correct on every apply. */
+        int fidx = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
+        if (jw__setting_has(values, found, JW_SETTING_FONT_FAMILY_INDEX)) {
+            int idx = atoi(values[JW_SETTING_FONT_FAMILY_INDEX]);
+            if (idx >= 0 && idx < JW_APPEARANCE_FONT_FAMILY_COUNT)
+                fidx = idx;
         }
+        snprintf(t->font_path, sizeof(t->font_path), "%s",
+                 jw_appearance_font_path_for_index(fidx));
+        if (bump != cat_get_font_bump())
+            cat_set_font_bump(bump);
+        else
+            cat_reload_fonts(t->font_path);
     }
 
     if (jw__setting_has(values, found, JW_SETTING_ACCENT_COLOR))
@@ -3644,6 +3646,12 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 } else if (row == JW_LAYOUT_FONT_SIZE) {
                     int next = (ui->font_size_index + dir + JW_SETTINGS_FONT_SIZE_COUNT) % JW_SETTINGS_FONT_SIZE_COUNT;
                     ui->font_size_index = next;
+                    /* Re-assert the selected family before the bump reload — otherwise
+                       cat_set_font_bump reloads via theme.font_path, which can be empty,
+                       and falls back to res/font.ttf (clobbering the chosen font). */
+                    ap_theme *ft = cat_get_theme();
+                    snprintf(ft->font_path, sizeof(ft->font_path), "%s",
+                             jw_appearance_font_path_for_index(ui->font_family_index));
                     cat_set_font_bump(kJawakaFontSizeValues[next]);
                     jw__persist_int(ui, "font_size_index", next);
                 }
