@@ -47,6 +47,12 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
     (void)swallow;
 }
 
+void jw_input_proxy_take_power_edges(jw_input_proxy *proxy, bool *down, bool *up) {
+    (void)proxy;
+    if (down) *down = false;
+    if (up) *up = false;
+}
+
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     if (proxy) {
         memset(proxy, 0, sizeof(*proxy));

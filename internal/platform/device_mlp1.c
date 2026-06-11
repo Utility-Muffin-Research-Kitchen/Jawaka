@@ -782,27 +782,6 @@ static void jw__loong_load(void) {
     }
 }
 
-/* Open the power-key evdev device (rk805 pwrkey, KEY_POWER) read-only and
-   non-blocking. Used to exclusively grab the power key across a suspend so stock
-   loong_power doesn't see the wake press and re-suspend us. -1 if not found. */
-#define JW_MLP1_PWRKEY_NAME "rk805 pwrkey"
-static int jw__mlp1_open_power_key(void) {
-    for (int i = 0; i < 32; i++) {
-        char path[64];
-        snprintf(path, sizeof(path), "/dev/input/event%d", i);
-        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0) {
-            continue;
-        }
-        char name[128] = {0};
-        if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
-            strcmp(name, JW_MLP1_PWRKEY_NAME) == 0) {
-            return fd;
-        }
-        close(fd);
-    }
-    return -1;
-}
 
 /* Reboot or power off via the reboot(2) syscall directly.
    The stock busybox reboot/poweroff applets signal PID 1, but in Leaf mode init
@@ -1883,38 +1862,18 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_SLEEP) {
         jw_log_info("platform: sleep -> real suspend-to-RAM");
-        /* Real deep suspend via `echo mem`. The earlier loong PowerApi::powerStandby()
-           path (ed16b43) only blanked the screen — the system never actually
-           suspended — so we go back to the kernel write that genuinely suspends.
-           Stock loong_power also holds the power key and would re-suspend us on the
-           first wake press (the two-press-wake gotcha), so we EVIOCGRAB the power
-           key across the suspend: only we get the wake press, loong_power never
-           sees it, and the PMIC wake source (rk805-pwrkey) still resumes the kernel
-           on a single press. The write blocks here until we resume. */
-        int pk = jw__mlp1_open_power_key();
-        bool grabbed = (pk >= 0 && ioctl(pk, EVIOCGRAB, 1) == 0);
-        jw_log_info("platform: power-key %s (fd=%d) for single-press wake",
-                    grabbed ? "grabbed" : (pk >= 0 ? "GRAB FAILED (loong_power holds it?)"
-                                                    : "not found"), pk);
-
+        /* Real deep suspend via `echo mem`. (The earlier loong PowerApi::powerStandby()
+           path only blanked the screen — the system never actually suspended.) The
+           input proxy holds the power key exclusively, so loong_power can't see the
+           wake press and re-suspend us (the two-press-wake gotcha); the PMIC wake
+           source (rk805-pwrkey) resumes the kernel on a single press. The write
+           blocks here until we resume. */
         int sfd = open("/sys/power/state", O_WRONLY | O_CLOEXEC);
         int rc = -1;
         if (sfd >= 0) {
             rc = (write(sfd, "mem\n", 4) == 4) ? 0 : -1;   /* blocks until resume */
             close(sfd);
         }
-
-        if (pk >= 0) {
-            if (grabbed) {
-                struct input_event ev;
-                while (read(pk, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
-                    /* drain the wake press(es) so loong_power can't act on them */
-                }
-                ioctl(pk, EVIOCGRAB, 0);
-            }
-            close(pk);
-        }
-
         jw_platform_result_set(out,
                                rc == 0 ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED,
                                rc == 0 ? "suspended" : "sleep failed");

@@ -36,6 +36,9 @@ typedef struct {
     uint64_t last_brightness_ms;
     uint64_t last_activity_ms;     /* monotonic ms of the last EV_KEY (auto-sleep) */
     bool swallow;                  /* screen-off stage: wake on input but don't forward it */
+    bool power_grabbed;            /* we hold the power key exclusively (jawakad owns sleep) */
+    bool power_went_down;          /* power-key press edge the daemon hasn't routed */
+    bool power_went_up;            /* power-key release edge the daemon hasn't routed */
 } jw_mlp1_input_proxy_data;
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
@@ -437,11 +440,18 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
         return 0;
     }
 
-    /* Watch the power key read-only (best-effort) so a power press counts as
-       activity for auto-sleep — wakes the screen-off stage like any button. */
+    /* Take over the power key: EVIOCGRAB it so stock loong_power never sees a press
+       and jawakad owns the whole sleep/wake story (power = sleep when the screen is
+       on, wake when it's off — all through jawakad's own real-suspend path). The
+       PMIC still hard-powers-off on a long hold regardless of this grab. */
     data->power_fd = jw__open_power_key();
+    if (data->power_fd >= 0 && ioctl(data->power_fd, EVIOCGRAB, 1) == 0) {
+        data->power_grabbed = true;
+    }
     jw_log_info("input proxy: power key %s",
-                data->power_fd >= 0 ? "watched" : "not found");
+                data->power_grabbed ? "grabbed (jawakad owns it)"
+                                    : (data->power_fd >= 0 ? "open (grab failed)"
+                                                           : "not found"));
 
     proxy->backend_data = data;
     proxy->enabled = true;
@@ -498,11 +508,11 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
                 jw_log_warn("input proxy: read failed: %s", strerror(errno));
             }
             jw__release_deferred_menu_tap(data, false);
-            return;
+            break;   /* gamepad drained — fall through to the power-key handling */
         }
         if (n != (ssize_t)sizeof(ev)) {
             jw__release_deferred_menu_tap(data, false);
-            return;
+            break;
         }
 
         if (data->swallow) {
@@ -529,14 +539,15 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
             jw__forward_event(data, &ev);
         }
     }
-
-    /* Drain the power key (watched read-only): a press counts as activity so it
-       wakes the auto-sleep screen-off stage. We don't forward it (stock owns it). */
-    if (data->power_fd >= 0) {
+    /* Power key (we hold it exclusively): record press/release edges for jawakad,
+       which decides sleep vs wake from screen state — wake on press, sleep on
+       release. We don't act here. (value 2 = autorepeat, ignored.) */
+    if (data->power_grabbed && data->power_fd >= 0) {
         struct input_event pev;
         while (read(data->power_fd, &pev, sizeof(pev)) == (ssize_t)sizeof(pev)) {
-            if (pev.type == EV_KEY && pev.code == KEY_POWER && pev.value != 0) {
-                data->last_activity_ms = jw__monotonic_ms();
+            if (pev.type == EV_KEY && pev.code == KEY_POWER) {
+                if (pev.value == 1) data->power_went_down = true;
+                else if (pev.value == 0) data->power_went_up = true;
             }
         }
     }
@@ -566,6 +577,19 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
     }
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
     data->swallow = swallow;
+}
+
+void jw_input_proxy_take_power_edges(jw_input_proxy *proxy, bool *down, bool *up) {
+    bool d = false, u = false;
+    if (proxy && proxy->backend_data) {
+        jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+        d = data->power_went_down;
+        u = data->power_went_up;
+        data->power_went_down = false;
+        data->power_went_up = false;
+    }
+    if (down) *down = d;
+    if (up) *up = u;
 }
 
 void jw_input_proxy_flush(jw_input_proxy *proxy) {

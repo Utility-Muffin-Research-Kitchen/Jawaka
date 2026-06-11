@@ -118,6 +118,9 @@ typedef struct {
     int       autosleep_platform_synced_s;/* last value mirrored to stock power policy */
     long long autosleep_setting_next_ms;  /* throttle for re-reading the DB setting */
     bool      autosleep_screen_off;       /* currently in the screen-off (pre-suspend) stage */
+    bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
+    bool      power_held;                 /* power key currently held (for long-press detect) */
+    long long power_down_ms;              /* when the current power press started */
     jw_platform_perf_profile perf_global_profile;
     jw_platform_perf_profile perf_active_profile;
     jw_platform_perf_profile perf_session_profile;
@@ -3134,6 +3137,8 @@ fail:
                                                  reliable; auto-sleep is opt-in. */
 #define JW_AUTOSLEEP_SUSPEND_GRACE_MS 30000   /* screen-off → suspend after this much more idle */
 #define JW_AUTOSLEEP_SETTING_POLL_MS  2000    /* re-read the DB setting at most this often */
+#define JW_POWER_LONGPRESS_MS         2000    /* power held this long → clean power off (before
+                                                 the PMIC hard-cut at ~6s) */
 
 static int jw__autosleep_read_timeout_s(jw_daemon_state *state) {
     if (!state->db_path) {
@@ -3180,6 +3185,31 @@ static void jw__autosleep_sync_platform(jw_daemon_state *state) {
     state->autosleep_platform_synced_s = 0;
 }
 
+/* Real suspend-to-RAM and wake handling, shared by the auto-sleep timer and a power
+   press. The proxy holds the power key exclusively, so loong_power can't re-suspend
+   us on the wake press and the kernel wakes on a single press; we drop any input
+   that queued while asleep (gamepad replay + the wake press itself) and reset the
+   idle timer so the countdown restarts fresh after waking. */
+static void jw__deep_suspend(jw_daemon_state *state) {
+    jw__screen_set(state, false);
+    jw_input_proxy_set_swallow(&state->input_proxy, true);
+    jw_platform_result result;
+    jw__platform_sleep_with_performance(state, &result);   /* blocks until resume */
+    jw_log_info("sleep: resumed");
+    jw__screen_set(state, true);
+    jw_input_proxy_set_swallow(&state->input_proxy, false);
+    jw_input_proxy_flush(&state->input_proxy);             /* drop queued gamepad + wake press */
+    /* Clear the wake press's edges + disarm, so resuming doesn't read it as a new
+       sleep request. */
+    bool d, u;
+    jw_input_proxy_take_power_edges(&state->input_proxy, &d, &u);
+    state->power_sleep_armed = false;
+    state->power_held = false;
+    jw_input_proxy_mark_activity(&state->input_proxy);
+    state->autosleep_screen_off = false;
+    state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
+}
+
 static void jw__tick_auto_sleep(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
 
@@ -3189,10 +3219,52 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         jw__autosleep_sync_platform(state);
     }
 
+    /* Power button — jawakad owns the key exclusively, so it must do everything
+       loong_power used to: short tap = sleep, long hold = clean power off.
+         - dark screen + press -> wake immediately (responsive).
+         - lit screen  + press -> arm; sleep on RELEASE, so a long hold doesn't flash
+                                  to sleep first.
+         - held >= JW_POWER_LONGPRESS_MS -> clean power off (sync + reboot) BEFORE the
+                                  PMIC hard-cuts (a hard cut can lose unsynced writes
+                                  / corrupt the settings DB).
+       Works regardless of the auto-sleep timeout setting. */
+    {
+        bool pdown = false, pup = false;
+        jw_input_proxy_take_power_edges(&state->input_proxy, &pdown, &pup);
+        if (pdown) {
+            state->power_held = true;
+            state->power_down_ms = now;
+            if (state->autosleep_screen_off) {
+                jw_input_proxy_mark_activity(&state->input_proxy);  /* wake the dark screen */
+                state->power_sleep_armed = false;
+            } else {
+                state->power_sleep_armed = true;                    /* sleep on release */
+            }
+        }
+        if (state->power_held && now - state->power_down_ms >= JW_POWER_LONGPRESS_MS) {
+            state->power_held = false;
+            state->power_sleep_armed = false;
+            jw_log_info("power: long-press -> clean power off");
+            jw_platform_result poff;
+            jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
+            return;
+        }
+        if (pup) {
+            state->power_held = false;
+            if (state->power_sleep_armed) {
+                state->power_sleep_armed = false;
+                jw_log_info("power: sleep (tap)");
+                jw__deep_suspend(state);
+                return;
+            }
+        }
+    }
+
     /* Disabled or shutting down: ensure the screen is on and bail. */
     if (state->autosleep_timeout_s <= 0 || state->shutdown_requested) {
         if (state->autosleep_screen_off) {
             jw__screen_set(state, true);
+            jw_input_proxy_set_swallow(&state->input_proxy, false);
             state->autosleep_screen_off = false;
         }
         return;
@@ -3203,7 +3275,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     uint64_t suspend_at = screen_off_at + JW_AUTOSLEEP_SUSPEND_GRACE_MS;
 
     if (idle_ms < screen_off_at) {
-        /* Active: undo a prior blank and resume forwarding input. */
+        /* Active: undo a prior blank, resume forwarding input. */
         if (state->autosleep_screen_off) {
             jw__screen_set(state, true);
             jw_input_proxy_set_swallow(&state->input_proxy, false);
@@ -3213,10 +3285,10 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     }
 
     if (idle_ms < suspend_at) {
-        /* Stage 1 — blank the backlight. The proxy swallows input while blanked:
-           a press resets the idle timer (waking the screen next tick) but is NOT
-           forwarded, so the wake press only wakes the screen instead of also
-           firing a navigation action. */
+        /* Stage 1 — blank the backlight. The proxy swallows input while blanked: a
+           press resets the idle timer (waking the screen next tick) but is NOT
+           forwarded, so the wake press only wakes the screen instead of also firing
+           a navigation action. A power press here is routed above and wakes too. */
         if (!state->autosleep_screen_off) {
             jw_log_info("auto-sleep: screen off (idle %llums)",
                         (unsigned long long)idle_ms);
@@ -3227,23 +3299,9 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         return;
     }
 
-    /* Stage 2 — suspend-to-RAM. The platform write blocks until the power
-       button resumes us; on return, treat the wake as fresh activity (the wake
-       key arrives outside the proxied gamepad, so the idle timer is stale) and
-       restore the screen. */
+    /* Stage 2 — real suspend-to-RAM. */
     jw_log_info("auto-sleep: suspending (idle %llums)", (unsigned long long)idle_ms);
-    jw_platform_result result;
-    jw__platform_sleep_with_performance(state, &result);
-    jw_log_info("auto-sleep: resumed from suspend");
-    jw__screen_set(state, true);
-    jw_input_proxy_set_swallow(&state->input_proxy, false);
-    state->autosleep_screen_off = false;
-    /* Discard any button/d-pad presses that queued while suspended so they don't
-       replay into the launcher on wake (the power-button wake is the only intended
-       input here). */
-    jw_input_proxy_flush(&state->input_proxy);
-    jw_input_proxy_mark_activity(&state->input_proxy);
-    state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
+    jw__deep_suspend(state);
 }
 
 static void jw__tick_post_launch_resume(jw_daemon_state *state) {
@@ -4426,6 +4484,33 @@ int main(int argc, char *argv[]) {
     while (1) {
         if (g_shutdown_requested) {
             state.shutdown_requested = true;
+        }
+
+        /* Detect a resume from ANY suspend — our auto-sleep OR loong_power's power
+           button — by the gap between BOOTTIME (counts suspend time) and MONOTONIC
+           (does not). On resume: drop gamepad presses made while asleep so they
+           don't replay into the launcher, and treat the wake as fresh activity so
+           the auto-sleep countdown restarts (otherwise it resumes mid-count and the
+           screen blanks again moments after waking). Runs before the input tick so
+           the flush lands before any buffered events are forwarded. */
+        {
+            static long long prev_mono = -1, prev_boot = -1;
+            struct timespec mts, bts;
+            clock_gettime(CLOCK_MONOTONIC, &mts);
+            clock_gettime(CLOCK_BOOTTIME, &bts);
+            long long mono = (long long)mts.tv_sec * 1000 + mts.tv_nsec / 1000000;
+            long long boot = (long long)bts.tv_sec * 1000 + bts.tv_nsec / 1000000;
+            if (prev_mono >= 0) {
+                long long suspended = (boot - prev_boot) - (mono - prev_mono);
+                if (suspended > 2000) {
+                    jw_log_info("resume: ~%lldms suspended, flushing input + resetting idle",
+                                suspended);
+                    jw_input_proxy_flush(&state.input_proxy);
+                    jw_input_proxy_mark_activity(&state.input_proxy);
+                }
+            }
+            prev_mono = mono;
+            prev_boot = boot;
         }
 
         jw_update_download_poll(&state.update_status, &state.update_download_job);

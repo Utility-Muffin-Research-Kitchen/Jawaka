@@ -54,5 +54,11 @@ void     jw_input_proxy_flush(jw_input_proxy *proxy);
  * launcher — so the wake press only wakes the screen instead of also firing a
  * navigation action. Turn it off once the screen is back on. */
 void     jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow);
+/* The proxy grabs the power key exclusively at init (jawakad owns sleep/wake). This
+ * reports the power-key press/release edges seen since the last call (and clears
+ * them), for the daemon to route: wake on press when the screen is off, sleep on
+ * release when it's on (so a long hold powers off via the PMIC without sleeping
+ * first). Call once per tick. */
+void     jw_input_proxy_take_power_edges(jw_input_proxy *proxy, bool *down, bool *up);
 
 #endif /* JW_PLATFORM_INPUT_PROXY_H */
