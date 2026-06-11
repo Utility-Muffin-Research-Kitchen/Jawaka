@@ -378,16 +378,12 @@ static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
     cat_box_split_cols(&content, list_w, pad, &lb, &ib);
     SDL_Rect lr = cat_box_content(&lb);
     SDL_Rect ir = cat_box_content(&ib);
-    int ih = jw__browse_base_item_h();
-    if (visible_rows > 0 && item_count >= visible_rows && lr.h > 0) {
-        /* Rows are a fixed height, so box_h/visible_rows truncates and leaves a
-           remainder. Snap BOTH panes to the exact rendered list height
-           (visible_rows * item_h) so their bottoms land on the same line. */
-        ih = lr.h / visible_rows;
-        int filled = ih * visible_rows;
-        lr.h = filled;
-        ir.h = filled;
-    }
+    /* Fill the list box with whole rows (shared with the settings pickers), then
+       snap the image pane to the same height so their bottoms land on one line. */
+    int vis = visible_rows;
+    int ih;
+    lr = cat_box_fit_rows(&lb, jw__browse_base_item_h(), item_count, &vis, &ih);
+    ir.h = lr.h;
     /* The row pill is centered in its cell (pill_h = body + CAT_S(6); see
        jw__draw_rom_item), so the first/last pills sit inset from the cell edges by
        (ih - pill_h)/2. Inset the icon box by that same amount so its top and

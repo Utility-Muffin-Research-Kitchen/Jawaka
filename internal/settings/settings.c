@@ -1230,6 +1230,30 @@ static int jw__header_h(void) {
     return TTF_FontHeight(cat_get_font(CAT_FONT_LARGE)) + cat_scale(10);
 }
 
+/* Canonical vertical advance for one sub-header caption line — the single source
+   of truth for sub-header line spacing across every settings page. */
+static int jw__subheader_line_h(TTF_Font *f) {
+    return TTF_FontHeight(f) + cat_scale(8);
+}
+
+/* One settings page = a single full-width column: the title header strip, an
+   optional sub-header strip, then the content box (mirrors jw__browse_boxes with
+   the cover column collapsed to zero). cat_box_carve_top with height 0 is a no-op,
+   so a header-less / sub-header-less page costs nothing. Pure geometry, no drawing:
+   the title still draws via jw__draw_header (its geometry equals the carved header
+   strip); info lines draw into *sub; rows/list fill the returned content rect.
+   *header and *sub are nullable. */
+static SDL_Rect jw__settings_boxes(int x, int y, int w, int h,
+                                   bool show_header, int sub_h,
+                                   SDL_Rect *header, SDL_Rect *sub) {
+    cat_box page = { x, y, w, h, 0, 0, 0, 0 };
+    cat_box hdr = cat_box_carve_top(&page, show_header ? jw__header_h() : 0);
+    cat_box sb  = cat_box_carve_top(&page, sub_h);
+    if (header) *header = cat_box_content(&hdr);
+    if (sub)    *sub    = cat_box_content(&sb);
+    return cat_box_content(&page);
+}
+
 static void jw__render_list_row(const cat_list_state *list, int x, int y,
                                 int w, int row, const char *label,
                                 const char *value, bool cycler) {
@@ -1305,18 +1329,42 @@ static void jw__render_color_swatch(int x, int list_y, int w, int row, ap_color 
 
 /* ─── Page renderers ───────────────────────────────────────────────────── */
 
+/* List-pane row for the Settings home categories — mirrors jw__render_nav_row but
+   positioned by the scrolling list pane, so the list fills the page and scrolls
+   instead of overflowing under the footer. */
+static void jw__draw_home_item(int idx, int ix, int iy, int iw, int ih,
+                               bool selected, void *user) {
+    (void)user;
+    if (idx < 0 || idx >= JW_SETTINGS_CATEGORY_COUNT) return;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
+    ap_color tc = selected ? theme->highlighted_text : theme->text;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    cat_draw_text_ellipsized(body, kHomeCategoryLabels[idx], ix + cat_scale(12), ty,
+                             tc, iw - cat_scale(24));
+}
+
 static void jw__render_home(const jw_settings_ui *ui, int x, int y, int w, int h) {
     /* No "Settings" header — the tab bar above already names this screen, so the
-       category list starts at the top and reclaims that space. (Sub-screens keep
-       their headers since the tab bar still just says "Settings".) */
-    for (int i = 0; i < JW_SETTINGS_CATEGORY_COUNT; i++)
-        jw__render_nav_row(&ui->home_list, x, y, w, i, kHomeCategoryLabels[i]);
-    (void)h;
+       category list fills the full height and scrolls rather than overflowing. */
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    SDL_Rect content = jw__settings_boxes(x, y, w, h, false, 0, NULL, NULL);
+    cat_box lb = { content.x, content.y, content.w, content.h, 0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, JW_SETTINGS_CATEGORY_COUNT, &vis, &item_h);
+    ((cat_list_state *)&ui->home_list)->visible_rows = vis;
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, JW_SETTINGS_CATEGORY_COUNT,
+                       &ui->home_list, item_h, jw__draw_home_item, NULL);
 }
 
 static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Appearance", x, y, w);
-    int ly = y + jw__header_h();
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     /* Layout switching is gated to Tabs, so this row instead cycles the curated
        color schemes (Aurora/Ember/…); "Custom" once colors are hand-edited. */
     const char *scheme_name =
@@ -1327,13 +1375,12 @@ static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w,
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_COLORS, "Colors");
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_LAYOUT, "Layout");
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_STATUSBAR, "Status Bar");
-    (void)h;
 }
 
 static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int h) {
     ap_theme *t = cat_get_theme();
     jw__draw_header("Colors", x, y, w);
-    int ly = y + jw__header_h();
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
 
     struct { const char *label; ap_color color; } rows[] = {
         { "Accent",            t->accent },
@@ -1349,19 +1396,17 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
         jw__render_list_row(&ui->colors_list, x, ly, w, i, rows[i].label, NULL, false);
         jw__render_color_swatch(x, ly, w, i, rows[i].color);
     }
-    (void)h;
 }
 
 static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Layout", x, y, w);
-    int ly = y + jw__header_h();
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
                         "List Style", kPillShapeLabels[ui->pill_shape_index], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_FAMILY,
                         "Font", kJawakaFontFamilyLabels[ui->font_family_index], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_SIZE,
                         "Font Size", kFontSizeLabels[ui->font_size_index], true);
-    (void)h;
 }
 
 /* The Status Bar "Battery" row cycles four display modes. They're stored as the
@@ -1395,7 +1440,7 @@ static inline const char *jw__vis_label(bool visible) {
 
 static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Status Bar", x, y, w);
-    int ly = y + jw__header_h();
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_HINTS,
                         "Button Hints", jw__vis_label(ui->show_hints), true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_CLOCK,
@@ -1410,7 +1455,6 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
                         "Bluetooth", jw__vis_label(ui->show_bluetooth), true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_VOLUME,
                         "Volume", jw__vis_label(ui->show_volume), true);
-    (void)h;
 }
 
 /* One labelled slider row (Brightness / Volume) on the Display & Sound page. */
@@ -1457,18 +1501,17 @@ static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_bas
 
 static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Display & Sound", x, y, w);
-    int y_base = y + jw__header_h();
+    int y_base = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
                         ui->brightness_percent);
     jw__draw_audio_output_row(ui, x, y_base, w);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
                         ui->volume_percent);
-    (void)h;
 }
 
 static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Lighting", x, y, w);
-    int ly = y + jw__header_h();
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int mode = (ui->led_mode >= 0 && ui->led_mode < JW_LED_MODE_COUNT) ? ui->led_mode : 0;
     char bright[8], speed[8];
     snprintf(bright, sizeof(bright), "%d", ui->led_brightness);
@@ -1485,7 +1528,6 @@ static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, i
                         "Brightness", bright, true);
     jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_SPEED,
                         "Speed", speed, true);
-    (void)h;
 }
 
 static void jw__refresh_wifi(jw_settings_ui *ui) {
@@ -1727,7 +1769,6 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     jw__draw_header("Network", x, y, w);
-    int ly = y + jw__header_h();
     int item_h = TTF_FontHeight(body) + cat_scale(12);
 
     const jw_wifi_status_t *wifi = &ui->wifi;
@@ -1761,32 +1802,35 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
         snprintf(signal_val, sizeof(signal_val), "%s", "—");
     }
 
-    /* ── Current-connection summary (informational lines) ── */
-    int line_h = TTF_FontHeight(body) + cat_scale(8);
-    int dy = ly;
+    /* ── Current-connection summary (small caption lines) — drawn from the box
+       model's content origin; the list fills the remainder below. ── */
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int line_h = jw__subheader_line_h(small);
+    SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
+    int dy = content.y;
     char line[160];
 
     snprintf(line, sizeof(line), "Status: %s", status_val);
-    cat_draw_text(body, line, x + cat_scale(12), dy, theme->text);
+    cat_draw_text(small, line, x + cat_scale(12), dy, theme->text);
     dy += line_h;
 
     snprintf(line, sizeof(line), "Network: %s",
              (wifi->valid && wifi->ssid[0]) ? wifi->ssid : "—");
-    cat_draw_text_ellipsized(body, line, x + cat_scale(12), dy, theme->text, w - cat_scale(24));
+    cat_draw_text_ellipsized(small, line, x + cat_scale(12), dy, theme->text, w - cat_scale(24));
     dy += line_h;
 
     snprintf(line, sizeof(line), "Signal: %s", signal_val);
-    cat_draw_text(body, line, x + cat_scale(12), dy, theme->hint);
+    cat_draw_text(small, line, x + cat_scale(12), dy, theme->hint);
     dy += line_h;
 
     snprintf(line, sizeof(line), "IP: %s",
              (wifi->valid && wifi->ip[0]) ? wifi->ip : "—");
-    cat_draw_text(body, line, x + cat_scale(12), dy, theme->hint);
+    cat_draw_text(small, line, x + cat_scale(12), dy, theme->hint);
     dy += line_h + cat_scale(6);
 
     /* Action feedback (always visible, regardless of the hint setting). */
     if (ui->wifi_msg[0]) {
-        cat_draw_text_ellipsized(body, ui->wifi_msg, x + cat_scale(12), dy,
+        cat_draw_text_ellipsized(small, ui->wifi_msg, x + cat_scale(12), dy,
                                  theme->accent, w - cat_scale(24));
         dy += line_h + cat_scale(6);
     }
@@ -1802,15 +1846,16 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
         ui->adb_intent_enabled,
         ui->adb_supported,
     };
-    int list_h = JW_WIFI_LIST_ROWS * item_h;
-    cat_draw_list_pane(x, dy, w, list_h, count, &ui->network_list, item_h,
+    cat_box lb = { content.x, dy, content.w, (content.y + content.h) - dy, 0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
+    ((cat_list_state *)&ui->network_list)->visible_rows = vis;
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count, &ui->network_list, item_h,
                        jw__draw_wifi_item, &ctx);
     if (wifi_available && ui->wifi_radio_on && ui->wifi_network_count == 0) {
-        cat_draw_text(body, "Scanning…", x + cat_scale(12),
+        cat_draw_text(small, "Scanning…", x + cat_scale(12),
                       dy + item_h * JW_NETWORK_FIXED_ROWS, theme->hint);
     }
-
-    (void)h;
 }
 
 typedef struct {
@@ -1935,9 +1980,10 @@ static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, 
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     jw__draw_header("Bluetooth", x, y, w);
-    int ly = y + jw__header_h();
-    int line_h = TTF_FontHeight(body) + cat_scale(8);
-    int dy = ly;
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int line_h = jw__subheader_line_h(small);
+    SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
+    int dy = content.y;
 
     const char *status = "Unavailable";
     if (ui->bt_status.available) {
@@ -1945,16 +1991,16 @@ static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, 
     }
     char line[160];
     snprintf(line, sizeof(line), "Status: %s", status);
-    cat_draw_text(body, line, x + cat_scale(12), dy, theme->text);
+    cat_draw_text(small, line, x + cat_scale(12), dy, theme->text);
     dy += line_h;
 
     snprintf(line, sizeof(line), "Connected: %s",
              (ui->bt_status.available && ui->bt_status.any_connected) ? "Yes" : "No");
-    cat_draw_text(body, line, x + cat_scale(12), dy, theme->hint);
+    cat_draw_text(small, line, x + cat_scale(12), dy, theme->hint);
     dy += line_h;
 
     if (ui->bt_msg[0]) {
-        cat_draw_text_ellipsized(body, ui->bt_msg, x + cat_scale(12), dy,
+        cat_draw_text_ellipsized(small, ui->bt_msg, x + cat_scale(12), dy,
                                  theme->accent, w - cat_scale(24));
         dy += line_h + cat_scale(6);
     } else {
@@ -1964,34 +2010,35 @@ static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, 
     int item_h = TTF_FontHeight(body) + cat_scale(12);
     int rows = jw__bt_row_count(ui);
     jw__bt_list_ctx ctx = { ui };
-    cat_draw_list_pane(x, dy, w, JW_BLUETOOTH_LIST_ROWS * item_h,
+    cat_box lb = { content.x, dy, content.w, (content.y + content.h) - dy, 0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, rows, &vis, &item_h);
+    ((cat_list_state *)&ui->bluetooth_list)->visible_rows = vis;
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h,
                        rows, &ui->bluetooth_list, item_h,
                        jw__draw_bt_item, &ctx);
-    (void)h;
 }
 
 static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Library", x, y, w);
-    int ly = y + jw__header_h();
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     jw__render_list_row(&ui->library_list, x, ly, w, JW_LIBRARY_RESET_RETROARCH,
                         "Reset RetroArch Config", "Defaults", true);
     jw__render_list_row(&ui->library_list, x, ly, w, JW_LIBRARY_UNMOUNT_SECONDARY,
                         "Unmount Secondary SD",
                         ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
                         true);
-    (void)h;
 }
 
 static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Accounts", x, y, w);
-    int ly = y + jw__header_h();
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     /* Placeholders — sign-in is not wired up yet, so both rows report the
        not-signed-in state and do nothing on press. */
     jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_SCREENSCRAPER,
                         "ScreenScraper.fr", "Not signed in", false);
     jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_RETROACHIEVEMENTS,
                         "RetroAchievements", "Not signed in", false);
-    (void)h;
 }
 
 /* ─── About ────────────────────────────────────────────────────────────── */
@@ -2147,7 +2194,8 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
     jw__draw_header("About", x, y, w);
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int pad = cat_scale(6);
-    int top = y + jw__header_h() + pad;
+    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, pad, NULL, NULL);
+    int top = c.y;
 
     /* Live system facts + library counts, refreshed about once a second while
        the page is open (cheap reads; only one About screen is live at a time). */
@@ -2247,10 +2295,7 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
        convention, but the scroll view must persist its clamped offset across
        frames, so this one field is the deliberate exception. */
     int row_h     = TTF_FontHeight(small) + cat_scale(8);
-    int avail_h   = (y + h) - top;
-    int rows_fit  = avail_h / row_h;
-    if (rows_fit < 1) rows_fit = 1;
-    int view_h    = rows_fit * row_h;        /* row-aligned: never a partial row */
+    int view_h    = c.h;        /* fill the content box; a scroll view may clip a partial row at the bottom edge */
     int content_h = n * row_h;
     jw__about_ctx ctx = { rows, n, small, row_h };
     cat_draw_scroll_view(x + pad, top, w - pad * 2, view_h, content_h,
@@ -2260,7 +2305,7 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
 
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Behavior", x, y, w);
-    int ly = y + jw__header_h();
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int tab = (ui->startup_tab_index >= 0 && ui->startup_tab_index < JW_STARTUP_TAB_COUNT)
               ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_STARTUP_TAB,
@@ -2285,7 +2330,6 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                         "Game Performance", perf, ui->performance_supported);
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_TIMEZONE,
                         "Time Zone", jw__timezone_label(ui->timezone), true);
-    (void)h;
 }
 
 static void jw__format_update_size(long long bytes, char *out, size_t out_size) {
@@ -2449,8 +2493,11 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     jw__draw_header("System Update", x, y, w);
     ap_theme *theme = cat_get_theme();
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-    int line_h = TTF_FontHeight(small) + cat_scale(8);
-    int dy = y + jw__header_h() + cat_scale(6);
+    int line_h = jw__subheader_line_h(small);
+    /* Hybrid page: a runtime-variable status block (message + optional progress
+       bar) then fixed rows, so it keeps its own dy flow below the content origin
+       rather than carving a fixed sub-header strip. */
+    int dy = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
 
     const jw_ipc_update_status_info *u = &ui->update;
     char message[320];
@@ -2528,8 +2575,6 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
                         "Current", current_value, false);
     jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_AVAILABLE,
                         "Available", candidate_value, false);
-
-    (void)h;
 }
 
 typedef struct {
@@ -2613,12 +2658,12 @@ static void jw__render_update_picker(const jw_settings_ui *ui,
     if (count > 0) {
         int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) +
                      TTF_FontHeight(small) + cat_scale(16);
-        int list_h = h - (dy - y);
-        if (list_h < item_h) {
-            list_h = item_h;
-        }
+        cat_box lb = { x, dy, w, h - (dy - y), 0, 0, 0, 0 };
+        int vis = 0;
+        SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
+        ((cat_list_state *)&ui->update_picker_list)->visible_rows = vis;
         jw__update_picker_ctx ctx = { ui };
-        cat_draw_list_pane(x, dy, w, list_h, count,
+        cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count,
                            &ui->update_picker_list, item_h,
                            jw__draw_update_option_item, &ctx);
     }
@@ -2666,24 +2711,19 @@ static void jw__render_timezone_picker(const jw_settings_ui *ui,
     ap_theme *theme = cat_get_theme();
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int dy = y + jw__header_h() + cat_scale(6);
-    cat_draw_text_ellipsized(small, "Set your local time zone", x + cat_scale(12), dy,
-                             theme->hint, w - cat_scale(24));
-    dy += TTF_FontHeight(small) + cat_scale(10);
+    int sub_h = jw__subheader_line_h(small) + cat_scale(6);
+    SDL_Rect sub;
+    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
+    cat_draw_text_ellipsized(small, "Set your local time zone", sub.x + cat_scale(12),
+                             sub.y, theme->hint, sub.w - cat_scale(24));
 
-    /* Size the visible-row count to whatever fits below the header so the list
-       fills the page and scrolls — like the browse and Network/Bluetooth lists.
-       (render takes ui const by convention; visible_rows is a layout-fit detail
-       of an otherwise-mutable widget owned by the launcher.) */
     int item_h = TTF_FontHeight(body) + cat_scale(12);
-    int avail = h - (dy - y);
-    int vis = avail / item_h;
-    if (vis < 1) vis = 1;
-    if (vis > JW_TIMEZONE_COUNT) vis = JW_TIMEZONE_COUNT;
+    cat_box lb = { c.x, c.y, c.w, c.h, 0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, JW_TIMEZONE_COUNT, &vis, &item_h);
     ((cat_list_state *)&ui->timezone_picker_list)->visible_rows = vis;
-
     jw__timezone_picker_ctx ctx = { ui };
-    cat_draw_list_pane(x, dy, w, vis * item_h, JW_TIMEZONE_COUNT,
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, JW_TIMEZONE_COUNT,
                        &ui->timezone_picker_list, item_h,
                        jw__draw_timezone_item, &ctx);
 }
