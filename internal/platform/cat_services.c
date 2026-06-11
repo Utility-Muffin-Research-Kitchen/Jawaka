@@ -3,13 +3,17 @@
 #include "catastrophe.h"
 #include "internal/ipc/ipc_client.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
 static char s_socket_path[1024];
-static int s_battery_percent = -1;
-static int s_charging_state = -1;
-static int s_wifi_strength = -1;
+/* Atomics: the setters are documented as callable from a background poller
+   while the render thread reads via the hooks below — plain ints there would
+   be a C data race even when the values are word-sized. */
+static atomic_int s_battery_percent = -1;
+static atomic_int s_charging_state = -1;
+static atomic_int s_wifi_strength = -1;
 
 static int jw__cat_socket_ready(void) {
     return s_socket_path[0] != '\0';

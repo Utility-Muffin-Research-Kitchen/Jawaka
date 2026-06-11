@@ -54,11 +54,22 @@ void     jw_input_proxy_flush(jw_input_proxy *proxy);
  * launcher — so the wake press only wakes the screen instead of also firing a
  * navigation action. Turn it off once the screen is back on. */
 void     jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow);
-/* The proxy grabs the power key exclusively at init (jawakad owns sleep/wake). This
- * reports the power-key press/release edges seen since the last call (and clears
- * them), for the daemon to route: wake on press when the screen is off, sleep on
- * release when it's on (so a long hold powers off via the PMIC without sleeping
- * first). Call once per tick. */
-void     jw_input_proxy_take_power_edges(jw_input_proxy *proxy, bool *down, bool *up);
+/* One power-key press or release edge, stamped with when the key actually moved
+ * (kernel event time, CLOCK_MONOTONIC ms) — not when the daemon got around to
+ * consuming it. The distinction matters for long-press detection: if a tick
+ * stalls long enough for a press AND its release to queue up, consume-time
+ * stamps would make any hold look like a short tap. */
+typedef struct {
+    bool     down;   /* true = press edge, false = release edge */
+    uint64_t ms;     /* CLOCK_MONOTONIC ms of the edge */
+} jw_power_edge;
+
+/* The proxy grabs the power key exclusively at init (jawakad owns sleep/wake).
+ * This pops the oldest unconsumed power-key edge into *edge and returns true,
+ * or returns false when none are pending. The daemon routes them in order:
+ * wake on press when the screen is off, sleep on release when it's on, clean
+ * power-off when press→release spans the long-press threshold. Drain fully
+ * once per tick. */
+bool     jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge);
 
 #endif /* JW_PLATFORM_INPUT_PROXY_H */

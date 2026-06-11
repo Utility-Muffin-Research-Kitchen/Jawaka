@@ -3209,8 +3209,10 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     jw_input_proxy_flush(&state->input_proxy);             /* drop queued gamepad + wake press */
     /* Clear the wake press's edges + disarm, so resuming doesn't read it as a new
        sleep request. */
-    bool d, u;
-    jw_input_proxy_take_power_edges(&state->input_proxy, &d, &u);
+    jw_power_edge edge;
+    while (jw_input_proxy_take_power_edge(&state->input_proxy, &edge)) {
+        /* discard */
+    }
     state->power_sleep_armed = false;
     state->power_held = false;
     jw_input_proxy_mark_activity(&state->input_proxy);
@@ -3235,20 +3237,44 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
          - held >= JW_POWER_LONGPRESS_MS -> clean power off (sync + reboot) BEFORE the
                                   PMIC hard-cuts (a hard cut can lose unsynced writes
                                   / corrupt the settings DB).
-       Works regardless of the auto-sleep timeout setting. */
+       Works regardless of the auto-sleep timeout setting. Hold durations come
+       from the edges' own kernel timestamps (CLOCK_MONOTONIC, same domain as
+       `now`), so a press and release that both queued behind a stalled tick
+       still classify by their true spacing instead of reading as a 0ms tap. */
     {
-        bool pdown = false, pup = false;
-        jw_input_proxy_take_power_edges(&state->input_proxy, &pdown, &pup);
-        if (pdown) {
-            state->power_held = true;
-            state->power_down_ms = now;
-            if (state->autosleep_screen_off) {
-                jw_input_proxy_mark_activity(&state->input_proxy);  /* wake the dark screen */
+        jw_power_edge edge;
+        while (jw_input_proxy_take_power_edge(&state->input_proxy, &edge)) {
+            if (edge.down) {
+                state->power_held = true;
+                state->power_down_ms = (long long)edge.ms;
+                if (state->autosleep_screen_off) {
+                    jw_input_proxy_mark_activity(&state->input_proxy);  /* wake the dark screen */
+                    state->power_sleep_armed = false;
+                } else {
+                    state->power_sleep_armed = true;                    /* sleep on release */
+                }
+                continue;
+            }
+            /* Release edge. */
+            bool was_held = state->power_held;
+            long long held_ms = was_held ? (long long)edge.ms - state->power_down_ms : 0;
+            state->power_held = false;
+            if (was_held && held_ms >= JW_POWER_LONGPRESS_MS) {
                 state->power_sleep_armed = false;
-            } else {
-                state->power_sleep_armed = true;                    /* sleep on release */
+                jw_log_info("power: long-press (%lldms) -> clean power off", held_ms);
+                jw_platform_result poff;
+                jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
+                return;
+            }
+            if (state->power_sleep_armed) {
+                state->power_sleep_armed = false;
+                jw_log_info("power: sleep (tap)");
+                jw__deep_suspend(state);
+                return;
             }
         }
+        /* Still held with no release edge yet: power off the moment the hold
+           crosses the threshold rather than waiting for the release. */
         if (state->power_held && now - state->power_down_ms >= JW_POWER_LONGPRESS_MS) {
             state->power_held = false;
             state->power_sleep_armed = false;
@@ -3256,15 +3282,6 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             jw_platform_result poff;
             jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
             return;
-        }
-        if (pup) {
-            state->power_held = false;
-            if (state->power_sleep_armed) {
-                state->power_sleep_armed = false;
-                jw_log_info("power: sleep (tap)");
-                jw__deep_suspend(state);
-                return;
-            }
         }
     }
 

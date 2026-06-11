@@ -1145,15 +1145,14 @@ void jw_settings_ui_refresh_wifi_strength(jw_settings_ui *ui) {
     }
 }
 
-/* 0=off, 1=on (no device), 2=connected. */
-static int jw__bt_state_now(void) {
+int jw_settings_bt_state_now(void) {
     if (!jw_bt_radio_is_on()) return 0;
     return (jw_bt_any_connected() == 1) ? 2 : 1;
 }
 
 void jw_settings_ui_refresh_bt_state(jw_settings_ui *ui) {
     if (ui) {
-        ui->bt_state_cached = jw__bt_state_now();
+        ui->bt_state_cached = jw_settings_bt_state_now();
     }
 }
 
@@ -1210,7 +1209,7 @@ void jw_settings_load_status_prefs(const char *db_path,
         out_opts->show_battery_level = show_battery_level;
         out_opts->show_wifi = show_wifi;
         out_opts->show_bluetooth = show_bluetooth;
-        out_opts->bt_state = show_bluetooth ? jw__bt_state_now() : 0;
+        out_opts->bt_state = show_bluetooth ? jw_settings_bt_state_now() : 0;
         out_opts->show_volume = show_volume;
         out_opts->volume_percent = show_volume ? volume_percent : -1;
     }

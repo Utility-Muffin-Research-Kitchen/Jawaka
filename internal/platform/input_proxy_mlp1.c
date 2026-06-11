@@ -20,6 +20,13 @@
 #define JW_MLP1_PWRKEY_NAME "rk805 pwrkey"   /* physical power button (KEY_POWER) */
 #define JW_MLP1_BRIGHTNESS_REPEAT_MS 120u
 #define JW_MLP1_MENU_TAP_MS 80u
+#define JW_MLP1_POWER_EDGE_MAX 8   /* pending press/release edges (4 full taps) */
+
+/* Older kernel uapi headers predate the y2038 input_event_sec accessors. */
+#ifndef input_event_sec
+#define input_event_sec  time.tv_sec
+#define input_event_usec time.tv_usec
+#endif
 
 typedef struct {
     int input_fd;
@@ -37,8 +44,11 @@ typedef struct {
     uint64_t last_activity_ms;     /* monotonic ms of the last EV_KEY (auto-sleep) */
     bool swallow;                  /* screen-off stage: wake on input but don't forward it */
     bool power_grabbed;            /* we hold the power key exclusively (jawakad owns sleep) */
-    bool power_went_down;          /* power-key press edge the daemon hasn't routed */
-    bool power_went_up;            /* power-key release edge the daemon hasn't routed */
+    bool power_evdev_clock;        /* EVIOCSCLOCKID(CLOCK_MONOTONIC) took on power_fd, so
+                                      event timestamps are usable as edge times */
+    jw_power_edge power_edges[JW_MLP1_POWER_EDGE_MAX];  /* ring of unconsumed edges */
+    int power_edge_head;
+    int power_edge_count;
 } jw_mlp1_input_proxy_data;
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
@@ -447,6 +457,15 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
     data->power_fd = jw__open_power_key();
     if (data->power_fd >= 0 && ioctl(data->power_fd, EVIOCGRAB, 1) == 0) {
         data->power_grabbed = true;
+        /* Stamp edges with kernel event time in the clock jawakad measures hold
+           durations in, so a press/release that queues during a stalled daemon
+           tick still reports its true duration (long-press vs tap). */
+        int clk = CLOCK_MONOTONIC;
+        data->power_evdev_clock = ioctl(data->power_fd, EVIOCSCLOCKID, &clk) == 0;
+        if (!data->power_evdev_clock) {
+            jw_log_warn("input proxy: EVIOCSCLOCKID failed on power key; "
+                        "edge times fall back to read time");
+        }
     }
     jw_log_info("input proxy: power key %s",
                 data->power_grabbed ? "grabbed (jawakad owns it)"
@@ -539,16 +558,32 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
             jw__forward_event(data, &ev);
         }
     }
-    /* Power key (we hold it exclusively): record press/release edges for jawakad,
+    /* Power key (we hold it exclusively): queue press/release edges for jawakad,
        which decides sleep vs wake from screen state — wake on press, sleep on
-       release. We don't act here. (value 2 = autorepeat, ignored.) */
+       release. We don't act here. (value 2 = autorepeat, ignored.) Edges keep
+       their kernel timestamps so a hold whose press AND release queued behind a
+       stalled daemon tick still measures as a long press, not a 0ms tap. */
     if (data->power_grabbed && data->power_fd >= 0) {
         struct input_event pev;
         while (read(data->power_fd, &pev, sizeof(pev)) == (ssize_t)sizeof(pev)) {
-            if (pev.type == EV_KEY && pev.code == KEY_POWER) {
-                if (pev.value == 1) data->power_went_down = true;
-                else if (pev.value == 0) data->power_went_up = true;
+            if (pev.type != EV_KEY || pev.code != KEY_POWER ||
+                (pev.value != 0 && pev.value != 1)) {
+                continue;
             }
+            if (data->power_edge_count == JW_MLP1_POWER_EDGE_MAX) {
+                /* Full (the daemon is badly stalled): drop the oldest edge. */
+                data->power_edge_head =
+                    (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
+                data->power_edge_count--;
+            }
+            int tail = (data->power_edge_head + data->power_edge_count) %
+                       JW_MLP1_POWER_EDGE_MAX;
+            data->power_edges[tail].down = pev.value == 1;
+            data->power_edges[tail].ms = data->power_evdev_clock
+                ? (uint64_t)pev.input_event_sec * 1000u +
+                  (uint64_t)pev.input_event_usec / 1000u
+                : jw__monotonic_ms();
+            data->power_edge_count++;
         }
     }
 }
@@ -579,17 +614,18 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
     data->swallow = swallow;
 }
 
-void jw_input_proxy_take_power_edges(jw_input_proxy *proxy, bool *down, bool *up) {
-    bool d = false, u = false;
-    if (proxy && proxy->backend_data) {
-        jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
-        d = data->power_went_down;
-        u = data->power_went_up;
-        data->power_went_down = false;
-        data->power_went_up = false;
+bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) {
+    if (!proxy || !proxy->backend_data) {
+        return false;
     }
-    if (down) *down = d;
-    if (up) *up = u;
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    if (data->power_edge_count == 0) {
+        return false;
+    }
+    if (edge) *edge = data->power_edges[data->power_edge_head];
+    data->power_edge_head = (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
+    data->power_edge_count--;
+    return true;
 }
 
 void jw_input_proxy_flush(jw_input_proxy *proxy) {
@@ -609,6 +645,7 @@ void jw_input_proxy_flush(jw_input_proxy *proxy) {
             /* discard */
         }
     }
+    data->power_edge_count = 0;   /* drop already-queued edges too */
 }
 
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {

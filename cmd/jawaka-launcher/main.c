@@ -18,6 +18,7 @@
 #include "internal/settings/theme_resolve.h"
 
 #include <SDL2/SDL.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -618,17 +619,34 @@ static int jw__load_library_cache(const char *socket_path, const char *db_path,
    The status-bar volume/Wi-Fi/Bluetooth reads and the library-generation check
    all hit the daemon over IPC (the daemon forks pactl for volume) or shell out.
    Done on the render thread they stalled a frame ~once a second — visible as a
-   hitch in any continuous animation (e.g. the long-name marquee). Run them on
-   their own thread; the render loop just reads the already-cached int values.
-   The cached fields are plain ints (atomic on aligned aarch64), so no lock is
-   needed; the library DB reload still happens on the render thread. */
+   hitch in any continuous animation (e.g. the long-name marquee).
+
+   Threading contract: the worker never touches jw_settings_ui (the render
+   thread owns it and also writes the same cached fields from the settings
+   pages). All cross-thread traffic goes through the C11 atomics below — the
+   render thread publishes which values to poll (poll_mask) and consumes the
+   samples into the settings/status-bar caches once per loop
+   (jw__status_poller_sync); the worker only reads the mask and stores samples.
+   JW_STATUS_SAMPLE_NONE marks an empty mailbox slot. */
+#define JW_STATUS_POLL_VOLUME (1 << 0)
+#define JW_STATUS_POLL_WIFI   (1 << 1)
+#define JW_STATUS_POLL_BT     (1 << 2)
+#define JW_STATUS_SAMPLE_NONE INT_MIN
+
 typedef struct {
-    pthread_t       thread;
-    bool            started;
-    volatile bool   stop;
-    char            socket_path[PATH_MAX];
-    jw_settings_ui *settings;     /* refreshed volume/wifi/bt cached ints live here */
-    volatile int    generation;   /* latest library generation (-1 = unknown yet) */
+    pthread_t   thread;
+    bool        started;
+    atomic_bool stop;
+    char        socket_path[PATH_MAX];
+    atomic_int  poll_mask;    /* JW_STATUS_POLL_* bits the render thread wants */
+    atomic_int  generation;   /* latest library generation (-1 = unknown yet) */
+    atomic_int  volume;       /* sample mailboxes, JW_STATUS_SAMPLE_NONE = empty */
+    atomic_int  wifi;         /* 0..3 strength, -1 = wifi unavailable */
+    atomic_int  bt;           /* 0=off, 1=on, 2=connected */
+    atomic_int  battery;      /* 0..100, -1 = unknown */
+    atomic_int  charging;     /* 0/1, -1 = unknown */
+    uint32_t    fb_last_fast; /* render-thread fallback throttles (worker never started) */
+    uint32_t    fb_last_slow;
 } jw_status_poller;
 
 static jw_status_poller jw__status_poller;
@@ -636,56 +654,140 @@ static jw_status_poller jw__status_poller;
 static void *jw__status_poll_worker(void *arg) {
     jw_status_poller *P = (jw_status_poller *)arg;
     uint32_t last_slow = 0;
-    while (!P->stop) {
-        jw_settings_ui *s = P->settings;
-        /* ~1s cadence: volume + library generation (both IPC to the daemon). Skip
-           volume while the A/V page already polls it on the render thread. */
-        if (jw_settings_show_volume(s) && !jw_settings_ui_wants_av_poll(s))
-            jw_settings_ui_refresh_volume(s);
+    while (!atomic_load(&P->stop)) {
+        int mask = atomic_load(&P->poll_mask);
+        /* ~1s cadence: volume + library generation (both IPC to the daemon). */
+        if (mask & JW_STATUS_POLL_VOLUME) {
+            int percent = -1;
+            if (jw_ipc_platform_volume(P->socket_path, &percent) == 0 && percent >= 0)
+                atomic_store(&P->volume, percent > 100 ? 100 : percent);
+        }
         int gen = 0;
         if (jw_ipc_library_status(P->socket_path, &gen) == 0)
-            P->generation = gen;
+            atomic_store(&P->generation, gen);
         /* ~5s cadence: Wi-Fi strength, Bluetooth state, and battery/charging.
-           These shell out (wpa_cli/bluetoothctl) or IPC; the results feed the
-           settings UI AND the Catastrophe status-bar hooks (jw_cat_services_*),
-           so the render thread never spawns or blocks for status. Skip whichever
-           the matching settings page is already polling on the render thread. */
+           These shell out (wpa_cli/bluetoothctl) or IPC, so the render thread
+           never spawns or blocks for status. */
         uint32_t now = SDL_GetTicks();
         if (last_slow == 0 || now - last_slow >= 5000) {
-            if (jw_settings_show_wifi(s) && !jw_settings_ui_wants_wifi_poll(s)) {
-                jw_settings_ui_refresh_wifi_strength(s);
-                jw_cat_services_set_wifi_strength(
-                    jw_wifi_available() ? s->wifi_strength_cached : -1);
-            }
-            if (s->show_bluetooth && !jw_settings_ui_wants_bluetooth_poll(s))
-                jw_settings_ui_refresh_bt_state(s);
+            if (mask & JW_STATUS_POLL_WIFI)
+                atomic_store(&P->wifi,
+                             jw_wifi_available() ? jw_wifi_strength_now() : -1);
+            if (mask & JW_STATUS_POLL_BT)
+                atomic_store(&P->bt, jw_settings_bt_state_now());
             int batt = -1, chg = -1;
-            if (jw_ipc_platform_power_status(P->socket_path, &batt, &chg) == 0)
-                jw_cat_services_set_power(batt, chg);
+            if (jw_ipc_platform_power_status(P->socket_path, &batt, &chg) == 0) {
+                atomic_store(&P->battery, batt);
+                atomic_store(&P->charging, chg);
+            }
             last_slow = now;
         }
         /* Sleep ~1s, waking promptly for shutdown. */
-        for (int i = 0; i < 10 && !P->stop; i++) SDL_Delay(100);
+        for (int i = 0; i < 10 && !atomic_load(&P->stop); i++) SDL_Delay(100);
     }
     return NULL;
+}
+
+/* Fallback when the worker thread could not be created: poll inline on the
+   render thread with the worker's cadences — the pre-poller behavior, periodic
+   frame hitch included, but status icons and library generation stay live. */
+static void jw__status_poller_fallback_poll(jw_settings_ui *s, int mask) {
+    jw_status_poller *P = &jw__status_poller;
+    uint32_t now = SDL_GetTicks();
+    if (P->fb_last_fast == 0 || now - P->fb_last_fast >= 1000) {
+        if (mask & JW_STATUS_POLL_VOLUME)
+            jw_settings_ui_refresh_volume(s);
+        int gen = 0;
+        if (jw_ipc_library_status(P->socket_path, &gen) == 0)
+            atomic_store(&P->generation, gen);
+        P->fb_last_fast = now;
+    }
+    if (P->fb_last_slow == 0 || now - P->fb_last_slow >= 5000) {
+        if (mask & JW_STATUS_POLL_WIFI) {
+            jw_settings_ui_refresh_wifi_strength(s);
+            jw_cat_services_set_wifi_strength(
+                jw_wifi_available() ? s->wifi_strength_cached : -1);
+        }
+        if (mask & JW_STATUS_POLL_BT)
+            jw_settings_ui_refresh_bt_state(s);
+        int batt = -1, chg = -1;
+        if (jw_ipc_platform_power_status(P->socket_path, &batt, &chg) == 0)
+            jw_cat_services_set_power(batt, chg);
+        P->fb_last_slow = now;
+    }
+}
+
+/* Which values the worker should sample: each icon's poll is wanted while the
+   icon is shown, except while the matching settings page (A/V, Network,
+   Bluetooth) already polls it live on the render thread. */
+static int jw__status_poll_mask(const jw_settings_ui *s) {
+    int mask = 0;
+    if (jw_settings_show_volume(s) && !jw_settings_ui_wants_av_poll(s))
+        mask |= JW_STATUS_POLL_VOLUME;
+    if (jw_settings_show_wifi(s) && !jw_settings_ui_wants_wifi_poll(s))
+        mask |= JW_STATUS_POLL_WIFI;
+    if (s->show_bluetooth && !jw_settings_ui_wants_bluetooth_poll(s))
+        mask |= JW_STATUS_POLL_BT;
+    return mask;
+}
+
+/* Render-thread half of the poller, called once per loop iteration: publish
+   what the worker should poll (reading jw_settings_ui is render-thread-only)
+   and fold any delivered samples into the settings/status-bar caches. A page
+   that polls its own values live (A/V, Network, Bluetooth) masks the matching
+   poll off; a sample already in flight when a page opens is dropped here, and
+   at worst the page's own refresh overwrites it a frame later. */
+static void jw__status_poller_sync(jw_settings_ui *s) {
+    jw_status_poller *P = &jw__status_poller;
+    int mask = jw__status_poll_mask(s);
+
+    if (!P->started) {
+        jw__status_poller_fallback_poll(s, mask);
+        return;
+    }
+    atomic_store(&P->poll_mask, mask);
+
+    int v = atomic_exchange(&P->volume, JW_STATUS_SAMPLE_NONE);
+    if (v != JW_STATUS_SAMPLE_NONE && (mask & JW_STATUS_POLL_VOLUME))
+        s->volume_percent = v;
+    v = atomic_exchange(&P->wifi, JW_STATUS_SAMPLE_NONE);
+    if (v != JW_STATUS_SAMPLE_NONE && (mask & JW_STATUS_POLL_WIFI)) {
+        s->wifi_strength_cached = v > 0 ? v : 0;
+        jw_cat_services_set_wifi_strength(v);
+    }
+    v = atomic_exchange(&P->bt, JW_STATUS_SAMPLE_NONE);
+    if (v != JW_STATUS_SAMPLE_NONE && (mask & JW_STATUS_POLL_BT))
+        s->bt_state_cached = v;
+    int batt = atomic_exchange(&P->battery, JW_STATUS_SAMPLE_NONE);
+    int chg  = atomic_exchange(&P->charging, JW_STATUS_SAMPLE_NONE);
+    if (batt != JW_STATUS_SAMPLE_NONE || chg != JW_STATUS_SAMPLE_NONE)
+        jw_cat_services_set_power(batt == JW_STATUS_SAMPLE_NONE ? -1 : batt,
+                                  chg == JW_STATUS_SAMPLE_NONE ? -1 : chg);
 }
 
 static void jw__status_poller_start(const char *socket_path, jw_settings_ui *settings) {
     jw_status_poller *P = &jw__status_poller;
     if (P->started) return;
     snprintf(P->socket_path, sizeof(P->socket_path), "%s", socket_path ? socket_path : "");
-    P->settings   = settings;
-    P->generation = -1;
-    P->stop       = false;
-    P->started    = true;
+    atomic_store(&P->generation, -1);
+    atomic_store(&P->volume, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->wifi, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->bt, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->battery, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->charging, JW_STATUS_SAMPLE_NONE);
+    /* Seed the mask before the worker's first pass so startup doesn't skip a
+       round of samples while waiting for the first sync. */
+    atomic_store(&P->poll_mask, jw__status_poll_mask(settings));
+    atomic_store(&P->stop, false);
+    P->started = true;
     if (pthread_create(&P->thread, NULL, jw__status_poll_worker, P) != 0)
-        P->started = false;   /* no thread -> the render loop still works, just unbuffered */
+        P->started = false;   /* no thread -> jw__status_poller_sync polls inline */
 }
 
 static void jw__status_poller_shutdown(void) {
     jw_status_poller *P = &jw__status_poller;
     if (!P->started) return;
-    P->stop = true;
+    atomic_store(&P->stop, true);
     pthread_join(P->thread, NULL);
     P->started = false;
 }
@@ -698,7 +800,7 @@ static void jw__poll_library_generation(const char *socket_path,
         return;
     }
 
-    int generation = jw__status_poller.generation;
+    int generation = atomic_load(&jw__status_poller.generation);
     if (generation < 0) {
         return;   /* poller hasn't reported a generation yet */
     }
@@ -3736,9 +3838,11 @@ int main(void) {
 
         /* The library-generation IPC and the status-bar volume/Wi-Fi/Bluetooth
            reads all run on the background status poller now (jw__status_poller);
-           this just adopts the latest generation, and the status-bar icons read
-           the cached values the poller refreshes. Keeping them off the render
-           thread is what removes the ~1s hitch in continuous animations. */
+           the sync publishes what to poll and folds delivered samples into the
+           settings/status-bar caches, and the generation poll adopts the latest
+           generation. Keeping the polls off the render thread is what removes
+           the ~1s hitch in continuous animations. */
+        jw__status_poller_sync(&state.settings);
         jw__poll_library_generation(socket_path, db_path, &state);
 
         /* Keep the status bar live while idle: the launcher only renders on

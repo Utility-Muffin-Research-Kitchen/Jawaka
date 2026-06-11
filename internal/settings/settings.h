@@ -263,6 +263,10 @@ void jw_settings_ui_refresh_wifi_strength(jw_settings_ui *ui);
 /* Poll live Bluetooth state into ui->bt_state_cached (0=off,1=on,2=connected)
    so the status-bar icon reflects the radio without shelling out every frame. */
 void jw_settings_ui_refresh_bt_state(jw_settings_ui *ui);
+/* The raw poll behind refresh_bt_state: live 0=off/1=on/2=connected without
+   touching any jw_settings_ui state, so the launcher's background status
+   poller can call it off the render thread. Blocks (shells out). */
+int  jw_settings_bt_state_now(void);
 
 /* True if the status-bar speaker icon is enabled. The launcher uses this to
  * decide whether to keep volume polled on the home screen. */
