@@ -88,22 +88,6 @@ static void jw__extension_lower(const char *filename, char *out, size_t out_size
     jw__lower_copy(dot + 1, out, out_size);
 }
 
-static int jw__sidecar_extension(const char *ext) {
-    static const char *kSidecars[] = {
-        "txt", "nfo", "db", "json", "xml", "png", "jpg", "jpeg",
-        "bmp", "gif", "sav", "srm", "state", NULL
-    };
-    if (!ext || !ext[0]) {
-        return 0;
-    }
-    for (size_t i = 0; kSidecars[i]; i++) {
-        if (strcmp(ext, kSidecars[i]) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 static void jw__strip_last_extension(char *name) {
     if (!name) {
         return;
@@ -138,7 +122,9 @@ static void jw__title_from_metadata_filename(const jw_ra_system *system,
         jw__strip_last_extension(out);
     }
 
-    if (archive) {
+    if (archive || content) {
+        /* Also strip a content double-extension ("cart.p8.png") so titles
+           don't keep the inner suffix. */
         char inner_ext[64];
         jw__extension_lower(out, inner_ext, sizeof(inner_ext));
         if (jw_ra_string_list_contains_casefold(&system->archive_inner_extensions, inner_ext) ||
@@ -190,9 +176,13 @@ static int jw__metadata_accepts_rom(const jw_ra_system *system,
         return 1;
     }
 
+    /* No generic sidecar filtering here: the per-system metadata lists are
+       explicit allowlists, and some systems claim classic sidecar extensions
+       as content (Pico-8 ships .p8.png carts). Anything unlisted hits the
+       final reject below. */
     char ext[64];
     jw__extension_lower(filename, ext, sizeof(ext));
-    if (!ext[0] || jw__sidecar_extension(ext)) {
+    if (!ext[0]) {
         return 0;
     }
 
