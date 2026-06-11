@@ -14,7 +14,10 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <spawn.h>
 #include <unistd.h>
+
+extern char **environ;
 
 #define JW_BT_CMD_TIMEOUT_MS       4000
 #define JW_BT_SCAN_TIMEOUT_MS     12000
@@ -109,24 +112,29 @@ static int jw__bt_run_argv(const char *const *argv, char *buf, size_t buf_size,
         return -1;
     }
 
-    pid_t pid = fork();
-    if (pid < 0) {
+    /* posix_spawn rather than fork()+execvp: plain fork() duplicates this
+       process's page tables and contends on the malloc lock, and the launcher
+       carries a large RSS (textures, glyph atlases, cover thumbnails) — so each
+       status-poll fork stalled the render thread for a frame. posix_spawn is
+       vfork-backed: it shares the address space and suspends only this thread
+       until the child execs, so the render thread is never blocked. The child's
+       stdout goes to the pipe, stderr to /dev/null; the pipe fds are closed in
+       the child (the parent keeps the read end). */
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pipefd[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addclose(&fa, pipefd[0]);
+    posix_spawn_file_actions_addclose(&fa, pipefd[1]);
+
+    pid_t pid = 0;
+    int spawn_rc = posix_spawnp(&pid, argv[0], &fa, NULL,
+                                (char *const *)argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (spawn_rc != 0) {
         close(pipefd[0]);
         close(pipefd[1]);
         return -1;
-    }
-
-    if (pid == 0) {
-        dup2(pipefd[1], STDOUT_FILENO);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
-        }
-        close(pipefd[0]);
-        close(pipefd[1]);
-        execvp(argv[0], (char *const *)argv);
-        _exit(127);
     }
 
     close(pipefd[1]);

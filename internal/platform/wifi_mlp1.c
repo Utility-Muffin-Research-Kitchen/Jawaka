@@ -18,7 +18,10 @@
 #include <signal.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <spawn.h>
 #include <sqlite3.h>
+
+extern char **environ;
 
 bool jw_wifi_available(void) {
     return true;
@@ -60,28 +63,35 @@ static int jw__wifi_run(const char *const *args, int nargs,
         return -1;
     }
 
-    pid_t pid = fork();
-    if (pid < 0) {
+    /* Build argv in the parent — posix_spawn takes it here, not in a child. */
+    char *argv[16];
+    int a = 0;
+    argv[a++] = "wpa_cli";
+    argv[a++] = "-i";
+    argv[a++] = (char *)JW_WIFI_IFACE;
+    for (int i = 0; i < nargs && a < 15; i++) {
+        argv[a++] = (char *)args[i];
+    }
+    argv[a] = NULL;
+
+    /* posix_spawn rather than fork()+execvp: plain fork() duplicates the
+       launcher's large page tables and contends on the malloc lock, stalling the
+       render thread for a frame on each status poll. posix_spawn is vfork-backed
+       (shares the address space, suspends only this thread until exec), so the
+       render thread is never blocked. Child stdout -> pipe. */
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pipefd[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addclose(&fa, pipefd[0]);
+    posix_spawn_file_actions_addclose(&fa, pipefd[1]);
+
+    pid_t pid = 0;
+    int spawn_rc = posix_spawnp(&pid, "wpa_cli", &fa, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (spawn_rc != 0) {
         close(pipefd[0]);
         close(pipefd[1]);
         return -1;
-    }
-    if (pid == 0) {
-        /* Child: stdout -> pipe, then exec wpa_cli. */
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[0]);
-        close(pipefd[1]);
-        char *argv[16];
-        int a = 0;
-        argv[a++] = "wpa_cli";
-        argv[a++] = "-i";
-        argv[a++] = (char *)JW_WIFI_IFACE;
-        for (int i = 0; i < nargs && a < 15; i++) {
-            argv[a++] = (char *)args[i];
-        }
-        argv[a] = NULL;
-        execvp("wpa_cli", argv);
-        _exit(127);
     }
 
     /* Parent: read the child's stdout with a hard deadline. wpa_cli can block

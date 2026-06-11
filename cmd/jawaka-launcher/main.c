@@ -13,6 +13,7 @@
 #include "internal/launcher/game_switcher.h"
 #include "internal/platform/cat_services.h"
 #include "internal/platform/paths.h"
+#include "internal/platform/wifi.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 
@@ -152,7 +153,6 @@ typedef struct {
     char               status[256];
     bool               scan_ready;
     int                library_generation;
-    uint32_t           next_library_generation_poll_ms;
 } jw_launcher_state;
 
 static void jw__draw_app_detail(const jw_launcher_state *state,
@@ -614,23 +614,93 @@ static int jw__load_library_cache(const char *socket_path, const char *db_path,
     return 0;
 }
 
+/* ── Background status poller ───────────────────────────────────────────────
+   The status-bar volume/Wi-Fi/Bluetooth reads and the library-generation check
+   all hit the daemon over IPC (the daemon forks pactl for volume) or shell out.
+   Done on the render thread they stalled a frame ~once a second — visible as a
+   hitch in any continuous animation (e.g. the long-name marquee). Run them on
+   their own thread; the render loop just reads the already-cached int values.
+   The cached fields are plain ints (atomic on aligned aarch64), so no lock is
+   needed; the library DB reload still happens on the render thread. */
+typedef struct {
+    pthread_t       thread;
+    bool            started;
+    volatile bool   stop;
+    char            socket_path[PATH_MAX];
+    jw_settings_ui *settings;     /* refreshed volume/wifi/bt cached ints live here */
+    volatile int    generation;   /* latest library generation (-1 = unknown yet) */
+} jw_status_poller;
+
+static jw_status_poller jw__status_poller;
+
+static void *jw__status_poll_worker(void *arg) {
+    jw_status_poller *P = (jw_status_poller *)arg;
+    uint32_t last_slow = 0;
+    while (!P->stop) {
+        jw_settings_ui *s = P->settings;
+        /* ~1s cadence: volume + library generation (both IPC to the daemon). Skip
+           volume while the A/V page already polls it on the render thread. */
+        if (jw_settings_show_volume(s) && !jw_settings_ui_wants_av_poll(s))
+            jw_settings_ui_refresh_volume(s);
+        int gen = 0;
+        if (jw_ipc_library_status(P->socket_path, &gen) == 0)
+            P->generation = gen;
+        /* ~5s cadence: Wi-Fi strength, Bluetooth state, and battery/charging.
+           These shell out (wpa_cli/bluetoothctl) or IPC; the results feed the
+           settings UI AND the Catastrophe status-bar hooks (jw_cat_services_*),
+           so the render thread never spawns or blocks for status. Skip whichever
+           the matching settings page is already polling on the render thread. */
+        uint32_t now = SDL_GetTicks();
+        if (last_slow == 0 || now - last_slow >= 5000) {
+            if (jw_settings_show_wifi(s) && !jw_settings_ui_wants_wifi_poll(s)) {
+                jw_settings_ui_refresh_wifi_strength(s);
+                jw_cat_services_set_wifi_strength(
+                    jw_wifi_available() ? s->wifi_strength_cached : -1);
+            }
+            if (s->show_bluetooth && !jw_settings_ui_wants_bluetooth_poll(s))
+                jw_settings_ui_refresh_bt_state(s);
+            int batt = -1, chg = -1;
+            if (jw_ipc_platform_power_status(P->socket_path, &batt, &chg) == 0)
+                jw_cat_services_set_power(batt, chg);
+            last_slow = now;
+        }
+        /* Sleep ~1s, waking promptly for shutdown. */
+        for (int i = 0; i < 10 && !P->stop; i++) SDL_Delay(100);
+    }
+    return NULL;
+}
+
+static void jw__status_poller_start(const char *socket_path, jw_settings_ui *settings) {
+    jw_status_poller *P = &jw__status_poller;
+    if (P->started) return;
+    snprintf(P->socket_path, sizeof(P->socket_path), "%s", socket_path ? socket_path : "");
+    P->settings   = settings;
+    P->generation = -1;
+    P->stop       = false;
+    P->started    = true;
+    if (pthread_create(&P->thread, NULL, jw__status_poll_worker, P) != 0)
+        P->started = false;   /* no thread -> the render loop still works, just unbuffered */
+}
+
+static void jw__status_poller_shutdown(void) {
+    jw_status_poller *P = &jw__status_poller;
+    if (!P->started) return;
+    P->stop = true;
+    pthread_join(P->thread, NULL);
+    P->started = false;
+}
+
 static void jw__poll_library_generation(const char *socket_path,
                                         const char *db_path,
                                         jw_launcher_state *state) {
-    if (!socket_path || !db_path || !state) {
+    (void)socket_path;   /* the library-status IPC now runs on the status poller */
+    if (!db_path || !state) {
         return;
     }
 
-    uint32_t now = SDL_GetTicks();
-    if (state->next_library_generation_poll_ms &&
-        (int32_t)(now - state->next_library_generation_poll_ms) < 0) {
-        return;
-    }
-    state->next_library_generation_poll_ms = now + 1000;
-
-    int generation = 0;
-    if (jw_ipc_library_status(socket_path, &generation) != 0) {
-        return;
+    int generation = jw__status_poller.generation;
+    if (generation < 0) {
+        return;   /* poller hasn't reported a generation yet */
     }
     if (state->library_generation < 0) {
         /* The startup status query failed, so the cached library may predate a
@@ -3618,6 +3688,9 @@ int main(void) {
                 ready_done_ms - ready_start_ms,
                 ready_done_ms - process_start_ms);
 
+    /* Move the status-bar/library polls off the render thread (see jw__status_poller). */
+    jw__status_poller_start(socket_path, &state.settings);
+
     while (running) {
         cat_input_event ev;
         while (cat_poll_input(&ev)) {
@@ -3661,45 +3734,12 @@ int main(void) {
             cat_request_frame_in(500);
         }
 
+        /* The library-generation IPC and the status-bar volume/Wi-Fi/Bluetooth
+           reads all run on the background status poller now (jw__status_poller);
+           this just adopts the latest generation, and the status-bar icons read
+           the cached values the poller refreshes. Keeping them off the render
+           thread is what removes the ~1s hitch in continuous animations. */
         jw__poll_library_generation(socket_path, db_path, &state);
-
-        /* Keep the status-bar speaker icon current. Volume lives in the daemon,
-           so poll it at the idle status cadence when the icon is on and the A/V
-           page isn't already polling it. */
-        if (jw_settings_show_volume(&state.settings) &&
-            !jw_settings_ui_wants_av_poll(&state.settings)) {
-            static uint32_t last_volume_poll = 0;
-            uint32_t now = SDL_GetTicks();
-            if (last_volume_poll == 0 || now - last_volume_poll >= 1000) {
-                jw_settings_ui_refresh_volume(&state.settings);
-                last_volume_poll = now;
-            }
-        }
-
-        /* Keep the status-bar wifi icon current. We own the radio read (so the
-           icon and the Network page share one source), so poll the strength on a
-           slow cadence — RSSI drifts gradually — unless the Network page is
-           already polling it. */
-        if (jw_settings_show_wifi(&state.settings) &&
-            !jw_settings_ui_wants_wifi_poll(&state.settings)) {
-            static uint32_t last_wifi_poll = 0;
-            uint32_t now = SDL_GetTicks();
-            if (last_wifi_poll == 0 || now - last_wifi_poll >= 5000) {
-                jw_settings_ui_refresh_wifi_strength(&state.settings);
-                last_wifi_poll = now;
-            }
-        }
-
-        /* Bluetooth status-bar icon: poll the radio/connection state on the same
-           slow cadence as wifi (the read shells out, so never per-frame). */
-        if (state.settings.show_bluetooth) {
-            static uint32_t last_bt_poll = 0;
-            uint32_t now = SDL_GetTicks();
-            if (last_bt_poll == 0 || now - last_bt_poll >= 5000) {
-                jw_settings_ui_refresh_bt_state(&state.settings);
-                last_bt_poll = now;
-            }
-        }
 
         /* Keep the status bar live while idle: the launcher only renders on
            input or a requested frame, so without this a wifi connect / charger
@@ -3711,6 +3751,7 @@ int main(void) {
         jw__render_launcher(&state);
     }
 
+    jw__status_poller_shutdown();
     jw__cover_loader_shutdown();
     cat_quit();
     free(socket_path);
