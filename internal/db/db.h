@@ -87,6 +87,24 @@ int  jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
    Idempotent — removing an absent row succeeds. */
 int  jw_db_remove_recent(const char *db_path, const char *kind, int target_id);
 
+/* Scoped content actions/settings. game settings are keyed by stable games.id;
+   system settings are keyed by canonical Jawaka system id. Empty values should
+   normally be deleted by callers rather than stored. */
+int  jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
+                                jw_game_entry *out);
+int  jw_db_get_game_setting(const char *db_path, int game_id,
+                            const char *key, char *out, size_t out_size);
+int  jw_db_set_game_setting(const char *db_path, int game_id,
+                            const char *key, const char *value);
+int  jw_db_delete_game_setting(const char *db_path, int game_id,
+                               const char *key);
+int  jw_db_get_system_setting(const char *db_path, const char *system,
+                              const char *key, char *out, size_t out_size);
+int  jw_db_set_system_setting(const char *db_path, const char *system,
+                              const char *key, const char *value);
+int  jw_db_delete_system_setting(const char *db_path, const char *system,
+                                 const char *key);
+
 typedef struct {
     const char *key;
     char       *out;

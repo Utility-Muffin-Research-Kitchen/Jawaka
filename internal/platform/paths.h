@@ -16,6 +16,12 @@ char *jw_ingame_ui_mode_path(void);
 char *jw_db_path(void);
 char *jw_retroarch_bin_path(void);
 char *jw_retroarch_core_path_for_system(const char *system);
+char *jw_retroarch_core_path_for_system_choice(const char *system,
+                                               const char *preferred_core_id,
+                                               char *out_core_id,
+                                               size_t out_core_id_size,
+                                               char *diagnostic,
+                                               size_t diagnostic_size);
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size);
 char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdcard_root,
                                        const char *core_path, int player1_joypad_index);

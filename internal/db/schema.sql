@@ -4,7 +4,7 @@
 -- later codegen replaces this duplication.
 
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 
 CREATE TABLE IF NOT EXISTS games (
     id          INTEGER PRIMARY KEY,
@@ -86,4 +86,21 @@ END;
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    system     TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (system, key)
+);
+
+CREATE TABLE IF NOT EXISTS game_settings (
+    game_id    INTEGER NOT NULL,
+    key        TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (game_id, key),
+    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 );

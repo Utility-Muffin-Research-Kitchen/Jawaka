@@ -16,6 +16,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static int jw__exec(sqlite3 *db, const char *sql) {
     char *err = NULL;
@@ -242,6 +243,84 @@ static int jw__metadata_system_has_packaged_retroarch_core(const jw_ra_catalog *
     return 0;
 }
 
+static int jw__metadata_core_is_packaged_path(const jw_ra_core *core) {
+    return core &&
+           core->type &&
+           strcmp(core->type, "path") == 0 &&
+           core->status &&
+           strcmp(core->status, "packaged") == 0 &&
+           core->path &&
+           core->path[0];
+}
+
+static int jw__metadata_platform_path(const char *sdcard_root,
+                                      char *out,
+                                      size_t out_size) {
+    const char *platform_path = getenv("UMRK_PLATFORM_PATH");
+    if (!platform_path || !platform_path[0]) {
+        platform_path = getenv("SYSTEM_PATH");
+    }
+    if (platform_path && platform_path[0]) {
+        return snprintf(out, out_size, "%s", platform_path) < (int)out_size ? 0 : -1;
+    }
+    if (!sdcard_root || !sdcard_root[0]) {
+        return -1;
+    }
+    return snprintf(out, out_size, "%s/.system/leaf/platforms/%s",
+                    sdcard_root, jw_platform_compiled_id()) < (int)out_size ? 0 : -1;
+}
+
+static int jw__metadata_path_core_exists(const char *sdcard_root,
+                                         const jw_ra_core *core) {
+    if (!jw__metadata_core_is_packaged_path(core)) {
+        return 0;
+    }
+
+    char candidate[PATH_MAX];
+    if (core->path[0] == '/') {
+        if (snprintf(candidate, sizeof(candidate), "%s", core->path) >=
+            (int)sizeof(candidate)) {
+            return 0;
+        }
+    } else {
+        char platform_path[PATH_MAX];
+        if (jw__metadata_platform_path(sdcard_root, platform_path,
+                                       sizeof(platform_path)) != 0 ||
+            snprintf(candidate, sizeof(candidate), "%s/%s",
+                     platform_path, core->path) >= (int)sizeof(candidate)) {
+            return 0;
+        }
+    }
+
+    return access(candidate, X_OK) == 0;
+}
+
+static int jw__metadata_system_has_packaged_launch_target(const jw_ra_catalog *catalog,
+                                                          const jw_ra_system *system,
+                                                          const char *sdcard_root) {
+    if (!catalog || !system) {
+        return 0;
+    }
+
+    if (jw__metadata_system_has_packaged_retroarch_core(catalog, system)) {
+        return 1;
+    }
+
+    const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
+    if (jw__metadata_path_core_exists(sdcard_root, core)) {
+        return 1;
+    }
+
+    for (size_t i = 0; i < system->alternate_cores.count; i++) {
+        core = jw_ra_catalog_find_core(catalog, system->alternate_cores.items[i]);
+        if (jw__metadata_path_core_exists(sdcard_root, core)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static const char *jw__metadata_image_path(const jw_ra_system *system,
                                            const jw_storage_source *source,
                                            const char *physical_folder,
@@ -458,6 +537,7 @@ static int jw__name_is_m3u_member(const char *name, char members[][JW_M3U_MEMBER
 }
 
 static int jw__scan_roms_metadata(sqlite3 *db,
+                                  const char *sdcard_root,
                                   const jw_storage_source *source,
                                   const jw_ra_catalog *catalog,
                                   jw_scan_result *out) {
@@ -489,10 +569,10 @@ static int jw__scan_roms_metadata(sqlite3 *db,
                     system_entry->d_name);
             continue;
         }
-        if (!jw__metadata_system_has_packaged_retroarch_core(catalog, system)) {
+        if (!jw__metadata_system_has_packaged_launch_target(catalog, system, sdcard_root)) {
             fprintf(stderr,
                     "RetroArch discovery: skipping unsupported ROM folder %s "
-                    "(%s has no packaged RetroArch core)\n",
+                    "(%s has no packaged launch target)\n",
                     system_entry->d_name, system->id);
             continue;
         }
@@ -617,7 +697,7 @@ static int jw__scan_roms(sqlite3 *db, const char *sdcard_root, jw_scan_result *o
     }
 
     for (int i = 0; i < sources.count; i++) {
-        if (jw__scan_roms_metadata(db, &sources.sources[i], catalog, out) != 0) {
+        if (jw__scan_roms_metadata(db, sdcard_root, &sources.sources[i], catalog, out) != 0) {
             return -1;
         }
     }

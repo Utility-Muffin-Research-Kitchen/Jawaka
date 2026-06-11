@@ -925,9 +925,20 @@ static char *jw__default_cores_dir(void) {
     return jw__env_or_probe("CORES_PATH", layout->cores_relative, NULL);
 }
 
-char *jw_retroarch_core_path_for_system(const char *system) {
+char *jw_retroarch_core_path_for_system_choice(const char *system,
+                                               const char *preferred_core_id,
+                                               char *out_core_id,
+                                               size_t out_core_id_size,
+                                               char *diagnostic,
+                                               size_t diagnostic_size) {
     if (!system || !system[0]) {
         return NULL;
+    }
+    if (out_core_id && out_core_id_size > 0) {
+        out_core_id[0] = '\0';
+    }
+    if (diagnostic && diagnostic_size > 0) {
+        diagnostic[0] = '\0';
     }
 
     const char *disable_v2 = getenv("JAWAKA_DISABLE_RETROARCH_V2");
@@ -939,29 +950,44 @@ char *jw_retroarch_core_path_for_system(const char *system) {
         if (catalog && cores_dir) {
             char core_file[PATH_MAX];
             char core_id[128];
-            char diagnostic[256];
-            if (jw_ra_catalog_resolve_core_file(catalog, system, cores_dir,
-                                                core_file, sizeof(core_file),
-                                                core_id, sizeof(core_id),
-                                                diagnostic, sizeof(diagnostic)) == 0) {
-                if (diagnostic[0]) {
-                    jw_log_warn("RetroArch metadata fallback for %s: %s", system, diagnostic);
+            char local_diagnostic[256];
+            if (jw_ra_catalog_resolve_core_file_for_choice(catalog, system,
+                                                           preferred_core_id,
+                                                           cores_dir,
+                                                           core_file, sizeof(core_file),
+                                                           core_id, sizeof(core_id),
+                                                           local_diagnostic,
+                                                           sizeof(local_diagnostic)) == 0) {
+                if (local_diagnostic[0]) {
+                    jw_log_warn("RetroArch metadata fallback for %s: %s", system, local_diagnostic);
                 } else {
                     jw_log_info("RetroArch metadata resolved %s -> %s", system, core_id);
+                }
+                if (out_core_id && out_core_id_size > 0) {
+                    snprintf(out_core_id, out_core_id_size, "%s", core_id);
+                }
+                if (diagnostic && diagnostic_size > 0 && local_diagnostic[0]) {
+                    snprintf(diagnostic, diagnostic_size, "%s", local_diagnostic);
                 }
                 char *path = jw__dup_printf("%s/%s", cores_dir, core_file);
                 free(sdcard_root);
                 free(cores_dir);
                 return path;
             }
-            if (diagnostic[0]) {
-                jw_log_warn("RetroArch metadata could not resolve %s: %s", system, diagnostic);
+            if (local_diagnostic[0]) {
+                jw_log_warn("RetroArch metadata could not resolve %s: %s", system, local_diagnostic);
+                if (diagnostic && diagnostic_size > 0) {
+                    snprintf(diagnostic, diagnostic_size, "%s", local_diagnostic);
+                }
             } else {
                 jw_log_warn("RetroArch metadata could not resolve %s", system);
             }
         } else if (error[0]) {
-                jw_log_warn("RetroArch metadata unavailable: %s", error);
+            jw_log_warn("RetroArch metadata unavailable: %s", error);
+            if (diagnostic && diagnostic_size > 0) {
+                snprintf(diagnostic, diagnostic_size, "%s", error);
             }
+        }
         free(sdcard_root);
         free(cores_dir);
     }
@@ -985,9 +1011,20 @@ char *jw_retroarch_core_path_for_system(const char *system) {
     }
 
     char *path = jw__dup_printf("%s/%s", cores_dir, core_name);
+    if (path && out_core_id && out_core_id_size > 0) {
+        snprintf(out_core_id, out_core_id_size, "%s", core_name);
+        char *suffix = strstr(out_core_id, "_libretro.so");
+        if (suffix) {
+            *suffix = '\0';
+        }
+    }
     free(cores_dir);
     free(core_name);
     return path;
+}
+
+char *jw_retroarch_core_path_for_system(const char *system) {
+    return jw_retroarch_core_path_for_system_choice(system, NULL, NULL, 0, NULL, 0);
 }
 
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size) {

@@ -6,7 +6,7 @@
 
 static const char *kSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
-    "PRAGMA user_version = 3;\n"
+    "PRAGMA user_version = 4;\n"
     "\n"
     "CREATE TABLE IF NOT EXISTS games (\n"
     "    id          INTEGER PRIMARY KEY,\n"
@@ -88,6 +88,23 @@ static const char *kSchemaSql =
     "CREATE TABLE IF NOT EXISTS settings (\n"
     "    key   TEXT PRIMARY KEY,\n"
     "    value TEXT NOT NULL\n"
+    ");\n"
+    "\n"
+    "CREATE TABLE IF NOT EXISTS system_settings (\n"
+    "    system     TEXT NOT NULL,\n"
+    "    key        TEXT NOT NULL,\n"
+    "    value      TEXT NOT NULL,\n"
+    "    updated_at INTEGER NOT NULL,\n"
+    "    PRIMARY KEY (system, key)\n"
+    ");\n"
+    "\n"
+    "CREATE TABLE IF NOT EXISTS game_settings (\n"
+    "    game_id    INTEGER NOT NULL,\n"
+    "    key        TEXT NOT NULL,\n"
+    "    value      TEXT NOT NULL,\n"
+    "    updated_at INTEGER NOT NULL,\n"
+    "    PRIMARY KEY (game_id, key),\n"
+    "    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE\n"
     ");\n";
 
 static int jw__exec(sqlite3 *db, const char *sql) {
@@ -255,6 +272,7 @@ int jw_db_scan_prune(sqlite3 *db) {
     return jw__exec(db,
         "DELETE FROM games WHERE rom_path NOT IN (SELECT rom_path FROM _seen_games);"
         "DELETE FROM apps WHERE pak_dir NOT IN (SELECT pak_dir FROM _seen_apps);"
+        "DELETE FROM game_settings WHERE game_id NOT IN (SELECT id FROM games);"
         "DELETE FROM favorites WHERE kind = 'game' AND target_id NOT IN (SELECT id FROM games);"
         "DELETE FROM favorites WHERE kind = 'app'  AND target_id NOT IN (SELECT id FROM apps);"
         "DELETE FROM recents   WHERE kind = 'game' AND target_id NOT IN (SELECT id FROM games);"
@@ -584,11 +602,18 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
     if (jw_db_open(db_path, &db) != 0) {
         return -1;
     }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
 
     static const char *sql =
-        "SELECT g.id, g.system, g.name, g.rom_path, COALESCE(g.image_path, ''), "
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), g.name), "
+        "g.rom_path, COALESCE(g.image_path, ''), "
         "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
-        "FROM games g WHERE g.system = ? ORDER BY g.name LIMIT ?;";
+        "FROM games g "
+        "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
+        "WHERE g.system = ? ORDER BY COALESCE(NULLIF(gs.value, ''), g.name) LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -673,6 +698,235 @@ int jw_db_remove_recent(const char *db_path, const char *kind, int target_id) {
     return rc;
 }
 
+int jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
+                               jw_game_entry *out) {
+    if (!db_path || !rom_path || !rom_path[0] || !out) {
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql =
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), g.name), "
+        "g.rom_path, COALESCE(g.image_path, ''), "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "FROM games g "
+        "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
+        "WHERE g.rom_path = ? LIMIT 1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, rom_path, -1, SQLITE_TRANSIENT);
+
+    int rc = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *system_text = sqlite3_column_text(stmt, 1);
+        const unsigned char *name_text = sqlite3_column_text(stmt, 2);
+        const unsigned char *rom_text = sqlite3_column_text(stmt, 3);
+        const unsigned char *image_text = sqlite3_column_text(stmt, 4);
+        out->id = sqlite3_column_int(stmt, 0);
+        if (system_text) snprintf(out->system, sizeof(out->system), "%s", system_text);
+        if (name_text) snprintf(out->name, sizeof(out->name), "%s", name_text);
+        if (rom_text) snprintf(out->rom_path, sizeof(out->rom_path), "%s", rom_text);
+        if (image_text) snprintf(out->image_path, sizeof(out->image_path), "%s", image_text);
+        out->favorite = sqlite3_column_int(stmt, 5);
+        rc = 0;
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+static int jw__get_scoped_setting(const char *db_path, const char *sql,
+                                  const char *scope, int game_id,
+                                  const char *key, char *out, size_t out_size) {
+    if (!db_path || !sql || !key || !out || out_size == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+    if (scope) {
+        sqlite3_bind_text(stmt, 1, scope, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_int(stmt, 1, game_id);
+    }
+    sqlite3_bind_text(stmt, 2, key, -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        const unsigned char *text = sqlite3_column_text(stmt, 0);
+        if (text) snprintf(out, out_size, "%s", text);
+        rc = SQLITE_DONE;
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
+static int jw__set_scoped_setting(const char *db_path, const char *sql,
+                                  const char *scope, int game_id,
+                                  const char *key, const char *value) {
+    if (!db_path || !sql || !key || !value) {
+        return -1;
+    }
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+    if (scope) {
+        sqlite3_bind_text(stmt, 1, scope, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_int(stmt, 1, game_id);
+    }
+    sqlite3_bind_text(stmt, 2, key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, value, -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+static int jw__delete_scoped_setting(const char *db_path, const char *sql,
+                                     const char *scope, int game_id,
+                                     const char *key) {
+    if (!db_path || !sql || !key) {
+        return -1;
+    }
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+    if (scope) {
+        sqlite3_bind_text(stmt, 1, scope, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_int(stmt, 1, game_id);
+    }
+    sqlite3_bind_text(stmt, 2, key, -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_get_game_setting(const char *db_path, int game_id,
+                           const char *key, char *out, size_t out_size) {
+    if (game_id <= 0) {
+        return -1;
+    }
+    return jw__get_scoped_setting(db_path,
+        "SELECT value FROM game_settings WHERE game_id = ? AND key = ?;",
+        NULL, game_id, key, out, out_size);
+}
+
+int jw_db_set_game_setting(const char *db_path, int game_id,
+                           const char *key, const char *value) {
+    if (game_id <= 0 || !value || !value[0]) {
+        return -1;
+    }
+    return jw__set_scoped_setting(db_path,
+        "INSERT INTO game_settings (game_id, key, value, updated_at) "
+        "VALUES (?, ?, ?, strftime('%s','now')) "
+        "ON CONFLICT(game_id, key) DO UPDATE SET "
+        "value = excluded.value, updated_at = excluded.updated_at;",
+        NULL, game_id, key, value);
+}
+
+int jw_db_delete_game_setting(const char *db_path, int game_id,
+                              const char *key) {
+    if (game_id <= 0) {
+        return -1;
+    }
+    return jw__delete_scoped_setting(db_path,
+        "DELETE FROM game_settings WHERE game_id = ? AND key = ?;",
+        NULL, game_id, key);
+}
+
+int jw_db_get_system_setting(const char *db_path, const char *system,
+                             const char *key, char *out, size_t out_size) {
+    if (!system || !system[0]) {
+        return -1;
+    }
+    return jw__get_scoped_setting(db_path,
+        "SELECT value FROM system_settings WHERE system = ? AND key = ?;",
+        system, 0, key, out, out_size);
+}
+
+int jw_db_set_system_setting(const char *db_path, const char *system,
+                             const char *key, const char *value) {
+    if (!system || !system[0] || !value || !value[0]) {
+        return -1;
+    }
+    return jw__set_scoped_setting(db_path,
+        "INSERT INTO system_settings (system, key, value, updated_at) "
+        "VALUES (?, ?, ?, strftime('%s','now')) "
+        "ON CONFLICT(system, key) DO UPDATE SET "
+        "value = excluded.value, updated_at = excluded.updated_at;",
+        system, 0, key, value);
+}
+
+int jw_db_delete_system_setting(const char *db_path, const char *system,
+                                const char *key) {
+    if (!system || !system[0]) {
+        return -1;
+    }
+    return jw__delete_scoped_setting(db_path,
+        "DELETE FROM system_settings WHERE system = ? AND key = ?;",
+        system, 0, key);
+}
+
 int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
                               int max_count, int *out_count) {
     if (!db_path || !out || max_count <= 0 || !out_count) {
@@ -686,11 +940,17 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
     if (jw_db_open(db_path, &db) != 0) {
         return -1;
     }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
 
     static const char *sql =
-        "SELECT g.id, g.system, g.name, g.rom_path, COALESCE(g.image_path, '') "
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), g.name), "
+        "g.rom_path, COALESCE(g.image_path, '') "
         "FROM games g JOIN favorites f ON f.kind = 'game' AND f.target_id = g.id "
-        "ORDER BY f.added_at DESC, g.name LIMIT ?;";
+        "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
+        "ORDER BY f.added_at DESC, COALESCE(NULLIF(gs.value, ''), g.name) LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -784,13 +1044,19 @@ int jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
     if (jw_db_open(db_path, &db) != 0) {
         return -1;
     }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
 
     /* Most-recently-opened first; carry the favorite flag so recents rows show
        the star too. */
     static const char *sql =
-        "SELECT g.id, g.system, g.name, g.rom_path, COALESCE(g.image_path, ''), "
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), g.name), "
+        "g.rom_path, COALESCE(g.image_path, ''), "
         "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
         "FROM games g JOIN recents r ON r.kind = 'game' AND r.target_id = g.id "
+        "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "ORDER BY r.last_opened DESC LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
@@ -869,6 +1135,51 @@ static int jw__build_fts_query(const char *query, char *out, size_t out_size) {
     return token_count > 0 ? 0 : 1;
 }
 
+static int jw__build_like_query(const char *query, char *out, size_t out_size) {
+    if (!query || !out || out_size < 2) {
+        return -1;
+    }
+
+    out[0] = '\0';
+    size_t used = 0;
+    int token_count = 0;
+    out[used++] = '%';
+    out[used] = '\0';
+
+    for (const unsigned char *p = (const unsigned char *)query; *p; ) {
+        while (*p && !isalnum(*p)) {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+
+        char token[64];
+        size_t token_len = 0;
+        while (*p && isalnum(*p)) {
+            if (token_len + 1 < sizeof(token)) {
+                token[token_len++] = (char)tolower(*p);
+            }
+            p++;
+        }
+        token[token_len] = '\0';
+        if (token_len == 0) {
+            continue;
+        }
+
+        if (used + token_len + 2u >= out_size) {
+            break;
+        }
+        memcpy(out + used, token, token_len);
+        used += token_len;
+        out[used++] = '%';
+        out[used] = '\0';
+        token_count++;
+    }
+
+    return token_count > 0 ? 0 : 1;
+}
+
 int jw_db_search_library(const char *db_path, const char *query,
                          jw_search_result *out, int max_count, int *out_count) {
     if (!db_path || !query || !out || max_count <= 0 || !out_count) {
@@ -880,10 +1191,12 @@ int jw_db_search_library(const char *db_path, const char *query,
 
     char fts_query[256];
     int query_rc = jw__build_fts_query(query, fts_query, sizeof(fts_query));
+    char like_query[256];
+    int like_rc = jw__build_like_query(query, like_query, sizeof(like_query));
     if (query_rc > 0) {
         return 0;
     }
-    if (query_rc < 0) {
+    if (query_rc < 0 || like_rc < 0) {
         return -1;
     }
 
@@ -891,14 +1204,27 @@ int jw_db_search_library(const char *db_path, const char *query,
     if (jw_db_open(db_path, &db) != 0) {
         return -1;
     }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
 
     static const char *sql =
         "SELECT kind, name, system, rom_path, image_path, pak_dir, icon FROM ("
-        "  SELECT 0 AS kind, games.name AS name, games.system AS system,"
+        "  SELECT 0 AS kind, COALESCE(NULLIF(gs.value, ''), games.name) AS name, games.system AS system,"
         "         games.rom_path AS rom_path, COALESCE(games.image_path, '') AS image_path,"
         "         '' AS pak_dir, '' AS icon, bm25(games_fts) AS score"
         "    FROM games_fts JOIN games ON games_fts.rowid = games.id"
+        "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
         "   WHERE games_fts MATCH ?"
+        "  UNION ALL"
+        "  SELECT 0 AS kind, gs.value AS name, games.system AS system,"
+        "         games.rom_path AS rom_path, COALESCE(games.image_path, '') AS image_path,"
+        "         '' AS pak_dir, '' AS icon, 1000000.0 AS score"
+        "    FROM games JOIN game_settings gs ON gs.game_id = games.id"
+        "   WHERE gs.key = 'display_name' AND gs.value <> ''"
+        "     AND lower(gs.value) LIKE ?"
+        "     AND games.id NOT IN (SELECT rowid FROM games_fts WHERE games_fts MATCH ?)"
         "  UNION ALL"
         "  SELECT 1 AS kind, apps.name AS name, '' AS system,"
         "         '' AS rom_path, '' AS image_path,"
@@ -915,8 +1241,10 @@ int jw_db_search_library(const char *db_path, const char *query,
     }
 
     sqlite3_bind_text(stmt, 1, fts_query, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, fts_query, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 3, max_count);
+    sqlite3_bind_text(stmt, 2, like_query, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, fts_query, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, fts_query, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 5, max_count);
 
     int step_rc = SQLITE_ROW;
     while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && *out_count < max_count) {

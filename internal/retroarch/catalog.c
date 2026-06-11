@@ -594,6 +594,66 @@ static bool jw_ra_core_file_exists(const char *core_dir, const char *file_name) 
     return jw_ra_path_exists(path) != 0;
 }
 
+static const jw_ra_system *jw_ra_catalog_find_system_any(const jw_ra_catalog *catalog,
+                                                         const char *system_id) {
+    const jw_ra_system *system = jw_ra_catalog_find_system(catalog, system_id);
+    if (!system) {
+        system = jw_ra_catalog_match_system_folder(catalog, system_id);
+    }
+    return system;
+}
+
+static bool jw_ra_system_allows_core(const jw_ra_system *system, const char *core_id) {
+    if (!system || !core_id || !core_id[0]) {
+        return false;
+    }
+    if (system->default_core && strcmp(system->default_core, core_id) == 0) {
+        return true;
+    }
+    return jw_ra_string_list_contains(&system->alternate_cores, core_id);
+}
+
+static int jw_ra_core_choice_index(const jw_ra_core_choice *out, size_t count,
+                                   const char *core_id) {
+    if (!out || !core_id) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(out[i].id, core_id) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static int jw_ra_add_core_choice(const jw_ra_core *core, bool is_default,
+                                 jw_ra_core_choice *out, size_t max_count,
+                                 size_t *count) {
+    if (!core || !out || !count || *count >= max_count) {
+        return 0;
+    }
+    if (jw_ra_core_choice_index(out, *count, core->id) >= 0) {
+        return 0;
+    }
+
+    jw_ra_core_choice *choice = &out[*count];
+    memset(choice, 0, sizeof(*choice));
+    snprintf(choice->id, sizeof(choice->id), "%s", core->id ? core->id : "");
+    snprintf(choice->display_name, sizeof(choice->display_name), "%s",
+             core->display_name && core->display_name[0] ? core->display_name : core->id);
+    snprintf(choice->file_name, sizeof(choice->file_name), "%s",
+             core->file_name ? core->file_name : "");
+    snprintf(choice->config_folder, sizeof(choice->config_folder), "%s",
+             core->config_folder ? core->config_folder : "");
+    choice->supports_menu = core->supports_menu;
+    choice->supports_savestate = core->supports_savestate;
+    choice->supports_disk_control = core->supports_disk_control;
+    choice->needs_swap = core->needs_swap;
+    choice->is_default = is_default;
+    (*count)++;
+    return 0;
+}
+
 static int jw_ra_copy(char *out, size_t out_size, const char *value) {
     if (!out || out_size == 0 || !value) {
         return -1;
@@ -601,23 +661,97 @@ static int jw_ra_copy(char *out, size_t out_size, const char *value) {
     return snprintf(out, out_size, "%s", value) < (int)out_size ? 0 : -1;
 }
 
-int jw_ra_catalog_resolve_core_file(const jw_ra_catalog *catalog,
+int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
                                     const char *system_id,
                                     const char *core_dir,
-                                    char *core_file,
-                                    size_t core_file_size,
-                                    char *core_id,
-                                    size_t core_id_size,
-                                    char *diagnostic,
-                                    size_t diagnostic_size) {
-    jw_ra_set_error(diagnostic, diagnostic_size, "");
-    const jw_ra_system *system = jw_ra_catalog_find_system(catalog, system_id);
-    if (!system) {
-        system = jw_ra_catalog_match_system_folder(catalog, system_id);
+                                    jw_ra_core_choice *out,
+                                    size_t max_count,
+                                    size_t *out_count) {
+    if (out_count) {
+        *out_count = 0;
     }
+    if (!catalog || !system_id || !system_id[0] || !core_dir || !out || !out_count) {
+        return -1;
+    }
+    if (max_count > 0) {
+        memset(out, 0, sizeof(out[0]) * max_count);
+    }
+
+    const jw_ra_system *system = jw_ra_catalog_find_system_any(catalog, system_id);
+    if (!system) {
+        return -1;
+    }
+
+    const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
+    if (jw_ra_core_is_packaged_retroarch(core) &&
+        jw_ra_core_file_exists(core_dir, core->file_name)) {
+        jw_ra_add_core_choice(core, true, out, max_count, out_count);
+    }
+
+    for (size_t i = 0; i < system->alternate_cores.count; i++) {
+        const jw_ra_core *alternate =
+            jw_ra_catalog_find_core(catalog, system->alternate_cores.items[i]);
+        if (!jw_ra_core_is_packaged_retroarch(alternate) ||
+            !jw_ra_core_file_exists(core_dir, alternate->file_name)) {
+            continue;
+        }
+        jw_ra_add_core_choice(alternate, false, out, max_count, out_count);
+    }
+
+    return 0;
+}
+
+int jw_ra_catalog_resolve_core_file_for_choice(const jw_ra_catalog *catalog,
+                                               const char *system_id,
+                                               const char *preferred_core_id,
+                                               const char *core_dir,
+                                               char *core_file,
+                                               size_t core_file_size,
+                                               char *core_id,
+                                               size_t core_id_size,
+                                               char *diagnostic,
+                                               size_t diagnostic_size) {
+    jw_ra_set_error(diagnostic, diagnostic_size, "");
+    const jw_ra_system *system = jw_ra_catalog_find_system_any(catalog, system_id);
     if (!system) {
         jw_ra_set_error(diagnostic, diagnostic_size, "system missing from metadata");
         return -1;
+    }
+
+    if (preferred_core_id && preferred_core_id[0]) {
+        if (!jw_ra_system_allows_core(system, preferred_core_id)) {
+            char message[256];
+            snprintf(message, sizeof(message), "preferred core %s is not valid for %s",
+                     preferred_core_id, system->id ? system->id : system_id);
+            jw_ra_set_error(diagnostic, diagnostic_size, message);
+        } else {
+            const jw_ra_core *preferred = jw_ra_catalog_find_core(catalog, preferred_core_id);
+            if (jw_ra_core_is_packaged_retroarch(preferred) &&
+                jw_ra_core_file_exists(core_dir, preferred->file_name)) {
+                if (jw_ra_copy(core_file, core_file_size, preferred->file_name) != 0 ||
+                    jw_ra_copy(core_id, core_id_size, preferred->id) != 0) {
+                    jw_ra_set_error(diagnostic, diagnostic_size, "resolved preferred core path too long");
+                    return -1;
+                }
+                return 0;
+            }
+
+            char message[256];
+            if (preferred && jw_ra_core_is_packaged_retroarch(preferred)) {
+                snprintf(message, sizeof(message),
+                         "preferred core %s is packaged but missing on disk",
+                         preferred_core_id);
+            } else if (preferred) {
+                snprintf(message, sizeof(message),
+                         "preferred core %s is not a packaged RetroArch core",
+                         preferred_core_id);
+            } else {
+                snprintf(message, sizeof(message),
+                         "preferred core %s is missing from metadata",
+                         preferred_core_id);
+            }
+            jw_ra_set_error(diagnostic, diagnostic_size, message);
+        }
     }
 
     const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
@@ -661,4 +795,20 @@ int jw_ra_catalog_resolve_core_file(const jw_ra_catalog *catalog,
     }
 
     return -1;
+}
+
+int jw_ra_catalog_resolve_core_file(const jw_ra_catalog *catalog,
+                                    const char *system_id,
+                                    const char *core_dir,
+                                    char *core_file,
+                                    size_t core_file_size,
+                                    char *core_id,
+                                    size_t core_id_size,
+                                    char *diagnostic,
+                                    size_t diagnostic_size) {
+    return jw_ra_catalog_resolve_core_file_for_choice(catalog, system_id, NULL,
+                                                     core_dir, core_file,
+                                                     core_file_size, core_id,
+                                                     core_id_size, diagnostic,
+                                                     diagnostic_size);
 }

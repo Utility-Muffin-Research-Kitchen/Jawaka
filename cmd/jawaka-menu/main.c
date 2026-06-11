@@ -394,8 +394,16 @@ static int jw__db_game_name(sqlite3 *db, const char *rom_path,
     if (!db || !rom_path || !rom_path[0]) {
         return -1;
     }
+    if (jw_db_apply_schema(db) != 0) {
+        return -1;
+    }
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT name FROM games WHERE rom_path = ? LIMIT 1;",
+    if (sqlite3_prepare_v2(db,
+                           "SELECT COALESCE(NULLIF(gs.value, ''), g.name) "
+                           "FROM games g "
+                           "LEFT JOIN game_settings gs "
+                           "ON gs.game_id = g.id AND gs.key = 'display_name' "
+                           "WHERE g.rom_path = ? LIMIT 1;",
                            -1, &stmt, NULL) != SQLITE_OK) {
         return -1;
     }
@@ -413,7 +421,7 @@ static int jw__db_game_name(sqlite3 *db, const char *rom_path,
 }
 
 /* Resolve the header game title and console subtitle for the active session.
-   Game title prefers the library name (games.name) keyed by rom_path, falling
+   Game title prefers the user display name/library name keyed by rom_path, falling
    back to a cleaned ROM basename; console prefers the RA catalog display name,
    falling back to the raw system id. */
 static void jw__ingame_resolve_titles(jw_ingame_state *state) {
@@ -1484,6 +1492,9 @@ static bool jw__prime_ingame_session_from_env(jw_ingame_state *state) {
     jw__copy_env_string("JAWAKA_INGAME_CORE",
                         state->session.core_path,
                         sizeof(state->session.core_path));
+    jw__copy_env_string("JAWAKA_INGAME_CORE_ID",
+                        state->session.core_id,
+                        sizeof(state->session.core_id));
     snprintf(state->session.command_result,
              sizeof(state->session.command_result), "%s", "pending");
     state->status[0] = '\0';

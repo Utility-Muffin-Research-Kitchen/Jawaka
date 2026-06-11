@@ -12,8 +12,10 @@
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/game_switcher.h"
 #include "internal/platform/cat_services.h"
+#include "internal/platform/device.h"
 #include "internal/platform/paths.h"
 #include "internal/platform/wifi.h"
+#include "internal/retroarch/catalog.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 
@@ -34,6 +36,12 @@
 #define JW_MAX_FAVORITES 256   /* newest-first; a heavier list is truncated */
 #define JW_MAX_RECENTS 64      /* most-recently-played first */
 #define JW_MAX_SEARCH_RESULTS 128
+#define JW_MAX_ACTION_ROWS 10
+#define JW_MAX_CORE_CHOICES 24
+
+#define JW_CONTENT_SETTING_CORE_ID "core_id"
+#define JW_CONTENT_SETTING_PERFORMANCE_PROFILE "performance_profile"
+#define JW_CONTENT_SETTING_DISPLAY_NAME "display_name"
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -91,6 +99,23 @@ typedef struct {
     int          system_idx;
 } jw_flat_item;
 
+typedef enum {
+    JW_ACTION_NONE = 0,
+    JW_ACTION_GAME,
+    JW_ACTION_SYSTEM
+} jw_action_scope;
+
+typedef enum {
+    JW_ACTION_ROW_SEARCH = 0,
+    JW_ACTION_ROW_LAUNCH,
+    JW_ACTION_ROW_DISPLAY_NAME,
+    JW_ACTION_ROW_CORE,
+    JW_ACTION_ROW_PERFORMANCE,
+    JW_ACTION_ROW_FAVORITE,
+    JW_ACTION_ROW_RESET,
+    JW_ACTION_ROW_OPEN_SYSTEM
+} jw_action_row_kind;
+
 /* ─── Coverflow animation state ───────────────────────────────────────────── */
 
 typedef struct {
@@ -147,6 +172,23 @@ typedef struct {
        Overlays the current layout; closing restores the prior view as-is. */
     bool               switcher_open;
     jw_game_switcher   switcher;
+    /* Contextual system/game actions opened with X. */
+    bool               actions_open;
+    jw_action_scope    action_scope;
+    cat_list_state     action_list;
+    jw_action_row_kind action_rows[JW_MAX_ACTION_ROWS];
+    int                action_row_count;
+    jw_game_entry      action_game;
+    char               action_system[64];
+    char               action_system_display[64];
+    jw_ra_core_choice  action_core_choices[JW_MAX_CORE_CHOICES];
+    size_t             action_core_count;
+    char               action_core_effective[64];
+    char               action_core_game_override[64];
+    char               action_core_system_override[64];
+    char               action_perf_game_override[64];
+    char               action_perf_system_override[64];
+    char               action_system_display_override[64];
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
     /* status line */
@@ -279,12 +321,21 @@ static const struct { const char *id; const char *name; } kSystemDisplayNames[] 
 
 /* Resolves a system id (folder code, e.g. "FC") to its full display name
    (e.g. "Nintendo Entertainment System"). Falls back to the id when unknown. */
-static void jw__system_display_name(const jw_launcher_state *state, const char *id,
+static void jw__system_display_name(const char *db_path, const char *id,
                                     char *out, size_t out_size) {
-    (void)state;
     if (out_size == 0) return;
     snprintf(out, out_size, "%s", id ? id : "");
     if (!id || !id[0]) return;
+
+    char override[64];
+    if (db_path &&
+        jw_db_get_system_setting(db_path, id, JW_CONTENT_SETTING_DISPLAY_NAME,
+                                 override, sizeof(override)) == 0 &&
+        override[0]) {
+        snprintf(out, out_size, "%s", override);
+        return;
+    }
+
     for (size_t i = 0; i < sizeof(kSystemDisplayNames) / sizeof(kSystemDisplayNames[0]); i++) {
         if (strcasecmp(id, kSystemDisplayNames[i].id) == 0) {
             snprintf(out, out_size, "%s", kSystemDisplayNames[i].name);
@@ -303,9 +354,9 @@ static int jw__system_cmp_display(const void *a, const void *b) {
 
 /* Fills each listed system's display_name from the catalog after a scan/load,
    then sorts the list alphabetically by that display name. */
-static void jw__resolve_system_names(jw_launcher_state *state) {
+static void jw__resolve_system_names(const char *db_path, jw_launcher_state *state) {
     for (int i = 0; i < state->system_count; i++) {
-        jw__system_display_name(state, state->systems[i].name,
+        jw__system_display_name(db_path, state->systems[i].name,
                                 state->systems[i].display_name,
                                 sizeof(state->systems[i].display_name));
     }
@@ -313,6 +364,35 @@ static void jw__resolve_system_names(jw_launcher_state *state) {
         qsort(state->systems, (size_t)state->system_count,
               sizeof(state->systems[0]), jw__system_cmp_display);
     }
+}
+
+static int jw__system_index_by_id(const jw_launcher_state *state,
+                                  const char *system) {
+    if (!state || !system || !system[0]) {
+        return -1;
+    }
+    for (int i = 0; i < state->system_count; i++) {
+        if (strcmp(state->systems[i].name, system) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int jw__flat_cursor_for_system(const jw_launcher_state *state,
+                                      const char *system) {
+    if (!state || !system || !system[0]) {
+        return -1;
+    }
+    for (int i = 0; i < state->flat_count; i++) {
+        const jw_flat_item *it = &state->flat_items[i];
+        if (it->kind == JW_FLAT_SYSTEM &&
+            it->system_idx >= 0 && it->system_idx < state->system_count &&
+            strcmp(state->systems[it->system_idx].name, system) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static void jw__draw_status_bar(const jw_launcher_state *state) {
@@ -495,13 +575,32 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     int flat_cursor = state->list.cursor;
     int game_cursor = state->game_list.cursor;
     int app_cursor = state->app_list.cursor;
+    char selected_system[64] = "";
+
+    const cat_stylesheet *ss_before = cat_get_stylesheet();
+    cat_launcher_layout layout_before = ss_before->launcher.layout;
+    if (layout_before == CAT_LAUNCHER_TABBED) {
+        if (state->current_tab == JW_TAB_GAMES &&
+            state->list.cursor >= 0 &&
+            state->list.cursor < state->system_count) {
+            snprintf(selected_system, sizeof(selected_system), "%s",
+                     state->systems[state->list.cursor].name);
+        }
+    } else if (state->list.cursor >= 0 && state->list.cursor < state->flat_count) {
+        const jw_flat_item *it = &state->flat_items[state->list.cursor];
+        if (it->kind == JW_FLAT_SYSTEM &&
+            it->system_idx >= 0 && it->system_idx < state->system_count) {
+            snprintf(selected_system, sizeof(selected_system), "%s",
+                     state->systems[it->system_idx].name);
+        }
+    }
 
     if (jw_db_read_summary(db_path, &state->summary) != 0) {
         return -1;
     }
 
     jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
-    jw__resolve_system_names(state);
+    jw__resolve_system_names(db_path, state);
     jw_db_list_apps(db_path, state->apps, JW_MAX_APPS, &state->app_count);
 
     if (jw_db_list_recent_games(db_path, state->recents, JW_MAX_RECENTS,
@@ -557,6 +656,12 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW) {
         jw__build_carousel_list(state);
         int count = state->flat_count;
+        if (selected_system[0]) {
+            int selected_cursor = jw__flat_cursor_for_system(state, selected_system);
+            if (selected_cursor >= 0) {
+                flat_cursor = selected_cursor;
+            }
+        }
         if (flat_cursor >= count) {
             flat_cursor = count > 0 ? count - 1 : 0;
         }
@@ -564,12 +669,24 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     } else if (layout == CAT_LAUNCHER_VERTICAL) {
         jw__build_flat_list(state);
         int count = state->flat_count;
+        if (selected_system[0]) {
+            int selected_cursor = jw__flat_cursor_for_system(state, selected_system);
+            if (selected_cursor >= 0) {
+                flat_cursor = selected_cursor;
+            }
+        }
         if (flat_cursor >= count) {
             flat_cursor = count > 0 ? count - 1 : 0;
         }
         cat_list_state_jump(&state->list, flat_cursor, count);
     } else {
         int count = jw__tab_list_count(state);
+        if (selected_system[0] && state->current_tab == JW_TAB_GAMES) {
+            int selected_cursor = jw__system_index_by_id(state, selected_system);
+            if (selected_cursor >= 0) {
+                tab_cursor = selected_cursor;
+            }
+        }
         if (tab_cursor >= count) {
             tab_cursor = count > 0 ? count - 1 : 0;
         }
@@ -1142,24 +1259,25 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     } else if (state->current_tab == JW_TAB_FAVORITES) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
+            { CAT_BTN_X,  "Actions",  false, JW_HINT("X") },
             { CAT_BTN_Y,  "Remove",   false, JW_HINT("Y") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 3);
+        jw__draw_footer(state, footer, 4);
     } else if (state->current_tab == JW_TAB_RECENTS) {
-        /* X still opens search (global handler) but its hint is dropped here so
-           the four shown actions fit without footer overflow. */
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
+            { CAT_BTN_X,  "Actions",  false, JW_HINT("X") },
             { CAT_BTN_B,  "Remove",   false, JW_HINT("B") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_A,  "Resume",   true,  JW_HINT("A") },
         };
-        jw__draw_footer(state, footer, 4);
+        jw__draw_footer(state, footer, 5);
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_L1,   "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_X,    "Search",   false, JW_HINT("X") },
+            { CAT_BTN_X,    state->current_tab == JW_TAB_GAMES ? "Actions" : "Search",
+                                            false, JW_HINT("X") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 3);
@@ -1308,7 +1426,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
         jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_X,    "Search",   false, JW_HINT("X") },
+            { CAT_BTN_X,    "Actions",  false, JW_HINT("X") },
             { CAT_BTN_MENU, "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
@@ -1566,7 +1684,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
         jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_X,     "Search",   false, JW_HINT("X") },
+            { CAT_BTN_X,     "Actions",  false, JW_HINT("X") },
             { CAT_BTN_MENU,  "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,     "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,     "Select",   true,  JW_HINT("A") },
@@ -2308,7 +2426,7 @@ static void jw__render_coverflow(jw_launcher_state *state) {
         jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_X,    "Search",   false, JW_HINT("X") },
+            { CAT_BTN_X,    "Actions",  false, JW_HINT("X") },
             { CAT_BTN_MENU, "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
@@ -2472,7 +2590,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     if (tabbed) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+            { CAT_BTN_X,  "Actions",  false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
@@ -2480,7 +2598,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         jw__draw_footer(state, footer, 5);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+            { CAT_BTN_X,  "Actions",  false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
@@ -2726,6 +2844,189 @@ static void jw__render_search(const jw_launcher_state *state) {
     cat_present();
 }
 
+typedef struct { const jw_launcher_state *state; } jw__actions_ctx;
+
+static const char *jw__action_core_label(const jw_launcher_state *state,
+                                         const char *core_id);
+static const char *jw__action_perf_label(const char *value);
+
+static void jw__action_row_strings(const jw_launcher_state *state,
+                                   jw_action_row_kind row,
+                                   char *title, size_t title_size,
+                                   char *value, size_t value_size) {
+    if (title && title_size > 0) title[0] = '\0';
+    if (value && value_size > 0) value[0] = '\0';
+    switch (row) {
+        case JW_ACTION_ROW_SEARCH:
+            snprintf(title, title_size, "%s", "Search This System");
+            snprintf(value, value_size, "%s", "Open");
+            break;
+        case JW_ACTION_ROW_LAUNCH:
+            snprintf(title, title_size, "%s", "Launch");
+            snprintf(value, value_size, "%s", "Start");
+            break;
+        case JW_ACTION_ROW_DISPLAY_NAME: {
+            snprintf(title, title_size, "%s", "Display Name");
+            if (state->action_scope == JW_ACTION_SYSTEM) {
+                const char *label = state->action_system_display[0]
+                    ? state->action_system_display
+                    : "Default";
+                if (state->action_system_display_override[0]) {
+                    snprintf(value, value_size, "%s (custom)", label);
+                } else {
+                    snprintf(value, value_size, "%s", label);
+                }
+            } else {
+                char name[256];
+                jw__clean_rom_name(state->action_game.name, name, sizeof(name));
+                snprintf(value, value_size, "%s", name[0] ? name : "Scanned");
+            }
+            break;
+        }
+        case JW_ACTION_ROW_CORE:
+            snprintf(title, title_size, "%s", "Core");
+            if (state->action_scope == JW_ACTION_GAME &&
+                state->action_core_game_override[0]) {
+                snprintf(value, value_size, "%s (game)",
+                         jw__action_core_label(state, state->action_core_game_override));
+            } else if (state->action_core_system_override[0]) {
+                snprintf(value, value_size, "%s (system)",
+                         jw__action_core_label(state, state->action_core_system_override));
+            } else if (state->action_core_effective[0]) {
+                snprintf(value, value_size, "%s (default)",
+                         jw__action_core_label(state, state->action_core_effective));
+            } else {
+                snprintf(value, value_size, "%s", "Unavailable");
+            }
+            break;
+        case JW_ACTION_ROW_PERFORMANCE:
+            snprintf(title, title_size, "%s", "Performance");
+            if (state->action_scope == JW_ACTION_GAME &&
+                state->action_perf_game_override[0]) {
+                snprintf(value, value_size, "%s (game)",
+                         jw__action_perf_label(state->action_perf_game_override));
+            } else if (state->action_perf_system_override[0]) {
+                snprintf(value, value_size, "%s (system)",
+                         jw__action_perf_label(state->action_perf_system_override));
+            } else {
+                snprintf(value, value_size, "%s", "Auto");
+            }
+            break;
+        case JW_ACTION_ROW_FAVORITE:
+            snprintf(title, title_size, "%s",
+                     state->action_game.favorite ? "Unfavorite" : "Favorite");
+            snprintf(value, value_size, "%s",
+                     state->action_game.favorite ? "On" : "Off");
+            break;
+        case JW_ACTION_ROW_RESET:
+            snprintf(title, title_size, "%s",
+                     state->action_scope == JW_ACTION_GAME
+                         ? "Reset Game Overrides"
+                         : "Reset System Overrides");
+            snprintf(value, value_size, "%s", "Clear");
+            break;
+        case JW_ACTION_ROW_OPEN_SYSTEM:
+            snprintf(title, title_size, "%s", "Open System Defaults");
+            snprintf(value, value_size, "%s", state->action_system_display);
+            break;
+        default:
+            break;
+    }
+}
+
+static void jw__draw_action_item(int idx, int ix, int iy, int iw, int ih,
+                                 bool selected, void *user) {
+    jw__actions_ctx *ctx = (jw__actions_ctx *)user;
+    const jw_launcher_state *state = ctx ? ctx->state : NULL;
+    if (!state || idx < 0 || idx >= state->action_row_count) {
+        return;
+    }
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+
+    int pill_h = TTF_FontHeight(body) + CAT_S(8);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected) {
+        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
+    }
+
+    char title[96];
+    char value[160];
+    jw__action_row_strings(state, state->action_rows[idx],
+                           title, sizeof(title), value, sizeof(value));
+
+    ap_color title_c = selected ? theme->highlighted_text : theme->text;
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    int value_w = iw * 42 / 100;
+    int title_w = iw - value_w - CAT_S(28);
+
+    cat_draw_text_ellipsized(body, title, ix + CAT_S(10), text_y,
+                             title_c, title_w);
+    if (value[0]) {
+        int value_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
+        cat_draw_text_ellipsized(small, value,
+                                 ix + iw - value_w - CAT_S(12),
+                                 value_y, value_c, value_w);
+    }
+}
+
+static void jw__render_actions(const jw_launcher_state *state) {
+    cat_clear_screen();
+    jw__draw_status_bar(state);
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    int fh = jw__footer_height(state);
+    int margin = CAT_S(12);
+    int title_y = CAT_S(8);
+    int title_max = sw - cat_get_status_bar_width(NULL) - margin * 3;
+    if (title_max < CAT_S(160)) title_max = sw - margin * 2;
+
+    char title[320];
+    if (state->action_scope == JW_ACTION_GAME) {
+        char name[256];
+        jw__clean_rom_name(state->action_game.name, name, sizeof(name));
+        snprintf(title, sizeof(title), "Game Actions: %s", name);
+    } else {
+        snprintf(title, sizeof(title), "System Actions: %s",
+                 state->action_system_display);
+    }
+    cat_draw_text_ellipsized(large, title, margin, title_y,
+                             theme->text, title_max);
+
+    int list_y = CAT_DS(42);
+    int list_h = sh - list_y - fh - CAT_S(24);
+    int item_h = TTF_FontHeight(body) + CAT_S(14);
+    jw__actions_ctx ctx = { state };
+    if (state->action_row_count > 0) {
+        cat_draw_list_pane(margin, list_y, sw - margin * 2, list_h,
+                           state->action_row_count, &state->action_list,
+                           item_h, jw__draw_action_item, &ctx);
+    }
+
+    int status_y = sh - fh - TTF_FontHeight(small) - CAT_S(4);
+    if (jw_settings_show_hints(&state->settings)) {
+        cat_draw_text_ellipsized(small, state->status, margin, status_y,
+                                 theme->hint, sw - margin * 2);
+    }
+
+    cat_footer_item footer[] = {
+        { CAT_BTN_LEFT, "Change", false, JW_HINT_DEVICE("\xe2\x86\x90/\xe2\x86\x92", "Left/Right") },
+        { CAT_BTN_B,    "Back",   true,  JW_HINT("B") },
+        { CAT_BTN_A,    "Select", true,  JW_HINT("A") },
+    };
+    jw__draw_footer(state, footer, 3);
+    cat_present();
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * DISPATCH
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -2774,6 +3075,11 @@ static void jw__render_launcher(jw_launcher_state *state) {
         return;
     }
 
+    if (state->actions_open) {
+        jw__render_actions(state);
+        return;
+    }
+
     if (state->games_open) {
         jw__render_game_browser(state);
         return;
@@ -2814,6 +3120,322 @@ static int jw__search_visible_rows(const jw_launcher_state *state) {
     return jw__browse_visible_rows(state, jw__search_header_h(state));
 }
 
+static const jw_platform_perf_profile kActionPerfProfiles[] = {
+    JW_PLATFORM_PERF_PROFILE_AUTO,
+    JW_PLATFORM_PERF_PROFILE_BALANCED,
+    JW_PLATFORM_PERF_PROFILE_PERFORMANCE,
+    JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER,
+};
+#define JW_ACTION_PERF_COUNT ((int)(sizeof(kActionPerfProfiles) / sizeof(kActionPerfProfiles[0])))
+
+static bool jw__runtime_cores_dir(const jw_launcher_state *state,
+                                  char *out, size_t out_size) {
+    const char *env = getenv("CORES_PATH");
+    if (!env || !env[0]) {
+        env = getenv("JAWAKA_RETROARCH_CORES_DIR");
+    }
+    if (env && env[0]) {
+        return snprintf(out, out_size, "%s", env) < (int)out_size;
+    }
+
+    const char *system_path = getenv("SYSTEM_PATH");
+    if (system_path && system_path[0]) {
+        return snprintf(out, out_size, "%s/cores", system_path) < (int)out_size;
+    }
+
+    (void)state;
+    return false;
+}
+
+static int jw__action_find_core(const jw_launcher_state *state, const char *core_id) {
+    if (!state || !core_id || !core_id[0]) {
+        return -1;
+    }
+    for (size_t i = 0; i < state->action_core_count; i++) {
+        if (strcmp(state->action_core_choices[i].id, core_id) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static const char *jw__action_core_label(const jw_launcher_state *state,
+                                         const char *core_id) {
+    int idx = jw__action_find_core(state, core_id);
+    if (idx >= 0) {
+        return state->action_core_choices[idx].display_name;
+    }
+    return core_id && core_id[0] ? core_id : "Default";
+}
+
+static int jw__action_perf_index(const char *value) {
+    jw_platform_perf_profile profile;
+    if (value && value[0] && jw_platform_parse_perf_profile(value, &profile)) {
+        for (int i = 0; i < JW_ACTION_PERF_COUNT; i++) {
+            if (kActionPerfProfiles[i] == profile) {
+                return i;
+            }
+        }
+    }
+    return 0;
+}
+
+static const char *jw__action_perf_label(const char *value) {
+    jw_platform_perf_profile profile = JW_PLATFORM_PERF_PROFILE_AUTO;
+    if (value && value[0]) {
+        (void)jw_platform_parse_perf_profile(value, &profile);
+    }
+    return jw_platform_perf_profile_label(profile);
+}
+
+static void jw__action_add_row(jw_launcher_state *state, jw_action_row_kind row) {
+    if (!state || state->action_row_count >= JW_MAX_ACTION_ROWS) {
+        return;
+    }
+    state->action_rows[state->action_row_count++] = row;
+}
+
+static void jw__action_refresh_rows(jw_launcher_state *state) {
+    if (!state) {
+        return;
+    }
+    int old_cursor = state->action_list.cursor;
+    state->action_row_count = 0;
+    if (state->action_scope == JW_ACTION_SYSTEM) {
+        jw__action_add_row(state, JW_ACTION_ROW_SEARCH);
+        jw__action_add_row(state, JW_ACTION_ROW_DISPLAY_NAME);
+        if (state->action_core_count > 1 || state->action_core_system_override[0]) {
+            jw__action_add_row(state, JW_ACTION_ROW_CORE);
+        }
+        jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
+        jw__action_add_row(state, JW_ACTION_ROW_RESET);
+    } else if (state->action_scope == JW_ACTION_GAME) {
+        jw__action_add_row(state, JW_ACTION_ROW_LAUNCH);
+        jw__action_add_row(state, JW_ACTION_ROW_DISPLAY_NAME);
+        if (state->action_core_count > 1 ||
+            state->action_core_game_override[0] ||
+            state->action_core_system_override[0]) {
+            jw__action_add_row(state, JW_ACTION_ROW_CORE);
+        }
+        jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
+        jw__action_add_row(state, JW_ACTION_ROW_FAVORITE);
+        jw__action_add_row(state, JW_ACTION_ROW_RESET);
+        jw__action_add_row(state, JW_ACTION_ROW_OPEN_SYSTEM);
+    }
+    cat_list_state_init(&state->action_list, 7);
+    cat_list_state_jump(&state->action_list, old_cursor, state->action_row_count);
+}
+
+static void jw__action_refresh_core_choices(const char *db_path,
+                                            jw_launcher_state *state) {
+    (void)db_path;
+    if (!state) {
+        return;
+    }
+    state->action_core_count = 0;
+    state->action_core_effective[0] = '\0';
+
+    char cores_dir[PATH_MAX];
+    if (!jw__runtime_cores_dir(state, cores_dir, sizeof(cores_dir))) {
+        return;
+    }
+
+    char error[256];
+    const jw_ra_catalog *catalog =
+        jw_ra_catalog_get(state->sdcard_root, error, sizeof(error));
+    if (!catalog) {
+        snprintf(state->status, sizeof(state->status), "Core metadata unavailable: %.180s",
+                 error[0] ? error : "unknown");
+        return;
+    }
+
+    const char *system = state->action_scope == JW_ACTION_GAME
+        ? state->action_game.system
+        : state->action_system;
+    (void)jw_ra_catalog_list_system_cores(catalog, system, cores_dir,
+                                          state->action_core_choices,
+                                          JW_MAX_CORE_CHOICES,
+                                          &state->action_core_count);
+
+    const char *preferred = state->action_core_game_override[0]
+        ? state->action_core_game_override
+        : state->action_core_system_override;
+    char diagnostic[256];
+    char core_file[PATH_MAX];
+    if (jw_ra_catalog_resolve_core_file_for_choice(catalog, system,
+                                                   preferred && preferred[0] ? preferred : NULL,
+                                                   cores_dir,
+                                                   core_file, sizeof(core_file),
+                                                   state->action_core_effective,
+                                                   sizeof(state->action_core_effective),
+                                                   diagnostic, sizeof(diagnostic)) != 0 &&
+        state->action_core_count > 0) {
+        snprintf(state->action_core_effective,
+                 sizeof(state->action_core_effective), "%s",
+                 state->action_core_choices[0].id);
+    }
+}
+
+static void jw__action_refresh_overrides(const char *db_path,
+                                         jw_launcher_state *state) {
+    if (!state || !db_path) {
+        return;
+    }
+    state->action_core_game_override[0] = '\0';
+    state->action_core_system_override[0] = '\0';
+    state->action_perf_game_override[0] = '\0';
+    state->action_perf_system_override[0] = '\0';
+    state->action_system_display_override[0] = '\0';
+
+    const char *system = state->action_scope == JW_ACTION_GAME
+        ? state->action_game.system
+        : state->action_system;
+
+    if (state->action_scope == JW_ACTION_GAME && state->action_game.id > 0) {
+        (void)jw_db_get_game_setting(db_path, state->action_game.id,
+                                     JW_CONTENT_SETTING_CORE_ID,
+                                     state->action_core_game_override,
+                                     sizeof(state->action_core_game_override));
+        (void)jw_db_get_game_setting(db_path, state->action_game.id,
+                                     JW_CONTENT_SETTING_PERFORMANCE_PROFILE,
+                                     state->action_perf_game_override,
+                                     sizeof(state->action_perf_game_override));
+    }
+    if (system && system[0]) {
+        (void)jw_db_get_system_setting(db_path, system,
+                                       JW_CONTENT_SETTING_CORE_ID,
+                                       state->action_core_system_override,
+                                       sizeof(state->action_core_system_override));
+        (void)jw_db_get_system_setting(db_path, system,
+                                       JW_CONTENT_SETTING_PERFORMANCE_PROFILE,
+                                       state->action_perf_system_override,
+                                       sizeof(state->action_perf_system_override));
+        (void)jw_db_get_system_setting(db_path, system,
+                                       JW_CONTENT_SETTING_DISPLAY_NAME,
+                                       state->action_system_display_override,
+                                       sizeof(state->action_system_display_override));
+    }
+}
+
+static void jw__action_refresh(const char *db_path, jw_launcher_state *state) {
+    jw__action_refresh_overrides(db_path, state);
+    jw__action_refresh_core_choices(db_path, state);
+    jw__action_refresh_rows(state);
+}
+
+static void jw__open_system_actions(const char *db_path, jw_launcher_state *state,
+                                    const char *system, const char *display_name) {
+    if (!state || !system || !system[0]) {
+        return;
+    }
+    state->actions_open = true;
+    state->action_scope = JW_ACTION_SYSTEM;
+    memset(&state->action_game, 0, sizeof(state->action_game));
+    snprintf(state->action_system, sizeof(state->action_system), "%s", system);
+    jw__system_display_name(db_path, system, state->action_system_display,
+                            sizeof(state->action_system_display));
+    if (!state->action_system_display[0] && display_name && display_name[0]) {
+        snprintf(state->action_system_display, sizeof(state->action_system_display),
+                 "%s", display_name);
+    }
+    jw__action_refresh(db_path, state);
+    snprintf(state->status, sizeof(state->status), "Actions: %.180s",
+             state->action_system_display);
+}
+
+static void jw__open_game_actions(const char *db_path, jw_launcher_state *state,
+                                  const jw_game_entry *game) {
+    if (!state || !game || game->id <= 0) {
+        return;
+    }
+    state->actions_open = true;
+    state->action_scope = JW_ACTION_GAME;
+    state->action_game = *game;
+    snprintf(state->action_system, sizeof(state->action_system), "%s", game->system);
+    jw__system_display_name(db_path, game->system, state->action_system_display,
+                            sizeof(state->action_system_display));
+    jw__action_refresh(db_path, state);
+    snprintf(state->status, sizeof(state->status), "Actions: %.180s", game->name);
+}
+
+static bool jw__selected_home_game(const jw_launcher_state *state,
+                                   const jw_game_entry **out) {
+    if (!state || !out) {
+        return false;
+    }
+    *out = NULL;
+    if (cat_get_stylesheet()->launcher.layout != CAT_LAUNCHER_TABBED) {
+        return false;
+    }
+    if (state->current_tab == JW_TAB_RECENTS &&
+        state->recents_count > 0 &&
+        state->list.cursor < state->recents_count) {
+        *out = &state->recents[state->list.cursor];
+        return true;
+    }
+    if (state->current_tab == JW_TAB_FAVORITES &&
+        state->favorites_count > 0 &&
+        state->list.cursor < state->favorites_count) {
+        *out = &state->favorites[state->list.cursor];
+        return true;
+    }
+    return false;
+}
+
+static bool jw__selected_home_system(const jw_launcher_state *state,
+                                     const jw_system_entry **out) {
+    if (!state || !out) {
+        return false;
+    }
+    *out = NULL;
+    cat_launcher_layout layout = cat_get_stylesheet()->launcher.layout;
+    if (layout == CAT_LAUNCHER_TABBED) {
+        if (state->current_tab == JW_TAB_GAMES &&
+            state->system_count > 0 &&
+            state->list.cursor < state->system_count) {
+            *out = &state->systems[state->list.cursor];
+            return true;
+        }
+        return false;
+    }
+    if (state->list.cursor >= state->flat_count) {
+        return false;
+    }
+    const jw_flat_item *it = &state->flat_items[state->list.cursor];
+    if (it->kind == JW_FLAT_SYSTEM &&
+        it->system_idx >= 0 && it->system_idx < state->system_count) {
+        *out = &state->systems[it->system_idx];
+        return true;
+    }
+    return false;
+}
+
+static bool jw__open_context_actions(const char *db_path, jw_launcher_state *state) {
+    if (!state) {
+        return false;
+    }
+    if (state->games_open &&
+        state->game_count > 0 &&
+        state->game_list.cursor < state->game_count) {
+        jw__open_game_actions(db_path, state, &state->games[state->game_list.cursor]);
+        return true;
+    }
+
+    const jw_game_entry *game = NULL;
+    if (jw__selected_home_game(state, &game) && game) {
+        jw__open_game_actions(db_path, state, game);
+        return true;
+    }
+
+    const jw_system_entry *system = NULL;
+    if (jw__selected_home_system(state, &system) && system) {
+        jw__open_system_actions(db_path, state, system->name, system->display_name);
+        return true;
+    }
+
+    return false;
+}
+
 static int jw__perform_search(const char *db_path, jw_launcher_state *state,
                               const char *query) {
     snprintf(state->search_query, sizeof(state->search_query), "%s", query ? query : "");
@@ -2847,22 +3469,26 @@ static void jw__open_search(const char *db_path, jw_launcher_state *state) {
 
 static int jw__open_system_games(const char *db_path, const char *system,
                                  jw_launcher_state *state) {
+    char display_name[64];
+    jw__system_display_name(db_path, system, display_name, sizeof(display_name));
+
     if (jw_db_list_games_for_system(db_path, system, state->games, JW_MAX_GAMES,
                                     &state->game_count) != 0 ||
         state->game_count == 0) {
-        snprintf(state->status, sizeof(state->status), "No launchable games for %s", system);
+        snprintf(state->status, sizeof(state->status), "No launchable games for %s",
+                 display_name[0] ? display_name : system);
         return -1;
     }
 
     snprintf(state->game_system, sizeof(state->game_system), "%s", system);
-    jw__system_display_name(state, system, state->game_system_display,
-                            sizeof(state->game_system_display));
+    snprintf(state->game_system_display, sizeof(state->game_system_display), "%s",
+             display_name[0] ? display_name : system);
     state->games_are_favorites = false;
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     snprintf(state->status, sizeof(state->status), "%d %s games",
-             state->game_count, system);
+             state->game_count, state->game_system_display);
     return 0;
 }
 
@@ -3026,6 +3652,296 @@ static int jw__launch_selected_search_result(const char *socket_path,
     cat_hide_window();
     *running = false;
     return 0;
+}
+
+static void jw__refresh_action_game_from_db(const char *db_path,
+                                            jw_launcher_state *state) {
+    if (!state || state->action_scope != JW_ACTION_GAME ||
+        state->action_game.id <= 0 || !db_path) {
+        return;
+    }
+    jw_game_entry updated;
+    if (jw_db_get_game_by_rom_path(db_path, state->action_game.rom_path,
+                                   &updated) == 0) {
+        state->action_game = updated;
+    }
+}
+
+static void jw__refresh_action_system_display(const char *db_path,
+                                              jw_launcher_state *state) {
+    if (!state || !db_path || !state->action_system[0]) {
+        return;
+    }
+    jw__system_display_name(db_path, state->action_system,
+                            state->action_system_display,
+                            sizeof(state->action_system_display));
+    if (state->games_open && strcmp(state->game_system, state->action_system) == 0) {
+        snprintf(state->game_system_display, sizeof(state->game_system_display), "%s",
+                 state->action_system_display[0]
+                     ? state->action_system_display
+                     : state->action_system);
+    }
+}
+
+static void jw__refresh_after_action_write(const char *db_path,
+                                           jw_launcher_state *state) {
+    if (!state) {
+        return;
+    }
+    (void)jw__reload_library_from_db(db_path, state);
+    jw__refresh_action_game_from_db(db_path, state);
+    jw__refresh_action_system_display(db_path, state);
+    jw__action_refresh(db_path, state);
+}
+
+static void jw__cycle_action_core(const char *db_path, jw_launcher_state *state,
+                                  int direction) {
+    if (!state || state->action_core_count == 0) {
+        return;
+    }
+    int idx = jw__action_find_core(state, state->action_core_effective);
+    if (idx < 0) idx = 0;
+    int next = (idx + direction + (int)state->action_core_count) %
+               (int)state->action_core_count;
+    const char *next_id = state->action_core_choices[next].id;
+
+    int rc;
+    if (state->action_scope == JW_ACTION_GAME) {
+        rc = jw_db_set_game_setting(db_path, state->action_game.id,
+                                    JW_CONTENT_SETTING_CORE_ID, next_id);
+    } else {
+        rc = jw_db_set_system_setting(db_path, state->action_system,
+                                      JW_CONTENT_SETTING_CORE_ID, next_id);
+    }
+    if (rc == 0) {
+        snprintf(state->status, sizeof(state->status), "Core: %.160s",
+                 jw__action_core_label(state, next_id));
+        jw__refresh_after_action_write(db_path, state);
+    } else {
+        snprintf(state->status, sizeof(state->status), "%s", "Core update failed");
+    }
+}
+
+static void jw__cycle_action_performance(const char *db_path,
+                                         jw_launcher_state *state,
+                                         int direction) {
+    if (!state) {
+        return;
+    }
+    const char *current = "";
+    if (state->action_scope == JW_ACTION_GAME &&
+        state->action_perf_game_override[0]) {
+        current = state->action_perf_game_override;
+    } else if (state->action_perf_system_override[0]) {
+        current = state->action_perf_system_override;
+    }
+    int idx = jw__action_perf_index(current);
+    int next = (idx + direction + JW_ACTION_PERF_COUNT) % JW_ACTION_PERF_COUNT;
+    const char *next_name = jw_platform_perf_profile_name(kActionPerfProfiles[next]);
+
+    int rc;
+    if (state->action_scope == JW_ACTION_GAME) {
+        rc = jw_db_set_game_setting(db_path, state->action_game.id,
+                                    JW_CONTENT_SETTING_PERFORMANCE_PROFILE,
+                                    next_name);
+    } else {
+        rc = jw_db_set_system_setting(db_path, state->action_system,
+                                      JW_CONTENT_SETTING_PERFORMANCE_PROFILE,
+                                      next_name);
+    }
+    if (rc == 0) {
+        snprintf(state->status, sizeof(state->status), "Performance: %.160s",
+                 jw_platform_perf_profile_label(kActionPerfProfiles[next]));
+        jw__refresh_after_action_write(db_path, state);
+    } else {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "Performance update failed");
+    }
+}
+
+static void jw__edit_action_display_name(const char *db_path,
+                                         jw_launcher_state *state) {
+    if (!state ||
+        (state->action_scope == JW_ACTION_GAME && state->action_game.id <= 0) ||
+        (state->action_scope == JW_ACTION_SYSTEM && !state->action_system[0]) ||
+        state->action_scope == JW_ACTION_NONE) {
+        return;
+    }
+
+    const char *current = state->action_scope == JW_ACTION_SYSTEM
+        ? state->action_system_display
+        : state->action_game.name;
+    cat_keyboard_result result;
+    int rc = cat_keyboard(current,
+                          "A: Save | Empty: Reset | Y: Cancel",
+                          CAT_KB_GENERAL, &result);
+    if (rc == CAT_OK) {
+        if (result.text[0]) {
+            int write_rc = state->action_scope == JW_ACTION_SYSTEM
+                ? jw_db_set_system_setting(db_path, state->action_system,
+                                           JW_CONTENT_SETTING_DISPLAY_NAME,
+                                           result.text)
+                : jw_db_set_game_setting(db_path, state->action_game.id,
+                                         JW_CONTENT_SETTING_DISPLAY_NAME,
+                                         result.text);
+            if (write_rc != 0) {
+                snprintf(state->status, sizeof(state->status), "%s",
+                         "Display name update failed");
+                return;
+            }
+            snprintf(state->status, sizeof(state->status), "Display Name: %.160s",
+                     result.text);
+        } else {
+            int delete_rc = state->action_scope == JW_ACTION_SYSTEM
+                ? jw_db_delete_system_setting(db_path, state->action_system,
+                                              JW_CONTENT_SETTING_DISPLAY_NAME)
+                : jw_db_delete_game_setting(db_path, state->action_game.id,
+                                            JW_CONTENT_SETTING_DISPLAY_NAME);
+            if (delete_rc != 0) {
+                snprintf(state->status, sizeof(state->status), "%s",
+                         "Display name reset failed");
+                return;
+            }
+            snprintf(state->status, sizeof(state->status), "%s",
+                     "Display name reset");
+        }
+        jw__refresh_after_action_write(db_path, state);
+    } else if (rc == CAT_ERROR) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "display name keyboard failed");
+    }
+}
+
+static void jw__reset_action_overrides(const char *db_path,
+                                       jw_launcher_state *state) {
+    if (!state) {
+        return;
+    }
+    int rc = 0;
+    if (state->action_scope == JW_ACTION_GAME) {
+        rc |= jw_db_delete_game_setting(db_path, state->action_game.id,
+                                        JW_CONTENT_SETTING_CORE_ID);
+        rc |= jw_db_delete_game_setting(db_path, state->action_game.id,
+                                        JW_CONTENT_SETTING_PERFORMANCE_PROFILE);
+        rc |= jw_db_delete_game_setting(db_path, state->action_game.id,
+                                        JW_CONTENT_SETTING_DISPLAY_NAME);
+    } else if (state->action_scope == JW_ACTION_SYSTEM) {
+        rc |= jw_db_delete_system_setting(db_path, state->action_system,
+                                          JW_CONTENT_SETTING_CORE_ID);
+        rc |= jw_db_delete_system_setting(db_path, state->action_system,
+                                          JW_CONTENT_SETTING_PERFORMANCE_PROFILE);
+        rc |= jw_db_delete_system_setting(db_path, state->action_system,
+                                          JW_CONTENT_SETTING_DISPLAY_NAME);
+    }
+    if (rc == 0) {
+        snprintf(state->status, sizeof(state->status), "%s", "Overrides reset");
+        jw__refresh_after_action_write(db_path, state);
+    } else {
+        snprintf(state->status, sizeof(state->status), "%s", "Reset failed");
+    }
+}
+
+static void jw__toggle_action_favorite(const char *db_path,
+                                       jw_launcher_state *state) {
+    if (!state || state->action_scope != JW_ACTION_GAME ||
+        state->action_game.id <= 0) {
+        return;
+    }
+    int want_on = !state->action_game.favorite;
+    if (jw_db_set_favorite(db_path, "game", state->action_game.id, want_on) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "Favorite update failed");
+        return;
+    }
+    state->action_game.favorite = want_on;
+    snprintf(state->status, sizeof(state->status), "%s %.160s",
+             want_on ? "Favorited" : "Unfavorited",
+             state->action_game.name);
+    jw__refresh_after_action_write(db_path, state);
+}
+
+static void jw__select_action_row(const char *socket_path, const char *db_path,
+                                  jw_launcher_state *state, bool *running) {
+    if (!state || state->action_list.cursor < 0 ||
+        state->action_list.cursor >= state->action_row_count) {
+        return;
+    }
+    jw_action_row_kind row = state->action_rows[state->action_list.cursor];
+    switch (row) {
+        case JW_ACTION_ROW_SEARCH:
+            state->actions_open = false;
+            jw__open_search(db_path, state);
+            break;
+        case JW_ACTION_ROW_LAUNCH:
+            jw__launch_game_entry(socket_path, state, &state->action_game, running);
+            break;
+        case JW_ACTION_ROW_DISPLAY_NAME:
+            jw__edit_action_display_name(db_path, state);
+            break;
+        case JW_ACTION_ROW_CORE:
+            jw__cycle_action_core(db_path, state, +1);
+            break;
+        case JW_ACTION_ROW_PERFORMANCE:
+            jw__cycle_action_performance(db_path, state, +1);
+            break;
+        case JW_ACTION_ROW_FAVORITE:
+            jw__toggle_action_favorite(db_path, state);
+            break;
+        case JW_ACTION_ROW_RESET:
+            jw__reset_action_overrides(db_path, state);
+            break;
+        case JW_ACTION_ROW_OPEN_SYSTEM:
+            jw__open_system_actions(db_path, state, state->action_game.system,
+                                    state->action_system_display);
+            break;
+        default:
+            break;
+    }
+}
+
+static void jw__handle_actions_input(const char *socket_path, const char *db_path,
+                                     jw_launcher_state *state,
+                                     cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_UP:
+            cat_list_state_move(&state->action_list, -1, state->action_row_count);
+            break;
+        case CAT_BTN_DOWN:
+            cat_list_state_move(&state->action_list, +1, state->action_row_count);
+            break;
+        case CAT_BTN_LEFT:
+        case CAT_BTN_RIGHT:
+            if (state->action_list.cursor >= 0 &&
+                state->action_list.cursor < state->action_row_count) {
+                jw_action_row_kind row = state->action_rows[state->action_list.cursor];
+                int dir = button == CAT_BTN_LEFT ? -1 : +1;
+                if (row == JW_ACTION_ROW_CORE) {
+                    jw__cycle_action_core(db_path, state, dir);
+                } else if (row == JW_ACTION_ROW_PERFORMANCE) {
+                    jw__cycle_action_performance(db_path, state, dir);
+                }
+            }
+            break;
+        case CAT_BTN_A:
+            jw__select_action_row(socket_path, db_path, state, running);
+            break;
+        case CAT_BTN_B:
+            state->actions_open = false;
+            state->action_scope = JW_ACTION_NONE;
+            state->status[0] = '\0';
+            break;
+        case CAT_BTN_MENU:
+            if (jw_ipc_open_menu(socket_path) == 0) {
+                cat_hide_window();
+                *running = false;
+            } else {
+                snprintf(state->status, sizeof(state->status), "%s",
+                         "open-menu failed");
+            }
+            break;
+        default:
+            break;
+    }
 }
 
 static void jw__activate_tabbed(const char *socket_path, const char *db_path,
@@ -3407,6 +4323,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         return;
     }
 
+    if (state->actions_open) {
+        jw__handle_actions_input(socket_path, db_path, state, button, running);
+        return;
+    }
+
     if (state->search_open) {
         jw__handle_search_input(socket_path, db_path, state, button, running);
         return;
@@ -3427,7 +4348,9 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             return;
         }
         if (button == CAT_BTN_X) {
-            jw__open_search(db_path, state);
+            if (!jw__open_context_actions(db_path, state)) {
+                jw__open_search(db_path, state);
+            }
             return;
         }
         jw__handle_game_browser_input(socket_path, db_path, state, button, running);
@@ -3516,7 +4439,9 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     }
 
     if (button == CAT_BTN_X) {
-        jw__open_search(db_path, state);
+        if (!jw__open_context_actions(db_path, state)) {
+            jw__open_search(db_path, state);
+        }
         return;
     }
 

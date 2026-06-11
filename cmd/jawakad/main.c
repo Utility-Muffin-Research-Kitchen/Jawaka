@@ -8,6 +8,7 @@
 #include "internal/platform/paths.h"
 #include "internal/platform/wifi.h"
 #include "internal/retroarch/command.h"
+#include "internal/retroarch/catalog.h"
 #include "internal/retroarch/states.h"
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
@@ -47,6 +48,8 @@
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT (-1)
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT_LABEL "unlimited"
 #define JW_PERF_SETTING_KEY "platform.performance.game_profile"
+#define JW_CONTENT_SETTING_CORE_ID "core_id"
+#define JW_CONTENT_SETTING_PERFORMANCE_PROFILE "performance_profile"
 #define JW_STARTUP_MAINT_GRACE_MS 500LL    /* after frontend-ready */
 #define JW_STARTUP_MAINT_FALLBACK_MS 15000LL /* if frontend-ready never arrives */
 
@@ -55,8 +58,15 @@ typedef enum {
     JW_CHILD_LAUNCHER,
     JW_CHILD_MENU,
     JW_CHILD_RETROARCH,
+    JW_CHILD_EMULATOR,
     JW_CHILD_APP
 } jw_child_kind;
+
+typedef enum {
+    JW_LAUNCH_TARGET_NONE = 0,
+    JW_LAUNCH_TARGET_RETROARCH,
+    JW_LAUNCH_TARGET_STANDALONE
+} jw_launch_target_kind;
 
 typedef struct {
     bool active;
@@ -67,10 +77,18 @@ typedef struct {
     char db_rom_path[PATH_MAX];
     char source_root[PATH_MAX];
     char core_path[PATH_MAX];
+    char core_id[64];
     char config_path[PATH_MAX];
     int resident_switches;
     bool persist_config;
 } jw_retroarch_session;
+
+typedef struct {
+    jw_launch_target_kind kind;
+    char path[PATH_MAX];
+    char core_id[64];
+    char diagnostic[256];
+} jw_launch_target;
 
 typedef struct {
     char *runtime_dir;
@@ -142,6 +160,12 @@ typedef struct {
 } jw_daemon_state;
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
+
+static bool jw__has_retroarch_session(const jw_daemon_state *state) {
+    return state &&
+           state->retroarch_session.active &&
+           state->child_kind == JW_CHILD_RETROARCH;
+}
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -1239,6 +1263,7 @@ static const char *jw__child_name(jw_child_kind kind) {
         case JW_CHILD_LAUNCHER: return "jawaka-launcher";
         case JW_CHILD_MENU: return "jawaka-menu";
         case JW_CHILD_RETROARCH: return "RetroArch";
+        case JW_CHILD_EMULATOR: return "standalone emulator";
         case JW_CHILD_APP: return "app";
         default: return NULL;
     }
@@ -1248,6 +1273,9 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
 static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now);
 static int jw__spawn_osd(jw_daemon_state *state);
 static int jw__spawn_retroarch(jw_daemon_state *state);
+static int jw__spawn_standalone_emulator(jw_daemon_state *state,
+                                         const jw_launch_target *target);
+static int jw__spawn_pending_game(jw_daemon_state *state);
 static int jw__spawn_app(jw_daemon_state *state);
 static int jw__request_open_in_game_menu(jw_daemon_state *state);
 static int jw__request_open_in_game_switcher(jw_daemon_state *state);
@@ -1350,6 +1378,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         const char *db_rom_path,
                                         const char *source_root,
                                         const char *core_path,
+                                        const char *core_id,
                                         const char *config_path,
                                         bool persist_config) {
     if (!state || pid <= 0) {
@@ -1368,6 +1397,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     snprintf(session->source_root, sizeof(session->source_root), "%s",
              source_root ? source_root : "");
     snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
+    snprintf(session->core_id, sizeof(session->core_id), "%s", core_id ? core_id : "");
     snprintf(session->config_path, sizeof(session->config_path), "%s",
              config_path ? config_path : "");
     session->persist_config = persist_config;
@@ -1376,9 +1406,10 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
 
-    jw_log_info("RetroArch session started pid=%d system=%s source=%s core=%s config=%s rom=%s",
+    jw_log_info("RetroArch session started pid=%d system=%s source=%s core=%s core_id=%s config=%s rom=%s",
                 (int)pid, session->system, session->source_root,
-                session->core_path, session->config_path, session->rom_path);
+                session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
+                session->config_path, session->rom_path);
 }
 
 static long jw__retroarch_session_runtime_s(const jw_retroarch_session *session) {
@@ -1416,7 +1447,8 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
                                            const char *rom_path,
                                            const char *db_rom_path,
                                            const char *source_root,
-                                           const char *core_path) {
+                                           const char *core_path,
+                                           const char *core_id) {
     if (!state || !state->retroarch_session.active) {
         return;
     }
@@ -1434,6 +1466,7 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
     snprintf(session->source_root, sizeof(session->source_root), "%s",
              source_root ? source_root : "");
     snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
+    snprintf(session->core_id, sizeof(session->core_id), "%s", core_id ? core_id : "");
     session->resident_switches = resident_switches;
 
     state->post_launch_resume_pending = false;
@@ -1443,10 +1476,11 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
 
-    jw_log_info("RetroArch session retargeted in-process pid=%d runtime_s=%ld resident_switches=%d system=%s source=%s core=%s rom=%s",
+    jw_log_info("RetroArch session retargeted in-process pid=%d runtime_s=%ld resident_switches=%d system=%s source=%s core=%s core_id=%s rom=%s",
                 (int)session->pid, runtime_s, session->resident_switches,
                 session->system, session->source_root,
-                session->core_path, session->rom_path);
+                session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
+                session->rom_path);
 }
 
 static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int status) {
@@ -1514,6 +1548,79 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
     }
 }
 
+static void jw__standalone_session_start(jw_daemon_state *state, pid_t pid,
+                                         const char *system, const char *rom_path,
+                                         const char *db_rom_path,
+                                         const char *source_root,
+                                         const char *launcher_path,
+                                         const char *core_id) {
+    if (!state || pid <= 0) {
+        return;
+    }
+
+    jw_retroarch_session *session = &state->retroarch_session;
+    jw__retroarch_session_clear(session);
+    session->active = true;
+    session->pid = pid;
+    session->started_at = time(NULL);
+    snprintf(session->system, sizeof(session->system), "%s", system ? system : "");
+    snprintf(session->rom_path, sizeof(session->rom_path), "%s", rom_path ? rom_path : "");
+    snprintf(session->db_rom_path, sizeof(session->db_rom_path), "%s",
+             db_rom_path ? db_rom_path : "");
+    snprintf(session->source_root, sizeof(session->source_root), "%s",
+             source_root ? source_root : "");
+    snprintf(session->core_path, sizeof(session->core_path), "%s",
+             launcher_path ? launcher_path : "");
+    snprintf(session->core_id, sizeof(session->core_id), "%s", core_id ? core_id : "");
+
+    state->menu_visible = false;
+    state->menu_standby_attempts = 0;
+
+    jw_log_info("standalone emulator session started pid=%d system=%s source=%s launcher=%s core_id=%s rom=%s",
+                (int)pid, session->system, session->source_root,
+                session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
+                session->rom_path);
+}
+
+static void jw__standalone_session_finish(jw_daemon_state *state, pid_t pid, int status) {
+    if (!state) {
+        return;
+    }
+
+    jw_retroarch_session *session = &state->retroarch_session;
+    if (!session->active) {
+        jw_log_warn("standalone emulator child exited without active session pid=%d", (int)pid);
+        return;
+    }
+
+    long runtime_s = jw__retroarch_session_runtime_s(session);
+    if (session->pid != pid) {
+        jw_log_warn("standalone emulator session pid mismatch tracked=%d exited=%d",
+                    (int)session->pid, (int)pid);
+    }
+
+    if (WIFEXITED(status)) {
+        jw_log_info("standalone emulator session ended pid=%d runtime_s=%ld status=%d system=%s rom=%s",
+                    (int)pid, runtime_s, WEXITSTATUS(status),
+                    session->system, session->rom_path);
+    } else if (WIFSIGNALED(status)) {
+        jw_log_warn("standalone emulator session terminated pid=%d runtime_s=%ld signal=%d system=%s rom=%s",
+                    (int)pid, runtime_s, WTERMSIG(status),
+                    session->system, session->rom_path);
+    } else {
+        jw_log_warn("standalone emulator session changed state pid=%d runtime_s=%ld status=%d system=%s rom=%s",
+                    (int)pid, runtime_s, status, session->system, session->rom_path);
+    }
+
+    jw__retroarch_session_record_play(state, session, runtime_s);
+    jw__retroarch_session_clear(session);
+    state->perf_session_override = false;
+    state->perf_session_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
+    state->perf_custom_valid = false;
+    jw__perf_request_init(&state->perf_custom_request);
+    (void)jw__perf_apply_frontend(state, "standalone-emulator-exit");
+}
+
 static int jw__request_open_menu(jw_daemon_state *state) {
     if (!state) {
         return -1;
@@ -1551,7 +1658,7 @@ static void jw__write_ingame_ui_mode(const char *mode) {
    or cold-spawns it. Reversible: this never saves or quits. */
 static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode) {
     long long start_ms = jw__monotonic_ms();
-    if (!state || !state->retroarch_session.active) {
+    if (!jw__has_retroarch_session(state)) {
         return -1;
     }
 
@@ -1873,6 +1980,336 @@ static int jw__resolve_app_launch_path(jw_daemon_state *state, const char *pak_d
     return 0;
 }
 
+static int jw__lookup_launch_game(jw_daemon_state *state, const char *rom_path,
+                                  jw_game_entry *out) {
+    if (!state || !state->db_path || !rom_path || !rom_path[0] || !out) {
+        return -1;
+    }
+    if (jw_db_get_game_by_rom_path(state->db_path, rom_path, out) == 0) {
+        return 0;
+    }
+
+    char rel_path[PATH_MAX];
+    if (state->sdcard_root && state->sdcard_root[0]) {
+        size_t root_len = strlen(state->sdcard_root);
+        if (strncmp(rom_path, state->sdcard_root, root_len) == 0 &&
+            rom_path[root_len] == '/') {
+            snprintf(rel_path, sizeof(rel_path), "%s", rom_path + root_len + 1);
+            return jw_db_get_game_by_rom_path(state->db_path, rel_path, out);
+        }
+    }
+    return -1;
+}
+
+static const char *jw__launch_system_key(const char *requested_system,
+                                         const jw_game_entry *game) {
+    if (game && game->system[0]) {
+        return game->system;
+    }
+    return requested_system;
+}
+
+static char *jw__resolve_launch_core_path(jw_daemon_state *state,
+                                          const char *system,
+                                          const char *rom_path,
+                                          char *out_core_id,
+                                          size_t out_core_id_size,
+                                          char *diagnostic,
+                                          size_t diagnostic_size) {
+    if (out_core_id && out_core_id_size > 0) {
+        out_core_id[0] = '\0';
+    }
+    if (diagnostic && diagnostic_size > 0) {
+        diagnostic[0] = '\0';
+    }
+
+    jw_game_entry game;
+    memset(&game, 0, sizeof(game));
+    bool have_game = jw__lookup_launch_game(state, rom_path, &game) == 0;
+    const char *system_key = jw__launch_system_key(system, have_game ? &game : NULL);
+
+    char preferred[64];
+    preferred[0] = '\0';
+    const char *source = NULL;
+    if (have_game && game.id > 0 && state && state->db_path) {
+        if (jw_db_get_game_setting(state->db_path, game.id,
+                                   JW_CONTENT_SETTING_CORE_ID,
+                                   preferred, sizeof(preferred)) == 0 &&
+            preferred[0]) {
+            source = "game";
+        }
+    }
+    if (!preferred[0] && state && state->db_path && system_key && system_key[0]) {
+        if (jw_db_get_system_setting(state->db_path, system_key,
+                                     JW_CONTENT_SETTING_CORE_ID,
+                                     preferred, sizeof(preferred)) == 0 &&
+            preferred[0]) {
+            source = "system";
+        }
+    }
+
+    char *core = jw_retroarch_core_path_for_system_choice(system_key,
+                                                          preferred[0] ? preferred : NULL,
+                                                          out_core_id,
+                                                          out_core_id_size,
+                                                          diagnostic,
+                                                          diagnostic_size);
+    if (core && source && preferred[0]) {
+        jw_log_info("launch resolver: %s core override system=%s rom=%s preferred=%s effective=%s",
+                    source, system_key ? system_key : "(none)",
+                    rom_path ? rom_path : "(none)", preferred,
+                    out_core_id && out_core_id[0] ? out_core_id : "(unknown)");
+    }
+    if (core && diagnostic && diagnostic[0]) {
+        jw_log_warn("launch resolver: %s", diagnostic);
+    }
+    return core;
+}
+
+static bool jw__catalog_system_allows_core(const jw_ra_system *system,
+                                           const char *core_id) {
+    if (!system || !core_id || !core_id[0]) {
+        return false;
+    }
+    if (system->default_core && strcmp(system->default_core, core_id) == 0) {
+        return true;
+    }
+    return jw_ra_string_list_contains(&system->alternate_cores, core_id);
+}
+
+static bool jw__core_is_packaged_path(const jw_ra_core *core) {
+    return core &&
+           core->type &&
+           strcmp(core->type, "path") == 0 &&
+           core->status &&
+           strcmp(core->status, "packaged") == 0 &&
+           core->path &&
+           core->path[0];
+}
+
+static int jw__platform_path(char *out, size_t out_size, const jw_daemon_state *state) {
+    const char *platform_path = jw__env_value("UMRK_PLATFORM_PATH");
+    if (!platform_path) {
+        platform_path = jw__env_value("SYSTEM_PATH");
+    }
+    if (platform_path) {
+        return snprintf(out, out_size, "%s", platform_path) < (int)out_size ? 0 : -1;
+    }
+    if (!state || !state->sdcard_root || !state->sdcard_root[0]) {
+        return -1;
+    }
+    return snprintf(out, out_size, "%s/.system/leaf/platforms/mlp1",
+                    state->sdcard_root) < (int)out_size ? 0 : -1;
+}
+
+static int jw__resolve_path_core_executable(const jw_daemon_state *state,
+                                            const jw_ra_core *core,
+                                            char *out,
+                                            size_t out_size) {
+    if (!jw__core_is_packaged_path(core) || !out || out_size == 0) {
+        return -1;
+    }
+
+    char candidate[PATH_MAX];
+    if (core->path[0] == '/') {
+        if (snprintf(candidate, sizeof(candidate), "%s", core->path) >=
+            (int)sizeof(candidate)) {
+            return -1;
+        }
+    } else {
+        char platform_path[PATH_MAX];
+        if (jw__platform_path(platform_path, sizeof(platform_path), state) != 0 ||
+            snprintf(candidate, sizeof(candidate), "%s/%s",
+                     platform_path, core->path) >= (int)sizeof(candidate)) {
+            return -1;
+        }
+    }
+
+    if (access(candidate, X_OK) != 0) {
+        return -1;
+    }
+    return snprintf(out, out_size, "%s", candidate) < (int)out_size ? 0 : -1;
+}
+
+static const jw_ra_system *jw__catalog_find_launch_system(const jw_ra_catalog *catalog,
+                                                          const char *system_id) {
+    const jw_ra_system *system = jw_ra_catalog_find_system(catalog, system_id);
+    if (!system) {
+        system = jw_ra_catalog_match_system_folder(catalog, system_id);
+    }
+    return system;
+}
+
+static bool jw__try_path_core(const jw_daemon_state *state,
+                              const jw_ra_catalog *catalog,
+                              const jw_ra_core *core,
+                              jw_launch_target *target) {
+    if (!target || !jw__core_is_packaged_path(core)) {
+        return false;
+    }
+
+    char exec_path[PATH_MAX];
+    if (jw__resolve_path_core_executable(state, core, exec_path, sizeof(exec_path)) != 0) {
+        return false;
+    }
+
+    memset(target, 0, sizeof(*target));
+    (void)catalog;
+    target->kind = JW_LAUNCH_TARGET_STANDALONE;
+    snprintf(target->path, sizeof(target->path), "%s", exec_path);
+    snprintf(target->core_id, sizeof(target->core_id), "%s", core->id ? core->id : "");
+    return true;
+}
+
+static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
+                                                 const char *system,
+                                                 const char *rom_path,
+                                                 jw_launch_target *target) {
+    if (!state || !target || !system || !system[0]) {
+        return false;
+    }
+
+    jw_game_entry game;
+    memset(&game, 0, sizeof(game));
+    bool have_game = jw__lookup_launch_game(state, rom_path, &game) == 0;
+    const char *system_key = jw__launch_system_key(system, have_game ? &game : NULL);
+
+    char preferred[64];
+    preferred[0] = '\0';
+    if (have_game && game.id > 0 && state->db_path) {
+        (void)jw_db_get_game_setting(state->db_path, game.id,
+                                     JW_CONTENT_SETTING_CORE_ID,
+                                     preferred, sizeof(preferred));
+    }
+    if (!preferred[0] && state->db_path && system_key && system_key[0]) {
+        (void)jw_db_get_system_setting(state->db_path, system_key,
+                                       JW_CONTENT_SETTING_CORE_ID,
+                                       preferred, sizeof(preferred));
+    }
+
+    char error[256];
+    const jw_ra_catalog *catalog = jw_ra_catalog_get(state->sdcard_root,
+                                                     error, sizeof(error));
+    if (!catalog) {
+        if (error[0]) {
+            jw_log_warn("standalone launch metadata unavailable: %s", error);
+        }
+        return false;
+    }
+
+    const jw_ra_system *ra_system = jw__catalog_find_launch_system(catalog, system_key);
+    if (!ra_system) {
+        return false;
+    }
+
+    if (preferred[0] && jw__catalog_system_allows_core(ra_system, preferred)) {
+        const jw_ra_core *core = jw_ra_catalog_find_core(catalog, preferred);
+        if (jw__try_path_core(state, catalog, core, target)) {
+            return true;
+        }
+    }
+
+    const jw_ra_core *core = jw_ra_catalog_find_core(catalog, ra_system->default_core);
+    if (jw__try_path_core(state, catalog, core, target)) {
+        return true;
+    }
+
+    for (size_t i = 0; i < ra_system->alternate_cores.count; i++) {
+        core = jw_ra_catalog_find_core(catalog, ra_system->alternate_cores.items[i]);
+        if (jw__try_path_core(state, catalog, core, target)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static int jw__resolve_launch_target(jw_daemon_state *state,
+                                     const char *system,
+                                     const char *rom_path,
+                                     jw_launch_target *target) {
+    if (!target) {
+        return -1;
+    }
+    memset(target, 0, sizeof(*target));
+
+    if (jw__resolve_standalone_launch_target(state, system, rom_path, target)) {
+        return 0;
+    }
+
+    char core_id[64];
+    char diagnostic[256];
+    char *core = jw__resolve_launch_core_path(state, system, rom_path,
+                                              core_id, sizeof(core_id),
+                                              diagnostic, sizeof(diagnostic));
+    if (!core) {
+        if (diagnostic[0]) {
+            snprintf(target->diagnostic, sizeof(target->diagnostic), "%s", diagnostic);
+        }
+        return -1;
+    }
+
+    target->kind = JW_LAUNCH_TARGET_RETROARCH;
+    snprintf(target->path, sizeof(target->path), "%s", core);
+    snprintf(target->core_id, sizeof(target->core_id), "%s", core_id);
+    if (diagnostic[0]) {
+        snprintf(target->diagnostic, sizeof(target->diagnostic), "%s", diagnostic);
+    }
+    free(core);
+    return 0;
+}
+
+static jw_platform_perf_profile jw__perf_requested_for_launch(
+        jw_daemon_state *state, const char *system, const char *rom_path) {
+    if (!state) {
+        return JW_PLATFORM_PERF_PROFILE_AUTO;
+    }
+    if (state->perf_session_override) {
+        return state->perf_session_profile;
+    }
+
+    jw_game_entry game;
+    memset(&game, 0, sizeof(game));
+    bool have_game = jw__lookup_launch_game(state, rom_path, &game) == 0;
+    const char *system_key = jw__launch_system_key(system, have_game ? &game : NULL);
+
+    char value[64];
+    if (have_game && game.id > 0 && state->db_path &&
+        jw_db_get_game_setting(state->db_path, game.id,
+                               JW_CONTENT_SETTING_PERFORMANCE_PROFILE,
+                               value, sizeof(value)) == 0 &&
+        value[0]) {
+        jw_platform_perf_profile profile;
+        if (jw_platform_parse_perf_profile(value, &profile)) {
+            return profile;
+        }
+        jw_log_warn("performance: ignoring invalid game override %s for rom=%s",
+                    value, rom_path ? rom_path : "(none)");
+    }
+
+    if (state->db_path && system_key && system_key[0] &&
+        jw_db_get_system_setting(state->db_path, system_key,
+                                 JW_CONTENT_SETTING_PERFORMANCE_PROFILE,
+                                 value, sizeof(value)) == 0 &&
+        value[0]) {
+        jw_platform_perf_profile profile;
+        if (jw_platform_parse_perf_profile(value, &profile)) {
+            return profile;
+        }
+        jw_log_warn("performance: ignoring invalid system override %s for system=%s",
+                    value, system_key);
+    }
+
+    return state->perf_global_profile;
+}
+
+static int jw__perf_apply_launch_game(jw_daemon_state *state, const char *system,
+                                      const char *rom_path, const char *reason) {
+    return jw__perf_apply_profile(state,
+                                  jw__perf_requested_for_launch(state, system, rom_path),
+                                  system, reason);
+}
+
 static int jw__validate_launch_request(jw_daemon_state *state, const char *system,
                                        const char *rom_path, const char **out_error) {
     if (!state || !system || !system[0] || !rom_path || !rom_path[0]) {
@@ -1880,25 +2317,37 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
         return -1;
     }
 
-    char *retroarch = jw_retroarch_bin_path();
-    if (!retroarch || !jw__path_exists(retroarch)) {
-        free(retroarch);
-        if (out_error) *out_error = "RetroArch binary missing";
-        return -1;
-    }
-    free(retroarch);
-
-    char *core = jw_retroarch_core_path_for_system(system);
-    if (!core) {
+    jw_launch_target target;
+    if (jw__resolve_launch_target(state, system, rom_path, &target) != 0) {
         if (out_error) *out_error = "unsupported system";
         return -1;
     }
-    if (!jw__path_exists(core)) {
-        free(core);
-        if (out_error) *out_error = "libretro core missing";
+
+    if (target.kind == JW_LAUNCH_TARGET_RETROARCH) {
+        char *retroarch = jw_retroarch_bin_path();
+        if (!retroarch || !jw__path_exists(retroarch)) {
+            free(retroarch);
+            if (out_error) *out_error = "RetroArch binary missing";
+            return -1;
+        }
+        free(retroarch);
+    }
+
+    if (!jw__path_exists(target.path)) {
+        if (out_error) {
+            *out_error = target.kind == JW_LAUNCH_TARGET_STANDALONE
+                ? "standalone emulator missing"
+                : "libretro core missing";
+        }
         return -1;
     }
-    free(core);
+
+    char exec_error[256];
+    if (!jw_sdcard_exec_available_for_path(target.path, exec_error, sizeof(exec_error))) {
+        jw_log_error("cannot launch game target from SD: %s", exec_error);
+        if (out_error) *out_error = "SD-card mounted noexec; switcher remount failed or regressed";
+        return -1;
+    }
 
     char rom_abs[PATH_MAX];
     if (jw__resolve_rom_path(state, rom_path, rom_abs, sizeof(rom_abs)) != 0 ||
@@ -1923,9 +2372,9 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
     state->pending_launch = true;
 
     if (state->child_pid <= 0) {
-        if (jw__spawn_retroarch(state) != 0) {
+        if (jw__spawn_pending_game(state) != 0) {
             state->pending_launch_resume_switcher = false;
-            if (out_error) *out_error = "RetroArch spawn failed";
+            if (out_error) *out_error = "game spawn failed";
             return -1;
         }
     }
@@ -1977,7 +2426,7 @@ static bool jw__force_retroarch_exit_if_needed(jw_daemon_state *state, pid_t pid
    switch-game request targeting the current game resumes instead of switching. */
 static bool jw__is_current_session_game(const jw_daemon_state *state,
                                         const char *system, const char *rom_path) {
-    if (!state || !state->retroarch_session.active || !rom_path) {
+    if (!jw__has_retroarch_session(state) || !rom_path) {
         return false;
     }
     const jw_retroarch_session *s = &state->retroarch_session;
@@ -2003,7 +2452,7 @@ static bool jw__is_current_session_game(const jw_daemon_state *state,
    game directly — no launcher flash in between. */
 static int jw__request_switch_game(jw_daemon_state *state, const char *system,
                                    const char *rom_path, const char **out_error) {
-    if (!state || !state->retroarch_session.active) {
+    if (!jw__has_retroarch_session(state)) {
         if (out_error) *out_error = "no active RetroArch session";
         return -1;
     }
@@ -2062,6 +2511,8 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     target_rom_abs[0] = '\0';
     char target_source_root[PATH_MAX];
     target_source_root[0] = '\0';
+    char target_core_id[64];
+    target_core_id[0] = '\0';
     char *target_core = NULL;
     bool resident_eligible = false;
     int resident_switch_max = jw__resident_switch_max();
@@ -2082,7 +2533,12 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
                      state->sdcard_root ? state->sdcard_root : "");
         }
 
-        target_core = jw_retroarch_core_path_for_system(system);
+        char target_core_diagnostic[256];
+        target_core = jw__resolve_launch_core_path(state, system, rom_path,
+                                                   target_core_id,
+                                                   sizeof(target_core_id),
+                                                   target_core_diagnostic,
+                                                   sizeof(target_core_diagnostic));
         resident_eligible =
             target_core && target_core[0] &&
             (resident_switch_max < 0 ||
@@ -2095,7 +2551,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     }
 
     if (resident_eligible) {
-        (void)jw__perf_apply_game(state, system, "resident-switch");
+        (void)jw__perf_apply_launch_game(state, system, rom_path, "resident-switch");
         long long resident_start_ms = jw__monotonic_ms();
         char load_reply[JW_RA_REPLY_MAX];
         jw_ra_result load_content =
@@ -2120,7 +2576,8 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
 
             jw__retroarch_session_retarget(state, system, target_rom_abs,
                                            rom_path, target_source_root,
-                                           target_core);
+                                           target_core,
+                                           target_core_id);
 
             if (have_resume_state) {
                 char load_state_reply[JW_RA_REPLY_MAX];
@@ -2658,7 +3115,7 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
 
 static bool jw__input_menu_tap(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
-    if (!state || !state->retroarch_session.active) {
+    if (!jw__has_retroarch_session(state)) {
         return false;
     }
 
@@ -2682,7 +3139,7 @@ static bool jw__input_menu_tap(void *userdata) {
    or quits. */
 static bool jw__input_game_switcher(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
-    if (!state || !state->retroarch_session.active) {
+    if (!jw__has_retroarch_session(state)) {
         return false;
     }
 
@@ -2730,7 +3187,8 @@ static void jw__suspend_input_proxy_for_app(jw_daemon_state *state) {
 
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     const char *name = jw__child_name(kind);
-    if (!state || !name || kind == JW_CHILD_RETROARCH || kind == JW_CHILD_APP) {
+    if (!state || !name || kind == JW_CHILD_RETROARCH ||
+        kind == JW_CHILD_EMULATOR || kind == JW_CHILD_APP) {
         return -1;
     }
 
@@ -2803,11 +3261,12 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
 
     if (pid == 0) {
         jw_appearance_apply_env(&appearance);
-        if (state->retroarch_session.active) {
+        if (jw__has_retroarch_session(state)) {
             setenv("JAWAKA_INGAME_ACTIVE", "1", 1);
             setenv("JAWAKA_INGAME_SYSTEM", state->retroarch_session.system, 1);
             setenv("JAWAKA_INGAME_ROM", state->retroarch_session.rom_path, 1);
             setenv("JAWAKA_INGAME_CORE", state->retroarch_session.core_path, 1);
+            setenv("JAWAKA_INGAME_CORE_ID", state->retroarch_session.core_id, 1);
         }
         setenv("JAWAKA_INGAME_AUTOSHOW", show_now ? "1" : "0", 1);
         char dir_buf[PATH_MAX];
@@ -2905,6 +3364,123 @@ static int jw__spawn_app(jw_daemon_state *state) {
     return 0;
 }
 
+static int jw__spawn_standalone_emulator(jw_daemon_state *state,
+                                         const jw_launch_target *target) {
+    if (!state || !state->pending_launch || !target ||
+        target->kind != JW_LAUNCH_TARGET_STANDALONE) {
+        return -1;
+    }
+
+    char rom_abs[PATH_MAX];
+    if (jw__resolve_rom_path(state, state->pending_launch_rom_path,
+                             rom_abs, sizeof(rom_abs)) != 0) {
+        jw_log_error("could not resolve ROM path: %s", state->pending_launch_rom_path);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        return -1;
+    }
+
+    jw_storage_source_list sources;
+    const jw_storage_source *rom_source = NULL;
+    if (jw__storage_sources(state, &sources) == 0) {
+        rom_source = jw_storage_sources_find_for_path(&sources, rom_abs);
+    }
+
+    char source_root[PATH_MAX];
+    if (rom_source) {
+        snprintf(source_root, sizeof(source_root), "%s", rom_source->root);
+    } else {
+        snprintf(source_root, sizeof(source_root), "%s", state->sdcard_root);
+    }
+
+    char exec_error[256];
+    if (!jw_sdcard_exec_available_for_path(target->path, exec_error, sizeof(exec_error))) {
+        jw_log_error("cannot launch standalone emulator from SD: %s", exec_error);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        return -1;
+    }
+
+    jw_platform_result ready_result;
+    jw_platform_frontend_ready(&state->platform, "launcher", &ready_result);
+    jw_log_info("standalone emulator launch transition readiness code=%s",
+                jw_platform_result_code_name(ready_result.code));
+
+    jw__suspend_input_proxy_for_app(state);
+    jw__publish_audio_env(state);
+    (void)jw__perf_apply_launch_game(state, state->pending_launch_system,
+                                     state->pending_launch_rom_path,
+                                     "standalone-emulator-launch");
+
+    jw_appearance_env appearance;
+    jw_appearance_resolve(state->db_path, &appearance);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_log_error("fork failed: %s", strerror(errno));
+        jw__start_input_proxy(state);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        return -1;
+    }
+
+    if (pid == 0) {
+        jw_appearance_apply_env(&appearance);
+        jw__publish_source_content_env(rom_source);
+        setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
+        setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
+        setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
+        setenv("JAWAKA_GAME_CORE_ID", target->core_id, 1);
+
+        char *const argv[] = {
+            (char *)target->path,
+            rom_abs,
+            NULL,
+        };
+        execv(target->path, argv);
+        perror("execv");
+        _exit(127);
+    }
+
+    state->child_pid = pid;
+    state->child_kind = JW_CHILD_EMULATOR;
+    state->pending_launch = false;
+    state->pending_launch_resume_switcher = false;
+    state->post_launch_resume_pending = false;
+    state->post_launch_resume_attempts = 0;
+    state->post_launch_resume_next_ms = 0;
+    jw_log_info("spawned standalone emulator pid=%d launcher=%s core_id=%s",
+                (int)pid, target->path,
+                target->core_id[0] ? target->core_id : "(unknown)");
+    jw__standalone_session_start(state, pid, state->pending_launch_system, rom_abs,
+                                 state->pending_launch_rom_path, source_root,
+                                 target->path, target->core_id);
+    return 0;
+}
+
+static int jw__spawn_pending_game(jw_daemon_state *state) {
+    if (!state || !state->pending_launch) {
+        return -1;
+    }
+
+    jw_launch_target target;
+    if (jw__resolve_launch_target(state, state->pending_launch_system,
+                                  state->pending_launch_rom_path,
+                                  &target) != 0) {
+        jw_log_error("could not resolve launch target for system=%s rom=%s",
+                     state->pending_launch_system,
+                     state->pending_launch_rom_path);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        return -1;
+    }
+
+    if (target.kind == JW_LAUNCH_TARGET_STANDALONE) {
+        return jw__spawn_standalone_emulator(state, &target);
+    }
+    return jw__spawn_retroarch(state);
+}
+
 static int jw__spawn_retroarch(jw_daemon_state *state) {
     if (!state || !state->pending_launch) {
         return -1;
@@ -2932,7 +3508,14 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
 
     char *retroarch = jw_retroarch_bin_path();
-    char *core = jw_retroarch_core_path_for_system(state->pending_launch_system);
+    char core_id[64];
+    char core_diagnostic[256];
+    char *core = jw__resolve_launch_core_path(state,
+                                              state->pending_launch_system,
+                                              state->pending_launch_rom_path,
+                                              core_id, sizeof(core_id),
+                                              core_diagnostic,
+                                              sizeof(core_diagnostic));
     char *runtime_config = NULL;
     char *ra_home = NULL;
 
@@ -3040,8 +3623,9 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
     long long state_resolve_done_ms = jw__monotonic_ms();
 
-    (void)jw__perf_apply_game(state, state->pending_launch_system,
-                              "retroarch-launch");
+    (void)jw__perf_apply_launch_game(state, state->pending_launch_system,
+                                     state->pending_launch_rom_path,
+                                     "retroarch-launch");
 
     /* RetroArch resolves its config dir / per-core option files (e.g.
        FCEUmm.opt) under $HOME. Point HOME at the SD state dir the runner uses so
@@ -3092,7 +3676,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
     jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs,
                                 state->pending_launch_rom_path, source_root,
-                                core, runtime_config, persist_config);
+                                core, core_id, runtime_config, persist_config);
     bool post_launch_resume = switcher_resume && !entryslot_resume;
     if (post_launch_resume) {
         state->post_launch_resume_pending = true;
@@ -3477,11 +4061,11 @@ static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *cl
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "retroarch-session");
     cJSON_AddBoolToObject(root, "active",
-                          state && state->retroarch_session.active);
+                          jw__has_retroarch_session(state));
     cJSON_AddNumberToObject(root, "resident_switch_max",
                             jw__resident_switch_max());
 
-    if (!state || !state->retroarch_session.active) {
+    if (!jw__has_retroarch_session(state)) {
         cJSON_AddBoolToObject(root, "command_ok", false);
         cJSON_AddStringToObject(root, "command_result", "inactive");
         return jw__reply_json(client, root);
@@ -3490,6 +4074,7 @@ static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *cl
     cJSON_AddStringToObject(root, "system", state->retroarch_session.system);
     cJSON_AddStringToObject(root, "rom_path", state->retroarch_session.rom_path);
     cJSON_AddStringToObject(root, "core_path", state->retroarch_session.core_path);
+    cJSON_AddStringToObject(root, "core_id", state->retroarch_session.core_id);
     cJSON_AddNumberToObject(root, "resident_switches",
                             state->retroarch_session.resident_switches);
 
@@ -3576,7 +4161,7 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
         !action_json->valuestring[0]) {
         return jw__reply_error(client, "missing RetroArch action");
     }
-    if (!state || !state->retroarch_session.active) {
+    if (!jw__has_retroarch_session(state)) {
         return jw__reply_error(client, "no active RetroArch session");
     }
 
@@ -3741,7 +4326,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     }
 
     if (strcmp(type->valuestring, "open-menu") == 0) {
-        bool in_game = state && state->retroarch_session.active;
+        bool in_game = jw__has_retroarch_session(state);
         if ((in_game ? jw__request_open_in_game_menu(state)
                      : jw__request_open_menu(state)) != 0) {
             cJSON_Delete(root);
@@ -3753,7 +4338,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     }
 
     if (strcmp(type->valuestring, "open-switcher") == 0) {
-        bool in_game = state && state->retroarch_session.active;
+        bool in_game = jw__has_retroarch_session(state);
         if (!in_game || jw__request_open_in_game_switcher(state) != 0) {
             cJSON_Delete(root);
             return jw__reply_error(client,
@@ -4164,12 +4749,15 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             jw__terminate_menu_child(state, true);
         }
     }
+    if (exited_kind == JW_CHILD_EMULATOR) {
+        jw__standalone_session_finish(state, exited_pid, status);
+    }
 
     if (state->shutdown_requested || g_shutdown_requested) {
         return;
     }
 
-    if (exited_kind == JW_CHILD_APP) {
+    if (exited_kind == JW_CHILD_APP || exited_kind == JW_CHILD_EMULATOR) {
         jw__start_input_proxy(state);
     }
 
@@ -4177,7 +4765,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
      * the selected game directly instead of returning to the launcher. The
      * session finish above already recorded the old game's playtime/recents. */
     if (exited_kind == JW_CHILD_RETROARCH && state->pending_launch) {
-        if (jw__spawn_retroarch(state) != 0) {
+        if (jw__spawn_pending_game(state) != 0) {
             jw_log_warn("switch-game: next game spawn failed; returning to launcher");
             if (!state->daemon_only) {
                 jw__spawn_child(state, JW_CHILD_LAUNCHER);
@@ -4189,7 +4777,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     /* Spawn-on-exit model: the launcher sends a pending action, then exits
      * voluntarily. The daemon detects the exit here and owns the next process. */
     if (exited_kind == JW_CHILD_LAUNCHER && state->pending_launch) {
-        if (jw__spawn_retroarch(state) != 0 && !state->daemon_only) {
+        if (jw__spawn_pending_game(state) != 0 && !state->daemon_only) {
             jw__spawn_child(state, JW_CHILD_LAUNCHER);
         }
         return;
@@ -4217,7 +4805,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         return;
     }
 
-    if (exited_kind == JW_CHILD_RETROARCH) {
+    if (exited_kind == JW_CHILD_RETROARCH || exited_kind == JW_CHILD_EMULATOR) {
         jw__spawn_child(state, JW_CHILD_LAUNCHER);
         return;
     }

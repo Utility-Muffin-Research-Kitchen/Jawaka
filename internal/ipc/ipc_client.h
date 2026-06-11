@@ -16,6 +16,7 @@ typedef struct {
     char system[64];
     char rom_path[512];
     char core_path[512];
+    char core_id[64];
     int disk_count;
     int disk_slot;
     bool savestate_supported;
