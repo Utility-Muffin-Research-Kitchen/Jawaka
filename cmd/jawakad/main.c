@@ -30,6 +30,14 @@
 #include <time.h>
 #include <unistd.h>
 
+/* CLOCK_BOOTTIME (counts time spent suspended) is Linux-only. The native/mock
+   build never suspends, so fall back to CLOCK_MONOTONIC there: the boot-minus-
+   monotonic gap is then always ~0 ("never suspended"), which is the correct
+   off-device behavior and keeps the resume-detection code portable. */
+#ifndef CLOCK_BOOTTIME
+#define CLOCK_BOOTTIME CLOCK_MONOTONIC
+#endif
+
 #define JW_SWITCHER_RESUME_RETRY_MS 100LL
 #define JW_SWITCHER_RESUME_MAX_ATTEMPTS 40
 #define JW_INGAME_MENU_PREWARM_DELAY_MS 1200LL
