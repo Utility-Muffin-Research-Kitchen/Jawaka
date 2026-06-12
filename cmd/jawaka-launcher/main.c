@@ -467,9 +467,10 @@ static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
     lr = cat_box_fit_rows(&lb, jw__browse_base_item_h(), item_count, &vis, &ih);
     ir.h = lr.h;
     /* The row pill is centered in its cell (pill_h = body + CAT_S(6); see
-       jw__draw_rom_item), so the first/last pills sit inset from the cell edges by
-       (ih - pill_h)/2. Inset the icon box by that same amount so its top and
-       bottom line up with the pills, not the bare cell edges. */
+       jw__draw_rom_item), so the first/last pills sit inset from the cell edges
+       by (ih - pill_h)/2. Inset the icon box by that same amount so its top and
+       bottom line up with the pills, not the bare cell edges. (ih is the filled
+       pitch in all cases - fit_rows keeps short lists on the same grid.) */
     int pad_v = (ih - (jw__browse_base_item_h() - CAT_S(6))) / 2;
     if (pad_v > 0) { ir.y += pad_v; ir.h -= pad_v * 2; }
     if (list)   *list   = lr;
@@ -603,6 +604,19 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
     jw__resolve_system_names(db_path, state);
     jw_db_list_apps(db_path, state->apps, JW_MAX_APPS, &state->app_count);
+
+    /* Dev-only layout filler: JAWAKA_FAKE_APPS=N appends N synthetic rows to
+       the Apps tab to evaluate how a fuller list renders. Empty pak_dir marks
+       them unlaunchable (guarded at the launch site). */
+    const char *fake_apps_env = getenv("JAWAKA_FAKE_APPS");
+    if (fake_apps_env && fake_apps_env[0]) {
+        int want = atoi(fake_apps_env);
+        for (int i = 0; i < want && state->app_count < JW_MAX_APPS; i++) {
+            jw_app_entry *fake = &state->apps[state->app_count++];
+            memset(fake, 0, sizeof(*fake));
+            snprintf(fake->name, sizeof(fake->name), "Sample App %02d", i + 1);
+        }
+    }
 
     if (jw_db_list_recent_games(db_path, state->recents, JW_MAX_RECENTS,
                                 &state->recents_count) != 0) {
@@ -3577,6 +3591,11 @@ static int jw__launch_app_at(const char *socket_path, jw_launcher_state *state,
     }
 
     const jw_app_entry *app = &state->apps[cursor];
+    if (!app->pak_dir[0]) {
+        snprintf(state->status, sizeof(state->status),
+                 "%.200s is a layout sample, not a real app", app->name);
+        return -1;
+    }
     return jw__launch_app_request(socket_path, app->name, app->pak_dir, state, running);
 }
 
