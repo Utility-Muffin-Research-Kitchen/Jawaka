@@ -105,18 +105,18 @@ typedef enum {
     JW_ACTION_SYSTEM
 } jw_action_scope;
 
+/* Action rows offer only what the underlying views can't already do directly:
+   launching, favoriting, and reaching system defaults all have first-class
+   buttons elsewhere, so they don't reappear here. */
 typedef enum {
     JW_ACTION_ROW_SEARCH = 0,
-    JW_ACTION_ROW_LAUNCH,
     JW_ACTION_ROW_DISPLAY_NAME,
     JW_ACTION_ROW_CORE,
     JW_ACTION_ROW_PERFORMANCE,
-    JW_ACTION_ROW_FAVORITE,
     JW_ACTION_ROW_SCRAPE,        /* game: replace art; system: missing only */
     JW_ACTION_ROW_SCRAPE_ALL,    /* system: re-scrape everything */
     JW_ACTION_ROW_SCRAPE_CANCEL, /* swap-in while the target is queued */
-    JW_ACTION_ROW_RESET,
-    JW_ACTION_ROW_OPEN_SYSTEM
+    JW_ACTION_ROW_RESET
 } jw_action_row_kind;
 
 /* ─── Coverflow animation state ───────────────────────────────────────────── */
@@ -1374,7 +1374,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     } else if (state->current_tab == JW_TAB_FAVORITES) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_X,  "Actions",  false, JW_HINT("X") },
+            { CAT_BTN_X,  "Options",  false, JW_HINT("X") },
             { CAT_BTN_Y,  "Remove",   false, JW_HINT("Y") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
         };
@@ -1382,7 +1382,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     } else if (state->current_tab == JW_TAB_RECENTS) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_X,  "Actions",  false, JW_HINT("X") },
+            { CAT_BTN_X,  "Options",  false, JW_HINT("X") },
             { CAT_BTN_B,  "Remove",   false, JW_HINT("B") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_A,  "Resume",   true,  JW_HINT("A") },
@@ -1391,7 +1391,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     } else {
         cat_footer_item footer[] = {
             { CAT_BTN_L1,   "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_X,    state->current_tab == JW_TAB_GAMES ? "Actions" : "Search",
+            { CAT_BTN_X,    state->current_tab == JW_TAB_GAMES ? "Options" : "Search",
                                             false, JW_HINT("X") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
         };
@@ -1541,7 +1541,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
         jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_X,    "Actions",  false, JW_HINT("X") },
+            { CAT_BTN_X,    "Options",  false, JW_HINT("X") },
             { CAT_BTN_MENU, "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
@@ -1799,7 +1799,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
         jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_X,     "Actions",  false, JW_HINT("X") },
+            { CAT_BTN_X,     "Options",  false, JW_HINT("X") },
             { CAT_BTN_MENU,  "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,     "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,     "Select",   true,  JW_HINT("A") },
@@ -2541,7 +2541,7 @@ static void jw__render_coverflow(jw_launcher_state *state) {
         jw__draw_footer(state, footer, 2);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_X,    "Actions",  false, JW_HINT("X") },
+            { CAT_BTN_X,    "Options",  false, JW_HINT("X") },
             { CAT_BTN_MENU, "Menu",     false, JW_HINT("H") },
             { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
             { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
@@ -2705,7 +2705,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     if (tabbed) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-            { CAT_BTN_X,  "Actions",  false, JW_HINT("X") },
+            { CAT_BTN_X,  "Options",  false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
@@ -2713,7 +2713,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         jw__draw_footer(state, footer, 5);
     } else {
         cat_footer_item footer[] = {
-            { CAT_BTN_X,  "Actions",  false, JW_HINT("X") },
+            { CAT_BTN_X,  "Options",  false, JW_HINT("X") },
             { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
@@ -2976,10 +2976,6 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             snprintf(title, title_size, "%s", "Search This System");
             snprintf(value, value_size, "%s", "Open");
             break;
-        case JW_ACTION_ROW_LAUNCH:
-            snprintf(title, title_size, "%s", "Launch");
-            snprintf(value, value_size, "%s", "Start");
-            break;
         case JW_ACTION_ROW_DISPLAY_NAME: {
             snprintf(title, title_size, "%s", "Display Name");
             if (state->action_scope == JW_ACTION_SYSTEM) {
@@ -3027,12 +3023,6 @@ static void jw__action_row_strings(const jw_launcher_state *state,
                 snprintf(value, value_size, "%s", "Auto");
             }
             break;
-        case JW_ACTION_ROW_FAVORITE:
-            snprintf(title, title_size, "%s",
-                     state->action_game.favorite ? "Unfavorite" : "Favorite");
-            snprintf(value, value_size, "%s",
-                     state->action_game.favorite ? "On" : "Off");
-            break;
         case JW_ACTION_ROW_SCRAPE:
             if (state->action_scope == JW_ACTION_GAME) {
                 snprintf(title, title_size, "%s", "Scrape Artwork");
@@ -3056,10 +3046,6 @@ static void jw__action_row_strings(const jw_launcher_state *state,
                          ? "Reset Game Overrides"
                          : "Reset System Overrides");
             snprintf(value, value_size, "%s", "Clear");
-            break;
-        case JW_ACTION_ROW_OPEN_SYSTEM:
-            snprintf(title, title_size, "%s", "Open System Defaults");
-            snprintf(value, value_size, "%s", state->action_system_display);
             break;
         default:
             break;
@@ -3105,26 +3091,48 @@ static void jw__draw_action_item(int idx, int ix, int iy, int iw, int ih,
     }
 }
 
+/* Header height for the actions page: tab bar + name sub-header in tabbed
+   mode, or the standalone title bar otherwise - same shape as search, shared
+   by the renderer and the box model so they never disagree. */
+static int jw__actions_header_h(void) {
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED)
+        return cat_get_tab_bar_height() + CAT_S(2) +
+               TTF_FontHeight(cat_get_font(CAT_FONT_EXTRA_LARGE));
+    return CAT_DS(34);
+}
+
 static void jw__render_actions(const jw_launcher_state *state) {
     cat_clear_screen();
-    jw__draw_status_bar(state);
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
 
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
     int fh = jw__footer_height(state);
     int margin = CAT_S(12);
-    int title_y = CAT_S(8);
-    cat_status_bar_opts title_sb = {0};
-    jw_settings_status_bar_opts(&state->settings, &title_sb);
-    int title_max = sw - cat_get_status_bar_width(&title_sb) - margin * 3;
-    if (title_max < CAT_S(120)) title_max = CAT_S(120);
-    int page_max = sw - margin * 2;
-    if (title_max > page_max) title_max = page_max;
+
+    /* Same header as the home tabs / game browser / search: in tabbed layout
+       the section tab bar with the status icons inline, and the game or
+       system name as a sub-header beneath it. The status bar never floats
+       free in the tabbed world. Other layouts keep the standalone pill. */
+    bool tabbed = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED);
+    int title_y;
+    if (tabbed) {
+        title_y = jw__draw_tab_header(state) + CAT_S(2);
+    } else {
+        jw__draw_status_bar(state);
+        title_y = CAT_S(6);
+    }
+
+    int title_max = sw - margin * 2;
+    if (!tabbed) {
+        cat_status_bar_opts title_sb = {0};
+        jw_settings_status_bar_opts(&state->settings, &title_sb);
+        title_max = sw - cat_get_status_bar_width(&title_sb) - margin * 3;
+        if (title_max < CAT_S(120)) title_max = CAT_S(120);
+    }
 
     char title[320];
     if (state->action_scope == JW_ACTION_GAME) {
@@ -3132,51 +3140,60 @@ static void jw__render_actions(const jw_launcher_state *state) {
         jw__clean_rom_name(state->action_game.name, name, sizeof(name));
         snprintf(title, sizeof(title), "%s", name);
     } else {
-        snprintf(title, sizeof(title), "System Actions: %s",
+        snprintf(title, sizeof(title), "System Options: %s",
                  state->action_system_display);
     }
+
+    /* A title longer than title_max scrolls (looping marquee) instead of
+       truncating, so the full game name is always readable - same treatment
+       as the game browser's system sub-header. */
     {
-        static cat_marquee action_title_marquee;
-        static char        last_action_title[320] = "";
-        static uint32_t    last_action_title_ms = 0;
+        static cat_marquee title_marquee;
+        static char        last_title[320] = "";
+        static uint32_t    last_ms = 0;
         uint32_t now = SDL_GetTicks();
-        if (strcmp(title, last_action_title) != 0 ||
-            action_title_marquee.mode != CAT_MARQUEE_PINGPONG) {
-            action_title_marquee.elapsed_ms = 0;
-            action_title_marquee.mode = CAT_MARQUEE_PINGPONG;
-            snprintf(last_action_title, sizeof(last_action_title), "%s", title);
-            last_action_title_ms = now;
+        if (strcmp(title, last_title) != 0) {
+            title_marquee.elapsed_ms = 0;
+            snprintf(last_title, sizeof(last_title), "%s", title);
+            last_ms = now;
         }
-        uint32_t dt = (last_action_title_ms == 0) ? 0u : (now - last_action_title_ms);
-        last_action_title_ms = now;
-        if (cat_draw_text_marquee(large, title, margin, title_y,
-                                  theme->text, title_max,
-                                  &action_title_marquee, dt))
+        uint32_t dt = (last_ms == 0) ? 0u : (now - last_ms);
+        last_ms = now;
+        if (cat_draw_text_marquee(large, title, margin, title_y, theme->text,
+                                  title_max, &title_marquee, dt))
             cat_request_frame();
     }
 
-    int list_y = CAT_DS(42);
-    int list_h = sh - list_y - fh - CAT_S(24);
-    int item_h = TTF_FontHeight(body) + CAT_S(14);
+    /* Box model below the header: the rows fill the content box on the
+       canonical grid - same pitch and filled geometry as every tab. */
+    int header_h = jw__actions_header_h();
+    int hint_pad = (fh > 0) ? margin : 0;
+    cat_box page = { 0, header_h, sw, sh - header_h - fh - hint_pad,
+                     margin, margin, 0, margin };
+
+    /* No status toast in this view: a selection's feedback is the row value
+       itself changing, and the name already lives in the sub-header. */
+    int item_h = TTF_FontHeight(body) + CAT_S(12);
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&page, item_h, state->action_row_count,
+                                   &vis, &item_h);
+    ((cat_list_state *)&state->action_list)->visible_rows = vis;
     jw__actions_ctx ctx = { state };
     if (state->action_row_count > 0) {
-        cat_draw_list_pane(margin, list_y, sw - margin * 2, list_h,
+        cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h,
                            state->action_row_count, &state->action_list,
                            item_h, jw__draw_action_item, &ctx);
     }
 
-    int status_y = sh - fh - TTF_FontHeight(small) - CAT_S(4);
-    if (jw_settings_show_hints(&state->settings)) {
-        cat_draw_text_ellipsized(small, state->status, margin, status_y,
-                                 theme->hint, sw - margin * 2);
-    }
-
+    /* No Left/Right hint: cycling a value row is discoverable and A cycles it
+       too. The Tab hint only applies where the tab bar is shown (tabbed). */
     cat_footer_item footer[] = {
-        { CAT_BTN_LEFT, "Change", false, JW_HINT_DEVICE("\xe2\x86\x90/\xe2\x86\x92", "Left/Right") },
+        { CAT_BTN_L1,   "Tab",    false, JW_HINT_DEVICE(";/t", "L1/R1") },
         { CAT_BTN_B,    "Back",   true,  JW_HINT("B") },
         { CAT_BTN_A,    "Select", true,  JW_HINT("A") },
     };
-    jw__draw_footer(state, footer, 3);
+    cat_footer_item *footer_items = tabbed ? footer : footer + 1;
+    jw__draw_footer(state, footer_items, tabbed ? 3 : 2);
     cat_present();
 }
 
@@ -3369,7 +3386,6 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
         }
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
     } else if (state->action_scope == JW_ACTION_GAME) {
-        jw__action_add_row(state, JW_ACTION_ROW_LAUNCH);
         jw__action_add_row(state, JW_ACTION_ROW_DISPLAY_NAME);
         if (state->action_core_count > 1 ||
             state->action_core_game_override[0] ||
@@ -3377,12 +3393,10 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
-        jw__action_add_row(state, JW_ACTION_ROW_FAVORITE);
         jw__action_add_row(state, state->action_scrape_pending
                                       ? JW_ACTION_ROW_SCRAPE_CANCEL
                                       : JW_ACTION_ROW_SCRAPE);
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
-        jw__action_add_row(state, JW_ACTION_ROW_OPEN_SYSTEM);
     }
     cat_list_state_init(&state->action_list, 7);
     cat_list_state_jump(&state->action_list, old_cursor, state->action_row_count);
@@ -3520,8 +3534,8 @@ static void jw__open_system_actions(const char *db_path, jw_launcher_state *stat
                  "%s", display_name);
     }
     jw__action_refresh(db_path, state);
-    snprintf(state->status, sizeof(state->status), "Actions: %.180s",
-             state->action_system_display);
+    /* No "Actions: ..." status echo - the name is already the sub-header. */
+    state->status[0] = '\0';
 }
 
 static void jw__open_game_actions(const char *db_path, jw_launcher_state *state,
@@ -3536,7 +3550,8 @@ static void jw__open_game_actions(const char *db_path, jw_launcher_state *state,
     jw__system_display_name(db_path, game->system, state->action_system_display,
                             sizeof(state->action_system_display));
     jw__action_refresh(db_path, state);
-    snprintf(state->status, sizeof(state->status), "Actions: %.180s", game->name);
+    /* No "Actions: ..." status echo - the name is already the sub-header. */
+    state->status[0] = '\0';
 }
 
 static bool jw__selected_home_game(const jw_launcher_state *state,
@@ -4028,25 +4043,6 @@ static void jw__reset_action_overrides(const char *db_path,
     }
 }
 
-static void jw__toggle_action_favorite(const char *db_path,
-                                       jw_launcher_state *state) {
-    if (!state || state->action_scope != JW_ACTION_GAME ||
-        state->action_game.id <= 0) {
-        return;
-    }
-    int want_on = !state->action_game.favorite;
-    if (jw_db_set_favorite(db_path, "game", state->action_game.id, want_on) != 0) {
-        snprintf(state->status, sizeof(state->status), "%s",
-                 "Favorite update failed");
-        return;
-    }
-    state->action_game.favorite = want_on;
-    snprintf(state->status, sizeof(state->status), "%s %.160s",
-             want_on ? "Favorited" : "Unfavorited",
-             state->action_game.name);
-    jw__refresh_after_action_write(db_path, state);
-}
-
 static void jw__start_action_scrape(const char *socket_path, const char *db_path,
                                     jw_launcher_state *state, bool missing_only) {
     bool is_game = state->action_scope == JW_ACTION_GAME;
@@ -4113,9 +4109,6 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
             state->actions_open = false;
             jw__open_search(db_path, state);
             break;
-        case JW_ACTION_ROW_LAUNCH:
-            jw__launch_game_entry(socket_path, state, &state->action_game, running);
-            break;
         case JW_ACTION_ROW_DISPLAY_NAME:
             jw__edit_action_display_name(db_path, state);
             break;
@@ -4124,9 +4117,6 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
             break;
         case JW_ACTION_ROW_PERFORMANCE:
             jw__cycle_action_performance(db_path, state, +1);
-            break;
-        case JW_ACTION_ROW_FAVORITE:
-            jw__toggle_action_favorite(db_path, state);
             break;
         case JW_ACTION_ROW_SCRAPE:
             jw__start_action_scrape(socket_path, db_path, state,
@@ -4140,10 +4130,6 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
             break;
         case JW_ACTION_ROW_RESET:
             jw__reset_action_overrides(db_path, state);
-            break;
-        case JW_ACTION_ROW_OPEN_SYSTEM:
-            jw__open_system_actions(db_path, state, state->action_game.system,
-                                    state->action_system_display);
             break;
         default:
             break;
@@ -4180,6 +4166,18 @@ static void jw__handle_actions_input(const char *socket_path, const char *db_pat
             state->actions_open = false;
             state->action_scope = JW_ACTION_NONE;
             state->status[0] = '\0';
+            break;
+        case CAT_BTN_L1:
+        case CAT_BTN_R1:
+            /* The actions header shows the section tabs, so L1/R1 tabs away —
+               closing the actions view and landing on the adjacent section,
+               like the game browser and search. Tabbed layout only. */
+            if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED) {
+                state->actions_open = false;
+                state->action_scope = JW_ACTION_NONE;
+                state->status[0] = '\0';
+                jw__switch_tab(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
+            }
             break;
         case CAT_BTN_MENU:
             if (jw_ipc_open_menu(socket_path) == 0) {
