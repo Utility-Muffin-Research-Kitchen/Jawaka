@@ -110,6 +110,8 @@ typedef enum {
     JW_SETTING_BUTTON_LABEL_COLOR,
     JW_SETTING_BUTTON_GLYPH_BG_COLOR,
     JW_SETTING_TIMEZONE,
+    JW_SETTING_SS_USER,
+    JW_SETTING_SS_PASS,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -139,6 +141,8 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_BUTTON_LABEL_COLOR] = "button_label_color",
     [JW_SETTING_BUTTON_GLYPH_BG_COLOR] = "button_glyph_bg_color",
     [JW_SETTING_TIMEZONE] = "timezone",
+    [JW_SETTING_SS_USER] = "screenscraper_user",
+    [JW_SETTING_SS_PASS] = "screenscraper_pass",
 };
 
 /* Curated time-zone list for Settings > Behavior > Time Zone. Each entry maps a
@@ -1000,6 +1004,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             if (jw__setting_has(values, found, JW_SETTING_TIMEZONE))
                 snprintf(ui->timezone, sizeof(ui->timezone), "%s",
                          values[JW_SETTING_TIMEZONE]);
+            if (jw__setting_has(values, found, JW_SETTING_SS_USER))
+                snprintf(ui->ss_username, sizeof(ui->ss_username), "%s",
+                         values[JW_SETTING_SS_USER]);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
                 ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
@@ -2034,10 +2041,18 @@ static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, in
 static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Accounts", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
-    /* Placeholders — sign-in is not wired up yet, so both rows report the
-       not-signed-in state and do nothing on press. */
+    /* "Saved", not "Signed in": credentials are only stored locally until the
+       scrape engine (which owns the dev-credential half of API auth) verifies
+       them against the service on first use. */
+    char ss_value[96];
+    if (ui->ss_username[0]) {
+        snprintf(ss_value, sizeof(ss_value), "Saved: %s", ui->ss_username);
+    } else {
+        snprintf(ss_value, sizeof(ss_value), "Not signed in");
+    }
     jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_SCREENSCRAPER,
-                        "ScreenScraper.fr", "Not signed in", false);
+                        "ScreenScraper.fr", ss_value, false);
+    /* RetroAchievements sign-in is not wired up yet. */
     jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_RETROACHIEVEMENTS,
                         "RetroAchievements", "Not signed in", false);
 }
@@ -4095,8 +4110,42 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 cat_list_state_move(&ui->accounts_list, +1, JW_ACCOUNTS_ROW_COUNT);
                 break;
             case CAT_BTN_A:
-                /* Sign-in not implemented yet — report it instead of pretending. */
-                snprintf(status_buf, status_size, "Sign-in coming soon");
+                if (ui->accounts_list.cursor == JW_ACCOUNTS_SCREENSCRAPER) {
+                    /* Credentials are checked against the API on first use (the
+                       scrape worker owns the dev-credential half of auth). */
+                    cat_keyboard_result kb;
+                    if (cat_keyboard(ui->ss_username,
+                                     "ScreenScraper username | B: Cancel",
+                                     CAT_KB_GENERAL, &kb) != CAT_OK || !kb.text[0]) {
+                        snprintf(status_buf, status_size, "Cancelled");
+                        break;
+                    }
+                    cat_keyboard_result pw;
+                    if (cat_keyboard("", "ScreenScraper password | B: Cancel",
+                                     CAT_KB_GENERAL, &pw) != CAT_OK || !pw.text[0]) {
+                        snprintf(status_buf, status_size, "Cancelled");
+                        break;
+                    }
+                    size_t ss_n = strnlen(kb.text, sizeof(ui->ss_username) - 1);
+                    memcpy(ui->ss_username, kb.text, ss_n);
+                    ui->ss_username[ss_n] = '\0';
+                    jw__persist(ui, "screenscraper_user", ui->ss_username);
+                    jw__persist(ui, "screenscraper_pass", pw.text);
+                    snprintf(status_buf, status_size,
+                             "Saved - verified on first scrape");
+                } else {
+                    /* RetroAchievements sign-in not implemented yet. */
+                    snprintf(status_buf, status_size, "Sign-in coming soon");
+                }
+                break;
+            case CAT_BTN_Y:
+                if (ui->accounts_list.cursor == JW_ACCOUNTS_SCREENSCRAPER &&
+                    ui->ss_username[0]) {
+                    ui->ss_username[0] = '\0';
+                    jw__persist(ui, "screenscraper_user", "");
+                    jw__persist(ui, "screenscraper_pass", "");
+                    snprintf(status_buf, status_size, "Signed out of ScreenScraper");
+                }
                 break;
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_HOME;
