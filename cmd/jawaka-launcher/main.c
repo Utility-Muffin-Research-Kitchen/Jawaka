@@ -1198,7 +1198,12 @@ static void jw__render_settings(const jw_launcher_state *state,
     int sx = margin;
     int sy = content_y + margin;
     int sw_inner = sw - margin * 2;
-    int sh_inner = content_h - CAT_S(28);
+    /* Same content-box height rule as jw__browse_boxes (top pad here is the
+       margin already applied via sy; the gap above the hint bar is the hint
+       box's own top padding) - so the Settings list sits on the same row grid
+       as the browse tabs instead of a slightly denser one. */
+    int hints_h = jw__footer_height(state);
+    int sh_inner = content_h - margin - ((hints_h > 0) ? margin : 0);
 
     jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
 }
