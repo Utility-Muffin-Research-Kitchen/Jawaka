@@ -167,6 +167,8 @@ typedef struct {
     char               timezone[64];        /* IANA zone id exported as TZ; "" = system default */
     char               ss_username[64];     /* ScreenScraper account ("" = signed out); password
                                                lives only in the settings DB for the scrape worker */
+    char               ra_username[64];     /* RetroAchievements account ("" = signed out); exported
+                                               to RetroArch's session config, which validates it */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */

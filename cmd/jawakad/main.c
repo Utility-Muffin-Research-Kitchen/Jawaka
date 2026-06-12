@@ -889,6 +889,28 @@ static void jw__refresh_platform_cache(jw_daemon_state *state) {
     jw__cache_platform_status(state, &status);
 }
 
+/* Export stored RetroAchievements credentials (Settings > Accounts) so the
+   RetroArch session config writer can enable cheevos; RetroArch validates
+   them with the service at launch. No credentials = leave whatever the user
+   configured inside RetroArch itself untouched. */
+static void jw__publish_cheevos_env(jw_daemon_state *state) {
+    char user[64] = "";
+    char pass[128] = "";
+    if (state && state->db_path) {
+        (void)jw_db_get_setting(state->db_path, "retroachievements_user",
+                                user, sizeof(user));
+        (void)jw_db_get_setting(state->db_path, "retroachievements_pass",
+                                pass, sizeof(pass));
+    }
+    if (user[0] && pass[0]) {
+        setenv("JAWAKA_CHEEVOS_USERNAME", user, 1);
+        setenv("JAWAKA_CHEEVOS_PASSWORD", pass, 1);
+    } else {
+        unsetenv("JAWAKA_CHEEVOS_USERNAME");
+        unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+    }
+}
+
 static void jw__publish_audio_env(jw_daemon_state *state) {
     if (!state) {
         return;
@@ -3371,6 +3393,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
 
     jw__suspend_input_proxy_for_app(state);
     jw__publish_audio_env(state);
+    jw__publish_cheevos_env(state);   /* the RetroArch.pak runner builds its own config */
     (void)jw__perf_apply_frontend(state, "app-launch");
 
     /* Resolve appearance from the DB here in the parent — opening SQLite between
@@ -3574,6 +3597,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
 
     jw__publish_retroarch_input_env(state);
     jw__publish_audio_env(state);
+    jw__publish_cheevos_env(state);
 
     if (!retroarch || !jw__path_exists(retroarch)) {
         jw_log_error("RetroArch binary missing: %s", retroarch ? retroarch : "(null)");

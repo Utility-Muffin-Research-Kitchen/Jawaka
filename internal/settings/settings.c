@@ -112,6 +112,8 @@ typedef enum {
     JW_SETTING_TIMEZONE,
     JW_SETTING_SS_USER,
     JW_SETTING_SS_PASS,
+    JW_SETTING_RA_USER,
+    JW_SETTING_RA_PASS,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -143,6 +145,8 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_TIMEZONE] = "timezone",
     [JW_SETTING_SS_USER] = "screenscraper_user",
     [JW_SETTING_SS_PASS] = "screenscraper_pass",
+    [JW_SETTING_RA_USER] = "retroachievements_user",
+    [JW_SETTING_RA_PASS] = "retroachievements_pass",
 };
 
 /* Curated time-zone list for Settings > Behavior > Time Zone. Each entry maps a
@@ -1007,6 +1011,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             if (jw__setting_has(values, found, JW_SETTING_SS_USER))
                 snprintf(ui->ss_username, sizeof(ui->ss_username), "%s",
                          values[JW_SETTING_SS_USER]);
+            if (jw__setting_has(values, found, JW_SETTING_RA_USER))
+                snprintf(ui->ra_username, sizeof(ui->ra_username), "%s",
+                         values[JW_SETTING_RA_USER]);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
                 ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
@@ -2052,9 +2059,14 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
     }
     jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_SCREENSCRAPER,
                         "ScreenScraper.fr", ss_value, false);
-    /* RetroAchievements sign-in is not wired up yet. */
+    char ra_value[96];
+    if (ui->ra_username[0]) {
+        snprintf(ra_value, sizeof(ra_value), "Saved: %s", ui->ra_username);
+    } else {
+        snprintf(ra_value, sizeof(ra_value), "Not signed in");
+    }
     jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_RETROACHIEVEMENTS,
-                        "RetroAchievements", "Not signed in", false);
+                        "RetroAchievements", ra_value, false);
 }
 
 /* ─── About ────────────────────────────────────────────────────────────── */
@@ -4109,35 +4121,43 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_DOWN:
                 cat_list_state_move(&ui->accounts_list, +1, JW_ACCOUNTS_ROW_COUNT);
                 break;
-            case CAT_BTN_A:
-                if (ui->accounts_list.cursor == JW_ACCOUNTS_SCREENSCRAPER) {
-                    /* Credentials are checked against the API on first use (the
-                       scrape worker owns the dev-credential half of auth). */
-                    cat_keyboard_result kb;
-                    if (cat_keyboard(ui->ss_username,
-                                     "ScreenScraper username | B: Cancel",
-                                     CAT_KB_GENERAL, &kb) != CAT_OK || !kb.text[0]) {
-                        snprintf(status_buf, status_size, "Cancelled");
-                        break;
-                    }
-                    cat_keyboard_result pw;
-                    if (cat_keyboard("", "ScreenScraper password | B: Cancel",
-                                     CAT_KB_GENERAL, &pw) != CAT_OK || !pw.text[0]) {
-                        snprintf(status_buf, status_size, "Cancelled");
-                        break;
-                    }
-                    size_t ss_n = strnlen(kb.text, sizeof(ui->ss_username) - 1);
-                    memcpy(ui->ss_username, kb.text, ss_n);
-                    ui->ss_username[ss_n] = '\0';
-                    jw__persist(ui, "screenscraper_user", ui->ss_username);
-                    jw__persist(ui, "screenscraper_pass", pw.text);
-                    snprintf(status_buf, status_size,
-                             "Saved - verified on first scrape");
-                } else {
-                    /* RetroAchievements sign-in not implemented yet. */
-                    snprintf(status_buf, status_size, "Sign-in coming soon");
+            case CAT_BTN_A: {
+                /* Both rows store credentials for later validation by the
+                   consuming service: ScreenScraper by the scrape worker (which
+                   owns the dev-credential half of API auth), RetroAchievements
+                   by RetroArch itself at game launch. */
+                bool is_ss = ui->accounts_list.cursor == JW_ACCOUNTS_SCREENSCRAPER;
+                char *username = is_ss ? ui->ss_username : ui->ra_username;
+                size_t username_size = is_ss ? sizeof(ui->ss_username)
+                                             : sizeof(ui->ra_username);
+                const char *service = is_ss ? "ScreenScraper" : "RetroAchievements";
+                char prompt[96];
+                cat_keyboard_result kb;
+                snprintf(prompt, sizeof(prompt), "%s username | B: Cancel", service);
+                if (cat_keyboard(username, prompt, CAT_KB_GENERAL, &kb) != CAT_OK ||
+                    !kb.text[0]) {
+                    snprintf(status_buf, status_size, "Cancelled");
+                    break;
                 }
+                cat_keyboard_result pw;
+                snprintf(prompt, sizeof(prompt), "%s password | B: Cancel", service);
+                if (cat_keyboard("", prompt, CAT_KB_GENERAL, &pw) != CAT_OK ||
+                    !pw.text[0]) {
+                    snprintf(status_buf, status_size, "Cancelled");
+                    break;
+                }
+                size_t name_n = strnlen(kb.text, username_size - 1);
+                memcpy(username, kb.text, name_n);
+                username[name_n] = '\0';
+                jw__persist(ui, is_ss ? "screenscraper_user" : "retroachievements_user",
+                            username);
+                jw__persist(ui, is_ss ? "screenscraper_pass" : "retroachievements_pass",
+                            pw.text);
+                snprintf(status_buf, status_size,
+                         is_ss ? "Saved - verified on first scrape"
+                               : "Saved - RetroArch signs in at game launch");
                 break;
+            }
             case CAT_BTN_Y:
                 if (ui->accounts_list.cursor == JW_ACCOUNTS_SCREENSCRAPER &&
                     ui->ss_username[0]) {
@@ -4145,6 +4165,12 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__persist(ui, "screenscraper_user", "");
                     jw__persist(ui, "screenscraper_pass", "");
                     snprintf(status_buf, status_size, "Signed out of ScreenScraper");
+                } else if (ui->accounts_list.cursor == JW_ACCOUNTS_RETROACHIEVEMENTS &&
+                           ui->ra_username[0]) {
+                    ui->ra_username[0] = '\0';
+                    jw__persist(ui, "retroachievements_user", "");
+                    jw__persist(ui, "retroachievements_pass", "");
+                    snprintf(status_buf, status_size, "Signed out of RetroAchievements");
                 }
                 break;
             case CAT_BTN_B:

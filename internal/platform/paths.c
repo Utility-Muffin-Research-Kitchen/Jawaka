@@ -1341,6 +1341,19 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
         jw__retroarch_cfg_string(fp, "input_player1_joypad_index", joypad_index);
     }
 
+    /* RetroAchievements: jawakad exports the credentials stored under
+       Settings > Accounts; RetroArch validates them with the service at
+       launch. Absent env = don't touch whatever the user set up inside
+       RetroArch itself. The session config lives in the runtime dir, so the
+       password never lands in the persistent shared config. */
+    const char *cheevos_user = jw__env_value("JAWAKA_CHEEVOS_USERNAME");
+    const char *cheevos_pass = jw__env_value("JAWAKA_CHEEVOS_PASSWORD");
+    if (cheevos_user && cheevos_user[0] && cheevos_pass && cheevos_pass[0]) {
+        jw__retroarch_cfg_string(fp, "cheevos_enable", "true");
+        jw__retroarch_cfg_string(fp, "cheevos_username", cheevos_user);
+        jw__retroarch_cfg_string(fp, "cheevos_password", cheevos_pass);
+    }
+
     free(core_dir_alloc);
     free(info_dir);
     free(autoconfig_dir);
