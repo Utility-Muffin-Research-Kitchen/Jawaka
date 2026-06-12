@@ -240,6 +240,9 @@ static int jw__find_virtual_event(const char *physical_path, char *out, size_t o
 
 static void jw__write_event(jw_mlp1_input_proxy_data *data,
                             uint16_t type, uint16_t code, int32_t value) {
+    if (data->uinput_fd < 0) {
+        return;   /* watch-only mode: observe hotkeys, forward nothing */
+    }
     struct input_event ev;
     memset(&ev, 0, sizeof(ev));
     gettimeofday(&ev.time, NULL);
@@ -386,12 +389,13 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
     jw__forward_event(data, ev);
 }
 
-int jw_input_proxy_init(jw_input_proxy *proxy,
-                        jw_input_brightness_delta_cb brightness_delta,
-                        jw_input_volume_delta_cb volume_delta,
-                        jw_input_menu_tap_cb menu_tap,
-                        jw_input_game_switcher_cb game_switcher,
-                        void *userdata) {
+static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
+                                     jw_input_brightness_delta_cb brightness_delta,
+                                     jw_input_volume_delta_cb volume_delta,
+                                     jw_input_menu_tap_cb menu_tap,
+                                     jw_input_game_switcher_cb game_switcher,
+                                     void *userdata,
+                                     bool watch_only) {
     if (!proxy) {
         return -1;
     }
@@ -427,27 +431,29 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
              "%s", data->physical_path);
     snprintf(proxy->device_name, sizeof(proxy->device_name), "%s", JW_MLP1_INPUT_NAME);
 
-    data->uinput_fd = jw__create_virtual_gamepad(data->input_fd);
-    if (data->uinput_fd < 0) {
-        jw_log_warn("input proxy: could not create virtual gamepad: %s", strerror(errno));
-        close(data->input_fd);
-        free(data);
-        return 0;
-    }
+    if (!watch_only) {
+        data->uinput_fd = jw__create_virtual_gamepad(data->input_fd);
+        if (data->uinput_fd < 0) {
+            jw_log_warn("input proxy: could not create virtual gamepad: %s", strerror(errno));
+            close(data->input_fd);
+            free(data);
+            return 0;
+        }
 
-    if (jw__find_virtual_event(data->physical_path,
-                               proxy->virtual_event_path,
-                               sizeof(proxy->virtual_event_path)) != 0) {
-        jw_log_warn("input proxy: virtual event path not found");
-    }
+        if (jw__find_virtual_event(data->physical_path,
+                                   proxy->virtual_event_path,
+                                   sizeof(proxy->virtual_event_path)) != 0) {
+            jw_log_warn("input proxy: virtual event path not found");
+        }
 
-    if (ioctl(data->input_fd, EVIOCGRAB, 1) < 0) {
-        jw_log_warn("input proxy: EVIOCGRAB failed: %s", strerror(errno));
-        ioctl(data->uinput_fd, UI_DEV_DESTROY);
-        close(data->uinput_fd);
-        close(data->input_fd);
-        free(data);
-        return 0;
+        if (ioctl(data->input_fd, EVIOCGRAB, 1) < 0) {
+            jw_log_warn("input proxy: EVIOCGRAB failed: %s", strerror(errno));
+            ioctl(data->uinput_fd, UI_DEV_DESTROY);
+            close(data->uinput_fd);
+            close(data->input_fd);
+            free(data);
+            return 0;
+        }
     }
 
     /* Take over the power key: EVIOCGRAB it so stock loong_power never sees a press
@@ -474,10 +480,40 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
 
     proxy->backend_data = data;
     proxy->enabled = true;
-    jw_log_info("input proxy: grabbed %s, virtual=%s",
-                data->physical_path,
-                proxy->virtual_event_path[0] ? proxy->virtual_event_path : "(unknown)");
+    if (watch_only) {
+        jw_log_info("input proxy: watching %s (no grab; hotkeys only)",
+                    data->physical_path);
+    } else {
+        jw_log_info("input proxy: grabbed %s, virtual=%s",
+                    data->physical_path,
+                    proxy->virtual_event_path[0] ? proxy->virtual_event_path : "(unknown)");
+    }
     return 0;
+}
+
+int jw_input_proxy_init(jw_input_proxy *proxy,
+                        jw_input_brightness_delta_cb brightness_delta,
+                        jw_input_volume_delta_cb volume_delta,
+                        jw_input_menu_tap_cb menu_tap,
+                        jw_input_game_switcher_cb game_switcher,
+                        void *userdata) {
+    return jw__input_proxy_init_impl(proxy, brightness_delta, volume_delta,
+                                     menu_tap, game_switcher, userdata, false);
+}
+
+/* Watch-only variant for standalone emulator sessions: the emulator reads the
+   physical gamepad directly (no grab, no virtual device), while jawakad still
+   observes the same device for the volume/brightness hotkeys and the Menu tap -
+   the only exit from a kmsdrm fullscreen session. The emulator also receives
+   the hotkey presses, but it has no bindings for them. */
+int jw_input_proxy_init_watch(jw_input_proxy *proxy,
+                              jw_input_brightness_delta_cb brightness_delta,
+                              jw_input_volume_delta_cb volume_delta,
+                              jw_input_menu_tap_cb menu_tap,
+                              jw_input_game_switcher_cb game_switcher,
+                              void *userdata) {
+    return jw__input_proxy_init_impl(proxy, brightness_delta, volume_delta,
+                                     menu_tap, game_switcher, userdata, true);
 }
 
 int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {

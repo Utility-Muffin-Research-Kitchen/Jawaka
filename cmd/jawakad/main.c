@@ -108,6 +108,9 @@ typedef struct {
     bool menu_in_game;
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
     int menu_standby_attempts;/* respawn guard for a crashing standby within one session */
+    long long standalone_quit_request_ms; /* Menu-tap quit sent to a standalone
+                                 emulator (0 = none); a second tap after the
+                                 grace period escalates to SIGKILL */
     bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
@@ -165,6 +168,12 @@ static bool jw__has_retroarch_session(const jw_daemon_state *state) {
     return state &&
            state->retroarch_session.active &&
            state->child_kind == JW_CHILD_RETROARCH;
+}
+
+static bool jw__has_standalone_session(const jw_daemon_state *state) {
+    return state &&
+           state->retroarch_session.active &&
+           state->child_kind == JW_CHILD_EMULATOR;
 }
 
 static long long jw__monotonic_ms(void) {
@@ -1575,6 +1584,7 @@ static void jw__standalone_session_start(jw_daemon_state *state, pid_t pid,
 
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
+    state->standalone_quit_request_ms = 0;
 
     jw_log_info("standalone emulator session started pid=%d system=%s source=%s launcher=%s core_id=%s rom=%s",
                 (int)pid, session->system, session->source_root,
@@ -1586,6 +1596,7 @@ static void jw__standalone_session_finish(jw_daemon_state *state, pid_t pid, int
     if (!state) {
         return;
     }
+    state->standalone_quit_request_ms = 0;
 
     jw_retroarch_session *session = &state->retroarch_session;
     if (!session->active) {
@@ -3084,7 +3095,12 @@ static void jw__input_volume_delta(void *userdata, int delta_percent) {
         if (resolved > 100) resolved = 100;
         state->cached_volume_percent = resolved;
         jw__persist_volume(state, resolved);
-        jw__osd_show_volume(state, resolved);
+        /* No OSD over a kmsdrm standalone emulator: the Wayland overlay can
+           only steal one stray frame from the emulator's page flips. The
+           audible change is the feedback. */
+        if (!jw__has_standalone_session(state)) {
+            jw__osd_show_volume(state, resolved);
+        }
         jw_log_info("volume hotkey delta=%d value=%d", delta_percent, resolved);
     } else {
         jw_log_warn("volume hotkey failed: %s", result.message);
@@ -3105,7 +3121,8 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
                     : 50;
 
     jw_platform_result result;
-    if (jw__set_brightness(state, current + delta_percent, true, true, &result) == 0) {
+    bool show_osd = !jw__has_standalone_session(state);
+    if (jw__set_brightness(state, current + delta_percent, true, show_osd, &result) == 0) {
         jw_log_info("brightness hotkey delta=%d value=%d",
                     delta_percent, result.has_value ? result.value : current + delta_percent);
     } else {
@@ -3115,6 +3132,31 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
 
 static bool jw__input_menu_tap(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
+
+    /* Standalone emulators (PPSSPP) own the display via kmsdrm, so no overlay
+       menu can appear above them; the Menu key is the exit instead. First tap
+       asks the emulator to quit (SIGTERM - back to the launcher); if it is
+       still alive after a grace period, a second tap forces it. */
+    if (jw__has_standalone_session(state)) {
+        pid_t pid = state->retroarch_session.pid;
+        long long now = jw__monotonic_ms();
+        if (state->standalone_quit_request_ms == 0) {
+            jw_log_info("menu tap: quitting standalone emulator pid=%d", (int)pid);
+            if (kill(pid, SIGTERM) != 0 && errno != ESRCH) {
+                jw_log_warn("standalone quit: SIGTERM failed pid=%d: %s",
+                            (int)pid, strerror(errno));
+            }
+            state->standalone_quit_request_ms = now;
+        } else if (now - state->standalone_quit_request_ms >= 2000) {
+            jw_log_warn("standalone emulator ignored quit; forcing pid=%d", (int)pid);
+            if (kill(pid, SIGKILL) != 0 && errno != ESRCH) {
+                jw_log_warn("standalone quit: SIGKILL failed pid=%d: %s",
+                            (int)pid, strerror(errno));
+            }
+        }
+        return true;
+    }
+
     if (!jw__has_retroarch_session(state)) {
         return false;
     }
@@ -3406,7 +3448,17 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_log_info("standalone emulator launch transition readiness code=%s",
                 jw_platform_result_code_name(ready_result.code));
 
+    /* The emulator reads the physical pad directly (suspend the grab, like app
+       launches - SDL emulators bind pad 0, which must be the real device), but
+       jawakad still needs the hotkeys: re-open the pad in watch-only mode so
+       volume/brightness keep working and a Menu tap can end the session - the
+       only exit from a kmsdrm fullscreen emulator. */
     jw__suspend_input_proxy_for_app(state);
+    if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
+                                  jw__input_volume_delta, jw__input_menu_tap,
+                                  jw__input_game_switcher, state) != 0) {
+        jw_log_warn("input watch: init failed; Menu exit unavailable this session");
+    }
     jw__publish_audio_env(state);
     (void)jw__perf_apply_launch_game(state, state->pending_launch_system,
                                      state->pending_launch_rom_path,
@@ -3418,6 +3470,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
+        jw_input_proxy_shutdown(&state->input_proxy);  /* drop the watch-only proxy */
         jw__start_input_proxy(state);
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
@@ -4758,6 +4811,9 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     if (exited_kind == JW_CHILD_APP || exited_kind == JW_CHILD_EMULATOR) {
+        /* A standalone session leaves the watch-only proxy active; tear it
+           down so the full grab-and-forward proxy can come back. */
+        jw_input_proxy_shutdown(&state->input_proxy);
         jw__start_input_proxy(state);
     }
 

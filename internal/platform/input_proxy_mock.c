@@ -20,6 +20,16 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
     return 0;
 }
 
+int jw_input_proxy_init_watch(jw_input_proxy *proxy,
+                              jw_input_brightness_delta_cb brightness_delta,
+                              jw_input_volume_delta_cb volume_delta,
+                              jw_input_menu_tap_cb menu_tap,
+                              jw_input_game_switcher_cb game_switcher,
+                              void *userdata) {
+    return jw_input_proxy_init(proxy, brightness_delta, volume_delta,
+                               menu_tap, game_switcher, userdata);
+}
+
 int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {
     (void)proxy;
     return -1;
