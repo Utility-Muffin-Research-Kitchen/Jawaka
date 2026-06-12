@@ -4,6 +4,7 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/device.h"
 #include "internal/platform/platform_id.h"
+#include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
 #include "cJSON.h"
 
@@ -112,6 +113,12 @@ typedef enum {
     JW_SETTING_TIMEZONE,
     JW_SETTING_SS_USER,
     JW_SETTING_SS_PASS,
+    JW_SETTING_SS_VERIFIED,
+    JW_SETTING_SS_MAXTHREADS,
+    JW_SETTING_SS_REQUESTS_TODAY,
+    JW_SETTING_SS_MAX_REQUESTS,
+    JW_SETTING_SCRAPE_ARTWORK_PRIO,
+    JW_SETTING_SCRAPE_REGION_PRIO,
     JW_SETTING_RA_USER,
     JW_SETTING_RA_PASS,
     JW_SETTING_COUNT,
@@ -145,6 +152,12 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_TIMEZONE] = "timezone",
     [JW_SETTING_SS_USER] = "screenscraper_user",
     [JW_SETTING_SS_PASS] = "screenscraper_pass",
+    [JW_SETTING_SS_VERIFIED] = "screenscraper_verified",
+    [JW_SETTING_SS_MAXTHREADS] = "screenscraper_maxthreads",
+    [JW_SETTING_SS_REQUESTS_TODAY] = "screenscraper_requests_today",
+    [JW_SETTING_SS_MAX_REQUESTS] = "screenscraper_max_requests",
+    [JW_SETTING_SCRAPE_ARTWORK_PRIO] = "scrape.artwork_priority",
+    [JW_SETTING_SCRAPE_REGION_PRIO] = "scrape.region_priority",
     [JW_SETTING_RA_USER] = "retroachievements_user",
     [JW_SETTING_RA_PASS] = "retroachievements_pass",
 };
@@ -280,11 +293,12 @@ static const char *kHomeCategoryLabels[] = {
     "Lighting",
     "Library",
     "Accounts",
+    "Scraping",
     "Behavior",
     "System Update",
     "About",
 };
-#define JW_SETTINGS_CATEGORY_COUNT 10
+#define JW_SETTINGS_CATEGORY_COUNT 11
 
 /* Visible rows in the Network page's scanned-network list (scrolls beyond). */
 #define JW_WIFI_LIST_ROWS 6
@@ -311,6 +325,11 @@ static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
 
 
 /* ─── Helpers ──────────────────────────────────────────────────────────── */
+
+static int jw__scrape_csv_to_order(const char *csv,
+                                   const jw_ss_option *catalog, int catalog_count,
+                                   const char *const *fallback, int fallback_count,
+                                   int *order);
 
 static int jw__find_theme_index(const char *name) {
     if (!name || !name[0]) return 0;
@@ -930,6 +949,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->lighting_list,    JW_LIGHTING_ROW_COUNT);
     cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
     cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
+    cat_list_state_init(&ui->scraping_list,    JW_SCRAPING_ROW_COUNT);
+    cat_list_state_init(&ui->scrape_edit_list, 8);
     cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
     cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
     cat_list_state_init(&ui->update_picker_list, JW_UPDATE_PICKER_VISIBLE_ROWS);
@@ -1011,6 +1032,28 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             if (jw__setting_has(values, found, JW_SETTING_SS_USER))
                 snprintf(ui->ss_username, sizeof(ui->ss_username), "%s",
                          values[JW_SETTING_SS_USER]);
+            if (jw__setting_has(values, found, JW_SETTING_SS_VERIFIED))
+                ui->ss_verified = (strcmp(values[JW_SETTING_SS_VERIFIED], "1") == 0);
+            if (jw__setting_has(values, found, JW_SETTING_SS_MAXTHREADS))
+                ui->ss_max_threads = atoi(values[JW_SETTING_SS_MAXTHREADS]);
+            if (jw__setting_has(values, found, JW_SETTING_SS_REQUESTS_TODAY))
+                ui->ss_requests_today = atoi(values[JW_SETTING_SS_REQUESTS_TODAY]);
+            if (jw__setting_has(values, found, JW_SETTING_SS_MAX_REQUESTS))
+                ui->ss_max_requests = atoi(values[JW_SETTING_SS_MAX_REQUESTS]);
+            ui->scrape_artwork_included = jw__scrape_csv_to_order(
+                jw__setting_has(values, found, JW_SETTING_SCRAPE_ARTWORK_PRIO)
+                    ? values[JW_SETTING_SCRAPE_ARTWORK_PRIO] : NULL,
+                jw_ss_media_types, jw_ss_media_types_count,
+                jw_ss_default_artwork_priority,
+                jw_ss_default_artwork_priority_count,
+                ui->scrape_artwork_order);
+            ui->scrape_region_included = jw__scrape_csv_to_order(
+                jw__setting_has(values, found, JW_SETTING_SCRAPE_REGION_PRIO)
+                    ? values[JW_SETTING_SCRAPE_REGION_PRIO] : NULL,
+                jw_ss_regions, jw_ss_regions_count,
+                jw_ss_default_region_priority,
+                jw_ss_default_region_priority_count,
+                ui->scrape_region_order);
             if (jw__setting_has(values, found, JW_SETTING_RA_USER))
                 snprintf(ui->ra_username, sizeof(ui->ra_username), "%s",
                          values[JW_SETTING_RA_USER]);
@@ -2045,15 +2088,210 @@ static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, in
                         true);
 }
 
+/* ─── Scraping priorities ──────────────────────────────────────────────── */
+
+/* Parse a CSV of catalog values into a full permutation of catalog indices:
+   matched values first (in CSV order, the included zone), unmatched catalog
+   entries appended in catalog order. Returns the included count. An empty
+   CSV applies the fallback value list instead. */
+static int jw__scrape_csv_to_order(const char *csv,
+                                   const jw_ss_option *catalog, int catalog_count,
+                                   const char *const *fallback, int fallback_count,
+                                   int *order) {
+    bool used[JW_SCRAPE_PRIO_SLOTS] = { false };
+    int included = 0;
+
+    if (catalog_count > JW_SCRAPE_PRIO_SLOTS) catalog_count = JW_SCRAPE_PRIO_SLOTS;
+
+    const char *p = (csv && csv[0]) ? csv : NULL;
+    while (p && *p && included < catalog_count) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        while (len > 0 && (*p == ' ' || *p == '\t')) { p++; len--; }
+        while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t')) len--;
+        for (int i = 0; i < catalog_count && len > 0; i++) {
+            if (!used[i] && strlen(catalog[i].value) == len &&
+                strncmp(catalog[i].value, p, len) == 0) {
+                order[included++] = i;
+                used[i] = true;
+                break;
+            }
+        }
+        p = comma ? comma + 1 : NULL;
+    }
+
+    if (included == 0 && fallback) {
+        for (int f = 0; f < fallback_count && included < catalog_count; f++) {
+            for (int i = 0; i < catalog_count; i++) {
+                if (!used[i] && strcmp(catalog[i].value, fallback[f]) == 0) {
+                    order[included++] = i;
+                    used[i] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    int tail = included;
+    for (int i = 0; i < catalog_count; i++) {
+        if (!used[i]) order[tail++] = i;
+    }
+    return included;
+}
+
+static void jw__scrape_persist_order(const jw_settings_ui *ui, bool region) {
+    const jw_ss_option *catalog = region ? jw_ss_regions : jw_ss_media_types;
+    const int *order = region ? ui->scrape_region_order : ui->scrape_artwork_order;
+    int included = region ? ui->scrape_region_included : ui->scrape_artwork_included;
+
+    char csv[JW_SETTINGS_VALUE_MAX] = "";
+    size_t len = 0;
+    for (int i = 0; i < included; i++) {
+        int n = snprintf(csv + len, sizeof(csv) - len, "%s%s",
+                         i > 0 ? "," : "", catalog[order[i]].value);
+        if (n < 0 || (size_t)n >= sizeof(csv) - len) break;
+        len += (size_t)n;
+    }
+    jw__persist(ui, region ? "scrape.region_priority" : "scrape.artwork_priority",
+                csv);
+}
+
+/* Move order[from] to position to, shifting the entries between. */
+static void jw__scrape_order_move(int *order, int from, int to) {
+    if (from == to) return;
+    int v = order[from];
+    if (from < to) {
+        memmove(order + from, order + from + 1, (size_t)(to - from) * sizeof(int));
+    } else {
+        memmove(order + to + 1, order + to, (size_t)(from - to) * sizeof(int));
+    }
+    order[to] = v;
+}
+
+typedef struct {
+    const jw_settings_ui *ui;
+} jw__scrape_edit_ctx;
+
+static void jw__draw_scrape_edit_item(int idx, int ix, int iy, int iw, int ih,
+                                      bool selected, void *user) {
+    jw__scrape_edit_ctx *ctx = (jw__scrape_edit_ctx *)user;
+    const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
+    if (!ui) return;
+
+    bool region = ui->scrape_edit_is_region;
+    const jw_ss_option *catalog = region ? jw_ss_regions : jw_ss_media_types;
+    int catalog_count = region ? jw_ss_regions_count : jw_ss_media_types_count;
+    const int *order = region ? ui->scrape_region_order : ui->scrape_artwork_order;
+    int included = region ? ui->scrape_region_included : ui->scrape_artwork_included;
+    if (idx < 0 || idx >= catalog_count) return;
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    bool grabbed_row = selected && ui->scrape_edit_grabbed;
+    if (selected) {
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h,
+                      grabbed_row ? theme->accent : theme->highlight);
+    }
+
+    bool is_included = idx < included;
+    ap_color label_c = selected ? theme->highlighted_text
+                                : (is_included ? theme->text : theme->hint);
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    char label[64];
+    if (is_included) {
+        snprintf(label, sizeof(label), "%d. %s", idx + 1,
+                 catalog[order[idx]].display);
+    } else {
+        snprintf(label, sizeof(label), "%s", catalog[order[idx]].display);
+    }
+    cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
+                             iw * 2 / 3);
+
+    const char *value = grabbed_row ? "Moving" : (is_included ? "On" : "Off");
+    int vw = cat_measure_text(body, value);
+    cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+}
+
+static void jw__render_scrape_priority(const jw_settings_ui *ui,
+                                       int x, int y, int w, int h) {
+    bool region = ui->scrape_edit_is_region;
+    jw__draw_header(region ? "Region Priority" : "Artwork Priority", x, y, w);
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int sub_h = jw__subheader_line_h(small) + cat_scale(6);
+    SDL_Rect sub;
+    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
+    cat_draw_text_ellipsized(small, "A: On/Off   X: Grab to reorder",
+                             sub.x + cat_scale(12), sub.y, theme->hint,
+                             sub.w - cat_scale(24));
+
+    int count = region ? jw_ss_regions_count : jw_ss_media_types_count;
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    cat_box lb = { c.x, c.y, c.w, c.h, 0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
+    ((cat_list_state *)&ui->scrape_edit_list)->visible_rows = vis;
+    jw__scrape_edit_ctx ctx = { ui };
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count,
+                       &ui->scrape_edit_list, item_h,
+                       jw__draw_scrape_edit_item, &ctx);
+}
+
+static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Scraping", x, y, w);
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+
+    char artwork_value[64];
+    if (ui->scrape_artwork_included > 0) {
+        snprintf(artwork_value, sizeof(artwork_value), "%s first",
+                 jw_ss_media_types[ui->scrape_artwork_order[0]].display);
+    } else {
+        snprintf(artwork_value, sizeof(artwork_value), "None selected");
+    }
+    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_ARTWORK,
+                        "Artwork Priority", artwork_value, false);
+
+    char region_value[64];
+    if (ui->scrape_region_included > 0) {
+        snprintf(region_value, sizeof(region_value), "%s first",
+                 jw_ss_regions[ui->scrape_region_order[0]].display);
+    } else {
+        snprintf(region_value, sizeof(region_value), "None selected");
+    }
+    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_REGION,
+                        "Region Priority", region_value, false);
+}
+
 static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Accounts", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
-    /* "Saved", not "Signed in": credentials are only stored locally until the
-       scrape engine (which owns the dev-credential half of API auth) verifies
-       them against the service on first use. */
-    char ss_value[96];
-    if (ui->ss_username[0]) {
-        snprintf(ss_value, sizeof(ss_value), "Saved: %s", ui->ss_username);
+    /* "Signed in" only after the daemon has validated the credentials against
+       the API (scrape-validate IPC); "Saved" means stored but unverified
+       (daemon or network unavailable at sign-in). */
+    char ss_value[160];
+    if (ui->ss_username[0] && ui->ss_verified) {
+        char quota[32] = "";
+        if (ui->ss_max_requests > 0) {
+            snprintf(quota, sizeof(quota), ", quota %d/%d",
+                     ui->ss_requests_today, ui->ss_max_requests);
+        }
+        if (ui->ss_max_threads > 0) {
+            snprintf(ss_value, sizeof(ss_value), "Signed in as %s - %d thread%s%s",
+                     ui->ss_username, ui->ss_max_threads,
+                     ui->ss_max_threads == 1 ? "" : "s", quota);
+        } else {
+            snprintf(ss_value, sizeof(ss_value), "Signed in as %s%s",
+                     ui->ss_username, quota);
+        }
+    } else if (ui->ss_username[0]) {
+        snprintf(ss_value, sizeof(ss_value), "Saved: %s (unverified)", ui->ss_username);
     } else {
         snprintf(ss_value, sizeof(ss_value), "Not signed in");
     }
@@ -2773,6 +3011,8 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_LIGHTING:   jw__render_lighting(ui, x, y, w, h);   break;
         case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
         case JW_SETTINGS_ACCOUNTS:   jw__render_accounts(ui, x, y, w, h);                break;
+        case JW_SETTINGS_SCRAPING:   jw__render_scraping(ui, x, y, w, h);                break;
+        case JW_SETTINGS_SCRAPE_PRIORITY: jw__render_scrape_priority(ui, x, y, w, h);    break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
         case JW_SETTINGS_UPDATE:     jw__render_update(ui, x, y, w, h);                  break;
         case JW_SETTINGS_UPDATE_PICKER: jw__render_update_picker(ui, x, y, w, h);        break;
@@ -3549,11 +3789,16 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 }
                 else if (idx == 6) ui->screen = JW_SETTINGS_ACCOUNTS;
                 else if (idx == 7) {
+                    ui->screen = JW_SETTINGS_SCRAPING;
+                    ui->scraping_list.cursor = 0;
+                    ui->scraping_list.scroll_offset = 0;
+                }
+                else if (idx == 8) {
                     ui->screen = JW_SETTINGS_BEHAVIOR;
                     jw__refresh_boot_splash(ui);
                     jw__refresh_performance(ui);
                 }
-                else if (idx == 8) {
+                else if (idx == 9) {
                     ui->screen = JW_SETTINGS_UPDATE;
                     ui->update_list.cursor = 0;
                     ui->update_list.scroll_offset = 0;
@@ -3562,7 +3807,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_update_status(ui, false);
                     ui->update_next_poll_ms = SDL_GetTicks() + 1000;
                 }
-                else if (idx == 9) {
+                else if (idx == 10) {
                     ui->screen = JW_SETTINGS_ABOUT;
                     cat_scroll_state_init(&ui->about_scroll);   /* start at top */
                 }
@@ -3836,8 +4081,9 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 jw_wifi_connect_result r = jw_wifi_connect(net->ssid, net->secured);
                 if (r == JW_WIFI_CONNECT_NEED_PASSWORD) {
                     cat_keyboard_result kb;
-                    char prompt[96];
-                    snprintf(prompt, sizeof(prompt), "Password for %s | B: Cancel",
+                    char prompt[160];
+                    snprintf(prompt, sizeof(prompt),
+                             "Password for %s\nStart: Confirm\nY: Cancel",
                              net->ssid);
                     if (cat_keyboard("", prompt, CAT_KB_GENERAL, &kb) == CAT_OK &&
                         kb.text[0]) {
@@ -4122,48 +4368,138 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 cat_list_state_move(&ui->accounts_list, +1, JW_ACCOUNTS_ROW_COUNT);
                 break;
             case CAT_BTN_A: {
-                /* Both rows store credentials for later validation by the
-                   consuming service: ScreenScraper by the scrape worker (which
-                   owns the dev-credential half of API auth), RetroAchievements
-                   by RetroArch itself at game launch. */
                 bool is_ss = ui->accounts_list.cursor == JW_ACCOUNTS_SCREENSCRAPER;
-                char *username = is_ss ? ui->ss_username : ui->ra_username;
-                size_t username_size = is_ss ? sizeof(ui->ss_username)
-                                             : sizeof(ui->ra_username);
-                const char *service = is_ss ? "ScreenScraper" : "RetroAchievements";
-                char prompt[96];
+                if (is_ss) {
+                    /* ScreenScraper: validate against the API through jawakad
+                       (the daemon owns the dev-credential half of API auth).
+                       Rejected credentials reopen the keyboard; an unreachable
+                       daemon/network saves them unverified for the first
+                       scrape to confirm. */
+                    char entered[64];
+                    snprintf(entered, sizeof(entered), "%s", ui->ss_username);
+                    const char *retry_hint = NULL;
+                    for (;;) {
+                        char prompt[160];
+                        cat_keyboard_result kb;
+                        snprintf(prompt, sizeof(prompt),
+                                 "%s\nStart: Confirm\nY: Cancel",
+                                 retry_hint ? retry_hint : "ScreenScraper username");
+                        if (cat_keyboard(entered, prompt, CAT_KB_GENERAL, &kb) != CAT_OK ||
+                            !kb.text[0]) {
+                            snprintf(status_buf, status_size, "Cancelled");
+                            break;
+                        }
+                        snprintf(entered, sizeof(entered), "%.*s",
+                                 (int)sizeof(entered) - 1, kb.text);
+                        cat_keyboard_result pw;
+                        snprintf(prompt, sizeof(prompt),
+                                 "ScreenScraper password\nStart: Confirm\nY: Cancel");
+                        if (cat_keyboard("", prompt, CAT_KB_GENERAL, &pw) != CAT_OK ||
+                            !pw.text[0]) {
+                            snprintf(status_buf, status_size, "Cancelled");
+                            break;
+                        }
+
+                        jw_ipc_scrape_validate_info info;
+                        int rc = ui->socket_path[0]
+                            ? jw_ipc_scrape_validate(ui->socket_path, entered,
+                                                     pw.text, &info)
+                            : -1;
+                        if (rc == 0 && info.valid) {
+                            snprintf(ui->ss_username, sizeof(ui->ss_username),
+                                     "%s", entered);
+                            ui->ss_verified = true;
+                            ui->ss_max_threads = info.max_threads;
+                            ui->ss_requests_today = info.requests_today;
+                            ui->ss_max_requests = info.max_requests;
+                            jw__persist(ui, "screenscraper_user", ui->ss_username);
+                            jw__persist(ui, "screenscraper_pass", pw.text);
+                            jw__persist(ui, "screenscraper_verified", "1");
+                            jw__persist_int(ui, "screenscraper_maxthreads",
+                                            info.max_threads);
+                            jw__persist_int(ui, "screenscraper_requests_today",
+                                            info.requests_today);
+                            jw__persist_int(ui, "screenscraper_max_requests",
+                                            info.max_requests);
+                            if (info.max_requests > 0) {
+                                snprintf(status_buf, status_size,
+                                         "Signed in - %d thread%s, quota %d/%d today",
+                                         info.max_threads,
+                                         info.max_threads == 1 ? "" : "s",
+                                         info.requests_today, info.max_requests);
+                            } else {
+                                snprintf(status_buf, status_size, "Signed in as %s",
+                                         ui->ss_username);
+                            }
+                            break;
+                        }
+                        if (rc == 0 && info.rejected) {
+                            retry_hint = "Login rejected - check username";
+                            continue;
+                        }
+                        /* Daemon or network unavailable: keep them, unverified. */
+                        snprintf(ui->ss_username, sizeof(ui->ss_username), "%s",
+                                 entered);
+                        ui->ss_verified = false;
+                        ui->ss_max_threads = 0;
+                        ui->ss_requests_today = 0;
+                        ui->ss_max_requests = 0;
+                        jw__persist(ui, "screenscraper_user", ui->ss_username);
+                        jw__persist(ui, "screenscraper_pass", pw.text);
+                        jw__persist(ui, "screenscraper_verified", "0");
+                        jw__persist(ui, "screenscraper_maxthreads", "");
+                        jw__persist(ui, "screenscraper_requests_today", "");
+                        jw__persist(ui, "screenscraper_max_requests", "");
+                        snprintf(status_buf, status_size,
+                                 "Saved - could not verify: %s",
+                                 (rc == 0 && info.message[0]) ? info.message
+                                                              : "daemon unavailable");
+                        break;
+                    }
+                    break;
+                }
+
+                /* RetroAchievements: stored for RetroArch, which validates at
+                   game launch. */
+                char prompt[160];
                 cat_keyboard_result kb;
-                snprintf(prompt, sizeof(prompt), "%s username | B: Cancel", service);
-                if (cat_keyboard(username, prompt, CAT_KB_GENERAL, &kb) != CAT_OK ||
+                snprintf(prompt, sizeof(prompt),
+                         "RetroAchievements username\nStart: Confirm\nY: Cancel");
+                if (cat_keyboard(ui->ra_username, prompt, CAT_KB_GENERAL, &kb) != CAT_OK ||
                     !kb.text[0]) {
                     snprintf(status_buf, status_size, "Cancelled");
                     break;
                 }
                 cat_keyboard_result pw;
-                snprintf(prompt, sizeof(prompt), "%s password | B: Cancel", service);
+                snprintf(prompt, sizeof(prompt),
+                         "RetroAchievements password\nStart: Confirm\nY: Cancel");
                 if (cat_keyboard("", prompt, CAT_KB_GENERAL, &pw) != CAT_OK ||
                     !pw.text[0]) {
                     snprintf(status_buf, status_size, "Cancelled");
                     break;
                 }
-                size_t name_n = strnlen(kb.text, username_size - 1);
-                memcpy(username, kb.text, name_n);
-                username[name_n] = '\0';
-                jw__persist(ui, is_ss ? "screenscraper_user" : "retroachievements_user",
-                            username);
-                jw__persist(ui, is_ss ? "screenscraper_pass" : "retroachievements_pass",
-                            pw.text);
+                snprintf(ui->ra_username, sizeof(ui->ra_username), "%.*s",
+                         (int)sizeof(ui->ra_username) - 1, kb.text);
+                jw__persist(ui, "retroachievements_user", ui->ra_username);
+                jw__persist(ui, "retroachievements_pass", pw.text);
                 snprintf(status_buf, status_size,
-                         is_ss ? "Saved - verified on first scrape"
-                               : "Saved - RetroArch signs in at game launch");
+                         "Saved - RetroArch signs in at game launch");
                 break;
             }
             case CAT_BTN_Y:
                 if (ui->accounts_list.cursor == JW_ACCOUNTS_SCREENSCRAPER &&
                     ui->ss_username[0]) {
                     ui->ss_username[0] = '\0';
+                    ui->ss_verified = false;
+                    ui->ss_max_threads = 0;
+                    ui->ss_requests_today = 0;
+                    ui->ss_max_requests = 0;
                     jw__persist(ui, "screenscraper_user", "");
                     jw__persist(ui, "screenscraper_pass", "");
+                    jw__persist(ui, "screenscraper_verified", "");
+                    jw__persist(ui, "screenscraper_maxthreads", "");
+                    jw__persist(ui, "screenscraper_requests_today", "");
+                    jw__persist(ui, "screenscraper_max_requests", "");
                     snprintf(status_buf, status_size, "Signed out of ScreenScraper");
                 } else if (ui->accounts_list.cursor == JW_ACCOUNTS_RETROACHIEVEMENTS &&
                            ui->ra_username[0]) {
@@ -4180,6 +4516,99 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 break;
         }
         break;
+
+    /* ── Scraping ────────────────────────────────────────────────────── */
+    case JW_SETTINGS_SCRAPING:
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->scraping_list, -1, JW_SCRAPING_ROW_COUNT);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->scraping_list, +1, JW_SCRAPING_ROW_COUNT);
+                break;
+            case CAT_BTN_A:
+                ui->scrape_edit_is_region =
+                    ui->scraping_list.cursor == JW_SCRAPING_REGION;
+                ui->scrape_edit_grabbed = false;
+                ui->scrape_edit_list.cursor = 0;
+                ui->scrape_edit_list.scroll_offset = 0;
+                ui->screen = JW_SETTINGS_SCRAPE_PRIORITY;
+                break;
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default:
+                break;
+        }
+        break;
+
+    /* ── Scrape priority editor (artwork or region) ──────────────────── */
+    case JW_SETTINGS_SCRAPE_PRIORITY: {
+        bool region = ui->scrape_edit_is_region;
+        int *order = region ? ui->scrape_region_order : ui->scrape_artwork_order;
+        int *included = region ? &ui->scrape_region_included
+                               : &ui->scrape_artwork_included;
+        int count = region ? jw_ss_regions_count : jw_ss_media_types_count;
+        int cursor = ui->scrape_edit_list.cursor;
+
+        switch (button) {
+            case CAT_BTN_UP:
+            case CAT_BTN_DOWN: {
+                int dir = button == CAT_BTN_UP ? -1 : +1;
+                if (ui->scrape_edit_grabbed) {
+                    /* Reorder within the included zone. */
+                    int target = cursor + dir;
+                    if (target >= 0 && target < *included) {
+                        jw__scrape_order_move(order, cursor, target);
+                        cat_list_state_move(&ui->scrape_edit_list, dir, count);
+                        jw__scrape_persist_order(ui, region);
+                    }
+                } else {
+                    cat_list_state_move(&ui->scrape_edit_list, dir, count);
+                }
+                break;
+            }
+            case CAT_BTN_A: {
+                if (ui->scrape_edit_grabbed) {
+                    ui->scrape_edit_grabbed = false;
+                    break;
+                }
+                if (cursor < *included) {
+                    /* Exclude: sink to the top of the excluded zone. */
+                    jw__scrape_order_move(order, cursor, *included - 1);
+                    *included -= 1;
+                    cat_list_state_jump(&ui->scrape_edit_list, *included, count);
+                } else {
+                    /* Include: append to the included zone. */
+                    jw__scrape_order_move(order, cursor, *included);
+                    *included += 1;
+                    cat_list_state_jump(&ui->scrape_edit_list, *included - 1, count);
+                }
+                jw__scrape_persist_order(ui, region);
+                break;
+            }
+            case CAT_BTN_X:
+                if (ui->scrape_edit_grabbed) {
+                    ui->scrape_edit_grabbed = false;
+                } else if (cursor < *included) {
+                    ui->scrape_edit_grabbed = true;
+                } else {
+                    snprintf(status_buf, status_size,
+                             "Excluded entries cannot be reordered");
+                }
+                break;
+            case CAT_BTN_B:
+                if (ui->scrape_edit_grabbed) {
+                    ui->scrape_edit_grabbed = false;
+                } else {
+                    ui->screen = JW_SETTINGS_SCRAPING;
+                }
+                break;
+            default:
+                break;
+        }
+        break;
+    }
 
     /* ── System Update ───────────────────────────────────────────────── */
     case JW_SETTINGS_UPDATE:

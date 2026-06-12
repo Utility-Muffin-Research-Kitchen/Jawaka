@@ -112,6 +112,9 @@ typedef enum {
     JW_ACTION_ROW_CORE,
     JW_ACTION_ROW_PERFORMANCE,
     JW_ACTION_ROW_FAVORITE,
+    JW_ACTION_ROW_SCRAPE,        /* game: replace art; system: missing only */
+    JW_ACTION_ROW_SCRAPE_ALL,    /* system: re-scrape everything */
+    JW_ACTION_ROW_SCRAPE_CANCEL, /* swap-in while the target is queued */
     JW_ACTION_ROW_RESET,
     JW_ACTION_ROW_OPEN_SYSTEM
 } jw_action_row_kind;
@@ -189,6 +192,7 @@ typedef struct {
     char               action_perf_game_override[64];
     char               action_perf_system_override[64];
     char               action_system_display_override[64];
+    bool               action_scrape_pending;   /* target has queued scrape work */
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
     /* status line */
@@ -263,9 +267,9 @@ static void jw__draw_row_name(TTF_Font *font, const char *text, int x, int y,
 }
 
 /* Full console names for the system folder codes stored in the library. The
-   metadata catalog only carries terse labels and currently fails to load on
-   device (a core-less system row rejects the whole catalog), so display names
-   live here. Unknown ids fall back to the id itself. */
+   metadata catalog still carries terse source labels for some systems, so these
+   user-facing names stay here until metadata names are curated. Unknown ids
+   fall back to the id itself. */
 static const struct { const char *id; const char *name; } kSystemDisplayNames[] = {
     { "FC",      "Nintendo Entertainment System" },
     { "NES",     "Nintendo Entertainment System" },
@@ -779,6 +783,12 @@ typedef struct {
     atomic_int  charging;     /* 0/1, -1 = unknown */
     uint32_t    fb_last_fast; /* render-thread fallback throttles (worker never started) */
     uint32_t    fb_last_slow;
+    /* Scrape progress snapshot, refreshed at the fast cadence. Strings need
+       more than an atomic: the worker copies under scrape_mu and bumps
+       scrape_seq; the render thread re-copies when the seq moved. */
+    pthread_mutex_t scrape_mu;
+    jw_ipc_scrape_status_info scrape;
+    atomic_int  scrape_seq;
 } jw_status_poller;
 
 static jw_status_poller jw__status_poller;
@@ -797,6 +807,17 @@ static void *jw__status_poll_worker(void *arg) {
         int gen = 0;
         if (jw_ipc_library_status(P->socket_path, &gen) == 0)
             atomic_store(&P->generation, gen);
+        /* Scrape progress (same fast cadence; art pops in live while the
+           daemon worker downloads, so the status line should track it). */
+        {
+            jw_ipc_scrape_status_info scrape;
+            if (jw_ipc_scrape_status(P->socket_path, &scrape) == 0) {
+                pthread_mutex_lock(&P->scrape_mu);
+                P->scrape = scrape;
+                pthread_mutex_unlock(&P->scrape_mu);
+                atomic_fetch_add(&P->scrape_seq, 1);
+            }
+        }
         /* ~5s cadence: Wi-Fi strength, Bluetooth state, and battery/charging.
            These shell out (wpa_cli/bluetoothctl) or IPC, so the render thread
            never spawns or blocks for status. */
@@ -910,6 +931,8 @@ static void jw__status_poller_start(const char *socket_path, jw_settings_ui *set
     /* Seed the mask before the worker's first pass so startup doesn't skip a
        round of samples while waiting for the first sync. */
     atomic_store(&P->poll_mask, jw__status_poll_mask(settings));
+    pthread_mutex_init(&P->scrape_mu, NULL);
+    atomic_store(&P->scrape_seq, 0);
     atomic_store(&P->stop, false);
     P->started = true;
     if (pthread_create(&P->thread, NULL, jw__status_poll_worker, P) != 0)
@@ -951,9 +974,81 @@ static void jw__poll_library_generation(const char *socket_path,
 
     if (jw__reload_library_from_db(db_path, state) == 0) {
         state->library_generation = generation;
+        /* Drop cached cover textures: a generation bump can mean art was
+           *replaced* at an unchanged path (re-scrape), and the texture cache
+           is path-keyed. The on-disk thumbnail is mtime-checked on reload, so
+           covers rebuild from fresh sources; untouched covers re-decode their
+           small thumbnails (~15ms each) at worst. */
+        cat_cache_clear();
         snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
                  state->summary.game_count, state->system_count, state->summary.app_count);
         cat_request_frame();
+    }
+}
+
+/* Surface scrape progress in the status line: live counts while the daemon
+   worker runs and a one-shot summary when the batch finishes. Reads the
+   poller's snapshot — no IPC on the render thread. */
+static void jw__poll_scrape_status(jw_launcher_state *state) {
+    jw_status_poller *P = &jw__status_poller;
+    if (!P->started) {
+        return;   /* rare fallback path: no scrape progress line */
+    }
+
+    static int  last_seq = 0;
+    static bool was_active = false;
+    int seq = atomic_load(&P->scrape_seq);
+    if (seq == last_seq) {
+        return;
+    }
+    last_seq = seq;
+
+    jw_ipc_scrape_status_info s;
+    pthread_mutex_lock(&P->scrape_mu);
+    s = P->scrape;
+    pthread_mutex_unlock(&P->scrape_mu);
+
+    bool active = strcmp(s.state, "running") == 0 ||
+                  strcmp(s.state, "paused-quota") == 0;
+    if (active) {
+        char item[224] = "";
+        if (s.current_name[0]) {
+            snprintf(item, sizeof(item), "%.*s",
+                     (int)sizeof(item) - 1, s.current_name);
+            char *dot = strrchr(item, '.');
+            if (dot && dot != item) *dot = '\0';
+        }
+        if (strcmp(s.state, "paused-quota") == 0) {
+            snprintf(state->status, sizeof(state->status),
+                     "Scraping paused: %.200s",
+                     s.message[0] ? s.message : "daily quota exceeded");
+        } else if (item[0]) {
+            int shown = s.done + 1 > s.total ? s.total : s.done + 1;
+            snprintf(state->status, sizeof(state->status),
+                     "Scraping %s: %d/%d - %.160s",
+                     s.current_system, shown, s.total, item);
+        } else {
+            snprintf(state->status, sizeof(state->status),
+                     "Scraping: %d/%d", s.done, s.total);
+        }
+        cat_request_frame();
+        was_active = true;
+    } else if (was_active) {
+        was_active = false;
+        if (s.total > 0) {
+            size_t cap = sizeof(state->status);
+            int n = snprintf(state->status, cap,
+                             "Scrape finished: %d found", s.found);
+            if (s.not_found > 0 && n > 0 && (size_t)n < cap) {
+                n += snprintf(state->status + n, cap - (size_t)n,
+                              ", %d not found", s.not_found);
+            }
+            if (s.failed > 0 && n > 0 && (size_t)n < cap) {
+                snprintf(state->status + n, cap - (size_t)n,
+                         ", %d failed", s.failed);
+            }
+            cat_request_frame();
+        }
     }
 }
 
@@ -2938,6 +3033,23 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             snprintf(value, value_size, "%s",
                      state->action_game.favorite ? "On" : "Off");
             break;
+        case JW_ACTION_ROW_SCRAPE:
+            if (state->action_scope == JW_ACTION_GAME) {
+                snprintf(title, title_size, "%s", "Scrape Artwork");
+                snprintf(value, value_size, "%s", "Replace");
+            } else {
+                snprintf(title, title_size, "%s", "Scrape Missing Artwork");
+                snprintf(value, value_size, "%s", "Start");
+            }
+            break;
+        case JW_ACTION_ROW_SCRAPE_ALL:
+            snprintf(title, title_size, "%s", "Re-scrape All Artwork");
+            snprintf(value, value_size, "%s", "Replace all");
+            break;
+        case JW_ACTION_ROW_SCRAPE_CANCEL:
+            snprintf(title, title_size, "%s", "Cancel Scraping");
+            snprintf(value, value_size, "%s", "Stop");
+            break;
         case JW_ACTION_ROW_RESET:
             snprintf(title, title_size, "%s",
                      state->action_scope == JW_ACTION_GAME
@@ -3007,20 +3119,41 @@ static void jw__render_actions(const jw_launcher_state *state) {
     int fh = jw__footer_height(state);
     int margin = CAT_S(12);
     int title_y = CAT_S(8);
-    int title_max = sw - cat_get_status_bar_width(NULL) - margin * 3;
-    if (title_max < CAT_S(160)) title_max = sw - margin * 2;
+    cat_status_bar_opts title_sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &title_sb);
+    int title_max = sw - cat_get_status_bar_width(&title_sb) - margin * 3;
+    if (title_max < CAT_S(120)) title_max = CAT_S(120);
+    int page_max = sw - margin * 2;
+    if (title_max > page_max) title_max = page_max;
 
     char title[320];
     if (state->action_scope == JW_ACTION_GAME) {
         char name[256];
         jw__clean_rom_name(state->action_game.name, name, sizeof(name));
-        snprintf(title, sizeof(title), "Game Actions: %s", name);
+        snprintf(title, sizeof(title), "%s", name);
     } else {
         snprintf(title, sizeof(title), "System Actions: %s",
                  state->action_system_display);
     }
-    cat_draw_text_ellipsized(large, title, margin, title_y,
-                             theme->text, title_max);
+    {
+        static cat_marquee action_title_marquee;
+        static char        last_action_title[320] = "";
+        static uint32_t    last_action_title_ms = 0;
+        uint32_t now = SDL_GetTicks();
+        if (strcmp(title, last_action_title) != 0 ||
+            action_title_marquee.mode != CAT_MARQUEE_PINGPONG) {
+            action_title_marquee.elapsed_ms = 0;
+            action_title_marquee.mode = CAT_MARQUEE_PINGPONG;
+            snprintf(last_action_title, sizeof(last_action_title), "%s", title);
+            last_action_title_ms = now;
+        }
+        uint32_t dt = (last_action_title_ms == 0) ? 0u : (now - last_action_title_ms);
+        last_action_title_ms = now;
+        if (cat_draw_text_marquee(large, title, margin, title_y,
+                                  theme->text, title_max,
+                                  &action_title_marquee, dt))
+            cat_request_frame();
+    }
 
     int list_y = CAT_DS(42);
     int list_h = sh - list_y - fh - CAT_S(24);
@@ -3228,6 +3361,12 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
+        if (state->action_scrape_pending) {
+            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_CANCEL);
+        } else {
+            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE);
+            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_ALL);
+        }
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
     } else if (state->action_scope == JW_ACTION_GAME) {
         jw__action_add_row(state, JW_ACTION_ROW_LAUNCH);
@@ -3239,6 +3378,9 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
         jw__action_add_row(state, JW_ACTION_ROW_FAVORITE);
+        jw__action_add_row(state, state->action_scrape_pending
+                                      ? JW_ACTION_ROW_SCRAPE_CANCEL
+                                      : JW_ACTION_ROW_SCRAPE);
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
         jw__action_add_row(state, JW_ACTION_ROW_OPEN_SYSTEM);
     }
@@ -3337,9 +3479,28 @@ static void jw__action_refresh_overrides(const char *db_path,
     }
 }
 
+static void jw__action_refresh_scrape_pending(jw_launcher_state *state) {
+    state->action_scrape_pending = false;
+    const char *socket_path = state->settings.socket_path;
+    if (!socket_path[0]) {
+        return;
+    }
+    bool pending = false;
+    const char *system = state->action_scope == JW_ACTION_GAME
+        ? state->action_game.system
+        : state->action_system;
+    const char *rom_path = state->action_scope == JW_ACTION_GAME
+        ? state->action_game.rom_path
+        : NULL;
+    if (jw_ipc_scrape_pending(socket_path, system, rom_path, &pending) == 0) {
+        state->action_scrape_pending = pending;
+    }
+}
+
 static void jw__action_refresh(const char *db_path, jw_launcher_state *state) {
     jw__action_refresh_overrides(db_path, state);
     jw__action_refresh_core_choices(db_path, state);
+    jw__action_refresh_scrape_pending(state);
     jw__action_refresh_rows(state);
 }
 
@@ -3478,7 +3639,8 @@ static int jw__perform_search(const char *db_path, jw_launcher_state *state,
 
 static void jw__open_search(const char *db_path, jw_launcher_state *state) {
     cat_keyboard_result result;
-    int rc = cat_keyboard(state->search_query, "Start: Search | Y: Cancel",
+    int rc = cat_keyboard(state->search_query,
+                          "Search library\nStart: Confirm\nY: Cancel",
                           CAT_KB_GENERAL, &result);
     if (rc == CAT_OK) {
         jw__perform_search(db_path, state, result.text);
@@ -3798,7 +3960,7 @@ static void jw__edit_action_display_name(const char *db_path,
         : state->action_game.name;
     cat_keyboard_result result;
     int rc = cat_keyboard(current,
-                          "A: Save | Empty: Reset | Y: Cancel",
+                          "Start: Confirm\nY: Cancel\nLeave empty to reset",
                           CAT_KB_GENERAL, &result);
     if (rc == CAT_OK) {
         if (result.text[0]) {
@@ -3885,6 +4047,60 @@ static void jw__toggle_action_favorite(const char *db_path,
     jw__refresh_after_action_write(db_path, state);
 }
 
+static void jw__start_action_scrape(const char *socket_path, const char *db_path,
+                                    jw_launcher_state *state, bool missing_only) {
+    bool is_game = state->action_scope == JW_ACTION_GAME;
+    int enqueued = 0;
+    char status[256] = "";
+    int rc = jw_ipc_scrape_start(socket_path,
+                                 is_game ? "game" : "system",
+                                 is_game ? state->action_game.system
+                                         : state->action_system,
+                                 is_game ? state->action_game.rom_path : NULL,
+                                 missing_only, &enqueued,
+                                 status, sizeof(status));
+    if (rc != 0) {
+        snprintf(state->status, sizeof(state->status), "Scrape failed: %.180s",
+                 status[0] ? status : "daemon unavailable");
+        return;
+    }
+    if (is_game) {
+        char name[256];
+        jw__clean_rom_name(state->action_game.name, name, sizeof(name));
+        snprintf(state->status, sizeof(state->status),
+                 "Scraping artwork: %.180s", name);
+    } else if (enqueued == 0) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 missing_only ? "Nothing to scrape - all games have artwork"
+                              : "Nothing to scrape - no games in this system");
+    } else {
+        snprintf(state->status, sizeof(state->status),
+                 "Scraping %d game%s in %.140s", enqueued,
+                 enqueued == 1 ? "" : "s", state->action_system_display);
+    }
+    jw__action_refresh(db_path, state);
+}
+
+static void jw__cancel_action_scrape(const char *socket_path, const char *db_path,
+                                     jw_launcher_state *state) {
+    bool is_game = state->action_scope == JW_ACTION_GAME;
+    int removed = 0;
+    if (jw_ipc_scrape_cancel(socket_path,
+                             is_game ? "game" : "system",
+                             is_game ? state->action_game.system
+                                     : state->action_system,
+                             is_game ? state->action_game.rom_path : NULL,
+                             &removed) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "Cancel failed: daemon unavailable");
+        return;
+    }
+    snprintf(state->status, sizeof(state->status),
+             "Scraping cancelled (%d item%s dropped)", removed,
+             removed == 1 ? "" : "s");
+    jw__action_refresh(db_path, state);
+}
+
 static void jw__select_action_row(const char *socket_path, const char *db_path,
                                   jw_launcher_state *state, bool *running) {
     if (!state || state->action_list.cursor < 0 ||
@@ -3911,6 +4127,16 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
             break;
         case JW_ACTION_ROW_FAVORITE:
             jw__toggle_action_favorite(db_path, state);
+            break;
+        case JW_ACTION_ROW_SCRAPE:
+            jw__start_action_scrape(socket_path, db_path, state,
+                                    state->action_scope == JW_ACTION_SYSTEM);
+            break;
+        case JW_ACTION_ROW_SCRAPE_ALL:
+            jw__start_action_scrape(socket_path, db_path, state, false);
+            break;
+        case JW_ACTION_ROW_SCRAPE_CANCEL:
+            jw__cancel_action_scrape(socket_path, db_path, state);
             break;
         case JW_ACTION_ROW_RESET:
             jw__reset_action_overrides(db_path, state);
@@ -4794,6 +5020,7 @@ int main(void) {
            the ~1s hitch in continuous animations. */
         jw__status_poller_sync(&state.settings);
         jw__poll_library_generation(socket_path, db_path, &state);
+        jw__poll_scrape_status(&state);
 
         /* Keep the status bar live while idle: the launcher only renders on
            input or a requested frame, so without this a wifi connect / charger

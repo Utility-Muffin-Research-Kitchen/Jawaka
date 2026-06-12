@@ -478,6 +478,67 @@ int jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,
     return ok ? 0 : -1;
 }
 
+int jw_db_set_game_image(const char *db_path, const char *rom_path,
+                         const char *image_path) {
+    if (!db_path || !rom_path) return -1;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql = "UPDATE games SET image_path = ? WHERE rom_path = ?;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    if (image_path && image_path[0]) {
+        sqlite3_bind_text(stmt, 1, image_path, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 1);
+    }
+    sqlite3_bind_text(stmt, 2, rom_path, -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    if (rc == 0 && sqlite3_changes(db) == 0) rc = 1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_increment_setting(const char *db_path, const char *key) {
+    if (!db_path || !key) return -1;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql =
+        "INSERT INTO settings (key, value) VALUES (?, '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
 int jw_db_set_setting(const char *db_path, const char *key, const char *value) {
     if (!db_path || !key || !value) return -1;
 

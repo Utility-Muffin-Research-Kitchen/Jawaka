@@ -37,7 +37,7 @@ int  jw_input_proxy_init(jw_input_proxy *proxy,
                          void *userdata);
 /* Watch-only: observe the physical pad for hotkeys (volume/brightness/Menu)
    without grabbing it or creating a virtual device, so a standalone emulator
-   reads the pad directly while jawakad keeps the hotkeys (Menu = exit). */
+   reads the pad directly while jawakad keeps the hotkeys. */
 int  jw_input_proxy_init_watch(jw_input_proxy *proxy,
                                jw_input_brightness_delta_cb brightness_delta,
                                jw_input_volume_delta_cb volume_delta,

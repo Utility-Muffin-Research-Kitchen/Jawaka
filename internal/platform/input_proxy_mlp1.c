@@ -503,9 +503,9 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
 
 /* Watch-only variant for standalone emulator sessions: the emulator reads the
    physical gamepad directly (no grab, no virtual device), while jawakad still
-   observes the same device for the volume/brightness hotkeys and the Menu tap -
-   the only exit from a kmsdrm fullscreen session. The emulator also receives
-   the hotkey presses, but it has no bindings for them. */
+   observes the same device for volume/brightness and Menu hotkeys. The emulator
+   also receives those hotkey presses, but PPSSPP's guide button mapping is
+   patched out so Jawaka can open its pause menu via SIGUSR2 instead. */
 int jw_input_proxy_init_watch(jw_input_proxy *proxy,
                               jw_input_brightness_delta_cb brightness_delta,
                               jw_input_volume_delta_cb volume_delta,

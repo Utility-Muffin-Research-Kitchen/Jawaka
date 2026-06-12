@@ -272,6 +272,56 @@ int jw_ipc_get_boot_splash(const char *socket_path, int *out_enabled,
 int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
                            char *status, int status_len);
 
+typedef struct {
+    bool valid;           /* credentials confirmed by ScreenScraper */
+    bool rejected;        /* explicit credential rejection (vs transport error) */
+    int  max_threads;
+    int  requests_today;
+    int  max_requests;
+    int  user_level;
+    char message[256];    /* daemon-side error detail when !valid */
+} jw_ipc_scrape_validate_info;
+
+/* Ask jawakad to validate ScreenScraper user credentials against the API
+   (the daemon owns the dev-credential half of the auth). Returns 0 when the
+   request completed (check out->valid / out->rejected), -1 when the daemon
+   was unreachable or replied malformed. */
+int jw_ipc_scrape_validate(const char *socket_path, const char *username,
+                           const char *password,
+                           jw_ipc_scrape_validate_info *out);
+
+typedef struct {
+    char state[16];           /* "idle" | "running" | "paused-quota" */
+    int  total;
+    int  done;
+    int  found;
+    int  not_found;
+    int  failed;
+    int  queued;
+    char current_name[256];
+    char current_system[64];
+    char message[256];
+} jw_ipc_scrape_status_info;
+
+/* Queue scraping. scope "game" needs rom_path (always re-fetches/replaces);
+   scope "system" honors missing_only. On success returns 0 and sets
+   *out_enqueued; on failure returns -1 with a daemon message in
+   status[status_len]. */
+int jw_ipc_scrape_start(const char *socket_path, const char *scope,
+                        const char *system, const char *rom_path,
+                        bool missing_only, int *out_enqueued,
+                        char *status, int status_len);
+int jw_ipc_scrape_status(const char *socket_path,
+                         jw_ipc_scrape_status_info *out);
+/* True in *out_pending when the system (rom_path NULL) or game has queued
+   or in-flight scrape work. */
+int jw_ipc_scrape_pending(const char *socket_path, const char *system,
+                          const char *rom_path, bool *out_pending);
+/* scope "all" | "system" | "game"; system/rom_path as required by scope. */
+int jw_ipc_scrape_cancel(const char *socket_path, const char *scope,
+                         const char *system, const char *rom_path,
+                         int *out_removed);
+
 /* LED ring. set-led applies + persists in jawakad; get-led reads the cached
    state back from platform-status. mode is "FOREVER"/"BREATH"/"RAINBOW". */
 int jw_ipc_set_led(const char *socket_path, int enabled, const char *mode,

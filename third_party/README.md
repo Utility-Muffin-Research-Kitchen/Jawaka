@@ -6,6 +6,10 @@ build contract.
 ## Current Contents
 
 - `cjson/` is vendored and compiled into the Jawaka binaries.
+- `stb/` (stb_image, public domain/MIT), `miniz/` (MIT), and `md5/` (public
+  domain, RFC 1321-based) are vendored for the ScreenScraper scrape engine
+  (`internal/scrape/`): JPEG/PNG decode, PNG encode and zip access, and ROM
+  hashing. Copied from Helaas's nextui-scrapegoat-pak (MIT).
 - `catastrophe/` is a placeholder for a future submodule, but the active local
   workflow uses an adjacent `../Catastrophe` checkout or an explicit
   `CATASTROPHE_DIR`.

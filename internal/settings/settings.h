@@ -43,6 +43,8 @@ typedef enum {
     JW_SETTINGS_LIGHTING,
     JW_SETTINGS_LIBRARY,
     JW_SETTINGS_ACCOUNTS,
+    JW_SETTINGS_SCRAPING,
+    JW_SETTINGS_SCRAPE_PRIORITY,   /* artwork or region editor, see scrape_edit_is_region */
     JW_SETTINGS_BEHAVIOR,
     JW_SETTINGS_UPDATE,
     JW_SETTINGS_UPDATE_PICKER,
@@ -109,10 +111,17 @@ typedef enum {
 #define JW_LIBRARY_UNMOUNT_SECONDARY 1
 #define JW_LIBRARY_ROW_COUNT 2
 
-/* Accounts page (placeholders — sign-in not yet implemented) */
+/* Accounts page */
 #define JW_ACCOUNTS_SCREENSCRAPER     0
 #define JW_ACCOUNTS_RETROACHIEVEMENTS 1
 #define JW_ACCOUNTS_ROW_COUNT         2
+
+/* Scraping page */
+#define JW_SCRAPING_ARTWORK   0
+#define JW_SCRAPING_REGION    1
+#define JW_SCRAPING_ROW_COUNT 2
+/* Capacity for the priority editors (catalogs are 10 entries each today). */
+#define JW_SCRAPE_PRIO_SLOTS  16
 
 /* Behavior page */
 #define JW_BEHAVIOR_STARTUP_TAB 0
@@ -146,6 +155,8 @@ typedef struct {
     cat_list_state     lighting_list;
     cat_list_state     library_list;
     cat_list_state     accounts_list;
+    cat_list_state     scraping_list;
+    cat_list_state     scrape_edit_list;
     cat_list_state     behavior_list;
     cat_list_state     update_list;
     cat_list_state     update_picker_list;
@@ -167,6 +178,20 @@ typedef struct {
     char               timezone[64];        /* IANA zone id exported as TZ; "" = system default */
     char               ss_username[64];     /* ScreenScraper account ("" = signed out); password
                                                lives only in the settings DB for the scrape worker */
+    bool               ss_verified;         /* credentials confirmed against the API at sign-in */
+    int                ss_max_threads;      /* account thread allowance from validation; 0 unknown */
+    int                ss_requests_today;   /* quota snapshot from validation */
+    int                ss_max_requests;     /* quota snapshot from validation; 0 unknown */
+    /* Scrape priority editors: permutations of the scrape catalogs as catalog
+       indices; the first *_included entries are active, the rest excluded.
+       Persisted as CSV of included values in scrape.artwork_priority /
+       scrape.region_priority (read by the daemon's scrape worker). */
+    int                scrape_artwork_order[JW_SCRAPE_PRIO_SLOTS];
+    int                scrape_artwork_included;
+    int                scrape_region_order[JW_SCRAPE_PRIO_SLOTS];
+    int                scrape_region_included;
+    bool               scrape_edit_is_region;  /* which list the editor edits */
+    bool               scrape_edit_grabbed;    /* X grabbed the cursor row */
     char               ra_username[64];     /* RetroAchievements account ("" = signed out); exported
                                                to RetroArch's session config, which validates it */
     int                startup_tab_index;   /* jw_tab the launcher opens on */

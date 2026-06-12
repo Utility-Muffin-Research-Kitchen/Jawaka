@@ -1,6 +1,7 @@
 build/
 mock-sdcard/
 .DS_Store
+.env.local
 *.o
 *.dSYM/
 third_party/catastrophe/*

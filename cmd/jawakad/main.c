@@ -10,6 +10,8 @@
 #include "internal/retroarch/command.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/retroarch/states.h"
+#include "internal/scrape/scrape_worker.h"
+#include "internal/scrape/ss_client.h"
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
 #include "internal/update/update.h"
@@ -109,8 +111,9 @@ typedef struct {
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
     int menu_standby_attempts;/* respawn guard for a crashing standby within one session */
     long long standalone_quit_request_ms; /* Menu-tap quit sent to a standalone
-                                 emulator (0 = none); a second tap after the
-                                 grace period escalates to SIGKILL */
+                                 emulator without a native menu signal (0 = none);
+                                 a second tap after the grace period escalates
+                                 to SIGKILL */
     bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
@@ -174,6 +177,28 @@ static bool jw__has_standalone_session(const jw_daemon_state *state) {
     return state &&
            state->retroarch_session.active &&
            state->child_kind == JW_CHILD_EMULATOR;
+}
+
+static bool jw__standalone_session_is_ppsspp(const jw_daemon_state *state) {
+    if (!jw__has_standalone_session(state)) {
+        return false;
+    }
+
+    const jw_retroarch_session *session = &state->retroarch_session;
+    return strcmp(session->core_id, "ppsspp") == 0 ||
+           strstr(session->core_path, "/ppsspp/") != NULL ||
+           strstr(session->core_path, "/PPSSPP") != NULL;
+}
+
+static bool jw__standalone_session_is_drastic(const jw_daemon_state *state) {
+    if (!jw__has_standalone_session(state)) {
+        return false;
+    }
+
+    const jw_retroarch_session *session = &state->retroarch_session;
+    return strcmp(session->core_id, "drastic") == 0 ||
+           strstr(session->core_path, "/drastic/") != NULL ||
+           strstr(session->core_path, "/DraStic") != NULL;
 }
 
 static long long jw__monotonic_ms(void) {
@@ -979,6 +1004,171 @@ static int jw__reply_update_status(jw_daemon_state *state, jw_ipc_client *client
                                          state->sdcard_root);
     }
     cJSON *root = jw_update_status_to_json(&state->update_status);
+    return jw__reply_json(client, root);
+}
+
+static int jw__reply_scrape_status(jw_ipc_client *client, cJSON *request) {
+    jw_scrape_status_info info;
+    jw_scrape_status(&info);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "scrape-status");
+    const char *state_name =
+        info.state == JW_SCRAPE_RUNNING ? "running" :
+        info.state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" : "idle";
+    cJSON_AddStringToObject(root, "state", state_name);
+    cJSON_AddNumberToObject(root, "total", info.total);
+    cJSON_AddNumberToObject(root, "done", info.done);
+    cJSON_AddNumberToObject(root, "found", info.found);
+    cJSON_AddNumberToObject(root, "not_found", info.not_found);
+    cJSON_AddNumberToObject(root, "failed", info.failed);
+    cJSON_AddNumberToObject(root, "queued", info.queued);
+    cJSON_AddStringToObject(root, "current_name", info.current_name);
+    cJSON_AddStringToObject(root, "current_system", info.current_system);
+    cJSON_AddStringToObject(root, "message", info.message);
+
+    /* Optional target: with "system" (and optionally "rom_path") in the
+       request, also report whether that target has queued/in-flight work —
+       drives the Actions menu's Scrape vs Cancel entries. */
+    cJSON *system = request ? cJSON_GetObjectItemCaseSensitive(request, "system") : NULL;
+    if (cJSON_IsString(system) && system->valuestring[0]) {
+        cJSON *rom = cJSON_GetObjectItemCaseSensitive(request, "rom_path");
+        bool pending = (cJSON_IsString(rom) && rom->valuestring[0])
+            ? jw_scrape_is_pending_game(system->valuestring, rom->valuestring)
+            : jw_scrape_is_pending_system(system->valuestring);
+        cJSON_AddBoolToObject(root, "pending", pending);
+    }
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_scrape_start(jw_daemon_state *state,
+                                   jw_ipc_client *client, cJSON *request) {
+    (void)state;
+    cJSON *scope = cJSON_GetObjectItemCaseSensitive(request, "scope");
+    cJSON *system = cJSON_GetObjectItemCaseSensitive(request, "system");
+    cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(request, "rom_path");
+    cJSON *mode = cJSON_GetObjectItemCaseSensitive(request, "mode");
+    if (!cJSON_IsString(scope) || !cJSON_IsString(system) ||
+        !system->valuestring[0]) {
+        return jw__reply_error(client, "missing scope or system");
+    }
+
+    /* Gate on connectivity when the platform exposes Wi-Fi state, instead of
+       letting the whole batch burn down as transport errors. */
+    if (jw_wifi_available()) {
+        jw_wifi_status_t wifi;
+        if (jw_wifi_status(&wifi) == 0 && wifi.valid && !wifi.connected) {
+            return jw__reply_error(client, "Wi-Fi is not connected");
+        }
+    }
+
+    const char *error = NULL;
+    int enqueued = -1;
+    if (strcmp(scope->valuestring, "game") == 0) {
+        if (!cJSON_IsString(rom_path) || !rom_path->valuestring[0]) {
+            return jw__reply_error(client, "missing rom_path");
+        }
+        enqueued = jw_scrape_enqueue_game(system->valuestring,
+                                          rom_path->valuestring, &error);
+    } else if (strcmp(scope->valuestring, "system") == 0) {
+        bool missing_only = !cJSON_IsString(mode) ||
+                            strcmp(mode->valuestring, "all") != 0;
+        enqueued = jw_scrape_enqueue_system(system->valuestring, missing_only,
+                                            &error);
+    } else {
+        return jw__reply_error(client, "unknown scope");
+    }
+
+    if (enqueued < 0) {
+        return jw__reply_error(client, error ? error : "scrape-start failed");
+    }
+    jw_log_info("scrape-start scope=%s system=%s enqueued=%d",
+                scope->valuestring, system->valuestring, enqueued);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ok");
+    cJSON_AddStringToObject(root, "action", "scrape-start");
+    cJSON_AddNumberToObject(root, "enqueued", enqueued);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_scrape_cancel(jw_daemon_state *state,
+                                    jw_ipc_client *client, cJSON *request) {
+    (void)state;
+    cJSON *scope = cJSON_GetObjectItemCaseSensitive(request, "scope");
+    cJSON *system = cJSON_GetObjectItemCaseSensitive(request, "system");
+    cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(request, "rom_path");
+
+    int removed = 0;
+    if (!cJSON_IsString(scope) || strcmp(scope->valuestring, "all") == 0) {
+        removed = jw_scrape_cancel_all();
+    } else if (strcmp(scope->valuestring, "system") == 0 &&
+               cJSON_IsString(system) && system->valuestring[0]) {
+        removed = jw_scrape_cancel_system(system->valuestring);
+    } else if (strcmp(scope->valuestring, "game") == 0 &&
+               cJSON_IsString(system) && system->valuestring[0] &&
+               cJSON_IsString(rom_path) && rom_path->valuestring[0]) {
+        removed = jw_scrape_cancel_game(system->valuestring,
+                                        rom_path->valuestring);
+    } else {
+        return jw__reply_error(client, "invalid cancel scope");
+    }
+
+    jw_log_info("scrape-cancel removed=%d", removed);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ok");
+    cJSON_AddStringToObject(root, "action", "scrape-cancel");
+    cJSON_AddNumberToObject(root, "removed", removed);
+    return jw__reply_json(client, root);
+}
+
+/* Validate ScreenScraper user credentials for the settings UI. Synchronous
+   network call in the handler, same trade-off as update-check: a few seconds
+   of daemon-loop blocking for a rare, user-initiated action. */
+static int jw__handle_scrape_validate(jw_daemon_state *state,
+                                      jw_ipc_client *client,
+                                      cJSON *request) {
+    (void)state;
+    cJSON *user = cJSON_GetObjectItemCaseSensitive(request, "username");
+    cJSON *pass = cJSON_GetObjectItemCaseSensitive(request, "password");
+    if (!cJSON_IsString(user) || !user->valuestring[0] ||
+        !cJSON_IsString(pass) || !pass->valuestring[0]) {
+        return jw__reply_error(client, "missing credentials");
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "scrape-validate");
+
+    if (!jw_ss_available()) {
+        cJSON_AddBoolToObject(root, "valid", false);
+        cJSON_AddBoolToObject(root, "rejected", false);
+        cJSON_AddStringToObject(root, "message",
+                                "scraping unavailable in this build");
+        return jw__reply_json(client, root);
+    }
+
+    jw_ss_client ss = {0};
+    snprintf(ss.username, sizeof(ss.username), "%s", user->valuestring);
+    snprintf(ss.password, sizeof(ss.password), "%s", pass->valuestring);
+
+    jw_ss_user info;
+    int rc = jw_ss_validate_user(&ss, &info);
+
+    cJSON_AddBoolToObject(root, "valid", rc == 0);
+    cJSON_AddBoolToObject(root, "rejected", rc == 1);
+    if (rc == 0) {
+        cJSON_AddNumberToObject(root, "max_threads", info.max_threads);
+        cJSON_AddNumberToObject(root, "requests_today", info.requests_today);
+        cJSON_AddNumberToObject(root, "max_requests", info.max_requests);
+        cJSON_AddNumberToObject(root, "user_level", info.user_level);
+        jw_log_info("scrape-validate ok user=%s maxthreads=%d",
+                    ss.username, info.max_threads);
+    } else {
+        const char *msg = jw_ss_last_error();
+        cJSON_AddStringToObject(root, "message",
+                                msg ? msg : "validation failed");
+        jw_log_info("scrape-validate failed user=%s rc=%d", ss.username, rc);
+    }
     return jw__reply_json(client, root);
 }
 
@@ -3155,12 +3345,28 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
 static bool jw__input_menu_tap(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
 
-    /* Standalone emulators (PPSSPP) own the display via kmsdrm, so no overlay
-       menu can appear above them; the Menu key is the exit instead. First tap
-       asks the emulator to quit (SIGTERM - back to the launcher); if it is
-       still alive after a grace period, a second tap forces it. */
+    /* Standalone emulators own the display, so Jawaka's overlay menu cannot
+       appear above them. PPSSPP has a patched SIGUSR2 pause-menu hook. DraStic
+       reads the real pad directly and has an internal menu binding, so let the
+       Menu tap pass through to the emulator. Standalone emulators without a
+       menu hook keep Menu as the exit key. */
     if (jw__has_standalone_session(state)) {
         pid_t pid = state->retroarch_session.pid;
+        if (jw__standalone_session_is_ppsspp(state)) {
+            state->standalone_quit_request_ms = 0;
+            jw_log_info("menu tap: opening PPSSPP pause menu pid=%d", (int)pid);
+            if (kill(pid, SIGUSR2) != 0 && errno != ESRCH) {
+                jw_log_warn("PPSSPP menu: SIGUSR2 failed pid=%d: %s",
+                            (int)pid, strerror(errno));
+            }
+            return true;
+        }
+        if (jw__standalone_session_is_drastic(state)) {
+            state->standalone_quit_request_ms = 0;
+            jw_log_info("menu tap: letting DraStic handle native menu pid=%d", (int)pid);
+            return true;
+        }
+
         long long now = jw__monotonic_ms();
         if (state->standalone_quit_request_ms == 0) {
             jw_log_info("menu tap: quitting standalone emulator pid=%d", (int)pid);
@@ -3474,8 +3680,8 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     /* The emulator reads the physical pad directly (suspend the grab, like app
        launches - SDL emulators bind pad 0, which must be the real device), but
        jawakad still needs the hotkeys: re-open the pad in watch-only mode so
-       volume/brightness keep working and a Menu tap can end the session - the
-       only exit from a kmsdrm fullscreen emulator. */
+       volume/brightness keep working and Menu can route to the emulator's
+       native menu or the generic standalone exit path. */
     jw__suspend_input_proxy_for_app(state);
     if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
                                   jw__input_volume_delta, jw__input_menu_tap,
@@ -4381,6 +4587,30 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__handle_scan(state, client);
     }
 
+    if (strcmp(type->valuestring, "scrape-validate") == 0) {
+        int rc = jw__handle_scrape_validate(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "scrape-start") == 0) {
+        int rc = jw__handle_scrape_start(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "scrape-status") == 0) {
+        int rc = jw__reply_scrape_status(client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "scrape-cancel") == 0) {
+        int rc = jw__handle_scrape_cancel(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
     if (strcmp(type->valuestring, "library-status") == 0) {
         cJSON_Delete(root);
         return jw__reply_library_status(state, client);
@@ -4995,6 +5225,7 @@ static void jw__cleanup(jw_daemon_state *state) {
     if (state->update_download_job.active) {
         jw_update_download_cancel(&state->update_status, &state->update_download_job);
     }
+    jw_scrape_worker_stop();
     jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
@@ -5164,6 +5395,10 @@ int main(int argc, char *argv[]) {
     state.startup_maintenance_phase = 0;
     state.startup_maintenance_next_ms = jw__monotonic_ms() +
         (state.daemon_only ? 0 : JW_STARTUP_MAINT_FALLBACK_MS);
+
+    if (jw_scrape_worker_start(state.db_path, state.sdcard_root) != 0) {
+        jw_log_warn("scrape worker failed to start; scraping disabled this run");
+    }
 
     jw__spawn_osd(&state);
 

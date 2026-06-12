@@ -112,6 +112,16 @@ typedef struct {
     int         found;
 } jw_db_setting_query;
 
+/* Set a game's image_path by rom_path (scrape worker: art landed outside a
+   scan). Returns 0 on success, 1 when no game row matched, -1 on error. */
+int  jw_db_set_game_image(const char *db_path, const char *rom_path,
+                          const char *image_path);
+
+/* Atomically increment an integer-valued setting, creating it at 1 when
+   absent. Safe against concurrent bumps from the daemon main loop and the
+   scrape worker (single UPSERT statement). */
+int  jw_db_increment_setting(const char *db_path, const char *key);
+
 int  jw_db_get_setting(const char *db_path, const char *key,
                         char *out, size_t out_size);
 int  jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,

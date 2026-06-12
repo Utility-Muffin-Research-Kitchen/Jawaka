@@ -28,6 +28,28 @@ WAYLAND_PROTOCOLS_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protoc
 WAYLAND_SCANNER ?= wayland-scanner
 CURL_CFLAGS := $(shell pkg-config --cflags libcurl 2>/dev/null)
 CURL_LDFLAGS := $(shell pkg-config --libs libcurl 2>/dev/null)
+# The Mac lane links the system libcurl when pkg-config has no entry; the
+# mlp1 branch below still demands a pkg-config hit from the toolchain.
+ifneq ($(PLATFORM),mlp1)
+ifeq ($(strip $(CURL_LDFLAGS)),)
+CURL_LDFLAGS := -lcurl
+endif
+endif
+
+# ScreenScraper dev credentials, injected from the git-ignored .env.local
+# (copy .env.example). Builds without credentials still compile; scraping
+# reports itself unavailable at runtime.
+-include .env.local
+SCRAPE_DEFINES :=
+ifdef SCREENSCRAPER_DEV_ID
+SCRAPE_DEFINES += -DSCREENSCRAPER_DEV_ID=\"$(SCREENSCRAPER_DEV_ID)\"
+endif
+ifdef SCREENSCRAPER_DEV_PASSWORD
+SCRAPE_DEFINES += -DSCREENSCRAPER_DEV_PASSWORD=\"$(SCREENSCRAPER_DEV_PASSWORD)\"
+endif
+ifdef SCREENSCRAPER_DEBUG_PASSWORD
+SCRAPE_DEFINES += -DSCREENSCRAPER_DEBUG_PASSWORD=\"$(SCREENSCRAPER_DEBUG_PASSWORD)\"
+endif
 
 CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
@@ -69,6 +91,24 @@ OSD_LDLIBS := $(LDLIBS_UI)
 endif
 PLATFORM_COMMON_SRC := internal/platform/platform_common.c
 
+# ScreenScraper scrape engine (daemon-side; curl + vendored stb/miniz/md5).
+SCRAPE_SRCS := \
+	internal/scrape/ss_client.c \
+	internal/scrape/scrape_catalog.c \
+	internal/scrape/scrape_md5.c \
+	internal/scrape/scrape_systems.c \
+	internal/scrape/scrape_worker.c \
+	third_party/md5/md5.c \
+	third_party/miniz/miniz.c \
+	third_party/miniz/miniz_tdef.c \
+	third_party/miniz/miniz_tinfl.c \
+	third_party/miniz/miniz_zip.c
+SCRAPE_CFLAGS := $(SCRAPE_DEFINES) $(CURL_CFLAGS) \
+	-Ithird_party/stb -Ithird_party/miniz -Ithird_party/md5
+
+CFLAGS_DAEMON += $(SCRAPE_CFLAGS)
+LDLIBS_DAEMON += $(CURL_LDFLAGS) -lpthread -lm
+
 DAEMON_SRCS := \
 	cmd/jawakad/main.c \
 	internal/core/log.c \
@@ -92,6 +132,7 @@ DAEMON_SRCS := \
 	internal/settings/appearance.c \
 	internal/settings/theme_resolve.c \
 	internal/discovery/discovery.c \
+	$(SCRAPE_SRCS) \
 	third_party/cjson/cJSON.c
 
 RETROARCH_CTL_SRCS := \
@@ -139,6 +180,14 @@ SCAN_SMOKE_SRCS := \
 	internal/storage/sources.c \
 	third_party/cjson/cJSON.c
 
+SCRAPE_SMOKE_SRCS := \
+	cmd/jawaka-scrape-smoke/main.c \
+	$(SCRAPE_SRCS) \
+	internal/core/log.c \
+	internal/db/db.c \
+	internal/storage/sources.c \
+	third_party/cjson/cJSON.c
+
 UI_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
@@ -155,6 +204,7 @@ UI_SRCS := \
 	internal/db/db.c \
 	internal/launcher/console_colors.c \
 	internal/launcher/game_switcher.c \
+	internal/scrape/scrape_catalog.c \
 	internal/settings/appearance.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
@@ -174,7 +224,7 @@ ifeq ($(PLATFORM),mlp1)
 ALL_BINS += $(BUILD)/bin/jawaka-ledd
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
 
 all: $(ALL_BINS)
 
@@ -194,6 +244,7 @@ jawaka-ledd:
 	@exit 1
 endif
 jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
+jawaka-scrape-smoke: $(BUILD)/bin/jawaka-scrape-smoke
 
 $(BUILD)/bin:
 	@mkdir -p $(BUILD)/bin
@@ -243,6 +294,9 @@ $(BUILD)/bin/jawaka-platformctl: $(PLATFORM_CTL_SRCS) | $(BUILD)/bin
 
 $(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(SCAN_SMOKE_SRCS) $(LDLIBS_COMMON)
+
+$(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(SCRAPE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
 
 ifeq ($(PLATFORM),mlp1)
 $(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin

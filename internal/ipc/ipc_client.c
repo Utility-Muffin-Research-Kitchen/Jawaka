@@ -1657,6 +1657,165 @@ int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
     return ok ? 0 : -1;
 }
 
+int jw_ipc_scrape_validate(const char *socket_path, const char *username,
+                           const char *password,
+                           jw_ipc_scrape_validate_info *out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-validate");
+    cJSON_AddStringToObject(req, "username", username ? username : "");
+    cJSON_AddStringToObject(req, "password", password ? password : "");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    if (!ipc__type_is(resp, "scrape-validate")) {
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (out) {
+        out->valid = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "valid"));
+        out->rejected = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "rejected"));
+        out->max_threads = (int)ipc__json_ll(resp, "max_threads");
+        out->requests_today = (int)ipc__json_ll(resp, "requests_today");
+        out->max_requests = (int)ipc__json_ll(resp, "max_requests");
+        out->user_level = (int)ipc__json_ll(resp, "user_level");
+        const cJSON *msg = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(msg)) {
+            ipc__copy_string(out->message, sizeof(out->message), msg->valuestring);
+        }
+    }
+
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_scrape_start(const char *socket_path, const char *scope,
+                        const char *system, const char *rom_path,
+                        bool missing_only, int *out_enqueued,
+                        char *status, int status_len) {
+    if (out_enqueued) *out_enqueued = 0;
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-start");
+    cJSON_AddStringToObject(req, "scope", scope ? scope : "");
+    cJSON_AddStringToObject(req, "system", system ? system : "");
+    if (rom_path && rom_path[0]) {
+        cJSON_AddStringToObject(req, "rom_path", rom_path);
+    }
+    cJSON_AddStringToObject(req, "mode", missing_only ? "missing" : "all");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status) snprintf(status, (size_t)status_len, "%s",
+                             "scrape failed: daemon unavailable");
+        return -1;
+    }
+    if (!ipc__type_is(resp, "ok")) {
+        const cJSON *msg = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status) {
+            snprintf(status, (size_t)status_len, "%s",
+                     cJSON_IsString(msg) ? msg->valuestring
+                                         : "scrape failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (out_enqueued) {
+        *out_enqueued = (int)ipc__json_ll(resp, "enqueued");
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_scrape_status(const char *socket_path,
+                         jw_ipc_scrape_status_info *out) {
+    if (out) memset(out, 0, sizeof(*out));
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    if (!ipc__type_is(resp, "scrape-status")) {
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (out) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(resp, "state");
+        if (cJSON_IsString(v)) ipc__copy_string(out->state, sizeof(out->state), v->valuestring);
+        out->total = (int)ipc__json_ll(resp, "total");
+        out->done = (int)ipc__json_ll(resp, "done");
+        out->found = (int)ipc__json_ll(resp, "found");
+        out->not_found = (int)ipc__json_ll(resp, "not_found");
+        out->failed = (int)ipc__json_ll(resp, "failed");
+        out->queued = (int)ipc__json_ll(resp, "queued");
+        v = cJSON_GetObjectItemCaseSensitive(resp, "current_name");
+        if (cJSON_IsString(v)) ipc__copy_string(out->current_name, sizeof(out->current_name), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "current_system");
+        if (cJSON_IsString(v)) ipc__copy_string(out->current_system, sizeof(out->current_system), v->valuestring);
+        v = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(v)) ipc__copy_string(out->message, sizeof(out->message), v->valuestring);
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_scrape_pending(const char *socket_path, const char *system,
+                          const char *rom_path, bool *out_pending) {
+    if (out_pending) *out_pending = false;
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-status");
+    cJSON_AddStringToObject(req, "system", system ? system : "");
+    if (rom_path && rom_path[0]) {
+        cJSON_AddStringToObject(req, "rom_path", rom_path);
+    }
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    int rc = ipc__type_is(resp, "scrape-status") ? 0 : -1;
+    if (rc == 0 && out_pending) {
+        *out_pending = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "pending"));
+    }
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_scrape_cancel(const char *socket_path, const char *scope,
+                         const char *system, const char *rom_path,
+                         int *out_removed) {
+    if (out_removed) *out_removed = 0;
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-cancel");
+    cJSON_AddStringToObject(req, "scope", scope ? scope : "all");
+    if (system && system[0]) cJSON_AddStringToObject(req, "system", system);
+    if (rom_path && rom_path[0]) cJSON_AddStringToObject(req, "rom_path", rom_path);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    int rc = ipc__type_is(resp, "ok") ? 0 : -1;
+    if (rc == 0 && out_removed) {
+        *out_removed = (int)ipc__json_ll(resp, "removed");
+    }
+    cJSON_Delete(resp);
+    return rc;
+}
+
 int jw_ipc_set_led(const char *socket_path, int enabled, const char *mode,
                    int r, int g, int b, int brightness, int speed,
                    char *status, int status_len) {

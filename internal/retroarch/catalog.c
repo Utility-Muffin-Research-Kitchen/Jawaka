@@ -9,6 +9,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 static const char *jw_ra_platform_id(void) {
     return jw_platform_compiled_id();
@@ -293,6 +294,93 @@ static int jw_ra_doc_has_expanded_cores(const char *path) {
     return expanded;
 }
 
+typedef struct {
+    char cores_path[PATH_MAX];
+    char systems_path[PATH_MAX];
+    off_t cores_size;
+    off_t systems_size;
+    time_t cores_mtime;
+    time_t systems_mtime;
+} jw_ra_metadata_signature;
+
+static int jw_ra_metadata_signature_load(const char *sdcard_root,
+                                         jw_ra_metadata_signature *out,
+                                         char *error,
+                                         size_t error_size) {
+    if (!out) {
+        jw_ra_set_error(error, error_size, "missing metadata signature output");
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    const char *platform_path = getenv("UMRK_PLATFORM_PATH");
+    const char *system_path = getenv("SYSTEM_PATH");
+    char defaults_dir[PATH_MAX];
+    if (platform_path && platform_path[0]) {
+        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/defaults",
+                     platform_path) >= (int)sizeof(defaults_dir)) {
+            jw_ra_set_error(error, error_size, "defaults path too long");
+            return -1;
+        }
+    } else if (system_path && system_path[0]) {
+        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/defaults",
+                     system_path) >= (int)sizeof(defaults_dir)) {
+            jw_ra_set_error(error, error_size, "defaults path too long");
+            return -1;
+        }
+    } else {
+        const char *platform_id = jw_ra_platform_id();
+        const char *prefix = jw_ra_platform_uses_dot_system(platform_id) ? ".system" : "UMRK";
+        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/%s/%s/defaults",
+                     sdcard_root, prefix, platform_id) >= (int)sizeof(defaults_dir)) {
+            jw_ra_set_error(error, error_size, "defaults path too long");
+            return -1;
+        }
+    }
+
+    char cores_path[PATH_MAX];
+    char cores_v2_path[PATH_MAX];
+    if (snprintf(cores_path, sizeof(cores_path), "%s/cores.json", defaults_dir) >=
+            (int)sizeof(cores_path) ||
+        snprintf(cores_v2_path, sizeof(cores_v2_path), "%s/cores.v2.json", defaults_dir) >=
+            (int)sizeof(cores_v2_path) ||
+        snprintf(out->systems_path, sizeof(out->systems_path), "%s/systems.json", defaults_dir) >=
+            (int)sizeof(out->systems_path)) {
+        jw_ra_set_error(error, error_size, "metadata path too long");
+        return -1;
+    }
+
+    const char *selected_cores_path = cores_path;
+    if (!jw_ra_doc_has_expanded_cores(cores_path) && jw_ra_doc_has_expanded_cores(cores_v2_path)) {
+        selected_cores_path = cores_v2_path;
+    }
+    snprintf(out->cores_path, sizeof(out->cores_path), "%s", selected_cores_path);
+
+    struct stat cores_st;
+    struct stat systems_st;
+    if (stat(out->cores_path, &cores_st) != 0 ||
+        stat(out->systems_path, &systems_st) != 0) {
+        jw_ra_set_error(error, error_size, "expanded RetroArch metadata missing");
+        return -1;
+    }
+    out->cores_size = cores_st.st_size;
+    out->systems_size = systems_st.st_size;
+    out->cores_mtime = cores_st.st_mtime;
+    out->systems_mtime = systems_st.st_mtime;
+    return 0;
+}
+
+static int jw_ra_metadata_signature_equal(const jw_ra_metadata_signature *a,
+                                          const jw_ra_metadata_signature *b) {
+    return a && b &&
+           strcmp(a->cores_path, b->cores_path) == 0 &&
+           strcmp(a->systems_path, b->systems_path) == 0 &&
+           a->cores_size == b->cores_size &&
+           a->systems_size == b->systems_size &&
+           a->cores_mtime == b->cores_mtime &&
+           a->systems_mtime == b->systems_mtime;
+}
+
 static int jw_ra_validate_catalog(const jw_ra_catalog *catalog, char *error, size_t error_size);
 
 jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t error_size) {
@@ -448,6 +536,7 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
 const jw_ra_catalog *jw_ra_catalog_get(const char *sdcard_root, char *error, size_t error_size) {
     static jw_ra_catalog *cached_catalog = NULL;
     static char *cached_root = NULL;
+    static jw_ra_metadata_signature cached_signature;
 
     jw_ra_set_error(error, error_size, "");
     if (!sdcard_root || !sdcard_root[0]) {
@@ -455,7 +544,13 @@ const jw_ra_catalog *jw_ra_catalog_get(const char *sdcard_root, char *error, siz
         return NULL;
     }
 
-    if (cached_catalog && cached_root && strcmp(cached_root, sdcard_root) == 0) {
+    jw_ra_metadata_signature signature;
+    if (jw_ra_metadata_signature_load(sdcard_root, &signature, error, error_size) != 0) {
+        return NULL;
+    }
+
+    if (cached_catalog && cached_root && strcmp(cached_root, sdcard_root) == 0 &&
+        jw_ra_metadata_signature_equal(&cached_signature, &signature)) {
         return cached_catalog;
     }
 
@@ -475,6 +570,7 @@ const jw_ra_catalog *jw_ra_catalog_get(const char *sdcard_root, char *error, siz
     free(cached_root);
     cached_catalog = loaded;
     cached_root = root_copy;
+    cached_signature = signature;
     return cached_catalog;
 }
 
