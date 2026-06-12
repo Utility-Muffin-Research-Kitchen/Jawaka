@@ -289,6 +289,7 @@ static const struct { const char *id; const char *name; } kSystemDisplayNames[] 
     { "DC",      "Dreamcast" },
     { "SG1000",  "SG-1000" },
     { "PCE",     "TurboGrafx-16" },
+    { "TG16",    "TurboGrafx-16" },
     { "PCECD",   "TurboGrafx-CD" },
     { "NEOGEO",  "Neo Geo" },
     { "NGP",     "Neo Geo Pocket" },
