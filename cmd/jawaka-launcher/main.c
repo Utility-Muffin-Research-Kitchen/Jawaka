@@ -2707,16 +2707,9 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     int title_y;
     int title_max;
     if (tabbed) {
-        int bar_h = cat_get_tab_bar_height();
-        int pill_h = CAT_DS(CAT__PILL_SIZE);
-        cat_status_bar_opts sb = {0};
-        jw_settings_status_bar_opts(&state->settings, &sb);
-        sb.no_pill    = true;
-        sb.use_y      = true;
-        sb.y_position = (bar_h - pill_h) / 2;
-        cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
-        cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
-        cat_draw_status_bar(&sb);
+        /* Same tab bar + inline status as the home view (shared helper, so the
+           chrome can't drift between this and the other tab-bar views). */
+        int bar_h = jw__draw_tab_header(state);
 
         title_y   = bar_h + CAT_S(2);
         header_h  = jw__game_browser_header_h(state);
