@@ -3737,6 +3737,11 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         switch (button) {
             case CAT_BTN_UP:   cat_list_state_move(&ui->home_list, -1, JW_SETTINGS_CATEGORY_COUNT); break;
             case CAT_BTN_DOWN: cat_list_state_move(&ui->home_list, +1, JW_SETTINGS_CATEGORY_COUNT); break;
+            /* Left/Right jump to the top/bottom of the category list. Only safe on
+               this pure-navigation list: the sub-pages use Left/Right to change
+               values, so a jump there would be an easy mis-press. */
+            case CAT_BTN_LEFT:  cat_list_state_jump(&ui->home_list, 0, JW_SETTINGS_CATEGORY_COUNT); break;
+            case CAT_BTN_RIGHT: cat_list_state_jump(&ui->home_list, JW_SETTINGS_CATEGORY_COUNT - 1, JW_SETTINGS_CATEGORY_COUNT); break;
             case CAT_BTN_A: {
                 int idx = ui->home_list.cursor;
                 if (idx == 0) ui->screen = JW_SETTINGS_APPEARANCE;
