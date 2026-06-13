@@ -121,6 +121,7 @@ typedef enum {
     JW_SETTING_SCRAPE_REGION_PRIO,
     JW_SETTING_RA_USER,
     JW_SETTING_RA_PASS,
+    JW_SETTING_TAB_GLIDE,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -160,7 +161,11 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_SCRAPE_REGION_PRIO] = "scrape.region_priority",
     [JW_SETTING_RA_USER] = "retroachievements_user",
     [JW_SETTING_RA_PASS] = "retroachievements_pass",
+    [JW_SETTING_TAB_GLIDE] = "tab_glide",
 };
+
+static const char *const kTabSwitchLabels[] = { "Snap", "Glide" };
+#define JW_TAB_SWITCH_COUNT 2
 
 /* Curated time-zone list for Settings > Behavior > Time Zone. Each entry maps a
    friendly label to an IANA zone id, exported as the TZ environment variable. The
@@ -963,6 +968,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->font_family_index = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
     ui->timezone[0]       = '\0';  /* "" = follow system tz until the user picks */
     ui->font_size_index   = 1;
+    ui->tab_glide         = 1;     /* Glide by default — matches Leaf's soft feel; Snap is opt-out */
     ui->show_hints        = true;
     ui->clock_style_index = 1;
     ui->show_battery      = true;
@@ -1019,6 +1025,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 if (idx >= 0 && idx < JW_SETTINGS_FONT_SIZE_COUNT)
                     ui->font_size_index = idx;
             }
+            if (jw__setting_has(values, found, JW_SETTING_TAB_GLIDE))
+                ui->tab_glide = (strcmp(values[JW_SETTING_TAB_GLIDE], "0") != 0) ? 1 : 0;
             if (jw__setting_has(values, found, JW_SETTING_SHOW_HINTS))
                 ui->show_hints = (strcmp(values[JW_SETTING_SHOW_HINTS], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_CLOCK_STYLE_INDEX)) {
@@ -1152,6 +1160,10 @@ void jw_settings_ui_refresh_av(jw_settings_ui *ui) {
 
 bool jw_settings_show_hints(const jw_settings_ui *ui) {
     return !ui || ui->show_hints;
+}
+
+bool jw_settings_tab_glide(const jw_settings_ui *ui) {
+    return ui && ui->tab_glide != 0;
 }
 
 void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *out) {
@@ -1465,6 +1477,8 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
                         "Font", kJawakaFontFamilyLabels[ui->font_family_index], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_SIZE,
                         "Font Size", kFontSizeLabels[ui->font_size_index], true);
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_TAB_SWITCH,
+                        "Tab Switching", kTabSwitchLabels[ui->tab_glide ? 1 : 0], true);
 }
 
 /* The Status Bar "Battery" row cycles four display modes. They're stored as the
@@ -3930,6 +3944,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                              jw_appearance_font_path_for_index(ui->font_family_index));
                     cat_set_font_bump(kJawakaFontSizeValues[next]);
                     jw__persist_int(ui, "font_size_index", next);
+                } else if (row == JW_LAYOUT_TAB_SWITCH) {
+                    int next = (ui->tab_glide + dir + JW_TAB_SWITCH_COUNT) % JW_TAB_SWITCH_COUNT;
+                    ui->tab_glide = next;
+                    jw__persist_int(ui, "tab_glide", next);
                 }
                 break;
             }

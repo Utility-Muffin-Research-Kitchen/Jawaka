@@ -75,7 +75,8 @@ typedef enum {
 #define JW_LAYOUT_PILL_SHAPE  0
 #define JW_LAYOUT_FONT_FAMILY 1
 #define JW_LAYOUT_FONT_SIZE   2
-#define JW_LAYOUT_ROW_COUNT   3
+#define JW_LAYOUT_TAB_SWITCH  3
+#define JW_LAYOUT_ROW_COUNT   4
 
 /* Status Bar page */
 #define JW_STATUSBAR_HINTS   0
@@ -168,6 +169,7 @@ typedef struct {
     int                pill_shape_index;
     int                font_family_index;
     int                font_size_index;
+    int                tab_glide;            /* 0 = Snap (instant), 1 = Glide (slide) */
     bool               show_hints;
     int                clock_style_index;
     bool               show_battery;
@@ -259,6 +261,8 @@ bool jw_settings_ui_is_open(const jw_settings_ui *ui);
 /* Current sub-page, so the launcher can pick page-specific footer hints. */
 jw_settings_screen jw_settings_ui_screen(const jw_settings_ui *ui);
 bool jw_settings_show_hints(const jw_settings_ui *ui);
+/* True when tab switches should slide (Glide); false for an instant cut (Snap). */
+bool jw_settings_tab_glide(const jw_settings_ui *ui);
 
 /* True while the Display & Sound page is showing. The launcher polls this and
    calls jw_settings_ui_refresh_av() so the sliders track hardware volume/
