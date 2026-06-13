@@ -447,7 +447,7 @@ static int jw__browse_base_item_h(void) {
 }
 
 static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
-                             int item_count, int visible_rows,
+                             int item_count, const cat_list_state *ls,
                              SDL_Rect *list, SDL_Rect *image, int *item_h) {
     int pad     = CAT_S(JW_BROWSE_PAD);
     int hints_h = jw__footer_height(state);
@@ -466,10 +466,15 @@ static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
     SDL_Rect ir = cat_box_content(&ib);
     /* Fill the list box with whole rows (shared with the settings pickers), then
        snap the image pane to the same height so their bottoms land on one line. */
-    int vis = visible_rows;
+    int vis = ls ? ls->visible_rows : 0;
     int ih;
     lr = cat_box_fit_rows(&lb, jw__browse_base_item_h(), item_count, &vis, &ih);
     ir.h = lr.h;
+    /* cat_draw_list_pane draws ls->visible_rows rows regardless of the pane
+       rect, so the clamped count must land back in the list state — otherwise
+       a count cached when the box was taller (hints off, smaller font) keeps
+       drawing rows under the hint bar. Same idiom as the settings pickers. */
+    if (ls) ((cat_list_state *)ls)->visible_rows = vis;
     /* The row pill is centered in its cell (pill_h = body + CAT_S(6); see
        jw__draw_rom_item), so the first/last pills sit inset from the cell edges
        by (ih - pill_h)/2. Inset the icon box by that same amount so its top and
@@ -486,7 +491,7 @@ static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
  * stored visible_rows matches the renderer's box exactly. */
 static int jw__browse_visible_rows(const jw_launcher_state *state, int header_h) {
     SDL_Rect list;
-    jw__browse_boxes(state, header_h, 0, 0, &list, NULL, NULL);
+    jw__browse_boxes(state, header_h, 0, NULL, &list, NULL, NULL);
     int base = jw__browse_base_item_h();
     int v = (base > 0) ? list.h / base : 1;
     return v > 0 ? v : 1;
@@ -1230,7 +1235,7 @@ static void jw__render_games(const jw_launcher_state *state,
     SDL_Rect list, image;
     int item_h;
     jw__browse_boxes(state, content_y, state->system_count,
-                     state->list.visible_rows, &list, &image, &item_h);
+                     &state->list, &list, &image, &item_h);
 
     if (state->system_count > 0 && state->list.cursor < state->system_count) {
         const jw_system_entry *sys = &state->systems[state->list.cursor];
@@ -1263,7 +1268,7 @@ static void jw__render_apps(const jw_launcher_state *state,
     SDL_Rect list, image;
     int item_h;
     jw__browse_boxes(state, content_y, state->app_count,
-                     state->list.visible_rows, &list, &image, &item_h);
+                     &state->list, &list, &image, &item_h);
 
     if (state->app_count > 0 && state->list.cursor < state->app_count) {
         jw__draw_app_detail(state, &state->apps[state->list.cursor],
@@ -2655,7 +2660,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     SDL_Rect list, image;
     int item_h;
     jw__browse_boxes(state, region_y, state->game_count,
-                     state->game_list.visible_rows, &list, &image, &item_h);
+                     &state->game_list, &list, &image, &item_h);
 
     if (state->game_count == 0) {
         cat_draw_text_wrapped(body, "No games found",
@@ -2735,7 +2740,7 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
 
     SDL_Rect list, image;
     int item_h;
-    jw__browse_boxes(state, content_y, count, state->list.visible_rows,
+    jw__browse_boxes(state, content_y, count, &state->list,
                      &list, &image, &item_h);
 
     if (count == 0) {
@@ -2886,7 +2891,7 @@ static void jw__render_search(const jw_launcher_state *state) {
     SDL_Rect list, image;
     int item_h;
     jw__browse_boxes(state, region_y, state->search_count,
-                     state->search_list.visible_rows, &list, &image, &item_h);
+                     &state->search_list, &list, &image, &item_h);
 
     if (state->search_count == 0) {
         cat_draw_text_wrapped(body, "No results",
