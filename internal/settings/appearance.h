@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-#define JW_APPEARANCE_FONT_FAMILY_COUNT 2
+#define JW_APPEARANCE_FONT_FAMILY_COUNT 9
 #define JW_APPEARANCE_FONT_FAMILY_DEFAULT 0
 
 extern const char *const kJawakaFontFamilyLabels[JW_APPEARANCE_FONT_FAMILY_COUNT];

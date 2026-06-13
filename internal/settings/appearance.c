@@ -22,11 +22,25 @@
 const char *const kJawakaFontFamilyLabels[JW_APPEARANCE_FONT_FAMILY_COUNT] = {
     "Space Grotesk",
     "Inter",
+    "Rounded M+",
+    "Nunito",
+    "Baloo 2",
+    "Fredoka",
+    "Lexend",
+    "IBM Plex Sans",
+    "Noto Sans",
 };
 
 const char *const kJawakaFontFamilyPaths[JW_APPEARANCE_FONT_FAMILY_COUNT] = {
     "fonts/SpaceGrotesk/SpaceGrotesk-Regular.ttf",
     "fonts/Inter/Inter.ttf",
+    "fonts/MPlusRounded1c/MPLUSRounded1c-Bold.ttf",
+    "fonts/Nunito/Nunito-Bold.ttf",
+    "fonts/Baloo2/Baloo2-Bold.ttf",
+    "fonts/Fredoka/Fredoka-Bold.ttf",
+    "fonts/Lexend/Lexend-Bold.ttf",
+    "fonts/IBMPlexSans/IBMPlexSans-Bold.ttf",
+    "fonts/NotoSans/NotoSans-Bold.ttf",
 };
 
 const float kJawakaPillRadiusValues[JW_APPEARANCE_PILL_SHAPE_COUNT] = {
