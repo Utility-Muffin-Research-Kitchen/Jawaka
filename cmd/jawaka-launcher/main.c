@@ -169,6 +169,13 @@ typedef struct {
     cat_list_state     tools_list;
     /* coverflow animation */
     jw_coverflow_anim  coverflow_anim;
+    /* Tab-switch slide (Glide setting): two content snapshots cross-slide. */
+    bool               tab_anim_active;
+    int                tab_anim_dir;        /* +1 = next (from right), -1 = prev */
+    uint32_t           tab_anim_start_ms;
+    SDL_Texture       *tab_anim_from;
+    SDL_Texture       *tab_anim_to;
+    int                tab_anim_y, tab_anim_h;
     /* curated per-console colors (Horizontal carousel; loaded from active theme) */
     jw_console_color_table console_colors;
     /* Game switcher: a dedicated recents/resume carousel opened with Select.
@@ -1308,6 +1315,102 @@ static void jw__render_settings(const jw_launcher_state *state,
     jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
 }
 
+/* The current tab's content dispatch, factored out so it can draw to the screen
+   or into an offscreen snapshot for the Glide slide. */
+static void jw__render_tab_content(const jw_launcher_state *state,
+                                   int content_y, int content_h, int margin) {
+    switch (state->current_tab) {
+        case JW_TAB_RECENTS:   jw__render_recents(state, content_y, content_h, margin);   break;
+        case JW_TAB_FAVORITES: jw__render_favorites(state, content_y, content_h, margin); break;
+        case JW_TAB_GAMES:     jw__render_games(state, content_y, content_h, margin);     break;
+        case JW_TAB_APPS:      jw__render_apps(state, content_y, content_h, margin);       break;
+        case JW_TAB_SETTINGS:  jw__render_settings(state, content_y, content_h, margin);   break;
+        default: break;
+    }
+}
+
+static void jw__tab_anim_clear(jw_launcher_state *state) {
+    if (state->tab_anim_from) { SDL_DestroyTexture(state->tab_anim_from); state->tab_anim_from = NULL; }
+    if (state->tab_anim_to)   { SDL_DestroyTexture(state->tab_anim_to);   state->tab_anim_to   = NULL; }
+    state->tab_anim_active = false;
+}
+
+/* The tab-bar views, declared so the snapshot helper below can render whichever
+   one is live. (Definitions follow further down.) */
+static void jw__render_tabbed(const jw_launcher_state *state);
+static void jw__render_actions(const jw_launcher_state *state);
+static void jw__render_search(const jw_launcher_state *state);
+static void jw__render_game_browser(const jw_launcher_state *state);
+
+/* Snapshot whatever tab-bar view is currently on screen into a full-screen
+   texture. cat_present no-ops while a render target is set, so the view's own
+   render path draws into the texture without presenting. The slide clips to the
+   content band, so each view's own header/footer are harmlessly captured too. */
+static SDL_Texture *jw__capture_view(const jw_launcher_state *state) {
+    SDL_Renderer *r = cat_get_renderer();
+    if (!r) return NULL;
+    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+    SDL_Texture *tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA8888,
+                                         SDL_TEXTUREACCESS_TARGET, sw, sh);
+    if (!tex) return NULL;
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    SDL_Texture *prev = SDL_GetRenderTarget(r);
+    SDL_SetRenderTarget(r, tex);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
+    SDL_RenderClear(r);
+    if (state->actions_open)     jw__render_actions(state);
+    else if (state->search_open) jw__render_search(state);
+    else if (state->games_open)  jw__render_game_browser(state);
+    else                         jw__render_tabbed(state);
+    SDL_SetRenderTarget(r, prev);
+    return tex;
+}
+
+/* L1/R1 tab switch with the Glide slide. Honors the tab-bar promise: snapshots
+   the current tab-bar view (home/Settings, Options, or search results), closes
+   any sub-view, switches, snapshots the destination tab, and cross-slides the
+   content band. Snap mode (or any failure) falls back to an instant switch. */
+static void jw__switch_tab_slide(jw_launcher_state *state, int direction, const char *db_path) {
+    bool glide = cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED &&
+                 jw_settings_tab_glide(&state->settings);
+
+    /* Settle any in-flight slide first, so the snapshot is the current view at
+       rest — fast flips keep gliding, and old textures are freed before new. */
+    if (state->tab_anim_active) jw__tab_anim_clear(state);
+
+    SDL_Texture *from = glide ? jw__capture_view(state) : NULL;
+
+    /* Leaving a tab-bar sub-view (Options/search/game browser) closes it; the
+       destination is always a top-level tab. Centralized here so every L1/R1 path
+       is uniform. */
+    state->actions_open        = false;
+    state->action_scope        = JW_ACTION_NONE;
+    state->search_open         = false;
+    state->games_open          = false;
+    state->games_are_favorites = false;
+    state->game_count          = 0;
+    state->status[0]           = '\0';
+    jw__switch_tab(state, direction, db_path);
+
+    if (!glide) { if (from) SDL_DestroyTexture(from); return; }
+
+    SDL_Texture *to = jw__capture_view(state);
+    if (!from || !to) {
+        if (from) SDL_DestroyTexture(from);
+        if (to)   SDL_DestroyTexture(to);
+        return;
+    }
+    int content_y = cat_get_tab_bar_height();
+    state->tab_anim_from = from;
+    state->tab_anim_to   = to;
+    state->tab_anim_dir  = direction;
+    state->tab_anim_y    = content_y;
+    state->tab_anim_h    = cat_get_screen_height() - content_y - jw__footer_height(state);
+    state->tab_anim_start_ms = SDL_GetTicks();
+    state->tab_anim_active = true;
+    cat_request_frame();
+}
+
 static void jw__render_tabbed(const jw_launcher_state *state) {
     cat_clear_screen();
     int sh = cat_get_screen_height();
@@ -1318,24 +1421,29 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     int content_h = sh - header_h - fh;
     int margin    = CAT_S(12);
 
-    switch (state->current_tab) {
-        case JW_TAB_RECENTS:
-            jw__render_recents(state, content_y, content_h, margin);
-            break;
-        case JW_TAB_FAVORITES:
-            jw__render_favorites(state, content_y, content_h, margin);
-            break;
-        case JW_TAB_GAMES:
-            jw__render_games(state, content_y, content_h, margin);
-            break;
-        case JW_TAB_APPS:
-            jw__render_apps(state, content_y, content_h, margin);
-            break;
-        case JW_TAB_SETTINGS:
-            jw__render_settings(state, content_y, content_h, margin);
-            break;
-        default:
-            break;
+    if (state->tab_anim_active) {
+        /* Cross-slide the two snapshots, eased; header/footer stay put. The two
+           are always one screen-width apart, so they read as adjacent pages. */
+        const uint32_t dur = 200;
+        uint32_t elapsed = SDL_GetTicks() - state->tab_anim_start_ms;
+        float p = (dur > 0) ? (float)elapsed / (float)dur : 1.0f;
+        if (p > 1.0f) p = 1.0f;
+        float e = 1.0f - (1.0f - p) * (1.0f - p) * (1.0f - p);  /* easeOutCubic */
+        int sw = cat_get_screen_width();
+        int from_x = (int)(-state->tab_anim_dir * sw * e);
+        int to_x   = (int)( state->tab_anim_dir * sw * (1.0f - e));
+        SDL_Renderer *r = cat_get_renderer();
+        SDL_Rect clip = { 0, state->tab_anim_y, sw, state->tab_anim_h };
+        SDL_RenderSetClipRect(r, &clip);
+        SDL_Rect fr = { from_x, 0, sw, sh };
+        SDL_Rect tr = { to_x,   0, sw, sh };
+        SDL_RenderCopy(r, state->tab_anim_from, NULL, &fr);
+        SDL_RenderCopy(r, state->tab_anim_to,   NULL, &tr);
+        SDL_RenderSetClipRect(r, NULL);
+        if (p >= 1.0f) jw__tab_anim_clear((jw_launcher_state *)state);
+        else           cat_request_frame();
+    } else {
+        jw__render_tab_content(state, content_y, content_h, margin);
     }
 
     if (jw_settings_ui_is_open(&state->settings)) {
@@ -4174,14 +4282,11 @@ static void jw__handle_actions_input(const char *socket_path, const char *db_pat
         case CAT_BTN_L1:
         case CAT_BTN_R1:
             /* The actions header shows the section tabs, so L1/R1 tabs away —
-               closing the actions view and landing on the adjacent section,
-               like the game browser and search. Tabbed layout only. */
-            if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED) {
-                state->actions_open = false;
-                state->action_scope = JW_ACTION_NONE;
-                state->status[0] = '\0';
-                jw__switch_tab(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
-            }
+               closing the actions view and landing on the adjacent section.
+               jw__switch_tab_slide closes the view and glides (Options shows the
+               tab bar). Tabbed layout only. */
+            if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED)
+                jw__switch_tab_slide(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
             break;
         case CAT_BTN_MENU:
             if (jw_ipc_open_menu(socket_path) == 0) {
@@ -4274,6 +4379,7 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
     state->tools_open = false;
     state->apps_open = false;
     memset(&state->coverflow_anim, 0, sizeof(state->coverflow_anim));
+    jw__tab_anim_clear(state);   /* cancel any in-flight tab slide on layout/theme change */
 
     /* Refresh per-console color palette from the active theme stylesheet.
      * Empty / missing maps degrade to hash-derived colors in the carousel. */
@@ -4339,14 +4445,11 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
             break;
         case CAT_BTN_L1:
         case CAT_BTN_R1:
-            /* The search header shows the section tabs, so L1/R1 tabs away —
-               closing search and landing on the adjacent section, like the game
-               browser. Tabbed layout only. */
-            if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED) {
-                state->search_open = false;
-                state->status[0] = '\0';
-                jw__switch_tab(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
-            }
+            /* The search results header shows the section tabs, so L1/R1 tabs
+               away — closing search and gliding to the adjacent section (search
+               results show the tab bar). Tabbed layout only. */
+            if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED)
+                jw__switch_tab_slide(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
             break;
         default:
             break;
@@ -4566,16 +4669,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
 
     if (state->games_open) {
         /* In the tabbed layout the section tabs sit above the game list, so
-           L1/R1 tabs away from the system — closing the browser and landing on
-           the adjacent section, exactly as on the tabbed home view. */
+           L1/R1 tabs away from the system — closing the browser and gliding to
+           the adjacent section (the game list shows the tab bar). */
         if (layout == CAT_LAUNCHER_TABBED &&
             (button == CAT_BTN_L1 || button == CAT_BTN_R1)) {
-            bool back = (button == CAT_BTN_L1);
-            state->games_open = false;
-            state->games_are_favorites = false;
-            state->game_count = 0;
-            state->status[0] = '\0';
-            jw__switch_tab(state, back ? -1 : +1, db_path);
+            jw__switch_tab_slide(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
             return;
         }
         if (button == CAT_BTN_X) {
@@ -4647,11 +4745,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
            side effect when moving off the tab. */
         if (layout == CAT_LAUNCHER_TABBED) {
             if (button == CAT_BTN_L1) {
-                jw__switch_tab(state, -1, db_path);
+                jw__switch_tab_slide(state, -1, db_path);
                 return;
             }
             if (button == CAT_BTN_R1) {
-                jw__switch_tab(state, +1, db_path);
+                jw__switch_tab_slide(state, +1, db_path);
                 return;
             }
         }
@@ -4719,11 +4817,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             break;
         case CAT_BTN_L1:   /* L1/R1 tab between sections (L2/R2 reserved for future use) */
             if (layout == CAT_LAUNCHER_TABBED)
-                jw__switch_tab(state, -1, db_path);
+                jw__switch_tab_slide(state, -1, db_path);
             break;
         case CAT_BTN_R1:
             if (layout == CAT_LAUNCHER_TABBED)
-                jw__switch_tab(state, +1, db_path);
+                jw__switch_tab_slide(state, +1, db_path);
             break;
         case CAT_BTN_A:
             if (layout == CAT_LAUNCHER_TABBED)
