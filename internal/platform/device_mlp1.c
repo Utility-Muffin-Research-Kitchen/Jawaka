@@ -1610,6 +1610,27 @@ static bool jw__mlp1_default_audio_sink(char *out, size_t out_size) {
     return found;
 }
 
+/* Escape a string for safe inclusion inside single quotes in a shell command:
+   each ' becomes '\''. Everything else (spaces, UTF-8, apostrophes from device
+   names like "Eric's AirPods Pro") is passed through literally. */
+static void jw__mlp1_shell_squote(const char *in, char *out, size_t out_size) {
+    size_t o = 0;
+    if (!out || out_size == 0) {
+        return;
+    }
+    for (const char *p = in ? in : ""; *p && o + 4 < out_size; p++) {
+        if (*p == '\'') {
+            out[o++] = '\''; out[o++] = '\\'; out[o++] = '\''; out[o++] = '\'';
+        } else {
+            out[o++] = *p;
+        }
+    }
+    out[o] = '\0';
+}
+
+/* Pick the BlueALSA mixer control to drive: prefer the A2DP (music) profile over
+   SCO (call audio). Returns the raw control name; callers must shell-escape it
+   with jw__mlp1_shell_squote since device names contain spaces/apostrophes. */
 static bool jw__mlp1_bluealsa_control(char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return false;
@@ -1620,30 +1641,27 @@ static bool jw__mlp1_bluealsa_control(char *out, size_t out_size) {
         return false;
     }
     char line[256];
-    bool ok = false;
+    char first[128] = { 0 };
+    bool have_a2dp = false;
     while (fgets(line, sizeof(line), fp)) {
         char ctl[128];
         if (sscanf(line, "Simple mixer control '%127[^']'", ctl) != 1) {
             continue;
         }
-        bool safe = true;
-        for (const char *p = ctl; *p; p++) {
-            if (!( (*p >= 'A' && *p <= 'Z') ||
-                   (*p >= 'a' && *p <= 'z') ||
-                   (*p >= '0' && *p <= '9') ||
-                   *p == ':' || *p == '_' || *p == '-' || *p == '.' || *p == ' ')) {
-                safe = false;
-                break;
-            }
+        if (!first[0]) {
+            snprintf(first, sizeof(first), "%s", ctl);
         }
-        if (safe) {
+        if (strstr(ctl, "A2DP") || strstr(ctl, "a2dp")) {
             snprintf(out, out_size, "%s", ctl);
-            ok = true;
+            have_a2dp = true;
             break;
         }
     }
     pclose(fp);
-    return ok;
+    if (!have_a2dp && first[0]) {
+        snprintf(out, out_size, "%s", first);
+    }
+    return out[0] != '\0';
 }
 
 static int jw__mlp1_get_bluealsa_volume_percent(void) {
@@ -1651,8 +1669,9 @@ static int jw__mlp1_get_bluealsa_volume_percent(void) {
     if (!jw__mlp1_bluealsa_control(ctl, sizeof(ctl))) {
         return -1;
     }
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "amixer -D bluealsa sget '%s' 2>/dev/null", ctl);
+    char esc[256], cmd[320];
+    jw__mlp1_shell_squote(ctl, esc, sizeof(esc));
+    snprintf(cmd, sizeof(cmd), "amixer -D bluealsa sget '%s' 2>/dev/null", esc);
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return -1;
@@ -1669,10 +1688,11 @@ static int jw__mlp1_set_bluealsa_volume_percent(int percent) {
     if (!jw__mlp1_bluealsa_control(ctl, sizeof(ctl))) {
         return -1;
     }
-    char cmd[256];
+    char esc[256], cmd[320];
+    jw__mlp1_shell_squote(ctl, esc, sizeof(esc));
     snprintf(cmd, sizeof(cmd),
              "amixer -D bluealsa sset '%s' %d%% >/dev/null 2>&1",
-             ctl, percent);
+             esc, percent);
     return jw__exec_shell(cmd);
 }
 
