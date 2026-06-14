@@ -78,10 +78,17 @@ static const jw__color_scheme kColorSchemes[] = {
     { "Orchid",  "#2E2240", "#181226", "#ECE4F2", "#8E7CB0", "#C792EA", "#181226", "#C792EA" },
     { "Slate",   "#242A36", "#14171E", "#E4E7ED", "#7C828E", "#7AA2F7", "#14171E", "#7AA2F7" },
     { "Rosé",    "#33222E", "#1C1620", "#F0E6EC", "#A88A98", "#EB6F92", "#1C1620", "#EB6F92" },
-    /* Light companion to Leaf: near-white green-tinted page, dark forest text, a
-       leaf-green chrome bar and selection pill. Appended (not inserted) so saved
-       color_scheme_index values for the dark schemes don't shift. */
-    { "Leaf Light", "#9CCB85", "#D1D0A6", "#1B2E1B", "#5E7654", "#7FB069", "#1B2E1B", "#7FB069" },
+    /* Light schemes: a light page with a hue-matched chrome bar + selection pill.
+       Appended (not inserted) so saved color_scheme_index values for the dark
+       schemes don't shift. The selected-row text auto-contrast in
+       cat_finalize_theme_colors picks the readable one of {text,bg}, so dark text
+       lands on the bright selection pill. */
+    /* name        accent     bg         text       hint       selection  btn_label  btn_bg     */
+    { "Meadow",   "#9CCB85", "#D1D0A6", "#1B2E1B", "#5E7654", "#7FB069", "#1B2E1B", "#7FB069" },
+    { "Sky",      "#9CC3E0", "#BFCED7", "#1B2A33", "#5A7280", "#6FA8DC", "#1B2A33", "#6FA8DC" },
+    { "Blush",    "#F2BFCE", "#DEC9D0", "#3A2630", "#8A6E78", "#E886A4", "#3A2630", "#E886A4" },
+    { "Sand",     "#EAC99C", "#E6D2B0", "#332518", "#8A7050", "#EE9F54", "#332518", "#EE9F54" },
+    { "Lavender", "#D0BCE4", "#D2C9DC", "#2A2238", "#786E8A", "#BE8FE2", "#2A2238", "#BE8FE2" },
 };
 #define JW_COLOR_SCHEME_COUNT ((int)(sizeof(kColorSchemes) / sizeof(kColorSchemes[0])))
 #define JW_COLOR_SCHEME_DEFAULT 0   /* Leaf — the Dweezil/Leaf identity theme */
