@@ -4,7 +4,7 @@
 #include <stddef.h>
 
 #define JW_APPEARANCE_FONT_FAMILY_COUNT 9
-#define JW_APPEARANCE_FONT_FAMILY_DEFAULT 0
+#define JW_APPEARANCE_FONT_FAMILY_DEFAULT 3   /* Nunito (index into kJawakaFontFamily*) */
 
 extern const char *const kJawakaFontFamilyLabels[JW_APPEARANCE_FONT_FAMILY_COUNT];
 extern const char *const kJawakaFontFamilyPaths[JW_APPEARANCE_FONT_FAMILY_COUNT];
