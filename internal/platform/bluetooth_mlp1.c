@@ -940,7 +940,7 @@ void jw_bt_cancel_operation(void) {
 }
 
 static int jw__bt_worker_start(jw_bt_operation_kind kind, int timeout_ms,
-                               void (*child_fn)(const char *mac, bool pair),
+                               void (*child_fn)(const char *mac, bool pair, int out_fd),
                                const char *mac, bool pair) {
     if (s_worker.pid > 0 && jw__bt_worker_running()) {
         return -1;
@@ -960,10 +960,24 @@ static int jw__bt_worker_start(jw_bt_operation_kind kind, int timeout_ms,
     }
 
     if (pid == 0) {
-        dup2(pipefd[1], STDOUT_FILENO);
+        /* The parent reads this child's output as the operation message. Give the
+           child a dedicated result channel (out_fd) and route its stdout/stderr to
+           /dev/null, so chatter that stock helpers and libraries scribble into the
+           forked child -- the Mali "arm_release_ver" banner, wifibt-init.sh, etc.
+           -- never reaches the status line. Children write only their status on
+           out_fd. */
+        int out_fd = dup(pipefd[1]);
+        int dn = open("/dev/null", O_WRONLY);
+        if (dn >= 0) {
+            dup2(dn, STDOUT_FILENO);
+            dup2(dn, STDERR_FILENO);
+            if (dn > STDERR_FILENO) {
+                close(dn);
+            }
+        }
         close(pipefd[0]);
         close(pipefd[1]);
-        child_fn(mac, pair);
+        child_fn(mac, pair, out_fd >= 0 ? out_fd : STDOUT_FILENO);
         _exit(1);
     }
 
@@ -1039,19 +1053,23 @@ static jw_bt_operation_status jw__bt_worker_poll(jw_bt_operation_kind kind,
     return result;
 }
 
-static void jw__bt_scan_child(const char *mac, bool pair) {
+static void jw__bt_scan_child(const char *mac, bool pair, int out_fd) {
     (void)mac;
     (void)pair;
+    FILE *out = fdopen(out_fd, "w");
+    if (!out) {
+        out = stdout;
+    }
     char buf[8192];
     int rc = jw__btctl_timeout_scan(buf, sizeof(buf));
     (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS, "scan", "off", NULL);
     if (rc < 0) {
-        printf("Bluetooth scan failed\n");
-        fflush(stdout);
+        fprintf(out, "Bluetooth scan failed\n");
+        fflush(out);
         _exit(1);
     }
-    printf("Bluetooth scan complete\n");
-    fflush(stdout);
+    fprintf(out, "Bluetooth scan complete\n");
+    fflush(out);
     _exit(0);
 }
 
@@ -1113,25 +1131,11 @@ static void jw__bt_enforce_single_audio_sink(const char *keep) {
     }
 }
 
-static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
-    /* The parent reads this child's stdout as the operation message shown in the
-       UI. Stock helpers we trigger here (wifibt-init.sh's start_bt, kernel module
-       loads and driver banners like "arm_release_ver", ...) scribble to stdout and
-       stderr; route all of that to /dev/null and emit only our own status line on
-       the saved channel, so no vendor chatter ever reaches the status bar. */
-    int out_fd = dup(STDOUT_FILENO);
-    if (out_fd >= 0) {
-        int dn = open("/dev/null", O_WRONLY);
-        if (dn >= 0) {
-            dup2(dn, STDOUT_FILENO);
-            dup2(dn, STDERR_FILENO);
-            if (dn > STDERR_FILENO) {
-                close(dn);
-            }
-        }
-    } else {
-        out_fd = STDOUT_FILENO;
-    }
+static void jw__bt_connect_child(const char *mac, bool pair_if_needed, int out_fd) {
+    /* out_fd is the dedicated result channel from jw__bt_worker_start; this child's
+       stdout/stderr are already routed to /dev/null there, so stock chatter
+       (start_bt, arm_release_ver, ...) can't reach the status line. We emit only
+       our own status messages, on out_fd. */
     FILE *out = fdopen(out_fd, "w");
     if (!out) {
         out = stdout;
