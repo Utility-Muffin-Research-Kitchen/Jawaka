@@ -1324,12 +1324,11 @@ static SDL_Rect jw__settings_boxes(int x, int y, int w, int h,
     return cat_box_content(&page);
 }
 
-static void jw__render_list_row(const cat_list_state *list, int x, int y,
-                                int w, int row, const char *label,
-                                const char *value, bool cycler) {
+static void jw__render_list_row_h(const cat_list_state *list, int x, int y,
+                                  int w, int row, const char *label,
+                                  const char *value, bool cycler, int item_h) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int item_h = TTF_FontHeight(body) + cat_scale(12);
     int iy = y + row * item_h;
     bool selected = (list->cursor == row);
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
@@ -1368,6 +1367,22 @@ static void jw__render_list_row(const cat_list_state *list, int x, int y,
             cat_draw_text(body, value, vx, ty, value_c);
         }
     }
+}
+
+/* The canonical settings list row: medium font + cat_scale(12) padding. */
+static void jw__render_list_row(const cat_list_state *list, int x, int y,
+                                int w, int row, const char *label,
+                                const char *value, bool cycler) {
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__render_list_row_h(list, x, y, w, row, label, value, cycler, item_h);
+}
+
+/* Row pitch for the Display & Sound page. The Brightness/Volume sliders need the
+   taller slot for their track, so the Audio Output row (a plain list row between
+   them) must share this same pitch — otherwise the three rows, each positioned by
+   row*own_height, overlap and gap. */
+static int jw__display_row_h(void) {
+    return TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(28);
 }
 
 static void jw__render_nav_row(const cat_list_state *list, int x, int y,
@@ -1534,7 +1549,7 @@ static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int
                                 int row, const char *label, int percent) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int item_h = TTF_FontHeight(body) + cat_scale(28);
+    int item_h = jw__display_row_h();
     int iy = y_base + row * item_h;
     bool selected = (ui->display_list.cursor == row);
     int pill_h = item_h - cat_scale(6);
@@ -1567,8 +1582,18 @@ static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_bas
     if (output < 0 || output >= JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
         output = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
     }
-    jw__render_list_row(&ui->display_list, x, y_base, w, JW_DISPLAY_OUTPUT,
-                        "Output", jw_platform_audio_output_label(output), true);
+    /* Only show the cycle affordance when there is more than one output to pick
+       (e.g. headphones plugged in), so a lone "Speaker" doesn't look switchable.
+       Shares the slider pitch so all three rows line up. */
+    int navail = 0;
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        if (ui->audio_available_outputs & JW_PLATFORM_AUDIO_OUTPUT_BIT(i)) {
+            navail++;
+        }
+    }
+    jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_OUTPUT,
+                          "Output", jw_platform_audio_output_label(output),
+                          navail > 1, jw__display_row_h());
 }
 
 static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
