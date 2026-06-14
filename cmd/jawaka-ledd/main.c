@@ -238,7 +238,13 @@ int main(int argc, char **argv) {
 
     /* Fixed high frame rate for smooth motion; speed drives how fast the dot
        advances per frame (sub-LED units), not the frame interval. */
-    long interval_ms = JW_LED_FPS_INTERVAL_MS;
+    /* "off" and "static" are constant frames: the AW20036 latches its registers,
+       so re-driving them at the animation frame rate just churns the shared i2c
+       bus (codec, brightness) ~40x/second for a frame that never changes. Hold
+       them at a slow refresh; animated effects keep the smooth rate. */
+    int constant_frame = (strcmp(effect, "off") == 0 ||
+                          strcmp(effect, "static") == 0);
+    long interval_ms = constant_frame ? 1000 : JW_LED_FPS_INTERVAL_MS;
     long advance = 6 + (long)speed * 6;   /* sub-LED units per frame */
 
     g_daemon_pid = jw__find_daemon(JW_LED_DAEMON);
