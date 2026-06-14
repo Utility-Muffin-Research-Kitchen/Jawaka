@@ -5037,8 +5037,10 @@ int main(void) {
 
     while (running) {
         cat_input_event ev;
+        bool had_input = false;
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
+            had_input = true;
             jw__handle_input(socket_path, db_path, &state, ev.button, &running);
         }
 
@@ -5057,7 +5059,14 @@ int main(void) {
            the sliders follow the hardware volume keys (jawakad's input proxy
            consumes those events, so the UI can only observe the result). */
         if (jw_settings_ui_wants_av_poll(&state.settings)) {
-            jw_settings_ui_refresh_av(&state.settings);
+            /* refresh_av forks amixer/pactl in jawakad (~60ms/frame); doing it on
+               a d-pad frame stalls navigation on this page. Its only job is to
+               follow the hardware volume/brightness keys, which are not launcher
+               input (jawakad's proxy consumes them), so skip it on input frames
+               and let the 300ms timer wake catch the hardware-key result. */
+            if (!had_input) {
+                jw_settings_ui_refresh_av(&state.settings);
+            }
             cat_request_frame_in(300);
         }
 
