@@ -514,6 +514,24 @@ static void jw__bt_add_mac_to_set(const char mac[JW_BT_MAC_LEN],
     (*count)++;
 }
 
+/* BlueZ reports unnamed devices with their address (dash form) as the "name",
+   e.g. "0C-3D-44-6A-62-EE". Treat those as nameless so the scan list can hide
+   the address-only BLE clutter and only surface devices with a real name. */
+static bool jw__bt_name_is_address(const char *name, const char mac[JW_BT_MAC_LEN]) {
+    if (!name || !name[0]) {
+        return true;
+    }
+    char norm[JW_BT_NAME_LEN];
+    size_t i = 0;
+    for (; name[i] && i + 1 < sizeof(norm); i++) {
+        char c = name[i];
+        if (c == '-') c = ':';
+        norm[i] = (char)toupper((unsigned char)c);
+    }
+    norm[i] = '\0';
+    return strcmp(norm, mac) == 0;
+}
+
 static void jw__bt_summary_device(jw_bt_device_t *dev,
                                   const char mac[JW_BT_MAC_LEN],
                                   const char *name,
@@ -752,6 +770,9 @@ int jw_bt_list_summaries(jw_bt_device_t *paired, int paired_max, int *paired_cou
             if (!jw__bt_parse_device_line(line, mac, name) ||
                 jw__bt_mac_in_set(mac, paired_macs, paired_set_count)) {
                 continue;
+            }
+            if (jw__bt_name_is_address(name, mac)) {
+                continue;   /* hide address-only (unnamed) devices */
             }
             jw__bt_summary_device(&nearby[out_nearby_count], mac, name, false,
                                   jw__bt_mac_in_set(mac, connected_macs,
@@ -1078,10 +1099,173 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
     _exit(0);
 }
 
+/* ── Auto-reconnect ─────────────────────────────────────────────────────────
+   Remember the last device the user connected (target MAC in the state dir, so
+   it survives reboots) and quietly reconnect it whenever it has dropped — a case
+   stow or a reboot. A manual Disconnect drops a suppress marker in the runtime
+   dir (tmpfs, cleared on reboot) so we do not fight the user until they connect
+   again or reboot. jawakad calls jw_bt_audio_reconnect_tick() from its loop. */
+
+static bool jw__bt_autoreconnect_target_path(char *out, size_t out_size) {
+    char *sd = jw_state_dir();
+    if (!sd) {
+        return false;
+    }
+    int n = snprintf(out, out_size, "%s/bt-autoreconnect", sd);
+    free(sd);
+    return n > 0 && (size_t)n < out_size;
+}
+
+static bool jw__bt_autoreconnect_suppress_path(char *out, size_t out_size) {
+    char *rd = jw_runtime_dir();
+    int n = snprintf(out, out_size, "%s/bt-autoreconnect-off", rd ? rd : "/tmp");
+    free(rd);
+    return n > 0 && (size_t)n < out_size;
+}
+
+/* The user connected this device -> remember it and clear any suppression. */
+static void jw__bt_autoreconnect_remember(const char *mac) {
+    char path[512];
+    if (!jw_bt_mac_valid(mac) || !jw__bt_autoreconnect_target_path(path, sizeof(path))) {
+        return;
+    }
+    char canon[JW_BT_MAC_LEN];
+    jw_bt_mac_canonical(mac, canon);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "%s\n", canon);
+        fclose(f);
+    }
+    char sp[512];
+    if (jw__bt_autoreconnect_suppress_path(sp, sizeof(sp))) {
+        unlink(sp);
+    }
+}
+
+/* The user disconnected -> stop auto-reconnecting until they reconnect/reboot. */
+static void jw__bt_autoreconnect_suppress(void) {
+    char sp[512];
+    if (!jw__bt_autoreconnect_suppress_path(sp, sizeof(sp))) {
+        return;
+    }
+    FILE *f = fopen(sp, "w");
+    if (f) {
+        fclose(f);
+    }
+}
+
+/* Forgetting the remembered device -> stop targeting it. */
+static void jw__bt_autoreconnect_forget(const char *mac) {
+    char path[512], line[64] = { 0 };
+    if (!jw_bt_mac_valid(mac) || !jw__bt_autoreconnect_target_path(path, sizeof(path))) {
+        return;
+    }
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return;
+    }
+    char *got = fgets(line, sizeof(line), f);
+    fclose(f);
+    if (!got) {
+        return;
+    }
+    line[strcspn(line, "\r\n")] = '\0';
+    char canon[JW_BT_MAC_LEN];
+    jw_bt_mac_canonical(mac, canon);
+    if (strcmp(line, canon) == 0) {
+        unlink(path);
+    }
+}
+
+int jw_bt_audio_reconnect_tick(void) {
+    static pid_t child = -1;
+    static long long next_ms = 0;
+    static int fail_streak = 0;
+
+    /* Reap our previous attempt (jawakad never waitpid(-1), so this child is
+       ours to collect). Its exit code reports whether the device ended up
+       connected — the script exits 0 when it is already/now connected — which
+       sets the cadence: poll often while connected so a drop is caught quickly,
+       and back off failed retries so an absent device is not paged forever
+       (battery). While an attempt is in flight, do not start another. */
+    if (child > 0) {
+        int status = 0;
+        pid_t r = waitpid(child, &status, WNOHANG);
+        if (r == 0) {
+            return 0;
+        }
+        child = -1;
+        if (r > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            fail_streak = 0;
+            next_ms = jw__bt_now_ms() + 8000;
+        } else {
+            static const long backoff_ms[] = { 6000, 6000, 12000, 30000, 60000, 60000 };
+            if (fail_streak < 5) {
+                fail_streak++;
+            }
+            next_ms = jw__bt_now_ms() + backoff_ms[fail_streak];
+        }
+        return 0;
+    }
+
+    long long now = jw__bt_now_ms();
+    if (now < next_ms) {
+        return 0;
+    }
+    next_ms = now + 8000;   /* default cadence; the attempt's reap refines it */
+
+    char sp[512];
+    if (jw__bt_autoreconnect_suppress_path(sp, sizeof(sp)) && access(sp, F_OK) == 0) {
+        return 0;            /* user disconnected on purpose */
+    }
+
+    char tp[512], line[64] = { 0 }, mac[JW_BT_MAC_LEN] = { 0 };
+    if (!jw__bt_autoreconnect_target_path(tp, sizeof(tp))) {
+        return 0;
+    }
+    FILE *f = fopen(tp, "r");
+    if (!f) {
+        return 0;            /* no remembered device */
+    }
+    char *got = fgets(line, sizeof(line), f);
+    fclose(f);
+    if (!got) {
+        return 0;
+    }
+    line[strcspn(line, "\r\n")] = '\0';
+    jw_bt_mac_canonical(line, mac);
+    if (!jw_bt_mac_valid(mac)) {
+        return 0;
+    }
+
+    /* Do the connected-check and connect in a child so the daemon loop never
+       blocks on bluetoothctl. The MAC is passed as a separate argv ($0), never
+       interpolated into the script, so it cannot inject. A connect failure (out
+       of range / in case) is fine; we retry on the next tick. */
+    pid_t p = fork();
+    if (p == 0) {
+        int dn = open("/dev/null", O_WRONLY);
+        if (dn >= 0) {
+            dup2(dn, STDOUT_FILENO);
+            dup2(dn, STDERR_FILENO);
+        }
+        execlp("sh", "sh", "-c",
+               "bluetoothctl devices Connected 2>/dev/null | grep -qi \"$0\" || "
+               "bluetoothctl --timeout 15 connect \"$0\"",
+               mac, (char *)NULL);
+        _exit(127);
+    }
+    if (p > 0) {
+        child = p;
+    }
+    return 0;
+}
+
 int jw_bt_connect_start(const char *mac, bool pair_if_needed) {
     if (!jw_bt_mac_valid(mac)) {
         return -1;
     }
+    jw__bt_autoreconnect_remember(mac);
     return jw__bt_worker_start(pair_if_needed ? JW_BT_OP_PAIR_CONNECT : JW_BT_OP_CONNECT,
                                JW_BT_CONNECT_TIMEOUT_MS,
                                jw__bt_connect_child, mac, pair_if_needed);
@@ -1153,6 +1337,7 @@ int jw_bt_disconnect(const char *mac) {
     char buf[512];
     int rc = jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
                        "disconnect", canon, NULL);
+    jw__bt_autoreconnect_suppress();
     (void)jw_bt_sync_stock_saved_list();
     return rc < 0 ? -1 : 0;
 }
@@ -1168,6 +1353,7 @@ int jw_bt_forget(const char *mac) {
                     "disconnect", canon, NULL);
     int rc = jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
                        "remove", canon, NULL);
+    jw__bt_autoreconnect_forget(canon);
     (void)jw_bt_sync_stock_saved_list();
     return rc < 0 ? -1 : 0;
 }

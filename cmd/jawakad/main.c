@@ -3,6 +3,7 @@
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
 #include "internal/ipc/ipc.h"
+#include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/paths.h"
@@ -5450,6 +5451,7 @@ int main(int argc, char *argv[]) {
         jw__handle_osd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
         jw_platform_audio_tick(&state.platform);
+        jw_bt_audio_reconnect_tick();
         jw__tick_auto_sleep(&state);
         if (jw_platform_storage_tick(&state.platform)) {
             jw_scan_result scan_result;
