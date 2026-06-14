@@ -141,10 +141,6 @@ int jw_bt_forget(const char *mac) {
     return -1;
 }
 
-int jw_bt_audio_reconnect_tick(void) {
-    return 0;
-}
-
 int jw_bt_sync_stock_saved_list(void) {
     return 0;
 }

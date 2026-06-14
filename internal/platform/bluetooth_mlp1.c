@@ -1020,20 +1020,18 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
     char buf[4096];
 
     (void)jw_bt_set_radio(true);
-    (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
-                    "agent", "NoInputNoOutput", NULL);
-    (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
-                    "default-agent", NULL, NULL);
 
     jw_bt_device_t before;
-    bool paired = jw_bt_refresh_device(canon, &before) == 0 && before.paired;
-    if (!paired && !pair_if_needed) {
+    bool bonded = jw_bt_refresh_device(canon, &before) == 0 && before.bonded;
+    if (!bonded && !pair_if_needed) {
         printf("Device is not paired\n");
         fflush(stdout);
         _exit(1);
     }
 
-    if (!paired) {
+    /* Discover the device first when we still have to pair it. A one-shot scan is
+       fine here — scanning needs no agent. */
+    if (!bonded) {
         bool seen = jw__bt_device_seen(canon);
         for (int i = 0; !seen && i < 5; i++) {
             (void)jw__btctl_timeout_scan(buf, sizeof(buf));
@@ -1046,44 +1044,40 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
             fflush(stdout);
             _exit(1);
         }
-
-        (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
-                        "trust", canon, NULL);
-        bool pair_ok = false;
-        for (int i = 0; i < 5 && !pair_ok; i++) {
-            if (jw__btctl(buf, sizeof(buf), 10000, "pair", canon, NULL) >= 0) {
-                pair_ok = strstr(buf, "successful") || strstr(buf, "Connection successful") ||
-                          strstr(buf, "Device already exists") || strstr(buf, "AlreadyExists");
-            }
-            if (!pair_ok && i == 0) {
-                (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
-                                "remove", canon, NULL);
-                (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
-                                "trust", canon, NULL);
-            }
-        }
-        if (!pair_ok) {
-            jw_bt_device_t after;
-            pair_ok = jw_bt_refresh_device(canon, &after) == 0 && after.paired;
-        }
-        if (!pair_ok) {
-            printf("Pairing failed\n");
-            fflush(stdout);
-            _exit(1);
-        }
     }
 
-    (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
-                    "trust", canon, NULL);
-    bool connected = false;
-    for (int i = 0; i < 3 && !connected; i++) {
-        (void)jw__btctl(buf, sizeof(buf), 10000, "connect", canon, NULL);
-        usleep(750 * 1000);
-        connected = jw__bt_device_connected(canon);
+    /* Pair + connect inside ONE bluetoothctl session. The NoInputNoOutput agent
+       MUST stay registered across the `pair`: running `agent`/`pair` as separate
+       one-shot `bluetoothctl` processes drops the agent the instant each exits,
+       so a "just works" pair completes Paired-but-NOT-Bonded (no link key) and
+       BlueZ evicts the device on its first disconnect. Holding a single session
+       keeps the agent alive and writes a real bond that survives — same shape as
+       stock connect-bt.sh. canon is a validated BT address, safe to inline. */
+    char cmd[1024];
+    int n = snprintf(cmd, sizeof(cmd),
+        "( printf 'power on\\n'; sleep 1;"
+        " printf 'agent NoInputNoOutput\\n'; sleep 1;"
+        " printf 'default-agent\\n'; sleep 1;");
+    if (!bonded && n > 0 && (size_t)n < sizeof(cmd)) {
+        n += snprintf(cmd + n, sizeof(cmd) - (size_t)n,
+            " printf 'trust %s\\n'; sleep 1;"
+            " printf 'pair %s\\n'; sleep 8;",
+            canon, canon);
     }
+    if (n > 0 && (size_t)n < sizeof(cmd)) {
+        (void)snprintf(cmd + n, sizeof(cmd) - (size_t)n,
+            " printf 'trust %s\\n'; sleep 1;"
+            " printf 'connect %s\\n'; sleep 4;"
+            " printf 'quit\\n' ) | bluetoothctl >/dev/null 2>&1",
+            canon, canon);
+    }
+
+    const char *argv[] = { "sh", "-c", cmd, NULL };
+    (void)jw__bt_run_argv(argv, buf, sizeof(buf), bonded ? 20000 : 35000);
 
     (void)jw_bt_sync_stock_saved_list();
-    if (!connected) {
+
+    if (!jw__bt_device_connected(canon)) {
         printf("Connect failed\n");
         fflush(stdout);
         _exit(1);
@@ -1099,173 +1093,10 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
     _exit(0);
 }
 
-/* ── Auto-reconnect ─────────────────────────────────────────────────────────
-   Remember the last device the user connected (target MAC in the state dir, so
-   it survives reboots) and quietly reconnect it whenever it has dropped — a case
-   stow or a reboot. A manual Disconnect drops a suppress marker in the runtime
-   dir (tmpfs, cleared on reboot) so we do not fight the user until they connect
-   again or reboot. jawakad calls jw_bt_audio_reconnect_tick() from its loop. */
-
-static bool jw__bt_autoreconnect_target_path(char *out, size_t out_size) {
-    char *sd = jw_state_dir();
-    if (!sd) {
-        return false;
-    }
-    int n = snprintf(out, out_size, "%s/bt-autoreconnect", sd);
-    free(sd);
-    return n > 0 && (size_t)n < out_size;
-}
-
-static bool jw__bt_autoreconnect_suppress_path(char *out, size_t out_size) {
-    char *rd = jw_runtime_dir();
-    int n = snprintf(out, out_size, "%s/bt-autoreconnect-off", rd ? rd : "/tmp");
-    free(rd);
-    return n > 0 && (size_t)n < out_size;
-}
-
-/* The user connected this device -> remember it and clear any suppression. */
-static void jw__bt_autoreconnect_remember(const char *mac) {
-    char path[512];
-    if (!jw_bt_mac_valid(mac) || !jw__bt_autoreconnect_target_path(path, sizeof(path))) {
-        return;
-    }
-    char canon[JW_BT_MAC_LEN];
-    jw_bt_mac_canonical(mac, canon);
-    FILE *f = fopen(path, "w");
-    if (f) {
-        fprintf(f, "%s\n", canon);
-        fclose(f);
-    }
-    char sp[512];
-    if (jw__bt_autoreconnect_suppress_path(sp, sizeof(sp))) {
-        unlink(sp);
-    }
-}
-
-/* The user disconnected -> stop auto-reconnecting until they reconnect/reboot. */
-static void jw__bt_autoreconnect_suppress(void) {
-    char sp[512];
-    if (!jw__bt_autoreconnect_suppress_path(sp, sizeof(sp))) {
-        return;
-    }
-    FILE *f = fopen(sp, "w");
-    if (f) {
-        fclose(f);
-    }
-}
-
-/* Forgetting the remembered device -> stop targeting it. */
-static void jw__bt_autoreconnect_forget(const char *mac) {
-    char path[512], line[64] = { 0 };
-    if (!jw_bt_mac_valid(mac) || !jw__bt_autoreconnect_target_path(path, sizeof(path))) {
-        return;
-    }
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        return;
-    }
-    char *got = fgets(line, sizeof(line), f);
-    fclose(f);
-    if (!got) {
-        return;
-    }
-    line[strcspn(line, "\r\n")] = '\0';
-    char canon[JW_BT_MAC_LEN];
-    jw_bt_mac_canonical(mac, canon);
-    if (strcmp(line, canon) == 0) {
-        unlink(path);
-    }
-}
-
-int jw_bt_audio_reconnect_tick(void) {
-    static pid_t child = -1;
-    static long long next_ms = 0;
-    static int fail_streak = 0;
-
-    /* Reap our previous attempt (jawakad never waitpid(-1), so this child is
-       ours to collect). Its exit code reports whether the device ended up
-       connected — the script exits 0 when it is already/now connected — which
-       sets the cadence: poll often while connected so a drop is caught quickly,
-       and back off failed retries so an absent device is not paged forever
-       (battery). While an attempt is in flight, do not start another. */
-    if (child > 0) {
-        int status = 0;
-        pid_t r = waitpid(child, &status, WNOHANG);
-        if (r == 0) {
-            return 0;
-        }
-        child = -1;
-        if (r > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-            fail_streak = 0;
-            next_ms = jw__bt_now_ms() + 8000;
-        } else {
-            static const long backoff_ms[] = { 6000, 6000, 12000, 30000, 60000, 60000 };
-            if (fail_streak < 5) {
-                fail_streak++;
-            }
-            next_ms = jw__bt_now_ms() + backoff_ms[fail_streak];
-        }
-        return 0;
-    }
-
-    long long now = jw__bt_now_ms();
-    if (now < next_ms) {
-        return 0;
-    }
-    next_ms = now + 8000;   /* default cadence; the attempt's reap refines it */
-
-    char sp[512];
-    if (jw__bt_autoreconnect_suppress_path(sp, sizeof(sp)) && access(sp, F_OK) == 0) {
-        return 0;            /* user disconnected on purpose */
-    }
-
-    char tp[512], line[64] = { 0 }, mac[JW_BT_MAC_LEN] = { 0 };
-    if (!jw__bt_autoreconnect_target_path(tp, sizeof(tp))) {
-        return 0;
-    }
-    FILE *f = fopen(tp, "r");
-    if (!f) {
-        return 0;            /* no remembered device */
-    }
-    char *got = fgets(line, sizeof(line), f);
-    fclose(f);
-    if (!got) {
-        return 0;
-    }
-    line[strcspn(line, "\r\n")] = '\0';
-    jw_bt_mac_canonical(line, mac);
-    if (!jw_bt_mac_valid(mac)) {
-        return 0;
-    }
-
-    /* Do the connected-check and connect in a child so the daemon loop never
-       blocks on bluetoothctl. The MAC is passed as a separate argv ($0), never
-       interpolated into the script, so it cannot inject. A connect failure (out
-       of range / in case) is fine; we retry on the next tick. */
-    pid_t p = fork();
-    if (p == 0) {
-        int dn = open("/dev/null", O_WRONLY);
-        if (dn >= 0) {
-            dup2(dn, STDOUT_FILENO);
-            dup2(dn, STDERR_FILENO);
-        }
-        execlp("sh", "sh", "-c",
-               "bluetoothctl devices Connected 2>/dev/null | grep -qi \"$0\" || "
-               "bluetoothctl --timeout 15 connect \"$0\"",
-               mac, (char *)NULL);
-        _exit(127);
-    }
-    if (p > 0) {
-        child = p;
-    }
-    return 0;
-}
-
 int jw_bt_connect_start(const char *mac, bool pair_if_needed) {
     if (!jw_bt_mac_valid(mac)) {
         return -1;
     }
-    jw__bt_autoreconnect_remember(mac);
     return jw__bt_worker_start(pair_if_needed ? JW_BT_OP_PAIR_CONNECT : JW_BT_OP_CONNECT,
                                JW_BT_CONNECT_TIMEOUT_MS,
                                jw__bt_connect_child, mac, pair_if_needed);
@@ -1337,7 +1168,6 @@ int jw_bt_disconnect(const char *mac) {
     char buf[512];
     int rc = jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
                        "disconnect", canon, NULL);
-    jw__bt_autoreconnect_suppress();
     (void)jw_bt_sync_stock_saved_list();
     return rc < 0 ? -1 : 0;
 }
@@ -1353,7 +1183,6 @@ int jw_bt_forget(const char *mac) {
                     "disconnect", canon, NULL);
     int rc = jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
                        "remove", canon, NULL);
-    jw__bt_autoreconnect_forget(canon);
     (void)jw_bt_sync_stock_saved_list();
     return rc < 0 ? -1 : 0;
 }

@@ -763,6 +763,9 @@ bool jw_settings_ui_wants_bluetooth_poll(const jw_settings_ui *ui) {
     return ui && ui->open && ui->screen == JW_SETTINGS_BLUETOOTH;
 }
 
+static void jw__set_audio_output(jw_settings_ui *ui, jw_platform_audio_output output,
+                                 char *status_buf, size_t status_size);
+
 void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui) {
     if (!ui) {
         return;
@@ -791,6 +794,7 @@ void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui) {
             return;
         }
         if (st == JW_BT_OP_OK || st == JW_BT_OP_FAILED || st == JW_BT_OP_TIMEOUT) {
+            bool was_connect = (ui->bt_op != JW_BT_OP_SCAN);
             bool quiet_auto_scan = (ui->bt_op == JW_BT_OP_SCAN && !ui->bt_op_manual);
             if (!quiet_auto_scan) {
                 jw__bt_msg(ui, "%s", message[0] ? message :
@@ -800,6 +804,16 @@ void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui) {
             ui->bt_op_manual = false;
             jw__refresh_bluetooth_lists(ui);
             ui->bt_next_poll_ms = SDL_GetTicks() + JW_BT_POLL_INTERVAL_MS;
+            /* A successful connect should make the headset the audio output on its
+               own — otherwise you connect headphones and still hear the speaker
+               until you dig into Sound settings. The route is guarded daemon-side
+               (BLUETOOTH output is only "available" when an audio sink is actually
+               connected), so connecting a non-audio device here is a no-op. */
+            if (was_connect && st == JW_BT_OP_OK) {
+                char route_status[128];
+                jw__set_audio_output(ui, JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH,
+                                     route_status, sizeof(route_status));
+            }
             cat_request_frame();
             return;
         }
@@ -811,10 +825,11 @@ void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui) {
         ui->bt_next_poll_ms = now + JW_BT_POLL_INTERVAL_MS;
     }
 
-    if (ui->bt_radio_on &&
-        (ui->bt_next_scan_ms == 0 || (int)(now - ui->bt_next_scan_ms) >= 0)) {
-        (void)jw__bt_scan_start(ui, false);
-    }
+    /* No background auto-scan. It re-scanned every ~12s, and each scan pinned the
+       page on "Bluetooth is busy" for ~8s and churned the BT radio (which starves
+       WiFi on this combo chip). Discovery is manual only now: the Paired list is
+       always shown, and the user presses Scan (X) when they want to find a new
+       device to pair. */
 }
 
 /* Push the current LED config to jawakad (applies to hardware + persists). */
@@ -3200,6 +3215,27 @@ static void jw__set_audio_output(jw_settings_ui *ui, jw_platform_audio_output ou
     jw__refresh_audio_status(ui);
 }
 
+/* After a Bluetooth headset is disconnected or unpaired the codec is still
+   pointed at the (now gone) Bluetooth output, so audio would play to nothing.
+   When that is the case, fall back to the wired jack if it is plugged in, else
+   the speaker — so sound returns on its own instead of staying silent. */
+static void jw__bt_route_back_if_orphaned(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+    jw__refresh_audio_status(ui);
+    if (ui->audio_output != JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH ||
+        jw__audio_output_available(ui, JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH)) {
+        return;
+    }
+    jw_platform_audio_output back =
+        jw__audio_output_available(ui, JW_PLATFORM_AUDIO_OUTPUT_HEADSET)
+            ? JW_PLATFORM_AUDIO_OUTPUT_HEADSET
+            : JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    char status[128];
+    jw__set_audio_output(ui, back, status, sizeof(status));
+}
+
 /* ─── Color picker helper ──────────────────────────────────────────────── */
 
 static bool jw__pick_color(jw_settings_ui *ui, ap_color *target,
@@ -4241,12 +4277,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                                   : "Bluetooth off");
                     }
                     jw__refresh_bluetooth_lists(ui);
-                    unsigned now = SDL_GetTicks();
-                    ui->bt_next_poll_ms = now + JW_BT_POLL_INTERVAL_MS;
-                    ui->bt_next_scan_ms = now + JW_BT_SCAN_INTERVAL_MS;
-                    if (ui->bt_radio_on) {
-                        (void)jw__bt_scan_start(ui, false);
-                    }
+                    ui->bt_next_poll_ms = SDL_GetTicks() + JW_BT_POLL_INTERVAL_MS;
                     break;
                 }
 
@@ -4264,11 +4295,14 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 }
 
                 if (paired_device && dev->connected) {
-                    if (jw_bt_disconnect(dev->mac) == 0)
+                    bool disconnected = (jw_bt_disconnect(dev->mac) == 0);
+                    if (disconnected)
                         jw__bt_msg(ui, "Disconnected %s", dev->name);
                     else
                         jw__bt_msg(ui, "Disconnect failed");
                     jw__refresh_bluetooth_lists(ui);
+                    if (disconnected)
+                        jw__bt_route_back_if_orphaned(ui);
                     if (status_buf && status_size > 0)
                         snprintf(status_buf, status_size, "%s", ui->bt_msg);
                     break;
@@ -4307,11 +4341,14 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__bt_msg(ui, "Unpair canceled");
                     break;
                 }
-                if (jw_bt_forget(dev->mac) == 0)
+                bool forgot = (jw_bt_forget(dev->mac) == 0);
+                if (forgot)
                     jw__bt_msg(ui, "Unpaired %s", name);
                 else
                     jw__bt_msg(ui, "Unpair failed");
                 jw__refresh_bluetooth_lists(ui);
+                if (forgot)
+                    jw__bt_route_back_if_orphaned(ui);
                 if (status_buf && status_size > 0)
                     snprintf(status_buf, status_size, "%s", ui->bt_msg);
                 break;

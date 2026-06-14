@@ -95,11 +95,6 @@ int jw_bt_disconnect(const char *mac);
 int jw_bt_forget(const char *mac);
 int jw_bt_sync_stock_saved_list(void);
 
-/* Quietly reconnect the last device the user connected when it has dropped (case
-   stow, reboot), unless they explicitly disconnected it. Call periodically from
-   the daemon loop; it self-throttles and does its work in a child process. */
-int jw_bt_audio_reconnect_tick(void);
-
 const char *jw_bt_device_kind_name(jw_bt_device_kind kind);
 const char *jw_bt_device_kind_stock_name(jw_bt_device_kind kind);
 
