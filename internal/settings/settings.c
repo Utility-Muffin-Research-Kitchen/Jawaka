@@ -78,6 +78,10 @@ static const jw__color_scheme kColorSchemes[] = {
     { "Orchid",  "#2E2240", "#181226", "#ECE4F2", "#8E7CB0", "#C792EA", "#181226", "#C792EA" },
     { "Slate",   "#242A36", "#14171E", "#E4E7ED", "#7C828E", "#7AA2F7", "#14171E", "#7AA2F7" },
     { "Rosé",    "#33222E", "#1C1620", "#F0E6EC", "#A88A98", "#EB6F92", "#1C1620", "#EB6F92" },
+    /* Light companion to Leaf: near-white green-tinted page, dark forest text, a
+       leaf-green chrome bar and selection pill. Appended (not inserted) so saved
+       color_scheme_index values for the dark schemes don't shift. */
+    { "Leaf Light", "#9CCB85", "#D1D0A6", "#1B2E1B", "#5E7654", "#7FB069", "#1B2E1B", "#7FB069" },
 };
 #define JW_COLOR_SCHEME_COUNT ((int)(sizeof(kColorSchemes) / sizeof(kColorSchemes[0])))
 #define JW_COLOR_SCHEME_DEFAULT 0   /* Leaf — the Dweezil/Leaf identity theme */
