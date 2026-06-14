@@ -2077,15 +2077,35 @@ static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
         return;
     }
 
-    const char *label = dev->name[0] ? dev->name : dev->mac;
-    cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
-                             iw / 2);
+    /* Leading device-type icon (headset / controller / generic), theme-tinted, so
+       the row sorts by kind at a glance before the name is read. The icon carries
+       the type, so Nearby rows no longer need kind text on the right; Paired rows
+       keep their Connected/Paired state there. */
+    int name_x = ix + cat_scale(12);
+    int icon_px = cat_device_icon_px();
+    if (icon_px > 0) {
+        cat_device_icon dicon =
+            (dev->kind == JW_BT_DEVICE_HEADSET) ? CAT_DEVICE_ICON_HEADSET :
+            (dev->kind == JW_BT_DEVICE_JOYPAD)  ? CAT_DEVICE_ICON_CONTROLLER :
+                                                  CAT_DEVICE_ICON_BLUETOOTH;
+        cat_draw_device_icon(dicon, name_x, pill_y + (pill_h - icon_px) / 2, label_c);
+        name_x += icon_px + cat_scale(8);
+    }
 
-    const char *value = paired_device
-        ? (dev->connected ? "Connected" : "Paired")
-        : jw_bt_device_kind_name(dev->kind);
-    int vw = cat_measure_text(body, value);
-    cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+    int right = ix + iw - cat_scale(16);
+    if (paired_device) {
+        const char *value = dev->connected ? "Connected" : "Paired";
+        int vw = cat_measure_text(body, value);
+        cat_draw_text(body, value, right - vw, ty, value_c);
+        right -= vw + cat_scale(8);
+    }
+
+    const char *label = dev->name[0] ? dev->name : dev->mac;
+    int name_max = right - name_x;
+    if (name_max < cat_scale(24)) {
+        name_max = cat_scale(24);
+    }
+    cat_draw_text_ellipsized(body, label, name_x, ty, label_c, name_max);
 }
 
 static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, int h) {

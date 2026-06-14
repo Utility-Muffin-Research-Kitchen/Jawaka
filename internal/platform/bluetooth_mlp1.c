@@ -266,30 +266,86 @@ static bool jw__bt_contains_ci(const char *haystack, const char *needle) {
     return false;
 }
 
+static bool jw__bt_name_has(const char *name, const char *const *keywords) {
+    for (int i = 0; keywords[i]; i++) {
+        if (jw__bt_contains_ci(name, keywords[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Classify a device into a coarse kind for the Nearby "type" label. Strongest
+   signal first: the Class of Device (authoritative, present from an inquiry or
+   `info`, but 0 when all we have is a scanned name), then the BlueZ icon / audio
+   profile / BLE appearance, then a name-keyword fallback. The Nearby list is
+   built from `bluetoothctl devices`, which carries only the name -- so the
+   keywords are what classify a freshly scanned device before it is connected and
+   its Class/Icon/UUIDs resolve. */
 static void jw__bt_classify(jw_bt_device_t *d) {
     if (!d) {
         return;
     }
+
+    /* 1. Class of Device (authoritative when we have it). Major class in bits
+       8-12; for Peripheral, bits 2-5 give joystick/gamepad and bits 6/7 flag
+       keyboard/pointing. */
+    if (d->class_hex != 0) {
+        unsigned major = (d->class_hex >> 8) & 0x1Fu;
+        if (major == 0x04u) {                       /* Audio/Video */
+            d->kind = JW_BT_DEVICE_HEADSET;
+            return;
+        }
+        if (major == 0x05u) {                       /* Peripheral */
+            unsigned low = (d->class_hex >> 2) & 0x0Fu;
+            if (low == 0x01u || low == 0x02u) {     /* joystick / gamepad */
+                d->kind = JW_BT_DEVICE_JOYPAD;
+                return;
+            }
+            if ((d->class_hex >> 6) & 0x1u) {        /* keyboard */
+                d->kind = JW_BT_DEVICE_KEYBOARD;
+                return;
+            }
+            if ((d->class_hex >> 7) & 0x1u) {        /* pointing device */
+                d->kind = JW_BT_DEVICE_MOUSE;
+                return;
+            }
+        }
+    }
+
+    /* 2. Icon / audio profile / BLE appearance / name keywords. */
+    static const char *const audio_kw[] = {
+        "headphone", "headset", "earphone", "earbud", "buds", "airpod",
+        "shokz", "openrun", "opencomm", "soundcore", "jbl", "bose", "beats",
+        "jabra", "sennheiser", "skullcandy", "freebuds", "quietcomfort",
+        "speaker", "soundbar", NULL
+    };
+    static const char *const pad_kw[] = {
+        "controller", "gamepad", "joystick", "joypad", "xbox", "dualsense",
+        "dualshock", "8bitdo", "stadia", "joy-con", "joycon", "gulikit",
+        "sn30", "pro controller", NULL
+    };
+    static const char *const kbd_kw[] = { "keyboard", "keychron", NULL };
+    static const char *const mouse_kw[] = { "mouse", "trackpad", NULL };
+
     if (jw__bt_contains_ci(d->icon, "audio") || d->has_audio_sink ||
-        d->has_a2dp || jw__bt_contains_ci(d->name, "headphone") ||
-        jw__bt_contains_ci(d->name, "headset")) {
+        d->has_a2dp || jw__bt_name_has(d->name, audio_kw)) {
         d->kind = JW_BT_DEVICE_HEADSET;
         return;
     }
     if (jw__bt_contains_ci(d->icon, "gaming") ||
-        jw__bt_contains_ci(d->name, "controller") ||
-        jw__bt_contains_ci(d->name, "gamepad") ||
-        jw__bt_contains_ci(d->name, "xbox")) {
+        d->appearance_hex == 0x03c3 || d->appearance_hex == 0x03c4 ||
+        jw__bt_name_has(d->name, pad_kw)) {
         d->kind = JW_BT_DEVICE_JOYPAD;
         return;
     }
     if (jw__bt_contains_ci(d->icon, "keyboard") ||
-        d->appearance_hex == 0x03c1) {
+        d->appearance_hex == 0x03c1 || jw__bt_name_has(d->name, kbd_kw)) {
         d->kind = JW_BT_DEVICE_KEYBOARD;
         return;
     }
     if (jw__bt_contains_ci(d->icon, "mouse") ||
-        d->appearance_hex == 0x03c2) {
+        d->appearance_hex == 0x03c2 || jw__bt_name_has(d->name, mouse_kw)) {
         d->kind = JW_BT_DEVICE_MOUSE;
         return;
     }
@@ -441,6 +497,19 @@ static void jw__bt_try_start_stack(void) {
     if (access("/usr/bin/wifibt-init.sh", X_OK) == 0) {
         pid_t pid = fork();
         if (pid == 0) {
+            /* Silence the stock script's chatter ("handling start_bt for
+               wifi/bt chip", etc.). When set_radio runs inside the connect
+               worker, the worker's stdout is the pipe the UI reads as the
+               operation message, so unredirected output leaks into the status
+               line. We only want the script's side effect, not its words. */
+            int dn = open("/dev/null", O_WRONLY);
+            if (dn >= 0) {
+                dup2(dn, STDOUT_FILENO);
+                dup2(dn, STDERR_FILENO);
+                if (dn > STDERR_FILENO) {
+                    close(dn);
+                }
+            }
             execl("/usr/bin/wifibt-init.sh", "wifibt-init.sh", "start_bt", (char *)NULL);
             _exit(127);
         } else if (pid > 0) {
@@ -1009,10 +1078,68 @@ static bool jw__bt_device_connected(const char *mac) {
     return jw_bt_refresh_device(mac, &dev) == 0 && dev.connected;
 }
 
+/* Single audio sink policy: A2DP is point-to-point and this radio only feeds one
+   headset cleanly, so when an audio device connects we disconnect any OTHER
+   connected audio device. Non-audio devices (controllers, etc.) are left alone --
+   a controller and a headset can be connected at the same time. `keep` is the
+   canonical MAC of the just-connected device to preserve. */
+static void jw__bt_enforce_single_audio_sink(const char *keep) {
+    char dump[4096];
+    if (jw__btctl(dump, sizeof(dump), JW_BT_CMD_TIMEOUT_MS,
+                  "devices", "Connected", NULL) < 0) {
+        return;
+    }
+    char *save = NULL;
+    for (char *line = strtok_r(dump, "\n", &save);
+         line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char mac[JW_BT_MAC_LEN], name[JW_BT_NAME_LEN];
+        if (!jw__bt_parse_device_line(line, mac, name)) {
+            continue;
+        }
+        char canon[JW_BT_MAC_LEN];
+        jw_bt_mac_canonical(mac, canon);
+        if (!jw_bt_mac_valid(canon) || (keep && strcmp(canon, keep) == 0)) {
+            continue;
+        }
+        jw_bt_device_t dev;
+        if (jw_bt_refresh_device(canon, &dev) == 0 &&
+            (dev.has_audio_sink || dev.has_a2dp ||
+             dev.kind == JW_BT_DEVICE_HEADSET)) {
+            char buf[256];
+            (void)jw__btctl(buf, sizeof(buf), JW_BT_CMD_TIMEOUT_MS,
+                            "disconnect", canon, NULL);
+        }
+    }
+}
+
 static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
+    /* The parent reads this child's stdout as the operation message shown in the
+       UI. Stock helpers we trigger here (wifibt-init.sh's start_bt, kernel module
+       loads and driver banners like "arm_release_ver", ...) scribble to stdout and
+       stderr; route all of that to /dev/null and emit only our own status line on
+       the saved channel, so no vendor chatter ever reaches the status bar. */
+    int out_fd = dup(STDOUT_FILENO);
+    if (out_fd >= 0) {
+        int dn = open("/dev/null", O_WRONLY);
+        if (dn >= 0) {
+            dup2(dn, STDOUT_FILENO);
+            dup2(dn, STDERR_FILENO);
+            if (dn > STDERR_FILENO) {
+                close(dn);
+            }
+        }
+    } else {
+        out_fd = STDOUT_FILENO;
+    }
+    FILE *out = fdopen(out_fd, "w");
+    if (!out) {
+        out = stdout;
+    }
+
     if (!jw_bt_mac_valid(mac)) {
-        printf("Invalid Bluetooth address\n");
-        fflush(stdout);
+        fprintf(out, "Invalid Bluetooth address\n");
+        fflush(out);
         _exit(1);
     }
     char canon[JW_BT_MAC_LEN];
@@ -1024,8 +1151,8 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
     jw_bt_device_t before;
     bool bonded = jw_bt_refresh_device(canon, &before) == 0 && before.bonded;
     if (!bonded && !pair_if_needed) {
-        printf("Device is not paired\n");
-        fflush(stdout);
+        fprintf(out, "Device is not paired\n");
+        fflush(out);
         _exit(1);
     }
 
@@ -1040,8 +1167,8 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
             seen = jw__bt_device_seen(canon);
         }
         if (!seen) {
-            printf("Device not found\n");
-            fflush(stdout);
+            fprintf(out, "Device not found\n");
+            fflush(out);
             _exit(1);
         }
     }
@@ -1075,21 +1202,25 @@ static void jw__bt_connect_child(const char *mac, bool pair_if_needed) {
     const char *argv[] = { "sh", "-c", cmd, NULL };
     (void)jw__bt_run_argv(argv, buf, sizeof(buf), bonded ? 20000 : 35000);
 
-    (void)jw_bt_sync_stock_saved_list();
-
     if (!jw__bt_device_connected(canon)) {
-        printf("Connect failed\n");
-        fflush(stdout);
+        (void)jw_bt_sync_stock_saved_list();
+        fprintf(out, "Connect failed\n");
+        fflush(out);
         _exit(1);
     }
 
+    /* Single audio sink: if we just connected an audio device, drop any other
+       connected audio device so only one headset receives audio at a time. */
     jw_bt_device_t dev;
-    if (jw_bt_refresh_device(canon, &dev) == 0) {
-        printf("Connected to %s\n", dev.name[0] ? dev.name : canon);
-    } else {
-        printf("Connected\n");
+    bool have = (jw_bt_refresh_device(canon, &dev) == 0);
+    if (have && (dev.has_audio_sink || dev.has_a2dp ||
+                 dev.kind == JW_BT_DEVICE_HEADSET)) {
+        jw__bt_enforce_single_audio_sink(canon);
     }
-    fflush(stdout);
+
+    (void)jw_bt_sync_stock_saved_list();
+    fprintf(out, "Connected to %s\n", (have && dev.name[0]) ? dev.name : canon);
+    fflush(out);
     _exit(0);
 }
 
