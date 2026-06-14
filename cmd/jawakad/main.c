@@ -5449,6 +5449,7 @@ int main(int argc, char *argv[]) {
         jw__handle_menu_exit(&state);
         jw__handle_osd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
+        jw_platform_audio_tick(&state.platform);
         jw__tick_auto_sleep(&state);
         if (jw_platform_storage_tick(&state.platform)) {
             jw_scan_result scan_result;

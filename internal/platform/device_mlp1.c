@@ -60,6 +60,7 @@
 #define JW_MLP1_PLAYBACK_PATH_SPK "amixer -c 1 cset numid=13 2 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_HP  "amixer -c 1 cset numid=13 3 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_BT  "amixer -c 1 cset numid=13 5 >/dev/null 2>&1"
+#define JW_MLP1_HP_JACK_CMD "amixer -c 1 cget numid=1 2>/dev/null"
 #define JW_MLP1_HDMI_STATUS "/sys/class/drm/card0-HDMI-A-1/status"
 
 /* The rk817 DAC (ALSA numid=16) is the dominant hardware loudness control and is
@@ -1555,6 +1556,60 @@ static bool jw__mlp1_hdmi_connected(void) {
     return connected;
 }
 
+/* Headphone jack detection (rk817 'Headphones Jack' kcontrol, numid=1). The
+   value line reads ": values=on"/"=off" (or 1/0). Used to offer the Headset
+   output only when something is actually plugged in, mirroring how HDMI and
+   Bluetooth are gated on being connected. */
+static bool jw__mlp1_headphone_jack_present(void) {
+    FILE *fp = popen(JW_MLP1_HP_JACK_CMD, "r");
+    if (!fp) {
+        return false;
+    }
+    char line[256];
+    bool present = false;
+    while (fgets(line, sizeof(line), fp)) {
+        const char *v = strstr(line, ": values=");
+        if (v) {
+            v += strlen(": values=");
+            present = (strncmp(v, "on", 2) == 0 || v[0] == '1');
+            break;
+        }
+    }
+    pclose(fp);
+    return present;
+}
+
+/* The rk817 (analog) sink's PulseAudio name is not stable: udev-detect names it
+   "alsa_output.platform-rk817-sound.stereo-fallback", a raw module-alsa-sink
+   load names it "alsa_output.hw_1_0", and which one wins is a boot-time race.
+   Resolve it at runtime as the first sink that is not the HDMI sink, instead of
+   hardcoding a name that may not exist. Returns false if no analog sink found. */
+static bool jw__mlp1_default_audio_sink(char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return false;
+    }
+    FILE *fp = popen("pactl list short sinks 2>/dev/null", "r");
+    if (!fp) {
+        return false;
+    }
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), fp)) {
+        char name[256];
+        /* fields: index <tab> name <tab> module ... */
+        if (sscanf(line, "%*s %255s", name) == 1) {
+            if (strstr(name, "hdmi")) {
+                continue;
+            }
+            snprintf(out, out_size, "%s", name);
+            found = true;
+            break;
+        }
+    }
+    pclose(fp);
+    return found;
+}
+
 static bool jw__mlp1_bluealsa_control(char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return false;
@@ -1622,8 +1677,10 @@ static int jw__mlp1_set_bluealsa_volume_percent(int percent) {
 }
 
 static unsigned jw__mlp1_get_audio_available_outputs(void) {
-    unsigned mask = JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_SPEAKER) |
-                    JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_HEADSET);
+    unsigned mask = JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_SPEAKER);
+    if (jw__mlp1_headphone_jack_present()) {
+        mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_HEADSET);
+    }
     if (jw__mlp1_hdmi_connected() &&
         jw__mlp1_pulse_sink_exists(JW_MLP1_PACTL_HDMI_SINK)) {
         mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_HDMI);
@@ -1688,15 +1745,27 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
     int rc = -1;
     switch (output) {
         case JW_PLATFORM_AUDIO_OUTPUT_SPEAKER:
-            rc = jw__exec_shell(JW_MLP1_PACTL_SET_DEFAULT_RK817 " && "
-                                JW_MLP1_PLAYBACK_PATH_SPK " && "
-                                JW_MLP1_ENSURE_DAC_FLOOR);
+        case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: {
+            /* The in-codec Playback Path is the actual speaker/headphone switch,
+               and both are the same PulseAudio sink, so it must run on its own —
+               NOT chained behind the sink-default change, which fails whenever
+               pulse named the sink something other than the descriptive udev
+               name (then '&&' would skip the path write and nothing switches). */
+            rc = jw__exec_shell(output == JW_PLATFORM_AUDIO_OUTPUT_HEADSET
+                                    ? JW_MLP1_PLAYBACK_PATH_HP
+                                    : JW_MLP1_PLAYBACK_PATH_SPK);
+            /* Best effort: point pulse back at the analog (rk817) sink in case we
+               were on HDMI. Resolve the live sink name rather than hardcoding. */
+            char sink[256];
+            if (jw__mlp1_default_audio_sink(sink, sizeof(sink))) {
+                char cmd[320];
+                snprintf(cmd, sizeof(cmd),
+                         "pactl set-default-sink %s 2>/dev/null", sink);
+                (void)jw__exec_shell(cmd);
+            }
+            (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
             break;
-        case JW_PLATFORM_AUDIO_OUTPUT_HEADSET:
-            rc = jw__exec_shell(JW_MLP1_PACTL_SET_DEFAULT_RK817 " && "
-                                JW_MLP1_PLAYBACK_PATH_HP " && "
-                                JW_MLP1_ENSURE_DAC_FLOOR);
-            break;
+        }
         case JW_PLATFORM_AUDIO_OUTPUT_HDMI:
             rc = jw__exec_shell(JW_MLP1_PACTL_SET_DEFAULT_HDMI);
             break;
@@ -1719,6 +1788,63 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
              jw_platform_audio_output_label(output));
     jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, (int)output);
     return 0;
+}
+
+/* Read the headphone-jack switch straight from its input device (event3,
+   "rk817-codec Headphones") via EVIOCGSW — kernel state, no amixer fork. The fd
+   is opened once by name and cached. Returns 1 = plugged, 0 = unplugged,
+   -1 = no device. */
+static int jw__mlp1_jack_input_state(void) {
+    static int fd = -2;   /* -2 = not yet probed */
+    if (fd == -2) {
+        fd = -1;
+        for (int i = 0; i < 32; i++) {
+            char path[32];
+            snprintf(path, sizeof(path), "/dev/input/event%d", i);
+            int f = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+            if (f < 0) {
+                continue;
+            }
+            char name[128] = {0};
+            if (ioctl(f, EVIOCGNAME(sizeof(name)), name) >= 0 &&
+                strstr(name, "rk817-codec Headphones")) {
+                fd = f;
+                break;
+            }
+            close(f);
+        }
+    }
+    if (fd < 0) {
+        return -1;
+    }
+    unsigned long bits[2] = {0};   /* SW_HEADPHONE_INSERT (2) lives in word 0 */
+    if (ioctl(fd, EVIOCGSW(sizeof(bits)), bits) < 0) {
+        return -1;
+    }
+    return (bits[0] >> SW_HEADPHONE_INSERT) & 1UL ? 1 : 0;
+}
+
+/* Re-route audio when the headphone jack changes. On this hardware the rk817
+   mutes its DAC (numid=16 -> 0) on jack insert and nothing restores it in Leaf
+   (no stock daemon owns the jack), so audio stays silent until a manual volume
+   nudge. Re-applying the matching output runs ENSURE_DAC_FLOOR (un-mute) and sets
+   the path — doing automatically what the volume press did by hand. Acts only on
+   an edge; the steady-state cost is one cheap ioctl per tick. */
+static void jw__mlp1_audio_tick(jw_platform_context *ctx) {
+    (void)ctx;
+    static int last_present = -1;
+    int present = jw__mlp1_jack_input_state();
+    if (present < 0 || present == last_present) {
+        return;
+    }
+    last_present = present;
+    jw_platform_result res;
+    jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
+    jw__mlp1_set_audio_output(present ? JW_PLATFORM_AUDIO_OUTPUT_HEADSET
+                                      : JW_PLATFORM_AUDIO_OUTPUT_SPEAKER, &res);
+    jw_log_info("audio: headphone jack %s, routed to %s",
+                present ? "inserted" : "removed",
+                present ? "headset" : "speaker");
 }
 
 static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
@@ -2235,6 +2361,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .shutdown = jw__mlp1_shutdown,
         .get_status = jw__mlp1_get_status,
         .get_audio_status = jw__mlp1_get_audio_status,
+        .audio_tick = jw__mlp1_audio_tick,
         .frontend_ready = jw__mlp1_frontend_ready,
         .perform_action = jw__mlp1_perform_action,
         .get_performance_status = jw__mlp1_get_performance_status,

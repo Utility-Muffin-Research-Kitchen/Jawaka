@@ -191,6 +191,8 @@ int  jw_platform_init(jw_platform_context *ctx, const char *runtime_dir, const c
 void jw_platform_shutdown(jw_platform_context *ctx);
 void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out);
 void jw_platform_get_audio_status(jw_platform_context *ctx, jw_platform_status *out);
+/* Poll for headphone-jack plug/unplug and re-route audio. Call periodically. */
+void jw_platform_audio_tick(jw_platform_context *ctx);
 void jw_platform_frontend_ready(jw_platform_context *ctx, const char *role, jw_platform_result *out);
 
 bool jw_platform_parse_action(const char *name, jw_platform_action *out);

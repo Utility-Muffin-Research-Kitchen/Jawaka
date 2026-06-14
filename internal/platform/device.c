@@ -139,6 +139,16 @@ void jw_platform_get_audio_status(jw_platform_context *ctx, jw_platform_status *
     }
 }
 
+void jw_platform_audio_tick(jw_platform_context *ctx) {
+    if (!ctx) {
+        return;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->audio_tick) {
+        backend->audio_tick(ctx);
+    }
+}
+
 void jw_platform_frontend_ready(jw_platform_context *ctx, const char *role, jw_platform_result *out) {
     if (!ctx || !role || !role[0]) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_INVALID, "missing frontend role");
