@@ -41,7 +41,6 @@ typedef enum {
     JW_SETTINGS_NETWORK,
     JW_SETTINGS_BLUETOOTH,
     JW_SETTINGS_LIGHTING,
-    JW_SETTINGS_LIBRARY,
     JW_SETTINGS_ACCOUNTS,
     JW_SETTINGS_SCRAPING,
     JW_SETTINGS_SCRAPE_PRIORITY,   /* artwork or region editor, see scrape_edit_is_region */
@@ -107,11 +106,6 @@ typedef enum {
 #define JW_LIGHTING_SPEED      4
 #define JW_LIGHTING_ROW_COUNT  5
 
-/* Library page */
-#define JW_LIBRARY_RESET_RETROARCH 0
-#define JW_LIBRARY_UNMOUNT_SECONDARY 1
-#define JW_LIBRARY_ROW_COUNT 2
-
 /* Accounts page */
 #define JW_ACCOUNTS_SCREENSCRAPER     0
 #define JW_ACCOUNTS_RETROACHIEVEMENTS 1
@@ -130,7 +124,9 @@ typedef enum {
 #define JW_BEHAVIOR_BOOT_SPLASH 2
 #define JW_BEHAVIOR_PERFORMANCE 3
 #define JW_BEHAVIOR_TIMEZONE    4   /* opens the Time Zone picker screen */
-#define JW_BEHAVIOR_ROW_COUNT   5
+#define JW_BEHAVIOR_RESET_RETROARCH   5   /* maintenance, moved from Library */
+#define JW_BEHAVIOR_UNMOUNT_SECONDARY 6
+#define JW_BEHAVIOR_ROW_COUNT   7
 
 /* System Update page */
 #define JW_UPDATE_ROW_CHECK     0
@@ -154,7 +150,6 @@ typedef struct {
     cat_list_state     network_list;
     cat_list_state     bluetooth_list;
     cat_list_state     lighting_list;
-    cat_list_state     library_list;
     cat_list_state     accounts_list;
     cat_list_state     scraping_list;
     cat_list_state     scrape_edit_list;

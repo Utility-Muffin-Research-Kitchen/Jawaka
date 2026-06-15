@@ -275,7 +275,7 @@ static void jw__render_menu(const jw_menu_state *state) {
     cat_status_bar_opts sb = state->status_bar;
 
     cat_clear_screen();
-    cat_draw_screen_title("Menu", &sb);
+    cat_draw_screen_title("System Actions", &sb);
 
     SDL_Rect content = cat_get_content_rect(true, true, false);
     int x      = content.x + CAT_S(24);

@@ -301,20 +301,22 @@ static int jw__game_perf_index_for_profile(jw_platform_perf_profile profile) {
     return JW_GAME_PERF_PROFILE_DEFAULT;
 }
 
+/* Top-level Settings categories, grouped by theme: look & feel, connectivity,
+   games & content, system. The A handler maps each row to its screen by name
+   (not row index), so this order can change freely. */
 static const char *kHomeCategoryLabels[] = {
     "Appearance",
     "Display & Sound",
+    "Lighting",
     "Network",
     "Bluetooth",
-    "Lighting",
-    "Library",
+    "Box Art",
     "Accounts",
-    "Scraping",
-    "Behavior",
+    "General",
     "System Update",
     "About",
 };
-#define JW_SETTINGS_CATEGORY_COUNT 11
+#define JW_SETTINGS_CATEGORY_COUNT 10
 
 /* Visible rows in the Network page's scanned-network list (scrolls beyond). */
 #define JW_WIFI_LIST_ROWS 6
@@ -978,7 +980,6 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->network_list,     JW_WIFI_LIST_ROWS);
     cat_list_state_init(&ui->bluetooth_list,   JW_BLUETOOTH_LIST_ROWS);
     cat_list_state_init(&ui->lighting_list,    JW_LIGHTING_ROW_COUNT);
-    cat_list_state_init(&ui->library_list,     JW_LIBRARY_ROW_COUNT);
     cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
     cat_list_state_init(&ui->scraping_list,    JW_SCRAPING_ROW_COUNT);
     cat_list_state_init(&ui->scrape_edit_list, 8);
@@ -2162,17 +2163,6 @@ static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, 
                        jw__draw_bt_item, &ctx);
 }
 
-static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("Library", x, y, w);
-    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
-    jw__render_list_row(&ui->library_list, x, ly, w, JW_LIBRARY_RESET_RETROARCH,
-                        "Reset RetroArch Config", "Defaults", true);
-    jw__render_list_row(&ui->library_list, x, ly, w, JW_LIBRARY_UNMOUNT_SECONDARY,
-                        "Unmount Secondary SD",
-                        ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
-                        true);
-}
-
 /* ─── Scraping priorities ──────────────────────────────────────────────── */
 
 /* Parse a CSV of catalog values into a full permutation of catalog indices:
@@ -2330,7 +2320,7 @@ static void jw__render_scrape_priority(const jw_settings_ui *ui,
 }
 
 static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("Scraping", x, y, w);
+    jw__draw_header("Box Art", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
 
     char artwork_value[64];
@@ -2411,7 +2401,9 @@ static const jw__about_credit kAboutCredits[] = {
     { "SQLite",                                 "Public Domain" },
     { "cJSON",                                  "MIT" },
     { "System icons (libretro Systematic)",     "CC BY-SA 4.0" },
-    { "Fonts (Space Grotesk, Inter, Source Han Sans)", "SIL OFL 1.1" },
+    { "Fonts: Space Grotesk, Inter, Rounded M+, Nunito, Baloo 2, Fredoka, "
+      "Lexend, IBM Plex Sans, Noto Sans, Source Han Sans", "SIL OFL 1.1" },
+    { "Keyboard icons (Nerd Fonts)",            "MIT" },
     { "Dropbear SSH",                           "MIT-style" },
 };
 #define JW_ABOUT_CREDIT_COUNT ((int)(sizeof(kAboutCredits) / sizeof(kAboutCredits[0])))
@@ -2428,7 +2420,7 @@ typedef enum {
 
 typedef struct {
     jw__about_kind kind;
-    char label[48];
+    char label[128];   /* roomy enough for the full bundled-font credit line */
     char value[72];
 } jw__about_row;
 
@@ -2484,12 +2476,10 @@ static void jw__draw_about_rows(int x, int y, int w, void *user) {
             value_col = theme->hint;
         }
         int value_w = (x + w) - value_x;
-        /* Components ping-pong (they barely overflow, so a bounce reads better);
-           device-info values use the continuous loop. */
-        cat_marquee_mode mode = (r->kind == JW_ABOUT_CREDIT) ? CAT_MARQUEE_PINGPONG
-                                                             : CAT_MARQUEE_LOOP;
-        label_mq[i].mode = mode;
-        value_mq[i].mode = mode;
+        /* Every overflowing line scrolls through continuously and wraps (no
+           ping-pong bounce) for a calmer, uniform read. */
+        label_mq[i].mode = CAT_MARQUEE_LOOP;
+        value_mq[i].mode = CAT_MARQUEE_LOOP;
         if (cat_draw_text_marquee(ctx->font, r->label, x, row_y, label_col, label_w, &label_mq[i], dt))
             animating = true;
         if (cat_draw_text_marquee(ctx->font, r->value, value_x, row_y, value_col, value_w, &value_mq[i], dt))
@@ -2655,7 +2645,7 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
 }
 
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("Behavior", x, y, w);
+    jw__draw_header("General", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int tab = (ui->startup_tab_index >= 0 && ui->startup_tab_index < JW_STARTUP_TAB_COUNT)
               ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
@@ -2681,6 +2671,12 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                         "Game Performance", perf, ui->performance_supported);
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_TIMEZONE,
                         "Time Zone", jw__timezone_label(ui->timezone), true);
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_RESET_RETROARCH,
+                        "Reset RetroArch Config", "Defaults", true);
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_UNMOUNT_SECONDARY,
+                        "Unmount Secondary SD",
+                        ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
+                        true);
 }
 
 static void jw__format_update_size(long long bytes, char *out, size_t out_size) {
@@ -3094,7 +3090,6 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_NETWORK:    jw__render_network(ui, x, y, w, h);    break;
         case JW_SETTINGS_BLUETOOTH:  jw__render_bluetooth(ui, x, y, w, h);  break;
         case JW_SETTINGS_LIGHTING:   jw__render_lighting(ui, x, y, w, h);   break;
-        case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
         case JW_SETTINGS_ACCOUNTS:   jw__render_accounts(ui, x, y, w, h);                break;
         case JW_SETTINGS_SCRAPING:   jw__render_scraping(ui, x, y, w, h);                break;
         case JW_SETTINGS_SCRAPE_PRIORITY: jw__render_scrape_priority(ui, x, y, w, h);    break;
@@ -3859,7 +3854,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_volume(ui);
                     jw__refresh_audio_status(ui);
                 }
-                else if (idx == 2) {
+                else if (idx == 3) {
                     ui->screen = JW_SETTINGS_NETWORK;
                     ui->network_list.cursor = 0;
                     ui->network_list.scroll_offset = 0;
@@ -3878,7 +3873,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->wifi_next_poll_ms = now + 2000;            /* then live every ~2s */
                     ui->wifi_next_scan_ms = now + JW_WIFI_SCAN_INTERVAL_MS;
                 }
-                else if (idx == 3) {
+                else if (idx == 4) {
                     ui->screen = JW_SETTINGS_BLUETOOTH;
                     ui->bluetooth_list.cursor = 0;
                     ui->bluetooth_list.scroll_offset = 0;
@@ -3890,26 +3885,23 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->bt_next_scan_ms = now + JW_BT_ENTRY_DEFER_MS;
                     cat_request_frame_in(JW_BT_ENTRY_DEFER_MS);
                 }
-                else if (idx == 4) {
+                else if (idx == 2) {
                     ui->screen = JW_SETTINGS_LIGHTING;
                     jw__refresh_led(ui);
                 }
                 else if (idx == 5) {
-                    ui->screen = JW_SETTINGS_LIBRARY;
-                    jw__refresh_secondary_sd_status(ui);
-                }
-                else if (idx == 6) ui->screen = JW_SETTINGS_ACCOUNTS;
-                else if (idx == 7) {
                     ui->screen = JW_SETTINGS_SCRAPING;
                     ui->scraping_list.cursor = 0;
                     ui->scraping_list.scroll_offset = 0;
                 }
-                else if (idx == 8) {
+                else if (idx == 6) ui->screen = JW_SETTINGS_ACCOUNTS;
+                else if (idx == 7) {
                     ui->screen = JW_SETTINGS_BEHAVIOR;
                     jw__refresh_boot_splash(ui);
                     jw__refresh_performance(ui);
+                    jw__refresh_secondary_sd_status(ui);   /* Unmount SD row lives here now */
                 }
-                else if (idx == 9) {
+                else if (idx == 8) {
                     ui->screen = JW_SETTINGS_UPDATE;
                     ui->update_list.cursor = 0;
                     ui->update_list.scroll_offset = 0;
@@ -3918,7 +3910,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_update_status(ui, false);
                     ui->update_next_poll_ms = SDL_GetTicks() + 1000;
                 }
-                else if (idx == 10) {
+                else if (idx == 9) {
                     ui->screen = JW_SETTINGS_ABOUT;
                     cat_scroll_state_init(&ui->about_scroll);   /* start at top */
                 }
@@ -4450,30 +4442,6 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         }
         break;
 
-    /* ── Library ─────────────────────────────────────────────────────── */
-    case JW_SETTINGS_LIBRARY:
-        switch (button) {
-            case CAT_BTN_UP:
-                cat_list_state_move(&ui->library_list, -1, JW_LIBRARY_ROW_COUNT);
-                break;
-            case CAT_BTN_DOWN:
-                cat_list_state_move(&ui->library_list, +1, JW_LIBRARY_ROW_COUNT);
-                break;
-            case CAT_BTN_A:
-                if (ui->library_list.cursor == JW_LIBRARY_RESET_RETROARCH) {
-                    jw__reset_retroarch_config(ui, status_buf, status_size);
-                } else if (ui->library_list.cursor == JW_LIBRARY_UNMOUNT_SECONDARY) {
-                    jw__safe_unmount_secondary_sd(ui, status_buf, status_size);
-                }
-                break;
-            case CAT_BTN_B:
-                ui->screen = JW_SETTINGS_HOME;
-                break;
-            default:
-                break;
-        }
-        break;
-
     /* ── Accounts (placeholder) ──────────────────────────────────────── */
     case JW_SETTINGS_ACCOUNTS:
         switch (button) {
@@ -4862,6 +4830,12 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                         ui->timezone_picker_list.scroll_offset = off > 0 ? off : 0;
                         ui->screen = JW_SETTINGS_TIMEZONE_PICKER;
                     }
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_RESET_RETROARCH) {
+                    if (button == CAT_BTN_A)
+                        jw__reset_retroarch_config(ui, status_buf, status_size);
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_UNMOUNT_SECONDARY) {
+                    if (button == CAT_BTN_A)
+                        jw__safe_unmount_secondary_sd(ui, status_buf, status_size);
                 }
                 break;
             }
