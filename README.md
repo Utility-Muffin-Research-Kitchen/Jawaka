@@ -198,16 +198,21 @@ unless they are absolute. Flat `Apps/<Name>.pak/` entries are ignored.
 The current Settings tree includes:
 
 ```text
-Appearance       theme, color scheme, layout, status bar, fonts, pill shape
-Display & Sound brightness, audio output, volume
+Appearance       color scheme, colors, layout (list style, fonts, font size,
+                 tab switching), status bar
+Display & Sound  brightness, audio output, volume
+Lighting         MLP1 LED enable/mode/color/brightness/speed
 Network          Wi-Fi scan/connect/forget and ADB enable/disable
 Bluetooth        scan, pair/connect, disconnect/forget
-Lighting         MLP1 LED enable/mode/color/brightness/speed
-Library          reset RetroArch config, unmount secondary SD
-Accounts         placeholders for future service sign-in
-Behavior         startup tab, auto-sleep, boot splash
-About            system/library facts and open-source component credits
+Game Art         scraping artwork-type and region priority
+Accounts         ScreenScraper / RetroAchievements sign-in
+General          startup tab, auto-sleep, boot splash, game performance,
+                 time zone, reset RetroArch config, unmount secondary SD
 ```
+
+System Update and About are not in the Settings tree; they live in the **System**
+menu (the Menu-button popup), which also offers a library rescan and the
+session/power actions (return to launcher, sleep, exit to stock, reboot, power off).
 
 Jawaka exports Catastrophe `CAT_*` appearance variables before launching
 `jawaka-launcher`, `jawaka-menu`, and Catastrophe-based `.pak` apps. Apps should
