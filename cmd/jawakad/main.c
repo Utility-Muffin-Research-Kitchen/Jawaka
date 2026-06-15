@@ -3598,6 +3598,17 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     jw__suspend_input_proxy_for_app(state);
+    /* Watch the pad in watch-only mode so the hardware volume / brightness keys
+       keep working while a generic app is foreground — the same as standalone
+       emulators. The app reads the pad directly for its own input; jawakad only
+       watches for the system hotkeys (volume/brightness; Menu and the switcher
+       no-op without a game session). The app-exit handler tears this watch proxy
+       down and restores the full grab. */
+    if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
+                                  jw__input_volume_delta, jw__input_menu_tap,
+                                  jw__input_game_switcher, state) != 0) {
+        jw_log_warn("input watch: init failed; volume/brightness keys unavailable this app session");
+    }
     jw__publish_audio_env(state);
     jw__publish_cheevos_env(state);   /* the RetroArch.pak runner builds its own config */
     (void)jw__perf_apply_frontend(state, "app-launch");
@@ -3610,6 +3621,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
+        jw_input_proxy_shutdown(&state->input_proxy);   /* drop the watch-only proxy */
         jw__start_input_proxy(state);
         state->pending_app = false;
         return -1;
