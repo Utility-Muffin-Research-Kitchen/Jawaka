@@ -2365,9 +2365,63 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
                         "Region Priority", region_value, false);
 }
 
+/* Account row: like jw__render_list_row, but the status value marquees while the
+   row is selected so a long "Signed in as … threads … quota …" line scrolls into
+   view instead of running off the right edge. Unselected rows ellipsize it. The
+   value stays right-aligned when it already fits. Returns true while animating. */
+static bool jw__render_account_row(const cat_list_state *list, int x, int y,
+                                   int w, int row, const char *label,
+                                   const char *value, cat_marquee *mq,
+                                   uint32_t dt) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    int iy = y + row * item_h;
+    bool selected = (list->cursor == row);
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (item_h - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
+
+    ap_color label_c = selected ? theme->highlighted_text : theme->text;
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
+                             w / 2 - cat_scale(20));
+
+    bool anim = false;
+    if (value && value[0]) {
+        int value_x = x + w / 2;
+        int value_w = (x + w - cat_scale(16)) - value_x;
+        int vw = cat_measure_text(body, value);
+        if (value_w <= 0) {
+            /* no room */
+        } else if (vw <= value_w) {
+            cat_draw_text(body, value, x + w - vw - cat_scale(16), ty, value_c);
+        } else if (selected) {
+            if (mq) mq->mode = CAT_MARQUEE_LOOP;
+            anim = cat_draw_text_marquee(body, value, value_x, ty, value_c,
+                                         value_w, mq, dt);
+        } else {
+            if (mq) mq->elapsed_ms = 0;   /* restart the scroll next time it's selected */
+            cat_draw_text_ellipsized(body, value, value_x, ty, value_c, value_w);
+        }
+    }
+    return anim;
+}
+
 static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Accounts", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+
+    /* Per-row marquee state (one Accounts screen is live at a time). */
+    static cat_marquee mq[JW_ACCOUNTS_ROW_COUNT];
+    static uint32_t    last_ms = 0;
+    uint32_t now = SDL_GetTicks();
+    uint32_t dt  = (last_ms == 0) ? 0u : (now - last_ms);
+    last_ms = now;
+    bool anim = false;
+
     /* "Signed in" only after the daemon has validated the credentials against
        the API (scrape-validate IPC); "Saved" means stored but unverified
        (daemon or network unavailable at sign-in). */
@@ -2391,16 +2445,19 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
     } else {
         snprintf(ss_value, sizeof(ss_value), "Not signed in");
     }
-    jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_SCREENSCRAPER,
-                        "ScreenScraper.fr", ss_value, false);
+    anim |= jw__render_account_row(&ui->accounts_list, x, ly, w,
+                                   JW_ACCOUNTS_SCREENSCRAPER, "ScreenScraper.fr",
+                                   ss_value, &mq[JW_ACCOUNTS_SCREENSCRAPER], dt);
     char ra_value[96];
     if (ui->ra_username[0]) {
         snprintf(ra_value, sizeof(ra_value), "Saved: %s", ui->ra_username);
     } else {
         snprintf(ra_value, sizeof(ra_value), "Not signed in");
     }
-    jw__render_list_row(&ui->accounts_list, x, ly, w, JW_ACCOUNTS_RETROACHIEVEMENTS,
-                        "RetroAchievements", ra_value, false);
+    anim |= jw__render_account_row(&ui->accounts_list, x, ly, w,
+                                   JW_ACCOUNTS_RETROACHIEVEMENTS, "RetroAchievements",
+                                   ra_value, &mq[JW_ACCOUNTS_RETROACHIEVEMENTS], dt);
+    if (anim) cat_request_frame();
 }
 
 /* ─── About ────────────────────────────────────────────────────────────── */
