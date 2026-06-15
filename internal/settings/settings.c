@@ -70,25 +70,29 @@ typedef struct {
     const char *accent, *bg, *text, *hint, *selection, *btn_label, *btn_bg;
 } jw__color_scheme;
 
+/* Two ROYGBIV runs, Leaf leading: seven dark schemes (Leaf, then the spectrum in
+   R-O-Y-B-I-V order), then the seven light schemes in the same order so each light
+   sits a hue-twin of the dark above it. The selected-row text auto-contrast in
+   cat_finalize_theme_colors picks the readable one of {text,bg}, so dark text lands
+   on the bright selection pill on both dark and light pages. */
 static const jw__color_scheme kColorSchemes[] = {
-    /* name      accent     bg         text       hint       selection  btn_label  btn_bg     */
-    { "Leaf",    "#1E331E", "#0F160E", "#E8F1E3", "#7E9579", "#7FB069", "#0F160E", "#7FB069" },
-    { "Aurora",  "#173342", "#0E1822", "#E6F0F2", "#6E8898", "#3DDC97", "#0E1822", "#3DDC97" },
-    { "Ember",   "#3A2A22", "#1A1413", "#F2EAE2", "#A38A7A", "#FF8A4C", "#1A1413", "#FF8A4C" },
-    { "Orchid",  "#2E2240", "#181226", "#ECE4F2", "#8E7CB0", "#C792EA", "#181226", "#C792EA" },
-    { "Slate",   "#242A36", "#14171E", "#E4E7ED", "#7C828E", "#7AA2F7", "#14171E", "#7AA2F7" },
-    { "Rosé",    "#33222E", "#1C1620", "#F0E6EC", "#A88A98", "#EB6F92", "#1C1620", "#EB6F92" },
-    /* Light schemes: a light page with a hue-matched chrome bar + selection pill.
-       Appended (not inserted) so saved color_scheme_index values for the dark
-       schemes don't shift. The selected-row text auto-contrast in
-       cat_finalize_theme_colors picks the readable one of {text,bg}, so dark text
-       lands on the bright selection pill. */
     /* name        accent     bg         text       hint       selection  btn_label  btn_bg     */
-    { "Meadow",   "#9CCB85", "#D1D0A6", "#1B2E1B", "#5E7654", "#7FB069", "#1B2E1B", "#7FB069" },
-    { "Sky",      "#9CC3E0", "#BFCED7", "#1B2A33", "#5A7280", "#6FA8DC", "#1B2A33", "#6FA8DC" },
-    { "Blush",    "#F2BFCE", "#DEC9D0", "#3A2630", "#8A6E78", "#E886A4", "#3A2630", "#E886A4" },
-    { "Sand",     "#EAC99C", "#E6D2B0", "#332518", "#8A7050", "#EE9F54", "#332518", "#EE9F54" },
-    { "Lavender", "#D0BCE4", "#D2C9DC", "#2A2238", "#786E8A", "#BE8FE2", "#2A2238", "#BE8FE2" },
+    /* Dark */
+    { "Leaf",      "#1E331E", "#0F160E", "#E8F1E3", "#7E9579", "#7FB069", "#0F160E", "#7FB069" },
+    { "Rose",      "#33222E", "#1C1620", "#F0E6EC", "#A88A98", "#EB6F92", "#1C1620", "#EB6F92" },
+    { "Ember",     "#3A2A22", "#1A1413", "#F2EAE2", "#A38A7A", "#FF8A4C", "#1A1413", "#FF8A4C" },
+    { "Goldenrod", "#332C16", "#15120A", "#F2EEDD", "#A89A6E", "#E8C24A", "#15120A", "#E8C24A" },
+    { "Tide",      "#173042", "#0D1620", "#E2EEF4", "#6E8A9A", "#4FA3E0", "#0D1620", "#4FA3E0" },
+    { "Indigo",    "#232544", "#131426", "#E6E7F4", "#7C7EA0", "#818CF5", "#131426", "#818CF5" },
+    { "Orchid",    "#2E2240", "#181226", "#ECE4F2", "#8E7CB0", "#C792EA", "#181226", "#C792EA" },
+    /* Light */
+    { "Meadow",    "#9CCB85", "#D1D0A6", "#1B2E1B", "#5E7654", "#7FB069", "#1B2E1B", "#7FB069" },
+    { "Petal",     "#F2BFCE", "#DEC9D0", "#3A2630", "#8A6E78", "#E886A4", "#3A2630", "#E886A4" },
+    { "Apricot",   "#EAC99C", "#E6D2B0", "#332518", "#8A7050", "#EE9F54", "#332518", "#EE9F54" },
+    { "Wheat",     "#E6D38A", "#ECE6C2", "#332C12", "#897F50", "#CDB23E", "#332C12", "#CDB23E" },
+    { "Sky",       "#9CC3E0", "#BFCED7", "#1B2A33", "#5A7280", "#6FA8DC", "#1B2A33", "#6FA8DC" },
+    { "Periwinkle","#BFC0E6", "#CFCFE2", "#22243A", "#6E708E", "#8088E6", "#22243A", "#8088E6" },
+    { "Lavender",  "#D0BCE4", "#D2C9DC", "#2A2238", "#786E8A", "#BE8FE2", "#2A2238", "#BE8FE2" },
 };
 #define JW_COLOR_SCHEME_COUNT ((int)(sizeof(kColorSchemes) / sizeof(kColorSchemes[0])))
 #define JW_COLOR_SCHEME_DEFAULT 0   /* Leaf — the Dweezil/Leaf identity theme */
