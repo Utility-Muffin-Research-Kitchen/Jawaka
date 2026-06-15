@@ -1860,11 +1860,24 @@ static void jw__mlp1_audio_tick(jw_platform_context *ctx) {
     last_present = present;
     jw_platform_result res;
     jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
-    jw__mlp1_set_audio_output(present ? JW_PLATFORM_AUDIO_OUTPUT_HEADSET
-                                      : JW_PLATFORM_AUDIO_OUTPUT_SPEAKER, &res);
+    /* On unplug, fall back to Bluetooth if a headset is still connected, not
+       always the speaker — otherwise removing wired headphones strands audio on
+       the speaker even though the BT headset is live (and leaves the codec path
+       off bluealsa, so BT stays silent in games/apps until the headset
+       reconnects). */
+    jw_platform_audio_output target;
+    if (present) {
+        target = JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
+    } else if (jw_bt_audio_connected() == 1) {
+        target = JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
+    } else {
+        target = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    }
+    jw__mlp1_set_audio_output(target, &res);
     jw_log_info("audio: headphone jack %s, routed to %s",
                 present ? "inserted" : "removed",
-                present ? "headset" : "speaker");
+                target == JW_PLATFORM_AUDIO_OUTPUT_HEADSET   ? "headset" :
+                target == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH ? "bluetooth" : "speaker");
 }
 
 static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
