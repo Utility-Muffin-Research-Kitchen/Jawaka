@@ -251,6 +251,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                          const char *initial_theme_name,
                          const char *socket_path);
 void jw_settings_ui_enter(jw_settings_ui *ui);
+/* Open directly on a specific screen (and prime its state) instead of the home
+   list. Used by jawaka-menu's System popup to host About / System Update. */
+void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen);
 void jw_settings_ui_close(jw_settings_ui *ui);
 bool jw_settings_ui_is_open(const jw_settings_ui *ui);
 /* Current sub-page, so the launcher can pick page-specific footer hints. */

@@ -302,21 +302,22 @@ static int jw__game_perf_index_for_profile(jw_platform_perf_profile profile) {
 }
 
 /* Top-level Settings categories, grouped by theme: look & feel, connectivity,
-   games & content, system. The A handler maps each row to its screen by name
-   (not row index), so this order can change freely. */
+   games & content, system. The A handler maps each row to its screen by row
+   index (a positional `idx == N` chain), so this label order and those checks
+   must stay in lockstep — reordering here means renumbering there. */
 static const char *kHomeCategoryLabels[] = {
     "Appearance",
     "Display & Sound",
     "Lighting",
     "Network",
     "Bluetooth",
-    "Box Art",
+    "Game Art",
     "Accounts",
     "General",
-    "System Update",
-    "About",
 };
-#define JW_SETTINGS_CATEGORY_COUNT 10
+/* System Update and About are not listed here — they live in the System menu
+   (the Menu-button popup), hosted there via jw_settings_ui_open(). */
+#define JW_SETTINGS_CATEGORY_COUNT 8
 
 /* Visible rows in the Network page's scanned-network list (scrolls beyond). */
 #define JW_WIFI_LIST_ROWS 6
@@ -1164,6 +1165,26 @@ void jw_settings_ui_close(jw_settings_ui *ui) {
     }
     ui->open = false;
     ui->screen = JW_SETTINGS_HOME;
+}
+
+/* Open the UI directly on a specific screen and prime its state, so a host that
+   doesn't go through the Settings home (e.g. jawaka-menu's System popup) lands
+   the same as picking the category would. Currently used for About and System
+   Update; mirrors the per-screen entry priming the home A-handler does. */
+void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
+    if (!ui) return;
+    ui->open = true;
+    ui->screen = screen;
+    if (screen == JW_SETTINGS_UPDATE) {
+        ui->update_list.cursor = 0;
+        ui->update_list.scroll_offset = 0;
+        ui->update_msg[0] = '\0';
+        ui->update_msg_ms = 0;
+        jw__refresh_update_status(ui, false);
+        ui->update_next_poll_ms = SDL_GetTicks() + 1000;
+    } else if (screen == JW_SETTINGS_ABOUT) {
+        cat_scroll_state_init(&ui->about_scroll);   /* start at top */
+    }
 }
 
 bool jw_settings_ui_is_open(const jw_settings_ui *ui) {
@@ -2320,7 +2341,7 @@ static void jw__render_scrape_priority(const jw_settings_ui *ui,
 }
 
 static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("Box Art", x, y, w);
+    jw__draw_header("Game Art", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
 
     char artwork_value[64];
@@ -3900,19 +3921,6 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_boot_splash(ui);
                     jw__refresh_performance(ui);
                     jw__refresh_secondary_sd_status(ui);   /* Unmount SD row lives here now */
-                }
-                else if (idx == 8) {
-                    ui->screen = JW_SETTINGS_UPDATE;
-                    ui->update_list.cursor = 0;
-                    ui->update_list.scroll_offset = 0;
-                    ui->update_msg[0] = '\0';
-                    ui->update_msg_ms = 0;
-                    jw__refresh_update_status(ui, false);
-                    ui->update_next_poll_ms = SDL_GetTicks() + 1000;
-                }
-                else if (idx == 9) {
-                    ui->screen = JW_SETTINGS_ABOUT;
-                    cat_scroll_state_init(&ui->about_scroll);   /* start at top */
                 }
                 break;
             }

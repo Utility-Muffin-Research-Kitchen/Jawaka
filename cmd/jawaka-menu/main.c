@@ -133,7 +133,13 @@ static void jw__menu_wait_for_show(void) {
     }
 }
 
+/* System menu items, ordered benign -> destructive: system info/maintenance up
+   top, session in the middle, the destructive power trio anchored at the bottom
+   so it can't be fat-fingered. About and System Update are hosted here (they no
+   longer live in Settings) via the shared jw_settings_ui render API. */
 static const char *kMenuItems[] = {
+    "System Update",
+    "About",
     "Rescan Library",
     "Return to Launcher",
     "Sleep",
@@ -141,13 +147,15 @@ static const char *kMenuItems[] = {
     "Reboot",
     "Power Off",
 };
-#define JW_MENU_COUNT       6
-#define JW_MENU_RESCAN      0
-#define JW_MENU_RETURN      1
-#define JW_MENU_SLEEP       2
-#define JW_MENU_EXIT_STOCK  3
-#define JW_MENU_REBOOT      4
-#define JW_MENU_POWEROFF    5
+#define JW_MENU_COUNT       8
+#define JW_MENU_UPDATE      0
+#define JW_MENU_ABOUT       1
+#define JW_MENU_RESCAN      2
+#define JW_MENU_RETURN      3
+#define JW_MENU_SLEEP       4
+#define JW_MENU_EXIT_STOCK  5
+#define JW_MENU_REBOOT      6
+#define JW_MENU_POWEROFF    7
 
 static const char *kInGameItems[] = {
     "Continue",
@@ -231,6 +239,10 @@ typedef struct {
     char                status[256];
     cat_status_bar_opts status_bar;
     bool                show_hints;
+    const char         *db_path;          /* for hosting About / System Update */
+    int                 pending_settings; /* JW_SETTINGS_* to host next, or -1 */
+    jw_library_summary  summary;          /* live counts for the Rescan detail */
+    bool                summary_ready;
 } jw_menu_state;
 
 typedef struct {
@@ -270,20 +282,33 @@ typedef struct {
 static void jw__render_menu(const jw_menu_state *state) {
     ap_theme *theme     = cat_get_theme();
     TTF_Font *body_font = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small     = cat_get_font(CAT_FONT_SMALL);
 
     cat_status_bar_opts sb = state->status_bar;
 
     cat_clear_screen();
-    cat_draw_screen_title("System Actions", &sb);
+    cat_draw_screen_title("System", &sb);
 
-    SDL_Rect content = cat_get_content_rect(true, true, false);
+    /* Box-model composition (same shape as the Settings / browse pages): carve a
+       0-height tab bar and a 0-height sub-header off the content box, leaving a
+       full-width list with no cover/icon pane. */
+    SDL_Rect cr = cat_get_content_rect(true, true, false);
+    cat_box page = { cr.x, cr.y, cr.w, cr.h, 0, 0, 0, 0 };
+    (void)cat_box_carve_top(&page, 0);   /* tab bar: none      */
+    (void)cat_box_carve_top(&page, 0);   /* sub-header: none   */
+    SDL_Rect content = cat_box_content(&page);
+
     int x      = content.x + CAT_S(24);
     int item_w = content.w * 55 / 100;
     int body_h = TTF_FontHeight(body_font);
     int item_h = body_h + CAT_S(12);
     int pill_h = body_h + CAT_S(6);
     int pill_w = item_w;
+
+    /* The right column (formerly the browse layout's cover pane) is reserved for
+       the Rescan Library notification — the live library counts, or "Scanning…"
+       while a scan runs. Every other row leaves it empty. */
+    int detail_x = x + item_w + CAT_S(14);
+    int detail_w = (content.x + content.w - CAT_S(24)) - detail_x;
 
     for (int i = 0; i < JW_MENU_COUNT; i++) {
         int iy     = content.y + CAT_S(16) + i * item_h;
@@ -298,13 +323,29 @@ static void jw__render_menu(const jw_menu_state *state) {
         cat_draw_text(body_font, kMenuItems[i], x, text_y, col);
     }
 
-    /* Status line follows the same hints toggle as the footer: hidden when
-       hints are off, matching the launcher. Only carries real feedback now
-       (e.g. rescan results), so it stays empty until something sets it. */
-    if (state->show_hints && state->status[0]) {
-        int status_y = content.y + content.h - CAT_S(28);
-        cat_draw_text_ellipsized(small, state->status, x, status_y,
-                                 theme->hint, item_w);
+    /* Right pane: the Rescan Library notification, sized to fill the pane (not a
+       single line). "Scanning…" while a scan runs; otherwise the live library
+       counts, stacked and centered over the pane's full height. */
+    if (detail_w > CAT_S(40)) {
+        int pane_y = content.y + CAT_S(16);
+        int pane_h = JW_MENU_COUNT * item_h;
+        int line_h = TTF_FontHeight(body_font);
+        if (state->status[0]) {
+            int ty = pane_y + (pane_h - line_h) / 2;
+            cat_draw_text_wrapped(body_font, state->status, detail_x, ty,
+                                  detail_w, theme->hint, CAT_ALIGN_CENTER);
+        } else if (state->summary_ready) {
+            char l1[32], l2[32];
+            snprintf(l1, sizeof(l1), "%d games", state->summary.game_count);
+            snprintf(l2, sizeof(l2), "%d apps",  state->summary.app_count);
+            int gap     = CAT_S(6);
+            int block_h = line_h * 2 + gap;
+            int ty      = pane_y + (pane_h - block_h) / 2;
+            cat_draw_text_wrapped(body_font, l1, detail_x, ty, detail_w,
+                                  theme->text, CAT_ALIGN_CENTER);
+            cat_draw_text_wrapped(body_font, l2, detail_x, ty + line_h + gap,
+                                  detail_w, theme->hint, CAT_ALIGN_CENTER);
+        }
     }
 
     if (state->show_hints) {
@@ -319,11 +360,27 @@ static void jw__render_menu(const jw_menu_state *state) {
 
 static int jw__activate(const char *socket_path, jw_menu_state *state, bool *running) {
     switch (state->list.cursor) {
-        case JW_MENU_RESCAN:
-            snprintf(state->status, sizeof(state->status), "%s", "scanning...");
+        case JW_MENU_UPDATE:
+            /* Hosted in this popup via the shared settings UI; main() picks it up
+               after input so the modal sub-loop runs outside the event drain. */
+            state->pending_settings = JW_SETTINGS_UPDATE;
+            return 0;
+        case JW_MENU_ABOUT:
+            state->pending_settings = JW_SETTINGS_ABOUT;
+            return 0;
+        case JW_MENU_RESCAN: {
+            snprintf(state->status, sizeof(state->status), "%s", "Scanning\xe2\x80\xa6");
             cat_request_frame();
             jw__render_menu(state);
-            return jw_ipc_scan_library(socket_path, state->status, sizeof(state->status));
+            int rc = jw_ipc_scan_library(socket_path, state->status,
+                                         sizeof(state->status));
+            /* Refresh the cached counts and drop the IPC's verbose message: the
+               updated "N games · M apps" next to the row is the result we show. */
+            if (jw_db_read_summary(state->db_path, &state->summary) == 0)
+                state->summary_ready = true;
+            state->status[0] = '\0';
+            return rc;
+        }
         case JW_MENU_RETURN:
             *running = false;
             return 0;
@@ -359,9 +416,11 @@ static void jw__handle_input(const char *socket_path, jw_menu_state *state,
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->list, -1, JW_MENU_COUNT);
+            state->status[0] = '\0';   /* a moved cursor dismisses stale feedback */
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->list, +1, JW_MENU_COUNT);
+            state->status[0] = '\0';
             break;
         case CAT_BTN_A:
         case CAT_BTN_START:
@@ -1966,6 +2025,95 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
     return 0;
 }
 
+/* ── Hosted settings screens (About / System Update) ──────────────────────────
+   These two used to be Settings categories; they now live in the System menu and
+   render here through the shared jw_settings_ui API (no duplicated layout). The
+   page draws its own header, so we add no separate title bar (the menu popup has
+   no status bar) and supply the per-screen footer the launcher would normally
+   provide. */
+static void jw__render_hosted(const jw_menu_state *menu, const jw_settings_ui *ui) {
+    cat_clear_screen();
+    SDL_Rect cr = cat_get_content_rect(false, menu->show_hints, false);
+    int margin = CAT_S(12);
+    jw_settings_ui_render(ui, cr.x + margin, cr.y, cr.w - margin * 2, cr.h);
+
+    if (menu->show_hints) {
+        switch (jw_settings_ui_screen(ui)) {
+            case JW_SETTINGS_ABOUT: {
+                cat_footer_item f[] = {
+                    { CAT_BTN_B, "Back", true, JW_HINT("B") },
+                };
+                cat_draw_footer(f, 1);
+                break;
+            }
+            case JW_SETTINGS_UPDATE: {
+                cat_footer_item f[] = {
+                    { CAT_BTN_X, "Releases", false, JW_HINT("X") },
+                    { CAT_BTN_B, "Back",     true,  JW_HINT("B") },
+                    { CAT_BTN_A, "Select",   true,  JW_HINT("A") },
+                };
+                cat_draw_footer(f, 3);
+                break;
+            }
+            case JW_SETTINGS_UPDATE_PICKER: {
+                cat_footer_item f[] = {
+                    { CAT_BTN_X, "Refresh", false, JW_HINT("X") },
+                    { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
+                    { CAT_BTN_A, "Pick",    true,  JW_HINT("A") },
+                };
+                cat_draw_footer(f, 3);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    cat_present();
+}
+
+/* Modal sub-loop: host one settings screen until the user backs out of it (the
+   screen returns to HOME). The jw_settings_ui is built once on first use and
+   reused for later visits; it lives until the menu process exits. */
+static void jw__menu_host_setting(const char *socket_path, jw_menu_state *menu,
+                                  jw_settings_screen screen) {
+    static jw_settings_ui *ui = NULL;
+    if (!ui) {
+        ui = malloc(sizeof(*ui));
+        if (!ui) return;
+        char theme_name[256];
+        jw_resolve_theme_name(menu->db_path, theme_name, sizeof(theme_name));
+        jw_settings_ui_init(ui, menu->db_path, theme_name, socket_path);
+    }
+    jw_settings_ui_open(ui, screen);
+
+    char status[256] = { 0 };
+    bool running = true;
+    cat_request_frame();
+    while (running) {
+        cat_input_event ev;
+        while (cat_poll_input(&ev)) {
+            if (!ev.pressed) continue;
+            bool theme_changed = false;
+            jw_settings_ui_handle_button(ui, ev.button, status, sizeof(status),
+                                         &theme_changed);
+            /* B at the hosted screen returns it to HOME; that is our cue to drop
+               back to the System list. The Update <-> Releases picker navigation
+               stays inside the loop (neither is HOME). */
+            if (!jw_settings_ui_is_open(ui) ||
+                jw_settings_ui_screen(ui) == JW_SETTINGS_HOME) {
+                running = false;
+                break;
+            }
+        }
+        if (!running) break;
+        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE)
+            jw_settings_ui_refresh_update(ui);
+        jw__render_hosted(menu, ui);
+    }
+    jw_settings_ui_close(ui);
+    cat_request_frame();   /* repaint the System list on return */
+}
+
 int main(int argc, char **argv) {
     long long process_start_ms = jw__monotonic_ms();
     bool in_game = false;
@@ -2063,6 +2211,11 @@ int main(int argc, char **argv) {
     jw_menu_state state;
     memset(&state, 0, sizeof(state));
     cat_list_state_init(&state.list, JW_MENU_COUNT);
+    state.db_path = db_path;          /* for hosting About / System Update */
+    state.pending_settings = -1;
+    /* Prime the library counts for the Rescan detail (cheap local DB read). */
+    if (jw_db_read_summary(db_path, &state.summary) == 0)
+        state.summary_ready = true;
     /* status stays empty (memset above); the line only shows real feedback. */
 
     /* Inherit the launcher's status-bar and button-hint preferences. */
@@ -2098,6 +2251,15 @@ int main(int argc, char **argv) {
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
             jw__handle_input(socket_path, &state, ev.button, &running);
+        }
+
+        /* About / System Update run as a modal sub-loop outside the event drain,
+           then we return to the System list. */
+        if (state.pending_settings >= 0) {
+            jw__menu_host_setting(socket_path, &state,
+                                  (jw_settings_screen)state.pending_settings);
+            state.pending_settings = -1;
+            jw_autodemo_init(&demo);   /* the user was active; reset the idle timer */
         }
 
         if (demo.enabled && !demo.fired) {
