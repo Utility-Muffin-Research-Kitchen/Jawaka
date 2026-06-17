@@ -3856,6 +3856,8 @@ static void jw__open_apps(jw_launcher_state *state) {
    next start. /tmp is deliberate: it survives the game round-trip but clears on
    reboot, so a cold boot still honors the Startup Tab setting. */
 #define JW_RESUME_PATH "/tmp/jawaka-launcher-resume"
+/* Dropped by the System menu's "Search" item; opens the search overlay on respawn. */
+#define JW_OPEN_SEARCH_MARKER "/tmp/jawaka-open-search"
 
 typedef struct {
     int  tab;
@@ -5125,6 +5127,17 @@ int main(void) {
 
     /* Move the status-bar/library polls off the render thread (see jw__status_poller). */
     jw__status_poller_start(socket_path, &state.settings);
+
+    /* The System menu's "Search" item left a marker — open the search overlay now
+       that input is up (jw__open_search runs a blocking keyboard). */
+    {
+        FILE *mf = fopen(JW_OPEN_SEARCH_MARKER, "r");
+        if (mf) {
+            fclose(mf);
+            remove(JW_OPEN_SEARCH_MARKER);
+            jw__open_search(db_path, &state);
+        }
+    }
 
     while (running) {
         cat_input_event ev;

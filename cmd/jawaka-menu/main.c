@@ -138,6 +138,7 @@ static void jw__menu_wait_for_show(void) {
    so it can't be fat-fingered. About and System Update are hosted here (they no
    longer live in Settings) via the shared jw_settings_ui render API. */
 static const char *kMenuItems[] = {
+    "Search",
     "System Update",
     "About",
     "Rescan Library",
@@ -147,15 +148,20 @@ static const char *kMenuItems[] = {
     "Reboot",
     "Power Off",
 };
-#define JW_MENU_COUNT       8
-#define JW_MENU_UPDATE      0
-#define JW_MENU_ABOUT       1
-#define JW_MENU_RESCAN      2
-#define JW_MENU_RETURN      3
-#define JW_MENU_SLEEP       4
-#define JW_MENU_EXIT_STOCK  5
-#define JW_MENU_REBOOT      6
-#define JW_MENU_POWEROFF    7
+#define JW_MENU_COUNT       9
+#define JW_MENU_SEARCH      0
+#define JW_MENU_UPDATE      1
+#define JW_MENU_ABOUT       2
+#define JW_MENU_RESCAN      3
+#define JW_MENU_RETURN      4
+#define JW_MENU_SLEEP       5
+#define JW_MENU_EXIT_STOCK  6
+#define JW_MENU_REBOOT      7
+#define JW_MENU_POWEROFF    8
+
+/* Picking Search drops a /tmp marker and returns to the launcher, which opens its
+   search overlay on respawn (the launcher exits while this menu is up). */
+#define JW_OPEN_SEARCH_MARKER "/tmp/jawaka-open-search"
 
 static const char *kInGameItems[] = {
     "Continue",
@@ -360,6 +366,13 @@ static void jw__render_menu(const jw_menu_state *state) {
 
 static int jw__activate(const char *socket_path, jw_menu_state *state, bool *running) {
     switch (state->list.cursor) {
+        case JW_MENU_SEARCH: {
+            /* Hand off to the launcher: drop a marker it consumes on respawn. */
+            FILE *mf = fopen(JW_OPEN_SEARCH_MARKER, "w");
+            if (mf) fclose(mf);
+            *running = false;
+            return 0;
+        }
         case JW_MENU_UPDATE:
             /* Hosted in this popup via the shared settings UI; main() picks it up
                after input so the modal sub-loop runs outside the event drain. */
