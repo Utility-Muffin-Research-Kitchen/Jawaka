@@ -67,6 +67,7 @@ typedef struct {
     bool bluetooth;
     bool adb;
     bool boot_splash;
+    bool refresh_rate;   /* runtime display refresh-rate switching (e.g. 60/90 Hz) */
     bool led;
     bool performance;
 } jw_platform_capabilities;
@@ -97,6 +98,7 @@ typedef struct {
     int adb_enabled;           /* -1 unknown/unavailable, 0 no, 1 yes */
     int adb_intent_enabled;    /* -1 unknown/unavailable, 0 no, 1 yes */
     int boot_splash_enabled;   /* -1 unknown/unavailable, 0 no, 1 yes */
+    int refresh_rate_hz;       /* current panel refresh in Hz; -1 unknown/unsupported */
 } jw_platform_status;
 
 typedef struct {
@@ -171,7 +173,8 @@ typedef enum {
     JW_PLATFORM_ACTION_ENABLE_ADB,
     JW_PLATFORM_ACTION_DISABLE_ADB,
     JW_PLATFORM_ACTION_SET_BOOT_SPLASH,
-    JW_PLATFORM_ACTION_PLAY_TEST_SOUND  /* play a short clip on the current audio output */
+    JW_PLATFORM_ACTION_PLAY_TEST_SOUND,  /* play a short clip on the current audio output */
+    JW_PLATFORM_ACTION_SET_REFRESH_RATE  /* value = target panel refresh in Hz (60/90) */
 } jw_platform_action;
 
 typedef enum {

@@ -1038,6 +1038,130 @@ static int jw__mlp1_set_boot_splash(jw_platform_context *ctx, bool enabled) {
     return fclose(fp) == 0 && ok ? 0 : -1;
 }
 
+/* ── Display refresh rate (60/90 Hz) ─────────────────────────────────────
+   The MLP1 DSI panel advertises a single fixed 720x960@60 mode, but the
+   rockchip DSI driver accepts a runtime modeline at ~90 Hz (verified). Weston
+   takes its output mode from weston.ini; its HOME is /userdata/root, so a
+   ~/.config/weston.ini override (a copy of the stock /etc/xdg config plus a
+   `mode=` line in [output]) takes precedence with no stock-file edit. 90 Hz =
+   write the override; 60 Hz = remove it (Weston falls back to the stock 60 Hz
+   preferred mode). The override lives on rootfs and persists across reboots,
+   so no boot hook is needed — Weston reads it at S49 every boot. */
+#define JW_MLP1_WESTON_STOCK_INI    "/etc/xdg/weston/weston.ini"
+#define JW_MLP1_WESTON_OVERRIDE_INI "/userdata/root/.config/weston.ini"
+/* Stock 720x960 panel timing taken to 90 Hz: clock(MHz) hdisp hss hse htot
+   vdisp vss vse vtot, -hsync -vsync to match the panel's stock mode flags. */
+#define JW_MLP1_WESTON_MODE_90 \
+    "mode=70.46 720 735 749 769 960 990 998 1018 -hsync -vsync\n"
+
+static int jw__mlp1_get_refresh_hz(void) {
+    FILE *fp = fopen("/sys/kernel/debug/dri/0/summary", "r");
+    if (!fp) {
+        return -1;
+    }
+    int hz = -1;
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        const char *p = strstr(line, "Display mode:");
+        if (!p) {
+            continue;
+        }
+        int dw, dh, dr;
+        if (sscanf(p, "Display mode: %dx%dp%d", &dw, &dh, &dr) == 3) {
+            hz = dr;
+            break;
+        }
+    }
+    fclose(fp);
+    return hz;
+}
+
+/* Build the override from the stock config: copy it verbatim, drop any
+   pre-existing `mode=` line (so re-toggling never duplicates), and append the
+   90 Hz modeline. [output] is the stock file's last section, so EOF == inside
+   it. Written via a temp + rename so a partial write never breaks the boot. */
+static int jw__mlp1_write_weston_override_90(void) {
+    FILE *in = fopen(JW_MLP1_WESTON_STOCK_INI, "r");
+    if (!in) {
+        return -1;
+    }
+    char tmp[PATH_MAX];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", JW_MLP1_WESTON_OVERRIDE_INI);
+    if (jw__mkdir_parent(tmp) != 0) {
+        fclose(in);
+        return -1;
+    }
+    FILE *out = fopen(tmp, "w");
+    if (!out) {
+        fclose(in);
+        return -1;
+    }
+    char line[512];
+    int ok = 1;
+    while (fgets(line, sizeof(line), in)) {
+        const char *s = line;
+        while (*s == ' ' || *s == '\t') {
+            s++;
+        }
+        if (strncmp(s, "mode=", 5) == 0) {
+            continue;
+        }
+        if (fputs(line, out) < 0) {
+            ok = 0;
+            break;
+        }
+    }
+    if (ok && fputs(JW_MLP1_WESTON_MODE_90, out) < 0) {
+        ok = 0;
+    }
+    fclose(in);
+    if (fclose(out) != 0) {
+        ok = 0;
+    }
+    if (!ok) {
+        unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, JW_MLP1_WESTON_OVERRIDE_INI) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+static int jw__mlp1_set_refresh_rate(int hz) {
+    if (hz >= 90) {
+        if (jw__mlp1_write_weston_override_90() != 0) {
+            return -1;
+        }
+    } else {
+        if (unlink(JW_MLP1_WESTON_OVERRIDE_INI) != 0 && errno != ENOENT) {
+            return -1;
+        }
+    }
+
+    /* Restart Weston so it re-reads the config at the new mode, then drop the
+       launcher AND the OSD so jawakad respawns fresh ones that reconnect to the
+       new compositor and repaint (both Wayland clients black-screen across a
+       restart — the old OSD survives the kill of Weston but never redraws).
+       Detached child so the action returns to the caller immediately. */
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        execl("/bin/sh", "sh", "-c",
+              "/etc/init.d/S49weston restart; sleep 1; "
+              "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
+              (char *)NULL);
+        _exit(127);
+    }
+    return 0;
+}
+
 static bool jw__mlp1_adb_supported(void) {
     return access(JW_MLP1_ADBD, X_OK) == 0 &&
            access(JW_MLP1_USB_GADGET, X_OK) == 0;
@@ -1996,6 +2120,7 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
         out->adb_intent_enabled = jw__mlp1_adb_intent_enabled(ctx) ? 1 : 0;
     }
     out->boot_splash_enabled = jw__mlp1_boot_splash_enabled(ctx) ? 1 : 0;
+    out->refresh_rate_hz = jw__mlp1_get_refresh_hz();
 }
 
 static void jw__mlp1_get_audio_status(jw_platform_context *ctx, jw_platform_status *out) {
@@ -2241,6 +2366,19 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
                                enabled ? "boot splash enabled"
                                        : "boot splash disabled");
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SET_REFRESH_RATE) {
+        int hz = (value >= 90) ? 90 : 60;
+        if (jw__mlp1_set_refresh_rate(hz) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   "refresh rate change failed");
+            return;
+        }
+        jw_log_info("display: refresh rate -> %d Hz", hz);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                               hz >= 90 ? "switching to 90 Hz" : "switching to 60 Hz");
         return;
     }
 
@@ -2516,6 +2654,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .bluetooth = true,
             .adb = true,
             .boot_splash = true,
+            .refresh_rate = true,
             .led = true,
             .performance = true,
         },

@@ -272,6 +272,10 @@ int jw_ipc_get_boot_splash(const char *socket_path, int *out_enabled,
                            bool *out_supported);
 int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
                            char *status, int status_len);
+int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
+                            bool *out_supported);
+int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
+                            char *status, int status_len);
 
 typedef struct {
     bool valid;           /* credentials confirmed by ScreenScraper */

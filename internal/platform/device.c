@@ -109,6 +109,7 @@ static void jw__platform_status_init(jw_platform_status *out) {
     out->adb_enabled = -1;
     out->adb_intent_enabled = -1;
     out->boot_splash_enabled = -1;
+    out->refresh_rate_hz = -1;
 }
 
 void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out) {
@@ -203,6 +204,8 @@ bool jw_platform_parse_action(const char *name, jw_platform_action *out) {
         *out = JW_PLATFORM_ACTION_SET_BOOT_SPLASH;
     } else if (strcmp(name, "play-test-sound") == 0) {
         *out = JW_PLATFORM_ACTION_PLAY_TEST_SOUND;
+    } else if (strcmp(name, "set-refresh-rate") == 0) {
+        *out = JW_PLATFORM_ACTION_SET_REFRESH_RATE;
     } else {
         return false;
     }
@@ -229,6 +232,7 @@ const char *jw_platform_action_name(jw_platform_action action) {
         case JW_PLATFORM_ACTION_DISABLE_ADB: return "disable-adb";
         case JW_PLATFORM_ACTION_SET_BOOT_SPLASH: return "set-boot-splash";
         case JW_PLATFORM_ACTION_PLAY_TEST_SOUND: return "play-test-sound";
+        case JW_PLATFORM_ACTION_SET_REFRESH_RATE: return "set-refresh-rate";
         default: return "unknown";
     }
 }

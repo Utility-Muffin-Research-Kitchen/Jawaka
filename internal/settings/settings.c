@@ -137,6 +137,7 @@ typedef enum {
     JW_SETTING_RA_USER,
     JW_SETTING_RA_PASS,
     JW_SETTING_TAB_GLIDE,
+    JW_SETTING_REFRESH_RATE_HZ,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -177,6 +178,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_RA_USER] = "retroachievements_user",
     [JW_SETTING_RA_PASS] = "retroachievements_pass",
     [JW_SETTING_TAB_GLIDE] = "tab_glide",
+    [JW_SETTING_REFRESH_RATE_HZ] = "refresh_rate_hz",
 };
 
 static const char *const kTabSwitchLabels[] = { "Snap", "Glide" };
@@ -479,6 +481,27 @@ static void jw__refresh_boot_splash(jw_settings_ui *ui) {
         ui->boot_splash_supported = supported;
         if (enabled >= 0) {
             ui->boot_splash_enabled = enabled != 0;
+        }
+    }
+}
+
+static void jw__refresh_refresh_rate(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+    ui->refresh_rate_supported = false;
+    if (!ui->socket_path[0]) {
+        return;
+    }
+
+    int hz = -1;
+    bool supported = false;
+    if (jw_ipc_get_refresh_rate(ui->socket_path, &hz, &supported) == 0) {
+        ui->refresh_rate_supported = supported;
+        /* Reflect the panel's actual current rate when the daemon reports it
+           (truth over the persisted mirror, e.g. after moving the card). */
+        if (hz == 60 || hz == 90) {
+            ui->refresh_rate_hz = hz;
         }
     }
 }
@@ -1013,6 +1036,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
+    ui->refresh_rate_hz   = 60;
+    ui->refresh_rate_supported = false;
     ui->game_perf_profile = JW_GAME_PERF_PROFILE_DEFAULT;
     ui->performance_supported = false;
     ui->brightness_percent = 50;
@@ -1127,6 +1152,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             }
             if (jw__setting_has(values, found, JW_SETTING_BOOT_SPLASH_ENABLED))
                 ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_REFRESH_RATE_HZ)) {
+                int hz = atoi(values[JW_SETTING_REFRESH_RATE_HZ]);
+                if (hz == 60 || hz == 90) ui->refresh_rate_hz = hz;
+            }
             if (jw__setting_has(values, found, JW_SETTING_GAME_PERFORMANCE_PROFILE)) {
                 jw_platform_perf_profile profile;
                 if (jw_platform_parse_perf_profile(
@@ -1654,6 +1683,12 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     int y_base = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
                         ui->brightness_percent);
+    /* Display refresh rate (60/90 Hz). Cycler when the platform supports it. */
+    char refresh_val[16];
+    snprintf(refresh_val, sizeof(refresh_val), "%d Hz", ui->refresh_rate_hz);
+    jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_REFRESH_RATE,
+                          "Refresh Rate", refresh_val,
+                          ui->refresh_rate_supported, jw__display_row_h());
     jw__draw_audio_output_row(ui, x, y_base, w);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
                         ui->volume_percent);
@@ -2452,6 +2487,8 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
         }
     } else if (ui->ss_username[0]) {
         snprintf(ss_value, sizeof(ss_value), "Saved: %s (unverified)", ui->ss_username);
+    } else if (ui->ss_rejected) {
+        snprintf(ss_value, sizeof(ss_value), "Rejected - wrong username or password");
     } else {
         snprintf(ss_value, sizeof(ss_value), "Not signed in");
     }
@@ -3890,6 +3927,30 @@ static void jw__set_boot_splash(jw_settings_ui *ui, bool enabled,
     jw__persist_bool(ui, "boot_splash_enabled", ui->boot_splash_enabled);
 }
 
+static void jw__set_refresh_rate(jw_settings_ui *ui, int hz,
+                                 char *status_buf, size_t status_size) {
+    if (!ui || !status_buf || status_size == 0) {
+        return;
+    }
+
+    if (!ui->refresh_rate_supported) {
+        snprintf(status_buf, status_size, "%s", "refresh rate unavailable on this platform");
+        return;
+    }
+
+    status_buf[0] = '\0';
+    if (jw_ipc_set_refresh_rate(ui->socket_path, hz, status_buf, (int)status_size) != 0 &&
+        !status_buf[0]) {
+        snprintf(status_buf, status_size, "%s", "refresh rate change failed");
+        return;
+    }
+    /* The daemon restarts Weston and respawns this launcher, so re-querying now
+       would read the pre-restart rate; persist the choice optimistically and let
+       the fresh launcher pick up the live rate on its next status poll. */
+    ui->refresh_rate_hz = hz;
+    jw__persist_int(ui, "refresh_rate_hz", hz);
+}
+
 static void jw__safe_unmount_secondary_sd(jw_settings_ui *ui,
                                           char *status_buf, size_t status_size) {
     if (!ui || !status_buf || status_size == 0) {
@@ -3941,6 +4002,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_brightness(ui);
                     jw__refresh_volume(ui);
                     jw__refresh_audio_status(ui);
+                    jw__refresh_refresh_rate(ui);
                 }
                 else if (idx == 3) {
                     ui->screen = JW_SETTINGS_NETWORK;
@@ -4173,6 +4235,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 if (ui->display_list.cursor == JW_DISPLAY_BRIGHTNESS)
                     jw__change_brightness(ui, dir * JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
                                           status_buf, status_size);
+                else if (ui->display_list.cursor == JW_DISPLAY_REFRESH_RATE)
+                    /* Two-value toggle (60/90): left/right/A all flip it. */
+                    jw__set_refresh_rate(ui, ui->refresh_rate_hz >= 90 ? 60 : 90,
+                                         status_buf, status_size);
                 else if (ui->display_list.cursor == JW_DISPLAY_OUTPUT)
                     jw__set_audio_output(ui, jw__next_audio_output(ui, dir),
                                          status_buf, status_size);
@@ -4543,75 +4609,76 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 if (is_ss) {
                     /* ScreenScraper: validate against the API through jawakad
                        (the daemon owns the dev-credential half of API auth).
-                       Rejected credentials reopen the keyboard; an unreachable
-                       daemon/network saves them unverified for the first
-                       scrape to confirm. */
+                       A rejected login is surfaced in the Accounts row itself
+                       (ss_rejected) because the hint-line status is hidden when
+                       hints are off; an unreachable daemon/network saves the
+                       credentials unverified for the first scrape to confirm. */
                     char entered[64];
                     snprintf(entered, sizeof(entered), "%s", ui->ss_username);
-                    const char *retry_hint = NULL;
-                    for (;;) {
-                        char prompt[160];
-                        cat_keyboard_result kb;
-                        snprintf(prompt, sizeof(prompt),
-                                 "%s\nStart: Confirm\nY: Cancel",
-                                 retry_hint ? retry_hint : "ScreenScraper username");
-                        if (cat_keyboard(entered, prompt, CAT_KB_GENERAL, &kb) != CAT_OK ||
-                            !kb.text[0]) {
-                            snprintf(status_buf, status_size, "Cancelled");
-                            break;
-                        }
-                        snprintf(entered, sizeof(entered), "%.*s",
-                                 (int)sizeof(entered) - 1, kb.text);
-                        cat_keyboard_result pw;
-                        snprintf(prompt, sizeof(prompt),
-                                 "ScreenScraper password\nStart: Confirm\nY: Cancel");
-                        if (cat_keyboard("", prompt, CAT_KB_GENERAL, &pw) != CAT_OK ||
-                            !pw.text[0]) {
-                            snprintf(status_buf, status_size, "Cancelled");
-                            break;
-                        }
+                    ui->ss_rejected = false;   /* fresh attempt */
+                    char prompt[160];
+                    cat_keyboard_result kb;
+                    snprintf(prompt, sizeof(prompt),
+                             "ScreenScraper username\nStart: Confirm\nY: Cancel");
+                    if (cat_keyboard(entered, prompt, CAT_KB_GENERAL, &kb) != CAT_OK ||
+                        !kb.text[0]) {
+                        snprintf(status_buf, status_size, "Cancelled");
+                        break;
+                    }
+                    snprintf(entered, sizeof(entered), "%.*s",
+                             (int)sizeof(entered) - 1, kb.text);
+                    cat_keyboard_result pw;
+                    snprintf(prompt, sizeof(prompt),
+                             "ScreenScraper password\nStart: Confirm\nY: Cancel");
+                    if (cat_keyboard("", prompt, CAT_KB_GENERAL, &pw) != CAT_OK ||
+                        !pw.text[0]) {
+                        snprintf(status_buf, status_size, "Cancelled");
+                        break;
+                    }
 
-                        jw_ipc_scrape_validate_info info;
-                        int rc = ui->socket_path[0]
-                            ? jw_ipc_scrape_validate(ui->socket_path, entered,
-                                                     pw.text, &info)
-                            : -1;
-                        if (rc == 0 && info.valid) {
-                            snprintf(ui->ss_username, sizeof(ui->ss_username),
-                                     "%s", entered);
-                            ui->ss_verified = true;
-                            ui->ss_max_threads = info.max_threads;
-                            ui->ss_requests_today = info.requests_today;
-                            ui->ss_max_requests = info.max_requests;
-                            jw__persist(ui, "screenscraper_user", ui->ss_username);
-                            jw__persist(ui, "screenscraper_pass", pw.text);
-                            jw__persist(ui, "screenscraper_verified", "1");
-                            jw__persist_int(ui, "screenscraper_maxthreads",
-                                            info.max_threads);
-                            jw__persist_int(ui, "screenscraper_requests_today",
-                                            info.requests_today);
-                            jw__persist_int(ui, "screenscraper_max_requests",
-                                            info.max_requests);
-                            if (info.max_requests > 0) {
-                                snprintf(status_buf, status_size,
-                                         "Signed in - %d thread%s, quota %d/%d today",
-                                         info.max_threads,
-                                         info.max_threads == 1 ? "" : "s",
-                                         info.requests_today, info.max_requests);
-                            } else {
-                                snprintf(status_buf, status_size, "Signed in as %s",
-                                         ui->ss_username);
-                            }
-                            break;
+                    jw_ipc_scrape_validate_info info;
+                    int rc = ui->socket_path[0]
+                        ? jw_ipc_scrape_validate(ui->socket_path, entered,
+                                                 pw.text, &info)
+                        : -1;
+                    if (rc == 0 && info.valid) {
+                        snprintf(ui->ss_username, sizeof(ui->ss_username),
+                                 "%s", entered);
+                        ui->ss_verified = true;
+                        ui->ss_rejected = false;
+                        ui->ss_max_threads = info.max_threads;
+                        ui->ss_requests_today = info.requests_today;
+                        ui->ss_max_requests = info.max_requests;
+                        jw__persist(ui, "screenscraper_user", ui->ss_username);
+                        jw__persist(ui, "screenscraper_pass", pw.text);
+                        jw__persist(ui, "screenscraper_verified", "1");
+                        jw__persist_int(ui, "screenscraper_maxthreads",
+                                        info.max_threads);
+                        jw__persist_int(ui, "screenscraper_requests_today",
+                                        info.requests_today);
+                        jw__persist_int(ui, "screenscraper_max_requests",
+                                        info.max_requests);
+                        if (info.max_requests > 0) {
+                            snprintf(status_buf, status_size,
+                                     "Signed in - %d thread%s, quota %d/%d today",
+                                     info.max_threads,
+                                     info.max_threads == 1 ? "" : "s",
+                                     info.requests_today, info.max_requests);
+                        } else {
+                            snprintf(status_buf, status_size, "Signed in as %s",
+                                     ui->ss_username);
                         }
-                        if (rc == 0 && info.rejected) {
-                            retry_hint = "Login rejected - check username";
-                            continue;
-                        }
+                    } else if (rc == 0 && info.rejected) {
+                        /* Wrong username/password — shown on the row (see above). */
+                        ui->ss_rejected = true;
+                        snprintf(status_buf, status_size,
+                                 "Rejected - wrong username or password");
+                    } else {
                         /* Daemon or network unavailable: keep them, unverified. */
                         snprintf(ui->ss_username, sizeof(ui->ss_username), "%s",
                                  entered);
                         ui->ss_verified = false;
+                        ui->ss_rejected = false;
                         ui->ss_max_threads = 0;
                         ui->ss_requests_today = 0;
                         ui->ss_max_requests = 0;
@@ -4625,7 +4692,6 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                  "Saved - could not verify: %s",
                                  (rc == 0 && info.message[0]) ? info.message
                                                               : "daemon unavailable");
-                        break;
                     }
                     break;
                 }
@@ -4659,9 +4725,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             }
             case CAT_BTN_Y:
                 if (ui->accounts_list.cursor == JW_ACCOUNTS_SCREENSCRAPER &&
-                    ui->ss_username[0]) {
+                    (ui->ss_username[0] || ui->ss_rejected)) {
                     ui->ss_username[0] = '\0';
                     ui->ss_verified = false;
+                    ui->ss_rejected = false;
                     ui->ss_max_threads = 0;
                     ui->ss_requests_today = 0;
                     ui->ss_max_requests = 0;

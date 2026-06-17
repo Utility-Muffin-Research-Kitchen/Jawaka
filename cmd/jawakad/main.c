@@ -482,6 +482,7 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "bluetooth", cap && cap->bluetooth);
     cJSON_AddBoolToObject(root, "adb", cap && cap->adb);
     cJSON_AddBoolToObject(root, "boot_splash", cap && cap->boot_splash);
+    cJSON_AddBoolToObject(root, "refresh_rate", cap && cap->refresh_rate);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
     cJSON_AddBoolToObject(root, "performance", cap && cap->performance);
     return root;
@@ -534,6 +535,7 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "adb_enabled", status->adb_enabled);
     jw__json_add_int_or_null(root, "adb_intent_enabled", status->adb_intent_enabled);
     jw__json_add_int_or_null(root, "boot_splash_enabled", status->boot_splash_enabled);
+    jw__json_add_int_or_null(root, "refresh_rate_hz", status->refresh_rate_hz);
     return root;
 }
 

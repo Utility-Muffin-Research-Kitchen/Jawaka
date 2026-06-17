@@ -1664,6 +1664,76 @@ int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
     return ok ? 0 : -1;
 }
 
+int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
+                            bool *out_supported) {
+    if (out_hz) {
+        *out_hz = -1;
+    }
+    if (out_supported) {
+        *out_supported = false;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    int rc = -1;
+    const cJSON *capabilities = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
+    const cJSON *rate_cap = cJSON_GetObjectItemCaseSensitive(capabilities, "refresh_rate");
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *hz = cJSON_GetObjectItemCaseSensitive(status, "refresh_rate_hz");
+    if (out_supported) {
+        *out_supported = cJSON_IsTrue(rate_cap);
+    }
+    if (cJSON_IsNumber(hz)) {
+        if (out_hz) {
+            *out_hz = hz->valueint;
+        }
+        rc = 0;
+    } else if (cJSON_IsBool(rate_cap)) {
+        rc = 0;
+    }
+
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
+                            char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-action");
+    cJSON_AddStringToObject(req, "action", "set-refresh-rate");
+    cJSON_AddNumberToObject(req, "value", hz);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "refresh rate failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    bool ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            snprintf(status, (size_t)status_len, "%s",
+                     ok ? (hz >= 90 ? "switching to 90 Hz" : "switching to 60 Hz")
+                        : "refresh rate failed");
+        }
+    }
+
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
 int jw_ipc_scrape_validate(const char *socket_path, const char *username,
                            const char *password,
                            jw_ipc_scrape_validate_info *out) {

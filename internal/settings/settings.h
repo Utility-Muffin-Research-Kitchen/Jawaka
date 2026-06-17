@@ -87,11 +87,12 @@ typedef enum {
 #define JW_STATUSBAR_ROW_COUNT 6
 
 /* Display & Sound page */
-#define JW_DISPLAY_BRIGHTNESS 0
-#define JW_DISPLAY_OUTPUT     1
-#define JW_DISPLAY_VOLUME     2
-#define JW_DISPLAY_TEST_SOUND 3
-#define JW_DISPLAY_ROW_COUNT  4
+#define JW_DISPLAY_BRIGHTNESS   0
+#define JW_DISPLAY_REFRESH_RATE 1
+#define JW_DISPLAY_OUTPUT       2
+#define JW_DISPLAY_VOLUME       3
+#define JW_DISPLAY_TEST_SOUND   4
+#define JW_DISPLAY_ROW_COUNT    5
 
 /* Bluetooth page */
 #define JW_BLUETOOTH_ROW_POWER 0
@@ -177,6 +178,9 @@ typedef struct {
     char               ss_username[64];     /* ScreenScraper account ("" = signed out); password
                                                lives only in the settings DB for the scrape worker */
     bool               ss_verified;         /* credentials confirmed against the API at sign-in */
+    bool               ss_rejected;         /* last sign-in attempt was rejected (wrong user/pass);
+                                               shown in the Accounts row since the hint-line status
+                                               is hidden when hints are off */
     int                ss_max_threads;      /* account thread allowance from validation; 0 unknown */
     int                ss_requests_today;   /* quota snapshot from validation */
     int                ss_max_requests;     /* quota snapshot from validation; 0 unknown */
@@ -204,6 +208,8 @@ typedef struct {
     unsigned           audio_available_outputs;
     int                audio_volumes[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
     bool               test_sound_playing;  /* Display&Sound: Test Sound clip active */
+    int                refresh_rate_hz;     /* display refresh: 60 or 90 */
+    bool               refresh_rate_supported; /* platform offers refresh-rate switching */
     bool               led_enabled;
     int                led_mode;            /* jw_led_mode */
     ap_color           led_color;
