@@ -201,6 +201,8 @@ bool jw_platform_parse_action(const char *name, jw_platform_action *out) {
         *out = JW_PLATFORM_ACTION_DISABLE_ADB;
     } else if (strcmp(name, "set-boot-splash") == 0) {
         *out = JW_PLATFORM_ACTION_SET_BOOT_SPLASH;
+    } else if (strcmp(name, "play-test-sound") == 0) {
+        *out = JW_PLATFORM_ACTION_PLAY_TEST_SOUND;
     } else {
         return false;
     }
@@ -226,6 +228,7 @@ const char *jw_platform_action_name(jw_platform_action action) {
         case JW_PLATFORM_ACTION_ENABLE_ADB: return "enable-adb";
         case JW_PLATFORM_ACTION_DISABLE_ADB: return "disable-adb";
         case JW_PLATFORM_ACTION_SET_BOOT_SPLASH: return "set-boot-splash";
+        case JW_PLATFORM_ACTION_PLAY_TEST_SOUND: return "play-test-sound";
         default: return "unknown";
     }
 }

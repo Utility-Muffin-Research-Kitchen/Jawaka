@@ -148,6 +148,7 @@ static bool s_loong_loaded;
 
 static jw_platform_audio_output jw__mlp1_get_audio_output(void);
 static unsigned jw__mlp1_get_audio_available_outputs(void);
+static bool jw__mlp1_test_sound_active(void);
 static void jw__mlp1_get_audio_volumes(int out[JW_PLATFORM_AUDIO_OUTPUT_COUNT]);
 static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
                                      jw_platform_result *out);
@@ -1850,34 +1851,84 @@ static int jw__mlp1_jack_input_state(void) {
    nudge. Re-applying the matching output runs ENSURE_DAC_FLOOR (un-mute) and sets
    the path — doing automatically what the volume press did by hand. Acts only on
    an edge; the steady-state cost is one cheap ioctl per tick. */
+/* Cheap "is a Bluetooth audio sink connected" probe: bluealsa publishes an ALSA
+   mixer control per connected A2DP/SCO device, so this is a LOCAL query to the
+   bluealsa daemon (~30ms, one amixer fork) — no bluetoothctl, no radio paging,
+   so it is safe to poll, unlike the Wi-Fi/BT-coexistence-killing bluetoothctl
+   polling. Controllers create no bluealsa control, so this only trips for audio. */
+static bool jw__mlp1_bt_audio_present(void) {
+    char ctl[160];
+    return jw__mlp1_bluealsa_control(ctl, sizeof(ctl));
+}
+
 static void jw__mlp1_audio_tick(jw_platform_context *ctx) {
     (void)ctx;
-    static int last_present = -1;
-    int present = jw__mlp1_jack_input_state();
-    if (present < 0 || present == last_present) {
-        return;
-    }
-    last_present = present;
-    jw_platform_result res;
-    jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
-    /* On unplug, fall back to Bluetooth if a headset is still connected, not
+    /* Reap the test-clip player if it finished on its own (keeps it from
+       lingering as a zombie and keeps the play/stop state accurate). */
+    (void)jw__mlp1_test_sound_active();
+
+    /* ── Headphone-jack edge (cheap kernel switch, checked every loop). ──
+       On unplug, fall back to Bluetooth if a headset is still connected, not
        always the speaker — otherwise removing wired headphones strands audio on
        the speaker even though the BT headset is live (and leaves the codec path
        off bluealsa, so BT stays silent in games/apps until the headset
        reconnects). */
-    jw_platform_audio_output target;
-    if (present) {
-        target = JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
-    } else if (jw_bt_audio_connected() == 1) {
-        target = JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
-    } else {
-        target = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    static int last_present = -1;
+    int present = jw__mlp1_jack_input_state();
+    if (present >= 0 && present != last_present) {
+        last_present = present;
+        jw_platform_result res;
+        jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
+        jw_platform_audio_output target;
+        if (present) {
+            target = JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
+        } else if (jw_bt_audio_connected() == 1) {
+            target = JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
+        } else {
+            target = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+        }
+        jw__mlp1_set_audio_output(target, &res);
+        jw_log_info("audio: headphone jack %s, routed to %s",
+                    present ? "inserted" : "removed",
+                    target == JW_PLATFORM_AUDIO_OUTPUT_HEADSET   ? "headset" :
+                    target == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH ? "bluetooth" : "speaker");
     }
-    jw__mlp1_set_audio_output(target, &res);
-    jw_log_info("audio: headphone jack %s, routed to %s",
-                present ? "inserted" : "removed",
-                target == JW_PLATFORM_AUDIO_OUTPUT_HEADSET   ? "headset" :
-                target == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH ? "bluetooth" : "speaker");
+
+    /* ── Bluetooth audio connect/disconnect edge (throttled). ──
+       Auto-routes a headset that (dis)connects OUTSIDE the Bluetooth settings
+       page — auto-reconnect, powering the headset on/off, dropping out of range.
+       On connect we only take over from the speaker (a plugged-in wired headset
+       or HDMI wins); on disconnect we leave Bluetooth for the jack or speaker. */
+    static long long bt_next_ms = 0;
+    static int last_bt = -1;
+    long long now = jw__monotonic_ms();
+    if (now >= bt_next_ms) {
+        bt_next_ms = now + 1500;
+        int bt = jw__mlp1_bt_audio_present() ? 1 : 0;
+        if (bt != last_bt) {
+            int prev = last_bt;
+            last_bt = bt;
+            if (prev >= 0) {   /* skip the first sample; boot routing is the jack tick's job */
+                jw_platform_audio_output cur = jw__mlp1_get_audio_output();
+                jw_platform_result res;
+                jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
+                if (bt) {
+                    if (cur == JW_PLATFORM_AUDIO_OUTPUT_SPEAKER) {
+                        jw__mlp1_set_audio_output(JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH, &res);
+                        jw_log_info("audio: bluetooth connected, routed to bluetooth");
+                    }
+                } else if (cur == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
+                    jw_platform_audio_output fb =
+                        jw__mlp1_headphone_jack_present()
+                            ? JW_PLATFORM_AUDIO_OUTPUT_HEADSET
+                            : JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+                    jw__mlp1_set_audio_output(fb, &res);
+                    jw_log_info("audio: bluetooth disconnected, routed to %s",
+                                fb == JW_PLATFORM_AUDIO_OUTPUT_HEADSET ? "headset" : "speaker");
+                }
+            }
+        }
+    }
 }
 
 static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
@@ -1960,6 +2011,7 @@ static void jw__mlp1_get_audio_status(jw_platform_context *ctx, jw_platform_stat
         out->volume_percent >= 0) {
         out->audio_volume_percent[out->audio_output] = out->volume_percent;
     }
+    out->audio_test_playing = jw__mlp1_test_sound_active() ? 1 : 0;
 }
 
 static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
@@ -1997,8 +2049,85 @@ static void jw__mlp1_frontend_ready(jw_platform_context *ctx, const char *role,
     jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "home ready sent");
 }
 
+/* The test-clip player, tracked so it can be stopped (and reaped). -1 = idle. */
+static pid_t g_test_sound_pid = -1;
+
+/* True while the test clip is still playing; reaps the player if it has finished
+   so it never lingers as a zombie. Cheap (one WNOHANG waitpid). */
+static bool jw__mlp1_test_sound_active(void) {
+    if (g_test_sound_pid <= 0) {
+        return false;
+    }
+    if (waitpid(g_test_sound_pid, NULL, WNOHANG) == 0) {
+        return true;            /* still running */
+    }
+    g_test_sound_pid = -1;      /* exited (or already gone) */
+    return false;
+}
+
+/* Toggle the bundled "Leaf" test clip on whatever the current audio output is,
+   so the user (and we) can verify sound on this device. A second press stops it.
+   Speaker/headset/HDMI play through PulseAudio (paplay -> the default sink the
+   codec is routed to); Bluetooth goes straight to the BlueALSA A2DP pcm (it is
+   not a Pulse sink), via the `plug` wrapper so the clip's rate/format/channels
+   are converted to the A2DP link. The player is a tracked child so a second tap
+   can SIGTERM it; the daemon never blocks on playback. */
+static void jw__mlp1_play_test_sound(jw_platform_result *out) {
+    if (jw__mlp1_test_sound_active()) {
+        kill(g_test_sound_pid, SIGTERM);
+        waitpid(g_test_sound_pid, NULL, 0);
+        g_test_sound_pid = -1;
+        jw_log_info("audio: test sound stopped");
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "test sound stopped");
+        return;
+    }
+
+    const char *base = getenv("UMRK_LAUNCHER_PATH");
+    char wav[PATH_MAX];
+    if (base && base[0]) {
+        snprintf(wav, sizeof(wav), "%s/res/sounds/leaf-test.wav", base);
+    } else {
+        snprintf(wav, sizeof(wav),
+                 "/mnt/sdcard/.system/leaf/platforms/mlp1/launcher/res/sounds/leaf-test.wav");
+    }
+    if (access(wav, R_OK) != 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "test sound file missing");
+        return;
+    }
+
+    bool bt = (jw__mlp1_get_audio_output() == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH);
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "test sound spawn failed");
+        return;
+    }
+    if (pid == 0) {
+        /* Silence the player's chatter; exec it directly (no shell) so this pid
+           IS the player and SIGTERM stops it. */
+        int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        if (bt) {
+            execlp("aplay", "aplay", "-q", "-D", "plug:bluealsa", wav, (char *)NULL);
+        } else {
+            execlp("paplay", "paplay", wav, (char *)NULL);
+        }
+        _exit(127);
+    }
+    g_test_sound_pid = pid;
+    jw_log_info("audio: playing test sound (%s) pid=%d", bt ? "bluealsa" : "pulse", (int)pid);
+    jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "playing test sound");
+}
+
 static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                     int value, jw_platform_result *out) {
+    if (action == JW_PLATFORM_ACTION_PLAY_TEST_SOUND) {
+        jw__mlp1_play_test_sound(out);
+        return;
+    }
+
     if (action == JW_PLATFORM_ACTION_POWEROFF) {
         jw_log_info("platform: poweroff requested");
         if (jw__mlp1_power_transition_async(RB_POWER_OFF) != 0) {

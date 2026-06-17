@@ -908,6 +908,7 @@ static void ipc__audio_status_init(jw_ipc_audio_status *out_status) {
     for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
         out_status->volume_percent[i] = -1;
     }
+    out_status->test_playing = 0;
 }
 
 int jw_ipc_platform_audio_status(const char *socket_path,
@@ -959,6 +960,12 @@ int jw_ipc_platform_audio_status(const char *socket_path,
                     out_status->volume_percent[i] = percent;
                 }
             }
+        }
+
+        const cJSON *test_playing = cJSON_GetObjectItemCaseSensitive(status,
+                                                                     "audio_test_playing");
+        if (cJSON_IsNumber(test_playing)) {
+            out_status->test_playing = test_playing->valueint ? 1 : 0;
         }
 
         rc = 0;

@@ -90,7 +90,8 @@ typedef enum {
 #define JW_DISPLAY_BRIGHTNESS 0
 #define JW_DISPLAY_OUTPUT     1
 #define JW_DISPLAY_VOLUME     2
-#define JW_DISPLAY_ROW_COUNT  3
+#define JW_DISPLAY_TEST_SOUND 3
+#define JW_DISPLAY_ROW_COUNT  4
 
 /* Bluetooth page */
 #define JW_BLUETOOTH_ROW_POWER 0
@@ -202,6 +203,7 @@ typedef struct {
     jw_platform_audio_output audio_output;
     unsigned           audio_available_outputs;
     int                audio_volumes[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
+    bool               test_sound_playing;  /* Display&Sound: Test Sound clip active */
     bool               led_enabled;
     int                led_mode;            /* jw_led_mode */
     ap_color           led_color;

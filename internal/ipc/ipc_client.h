@@ -27,6 +27,7 @@ typedef struct {
     jw_platform_audio_output output;
     unsigned available_outputs;
     int volume_percent[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
+    int test_playing;          /* 1 while the Test Sound clip is playing, else 0 */
 } jw_ipc_audio_status;
 
 typedef struct {

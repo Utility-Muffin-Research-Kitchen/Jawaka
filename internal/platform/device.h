@@ -90,6 +90,7 @@ typedef struct {
     jw_platform_audio_output audio_output;
     unsigned audio_available_outputs;  /* bitmask of JW_PLATFORM_AUDIO_OUTPUT_BIT(output) */
     int audio_volume_percent[JW_PLATFORM_AUDIO_OUTPUT_COUNT]; /* -1 when unknown */
+    int audio_test_playing;    /* 1 while the Test Sound clip is playing, else 0 */
     int wifi_connected;        /* -1 unknown, 0 no, 1 yes */
     int wifi_strength;         /* -1 unknown, 0 off/disconnected, 1..3 strength */
     int bluetooth_connected;   /* -1 unknown, 0 no, 1 yes */
@@ -169,7 +170,8 @@ typedef enum {
     JW_PLATFORM_ACTION_SCREEN_ON,    /* unblank the backlight */
     JW_PLATFORM_ACTION_ENABLE_ADB,
     JW_PLATFORM_ACTION_DISABLE_ADB,
-    JW_PLATFORM_ACTION_SET_BOOT_SPLASH
+    JW_PLATFORM_ACTION_SET_BOOT_SPLASH,
+    JW_PLATFORM_ACTION_PLAY_TEST_SOUND  /* play a short clip on the current audio output */
 } jw_platform_action;
 
 typedef enum {

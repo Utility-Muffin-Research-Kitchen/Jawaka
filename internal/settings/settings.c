@@ -391,6 +391,7 @@ static void jw__refresh_audio_status(jw_settings_ui *ui) {
 
     ui->audio_output = status.output;
     ui->audio_available_outputs = status.available_outputs;
+    ui->test_sound_playing = (status.test_playing != 0);
     for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
         ui->audio_volumes[i] = status.volume_percent[i];
     }
@@ -1656,6 +1657,11 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     jw__draw_audio_output_row(ui, x, y_base, w);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
                         ui->volume_percent);
+    /* Action row: toggles a short clip on the current output so the user can
+       verify sound (and which device it lands on). Shows Stop while playing. */
+    jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_TEST_SOUND,
+                          "Test Sound", ui->test_sound_playing ? "Stop" : "Play",
+                          false, jw__display_row_h());
 }
 
 static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, int h) {
@@ -4173,6 +4179,18 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 else if (ui->display_list.cursor == JW_DISPLAY_VOLUME)
                     jw__change_volume(ui, dir * JW_PLATFORM_VOLUME_STEP_PERCENT,
                                       status_buf, status_size);
+                else if (ui->display_list.cursor == JW_DISPLAY_TEST_SOUND &&
+                         button == CAT_BTN_A) {
+                    /* Toggle: the daemon plays the clip on the current output, or
+                       stops it if already playing (left/right do nothing here).
+                       Reflect the action from the last-known state; the 300ms
+                       av-poll then syncs the Play/Stop label. */
+                    bool was_playing = ui->test_sound_playing;
+                    jw_ipc_platform_action(ui->socket_path, "play-test-sound", 0);
+                    ui->test_sound_playing = !was_playing;
+                    snprintf(status_buf, status_size, "%s",
+                             was_playing ? "Stopped test sound" : "Playing test sound…");
+                }
                 break;
             }
             case CAT_BTN_B:

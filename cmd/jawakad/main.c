@@ -527,6 +527,7 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
         }
         cJSON_AddItemToObject(root, "audio_volumes", audio_volumes);
     }
+    cJSON_AddNumberToObject(root, "audio_test_playing", status->audio_test_playing);
     jw__json_add_int_or_null(root, "wifi_connected", status->wifi_connected);
     jw__json_add_int_or_null(root, "wifi_strength", status->wifi_strength);
     jw__json_add_int_or_null(root, "bluetooth_connected", status->bluetooth_connected);
