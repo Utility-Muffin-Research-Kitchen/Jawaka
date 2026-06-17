@@ -1049,10 +1049,16 @@ static int jw__mlp1_set_boot_splash(jw_platform_context *ctx, bool enabled) {
    so no boot hook is needed — Weston reads it at S49 every boot. */
 #define JW_MLP1_WESTON_STOCK_INI    "/etc/xdg/weston/weston.ini"
 #define JW_MLP1_WESTON_OVERRIDE_INI "/userdata/root/.config/weston.ini"
-/* Stock 720x960 panel timing taken to 90 Hz: clock(MHz) hdisp hss hse htot
-   vdisp vss vse vtot, -hsync -vsync to match the panel's stock mode flags. */
-#define JW_MLP1_WESTON_MODE_90 \
-    "mode=70.46 720 735 749 769 960 990 998 1018 -hsync -vsync\n"
+/* Stock 720x960 panel timing held constant; only the pixel clock scales with
+   the target rate. htotal*vtotal = 769*1018 = 782842 px/frame, so the dot clock
+   (MHz) = 782842 * hz / 1e6 (90->70.46, 120->93.94). -hsync -vsync matches the
+   panel's stock mode flags. Driver+panel verified clean to 120 Hz on the MLP1. */
+#define JW_MLP1_PANEL_PX_PER_FRAME 782842.0
+static void jw__mlp1_weston_mode_line(int hz, char *buf, size_t n) {
+    double clk = (JW_MLP1_PANEL_PX_PER_FRAME * (double)hz) / 1.0e6;
+    snprintf(buf, n,
+             "mode=%.2f 720 735 749 769 960 990 998 1018 -hsync -vsync\n", clk);
+}
 
 static int jw__mlp1_get_refresh_hz(void) {
     FILE *fp = fopen("/sys/kernel/debug/dri/0/summary", "r");
@@ -1078,9 +1084,10 @@ static int jw__mlp1_get_refresh_hz(void) {
 
 /* Build the override from the stock config: copy it verbatim, drop any
    pre-existing `mode=` line (so re-toggling never duplicates), and append the
-   90 Hz modeline. [output] is the stock file's last section, so EOF == inside
-   it. Written via a temp + rename so a partial write never breaks the boot. */
-static int jw__mlp1_write_weston_override_90(void) {
+   modeline for the target rate. [output] is the stock file's last section, so
+   EOF == inside it. Written via a temp + rename so a partial write never breaks
+   the boot. */
+static int jw__mlp1_write_weston_override(int hz) {
     FILE *in = fopen(JW_MLP1_WESTON_STOCK_INI, "r");
     if (!in) {
         return -1;
@@ -1111,7 +1118,9 @@ static int jw__mlp1_write_weston_override_90(void) {
             break;
         }
     }
-    if (ok && fputs(JW_MLP1_WESTON_MODE_90, out) < 0) {
+    char mode_line[96];
+    jw__mlp1_weston_mode_line(hz, mode_line, sizeof(mode_line));
+    if (ok && fputs(mode_line, out) < 0) {
         ok = 0;
     }
     fclose(in);
@@ -1130,8 +1139,8 @@ static int jw__mlp1_write_weston_override_90(void) {
 }
 
 static int jw__mlp1_set_refresh_rate(int hz) {
-    if (hz >= 90) {
-        if (jw__mlp1_write_weston_override_90() != 0) {
+    if (hz > 60) {
+        if (jw__mlp1_write_weston_override(hz) != 0) {
             return -1;
         }
     } else {
@@ -2370,15 +2379,19 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
     }
 
     if (action == JW_PLATFORM_ACTION_SET_REFRESH_RATE) {
-        int hz = (value >= 90) ? 90 : 60;
+        /* Clamp to the panel's verified range; <=60 removes the override. */
+        int hz = value;
+        if (hz < 60) hz = 60;
+        if (hz > 120) hz = 120;
         if (jw__mlp1_set_refresh_rate(hz) != 0) {
             jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
                                    "refresh rate change failed");
             return;
         }
         jw_log_info("display: refresh rate -> %d Hz", hz);
-        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
-                               hz >= 90 ? "switching to 90 Hz" : "switching to 60 Hz");
+        char msg[32];
+        snprintf(msg, sizeof(msg), "switching to %d Hz", hz);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }
 

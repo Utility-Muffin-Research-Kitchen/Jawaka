@@ -500,7 +500,7 @@ static void jw__refresh_refresh_rate(jw_settings_ui *ui) {
         ui->refresh_rate_supported = supported;
         /* Reflect the panel's actual current rate when the daemon reports it
            (truth over the persisted mirror, e.g. after moving the card). */
-        if (hz == 60 || hz == 90) {
+        if (hz == 60 || hz == 90 || hz == 120) {
             ui->refresh_rate_hz = hz;
         }
     }
@@ -1154,7 +1154,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_REFRESH_RATE_HZ)) {
                 int hz = atoi(values[JW_SETTING_REFRESH_RATE_HZ]);
-                if (hz == 60 || hz == 90) ui->refresh_rate_hz = hz;
+                if (hz == 60 || hz == 90 || hz == 120) ui->refresh_rate_hz = hz;
             }
             if (jw__setting_has(values, found, JW_SETTING_GAME_PERFORMANCE_PROFILE)) {
                 jw_platform_perf_profile profile;
@@ -4235,10 +4235,17 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 if (ui->display_list.cursor == JW_DISPLAY_BRIGHTNESS)
                     jw__change_brightness(ui, dir * JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
                                           status_buf, status_size);
-                else if (ui->display_list.cursor == JW_DISPLAY_REFRESH_RATE)
-                    /* Two-value toggle (60/90): left/right/A all flip it. */
-                    jw__set_refresh_rate(ui, ui->refresh_rate_hz >= 90 ? 60 : 90,
-                                         status_buf, status_size);
+                else if (ui->display_list.cursor == JW_DISPLAY_REFRESH_RATE) {
+                    /* Cycle 60 -> 90 -> 120 (left/right step, A advances). */
+                    static const int rates[] = {60, 90, 120};
+                    int n = (int)(sizeof(rates) / sizeof(rates[0]));
+                    int cur = 0;
+                    for (int i = 0; i < n; i++) {
+                        if (rates[i] == ui->refresh_rate_hz) { cur = i; break; }
+                    }
+                    int next = (cur + dir + n) % n;
+                    jw__set_refresh_rate(ui, rates[next], status_buf, status_size);
+                }
                 else if (ui->display_list.cursor == JW_DISPLAY_OUTPUT)
                     jw__set_audio_output(ui, jw__next_audio_output(ui, dir),
                                          status_buf, status_size);
