@@ -3849,6 +3849,84 @@ static void jw__open_apps(jw_launcher_state *state) {
     }
 }
 
+/* ─── Navigation resume (breadcrumb) ─────────────────────────────────────────
+   Launching a game or app exits the launcher; jawakad respawns it when the game
+   returns, which would otherwise drop you at the top of the Startup Tab. So the
+   current position is stashed in /tmp right before launching and restored on the
+   next start. /tmp is deliberate: it survives the game round-trip but clears on
+   reboot, so a cold boot still honors the Startup Tab setting. */
+#define JW_RESUME_PATH "/tmp/jawaka-launcher-resume"
+
+typedef struct {
+    int  tab;
+    int  list_cursor;   /* every tabbed tab list navigates state->list */
+    int  games_open;
+    int  games_fav;
+    int  game_cursor;
+    char game_system[64];
+} jw_resume;
+
+static void jw__save_resume(const jw_launcher_state *state) {
+    FILE *fp = fopen(JW_RESUME_PATH, "w");
+    if (!fp) return;
+    fprintf(fp, "tab=%d\n", (int)state->current_tab);
+    fprintf(fp, "list_cursor=%d\n", state->list.cursor);
+    fprintf(fp, "games_open=%d\n", state->games_open ? 1 : 0);
+    fprintf(fp, "games_fav=%d\n", state->games_are_favorites ? 1 : 0);
+    fprintf(fp, "game_cursor=%d\n", state->game_list.cursor);
+    fprintf(fp, "game_system=%s\n", state->game_system);
+    fclose(fp);
+}
+
+/* Load and consume (delete) the resume breadcrumb. True if one was present. */
+static bool jw__load_resume(jw_resume *out) {
+    FILE *fp = fopen(JW_RESUME_PATH, "r");
+    if (!fp) return false;
+    memset(out, 0, sizeof(*out));
+    out->tab = -1;
+    char line[160];
+    while (fgets(line, sizeof(line), fp)) {
+        int v;
+        if (sscanf(line, "tab=%d", &v) == 1) out->tab = v;
+        else if (sscanf(line, "list_cursor=%d", &v) == 1) out->list_cursor = v;
+        else if (sscanf(line, "games_open=%d", &v) == 1) out->games_open = v;
+        else if (sscanf(line, "games_fav=%d", &v) == 1) out->games_fav = v;
+        else if (sscanf(line, "game_cursor=%d", &v) == 1) out->game_cursor = v;
+        else if (strncmp(line, "game_system=", 12) == 0) {
+            snprintf(out->game_system, sizeof(out->game_system), "%s", line + 12);
+            out->game_system[strcspn(out->game_system, "\r\n")] = '\0';
+        }
+    }
+    fclose(fp);
+    remove(JW_RESUME_PATH);
+    return out->tab >= 0;
+}
+
+/* Restore the drilled-in game browser + cursors from a loaded breadcrumb. Call
+   AFTER jw__rebuild_for_layout (which re-inits state->list to cursor 0), and after
+   the library + tab contents are loaded. cat_list_state_jump clamps the target, so
+   stale indices (a removed game) just land on the nearest row. */
+static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
+                             const jw_resume *r) {
+    if (r->games_open) {
+        bool recents = (strcmp(r->game_system, "Recently Played") == 0);
+        int rc;
+        if (r->games_fav)   rc = jw__open_favorites(db_path, state);
+        else if (recents)   rc = jw__open_recents(db_path, state);
+        else                rc = jw__open_system_games(db_path, r->game_system, state);
+        if (rc == 0 && state->game_count > 0)
+            /* Recents reorders the just-played game to the top -> land on row 0. */
+            cat_list_state_jump(&state->game_list, recents ? 0 : r->game_cursor,
+                                state->game_count);
+    }
+    /* Every tabbed tab list (Recents/Favorites/Games systems/Apps) navigates
+       state->list. Recents reorders the just-played game to the top -> land on 0. */
+    int count = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED)
+                    ? jw__tab_list_count(state) : state->flat_count;
+    int target = (state->current_tab == JW_TAB_RECENTS) ? 0 : r->list_cursor;
+    cat_list_state_jump(&state->list, target, count);
+}
+
 static int jw__launch_app_request(const char *socket_path, const char *name,
                                   const char *pak_dir, jw_launcher_state *state,
                                   bool *running) {
@@ -3865,6 +3943,7 @@ static int jw__launch_app_request(const char *socket_path, const char *name,
         return -1;
     }
 
+    jw__save_resume(state);
     cat_hide_window();
     *running = false;
     return 0;
@@ -3909,6 +3988,7 @@ static int jw__launch_game_entry_with_mode(const char *socket_path,
         return -1;
     }
 
+    jw__save_resume(state);
     cat_hide_window();
     *running = false;
     return 0;
@@ -3956,6 +4036,7 @@ static int jw__launch_selected_search_result(const char *socket_path,
         return -1;
     }
 
+    jw__save_resume(state);
     cat_hide_window();
     *running = false;
     return 0;
@@ -4955,10 +5036,15 @@ int main(void) {
     jw_launcher_state state;
     memset(&state, 0, sizeof(state));
     state.library_generation = -1;
-    /* Honor the persisted startup tab (Settings > Behavior > Startup Tab);
-       default Games. Index mirrors the jw_tab enum. */
+    /* A resume breadcrumb (left by the last game/app launch, cleared on reboot)
+       restores the exact position; otherwise honor the persisted Startup Tab
+       (Settings > Behavior > Startup Tab), default Games. Index mirrors jw_tab. */
+    jw_resume resume;
+    bool have_resume = jw__load_resume(&resume);
     state.current_tab = JW_TAB_GAMES;
-    {
+    if (have_resume && resume.tab >= 0 && resume.tab < JW_TAB_COUNT) {
+        state.current_tab = (jw_tab)resume.tab;
+    } else {
         char startup_buf[16];
         if (jw_db_get_setting(db_path, "startup_tab_index", startup_buf,
                               sizeof(startup_buf)) == 0 && startup_buf[0]) {
@@ -5004,6 +5090,11 @@ int main(void) {
     }
 
     jw__rebuild_for_layout(&state);
+
+    /* Restore the drilled-in browser + cursors from the resume breadcrumb. Must run
+       AFTER jw__rebuild_for_layout, which re-inits state->list to cursor 0. */
+    if (have_resume)
+        jw__apply_resume(db_path, &state, &resume);
 
     jw_autodemo demo;
     jw_autodemo_init(&demo);
