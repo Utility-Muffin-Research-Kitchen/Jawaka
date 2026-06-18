@@ -378,14 +378,16 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     }
 
     if (getenv("SYSTEM_PATH")) {
-        jw__setenvf_default("USERDATA_PATH", "%s/userdata",
-                            getenv("SYSTEM_PATH"));
-        jw__setenvf_default("UMRK_INTERNAL_DATA_PATH", "%s/state",
-                            getenv("SYSTEM_PATH"));
         jw__setenvf_default("UMRK_MARKER_PATH", "%s/enabled",
                             getenv("SYSTEM_PATH"));
     }
-    jw__setenvf_default("SHARED_USERDATA_PATH", "%s/.system/leaf/shared/userdata",
+    /* Durable data lives at the SD root, split by ownership, not under the
+       release-managed .system payload (matches device/umrk-env.sh). */
+    jw__setenvf_default("USERDATA_PATH", "%s/.userdata/%s",
+                        state->sdcard_root, platform);
+    jw__setenvf_default("UMRK_INTERNAL_DATA_PATH", "%s/.umrk/%s",
+                        state->sdcard_root, platform);
+    jw__setenvf_default("SHARED_USERDATA_PATH", "%s/.userdata/shared",
                         state->sdcard_root);
     if (getenv("USERDATA_PATH")) {
         jw__setenvf_default("LOGS_PATH", "%s/logs", getenv("USERDATA_PATH"));

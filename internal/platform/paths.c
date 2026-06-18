@@ -215,6 +215,20 @@ static bool jw__format_default_system_child(char *out, size_t out_size,
     return jw__format_string(out, out_size, "%s/%s", system_path, child);
 }
 
+/* Internal launcher state (library.db, release.json, wifi.conf, RetroArch
+   config) lives under the SD root's .umrk/<platform> — separate from the
+   release-managed system content under .system. Used only as the fallback when
+   UMRK_INTERNAL_DATA_PATH is unset (native dev / tests); on device the session
+   exports the real path. */
+static bool jw__format_default_internal_data(char *out, size_t out_size,
+                                             const char *sdcard_root) {
+    if (!out || out_size == 0 || !sdcard_root || !sdcard_root[0]) {
+        return false;
+    }
+    return jw__format_string(out, out_size, "%s/.umrk/%s",
+                             sdcard_root, jw_platform_compiled_id());
+}
+
 static char *jw__dup_env_value(const char *env_name) {
     const char *env = jw__env_value(env_name);
     return env ? jw__dup_realpath_or_literal(env) : NULL;
@@ -679,8 +693,8 @@ char *jw_state_dir(void) {
     }
 
     char state_path[PATH_MAX];
-    if (!jw__format_default_system_child(state_path, sizeof(state_path),
-                                         sdcard_root, "state")) {
+    if (!jw__format_default_internal_data(state_path, sizeof(state_path),
+                                          sdcard_root)) {
         free(sdcard_root);
         return NULL;
     }
@@ -767,8 +781,8 @@ char *jw_retroarch_state_dir(const char *sdcard_root) {
         if (!jw__format_string(state_root, sizeof(state_root), "%s", internal)) {
             return NULL;
         }
-    } else if (!jw__format_default_system_child(state_root, sizeof(state_root),
-                                                sdroot_abs, "state")) {
+    } else if (!jw__format_default_internal_data(state_root, sizeof(state_root),
+                                                 sdroot_abs)) {
         return NULL;
     }
     if (jw__mkdir_if_needed(state_root, 0755) != 0) {
