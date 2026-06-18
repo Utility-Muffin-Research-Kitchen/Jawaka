@@ -82,6 +82,16 @@ static const jw__platform_entry jw__platforms[] = {
     {"PICO8",              234},  /* == PICO / P8 */
     {"MAME2003",           75},   /* == MAME / ARCADE */
     {"MAME2010",           75},
+
+    /* Systems with no prior table entry; ids verified against ScreenScraper's
+       systemesListe (PC Engine CD-Rom 114, Bandai WonderSwan 45 / Color 46,
+       GCE Vectrex 102, Game & Watch 52, MS-Dos 135). */
+    {"PCECD",              114},
+    {"WS",                 45},
+    {"WSC",                46},
+    {"VECTREX",            102},
+    {"GW",                 52},
+    {"DOS",                135},
 };
 
 int jw_scrape_platform_id(const char *system_tag) {
