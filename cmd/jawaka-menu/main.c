@@ -5,6 +5,7 @@
 
 #include "internal/core/autodemo.h"
 #include "internal/core/log.h"
+#include "internal/core/title.h"
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/game_switcher.h"
@@ -525,6 +526,8 @@ static void jw__ingame_resolve_titles(jw_ingame_state *state) {
                          state->game_title, sizeof(state->game_title));
         jw_db_close(db);
     }
+
+    jw_clean_rom_title(state->game_title);   /* drop (U)/[!]/(En,Fr) filename tags */
 
     snprintf(state->console_title, sizeof(state->console_title), "%s",
              state->session.system[0] ? state->session.system : "");
@@ -1075,6 +1078,20 @@ static void jw__ingame_free_imagery(jw_ingame_state *state) {
     state->thumb_slot = INT_MIN;
 }
 
+/* Readability underlay for the in-game menu: a panel in the theme's own
+   background colour behind the list, so theme->text keeps the launcher's
+   guaranteed contrast over the paused game frame for every colour scheme —
+   including light ones whose text is dark and would otherwise wash out against
+   the dimmed still. Slightly transparent so a hint of the game still reads. */
+#define JW_INGAME_UNDERLAY_ALPHA 200   /* slightly transparent; game still reads through */
+static void jw__draw_ingame_underlay(SDL_Rect content, int top, int bottom) {
+    if (bottom <= top) return;
+    ap_color panel = cat_get_theme()->background;
+    panel.a = JW_INGAME_UNDERLAY_ALPHA;
+    cat_draw_rounded_rect(content.x + CAT_S(8), top,
+                          content.w - CAT_S(16), bottom - top, CAT_S(14), panel);
+}
+
 static void jw__render_ingame_menu(const jw_ingame_state *state) {
     ap_theme *theme     = cat_get_theme();
     TTF_Font *body_font = cat_get_font(CAT_FONT_MEDIUM);
@@ -1094,9 +1111,10 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
         ap_color scrim = { 0, 0, 0, 150 };
         cat_draw_rect(0, 0, sw, sh, scrim);
     }
+    SDL_Rect content = cat_get_content_rect(true, true, false);
+    jw__draw_ingame_underlay(content, CAT_S(4), content.y - CAT_S(4));   /* behind the title */
     cat_draw_screen_title(state->game_title[0] ? state->game_title : "Game", &sb);
 
-    SDL_Rect content = cat_get_content_rect(true, true, false);
     int pad       = CAT_S(24);
     int x         = content.x + pad;
     int right     = content.x + content.w - pad;
@@ -1134,6 +1152,8 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
         pill_h = body_h + CAT_S(2);
     }
     int pill_w = list_w;
+
+    jw__draw_ingame_underlay(content, content.y + CAT_S(4), bottom_y);
 
     const char *session_line = state->console_title[0]
                              ? state->console_title
@@ -1245,6 +1265,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     }
 
     if (state->show_hints) {
+        cat_set_footer_bg_opacity(JW_INGAME_UNDERLAY_ALPHA);   /* match the underlay panels */
         if (on_latest) {
             cat_footer_item footer[] = {
                 { CAT_BTN_LEFT, "Browse", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
@@ -1386,9 +1407,10 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
         ap_color scrim = { 0, 0, 0, 165 };
         cat_draw_rect(0, 0, sw, sh, scrim);
     }
+    SDL_Rect content = cat_get_content_rect(true, true, false);
+    jw__draw_ingame_underlay(content, CAT_S(4), content.y - CAT_S(4));   /* behind the title */
     cat_draw_screen_title("Performance", &sb);
 
-    SDL_Rect content = cat_get_content_rect(true, true, false);
     int pad = CAT_S(24);
     int x = content.x + pad;
     int right = content.x + content.w - pad;
@@ -1400,6 +1422,10 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
     int pill_h = item_h - CAT_S(4);
     int detail_x = x + list_w * 48 / 100;
     int detail_w = right - detail_x;
+
+    jw__draw_ingame_underlay(content, content.y + CAT_S(4),
+                             content.y + CAT_S(18) + small_h + CAT_S(12)
+                                 + JW_INGAME_PERF_ROWS * item_h + CAT_S(8));
 
     const char *labels[JW_INGAME_PERF_ROWS] = {
         "Profile", "CPU", "GPU", "DMC", "Reset Override",
@@ -1453,6 +1479,7 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
         cat_draw_text_ellipsized(small, state->status, x, y, theme->hint, list_w);
     }
     if (state->show_hints) {
+        cat_set_footer_bg_opacity(JW_INGAME_UNDERLAY_ALPHA);   /* match the underlay panels */
         cat_footer_item footer[] = {
             { CAT_BTN_LEFT, "Adjust", false, JW_HINT_DEVICE("\xe2\x86\x90\xe2\x86\x92", "\xe2\x86\x90\xe2\x86\x92") },
             { CAT_BTN_B,  "Back", true, JW_HINT("B") },

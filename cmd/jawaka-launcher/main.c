@@ -4807,6 +4807,7 @@ static void jw__handle_switcher_input(const char *socket_path, const char *db_pa
             jw__switcher_remove_selected(db_path, state);
             break;
         case CAT_BTN_B:
+        case CAT_BTN_SELECT:   /* Select closes the switcher too (it opened it) */
             state->switcher_open = false;
             state->status[0] = '\0';
             break;

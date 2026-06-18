@@ -1,4 +1,5 @@
 #include "internal/launcher/game_switcher.h"
+#include "internal/core/title.h"
 
 #include "internal/retroarch/states.h"
 #include "internal/storage/sources.h"
@@ -507,14 +508,17 @@ void jw_game_switcher_render(jw_game_switcher *sw, int x, int y, int w, int h) {
 
     /* Title + system for the logical (target) selection. */
     const jw_game_entry *sel = &sw->entries[sw->cursor];
+    char title[256];
+    snprintf(title, sizeof(title), "%s", sel->name);
+    jw_clean_rom_title(title);   /* drop (U)/[!]/(En,Fr) filename tags */
     int text_w = w * 86 / 100;
     int title_y = cy + center_size / 2 + cat_scale(18);
-    int tw = cat_measure_text(title_font, sel->name);
+    int tw = cat_measure_text(title_font, title);
     if (tw > text_w) {
-        cat_draw_text_ellipsized(title_font, sel->name, x + (w - text_w) / 2,
+        cat_draw_text_ellipsized(title_font, title, x + (w - text_w) / 2,
                                  title_y, theme->text, text_w);
     } else {
-        cat_draw_text(title_font, sel->name, x + (w - tw) / 2, title_y,
+        cat_draw_text(title_font, title, x + (w - tw) / 2, title_y,
                       theme->text);
     }
 
