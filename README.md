@@ -120,7 +120,7 @@ $SDCARD_PATH/.system/leaf/platforms/mlp1/enabled
 Jawaka's ADB restore intent marker lives at:
 
 ```text
-$SDCARD_PATH/.system/leaf/platforms/mlp1/state/adb-enabled
+$SDCARD_PATH/.umrk/mlp1/adb-enabled
 ```
 
 ## Controls
@@ -186,7 +186,7 @@ BIOS/
 Saves/
 States/
 Cheats/
-.system/leaf/platforms/<platform>/state/library.db
+.umrk/<platform>/library.db
 ```
 
 For app paks, `pak.json.platform` must match the containing platform directory
