@@ -33,7 +33,7 @@ this stops leaking the *reusable* passphrase). jw__wifi_derive_psk shells to
 `wpa_passphrase` to get the 64-hex PMK; jw_wifi_connect_psk stores the hex
 (unquoted). jw_wifi_harden() runs at startup and rewrites any pre-existing
 plaintext `psk="..."` to its hash (save_config + re-export). Verified: live conf
-and <sdcard>/.umrk/wifi.conf both hold only hashed keys. NOTE: jw__wifi_run
+and <sdcard>/.umrk/<platform>/wifi.conf both hold only hashed keys. NOTE: jw__wifi_run
 returns BYTES READ (>=0) on success / -1 on error — check `< 0` / `>= 0`, never
 `== 0` (that bug initially made harden silently no-op).
 
@@ -71,7 +71,7 @@ returns BYTES READ (>=0) on success / -1 on error — check `< 0` / `>= 0`, neve
   PERSISTENCE (corrected): the live wpa conf lives on **tmpfs** (path is the running
   process's -c arg, /var/run or /tmp) and is wiped on reboot; /etc is NOT the boot
   source for networks (the old /etc mirror was ineffective and was removed). Instead
-  we keep a durable store at **<sdcard>/.umrk/wifi.conf**: jw__wifi_export() copies
+  we keep a durable store at **<sdcard>/.umrk/<platform>/wifi.conf**: jw__wifi_export() copies
   the live conf there after every connect/forget, and jw_wifi_restore() runs once at
   launcher startup to re-add any saved networks missing from the live conf (then
   save_config + reconnect), and re-seeds the store from the current live conf. Verified

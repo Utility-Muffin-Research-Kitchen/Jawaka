@@ -1,5 +1,13 @@
 # Jawaka MLP1 Device POC Plan
 
+> **Historical (2026-05-23 POC) — superseded.** This records the original
+> proof-of-concept layout: an unscoped `.umrk/` SD-state dir and a `.umrk-launcher`
+> marker file. The shipped design differs: launcher control state lives at
+> `.umrk/<platform>/` (e.g. `.umrk/mlp1/library.db`) and the enable marker is
+> `.system/leaf/platforms/<platform>/enabled`. See `umrk-workspace/docs/runtime-paths.md`
+> for the current contract. Unscoped `.umrk/` paths below are kept as POC history,
+> not current truth.
+
 Date: 2026-05-23
 
 Goal: get a safe proof-of-concept Jawaka launcher running on a Miniloong Pocket 1
