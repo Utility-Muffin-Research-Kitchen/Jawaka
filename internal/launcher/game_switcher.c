@@ -430,9 +430,14 @@ static void jw__switcher_draw_tile(const jw_game_switcher *sw,
         return;
     }
 
+    /* No art: a 4:3 placeholder card (centered in the square slot) rather than a
+       full square, so its height matches a fit 4:3 screenshot instead of towering
+       over the real art and making everything else look small. */
+    int ph = box * 3 / 4;
+    int py = cy - ph / 2;
     ap_color card = theme->highlight;
     card.a = (uint8_t)((int)card.a * alpha / 255);
-    cat_draw_rounded_rect(x, y, box, box, cat_scale(10), card);
+    cat_draw_rounded_rect(x, py, box, ph, cat_scale(10), card);
 
     if (entry && entry->system[0]) {
         TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
@@ -440,7 +445,7 @@ static void jw__switcher_draw_tile(const jw_game_switcher *sw,
         ap_color tc = theme->text;
         tc.a = alpha;
         cat_draw_text(small, entry->system, x + (box - code_w) / 2,
-                      y + box / 2 - TTF_FontHeight(small) / 2, tc);
+                      py + ph / 2 - TTF_FontHeight(small) / 2, tc);
     }
 }
 
@@ -462,15 +467,28 @@ void jw_game_switcher_render(jw_game_switcher *sw, int x, int y, int w, int h) {
     TTF_Font *title_font = cat_get_font(CAT_FONT_EXTRA_LARGE);
     TTF_Font *small_font = cat_get_font(CAT_FONT_SMALL);
 
-    int center_size = w * 42 / 100;
-    int max_by_h = h * 52 / 100;
+    /* Vertical budget: the square center tile, then the title + system caption
+       below it. Grow the tile to fill the height left after that text block (the
+       old fixed h*52% cap left a band of dead space under the tiles), and centre
+       the whole composition so any leftover splits top/bottom. */
+    int title_h = TTF_FontHeight(title_font);
+    int sys_h   = TTF_FontHeight(small_font);
+    int below_h = cat_scale(18) + title_h + cat_scale(6) + sys_h; /* matches title_y + system layout */
+    int top_pad = cat_scale(10);
+
+    int center_size = w * 46 / 100;
+    int max_by_h = h - below_h - top_pad * 2;
     if (center_size > max_by_h) {
         center_size = max_by_h;
+    }
+    if (center_size < cat_scale(80)) {
+        center_size = cat_scale(80);
     }
     int side_size = center_size * 64 / 100;
     int spacing = center_size * 78 / 100;
     int cx0 = x + w / 2;
-    int cy = y + center_size / 2 + cat_scale(8);
+    int block_h = center_size + below_h;
+    int cy = y + (h - block_h) / 2 + center_size / 2;
 
     float v_cursor = jw__switcher_visual_cursor(sw);
     if (sw->anim_active) {
