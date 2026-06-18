@@ -2288,8 +2288,9 @@ int main(int argc, char **argv) {
         jw__render_menu(&state);
     }
 
-    cat_quit();
-    free(socket_path);
-    free(db_path);
-    return 0;
+    /* Hand-off exit (back to the launcher): skip cat_quit()'s SDL/TTF teardown — the
+       OS reclaims it and the Wayland surface on exit, and it's pure dead time before
+       the launcher reappears. Logs are line-flushed; no exit-time writes are pending. */
+    cat_hide_window();
+    _Exit(0);
 }

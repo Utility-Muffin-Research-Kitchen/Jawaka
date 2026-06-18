@@ -29,6 +29,11 @@
 #include <ctype.h>
 #include <limits.h>
 #include <time.h>
+#include <signal.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <unistd.h>
 
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
@@ -200,6 +205,12 @@ typedef struct {
     char               action_perf_system_override[64];
     char               action_system_display_override[64];
     bool               action_scrape_pending;   /* target has queued scrape work */
+    /* System menu (MENU button): an in-launcher overlay, not a separate process,
+       so open/close is instant (no respawn, no SDL/Wayland/DB re-init). The
+       in-game menu is still its own process — a different path. */
+    bool               menu_open;
+    bool               menu_scanning;   /* Rescan in progress: pane shows "Scanning…" */
+    cat_list_state     menu_list;
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
     /* status line */
@@ -3339,9 +3350,110 @@ static void jw__render_switcher(jw_launcher_state *state) {
     cat_present();
 }
 
+/* ─── System menu overlay (MENU) ────────────────────────────────────────────
+   Drawn over the live launcher; opening/closing is a state flag, so it's instant
+   (no process respawn). Search / Rescan / power are direct calls + IPC; About and
+   System Update are hosted modally via a settings UI (see jw__menu_host_setting). */
+static const char *kSysMenuItems[] = {
+    "Search", "System Update", "About", "Rescan Library",
+    "Sleep", "Exit to Stock", "Reboot", "Power Off",
+};
+enum { JW_SM_SEARCH = 0, JW_SM_UPDATE, JW_SM_ABOUT, JW_SM_RESCAN,
+       JW_SM_SLEEP, JW_SM_EXIT_STOCK, JW_SM_REBOOT, JW_SM_POWEROFF, JW_SM_COUNT };
+
+static void jw__draw_menu_item(int idx, int ix, int iy, int iw, int ih,
+                               bool selected, void *user) {
+    (void)user;
+    if (idx < 0 || idx >= JW_SM_COUNT) return;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int pill_h = TTF_FontHeight(body) + CAT_S(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
+    ap_color c = selected ? theme->highlighted_text : theme->text;
+    int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    cat_draw_text_ellipsized(body, kSysMenuItems[idx], ix + CAT_S(10), text_y,
+                             c, iw - CAT_S(20));
+}
+
+static void jw__render_menu(const jw_launcher_state *state) {
+    cat_clear_screen();
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+
+    /* Header is the browse pages' tab bar, verbatim (see jw__draw_tab_header):
+       the accent band at cat_get_tab_bar_height() with the status icons inline,
+       and "System" where the section tabs sit — minus the tabs, since a global
+       page showing tabs that don't navigate here is confusing. Drawing it the
+       same way (same band, same height) keeps the list/panel boxes — and the
+       gap above them — pixel-aligned with Recents/Favorites/Games/etc. */
+    int bar_h   = cat_get_tab_bar_height();
+    int pill_h  = CAT_DS(CAT__PILL_SIZE);
+    TTF_Font *tabf = cat_get_font(CAT_FONT_SMALL);
+    cat_draw_rect(0, 0, cat_get_screen_width(), bar_h, theme->accent);
+    cat_status_bar_opts sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &sb);
+    sb.no_pill    = true;
+    sb.use_y      = true;
+    sb.y_position = (bar_h - pill_h) / 2;
+    cat_draw_status_bar(&sb);
+    cat_draw_text(tabf, "System", CAT_S(16),
+                  (bar_h - TTF_FontHeight(tabf)) / 2, theme->text);
+    int header_h = bar_h;
+
+    /* Same box geometry as the browse pages: a 58% list on the left, a panel on the
+       right. The right panel is the library-counts card. */
+    /* Size rows to the base-height fit count (what the browse pages use), NOT the
+       item count — otherwise fit_rows divides the column by 8 and stretches the
+       rows (taller pitch + a deeper panel inset via pad_v). A short list then
+       sits at the same pitch as the browse pages, top-aligned. */
+    ((cat_list_state *)&state->menu_list)->visible_rows =
+        jw__browse_visible_rows(state, header_h);
+    SDL_Rect list, image;
+    int item_h;
+    jw__browse_boxes(state, header_h, JW_SM_COUNT,
+                     &state->menu_list, &list, &image, &item_h);
+
+    cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
+                          cat_hex_to_color("#ffffff10"));
+    {
+        int line_h = TTF_FontHeight(body);
+        int ty = image.y + (image.h - line_h) / 2;
+        int tx = image.x + CAT_S(10);
+        int tw = image.w - CAT_S(20);
+        if (state->menu_scanning) {
+            cat_draw_text_wrapped(body, "Scanning\xe2\x80\xa6", tx, ty, tw,
+                                  theme->hint, CAT_ALIGN_CENTER);
+        } else {
+            char counts[96];
+            snprintf(counts, sizeof(counts), "%d games, %d systems, %d apps",
+                     state->summary.game_count, state->system_count,
+                     state->summary.app_count);
+            cat_draw_text_wrapped(body, counts, tx, ty, tw, theme->text,
+                                  CAT_ALIGN_CENTER);
+        }
+    }
+
+    cat_draw_list_pane(list.x, list.y, list.w, list.h, JW_SM_COUNT,
+                       &state->menu_list, item_h, jw__draw_menu_item, NULL);
+
+    cat_footer_item footer[] = {
+        { CAT_BTN_B, "Back",   true, JW_HINT("B") },
+        { CAT_BTN_A, "Select", true, JW_HINT("A") },
+    };
+    jw__draw_footer(state, footer, 2);
+    cat_present();
+}
+
 static void jw__render_launcher(jw_launcher_state *state) {
     if (state->switcher_open) {
         jw__render_switcher(state);
+        return;
+    }
+
+    if (state->menu_open) {
+        jw__render_menu(state);
         return;
     }
 
@@ -4365,13 +4477,8 @@ static void jw__handle_actions_input(const char *socket_path, const char *db_pat
                 jw__switch_tab_slide(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
             break;
         case CAT_BTN_MENU:
-            if (jw_ipc_open_menu(socket_path) == 0) {
-                cat_hide_window();
-                *running = false;
-            } else {
-                snprintf(state->status, sizeof(state->status), "%s",
-                         "open-menu failed");
-            }
+            state->menu_open = true;
+            cat_list_state_init(&state->menu_list, JW_SM_COUNT);
             break;
         default:
             break;
@@ -4708,6 +4815,138 @@ static void jw__handle_switcher_input(const char *socket_path, const char *db_pa
     }
 }
 
+/* Host About / System Update modally over the launcher, on a dedicated settings UI
+   instance (kept separate from the Settings tab's, so opening it from the menu can't
+   disturb the tab). Blocks until the user backs out, then returns to the overlay. */
+static void jw__menu_host_setting(const char *socket_path, const char *db_path,
+                                  jw_launcher_state *state, jw_settings_screen screen) {
+    static jw_settings_ui *ui = NULL;
+    if (!ui) {
+        ui = malloc(sizeof(*ui));
+        if (!ui) return;
+        char theme_name[256];
+        jw_resolve_theme_name(db_path, theme_name, sizeof(theme_name));
+        jw_settings_ui_init(ui, db_path, theme_name, socket_path);
+    }
+    jw_settings_ui_open(ui, screen);
+
+    char status[256] = { 0 };
+    bool hints = jw_settings_show_hints(&state->settings);
+    int m = CAT_S(12);
+    bool running = true;
+    cat_request_frame();
+    while (running) {
+        cat_input_event ev;
+        while (cat_poll_input(&ev)) {
+            if (!ev.pressed) continue;
+            bool theme_changed = false;
+            jw_settings_ui_handle_button(ui, ev.button, status, sizeof(status),
+                                         &theme_changed);
+            if (!jw_settings_ui_is_open(ui) ||
+                jw_settings_ui_screen(ui) == JW_SETTINGS_HOME) {
+                running = false;
+                break;
+            }
+        }
+        if (!running) break;
+        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE)
+            jw_settings_ui_refresh_update(ui);
+
+        cat_clear_screen();
+        SDL_Rect cr = cat_get_content_rect(false, hints, false);
+        jw_settings_ui_render(ui, cr.x + m, cr.y, cr.w - m * 2, cr.h);
+        if (hints) {
+            if (jw_settings_ui_screen(ui) == JW_SETTINGS_ABOUT) {
+                cat_footer_item f[] = { { CAT_BTN_B, "Back", true, JW_HINT("B") } };
+                cat_draw_footer(f, 1);
+            } else {
+                cat_footer_item f[] = {
+                    { CAT_BTN_X, "Releases", false, JW_HINT("X") },
+                    { CAT_BTN_B, "Back",     true,  JW_HINT("B") },
+                    { CAT_BTN_A, "Select",   true,  JW_HINT("A") },
+                };
+                cat_draw_footer(f, 3);
+            }
+        }
+        cat_present();
+    }
+    jw_settings_ui_close(ui);
+    cat_request_frame();
+}
+
+static void jw__menu_activate(const char *socket_path, const char *db_path,
+                              jw_launcher_state *state, bool *running) {
+    switch (state->menu_list.cursor) {
+        case JW_SM_SEARCH:
+            state->menu_open = false;
+            jw__open_search(db_path, state);
+            break;
+        case JW_SM_UPDATE:
+            jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_UPDATE);
+            break;
+        case JW_SM_ABOUT:
+            jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_ABOUT);
+            break;
+        case JW_SM_RESCAN: {
+            /* Show "Scanning…" in the right pane, run the scan, then refresh the
+               summary so the pane lands on the new counts. Uses its own flag, not
+               state->status (which the rest of the launcher also writes). */
+            char buf[160] = { 0 };
+            state->menu_scanning = true;
+            cat_request_frame();
+            jw__render_menu(state);
+            jw_ipc_scan_library(socket_path, buf, sizeof(buf));
+            jw_db_read_summary(db_path, &state->summary);
+            state->menu_scanning = false;
+            break;
+        }
+        case JW_SM_SLEEP:
+            /* Blocks until the system resumes; keep the menu open so we land back. */
+            jw_ipc_platform_action(socket_path, "sleep", 0);
+            break;
+        case JW_SM_EXIT_STOCK:
+            jw_ipc_exit_stock(socket_path);
+            cat_hide_window();
+            *running = false;
+            break;
+        case JW_SM_REBOOT:
+            jw_ipc_platform_action(socket_path, "reboot", 0);
+            cat_hide_window();
+            *running = false;
+            break;
+        case JW_SM_POWEROFF:
+            jw_ipc_platform_action(socket_path, "poweroff", 0);
+            cat_hide_window();
+            *running = false;
+            break;
+        default:
+            break;
+    }
+}
+
+static void jw__handle_menu_input(const char *socket_path, const char *db_path,
+                                  jw_launcher_state *state,
+                                  cat_button button, bool *running) {
+    switch (button) {
+        case CAT_BTN_UP:
+            cat_list_state_move(&state->menu_list, -1, JW_SM_COUNT);
+            break;
+        case CAT_BTN_DOWN:
+            cat_list_state_move(&state->menu_list, +1, JW_SM_COUNT);
+            break;
+        case CAT_BTN_A:
+            jw__menu_activate(socket_path, db_path, state, running);
+            break;
+        case CAT_BTN_B:
+        case CAT_BTN_MENU:
+            state->menu_open = false;
+            state->status[0] = '\0';
+            break;
+        default:
+            break;
+    }
+}
+
 static void jw__handle_input(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, cat_button button, bool *running) {
     const cat_stylesheet *ss = cat_get_stylesheet();
@@ -4724,6 +4963,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     /* Analog-stick click is a global shortcut: toggle the LED ring on/off. */
     if (button == CAT_BTN_STICK) {
         jw_settings_toggle_led(&state->settings);
+        return;
+    }
+
+    /* The system-menu overlay captures all input while open. */
+    if (state->menu_open) {
+        jw__handle_menu_input(socket_path, db_path, state, button, running);
         return;
     }
 
@@ -4807,12 +5052,8 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         /* MENU always opens the main menu, from any settings sub-screen and
            any layout — it is a global action, not consumed by settings. */
         if (button == CAT_BTN_MENU) {
-            if (jw_ipc_open_menu(socket_path) == 0) {
-                cat_hide_window();
-                *running = false;
-            } else {
-                snprintf(state->status, sizeof(state->status), "%s", "open-menu failed");
-            }
+            state->menu_open = true;
+            cat_list_state_init(&state->menu_list, JW_SM_COUNT);
             return;
         }
         /* Tabbed mode: Settings is a tab, not an app. Triggers must escape
@@ -4909,12 +5150,8 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
            top level, and B stays the universal cancel everywhere else. (Recents
            self-curates as you play, so it needs no per-entry remove.) */
         case CAT_BTN_MENU:
-            if (jw_ipc_open_menu(socket_path) == 0) {
-                cat_hide_window();
-                *running = false;
-            } else {
-                snprintf(state->status, sizeof(state->status), "%s", "open-menu failed");
-            }
+            state->menu_open = true;
+            cat_list_state_init(&state->menu_list, JW_SM_COUNT);
             break;
         case CAT_BTN_Y: {
             /* On the Recents tab, Y toggles the favorite of the selected game
@@ -5213,9 +5450,13 @@ int main(void) {
 
     jw__status_poller_shutdown();
     jw__cover_loader_shutdown();
-    cat_quit();
-    free(socket_path);
-    free(db_path);
-    free(sdcard_root);
-    return 0;
+    /* Hand-off exit. The launcher only ever exits to be respawned (into the menu /
+       an app / a game) or for shutdown, so the OS reclaims everything — memory, the
+       cover-art texture cache, the Wayland surface — the instant we exit. Running
+       cat_quit() first (cat_cache_clear over a warm cover cache + SDL/TTF teardown)
+       costs ~1s of dead time before the next screen appears, with no benefit. Skip
+       it: hide the surface and _Exit. Logs are line-flushed; the resume + clean-exit
+       markers are already on disk; the worker threads above were joined cleanly. */
+    cat_hide_window();
+    _Exit(0);
 }
