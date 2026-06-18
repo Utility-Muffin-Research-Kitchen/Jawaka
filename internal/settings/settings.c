@@ -4151,6 +4151,15 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     if (cat_reload_fonts(path) == CAT_OK) {
                         ui->font_family_index = next;
                         jw__persist_int(ui, "font_family_index", next);
+                        /* Font metrics changed -> the launcher must recompute its
+                           cached list row height (cat_box_fit_rows only ever clamps
+                           the row count DOWN, so a smaller font won't re-grow it
+                           without a rebuild). Reuse the theme-changed signal that
+                           drives jw__rebuild_for_layout. NOTE: this also resets the
+                           home cursor to row 0 (same as a color-scheme change);
+                           revisit with a position-preserving refit if breadcrumbs
+                           get more serious. */
+                        if (theme_changed) *theme_changed = true;
                     } else if (status_buf && status_size > 0) {
                         snprintf(status_buf, status_size, "%s", "font load failed");
                     }
@@ -4165,6 +4174,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                              jw_appearance_font_path_for_index(ui->font_family_index));
                     cat_set_font_bump(kJawakaFontSizeValues[next]);
                     jw__persist_int(ui, "font_size_index", next);
+                    /* Recompute cached list row height (see the font-family note
+                       above) — without this, shrinking the font leaves the list
+                       rows stretched tall until a relaunch. */
+                    if (theme_changed) *theme_changed = true;
                 } else if (row == JW_LAYOUT_TAB_SWITCH) {
                     int next = (ui->tab_glide + dir + JW_TAB_SWITCH_COUNT) % JW_TAB_SWITCH_COUNT;
                     ui->tab_glide = next;
