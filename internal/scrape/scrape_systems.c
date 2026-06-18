@@ -66,6 +66,22 @@ static const jw__platform_entry jw__platforms[] = {
     {"TIC",        222},
     {"VB",         11},
     {"VIC",        73},
+
+    /* Jawaka folder-ids (systems.json canonical ids) that differ from the tags
+       above. Each aliases the SAME ScreenScraper platform as an entry above, so
+       "Scrape Artwork" works for these folders too. Without these, the daemon's
+       jw_scrape_platform_id() returns -1 and the scrape is silently refused. */
+    {"GENESIS",            1},    /* == MD   */
+    {"GEN",                1},
+    {"MD32X",              19},   /* == 32X  */
+    {"ATARI2600",          26},   /* == A2600 */
+    {"SEVENTYEIGHTHUNDRED", 41},  /* == A7800 */
+    {"SATURN",             22},   /* == SS   */
+    {"PSX",                57},   /* == PS   */
+    {"SFC_JP",             4},    /* == SFC  */
+    {"PICO8",              234},  /* == PICO / P8 */
+    {"MAME2003",           75},   /* == MAME / ARCADE */
+    {"MAME2010",           75},
 };
 
 int jw_scrape_platform_id(const char *system_tag) {
