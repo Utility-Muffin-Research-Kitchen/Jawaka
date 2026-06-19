@@ -121,6 +121,7 @@ DAEMON_SRCS := \
 	$(PLATFORM_BACKEND_SRC) \
 	$(PLATFORM_ID_SRC) \
 	$(INPUT_PROXY_SRC) \
+	internal/platform/calibration.c \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
 	internal/retroarch/command.c \

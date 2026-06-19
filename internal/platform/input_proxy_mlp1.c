@@ -1,4 +1,5 @@
 #include "internal/platform/input_proxy.h"
+#include "internal/platform/calibration.h"
 #include "internal/core/log.h"
 
 #include <errno.h>
@@ -49,6 +50,10 @@ typedef struct {
     jw_power_edge power_edges[JW_MLP1_POWER_EDGE_MAX];  /* ring of unconsumed edges */
     int power_edge_head;
     int power_edge_count;
+    jw_stick_calibration cal;      /* analog-stick range normalization (if loaded) */
+    int32_t obs_x_min, obs_x_max;  /* observed stick extremes (measure mode only) */
+    int32_t obs_y_min, obs_y_max;
+    uint64_t last_cal_log_ms;      /* throttle for the measure-mode extremes log */
 } jw_mlp1_input_proxy_data;
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
@@ -265,6 +270,48 @@ static void jw__emit_syn(jw_mlp1_input_proxy_data *data) {
     jw__write_event(data, EV_SYN, SYN_REPORT, 0);
 }
 
+/* Measure mode (no calibration profile): track this unit's real stick throw and
+   log it (throttled) so a profile can be hand-written from the device log. */
+static void jw__cal_observe(jw_mlp1_input_proxy_data *data,
+                            const struct input_event *ev) {
+    int32_t v = ev->value;
+    bool changed = false;
+    if (ev->code == ABS_X) {
+        if (v < data->obs_x_min) { data->obs_x_min = v; changed = true; }
+        if (v > data->obs_x_max) { data->obs_x_max = v; changed = true; }
+    } else { /* ABS_Y */
+        if (v < data->obs_y_min) { data->obs_y_min = v; changed = true; }
+        if (v > data->obs_y_max) { data->obs_y_max = v; changed = true; }
+    }
+    if (!changed) {
+        return;
+    }
+    uint64_t now = jw__monotonic_ms();
+    if (data->last_cal_log_ms != 0 && now - data->last_cal_log_ms < 400u) {
+        return;
+    }
+    data->last_cal_log_ms = now;
+    jw_log_info("calibration[measure]: ABS_X[%d..%d] ABS_Y[%d..%d] "
+                "(no profile; roll the stick fully to capture range)",
+                data->obs_x_min, data->obs_x_max,
+                data->obs_y_min, data->obs_y_max);
+}
+
+/* Forward an analog-stick axis event. With a loaded profile, remap the value to
+   the normalized output range before forwarding; otherwise forward raw and feed
+   the measure-mode observer. Non-stick ABS events never reach here. */
+static void jw__forward_stick_abs(jw_mlp1_input_proxy_data *data,
+                                  const struct input_event *ev) {
+    if (data->cal.loaded) {
+        struct input_event out = *ev;
+        out.value = jw_calibration_axis(&data->cal, ev->code == ABS_X, ev->value);
+        jw__forward_event(data, &out);
+        return;
+    }
+    jw__cal_observe(data, ev);
+    jw__forward_event(data, ev);
+}
+
 static void jw__flush_menu_press(jw_mlp1_input_proxy_data *data) {
     if (!data->menu_held || data->menu_forwarded || data->chord_active) {
         return;
@@ -420,6 +467,11 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
     data->uinput_fd = -1;
     data->power_fd = -1;
     data->last_activity_ms = jw__monotonic_ms();   /* don't count boot as idle */
+    data->obs_x_min = INT32_MAX;
+    data->obs_x_max = INT32_MIN;
+    data->obs_y_min = INT32_MAX;
+    data->obs_y_max = INT32_MIN;
+    jw_calibration_load(&data->cal);   /* loaded=false → forward raw + measure */
 
     data->input_fd = jw__open_loong_gamepad(data->physical_path, sizeof(data->physical_path));
     if (data->input_fd < 0) {
@@ -591,7 +643,13 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
                 (ev.code == ABS_HAT0X || ev.code == ABS_HAT0Y) && ev.value != 0) {
                 data->last_activity_ms = jw__monotonic_ms();
             }
-            jw__forward_event(data, &ev);
+            /* Analog stick axes get calibration-normalized (or measured); every
+               other ABS/event forwards verbatim. */
+            if (ev.type == EV_ABS && (ev.code == ABS_X || ev.code == ABS_Y)) {
+                jw__forward_stick_abs(data, &ev);
+            } else {
+                jw__forward_event(data, &ev);
+            }
         }
     }
     /* Power key (we hold it exclusively): queue press/release edges for jawakad,
