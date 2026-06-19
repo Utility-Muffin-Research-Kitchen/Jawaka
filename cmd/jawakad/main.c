@@ -2673,6 +2673,62 @@ static bool jw__is_current_session_game(const jw_daemon_state *state,
     return strcmp(target_abs, s->rom_path) == 0;
 }
 
+/* RetroArch writes save states asynchronously — the SAVE_STATE command returns
+   well before the file is on disk. Tearing the emulator down right after (quit,
+   or a relaunch for a game switch) truncates the write, and the partial state
+   then crashes the core on the next resume (seen on N64: a ~16MB mupen state cut
+   to 100KB/5.7MB). After issuing a save to `slot`, wait until that slot's file
+   has stopped growing before proceeding, then sync. A short warm-up avoids
+   mistaking a *pre-existing* (already-stable) state file for the new write.
+   Best-effort: bounded by a timeout so a user is never stranded. */
+static void jw__wait_for_savestate_write(const jw_daemon_state *state, int slot) {
+    const char *source_root = state->retroarch_session.source_root[0]
+        ? state->retroarch_session.source_root
+        : state->sdcard_root;
+    char states_dir[PATH_MAX];
+    if (!source_root || !source_root[0] ||
+        snprintf(states_dir, sizeof(states_dir), "%s/States", source_root) >=
+            (int)sizeof(states_dir)) {
+        return;
+    }
+    const char *rom = state->retroarch_session.rom_path;
+    if (!rom || !rom[0]) {
+        return;
+    }
+
+    const int timeout_ms = 8000;
+    const int poll_ms = 100;
+    const int warmup_ms = 800;     /* let RA truncate + begin the new write */
+    const int stable_polls = 3;    /* ~300ms of no growth = write finished */
+    long long last_size = -1;
+    int stable = 0;
+    int elapsed = 0;
+    char path[PATH_MAX];
+    while (elapsed < timeout_ms) {
+        struct timespec ts = { poll_ms / 1000, (long)(poll_ms % 1000) * 1000000L };
+        nanosleep(&ts, NULL);
+        elapsed += poll_ms;
+
+        struct stat st;
+        if (!jw_ra_find_slot_state(states_dir, rom, slot, path, sizeof(path)) ||
+            stat(path, &st) != 0) {
+            continue;   /* not created yet */
+        }
+        long long sz = (long long)st.st_size;
+        if (sz != last_size) {
+            stable = 0;            /* still being written (or just truncated) */
+        } else if (elapsed >= warmup_ms && sz > 0 && ++stable >= stable_polls) {
+            sync();
+            jw_log_info("savestate settled slot=%d bytes=%lld waited_ms=%d",
+                        slot, sz, elapsed);
+            return;
+        }
+        last_size = sz;
+    }
+    jw_log_warn("savestate did not settle slot=%d within %dms; proceeding anyway",
+                slot, timeout_ms);
+}
+
 /* Commit a switch from the in-game switcher: save the current game into the
    reserved switcher slot, then prefer an in-process same-core/same-source
    content load. If RetroArch cannot do that, queue the selected game and quit;
@@ -2734,6 +2790,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     }
     jw_log_info("switch-game: saved current game state slot=%d",
                 JW_RA_GAME_SWITCHER_STATE_SLOT);
+    jw__wait_for_savestate_write(state, JW_RA_GAME_SWITCHER_STATE_SLOT);
 
     char target_rom_abs[PATH_MAX];
     target_rom_abs[0] = '\0';
@@ -4511,6 +4568,9 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             } else {
                 jw_log_info("save-and-quit: saved state slot=%d",
                             JW_RA_GAME_SWITCHER_STATE_SLOT);
+                /* Let the async state write finish before we quit RetroArch,
+                   otherwise the resume state is truncated and crashes on load. */
+                jw__wait_for_savestate_write(state, JW_RA_GAME_SWITCHER_STATE_SLOT);
             }
         } else {
             jw_log_info("save-and-quit: savestates unavailable; quitting without save");
