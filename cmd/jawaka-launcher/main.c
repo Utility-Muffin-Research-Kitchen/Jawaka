@@ -118,6 +118,7 @@ typedef enum {
     JW_ACTION_ROW_DISPLAY_NAME,
     JW_ACTION_ROW_CORE,
     JW_ACTION_ROW_PERFORMANCE,
+    JW_ACTION_ROW_SCRAPE_QUEUE,
     JW_ACTION_ROW_SCRAPE,        /* game: replace art; system: missing only */
     JW_ACTION_ROW_SCRAPE_ALL,    /* system: re-scrape everything */
     JW_ACTION_ROW_SCRAPE_CANCEL, /* swap-in while the target is queued */
@@ -205,6 +206,7 @@ typedef struct {
     char               action_perf_system_override[64];
     char               action_system_display_override[64];
     bool               action_scrape_pending;   /* target has queued scrape work */
+    bool               action_scrape_queue_present;
     /* System menu (MENU button): an in-launcher overlay, not a separate process,
        so open/close is instant (no respawn, no SDL/Wayland/DB re-init). The
        in-game menu is still its own process — a different path. */
@@ -1067,8 +1069,12 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
                               ", %d not found", s.not_found);
             }
             if (s.failed > 0 && n > 0 && (size_t)n < cap) {
+                n += snprintf(state->status + n, cap - (size_t)n,
+                              ", %d failed", s.failed);
+            }
+            if (s.cancelled > 0 && n > 0 && (size_t)n < cap) {
                 snprintf(state->status + n, cap - (size_t)n,
-                         ", %d failed", s.failed);
+                         ", %d cancelled", s.cancelled);
             }
             cat_request_frame();
         }
@@ -3139,6 +3145,10 @@ static void jw__action_row_strings(const jw_launcher_state *state,
                 snprintf(value, value_size, "%s", "Auto");
             }
             break;
+        case JW_ACTION_ROW_SCRAPE_QUEUE:
+            snprintf(title, title_size, "%s", "View Scrape Queue");
+            snprintf(value, value_size, "%s", "Open");
+            break;
         case JW_ACTION_ROW_SCRAPE:
             if (state->action_scope == JW_ACTION_GAME) {
                 snprintf(title, title_size, "%s", "Scrape Artwork");
@@ -3595,6 +3605,9 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
+        if (state->action_scrape_queue_present) {
+            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_QUEUE);
+        }
         if (state->action_scrape_pending) {
             jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_CANCEL);
         } else {
@@ -3610,6 +3623,9 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
+        if (state->action_scrape_queue_present) {
+            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_QUEUE);
+        }
         jw__action_add_row(state, state->action_scrape_pending
                                       ? JW_ACTION_ROW_SCRAPE_CANCEL
                                       : JW_ACTION_ROW_SCRAPE);
@@ -3712,6 +3728,7 @@ static void jw__action_refresh_overrides(const char *db_path,
 
 static void jw__action_refresh_scrape_pending(jw_launcher_state *state) {
     state->action_scrape_pending = false;
+    state->action_scrape_queue_present = false;
     const char *socket_path = state->settings.socket_path;
     if (!socket_path[0]) {
         return;
@@ -3725,6 +3742,10 @@ static void jw__action_refresh_scrape_pending(jw_launcher_state *state) {
         : NULL;
     if (jw_ipc_scrape_pending(socket_path, system, rom_path, &pending) == 0) {
         state->action_scrape_pending = pending;
+    }
+    jw_ipc_scrape_status_info status;
+    if (jw_ipc_scrape_status(socket_path, &status) == 0) {
+        state->action_scrape_queue_present = status.total > 0;
     }
 }
 
@@ -4343,9 +4364,38 @@ static void jw__reset_action_overrides(const char *db_path,
     }
 }
 
+static bool jw__screenscraper_account_configured(const char *db_path) {
+    char username[64] = "";
+    return db_path && db_path[0] &&
+           jw_db_get_setting(db_path, "screenscraper_user",
+                             username, sizeof(username)) == 0 &&
+           username[0] != '\0';
+}
+
+static bool jw__confirm_anonymous_batch_scrape(bool missing_only) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Start",  .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = missing_only
+            ? "Scrape missing artwork anonymously? ScreenScraper can be slow and quota-limited without an account."
+            : "Re-scrape all artwork anonymously? ScreenScraper can be slow and quota-limited without an account.",
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
 static void jw__start_action_scrape(const char *socket_path, const char *db_path,
                                     jw_launcher_state *state, bool missing_only) {
     bool is_game = state->action_scope == JW_ACTION_GAME;
+    if (!is_game && !jw__screenscraper_account_configured(db_path) &&
+        !jw__confirm_anonymous_batch_scrape(missing_only)) {
+        snprintf(state->status, sizeof(state->status), "%s", "Scrape cancelled");
+        return;
+    }
     int enqueued = 0;
     char status[256] = "";
     int rc = jw_ipc_scrape_start(socket_path,
@@ -4392,7 +4442,7 @@ static void jw__cancel_action_scrape(const char *socket_path, const char *db_pat
         return;
     }
     snprintf(state->status, sizeof(state->status),
-             "Scraping cancelled (%d item%s dropped)", removed,
+             "Scraping cancelled (%d item%s stopped)", removed,
              removed == 1 ? "" : "s");
     jw__action_refresh(db_path, state);
 }
@@ -4417,6 +4467,11 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
             break;
         case JW_ACTION_ROW_PERFORMANCE:
             jw__cycle_action_performance(db_path, state, +1);
+            break;
+        case JW_ACTION_ROW_SCRAPE_QUEUE:
+            state->actions_open = false;
+            jw_settings_ui_open_scrape_queue(&state->settings);
+            jw__action_refresh(db_path, state);
             break;
         case JW_ACTION_ROW_SCRAPE:
             jw__start_action_scrape(socket_path, db_path, state,

@@ -13,17 +13,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 #define JW__SCRAPE_QUEUE_MAX   4096
 #define JW__SCRAPE_LIST_MAX    4096   /* games per system when expanding a batch */
 #define JW__SCRAPE_PRIO_MAX    16
 #define JW__SCRAPE_MAX_WORKERS 4      /* hard cap regardless of account allowance */
+#define JW__SCRAPE_ETA_SAMPLES 16
 
 typedef struct {
+    unsigned row_id;
     char system[64];
     char rom_path[512];
 } jw__scrape_item;
+
+typedef struct {
+    unsigned id;
+    jw_scrape_row_state state;
+    char display_name[256];
+    char system[64];
+    char rom_path[512];
+    char output_path[512];
+    char message[256];
+    long long started_ms;
+    long long finished_ms;
+} jw__scrape_row;
 
 typedef struct {
     bool            used;
@@ -45,6 +60,9 @@ static struct {
     jw__scrape_item *queue;         /* FIFO: [head, head+count) */
     int  head;
     int  count;
+    jw__scrape_row *rows;           /* current-session rows; terminal rows live until clear/new batch */
+    int  row_count;
+    unsigned next_row_id;
 
     jw__active_slot active[JW__SCRAPE_MAX_WORKERS];
     int  active_count;
@@ -52,12 +70,12 @@ static struct {
                                        follows the account's maxthreads */
     bool paused_quota;              /* daily quota exhausted; queue retained */
 
-    /* batch counters; reset when work starts from a fully drained state */
-    int total;
-    int done;
-    int found;
-    int not_found;
-    int failed;
+    int requests_today;
+    int max_requests;
+    int max_threads;
+    int eta_samples[JW__SCRAPE_ETA_SAMPLES];
+    int eta_sample_count;
+    int eta_sample_pos;
     char message[256];
 } jw__w = {
     .mu = PTHREAD_MUTEX_INITIALIZER,
@@ -150,6 +168,164 @@ static void jw__art_base(const char *rom_name, char *out, size_t out_size) {
     if (dot) *dot = '\0';
 }
 
+static long long jw__now_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (long long)ts.tv_sec * 1000LL + (long long)ts.tv_nsec / 1000000LL;
+}
+
+static bool jw__row_state_is_terminal(jw_scrape_row_state state) {
+    return state == JW_SCRAPE_ROW_DONE ||
+           state == JW_SCRAPE_ROW_NOT_FOUND ||
+           state == JW_SCRAPE_ROW_ERROR ||
+           state == JW_SCRAPE_ROW_CANCELLED;
+}
+
+static bool jw__row_state_is_busy(jw_scrape_row_state state) {
+    return state == JW_SCRAPE_ROW_HASH ||
+           state == JW_SCRAPE_ROW_SEARCH ||
+           state == JW_SCRAPE_ROW_DOWNLOAD ||
+           state == JW_SCRAPE_ROW_SAVE;
+}
+
+static void jw__display_name_from_rom_path(const char *rom_path,
+                                           char *out, size_t out_size) {
+    char copy[512];
+    snprintf(copy, sizeof(copy), "%s", rom_path ? rom_path : "");
+    char base[256];
+    jw__art_base(basename(copy), base, sizeof(base));
+    snprintf(out, out_size, "%s", base[0] ? base : (rom_path ? rom_path : ""));
+}
+
+static jw__scrape_row *jw__row_find_locked(unsigned row_id) {
+    for (int i = 0; i < jw__w.row_count; i++) {
+        if (jw__w.rows[i].id == row_id) {
+            return &jw__w.rows[i];
+        }
+    }
+    return NULL;
+}
+
+static void jw__row_set_locked(unsigned row_id, jw_scrape_row_state state,
+                               const char *message) {
+    jw__scrape_row *row = jw__row_find_locked(row_id);
+    if (!row) {
+        return;
+    }
+    row->state = state;
+    if (message) {
+        snprintf(row->message, sizeof(row->message), "%s", message);
+    }
+    if (jw__row_state_is_busy(state) && row->started_ms <= 0) {
+        row->started_ms = jw__now_ms();
+    }
+    if (jw__row_state_is_terminal(state) && row->finished_ms <= 0) {
+        row->finished_ms = jw__now_ms();
+    }
+}
+
+static void jw__row_set(unsigned row_id, jw_scrape_row_state state,
+                        const char *message) {
+    pthread_mutex_lock(&jw__w.mu);
+    jw__row_set_locked(row_id, state, message);
+    pthread_mutex_unlock(&jw__w.mu);
+}
+
+static void jw__row_set_output(unsigned row_id, const char *output_path) {
+    pthread_mutex_lock(&jw__w.mu);
+    jw__scrape_row *row = jw__row_find_locked(row_id);
+    if (row && output_path) {
+        snprintf(row->output_path, sizeof(row->output_path), "%s", output_path);
+    }
+    pthread_mutex_unlock(&jw__w.mu);
+}
+
+static void jw__eta_record_done_locked(const jw__scrape_row *row) {
+    if (!row || row->started_ms <= 0 || row->finished_ms <= row->started_ms) {
+        return;
+    }
+    long long duration_ms = row->finished_ms - row->started_ms;
+    int duration_s = (int)((duration_ms + 999) / 1000);
+    if (duration_s < 1) {
+        duration_s = 1;
+    }
+    jw__w.eta_samples[jw__w.eta_sample_pos] = duration_s;
+    jw__w.eta_sample_pos =
+        (jw__w.eta_sample_pos + 1) % JW__SCRAPE_ETA_SAMPLES;
+    if (jw__w.eta_sample_count < JW__SCRAPE_ETA_SAMPLES) {
+        jw__w.eta_sample_count++;
+    }
+}
+
+static int jw__eta_seconds_locked(void) {
+    if (jw__w.eta_sample_count < 2) {
+        return -1;
+    }
+    int remaining = 0;
+    for (int i = 0; i < jw__w.row_count; i++) {
+        if (!jw__row_state_is_terminal(jw__w.rows[i].state)) {
+            remaining++;
+        }
+    }
+    if (remaining <= 0) {
+        return 0;
+    }
+    int total = 0;
+    for (int i = 0; i < jw__w.eta_sample_count; i++) {
+        total += jw__w.eta_samples[i];
+    }
+    return (total / jw__w.eta_sample_count) * remaining;
+}
+
+static void jw__clear_finished_batch_locked(void) {
+    jw__w.row_count = 0;
+    jw__w.next_row_id = 1;
+    jw__w.requests_today = 0;
+    jw__w.max_requests = 0;
+    jw__w.max_threads = 0;
+    jw__w.eta_sample_count = 0;
+    jw__w.eta_sample_pos = 0;
+    memset(jw__w.eta_samples, 0, sizeof(jw__w.eta_samples));
+    jw__w.message[0] = '\0';
+}
+
+static void jw__count_rows_locked(int *total, int *done, int *found,
+                                  int *not_found, int *failed,
+                                  int *cancelled, int *queued, int *active) {
+    int t = 0, d = 0, f = 0, nf = 0, er = 0, c = 0, q = 0, a = 0;
+    for (int i = 0; i < jw__w.row_count; i++) {
+        jw_scrape_row_state s = jw__w.rows[i].state;
+        t++;
+        if (s == JW_SCRAPE_ROW_QUEUED) {
+            q++;
+        } else if (jw__row_state_is_busy(s)) {
+            a++;
+        } else if (s == JW_SCRAPE_ROW_DONE) {
+            d++;
+            f++;
+        } else if (s == JW_SCRAPE_ROW_NOT_FOUND) {
+            d++;
+            nf++;
+        } else if (s == JW_SCRAPE_ROW_ERROR) {
+            d++;
+            er++;
+        } else if (s == JW_SCRAPE_ROW_CANCELLED) {
+            d++;
+            c++;
+        }
+    }
+    if (total) *total = t;
+    if (done) *done = d;
+    if (found) *found = f;
+    if (not_found) *not_found = nf;
+    if (failed) *failed = er;
+    if (cancelled) *cancelled = c;
+    if (queued) *queued = q;
+    if (active) *active = a;
+}
+
 /* Resolve everything needed to land art for one item. dest_abs is the target
    PNG; image_db is the games.image_path value (relative on the primary
    source, absolute elsewhere). */
@@ -193,24 +369,14 @@ static int jw__resolve_paths(const jw__scrape_item *item,
 
 /* ── Queue helpers (mutex held) ──────────────────────────────────────── */
 
-static bool jw__queue_contains(const char *system, const char *rom_path) {
-    for (int i = 0; i < jw__w.count; i++) {
-        const jw__scrape_item *it =
-            &jw__w.queue[(jw__w.head + i) % JW__SCRAPE_QUEUE_MAX];
-        if (strcmp(it->system, system) == 0 &&
-            strcmp(it->rom_path, rom_path) == 0) {
-            return true;
+static bool jw__pending_contains_locked(const char *system, const char *rom_path) {
+    for (int i = 0; i < jw__w.row_count; i++) {
+        jw__scrape_row *row = &jw__w.rows[i];
+        if (jw__row_state_is_terminal(row->state)) {
+            continue;
         }
-    }
-    return false;
-}
-
-static bool jw__active_matches(const char *system, const char *rom_path) {
-    for (int i = 0; i < JW__SCRAPE_MAX_WORKERS; i++) {
-        const jw__active_slot *slot = &jw__w.active[i];
-        if (!slot->used) continue;
-        if ((!system || strcmp(slot->item.system, system) == 0) &&
-            (!rom_path || strcmp(slot->item.rom_path, rom_path) == 0)) {
+        if ((!system || strcmp(row->system, system) == 0) &&
+            (!rom_path || strcmp(row->rom_path, rom_path) == 0)) {
             return true;
         }
     }
@@ -218,27 +384,39 @@ static bool jw__active_matches(const char *system, const char *rom_path) {
 }
 
 static int jw__queue_push(const char *system, const char *rom_path) {
-    if (jw__w.count >= JW__SCRAPE_QUEUE_MAX) return -1;
-    if (jw__queue_contains(system, rom_path) ||
-        jw__active_matches(system, rom_path)) {
+    if (jw__w.count >= JW__SCRAPE_QUEUE_MAX ||
+        jw__w.row_count >= JW__SCRAPE_QUEUE_MAX) {
+        return -1;
+    }
+    if (jw__pending_contains_locked(system, rom_path)) {
         return 0;
     }
     if (jw__w.count == 0 && jw__w.active_count == 0 && !jw__w.paused_quota) {
-        /* New batch from idle: drop the previous batch's summary (it stays
-           readable while idle so "scrape finished" is observable). */
-        jw__w.total = jw__w.done = 0;
-        jw__w.found = jw__w.not_found = jw__w.failed = 0;
-        jw__w.message[0] = '\0';
+        /* New batch from idle: terminal rows remain readable until this point. */
+        jw__clear_finished_batch_locked();
     }
     /* A user-initiated start is the retry gesture that clears a quota pause
        (e.g. the day rolled over). */
     jw__w.paused_quota = false;
+
+    jw__scrape_row *row = &jw__w.rows[jw__w.row_count++];
+    memset(row, 0, sizeof(*row));
+    row->id = jw__w.next_row_id++;
+    if (jw__w.next_row_id == 0) {
+        jw__w.next_row_id = 1;
+    }
+    row->state = JW_SCRAPE_ROW_QUEUED;
+    snprintf(row->system, sizeof(row->system), "%s", system);
+    snprintf(row->rom_path, sizeof(row->rom_path), "%s", rom_path);
+    jw__display_name_from_rom_path(rom_path, row->display_name,
+                                   sizeof(row->display_name));
+
     jw__scrape_item *slot =
         &jw__w.queue[(jw__w.head + jw__w.count) % JW__SCRAPE_QUEUE_MAX];
+    slot->row_id = row->id;
     snprintf(slot->system, sizeof(slot->system), "%s", system);
     snprintf(slot->rom_path, sizeof(slot->rom_path), "%s", rom_path);
     jw__w.count++;
-    jw__w.total++;
     return 1;
 }
 
@@ -253,6 +431,8 @@ static int jw__queue_remove(const char *system, const char *rom_path) {
         bool match = (!system || strcmp(it->system, system) == 0) &&
                      (!rom_path || strcmp(it->rom_path, rom_path) == 0);
         if (match) {
+            jw__row_set_locked(it->row_id, JW_SCRAPE_ROW_CANCELLED,
+                               "Cancelled before it started");
             removed++;
             continue;
         }
@@ -262,7 +442,6 @@ static int jw__queue_remove(const char *system, const char *rom_path) {
         kept++;
     }
     jw__w.count = kept;
-    jw__w.total -= removed;
     return removed;
 }
 
@@ -302,30 +481,63 @@ static int jw__queue_prepend_locked(const jw__scrape_item *item) {
     jw__w.head = (jw__w.head + JW__SCRAPE_QUEUE_MAX - 1) % JW__SCRAPE_QUEUE_MAX;
     jw__w.queue[jw__w.head] = *item;
     jw__w.count++;
+    jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_QUEUED,
+                       "Paused by ScreenScraper quota");
     return 0;
+}
+
+typedef struct {
+    unsigned row_id;
+} jw__scrape_progress_ctx;
+
+static void jw__scrape_progress(void *userdata, jw_ss_phase phase) {
+    jw__scrape_progress_ctx *ctx = (jw__scrape_progress_ctx *)userdata;
+    if (!ctx) {
+        return;
+    }
+    switch (phase) {
+        case JW_SS_PHASE_HASHING:
+            jw__row_set(ctx->row_id, JW_SCRAPE_ROW_HASH, "Hashing ROM");
+            break;
+        case JW_SS_PHASE_SEARCHING:
+            jw__row_set(ctx->row_id, JW_SCRAPE_ROW_SEARCH,
+                        "Searching ScreenScraper");
+            break;
+        case JW_SS_PHASE_DOWNLOADING:
+            jw__row_set(ctx->row_id, JW_SCRAPE_ROW_DOWNLOAD,
+                        "Downloading artwork");
+            break;
+        case JW_SS_PHASE_SAVING:
+            jw__row_set(ctx->row_id, JW_SCRAPE_ROW_SAVE, "Saving artwork");
+            break;
+    }
 }
 
 static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
                                                atomic_int *interrupt) {
     char rom_abs[PATH_MAX], rom_name[256];
     char dest_abs[PATH_MAX], image_db[512];
+    jw__row_set(item->row_id, JW_SCRAPE_ROW_HASH, "Resolving ROM path");
     if (jw__resolve_paths(item, rom_abs, sizeof(rom_abs),
                           rom_name, sizeof(rom_name),
                           dest_abs, sizeof(dest_abs),
                           image_db, sizeof(image_db)) != 0) {
         pthread_mutex_lock(&jw__w.mu);
-        jw__w.failed++;
         snprintf(jw__w.message, sizeof(jw__w.message),
                  "Could not resolve paths for %.200s", item->rom_path);
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_ERROR,
+                           jw__w.message);
         pthread_mutex_unlock(&jw__w.mu);
         return JW__SCRAPE_ITEM_DONE;
     }
+    jw__row_set_output(item->row_id, dest_abs);
 
     int system_id = jw_scrape_platform_id(item->system);
     if (system_id < 0) {
         /* enqueue validates this; only reachable through races */
         pthread_mutex_lock(&jw__w.mu);
-        jw__w.failed++;
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_ERROR,
+                           "No ScreenScraper mapping for this system");
         pthread_mutex_unlock(&jw__w.mu);
         return JW__SCRAPE_ITEM_DONE;
     }
@@ -338,6 +550,9 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     snprintf(client.username, sizeof(client.username), "%s", prefs.user);
     snprintf(client.password, sizeof(client.password), "%s", prefs.pass);
     client.interrupt = interrupt;
+    jw__scrape_progress_ctx progress_ctx = { item->row_id };
+    client.progress = jw__scrape_progress;
+    client.progress_userdata = &progress_ctx;
 
     jw_ss_result result;
     int rc = jw_ss_search_rom(&client, rom_name, rom_abs, system_id,
@@ -361,7 +576,9 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
         jw_db_increment_setting(jw__w.db_path, "library.generation");
 
         pthread_mutex_lock(&jw__w.mu);
-        jw__w.found++;
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_DONE, "Artwork saved");
+        jw__scrape_row *row = jw__row_find_locked(item->row_id);
+        jw__eta_record_done_locked(row);
         /* Follow the account's thread allowance, capped by the pool. */
         if (result.max_threads > 0) {
             int permits = result.max_threads;
@@ -370,6 +587,11 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
                 jw__w.permits = permits;
                 pthread_cond_broadcast(&jw__w.cv);
             }
+            jw__w.max_threads = result.max_threads;
+        }
+        if (result.max_requests > 0) {
+            jw__w.requests_today = result.requests_today;
+            jw__w.max_requests = result.max_requests;
         }
         /* Out of daily requests: pause before burning failed lookups. */
         if (result.max_requests > 0 &&
@@ -386,10 +608,11 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
 
     pthread_mutex_lock(&jw__w.mu);
     if (rc == 1) {
-        jw__w.not_found++;
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_NOT_FOUND,
+                           "No matching artwork found");
     } else if (rc == -2) {
-        /* cancelled mid-flight: counted as failed without a message */
-        jw__w.failed++;
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_CANCELLED,
+                           "Cancelled");
     } else {
         const char *msg = jw_ss_last_error();
         if (msg) {
@@ -404,7 +627,8 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
                 jw__w.permits--;
             }
         }
-        jw__w.failed++;
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_ERROR,
+                           msg ? msg : "ScreenScraper request failed");
     }
     pthread_mutex_unlock(&jw__w.mu);
     return JW__SCRAPE_ITEM_DONE;
@@ -441,6 +665,8 @@ static void *jw__worker_main(void *arg) {
         jw__w.head = (jw__w.head + 1) % JW__SCRAPE_QUEUE_MAX;
         jw__w.count--;
         jw__w.active_count++;
+        jw__row_set_locked(slot->item.row_id, JW_SCRAPE_ROW_HASH,
+                           "Starting scrape");
         pthread_mutex_unlock(&jw__w.mu);
 
         jw__scrape_item_result result =
@@ -449,14 +675,12 @@ static void *jw__worker_main(void *arg) {
         pthread_mutex_lock(&jw__w.mu);
         if (result == JW__SCRAPE_ITEM_PAUSED_QUOTA &&
             jw__queue_prepend_locked(&slot->item) != 0) {
-            jw__w.failed++;
+            jw__row_set_locked(slot->item.row_id, JW_SCRAPE_ROW_ERROR,
+                               "Could not keep quota-paused item queued");
             result = JW__SCRAPE_ITEM_DONE;
         }
         slot->used = false;
         jw__w.active_count--;
-        if (result == JW__SCRAPE_ITEM_DONE) {
-            jw__w.done++;
-        }
         /* Wake siblings: a permit freed up, or the drain just completed. */
         pthread_cond_broadcast(&jw__w.cv);
     }
@@ -485,6 +709,18 @@ int jw_scrape_worker_start(const char *db_path, const char *sdcard_root) {
             return -1;
         }
     }
+    if (!jw__w.rows) {
+        jw__w.rows = calloc(JW__SCRAPE_QUEUE_MAX, sizeof(*jw__w.rows));
+        if (!jw__w.rows) {
+            pthread_mutex_unlock(&jw__w.mu);
+            return -1;
+        }
+    }
+    jw__w.head = 0;
+    jw__w.count = 0;
+    jw__w.active_count = 0;
+    jw__w.paused_quota = false;
+    jw__clear_finished_batch_locked();
     jw__w.shutdown = false;
     jw__w.permits = 1;
     jw__w.thread_count = 0;
@@ -646,12 +882,9 @@ void jw_scrape_status(jw_scrape_status_info *out) {
     } else {
         out->state = JW_SCRAPE_IDLE;
     }
-    out->total = jw__w.total;
-    out->done = jw__w.done;
-    out->found = jw__w.found;
-    out->not_found = jw__w.not_found;
-    out->failed = jw__w.failed;
-    out->queued = jw__w.count;
+    jw__count_rows_locked(&out->total, &out->done, &out->found,
+                          &out->not_found, &out->failed,
+                          &out->cancelled, &out->queued, &out->active);
     for (int i = 0; i < JW__SCRAPE_MAX_WORKERS; i++) {
         if (jw__w.active[i].used) {
             char rom_copy[512];
@@ -668,45 +901,136 @@ void jw_scrape_status(jw_scrape_status_info *out) {
     pthread_mutex_unlock(&jw__w.mu);
 }
 
-static int jw__cancel(const char *system, const char *rom_path) {
+void jw_scrape_queue_snapshot(jw_scrape_queue_info *out, int offset, int limit) {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->eta_seconds = -1;
+    if (offset < 0) {
+        offset = 0;
+    }
+    if (limit <= 0 || limit > JW_SCRAPE_QUEUE_SNAPSHOT_MAX) {
+        limit = JW_SCRAPE_QUEUE_SNAPSHOT_MAX;
+    }
+
     pthread_mutex_lock(&jw__w.mu);
-    int removed = jw__queue_remove(system, rom_path);
-    if (!system && !rom_path) {
-        /* Cancel-all is also the "stop showing the pause banner" gesture. */
-        jw__w.paused_quota = false;
+    if (jw__w.paused_quota) {
+        out->state = JW_SCRAPE_PAUSED_QUOTA;
+    } else if (jw__w.count > 0 || jw__w.active_count > 0) {
+        out->state = JW_SCRAPE_RUNNING;
+    } else {
+        out->state = JW_SCRAPE_IDLE;
+    }
+    jw__count_rows_locked(&out->total, &out->done, &out->found,
+                          &out->not_found, &out->failed,
+                          &out->cancelled, &out->queued, &out->active);
+    out->requests_today = jw__w.requests_today;
+    out->max_requests = jw__w.max_requests;
+    out->max_threads = jw__w.max_threads;
+    out->permits = jw__w.permits;
+    out->eta_seconds = jw__eta_seconds_locked();
+    snprintf(out->message, sizeof(out->message), "%s", jw__w.message);
+
+    int available = jw__w.row_count - offset;
+    if (available < 0) {
+        available = 0;
+    }
+    if (available > limit) {
+        available = limit;
+    }
+    out->row_count = available;
+    for (int i = 0; i < available; i++) {
+        const jw__scrape_row *src = &jw__w.rows[offset + i];
+        jw_scrape_queue_row *dst = &out->rows[i];
+        dst->id = src->id;
+        dst->state = src->state;
+        snprintf(dst->display_name, sizeof(dst->display_name), "%s",
+                 src->display_name);
+        snprintf(dst->system, sizeof(dst->system), "%s", src->system);
+        snprintf(dst->rom_path, sizeof(dst->rom_path), "%s", src->rom_path);
+        snprintf(dst->output_path, sizeof(dst->output_path), "%s",
+                 src->output_path);
+        snprintf(dst->message, sizeof(dst->message), "%s", src->message);
+    }
+    pthread_mutex_unlock(&jw__w.mu);
+}
+
+int jw_scrape_clear_done(void) {
+    pthread_mutex_lock(&jw__w.mu);
+    int removed = 0;
+    int kept = 0;
+    for (int i = 0; i < jw__w.row_count; i++) {
+        if (jw__row_state_is_terminal(jw__w.rows[i].state)) {
+            removed++;
+            continue;
+        }
+        if (kept != i) {
+            jw__w.rows[kept] = jw__w.rows[i];
+        }
+        kept++;
+    }
+    jw__w.row_count = kept;
+    if (kept == 0 && jw__w.count == 0 && jw__w.active_count == 0) {
+        jw__clear_finished_batch_locked();
     }
     pthread_mutex_unlock(&jw__w.mu);
     return removed;
 }
 
+static int jw__cancel(const char *system, const char *rom_path,
+                      bool interrupt_active) {
+    pthread_mutex_lock(&jw__w.mu);
+    int removed = jw__queue_remove(system, rom_path);
+    if (interrupt_active) {
+        for (int i = 0; i < JW__SCRAPE_MAX_WORKERS; i++) {
+            jw__active_slot *slot = &jw__w.active[i];
+            if (!slot->used) {
+                continue;
+            }
+            bool match = (!system || strcmp(slot->item.system, system) == 0) &&
+                         (!rom_path || strcmp(slot->item.rom_path, rom_path) == 0);
+            if (match) {
+                atomic_store(&slot->interrupt, 1);
+                removed++;
+            }
+        }
+    }
+    if (!system && !rom_path) {
+        /* Cancel-all is also the "stop showing the pause banner" gesture. */
+        jw__w.paused_quota = false;
+    }
+    pthread_cond_broadcast(&jw__w.cv);
+    pthread_mutex_unlock(&jw__w.mu);
+    return removed;
+}
+
+int jw_scrape_stop_all(void) {
+    return jw__cancel(NULL, NULL, true);
+}
+
 int jw_scrape_cancel_all(void) {
-    return jw__cancel(NULL, NULL);
+    return jw_scrape_stop_all();
 }
 
 int jw_scrape_cancel_system(const char *system) {
-    return jw__cancel(system, NULL);
+    return jw__cancel(system, NULL, true);
 }
 
 int jw_scrape_cancel_game(const char *system, const char *rom_path) {
-    return jw__cancel(system, rom_path);
+    return jw__cancel(system, rom_path, true);
 }
 
 bool jw_scrape_is_pending_game(const char *system, const char *rom_path) {
     pthread_mutex_lock(&jw__w.mu);
-    bool pending = jw__queue_contains(system, rom_path) ||
-                   jw__active_matches(system, rom_path);
+    bool pending = jw__pending_contains_locked(system, rom_path);
     pthread_mutex_unlock(&jw__w.mu);
     return pending;
 }
 
 bool jw_scrape_is_pending_system(const char *system) {
     pthread_mutex_lock(&jw__w.mu);
-    bool pending = jw__active_matches(system, NULL);
-    for (int i = 0; i < jw__w.count && !pending; i++) {
-        const jw__scrape_item *it =
-            &jw__w.queue[(jw__w.head + i) % JW__SCRAPE_QUEUE_MAX];
-        if (strcmp(it->system, system) == 0) pending = true;
-    }
+    bool pending = jw__pending_contains_locked(system, NULL);
     pthread_mutex_unlock(&jw__w.mu);
     return pending;
 }

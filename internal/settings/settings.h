@@ -116,7 +116,8 @@ typedef enum {
 /* Scraping page */
 #define JW_SCRAPING_ARTWORK   0
 #define JW_SCRAPING_REGION    1
-#define JW_SCRAPING_ROW_COUNT 2
+#define JW_SCRAPING_QUEUE     2
+#define JW_SCRAPING_ROW_COUNT 3
 /* Capacity for the priority editors (catalogs are 10 entries each today). */
 #define JW_SCRAPE_PRIO_SLOTS  16
 
@@ -194,6 +195,9 @@ typedef struct {
     int                scrape_region_included;
     bool               scrape_edit_is_region;  /* which list the editor edits */
     bool               scrape_edit_grabbed;    /* X grabbed the cursor row */
+    jw_ipc_scrape_queue_info *scrape_queue_cache;
+    bool               scrape_queue_have_cache;
+    unsigned           scrape_queue_next_poll_ms;
     char               ra_username[64];     /* RetroAchievements account ("" = signed out); exported
                                                to RetroArch's session config, which validates it */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
@@ -335,6 +339,7 @@ void jw_settings_load_status_prefs(const char *db_path,
 
 void jw_settings_ui_render(const jw_settings_ui *ui,
                             int x, int y, int w, int h);
+void jw_settings_ui_open_scrape_queue(jw_settings_ui *ui);
 
 bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                    char *status_buf, size_t status_buf_size,

@@ -1027,7 +1027,9 @@ static int jw__reply_scrape_status(jw_ipc_client *client, cJSON *request) {
     cJSON_AddNumberToObject(root, "found", info.found);
     cJSON_AddNumberToObject(root, "not_found", info.not_found);
     cJSON_AddNumberToObject(root, "failed", info.failed);
+    cJSON_AddNumberToObject(root, "cancelled", info.cancelled);
     cJSON_AddNumberToObject(root, "queued", info.queued);
+    cJSON_AddNumberToObject(root, "active", info.active);
     cJSON_AddStringToObject(root, "current_name", info.current_name);
     cJSON_AddStringToObject(root, "current_system", info.current_system);
     cJSON_AddStringToObject(root, "message", info.message);
@@ -1044,6 +1046,81 @@ static int jw__reply_scrape_status(jw_ipc_client *client, cJSON *request) {
         cJSON_AddBoolToObject(root, "pending", pending);
     }
     return jw__reply_json(client, root);
+}
+
+static const char *jw__scrape_row_state_name(jw_scrape_row_state state) {
+    switch (state) {
+        case JW_SCRAPE_ROW_QUEUED:    return "queued";
+        case JW_SCRAPE_ROW_HASH:      return "hashing";
+        case JW_SCRAPE_ROW_SEARCH:    return "searching";
+        case JW_SCRAPE_ROW_DOWNLOAD:  return "downloading";
+        case JW_SCRAPE_ROW_SAVE:      return "saving";
+        case JW_SCRAPE_ROW_DONE:      return "done";
+        case JW_SCRAPE_ROW_NOT_FOUND: return "not-found";
+        case JW_SCRAPE_ROW_ERROR:     return "error";
+        case JW_SCRAPE_ROW_CANCELLED: return "cancelled";
+        default:                      return "queued";
+    }
+}
+
+static int jw__reply_scrape_queue(jw_ipc_client *client, cJSON *request) {
+    int offset = 0;
+    int limit = JW_SCRAPE_QUEUE_SNAPSHOT_MAX;
+    cJSON *offset_json = request
+        ? cJSON_GetObjectItemCaseSensitive(request, "offset") : NULL;
+    cJSON *limit_json = request
+        ? cJSON_GetObjectItemCaseSensitive(request, "limit") : NULL;
+    if (cJSON_IsNumber(offset_json)) offset = offset_json->valueint;
+    if (cJSON_IsNumber(limit_json)) limit = limit_json->valueint;
+
+    jw_scrape_queue_info *info =
+        (jw_scrape_queue_info *)calloc(1, sizeof(*info));
+    if (!info) {
+        return jw__reply_error(client, "out of memory");
+    }
+    jw_scrape_queue_snapshot(info, offset, limit);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "scrape-queue");
+    const char *state_name =
+        info->state == JW_SCRAPE_RUNNING ? "running" :
+        info->state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" : "idle";
+    cJSON_AddStringToObject(root, "state", state_name);
+    cJSON_AddNumberToObject(root, "total", info->total);
+    cJSON_AddNumberToObject(root, "done", info->done);
+    cJSON_AddNumberToObject(root, "found", info->found);
+    cJSON_AddNumberToObject(root, "not_found", info->not_found);
+    cJSON_AddNumberToObject(root, "failed", info->failed);
+    cJSON_AddNumberToObject(root, "cancelled", info->cancelled);
+    cJSON_AddNumberToObject(root, "queued", info->queued);
+    cJSON_AddNumberToObject(root, "active", info->active);
+    cJSON_AddNumberToObject(root, "requests_today", info->requests_today);
+    cJSON_AddNumberToObject(root, "max_requests", info->max_requests);
+    cJSON_AddNumberToObject(root, "max_threads", info->max_threads);
+    cJSON_AddNumberToObject(root, "permits", info->permits);
+    cJSON_AddNumberToObject(root, "eta_seconds", info->eta_seconds);
+    cJSON_AddStringToObject(root, "message", info->message);
+    cJSON_AddNumberToObject(root, "offset", offset);
+    cJSON_AddNumberToObject(root, "row_count", info->row_count);
+
+    cJSON *rows = cJSON_CreateArray();
+    for (int i = 0; i < info->row_count; i++) {
+        jw_scrape_queue_row *row = &info->rows[i];
+        cJSON *r = cJSON_CreateObject();
+        cJSON_AddNumberToObject(r, "id", (double)row->id);
+        cJSON_AddStringToObject(r, "state",
+                                jw__scrape_row_state_name(row->state));
+        cJSON_AddStringToObject(r, "display_name", row->display_name);
+        cJSON_AddStringToObject(r, "system", row->system);
+        cJSON_AddStringToObject(r, "rom_path", row->rom_path);
+        cJSON_AddStringToObject(r, "output_path", row->output_path);
+        cJSON_AddStringToObject(r, "message", row->message);
+        cJSON_AddItemToArray(rows, r);
+    }
+    cJSON_AddItemToObject(root, "rows", rows);
+    int rc = jw__reply_json(client, root);
+    free(info);
+    return rc;
 }
 
 static int jw__handle_scrape_start(jw_daemon_state *state,
@@ -1124,6 +1201,30 @@ static int jw__handle_scrape_cancel(jw_daemon_state *state,
     cJSON_AddStringToObject(root, "type", "ok");
     cJSON_AddStringToObject(root, "action", "scrape-cancel");
     cJSON_AddNumberToObject(root, "removed", removed);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_scrape_stop_all(jw_daemon_state *state,
+                                      jw_ipc_client *client) {
+    (void)state;
+    int stopped = jw_scrape_stop_all();
+    jw_log_info("scrape-stop-all stopped=%d", stopped);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ok");
+    cJSON_AddStringToObject(root, "action", "scrape-stop-all");
+    cJSON_AddNumberToObject(root, "stopped", stopped);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_scrape_clear_done(jw_daemon_state *state,
+                                        jw_ipc_client *client) {
+    (void)state;
+    int cleared = jw_scrape_clear_done();
+    jw_log_info("scrape-clear-done cleared=%d", cleared);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ok");
+    cJSON_AddStringToObject(root, "action", "scrape-clear-done");
+    cJSON_AddNumberToObject(root, "cleared", cleared);
     return jw__reply_json(client, root);
 }
 
@@ -4682,10 +4783,26 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return rc;
     }
 
+    if (strcmp(type->valuestring, "scrape-queue") == 0) {
+        int rc = jw__reply_scrape_queue(client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
     if (strcmp(type->valuestring, "scrape-cancel") == 0) {
         int rc = jw__handle_scrape_cancel(state, client, root);
         cJSON_Delete(root);
         return rc;
+    }
+
+    if (strcmp(type->valuestring, "scrape-stop-all") == 0) {
+        cJSON_Delete(root);
+        return jw__handle_scrape_stop_all(state, client);
+    }
+
+    if (strcmp(type->valuestring, "scrape-clear-done") == 0) {
+        cJSON_Delete(root);
+        return jw__handle_scrape_clear_done(state, client);
     }
 
     if (strcmp(type->valuestring, "library-status") == 0) {

@@ -10,6 +10,7 @@
    the launcher refreshes live. */
 
 #define JW_SCRAPE_MAX_DIM 1000   /* longest-side cap for saved art */
+#define JW_SCRAPE_QUEUE_SNAPSHOT_MAX 256
 
 typedef enum {
     JW_SCRAPE_IDLE = 0,
@@ -20,15 +21,59 @@ typedef enum {
 typedef struct {
     jw_scrape_state state;
     int  total;               /* items accepted since the queue last drained */
-    int  done;                /* processed (found + not_found + failed) */
+    int  done;                /* terminal rows (found + not_found + failed + cancelled) */
     int  found;
     int  not_found;
     int  failed;
+    int  cancelled;
     int  queued;              /* still waiting (excludes in-flight) */
+    int  active;              /* in-flight worker slots */
     char current_name[256];   /* rom filename being processed ("" when idle) */
     char current_system[64];
     char message[256];        /* last error / quota message ("" when none) */
 } jw_scrape_status_info;
+
+typedef enum {
+    JW_SCRAPE_ROW_QUEUED = 0,
+    JW_SCRAPE_ROW_HASH,
+    JW_SCRAPE_ROW_SEARCH,
+    JW_SCRAPE_ROW_DOWNLOAD,
+    JW_SCRAPE_ROW_SAVE,
+    JW_SCRAPE_ROW_DONE,
+    JW_SCRAPE_ROW_NOT_FOUND,
+    JW_SCRAPE_ROW_ERROR,
+    JW_SCRAPE_ROW_CANCELLED,
+} jw_scrape_row_state;
+
+typedef struct {
+    unsigned id;
+    jw_scrape_row_state state;
+    char display_name[256];
+    char system[64];
+    char rom_path[512];
+    char output_path[512];
+    char message[256];
+} jw_scrape_queue_row;
+
+typedef struct {
+    jw_scrape_state state;
+    int total;
+    int done;
+    int found;
+    int not_found;
+    int failed;
+    int cancelled;
+    int queued;
+    int active;
+    int row_count;
+    int requests_today;
+    int max_requests;
+    int max_threads;
+    int permits;
+    int eta_seconds;          /* -1 when unavailable */
+    char message[256];
+    jw_scrape_queue_row rows[JW_SCRAPE_QUEUE_SNAPSHOT_MAX];
+} jw_scrape_queue_info;
 
 /* Start/stop the worker thread. Both are idempotent; stop joins the thread
    and drops any queued items. */
@@ -47,9 +92,17 @@ int jw_scrape_enqueue_system(const char *system, bool missing_only,
                              const char **error);
 
 void jw_scrape_status(jw_scrape_status_info *out);
+void jw_scrape_queue_snapshot(jw_scrape_queue_info *out, int offset, int limit);
 
-/* Cancel queued work (returns the number of items removed). In-flight items
-   finish normally, matching the IPC contract. */
+/* Clear terminal rows (done/not-found/error/cancelled), preserving queued and
+   active work. Returns the number of rows removed. */
+int jw_scrape_clear_done(void);
+
+/* Stop queued and active work. Active HTTP/backoff is interrupted where the
+   ScreenScraper client can observe it. Returns terminal rows created. */
+int jw_scrape_stop_all(void);
+
+/* Cancel queued and matching in-flight work (returns affected items). */
 int jw_scrape_cancel_all(void);
 int jw_scrape_cancel_system(const char *system);
 int jw_scrape_cancel_game(const char *system, const char *rom_path);

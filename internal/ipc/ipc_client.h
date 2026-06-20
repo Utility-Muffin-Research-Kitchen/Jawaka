@@ -302,11 +302,57 @@ typedef struct {
     int  found;
     int  not_found;
     int  failed;
+    int  cancelled;
     int  queued;
+    int  active;
     char current_name[256];
     char current_system[64];
     char message[256];
 } jw_ipc_scrape_status_info;
+
+#define JW_IPC_SCRAPE_QUEUE_MAX_ROWS 256
+
+typedef enum {
+    JW_IPC_SCRAPE_ROW_QUEUED = 0,
+    JW_IPC_SCRAPE_ROW_HASH,
+    JW_IPC_SCRAPE_ROW_SEARCH,
+    JW_IPC_SCRAPE_ROW_DOWNLOAD,
+    JW_IPC_SCRAPE_ROW_SAVE,
+    JW_IPC_SCRAPE_ROW_DONE,
+    JW_IPC_SCRAPE_ROW_NOT_FOUND,
+    JW_IPC_SCRAPE_ROW_ERROR,
+    JW_IPC_SCRAPE_ROW_CANCELLED,
+} jw_ipc_scrape_row_state;
+
+typedef struct {
+    unsigned id;
+    jw_ipc_scrape_row_state state;
+    char display_name[256];
+    char system[64];
+    char rom_path[512];
+    char output_path[512];
+    char message[256];
+} jw_ipc_scrape_queue_row;
+
+typedef struct {
+    char state[16];           /* "idle" | "running" | "paused-quota" */
+    int total;
+    int done;
+    int found;
+    int not_found;
+    int failed;
+    int cancelled;
+    int queued;
+    int active;
+    int requests_today;
+    int max_requests;
+    int max_threads;
+    int permits;
+    int eta_seconds;          /* -1 when unavailable */
+    int row_count;
+    char message[256];
+    jw_ipc_scrape_queue_row rows[JW_IPC_SCRAPE_QUEUE_MAX_ROWS];
+} jw_ipc_scrape_queue_info;
 
 /* Queue scraping. scope "game" needs rom_path (always re-fetches/replaces);
    scope "system" honors missing_only. On success returns 0 and sets
@@ -318,6 +364,8 @@ int jw_ipc_scrape_start(const char *socket_path, const char *scope,
                         char *status, int status_len);
 int jw_ipc_scrape_status(const char *socket_path,
                          jw_ipc_scrape_status_info *out);
+int jw_ipc_scrape_queue(const char *socket_path, int offset, int limit,
+                        jw_ipc_scrape_queue_info *out);
 /* True in *out_pending when the system (rom_path NULL) or game has queued
    or in-flight scrape work. */
 int jw_ipc_scrape_pending(const char *socket_path, const char *system,
@@ -326,6 +374,8 @@ int jw_ipc_scrape_pending(const char *socket_path, const char *system,
 int jw_ipc_scrape_cancel(const char *socket_path, const char *scope,
                          const char *system, const char *rom_path,
                          int *out_removed);
+int jw_ipc_scrape_stop_all(const char *socket_path, int *out_stopped);
+int jw_ipc_scrape_clear_done(const char *socket_path, int *out_cleared);
 
 /* LED ring. set-led applies + persists in jawakad; get-led reads the cached
    state back from platform-status. mode is "FOREVER"/"BREATH"/"RAINBOW". */

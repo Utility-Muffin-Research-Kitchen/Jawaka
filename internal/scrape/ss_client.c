@@ -51,6 +51,12 @@ const char *jw_ss_last_error(void) {
     return jw__ss_error[0] ? jw__ss_error : NULL;
 }
 
+static void jw__ss_progress(const jw_ss_client *client, jw_ss_phase phase) {
+    if (client && client->progress) {
+        client->progress(client->progress_userdata, phase);
+    }
+}
+
 /* ── cURL plumbing ────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -515,12 +521,16 @@ int jw_ss_search_rom(const jw_ss_client *client,
 
     char md5_hash[33] = {0};
     long file_size = 0;
+    if (rom_abs_path) {
+        jw__ss_progress(client, JW_SS_PHASE_HASHING);
+    }
     if (rom_abs_path &&
         jw_scrape_md5(rom_abs_path, md5_hash, &file_size) != 0) {
         md5_hash[0] = '\0';
         file_size = 0;
     }
 
+    jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
     int ret = jw__search_request(client, rom_name, md5_hash, file_size,
                                  system_id, artwork_types, artwork_count,
                                  region_prio, region_count, result);
@@ -528,6 +538,7 @@ int jw_ss_search_rom(const jw_ss_client *client,
     /* An md5 that ScreenScraper does not know can shadow a clean name
        match; retry without it. */
     if (ret == 1 && md5_hash[0] != '\0') {
+        jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
         ret = jw__search_request(client, rom_name, "", 0, system_id,
                                  artwork_types, artwork_count,
                                  region_prio, region_count, result);
@@ -690,6 +701,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
 
     jw__curl_buffer buf;
     char content_type[128];
+    jw__ss_progress(client, JW_SS_PHASE_DOWNLOADING);
     int http_code = jw__http_get(client, media_url, &buf, 2,
                                  content_type, sizeof(content_type));
     if (http_code == -2) {
@@ -709,6 +721,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
         return -1;
     }
 
+    jw__ss_progress(client, JW_SS_PHASE_SAVING);
     jw__ensure_parent_dir(dest_path);
 
     char tmp_path[PATH_MAX];

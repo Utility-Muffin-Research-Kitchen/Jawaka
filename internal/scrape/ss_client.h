@@ -31,10 +31,21 @@
 bool jw_ss_available(void);   /* dev credentials compiled in */
 bool jw_ss_is_debug(void);
 
+typedef enum {
+    JW_SS_PHASE_HASHING = 0,
+    JW_SS_PHASE_SEARCHING,
+    JW_SS_PHASE_DOWNLOADING,
+    JW_SS_PHASE_SAVING,
+} jw_ss_phase;
+
+typedef void (*jw_ss_progress_fn)(void *userdata, jw_ss_phase phase);
+
 typedef struct {
     char username[256];       /* ScreenScraper user account ("" = anonymous) */
     char password[256];
     atomic_int *interrupt;    /* optional: set non-zero to cancel mid-request */
+    jw_ss_progress_fn progress;
+    void *progress_userdata;
 } jw_ss_client;
 
 typedef struct {

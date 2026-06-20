@@ -9,9 +9,11 @@
 #include "cJSON.h"
 
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ─── Data tables ──────────────────────────────────────────────────────── */
 
@@ -2385,6 +2387,336 @@ static void jw__render_scrape_priority(const jw_settings_ui *ui,
                        jw__draw_scrape_edit_item, &ctx);
 }
 
+static const char *jw__scrape_queue_state_label(jw_ipc_scrape_row_state state) {
+    switch (state) {
+        case JW_IPC_SCRAPE_ROW_QUEUED:    return "Queued";
+        case JW_IPC_SCRAPE_ROW_HASH:      return "Hashing";
+        case JW_IPC_SCRAPE_ROW_SEARCH:    return "Searching";
+        case JW_IPC_SCRAPE_ROW_DOWNLOAD:  return "Downloading";
+        case JW_IPC_SCRAPE_ROW_SAVE:      return "Saving";
+        case JW_IPC_SCRAPE_ROW_DONE:      return "Done";
+        case JW_IPC_SCRAPE_ROW_NOT_FOUND: return "Not Found";
+        case JW_IPC_SCRAPE_ROW_ERROR:     return "Error";
+        case JW_IPC_SCRAPE_ROW_CANCELLED: return "Cancelled";
+        default:                          return "Queued";
+    }
+}
+
+static cat_queue_status jw__scrape_queue_cat_status(jw_ipc_scrape_row_state state) {
+    switch (state) {
+        case JW_IPC_SCRAPE_ROW_DONE:      return CAT_QUEUE_DONE;
+        case JW_IPC_SCRAPE_ROW_NOT_FOUND:
+        case JW_IPC_SCRAPE_ROW_ERROR:     return CAT_QUEUE_FAILED;
+        case JW_IPC_SCRAPE_ROW_CANCELLED: return CAT_QUEUE_SKIPPED;
+        case JW_IPC_SCRAPE_ROW_QUEUED:    return CAT_QUEUE_PENDING;
+        default:                          return CAT_QUEUE_RUNNING;
+    }
+}
+
+static void jw__scrape_queue_format_eta(int seconds, char *buf, size_t buf_size) {
+    if (!buf || buf_size == 0) return;
+    if (seconds < 0) {
+        buf[0] = '\0';
+    } else if (seconds < 60) {
+        snprintf(buf, buf_size, "%ds", seconds);
+    } else {
+        int minutes = (seconds + 59) / 60;
+        if (minutes < 60)
+            snprintf(buf, buf_size, "%dm", minutes);
+        else
+            snprintf(buf, buf_size, "%dh %dm", minutes / 60, minutes % 60);
+    }
+}
+
+static jw_ipc_scrape_queue_info *jw__scrape_queue_cache(jw_settings_ui *ui) {
+    if (!ui) return NULL;
+    if (!ui->scrape_queue_cache) {
+        ui->scrape_queue_cache =
+            (jw_ipc_scrape_queue_info *)calloc(1, sizeof(*ui->scrape_queue_cache));
+    }
+    return ui->scrape_queue_cache;
+}
+
+static void jw__scrape_queue_refresh_settings_cache(jw_settings_ui *ui,
+                                                    bool force) {
+    if (!ui || !ui->socket_path[0]) return;
+    unsigned now = SDL_GetTicks();
+    if (!force && ui->scrape_queue_have_cache &&
+        now < ui->scrape_queue_next_poll_ms) {
+        return;
+    }
+    jw_ipc_scrape_queue_info *info = jw__scrape_queue_cache(ui);
+    if (info && jw_ipc_scrape_queue(ui->socket_path, 0, 1, info) == 0) {
+        ui->scrape_queue_have_cache = true;
+        ui->scrape_queue_next_poll_ms = now + 1000u;
+    }
+}
+
+static void jw__scrape_queue_settings_value(jw_settings_ui *ui,
+                                            char *buf, size_t buf_size) {
+    if (!buf || buf_size == 0) return;
+    snprintf(buf, buf_size, "%s", "Open");
+    jw__scrape_queue_refresh_settings_cache(ui, false);
+    if (!ui || !ui->scrape_queue_have_cache) {
+        return;
+    }
+    const jw_ipc_scrape_queue_info *q = ui->scrape_queue_cache;
+    if (!q) return;
+    int failed = q->failed + q->not_found;
+    if (strcmp(q->state, "paused-quota") == 0) {
+        snprintf(buf, buf_size, "%s", "Quota paused");
+    } else if (q->active > 0 || q->queued > 0) {
+        snprintf(buf, buf_size, "%d/%d done", q->done, q->total);
+    } else if (q->total <= 0) {
+        snprintf(buf, buf_size, "%s", "Empty");
+    } else if (failed > 0) {
+        snprintf(buf, buf_size, "%d done, %d failed", q->done, failed);
+    } else {
+        snprintf(buf, buf_size, "%d done", q->done);
+    }
+}
+
+typedef struct {
+    jw_settings_ui *ui;
+    jw_ipc_scrape_queue_info *info;
+    bool have_info;
+    unsigned next_poll_ms;
+} jw__scrape_queue_ctx;
+
+static void jw__scrape_queue_fetch(jw__scrape_queue_ctx *ctx, bool force) {
+    if (!ctx || !ctx->ui || !ctx->ui->socket_path[0]) {
+        return;
+    }
+    unsigned now = SDL_GetTicks();
+    if (!force && ctx->have_info && now < ctx->next_poll_ms) {
+        return;
+    }
+    if (!ctx->info) {
+        ctx->info = (jw_ipc_scrape_queue_info *)calloc(1, sizeof(*ctx->info));
+        if (!ctx->info) return;
+    }
+    if (jw_ipc_scrape_queue(ctx->ui->socket_path, 0,
+                            JW_IPC_SCRAPE_QUEUE_MAX_ROWS, ctx->info) == 0) {
+        ctx->have_info = true;
+        ctx->next_poll_ms = now + 250u;
+        jw_ipc_scrape_queue_info *cache = jw__scrape_queue_cache(ctx->ui);
+        if (cache) {
+            *cache = *ctx->info;
+            ctx->ui->scrape_queue_have_cache = true;
+            ctx->ui->scrape_queue_next_poll_ms = now + 1000u;
+        }
+    }
+}
+
+static int jw__scrape_queue_snapshot(cat_queue_item *buf, int max,
+                                     void *userdata) {
+    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
+    if (!buf || max <= 0 || !ctx) return 0;
+    jw__scrape_queue_fetch(ctx, false);
+    if (!ctx->have_info || !ctx->info) return 0;
+
+    int count = ctx->info->row_count;
+    if (count > max) count = max;
+    for (int i = 0; i < count; i++) {
+        const jw_ipc_scrape_queue_row *row = &ctx->info->rows[i];
+        cat_queue_item *item = &buf[i];
+        memset(item, 0, sizeof(*item));
+        const char *title = row->display_name[0] ? row->display_name
+                                                 : row->rom_path;
+        snprintf(item->title, sizeof(item->title), "%.*s",
+                 (int)sizeof(item->title) - 1, title);
+        if (row->message[0]) {
+            snprintf(item->subtitle, sizeof(item->subtitle), "%.32s - %.90s",
+                     row->system, row->message);
+        } else {
+            snprintf(item->subtitle, sizeof(item->subtitle), "%.127s",
+                     row->system);
+        }
+        snprintf(item->status_text, sizeof(item->status_text), "%s",
+                 jw__scrape_queue_state_label(row->state));
+        item->status = jw__scrape_queue_cat_status(row->state);
+        item->progress = -1.0f;
+        item->userdata = (void *)(uintptr_t)row->id;
+    }
+    return count;
+}
+
+static const jw_ipc_scrape_queue_row *
+jw__scrape_queue_find_row(const jw__scrape_queue_ctx *ctx, unsigned id) {
+    if (!ctx || !ctx->have_info || !ctx->info) return NULL;
+    for (int i = 0; i < ctx->info->row_count; i++) {
+        if (ctx->info->rows[i].id == id) {
+            return &ctx->info->rows[i];
+        }
+    }
+    return NULL;
+}
+
+static void jw__scrape_queue_detail(const cat_queue_item *item, void *userdata) {
+    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
+    if (!item || !ctx) return;
+    unsigned id = (unsigned)(uintptr_t)item->userdata;
+    const jw_ipc_scrape_queue_row *src = jw__scrape_queue_find_row(ctx, id);
+    if (!src) return;
+    jw_ipc_scrape_queue_row row = *src;
+
+    char status[64];
+    snprintf(status, sizeof(status), "%s", jw__scrape_queue_state_label(row.state));
+    const char *output = row.output_path[0] ? row.output_path : "Not written";
+    cat_detail_info_pair info[] = {
+        { .key = "Status", .value = status },
+        { .key = "System", .value = row.system },
+        { .key = "ROM",    .value = row.rom_path },
+        { .key = "Output", .value = output },
+    };
+    cat_detail_section sections[3];
+    memset(sections, 0, sizeof(sections));
+    int section_count = 0;
+    sections[section_count++] = (cat_detail_section) {
+        .type = CAT_SECTION_INFO,
+        .title = "Result",
+        .info_pairs = info,
+        .info_count = (int)(sizeof(info) / sizeof(info[0])),
+    };
+
+    bool preview_available = false;
+    if (row.state == JW_IPC_SCRAPE_ROW_DONE &&
+        row.output_path[0] && access(row.output_path, R_OK) == 0) {
+        SDL_Texture *preview_probe = cat_load_image(row.output_path);
+        if (preview_probe) {
+            SDL_DestroyTexture(preview_probe);
+            preview_available = true;
+        }
+    }
+    if (preview_available) {
+        sections[section_count++] = (cat_detail_section) {
+            .type = CAT_SECTION_IMAGE,
+            .title = "Preview",
+            .image_path = row.output_path,
+            .image_w = cat_scale(220),
+            .image_h = cat_scale(160),
+        };
+    }
+
+    char description[512] = "";
+    if (row.state == JW_IPC_SCRAPE_ROW_NOT_FOUND) {
+        snprintf(description, sizeof(description), "%s",
+                 "Not found in ScreenScraper.fr database.");
+    } else if (row.state == JW_IPC_SCRAPE_ROW_ERROR) {
+        snprintf(description, sizeof(description), "%s",
+                 row.message[0] ? row.message : "Artwork scrape failed.");
+    } else if (row.state == JW_IPC_SCRAPE_ROW_CANCELLED) {
+        snprintf(description, sizeof(description), "%s",
+                 row.message[0] ? row.message : "Scrape was cancelled before completion.");
+    }
+    if (description[0]) {
+        sections[section_count++] = (cat_detail_section) {
+            .type = CAT_SECTION_DESCRIPTION,
+            .title = "Details",
+            .description = description,
+        };
+    }
+
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "BACK" },
+    };
+    cat_status_bar_opts status_bar;
+    jw_settings_status_bar_opts(ctx->ui, &status_bar);
+    cat_detail_opts opts = {
+        .title = row.display_name[0] ? row.display_name : "Scrape Result",
+        .sections = sections,
+        .section_count = section_count,
+        .footer = footer,
+        .footer_count = 1,
+        .status_bar = &status_bar,
+    };
+    cat_detail_result result;
+    cat_detail_screen(&opts, &result);
+}
+
+static void jw__scrape_queue_stop_all(void *userdata) {
+    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
+    if (!ctx || !ctx->ui || !ctx->ui->socket_path[0]) return;
+    int stopped = 0;
+    (void)jw_ipc_scrape_stop_all(ctx->ui->socket_path, &stopped);
+    ctx->next_poll_ms = 0;
+    jw__scrape_queue_fetch(ctx, true);
+}
+
+static void jw__scrape_queue_clear_done(void *userdata) {
+    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
+    if (!ctx || !ctx->ui || !ctx->ui->socket_path[0]) return;
+    int cleared = 0;
+    (void)jw_ipc_scrape_clear_done(ctx->ui->socket_path, &cleared);
+    ctx->next_poll_ms = 0;
+    jw__scrape_queue_fetch(ctx, true);
+}
+
+static void jw__scrape_queue_summary(char *buf, size_t buf_size,
+                                     void *userdata) {
+    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
+    if (!buf || buf_size == 0 || !ctx || !ctx->have_info || !ctx->info) return;
+    const jw_ipc_scrape_queue_info *q = ctx->info;
+    int failed = q->failed + q->not_found;
+    char eta[32] = "";
+    jw__scrape_queue_format_eta(q->eta_seconds, eta, sizeof(eta));
+
+    char api[64] = "";
+    if (q->max_requests > 0) {
+        snprintf(api, sizeof(api), " | API %d/%d",
+                 q->requests_today, q->max_requests);
+    }
+    char threads[40] = "";
+    if (q->max_threads > 0) {
+        snprintf(threads, sizeof(threads), " | %d/%d THREADS",
+                 q->permits, q->max_threads);
+    } else if (q->permits > 0) {
+        snprintf(threads, sizeof(threads), " | %d THREAD", q->permits);
+    }
+    char eta_part[64] = "";
+    if (eta[0]) {
+        snprintf(eta_part, sizeof(eta_part), " | ETA EST. %s", eta);
+    }
+    const char *prefix = strcmp(q->state, "paused-quota") == 0
+        ? "PAUSED: quota exhausted, " : "";
+    snprintf(buf, buf_size, "%s%d/%d DONE, %d FAILED, %d BUSY%s%s%s",
+             prefix, q->done, q->total, failed, q->active + q->queued,
+             api, threads, eta_part);
+}
+
+void jw_settings_ui_open_scrape_queue(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) return;
+    jw__scrape_queue_ctx *ctx =
+        (jw__scrape_queue_ctx *)calloc(1, sizeof(*ctx));
+    if (!ctx) return;
+    ctx->ui = ui;
+    ctx->info = (jw_ipc_scrape_queue_info *)calloc(1, sizeof(*ctx->info));
+    if (!ctx->info) {
+        free(ctx);
+        return;
+    }
+    jw__scrape_queue_fetch(ctx, true);
+    cat_status_bar_opts status_bar;
+    jw_settings_status_bar_opts(ui, &status_bar);
+    const char *filters[4] = { "ALL", "BUSY", "DONE", "FAIL" };
+    cat_queue_opts opts = {
+        .title = "SCRAPE QUEUE",
+        .snapshot = jw__scrape_queue_snapshot,
+        .max_items = JW_IPC_SCRAPE_QUEUE_MAX_ROWS,
+        .userdata = ctx,
+        .on_detail = jw__scrape_queue_detail,
+        .on_cancel = jw__scrape_queue_stop_all,
+        .on_clear = jw__scrape_queue_clear_done,
+        .status_bar = &status_bar,
+        .filter_labels = { filters[0], filters[1], filters[2], filters[3] },
+        .summary = jw__scrape_queue_summary,
+    };
+    cat_queue_viewer(&opts);
+    jw__scrape_queue_refresh_settings_cache(ui, true);
+    free(ctx->info);
+    free(ctx);
+}
+
 static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Game Art", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
@@ -2408,6 +2740,12 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
     }
     jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_REGION,
                         "Region Priority", region_value, false);
+
+    char queue_value[64];
+    jw__scrape_queue_settings_value((jw_settings_ui *)ui, queue_value,
+                                    sizeof(queue_value));
+    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_QUEUE,
+                        "Scrape Queue", queue_value, false);
 }
 
 /* Account row: like jw__render_list_row, but the status value marquees while the
@@ -4785,6 +5123,12 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 cat_list_state_move(&ui->scraping_list, +1, JW_SCRAPING_ROW_COUNT);
                 break;
             case CAT_BTN_A:
+                if (ui->scraping_list.cursor == JW_SCRAPING_QUEUE) {
+                    jw_settings_ui_open_scrape_queue(ui);
+                    jw__scrape_queue_refresh_settings_cache(ui, true);
+                    snprintf(status_buf, status_size, "%s", "Scrape queue");
+                    break;
+                }
                 ui->scrape_edit_is_region =
                     ui->scraping_list.cursor == JW_SCRAPING_REGION;
                 ui->scrape_edit_grabbed = false;

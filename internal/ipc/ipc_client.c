@@ -1835,7 +1835,9 @@ int jw_ipc_scrape_status(const char *socket_path,
         out->found = (int)ipc__json_ll(resp, "found");
         out->not_found = (int)ipc__json_ll(resp, "not_found");
         out->failed = (int)ipc__json_ll(resp, "failed");
+        out->cancelled = (int)ipc__json_ll(resp, "cancelled");
         out->queued = (int)ipc__json_ll(resp, "queued");
+        out->active = (int)ipc__json_ll(resp, "active");
         v = cJSON_GetObjectItemCaseSensitive(resp, "current_name");
         if (cJSON_IsString(v)) ipc__copy_string(out->current_name, sizeof(out->current_name), v->valuestring);
         v = cJSON_GetObjectItemCaseSensitive(resp, "current_system");
@@ -1843,6 +1845,99 @@ int jw_ipc_scrape_status(const char *socket_path,
         v = cJSON_GetObjectItemCaseSensitive(resp, "message");
         if (cJSON_IsString(v)) ipc__copy_string(out->message, sizeof(out->message), v->valuestring);
     }
+    cJSON_Delete(resp);
+    return 0;
+}
+
+static jw_ipc_scrape_row_state ipc__parse_scrape_row_state(const char *state) {
+    if (!state) return JW_IPC_SCRAPE_ROW_QUEUED;
+    if (strcmp(state, "hashing") == 0 || strcmp(state, "hash") == 0)
+        return JW_IPC_SCRAPE_ROW_HASH;
+    if (strcmp(state, "searching") == 0 || strcmp(state, "search") == 0)
+        return JW_IPC_SCRAPE_ROW_SEARCH;
+    if (strcmp(state, "downloading") == 0 || strcmp(state, "download") == 0)
+        return JW_IPC_SCRAPE_ROW_DOWNLOAD;
+    if (strcmp(state, "saving") == 0 || strcmp(state, "save") == 0)
+        return JW_IPC_SCRAPE_ROW_SAVE;
+    if (strcmp(state, "done") == 0) return JW_IPC_SCRAPE_ROW_DONE;
+    if (strcmp(state, "not-found") == 0) return JW_IPC_SCRAPE_ROW_NOT_FOUND;
+    if (strcmp(state, "error") == 0) return JW_IPC_SCRAPE_ROW_ERROR;
+    if (strcmp(state, "cancelled") == 0) return JW_IPC_SCRAPE_ROW_CANCELLED;
+    return JW_IPC_SCRAPE_ROW_QUEUED;
+}
+
+int jw_ipc_scrape_queue(const char *socket_path, int offset, int limit,
+                        jw_ipc_scrape_queue_info *out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        out->eta_seconds = -1;
+    }
+
+    if (limit <= 0 || limit > JW_IPC_SCRAPE_QUEUE_MAX_ROWS) {
+        limit = JW_IPC_SCRAPE_QUEUE_MAX_ROWS;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-queue");
+    cJSON_AddNumberToObject(req, "offset", offset);
+    cJSON_AddNumberToObject(req, "limit", limit);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    if (!ipc__type_is(resp, "scrape-queue")) {
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (out) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(resp, "state");
+        if (cJSON_IsString(v)) ipc__copy_string(out->state, sizeof(out->state), v->valuestring);
+        out->total = (int)ipc__json_ll(resp, "total");
+        out->done = (int)ipc__json_ll(resp, "done");
+        out->found = (int)ipc__json_ll(resp, "found");
+        out->not_found = (int)ipc__json_ll(resp, "not_found");
+        out->failed = (int)ipc__json_ll(resp, "failed");
+        out->cancelled = (int)ipc__json_ll(resp, "cancelled");
+        out->queued = (int)ipc__json_ll(resp, "queued");
+        out->active = (int)ipc__json_ll(resp, "active");
+        out->requests_today = (int)ipc__json_ll(resp, "requests_today");
+        out->max_requests = (int)ipc__json_ll(resp, "max_requests");
+        out->max_threads = (int)ipc__json_ll(resp, "max_threads");
+        out->permits = (int)ipc__json_ll(resp, "permits");
+        out->eta_seconds = (int)ipc__json_ll(resp, "eta_seconds");
+        v = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (cJSON_IsString(v)) ipc__copy_string(out->message, sizeof(out->message), v->valuestring);
+
+        const cJSON *rows = cJSON_GetObjectItemCaseSensitive(resp, "rows");
+        if (cJSON_IsArray(rows)) {
+            int count = cJSON_GetArraySize(rows);
+            if (count > JW_IPC_SCRAPE_QUEUE_MAX_ROWS) {
+                count = JW_IPC_SCRAPE_QUEUE_MAX_ROWS;
+            }
+            out->row_count = count;
+            for (int i = 0; i < count; i++) {
+                const cJSON *item = cJSON_GetArrayItem(rows, i);
+                jw_ipc_scrape_queue_row *row = &out->rows[i];
+                row->id = (unsigned)ipc__json_ll(item, "id");
+                v = cJSON_GetObjectItemCaseSensitive(item, "state");
+                row->state = ipc__parse_scrape_row_state(
+                    cJSON_IsString(v) ? v->valuestring : NULL);
+                v = cJSON_GetObjectItemCaseSensitive(item, "display_name");
+                if (cJSON_IsString(v)) ipc__copy_string(row->display_name, sizeof(row->display_name), v->valuestring);
+                v = cJSON_GetObjectItemCaseSensitive(item, "system");
+                if (cJSON_IsString(v)) ipc__copy_string(row->system, sizeof(row->system), v->valuestring);
+                v = cJSON_GetObjectItemCaseSensitive(item, "rom_path");
+                if (cJSON_IsString(v)) ipc__copy_string(row->rom_path, sizeof(row->rom_path), v->valuestring);
+                v = cJSON_GetObjectItemCaseSensitive(item, "output_path");
+                if (cJSON_IsString(v)) ipc__copy_string(row->output_path, sizeof(row->output_path), v->valuestring);
+                v = cJSON_GetObjectItemCaseSensitive(item, "message");
+                if (cJSON_IsString(v)) ipc__copy_string(row->message, sizeof(row->message), v->valuestring);
+            }
+        }
+    }
+
     cJSON_Delete(resp);
     return 0;
 }
@@ -1888,6 +1983,42 @@ int jw_ipc_scrape_cancel(const char *socket_path, const char *scope,
     int rc = ipc__type_is(resp, "ok") ? 0 : -1;
     if (rc == 0 && out_removed) {
         *out_removed = (int)ipc__json_ll(resp, "removed");
+    }
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_scrape_stop_all(const char *socket_path, int *out_stopped) {
+    if (out_stopped) *out_stopped = 0;
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-stop-all");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    int rc = ipc__type_is(resp, "ok") ? 0 : -1;
+    if (rc == 0 && out_stopped) {
+        *out_stopped = (int)ipc__json_ll(resp, "stopped");
+    }
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_scrape_clear_done(const char *socket_path, int *out_cleared) {
+    if (out_cleared) *out_cleared = 0;
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-clear-done");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    int rc = ipc__type_is(resp, "ok") ? 0 : -1;
+    if (rc == 0 && out_cleared) {
+        *out_cleared = (int)ipc__json_ll(resp, "cleared");
     }
     cJSON_Delete(resp);
     return rc;
