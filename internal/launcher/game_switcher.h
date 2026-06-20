@@ -30,9 +30,13 @@ typedef struct {
     struct SDL_Texture *current_tex;
     char          sdcard_root[PATH_MAX];
     char          states_dir[PATH_MAX]; /* RetroArch States/ root for thumbnails */
-    /* Carousel slide animation (logical cursor lerps to the new selection). */
-    float         anim_from_visual;
-    int           anim_to_cursor;
+    /* Carousel slide animation. The cursor jumps to the new selection at once;
+       anim_from_offset is the strip's visual displacement (in tile units) at the
+       start of the slide, relative to the new cursor, and eases to 0. Tracking a
+       relative offset (rather than an absolute target index) makes every move a
+       single-tile slide in the press direction — including the seam crossing of
+       the infinite wrap, which no longer rewinds across the whole strip. */
+    float         anim_from_offset;
     uint32_t      anim_start_ms;
     bool          anim_active;
 } jw_game_switcher;
@@ -69,7 +73,10 @@ void jw_game_switcher_set_current_texture(jw_game_switcher *sw,
    every entry is considered. */
 void jw_game_switcher_resolve_thumbnails(jw_game_switcher *sw);
 
-/* Move the selection by delta with wrap-around, animating the slide. */
+/* Move the selection by delta (callers pass +/-1), animating a single-tile
+   slide. With 5+ entries the carousel is an infinite ring: stepping past either
+   end wraps seamlessly to the other in the press direction. Below that the seam
+   would show the same tile on both sides of the window, so it clamps instead. */
 void jw_game_switcher_move(jw_game_switcher *sw, int delta);
 
 /* The selected entry, or NULL when the carousel is empty. */

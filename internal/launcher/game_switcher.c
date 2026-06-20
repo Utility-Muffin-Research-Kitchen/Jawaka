@@ -17,6 +17,16 @@
    the in-game overlay animates identically without depending on a theme. */
 #define JW_SWITCHER_ANIM_MS 160u
 
+/* Infinite-ring threshold. The render window draws the center tile +/- 2, so up
+   to 5 tiles are on screen at once; below 5 entries a wrap would put the same
+   tile on both sides of the window (a visible duplicate), so the carousel clamps
+   at the ends instead of looping. At 5+ every visible slot is a distinct entry. */
+#define JW_SWITCHER_LOOP_MIN 5
+
+static bool jw__switcher_loops(const jw_game_switcher *sw) {
+    return sw && sw->count >= JW_SWITCHER_LOOP_MIN;
+}
+
 typedef struct {
     const jw_storage_source *source;
     jw_state_thumb_index    *index;
@@ -262,32 +272,50 @@ void jw_game_switcher_set_current_texture(jw_game_switcher *sw, SDL_Texture *tex
     sw->current_tex = tex; /* borrowed; caller retains ownership */
 }
 
-static float jw__switcher_visual_cursor(const jw_game_switcher *sw) {
+/* Current visual displacement of the strip from the (already-updated) cursor, in
+   tile units. 0 at rest; eases from anim_from_offset to 0 over a slide. The tile
+   at slot k (logical cursor + k) sits at screen distance (k - this) tiles. */
+static float jw__switcher_visual_offset(const jw_game_switcher *sw) {
     if (!sw->anim_active) {
-        return (float)sw->cursor;
+        return 0.0f;
     }
     uint32_t elapsed = SDL_GetTicks() - sw->anim_start_ms;
     if (elapsed >= JW_SWITCHER_ANIM_MS) {
-        return (float)sw->anim_to_cursor;
+        return 0.0f;
     }
     float t = (float)elapsed / (float)JW_SWITCHER_ANIM_MS;
     float eased = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t); /* ease-out cubic */
-    return sw->anim_from_visual + ((float)sw->anim_to_cursor - sw->anim_from_visual) * eased;
+    return sw->anim_from_offset * (1.0f - eased);
 }
 
 void jw_game_switcher_move(jw_game_switcher *sw, int delta) {
     if (!sw || sw->count <= 0 || delta == 0) {
         return;
     }
-    int next = (sw->cursor + delta) % sw->count;
-    if (next < 0) {
-        next += sw->count;
+    bool loops = jw__switcher_loops(sw);
+
+    int next;
+    if (loops) {
+        next = ((sw->cursor + delta) % sw->count + sw->count) % sw->count;
+    } else {
+        next = sw->cursor + delta;
+        if (next < 0) next = 0;
+        if (next > sw->count - 1) next = sw->count - 1;
     }
     if (next == sw->cursor) {
-        return;
+        return; /* clamped at an end */
     }
-    sw->anim_from_visual = jw__switcher_visual_cursor(sw);
-    sw->anim_to_cursor = next;
+
+    /* Visual step = how many tiles the strip slides on screen. Normally next -
+       cursor, but a seam wrap (e.g. last -> first) is logically a big index jump
+       yet visually a single tile in the press direction, so use delta there. */
+    bool wrapped_seam = loops &&
+                        ((delta > 0 && next < sw->cursor) ||
+                         (delta < 0 && next > sw->cursor));
+    int vstep = wrapped_seam ? delta : (next - sw->cursor);
+
+    /* Carry any in-flight offset so a mid-slide press composes smoothly. */
+    sw->anim_from_offset = jw__switcher_visual_offset(sw) - (float)vstep;
     sw->anim_start_ms = SDL_GetTicks();
     sw->anim_active = true;
     sw->cursor = next;
@@ -490,7 +518,7 @@ void jw_game_switcher_render(jw_game_switcher *sw, int x, int y, int w, int h) {
     int block_h = center_size + below_h;
     int cy = y + (h - block_h) / 2 + center_size / 2;
 
-    float v_cursor = jw__switcher_visual_cursor(sw);
+    float voff = jw__switcher_visual_offset(sw);
     if (sw->anim_active) {
         cat_request_frame();
         if (SDL_GetTicks() - sw->anim_start_ms >= JW_SWITCHER_ANIM_MS) {
@@ -498,15 +526,22 @@ void jw_game_switcher_render(jw_game_switcher *sw, int x, int y, int w, int h) {
         }
     }
 
-    int lo = (int)floorf(v_cursor) - 1;
-    int hi = (int)floorf(v_cursor) + 2;
-    if (lo < 0) lo = 0;
-    if (hi > sw->count - 1) hi = sw->count - 1;
+    bool loops = jw__switcher_loops(sw);
 
-    /* Sides first, center last so the active tile overlaps its neighbors. */
+    /* Walk slots around the cursor. The window is center +/- 2 tiles; slots
+       -3..+3 cover it for any voff in [-1, 1]. Each slot maps to a logical entry
+       by wrapping (infinite ring) or is skipped past the ends (clamp). Sides
+       first, center last so the active tile overlaps its neighbors. */
     for (int pass = 0; pass < 2; pass++) {
-        for (int i = lo; i <= hi; i++) {
-            float dist = (float)i - v_cursor;
+        for (int k = -3; k <= 3; k++) {
+            int idx = sw->cursor + k;
+            if (loops) {
+                idx = (idx % sw->count + sw->count) % sw->count;
+            } else if (idx < 0 || idx >= sw->count) {
+                continue;
+            }
+
+            float dist = (float)k - voff;
             float adist = fabsf(dist);
             if (adist > 2.0f) {
                 continue;
@@ -519,8 +554,8 @@ void jw_game_switcher_render(jw_game_switcher *sw, int x, int y, int w, int h) {
             int size_px = (int)((1.0f - c) * (float)side_size + c * (float)center_size);
             uint8_t alpha = (uint8_t)((1.0f - c) * 110.0f + c * 255.0f);
             int cx = cx0 + (int)(dist * (float)spacing);
-            jw__switcher_draw_tile(sw, &sw->entries[i], cx, cy, size_px, alpha,
-                                   i == sw->current_index);
+            jw__switcher_draw_tile(sw, &sw->entries[idx], cx, cy, size_px, alpha,
+                                   idx == sw->current_index);
         }
     }
 
