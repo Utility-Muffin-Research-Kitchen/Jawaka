@@ -961,6 +961,25 @@ static void jw__publish_audio_env(jw_daemon_state *state) {
     setenv("JAWAKA_AUDIO_DEVICE", device, 1);
 }
 
+/* Publish the live panel refresh (read from the active DRM mode) so the
+   RetroArch config writer can pin video_refresh_rate to it. RA's pacing and
+   Black Frame Insertion break when it believes 60Hz while the panel runs
+   90/120. Re-read per launch so a runtime refresh-rate change is reflected. */
+static void jw__publish_display_env(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+    if (status.refresh_rate_hz > 0) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", status.refresh_rate_hz);
+        setenv("JAWAKA_REFRESH_RATE_HZ", buf, 1);
+    } else {
+        unsetenv("JAWAKA_REFRESH_RATE_HZ");
+    }
+}
+
 static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {
     jw_platform_status status;
     jw_platform_get_status(&state->platform, &status);
@@ -3978,6 +3997,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
 
     jw__publish_retroarch_input_env(state);
     jw__publish_audio_env(state);
+    jw__publish_display_env(state);
     jw__publish_cheevos_env(state);
 
     if (!retroarch || !jw__path_exists(retroarch)) {

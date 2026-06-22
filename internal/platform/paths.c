@@ -476,6 +476,7 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "input_max_users",
         "savestate_file_compression",
         "video_threaded",
+        "video_refresh_rate",
         "video_driver",
         "video_context_driver",
         "aspect_ratio_index",
@@ -1333,6 +1334,23 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "audio_latency", "128");
     jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
     jw__retroarch_cfg_string(fp, "video_threaded", "false");
+    /* Pin RA's reported refresh to the live panel rate the daemon read from the
+       active DRM mode. RA's frame pacing — and Black Frame Insertion's
+       refresh-aware cadence — misfire if it believes 60Hz while the panel runs
+       90/120. Written in the protected section so it's correct from the first
+       frame of every launch, independent of save-on-exit; absent env (unknown
+       rate) leaves whatever the merged config had. */
+    {
+        const char *refresh_hz = jw__env_value("JAWAKA_REFRESH_RATE_HZ");
+        if (refresh_hz && refresh_hz[0]) {
+            int hz = atoi(refresh_hz);
+            if (hz >= 50 && hz <= 240) {
+                char refresh_val[24];
+                snprintf(refresh_val, sizeof(refresh_val), "%d.000000", hz);
+                jw__retroarch_cfg_string(fp, "video_refresh_rate", refresh_val);
+            }
+        }
+    }
     jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
     jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
     jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
@@ -1665,6 +1683,23 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     jw__retroarch_cfg_string(fp, "audio_latency", "128");
     jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
     jw__retroarch_cfg_string(fp, "video_threaded", "false");
+    /* Pin RA's reported refresh to the live panel rate the daemon read from the
+       active DRM mode. RA's frame pacing — and Black Frame Insertion's
+       refresh-aware cadence — misfire if it believes 60Hz while the panel runs
+       90/120. Written in the protected section so it's correct from the first
+       frame of every launch, independent of save-on-exit; absent env (unknown
+       rate) leaves whatever the merged config had. */
+    {
+        const char *refresh_hz = jw__env_value("JAWAKA_REFRESH_RATE_HZ");
+        if (refresh_hz && refresh_hz[0]) {
+            int hz = atoi(refresh_hz);
+            if (hz >= 50 && hz <= 240) {
+                char refresh_val[24];
+                snprintf(refresh_val, sizeof(refresh_val), "%d.000000", hz);
+                jw__retroarch_cfg_string(fp, "video_refresh_rate", refresh_val);
+            }
+        }
+    }
     jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
     jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
     jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
