@@ -200,7 +200,8 @@ The current Settings tree includes:
 ```text
 Appearance       color scheme, colors, layout (list style, fonts, font size,
                  tab switching), status bar
-Display & Sound  brightness, audio output, volume
+Display & Sound  brightness, refresh rate (60/90/120), black frame insertion
+                 (120Hz only), audio output, volume, test sound
 Lighting         MLP1 LED enable/mode/color/brightness/speed
 Network          Wi-Fi scan/connect/forget and ADB enable/disable
 Bluetooth        scan, pair/connect, disconnect/forget
