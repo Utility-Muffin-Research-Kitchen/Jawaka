@@ -205,7 +205,8 @@ Display & Sound  brightness, refresh rate (60/90/120), black frame insertion
 Lighting         MLP1 LED enable/mode/color/brightness/speed
 Network          Wi-Fi scan/connect/forget and ADB enable/disable
 Bluetooth        scan, pair/connect, disconnect/forget
-Game Art         scraping artwork-type and region priority
+Game Art         scrape artwork (all/per-system, missing or replace-all), live
+                 scrape queue, artwork-type and region priority
 Accounts         ScreenScraper / RetroAchievements sign-in
 General          startup tab, auto-sleep, boot splash, game performance,
                  time zone, reset RetroArch config, unmount secondary SD
