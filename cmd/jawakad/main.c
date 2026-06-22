@@ -43,6 +43,10 @@
 
 #define JW_SWITCHER_RESUME_RETRY_MS 100LL
 #define JW_SWITCHER_RESUME_MAX_ATTEMPTS 40
+/* The load-state command does real work (RA reads + applies the state) and can
+   need longer than the readiness probe, especially in the first second of boot.
+   Generous enough to catch a slow reply, short enough not to stall the daemon. */
+#define JW_SWITCHER_RESUME_LOAD_TIMEOUT_MS 400u
 #define JW_INGAME_MENU_PREWARM_DELAY_MS 1200LL
 #define JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS 250LL
 #define JW_RETROARCH_QUIT_GRACE_MS 700LL
@@ -4102,17 +4106,18 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                                     JW_RA_GAME_SWITCHER_STATE_SLOT,
                                     &resolved_slot,
                                     resolved_path, sizeof(resolved_path))) {
-            if (resolved_slot >= 0 && resolved_slot <= 999) {
-                entryslot_resume = true;
-                entryslot = resolved_slot;
-                snprintf(entryslot_arg, sizeof(entryslot_arg), "%d", entryslot);
-                snprintf(entry_state_path, sizeof(entry_state_path), "%s", resolved_path);
-                jw_log_info("switcher resume: using RetroArch entryslot=%d path=%s",
-                            entryslot, entry_state_path);
-            } else {
-                jw_log_info("switcher resume: state slot=%d path=%s requires command fallback",
-                            resolved_slot, resolved_path);
-            }
+            /* Resume via the post-launch network load-state command (below), NOT
+               RetroArch's --entryslot. RA 1.22.2's --entryslot resolves a separate
+               "<rom>.stateN.entry" file and does not reliably load our regular
+               savestate when sort_savestates sorts states into per-core subfolders
+               (verified on device: -e <slot> with a valid .state99 on disk still
+               cold-started). The command path (jw_ra_load_state_slot) uses RA's
+               normal slot loader, which honors the subfolder. Leave entryslot_resume
+               false so post_launch_resume drives the load. */
+            entryslot = resolved_slot;
+            snprintf(entry_state_path, sizeof(entry_state_path), "%s", resolved_path);
+            jw_log_info("switcher resume: state slot=%d path=%s (post-launch load)",
+                        entryslot, entry_state_path);
         } else {
             jw_log_info("switcher resume: no prelaunch state found for %s", rom_abs);
         }
@@ -4447,54 +4452,63 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
         return;
     }
 
-    state->post_launch_resume_pending = false;
-    state->post_launch_resume_attempts = 0;
-    state->post_launch_resume_next_ms = 0;
+    /* Don't commit (pending=false) until the load actually succeeds. The readiness
+       probe (jw_ra_get_info) can answer before the core+content are ready to accept
+       a state load, so the first load can time out; in that case keep retrying
+       within the same attempt budget rather than cold-starting. Only the permanent
+       failures below (no savestate support / no state on disk) give up immediately. */
+    bool give_up = false;
 
     if (!info.savestate_supported) {
         jw_log_warn("switcher resume: core does not support savestates");
-        jw__schedule_in_game_menu_prewarm(state,
-                                          JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
-        return;
+        give_up = true;
     }
 
     char states_dir[PATH_MAX];
     const char *source_root = state->retroarch_session.source_root[0]
         ? state->retroarch_session.source_root
         : state->sdcard_root;
-    if (!source_root ||
-        snprintf(states_dir, sizeof(states_dir), "%s/States", source_root) >=
-            (int)sizeof(states_dir)) {
+    if (!give_up &&
+        (!source_root ||
+         snprintf(states_dir, sizeof(states_dir), "%s/States", source_root) >=
+             (int)sizeof(states_dir))) {
         jw_log_warn("switcher resume: states path unavailable");
-        jw__schedule_in_game_menu_prewarm(state,
-                                          JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
-        return;
+        give_up = true;
     }
 
     int slot = 0;
     char state_path[PATH_MAX];
-    if (!jw_ra_find_resume_state(states_dir, state->retroarch_session.rom_path,
+    state_path[0] = '\0';
+    if (!give_up &&
+        !jw_ra_find_resume_state(states_dir, state->retroarch_session.rom_path,
                                  JW_RA_GAME_SWITCHER_STATE_SLOT,
                                  &slot, state_path, sizeof(state_path))) {
         jw_log_info("switcher resume: no state found for %s",
                     state->retroarch_session.rom_path);
-        jw__schedule_in_game_menu_prewarm(state,
-                                          JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
-        return;
+        give_up = true;
     }
 
-    char reply[JW_RA_REPLY_MAX];
-    jw_ra_result load = jw_ra_load_state_slot(&ra, slot, reply, sizeof(reply));
-    if (load != JW_RA_OK) {
-        jw_log_warn("switcher resume: load failed slot=%d path=%s result=%s",
-                    slot, state_path, jw_ra_result_string(load));
-        jw__schedule_in_game_menu_prewarm(state,
-                                          JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
-        return;
+    if (!give_up) {
+        char reply[JW_RA_REPLY_MAX];
+        ra.timeout_ms = JW_SWITCHER_RESUME_LOAD_TIMEOUT_MS;
+        jw_ra_result load = jw_ra_load_state_slot(&ra, slot, reply, sizeof(reply));
+        if (load == JW_RA_OK) {
+            jw_ra_resume_direct(&ra);
+            jw_log_info("switcher resume: loaded slot=%d path=%s", slot, state_path);
+        } else if (state->post_launch_resume_attempts < JW_SWITCHER_RESUME_MAX_ATTEMPTS) {
+            /* RA accepted commands but isn't ready to load the state yet — retry
+               next tick; pending stays set, attempts already counted at the top. */
+            state->post_launch_resume_next_ms = now + JW_SWITCHER_RESUME_RETRY_MS;
+            return;
+        } else {
+            jw_log_warn("switcher resume: load failed slot=%d path=%s result=%s",
+                        slot, state_path, jw_ra_result_string(load));
+        }
     }
 
-    jw_ra_resume_direct(&ra);
-    jw_log_info("switcher resume: loaded slot=%d path=%s", slot, state_path);
+    state->post_launch_resume_pending = false;
+    state->post_launch_resume_attempts = 0;
+    state->post_launch_resume_next_ms = 0;
     jw__schedule_in_game_menu_prewarm(state,
                                       JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
 }
