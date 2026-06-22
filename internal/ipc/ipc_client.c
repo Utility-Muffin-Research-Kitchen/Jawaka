@@ -1942,6 +1942,45 @@ int jw_ipc_scrape_queue(const char *socket_path, int offset, int limit,
     return 0;
 }
 
+int jw_ipc_scrape_missing_counts(const char *socket_path,
+                                 jw_ipc_scrape_missing_info *out) {
+    if (out) memset(out, 0, sizeof(*out));
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "scrape-missing-counts");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    if (!ipc__type_is(resp, "ok")) {
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    if (out) {
+        out->total_missing = (int)ipc__json_ll(resp, "total_missing");
+        const cJSON *arr = cJSON_GetObjectItemCaseSensitive(resp, "systems");
+        if (cJSON_IsArray(arr)) {
+            int count = cJSON_GetArraySize(arr);
+            if (count > JW_IPC_MISSING_MAX_SYSTEMS) count = JW_IPC_MISSING_MAX_SYSTEMS;
+            out->system_count = count;
+            for (int i = 0; i < count; i++) {
+                const cJSON *item = cJSON_GetArrayItem(arr, i);
+                jw_ipc_scrape_missing_row *row = &out->systems[i];
+                const cJSON *v = cJSON_GetObjectItemCaseSensitive(item, "system");
+                if (cJSON_IsString(v))
+                    ipc__copy_string(row->system, sizeof(row->system), v->valuestring);
+                row->missing = (int)ipc__json_ll(item, "missing");
+                row->total   = (int)ipc__json_ll(item, "total");
+            }
+        }
+    }
+
+    cJSON_Delete(resp);
+    return 0;
+}
+
 int jw_ipc_scrape_pending(const char *socket_path, const char *system,
                           const char *rom_path, bool *out_pending) {
     if (out_pending) *out_pending = false;

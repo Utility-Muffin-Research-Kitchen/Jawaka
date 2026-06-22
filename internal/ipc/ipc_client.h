@@ -377,6 +377,21 @@ int jw_ipc_scrape_cancel(const char *socket_path, const char *scope,
 int jw_ipc_scrape_stop_all(const char *socket_path, int *out_stopped);
 int jw_ipc_scrape_clear_done(const char *socket_path, int *out_cleared);
 
+#define JW_IPC_MISSING_MAX_SYSTEMS 128
+typedef struct {
+    char system[64];   /* system code (e.g. "GB") */
+    int  missing;      /* games still needing art */
+    int  total;        /* games in this system */
+} jw_ipc_scrape_missing_row;
+typedef struct {
+    int total_missing;
+    int system_count;
+    jw_ipc_scrape_missing_row systems[JW_IPC_MISSING_MAX_SYSTEMS];
+} jw_ipc_scrape_missing_info;
+/* Per-system missing/total art counts (mapped systems with games only). */
+int jw_ipc_scrape_missing_counts(const char *socket_path,
+                                 jw_ipc_scrape_missing_info *out);
+
 /* LED ring. set-led applies + persists in jawakad; get-led reads the cached
    state back from platform-status. mode is "FOREVER"/"BREATH"/"RAINBOW". */
 int jw_ipc_set_led(const char *socket_path, int enabled, const char *mode,

@@ -91,6 +91,27 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
 int jw_scrape_enqueue_system(const char *system, bool missing_only,
                              const char **error);
 
+/* Enqueue every mapped system at once (used by scope "all"). Returns the total
+   enqueued; per-system errors are tolerated. -1 only on a fatal setup error. */
+int jw_scrape_enqueue_all(bool missing_only, const char **error);
+
+/* Count a system's games still needing art (out_missing) and its total
+   (out_total). Returns 0 on success; unmapped systems report zero. */
+int jw_scrape_count_missing_system(const char *system, int *out_missing,
+                                   int *out_total, const char **error);
+
+typedef struct {
+    char system[64];   /* system code (e.g. "GB") */
+    int  missing;      /* games still needing art */
+    int  total;        /* games in this system */
+} jw_scrape_missing_row;
+
+/* Per-system missing/total counts for every mapped system that has games.
+   Fills up to `max` rows, sets *out_count and *out_total_missing. Returns 0 on
+   success, -1 on a fatal setup error. */
+int jw_scrape_missing_counts(jw_scrape_missing_row *out, int max,
+                             int *out_count, int *out_total_missing);
+
 void jw_scrape_status(jw_scrape_status_info *out);
 void jw_scrape_queue_snapshot(jw_scrape_queue_info *out, int offset, int limit);
 

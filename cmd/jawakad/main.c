@@ -1171,9 +1171,12 @@ static int jw__handle_scrape_start(jw_daemon_state *state,
     cJSON *system = cJSON_GetObjectItemCaseSensitive(request, "system");
     cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(request, "rom_path");
     cJSON *mode = cJSON_GetObjectItemCaseSensitive(request, "mode");
-    if (!cJSON_IsString(scope) || !cJSON_IsString(system) ||
-        !system->valuestring[0]) {
-        return jw__reply_error(client, "missing scope or system");
+    if (!cJSON_IsString(scope)) {
+        return jw__reply_error(client, "missing scope");
+    }
+    bool scope_all = strcmp(scope->valuestring, "all") == 0;
+    if (!scope_all && (!cJSON_IsString(system) || !system->valuestring[0])) {
+        return jw__reply_error(client, "missing system");
     }
 
     /* Gate on connectivity when the platform exposes Wi-Fi state, instead of
@@ -1198,6 +1201,10 @@ static int jw__handle_scrape_start(jw_daemon_state *state,
                             strcmp(mode->valuestring, "all") != 0;
         enqueued = jw_scrape_enqueue_system(system->valuestring, missing_only,
                                             &error);
+    } else if (scope_all) {
+        bool missing_only = !cJSON_IsString(mode) ||
+                            strcmp(mode->valuestring, "all") != 0;
+        enqueued = jw_scrape_enqueue_all(missing_only, &error);
     } else {
         return jw__reply_error(client, "unknown scope");
     }
@@ -1206,12 +1213,48 @@ static int jw__handle_scrape_start(jw_daemon_state *state,
         return jw__reply_error(client, error ? error : "scrape-start failed");
     }
     jw_log_info("scrape-start scope=%s system=%s enqueued=%d",
-                scope->valuestring, system->valuestring, enqueued);
+                scope->valuestring,
+                (cJSON_IsString(system) && system->valuestring[0])
+                    ? system->valuestring : "*",
+                enqueued);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "ok");
     cJSON_AddStringToObject(root, "action", "scrape-start");
     cJSON_AddNumberToObject(root, "enqueued", enqueued);
+    return jw__reply_json(client, root);
+}
+
+static int jw__handle_scrape_missing_counts(jw_daemon_state *state,
+                                            jw_ipc_client *client,
+                                            cJSON *request) {
+    (void)state;
+    (void)request;
+    enum { JW__MISSING_CAP = 256 };
+    jw_scrape_missing_row *rows = calloc(JW__MISSING_CAP, sizeof(*rows));
+    if (!rows) return jw__reply_error(client, "out of memory");
+
+    int count = 0, total_missing = 0;
+    if (jw_scrape_missing_counts(rows, JW__MISSING_CAP, &count,
+                                 &total_missing) != 0) {
+        free(rows);
+        return jw__reply_error(client, "could not compute missing counts");
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ok");
+    cJSON_AddStringToObject(root, "action", "scrape-missing-counts");
+    cJSON_AddNumberToObject(root, "total_missing", total_missing);
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < count; i++) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "system", rows[i].system);
+        cJSON_AddNumberToObject(o, "missing", rows[i].missing);
+        cJSON_AddNumberToObject(o, "total", rows[i].total);
+        cJSON_AddItemToArray(arr, o);
+    }
+    cJSON_AddItemToObject(root, "systems", arr);
+    free(rows);
     return jw__reply_json(client, root);
 }
 
@@ -4832,6 +4875,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
 
     if (strcmp(type->valuestring, "scrape-start") == 0) {
         int rc = jw__handle_scrape_start(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "scrape-missing-counts") == 0) {
+        int rc = jw__handle_scrape_missing_counts(state, client, root);
         cJSON_Delete(root);
         return rc;
     }

@@ -1017,6 +1017,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
     cat_list_state_init(&ui->scraping_list,    JW_SCRAPING_ROW_COUNT);
     cat_list_state_init(&ui->scrape_edit_list, 8);
+    cat_list_state_init(&ui->scrape_download_list, 8);
     cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
     cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
     cat_list_state_init(&ui->update_picker_list, JW_UPDATE_PICKER_VISIBLE_ROWS);
@@ -2401,6 +2402,99 @@ static void jw__render_scrape_priority(const jw_settings_ui *ui,
                        jw__draw_scrape_edit_item, &ctx);
 }
 
+/* "Scrape Missing Artwork" picker: row 0 = All Systems, rows 1.. = one system
+   each. Y toggles missing-only vs replace-all; in replace mode the right-hand
+   count is the system's total games rather than its missing count. */
+typedef struct {
+    const jw_settings_ui *ui;
+    bool replace;        /* replace-all mode */
+    int  all_count;      /* count for the "All Systems" row (mode-dependent) */
+} jw__scrape_download_ctx;
+
+static void jw__draw_scrape_download_item(int idx, int ix, int iy, int iw, int ih,
+                                          bool selected, void *user) {
+    jw__scrape_download_ctx *c = (jw__scrape_download_ctx *)user;
+    const jw_ipc_scrape_missing_info *m = &c->ui->scrape_missing_cache;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
+    ap_color label_c = selected ? theme->highlighted_text : theme->text;
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    char label[80], value[32];
+    int n;
+    if (idx == 0) {
+        snprintf(label, sizeof(label), "%s", "All Systems");
+        n = c->all_count;
+    } else {
+        const jw_ipc_scrape_missing_row *r = &m->systems[idx - 1];
+        snprintf(label, sizeof(label), "%s", r->system);
+        n = c->replace ? r->total : r->missing;
+    }
+    snprintf(value, sizeof(value), c->replace ? "%d total" : "%d missing", n);
+    cat_draw_text_ellipsized(body, label, ix + cat_scale(18), ty, label_c,
+                             iw / 2);
+    int vw = cat_measure_text(body, value);
+    cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+}
+
+static void jw__render_scrape_download(const jw_settings_ui *ui,
+                                       int x, int y, int w, int h) {
+    bool replace = ui->scrape_download_replace;
+    char header[48];
+    snprintf(header, sizeof(header), "Scrape Artwork - %s",
+             replace ? "Replace All" : "Missing");
+    jw__draw_header(header, x, y, w);
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    int sub_h = jw__subheader_line_h(small) + cat_scale(6);
+    SDL_Rect sub;
+    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
+
+    const jw_ipc_scrape_missing_info *m = &ui->scrape_missing_cache;
+    if (!ui->scrape_missing_have_cache) {
+        cat_draw_text_ellipsized(small, "Scanning library...",
+                                 sub.x + cat_scale(12), sub.y, theme->hint,
+                                 sub.w - cat_scale(24));
+        cat_draw_text(body, "Scanning library...",
+                      c.x + cat_scale(4), c.y + cat_scale(4), theme->hint);
+        return;
+    }
+
+    /* Grand total for the "All Systems" row + subline (replace = every game). */
+    int all_count = m->total_missing;
+    if (replace) {
+        all_count = 0;
+        for (int i = 0; i < m->system_count; i++) all_count += m->systems[i].total;
+    }
+
+    char subline[96];
+    snprintf(subline, sizeof(subline),
+             replace ? "%d games across %d systems"
+                     : "%d missing across %d systems",
+             all_count, m->system_count);
+    cat_draw_text_ellipsized(small, subline, sub.x + cat_scale(12), sub.y,
+                             theme->hint, sub.w - cat_scale(24));
+
+    int count = m->system_count + 1;   /* +1 for "All Systems" */
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    cat_box lb = { c.x, c.y, c.w, c.h, 0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
+    ((cat_list_state *)&ui->scrape_download_list)->visible_rows = vis;
+    jw__scrape_download_ctx ctx = { ui, replace, all_count };
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count,
+                       (cat_list_state *)&ui->scrape_download_list, item_h,
+                       jw__draw_scrape_download_item, &ctx);
+}
+
 static const char *jw__scrape_queue_state_label(jw_ipc_scrape_row_state state) {
     switch (state) {
         case JW_IPC_SCRAPE_ROW_QUEUED:    return "Queued";
@@ -2490,250 +2584,313 @@ static void jw__scrape_queue_settings_value(jw_settings_ui *ui,
     }
 }
 
-typedef struct {
-    jw_settings_ui *ui;
-    jw_ipc_scrape_queue_info *info;
-    bool have_info;
-    unsigned next_poll_ms;
-} jw__scrape_queue_ctx;
+/* ── Scrape queue: native settings page (replaces the cat_queue_viewer modal) ──
+ * Reuses the data layer above (cache, state labels, settings-value); renders
+ * ui->scrape_queue_cache directly through the box model. Poll is driven from the
+ * render fn (throttled), so no host-loop wiring is needed. */
 
-static void jw__scrape_queue_fetch(jw__scrape_queue_ctx *ctx, bool force) {
-    if (!ctx || !ctx->ui || !ctx->ui->socket_path[0]) {
-        return;
-    }
+/* Full-row poll into the shared cache. The Game Art row's
+   jw__scrape_queue_refresh_settings_cache fetches a single row for its summary;
+   the page needs every row. Throttled — safe to call every frame. */
+static void jw__scrape_queue_poll(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) return;
     unsigned now = SDL_GetTicks();
-    if (!force && ctx->have_info && now < ctx->next_poll_ms) {
-        return;
-    }
-    if (!ctx->info) {
-        ctx->info = (jw_ipc_scrape_queue_info *)calloc(1, sizeof(*ctx->info));
-        if (!ctx->info) return;
-    }
-    if (jw_ipc_scrape_queue(ctx->ui->socket_path, 0,
-                            JW_IPC_SCRAPE_QUEUE_MAX_ROWS, ctx->info) == 0) {
-        ctx->have_info = true;
-        ctx->next_poll_ms = now + 250u;
-        jw_ipc_scrape_queue_info *cache = jw__scrape_queue_cache(ctx->ui);
-        if (cache) {
-            *cache = *ctx->info;
-            ctx->ui->scrape_queue_have_cache = true;
-            ctx->ui->scrape_queue_next_poll_ms = now + 1000u;
-        }
+    if (ui->scrape_queue_have_cache && now < ui->scrape_queue_next_poll_ms) return;
+    jw_ipc_scrape_queue_info *info = jw__scrape_queue_cache(ui);
+    if (info && jw_ipc_scrape_queue(ui->socket_path, 0,
+                                    JW_IPC_SCRAPE_QUEUE_MAX_ROWS, info) == 0) {
+        ui->scrape_queue_have_cache = true;
+        ui->scrape_queue_next_poll_ms = now + 500u;
     }
 }
 
-static int jw__scrape_queue_snapshot(cat_queue_item *buf, int max,
-                                     void *userdata) {
-    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
-    if (!buf || max <= 0 || !ctx) return 0;
-    jw__scrape_queue_fetch(ctx, false);
-    if (!ctx->have_info || !ctx->info) return 0;
-
-    int count = ctx->info->row_count;
-    if (count > max) count = max;
-    for (int i = 0; i < count; i++) {
-        const jw_ipc_scrape_queue_row *row = &ctx->info->rows[i];
-        cat_queue_item *item = &buf[i];
-        memset(item, 0, sizeof(*item));
-        const char *title = row->display_name[0] ? row->display_name
-                                                 : row->rom_path;
-        snprintf(item->title, sizeof(item->title), "%.*s",
-                 (int)sizeof(item->title) - 1, title);
-        if (row->message[0]) {
-            snprintf(item->subtitle, sizeof(item->subtitle), "%.32s - %.90s",
-                     row->system, row->message);
-        } else {
-            snprintf(item->subtitle, sizeof(item->subtitle), "%.127s",
-                     row->system);
-        }
-        snprintf(item->status_text, sizeof(item->status_text), "%s",
-                 jw__scrape_queue_state_label(row->state));
-        item->status = jw__scrape_queue_cat_status(row->state);
-        item->progress = -1.0f;
-        item->userdata = (void *)(uintptr_t)row->id;
-    }
-    return count;
+/* True while any job is pending/running — drives the live redraw and selects
+   X = Stop All vs Clear Done. */
+static bool jw__scrape_queue_active(const jw_ipc_scrape_queue_info *q) {
+    return q && (q->active > 0 || q->queued > 0);
 }
 
-static const jw_ipc_scrape_queue_row *
-jw__scrape_queue_find_row(const jw__scrape_queue_ctx *ctx, unsigned id) {
-    if (!ctx || !ctx->have_info || !ctx->info) return NULL;
-    for (int i = 0; i < ctx->info->row_count; i++) {
-        if (ctx->info->rows[i].id == id) {
-            return &ctx->info->rows[i];
-        }
+static bool jw__scrape_queue_row_passes(jw_ipc_scrape_row_state st, int filter) {
+    cat_queue_status s = jw__scrape_queue_cat_status(st);
+    switch (filter) {
+        case 1:  return s == CAT_QUEUE_PENDING || s == CAT_QUEUE_RUNNING; /* Busy   */
+        case 2:  return s == CAT_QUEUE_DONE || s == CAT_QUEUE_SKIPPED;    /* Done   */
+        case 3:  return s == CAT_QUEUE_FAILED;                            /* Failed */
+        default: return true;                                            /* All    */
     }
-    return NULL;
 }
 
-static void jw__scrape_queue_detail(const cat_queue_item *item, void *userdata) {
-    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
-    if (!item || !ctx) return;
-    unsigned id = (unsigned)(uintptr_t)item->userdata;
-    const jw_ipc_scrape_queue_row *src = jw__scrape_queue_find_row(ctx, id);
-    if (!src) return;
-    jw_ipc_scrape_queue_row row = *src;
-
-    char status[64];
-    snprintf(status, sizeof(status), "%s", jw__scrape_queue_state_label(row.state));
-    const char *output = row.output_path[0] ? row.output_path : "Not written";
-    cat_detail_info_pair info[] = {
-        { .key = "Status", .value = status },
-        { .key = "System", .value = row.system },
-        { .key = "ROM",    .value = row.rom_path },
-        { .key = "Output", .value = output },
-    };
-    cat_detail_section sections[3];
-    memset(sections, 0, sizeof(sections));
-    int section_count = 0;
-    sections[section_count++] = (cat_detail_section) {
-        .type = CAT_SECTION_INFO,
-        .title = "Result",
-        .info_pairs = info,
-        .info_count = (int)(sizeof(info) / sizeof(info[0])),
-    };
-
-    bool preview_available = false;
-    if (row.state == JW_IPC_SCRAPE_ROW_DONE &&
-        row.output_path[0] && access(row.output_path, R_OK) == 0) {
-        SDL_Texture *preview_probe = cat_load_image(row.output_path);
-        if (preview_probe) {
-            SDL_DestroyTexture(preview_probe);
-            preview_available = true;
-        }
+/* Build the visible (filtered) row-index list into idx[]; returns the count. */
+static int jw__scrape_queue_filter_rows(const jw_ipc_scrape_queue_info *q,
+                                        int filter, int *idx, int max) {
+    if (!q || !idx) return 0;
+    int n = 0;
+    for (int i = 0; i < q->row_count && n < max; i++) {
+        if (jw__scrape_queue_row_passes(q->rows[i].state, filter)) idx[n++] = i;
     }
-    if (preview_available) {
-        sections[section_count++] = (cat_detail_section) {
-            .type = CAT_SECTION_IMAGE,
-            .title = "Preview",
-            .image_path = row.output_path,
-            .image_w = cat_scale(220),
-            .image_h = cat_scale(160),
-        };
-    }
-
-    char description[512] = "";
-    if (row.state == JW_IPC_SCRAPE_ROW_NOT_FOUND) {
-        snprintf(description, sizeof(description), "%s",
-                 "Not found in ScreenScraper.fr database.");
-    } else if (row.state == JW_IPC_SCRAPE_ROW_ERROR) {
-        snprintf(description, sizeof(description), "%s",
-                 row.message[0] ? row.message : "Artwork scrape failed.");
-    } else if (row.state == JW_IPC_SCRAPE_ROW_CANCELLED) {
-        snprintf(description, sizeof(description), "%s",
-                 row.message[0] ? row.message : "Scrape was cancelled before completion.");
-    }
-    if (description[0]) {
-        sections[section_count++] = (cat_detail_section) {
-            .type = CAT_SECTION_DESCRIPTION,
-            .title = "Details",
-            .description = description,
-        };
-    }
-
-    cat_footer_item footer[] = {
-        { .button = CAT_BTN_B, .label = "BACK" },
-    };
-    cat_status_bar_opts status_bar;
-    jw_settings_status_bar_opts(ctx->ui, &status_bar);
-    cat_detail_opts opts = {
-        .title = row.display_name[0] ? row.display_name : "Scrape Result",
-        .sections = sections,
-        .section_count = section_count,
-        .footer = footer,
-        .footer_count = 1,
-        .status_bar = &status_bar,
-    };
-    cat_detail_result result;
-    cat_detail_screen(&opts, &result);
+    return n;
 }
 
-static void jw__scrape_queue_stop_all(void *userdata) {
-    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
-    if (!ctx || !ctx->ui || !ctx->ui->socket_path[0]) return;
-    int stopped = 0;
-    (void)jw_ipc_scrape_stop_all(ctx->ui->socket_path, &stopped);
-    ctx->next_poll_ms = 0;
-    jw__scrape_queue_fetch(ctx, true);
+static const char *jw__scrape_queue_filter_label(int filter) {
+    switch (filter) {
+        case 1:  return "Busy";
+        case 2:  return "Done";
+        case 3:  return "Failed";
+        default: return "All";
+    }
 }
 
-static void jw__scrape_queue_clear_done(void *userdata) {
-    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
-    if (!ctx || !ctx->ui || !ctx->ui->socket_path[0]) return;
-    int cleared = 0;
-    (void)jw_ipc_scrape_clear_done(ctx->ui->socket_path, &cleared);
-    ctx->next_poll_ms = 0;
-    jw__scrape_queue_fetch(ctx, true);
-}
-
-static void jw__scrape_queue_summary(char *buf, size_t buf_size,
-                                     void *userdata) {
-    jw__scrape_queue_ctx *ctx = (jw__scrape_queue_ctx *)userdata;
-    if (!buf || buf_size == 0 || !ctx || !ctx->have_info || !ctx->info) return;
-    const jw_ipc_scrape_queue_info *q = ctx->info;
+/* Sub-header summary line (counts + quota/threads/ETA), from the old modal
+   summary but driven by the cache instead of a callback context. */
+static void jw__scrape_queue_summary(const jw_ipc_scrape_queue_info *q,
+                                     char *buf, size_t buf_size) {
+    if (!buf || buf_size == 0 || !q) return;
     int failed = q->failed + q->not_found;
     char eta[32] = "";
     jw__scrape_queue_format_eta(q->eta_seconds, eta, sizeof(eta));
-
     char api[64] = "";
     if (q->max_requests > 0) {
-        snprintf(api, sizeof(api), " | API %d/%d",
-                 q->requests_today, q->max_requests);
+        snprintf(api, sizeof(api), " | API %d/%d", q->requests_today, q->max_requests);
     }
     char threads[40] = "";
     if (q->max_threads > 0) {
-        snprintf(threads, sizeof(threads), " | %d/%d THREADS",
-                 q->permits, q->max_threads);
+        snprintf(threads, sizeof(threads), " | %d/%d threads", q->permits, q->max_threads);
     } else if (q->permits > 0) {
-        snprintf(threads, sizeof(threads), " | %d THREAD", q->permits);
+        snprintf(threads, sizeof(threads), " | %d thread", q->permits);
     }
     char eta_part[64] = "";
-    if (eta[0]) {
-        snprintf(eta_part, sizeof(eta_part), " | ETA EST. %s", eta);
-    }
-    const char *prefix = strcmp(q->state, "paused-quota") == 0
-        ? "PAUSED: quota exhausted, " : "";
-    snprintf(buf, buf_size, "%s%d/%d DONE, %d FAILED, %d BUSY%s%s%s",
+    if (eta[0]) snprintf(eta_part, sizeof(eta_part), " | ETA %s", eta);
+    const char *prefix = strcmp(q->state, "paused-quota") == 0 ? "Quota paused, " : "";
+    snprintf(buf, buf_size, "%s%d/%d done, %d failed, %d busy%s%s%s",
              prefix, q->done, q->total, failed, q->active + q->queued,
              api, threads, eta_part);
 }
 
-void jw_settings_ui_open_scrape_queue(jw_settings_ui *ui) {
-    if (!ui || !ui->socket_path[0]) return;
-    jw__scrape_queue_ctx *ctx =
-        (jw__scrape_queue_ctx *)calloc(1, sizeof(*ctx));
-    if (!ctx) return;
-    ctx->ui = ui;
-    ctx->info = (jw_ipc_scrape_queue_info *)calloc(1, sizeof(*ctx->info));
-    if (!ctx->info) {
-        free(ctx);
-        return;
+typedef struct {
+    const jw_settings_ui *ui;
+    const int *idx;
+    int count;
+} jw__scrape_queue_draw_ctx;
+
+/* One queue row: title + system subtitle + a status-colored state badge. */
+static void jw__draw_scrape_queue_item(int i, int ix, int iy, int iw, int ih,
+                                       bool selected, void *user) {
+    jw__scrape_queue_draw_ctx *c = (jw__scrape_queue_draw_ctx *)user;
+    if (!c || !c->ui || !c->ui->scrape_queue_cache || i < 0 || i >= c->count) return;
+    const jw_ipc_scrape_queue_row *row = &c->ui->scrape_queue_cache->rows[c->idx[i]];
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+
+    /* fit_rows stretches rows to fill the box, so center the two-line text block
+       (and the pill that wraps it) vertically rather than top-aligning, and use
+       the standard cat_scale(12) left inset. */
+    int line_gap = cat_scale(2);
+    int block_h  = TTF_FontHeight(body) + line_gap + TTF_FontHeight(small);
+    int block_y  = iy + (ih - block_h) / 2;
+    int pill_h   = block_h + cat_scale(10);
+    int pill_y   = iy + (ih - pill_h) / 2;
+    int tx       = ix + cat_scale(24);
+    int text_w   = iw - cat_scale(24) - cat_scale(12);
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
+
+    /* Title in normal text; the "system - state" subtitle carries the status
+       color (green done / red failed / accent running / hint queued) so a row's
+       state reads at a glance without a cramped right-hand badge. */
+    ap_color main_c = selected ? theme->highlighted_text : theme->text;
+    ap_color sub_c;
+    if (selected) {
+        sub_c = theme->highlighted_text;
+    } else {
+        switch (jw__scrape_queue_cat_status(row->state)) {
+            case CAT_QUEUE_DONE:    sub_c = cat_hex_to_color("#64c864"); break;
+            case CAT_QUEUE_FAILED:  sub_c = cat_hex_to_color("#ff6464"); break;
+            case CAT_QUEUE_RUNNING: sub_c = theme->accent;               break;
+            default:                sub_c = theme->hint;                 break;
+        }
     }
-    jw__scrape_queue_fetch(ctx, true);
-    cat_status_bar_opts status_bar;
-    jw_settings_status_bar_opts(ui, &status_bar);
-    const char *filters[4] = { "ALL", "BUSY", "DONE", "FAIL" };
-    cat_queue_opts opts = {
-        .title = "SCRAPE QUEUE",
-        .snapshot = jw__scrape_queue_snapshot,
-        .max_items = JW_IPC_SCRAPE_QUEUE_MAX_ROWS,
-        .userdata = ctx,
-        .on_detail = jw__scrape_queue_detail,
-        .on_cancel = jw__scrape_queue_stop_all,
-        .on_clear = jw__scrape_queue_clear_done,
-        .status_bar = &status_bar,
-        .filter_labels = { filters[0], filters[1], filters[2], filters[3] },
-        .summary = jw__scrape_queue_summary,
+
+    const char *label = row->display_name[0] ? row->display_name : row->rom_path;
+    char subtitle[160];
+    snprintf(subtitle, sizeof(subtitle), "%s  -  %s", row->system,
+             jw__scrape_queue_state_label(row->state));
+    cat_draw_text_ellipsized(body, label, tx, block_y, main_c, text_w);
+    cat_draw_text_ellipsized(small, subtitle, tx,
+                             block_y + TTF_FontHeight(body) + line_gap,
+                             sub_c, text_w);
+}
+
+/* Result-detail drill for a finished row (A button). Transient cat_detail_screen,
+   like Leaf's other detail views; the main queue page stays on the box model. */
+/* One scrape job's result — a native settings sub-screen (was a cat_detail_screen
+   modal). Status/System/ROM/Output stack full-width up top so long paths get the
+   most room; the scraped art sits centered below, aspect-fit (the old modal forced
+   it into a fixed 220x160 box, squishing it) and rounded to match the games tab. */
+static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
+                                           int x, int y, int w, int h) {
+    const jw_ipc_scrape_queue_row *row = &ui->scrape_queue_detail_row;
+    jw__draw_header(row->display_name[0] ? row->display_name : "Scrape Result", x, y, w);
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
+
+    /* Full-width key/value rows: keys are drawn whole (never ellipsized), values
+       ellipsize to the rest of the width. */
+    const char *info[][2] = {
+        { "Status", jw__scrape_queue_state_label(row->state) },
+        { "System", row->system },
+        { "ROM",    row->rom_path },
+        { "Output", row->output_path[0] ? row->output_path : "Not written" },
     };
-    cat_queue_viewer(&opts);
-    jw__scrape_queue_refresh_settings_cache(ui, true);
-    free(ctx->info);
-    free(ctx);
+    int key_w = 0;
+    for (int i = 0; i < 4; i++) {
+        int kw = cat_measure_text(body, info[i][0]);
+        if (kw > key_w) key_w = kw;
+    }
+    key_w += cat_scale(18);
+
+    /* Overflowing values scroll through (loop) instead of truncating — same
+       calm continuous marquee as the About/Accounts rows. */
+    static uint32_t last_ms = 0;
+    uint32_t now = SDL_GetTicks();
+    uint32_t dt  = last_ms ? now - last_ms : 0u;
+    last_ms = now;
+    cat_marquee *mq = ((jw_settings_ui *)ui)->scrape_detail_marquee;
+    bool animating = false;
+
+    int line_h = TTF_FontHeight(body) + cat_scale(12);
+    int ly = c.y;
+    for (int i = 0; i < 4; i++) {
+        cat_draw_text(body, info[i][0], c.x, ly, theme->hint);
+        mq[i].mode = CAT_MARQUEE_LOOP;
+        if (cat_draw_text_marquee(body, info[i][1], c.x + key_w, ly, theme->text,
+                                  c.w - key_w, &mq[i], dt))
+            animating = true;
+        ly += line_h;
+    }
+    if (animating) cat_request_frame();
+
+    /* Error/cancel note below the info. */
+    const char *desc = NULL;
+    if (row->state == JW_IPC_SCRAPE_ROW_NOT_FOUND)
+        desc = "Not found in the ScreenScraper.fr database.";
+    else if (row->state == JW_IPC_SCRAPE_ROW_ERROR)
+        desc = row->message[0] ? row->message : "Artwork scrape failed.";
+    else if (row->state == JW_IPC_SCRAPE_ROW_CANCELLED)
+        desc = row->message[0] ? row->message : "Scrape was cancelled before completion.";
+    if (desc) {
+        ly += cat_scale(4);
+        cat_draw_text_ellipsized(small, desc, c.x, ly, theme->hint, c.w);
+        ly += TTF_FontHeight(small);
+    }
+
+    /* The scraped art (decoded once on open), centered in the space below the
+       text, aspect-fit and rounded to the current List Style (same recipe as
+       jw__draw_cover_fit). */
+    SDL_Texture *art = ui->scrape_detail_art;
+    int tw = ui->scrape_detail_art_w, th = ui->scrape_detail_art_h;
+    if (art && tw > 0 && th > 0) {
+        int top = ly + cat_scale(16);
+        int avail_h = (c.y + c.h) - top;
+        if (avail_h > cat_scale(40)) {
+            int dw = c.w;
+            int dh = th * dw / tw;
+            if (dh > avail_h) { dh = avail_h; dw = tw * dh / th; }
+            int dx = c.x + (c.w - dw) / 2;
+            int dy = top + (avail_h - dh) / 2;
+            int smaller = dw < dh ? dw : dh;
+            int radius  = (int)(theme->pill_radius_ratio * smaller * 0.26f + 0.5f);
+            unsigned corners = (unsigned)theme->pill_corner_mask;
+            if (corners == 0) corners = CAT_CORNER_ALL;
+            cat_draw_image_rounded_ex(art, dx, dy, dw, dh, radius, corners);
+        }
+    }
+}
+
+static void jw__render_scrape_queue(const jw_settings_ui *ui,
+                                    int x, int y, int w, int h) {
+    char header[64];
+    snprintf(header, sizeof(header), "Scrape Queue - %s",
+             jw__scrape_queue_filter_label(ui->scrape_queue_filter));
+    jw__draw_header(header, x, y, w);
+    jw__scrape_queue_poll((jw_settings_ui *)ui);   /* throttled live poll */
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    int sub_h = jw__subheader_line_h(small) + cat_scale(6);
+    SDL_Rect sub;
+    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
+
+    const jw_ipc_scrape_queue_info *q =
+        ui->scrape_queue_have_cache ? ui->scrape_queue_cache : NULL;
+
+    char summary[160] = "";
+    if (q) jw__scrape_queue_summary(q, summary, sizeof(summary));
+    /* The counts/API/threads/ETA line runs long — scroll it through rather than
+       truncating (it keeps scrolling as the live counts update). */
+    static cat_marquee summ_mq;
+    static uint32_t summ_last_ms = 0;
+    uint32_t summ_now = SDL_GetTicks();
+    uint32_t summ_dt  = summ_last_ms ? summ_now - summ_last_ms : 0u;
+    summ_last_ms = summ_now;
+    summ_mq.mode = CAT_MARQUEE_LOOP;
+    if (cat_draw_text_marquee(small, summary[0] ? summary : "Empty",
+                              sub.x + cat_scale(12), sub.y, theme->hint,
+                              sub.w - cat_scale(24), &summ_mq, summ_dt))
+        cat_request_frame();
+
+    int idx[JW_IPC_SCRAPE_QUEUE_MAX_ROWS];
+    int count = q ? jw__scrape_queue_filter_rows(q, ui->scrape_queue_filter,
+                                                 idx, JW_IPC_SCRAPE_QUEUE_MAX_ROWS)
+                  : 0;
+
+    cat_list_state *list = (cat_list_state *)&ui->scrape_queue_list;
+    if (list->cursor >= count) list->cursor = count > 0 ? count - 1 : 0;
+
+    if (count == 0) {
+        const char *msg = (q && q->total > 0) ? "No jobs match this filter."
+                                              : "No scrape jobs.";
+        int tw = cat_measure_text(body, msg);
+        cat_draw_text(body, msg, c.x + (c.w - tw) / 2,
+                      c.y + (c.h - TTF_FontHeight(body)) / 2, theme->hint);
+    } else {
+        int item_h = TTF_FontHeight(body) + TTF_FontHeight(small) + cat_scale(12);
+        cat_box lb = { c.x, c.y, c.w, c.h, 0, 0, 0, 0 };
+        int vis = 0;
+        SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
+        list->visible_rows = vis;
+        jw__scrape_queue_draw_ctx dctx = { ui, idx, count };
+        cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count, list, item_h,
+                           jw__draw_scrape_queue_item, &dctx);
+    }
+
+    if (jw__scrape_queue_active(q)) cat_request_frame();
 }
 
 static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Game Art", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+
+    char download_value[64];
+    if (ui->scrape_missing_have_cache) {
+        int n = ui->scrape_missing_cache.total_missing;
+        snprintf(download_value, sizeof(download_value), "%d missing", n);
+    } else {
+        download_value[0] = '\0';
+    }
+    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_DOWNLOAD,
+                        "Scrape Artwork", download_value, false);
+
+    char queue_value[64];
+    jw__scrape_queue_settings_value((jw_settings_ui *)ui, queue_value,
+                                    sizeof(queue_value));
+    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_QUEUE,
+                        "Scrape Queue", queue_value, false);
 
     char artwork_value[64];
     if (ui->scrape_artwork_included > 0) {
@@ -2754,12 +2911,6 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
     }
     jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_REGION,
                         "Region Priority", region_value, false);
-
-    char queue_value[64];
-    jw__scrape_queue_settings_value((jw_settings_ui *)ui, queue_value,
-                                    sizeof(queue_value));
-    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_QUEUE,
-                        "Scrape Queue", queue_value, false);
 }
 
 /* Account row: like jw__render_list_row, but the status value marquees while the
@@ -3597,6 +3748,9 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_ACCOUNTS:   jw__render_accounts(ui, x, y, w, h);                break;
         case JW_SETTINGS_SCRAPING:   jw__render_scraping(ui, x, y, w, h);                break;
         case JW_SETTINGS_SCRAPE_PRIORITY: jw__render_scrape_priority(ui, x, y, w, h);    break;
+        case JW_SETTINGS_SCRAPE_QUEUE:    jw__render_scrape_queue(ui, x, y, w, h);       break;
+        case JW_SETTINGS_SCRAPE_QUEUE_DETAIL: jw__render_scrape_queue_detail(ui, x, y, w, h); break;
+        case JW_SETTINGS_SCRAPE_DOWNLOAD: jw__render_scrape_download(ui, x, y, w, h);     break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
         case JW_SETTINGS_UPDATE:     jw__render_update(ui, x, y, w, h);                  break;
         case JW_SETTINGS_UPDATE_PICKER: jw__render_update_picker(ui, x, y, w, h);        break;
@@ -5179,9 +5333,24 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 break;
             case CAT_BTN_A:
                 if (ui->scraping_list.cursor == JW_SCRAPING_QUEUE) {
-                    jw_settings_ui_open_scrape_queue(ui);
-                    jw__scrape_queue_refresh_settings_cache(ui, true);
-                    snprintf(status_buf, status_size, "%s", "Scrape queue");
+                    ui->screen = JW_SETTINGS_SCRAPE_QUEUE;
+                    ui->scrape_queue_list.cursor = 0;
+                    ui->scrape_queue_list.scroll_offset = 0;
+                    ui->scrape_queue_filter = 0;
+                    ui->scrape_queue_next_poll_ms = 0;   /* force an immediate poll */
+                    break;
+                }
+                if (ui->scraping_list.cursor == JW_SCRAPING_DOWNLOAD) {
+                    ui->scrape_download_list.cursor = 0;
+                    ui->scrape_download_list.scroll_offset = 0;
+                    ui->scrape_download_replace = false;   /* default: missing-only */
+                    ui->scrape_missing_have_cache = false;
+                    if (ui->socket_path[0] &&
+                        jw_ipc_scrape_missing_counts(
+                            ui->socket_path, &ui->scrape_missing_cache) == 0) {
+                        ui->scrape_missing_have_cache = true;
+                    }
+                    ui->screen = JW_SETTINGS_SCRAPE_DOWNLOAD;
                     break;
                 }
                 ui->scrape_edit_is_region =
@@ -5196,6 +5365,150 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 break;
             default:
                 break;
+        }
+        break;
+
+    /* ── Scrape queue (live job list) ────────────────────────────────── */
+    case JW_SETTINGS_SCRAPE_QUEUE: {
+        const jw_ipc_scrape_queue_info *q =
+            ui->scrape_queue_have_cache ? ui->scrape_queue_cache : NULL;
+        int idx[JW_IPC_SCRAPE_QUEUE_MAX_ROWS];
+        int count = q ? jw__scrape_queue_filter_rows(q, ui->scrape_queue_filter,
+                                                     idx, JW_IPC_SCRAPE_QUEUE_MAX_ROWS)
+                      : 0;
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->scrape_queue_list, -1, count);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->scrape_queue_list, +1, count);
+                break;
+            case CAT_BTN_Y:   /* cycle filter: All -> Busy -> Done -> Failed */
+                ui->scrape_queue_filter = (ui->scrape_queue_filter + 1) % 4;
+                ui->scrape_queue_list.cursor = 0;
+                ui->scrape_queue_list.scroll_offset = 0;
+                break;
+            case CAT_BTN_A:   /* detail for a finished row */
+                if (count > 0 && ui->scrape_queue_list.cursor < count) {
+                    const jw_ipc_scrape_queue_row *row =
+                        &q->rows[idx[ui->scrape_queue_list.cursor]];
+                    cat_queue_status s = jw__scrape_queue_cat_status(row->state);
+                    if (s == CAT_QUEUE_DONE || s == CAT_QUEUE_FAILED ||
+                        s == CAT_QUEUE_SKIPPED) {
+                        ui->scrape_queue_detail_row = *row;   /* snapshot for the page */
+                        ui->screen = JW_SETTINGS_SCRAPE_QUEUE_DETAIL;
+                        for (int k = 0; k < 4; k++)
+                            ui->scrape_detail_marquee[k].elapsed_ms = 0;
+                        /* Decode the art once here, not every frame (a per-frame
+                           IMG_LoadTexture stutters the page). */
+                        if (ui->scrape_detail_art) {
+                            SDL_DestroyTexture(ui->scrape_detail_art);
+                            ui->scrape_detail_art = NULL;
+                        }
+                        ui->scrape_detail_art_w = ui->scrape_detail_art_h = 0;
+                        if (row->state == JW_IPC_SCRAPE_ROW_DONE &&
+                            row->output_path[0] &&
+                            access(row->output_path, R_OK) == 0) {
+                            SDL_Texture *t = cat_load_image(row->output_path);
+                            int tw = 0, th = 0;
+                            if (t) SDL_QueryTexture(t, NULL, NULL, &tw, &th);
+                            if (t && tw > 0 && th > 0) {
+                                ui->scrape_detail_art = t;
+                                ui->scrape_detail_art_w = tw;
+                                ui->scrape_detail_art_h = th;
+                            } else if (t) {
+                                SDL_DestroyTexture(t);
+                            }
+                        }
+                    }
+                }
+                break;
+            case CAT_BTN_X:   /* Stop All while busy, else Clear Done */
+                if (ui->socket_path[0]) {
+                    if (jw__scrape_queue_active(q)) {
+                        int stopped = 0;
+                        (void)jw_ipc_scrape_stop_all(ui->socket_path, &stopped);
+                        snprintf(status_buf, status_size, "Stopped %d job%s",
+                                 stopped, stopped == 1 ? "" : "s");
+                    } else if (q && q->done > 0) {
+                        int cleared = 0;
+                        (void)jw_ipc_scrape_clear_done(ui->socket_path, &cleared);
+                        snprintf(status_buf, status_size, "Cleared %d", cleared);
+                        ui->scrape_queue_list.cursor = 0;
+                        ui->scrape_queue_list.scroll_offset = 0;
+                    }
+                    ui->scrape_queue_next_poll_ms = 0;   /* force a refresh */
+                }
+                break;
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_SCRAPING;
+                break;
+            default:
+                break;
+        }
+        break;
+    }
+
+    /* ── Scrape Missing Artwork picker (All Systems / per system) ─────── */
+    case JW_SETTINGS_SCRAPE_DOWNLOAD: {
+        const jw_ipc_scrape_missing_info *m = &ui->scrape_missing_cache;
+        int count = ui->scrape_missing_have_cache ? m->system_count + 1 : 0;
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->scrape_download_list, -1, count);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->scrape_download_list, +1, count);
+                break;
+            case CAT_BTN_Y:   /* toggle missing-only vs replace-all */
+                ui->scrape_download_replace = !ui->scrape_download_replace;
+                break;
+            case CAT_BTN_A:
+                if (count > 0 && ui->socket_path[0] &&
+                    ui->scrape_download_list.cursor < count) {
+                    int cur = ui->scrape_download_list.cursor;
+                    bool missing_only = !ui->scrape_download_replace;
+                    int enq = 0;
+                    char st[96] = "";
+                    int rc = (cur == 0)
+                        ? jw_ipc_scrape_start(ui->socket_path, "all", "", NULL,
+                                              missing_only, &enq, st, sizeof(st))
+                        : jw_ipc_scrape_start(ui->socket_path, "system",
+                                              m->systems[cur - 1].system, NULL,
+                                              missing_only, &enq, st, sizeof(st));
+                    if (rc == 0) {
+                        snprintf(status_buf, status_size,
+                                 "Queued %d artwork job%s", enq,
+                                 enq == 1 ? "" : "s");
+                        ui->screen = JW_SETTINGS_SCRAPE_QUEUE;
+                        ui->scrape_queue_list.cursor = 0;
+                        ui->scrape_queue_list.scroll_offset = 0;
+                        ui->scrape_queue_filter = 0;
+                        ui->scrape_queue_next_poll_ms = 0;
+                    } else {
+                        snprintf(status_buf, status_size, "%s",
+                                 st[0] ? st : "Scrape failed");
+                    }
+                }
+                break;
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_SCRAPING;
+                break;
+            default:
+                break;
+        }
+        break;
+    }
+
+    /* ── Scrape job result (native detail page) ──────────────────────── */
+    case JW_SETTINGS_SCRAPE_QUEUE_DETAIL:
+        if (button == CAT_BTN_B) {
+            if (ui->scrape_detail_art) {
+                SDL_DestroyTexture(ui->scrape_detail_art);
+                ui->scrape_detail_art = NULL;
+            }
+            ui->scrape_detail_art_w = ui->scrape_detail_art_h = 0;
+            ui->screen = JW_SETTINGS_SCRAPE_QUEUE;
         }
         break;
 

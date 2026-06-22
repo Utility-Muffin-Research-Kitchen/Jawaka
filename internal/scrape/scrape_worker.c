@@ -18,6 +18,7 @@
 
 #define JW__SCRAPE_QUEUE_MAX   4096
 #define JW__SCRAPE_LIST_MAX    4096   /* games per system when expanding a batch */
+#define JW__SCRAPE_SYS_MAX     256    /* systems when expanding an "all" batch    */
 #define JW__SCRAPE_PRIO_MAX    16
 #define JW__SCRAPE_MAX_WORKERS 4      /* hard cap regardless of account allowance */
 #define JW__SCRAPE_ETA_SAMPLES 16
@@ -794,6 +795,138 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
     return rc;
 }
 
+/* True if the art file a scrape would write for this game already exists on disk
+   (checked at the write path so art that landed without a rescan still counts).
+   Shared by the enqueue and the missing-count paths. */
+static bool jw__game_art_exists(const jw_storage_source_list *sources,
+                                const char *system, const char *rom_path) {
+    char rom_abs[PATH_MAX], art_abs[PATH_MAX];
+    if (jw_storage_resolve_path(sources, rom_path, rom_abs, sizeof(rom_abs)) != 0)
+        return false;
+    char rom_copy[512], base[256];
+    snprintf(rom_copy, sizeof(rom_copy), "%s", rom_path);
+    jw__art_base(basename(rom_copy), base, sizeof(base));
+    const jw_storage_source *source =
+        jw_storage_sources_find_for_path(sources, rom_abs);
+    if (!source) source = jw_storage_sources_primary(sources);
+    return source &&
+           snprintf(art_abs, sizeof(art_abs), "%s/%s/%s.png",
+                    source->images_path, system, base) < (int)sizeof(art_abs) &&
+           access(art_abs, R_OK) == 0;
+}
+
+/* Count a system's games that still need art (and its total). Returns 0 on
+   success; unmapped systems report zero rather than erroring. */
+int jw_scrape_count_missing_system(const char *system, int *out_missing,
+                                   int *out_total, const char **error) {
+    if (error) *error = NULL;
+    if (out_missing) *out_missing = 0;
+    if (out_total) *out_total = 0;
+    if (!system || !system[0]) {
+        if (error) *error = "missing system";
+        return -1;
+    }
+    if (jw_scrape_platform_id(system) < 0)
+        return 0;   /* no ScreenScraper mapping -> nothing scrapeable */
+
+    jw_game_entry *games = calloc(JW__SCRAPE_LIST_MAX, sizeof(*games));
+    if (!games) {
+        if (error) *error = "out of memory";
+        return -1;
+    }
+    int game_count = 0;
+    if (jw_db_list_games_for_system(jw__w.db_path, system, games,
+                                    JW__SCRAPE_LIST_MAX, &game_count) != 0) {
+        free(games);
+        if (error) *error = "could not list games for this system";
+        return -1;
+    }
+
+    jw_storage_source_list sources;
+    bool have_sources =
+        jw_storage_sources_resolve(jw__w.sdcard_root, &sources) == 0 &&
+        sources.count > 0;
+
+    int missing = 0;
+    for (int i = 0; i < game_count; i++) {
+        if (have_sources && jw__game_art_exists(&sources, system, games[i].rom_path))
+            continue;
+        missing++;   /* with no resolvable sources we can't verify -> treat as missing */
+    }
+    if (out_total)   *out_total   = game_count;
+    if (out_missing) *out_missing = missing;
+    free(games);
+    return 0;
+}
+
+/* Per-system missing/total counts for every mapped system that has games. */
+int jw_scrape_missing_counts(jw_scrape_missing_row *out, int max,
+                             int *out_count, int *out_total_missing) {
+    if (out_count) *out_count = 0;
+    if (out_total_missing) *out_total_missing = 0;
+    if (!out || max <= 0) return -1;
+
+    jw_system_entry *systems = calloc(JW__SCRAPE_SYS_MAX, sizeof(*systems));
+    if (!systems) return -1;
+    int sys_count = 0;
+    if (jw_db_list_systems(jw__w.db_path, systems, JW__SCRAPE_SYS_MAX,
+                           &sys_count) != 0) {
+        free(systems);
+        return -1;
+    }
+
+    int n = 0, total_missing = 0;
+    for (int i = 0; i < sys_count && n < max; i++) {
+        if (jw_scrape_platform_id(systems[i].name) < 0) continue;  /* unmapped */
+        int missing = 0, total = 0;
+        if (jw_scrape_count_missing_system(systems[i].name, &missing, &total,
+                                           NULL) != 0)
+            continue;
+        if (total <= 0) continue;   /* no games -> nothing to scrape */
+        snprintf(out[n].system, sizeof(out[n].system), "%s", systems[i].name);
+        out[n].missing = missing;
+        out[n].total   = total;
+        total_missing += missing;
+        n++;
+    }
+    if (out_count) *out_count = n;
+    if (out_total_missing) *out_total_missing = total_missing;
+    free(systems);
+    return 0;
+}
+
+/* Enqueue every mapped system in one shot (used by scope "all"). Per-system
+   errors (e.g. a full queue) are tolerated so one bad system can't abort the
+   batch. Returns the total enqueued, or -1 only on a fatal setup error. */
+int jw_scrape_enqueue_all(bool missing_only, const char **error) {
+    if (error) *error = NULL;
+    if (!jw_ss_available()) {
+        if (error) *error = "scraping unavailable in this build";
+        return -1;
+    }
+    jw_system_entry *systems = calloc(JW__SCRAPE_SYS_MAX, sizeof(*systems));
+    if (!systems) {
+        if (error) *error = "out of memory";
+        return -1;
+    }
+    int sys_count = 0;
+    if (jw_db_list_systems(jw__w.db_path, systems, JW__SCRAPE_SYS_MAX,
+                           &sys_count) != 0) {
+        free(systems);
+        if (error) *error = "could not list systems";
+        return -1;
+    }
+    int total = 0;
+    for (int i = 0; i < sys_count; i++) {
+        if (jw_scrape_platform_id(systems[i].name) < 0) continue;  /* unmapped */
+        const char *err = NULL;
+        int n = jw_scrape_enqueue_system(systems[i].name, missing_only, &err);
+        if (n > 0) total += n;
+    }
+    free(systems);
+    return total;
+}
+
 int jw_scrape_enqueue_system(const char *system, bool missing_only,
                              const char **error) {
     if (error) *error = NULL;
@@ -838,30 +971,9 @@ int jw_scrape_enqueue_system(const char *system, bool missing_only,
         return -1;
     }
     for (int i = 0; i < game_count; i++) {
-        if (missing_only && have_sources) {
-            /* Skip games whose art file is already on disk — checked at the
-               path the scrape would write, so art that landed without a
-               rescan still counts. */
-            char rom_abs[PATH_MAX], art_abs[PATH_MAX];
-            bool exists = false;
-            if (jw_storage_resolve_path(&sources, games[i].rom_path,
-                                        rom_abs, sizeof(rom_abs)) == 0) {
-                char rom_copy[512], base[256];
-                snprintf(rom_copy, sizeof(rom_copy), "%s", games[i].rom_path);
-                jw__art_base(basename(rom_copy), base, sizeof(base));
-                const jw_storage_source *source =
-                    jw_storage_sources_find_for_path(&sources, rom_abs);
-                if (!source) source = jw_storage_sources_primary(&sources);
-                if (source &&
-                    snprintf(art_abs, sizeof(art_abs), "%s/%s/%s.png",
-                             source->images_path, system, base) <
-                        (int)sizeof(art_abs) &&
-                    access(art_abs, R_OK) == 0) {
-                    exists = true;
-                }
-            }
-            if (exists) continue;
-        }
+        if (missing_only && have_sources &&
+            jw__game_art_exists(&sources, system, games[i].rom_path))
+            continue;   /* art already on disk */
         int rc = jw__queue_push(system, games[i].rom_path);
         if (rc < 0) break;   /* queue full: enqueue what fit */
         enqueued += rc;

@@ -44,6 +44,9 @@ typedef enum {
     JW_SETTINGS_ACCOUNTS,
     JW_SETTINGS_SCRAPING,
     JW_SETTINGS_SCRAPE_PRIORITY,   /* artwork or region editor, see scrape_edit_is_region */
+    JW_SETTINGS_SCRAPE_QUEUE,      /* live scrape-job queue (native page, not the modal) */
+    JW_SETTINGS_SCRAPE_QUEUE_DETAIL, /* one job's result (native page, was cat_detail_screen) */
+    JW_SETTINGS_SCRAPE_DOWNLOAD,   /* pick All Systems / a system to scrape missing art */
     JW_SETTINGS_BEHAVIOR,
     JW_SETTINGS_UPDATE,
     JW_SETTINGS_UPDATE_PICKER,
@@ -115,10 +118,11 @@ typedef enum {
 #define JW_ACCOUNTS_ROW_COUNT         2
 
 /* Scraping page */
-#define JW_SCRAPING_ARTWORK   0
-#define JW_SCRAPING_REGION    1
-#define JW_SCRAPING_QUEUE     2
-#define JW_SCRAPING_ROW_COUNT 3
+#define JW_SCRAPING_DOWNLOAD  0
+#define JW_SCRAPING_QUEUE     1
+#define JW_SCRAPING_ARTWORK   2
+#define JW_SCRAPING_REGION    3
+#define JW_SCRAPING_ROW_COUNT 4
 /* Capacity for the priority editors (catalogs are 10 entries each today). */
 #define JW_SCRAPE_PRIO_SLOTS  16
 
@@ -157,6 +161,17 @@ typedef struct {
     cat_list_state     accounts_list;
     cat_list_state     scraping_list;
     cat_list_state     scrape_edit_list;
+    cat_list_state     scrape_queue_list;   /* cursor/scroll for the live queue page */
+    int                scrape_queue_filter; /* 0=ALL 1=BUSY 2=DONE 3=FAIL */
+    jw_ipc_scrape_queue_row scrape_queue_detail_row; /* snapshot shown on the detail page */
+    cat_marquee        scrape_detail_marquee[4];     /* per-row value marquees (reset on open) */
+    SDL_Texture       *scrape_detail_art;            /* art decoded once on open, freed on close */
+    int                scrape_detail_art_w;
+    int                scrape_detail_art_h;
+    cat_list_state     scrape_download_list;         /* "Scrape Missing Artwork" picker */
+    jw_ipc_scrape_missing_info scrape_missing_cache; /* per-system missing counts (fetched on open) */
+    bool               scrape_missing_have_cache;
+    bool               scrape_download_replace;      /* Y toggles missing-only vs replace-all */
     cat_list_state     behavior_list;
     cat_list_state     update_list;
     cat_list_state     update_picker_list;
@@ -342,7 +357,6 @@ void jw_settings_load_status_prefs(const char *db_path,
 
 void jw_settings_ui_render(const jw_settings_ui *ui,
                             int x, int y, int w, int h);
-void jw_settings_ui_open_scrape_queue(jw_settings_ui *ui);
 
 bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                    char *status_buf, size_t status_buf_size,

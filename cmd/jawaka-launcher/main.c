@@ -118,9 +118,7 @@ typedef enum {
     JW_ACTION_ROW_DISPLAY_NAME,
     JW_ACTION_ROW_CORE,
     JW_ACTION_ROW_PERFORMANCE,
-    JW_ACTION_ROW_SCRAPE_QUEUE,
-    JW_ACTION_ROW_SCRAPE,        /* game: replace art; system: missing only */
-    JW_ACTION_ROW_SCRAPE_ALL,    /* system: re-scrape everything */
+    JW_ACTION_ROW_SCRAPE,        /* game: replace art */
     JW_ACTION_ROW_SCRAPE_CANCEL, /* swap-in while the target is queued */
     JW_ACTION_ROW_RESET
 } jw_action_row_kind;
@@ -206,7 +204,6 @@ typedef struct {
     char               action_perf_system_override[64];
     char               action_system_display_override[64];
     bool               action_scrape_pending;   /* target has queued scrape work */
-    bool               action_scrape_queue_present;
     /* System menu (MENU button): an in-launcher overlay, not a separate process,
        so open/close is instant (no respawn, no SDL/Wayland/DB re-init). The
        in-game menu is still its own process — a different path. */
@@ -1492,6 +1489,30 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
                 { CAT_BTN_X, "Refresh", false, JW_HINT("X") },
                 { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
                 { CAT_BTN_A, "Pick",    true,  JW_HINT("A") },
+            };
+            jw__draw_footer(state, footer, 3);
+        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_SCRAPE_QUEUE) {
+            const jw_ipc_scrape_queue_info *q = state->settings.scrape_queue_have_cache
+                ? state->settings.scrape_queue_cache : NULL;
+            bool busy = q && (q->active > 0 || q->queued > 0);
+            cat_footer_item footer[] = {
+                { CAT_BTN_Y, "Filter",                          false, JW_HINT("Y") },
+                { CAT_BTN_X, busy ? "Stop All" : "Clear Done",  false, JW_HINT("X") },
+                { CAT_BTN_B, "Back",                            true,  JW_HINT("B") },
+                { CAT_BTN_A, "Details",                         true,  JW_HINT("A") },
+            };
+            jw__draw_footer(state, footer, 4);
+        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_SCRAPE_QUEUE_DETAIL) {
+            cat_footer_item footer[] = {
+                { CAT_BTN_B, "Back", true, JW_HINT("B") },
+            };
+            jw__draw_footer(state, footer, 1);
+        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_SCRAPE_DOWNLOAD) {
+            cat_footer_item footer[] = {
+                { CAT_BTN_Y, state->settings.scrape_download_replace
+                                 ? "Missing Only" : "Replace All", false, JW_HINT("Y") },
+                { CAT_BTN_B, "Back",   true, JW_HINT("B") },
+                { CAT_BTN_A, "Scrape", true, JW_HINT("A") },
             };
             jw__draw_footer(state, footer, 3);
         } else {
@@ -3145,22 +3166,9 @@ static void jw__action_row_strings(const jw_launcher_state *state,
                 snprintf(value, value_size, "%s", "Auto");
             }
             break;
-        case JW_ACTION_ROW_SCRAPE_QUEUE:
-            snprintf(title, title_size, "%s", "View Scrape Queue");
-            snprintf(value, value_size, "%s", "Open");
-            break;
         case JW_ACTION_ROW_SCRAPE:
-            if (state->action_scope == JW_ACTION_GAME) {
-                snprintf(title, title_size, "%s", "Scrape Artwork");
-                snprintf(value, value_size, "%s", "Replace");
-            } else {
-                snprintf(title, title_size, "%s", "Scrape Missing Artwork");
-                snprintf(value, value_size, "%s", "Start");
-            }
-            break;
-        case JW_ACTION_ROW_SCRAPE_ALL:
-            snprintf(title, title_size, "%s", "Re-scrape All Artwork");
-            snprintf(value, value_size, "%s", "Replace all");
+            snprintf(title, title_size, "%s", "Scrape Artwork");
+            snprintf(value, value_size, "%s", "Replace");
             break;
         case JW_ACTION_ROW_SCRAPE_CANCEL:
             snprintf(title, title_size, "%s", "Cancel Scraping");
@@ -3605,15 +3613,8 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
-        if (state->action_scrape_queue_present) {
-            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_QUEUE);
-        }
-        if (state->action_scrape_pending) {
-            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_CANCEL);
-        } else {
-            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE);
-            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_ALL);
-        }
+        /* Per-system scraping moved to Settings > Game Art > Scrape Missing
+           Artwork; the system X menu no longer offers it. */
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
     } else if (state->action_scope == JW_ACTION_GAME) {
         jw__action_add_row(state, JW_ACTION_ROW_DISPLAY_NAME);
@@ -3623,9 +3624,6 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
-        if (state->action_scrape_queue_present) {
-            jw__action_add_row(state, JW_ACTION_ROW_SCRAPE_QUEUE);
-        }
         jw__action_add_row(state, state->action_scrape_pending
                                       ? JW_ACTION_ROW_SCRAPE_CANCEL
                                       : JW_ACTION_ROW_SCRAPE);
@@ -3728,7 +3726,6 @@ static void jw__action_refresh_overrides(const char *db_path,
 
 static void jw__action_refresh_scrape_pending(jw_launcher_state *state) {
     state->action_scrape_pending = false;
-    state->action_scrape_queue_present = false;
     const char *socket_path = state->settings.socket_path;
     if (!socket_path[0]) {
         return;
@@ -3742,10 +3739,6 @@ static void jw__action_refresh_scrape_pending(jw_launcher_state *state) {
         : NULL;
     if (jw_ipc_scrape_pending(socket_path, system, rom_path, &pending) == 0) {
         state->action_scrape_pending = pending;
-    }
-    jw_ipc_scrape_status_info status;
-    if (jw_ipc_scrape_status(socket_path, &status) == 0) {
-        state->action_scrape_queue_present = status.total > 0;
     }
 }
 
@@ -4468,16 +4461,7 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
         case JW_ACTION_ROW_PERFORMANCE:
             jw__cycle_action_performance(db_path, state, +1);
             break;
-        case JW_ACTION_ROW_SCRAPE_QUEUE:
-            state->actions_open = false;
-            jw_settings_ui_open_scrape_queue(&state->settings);
-            jw__action_refresh(db_path, state);
-            break;
         case JW_ACTION_ROW_SCRAPE:
-            jw__start_action_scrape(socket_path, db_path, state,
-                                    state->action_scope == JW_ACTION_SYSTEM);
-            break;
-        case JW_ACTION_ROW_SCRAPE_ALL:
             jw__start_action_scrape(socket_path, db_path, state, false);
             break;
         case JW_ACTION_ROW_SCRAPE_CANCEL:
