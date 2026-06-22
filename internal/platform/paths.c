@@ -477,6 +477,7 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "savestate_file_compression",
         "video_threaded",
         "video_refresh_rate",
+        "video_black_frame_insertion",
         "video_driver",
         "video_context_driver",
         "aspect_ratio_index",
@@ -1351,6 +1352,16 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
             }
         }
     }
+    /* Black Frame Insertion. The daemon sets JAWAKA_BFI=1 only when the user
+       enabled it AND the panel is at 120Hz (one black frame per 60fps content
+       frame mimics a CRT's impulse, cutting motion blur). Written here and
+       stripped from the merge so the Leaf toggle is the single source of truth,
+       independent of RA's own menu / save-on-exit. */
+    {
+        const char *bfi = jw__env_value("JAWAKA_BFI");
+        jw__retroarch_cfg_string(fp, "video_black_frame_insertion",
+                                 (bfi && bfi[0] == '1') ? "1" : "0");
+    }
     jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
     jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
     jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
@@ -1699,6 +1710,16 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
                 jw__retroarch_cfg_string(fp, "video_refresh_rate", refresh_val);
             }
         }
+    }
+    /* Black Frame Insertion. The daemon sets JAWAKA_BFI=1 only when the user
+       enabled it AND the panel is at 120Hz (one black frame per 60fps content
+       frame mimics a CRT's impulse, cutting motion blur). Written here and
+       stripped from the merge so the Leaf toggle is the single source of truth,
+       independent of RA's own menu / save-on-exit. */
+    {
+        const char *bfi = jw__env_value("JAWAKA_BFI");
+        jw__retroarch_cfg_string(fp, "video_black_frame_insertion",
+                                 (bfi && bfi[0] == '1') ? "1" : "0");
     }
     jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
     jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");

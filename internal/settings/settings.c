@@ -140,6 +140,7 @@ typedef enum {
     JW_SETTING_RA_PASS,
     JW_SETTING_TAB_GLIDE,
     JW_SETTING_REFRESH_RATE_HZ,
+    JW_SETTING_BFI_ENABLED,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -181,6 +182,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_RA_PASS] = "retroachievements_pass",
     [JW_SETTING_TAB_GLIDE] = "tab_glide",
     [JW_SETTING_REFRESH_RATE_HZ] = "refresh_rate_hz",
+    [JW_SETTING_BFI_ENABLED] = "bfi_enabled",
 };
 
 static const char *const kTabSwitchLabels[] = { "Snap", "Glide" };
@@ -1040,6 +1042,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->boot_splash_supported = false;
     ui->refresh_rate_hz   = 60;
     ui->refresh_rate_supported = false;
+    ui->bfi_enabled       = false;
     ui->game_perf_profile = JW_GAME_PERF_PROFILE_DEFAULT;
     ui->performance_supported = false;
     ui->brightness_percent = 50;
@@ -1158,6 +1161,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 int hz = atoi(values[JW_SETTING_REFRESH_RATE_HZ]);
                 if (hz == 60 || hz == 90 || hz == 120) ui->refresh_rate_hz = hz;
             }
+            if (jw__setting_has(values, found, JW_SETTING_BFI_ENABLED))
+                ui->bfi_enabled = (strcmp(values[JW_SETTING_BFI_ENABLED], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_GAME_PERFORMANCE_PROFILE)) {
                 jw_platform_perf_profile profile;
                 if (jw_platform_parse_perf_profile(
@@ -1691,6 +1696,14 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_REFRESH_RATE,
                           "Refresh Rate", refresh_val,
                           ui->refresh_rate_supported, jw__display_row_h());
+    /* Black Frame Insertion (RetroArch strobing) — cuts motion blur, but only
+       works cleanly at 120Hz (one black frame per 60fps content frame). Greyed
+       with a "120 Hz only" hint at other refresh rates. */
+    bool bfi_avail = (ui->refresh_rate_hz == 120);
+    jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_BFI,
+                          "Black Frame Insertion",
+                          bfi_avail ? (ui->bfi_enabled ? "On" : "Off") : "120 Hz only",
+                          bfi_avail, jw__display_row_h());
     jw__draw_audio_output_row(ui, x, y_base, w);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
                         ui->volume_percent);
@@ -4596,6 +4609,20 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     }
                     int next = (cur + dir + n) % n;
                     jw__set_refresh_rate(ui, rates[next], status_buf, status_size);
+                }
+                else if (ui->display_list.cursor == JW_DISPLAY_BFI) {
+                    /* Black Frame Insertion: actionable only at 120Hz. Left/Right
+                       and A all just toggle on/off; the daemon writes
+                       video_black_frame_insertion into the per-launch RA config. */
+                    if (ui->refresh_rate_hz != 120) {
+                        snprintf(status_buf, status_size, "%s",
+                                 "Black Frame Insertion needs 120 Hz");
+                    } else {
+                        ui->bfi_enabled = !ui->bfi_enabled;
+                        jw__persist_int(ui, "bfi_enabled", ui->bfi_enabled ? 1 : 0);
+                        snprintf(status_buf, status_size, "Black Frame Insertion %s",
+                                 ui->bfi_enabled ? "on" : "off");
+                    }
                 }
                 else if (ui->display_list.cursor == JW_DISPLAY_OUTPUT)
                     jw__set_audio_output(ui, jw__next_audio_output(ui, dir),

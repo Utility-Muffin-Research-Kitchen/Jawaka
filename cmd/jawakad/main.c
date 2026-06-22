@@ -978,6 +978,24 @@ static void jw__publish_display_env(jw_daemon_state *state) {
     } else {
         unsetenv("JAWAKA_REFRESH_RATE_HZ");
     }
+
+    /* Black Frame Insertion: publish only when the user enabled it AND the panel
+       is at 120Hz (one black frame per 60fps content frame). The RA config
+       writer turns JAWAKA_BFI=1 into video_black_frame_insertion. At 60/90Hz
+       BFI would flicker badly, so it stays off there regardless of the setting. */
+    bool bfi_enabled = false;
+    if (state->db_path) {
+        char val[8] = "";
+        if (jw_db_get_setting(state->db_path, "bfi_enabled", val, sizeof(val)) == 0 &&
+            val[0] && strcmp(val, "0") != 0) {
+            bfi_enabled = true;
+        }
+    }
+    if (bfi_enabled && status.refresh_rate_hz == 120) {
+        setenv("JAWAKA_BFI", "1", 1);
+    } else {
+        unsetenv("JAWAKA_BFI");
+    }
 }
 
 static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {

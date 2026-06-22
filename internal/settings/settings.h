@@ -89,10 +89,11 @@ typedef enum {
 /* Display & Sound page */
 #define JW_DISPLAY_BRIGHTNESS   0
 #define JW_DISPLAY_REFRESH_RATE 1
-#define JW_DISPLAY_OUTPUT       2
-#define JW_DISPLAY_VOLUME       3
-#define JW_DISPLAY_TEST_SOUND   4
-#define JW_DISPLAY_ROW_COUNT    5
+#define JW_DISPLAY_BFI          2
+#define JW_DISPLAY_OUTPUT       3
+#define JW_DISPLAY_VOLUME       4
+#define JW_DISPLAY_TEST_SOUND   5
+#define JW_DISPLAY_ROW_COUNT    6
 
 /* Bluetooth page */
 #define JW_BLUETOOTH_ROW_POWER 0
@@ -212,8 +213,9 @@ typedef struct {
     unsigned           audio_available_outputs;
     int                audio_volumes[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
     bool               test_sound_playing;  /* Display&Sound: Test Sound clip active */
-    int                refresh_rate_hz;     /* display refresh: 60 or 90 */
+    int                refresh_rate_hz;     /* display refresh: 60, 90, or 120 */
     bool               refresh_rate_supported; /* platform offers refresh-rate switching */
+    bool               bfi_enabled;         /* Black Frame Insertion (RA): 120Hz only */
     bool               led_enabled;
     int                led_mode;            /* jw_led_mode */
     ap_color           led_color;
