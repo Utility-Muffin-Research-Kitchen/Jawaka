@@ -4071,7 +4071,14 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
 
     char config_error[256];
-    bool persist_config = !switcher_resume;
+    /* Persist RetroArch config changes on a clean exit regardless of how the game
+       was launched. Previously resume launches (Recents/Switcher) used
+       !switcher_resume = false, so a global RA setting changed while playing a
+       resumed game was silently dropped on quit, while the same change from a cold
+       Games-tab launch stuck. Per-game/core options already persist via RA's durable
+       HOME; this makes global settings consistent too. (The rapid switcher-hop case
+       is still excluded separately via switcher_transition at the write-back.) */
+    bool persist_config = true;
     long long config_start_ms = jw__monotonic_ms();
     runtime_config = jw_prepare_retroarch_config(state->runtime_dir,
                                                 source_root,
