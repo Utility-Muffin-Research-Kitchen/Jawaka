@@ -1002,6 +1002,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->adb_intent_enabled = -1;
     ui->update_have_status = false;
     ui->update_next_poll_ms = 0;
+    ui->update_bar_pct = 0.0f;
     ui->bt_op = JW_BT_OP_NONE;
     ui->bt_op_manual = false;
     cat_list_state_init(&ui->home_list,       JW_SETTINGS_CATEGORY_COUNT);
@@ -3271,9 +3272,28 @@ static void jw__draw_update_progress(const jw_settings_ui *ui,
     if (!ui || !ui->update.download_active || ui->update.download_percent < 0) {
         return;
     }
+    /* Ease the displayed fill toward the polled percent so the bar advances
+       smoothly between the 500ms progress updates instead of jumping. The render
+       path is const; the eased value is render-only animation state (mutated via
+       the same const-cast idiom used elsewhere in this file). Paired with the
+       per-frame redraw request in jw__render_update so it actually animates. */
+    jw_settings_ui *m = (jw_settings_ui *)ui;
+    float target = (float)ui->update.download_percent;
+    if (target < m->update_bar_pct) {
+        m->update_bar_pct = target;          /* snap back on a new/reset download */
+    } else {
+        m->update_bar_pct += (target - m->update_bar_pct) * 0.18f;
+        if (target - m->update_bar_pct < 0.5f) {
+            m->update_bar_pct = target;
+        }
+    }
+    int pct = (int)(m->update_bar_pct + 0.5f);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+
     ap_theme *theme = cat_get_theme();
     int track_h = cat_scale(5);
-    int fill_w = (w * ui->update.download_percent) / 100;
+    int fill_w = (w * pct) / 100;
     cat_draw_rect(x, y, w, track_h, cat_hex_to_color("#ffffff33"));
     cat_draw_rect(x, y, fill_w, track_h, theme->accent);
 }
@@ -3398,6 +3418,14 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
                         "Current", current_value, false);
     jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_AVAILABLE,
                         "Available", candidate_value, false);
+
+    /* Keep redrawing every frame while a transfer is active so the install
+       spinner and download bar animate at the render loop's frame rate. Without
+       this the screen only repaints on the 250ms poll-redraw, so the time-based
+       spinner (SDL_GetTicks) and the progress fill visibly stutter at ~4 fps. */
+    if (ui->update.download_active || ui->update.install_active) {
+        cat_request_frame();
+    }
 }
 
 typedef struct {

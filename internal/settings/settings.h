@@ -243,6 +243,7 @@ typedef struct {
     unsigned           update_next_poll_ms;
     char               update_msg[192];
     unsigned           update_msg_ms;
+    float              update_bar_pct;       /* eased download-bar fill (render anim) */
     jw_bt_status_t     bt_status;           /* last-read Bluetooth status */
     bool               bt_radio_on;
     jw_bt_device_t     bt_paired[JW_BT_MAX_DEVICES];
