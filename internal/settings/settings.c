@@ -141,6 +141,7 @@ typedef enum {
     JW_SETTING_TAB_GLIDE,
     JW_SETTING_REFRESH_RATE_HZ,
     JW_SETTING_BFI_ENABLED,
+    JW_SETTING_HDMI_OUTPUT_MODE,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -183,6 +184,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_TAB_GLIDE] = "tab_glide",
     [JW_SETTING_REFRESH_RATE_HZ] = "refresh_rate_hz",
     [JW_SETTING_BFI_ENABLED] = "bfi_enabled",
+    [JW_SETTING_HDMI_OUTPUT_MODE] = "hdmi_output_mode",
 };
 
 static const char *const kTabSwitchLabels[] = { "Snap", "Glide" };
@@ -506,6 +508,28 @@ static void jw__refresh_refresh_rate(jw_settings_ui *ui) {
            (truth over the persisted mirror, e.g. after moving the card). */
         if (hz == 60 || hz == 90 || hz == 120) {
             ui->refresh_rate_hz = hz;
+        }
+    }
+}
+
+static void jw__refresh_hdmi(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+    ui->hdmi_supported = false;
+    ui->hdmi_connected = -1;
+    if (!ui->socket_path[0]) {
+        return;
+    }
+    int connected = -1, mode = -1;
+    bool supported = false;
+    if (jw_ipc_get_hdmi_status(ui->socket_path, &connected, &mode, &supported) == 0) {
+        ui->hdmi_supported = supported;
+        ui->hdmi_connected = connected;
+        /* The persisted setting is the source of truth for the chosen mode; only
+           adopt the daemon's live mode when it actually has one applied. */
+        if (mode >= 0 && mode <= 2) {
+            ui->hdmi_output_mode = mode;
         }
     }
 }
@@ -1045,6 +1069,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->refresh_rate_hz   = 60;
     ui->refresh_rate_supported = false;
     ui->bfi_enabled       = false;
+    ui->hdmi_output_mode  = 0;       /* off */
+    ui->hdmi_connected    = -1;
+    ui->hdmi_supported    = false;
     ui->game_perf_profile = JW_GAME_PERF_PROFILE_DEFAULT;
     ui->performance_supported = false;
     ui->brightness_percent = 50;
@@ -1165,6 +1192,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             }
             if (jw__setting_has(values, found, JW_SETTING_BFI_ENABLED))
                 ui->bfi_enabled = (strcmp(values[JW_SETTING_BFI_ENABLED], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_HDMI_OUTPUT_MODE)) {
+                int m = atoi(values[JW_SETTING_HDMI_OUTPUT_MODE]);
+                if (m >= 0 && m <= 2) ui->hdmi_output_mode = m;
+            }
             if (jw__setting_has(values, found, JW_SETTING_GAME_PERFORMANCE_PROFILE)) {
                 jw_platform_perf_profile profile;
                 if (jw_platform_parse_perf_profile(
@@ -1223,6 +1254,7 @@ void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
         ui->update_list.scroll_offset = 0;
         ui->update_msg[0] = '\0';
         ui->update_msg_ms = 0;
+        ui->update_checked_this_visit = false;  /* don't assert a cached result */
         jw__refresh_update_status(ui, false);
         ui->update_next_poll_ms = SDL_GetTicks() + 1000;
     } else if (screen == JW_SETTINGS_ABOUT) {
@@ -1683,7 +1715,7 @@ static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_bas
         }
     }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_OUTPUT,
-                          "Output", jw_platform_audio_output_label(output),
+                          "Audio Output", jw_platform_audio_output_label(output),
                           navail > 1, jw__display_row_h());
 }
 
@@ -1706,6 +1738,17 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
                           "Black Frame Insertion",
                           bfi_avail ? (ui->bfi_enabled ? "On" : "Off") : "120 Hz only",
                           bfi_avail, jw__display_row_h());
+    /* HDMI external output (4:3 pillarbox / stretch). Cycler when a TV is
+       plugged in; greyed "Not connected" otherwise. */
+    static const char *const kHdmiVals[] = { "Off", "4:3", "Stretch" };
+    bool hdmi_avail = ui->hdmi_supported && ui->hdmi_connected == 1;
+    int hdmi_idx = (ui->hdmi_output_mode >= 0 && ui->hdmi_output_mode <= 2)
+                       ? ui->hdmi_output_mode : 0;
+    jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_HDMI,
+                          "HDMI Output",
+                          hdmi_avail ? kHdmiVals[hdmi_idx]
+                                     : (ui->hdmi_supported ? "Not connected" : "Unavailable"),
+                          hdmi_avail, jw__display_row_h());
     jw__draw_audio_output_row(ui, x, y_base, w);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
                         ui->volume_percent);
@@ -3342,6 +3385,13 @@ static const char *jw__update_state_label(const jw_ipc_update_status_info *u) {
     return "Idle";
 }
 
+/* True when the offered release is the one already installed — so we don't tempt
+   the user into re-downloading/re-installing the version they're on. */
+static bool jw__update_is_current(const jw_ipc_update_status_info *u) {
+    return u && u->release_id[0] && u->current_release_id[0] &&
+           strcmp(u->release_id, u->current_release_id) == 0;
+}
+
 static void jw__update_download_label(const jw_settings_ui *ui,
                                       char *out,
                                       size_t out_size) {
@@ -3359,6 +3409,8 @@ static void jw__update_download_label(const jw_settings_ui *ui,
         }
     } else if (u->downloaded) {
         snprintf(out, out_size, "%s", "Verified");
+    } else if (jw__update_is_current(u)) {
+        snprintf(out, out_size, "%s", "Up to date");
     } else if (u->compatible && u->artifact_name[0]) {
         snprintf(out, out_size, "%s", "Download");
     } else {
@@ -3547,15 +3599,33 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
              ? u->current_release_id
              : (ui->update_have_status && u->current_unknown ? "Unknown" : "-"));
     if (ui->update_have_status && u->release_id[0]) {
-        jw__format_update_size(u->artifact_size, size_value, sizeof(size_value));
-        snprintf(candidate_value, sizeof(candidate_value), "%s (%s)",
-                 u->release_id, size_value);
+        if (jw__update_is_current(u)) {
+            snprintf(candidate_value, sizeof(candidate_value), "%s (current)",
+                     u->release_id);
+        } else {
+            jw__format_update_size(u->artifact_size, size_value, sizeof(size_value));
+            snprintf(candidate_value, sizeof(candidate_value), "%s (%s)",
+                     u->release_id, size_value);
+        }
     } else if (ui->update_have_status && u->install_result_release_id[0]) {
         snprintf(candidate_value, sizeof(candidate_value), "Last: %s",
                  u->install_result_release_id);
     } else if (ui->update_have_status && strcmp(u->state, "up-to-date") == 0) {
         snprintf(candidate_value, sizeof(candidate_value), "%s", "None");
     } else {
+        snprintf(candidate_value, sizeof(candidate_value), "%s", "-");
+    }
+
+    /* Until a real release check runs this visit, don't present the daemon's
+       cached result as fresh truth — show "Not checked" and dash the result
+       rows. Skip the suppression when there's in-flight work to show (a download
+       or install in progress / a verified artifact / a pending restart). */
+    if (!ui->update_checked_this_visit && ui->update_have_status &&
+        !u->download_active && !u->install_active && !u->install_armed &&
+        !u->downloaded) {
+        snprintf(check_value, sizeof(check_value), "%s", "Not checked");
+        snprintf(download_value, sizeof(download_value), "%s", "-");
+        snprintf(install_value, sizeof(install_value), "%s", "-");
         snprintf(candidate_value, sizeof(candidate_value), "%s", "-");
     }
 
@@ -4247,6 +4317,7 @@ static void jw__update_check_releases(jw_settings_ui *ui,
         return;
     }
 
+    ui->update_checked_this_visit = true;   /* a real check ran -> results may show */
     jw_ipc_update_status_info info;
     memset(&info, 0, sizeof(info));
     char status[192] = { 0 };
@@ -4275,11 +4346,22 @@ static void jw__update_download_or_cancel(jw_settings_ui *ui,
     memset(&info, 0, sizeof(info));
     char status[192] = { 0 };
     int rc = 0;
+    if (!ui->update_checked_this_visit && !ui->update.download_active &&
+        !ui->update.downloaded) {
+        jw__copy_status(status_buf, status_size, "Check for updates first");
+        jw__update_msg(ui, "Check for updates first");
+        return;
+    }
+
     if (ui->update.download_active) {
         rc = jw_ipc_update_cancel(ui->socket_path, &info, status, sizeof(status));
     } else if (ui->update.downloaded) {
         jw__copy_status(status_buf, status_size, "Update already downloaded");
         jw__update_msg(ui, "Update already downloaded");
+        return;
+    } else if (jw__update_is_current(&ui->update)) {
+        jw__copy_status(status_buf, status_size, "Already on the latest version");
+        jw__update_msg(ui, "Already on the latest version");
         return;
     } else if (ui->update.compatible && ui->update.artifact_name[0]) {
         rc = jw_ipc_update_download(ui->socket_path, &info, status, sizeof(status));
@@ -4306,6 +4388,13 @@ static void jw__update_install_or_reboot(jw_settings_ui *ui,
     if (!ui || !ui->socket_path[0]) {
         jw__copy_status(status_buf, status_size, "Update service unavailable");
         if (ui) jw__update_msg(ui, "Update service unavailable");
+        return;
+    }
+
+    if (!ui->update_checked_this_visit && !ui->update.install_active &&
+        !ui->update.install_armed && !ui->update.downloaded) {
+        jw__copy_status(status_buf, status_size, "Check for updates first");
+        jw__update_msg(ui, "Check for updates first");
         return;
     }
 
@@ -4484,6 +4573,30 @@ static void jw__set_refresh_rate(jw_settings_ui *ui, int hz,
     jw__persist_int(ui, "refresh_rate_hz", hz);
 }
 
+static void jw__set_hdmi_output(jw_settings_ui *ui, int mode,
+                                char *status_buf, size_t status_size) {
+    if (!ui || !status_buf || status_size == 0) {
+        return;
+    }
+    if (!ui->hdmi_supported) {
+        snprintf(status_buf, status_size, "%s", "HDMI output unavailable on this platform");
+        return;
+    }
+    if (mode < 0 || mode > 2) {
+        mode = 0;
+    }
+    status_buf[0] = '\0';
+    if (jw_ipc_set_hdmi_output(ui->socket_path, mode, status_buf, (int)status_size) != 0 &&
+        !status_buf[0]) {
+        snprintf(status_buf, status_size, "%s", "HDMI output change failed");
+        return;
+    }
+    /* Switching to a TV output restarts Weston + respawns this launcher, so
+       persist optimistically (same as the refresh-rate path). */
+    ui->hdmi_output_mode = mode;
+    jw__persist_int(ui, "hdmi_output_mode", mode);
+}
+
 static void jw__safe_unmount_secondary_sd(jw_settings_ui *ui,
                                           char *status_buf, size_t status_size) {
     if (!ui || !status_buf || status_size == 0) {
@@ -4536,6 +4649,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_volume(ui);
                     jw__refresh_audio_status(ui);
                     jw__refresh_refresh_rate(ui);
+                    jw__refresh_hdmi(ui);
                 }
                 else if (idx == 3) {
                     ui->screen = JW_SETTINGS_NETWORK;
@@ -4804,6 +4918,18 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                         jw__persist_int(ui, "bfi_enabled", ui->bfi_enabled ? 1 : 0);
                         snprintf(status_buf, status_size, "Black Frame Insertion %s",
                                  ui->bfi_enabled ? "on" : "off");
+                    }
+                }
+                else if (ui->display_list.cursor == JW_DISPLAY_HDMI) {
+                    /* Cycle Off -> 4:3 -> Stretch (left/right step, A advances).
+                       Actionable only with a TV plugged in. */
+                    if (!(ui->hdmi_supported && ui->hdmi_connected == 1)) {
+                        snprintf(status_buf, status_size, "%s",
+                                 ui->hdmi_supported ? "No HDMI cable connected"
+                                                    : "HDMI output unavailable");
+                    } else {
+                        int next = (ui->hdmi_output_mode + dir + 3) % 3;
+                        jw__set_hdmi_output(ui, next, status_buf, status_size);
                     }
                 }
                 else if (ui->display_list.cursor == JW_DISPLAY_OUTPUT)

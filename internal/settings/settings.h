@@ -93,10 +93,11 @@ typedef enum {
 #define JW_DISPLAY_BRIGHTNESS   0
 #define JW_DISPLAY_REFRESH_RATE 1
 #define JW_DISPLAY_BFI          2
-#define JW_DISPLAY_OUTPUT       3
+#define JW_DISPLAY_HDMI         3
 #define JW_DISPLAY_VOLUME       4
-#define JW_DISPLAY_TEST_SOUND   5
-#define JW_DISPLAY_ROW_COUNT    6
+#define JW_DISPLAY_OUTPUT       5
+#define JW_DISPLAY_TEST_SOUND   6
+#define JW_DISPLAY_ROW_COUNT    7
 
 /* Bluetooth page */
 #define JW_BLUETOOTH_ROW_POWER 0
@@ -231,6 +232,9 @@ typedef struct {
     int                refresh_rate_hz;     /* display refresh: 60, 90, or 120 */
     bool               refresh_rate_supported; /* platform offers refresh-rate switching */
     bool               bfi_enabled;         /* Black Frame Insertion (RA): 120Hz only */
+    int                hdmi_output_mode;    /* HDMI out: 0 off, 1 4:3 pillarbox, 2 stretch */
+    int                hdmi_connected;      /* HDMI cable: -1 unknown, 0 no, 1 yes */
+    bool               hdmi_supported;      /* platform offers HDMI output switching */
     bool               led_enabled;
     int                led_mode;            /* jw_led_mode */
     ap_color           led_color;
@@ -255,6 +259,7 @@ typedef struct {
     int                adb_intent_enabled;  /* -1 unavailable, 0 no boot restore, 1 restore at boot */
     jw_ipc_update_status_info update;
     bool               update_have_status;
+    bool               update_checked_this_visit; /* a real release check ran since opening the page */
     unsigned           update_next_poll_ms;
     char               update_msg[192];
     unsigned           update_msg_ms;

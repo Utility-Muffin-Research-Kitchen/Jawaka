@@ -53,9 +53,11 @@
 #define JW_MLP1_PACTL_SET_DEFAULT_RK817 \
     "pactl set-default-sink alsa_output.platform-rk817-sound.stereo-fallback 2>/dev/null"
 #define JW_MLP1_PACTL_SET_DEFAULT_HDMI \
-    "pactl set-default-sink alsa_output.platform-hdmi-sound.stereo-fallback 2>/dev/null"
+    "pactl set-default-sink hdmi_out 2>/dev/null"
 #define JW_MLP1_PACTL_RK817_SINK "alsa_output.platform-rk817-sound.stereo-fallback"
-#define JW_MLP1_PACTL_HDMI_SINK "alsa_output.platform-hdmi-sound.stereo-fallback"
+/* The HDMI sink jawakad loads on demand (device=hw:0,0 sink_name=hdmi_out); the
+   vendor udev-detect name is never produced on this build, so we own the name. */
+#define JW_MLP1_PACTL_HDMI_SINK "hdmi_out"
 #define JW_MLP1_PLAYBACK_PATH_CMD "amixer -c 1 cget numid=13 2>/dev/null"
 #define JW_MLP1_PLAYBACK_PATH_SPK "amixer -c 1 cset numid=13 2 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_HP  "amixer -c 1 cset numid=13 3 >/dev/null 2>&1"
@@ -1162,6 +1164,63 @@ static int jw__mlp1_set_refresh_rate(int hz) {
     return 0;
 }
 
+/* ── HDMI output ──────────────────────────────────────────────────────────
+   The vendor-patched Weston DRM backend exposes env knobs + a live command file
+   (/tmp/.weston_drm.conf). 4:3 = single-head HDMI at a universal CEA mode
+   (1280x720; PC modes like 1024x768 show black on TVs) with the 960x720 (4:3)
+   Leaf surface placed 1:1 centered via a corner-coord rect <160,0,1120,720>
+   (160px pillarbox bars each side, no stretch). Stretch = same minus the rect.
+   Off = revert to the DSI panel. Reverse-engineered + proven on hardware; see
+   memory mlp1-weston-display.md. */
+enum { JW_MLP1_HDMI_OFF = 0, JW_MLP1_HDMI_4_3 = 1, JW_MLP1_HDMI_STRETCH = 2 };
+static int s_mlp1_hdmi_mode = -1;   /* last applied output mode; -1 until set */
+
+/* Apply the requested HDMI output mode by restarting Weston with the right env +
+   conf, then respawning the launcher AND OSD (same detached pattern + reason as
+   jw__mlp1_set_refresh_rate). Removes any leftover ~/.config/weston.ini override
+   so it can't pin HDMI mode=off and block the switch. */
+static int jw__mlp1_set_hdmi_output(int mode) {
+    const char *script;
+    if (mode == JW_MLP1_HDMI_4_3) {
+        script =
+            "rm -f " JW_MLP1_WESTON_OVERRIDE_INI "; "
+            "printf 'output:HDMI-A-1:mode=1280x720\\noutput:HDMI-A-1:rect=<160,0,1120,720>\\noutput:HDMI-A-1:primary\\n' > /tmp/.weston_drm.conf; "
+            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf; "
+            "/etc/init.d/S49weston restart; sleep 1; "
+            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null";
+    } else if (mode == JW_MLP1_HDMI_STRETCH) {
+        script =
+            "rm -f " JW_MLP1_WESTON_OVERRIDE_INI "; "
+            "printf 'output:HDMI-A-1:mode=1280x720\\noutput:HDMI-A-1:primary\\n' > /tmp/.weston_drm.conf; "
+            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf; "
+            "/etc/init.d/S49weston restart; sleep 1; "
+            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null";
+    } else {   /* off -> internal panel */
+        script =
+            "rm -f /tmp/.weston_drm.conf " JW_MLP1_WESTON_OVERRIDE_INI "; "
+            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=DSI-1; "
+            "/etc/init.d/S49weston restart; sleep 1; "
+            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null";
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+        }
+        execl("/bin/sh", "sh", "-c", script, (char *)NULL);
+        _exit(127);
+    }
+    if (pid < 0) {
+        return -1;
+    }
+    s_mlp1_hdmi_mode = mode;
+    return 0;
+}
+
 static bool jw__mlp1_adb_supported(void) {
     return access(JW_MLP1_ADBD, X_OK) == 0 &&
            access(JW_MLP1_USB_GADGET, X_OK) == 0;
@@ -1671,14 +1730,20 @@ static bool jw__mlp1_pulse_sink_exists(const char *needle) {
 }
 
 static bool jw__mlp1_hdmi_connected(void) {
-    char *text = jw__read_text_file(JW_MLP1_HDMI_STATUS, 64);
-    if (!text) {
+    /* sysfs files report st_size 0, so jw__read_text_file (ftell-based) reads
+       empty — read the connector status directly with fgets instead. */
+    FILE *fp = fopen(JW_MLP1_HDMI_STATUS, "r");
+    if (!fp) {
         return false;
     }
-    text[strcspn(text, "\r\n")] = '\0';
-    bool connected = strcmp(text, "connected") == 0;
-    free(text);
-    return connected;
+    char s[32] = { 0 };
+    char *got = fgets(s, sizeof(s), fp);
+    fclose(fp);
+    if (!got) {
+        return false;
+    }
+    s[strcspn(s, "\r\n")] = '\0';
+    return strcmp(s, "connected") == 0;
 }
 
 /* Headphone jack detection (rk817 'Headphones Jack' kcontrol, numid=1). The
@@ -1733,6 +1798,66 @@ static bool jw__mlp1_default_audio_sink(char *out, size_t out_size) {
     }
     pclose(fp);
     return found;
+}
+
+/* ── HDMI audio (follows the HDMI display output) ─────────────────────────────
+   udev-detect doesn't expose the HDMI card as a PulseAudio sink here, so load an
+   explicit one on hw:0,0 when the TV becomes the active display and drop it on
+   revert — an unplugged TV must never strand audio on a dead sink. The module
+   index is tracked so the unload is precise and can never hit the analog sink. */
+static int s_mlp1_hdmi_audio_module = -1;
+
+static bool jw__mlp1_hdmi_tv_active(void) {
+    return s_mlp1_hdmi_mode == JW_MLP1_HDMI_4_3 ||
+           s_mlp1_hdmi_mode == JW_MLP1_HDMI_STRETCH;
+}
+
+static void jw__mlp1_hdmi_audio_on(void) {
+    if (s_mlp1_hdmi_audio_module < 0) {
+        FILE *fp = popen("pactl load-module module-alsa-sink device=hw:0,0 "
+                         "sink_name=hdmi_out 2>/dev/null", "r");
+        if (fp) {
+            char buf[32];
+            if (fgets(buf, sizeof(buf), fp)) {
+                int idx = atoi(buf);
+                if (idx > 0) {
+                    s_mlp1_hdmi_audio_module = idx;
+                }
+            }
+            pclose(fp);
+        }
+    }
+    /* Make HDMI the default sink and pull any already-playing streams over. */
+    (void)jw__exec_shell(
+        "pactl set-default-sink hdmi_out 2>/dev/null; "
+        "pactl list short sink-inputs | while read id _rest; do "
+        "pactl move-sink-input \"$id\" hdmi_out 2>/dev/null; done");
+}
+
+static void jw__mlp1_hdmi_audio_off(void) {
+    /* Point default back at the analog codec sink (default_audio_sink skips any
+       'hdmi' sink) and move any streams over. */
+    char sink[256];
+    if (jw__mlp1_default_audio_sink(sink, sizeof(sink))) {
+        char cmd[768];
+        snprintf(cmd, sizeof(cmd),
+                 "pactl set-default-sink %s 2>/dev/null; "
+                 "pactl list short sink-inputs | while read id _rest; do "
+                 "pactl move-sink-input \"$id\" %s 2>/dev/null; done",
+                 sink, sink);
+        (void)jw__exec_shell(cmd);
+    }
+    /* Keep the HDMI sink loaded on a deliberate Off (cable still in) — unloading
+       then reloading hw:0,0 on the next TV-on races the ALSA device-busy window
+       and the reload silently fails, stranding audio on the speaker. Only drop it
+       when the cable is actually gone, so a fresh replug rebinds hw:0,0 cleanly. */
+    if (s_mlp1_hdmi_audio_module >= 0 && !jw__mlp1_hdmi_connected()) {
+        char cmd[64];
+        snprintf(cmd, sizeof(cmd), "pactl unload-module %d 2>/dev/null",
+                 s_mlp1_hdmi_audio_module);
+        (void)jw__exec_shell(cmd);
+        s_mlp1_hdmi_audio_module = -1;
+    }
 }
 
 /* Escape a string for safe inclusion inside single quotes in a shell command:
@@ -1999,7 +2124,7 @@ static void jw__mlp1_audio_tick(jw_platform_context *ctx) {
        reconnects). */
     static int last_present = -1;
     int present = jw__mlp1_jack_input_state();
-    if (present >= 0 && present != last_present) {
+    if (present >= 0 && present != last_present && !jw__mlp1_hdmi_tv_active()) {
         last_present = present;
         jw_platform_result res;
         jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
@@ -2032,7 +2157,7 @@ static void jw__mlp1_audio_tick(jw_platform_context *ctx) {
         if (bt != last_bt) {
             int prev = last_bt;
             last_bt = bt;
-            if (prev >= 0) {   /* skip the first sample; boot routing is the jack tick's job */
+            if (prev >= 0 && !jw__mlp1_hdmi_tv_active()) {   /* skip first sample; HDMI TV wins */
                 jw_platform_audio_output cur = jw__mlp1_get_audio_output();
                 jw_platform_result res;
                 jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
@@ -2121,6 +2246,8 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
     }
     out->boot_splash_enabled = jw__mlp1_boot_splash_enabled(ctx) ? 1 : 0;
     out->refresh_rate_hz = jw__mlp1_get_refresh_hz();
+    out->hdmi_connected = jw__mlp1_hdmi_connected() ? 1 : 0;
+    out->hdmi_output_mode = s_mlp1_hdmi_mode;
 }
 
 static void jw__mlp1_get_audio_status(jw_platform_context *ctx, jw_platform_status *out) {
@@ -2382,6 +2509,38 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         jw_log_info("display: refresh rate -> %d Hz", hz);
         char msg[32];
         snprintf(msg, sizeof(msg), "switching to %d Hz", hz);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SET_HDMI_OUTPUT) {
+        int mode = value;
+        if (mode < JW_MLP1_HDMI_OFF || mode > JW_MLP1_HDMI_STRETCH) {
+            mode = JW_MLP1_HDMI_OFF;
+        }
+        if (jw__mlp1_set_hdmi_output(mode) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   "HDMI output change failed");
+            return;
+        }
+        /* Audio follows the display: TV on -> HDMI sink; back to the panel ->
+           the analog codec, honoring a plugged headset / live Bluetooth. */
+        if (mode == JW_MLP1_HDMI_OFF) {
+            jw__mlp1_hdmi_audio_off();
+            jw_platform_result ar;
+            jw_platform_result_set(&ar, JW_PLATFORM_RESULT_OK, "");
+            jw_platform_audio_output tgt =
+                jw__mlp1_headphone_jack_present() ? JW_PLATFORM_AUDIO_OUTPUT_HEADSET
+                : (jw_bt_audio_connected() == 1)  ? JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH
+                                                  : JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+            (void)jw__mlp1_set_audio_output(tgt, &ar);
+        } else {
+            jw__mlp1_hdmi_audio_on();
+        }
+        static const char *const names[] = { "off", "4:3", "stretch" };
+        jw_log_info("display: HDMI output -> %s", names[mode]);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "HDMI output %s", names[mode]);
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }
@@ -2659,6 +2818,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .adb = true,
             .boot_splash = true,
             .refresh_rate = true,
+            .hdmi_output = true,
             .led = true,
             .performance = true,
         },

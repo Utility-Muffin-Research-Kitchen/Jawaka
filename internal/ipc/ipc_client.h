@@ -276,6 +276,11 @@ int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
                             bool *out_supported);
 int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
                             char *status, int status_len);
+/* HDMI output: status (connected/current mode/supported) + set (0 off/1 4:3/2 stretch). */
+int jw_ipc_get_hdmi_status(const char *socket_path, int *out_connected,
+                           int *out_mode, bool *out_supported);
+int jw_ipc_set_hdmi_output(const char *socket_path, int mode,
+                           char *status, int status_len);
 
 typedef struct {
     bool valid;           /* credentials confirmed by ScreenScraper */

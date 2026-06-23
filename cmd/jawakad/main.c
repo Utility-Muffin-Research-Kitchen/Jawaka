@@ -157,6 +157,8 @@ typedef struct {
     bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
     bool      power_held;                 /* power key currently held (for long-press detect) */
     long long power_down_ms;              /* when the current power press started */
+    int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
+    long long hdmi_next_poll_ms;          /* throttle for the HDMI hotplug poll */
     jw_platform_perf_profile perf_global_profile;
     jw_platform_perf_profile perf_active_profile;
     jw_platform_perf_profile perf_session_profile;
@@ -489,6 +491,7 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "adb", cap && cap->adb);
     cJSON_AddBoolToObject(root, "boot_splash", cap && cap->boot_splash);
     cJSON_AddBoolToObject(root, "refresh_rate", cap && cap->refresh_rate);
+    cJSON_AddBoolToObject(root, "hdmi_output", cap && cap->hdmi_output);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
     cJSON_AddBoolToObject(root, "performance", cap && cap->performance);
     return root;
@@ -542,6 +545,8 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "adb_intent_enabled", status->adb_intent_enabled);
     jw__json_add_int_or_null(root, "boot_splash_enabled", status->boot_splash_enabled);
     jw__json_add_int_or_null(root, "refresh_rate_hz", status->refresh_rate_hz);
+    jw__json_add_int_or_null(root, "hdmi_connected", status->hdmi_connected);
+    jw__json_add_int_or_null(root, "hdmi_output_mode", status->hdmi_output_mode);
     return root;
 }
 
@@ -4355,6 +4360,67 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
 }
 
+/* HDMI hotplug: on plug, apply the persisted HDMI output mode (4:3/stretch); on
+   unplug, revert to the panel (single-head TV mode would otherwise leave the
+   device black). Reads the cable status straight from the DRM connector and the
+   chosen mode from the settings DB (shared with the launcher). ~1s poll. */
+#define JW_HDMI_POLL_MS 1000
+static int jw__hdmi_connected_now(void) {
+    FILE *fp = fopen("/sys/class/drm/card0-HDMI-A-1/status", "r");
+    if (!fp) {
+        return 0;
+    }
+    char s[32] = { 0 };
+    char *got = fgets(s, sizeof(s), fp);
+    fclose(fp);
+    if (!got) {
+        return 0;
+    }
+    s[strcspn(s, "\r\n")] = '\0';
+    return strcmp(s, "connected") == 0 ? 1 : 0;
+}
+
+static void jw__tick_hdmi(jw_daemon_state *state) {
+    long long now = jw__monotonic_ms();
+    if (now < state->hdmi_next_poll_ms) {
+        return;
+    }
+    state->hdmi_next_poll_ms = now + JW_HDMI_POLL_MS;
+
+    int cur = jw__hdmi_connected_now();
+    int prev = state->hdmi_last_connected;
+    if (cur == prev) {
+        return;
+    }
+    state->hdmi_last_connected = cur;
+
+    /* The persisted HDMI Output setting (0 off / 1 4:3 / 2 stretch). */
+    int mode = 0;
+    if (state->db_path) {
+        char val[16];
+        if (jw_db_get_setting(state->db_path, "hdmi_output_mode", val, sizeof(val)) == 0) {
+            mode = atoi(val);
+            if (mode < 0 || mode > 2) mode = 0;
+        }
+    }
+    if (mode == 0) {
+        return;   /* feature disabled -> ignore plug/unplug */
+    }
+
+    jw_platform_result res;
+    if (cur == 1) {
+        /* plugged in (incl. the first poll after boot) -> apply the chosen mode */
+        jw_platform_perform_action(&state->platform,
+                                   JW_PLATFORM_ACTION_SET_HDMI_OUTPUT, mode, &res);
+        jw_log_info("HDMI hotplug: connected -> applying mode %d", mode);
+    } else if (prev == 1) {
+        /* was connected, now unplugged -> back to the panel */
+        jw_platform_perform_action(&state->platform,
+                                   JW_PLATFORM_ACTION_SET_HDMI_OUTPUT, 0, &res);
+        jw_log_info("HDMI hotplug: disconnected -> reverting to panel");
+    }
+}
+
 static void jw__tick_auto_sleep(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
 
@@ -5619,6 +5685,10 @@ int main(int argc, char *argv[]) {
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
     jw__apply_persisted_led(&state);
+    /* HDMI boot-apply happens via the first hotplug poll; defer it a few seconds
+       so the launcher + OSD are up before any TV-switch weston restart. */
+    state.hdmi_last_connected = -1;
+    state.hdmi_next_poll_ms = jw__monotonic_ms() + 4000;
 
     if (jw_ipc_server_listen(state.socket_path, &state.server) != 0) {
         jw_log_error("could not bind socket: %s", state.socket_path);
@@ -5753,6 +5823,7 @@ int main(int argc, char *argv[]) {
         jw_input_proxy_tick(&state.input_proxy);
         jw_platform_audio_tick(&state.platform);
         jw__tick_auto_sleep(&state);
+        jw__tick_hdmi(&state);
         if (jw_platform_storage_tick(&state.platform)) {
             jw_scan_result scan_result;
             if (jw__scan_library_now(&state, &scan_result, "after storage change") != 0) {

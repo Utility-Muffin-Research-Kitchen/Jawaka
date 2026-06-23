@@ -1734,6 +1734,62 @@ int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
     return ok ? 0 : -1;
 }
 
+int jw_ipc_get_hdmi_status(const char *socket_path, int *out_connected,
+                           int *out_mode, bool *out_supported) {
+    if (out_connected) *out_connected = -1;
+    if (out_mode) *out_mode = -1;
+    if (out_supported) *out_supported = false;
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    const cJSON *cap = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
+    const cJSON *hdmi_cap = cJSON_GetObjectItemCaseSensitive(cap, "hdmi_output");
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *conn = cJSON_GetObjectItemCaseSensitive(status, "hdmi_connected");
+    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(status, "hdmi_output_mode");
+    if (out_supported) *out_supported = cJSON_IsTrue(hdmi_cap);
+    if (out_connected && cJSON_IsNumber(conn)) *out_connected = conn->valueint;
+    if (out_mode && cJSON_IsNumber(mode)) *out_mode = mode->valueint;
+
+    cJSON_Delete(resp);
+    return cJSON_IsBool(hdmi_cap) ? 0 : -1;
+}
+
+int jw_ipc_set_hdmi_output(const char *socket_path, int mode,
+                           char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-action");
+    cJSON_AddStringToObject(req, "action", "set-hdmi-output");
+    cJSON_AddNumberToObject(req, "value", mode);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "HDMI output failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    bool ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        snprintf(status, (size_t)status_len, "%s",
+                 (cJSON_IsString(message) && message->valuestring)
+                     ? message->valuestring
+                     : (ok ? "switching HDMI output" : "HDMI output failed"));
+    }
+
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
 int jw_ipc_scrape_validate(const char *socket_path, const char *username,
                            const char *password,
                            jw_ipc_scrape_validate_info *out) {
