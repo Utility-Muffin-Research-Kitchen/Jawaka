@@ -1744,11 +1744,22 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     bool hdmi_avail = ui->hdmi_supported && ui->hdmi_connected == 1;
     int hdmi_idx = (ui->hdmi_output_mode >= 0 && ui->hdmi_output_mode <= 2)
                        ? ui->hdmi_output_mode : 0;
+    /* When sending to the TV, append the live negotiated mode so a 120Hz fallback
+       to 720p (a 60Hz-only TV, or a cable that can't carry 1080p120) is visible at
+       a glance. Resolution follows the live refresh: 120 -> 1080p120, else 720p60. */
+    char hdmi_val[40];
+    const char *hdmi_text;
+    if (hdmi_avail && hdmi_idx != 0) {
+        snprintf(hdmi_val, sizeof(hdmi_val), "%s \xc2\xb7 %s", kHdmiVals[hdmi_idx],
+                 ui->refresh_rate_hz >= 120 ? "1080p120" : "720p60");
+        hdmi_text = hdmi_val;
+    } else if (hdmi_avail) {
+        hdmi_text = kHdmiVals[hdmi_idx];
+    } else {
+        hdmi_text = ui->hdmi_supported ? "Not connected" : "Unavailable";
+    }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_HDMI,
-                          "HDMI Output",
-                          hdmi_avail ? kHdmiVals[hdmi_idx]
-                                     : (ui->hdmi_supported ? "Not connected" : "Unavailable"),
-                          hdmi_avail, jw__display_row_h());
+                          "HDMI Output", hdmi_text, hdmi_avail, jw__display_row_h());
     jw__draw_audio_output_row(ui, x, y_base, w);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
                         ui->volume_percent);
@@ -4896,9 +4907,15 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__change_brightness(ui, dir * JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
                                           status_buf, status_size);
                 else if (ui->display_list.cursor == JW_DISPLAY_REFRESH_RATE) {
-                    /* Cycle 60 -> 90 -> 120 (left/right step, A advances). */
-                    static const int rates[] = {60, 90, 120};
-                    int n = (int)(sizeof(rates) / sizeof(rates[0]));
+                    /* Cycle the refresh rate (left/right step, A advances). On a TV,
+                       HDMI has no 90Hz mode and 60/90 both render as 720p60, so the
+                       live-rate cycler would stick at 60 - offer just {60,120} there
+                       (the two distinct HDMI modes). The internal panel does all three. */
+                    static const int panel_rates[] = {60, 90, 120};
+                    static const int tv_rates[]    = {60, 120};
+                    bool on_tv = ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0;
+                    const int *rates = on_tv ? tv_rates : panel_rates;
+                    int n = on_tv ? 2 : 3;
                     int cur = 0;
                     for (int i = 0; i < n; i++) {
                         if (rates[i] == ui->refresh_rate_hz) { cur = i; break; }
