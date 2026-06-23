@@ -158,6 +158,18 @@ static void jw__mlp1_sync_sound_volume(jw_platform_audio_output output, int perc
 static int jw__mlp1_get_bluealsa_volume_percent(void);
 static int jw__mlp1_set_bluealsa_volume_percent(int percent);
 static int jw__mlp1_apply_power_cfg_live(void);
+static int jw__mlp1_set_hdmi_output(int mode);
+static bool jw__mlp1_hdmi_tv_active(void);
+static bool jw__mlp1_hdmi_has_1080p120(void);
+
+/* The user's Refresh Rate setting (60/90/120), cached when set so the HDMI apply
+   can choose 1080p120 vs the crisp 720p60. -1 until known; the HDMI apply then
+   falls back to the live panel mode (which boots at the persisted rate). */
+static int s_mlp1_target_refresh_hz = -1;
+
+/* HDMI output mode (0 off / 1 4:3 / 2 stretch); last applied, -1 until set. */
+enum { JW_MLP1_HDMI_OFF = 0, JW_MLP1_HDMI_4_3 = 1, JW_MLP1_HDMI_STRETCH = 2 };
+static int s_mlp1_hdmi_mode = -1;
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -1132,6 +1144,9 @@ static int jw__mlp1_write_weston_override(int hz) {
 }
 
 static int jw__mlp1_set_refresh_rate(int hz) {
+    s_mlp1_target_refresh_hz = hz;
+    /* Persist the panel modeline regardless, so the internal screen uses this
+       rate now (panel active) and later when HDMI is turned off. */
     if (hz > 60) {
         if (jw__mlp1_write_weston_override(hz) != 0) {
             return -1;
@@ -1140,6 +1155,12 @@ static int jw__mlp1_set_refresh_rate(int hz) {
         if (unlink(JW_MLP1_WESTON_OVERRIDE_INI) != 0 && errno != ENOENT) {
             return -1;
         }
+    }
+
+    /* If the TV is the active output, re-apply the HDMI mode at the new rate
+       (1080p120 vs the crisp 720p60) rather than restarting onto the panel. */
+    if (jw__mlp1_hdmi_tv_active()) {
+        return jw__mlp1_set_hdmi_output(s_mlp1_hdmi_mode);
     }
 
     /* Restart Weston so it re-reads the config at the new mode, then drop the
@@ -1172,35 +1193,63 @@ static int jw__mlp1_set_refresh_rate(int hz) {
    (160px pillarbox bars each side, no stretch). Stretch = same minus the rect.
    Off = revert to the DSI panel. Reverse-engineered + proven on hardware; see
    memory mlp1-weston-display.md. */
-enum { JW_MLP1_HDMI_OFF = 0, JW_MLP1_HDMI_4_3 = 1, JW_MLP1_HDMI_STRETCH = 2 };
-static int s_mlp1_hdmi_mode = -1;   /* last applied output mode; -1 until set */
+/* Does the connected TV advertise a 1080p120 mode? modetest lists the live EDID
+   modes per connector; only HDMI exposes 1920x1080 at ~120 here, so a global
+   match is safe. Gates the 120Hz path so a 60Hz-only TV stays on crisp 720p. */
+static bool jw__mlp1_hdmi_has_1080p120(void) {
+    FILE *fp = popen("modetest -c 2>/dev/null", "r");
+    if (!fp) {
+        return false;
+    }
+    char line[256];
+    bool found = false;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "1920x1080") &&
+            (strstr(line, " 120.") || strstr(line, " 119."))) {
+            found = true;
+            break;
+        }
+    }
+    pclose(fp);
+    return found;
+}
 
 /* Apply the requested HDMI output mode by restarting Weston with the right env +
    conf, then respawning the launcher AND OSD (same detached pattern + reason as
-   jw__mlp1_set_refresh_rate). Removes any leftover ~/.config/weston.ini override
-   so it can't pin HDMI mode=off and block the switch. */
+   jw__mlp1_set_refresh_rate). Removes any leftover ~/.config/weston.ini panel
+   override so it can't pin the mode and block the switch.
+
+   Mode pick: when the user wants 120Hz (Refresh Rate = 120) AND the TV advertises
+   1080p120, drive 1920x1080@120 so BFI + smoothness work over HDMI; otherwise the
+   crisp, universal 720p60 (the 960x720 4:3 UI maps 1:1). 4:3 pillarboxes via a
+   centered rect; Stretch fills the frame. */
 static int jw__mlp1_set_hdmi_output(int mode) {
-    const char *script;
-    if (mode == JW_MLP1_HDMI_4_3) {
-        script =
-            "rm -f " JW_MLP1_WESTON_OVERRIDE_INI "; "
-            "printf 'output:HDMI-A-1:mode=1280x720\\noutput:HDMI-A-1:rect=<160,0,1120,720>\\noutput:HDMI-A-1:primary\\n' > /tmp/.weston_drm.conf; "
-            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf; "
-            "/etc/init.d/S49weston restart; sleep 1; "
-            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null";
-    } else if (mode == JW_MLP1_HDMI_STRETCH) {
-        script =
-            "rm -f " JW_MLP1_WESTON_OVERRIDE_INI "; "
-            "printf 'output:HDMI-A-1:mode=1280x720\\noutput:HDMI-A-1:primary\\n' > /tmp/.weston_drm.conf; "
-            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf; "
-            "/etc/init.d/S49weston restart; sleep 1; "
-            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null";
-    } else {   /* off -> internal panel */
-        script =
-            "rm -f /tmp/.weston_drm.conf " JW_MLP1_WESTON_OVERRIDE_INI "; "
+    char script[1024];
+    if (mode == JW_MLP1_HDMI_OFF) {
+        snprintf(script, sizeof(script),
+            "rm -f /tmp/.weston_drm.conf %s; "
             "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=DSI-1; "
             "/etc/init.d/S49weston restart; sleep 1; "
-            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null";
+            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
+            JW_MLP1_WESTON_OVERRIDE_INI);
+    } else {
+        int want = (s_mlp1_target_refresh_hz > 0) ? s_mlp1_target_refresh_hz
+                                                  : jw__mlp1_get_refresh_hz();
+        bool use120 = (want >= 120) && jw__mlp1_hdmi_has_1080p120();
+        const char *modestr = use120 ? "1920x1080@120" : "1280x720";
+        char rectline[64] = "";
+        if (mode == JW_MLP1_HDMI_4_3) {
+            snprintf(rectline, sizeof(rectline),
+                     "output:HDMI-A-1:rect=<%s>\\n",
+                     use120 ? "240,0,1680,1080" : "160,0,1120,720");
+        }
+        snprintf(script, sizeof(script),
+            "rm -f %s; "
+            "printf 'output:HDMI-A-1:mode=%s\\n%soutput:HDMI-A-1:primary\\n' > /tmp/.weston_drm.conf; "
+            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf; "
+            "/etc/init.d/S49weston restart; sleep 1; "
+            "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
+            JW_MLP1_WESTON_OVERRIDE_INI, modestr, rectline);
     }
 
     pid_t pid = fork();
