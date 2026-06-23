@@ -217,6 +217,10 @@ int jw_ipc_set_brightness(const char *socket_path, int percent,
                           int *out_percent, char *status, int status_len);
 
 int jw_ipc_platform_volume(const char *socket_path, int *out_percent);
+/* HDMI 1080p120 auto-revert: seconds left before revert (0 = none pending), and
+   the user's "keep this mode" confirmation that cancels the revert. */
+int jw_ipc_hdmi_revert_status(const char *socket_path, int *out_seconds);
+int jw_ipc_hdmi_revert_keep(const char *socket_path);
 int jw_ipc_set_volume(const char *socket_path, int percent,
                       int *out_percent, char *status, int status_len);
 int jw_ipc_platform_audio_status(const char *socket_path,

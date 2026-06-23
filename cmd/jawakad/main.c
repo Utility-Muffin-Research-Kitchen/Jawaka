@@ -159,6 +159,8 @@ typedef struct {
     long long power_down_ms;              /* when the current power press started */
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
     long long hdmi_next_poll_ms;          /* throttle for the HDMI hotplug poll */
+    long long hdmi_revert_deadline_ms;    /* 0 = none; auto-revert 1080p120 if not kept */
+    int       hdmi_was_120;               /* live-1080p120 edge tracker */
     jw_platform_perf_profile perf_global_profile;
     jw_platform_perf_profile perf_active_profile;
     jw_platform_perf_profile perf_session_profile;
@@ -4380,12 +4382,57 @@ static int jw__hdmi_connected_now(void) {
     return strcmp(s, "connected") == 0 ? 1 : 0;
 }
 
+/* Is the live HDMI scanout 1080p120? 120Hz only exists at 1080p on this chain, so
+   the "1920x1080p120" mode string is unique to an HDMI 120Hz output. */
+static int jw__hdmi_live_is_1080p120(void) {
+    FILE *fp = fopen("/sys/kernel/debug/dri/0/summary", "r");
+    if (!fp) {
+        return 0;
+    }
+    char line[256];
+    int found = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "1920x1080p120")) {
+            found = 1;
+            break;
+        }
+    }
+    fclose(fp);
+    return found;
+}
+
 static void jw__tick_hdmi(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
     if (now < state->hdmi_next_poll_ms) {
         return;
     }
     state->hdmi_next_poll_ms = now + JW_HDMI_POLL_MS;
+
+    /* ── Auto-revert safety for 1080p120 ──
+       A 1080p120 switch can black out a TV/cable that can't carry the 297MHz signal,
+       stranding the user on a screen they can't see to navigate back. When 1080p120
+       goes live by a deliberate change (skip the boot-apply window), arm a 15s
+       deadline; the launcher's "keep" press clears it, otherwise revert to the safe,
+       universal 720p60 and drop the saved rate to 60 so it sticks. */
+    int is120 = jw__hdmi_live_is_1080p120();
+    if (is120 && !state->hdmi_was_120 && now > 30000) {
+        state->hdmi_revert_deadline_ms = now + 15000;
+        jw_log_info("HDMI 1080p120 live -> auto-revert armed (15s)");
+    } else if (!is120) {
+        state->hdmi_revert_deadline_ms = 0;
+    }
+    state->hdmi_was_120 = is120;
+    if (state->hdmi_revert_deadline_ms != 0 && now > state->hdmi_revert_deadline_ms) {
+        state->hdmi_revert_deadline_ms = 0;
+        state->hdmi_was_120 = 0;
+        jw_log_info("HDMI 1080p120 not kept -> reverting to 720p60");
+        jw_platform_result rres;
+        jw_platform_perform_action(&state->platform,
+                                   JW_PLATFORM_ACTION_SET_REFRESH_RATE, 60, &rres);
+        if (state->db_path) {
+            jw_db_set_setting(state->db_path, "refresh_rate_hz", "60");
+        }
+    }
 
     int cur = jw__hdmi_connected_now();
     int prev = state->hdmi_last_connected;
@@ -4926,6 +4973,27 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         }
         cJSON_Delete(root);
         return jw__reply_hello_ok(client);
+    }
+
+    if (strcmp(type->valuestring, "hdmi-revert-status") == 0) {
+        long long n = jw__monotonic_ms();
+        int secs = 0;
+        if (state->hdmi_revert_deadline_ms != 0 && state->hdmi_revert_deadline_ms > n) {
+            secs = (int)((state->hdmi_revert_deadline_ms - n + 999) / 1000);
+        }
+        cJSON_Delete(root);
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "ok");
+        cJSON_AddNumberToObject(reply, "seconds", secs);
+        return jw__reply_json(client, reply);
+    }
+    if (strcmp(type->valuestring, "hdmi-revert-keep") == 0) {
+        state->hdmi_revert_deadline_ms = 0;
+        jw_log_info("HDMI 1080p120 kept by user");
+        cJSON_Delete(root);
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "ok");
+        return jw__reply_json(client, reply);
     }
 
     if (strcmp(type->valuestring, "scan-library") == 0) {

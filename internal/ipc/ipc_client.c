@@ -854,6 +854,39 @@ int jw_ipc_platform_volume(const char *socket_path, int *out_percent) {
     return rc;
 }
 
+int jw_ipc_hdmi_revert_status(const char *socket_path, int *out_seconds) {
+    if (out_seconds) {
+        *out_seconds = 0;
+    }
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "hdmi-revert-status");
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    int rc = -1;
+    const cJSON *secs = cJSON_GetObjectItemCaseSensitive(resp, "seconds");
+    if (cJSON_IsNumber(secs)) {
+        if (out_seconds) {
+            *out_seconds = secs->valueint;
+        }
+        rc = 0;
+    }
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_hdmi_revert_keep(const char *socket_path) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "hdmi-revert-keep");
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
 int jw_ipc_set_volume(const char *socket_path, int percent,
                       int *out_percent, char *status, int status_len) {
     if (out_percent) {

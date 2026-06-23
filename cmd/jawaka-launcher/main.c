@@ -5253,6 +5253,118 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
  * MAIN
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* Blocking "keep this TV mode?" prompt for the 1080p120 auto-revert. Shown when
+   the daemon reports a pending revert (after a deliberate switch to 1080p120).
+   Keeping needs a deliberate two-shoulder squeeze (L1 + R1 together): a blank TV
+   invites panic-mashing of face buttons, and that must never cancel the rescue.
+   B - or simply leaving it - reverts to a safe 720p60 at the daemon's deadline. */
+static void jw__hdmi_keep_prompt(const char *socket_path) {
+    if (!socket_path || !socket_path[0]) {
+        return;
+    }
+    TTF_Font *font = cat_get_font(CAT_FONT_MEDIUM);
+    if (!font) {
+        return;
+    }
+    ap_theme *theme = cat_get_theme();
+    int max_w = cat_get_screen_width() - CAT_S(80);
+    if (max_w < 1) {
+        max_w = 1;
+    }
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Revert", .is_confirm = false },
+    };
+    static const char *const body =
+        "Keep this TV display mode?\n\n"
+        "Sending 1080p120 over HDMI. If your TV stays blank it can't show this "
+        "mode - leave it and Leaf reverts to a safe picture.";
+    static const char *const keep_hint = "Press L1 then R1 to keep";
+
+    /* Drive the visible countdown from a local deadline so the bar animates every
+       frame; re-sync with the daemon every couple of seconds. */
+    int total = 0;
+    if (jw_ipc_hdmi_revert_status(socket_path, &total) != 0 || total <= 0) {
+        return;
+    }
+    uint32_t deadline = SDL_GetTicks() + (uint32_t)total * 1000u;
+    uint32_t last_sync = SDL_GetTicks();
+    uint32_t l1_at = 0;
+
+    for (;;) {
+        uint32_t now = SDL_GetTicks();
+        if (now - last_sync >= 2000) {
+            int s = 0;
+            if (jw_ipc_hdmi_revert_status(socket_path, &s) != 0 || s <= 0) {
+                return;   /* reverted at the deadline, or kept from elsewhere */
+            }
+            deadline = now + (uint32_t)s * 1000u;
+            last_sync = now;
+        }
+        long remaining_ms = (long)deadline - (long)now;
+        if (remaining_ms <= 0) {
+            return;   /* about to revert */
+        }
+        int remaining_s = (int)((remaining_ms + 999) / 1000);
+
+        cat_input_event ev;
+        while (cat_poll_input(&ev)) {
+            if (!ev.pressed) {
+                continue;
+            }
+            if (ev.button == CAT_BTN_B) {
+                return;   /* revert now (always safe) */
+            }
+            if (ev.button == CAT_BTN_L1) {
+                l1_at = SDL_GetTicks();
+            } else if (ev.button == CAT_BTN_R1) {
+                /* Keep on the L1 -> R1 sequence (R1 within 1s of L1). A sequence is
+                   reliable where a simultaneous shoulder squeeze drops a press on
+                   this pad, and a single panic tap still can't keep an unshown mode. */
+                if (l1_at && SDL_GetTicks() - l1_at <= 1000u) {
+                    jw_ipc_hdmi_revert_keep(socket_path);
+                    return;
+                }
+            }
+        }
+
+        cat_draw_background();
+        int body_h  = cat_measure_wrapped_text_height(font, body, max_w);
+        int bar_w   = sw * 3 / 5;
+        int bar_h   = CAT_S(10);
+        int gap     = CAT_S(24);
+        int line_h  = TTF_FontHeight(font);
+        int block_h = body_h + gap + bar_h + CAT_S(12) + line_h + CAT_S(10) + line_h;
+        int y = (sh - block_h - cat_get_footer_height()) / 2;
+        if (y < CAT_S(20)) {
+            y = CAT_S(20);
+        }
+        cat_draw_text_wrapped(font, body, CAT_S(40), y, max_w, theme->text,
+                              CAT_ALIGN_CENTER);
+        int by = y + body_h + gap;
+        int bx = (sw - bar_w) / 2;
+        float frac = (float)remaining_ms / ((float)total * 1000.0f);
+        if (frac < 0.0f) frac = 0.0f;
+        if (frac > 1.0f) frac = 1.0f;
+        cat_draw_rect(bx, by, bar_w, bar_h, theme->hint);
+        cat_draw_rect(bx, by, (int)(bar_w * frac), bar_h, theme->highlight);
+        char cd[48];
+        snprintf(cd, sizeof(cd), "Reverting in %d second%s", remaining_s,
+                 remaining_s == 1 ? "" : "s");
+        int cw = cat_measure_text(font, cd);
+        cat_draw_text(font, cd, (sw - cw) / 2, by + bar_h + CAT_S(12), theme->text);
+        int kw = cat_measure_text(font, keep_hint);
+        cat_draw_text(font, keep_hint, (sw - kw) / 2,
+                      by + bar_h + CAT_S(12) + line_h + CAT_S(10), theme->highlight);
+        cat_draw_footer(footer, 1);
+        /* Request a frame so cat_present takes the active 60fps-paced path instead
+           of its idle sleep — otherwise the countdown bar freezes on frame one. */
+        cat_request_frame();
+        cat_present();
+    }
+}
+
 int main(void) {
     long long process_start_ms = jw__monotonic_ms();
     char *socket_path = jw_socket_path();
@@ -5477,6 +5589,23 @@ int main(void) {
         jw__status_poller_sync(&state.settings);
         jw__poll_library_generation(socket_path, db_path, &state);
         jw__poll_scrape_status(&state);
+
+        /* 1080p120 auto-revert: when the daemon has armed a revert (after a
+           deliberate switch to a 120Hz TV mode), show the blocking keep-or-revert
+           prompt so the user can confirm the TV actually lit up. Throttled so a
+           held d-pad doesn't spam the IPC. */
+        {
+            static uint32_t s_revert_poll = 0;
+            uint32_t rn = SDL_GetTicks();
+            if (s_revert_poll == 0 || rn - s_revert_poll >= 700) {
+                s_revert_poll = rn;
+                int rsecs = 0;
+                if (jw_ipc_hdmi_revert_status(socket_path, &rsecs) == 0 && rsecs > 0) {
+                    jw__hdmi_keep_prompt(socket_path);
+                    cat_request_frame();
+                }
+            }
+        }
 
         /* Keep the status bar live while idle: the launcher only renders on
            input or a requested frame, so without this a wifi connect / charger
