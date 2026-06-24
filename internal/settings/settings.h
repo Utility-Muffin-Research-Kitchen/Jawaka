@@ -52,6 +52,8 @@ typedef enum {
     JW_SETTINGS_UPDATE_PICKER,
     JW_SETTINGS_TIMEZONE_PICKER,
     JW_SETTINGS_ABOUT,
+    JW_SETTINGS_LIBRARY,    /* Info > Library: counts, art coverage, per-system */
+    JW_SETTINGS_PLAYTIME,   /* Info > Playtime: totals, most-played, per-system */
 } jw_settings_screen;
 
 /* ─── Row indices per sub-page ─────────────────────────────────────────── */
@@ -179,6 +181,8 @@ typedef struct {
     cat_list_state     timezone_picker_list;
     cat_list_state     placeholder_list;
     cat_scroll_state   about_scroll;
+    cat_scroll_state   library_scroll;
+    cat_scroll_state   playtime_scroll;
     int                theme_index;
     int                color_scheme_index;   /* -1 = custom (manually edited) */
     int                pill_shape_index;

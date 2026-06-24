@@ -12,6 +12,37 @@ typedef struct {
     char sample_summary[256];
 } jw_library_summary;
 
+/* Aggregate library + playtime stats for the System menu's Info pages. */
+typedef struct {
+    char name[128];
+    char system[64];
+    long playtime_s;
+    long last_played;
+} jw_stat_game;
+
+typedef struct {
+    char system[64];
+    int  game_count;
+    long playtime_s;
+} jw_stat_system;
+
+#define JW_STATS_TOP_MAX     8
+#define JW_STATS_SYSTEM_MAX  64
+
+typedef struct {
+    long total_playtime_s;   /* SUM(playtime_s) over all games            */
+    int  games_played;       /* games with playtime_s > 0                 */
+    int  game_count;
+    int  app_count;
+    int  favorite_count;     /* favorited games                           */
+    int  art_covered;        /* games with a non-empty image_path         */
+    long last_played;        /* MAX(last_played), 0 if never              */
+    jw_stat_game   top[JW_STATS_TOP_MAX];        /* most-played, time desc */
+    int            top_count;
+    jw_stat_system systems[JW_STATS_SYSTEM_MAX]; /* per-system, count desc */
+    int            system_count;
+} jw_library_stats;
+
 typedef struct {
     char name[64];          /* system id / folder code, e.g. "FC" (used for DB queries) */
     char display_name[64];  /* full name for display, e.g. "Famicom"; filled by the launcher */
@@ -62,6 +93,7 @@ int  jw_db_scan_prune(sqlite3 *db);
 int  jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path);
 int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version);
 int  jw_db_read_summary(const char *db_path, jw_library_summary *out);
+int  jw_db_read_stats(const char *db_path, jw_library_stats *out);
 int  jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count, int *out_count);
 int  jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *out_count);
 int  jw_db_list_games_for_system(const char *db_path, const char *system,

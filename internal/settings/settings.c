@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ─── Data tables ──────────────────────────────────────────────────────── */
@@ -279,7 +280,7 @@ static int jw__load_setting_values(const char *db_path,
    launcher's jw_tab enum so the persisted "startup_tab_index" maps 1:1 to the
    tab the launcher opens on boot. */
 static const char *kStartupTabLabels[] = {
-    "Recents", "Favorites", "Games", "Apps", "Settings",
+    "Recents", "Favorites", "Games", "Apps",
 };
 #define JW_STARTUP_TAB_COUNT ((int)(sizeof(kStartupTabLabels) / sizeof(kStartupTabLabels[0])))
 #define JW_STARTUP_TAB_DEFAULT 2   /* Games */
@@ -1268,6 +1269,10 @@ void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
         ui->update_next_poll_ms = SDL_GetTicks() + 500;
     } else if (screen == JW_SETTINGS_ABOUT) {
         cat_scroll_state_init(&ui->about_scroll);   /* start at top */
+    } else if (screen == JW_SETTINGS_LIBRARY) {
+        cat_scroll_state_init(&ui->library_scroll);
+    } else if (screen == JW_SETTINGS_PLAYTIME) {
+        cat_scroll_state_init(&ui->playtime_scroll);
     }
 }
 
@@ -3222,23 +3227,35 @@ static bool jw__read_installed_release(char *version, size_t version_size,
     return version[0] || release_id[0];
 }
 
+/* Page title for the Info pages (Device / Library / Playtime), matching the game
+   browser's drilled-in title: CAT_FONT_EXTRA_LARGE, theme text, no underline — so
+   the system side reads the same as the content side. Returns the content top y
+   and the remaining height below the title. */
+static void jw__draw_info_title(const char *title, int x, int y, int w, int h,
+                                int *out_top, int *out_h) {
+    TTF_Font *tf = cat_get_font(CAT_FONT_EXTRA_LARGE);
+    cat_draw_text_ellipsized(tf, title, x + cat_scale(4), y,
+                             cat_get_theme()->text, w - cat_scale(8));
+    int top = y + TTF_FontHeight(tf) + cat_scale(4);
+    if (out_top) *out_top = top;
+    if (out_h)   *out_h   = (y + h) - top;
+}
+
 static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("About", x, y, w);
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int pad = cat_scale(6);
-    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, pad, NULL, NULL);
-    int top = c.y;
+    int top, view_h;
+    jw__draw_info_title("Device", x, y, w, h, &top, &view_h);
 
-    /* Live system facts + library counts, refreshed about once a second while
-       the page is open (cheap reads; only one About screen is live at a time). */
+    /* Live system facts, refreshed about once a second while the page is open
+       (cheap read; only one Device screen is live at a time). Library counts now
+       live on their own Info > Library page, so they aren't duplicated here. */
     static jw_system_info    info;
-    static jw_library_summary summary;
     static uint32_t          last_refresh = 0;
     static bool              have = false;
     uint32_t now = SDL_GetTicks();
     if (!have || now - last_refresh > 1000) {
         jw_platform_system_info(ui->db_path, &info);
-        if (jw_db_read_summary(ui->db_path, &summary) != 0) memset(&summary, 0, sizeof(summary));
         last_refresh = now;
         have = true;
     }
@@ -3309,14 +3326,6 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
         jw__about_push(rows, &n, JW_ABOUT_FIELD, "Uptime", buf);
     }
 
-    jw__about_push(rows, &n, JW_ABOUT_HEADING, "Library", "");
-    snprintf(buf, sizeof(buf), "%d", summary.game_count);
-    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Games", buf);
-    snprintf(buf, sizeof(buf), "%d", summary.system_count);
-    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Systems", buf);
-    snprintf(buf, sizeof(buf), "%d", summary.app_count);
-    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Apps", buf);
-
     jw__about_push(rows, &n, JW_ABOUT_HEADING, "Open-source components", "");
     for (int i = 0; i < JW_ABOUT_CREDIT_COUNT; i++)
         jw__about_push(rows, &n, JW_ABOUT_CREDIT, kAboutCredits[i].name, kAboutCredits[i].license);
@@ -3327,11 +3336,140 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
        convention, but the scroll view must persist its clamped offset across
        frames, so this one field is the deliberate exception. */
     int row_h     = TTF_FontHeight(small) + cat_scale(8);
-    int view_h    = c.h;        /* fill the content box; a scroll view may clip a partial row at the bottom edge */
     int content_h = n * row_h;
     jw__about_ctx ctx = { rows, n, small, row_h };
     cat_draw_scroll_view(x + pad, top, w - pad * 2, view_h, content_h,
                          (cat_scroll_state *)&ui->about_scroll,
+                         jw__draw_about_rows, &ctx);
+}
+
+/* "12h 30m" / "45m" / "<1m" / "—" for a playtime in seconds. */
+static void jw__fmt_playtime(long s, char *buf, size_t n) {
+    if (s <= 0)     { snprintf(buf, n, "%s", "\xe2\x80\x94"); return; }  /* em dash */
+    long h = s / 3600, m = (s % 3600) / 60;
+    if (h > 0)      snprintf(buf, n, "%ldh %ldm", h, m);
+    else if (m > 0) snprintf(buf, n, "%ldm", m);
+    else            snprintf(buf, n, "<1m");
+}
+
+/* "today" / "yesterday" / "3 days ago" / "2 weeks ago" / "—" for a unix time. */
+static void jw__fmt_ago(long when, char *buf, size_t n) {
+    if (when <= 0) { snprintf(buf, n, "%s", "\xe2\x80\x94"); return; }
+    long d = ((long)time(NULL) - when) / 86400;
+    if (d <= 0)       snprintf(buf, n, "today");
+    else if (d == 1)  snprintf(buf, n, "yesterday");
+    else if (d < 7)   snprintf(buf, n, "%ld days ago", d);
+    else if (d < 30)  snprintf(buf, n, "%ld week%s ago",  d / 7,  d / 7  == 1 ? "" : "s");
+    else if (d < 365) snprintf(buf, n, "%ld month%s ago", d / 30, d / 30 == 1 ? "" : "s");
+    else              snprintf(buf, n, "%ld year%s ago",  d / 365, d / 365 == 1 ? "" : "s");
+}
+
+/* Refresh the shared stats snapshot about once a second (cheap reads; only one
+   Info page is live at a time, so a single static cache is fine). */
+static const jw_library_stats *jw__stats_snapshot(const jw_settings_ui *ui) {
+    static jw_library_stats st;
+    static uint32_t last = 0;
+    static bool     have = false;
+    uint32_t now = SDL_GetTicks();
+    if (!have || now - last > 1000) {
+        if (jw_db_read_stats(ui->db_path, &st) != 0) memset(&st, 0, sizeof(st));
+        last = now;
+        have = true;
+    }
+    return &st;
+}
+
+/* Info > Library: counts, box-art coverage, and a per-system breakdown. Same
+   box model + scroll-view + row machinery as About. */
+static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int pad = cat_scale(6);
+    int top, view_h;
+    jw__draw_info_title("Library", x, y, w, h, &top, &view_h);
+
+    const jw_library_stats *st = jw__stats_snapshot(ui);
+
+    jw__about_row rows[JW_ABOUT_MAX_ROWS];
+    int n = 0;
+    char buf[72];
+
+    snprintf(buf, sizeof(buf), "%d", st->game_count);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Games", buf);
+    snprintf(buf, sizeof(buf), "%d", st->system_count);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Systems", buf);
+    snprintf(buf, sizeof(buf), "%d", st->app_count);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Apps", buf);
+    snprintf(buf, sizeof(buf), "%d", st->favorite_count);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Favorites", buf);
+    if (st->game_count > 0) {
+        int pct = (st->art_covered * 100 + st->game_count / 2) / st->game_count;
+        snprintf(buf, sizeof(buf), "%d%% (%d/%d)", pct, st->art_covered, st->game_count);
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Box art", buf);
+    }
+
+    if (st->system_count > 0) {
+        jw__about_push(rows, &n, JW_ABOUT_HEADING, "By system", "");
+        for (int i = 0; i < st->system_count && n < JW_ABOUT_MAX_ROWS; i++) {
+            snprintf(buf, sizeof(buf), "%d", st->systems[i].game_count);
+            jw__about_push(rows, &n, JW_ABOUT_FIELD, st->systems[i].system, buf);
+        }
+    }
+
+    int row_h = TTF_FontHeight(small) + cat_scale(8);
+    jw__about_ctx ctx = { rows, n, small, row_h };
+    cat_draw_scroll_view(x + pad, top, w - pad * 2, view_h, n * row_h,
+                         (cat_scroll_state *)&ui->library_scroll,
+                         jw__draw_about_rows, &ctx);
+}
+
+/* Info > Playtime: totals, most-played games, and per-system hours. */
+static void jw__render_playtime(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int pad = cat_scale(6);
+    int top, view_h;
+    jw__draw_info_title("Playtime", x, y, w, h, &top, &view_h);
+
+    const jw_library_stats *st = jw__stats_snapshot(ui);
+
+    jw__about_row rows[JW_ABOUT_MAX_ROWS];
+    int n = 0;
+    char buf[72];
+
+    jw__fmt_playtime(st->total_playtime_s, buf, sizeof(buf));
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Total", buf);
+    snprintf(buf, sizeof(buf), "%d", st->games_played);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Games played", buf);
+    jw__fmt_ago(st->last_played, buf, sizeof(buf));
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Last played", buf);
+
+    if (st->top_count > 0) {
+        jw__about_push(rows, &n, JW_ABOUT_HEADING, "Most played", "");
+        for (int i = 0; i < st->top_count && n < JW_ABOUT_MAX_ROWS; i++) {
+            jw__fmt_playtime(st->top[i].playtime_s, buf, sizeof(buf));
+            jw__about_push(rows, &n, JW_ABOUT_FIELD, st->top[i].name, buf);
+        }
+    }
+
+    /* Per-system hours, only for systems that have actually been played. */
+    bool any = false;
+    for (int i = 0; i < st->system_count; i++)
+        if (st->systems[i].playtime_s > 0) { any = true; break; }
+    if (any) {
+        jw__about_push(rows, &n, JW_ABOUT_HEADING, "By system", "");
+        for (int i = 0; i < st->system_count && n < JW_ABOUT_MAX_ROWS; i++) {
+            if (st->systems[i].playtime_s <= 0) continue;
+            jw__fmt_playtime(st->systems[i].playtime_s, buf, sizeof(buf));
+            jw__about_push(rows, &n, JW_ABOUT_FIELD, st->systems[i].system, buf);
+        }
+    }
+
+    if (st->total_playtime_s <= 0)
+        jw__about_push(rows, &n, JW_ABOUT_PLAIN, "No playtime recorded yet.", "");
+
+    int row_h = TTF_FontHeight(small) + cat_scale(8);
+    jw__about_ctx ctx = { rows, n, small, row_h };
+    cat_draw_scroll_view(x + pad, top, w - pad * 2, view_h, n * row_h,
+                         (cat_scroll_state *)&ui->playtime_scroll,
                          jw__draw_about_rows, &ctx);
 }
 
@@ -3851,6 +3989,8 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_UPDATE_PICKER: jw__render_update_picker(ui, x, y, w, h);        break;
         case JW_SETTINGS_TIMEZONE_PICKER: jw__render_timezone_picker(ui, x, y, w, h);   break;
         case JW_SETTINGS_ABOUT:      jw__render_about(ui, x, y, w, h);                   break;
+        case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
+        case JW_SETTINGS_PLAYTIME:   jw__render_playtime(ui, x, y, w, h);                break;
     }
 }
 
@@ -5807,6 +5947,28 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         switch (button) {
             case CAT_BTN_UP:   cat_scroll_state_move(&ui->about_scroll, -line_h); break;
             case CAT_BTN_DOWN: cat_scroll_state_move(&ui->about_scroll, +line_h); break;
+            case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
+            default: break;
+        }
+        break;
+    }
+
+    case JW_SETTINGS_LIBRARY: {
+        int line_h = TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + cat_scale(8);
+        switch (button) {
+            case CAT_BTN_UP:   cat_scroll_state_move(&ui->library_scroll, -line_h); break;
+            case CAT_BTN_DOWN: cat_scroll_state_move(&ui->library_scroll, +line_h); break;
+            case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
+            default: break;
+        }
+        break;
+    }
+
+    case JW_SETTINGS_PLAYTIME: {
+        int line_h = TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + cat_scale(8);
+        switch (button) {
+            case CAT_BTN_UP:   cat_scroll_state_move(&ui->playtime_scroll, -line_h); break;
+            case CAT_BTN_DOWN: cat_scroll_state_move(&ui->playtime_scroll, +line_h); break;
             case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
             default: break;
         }

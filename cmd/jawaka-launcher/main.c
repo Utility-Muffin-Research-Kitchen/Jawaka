@@ -77,11 +77,12 @@ typedef enum {
     JW_TAB_FAVORITES,
     JW_TAB_GAMES,
     JW_TAB_APPS,
-    JW_TAB_SETTINGS,
     JW_TAB_COUNT
 } jw_tab;
 
-static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Favorites", "Games", "Apps", "Settings" };
+/* The home strip is games-only now; Settings lives in the MENU page's Settings
+   tab (see jw__render_menu / jw__handle_menu_input). */
+static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Favorites", "Games", "Apps" };
 
 /* Forward declarations: shared preview helper used by Tabs games-tab and the
  * Vertical preview pane. Defined alongside jw__load_system_icon below. */
@@ -209,6 +210,7 @@ typedef struct {
        in-game menu is still its own process — a different path. */
     bool               menu_open;
     bool               menu_scanning;   /* Rescan in progress: pane shows "Scanning…" */
+    int                menu_tab;        /* System menu tab: 0=Actions, 1=Info */
     cat_list_state     menu_list;
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
@@ -520,6 +522,74 @@ static void jw__draw_footer(const jw_launcher_state *state,
         cat_draw_footer(items, count);
 }
 
+/* Per-screen footer for the settings UI (shared by the menu's Settings tab). The
+   default (settings home + simple pages) is Tab + Select; B at home backs out via
+   the menu, not a footer hint. */
+static void jw__draw_settings_footer(const jw_launcher_state *state) {
+    jw_settings_screen scr = jw_settings_ui_screen(&state->settings);
+    if (scr == JW_SETTINGS_NETWORK) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_X, "Rescan",  false, JW_HINT("X") },
+            { CAT_BTN_Y, "Forget",  false, JW_HINT("Y") },
+            { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
+            { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 4);
+    } else if (scr == JW_SETTINGS_BLUETOOTH) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_X, "Scan",    false, JW_HINT("X") },
+            { CAT_BTN_Y, "Unpair",  false, JW_HINT("Y") },
+            { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
+            { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 4);
+    } else if (scr == JW_SETTINGS_UPDATE) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_X, "Releases", false, JW_HINT("X") },
+            { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
+            { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 3);
+    } else if (scr == JW_SETTINGS_UPDATE_PICKER) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_X, "Refresh", false, JW_HINT("X") },
+            { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
+            { CAT_BTN_A, "Pick",    true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 3);
+    } else if (scr == JW_SETTINGS_SCRAPE_QUEUE) {
+        const jw_ipc_scrape_queue_info *q = state->settings.scrape_queue_have_cache
+            ? state->settings.scrape_queue_cache : NULL;
+        bool busy = q && (q->active > 0 || q->queued > 0);
+        cat_footer_item footer[] = {
+            { CAT_BTN_Y, "Filter",                          false, JW_HINT("Y") },
+            { CAT_BTN_X, busy ? "Stop All" : "Clear Done",  false, JW_HINT("X") },
+            { CAT_BTN_B, "Back",                            true,  JW_HINT("B") },
+            { CAT_BTN_A, "Details",                         true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 4);
+    } else if (scr == JW_SETTINGS_SCRAPE_QUEUE_DETAIL) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_B, "Back", true, JW_HINT("B") },
+        };
+        jw__draw_footer(state, footer, 1);
+    } else if (scr == JW_SETTINGS_SCRAPE_DOWNLOAD) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_Y, state->settings.scrape_download_replace
+                             ? "Missing Only" : "Replace All", false, JW_HINT("Y") },
+            { CAT_BTN_B, "Back",   true, JW_HINT("B") },
+            { CAT_BTN_A, "Scrape", true, JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 3);
+    } else {
+        cat_footer_item footer[] = {
+            { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
+            { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 2);
+    }
+}
+
 static void jw__set_launching_status(jw_launcher_state *state,
                                      const char *name,
                                      const char *fallback) {
@@ -587,7 +657,6 @@ static int jw__tab_list_count(const jw_launcher_state *state) {
         case JW_TAB_FAVORITES: return state->favorites_count;
         case JW_TAB_GAMES:     return state->system_count;
         case JW_TAB_APPS:      return state->app_count;
-        case JW_TAB_SETTINGS:  return 0;  /* handled by jw_settings_ui */
         default:               return 0;
     }
 }
@@ -1112,12 +1181,6 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
     else if (state->current_tab == JW_TAB_RECENTS)
         jw__load_recents_tab(db_path, state);
     cat_list_state_jump(&state->list, 0, jw__tab_list_count(state));
-    /* In tabbed mode, the Settings tab is owned by jw_settings_ui:
-       auto-open on entry, close when navigating away. */
-    if (state->current_tab == JW_TAB_SETTINGS)
-        jw_settings_ui_enter(&state->settings);
-    else
-        jw_settings_ui_close(&state->settings);
 }
 
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
@@ -1338,7 +1401,6 @@ static void jw__render_tab_content(const jw_launcher_state *state,
         case JW_TAB_FAVORITES: jw__render_favorites(state, content_y, content_h, margin); break;
         case JW_TAB_GAMES:     jw__render_games(state, content_y, content_h, margin);     break;
         case JW_TAB_APPS:      jw__render_apps(state, content_y, content_h, margin);       break;
-        case JW_TAB_SETTINGS:  jw__render_settings(state, content_y, content_h, margin);   break;
         default: break;
     }
 }
@@ -1461,67 +1523,9 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
     }
 
     if (jw_settings_ui_is_open(&state->settings)) {
-        if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_NETWORK) {
-            cat_footer_item footer[] = {
-                { CAT_BTN_X, "Rescan",  false, JW_HINT("X") },
-                { CAT_BTN_Y, "Forget",  false, JW_HINT("Y") },
-                { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
-                { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
-            };
-            jw__draw_footer(state, footer, 4);
-        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_BLUETOOTH) {
-            cat_footer_item footer[] = {
-                { CAT_BTN_X, "Scan",    false, JW_HINT("X") },
-                { CAT_BTN_Y, "Unpair",  false, JW_HINT("Y") },
-                { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
-                { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
-            };
-            jw__draw_footer(state, footer, 4);
-        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_UPDATE) {
-            cat_footer_item footer[] = {
-                { CAT_BTN_X, "Releases", false, JW_HINT("X") },
-                { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
-                { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
-            };
-            jw__draw_footer(state, footer, 3);
-        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_UPDATE_PICKER) {
-            cat_footer_item footer[] = {
-                { CAT_BTN_X, "Refresh", false, JW_HINT("X") },
-                { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
-                { CAT_BTN_A, "Pick",    true,  JW_HINT("A") },
-            };
-            jw__draw_footer(state, footer, 3);
-        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_SCRAPE_QUEUE) {
-            const jw_ipc_scrape_queue_info *q = state->settings.scrape_queue_have_cache
-                ? state->settings.scrape_queue_cache : NULL;
-            bool busy = q && (q->active > 0 || q->queued > 0);
-            cat_footer_item footer[] = {
-                { CAT_BTN_Y, "Filter",                          false, JW_HINT("Y") },
-                { CAT_BTN_X, busy ? "Stop All" : "Clear Done",  false, JW_HINT("X") },
-                { CAT_BTN_B, "Back",                            true,  JW_HINT("B") },
-                { CAT_BTN_A, "Details",                         true,  JW_HINT("A") },
-            };
-            jw__draw_footer(state, footer, 4);
-        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_SCRAPE_QUEUE_DETAIL) {
-            cat_footer_item footer[] = {
-                { CAT_BTN_B, "Back", true, JW_HINT("B") },
-            };
-            jw__draw_footer(state, footer, 1);
-        } else if (jw_settings_ui_screen(&state->settings) == JW_SETTINGS_SCRAPE_DOWNLOAD) {
-            cat_footer_item footer[] = {
-                { CAT_BTN_Y, state->settings.scrape_download_replace
-                                 ? "Missing Only" : "Replace All", false, JW_HINT("Y") },
-                { CAT_BTN_B, "Back",   true, JW_HINT("B") },
-                { CAT_BTN_A, "Scrape", true, JW_HINT("A") },
-            };
-            jw__draw_footer(state, footer, 3);
-        } else {
-            cat_footer_item footer[] = {
-                { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
-                { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
-            };
-            jw__draw_footer(state, footer, 2);
-        }
+        /* Dead in practice now (settings is only open inside the MENU page, which
+           skips this render path), but kept correct via the shared helper. */
+        jw__draw_settings_footer(state);
     } else if (state->current_tab == JW_TAB_FAVORITES) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
@@ -3369,17 +3373,33 @@ static void jw__render_switcher(jw_launcher_state *state) {
    Drawn over the live launcher; opening/closing is a state flag, so it's instant
    (no process respawn). Search / Rescan / power are direct calls + IPC; About and
    System Update are hosted modally via a settings UI (see jw__menu_host_setting). */
-static const char *kSysMenuItems[] = {
-    "Search", "System Update", "About", "Rescan Library",
+/* The System menu is split into two L1/R1 tabs: Actions (do-something items) and
+   Info (read-only data pages). Search / Rescan / power are direct calls + IPC;
+   Device (the About page) is hosted modally via a settings UI (jw__menu_host_setting). */
+static const char *const kSysMenuTabs[] = { "Settings", "Actions", "Info" };
+enum { JW_SMTAB_SETTINGS = 0, JW_SMTAB_ACTIONS, JW_SMTAB_INFO, JW_SMTAB_COUNT };
+
+static const char *const kSysActions[] = {
+    "Search", "System Update", "Rescan Library",
     "Sleep", "Exit to Stock", "Reboot", "Power Off",
 };
-enum { JW_SM_SEARCH = 0, JW_SM_UPDATE, JW_SM_ABOUT, JW_SM_RESCAN,
-       JW_SM_SLEEP, JW_SM_EXIT_STOCK, JW_SM_REBOOT, JW_SM_POWEROFF, JW_SM_COUNT };
+enum { JW_SA_SEARCH = 0, JW_SA_UPDATE, JW_SA_RESCAN,
+       JW_SA_SLEEP, JW_SA_EXIT_STOCK, JW_SA_REBOOT, JW_SA_POWEROFF, JW_SA_COUNT };
+
+static const char *const kSysInfo[] = { "Device", "Library", "Playtime" };
+enum { JW_SI_DEVICE = 0, JW_SI_LIBRARY, JW_SI_PLAYTIME, JW_SI_COUNT };
+
+/* The active tab's item labels + count. */
+static const char *const *jw__menu_tab_items(int tab, int *count) {
+    if (tab == JW_SMTAB_INFO) { if (count) *count = JW_SI_COUNT; return kSysInfo; }
+    if (count) *count = JW_SA_COUNT;
+    return kSysActions;
+}
 
 static void jw__draw_menu_item(int idx, int ix, int iy, int iw, int ih,
                                bool selected, void *user) {
-    (void)user;
-    if (idx < 0 || idx >= JW_SM_COUNT) return;
+    const char *const *items = (const char *const *)user;
+    if (!items || idx < 0) return;
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
@@ -3388,8 +3408,27 @@ static void jw__draw_menu_item(int idx, int ix, int iy, int iw, int ih,
         cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
     ap_color c = selected ? theme->highlighted_text : theme->text;
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, kSysMenuItems[idx], ix + CAT_S(10), text_y,
+    cat_draw_text_ellipsized(body, items[idx], ix + CAT_S(10), text_y,
                              c, iw - CAT_S(20));
+}
+
+/* The System menu's top band: the Actions/Info tab bar drawn exactly like the
+   browse pages' header (cat_draw_tab_bar fills the accent band; status icons
+   inline). Drawn on the menu list AND the drilled-in Info/Update pages so the tab
+   bar stays pinned at top — consistent with the content side keeping its tab bar.
+   Returns the band height so callers can place content below it. */
+static int jw__draw_menu_tab_bar(const jw_launcher_state *state) {
+    int bar_h  = cat_get_tab_bar_height();
+    int pill_h = CAT_DS(CAT__PILL_SIZE);
+    cat_status_bar_opts sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &sb);
+    sb.no_pill    = true;
+    sb.use_y      = true;
+    sb.y_position = (bar_h - pill_h) / 2;
+    cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
+    cat_draw_tab_bar(kSysMenuTabs, JW_SMTAB_COUNT, state->menu_tab);
+    cat_draw_status_bar(&sb);
+    return bar_h;
 }
 
 static void jw__render_menu(const jw_launcher_state *state) {
@@ -3397,37 +3436,36 @@ static void jw__render_menu(const jw_launcher_state *state) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
 
-    /* Header is the browse pages' tab bar, verbatim (see jw__draw_tab_header):
-       the accent band at cat_get_tab_bar_height() with the status icons inline,
-       and "System" where the section tabs sit — minus the tabs, since a global
-       page showing tabs that don't navigate here is confusing. Drawing it the
-       same way (same band, same height) keeps the list/panel boxes — and the
-       gap above them — pixel-aligned with Recents/Favorites/Games/etc. */
-    int bar_h   = cat_get_tab_bar_height();
-    int pill_h  = CAT_DS(CAT__PILL_SIZE);
-    TTF_Font *tabf = cat_get_font(CAT_FONT_SMALL);
-    cat_draw_rect(0, 0, cat_get_screen_width(), bar_h, theme->accent);
-    cat_status_bar_opts sb = {0};
-    jw_settings_status_bar_opts(&state->settings, &sb);
-    sb.no_pill    = true;
-    sb.use_y      = true;
-    sb.y_position = (bar_h - pill_h) / 2;
-    cat_draw_status_bar(&sb);
-    cat_draw_text(tabf, "System", CAT_S(16),
-                  (bar_h - TTF_FontHeight(tabf)) / 2, theme->text);
-    int header_h = bar_h;
+    /* The tab bar keeps the list/panel boxes — and the gap above them —
+       pixel-aligned with Recents/Favorites/Games/etc. */
+    int header_h = jw__draw_menu_tab_bar(state);
+
+    /* Settings tab: render the real settings UI under the tab bar. It owns its own
+       sub-navigation, per-screen priming (Network/Bluetooth/Display) and live
+       polling (run from the main loop, gated on jw_settings_ui_wants_*), so this is
+       the same machinery the old Settings home tab used — just hosted here. */
+    if (state->menu_tab == JW_SMTAB_SETTINGS) {
+        int margin    = CAT_S(12);
+        int content_h = cat_get_screen_height() - header_h - jw__footer_height(state);
+        jw__render_settings(state, header_h, content_h, margin);
+        jw__draw_settings_footer(state);
+        cat_present();
+        return;
+    }
 
     /* Same box geometry as the browse pages: a 58% list on the left, a panel on the
        right. The right panel is the library-counts card. */
     /* Size rows to the base-height fit count (what the browse pages use), NOT the
-       item count — otherwise fit_rows divides the column by 8 and stretches the
-       rows (taller pitch + a deeper panel inset via pad_v). A short list then
-       sits at the same pitch as the browse pages, top-aligned. */
+       item count — otherwise fit_rows divides the column by the item count and
+       stretches the rows (taller pitch + a deeper panel inset via pad_v). A short
+       list (either tab) then sits at the same pitch as the browse pages, top-aligned. */
+    int tab_count;
+    const char *const *items = jw__menu_tab_items(state->menu_tab, &tab_count);
     ((cat_list_state *)&state->menu_list)->visible_rows =
         jw__browse_visible_rows(state, header_h);
     SDL_Rect list, image;
     int item_h;
-    jw__browse_boxes(state, header_h, JW_SM_COUNT,
+    jw__browse_boxes(state, header_h, tab_count,
                      &state->menu_list, &list, &image, &item_h);
 
     cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
@@ -3450,15 +3488,24 @@ static void jw__render_menu(const jw_launcher_state *state) {
         }
     }
 
-    cat_draw_list_pane(list.x, list.y, list.w, list.h, JW_SM_COUNT,
-                       &state->menu_list, item_h, jw__draw_menu_item, NULL);
+    cat_draw_list_pane(list.x, list.y, list.w, list.h, tab_count,
+                       &state->menu_list, item_h, jw__draw_menu_item, (void *)items);
 
     cat_footer_item footer[] = {
-        { CAT_BTN_B, "Back",   true, JW_HINT("B") },
-        { CAT_BTN_A, "Select", true, JW_HINT("A") },
+        { CAT_BTN_L1, "Tab",    false, JW_HINT_DEVICE(";/t", "L1/R1") },
+        { CAT_BTN_A,  "Select", true,  JW_HINT("A") },
     };
     jw__draw_footer(state, footer, 2);
     cat_present();
+}
+
+/* Open the System menu fresh on the Settings tab (the leftmost/primary tab).
+   Settings renders the real settings UI, so enter it; the Actions/Info list
+   states are initialized lazily when L1/R1 lands on them. */
+static void jw__open_menu(jw_launcher_state *state) {
+    state->menu_open = true;
+    state->menu_tab  = JW_SMTAB_SETTINGS;
+    jw_settings_ui_enter(&state->settings);
 }
 
 static void jw__render_launcher(jw_launcher_state *state) {
@@ -4513,8 +4560,7 @@ static void jw__handle_actions_input(const char *socket_path, const char *db_pat
                 jw__switch_tab_slide(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
             break;
         case CAT_BTN_MENU:
-            state->menu_open = true;
-            cat_list_state_init(&state->menu_list, JW_SM_COUNT);
+            jw__open_menu(state);
             break;
         default:
             break;
@@ -4547,9 +4593,6 @@ static void jw__activate_tabbed(const char *socket_path, const char *db_path,
             break;
         case JW_TAB_APPS:
             jw__launch_selected_app(socket_path, state, running);
-            break;
-        case JW_TAB_SETTINGS:
-            /* Settings tab content is owned by jw_settings_ui; A is handled there. */
             break;
         default:
             break;
@@ -4876,6 +4919,26 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
         cat_input_event ev;
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
+            /* MENU exits System entirely back to Content, from any depth — B only
+               steps back within System (to the Info/Actions list). */
+            if (ev.button == CAT_BTN_MENU) {
+                state->menu_open = false;
+                state->status[0] = '\0';
+                running = false;
+                break;
+            }
+            /* L1/R1 switches the System tab from anywhere — back out to the menu
+               list on the adjacent tab, mirroring how the content tabs let you
+               switch sections from within a drilled-in view. */
+            if (ev.button == CAT_BTN_L1 || ev.button == CAT_BTN_R1) {
+                int dir = (ev.button == CAT_BTN_L1) ? JW_SMTAB_COUNT - 1 : 1;
+                state->menu_tab = (state->menu_tab + dir) % JW_SMTAB_COUNT;
+                int nc;
+                jw__menu_tab_items(state->menu_tab, &nc);
+                cat_list_state_init(&state->menu_list, nc);
+                running = false;
+                break;
+            }
             bool theme_changed = false;
             jw_settings_ui_handle_button(ui, ev.button, status, sizeof(status),
                                          &theme_changed);
@@ -4890,10 +4953,15 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
             jw_settings_ui_refresh_update(ui);
 
         cat_clear_screen();
-        SDL_Rect cr = cat_get_content_rect(false, hints, false);
+        /* Keep the Actions/Info tab bar pinned at top while a page is open, so the
+           system side matches the content side (which never drops its tab bar). */
+        jw__draw_menu_tab_bar(state);
+        SDL_Rect cr = cat_get_content_rect(true, hints, false);
         jw_settings_ui_render(ui, cr.x + m, cr.y, cr.w - m * 2, cr.h);
         if (hints) {
-            if (jw_settings_ui_screen(ui) == JW_SETTINGS_ABOUT) {
+            jw_settings_screen scr = jw_settings_ui_screen(ui);
+            if (scr == JW_SETTINGS_ABOUT || scr == JW_SETTINGS_LIBRARY ||
+                scr == JW_SETTINGS_PLAYTIME) {
                 cat_footer_item f[] = { { CAT_BTN_B, "Back", true, JW_HINT("B") } };
                 cat_draw_footer(f, 1);
             } else {
@@ -4913,18 +4981,31 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
 
 static void jw__menu_activate(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, bool *running) {
+    if (state->menu_tab == JW_SMTAB_INFO) {
+        switch (state->menu_list.cursor) {
+            case JW_SI_DEVICE:
+                jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_ABOUT);
+                break;
+            case JW_SI_LIBRARY:
+                jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_LIBRARY);
+                break;
+            case JW_SI_PLAYTIME:
+                jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_PLAYTIME);
+                break;
+            default:
+                break;
+        }
+        return;
+    }
     switch (state->menu_list.cursor) {
-        case JW_SM_SEARCH:
+        case JW_SA_SEARCH:
             state->menu_open = false;
             jw__open_search(db_path, state);
             break;
-        case JW_SM_UPDATE:
+        case JW_SA_UPDATE:
             jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_UPDATE);
             break;
-        case JW_SM_ABOUT:
-            jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_ABOUT);
-            break;
-        case JW_SM_RESCAN: {
+        case JW_SA_RESCAN: {
             /* Show "Scanning…" in the right pane, run the scan, then refresh the
                summary so the pane lands on the new counts. Uses its own flag, not
                state->status (which the rest of the launcher also writes). */
@@ -4937,21 +5018,21 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
             state->menu_scanning = false;
             break;
         }
-        case JW_SM_SLEEP:
+        case JW_SA_SLEEP:
             /* Blocks until the system resumes; keep the menu open so we land back. */
             jw_ipc_platform_action(socket_path, "sleep", 0);
             break;
-        case JW_SM_EXIT_STOCK:
+        case JW_SA_EXIT_STOCK:
             jw_ipc_exit_stock(socket_path);
             cat_hide_window();
             *running = false;
             break;
-        case JW_SM_REBOOT:
+        case JW_SA_REBOOT:
             jw_ipc_platform_action(socket_path, "reboot", 0);
             cat_hide_window();
             *running = false;
             break;
-        case JW_SM_POWEROFF:
+        case JW_SA_POWEROFF:
             jw_ipc_platform_action(socket_path, "poweroff", 0);
             cat_hide_window();
             *running = false;
@@ -4964,18 +5045,67 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
 static void jw__handle_menu_input(const char *socket_path, const char *db_path,
                                   jw_launcher_state *state,
                                   cat_button button, bool *running) {
+    /* L1/R1 switches the System tab from any tab. Entering Settings opens the
+       settings UI at its home; leaving it closes the UI; Actions/Info reset their
+       selectable list to the tab's item count. */
+    if (button == CAT_BTN_L1 || button == CAT_BTN_R1) {
+        bool was_settings = (state->menu_tab == JW_SMTAB_SETTINGS);
+        int dir = (button == CAT_BTN_L1) ? JW_SMTAB_COUNT - 1 : 1;
+        state->menu_tab = (state->menu_tab + dir) % JW_SMTAB_COUNT;
+        bool now_settings = (state->menu_tab == JW_SMTAB_SETTINGS);
+        if (was_settings && !now_settings)
+            jw_settings_ui_close(&state->settings);
+        if (now_settings) {
+            jw_settings_ui_enter(&state->settings);
+        } else {
+            int n;
+            jw__menu_tab_items(state->menu_tab, &n);
+            cat_list_state_init(&state->menu_list, n);
+        }
+        cat_request_frame();
+        return;
+    }
+
+    /* Settings tab: forward to the real settings UI (its own sub-nav + priming).
+       MENU closes the whole menu; B at settings home closes the UI (still_open
+       false), which backs out of the menu to the games view. */
+    if (state->menu_tab == JW_SMTAB_SETTINGS) {
+        if (button == CAT_BTN_MENU) {
+            jw_settings_ui_close(&state->settings);
+            state->menu_open = false;
+            state->status[0] = '\0';
+            return;
+        }
+        bool theme_changed = false;
+        bool still_open = jw_settings_ui_handle_button(
+            &state->settings, button,
+            state->status, sizeof(state->status), &theme_changed);
+        if (theme_changed)
+            jw__rebuild_for_layout(state);
+        if (!still_open) {
+            /* B at the settings home is a no-op: stay in System. Only MENU exits
+               back to Content. Re-enter so the UI stays open at its home. */
+            jw_settings_ui_enter(&state->settings);
+        }
+        return;
+    }
+
+    /* Actions / Info: simple selectable lists. */
+    int tab_count;
+    jw__menu_tab_items(state->menu_tab, &tab_count);
     switch (button) {
         case CAT_BTN_UP:
-            cat_list_state_move(&state->menu_list, -1, JW_SM_COUNT);
+            cat_list_state_move(&state->menu_list, -1, tab_count);
             break;
         case CAT_BTN_DOWN:
-            cat_list_state_move(&state->menu_list, +1, JW_SM_COUNT);
+            cat_list_state_move(&state->menu_list, +1, tab_count);
             break;
         case CAT_BTN_A:
             jw__menu_activate(socket_path, db_path, state, running);
             break;
-        case CAT_BTN_B:
         case CAT_BTN_MENU:
+            /* MENU exits System back to Content; B stays inside System (no-op at
+               a tab's root — you leave via MENU). */
             state->menu_open = false;
             state->status[0] = '\0';
             break;
@@ -5040,6 +5170,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             }
             return;
         }
+        /* MENU opens the System page from inside a system's game list too, so it
+           works the same everywhere (the browser stays open underneath). */
+        if (button == CAT_BTN_MENU) {
+            jw__open_menu(state);
+            return;
+        }
         jw__handle_game_browser_input(socket_path, db_path, state, button, running);
         return;
     }
@@ -5047,6 +5183,10 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     if (state->apps_open) {
         if (button == CAT_BTN_X) {
             jw__open_search(db_path, state);
+            return;
+        }
+        if (button == CAT_BTN_MENU) {
+            jw__open_menu(state);
             return;
         }
         jw__handle_app_browser_input(socket_path, state, button, running);
@@ -5089,8 +5229,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         /* MENU always opens the main menu, from any settings sub-screen and
            any layout — it is a global action, not consumed by settings. */
         if (button == CAT_BTN_MENU) {
-            state->menu_open = true;
-            cat_list_state_init(&state->menu_list, JW_SM_COUNT);
+            jw__open_menu(state);
             return;
         }
         /* Tabbed mode: Settings is a tab, not an app. Triggers must escape
@@ -5187,8 +5326,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
            top level, and B stays the universal cancel everywhere else. (Recents
            self-curates as you play, so it needs no per-entry remove.) */
         case CAT_BTN_MENU:
-            state->menu_open = true;
-            cat_list_state_init(&state->menu_list, JW_SM_COUNT);
+            jw__open_menu(state);
             break;
         case CAT_BTN_Y: {
             /* On the Recents tab, Y toggles the favorite of the selected game
@@ -5473,8 +5611,6 @@ int main(void) {
             jw__load_favorites_tab(db_path, &state);
         else if (state.current_tab == JW_TAB_RECENTS)
             jw__load_recents_tab(db_path, &state);
-        else if (state.current_tab == JW_TAB_SETTINGS)
-            jw_settings_ui_enter(&state.settings);
     }
 
     jw__rebuild_for_layout(&state);

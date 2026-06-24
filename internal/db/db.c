@@ -311,6 +311,89 @@ static int jw__query_string(sqlite3 *db, const char *sql, char *out, size_t out_
     return 0;
 }
 
+int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
+    if (!db_path || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+
+    int rc = 0;
+    rc |= jw__query_int(db, "SELECT COUNT(*) FROM games;", &out->game_count);
+    rc |= jw__query_int(db, "SELECT COUNT(*) FROM apps;", &out->app_count);
+    rc |= jw__query_int(db, "SELECT COUNT(*) FROM favorites WHERE kind = 'game';",
+                        &out->favorite_count);
+    rc |= jw__query_int(db, "SELECT COUNT(*) FROM games WHERE playtime_s > 0;",
+                        &out->games_played);
+    rc |= jw__query_int(db,
+        "SELECT COUNT(*) FROM games WHERE image_path IS NOT NULL AND image_path <> '';",
+        &out->art_covered);
+
+    sqlite3_stmt *st = NULL;
+
+    /* Totals (64-bit: a unix timestamp overflows int32 near 2038). */
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(SUM(playtime_s), 0), COALESCE(MAX(last_played), 0) FROM games;",
+            -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            out->total_playtime_s = (long)sqlite3_column_int64(st, 0);
+            out->last_played      = (long)sqlite3_column_int64(st, 1);
+        }
+        sqlite3_finalize(st);
+        st = NULL;
+    } else {
+        rc = -1;
+    }
+
+    /* Most-played games (only those actually played). */
+    if (sqlite3_prepare_v2(db,
+            "SELECT name, system, playtime_s, COALESCE(last_played, 0) FROM games "
+            "WHERE playtime_s > 0 ORDER BY playtime_s DESC, name LIMIT ?;",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, JW_STATS_TOP_MAX);
+        while (sqlite3_step(st) == SQLITE_ROW && out->top_count < JW_STATS_TOP_MAX) {
+            jw_stat_game *g = &out->top[out->top_count++];
+            const unsigned char *nm = sqlite3_column_text(st, 0);
+            const unsigned char *sy = sqlite3_column_text(st, 1);
+            snprintf(g->name,   sizeof(g->name),   "%s", nm ? (const char *)nm : "");
+            snprintf(g->system, sizeof(g->system), "%s", sy ? (const char *)sy : "");
+            g->playtime_s  = (long)sqlite3_column_int64(st, 2);
+            g->last_played = (long)sqlite3_column_int64(st, 3);
+        }
+        sqlite3_finalize(st);
+        st = NULL;
+    } else {
+        rc = -1;
+    }
+
+    /* Per-system breakdown, most-stocked first. The row count doubles as the
+       distinct-system count for the Library page. */
+    if (sqlite3_prepare_v2(db,
+            "SELECT system, COUNT(*), COALESCE(SUM(playtime_s), 0) FROM games "
+            "GROUP BY system ORDER BY COUNT(*) DESC, system LIMIT ?;",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int(st, 1, JW_STATS_SYSTEM_MAX);
+        while (sqlite3_step(st) == SQLITE_ROW && out->system_count < JW_STATS_SYSTEM_MAX) {
+            jw_stat_system *s = &out->systems[out->system_count++];
+            const unsigned char *sy = sqlite3_column_text(st, 0);
+            snprintf(s->system, sizeof(s->system), "%s", sy ? (const char *)sy : "");
+            s->game_count = sqlite3_column_int(st, 1);
+            s->playtime_s = (long)sqlite3_column_int64(st, 2);
+        }
+        sqlite3_finalize(st);
+        st = NULL;
+    } else {
+        rc = -1;
+    }
+
+    jw_db_close(db);
+    return rc == 0 ? 0 : -1;
+}
+
 int jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count, int *out_count) {
     if (!db_path || !out || max_count <= 0 || !out_count) {
         return -1;
