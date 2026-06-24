@@ -2101,7 +2101,7 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     /* Action feedback (always visible, regardless of the hint setting). */
     if (ui->wifi_msg[0]) {
         cat_draw_text_ellipsized(small, ui->wifi_msg, x + cat_scale(12), dy,
-                                 theme->accent, w - cat_scale(24));
+                                 theme->emphasis, w - cat_scale(24));
         dy += line_h + cat_scale(6);
     }
 
@@ -2191,7 +2191,7 @@ static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
         } else if (idx != JW_BLUETOOTH_FIXED_ROWS && ui->bt_nearby_count == 0) {
             value = (ui->bt_op == JW_BT_OP_SCAN) ? "Scanning" : "None";
         }
-        cat_draw_text(body, label, ix + cat_scale(12), ty, theme->accent);
+        cat_draw_text(body, label, ix + cat_scale(12), ty, theme->emphasis);
         if (value) {
             int vw = cat_measure_text(body, value);
             cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, theme->hint);
@@ -2291,7 +2291,7 @@ static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, 
 
     if (ui->bt_msg[0]) {
         cat_draw_text_ellipsized(small, ui->bt_msg, x + cat_scale(12), dy,
-                                 theme->accent, w - cat_scale(24));
+                                 theme->emphasis, w - cat_scale(24));
         dy += line_h + cat_scale(6);
     } else {
         dy += cat_scale(6);
@@ -3143,7 +3143,7 @@ static void jw__draw_about_rows(int x, int y, int w, void *user) {
         const jw__about_row *r = &ctx->rows[i];
         int row_y = y + i * ctx->row_h;
         if (r->kind == JW_ABOUT_HEADING) {
-            if (cat_draw_text_marquee(ctx->font, r->label, x, row_y, theme->accent, w, &label_mq[i], dt))
+            if (cat_draw_text_marquee(ctx->font, r->label, x, row_y, theme->emphasis, w, &label_mq[i], dt))
                 animating = true;
             continue;
         }
