@@ -3351,13 +3351,10 @@ static void jw__render_switcher(jw_launcher_state *state) {
                             content.x + margin, content.y,
                             content.w - margin * 2, content.h);
 
-    if (state->status[0]) {
-        TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-        cat_draw_text_ellipsized(small, state->status,
-                                 content.x + margin,
-                                 content.y + content.h - TTF_FontHeight(small) - CAT_S(4),
-                                 cat_get_theme()->hint, content.w - margin * 2);
-    }
+    /* No status line here: the switcher sets no status of its own, so drawing
+       the shared state->status just leaks the last global message (e.g. a stale
+       "Scrape finished" / scan count). The carousel already shows the selected
+       game's title and system. */
 
     cat_footer_item footer[] = {
         { CAT_BTN_Y, "Remove", false, JW_HINT("Y") },
