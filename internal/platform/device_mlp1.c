@@ -161,6 +161,11 @@ static int jw__mlp1_apply_power_cfg_live(void);
 static int jw__mlp1_set_hdmi_output(int mode);
 static bool jw__mlp1_hdmi_tv_active(void);
 static bool jw__mlp1_hdmi_has_1080p120(void);
+static int jw__mlp1_jack_input_state(void);
+static bool jw__mlp1_bt_audio_present(void);
+static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi);
+static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx);
+static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason);
 
 /* The user's Refresh Rate setting (60/90/120), cached when set so the HDMI apply
    can choose 1080p120 vs the crisp 720p60. -1 until known; the HDMI apply then
@@ -2004,7 +2009,7 @@ static unsigned jw__mlp1_get_audio_available_outputs(void) {
         jw__mlp1_pulse_sink_exists(JW_MLP1_PACTL_HDMI_SINK)) {
         mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_HDMI);
     }
-    if (jw_bt_audio_connected() == 1) {
+    if (jw__mlp1_bt_audio_present() || jw_bt_audio_connected() == 1) {
         mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH);
     }
     return mask;
@@ -2159,8 +2164,60 @@ static bool jw__mlp1_bt_audio_present(void) {
     return jw__mlp1_bluealsa_control(ctl, sizeof(ctl));
 }
 
-static void jw__mlp1_audio_tick(jw_platform_context *ctx) {
+static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi) {
+    if (allow_hdmi && jw__mlp1_hdmi_tv_active()) {
+        return JW_PLATFORM_AUDIO_OUTPUT_HDMI;
+    }
+
+    int jack = jw__mlp1_jack_input_state();
+    if (jack < 0) {
+        jack = jw__mlp1_headphone_jack_present() ? 1 : 0;
+    }
+    if (jack > 0) {
+        return JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
+    }
+    if (jw__mlp1_bt_audio_present()) {
+        return JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
+    }
+    return JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+}
+
+static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason) {
     (void)ctx;
+    const char *why = (reason && reason[0]) ? reason : "unknown";
+    jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
+    jw_platform_audio_output current = jw__mlp1_get_audio_output();
+
+    if (target == JW_PLATFORM_AUDIO_OUTPUT_HDMI) {
+        jw__mlp1_hdmi_audio_on();
+    }
+
+    jw_platform_result res;
+    jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
+    if (current != target) {
+        if (jw__mlp1_set_audio_output(target, &res) != 0) {
+            jw_log_warn("audio: reconcile %s -> %s failed: %s",
+                        why, jw_platform_audio_output_label(target),
+                        res.message[0] ? res.message : "route failed");
+            return;
+        }
+    } else {
+        (void)jw__mlp1_apply_stored_audio_volume(target);
+        if (target == JW_PLATFORM_AUDIO_OUTPUT_SPEAKER ||
+            target == JW_PLATFORM_AUDIO_OUTPUT_HEADSET ||
+            target == JW_PLATFORM_AUDIO_OUTPUT_HDMI) {
+            (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
+        }
+    }
+
+    jw_log_info("audio: reconcile %s -> %s",
+                why, jw_platform_audio_output_label(target));
+}
+
+static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
+    (void)ctx;
+    unsigned events = 0;
+
     /* Reap the test-clip player if it finished on its own (keeps it from
        lingering as a zombie and keeps the play/stop state accurate). */
     (void)jw__mlp1_test_sound_active();
@@ -2177,14 +2234,7 @@ static void jw__mlp1_audio_tick(jw_platform_context *ctx) {
         last_present = present;
         jw_platform_result res;
         jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
-        jw_platform_audio_output target;
-        if (present) {
-            target = JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
-        } else if (jw_bt_audio_connected() == 1) {
-            target = JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
-        } else {
-            target = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
-        }
+        jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
         jw__mlp1_set_audio_output(target, &res);
         jw_log_info("audio: headphone jack %s, routed to %s",
                     present ? "inserted" : "removed",
@@ -2211,22 +2261,24 @@ static void jw__mlp1_audio_tick(jw_platform_context *ctx) {
                 jw_platform_result res;
                 jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
                 if (bt) {
-                    if (cur == JW_PLATFORM_AUDIO_OUTPUT_SPEAKER) {
-                        jw__mlp1_set_audio_output(JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH, &res);
+                    jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
+                    if (cur == JW_PLATFORM_AUDIO_OUTPUT_SPEAKER &&
+                        target == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
+                        jw__mlp1_set_audio_output(target, &res);
                         jw_log_info("audio: bluetooth connected, routed to bluetooth");
                     }
+                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED;
                 } else if (cur == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
-                    jw_platform_audio_output fb =
-                        jw__mlp1_headphone_jack_present()
-                            ? JW_PLATFORM_AUDIO_OUTPUT_HEADSET
-                            : JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+                    jw_platform_audio_output fb = jw__mlp1_desired_audio_output(true);
                     jw__mlp1_set_audio_output(fb, &res);
                     jw_log_info("audio: bluetooth disconnected, routed to %s",
                                 fb == JW_PLATFORM_AUDIO_OUTPUT_HEADSET ? "headset" : "speaker");
+                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_DISCONNECTED;
                 }
             }
         }
     }
+    return events;
 }
 
 static void jw__mlp1_set_auto_sleep(int seconds, jw_platform_result *out) {
@@ -2578,10 +2630,7 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
             jw__mlp1_hdmi_audio_off();
             jw_platform_result ar;
             jw_platform_result_set(&ar, JW_PLATFORM_RESULT_OK, "");
-            jw_platform_audio_output tgt =
-                jw__mlp1_headphone_jack_present() ? JW_PLATFORM_AUDIO_OUTPUT_HEADSET
-                : (jw_bt_audio_connected() == 1)  ? JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH
-                                                  : JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+            jw_platform_audio_output tgt = jw__mlp1_desired_audio_output(false);
             (void)jw__mlp1_set_audio_output(tgt, &ar);
         } else {
             jw__mlp1_hdmi_audio_on();
@@ -2876,6 +2925,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .get_status = jw__mlp1_get_status,
         .get_audio_status = jw__mlp1_get_audio_status,
         .audio_tick = jw__mlp1_audio_tick,
+        .audio_reconcile = jw__mlp1_audio_reconcile,
         .frontend_ready = jw__mlp1_frontend_ready,
         .perform_action = jw__mlp1_perform_action,
         .get_performance_status = jw__mlp1_get_performance_status,

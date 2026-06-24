@@ -49,6 +49,8 @@
 #define JW_SWITCHER_RESUME_LOAD_TIMEOUT_MS 400u
 #define JW_INGAME_MENU_PREWARM_DELAY_MS 1200LL
 #define JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS 250LL
+#define JW_RETROARCH_AUDIO_REINIT_RETRY_MS 500LL
+#define JW_RETROARCH_AUDIO_REINIT_TIMEOUT_MS 10000LL
 #define JW_RETROARCH_QUIT_GRACE_MS 700LL
 #define JW_RETROARCH_KILL_GRACE_MS 700LL
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT (-1)
@@ -87,6 +89,7 @@ typedef struct {
     char config_path[PATH_MAX];
     int resident_switches;
     bool persist_config;
+    bool audio_bluetooth;
 } jw_retroarch_session;
 
 typedef struct {
@@ -123,6 +126,7 @@ typedef struct {
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
     int cached_brightness_percent;
     int cached_volume_percent;
+    long long audio_reconcile_last_ms;
     jw_led_config cached_led;
     bool led_configured;       /* true once a user LED setting has been persisted/applied */
     jw_retroarch_session retroarch_session;
@@ -145,6 +149,10 @@ typedef struct {
     long long post_launch_resume_next_ms;
     bool in_game_menu_prewarm_pending;
     long long in_game_menu_prewarm_next_ms;
+    bool retroarch_audio_reinit_pending;
+    long long retroarch_audio_reinit_next_ms;
+    long long retroarch_audio_reinit_deadline_ms;
+    char retroarch_audio_reinit_reason[64];
     bool pending_app;
     char pending_app_pak_dir[PATH_MAX];
     bool daemon_only;
@@ -971,6 +979,113 @@ static void jw__publish_audio_env(jw_daemon_state *state) {
     setenv("JAWAKA_AUDIO_OUTPUT", name, 1);
     setenv("UMRK_AUDIO_DEVICE", device, 1);
     setenv("JAWAKA_AUDIO_DEVICE", device, 1);
+}
+
+#define JW_AUDIO_RECONCILE_WAKE_THROTTLE_MS 1000
+
+static void jw__reconcile_audio(jw_daemon_state *state, const char *reason,
+                                bool throttle) {
+    if (!state) {
+        return;
+    }
+
+    long long now = jw__monotonic_ms();
+    if (throttle) {
+        if (state->audio_reconcile_last_ms > 0 &&
+            now - state->audio_reconcile_last_ms < JW_AUDIO_RECONCILE_WAKE_THROTTLE_MS) {
+            return;
+        }
+        state->audio_reconcile_last_ms = now;
+    }
+    jw_platform_audio_reconcile(&state->platform, reason);
+}
+
+static bool jw__retroarch_bluetooth_audio_active(jw_daemon_state *state) {
+    if (!state) {
+        return false;
+    }
+
+    jw_platform_status status;
+    jw_platform_get_audio_status(&state->platform, &status);
+    return status.audio_output == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
+}
+
+static void jw__schedule_retroarch_audio_reinit(jw_daemon_state *state,
+                                                const char *reason) {
+    if (!state || !jw__has_retroarch_session(state) ||
+        !state->retroarch_session.audio_bluetooth) {
+        return;
+    }
+
+    long long now = jw__monotonic_ms();
+    state->retroarch_audio_reinit_pending = true;
+    state->retroarch_audio_reinit_next_ms = now;
+    state->retroarch_audio_reinit_deadline_ms =
+        now + JW_RETROARCH_AUDIO_REINIT_TIMEOUT_MS;
+    snprintf(state->retroarch_audio_reinit_reason,
+             sizeof(state->retroarch_audio_reinit_reason),
+             "%s", (reason && reason[0]) ? reason : "unknown");
+    jw_log_info("RetroArch audio: scheduled reinit after %s",
+                state->retroarch_audio_reinit_reason);
+}
+
+static void jw__schedule_retroarch_audio_reinit_if_bluetooth(jw_daemon_state *state,
+                                                             const char *reason) {
+    if (!state || !jw__has_retroarch_session(state) ||
+        !state->retroarch_session.audio_bluetooth) {
+        return;
+    }
+    if (jw__retroarch_bluetooth_audio_active(state)) {
+        jw__schedule_retroarch_audio_reinit(state, reason);
+    }
+}
+
+static void jw__tick_retroarch_audio_reinit(jw_daemon_state *state) {
+    if (!state || !state->retroarch_audio_reinit_pending) {
+        return;
+    }
+    if (!jw__has_retroarch_session(state) ||
+        !state->retroarch_session.audio_bluetooth) {
+        state->retroarch_audio_reinit_pending = false;
+        return;
+    }
+
+    long long now = jw__monotonic_ms();
+    if (now < state->retroarch_audio_reinit_next_ms) {
+        return;
+    }
+    if (state->retroarch_audio_reinit_deadline_ms > 0 &&
+        now > state->retroarch_audio_reinit_deadline_ms) {
+        jw_log_warn("RetroArch audio: Bluetooth reinit timed out after %s",
+                    state->retroarch_audio_reinit_reason[0]
+                        ? state->retroarch_audio_reinit_reason
+                        : "unknown");
+        state->retroarch_audio_reinit_pending = false;
+        return;
+    }
+
+    jw__reconcile_audio(state, "retroarch-audio-reinit", false);
+    if (!jw__retroarch_bluetooth_audio_active(state)) {
+        state->retroarch_audio_reinit_next_ms =
+            now + JW_RETROARCH_AUDIO_REINIT_RETRY_MS;
+        return;
+    }
+
+    jw_ra_client client = jw_ra_client_default();
+    jw_ra_result result = jw_ra_audio_reinit(&client);
+    if (result == JW_RA_OK) {
+        jw_log_info("RetroArch audio: reinit sent after %s",
+                    state->retroarch_audio_reinit_reason[0]
+                        ? state->retroarch_audio_reinit_reason
+                        : "unknown");
+        state->retroarch_audio_reinit_pending = false;
+        return;
+    }
+
+    jw_log_warn("RetroArch audio: reinit failed result=%s",
+                jw_ra_result_string(result));
+    state->retroarch_audio_reinit_next_ms =
+        now + JW_RETROARCH_AUDIO_REINIT_RETRY_MS;
 }
 
 /* Publish the live panel refresh (read from the active DRM mode) so the
@@ -1831,7 +1946,8 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         const char *core_path,
                                         const char *core_id,
                                         const char *config_path,
-                                        bool persist_config) {
+                                        bool persist_config,
+                                        bool audio_bluetooth) {
     if (!state || pid <= 0) {
         return;
     }
@@ -1852,6 +1968,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     snprintf(session->config_path, sizeof(session->config_path), "%s",
              config_path ? config_path : "");
     session->persist_config = persist_config;
+    session->audio_bluetooth = audio_bluetooth;
 
     /* Fresh session: no menu shown yet, reset the standby respawn guard. */
     state->menu_visible = false;
@@ -3896,6 +4013,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
                                   jw__input_game_switcher, state) != 0) {
         jw_log_warn("input watch: init failed; volume/brightness keys unavailable this app session");
     }
+    jw__reconcile_audio(state, "app-launch", false);
     jw__publish_audio_env(state);
     jw__publish_cheevos_env(state);   /* the RetroArch.pak runner builds its own config */
     (void)jw__perf_apply_frontend(state, "app-launch");
@@ -3987,6 +4105,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                                   jw__input_game_switcher, state) != 0) {
         jw_log_warn("input watch: init failed; Menu exit unavailable this session");
     }
+    jw__reconcile_audio(state, "standalone-launch", false);
     jw__publish_audio_env(state);
     (void)jw__perf_apply_launch_game(state, state->pending_launch_system,
                                      state->pending_launch_rom_path,
@@ -4101,7 +4220,11 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     char *ra_home = NULL;
 
     jw__publish_retroarch_input_env(state);
+    jw__reconcile_audio(state, "retroarch-launch", false);
     jw__publish_audio_env(state);
+    bool audio_bluetooth =
+        strcmp(getenv("JAWAKA_AUDIO_OUTPUT") ? getenv("JAWAKA_AUDIO_OUTPUT") : "",
+               "BLUETOOTH") == 0;
     jw__publish_display_env(state);
     jw__publish_cheevos_env(state);
 
@@ -4267,7 +4390,8 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
     jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs,
                                 state->pending_launch_rom_path, source_root,
-                                core, core_id, runtime_config, persist_config);
+                                core, core_id, runtime_config, persist_config,
+                                audio_bluetooth);
     bool post_launch_resume = switcher_resume && !entryslot_resume;
     if (post_launch_resume) {
         state->post_launch_resume_pending = true;
@@ -4374,12 +4498,14 @@ static void jw__autosleep_sync_platform(jw_daemon_state *state) {
    that queued while asleep (gamepad replay + the wake press itself) and reset the
    idle timer so the countdown restarts fresh after waking. */
 static void jw__deep_suspend(jw_daemon_state *state) {
+    jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
     jw__screen_set(state, false);
     jw_input_proxy_set_swallow(&state->input_proxy, true);
     jw_platform_result result;
     jw__platform_sleep_with_performance(state, &result);   /* blocks until resume */
     jw_log_info("sleep: resumed");
     jw__screen_set(state, true);
+    jw__reconcile_audio(state, "wake", true);
     jw_input_proxy_set_swallow(&state->input_proxy, false);
     jw_input_proxy_flush(&state->input_proxy);             /* drop queued gamepad + wake press */
     /* Clear the wake press's edges + disarm, so resuming doesn't read it as a new
@@ -5910,6 +6036,8 @@ int main(int argc, char *argv[]) {
                                 suspended);
                     jw_input_proxy_flush(&state.input_proxy);
                     jw_input_proxy_mark_activity(&state.input_proxy);
+                    jw__reconcile_audio(&state, "resume-detect", true);
+                    jw__schedule_retroarch_audio_reinit(&state, "resume-detect-bluetooth");
                 }
             }
             prev_mono = mono;
@@ -5925,7 +6053,11 @@ int main(int argc, char *argv[]) {
         jw__handle_menu_exit(&state);
         jw__handle_osd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
-        jw_platform_audio_tick(&state.platform);
+        unsigned audio_events = jw_platform_audio_tick(&state.platform);
+        if (audio_events & JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED) {
+            jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
+        }
+        jw__tick_retroarch_audio_reinit(&state);
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
         if (jw_platform_storage_tick(&state.platform)) {

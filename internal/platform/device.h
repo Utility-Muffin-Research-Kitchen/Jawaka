@@ -21,6 +21,9 @@
 #define JW_PLATFORM_PERF_VALUE_MAX 64
 #define JW_PLATFORM_PERF_LIST_MAX 512
 
+#define JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED    (1u << 0)
+#define JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_DISCONNECTED (1u << 1)
+
 typedef enum {
     /* Stock modes are driven by the active platform LED backend. */
     JW_LED_MODE_STATIC = 0,   /* solid color */
@@ -200,8 +203,10 @@ int  jw_platform_init(jw_platform_context *ctx, const char *runtime_dir, const c
 void jw_platform_shutdown(jw_platform_context *ctx);
 void jw_platform_get_status(jw_platform_context *ctx, jw_platform_status *out);
 void jw_platform_get_audio_status(jw_platform_context *ctx, jw_platform_status *out);
-/* Poll for headphone-jack plug/unplug and re-route audio. Call periodically. */
-void jw_platform_audio_tick(jw_platform_context *ctx);
+/* Poll for audio edge events and re-route audio. Call periodically. */
+unsigned jw_platform_audio_tick(jw_platform_context *ctx);
+/* Best-effort repair of live audio route/volume after wake or before launch. */
+void jw_platform_audio_reconcile(jw_platform_context *ctx, const char *reason);
 void jw_platform_frontend_ready(jw_platform_context *ctx, const char *role, jw_platform_result *out);
 
 bool jw_platform_parse_action(const char *name, jw_platform_action *out);

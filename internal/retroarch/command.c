@@ -74,6 +74,7 @@ static bool jw_ra__exact_supported(const char *command) {
         "PAUSE",
         "PAUSE_TOGGLE",
         "QUIT",
+        "AUDIO_REINIT",
         "RESET",
         "SAVE_STATE",
         "SCREENSHOT",
@@ -492,6 +493,10 @@ jw_ra_result jw_ra_quit(const jw_ra_client *client) {
 
 jw_ra_result jw_ra_reset(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "RESET");
+}
+
+jw_ra_result jw_ra_audio_reinit(const jw_ra_client *client) {
+    return jw_ra_send_raw(client, "AUDIO_REINIT");
 }
 
 jw_ra_result jw_ra_screenshot(const jw_ra_client *client) {

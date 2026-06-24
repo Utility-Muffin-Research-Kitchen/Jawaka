@@ -142,13 +142,24 @@ void jw_platform_get_audio_status(jw_platform_context *ctx, jw_platform_status *
     }
 }
 
-void jw_platform_audio_tick(jw_platform_context *ctx) {
+unsigned jw_platform_audio_tick(jw_platform_context *ctx) {
+    if (!ctx) {
+        return 0;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->audio_tick) {
+        return backend->audio_tick(ctx);
+    }
+    return 0;
+}
+
+void jw_platform_audio_reconcile(jw_platform_context *ctx, const char *reason) {
     if (!ctx) {
         return;
     }
     const jw_platform_backend *backend = jw_platform_get_backend();
-    if (backend && backend->audio_tick) {
-        backend->audio_tick(ctx);
+    if (backend && backend->audio_reconcile) {
+        backend->audio_reconcile(ctx, reason);
     }
 }
 

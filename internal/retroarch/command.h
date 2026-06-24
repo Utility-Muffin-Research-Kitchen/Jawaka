@@ -65,6 +65,7 @@ jw_ra_result jw_ra_menu_toggle(const jw_ra_client *client);
 jw_ra_result jw_ra_open_menu(const jw_ra_client *client);
 jw_ra_result jw_ra_quit(const jw_ra_client *client);
 jw_ra_result jw_ra_reset(const jw_ra_client *client);
+jw_ra_result jw_ra_audio_reinit(const jw_ra_client *client);
 /* Ask RetroArch to write a screenshot of the current frame to its configured
  * screenshot_directory. Fire-and-forget; RA writes the PNG asynchronously. */
 jw_ra_result jw_ra_screenshot(const jw_ra_client *client);
