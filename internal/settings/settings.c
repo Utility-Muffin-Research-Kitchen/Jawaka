@@ -3524,7 +3524,10 @@ static void jw__draw_update_progress(const jw_settings_ui *ui,
 
 static void jw__draw_update_activity(const jw_settings_ui *ui,
                                      int x, int y, int w) {
-    if (!ui || !ui->update.install_active || w <= 0) {
+    /* Indeterminate bar for any in-progress activity (install or release check).
+       The caller decides when to show it; don't re-gate on install_active here
+       or it never draws while checking. */
+    if (!ui || w <= 0) {
         return;
     }
     ap_theme *theme = cat_get_theme();
