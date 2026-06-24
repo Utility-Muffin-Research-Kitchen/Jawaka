@@ -3,6 +3,7 @@
 
 #include "cJSON.h"
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <sys/types.h>
@@ -30,7 +31,8 @@ typedef enum {
     JW_UPDATE_STATUS_CANCELLED,
     JW_UPDATE_STATUS_INSTALLING,
     JW_UPDATE_STATUS_ARMED,
-    JW_UPDATE_STATUS_ERROR
+    JW_UPDATE_STATUS_ERROR,
+    JW_UPDATE_STATUS_CHECKING
 } jw_update_status_code;
 
 typedef struct {
@@ -137,6 +139,20 @@ typedef struct {
     char result_path[JW_UPDATE_PATH_MAX];
 } jw_update_install_job;
 
+/* Async release check. The GitHub fetch is a blocking libcurl call (up to 15s on
+   bad Wi-Fi); running it on the daemon's request path froze the launcher render
+   loop, so we thread it. The worker fills `scratch`; the main loop's poll copies
+   it back once `done` is set (and `pthread_join` makes the writes visible). */
+typedef struct {
+    bool active;
+    volatile bool done;
+    pthread_t thread;
+    int result;
+    jw_update_status scratch;
+    char state_dir[JW_UPDATE_PATH_MAX];
+    char platform_id[JW_UPDATE_PLATFORM_ID_MAX];
+} jw_update_check_job;
+
 const char *jw_update_status_name(jw_update_status_code status);
 
 void jw_update_status_init(jw_update_status *status,
@@ -155,6 +171,15 @@ int jw_update_check_local_manifest(jw_update_status *status,
 int jw_update_check_github(jw_update_status *status,
                            const char *state_dir,
                            const char *platform_id);
+void jw_update_check_job_init(jw_update_check_job *job);
+/* Kick off an async GitHub release check. Sets status to CHECKING and returns
+   immediately; the result lands via jw_update_check_poll(). No-op (returns 0) if
+   a check is already in flight. */
+int jw_update_check_start(jw_update_status *status,
+                          jw_update_check_job *job,
+                          const char *state_dir);
+void jw_update_check_poll(jw_update_status *status,
+                          jw_update_check_job *job);
 int jw_update_select_option(jw_update_status *status, int option_index);
 int jw_update_download_candidate(jw_update_status *status,
                                  const char *state_dir);

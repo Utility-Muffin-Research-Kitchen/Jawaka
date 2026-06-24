@@ -1245,6 +1245,8 @@ void jw_settings_ui_close(jw_settings_ui *ui) {
    doesn't go through the Settings home (e.g. jawaka-menu's System popup) lands
    the same as picking the category would. Currently used for About and System
    Update; mirrors the per-screen entry priming the home A-handler does. */
+static void jw__update_check_releases(jw_settings_ui *ui, char *status_buf,
+                                      size_t status_size);
 void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
     if (!ui) return;
     ui->open = true;
@@ -1256,7 +1258,14 @@ void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
         ui->update_msg_ms = 0;
         ui->update_checked_this_visit = false;  /* don't assert a cached result */
         jw__refresh_update_status(ui, false);
-        ui->update_next_poll_ms = SDL_GetTicks() + 1000;
+        /* Auto-start a release check on open so the user sees it searching (with a
+           spinner) immediately, instead of a stale "Not checked". The daemon runs
+           the fetch on a worker thread and returns at once, so this doesn't block. */
+        {
+            char check_status[192] = { 0 };
+            jw__update_check_releases(ui, check_status, sizeof(check_status));
+        }
+        ui->update_next_poll_ms = SDL_GetTicks() + 500;
     } else if (screen == JW_SETTINGS_ABOUT) {
         cat_scroll_state_init(&ui->about_scroll);   /* start at top */
     }
@@ -3384,6 +3393,7 @@ static const char *jw__update_state_label(const jw_ipc_update_status_info *u) {
     if (!u || !u->state[0]) {
         return "Idle";
     }
+    if (strcmp(u->state, "checking") == 0) return "Checking...";
     if (strcmp(u->state, "up-to-date") == 0) return "Up to date";
     if (strcmp(u->state, "available") == 0) return "Available";
     if (strcmp(u->state, "downloading") == 0) return "Downloading";
@@ -3557,6 +3567,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     int dy = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
 
     const jw_ipc_update_status_info *u = &ui->update;
+    bool checking = ui->update_have_status && strcmp(u->state, "checking") == 0;
     char message[320];
     if (ui->update_have_status && u->install_active && u->install_message[0]) {
         snprintf(message, sizeof(message), "%s", u->install_message);
@@ -3588,7 +3599,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
         jw__draw_update_progress(ui, x + cat_scale(12), dy + cat_scale(2),
                                  w - cat_scale(24));
         dy += cat_scale(12);
-    } else if (ui->update.install_active) {
+    } else if (ui->update.install_active || checking) {
         jw__draw_update_activity(ui, x + cat_scale(12), dy + cat_scale(2),
                                  w - cat_scale(24));
         dy += cat_scale(12);
@@ -3631,7 +3642,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
        cached result as fresh truth — show "Not checked" and dash the result
        rows. Skip the suppression when there's in-flight work to show (a download
        or install in progress / a verified artifact / a pending restart). */
-    if (!ui->update_checked_this_visit && ui->update_have_status &&
+    if (!ui->update_checked_this_visit && ui->update_have_status && !checking &&
         !u->download_active && !u->install_active && !u->install_armed &&
         !u->downloaded) {
         snprintf(check_value, sizeof(check_value), "%s", "Not checked");
@@ -3655,7 +3666,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
        spinner and download bar animate at the render loop's frame rate. Without
        this the screen only repaints on the 250ms poll-redraw, so the time-based
        spinner (SDL_GetTicks) and the progress fill visibly stutter at ~4 fps. */
-    if (ui->update.download_active || ui->update.install_active) {
+    if (ui->update.download_active || ui->update.install_active || checking) {
         cat_request_frame();
     }
 }

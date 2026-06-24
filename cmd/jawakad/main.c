@@ -171,6 +171,7 @@ typedef struct {
     jw_update_status update_status;
     jw_update_download_job update_download_job;
     jw_update_install_job update_install_job;
+    jw_update_check_job update_check_job;
 } jw_daemon_state;
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
@@ -1374,11 +1375,17 @@ static int jw__handle_update_check(jw_daemon_state *state,
                                    cJSON *request) {
     jw_update_download_poll(&state->update_status, &state->update_download_job);
     jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw_update_check_poll(&state->update_status, &state->update_check_job);
     if (state->update_download_job.active) {
         cJSON *reply = jw_update_status_to_json(&state->update_status);
         return jw__reply_json(client, reply);
     }
     if (state->update_install_job.active) {
+        cJSON *reply = jw_update_status_to_json(&state->update_status);
+        return jw__reply_json(client, reply);
+    }
+    if (state->update_check_job.active) {
+        /* A check is already running; report CHECKING without starting another. */
         cJSON *reply = jw_update_status_to_json(&state->update_status);
         return jw__reply_json(client, reply);
     }
@@ -1401,9 +1408,12 @@ static int jw__handle_update_check(jw_daemon_state *state,
                                        state->platform.platform_id,
                                        manifest_path);
     } else {
-        jw_update_check_github(&state->update_status,
-                               state->state_dir,
-                               state->platform.platform_id);
+        /* Run the GitHub release check on a worker thread so the blocking fetch
+           doesn't freeze the launcher; reply immediately with state=checking and
+           let the launcher's status poll pick up the result. */
+        jw_update_check_start(&state->update_status,
+                              &state->update_check_job,
+                              state->state_dir);
     }
     cJSON *root = jw_update_status_to_json(&state->update_status);
     return jw__reply_json(client, root);
@@ -5694,6 +5704,7 @@ int main(int argc, char *argv[]) {
     jw__perf_request_init(&state.perf_custom_request);
     jw_update_download_job_init(&state.update_download_job);
     jw_update_install_job_init(&state.update_install_job);
+    jw_update_check_job_init(&state.update_check_job);
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--daemon-only") == 0) {
@@ -5883,6 +5894,7 @@ int main(int argc, char *argv[]) {
 
         jw_update_download_poll(&state.update_status, &state.update_download_job);
         jw_update_install_poll(&state.update_status, &state.update_install_job);
+        jw_update_check_poll(&state.update_status, &state.update_check_job);
         jw__handle_child_exit(&state);
         jw__tick_post_launch_resume(&state);
         jw__tick_in_game_menu_prewarm(&state);

@@ -634,6 +634,8 @@ const char *jw_update_status_name(jw_update_status_code status) {
         return "idle";
     case JW_UPDATE_STATUS_AVAILABLE:
         return "available";
+    case JW_UPDATE_STATUS_CHECKING:
+        return "checking";
     case JW_UPDATE_STATUS_UP_TO_DATE:
         return "up-to-date";
     case JW_UPDATE_STATUS_INCOMPATIBLE:
@@ -1723,6 +1725,65 @@ void jw_update_download_poll(jw_update_status *status,
     }
 
     jw__finish_download_job(status, job, child_status);
+}
+
+static void *jw__update_check_worker(void *arg) {
+    jw_update_check_job *job = (jw_update_check_job *)arg;
+    job->result = jw_update_check_github(&job->scratch, job->state_dir,
+                                         job->platform_id);
+    job->done = true;
+    return NULL;
+}
+
+void jw_update_check_job_init(jw_update_check_job *job) {
+    if (!job) {
+        return;
+    }
+    memset(job, 0, sizeof(*job));
+}
+
+int jw_update_check_start(jw_update_status *status,
+                          jw_update_check_job *job,
+                          const char *state_dir) {
+    if (!status || !job) {
+        return -1;
+    }
+    if (job->active) {
+        return 0;  /* a check is already running */
+    }
+
+    /* Seed the worker's scratch from the live status so fields the check does not
+       touch are preserved when we copy it back. */
+    job->scratch = *status;
+    job->done = false;
+    job->result = 0;
+    jw__copy_string(job->state_dir, sizeof(job->state_dir),
+                    state_dir ? state_dir : "");
+    jw__copy_string(job->platform_id, sizeof(job->platform_id),
+                    status->platform_id);
+
+    if (pthread_create(&job->thread, NULL, jw__update_check_worker, job) != 0) {
+        /* Threading failed: fall back to a synchronous check so the feature still
+           works. This blocks (the old behaviour) but is not a regression. */
+        jw_update_check_github(status, state_dir, status->platform_id);
+        return 0;
+    }
+
+    job->active = true;
+    status->status = JW_UPDATE_STATUS_CHECKING;
+    jw__set_message(status, "%s", "Checking for updates");
+    return 0;
+}
+
+void jw_update_check_poll(jw_update_status *status,
+                          jw_update_check_job *job) {
+    if (!status || !job || !job->active || !job->done) {
+        return;
+    }
+    pthread_join(job->thread, NULL);  /* makes the worker's writes visible */
+    *status = job->scratch;
+    job->active = false;
+    job->done = false;
 }
 
 int jw_update_download_cancel(jw_update_status *status,
