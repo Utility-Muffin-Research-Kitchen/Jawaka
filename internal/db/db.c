@@ -323,15 +323,20 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
     }
 
     int rc = 0;
-    rc |= jw__query_int(db, "SELECT COUNT(*) FROM games;", &out->game_count);
-    rc |= jw__query_int(db, "SELECT COUNT(*) FROM apps;", &out->app_count);
-    rc |= jw__query_int(db, "SELECT COUNT(*) FROM favorites WHERE kind = 'game';",
-                        &out->favorite_count);
-    rc |= jw__query_int(db, "SELECT COUNT(*) FROM games WHERE playtime_s > 0;",
-                        &out->games_played);
-    rc |= jw__query_int(db,
+    if (jw__query_int(db, "SELECT COUNT(*) FROM games;", &out->game_count) != 0)
+        rc = -1;
+    if (jw__query_int(db, "SELECT COUNT(*) FROM apps;", &out->app_count) != 0)
+        rc = -1;
+    if (jw__query_int(db, "SELECT COUNT(*) FROM favorites WHERE kind = 'game';",
+                      &out->favorite_count) != 0)
+        rc = -1;
+    if (jw__query_int(db, "SELECT COUNT(*) FROM games WHERE playtime_s > 0;",
+                      &out->games_played) != 0)
+        rc = -1;
+    if (jw__query_int(db,
         "SELECT COUNT(*) FROM games WHERE image_path IS NOT NULL AND image_path <> '';",
-        &out->art_covered);
+        &out->art_covered) != 0)
+        rc = -1;
 
     sqlite3_stmt *st = NULL;
 
@@ -340,8 +345,8 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
             "SELECT COALESCE(SUM(playtime_s), 0), COALESCE(MAX(last_played), 0) FROM games;",
             -1, &st, NULL) == SQLITE_OK) {
         if (sqlite3_step(st) == SQLITE_ROW) {
-            out->total_playtime_s = (long)sqlite3_column_int64(st, 0);
-            out->last_played      = (long)sqlite3_column_int64(st, 1);
+            out->total_playtime_s = (long long)sqlite3_column_int64(st, 0);
+            out->last_played      = (long long)sqlite3_column_int64(st, 1);
         }
         sqlite3_finalize(st);
         st = NULL;
@@ -361,8 +366,8 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
             const unsigned char *sy = sqlite3_column_text(st, 1);
             snprintf(g->name,   sizeof(g->name),   "%s", nm ? (const char *)nm : "");
             snprintf(g->system, sizeof(g->system), "%s", sy ? (const char *)sy : "");
-            g->playtime_s  = (long)sqlite3_column_int64(st, 2);
-            g->last_played = (long)sqlite3_column_int64(st, 3);
+            g->playtime_s  = (long long)sqlite3_column_int64(st, 2);
+            g->last_played = (long long)sqlite3_column_int64(st, 3);
         }
         sqlite3_finalize(st);
         st = NULL;
@@ -382,7 +387,7 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
             const unsigned char *sy = sqlite3_column_text(st, 0);
             snprintf(s->system, sizeof(s->system), "%s", sy ? (const char *)sy : "");
             s->game_count = sqlite3_column_int(st, 1);
-            s->playtime_s = (long)sqlite3_column_int64(st, 2);
+            s->playtime_s = (long long)sqlite3_column_int64(st, 2);
         }
         sqlite3_finalize(st);
         st = NULL;

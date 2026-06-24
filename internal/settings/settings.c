@@ -3344,24 +3344,24 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
 }
 
 /* "12h 30m" / "45m" / "<1m" / "—" for a playtime in seconds. */
-static void jw__fmt_playtime(long s, char *buf, size_t n) {
+static void jw__fmt_playtime(long long s, char *buf, size_t n) {
     if (s <= 0)     { snprintf(buf, n, "%s", "\xe2\x80\x94"); return; }  /* em dash */
-    long h = s / 3600, m = (s % 3600) / 60;
-    if (h > 0)      snprintf(buf, n, "%ldh %ldm", h, m);
-    else if (m > 0) snprintf(buf, n, "%ldm", m);
+    long long h = s / 3600, m = (s % 3600) / 60;
+    if (h > 0)      snprintf(buf, n, "%lldh %lldm", h, m);
+    else if (m > 0) snprintf(buf, n, "%lldm", m);
     else            snprintf(buf, n, "<1m");
 }
 
 /* "today" / "yesterday" / "3 days ago" / "2 weeks ago" / "—" for a unix time. */
-static void jw__fmt_ago(long when, char *buf, size_t n) {
+static void jw__fmt_ago(long long when, char *buf, size_t n) {
     if (when <= 0) { snprintf(buf, n, "%s", "\xe2\x80\x94"); return; }
-    long d = ((long)time(NULL) - when) / 86400;
+    long long d = ((long long)time(NULL) - when) / 86400;
     if (d <= 0)       snprintf(buf, n, "today");
     else if (d == 1)  snprintf(buf, n, "yesterday");
-    else if (d < 7)   snprintf(buf, n, "%ld days ago", d);
-    else if (d < 30)  snprintf(buf, n, "%ld week%s ago",  d / 7,  d / 7  == 1 ? "" : "s");
-    else if (d < 365) snprintf(buf, n, "%ld month%s ago", d / 30, d / 30 == 1 ? "" : "s");
-    else              snprintf(buf, n, "%ld year%s ago",  d / 365, d / 365 == 1 ? "" : "s");
+    else if (d < 7)   snprintf(buf, n, "%lld days ago", d);
+    else if (d < 30)  snprintf(buf, n, "%lld week%s ago",  d / 7,  d / 7  == 1 ? "" : "s");
+    else if (d < 365) snprintf(buf, n, "%lld month%s ago", d / 30, d / 30 == 1 ? "" : "s");
+    else              snprintf(buf, n, "%lld year%s ago",  d / 365, d / 365 == 1 ? "" : "s");
 }
 
 /* Refresh the shared stats snapshot about once a second (cheap reads; only one

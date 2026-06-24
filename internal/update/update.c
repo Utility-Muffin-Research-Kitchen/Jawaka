@@ -1731,7 +1731,7 @@ static void *jw__update_check_worker(void *arg) {
     jw_update_check_job *job = (jw_update_check_job *)arg;
     job->result = jw_update_check_github(&job->scratch, job->state_dir,
                                          job->platform_id);
-    job->done = true;
+    atomic_store_explicit(&job->done, true, memory_order_release);
     return NULL;
 }
 
@@ -1740,6 +1740,7 @@ void jw_update_check_job_init(jw_update_check_job *job) {
         return;
     }
     memset(job, 0, sizeof(*job));
+    atomic_init(&job->done, false);
 }
 
 int jw_update_check_start(jw_update_status *status,
@@ -1755,7 +1756,7 @@ int jw_update_check_start(jw_update_status *status,
     /* Seed the worker's scratch from the live status so fields the check does not
        touch are preserved when we copy it back. */
     job->scratch = *status;
-    job->done = false;
+    atomic_store_explicit(&job->done, false, memory_order_relaxed);
     job->result = 0;
     jw__copy_string(job->state_dir, sizeof(job->state_dir),
                     state_dir ? state_dir : "");
@@ -1777,13 +1778,23 @@ int jw_update_check_start(jw_update_status *status,
 
 void jw_update_check_poll(jw_update_status *status,
                           jw_update_check_job *job) {
-    if (!status || !job || !job->active || !job->done) {
+    if (!status || !job || !job->active ||
+        !atomic_load_explicit(&job->done, memory_order_acquire)) {
         return;
     }
     pthread_join(job->thread, NULL);  /* makes the worker's writes visible */
     *status = job->scratch;
     job->active = false;
-    job->done = false;
+    atomic_store_explicit(&job->done, false, memory_order_relaxed);
+}
+
+void jw_update_check_job_wait(jw_update_check_job *job) {
+    if (!job || !job->active) {
+        return;
+    }
+    pthread_join(job->thread, NULL);
+    job->active = false;
+    atomic_store_explicit(&job->done, false, memory_order_relaxed);
 }
 
 int jw_update_download_cancel(jw_update_status *status,

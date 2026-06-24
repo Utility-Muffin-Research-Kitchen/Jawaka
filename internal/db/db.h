@@ -16,27 +16,27 @@ typedef struct {
 typedef struct {
     char name[128];
     char system[64];
-    long playtime_s;
-    long last_played;
+    long long playtime_s;
+    long long last_played;
 } jw_stat_game;
 
 typedef struct {
     char system[64];
     int  game_count;
-    long playtime_s;
+    long long playtime_s;
 } jw_stat_system;
 
 #define JW_STATS_TOP_MAX     8
 #define JW_STATS_SYSTEM_MAX  64
 
 typedef struct {
-    long total_playtime_s;   /* SUM(playtime_s) over all games            */
+    long long total_playtime_s;   /* SUM(playtime_s) over all games            */
     int  games_played;       /* games with playtime_s > 0                 */
     int  game_count;
     int  app_count;
     int  favorite_count;     /* favorited games                           */
     int  art_covered;        /* games with a non-empty image_path         */
-    long last_played;        /* MAX(last_played), 0 if never              */
+    long long last_played;        /* MAX(last_played), 0 if never              */
     jw_stat_game   top[JW_STATS_TOP_MAX];        /* most-played, time desc */
     int            top_count;
     jw_stat_system systems[JW_STATS_SYSTEM_MAX]; /* per-system, count desc */

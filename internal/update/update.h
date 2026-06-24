@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include <sys/types.h>
 #include <time.h>
 
@@ -142,10 +143,10 @@ typedef struct {
 /* Async release check. The GitHub fetch is a blocking libcurl call (up to 15s on
    bad Wi-Fi); running it on the daemon's request path froze the launcher render
    loop, so we thread it. The worker fills `scratch`; the main loop's poll copies
-   it back once `done` is set (and `pthread_join` makes the writes visible). */
+   it back once `done` is atomically published and `pthread_join` completes. */
 typedef struct {
     bool active;
-    volatile bool done;
+    atomic_bool done;
     pthread_t thread;
     int result;
     jw_update_status scratch;
@@ -180,6 +181,7 @@ int jw_update_check_start(jw_update_status *status,
                           const char *state_dir);
 void jw_update_check_poll(jw_update_status *status,
                           jw_update_check_job *job);
+void jw_update_check_job_wait(jw_update_check_job *job);
 int jw_update_select_option(jw_update_status *status, int option_index);
 int jw_update_download_candidate(jw_update_status *status,
                                  const char *state_dir);

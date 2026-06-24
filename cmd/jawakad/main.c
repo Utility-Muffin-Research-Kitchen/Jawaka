@@ -1370,24 +1370,37 @@ static int jw__handle_scrape_validate(jw_daemon_state *state,
     return jw__reply_json(client, root);
 }
 
+static int jw__reply_update_status_raw(jw_daemon_state *state,
+                                       jw_ipc_client *client) {
+    /* Used only while an async release check is active: preserve CHECKING without
+       refreshing installed/result fields or touching download/install state. */
+    cJSON *reply = jw_update_status_to_json(&state->update_status);
+    return jw__reply_json(client, reply);
+}
+
+static bool jw__update_check_busy(jw_daemon_state *state) {
+    if (!state) {
+        return false;
+    }
+    jw_update_check_poll(&state->update_status, &state->update_check_job);
+    return state->update_check_job.active;
+}
+
 static int jw__handle_update_check(jw_daemon_state *state,
                                    jw_ipc_client *client,
                                    cJSON *request) {
     jw_update_download_poll(&state->update_status, &state->update_download_job);
     jw_update_install_poll(&state->update_status, &state->update_install_job);
-    jw_update_check_poll(&state->update_status, &state->update_check_job);
+    jw__update_check_busy(state);
     if (state->update_download_job.active) {
-        cJSON *reply = jw_update_status_to_json(&state->update_status);
-        return jw__reply_json(client, reply);
+        return jw__reply_update_status(state, client);
     }
     if (state->update_install_job.active) {
-        cJSON *reply = jw_update_status_to_json(&state->update_status);
-        return jw__reply_json(client, reply);
+        return jw__reply_update_status(state, client);
     }
     if (state->update_check_job.active) {
         /* A check is already running; report CHECKING without starting another. */
-        cJSON *reply = jw_update_status_to_json(&state->update_status);
-        return jw__reply_json(client, reply);
+        return jw__reply_update_status_raw(state, client);
     }
 
     cJSON *manifest_json = cJSON_GetObjectItemCaseSensitive(request, "manifest_path");
@@ -1421,6 +1434,9 @@ static int jw__handle_update_check(jw_daemon_state *state,
 
 static int jw__handle_update_download(jw_daemon_state *state,
                                       jw_ipc_client *client) {
+    if (jw__update_check_busy(state)) {
+        return jw__reply_update_status_raw(state, client);
+    }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
     jw_update_install_poll(&state->update_status, &state->update_install_job);
     if (!state->update_download_job.active &&
@@ -1430,34 +1446,36 @@ static int jw__handle_update_download(jw_daemon_state *state,
                                  &state->update_download_job,
                                  state->state_dir);
     }
-    cJSON *root = jw_update_status_to_json(&state->update_status);
-    return jw__reply_json(client, root);
+    return jw__reply_update_status(state, client);
 }
 
 static int jw__handle_update_select(jw_daemon_state *state,
                                     jw_ipc_client *client,
                                     cJSON *request) {
+    if (jw__update_check_busy(state)) {
+        return jw__reply_update_status_raw(state, client);
+    }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
     jw_update_install_poll(&state->update_status, &state->update_install_job);
     if (state->update_download_job.active || state->update_install_job.active) {
-        cJSON *root = jw_update_status_to_json(&state->update_status);
-        return jw__reply_json(client, root);
+        return jw__reply_update_status(state, client);
     }
 
     const cJSON *index_json = cJSON_GetObjectItemCaseSensitive(request, "option_index");
     int option_index = cJSON_IsNumber(index_json) ? index_json->valueint : -1;
     jw_update_select_option(&state->update_status, option_index);
-    cJSON *root = jw_update_status_to_json(&state->update_status);
-    return jw__reply_json(client, root);
+    return jw__reply_update_status(state, client);
 }
 
 static int jw__handle_update_cancel(jw_daemon_state *state,
                                     jw_ipc_client *client) {
+    if (jw__update_check_busy(state)) {
+        return jw__reply_update_status_raw(state, client);
+    }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
     jw_update_install_poll(&state->update_status, &state->update_install_job);
     jw_update_download_cancel(&state->update_status, &state->update_download_job);
-    cJSON *root = jw_update_status_to_json(&state->update_status);
-    return jw__reply_json(client, root);
+    return jw__reply_update_status(state, client);
 }
 
 static bool jw__update_install_idle(const jw_daemon_state *state) {
@@ -1473,7 +1491,8 @@ static bool jw__update_install_idle(const jw_daemon_state *state) {
         state->menu_in_game ||
         state->menu_visible ||
         state->update_download_job.active ||
-        state->update_install_job.active) {
+        state->update_install_job.active ||
+        state->update_check_job.active) {
         return false;
     }
 
@@ -1485,6 +1504,9 @@ static bool jw__update_install_idle(const jw_daemon_state *state) {
 static int jw__handle_update_install_preflight(jw_daemon_state *state,
                                                jw_ipc_client *client,
                                                cJSON *request) {
+    if (jw__update_check_busy(state)) {
+        return jw__reply_update_status_raw(state, client);
+    }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
     jw_update_install_poll(&state->update_status, &state->update_install_job);
 
@@ -1502,18 +1524,19 @@ static int jw__handle_update_install_preflight(jw_daemon_state *state,
                                 platform_status.battery_percent,
                                 platform_status.charging,
                                 confirm_unknown_battery);
-    cJSON *root = jw_update_status_to_json(&state->update_status);
-    return jw__reply_json(client, root);
+    return jw__reply_update_status(state, client);
 }
 
 static int jw__handle_update_install(jw_daemon_state *state,
                                      jw_ipc_client *client,
                                      cJSON *request) {
+    if (jw__update_check_busy(state)) {
+        return jw__reply_update_status_raw(state, client);
+    }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
     jw_update_install_poll(&state->update_status, &state->update_install_job);
     if (state->update_install_job.active) {
-        cJSON *root = jw_update_status_to_json(&state->update_status);
-        return jw__reply_json(client, root);
+        return jw__reply_update_status(state, client);
     }
 
     bool confirm_unknown_battery =
@@ -5671,6 +5694,7 @@ static void jw__cleanup(jw_daemon_state *state) {
     if (state->update_download_job.active) {
         jw_update_download_cancel(&state->update_status, &state->update_download_job);
     }
+    jw_update_check_job_wait(&state->update_check_job);
     jw_scrape_worker_stop();
     jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);

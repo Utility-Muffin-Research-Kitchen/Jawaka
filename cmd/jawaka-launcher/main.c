@@ -210,7 +210,7 @@ typedef struct {
        in-game menu is still its own process — a different path. */
     bool               menu_open;
     bool               menu_scanning;   /* Rescan in progress: pane shows "Scanning…" */
-    int                menu_tab;        /* System menu tab: 0=Actions, 1=Info */
+    int                menu_tab;        /* System menu tab: 0=Settings, 1=Actions, 2=Info */
     cat_list_state     menu_list;
     /* settings (Appearance/Library/Behavior/About) */
     jw_settings_ui     settings;
@@ -3508,6 +3508,23 @@ static void jw__open_menu(jw_launcher_state *state) {
     jw_settings_ui_enter(&state->settings);
 }
 
+static void jw__switch_system_tab(jw_launcher_state *state, int direction) {
+    if (!state) return;
+    bool was_settings = (state->menu_tab == JW_SMTAB_SETTINGS);
+    state->menu_tab = (state->menu_tab + direction + JW_SMTAB_COUNT) % JW_SMTAB_COUNT;
+    bool now_settings = (state->menu_tab == JW_SMTAB_SETTINGS);
+    if (was_settings && !now_settings)
+        jw_settings_ui_close(&state->settings);
+    if (now_settings) {
+        jw_settings_ui_enter(&state->settings);
+    } else {
+        int n;
+        jw__menu_tab_items(state->menu_tab, &n);
+        cat_list_state_init(&state->menu_list, n);
+    }
+    cat_request_frame();
+}
+
 static void jw__render_launcher(jw_launcher_state *state) {
     if (state->switcher_open) {
         jw__render_switcher(state);
@@ -4931,11 +4948,9 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
                list on the adjacent tab, mirroring how the content tabs let you
                switch sections from within a drilled-in view. */
             if (ev.button == CAT_BTN_L1 || ev.button == CAT_BTN_R1) {
-                int dir = (ev.button == CAT_BTN_L1) ? JW_SMTAB_COUNT - 1 : 1;
-                state->menu_tab = (state->menu_tab + dir) % JW_SMTAB_COUNT;
-                int nc;
-                jw__menu_tab_items(state->menu_tab, &nc);
-                cat_list_state_init(&state->menu_list, nc);
+                /* This intentionally primes state->settings (the Settings tab UI),
+                   not the modal ui, so landing on Settings renders immediately. */
+                jw__switch_system_tab(state, ev.button == CAT_BTN_L1 ? -1 : 1);
                 running = false;
                 break;
             }
@@ -5049,20 +5064,7 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
        settings UI at its home; leaving it closes the UI; Actions/Info reset their
        selectable list to the tab's item count. */
     if (button == CAT_BTN_L1 || button == CAT_BTN_R1) {
-        bool was_settings = (state->menu_tab == JW_SMTAB_SETTINGS);
-        int dir = (button == CAT_BTN_L1) ? JW_SMTAB_COUNT - 1 : 1;
-        state->menu_tab = (state->menu_tab + dir) % JW_SMTAB_COUNT;
-        bool now_settings = (state->menu_tab == JW_SMTAB_SETTINGS);
-        if (was_settings && !now_settings)
-            jw_settings_ui_close(&state->settings);
-        if (now_settings) {
-            jw_settings_ui_enter(&state->settings);
-        } else {
-            int n;
-            jw__menu_tab_items(state->menu_tab, &n);
-            cat_list_state_init(&state->menu_list, n);
-        }
-        cat_request_frame();
+        jw__switch_system_tab(state, button == CAT_BTN_L1 ? -1 : 1);
         return;
     }
 
