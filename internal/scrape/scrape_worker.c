@@ -385,16 +385,16 @@ static bool jw__pending_contains_locked(const char *system, const char *rom_path
 }
 
 static int jw__queue_push(const char *system, const char *rom_path) {
-    if (jw__w.count >= JW__SCRAPE_QUEUE_MAX ||
-        jw__w.row_count >= JW__SCRAPE_QUEUE_MAX) {
-        return -1;
+    if (jw__w.count == 0 && jw__w.active_count == 0 && !jw__w.paused_quota) {
+        /* New batch from idle: terminal rows remain readable until this point. */
+        jw__clear_finished_batch_locked();
     }
     if (jw__pending_contains_locked(system, rom_path)) {
         return 0;
     }
-    if (jw__w.count == 0 && jw__w.active_count == 0 && !jw__w.paused_quota) {
-        /* New batch from idle: terminal rows remain readable until this point. */
-        jw__clear_finished_batch_locked();
+    if (jw__w.count >= JW__SCRAPE_QUEUE_MAX ||
+        jw__w.row_count >= JW__SCRAPE_QUEUE_MAX) {
+        return -1;
     }
     /* A user-initiated start is the retry gesture that clears a quota pause
        (e.g. the day rolled over). */
@@ -895,10 +895,25 @@ int jw_scrape_missing_counts(jw_scrape_missing_row *out, int max,
     return 0;
 }
 
+static void jw__enqueue_result_add(jw_scrape_enqueue_result *dst,
+                                   const jw_scrape_enqueue_result *src) {
+    if (!dst || !src) return;
+    dst->requested += src->requested;
+    dst->enqueued += src->enqueued;
+    dst->already_queued += src->already_queued;
+    dst->skipped_existing += src->skipped_existing;
+    dst->queue_full = dst->queue_full || src->queue_full;
+}
+
 /* Enqueue every mapped system in one shot (used by scope "all"). Per-system
-   errors (e.g. a full queue) are tolerated so one bad system can't abort the
-   batch. Returns the total enqueued, or -1 only on a fatal setup error. */
-int jw_scrape_enqueue_all(bool missing_only, const char **error) {
+   errors are tolerated so one bad system can't abort the batch. Returns the
+   total enqueued, or -1 only on a fatal setup error. */
+int jw_scrape_enqueue_all_full(bool missing_only,
+                               jw_scrape_enqueue_result *out,
+                               const char **error) {
+    jw_scrape_enqueue_result fallback;
+    if (!out) out = &fallback;
+    memset(out, 0, sizeof(*out));
     if (error) *error = NULL;
     if (!jw_ss_available()) {
         if (error) *error = "scraping unavailable in this build";
@@ -916,19 +931,30 @@ int jw_scrape_enqueue_all(bool missing_only, const char **error) {
         if (error) *error = "could not list systems";
         return -1;
     }
-    int total = 0;
     for (int i = 0; i < sys_count; i++) {
         if (jw_scrape_platform_id(systems[i].name) < 0) continue;  /* unmapped */
         const char *err = NULL;
-        int n = jw_scrape_enqueue_system(systems[i].name, missing_only, &err);
-        if (n > 0) total += n;
+        jw_scrape_enqueue_result one;
+        (void)jw_scrape_enqueue_system_full(systems[i].name, missing_only,
+                                            &one, &err);
+        jw__enqueue_result_add(out, &one);
     }
     free(systems);
-    return total;
+    return out->enqueued;
 }
 
-int jw_scrape_enqueue_system(const char *system, bool missing_only,
-                             const char **error) {
+int jw_scrape_enqueue_all(bool missing_only, const char **error) {
+    jw_scrape_enqueue_result result;
+    int rc = jw_scrape_enqueue_all_full(missing_only, &result, error);
+    return rc < 0 ? rc : result.enqueued;
+}
+
+int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
+                                  jw_scrape_enqueue_result *out,
+                                  const char **error) {
+    jw_scrape_enqueue_result fallback;
+    if (!out) out = &fallback;
+    memset(out, 0, sizeof(*out));
     if (error) *error = NULL;
     if (!system || !system[0]) {
         if (error) *error = "missing system";
@@ -962,7 +988,7 @@ int jw_scrape_enqueue_system(const char *system, bool missing_only,
         jw_storage_sources_resolve(jw__w.sdcard_root, &sources) == 0 &&
         sources.count > 0;
 
-    int enqueued = 0;
+    bool queue_full = false;
     pthread_mutex_lock(&jw__w.mu);
     if (!jw__w.running) {
         pthread_mutex_unlock(&jw__w.mu);
@@ -972,16 +998,37 @@ int jw_scrape_enqueue_system(const char *system, bool missing_only,
     }
     for (int i = 0; i < game_count; i++) {
         if (missing_only && have_sources &&
-            jw__game_art_exists(&sources, system, games[i].rom_path))
+            jw__game_art_exists(&sources, system, games[i].rom_path)) {
+            out->skipped_existing++;
             continue;   /* art already on disk */
+        }
+        out->requested++;
+        if (queue_full) {
+            continue;   /* keep counting remaining selected games */
+        }
         int rc = jw__queue_push(system, games[i].rom_path);
-        if (rc < 0) break;   /* queue full: enqueue what fit */
-        enqueued += rc;
+        if (rc < 0) {
+            queue_full = true;   /* queue full: enqueue what fit */
+            out->queue_full = true;
+            continue;
+        }
+        if (rc > 0) {
+            out->enqueued++;
+        } else {
+            out->already_queued++;
+        }
     }
-    if (enqueued > 0) pthread_cond_broadcast(&jw__w.cv);
+    if (out->enqueued > 0) pthread_cond_broadcast(&jw__w.cv);
     pthread_mutex_unlock(&jw__w.mu);
     free(games);
-    return enqueued;
+    return out->enqueued;
+}
+
+int jw_scrape_enqueue_system(const char *system, bool missing_only,
+                             const char **error) {
+    jw_scrape_enqueue_result result;
+    int rc = jw_scrape_enqueue_system_full(system, missing_only, &result, error);
+    return rc < 0 ? rc : result.enqueued;
 }
 
 void jw_scrape_status(jw_scrape_status_info *out) {

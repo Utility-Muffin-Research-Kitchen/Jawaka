@@ -75,14 +75,23 @@ typedef struct {
     jw_scrape_queue_row rows[JW_SCRAPE_QUEUE_SNAPSHOT_MAX];
 } jw_scrape_queue_info;
 
+typedef struct {
+    int requested;        /* games selected for enqueue after mode filters */
+    int enqueued;         /* new queue rows accepted */
+    int already_queued;   /* selected games already queued or active */
+    int skipped_existing; /* missing-only games that already have art */
+    bool queue_full;      /* queue filled before all selected games fit */
+} jw_scrape_enqueue_result;
+
 /* Start/stop the worker thread. Both are idempotent; stop joins the thread
    and drops any queued items. */
 int  jw_scrape_worker_start(const char *db_path, const char *sdcard_root);
 void jw_scrape_worker_stop(void);
 
-/* Enqueue one game (always re-fetches and replaces existing art). Returns
-   the number of items enqueued (0 when deduped), or -1 with *error set to a
-   static message (unmapped system, queue full, worker not running). */
+/* Enqueue one game (always re-fetches and replaces existing art). Returns the
+   number of items enqueued (0 when deduped), or -1 with *error set to a static
+   message. Queue full intentionally stays on the error path for this legacy
+   single-game API; batch callers use jw_scrape_enqueue_result.queue_full. */
 int jw_scrape_enqueue_game(const char *system, const char *rom_path,
                            const char **error);
 
@@ -90,10 +99,16 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
    already exists. Same return convention as enqueue_game. */
 int jw_scrape_enqueue_system(const char *system, bool missing_only,
                              const char **error);
+int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
+                                  jw_scrape_enqueue_result *out,
+                                  const char **error);
 
 /* Enqueue every mapped system at once (used by scope "all"). Returns the total
    enqueued; per-system errors are tolerated. -1 only on a fatal setup error. */
 int jw_scrape_enqueue_all(bool missing_only, const char **error);
+int jw_scrape_enqueue_all_full(bool missing_only,
+                               jw_scrape_enqueue_result *out,
+                               const char **error);
 
 /* Count a system's games still needing art (out_missing) and its total
    (out_total). Returns 0 on success; unmapped systems report zero. */

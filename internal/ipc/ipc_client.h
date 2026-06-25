@@ -373,6 +373,14 @@ typedef struct {
     jw_ipc_scrape_queue_row rows[JW_IPC_SCRAPE_QUEUE_MAX_ROWS];
 } jw_ipc_scrape_queue_info;
 
+typedef struct {
+    int requested;
+    int enqueued;
+    int already_queued;
+    int skipped_existing;
+    bool queue_full;
+} jw_ipc_scrape_start_info;
+
 /* Queue scraping. scope "game" needs rom_path (always re-fetches/replaces);
    scope "system" honors missing_only. On success returns 0 and sets
    *out_enqueued; on failure returns -1 with a daemon message in
@@ -381,6 +389,14 @@ int jw_ipc_scrape_start(const char *socket_path, const char *scope,
                         const char *system, const char *rom_path,
                         bool missing_only, int *out_enqueued,
                         char *status, int status_len);
+/* Rich scrape-start response. Missing fields read as zero against older
+   daemons. scope "game" still reports queue-full through the error/status path
+   for legacy single-game launcher behavior. */
+int jw_ipc_scrape_start_full(const char *socket_path, const char *scope,
+                             const char *system, const char *rom_path,
+                             bool missing_only,
+                             jw_ipc_scrape_start_info *out,
+                             char *status, int status_len);
 int jw_ipc_scrape_status(const char *socket_path,
                          jw_ipc_scrape_status_info *out);
 int jw_ipc_scrape_queue(const char *socket_path, int offset, int limit,
@@ -396,7 +412,7 @@ int jw_ipc_scrape_cancel(const char *socket_path, const char *scope,
 int jw_ipc_scrape_stop_all(const char *socket_path, int *out_stopped);
 int jw_ipc_scrape_clear_done(const char *socket_path, int *out_cleared);
 
-#define JW_IPC_MISSING_MAX_SYSTEMS 128
+#define JW_IPC_MISSING_MAX_SYSTEMS 256
 typedef struct {
     char system[64];   /* system code (e.g. "GB") */
     int  missing;      /* games still needing art */

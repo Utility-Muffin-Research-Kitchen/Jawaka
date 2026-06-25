@@ -1894,11 +1894,12 @@ int jw_ipc_scrape_validate(const char *socket_path, const char *username,
     return 0;
 }
 
-int jw_ipc_scrape_start(const char *socket_path, const char *scope,
-                        const char *system, const char *rom_path,
-                        bool missing_only, int *out_enqueued,
-                        char *status, int status_len) {
-    if (out_enqueued) *out_enqueued = 0;
+int jw_ipc_scrape_start_full(const char *socket_path, const char *scope,
+                             const char *system, const char *rom_path,
+                             bool missing_only,
+                             jw_ipc_scrape_start_info *out,
+                             char *status, int status_len) {
+    if (out) memset(out, 0, sizeof(*out));
 
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "scrape-start");
@@ -1911,13 +1912,15 @@ int jw_ipc_scrape_start(const char *socket_path, const char *scope,
 
     cJSON *resp = NULL;
     if (ipc__request(socket_path, req, &resp) != 0) {
-        if (status) snprintf(status, (size_t)status_len, "%s",
-                             "scrape failed: daemon unavailable");
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "scrape failed: daemon unavailable");
+        }
         return -1;
     }
     if (!ipc__type_is(resp, "ok")) {
         const cJSON *msg = cJSON_GetObjectItemCaseSensitive(resp, "message");
-        if (status) {
+        if (status && status_len > 0) {
             snprintf(status, (size_t)status_len, "%s",
                      cJSON_IsString(msg) ? msg->valuestring
                                          : "scrape failed");
@@ -1926,11 +1929,27 @@ int jw_ipc_scrape_start(const char *socket_path, const char *scope,
         return -1;
     }
 
-    if (out_enqueued) {
-        *out_enqueued = (int)ipc__json_ll(resp, "enqueued");
+    if (out) {
+        out->requested = (int)ipc__json_ll(resp, "requested");
+        out->enqueued = (int)ipc__json_ll(resp, "enqueued");
+        out->already_queued = (int)ipc__json_ll(resp, "already_queued");
+        out->skipped_existing = (int)ipc__json_ll(resp, "skipped_existing");
+        out->queue_full =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "queue_full"));
     }
     cJSON_Delete(resp);
     return 0;
+}
+
+int jw_ipc_scrape_start(const char *socket_path, const char *scope,
+                        const char *system, const char *rom_path,
+                        bool missing_only, int *out_enqueued,
+                        char *status, int status_len) {
+    jw_ipc_scrape_start_info info;
+    int rc = jw_ipc_scrape_start_full(socket_path, scope, system, rom_path,
+                                      missing_only, &info, status, status_len);
+    if (out_enqueued) *out_enqueued = rc == 0 ? info.enqueued : 0;
+    return rc;
 }
 
 int jw_ipc_scrape_status(const char *socket_path,

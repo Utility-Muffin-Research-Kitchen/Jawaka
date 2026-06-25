@@ -1335,21 +1335,29 @@ static int jw__handle_scrape_start(jw_daemon_state *state,
 
     const char *error = NULL;
     int enqueued = -1;
+    jw_scrape_enqueue_result result;
+    memset(&result, 0, sizeof(result));
     if (strcmp(scope->valuestring, "game") == 0) {
         if (!cJSON_IsString(rom_path) || !rom_path->valuestring[0]) {
             return jw__reply_error(client, "missing rom_path");
         }
         enqueued = jw_scrape_enqueue_game(system->valuestring,
                                           rom_path->valuestring, &error);
+        if (enqueued >= 0) {
+            result.requested = 1;
+            result.enqueued = enqueued;
+            result.already_queued = enqueued == 0 ? 1 : 0;
+        }
     } else if (strcmp(scope->valuestring, "system") == 0) {
         bool missing_only = !cJSON_IsString(mode) ||
                             strcmp(mode->valuestring, "all") != 0;
-        enqueued = jw_scrape_enqueue_system(system->valuestring, missing_only,
-                                            &error);
+        enqueued = jw_scrape_enqueue_system_full(system->valuestring,
+                                                 missing_only, &result,
+                                                 &error);
     } else if (scope_all) {
         bool missing_only = !cJSON_IsString(mode) ||
                             strcmp(mode->valuestring, "all") != 0;
-        enqueued = jw_scrape_enqueue_all(missing_only, &error);
+        enqueued = jw_scrape_enqueue_all_full(missing_only, &result, &error);
     } else {
         return jw__reply_error(client, "unknown scope");
     }
@@ -1357,16 +1365,21 @@ static int jw__handle_scrape_start(jw_daemon_state *state,
     if (enqueued < 0) {
         return jw__reply_error(client, error ? error : "scrape-start failed");
     }
-    jw_log_info("scrape-start scope=%s system=%s enqueued=%d",
+    jw_log_info("scrape-start scope=%s system=%s requested=%d enqueued=%d already=%d skipped=%d full=%d",
                 scope->valuestring,
                 (cJSON_IsString(system) && system->valuestring[0])
                     ? system->valuestring : "*",
-                enqueued);
+                result.requested, result.enqueued, result.already_queued,
+                result.skipped_existing, result.queue_full ? 1 : 0);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "ok");
     cJSON_AddStringToObject(root, "action", "scrape-start");
-    cJSON_AddNumberToObject(root, "enqueued", enqueued);
+    cJSON_AddNumberToObject(root, "requested", result.requested);
+    cJSON_AddNumberToObject(root, "enqueued", result.enqueued);
+    cJSON_AddNumberToObject(root, "already_queued", result.already_queued);
+    cJSON_AddNumberToObject(root, "skipped_existing", result.skipped_existing);
+    cJSON_AddBoolToObject(root, "queue_full", result.queue_full);
     return jw__reply_json(client, root);
 }
 

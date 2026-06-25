@@ -2728,10 +2728,47 @@ static void jw__scrape_queue_summary(const jw_ipc_scrape_queue_info *q,
     }
     char eta_part[64] = "";
     if (eta[0]) snprintf(eta_part, sizeof(eta_part), " | ETA %s", eta);
+    char shown[48] = "";
+    if (q->row_count > 0 && q->row_count < q->total) {
+        snprintf(shown, sizeof(shown), " | showing first %d", q->row_count);
+    }
     const char *prefix = strcmp(q->state, "paused-quota") == 0 ? "Quota paused, " : "";
-    snprintf(buf, buf_size, "%s%d/%d done, %d failed, %d busy%s%s%s",
+    snprintf(buf, buf_size, "%s%d/%d done, %d failed, %d busy%s%s%s%s",
              prefix, q->done, q->total, failed, q->active + q->queued,
-             api, threads, eta_part);
+             api, threads, eta_part, shown);
+}
+
+static void jw__scrape_start_status(const jw_ipc_scrape_start_info *info,
+                                    bool missing_only,
+                                    char *buf, size_t buf_size) {
+    if (!info || !buf || buf_size == 0) return;
+    if (info->queue_full) {
+        if (info->enqueued > 0) {
+            snprintf(buf, buf_size, "Queue full: queued %d of %d",
+                     info->enqueued, info->requested);
+        } else {
+            snprintf(buf, buf_size, "%s", "Scrape queue is full");
+        }
+    } else if (info->enqueued > 0) {
+        if (info->already_queued > 0) {
+            snprintf(buf, buf_size, "Queued %d, %d already queued",
+                     info->enqueued, info->already_queued);
+        } else {
+            snprintf(buf, buf_size, "Queued %d artwork job%s",
+                     info->enqueued, info->enqueued == 1 ? "" : "s");
+        }
+    } else if (info->already_queued > 0) {
+        snprintf(buf, buf_size, "%d artwork job%s already queued",
+                 info->already_queued,
+                 info->already_queued == 1 ? "" : "s");
+    } else if (missing_only && info->skipped_existing > 0) {
+        snprintf(buf, buf_size, "%s", "No missing artwork");
+    } else if (info->requested == 0) {
+        snprintf(buf, buf_size, "%s",
+                 missing_only ? "No missing artwork" : "No games to scrape");
+    } else {
+        snprintf(buf, buf_size, "%s", "No new scrape jobs");
+    }
 }
 
 typedef struct {
@@ -5765,23 +5802,30 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->scrape_download_list.cursor < count) {
                     int cur = ui->scrape_download_list.cursor;
                     bool missing_only = !ui->scrape_download_replace;
-                    int enq = 0;
+                    jw_ipc_scrape_start_info info;
                     char st[96] = "";
                     int rc = (cur == 0)
-                        ? jw_ipc_scrape_start(ui->socket_path, "all", "", NULL,
-                                              missing_only, &enq, st, sizeof(st))
-                        : jw_ipc_scrape_start(ui->socket_path, "system",
-                                              m->systems[cur - 1].system, NULL,
-                                              missing_only, &enq, st, sizeof(st));
+                        ? jw_ipc_scrape_start_full(ui->socket_path, "all", "",
+                                                   NULL, missing_only, &info,
+                                                   st, sizeof(st))
+                        : jw_ipc_scrape_start_full(
+                              ui->socket_path, "system",
+                              m->systems[cur - 1].system, NULL,
+                              missing_only, &info, st, sizeof(st));
                     if (rc == 0) {
-                        snprintf(status_buf, status_size,
-                                 "Queued %d artwork job%s", enq,
-                                 enq == 1 ? "" : "s");
-                        ui->screen = JW_SETTINGS_SCRAPE_QUEUE;
-                        ui->scrape_queue_list.cursor = 0;
-                        ui->scrape_queue_list.scroll_offset = 0;
-                        ui->scrape_queue_filter = 0;
+                        jw__scrape_start_status(&info, missing_only,
+                                                status_buf, status_size);
+                        if (jw_ipc_scrape_missing_counts(
+                                ui->socket_path, &ui->scrape_missing_cache) == 0) {
+                            ui->scrape_missing_have_cache = true;
+                        }
                         ui->scrape_queue_next_poll_ms = 0;
+                        if (info.enqueued > 0) {
+                            ui->screen = JW_SETTINGS_SCRAPE_QUEUE;
+                            ui->scrape_queue_list.cursor = 0;
+                            ui->scrape_queue_list.scroll_offset = 0;
+                            ui->scrape_queue_filter = 0;
+                        }
                     } else {
                         snprintf(status_buf, status_size, "%s",
                                  st[0] ? st : "Scrape failed");
