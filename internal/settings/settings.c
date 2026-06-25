@@ -2,17 +2,20 @@
 
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
+#include "internal/launcher/system_names.h"
 #include "internal/platform/device.h"
 #include "internal/platform/platform_id.h"
 #include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
 #include "cJSON.h"
 
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -2470,6 +2473,138 @@ static void jw__render_scrape_priority(const jw_settings_ui *ui,
                        jw__draw_scrape_edit_item, &ctx);
 }
 
+static void jw__scrape_download_clear_rows(jw_settings_ui *ui) {
+    if (!ui) return;
+    memset(ui->scrape_download_rows, 0, sizeof(ui->scrape_download_rows));
+    ui->scrape_download_row_count = 0;
+    ui->scrape_download_total_missing = 0;
+    ui->scrape_download_total_games = 0;
+}
+
+static const char *jw__trim_start(const char *s) {
+    if (!s) return "";
+    while (*s && isspace((unsigned char)*s)) s++;
+    return s;
+}
+
+static size_t jw__trim_len(const char *s) {
+    const char *start = jw__trim_start(s);
+    size_t len = strlen(start);
+    while (len > 0 && isspace((unsigned char)start[len - 1])) len--;
+    return len;
+}
+
+static void jw__copy_trimmed_or_fallback(char *out, size_t out_size,
+                                         const char *value,
+                                         const char *fallback) {
+    if (!out || out_size == 0) return;
+    const char *start = jw__trim_start(value);
+    size_t len = jw__trim_len(value);
+    if (len == 0) {
+        snprintf(out, out_size, "%s", fallback ? fallback : "");
+        return;
+    }
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, start, len);
+    out[len] = '\0';
+}
+
+static int jw__scrape_label_equal(const char *a, const char *b) {
+    const char *as = jw__trim_start(a);
+    const char *bs = jw__trim_start(b);
+    size_t al = jw__trim_len(a);
+    size_t bl = jw__trim_len(b);
+    if (al != bl) return 0;
+    for (size_t i = 0; i < al; i++) {
+        unsigned char ac = (unsigned char)as[i];
+        unsigned char bc = (unsigned char)bs[i];
+        if (tolower(ac) != tolower(bc)) return 0;
+    }
+    return 1;
+}
+
+static int jw__scrape_download_row_cmp(const void *a, const void *b) {
+    const jw_scrape_download_row *ra = (const jw_scrape_download_row *)a;
+    const jw_scrape_download_row *rb = (const jw_scrape_download_row *)b;
+    int rc = strcasecmp(ra->label, rb->label);
+    if (rc != 0) return rc;
+    return strcasecmp(ra->system, rb->system);
+}
+
+static void jw__append_truncated(char *out, size_t out_size,
+                                 size_t *pos, const char *s) {
+    if (!out || out_size == 0 || !pos || !s) return;
+    while (*s && *pos + 1 < out_size) {
+        out[*pos] = *s;
+        *pos += 1;
+        s += 1;
+    }
+    out[*pos] = '\0';
+}
+
+static void jw__scrape_download_suffix_label(jw_scrape_download_row *row) {
+    if (!row) return;
+    char base[JW_SCRAPE_DOWNLOAD_LABEL_MAX];
+    snprintf(base, sizeof(base), "%s", row->label);
+
+    size_t pos = 0;
+    row->label[0] = '\0';
+    jw__append_truncated(row->label, sizeof(row->label), &pos, base);
+    jw__append_truncated(row->label, sizeof(row->label), &pos, " (");
+    jw__append_truncated(row->label, sizeof(row->label), &pos, row->system);
+    jw__append_truncated(row->label, sizeof(row->label), &pos, ")");
+}
+
+/* scrape_missing_cache is the IPC source of truth; rebuild these derived
+   display rows whenever that cache is repopulated. */
+static void jw__scrape_download_rebuild_rows(jw_settings_ui *ui) {
+    if (!ui) return;
+    jw__scrape_download_clear_rows(ui);
+
+    const jw_ipc_scrape_missing_info *m = &ui->scrape_missing_cache;
+    int count = m->system_count;
+    if (count > JW_IPC_MISSING_MAX_SYSTEMS) count = JW_IPC_MISSING_MAX_SYSTEMS;
+
+    for (int i = 0; i < count; i++) {
+        const jw_ipc_scrape_missing_row *src = &m->systems[i];
+        jw_scrape_download_row *dst = &ui->scrape_download_rows[ui->scrape_download_row_count];
+
+        snprintf(dst->system, sizeof(dst->system), "%s", src->system);
+        dst->missing = src->missing;
+        dst->total = src->total;
+        ui->scrape_download_total_missing += src->missing;
+        ui->scrape_download_total_games += src->total;
+
+        char display[JW_SCRAPE_DOWNLOAD_LABEL_MAX];
+        jw_system_display_name(ui->db_path, src->system, display, sizeof(display));
+        jw__copy_trimmed_or_fallback(dst->label, sizeof(dst->label),
+                                     display, src->system);
+        ui->scrape_download_row_count++;
+    }
+
+    for (int i = 0; i < ui->scrape_download_row_count; i++) {
+        int duplicate = 0;
+        for (int j = 0; j < ui->scrape_download_row_count; j++) {
+            if (i != j &&
+                jw__scrape_label_equal(ui->scrape_download_rows[i].label,
+                                       ui->scrape_download_rows[j].label)) {
+                duplicate = 1;
+                break;
+            }
+        }
+        if (duplicate) {
+            jw__scrape_download_suffix_label(&ui->scrape_download_rows[i]);
+        }
+    }
+
+    if (ui->scrape_download_row_count > 1) {
+        qsort(ui->scrape_download_rows,
+              (size_t)ui->scrape_download_row_count,
+              sizeof(ui->scrape_download_rows[0]),
+              jw__scrape_download_row_cmp);
+    }
+}
+
 /* "Scrape Missing Artwork" picker: row 0 = All Systems, rows 1.. = one system
    each. Y toggles missing-only vs replace-all; in replace mode the right-hand
    count is the system's total games rather than its missing count. */
@@ -2482,7 +2617,6 @@ typedef struct {
 static void jw__draw_scrape_download_item(int idx, int ix, int iy, int iw, int ih,
                                           bool selected, void *user) {
     jw__scrape_download_ctx *c = (jw__scrape_download_ctx *)user;
-    const jw_ipc_scrape_missing_info *m = &c->ui->scrape_missing_cache;
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
 
@@ -2494,15 +2628,17 @@ static void jw__draw_scrape_download_item(int idx, int ix, int iy, int iw, int i
     ap_color value_c = selected ? theme->highlighted_text : theme->hint;
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
-    char label[80], value[32];
+    const char *label = "All Systems";
+    char value[32];
     int n;
     if (idx == 0) {
-        snprintf(label, sizeof(label), "%s", "All Systems");
         n = c->all_count;
-    } else {
-        const jw_ipc_scrape_missing_row *r = &m->systems[idx - 1];
-        snprintf(label, sizeof(label), "%s", r->system);
+    } else if (idx - 1 < c->ui->scrape_download_row_count) {
+        const jw_scrape_download_row *r = &c->ui->scrape_download_rows[idx - 1];
+        label = r->label;
         n = c->replace ? r->total : r->missing;
+    } else {
+        n = 0;
     }
     snprintf(value, sizeof(value), c->replace ? "%d total" : "%d missing", n);
     cat_draw_text_ellipsized(body, label, ix + cat_scale(18), ty, label_c,
@@ -2526,7 +2662,6 @@ static void jw__render_scrape_download(const jw_settings_ui *ui,
     SDL_Rect sub;
     SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
 
-    const jw_ipc_scrape_missing_info *m = &ui->scrape_missing_cache;
     if (!ui->scrape_missing_have_cache) {
         cat_draw_text_ellipsized(small, "Scanning library...",
                                  sub.x + cat_scale(12), sub.y, theme->hint,
@@ -2537,21 +2672,19 @@ static void jw__render_scrape_download(const jw_settings_ui *ui,
     }
 
     /* Grand total for the "All Systems" row + subline (replace = every game). */
-    int all_count = m->total_missing;
-    if (replace) {
-        all_count = 0;
-        for (int i = 0; i < m->system_count; i++) all_count += m->systems[i].total;
-    }
+    int all_count = replace
+        ? ui->scrape_download_total_games
+        : ui->scrape_download_total_missing;
 
     char subline[96];
     snprintf(subline, sizeof(subline),
              replace ? "%d games across %d systems"
                      : "%d missing across %d systems",
-             all_count, m->system_count);
+             all_count, ui->scrape_download_row_count);
     cat_draw_text_ellipsized(small, subline, sub.x + cat_scale(12), sub.y,
                              theme->hint, sub.w - cat_scale(24));
 
-    int count = m->system_count + 1;   /* +1 for "All Systems" */
+    int count = ui->scrape_download_row_count + 1;   /* +1 for "All Systems" */
     int item_h = TTF_FontHeight(body) + cat_scale(12);
     cat_box lb = { c.x, c.y, c.w, c.h, 0, 0, 0, 0 };
     int vis = 0;
@@ -5679,10 +5812,13 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     ui->scrape_download_list.scroll_offset = 0;
                     ui->scrape_download_replace = false;   /* default: missing-only */
                     ui->scrape_missing_have_cache = false;
+                    jw__scrape_download_clear_rows(ui);
                     if (ui->socket_path[0] &&
                         jw_ipc_scrape_missing_counts(
                             ui->socket_path, &ui->scrape_missing_cache) == 0) {
                         ui->scrape_missing_have_cache = true;
+                        /* scrape_missing_cache was repopulated; refresh derived labels. */
+                        jw__scrape_download_rebuild_rows(ui);
                     }
                     ui->screen = JW_SETTINGS_SCRAPE_DOWNLOAD;
                     break;
@@ -5785,8 +5921,9 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
 
     /* ── Scrape Missing Artwork picker (All Systems / per system) ─────── */
     case JW_SETTINGS_SCRAPE_DOWNLOAD: {
-        const jw_ipc_scrape_missing_info *m = &ui->scrape_missing_cache;
-        int count = ui->scrape_missing_have_cache ? m->system_count + 1 : 0;
+        int count = ui->scrape_missing_have_cache
+            ? ui->scrape_download_row_count + 1
+            : 0;
         switch (button) {
             case CAT_BTN_UP:
                 cat_list_state_move(&ui->scrape_download_list, -1, count);
@@ -5810,7 +5947,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                                    st, sizeof(st))
                         : jw_ipc_scrape_start_full(
                               ui->socket_path, "system",
-                              m->systems[cur - 1].system, NULL,
+                              ui->scrape_download_rows[cur - 1].system, NULL,
                               missing_only, &info, st, sizeof(st));
                     if (rc == 0) {
                         jw__scrape_start_status(&info, missing_only,
@@ -5818,6 +5955,11 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                         if (jw_ipc_scrape_missing_counts(
                                 ui->socket_path, &ui->scrape_missing_cache) == 0) {
                             ui->scrape_missing_have_cache = true;
+                            /* scrape_missing_cache was repopulated; refresh derived labels. */
+                            jw__scrape_download_rebuild_rows(ui);
+                        } else {
+                            ui->scrape_missing_have_cache = false;
+                            jw__scrape_download_clear_rows(ui);
                         }
                         ui->scrape_queue_next_poll_ms = 0;
                         if (info.enqueued > 0) {

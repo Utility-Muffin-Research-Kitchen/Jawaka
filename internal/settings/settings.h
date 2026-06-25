@@ -149,6 +149,15 @@ typedef enum {
 
 /* ─── State ────────────────────────────────────────────────────────────── */
 
+#define JW_SCRAPE_DOWNLOAD_LABEL_MAX 160
+
+typedef struct {
+    char system[64];
+    char label[JW_SCRAPE_DOWNLOAD_LABEL_MAX];
+    int  missing;
+    int  total;
+} jw_scrape_download_row;
+
 typedef struct {
     bool               open;
     jw_settings_screen screen;
@@ -173,6 +182,10 @@ typedef struct {
     int                scrape_detail_art_h;
     cat_list_state     scrape_download_list;         /* "Scrape Missing Artwork" picker */
     jw_ipc_scrape_missing_info scrape_missing_cache; /* per-system missing counts (fetched on open) */
+    jw_scrape_download_row scrape_download_rows[JW_IPC_MISSING_MAX_SYSTEMS];
+    int                scrape_download_row_count;
+    int                scrape_download_total_missing;
+    int                scrape_download_total_games;
     bool               scrape_missing_have_cache;
     bool               scrape_download_replace;      /* Y toggles missing-only vs replace-all */
     cat_list_state     behavior_list;

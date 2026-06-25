@@ -11,6 +11,7 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/game_switcher.h"
+#include "internal/launcher/system_names.h"
 #include "internal/platform/cat_services.h"
 #include "internal/platform/device.h"
 #include "internal/platform/paths.h"
@@ -47,7 +48,6 @@
 
 #define JW_CONTENT_SETTING_CORE_ID "core_id"
 #define JW_CONTENT_SETTING_PERFORMANCE_PROFILE "performance_profile"
-#define JW_CONTENT_SETTING_DISPLAY_NAME "display_name"
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -400,89 +400,6 @@ static void jw__draw_row_name(TTF_Font *font, const char *text, int x, int y,
         cat_request_frame();
 }
 
-/* Full console names for the system folder codes stored in the library. The
-   metadata catalog still carries terse source labels for some systems, so these
-   user-facing names stay here until metadata names are curated. Unknown ids
-   fall back to the id itself. */
-static const struct { const char *id; const char *name; } kSystemDisplayNames[] = {
-    { "FC",      "Nintendo Entertainment System" },
-    { "NES",     "Nintendo Entertainment System" },
-    { "FDS",     "Famicom Disk System" },
-    { "SFC",     "Super Nintendo" },
-    { "SNES",    "Super Nintendo" },
-    { "SFC_JP",  "Super Famicom" },
-    { "N64",     "Nintendo 64" },
-    { "GB",      "Game Boy" },
-    { "GBC",     "Game Boy Color" },
-    { "GBA",     "Game Boy Advance" },
-    { "NDS",     "Nintendo DS" },
-    { "VB",      "Virtual Boy" },
-    { "MD",      "Sega Genesis" },
-    { "GENESIS", "Sega Genesis" },
-    { "MS",      "Sega Master System" },
-    { "GG",      "Game Gear" },
-    { "SEGACD",  "Sega CD" },
-    { "32X",     "Sega 32X" },
-    { "SATURN",  "Sega Saturn" },
-    { "DC",      "Dreamcast" },
-    { "SG1000",  "SG-1000" },
-    { "PCE",     "TurboGrafx-16" },
-    { "TG16",    "TurboGrafx-16" },
-    { "PCECD",   "TurboGrafx-CD" },
-    { "NEOGEO",  "Neo Geo" },
-    { "NGP",     "Neo Geo Pocket" },
-    { "NGPC",    "Neo Geo Pocket Color" },
-    { "WS",      "WonderSwan" },
-    { "WSC",     "WonderSwan Color" },
-    { "PS",      "PlayStation" },
-    { "PSX",     "PlayStation" },
-    { "PSP",     "PlayStation Portable" },
-    { "ATARI",     "Atari 2600" },
-    { "ATARI2600", "Atari 2600" },
-    { "A2600",   "Atari 2600" },
-    { "A5200",   "Atari 5200" },
-    { "A7800",   "Atari 7800" },
-    { "SEVENTYEIGHTHUNDRED", "Atari 7800" },
-    { "LYNX",    "Atari Lynx" },
-    { "JAGUAR",  "Atari Jaguar" },
-    { "COLECO",  "ColecoVision" },
-    { "INTV",    "Intellivision" },
-    { "VECTREX", "Vectrex" },
-    { "C64",     "Commodore 64" },
-    { "AMIGA",   "Amiga" },
-    { "DOS",     "MS-DOS" },
-    { "MSX",     "MSX" },
-    { "ARCADE",  "Arcade" },
-    { "MAME",    "Arcade" },
-    { "FBNEO",   "Arcade" },
-    { "PORTS",   "Ports" },
-};
-
-/* Resolves a system id (folder code, e.g. "FC") to its full display name
-   (e.g. "Nintendo Entertainment System"). Falls back to the id when unknown. */
-static void jw__system_display_name(const char *db_path, const char *id,
-                                    char *out, size_t out_size) {
-    if (out_size == 0) return;
-    snprintf(out, out_size, "%s", id ? id : "");
-    if (!id || !id[0]) return;
-
-    char override[64];
-    if (db_path &&
-        jw_db_get_system_setting(db_path, id, JW_CONTENT_SETTING_DISPLAY_NAME,
-                                 override, sizeof(override)) == 0 &&
-        override[0]) {
-        snprintf(out, out_size, "%s", override);
-        return;
-    }
-
-    for (size_t i = 0; i < sizeof(kSystemDisplayNames) / sizeof(kSystemDisplayNames[0]); i++) {
-        if (strcasecmp(id, kSystemDisplayNames[i].id) == 0) {
-            snprintf(out, out_size, "%s", kSystemDisplayNames[i].name);
-            return;
-        }
-    }
-}
-
 /* Sort the systems list alphabetically by display name (the DB returns them
    ordered by folder-code id, e.g. FC/MD/SFC, which isn't the user-facing order). */
 static int jw__system_cmp_display(const void *a, const void *b) {
@@ -495,9 +412,9 @@ static int jw__system_cmp_display(const void *a, const void *b) {
    then sorts the list alphabetically by that display name. */
 static void jw__resolve_system_names(const char *db_path, jw_launcher_state *state) {
     for (int i = 0; i < state->system_count; i++) {
-        jw__system_display_name(db_path, state->systems[i].name,
-                                state->systems[i].display_name,
-                                sizeof(state->systems[i].display_name));
+        jw_system_display_name(db_path, state->systems[i].name,
+                               state->systems[i].display_name,
+                               sizeof(state->systems[i].display_name));
     }
     if (state->system_count > 1) {
         qsort(state->systems, (size_t)state->system_count,
@@ -3971,8 +3888,8 @@ static void jw__open_system_actions(const char *db_path, jw_launcher_state *stat
     state->action_scope = JW_ACTION_SYSTEM;
     memset(&state->action_game, 0, sizeof(state->action_game));
     snprintf(state->action_system, sizeof(state->action_system), "%s", system);
-    jw__system_display_name(db_path, system, state->action_system_display,
-                            sizeof(state->action_system_display));
+    jw_system_display_name(db_path, system, state->action_system_display,
+                           sizeof(state->action_system_display));
     if (!state->action_system_display[0] && display_name && display_name[0]) {
         snprintf(state->action_system_display, sizeof(state->action_system_display),
                  "%s", display_name);
@@ -3991,8 +3908,8 @@ static void jw__open_game_actions(const char *db_path, jw_launcher_state *state,
     state->action_scope = JW_ACTION_GAME;
     state->action_game = *game;
     snprintf(state->action_system, sizeof(state->action_system), "%s", game->system);
-    jw__system_display_name(db_path, game->system, state->action_system_display,
-                            sizeof(state->action_system_display));
+    jw_system_display_name(db_path, game->system, state->action_system_display,
+                           sizeof(state->action_system_display));
     jw__action_refresh(db_path, state);
     /* No "Actions: ..." status echo - the name is already the sub-header. */
     state->status[0] = '\0';
@@ -4111,7 +4028,7 @@ static void jw__open_search(const char *db_path, jw_launcher_state *state) {
 static int jw__open_system_games(const char *db_path, const char *system,
                                  jw_launcher_state *state) {
     char display_name[64];
-    jw__system_display_name(db_path, system, display_name, sizeof(display_name));
+    jw_system_display_name(db_path, system, display_name, sizeof(display_name));
 
     int rc = jw__load_system_games_full(db_path, system, state, 0);
     if (rc != 0) {
@@ -4407,9 +4324,9 @@ static void jw__refresh_action_system_display(const char *db_path,
     if (!state || !db_path || !state->action_system[0]) {
         return;
     }
-    jw__system_display_name(db_path, state->action_system,
-                            state->action_system_display,
-                            sizeof(state->action_system_display));
+    jw_system_display_name(db_path, state->action_system,
+                           state->action_system_display,
+                           sizeof(state->action_system_display));
     if (state->games_open && strcmp(state->game_system, state->action_system) == 0) {
         snprintf(state->game_system_display, sizeof(state->game_system_display), "%s",
                  state->action_system_display[0]
