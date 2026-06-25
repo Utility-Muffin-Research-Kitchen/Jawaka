@@ -96,6 +96,7 @@ int  jw_db_read_summary(const char *db_path, jw_library_summary *out);
 int  jw_db_read_stats(const char *db_path, jw_library_stats *out);
 int  jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count, int *out_count);
 int  jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *out_count);
+int  jw_db_count_games_for_system(const char *db_path, const char *system, int *out_count);
 int  jw_db_list_games_for_system(const char *db_path, const char *system,
                                  jw_game_entry *out, int max_count, int *out_count);
 int  jw_db_search_library(const char *db_path, const char *query,

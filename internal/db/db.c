@@ -738,6 +738,39 @@ int jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *
     return 0;
 }
 
+int jw_db_count_games_for_system(const char *db_path, const char *system, int *out_count) {
+    if (!db_path || !system || !out_count) {
+        return -1;
+    }
+
+    *out_count = 0;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql = "SELECT COUNT(*) FROM games WHERE system = ?;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, system, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        *out_count = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc == SQLITE_ROW ? 0 : -1;
+}
+
 int jw_db_list_games_for_system(const char *db_path, const char *system,
                                 jw_game_entry *out, int max_count, int *out_count) {
     if (!db_path || !system || !out || max_count <= 0 || !out_count) {

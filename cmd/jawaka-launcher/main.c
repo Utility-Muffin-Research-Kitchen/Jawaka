@@ -37,7 +37,8 @@
 
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
-#define JW_MAX_GAMES   512
+#define JW_OPENED_GAME_BROWSER_LIMIT 512
+#define JW_GAME_LIST_RACE_SLACK 16
 #define JW_MAX_FAVORITES 256   /* newest-first; a heavier list is truncated */
 #define JW_MAX_RECENTS 64      /* most-recently-played first */
 #define JW_MAX_SEARCH_RESULTS 128
@@ -146,8 +147,9 @@ typedef struct {
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
-    jw_game_entry      games[JW_MAX_GAMES];
+    jw_game_entry     *games;
     int                game_count;
+    int                game_capacity;
     char               game_system[64];          /* system id (for queries) */
     char               game_system_display[64];  /* full name for the browser title */
     bool               games_open;
@@ -235,6 +237,117 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
                                       const jw_game_entry *entries, int count,
                                       int content_y, int content_h, int margin,
                                       const char *empty_msg);
+
+static void jw__reset_game_data(jw_launcher_state *state) {
+    if (!state) {
+        return;
+    }
+    free(state->games);
+    state->games = NULL;
+    state->game_count = 0;
+    state->game_capacity = 0;
+}
+
+static void jw__close_game_browser(jw_launcher_state *state) {
+    if (!state) {
+        return;
+    }
+    jw__reset_game_data(state);
+    state->games_open = false;
+    state->games_are_favorites = false;
+    state->game_system[0] = '\0';
+    state->game_system_display[0] = '\0';
+    cat_list_state_init(&state->game_list, 1);
+}
+
+static void jw__replace_game_data(jw_launcher_state *state, jw_game_entry *games,
+                                  int capacity, int count) {
+    jw__reset_game_data(state);
+    state->games = games;
+    state->game_capacity = capacity;
+    state->game_count = count;
+}
+
+typedef int (*jw__game_list_loader)(const char *db_path, jw_game_entry *out,
+                                    int max_count, int *out_count);
+
+static int jw__load_bounded_game_browser(const char *db_path,
+                                         jw_launcher_state *state,
+                                         jw__game_list_loader loader,
+                                         int capacity) {
+    if (!db_path || !state || !loader || capacity <= 0) {
+        return -1;
+    }
+
+    jw_game_entry *games = calloc((size_t)capacity, sizeof(*games));
+    if (!games) {
+        return -1;
+    }
+
+    int count = 0;
+    if (loader(db_path, games, capacity, &count) != 0) {
+        free(games);
+        return -1;
+    }
+
+    jw__replace_game_data(state, games, capacity, count);
+    return 0;
+}
+
+/* Returns 0 on success, 1 when the system has no games, and -1 on load errors.
+   Existing browser data is replaced only after the new full list has loaded. */
+static int jw__load_system_games_full(const char *db_path, const char *system,
+                                      jw_launcher_state *state, int retry_depth) {
+    if (!db_path || !system || !system[0] || !state) {
+        return -1;
+    }
+
+    int expected = 0;
+    if (jw_db_count_games_for_system(db_path, system, &expected) != 0) {
+        return -1;
+    }
+    if (expected <= 0) {
+        return 1;
+    }
+
+    int capacity = expected;
+    if (capacity <= INT_MAX - JW_GAME_LIST_RACE_SLACK) {
+        capacity += JW_GAME_LIST_RACE_SLACK;
+    }
+
+    jw_game_entry *games = calloc((size_t)capacity, sizeof(*games));
+    if (!games) {
+        return -1;
+    }
+
+    int loaded = 0;
+    if (jw_db_list_games_for_system(db_path, system, games, capacity, &loaded) != 0) {
+        free(games);
+        return -1;
+    }
+
+    if (loaded >= capacity) {
+        int latest = 0;
+        if (jw_db_count_games_for_system(db_path, system, &latest) == 0 &&
+            latest > loaded) {
+            if (retry_depth < 1) {
+                free(games);
+                return jw__load_system_games_full(db_path, system, state,
+                                                  retry_depth + 1);
+            }
+            jw_log_warn("system game list for %s may be truncated (%d loaded, %d counted)",
+                        system, loaded, latest);
+        }
+    }
+
+    if (loaded <= 0) {
+        free(games);
+        return 1;
+    }
+
+    jw__replace_game_data(state, games, capacity, loaded);
+    return 0;
+}
 
 /* Strips trailing region/dump tags — " (USA)", " (E)", " [!]", etc. — from a
    ROM name for display only. The stored name (derived from the filename) is
@@ -724,26 +837,26 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
 
     if (state->games_open) {
         int rc = -1;
+        char open_system[64];
+        snprintf(open_system, sizeof(open_system), "%s", state->game_system);
         if (state->games_are_favorites) {
-            rc = jw_db_list_favorite_games(db_path, state->games, JW_MAX_GAMES,
-                                           &state->game_count);
-        } else if (strcmp(state->game_system, "Recently Played") == 0) {
-            rc = jw_db_list_recent_games(db_path, state->games, JW_MAX_GAMES,
-                                         &state->game_count);
-        } else if (state->game_system[0]) {
-            rc = jw_db_list_games_for_system(db_path, state->game_system,
-                                             state->games, JW_MAX_GAMES,
-                                             &state->game_count);
+            rc = jw__load_bounded_game_browser(db_path, state,
+                                               jw_db_list_favorite_games,
+                                               JW_OPENED_GAME_BROWSER_LIMIT);
+        } else if (strcmp(open_system, "Recently Played") == 0) {
+            rc = jw__load_bounded_game_browser(db_path, state,
+                                               jw_db_list_recent_games,
+                                               JW_OPENED_GAME_BROWSER_LIMIT);
+        } else if (open_system[0]) {
+            rc = jw__load_system_games_full(db_path, open_system, state, 0);
         }
-        if (rc != 0 || state->game_count <= 0) {
-            state->games_open = false;
-            state->games_are_favorites = false;
-            state->game_count = 0;
-        } else {
+        if (rc == 0 && state->game_count > 0) {
             if (game_cursor >= state->game_count) {
                 game_cursor = state->game_count - 1;
             }
             cat_list_state_jump(&state->game_list, game_cursor, state->game_count);
+        } else if (rc == 1 || (rc == 0 && state->game_count <= 0)) {
+            jw__close_game_browser(state);
         }
     }
 
@@ -1462,9 +1575,7 @@ static void jw__switch_tab_slide(jw_launcher_state *state, int direction, const 
     state->actions_open        = false;
     state->action_scope        = JW_ACTION_NONE;
     state->search_open         = false;
-    state->games_open          = false;
-    state->games_are_favorites = false;
-    state->game_count          = 0;
+    jw__close_game_browser(state);
     state->status[0]           = '\0';
     jw__switch_tab(state, direction, db_path);
 
@@ -3961,9 +4072,13 @@ static int jw__open_system_games(const char *db_path, const char *system,
     char display_name[64];
     jw__system_display_name(db_path, system, display_name, sizeof(display_name));
 
-    if (jw_db_list_games_for_system(db_path, system, state->games, JW_MAX_GAMES,
-                                    &state->game_count) != 0 ||
-        state->game_count == 0) {
+    int rc = jw__load_system_games_full(db_path, system, state, 0);
+    if (rc != 0) {
+        if (rc < 0) {
+            snprintf(state->status, sizeof(state->status), "Could not load games for %s",
+                     display_name[0] ? display_name : system);
+            return -1;
+        }
         snprintf(state->status, sizeof(state->status), "No launchable games for %s",
                  display_name[0] ? display_name : system);
         return -1;
@@ -3982,13 +4097,15 @@ static int jw__open_system_games(const char *db_path, const char *system,
 }
 
 static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
-    if (jw_db_list_favorite_games(db_path, state->games, JW_MAX_GAMES,
-                                  &state->game_count) != 0) {
+    if (jw__load_bounded_game_browser(db_path, state, jw_db_list_favorite_games,
+                                      JW_OPENED_GAME_BROWSER_LIMIT) != 0) {
         snprintf(state->status, sizeof(state->status), "%s", "Could not load favorites");
         return -1;
     }
 
     snprintf(state->game_system, sizeof(state->game_system), "%s", "Favorites");
+    snprintf(state->game_system_display, sizeof(state->game_system_display),
+             "%s", "Favorites");
     state->games_are_favorites = true;
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
@@ -4003,8 +4120,8 @@ static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
 }
 
 static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
-    if (jw_db_list_recent_games(db_path, state->games, JW_MAX_GAMES,
-                                &state->game_count) != 0) {
+    if (jw__load_bounded_game_browser(db_path, state, jw_db_list_recent_games,
+                                      JW_OPENED_GAME_BROWSER_LIMIT) != 0) {
         snprintf(state->status, sizeof(state->status), "%s", "Could not load recents");
         return -1;
     }
@@ -4792,9 +4909,7 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
             jw__toggle_favorite_selected(db_path, state);
             break;
         case CAT_BTN_B:
-            state->games_open = false;
-            state->games_are_favorites = false;
-            state->game_count = 0;
+            jw__close_game_browser(state);
             state->status[0] = '\0';
             break;
         default:
@@ -5754,6 +5869,7 @@ int main(void) {
 
     jw__status_poller_shutdown();
     jw__cover_loader_shutdown();
+    jw__close_game_browser(&state);
     /* Hand-off exit. The launcher only ever exits to be respawned (into the menu /
        an app / a game) or for shutdown, so the OS reclaims everything — memory, the
        cover-art texture cache, the Wayland surface — the instant we exit. Running
