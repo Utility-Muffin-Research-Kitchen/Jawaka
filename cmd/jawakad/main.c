@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -100,6 +101,25 @@ typedef struct {
 } jw_launch_target;
 
 typedef struct {
+    pthread_t       thread;
+    pthread_mutex_t mu;
+    bool            initialized;
+    bool            thread_started;
+    bool            running;
+    bool            completed;
+    bool            ok;
+    bool            pending_rescan;
+    char            reason[96];
+    char            pending_reason[96];
+    char            db_path[PATH_MAX];
+    char            sdcard_root[PATH_MAX];
+    long long       started_ms;
+    long long       finished_ms;
+    jw_scan_result  result;
+    char            error[160];
+} jw_scan_job;
+
+typedef struct {
     char *runtime_dir;
     char *sdcard_root;
     char *socket_path;
@@ -131,6 +151,8 @@ typedef struct {
     bool led_configured;       /* true once a user LED setting has been persisted/applied */
     jw_retroarch_session retroarch_session;
     int library_generation;
+    bool library_populated;
+    jw_scan_job scan_job;
     /* Startup maintenance (wifi restore/harden + library scan) deferred past
        the launcher's first frame so it doesn't sit between boot animation and
        launcher; phase 0 = wifi, phase 1 = scan, fired on separate loop
@@ -1745,32 +1767,217 @@ static void jw__bump_library_generation(jw_daemon_state *state) {
     jw__persist_library_generation(state);
 }
 
-static int jw__scan_library_now(jw_daemon_state *state, jw_scan_result *out,
-                                const char *reason) {
-    if (!state) {
+static void jw__scan_job_init(jw_daemon_state *state) {
+    if (!state || state->scan_job.initialized) {
+        return;
+    }
+    pthread_mutex_init(&state->scan_job.mu, NULL);
+    state->scan_job.initialized = true;
+}
+
+static void *jw__scan_job_main(void *arg) {
+    jw_scan_job *job = (jw_scan_job *)arg;
+    char db_path[PATH_MAX];
+    char sdcard_root[PATH_MAX];
+    char reason[96];
+
+    pthread_mutex_lock(&job->mu);
+    snprintf(db_path, sizeof(db_path), "%s", job->db_path);
+    snprintf(sdcard_root, sizeof(sdcard_root), "%s", job->sdcard_root);
+    snprintf(reason, sizeof(reason), "%s", job->reason);
+    pthread_mutex_unlock(&job->mu);
+
+    jw_scan_result result;
+    memset(&result, 0, sizeof(result));
+    char error[160] = "";
+    int ok = 0;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0) {
+        snprintf(error, sizeof(error), "%s", "could not open scan database");
+        if (db) {
+            jw_db_close(db);
+        }
+        ok = 0;
+    } else if (jw_scan_library(db, sdcard_root, &result) != 0) {
+        snprintf(error, sizeof(error), "scan failed reason=%s",
+                 reason[0] ? reason : "unknown");
+        jw_db_close(db);
+        ok = 0;
+    } else {
+        jw_db_close(db);
+        ok = 1;
+    }
+
+    pthread_mutex_lock(&job->mu);
+    job->result = result;
+    job->ok = ok != 0;
+    snprintf(job->error, sizeof(job->error), "%s",
+             error[0] ? error : (ok ? "" : "scan failed"));
+    job->finished_ms = jw__monotonic_ms();
+    job->running = false;
+    job->completed = true;
+    pthread_mutex_unlock(&job->mu);
+    return NULL;
+}
+
+static int jw__start_scan_job(jw_daemon_state *state, const char *reason) {
+    if (!state || !state->scan_job.initialized) {
         return -1;
     }
 
-    jw_scan_result local_result;
-    jw_scan_result *scan_result = out ? out : &local_result;
-    if (jw_scan_library(state->db, state->sdcard_root, scan_result) != 0) {
-        jw_log_error("scan-library failed reason=%s", reason ? reason : "unknown");
-        return -1;
+    jw_scan_job *job = &state->scan_job;
+    pthread_mutex_lock(&job->mu);
+    if (job->running || job->completed) {
+        job->pending_rescan = true;
+        snprintf(job->pending_reason, sizeof(job->pending_reason), "%s",
+                 reason && reason[0] ? reason : "pending");
+        pthread_mutex_unlock(&job->mu);
+        jw_log_info("scan-library queued reason=%s",
+                    reason && reason[0] ? reason : "pending");
+        return 1;
     }
 
-    jw__bump_library_generation(state);
-    state->library_scanned_since_boot = true;
-    jw_log_info("scan-library %s", reason ? reason : "completed");
-    jw_log_info("scan-library indexed %d games across %d systems and %d apps generation=%d",
-                scan_result->game_count, scan_result->system_count,
-                scan_result->app_count, state->library_generation);
+    memset(&job->result, 0, sizeof(job->result));
+    job->ok = false;
+    job->completed = false;
+    job->running = true;
+    job->thread_started = true;
+    job->started_ms = jw__monotonic_ms();
+    job->finished_ms = 0;
+    job->error[0] = '\0';
+    snprintf(job->reason, sizeof(job->reason), "%s",
+             reason && reason[0] ? reason : "requested");
+    snprintf(job->db_path, sizeof(job->db_path), "%s", state->db_path);
+    snprintf(job->sdcard_root, sizeof(job->sdcard_root), "%s", state->sdcard_root);
+
+    int rc = pthread_create(&job->thread, NULL, jw__scan_job_main, job);
+    if (rc != 0) {
+        job->running = false;
+        job->thread_started = false;
+        snprintf(job->error, sizeof(job->error), "%s", "could not start scan worker");
+        pthread_mutex_unlock(&job->mu);
+        return -1;
+    }
+    char started_reason[96];
+    snprintf(started_reason, sizeof(started_reason), "%s", job->reason);
+    pthread_mutex_unlock(&job->mu);
+
+    jw_log_info("scan-library started reason=%s", started_reason);
     return 0;
+}
+
+static void jw__tick_scan_job(jw_daemon_state *state) {
+    if (!state || !state->scan_job.initialized) {
+        return;
+    }
+
+    jw_scan_job *job = &state->scan_job;
+    pthread_t thread;
+    bool join = false;
+    bool ok = false;
+    bool pending = false;
+    jw_scan_result result;
+    char reason[96];
+    char pending_reason[96];
+    char error[160];
+    long long elapsed_ms = 0;
+
+    pthread_mutex_lock(&job->mu);
+    if (job->completed && job->thread_started) {
+        thread = job->thread;
+        join = true;
+        ok = job->ok;
+        result = job->result;
+        snprintf(reason, sizeof(reason), "%s", job->reason);
+        snprintf(error, sizeof(error), "%s", job->error);
+        pending = job->pending_rescan;
+        snprintf(pending_reason, sizeof(pending_reason), "%s",
+                 job->pending_reason[0] ? job->pending_reason : "pending");
+        elapsed_ms = job->finished_ms > job->started_ms
+                         ? job->finished_ms - job->started_ms
+                         : 0;
+
+        job->thread_started = false;
+        job->completed = false;
+        job->pending_rescan = false;
+        job->pending_reason[0] = '\0';
+    }
+    pthread_mutex_unlock(&job->mu);
+
+    if (!join) {
+        return;
+    }
+
+    pthread_join(thread, NULL);
+
+    if (ok) {
+        jw__bump_library_generation(state);
+        state->library_scanned_since_boot = true;
+        state->library_populated = result.game_count > 0 || result.app_count > 0;
+        jw_log_info("scan-library %s", reason[0] ? reason : "completed");
+        jw_log_info("scan-library indexed %d games across %d systems and %d apps generation=%d",
+                    result.game_count, result.system_count, result.app_count,
+                    state->library_generation);
+        jw_log_info("scan-library timings reason=%s total_ms=%lld",
+                    reason[0] ? reason : "completed", elapsed_ms);
+    } else {
+        jw_log_warn("scan-library failed reason=%s error=%s",
+                    reason[0] ? reason : "unknown",
+                    error[0] ? error : "unknown");
+    }
+
+    if (pending && !state->shutdown_requested) {
+        (void)jw__start_scan_job(state, pending_reason);
+    }
+}
+
+static void jw__scan_job_shutdown(jw_daemon_state *state) {
+    if (!state || !state->scan_job.initialized) {
+        return;
+    }
+
+    jw_scan_job *job = &state->scan_job;
+    pthread_t thread;
+    bool join = false;
+    pthread_mutex_lock(&job->mu);
+    if (job->thread_started) {
+        thread = job->thread;
+        join = true;
+        job->thread_started = false;
+    }
+    pthread_mutex_unlock(&job->mu);
+
+    if (join) {
+        jw_log_info("waiting for scan worker to finish");
+        pthread_join(thread, NULL);
+    }
+
+    pthread_mutex_destroy(&job->mu);
+    job->initialized = false;
 }
 
 static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *client) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "library-status");
     cJSON_AddNumberToObject(root, "generation", state ? state->library_generation : 0);
+    if (state && state->scan_job.initialized) {
+        bool running = false;
+        bool pending = false;
+        char reason[96] = "";
+        char error[160] = "";
+        pthread_mutex_lock(&state->scan_job.mu);
+        running = state->scan_job.running;
+        pending = state->scan_job.pending_rescan;
+        snprintf(reason, sizeof(reason), "%s", state->scan_job.reason);
+        snprintf(error, sizeof(error), "%s", state->scan_job.error);
+        pthread_mutex_unlock(&state->scan_job.mu);
+        cJSON_AddBoolToObject(root, "scan_running", running);
+        cJSON_AddBoolToObject(root, "pending_rescan", pending);
+        cJSON_AddStringToObject(root, "scan_reason", reason);
+        cJSON_AddStringToObject(root, "scan_error", error);
+        cJSON_AddBoolToObject(root, "library_populated", state->library_populated);
+    }
     return jw__reply_json(client, root);
 }
 
@@ -1808,13 +2015,13 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
     jw_platform_result result;
     jw_platform_safe_unmount_storage(&state->platform, source, &result);
     if (result.code == JW_PLATFORM_RESULT_OK) {
-        jw_scan_result scan_result;
-        if (jw__scan_library_now(state, &scan_result, "after safe-unmount") != 0) {
-            result.code = JW_PLATFORM_RESULT_FAILED;
-            result.has_value = false;
-            result.value = 0;
+        int scan_rc = jw__start_scan_job(state, "after safe-unmount");
+        if (scan_rc < 0) {
+            jw_log_warn("safe-unmount: library rescan could not start");
+        } else {
             snprintf(result.message, sizeof(result.message), "%s",
-                     "Secondary SD unmounted; library rescan failed");
+                     scan_rc > 0 ? "Secondary SD unmounted; library rescan queued"
+                                 : "Secondary SD unmounted; library update started");
         }
     }
 
@@ -4837,9 +5044,8 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
 
 /* One-shot startup maintenance, armed before the launcher spawns and pulled
    forward by the frontend-ready handler (fallback deadline covers a launcher
-   that never reports ready). Runs in the IPC loop, so each phase blocks
-   clients for its duration — phase 0 (wifi, ~400ms) and phase 1 (library
-   scan, ~1s) fire on separate iterations so a queued poll drains between. */
+   that never reports ready). Tiny maintenance still runs inline; the library
+   scan is handed to a worker so the daemon IPC loop stays responsive. */
 static void jw__tick_startup_maintenance(jw_daemon_state *state) {
     if (!state || !state->startup_maintenance_pending) {
         return;
@@ -4870,23 +5076,29 @@ static void jw__tick_startup_maintenance(jw_daemon_state *state) {
         return;
     }
 
-    jw_scan_result scan_result;
-    long long scan_start_ms = jw__monotonic_ms();
-    if (jw__scan_library_now(state, &scan_result, "at startup (deferred)") != 0) {
-        jw_log_warn("startup library scan failed; launcher will use existing cache if available");
-    } else {
-        jw_log_info("startup library scan timings: total_ms=%lld",
-                    jw__monotonic_ms() - scan_start_ms);
+    bool scan_active = false;
+    if (state->scan_job.initialized) {
+        pthread_mutex_lock(&state->scan_job.mu);
+        scan_active = state->scan_job.running || state->scan_job.completed;
+        pthread_mutex_unlock(&state->scan_job.mu);
+    }
+    if (scan_active) {
+        jw_log_info("startup library scan already running");
+        return;
+    }
+
+    if (jw__start_scan_job(state, "at startup (deferred)") < 0) {
+        jw_log_warn("startup library scan could not start; launcher will use existing cache if available");
     }
 }
 
 static int jw__handle_scan(jw_daemon_state *state, jw_ipc_client *client) {
-    jw_scan_result scan_result;
-    if (jw__scan_library_now(state, &scan_result, "requested") != 0) {
-        return jw__reply_error(client, "scan-library failed");
+    int rc = jw__start_scan_job(state, "requested");
+    if (rc < 0) {
+        return jw__reply_error(client, "scan-library could not start");
     }
 
-    return jw__reply_ok(client, "scan-library", &scan_result);
+    return jw__reply_ok(client, rc > 0 ? "scan-library queued" : "scan-library started", NULL);
 }
 
 static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *client) {
@@ -5822,6 +6034,7 @@ static void jw__cleanup(jw_daemon_state *state) {
     }
     jw_update_check_job_wait(&state->update_check_job);
     jw_scrape_worker_stop();
+    jw__scan_job_shutdown(state);
     jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
@@ -5855,6 +6068,7 @@ int main(int argc, char *argv[]) {
     jw_update_download_job_init(&state.update_download_job);
     jw_update_install_job_init(&state.update_install_job);
     jw_update_check_job_init(&state.update_check_job);
+    jw__scan_job_init(&state);
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--daemon-only") == 0) {
@@ -5965,28 +6179,24 @@ int main(int argc, char *argv[]) {
         jw_log_info("daemon-only mode enabled");
     }
 
-    /* Scan synchronously before the launcher spawns only when the cache can't
-       carry the first frame (fresh or wiped DB) — otherwise defer the scan
-       (and wifi maintenance) past frontend-ready so the boot animation ends
-       ~1.4s sooner. The launcher polls the library generation every second
-       and reloads from the DB when the deferred scan bumps it. */
+    /* Use the cached DB for the first frame whenever possible. If the cache is
+       absent/empty, start a background scan instead of blocking launcher spawn;
+       otherwise defer a freshness scan past frontend-ready. */
     {
         bool need_initial_scan = state.library_generation <= 0;
+        jw_library_summary summary;
+        memset(&summary, 0, sizeof(summary));
         if (!need_initial_scan) {
-            jw_library_summary summary;
             need_initial_scan = jw_db_read_summary(state.db_path, &summary) != 0 ||
                                 (summary.game_count <= 0 && summary.app_count <= 0);
         }
         if (need_initial_scan) {
-            jw_scan_result scan_result;
-            long long scan_start_ms = jw__monotonic_ms();
-            if (jw__scan_library_now(&state, &scan_result, "at startup") != 0) {
-                jw_log_warn("startup library scan failed; launcher will use existing cache if available");
-            } else {
-                jw_log_info("startup library scan timings: total_ms=%lld",
-                            jw__monotonic_ms() - scan_start_ms);
+            state.library_populated = false;
+            if (jw__start_scan_job(&state, "at startup") < 0) {
+                jw_log_warn("startup library scan could not start; launcher will show cache if available");
             }
         } else {
+            state.library_populated = summary.game_count > 0 || summary.app_count > 0;
             jw_log_info("startup library scan deferred (generation=%d)",
                         state.library_generation);
         }
@@ -6061,11 +6271,11 @@ int main(int argc, char *argv[]) {
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
         if (jw_platform_storage_tick(&state.platform)) {
-            jw_scan_result scan_result;
-            if (jw__scan_library_now(&state, &scan_result, "after storage change") != 0) {
-                jw_log_warn("storage hotplug: library rescan failed");
+            if (jw__start_scan_job(&state, "after storage change") < 0) {
+                jw_log_warn("storage hotplug: library rescan could not start");
             }
         }
+        jw__tick_scan_job(&state);
         jw__tick_startup_maintenance(&state);
 
         if (state.shutdown_requested && state.child_pid <= 0 &&

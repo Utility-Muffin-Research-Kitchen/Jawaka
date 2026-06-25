@@ -225,15 +225,26 @@ int jw_ipc_scan_library(const char *socket_path, char *status, int status_len) {
         if (cJSON_IsNumber(gc) && cJSON_IsNumber(ac))
             snprintf(status, (size_t)status_len,
                      "scan complete: %d games, %d apps", gc->valueint, ac->valueint);
-        else
-            snprintf(status, (size_t)status_len, "%s", "scan complete");
+        else {
+            const cJSON *action = cJSON_GetObjectItemCaseSensitive(resp, "action");
+            if (cJSON_IsString(action) && action->valuestring &&
+                strstr(action->valuestring, "queued")) {
+                snprintf(status, (size_t)status_len, "%s", "scan already running; queued rescan");
+            } else {
+                snprintf(status, (size_t)status_len, "%s", "scan started");
+            }
+        }
     }
 
     cJSON_Delete(resp);
     return 0;
 }
 
-int jw_ipc_library_status(const char *socket_path, int *out_generation) {
+int jw_ipc_library_status_full(const char *socket_path, jw_ipc_library_status_info *out) {
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "library-status");
 
@@ -247,10 +258,32 @@ int jw_ipc_library_status(const char *socket_path, int *out_generation) {
     }
 
     const cJSON *generation = cJSON_GetObjectItemCaseSensitive(resp, "generation");
-    if (out_generation) {
-        *out_generation = cJSON_IsNumber(generation) ? generation->valueint : 0;
+    if (out) {
+        out->generation = cJSON_IsNumber(generation) ? generation->valueint : 0;
+        out->scan_running = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "scan_running"));
+        out->pending_rescan = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "pending_rescan"));
+        out->library_populated = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "library_populated"));
+        const cJSON *reason = cJSON_GetObjectItemCaseSensitive(resp, "scan_reason");
+        if (cJSON_IsString(reason)) {
+            ipc__copy_string(out->scan_reason, sizeof(out->scan_reason), reason->valuestring);
+        }
+        const cJSON *error = cJSON_GetObjectItemCaseSensitive(resp, "scan_error");
+        if (cJSON_IsString(error)) {
+            ipc__copy_string(out->scan_error, sizeof(out->scan_error), error->valuestring);
+        }
     }
     cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_library_status(const char *socket_path, int *out_generation) {
+    jw_ipc_library_status_info info;
+    if (jw_ipc_library_status_full(socket_path, &info) != 0) {
+        return -1;
+    }
+    if (out_generation) {
+        *out_generation = info.generation;
+    }
     return 0;
 }
 

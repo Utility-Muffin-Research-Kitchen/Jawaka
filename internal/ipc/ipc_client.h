@@ -64,6 +64,15 @@ typedef struct {
 } jw_ipc_storage_status_info;
 
 typedef struct {
+    int generation;
+    bool scan_running;
+    bool pending_rescan;
+    bool library_populated;
+    char scan_reason[96];
+    char scan_error[160];
+} jw_ipc_library_status_info;
+
+typedef struct {
     int index;
     bool selected;
     bool installed;
@@ -142,6 +151,7 @@ int jw_ipc_hello(const char *socket_path, const char *role);
 /* Request a library rescan. Populates status[status_len] with a human-readable
  * result message. Returns 0 on success, -1 on failure. */
 int jw_ipc_scan_library(const char *socket_path, char *status, int status_len);
+int jw_ipc_library_status_full(const char *socket_path, jw_ipc_library_status_info *out);
 int jw_ipc_library_status(const char *socket_path, int *out_generation);
 int jw_ipc_get_storage_status(const char *socket_path, const char *source,
                               jw_ipc_storage_status_info *out,

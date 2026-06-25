@@ -388,11 +388,15 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             jw__render_menu(state);
             int rc = jw_ipc_scan_library(socket_path, state->status,
                                          sizeof(state->status));
-            /* Refresh the cached counts and drop the IPC's verbose message: the
-               updated "N games · M apps" next to the row is the result we show. */
+            if (rc == 0 && strcmp(state->status, "scan started") == 0) {
+                snprintf(state->status, sizeof(state->status), "%s", "Scanning\xe2\x80\xa6");
+            } else if (rc != 0 && !state->status[0]) {
+                snprintf(state->status, sizeof(state->status), "%s", "Scan failed");
+            }
+            /* Refresh cached counts opportunistically; the daemon now runs the
+               scan asynchronously, so these may remain the pre-scan counts. */
             if (jw_db_read_summary(state->db_path, &state->summary) == 0)
                 state->summary_ready = true;
-            state->status[0] = '\0';
             return rc;
         }
         case JW_MENU_RETURN:

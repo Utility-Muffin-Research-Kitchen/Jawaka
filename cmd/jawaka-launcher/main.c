@@ -220,6 +220,8 @@ typedef struct {
     char               sdcard_root[PATH_MAX];
     char               status[256];
     bool               scan_ready;
+    bool               scan_running;
+    bool               library_populated;
     int                library_generation;
 } jw_launcher_state;
 
@@ -922,20 +924,22 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
 
 static int jw__scan_library(const char *socket_path, const char *db_path,
                              jw_launcher_state *state) {
+    (void)db_path;
     int rc = jw_ipc_scan_library(socket_path, state->status, sizeof(state->status));
     if (rc != 0) return -1;
 
-    if (jw__reload_library_from_db(db_path, state) != 0) {
-        snprintf(state->status, sizeof(state->status), "%s",
-                 "scan complete but summary load failed");
-        return -1;
-    }
-
-    if (jw_ipc_library_status(socket_path, &state->library_generation) != 0) {
+    jw_ipc_library_status_info lib;
+    if (jw_ipc_library_status_full(socket_path, &lib) == 0) {
+        state->library_generation = lib.generation;
+        state->scan_running = lib.scan_running;
+        state->library_populated = lib.library_populated;
+        state->scan_ready = lib.library_populated || !lib.scan_running;
+    } else {
         state->library_generation = -1;
     }
-    snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
-        state->summary.game_count, state->system_count, state->summary.app_count);
+    if (state->scan_running) {
+        snprintf(state->status, sizeof(state->status), "%s", "Library updating...");
+    }
     return 0;
 }
 
@@ -947,7 +951,13 @@ static int jw__load_library_cache(const char *socket_path, const char *db_path,
         return -1;
     }
 
-    if (jw_ipc_library_status(socket_path, &state->library_generation) != 0) {
+    jw_ipc_library_status_info lib;
+    if (jw_ipc_library_status_full(socket_path, &lib) == 0) {
+        state->library_generation = lib.generation;
+        state->scan_running = lib.scan_running;
+        state->library_populated = lib.library_populated;
+        state->scan_ready = lib.library_populated || !lib.scan_running;
+    } else {
         state->library_generation = -1;
     }
     snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
@@ -980,6 +990,9 @@ typedef struct {
     char        socket_path[PATH_MAX];
     atomic_int  poll_mask;    /* JW_STATUS_POLL_* bits the render thread wants */
     atomic_int  generation;   /* latest library generation (-1 = unknown yet) */
+    atomic_int  scan_running;
+    atomic_int  pending_rescan;
+    atomic_int  library_populated;
     atomic_int  volume;       /* sample mailboxes, JW_STATUS_SAMPLE_NONE = empty */
     atomic_int  wifi;         /* 0..3 strength, -1 = wifi unavailable */
     atomic_int  bt;           /* 0=off, 1=on, 2=connected */
@@ -1008,9 +1021,13 @@ static void *jw__status_poll_worker(void *arg) {
             if (jw_ipc_platform_volume(P->socket_path, &percent) == 0 && percent >= 0)
                 atomic_store(&P->volume, percent > 100 ? 100 : percent);
         }
-        int gen = 0;
-        if (jw_ipc_library_status(P->socket_path, &gen) == 0)
-            atomic_store(&P->generation, gen);
+        jw_ipc_library_status_info lib;
+        if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
+            atomic_store(&P->generation, lib.generation);
+            atomic_store(&P->scan_running, lib.scan_running ? 1 : 0);
+            atomic_store(&P->pending_rescan, lib.pending_rescan ? 1 : 0);
+            atomic_store(&P->library_populated, lib.library_populated ? 1 : 0);
+        }
         /* Scrape progress (same fast cadence; art pops in live while the
            daemon worker downloads, so the status line should track it). */
         {
@@ -1054,9 +1071,13 @@ static void jw__status_poller_fallback_poll(jw_settings_ui *s, int mask) {
     if (P->fb_last_fast == 0 || now - P->fb_last_fast >= 1000) {
         if (mask & JW_STATUS_POLL_VOLUME)
             jw_settings_ui_refresh_volume(s);
-        int gen = 0;
-        if (jw_ipc_library_status(P->socket_path, &gen) == 0)
-            atomic_store(&P->generation, gen);
+        jw_ipc_library_status_info lib;
+        if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
+            atomic_store(&P->generation, lib.generation);
+            atomic_store(&P->scan_running, lib.scan_running ? 1 : 0);
+            atomic_store(&P->pending_rescan, lib.pending_rescan ? 1 : 0);
+            atomic_store(&P->library_populated, lib.library_populated ? 1 : 0);
+        }
         P->fb_last_fast = now;
     }
     if (P->fb_last_slow == 0 || now - P->fb_last_slow >= 5000) {
@@ -1127,6 +1148,9 @@ static void jw__status_poller_start(const char *socket_path, jw_settings_ui *set
     if (P->started) return;
     snprintf(P->socket_path, sizeof(P->socket_path), "%s", socket_path ? socket_path : "");
     atomic_store(&P->generation, -1);
+    atomic_store(&P->scan_running, 0);
+    atomic_store(&P->pending_rescan, 0);
+    atomic_store(&P->library_populated, 0);
     atomic_store(&P->volume, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->wifi, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->bt, JW_STATUS_SAMPLE_NONE);
@@ -1157,6 +1181,23 @@ static void jw__poll_library_generation(const char *socket_path,
     (void)socket_path;   /* the library-status IPC now runs on the status poller */
     if (!db_path || !state) {
         return;
+    }
+
+    bool scan_running = atomic_load(&jw__status_poller.scan_running) != 0;
+    bool pending_rescan = atomic_load(&jw__status_poller.pending_rescan) != 0;
+    bool library_populated = atomic_load(&jw__status_poller.library_populated) != 0;
+    if (state->scan_running != scan_running ||
+        state->library_populated != library_populated) {
+        state->scan_running = scan_running;
+        state->library_populated = library_populated;
+        state->scan_ready = library_populated || !scan_running;
+        state->menu_scanning = scan_running;
+        if (scan_running) {
+            snprintf(state->status, sizeof(state->status), "%s",
+                     pending_rescan ? "Library updating; another scan is queued"
+                                    : "Library updating...");
+        }
+        cat_request_frame();
     }
 
     int generation = atomic_load(&jw__status_poller.generation);
@@ -3586,7 +3627,7 @@ static void jw__render_menu(const jw_launcher_state *state) {
         int ty = image.y + (image.h - line_h) / 2;
         int tx = image.x + CAT_S(10);
         int tw = image.w - CAT_S(20);
-        if (state->menu_scanning) {
+        if (state->menu_scanning || state->scan_running) {
             cat_draw_text_wrapped(body, "Scanning\xe2\x80\xa6", tx, ty, tw,
                                   theme->hint, CAT_ALIGN_CENTER);
         } else {
@@ -5136,16 +5177,21 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
             jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_UPDATE);
             break;
         case JW_SA_RESCAN: {
-            /* Show "Scanning…" in the right pane, run the scan, then refresh the
-               summary so the pane lands on the new counts. Uses its own flag, not
-               state->status (which the rest of the launcher also writes). */
+            /* Show "Scanning…" in the right pane and let the status poller refresh
+               counts when the daemon publishes the next library generation. */
             char buf[160] = { 0 };
             state->menu_scanning = true;
             cat_request_frame();
             jw__render_menu(state);
             jw_ipc_scan_library(socket_path, buf, sizeof(buf));
-            jw_db_read_summary(db_path, &state->summary);
-            state->menu_scanning = false;
+            jw_ipc_library_status_info lib;
+            if (jw_ipc_library_status_full(socket_path, &lib) == 0) {
+                state->library_generation = lib.generation;
+                state->scan_running = lib.scan_running;
+                state->library_populated = lib.library_populated;
+                state->scan_ready = lib.library_populated || !lib.scan_running;
+            }
+            state->menu_scanning = state->scan_running;
             break;
         }
         case JW_SA_SLEEP:
@@ -5702,7 +5748,8 @@ int main(void) {
     long long cache_start_ms = jw__monotonic_ms();
     if (jw__load_library_cache(socket_path, db_path, &state) != 0) {
         snprintf(state.status, sizeof(state.status), "%s", "scanning library...");
-        jw__scan_library(socket_path, db_path, &state);
+        state.scan_ready = false;
+        state.scan_running = true;
     }
     long long cache_done_ms = jw__monotonic_ms();
 
@@ -5746,21 +5793,27 @@ int main(void) {
     jw__render_launcher(&state);
     long long first_frame_done_ms = jw__monotonic_ms();
 
-    /* First frame is on screen; jawakad owns any platform-specific readiness
-     * side effects such as dismissing the MLP1 stock boot transition. */
+    /* First frame is on screen; initialize input before any platform readiness
+     * IPC so a slow daemon reply cannot postpone joystick setup. */
+    long long input_start_ms = jw__monotonic_ms();
+    cat_init_input();
+    long long input_done_ms = jw__monotonic_ms();
+
+    /* jawakad owns any platform-specific readiness side effects such as
+     * dismissing the MLP1 stock boot transition. */
     long long ready_start_ms = jw__monotonic_ms();
     if (jw_ipc_frontend_ready(socket_path, "launcher") != 0) {
         jw_log_warn("frontend-ready notification failed");
     }
     long long ready_done_ms = jw__monotonic_ms();
-    cat_init_input();
-    jw_log_info("launcher startup timings: hello_ms=%lld cat_ms=%lld theme_ms=%lld cache_ms=%lld settings_ms=%lld first_frame_ms=%lld ready_ms=%lld total_ms=%lld",
+    jw_log_info("launcher startup timings: hello_ms=%lld cat_ms=%lld theme_ms=%lld cache_ms=%lld settings_ms=%lld first_frame_ms=%lld input_ms=%lld ready_ms=%lld total_ms=%lld",
                 hello_done_ms - hello_start_ms,
                 cat_done_ms - cat_start_ms,
                 theme_done_ms - theme_start_ms,
                 cache_done_ms - cache_start_ms,
                 settings_done_ms - settings_start_ms,
                 first_frame_done_ms - first_frame_start_ms,
+                input_done_ms - input_start_ms,
                 ready_done_ms - ready_start_ms,
                 ready_done_ms - process_start_ms);
 

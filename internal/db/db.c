@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define JW_DB_SCHEMA_VERSION 4
+
 static const char *kSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
     "PRAGMA user_version = 4;\n"
@@ -122,6 +124,22 @@ static int jw__exec(sqlite3 *db, const char *sql) {
     return 0;
 }
 
+static int jw__schema_version(sqlite3 *db, int *out_version) {
+    sqlite3_stmt *stmt = NULL;
+    if (!db || !out_version) {
+        return -1;
+    }
+    if (sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        *out_version = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_ROW ? 0 : -1;
+}
+
 int jw_db_open(const char *path, sqlite3 **out) {
     if (!path || !out) {
         return -1;
@@ -140,6 +158,13 @@ int jw_db_open(const char *path, sqlite3 **out) {
 int jw_db_apply_schema(sqlite3 *db) {
     if (!db) {
         return -1;
+    }
+    if (jw__exec(db, "PRAGMA foreign_keys = ON;") != 0) {
+        return -1;
+    }
+    int version = 0;
+    if (jw__schema_version(db, &version) == 0 && version >= JW_DB_SCHEMA_VERSION) {
+        return 0;
     }
     return jw__exec(db, kSchemaSql);
 }
