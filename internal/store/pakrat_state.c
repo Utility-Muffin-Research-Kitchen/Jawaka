@@ -16,6 +16,10 @@ typedef struct {
     size_t size;
 } jw_mem;
 
+#define JW_PAKRAT_CATALOG_MAX_BYTES (8u * 1024u * 1024u)
+#define JW_PAKRAT_CONNECT_TIMEOUT_S 10L
+#define JW_PAKRAT_TRANSFER_TIMEOUT_S 30L
+
 static int jw__curl_ready = 0;
 
 static int jw__ensure_curl(void) {
@@ -56,6 +60,13 @@ static size_t jw__curl_mem_write(void *ptr, size_t size, size_t nmemb,
                                  void *userdata) {
     jw_mem *mem = (jw_mem *)userdata;
     size_t bytes = size * nmemb;
+    if (size != 0 && bytes / size != nmemb) {
+        return 0;
+    }
+    if (mem->size > JW_PAKRAT_CATALOG_MAX_BYTES ||
+        bytes > JW_PAKRAT_CATALOG_MAX_BYTES - mem->size) {
+        return 0;
+    }
     char *next = (char *)realloc(mem->data, mem->size + bytes + 1u);
     if (!next) {
         return 0;
@@ -78,6 +89,8 @@ static int jw__fetch_url(const char *url, jw_mem *out) {
     }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, JW_PAKRAT_CONNECT_TIMEOUT_S);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, JW_PAKRAT_TRANSFER_TIMEOUT_S);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, jw__curl_mem_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "jawaka-pakrat/1");

@@ -24,6 +24,10 @@
 
 static int jw__curl_ready = 0;
 
+#define JW_PAKRAT_CONNECT_TIMEOUT_S 10L
+#define JW_PAKRAT_LOW_SPEED_LIMIT_BPS 1024L
+#define JW_PAKRAT_LOW_SPEED_TIME_S 30L
+
 static int jw__ensure_curl(void) {
     if (jw__curl_ready) {
         return 0;
@@ -213,6 +217,9 @@ static int jw__download_file(const char *url, const char *path) {
     }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, JW_PAKRAT_CONNECT_TIMEOUT_S);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, JW_PAKRAT_LOW_SPEED_LIMIT_BPS);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, JW_PAKRAT_LOW_SPEED_TIME_S);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "jawaka-pakrat/1");
     CURLcode rc = curl_easy_perform(curl);
@@ -404,6 +411,11 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
         return -1;
     }
 
+    int rc = -1;
+    char artifact_path[PATH_MAX] = "";
+    char app_stage_dir[PATH_MAX] = "";
+    char target_tmp[PATH_MAX] = "";
+
     jw_pakrat_catalog_package pkg;
     int is_dev = 0;
     int parse_rc = jw_pakrat_find_catalog_package(ctx, store_id, &pkg, &is_dev);
@@ -411,14 +423,14 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
         fprintf(stderr, parse_rc > 0 ?
                 "Pak Rat catalog URL is not configured or store id/platform not found\n" :
                 "invalid storefront\n");
-        return -1;
+        goto cleanup;
     }
 
     if (!jw__safe_name(pkg.install_name) || !jw__has_suffix(pkg.install_name, ".pak") ||
         !jw__safe_name(pkg.artifact_name) ||
         !jw_pakrat_catalog_url_allowed(pkg.artifact_url, is_dev)) {
         fprintf(stderr, "catalog package failed safety checks\n");
-        return -1;
+        goto cleanup;
     }
 
     int blocked = jw_pakrat_managed_app_path_blocked_from_platform(
@@ -426,12 +438,32 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
     if (blocked != 0) {
         fprintf(stderr, blocked > 0 ? "target path is release-managed\n" :
                 "could not read managed app policy\n");
-        return -1;
+        goto cleanup;
+    }
+
+    jw_pakrat_install existing;
+    int install_row = jw_db_pakrat_get_install(ctx->db_path, store_id, &existing);
+    if (install_row < 0) {
+        goto cleanup;
+    }
+
+    char target[PATH_MAX];
+    if (jw__target_path_for_install(ctx, pkg.install_path, target, sizeof(target)) != 0 ||
+        snprintf(target_tmp, sizeof(target_tmp), "%s.partial", target) >=
+            (int)sizeof(target_tmp)) {
+        goto cleanup;
+    }
+    if (jw__path_exists(target) && install_row != 0) {
+        fprintf(stderr, "target exists without Pak Rat ownership; adoption is deferred\n");
+        goto cleanup;
+    }
+    if (install_row == 0 && strcmp(existing.install_path, pkg.install_path) != 0) {
+        fprintf(stderr, "installed record uses another path; move is deferred\n");
+        goto cleanup;
     }
 
     char downloads_dir[PATH_MAX];
     char staging_dir[PATH_MAX];
-    char artifact_path[PATH_MAX];
     if (jw__join3(downloads_dir, sizeof(downloads_dir), ctx->state_dir,
                   "store", "downloads") != 0 ||
         jw__join3(staging_dir, sizeof(staging_dir), ctx->state_dir,
@@ -439,29 +471,28 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
         jw__mkdir_p(downloads_dir, 0755) != 0 ||
         jw__join2(artifact_path, sizeof(artifact_path), downloads_dir,
                   pkg.artifact_name) != 0) {
-        return -1;
+        goto cleanup;
     }
 
     printf("download: %s\n", pkg.artifact_url);
     if (jw__download_file(pkg.artifact_url, artifact_path) != 0) {
         fprintf(stderr, "download failed\n");
-        return -1;
+        goto cleanup;
     }
     struct stat artifact_st;
     if (stat(artifact_path, &artifact_st) != 0 ||
         (long long)artifact_st.st_size != pkg.artifact_size) {
         fprintf(stderr, "artifact size mismatch\n");
-        return -1;
+        goto cleanup;
     }
-    char sha[65];
+    char sha[65] = "";
     char sha_err[256];
     if (jw_sha256_file_hex(artifact_path, sha, sha_err, sizeof(sha_err)) != 0 ||
         strcmp(sha, pkg.artifact_sha256) != 0) {
         fprintf(stderr, "artifact SHA-256 mismatch\n");
-        return -1;
+        goto cleanup;
     }
 
-    char app_stage_dir[PATH_MAX];
     char extracted_pak[PATH_MAX];
     if (jw__join2(app_stage_dir, sizeof(app_stage_dir), staging_dir, store_id) != 0 ||
         jw__extract_zip_single_pak(artifact_path, app_stage_dir,
@@ -469,50 +500,40 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
                                    sizeof(extracted_pak)) != 0 ||
         jw__validate_runtime_manifest(&pkg, extracted_pak) != 0) {
         fprintf(stderr, "artifact extraction/validation failed\n");
-        return -1;
+        goto cleanup;
     }
 
-    jw_pakrat_install existing;
-    int install_row = jw_db_pakrat_get_install(ctx->db_path, store_id, &existing);
-    if (install_row < 0) {
-        return -1;
-    }
-
-    char target[PATH_MAX];
-    char target_tmp[PATH_MAX];
-    if (jw__target_path_for_install(ctx, pkg.install_path, target, sizeof(target)) != 0 ||
-        snprintf(target_tmp, sizeof(target_tmp), "%s.partial", target) >=
-            (int)sizeof(target_tmp) ||
-        jw__mkdir_parent(target) != 0) {
-        return -1;
-    }
-    if (jw__path_exists(target) && install_row != 0) {
-        fprintf(stderr, "target exists without Pak Rat ownership; adoption is deferred\n");
-        return -1;
-    }
-    if (install_row == 0 && strcmp(existing.install_path, pkg.install_path) != 0) {
-        fprintf(stderr, "installed record uses another path; move is deferred\n");
-        return -1;
-    }
-
-    if (jw__remove_tree(target_tmp) != 0 ||
+    if (jw__mkdir_parent(target) != 0 ||
+        jw__remove_tree(target_tmp) != 0 ||
         rename(extracted_pak, target_tmp) != 0 ||
         jw__remove_tree(target) != 0 ||
         rename(target_tmp, target) != 0) {
         fprintf(stderr, "install target replacement failed\n");
-        return -1;
+        goto cleanup;
     }
 
     if (jw_db_pakrat_upsert_install(ctx->db_path, store_id, pkg.version,
                                     pkg.platform, pkg.install_path, sha, NULL) != 0 ||
         jw_pakrat_rescan(ctx) != 0) {
-        return -1;
+        goto cleanup;
     }
     (void)jw__notify_daemon_scan(ctx);
 
     printf("installed: %s %s -> Apps/%s\n", store_id, pkg.version,
            pkg.install_path);
-    return 0;
+    rc = 0;
+
+cleanup:
+    if (artifact_path[0]) {
+        (void)jw__remove_tree(artifact_path);
+    }
+    if (app_stage_dir[0]) {
+        (void)jw__remove_tree(app_stage_dir);
+    }
+    if (rc != 0 && target_tmp[0]) {
+        (void)jw__remove_tree(target_tmp);
+    }
+    return rc;
 }
 
 int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) {
