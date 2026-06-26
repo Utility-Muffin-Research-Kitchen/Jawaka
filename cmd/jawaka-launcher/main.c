@@ -15,10 +15,12 @@
 #include "internal/platform/cat_services.h"
 #include "internal/platform/device.h"
 #include "internal/platform/paths.h"
+#include "internal/platform/platform_id.h"
 #include "internal/platform/wifi.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
+#include "internal/store/pakrat_state.h"
 
 #include <SDL2/SDL.h>
 #include <stdatomic.h>
@@ -38,6 +40,7 @@
 
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
+#define JW_MAX_PAKRAT_APPS 128
 #define JW_OPENED_GAME_BROWSER_LIMIT 512
 #define JW_GAME_LIST_RACE_SLACK 16
 #define JW_MAX_FAVORITES 256   /* newest-first; a heavier list is truncated */
@@ -147,6 +150,12 @@ typedef struct {
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
+    jw_pakrat_app_state pakrat_apps[JW_MAX_PAKRAT_APPS];
+    int                pakrat_app_count;
+    int                pakrat_load_rc;
+    char               pakrat_message[160];
+    bool               pakrat_open;
+    cat_list_state     pakrat_list;
     jw_game_entry     *games;
     int                game_count;
     int                game_capacity;
@@ -218,6 +227,10 @@ typedef struct {
     jw_settings_ui     settings;
     /* status line */
     char               sdcard_root[PATH_MAX];
+    char               state_dir[PATH_MAX];
+    char               db_path[PATH_MAX];
+    char               platform_root[PATH_MAX];
+    char               socket_path[PATH_MAX];
     char               status[256];
     bool               scan_ready;
     bool               scan_running;
@@ -229,6 +242,9 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
                                 const jw_app_entry *app,
                                 int detail_x, int detail_y,
                                 int detail_w, int detail_h);
+static void jw__load_pakrat_store(jw_launcher_state *state);
+static int jw__draw_menu_tab_bar(const jw_launcher_state *state);
+static int jw__pakrat_visible_rows(const jw_launcher_state *state);
 
 /* Defined after the image helpers; used by the tabbed renderer above them. */
 static void jw__render_favorites(const jw_launcher_state *state,
@@ -753,6 +769,9 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
                                   &state->favorites_count) != 0) {
         state->favorites_count = 0;
     }
+    if (state->pakrat_open) {
+        jw__load_pakrat_store(state);
+    }
 
     if (state->games_open) {
         int rc = -1;
@@ -1238,6 +1257,54 @@ static void jw__load_recents_tab(const char *db_path, jw_launcher_state *state) 
     }
 }
 
+static int jw__pakrat_context_from_state(const jw_launcher_state *state,
+                                         jw_pakrat_context *ctx) {
+    if (!state || !ctx || !state->sdcard_root[0] || !state->state_dir[0] ||
+        !state->db_path[0] || !state->platform_root[0]) {
+        return -1;
+    }
+    memset(ctx, 0, sizeof(*ctx));
+    snprintf(ctx->platform, sizeof(ctx->platform), "%s", jw_platform_compiled_id());
+    snprintf(ctx->sdcard_root, sizeof(ctx->sdcard_root), "%s", state->sdcard_root);
+    snprintf(ctx->state_dir, sizeof(ctx->state_dir), "%s", state->state_dir);
+    snprintf(ctx->db_path, sizeof(ctx->db_path), "%s", state->db_path);
+    snprintf(ctx->platform_root, sizeof(ctx->platform_root), "%s", state->platform_root);
+    snprintf(ctx->socket_path, sizeof(ctx->socket_path), "%s", state->socket_path);
+    return 0;
+}
+
+static void jw__load_pakrat_store(jw_launcher_state *state) {
+    if (!state) {
+        return;
+    }
+    state->pakrat_app_count = 0;
+    state->pakrat_message[0] = '\0';
+
+    jw_pakrat_context ctx;
+    if (jw__pakrat_context_from_state(state, &ctx) != 0) {
+        state->pakrat_load_rc = -1;
+        snprintf(state->pakrat_message, sizeof(state->pakrat_message),
+                 "%s", "Pak Rat runtime paths unavailable");
+        return;
+    }
+
+    int count = 0;
+    int rc = jw_pakrat_list_app_states(&ctx, state->pakrat_apps,
+                                       JW_MAX_PAKRAT_APPS, &count);
+    state->pakrat_load_rc = rc;
+    if (rc == 0) {
+        state->pakrat_app_count = count;
+        snprintf(state->pakrat_message, sizeof(state->pakrat_message),
+                 "%d Pak Rat app%s", count, count == 1 ? "" : "s");
+    } else if (rc > 0) {
+        snprintf(state->pakrat_message, sizeof(state->pakrat_message),
+                 "%s", "Pak Rat catalog not configured");
+    } else {
+        snprintf(state->pakrat_message, sizeof(state->pakrat_message),
+                 "%s", "Pak Rat catalog unavailable");
+    }
+}
+
 static void jw__switch_tab(jw_launcher_state *state, int direction, const char *db_path) {
     if (!state) return;
     /* Cast to int and add COUNT before the modulo: jw_tab is an unsigned enum
@@ -1256,6 +1323,7 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
 
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
 typedef struct { const jw_app_entry   *apps;    } jw__apps_ctx;
+typedef struct { const jw_pakrat_app_state *apps; } jw__pakrat_ctx;
 typedef struct { const jw_game_entry  *games;   } jw__roms_ctx;
 typedef struct { const jw_search_result *results; } jw__search_ctx;
 
@@ -1292,6 +1360,50 @@ static void jw__draw_app_item(int idx, int ix, int iy, int iw, int ih,
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     jw__draw_row_name(body, ctx->apps[idx].name,
         ix + CAT_S(10), text_y, name_c, iw - CAT_S(20), selected);
+}
+
+static const char *jw__pakrat_status_label(jw_pakrat_app_status status) {
+    switch (status) {
+        case JW_PAKRAT_APP_AVAILABLE:        return "Available";
+        case JW_PAKRAT_APP_INSTALLED:        return "Installed";
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Update";
+        case JW_PAKRAT_APP_STALE:            return "Stale";
+        default:                             return "";
+    }
+}
+
+static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
+                                 bool selected, void *user) {
+    jw__pakrat_ctx *ctx = (jw__pakrat_ctx *)user;
+    ap_theme *theme     = cat_get_theme();
+    TTF_Font *body      = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small     = cat_get_font(CAT_FONT_SMALL);
+
+    const jw_pakrat_app_state *app = &ctx->apps[idx];
+    const char *status = jw__pakrat_status_label(app->status);
+
+    int pill_h = TTF_FontHeight(body) + CAT_S(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
+
+    ap_color name_c = selected ? theme->highlighted_text : theme->text;
+    ap_color meta_c = selected ? theme->highlighted_text : theme->hint;
+    int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
+    int status_w = cat_measure_text(small, status);
+    int name_max = iw - status_w - CAT_S(36);
+    if (name_max < CAT_S(96)) {
+        name_max = iw - CAT_S(20);
+        status_w = 0;
+    }
+
+    jw__draw_row_name(body, app->package.name,
+        ix + CAT_S(10), text_y, name_c, name_max, selected);
+    if (status_w > 0) {
+        cat_draw_text(small, status, ix + iw - status_w - CAT_S(14),
+                      small_y, meta_c);
+    }
 }
 
 static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
@@ -1444,6 +1556,133 @@ static void jw__render_apps(const jw_launcher_state *state,
             state->app_count, &state->list, item_h,
             jw__draw_app_item, &ctx);
     }
+}
+
+static void jw__draw_pakrat_detail(const jw_launcher_state *state,
+                                   const jw_pakrat_app_state *app,
+                                   int detail_x, int detail_y,
+                                   int detail_w, int detail_h) {
+    (void)state;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+
+    cat_draw_rounded_rect(detail_x, detail_y, detail_w, detail_h, CAT_S(8),
+                          cat_hex_to_color("#ffffff10"));
+    if (!app) {
+        return;
+    }
+
+    int pad = CAT_S(18);
+    int x = detail_x + pad;
+    int y = detail_y + pad;
+    int max_w = detail_w - pad * 2;
+
+    cat_draw_text_ellipsized(large, app->package.name,
+                             x, y, theme->text, max_w);
+    y += TTF_FontHeight(large) + CAT_S(8);
+
+    const char *status = jw__pakrat_status_label(app->status);
+    cat_draw_text(small, status, x, y,
+                  app->status == JW_PAKRAT_APP_STALE ? theme->highlight : theme->hint);
+    y += TTF_FontHeight(small) + CAT_S(16);
+
+    if (app->package.summary[0]) {
+        cat_draw_text_wrapped(body, app->package.summary,
+                              x, y, max_w, theme->text, CAT_ALIGN_LEFT);
+        y += cat_measure_wrapped_text_height(body, app->package.summary, max_w) +
+             CAT_S(18);
+    }
+
+    char line[768];
+    snprintf(line, sizeof(line), "Catalog version: %s", app->package.version);
+    cat_draw_text_ellipsized(small, line, x, y, theme->hint, max_w);
+    y += TTF_FontHeight(small) + CAT_S(8);
+
+    snprintf(line, sizeof(line), "Installed version: %s",
+             app->installed_version[0] ? app->installed_version : "-");
+    cat_draw_text_ellipsized(small, line, x, y, theme->hint, max_w);
+    y += TTF_FontHeight(small) + CAT_S(8);
+
+    snprintf(line, sizeof(line), "Path: Apps/%s", app->package.install_path);
+    cat_draw_text_ellipsized(small, line, x, y, theme->hint, max_w);
+    y += TTF_FontHeight(small) + CAT_S(8);
+
+    if (app->managed) {
+        cat_draw_text_ellipsized(small, "Release-managed path",
+                                 x, y, theme->hint, max_w);
+    }
+}
+
+static int jw__pakrat_title_h(void) {
+    return CAT_S(12) + TTF_FontHeight(cat_get_font(CAT_FONT_LARGE)) + CAT_S(10);
+}
+
+static int jw__pakrat_header_h(void) {
+    return cat_get_tab_bar_height() + jw__pakrat_title_h();
+}
+
+static int jw__draw_pakrat_header(const jw_launcher_state *state) {
+    int tab_h = jw__draw_menu_tab_bar(state);
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
+    int margin = CAT_S(12);
+    int y = tab_h + margin;
+    int w = cat_get_screen_width() - margin * 2;
+    int large_h = TTF_FontHeight(large);
+
+    cat_draw_text_ellipsized(large, "Pak Rat",
+                             margin + CAT_S(4), y,
+                             theme->text, w - CAT_S(8));
+    cat_draw_rect(margin, y + large_h + CAT_S(4), w, 1,
+                  cat_hex_to_color("#ffffff20"));
+    return tab_h + jw__pakrat_title_h();
+}
+
+static void jw__render_pakrat_store(const jw_launcher_state *state) {
+    cat_clear_screen();
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+
+    int header_h = jw__draw_pakrat_header(state);
+    int margin = CAT_S(12);
+
+    SDL_Rect list, detail;
+    int item_h;
+    jw__browse_boxes(state, header_h, state->pakrat_app_count,
+                     &state->pakrat_list, &list, &detail, &item_h);
+
+    if (state->pakrat_app_count > 0 &&
+        state->pakrat_list.cursor < state->pakrat_app_count) {
+        jw__draw_pakrat_detail(state, &state->pakrat_apps[state->pakrat_list.cursor],
+                               detail.x, detail.y, detail.w, detail.h);
+    } else {
+        cat_draw_rounded_rect(detail.x, detail.y, detail.w, detail.h, CAT_S(8),
+            cat_hex_to_color("#ffffff18"));
+    }
+
+    if (state->pakrat_app_count == 0) {
+        const char *msg = state->pakrat_message[0]
+            ? state->pakrat_message
+            : "No Pak Rat apps found";
+        cat_draw_text_wrapped(body, msg,
+            list.x + CAT_S(8), list.y + CAT_S(8),
+            list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+    } else {
+        jw__pakrat_ctx ctx = { state->pakrat_apps };
+        cat_draw_list_pane(list.x, list.y, list.w, list.h,
+            state->pakrat_app_count, &state->pakrat_list, item_h,
+            jw__draw_pakrat_item, &ctx);
+    }
+
+    cat_footer_item footer[] = {
+        { CAT_BTN_X, "Refresh", false, JW_HINT("X") },
+        { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
+        { CAT_BTN_A, "View",    true,  JW_HINT("A") },
+    };
+    jw__draw_footer(state, footer, 3);
+    cat_present();
 }
 
 static void jw__render_settings(const jw_launcher_state *state,
@@ -2046,6 +2285,22 @@ static int jw__resolve_sdcard_path(const jw_launcher_state *state, const char *p
     }
 
     return needed >= 0 && needed < (int)out_size ? 0 : -1;
+}
+
+static int jw__resolve_platform_root(const char *sdcard_root,
+                                     char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return -1;
+    }
+    const char *env = getenv("UMRK_PLATFORM_PATH");
+    if (!env || !env[0]) {
+        env = getenv("SYSTEM_PATH");
+    }
+    int needed = env && env[0]
+        ? snprintf(out, out_size, "%s", env)
+        : snprintf(out, out_size, "%s/.system/leaf/platforms/%s",
+                   sdcard_root ? sdcard_root : ".", jw_platform_compiled_id());
+    return needed >= 0 && (size_t)needed < out_size ? 0 : -1;
 }
 
 static SDL_Texture *jw__load_cached_image(const char *path, int *out_w, int *out_h) {
@@ -3449,10 +3704,10 @@ static const char *const kSysMenuTabs[] = { "Settings", "Actions", "Info" };
 enum { JW_SMTAB_SETTINGS = 0, JW_SMTAB_ACTIONS, JW_SMTAB_INFO, JW_SMTAB_COUNT };
 
 static const char *const kSysActions[] = {
-    "Search", "System Update", "Rescan Library",
+    "Search", "Pak Rat", "System Update", "Rescan Library",
     "Sleep", "Exit to Stock", "Reboot", "Power Off",
 };
-enum { JW_SA_SEARCH = 0, JW_SA_UPDATE, JW_SA_RESCAN,
+enum { JW_SA_SEARCH = 0, JW_SA_PAKRAT, JW_SA_UPDATE, JW_SA_RESCAN,
        JW_SA_SLEEP, JW_SA_EXIT_STOCK, JW_SA_REBOOT, JW_SA_POWEROFF, JW_SA_COUNT };
 
 static const char *const kSysInfo[] = { "Device", "Library", "Playtime" };
@@ -3594,9 +3849,32 @@ static void jw__switch_system_tab(jw_launcher_state *state, int direction) {
     cat_request_frame();
 }
 
+static void jw__open_pakrat_store(jw_launcher_state *state) {
+    if (!state) {
+        return;
+    }
+
+    int old_cursor = state->pakrat_list.cursor;
+    state->menu_open = false;
+    state->pakrat_open = true;
+    state->menu_tab = JW_SMTAB_ACTIONS;
+    jw_settings_ui_close(&state->settings);
+
+    jw__load_pakrat_store(state);
+    cat_list_state_init(&state->pakrat_list, jw__pakrat_visible_rows(state));
+    cat_list_state_jump(&state->pakrat_list, old_cursor, state->pakrat_app_count);
+    snprintf(state->status, sizeof(state->status), "%s",
+             state->pakrat_message[0] ? state->pakrat_message : "Pak Rat");
+}
+
 static void jw__render_launcher(jw_launcher_state *state) {
     if (state->switcher_open) {
         jw__render_switcher(state);
+        return;
+    }
+
+    if (state->pakrat_open) {
+        jw__render_pakrat_store(state);
         return;
     }
 
@@ -3653,6 +3931,10 @@ static int jw__app_browser_visible_rows(const jw_launcher_state *state) {
 
 static int jw__search_visible_rows(const jw_launcher_state *state) {
     return jw__browse_visible_rows(state, jw__search_header_h(state));
+}
+
+static int jw__pakrat_visible_rows(const jw_launcher_state *state) {
+    return jw__browse_visible_rows(state, jw__pakrat_header_h());
 }
 
 static const jw_platform_perf_profile kActionPerfProfiles[] = {
@@ -4097,6 +4379,22 @@ static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
         snprintf(state->status, sizeof(state->status), "%d recent", state->game_count);
     }
     return 0;
+}
+
+static void jw__describe_selected_pakrat(jw_launcher_state *state) {
+    if (!state || state->pakrat_app_count <= 0 ||
+        state->pakrat_list.cursor < 0 ||
+        state->pakrat_list.cursor >= state->pakrat_app_count) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 state && state->pakrat_message[0]
+                    ? state->pakrat_message
+                    : "No Pak Rat app selected");
+        return;
+    }
+
+    const jw_pakrat_app_state *app = &state->pakrat_apps[state->pakrat_list.cursor];
+    snprintf(state->status, sizeof(state->status), "%.120s: %.80s",
+             app->package.name, jw__pakrat_status_label(app->status));
 }
 
 static void jw__open_apps(jw_launcher_state *state) {
@@ -5090,6 +5388,9 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
             state->menu_open = false;
             jw__open_search(db_path, state);
             break;
+        case JW_SA_PAKRAT:
+            jw__open_pakrat_store(state);
+            break;
         case JW_SA_UPDATE:
             jw__menu_host_setting(socket_path, db_path, state, JW_SETTINGS_UPDATE);
             break;
@@ -5194,6 +5495,66 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
     }
 }
 
+static void jw__handle_pakrat_input(jw_launcher_state *state, cat_button button) {
+    if (!state) {
+        return;
+    }
+
+    switch (button) {
+        case CAT_BTN_UP:
+            cat_list_state_move(&state->pakrat_list, -1, state->pakrat_app_count);
+            break;
+        case CAT_BTN_DOWN:
+            cat_list_state_move(&state->pakrat_list, +1, state->pakrat_app_count);
+            break;
+        case CAT_BTN_LEFT:
+            cat_list_state_page(&state->pakrat_list, -1, state->pakrat_app_count);
+            break;
+        case CAT_BTN_RIGHT:
+            cat_list_state_page(&state->pakrat_list, +1, state->pakrat_app_count);
+            break;
+        case CAT_BTN_L1:
+        case CAT_BTN_R1:
+            state->pakrat_open = false;
+            state->menu_open = true;
+            state->status[0] = '\0';
+            jw__switch_system_tab(state, button == CAT_BTN_L1 ? -1 : 1);
+            break;
+        case CAT_BTN_A:
+            jw__describe_selected_pakrat(state);
+            break;
+        case CAT_BTN_X: {
+            int old_cursor = state->pakrat_list.cursor;
+            jw__load_pakrat_store(state);
+            cat_list_state_jump(&state->pakrat_list, old_cursor,
+                                state->pakrat_app_count);
+            snprintf(state->status, sizeof(state->status), "%s",
+                     state->pakrat_message[0]
+                        ? state->pakrat_message
+                        : "Pak Rat refreshed");
+            break;
+        }
+        case CAT_BTN_B: {
+            state->pakrat_open = false;
+            state->menu_open = true;
+            state->menu_tab = JW_SMTAB_ACTIONS;
+            int n = 0;
+            jw__menu_tab_items(state->menu_tab, &n);
+            cat_list_state_init(&state->menu_list, n);
+            cat_list_state_jump(&state->menu_list, JW_SA_PAKRAT, n);
+            state->status[0] = '\0';
+            break;
+        }
+        case CAT_BTN_MENU:
+            state->pakrat_open = false;
+            state->menu_open = false;
+            state->status[0] = '\0';
+            break;
+        default:
+            break;
+    }
+}
+
 static void jw__handle_input(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, cat_button button, bool *running) {
     const cat_stylesheet *ss = cat_get_stylesheet();
@@ -5210,6 +5571,11 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     /* Analog-stick click is a global shortcut: toggle the LED ring on/off. */
     if (button == CAT_BTN_STICK) {
         jw_settings_toggle_led(&state->settings);
+        return;
+    }
+
+    if (state->pakrat_open) {
+        jw__handle_pakrat_input(state, button);
         return;
     }
 
@@ -5660,6 +6026,17 @@ int main(void) {
         }
     }
     snprintf(state.sdcard_root, sizeof(state.sdcard_root), "%s", sdcard_root);
+    snprintf(state.socket_path, sizeof(state.socket_path), "%s", socket_path);
+    snprintf(state.db_path, sizeof(state.db_path), "%s", db_path);
+    char *state_dir = jw_state_dir();
+    if (state_dir && state_dir[0]) {
+        snprintf(state.state_dir, sizeof(state.state_dir), "%s", state_dir);
+    }
+    free(state_dir);
+    if (jw__resolve_platform_root(sdcard_root, state.platform_root,
+                                  sizeof(state.platform_root)) != 0) {
+        state.platform_root[0] = '\0';
+    }
     snprintf(state.status, sizeof(state.status), "%s", "loading library...");
 
     long long cache_start_ms = jw__monotonic_ms();

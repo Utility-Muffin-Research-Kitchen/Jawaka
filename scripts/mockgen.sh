@@ -41,6 +41,7 @@ cat >"$SYSTEM_ROOT/manifest.json" <<'JSON'
   "info_dir_relpath": "info",
   "defaults_dir_relpath": "defaults",
   "theme_dir_relpath": "themes",
+  "managed_apps": [],
   "source_repos": {
     "launcher": "Jawaka",
     "retroarch": "retroarch-builds",

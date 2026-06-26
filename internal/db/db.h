@@ -56,6 +56,18 @@ typedef struct {
 } jw_app_entry;
 
 typedef struct {
+    char store_id[128];
+    char version[64];
+    char platform[64];
+    char install_path[512];
+    char artifact_sha256[80];
+    char installed_at[64];
+    int  app_present;
+    char app_name[256];
+    char app_pak_dir[512];
+} jw_pakrat_install;
+
+typedef struct {
     int  id;
     char system[64];
     char name[256];
@@ -166,5 +178,21 @@ int  jw_db_set_setting(const char *db_path, const char *key, const char *value);
 int  jw_db_set_settings(const char *db_path, const char *const *keys,
                         const char *const *values, int count);
 int  jw_db_get_theme_name(const char *db_path, char *out, size_t out_size);
+
+/* Pak Rat store ownership. apps remains scan truth; pakrat_installs records
+   packages installed/updated through the store and intentionally survives
+   library rescans. install_path is the Apps-namespace path, e.g.
+   "mlp1/SDLReader.pak" or "shared/RetroArch.pak". */
+int  jw_db_pakrat_upsert_install(const char *db_path, const char *store_id,
+                                 const char *version, const char *platform,
+                                 const char *install_path,
+                                 const char *artifact_sha256,
+                                 const char *installed_at);
+int  jw_db_pakrat_remove_install(const char *db_path, const char *store_id);
+/* Returns 0 when found, 1 when no matching store_id exists, -1 on error. */
+int  jw_db_pakrat_get_install(const char *db_path, const char *store_id,
+                              jw_pakrat_install *out);
+int  jw_db_pakrat_list_installs(const char *db_path, jw_pakrat_install *out,
+                                int max_count, int *out_count);
 
 #endif

@@ -53,10 +53,10 @@ endif
 
 CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
-CFLAGS_UI := $(CFLAGS_COMMON) -I$(CATASTROPHE_INCLUDE) $(SDL_CFLAGS)
+CFLAGS_UI := $(CFLAGS_COMMON) -I$(CATASTROPHE_INCLUDE) $(SDL_CFLAGS) $(CURL_CFLAGS)
 LDLIBS_COMMON := -lsqlite3
 LDLIBS_DAEMON := $(LDLIBS_COMMON)
-LDLIBS_UI := $(LDLIBS_COMMON) $(SDL_LDFLAGS) -lm -lpthread
+LDLIBS_UI := $(LDLIBS_COMMON) $(SDL_LDFLAGS) $(CURL_LDFLAGS) -lm -lpthread
 ifeq ($(shell uname -s),Darwin)
 LDLIBS_UI += -lobjc
 endif
@@ -127,6 +127,8 @@ DAEMON_SRCS := \
 	internal/retroarch/command.c \
 	internal/retroarch/states.c \
 	internal/storage/sources.c \
+	internal/store/catalog_source.c \
+	internal/store/managed_apps.c \
 	internal/update/update.c \
 	internal/update/sha256.c \
 	internal/db/db.c \
@@ -189,6 +191,25 @@ SCRAPE_SMOKE_SRCS := \
 	internal/storage/sources.c \
 	third_party/cjson/cJSON.c
 
+PAKRAT_SMOKE_SRCS := \
+	cmd/jawaka-pakrat-smoke/main.c \
+	internal/store/pakrat.c \
+	internal/store/pakrat_state.c \
+	internal/ipc/ipc.c \
+	$(PLATFORM_ID_SRC) \
+	internal/db/db.c \
+	internal/discovery/discovery.c \
+	internal/retroarch/catalog.c \
+	internal/storage/sources.c \
+	internal/store/catalog_source.c \
+	internal/store/managed_apps.c \
+	internal/update/sha256.c \
+	third_party/cjson/cJSON.c \
+	third_party/miniz/miniz.c \
+	third_party/miniz/miniz_tdef.c \
+	third_party/miniz/miniz_tinfl.c \
+	third_party/miniz/miniz_zip.c
+
 UI_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
@@ -202,6 +223,9 @@ UI_SRCS := \
 	internal/retroarch/catalog.c \
 	internal/retroarch/states.c \
 	internal/storage/sources.c \
+	internal/store/catalog_source.c \
+	internal/store/managed_apps.c \
+	internal/store/pakrat_state.c \
 	internal/db/db.c \
 	internal/launcher/console_colors.c \
 	internal/launcher/game_switcher.c \
@@ -226,7 +250,7 @@ ifeq ($(PLATFORM),mlp1)
 ALL_BINS += $(BUILD)/bin/jawaka-ledd
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
 
 all: $(ALL_BINS)
 
@@ -247,6 +271,7 @@ jawaka-ledd:
 endif
 jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 jawaka-scrape-smoke: $(BUILD)/bin/jawaka-scrape-smoke
+jawaka-pakrat-smoke: $(BUILD)/bin/jawaka-pakrat-smoke
 
 $(BUILD)/bin:
 	@mkdir -p $(BUILD)/bin
@@ -299,6 +324,9 @@ $(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
 
 $(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(SCRAPE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
+
+$(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -Ithird_party/miniz -o $@ $(PAKRAT_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lm
 
 ifeq ($(PLATFORM),mlp1)
 $(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
@@ -369,6 +397,13 @@ mlp1:
 		"$(MLP1_TOOLCHAIN_IMAGE)" \
 		make -f ports/mlp1/Makefile all
 
+mlp1-pakrat-smoke:
+	docker run --rm \
+		-v "$(WORKSPACE_ROOT)":/workspace \
+		-w /workspace/Jawaka \
+		"$(MLP1_TOOLCHAIN_IMAGE)" \
+		make -f ports/mlp1/Makefile pakrat-smoke
+
 mlp1-adb-smoke:
 	scripts/adb-mlp1-smoke.sh
 
@@ -394,11 +429,13 @@ help:
 	@echo "  make jawaka-platformctl      Build platform status/control helper"
 	@echo "  make jawaka-retroarch-runner Build RetroArch app/config runner"
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
+	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"
 	@echo "  make tg5050        Placeholder cross-compile target"
 	@echo "  make my355         Placeholder cross-compile target"
 	@echo "  make mlp1          Cross-compile for Miniloong Pocket 1"
+	@echo "  make mlp1-pakrat-smoke  Cross-compile local Pak Rat smoke helper for MLP1"
 	@echo "  make mlp1-adb-smoke  Build, push to /tmp, and run an ADB UI smoke"
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"
 	@echo "  make mlp1-adb-ra-command-smoke  Run RetroArch command feature smoke over ADB"

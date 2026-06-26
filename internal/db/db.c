@@ -4,11 +4,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#define JW_DB_SCHEMA_VERSION 4
+#define JW_DB_SCHEMA_VERSION 5
 
 static const char *kSchemaSql =
     "PRAGMA foreign_keys = ON;\n"
-    "PRAGMA user_version = 4;\n"
+    "PRAGMA user_version = 5;\n"
     "\n"
     "CREATE TABLE IF NOT EXISTS games (\n"
     "    id          INTEGER PRIMARY KEY,\n"
@@ -107,7 +107,19 @@ static const char *kSchemaSql =
     "    updated_at INTEGER NOT NULL,\n"
     "    PRIMARY KEY (game_id, key),\n"
     "    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE\n"
-    ");\n";
+    ");\n"
+    "\n"
+    "CREATE TABLE IF NOT EXISTS pakrat_installs (\n"
+    "    store_id        TEXT PRIMARY KEY,\n"
+    "    version         TEXT NOT NULL,\n"
+    "    platform        TEXT NOT NULL,\n"
+    "    install_path    TEXT NOT NULL,\n"
+    "    artifact_sha256 TEXT NOT NULL,\n"
+    "    installed_at    TEXT NOT NULL\n"
+    ");\n"
+    "\n"
+    "CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx\n"
+    "    ON pakrat_installs(install_path);\n";
 
 static int jw__exec(sqlite3 *db, const char *sql) {
     char *err = NULL;
@@ -722,6 +734,193 @@ int jw_db_set_settings(const char *db_path, const char *const *keys,
 
 int jw_db_get_theme_name(const char *db_path, char *out, size_t out_size) {
     return jw_db_get_setting(db_path, "theme_name", out, out_size);
+}
+
+int jw_db_pakrat_upsert_install(const char *db_path, const char *store_id,
+                                const char *version, const char *platform,
+                                const char *install_path,
+                                const char *artifact_sha256,
+                                const char *installed_at) {
+    if (!db_path || !store_id || !store_id[0] || !version || !version[0] ||
+        !platform || !platform[0] || !install_path || !install_path[0] ||
+        !artifact_sha256 || !artifact_sha256[0]) {
+        return -1;
+    }
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql =
+        "INSERT INTO pakrat_installs "
+        "(store_id, version, platform, install_path, artifact_sha256, installed_at) "
+        "VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now'))) "
+        "ON CONFLICT(store_id) DO UPDATE SET "
+        "version = excluded.version, "
+        "platform = excluded.platform, "
+        "install_path = excluded.install_path, "
+        "artifact_sha256 = excluded.artifact_sha256, "
+        "installed_at = excluded.installed_at;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, store_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, version, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, platform, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, install_path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, artifact_sha256, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, installed_at ? installed_at : "", -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_pakrat_remove_install(const char *db_path, const char *store_id) {
+    if (!db_path || !store_id || !store_id[0]) {
+        return -1;
+    }
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "DELETE FROM pakrat_installs WHERE store_id = ?;",
+                          -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, store_id, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+static void jw__pakrat_copy_column(sqlite3_stmt *stmt, int column,
+                                   char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    const unsigned char *text = sqlite3_column_text(stmt, column);
+    if (text) {
+        snprintf(out, out_size, "%s", text);
+    }
+}
+
+static void jw__pakrat_fill_install(sqlite3_stmt *stmt, jw_pakrat_install *out) {
+    jw__pakrat_copy_column(stmt, 0, out->store_id, sizeof(out->store_id));
+    jw__pakrat_copy_column(stmt, 1, out->version, sizeof(out->version));
+    jw__pakrat_copy_column(stmt, 2, out->platform, sizeof(out->platform));
+    jw__pakrat_copy_column(stmt, 3, out->install_path, sizeof(out->install_path));
+    jw__pakrat_copy_column(stmt, 4, out->artifact_sha256, sizeof(out->artifact_sha256));
+    jw__pakrat_copy_column(stmt, 5, out->installed_at, sizeof(out->installed_at));
+    out->app_present = sqlite3_column_int(stmt, 6);
+    jw__pakrat_copy_column(stmt, 7, out->app_name, sizeof(out->app_name));
+    jw__pakrat_copy_column(stmt, 8, out->app_pak_dir, sizeof(out->app_pak_dir));
+}
+
+static const char *kPakratInstallJoinSql =
+    "SELECT p.store_id, p.version, p.platform, p.install_path, "
+    "p.artifact_sha256, p.installed_at, "
+    "CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS app_present, "
+    "COALESCE(a.name, ''), COALESCE(a.pak_dir, '') "
+    "FROM pakrat_installs p "
+    "LEFT JOIN apps a ON a.pak_dir = p.install_path "
+    "    OR a.pak_dir = ('Apps/' || p.install_path) ";
+
+int jw_db_pakrat_get_install(const char *db_path, const char *store_id,
+                             jw_pakrat_install *out) {
+    if (!db_path || !store_id || !store_id[0] || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    char sql[1024];
+    snprintf(sql, sizeof(sql), "%s WHERE p.store_id = ? LIMIT 1;", kPakratInstallJoinSql);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, store_id, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        jw__pakrat_fill_install(stmt, out);
+        rc = 0;
+    } else {
+        rc = rc == SQLITE_DONE ? 1 : -1;
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_pakrat_list_installs(const char *db_path, jw_pakrat_install *out,
+                               int max_count, int *out_count) {
+    if (!db_path || !out || max_count <= 0 || !out_count) {
+        return -1;
+    }
+    *out_count = 0;
+    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    char sql[1024];
+    snprintf(sql, sizeof(sql), "%s ORDER BY COALESCE(a.name, p.store_id) LIMIT ?;",
+             kPakratInstallJoinSql);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_count);
+    int step_rc = SQLITE_ROW;
+    while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW && *out_count < max_count) {
+        jw__pakrat_fill_install(stmt, &out[*out_count]);
+        (*out_count)++;
+    }
+
+    int rc = (step_rc == SQLITE_DONE || *out_count >= max_count) ? 0 : -1;
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
 }
 
 int jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *out_count) {

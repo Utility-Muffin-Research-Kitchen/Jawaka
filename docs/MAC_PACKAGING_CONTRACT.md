@@ -48,6 +48,12 @@ Required initial fields:
 - `theme_dir_relpath`
 - `source_repos`
 
+Optional runtime policy fields:
+
+- `managed_apps` — array of Apps-namespace paths owned by the active Leaf
+  release, such as `mlp1/SSHServer.pak` or `shared/RetroArch.pak`. Store
+  install/update/uninstall code must treat these paths as blocked.
+
 The mock SD generator emits a concrete example at
 `mock-sdcard/UMRK/mac/manifest.json`.
 

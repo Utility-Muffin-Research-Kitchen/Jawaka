@@ -7,7 +7,7 @@ JAWAKA_DIR ?= /workspace/Jawaka
 BUILD ?= build/mlp1
 CATASTROPHE_DIR ?= /workspace/Catastrophe
 
-.PHONY: all clean
+.PHONY: all pakrat-smoke clean
 
 all:
 	$(MAKE) -C "$(JAWAKA_DIR)" \
@@ -16,6 +16,14 @@ all:
 		PLATFORM=mlp1 \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
 		all
+
+pakrat-smoke:
+	$(MAKE) -C "$(JAWAKA_DIR)" \
+		BUILD="$(BUILD)" \
+		CSTD="-std=gnu11" \
+		PLATFORM=mlp1 \
+		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
+		jawaka-pakrat-smoke
 
 clean:
 	$(MAKE) -C "$(JAWAKA_DIR)" BUILD="$(BUILD)" clean
