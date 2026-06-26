@@ -6,6 +6,8 @@
 #include <string.h>
 #include <strings.h>
 
+#define JW_PAKRAT_PRODUCTION_BASE_URL "https://leaf.game/pakrat/v1/"
+
 static int jw__copy_trimmed_url(const char *value, char *out, size_t out_size) {
     if (!value || !out || out_size == 0) {
         return -1;
@@ -120,6 +122,5 @@ int jw_pakrat_catalog_base_url(const char *internal_data_path,
         return jw_pakrat_catalog_url_allowed(out, 1) ? 0 : -1;
     }
 
-    out[0] = '\0';
-    return 0;
+    return jw__copy_trimmed_url(JW_PAKRAT_PRODUCTION_BASE_URL, out, out_size);
 }

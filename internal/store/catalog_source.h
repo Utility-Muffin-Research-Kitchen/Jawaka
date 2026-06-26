@@ -5,12 +5,12 @@
 
 #define JW_PAKRAT_DEV_CATALOG_FILE "store/dev-catalog-url"
 
-/* Resolves the Pak Rat catalog base URL. Production is intentionally unset in
-   the local-first MVP, so an empty out buffer means "no catalog configured".
-   Developer overrides are read from PAKRAT_CATALOG_BASE_URL first, then from
+/* Resolves the Pak Rat catalog base URL. Developer overrides are read from
+   PAKRAT_CATALOG_BASE_URL first, then from
    <internal_data_path>/store/dev-catalog-url (or UMRK_INTERNAL_DATA_PATH when
-   internal_data_path is NULL). Returns 0 on success, -1 on invalid input or a
-   disallowed URL. */
+   internal_data_path is NULL). When no developer override exists, production
+   uses the HTTPS-only catalog at https://leaf.game/pakrat/v1/. Returns 0 on
+   success, -1 on invalid input or a disallowed URL. */
 int jw_pakrat_catalog_base_url(const char *internal_data_path,
                                char *out, size_t out_size,
                                int *out_is_dev_override);
