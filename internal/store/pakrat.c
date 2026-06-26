@@ -13,6 +13,7 @@
 #include <curl/curl.h>
 #include <dirent.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 static int jw__curl_ready = 0;
@@ -61,6 +63,25 @@ static int jw__join3(char *out, size_t out_size, const char *a, const char *b,
 static bool jw__path_exists(const char *path) {
     struct stat st;
     return path && stat(path, &st) == 0;
+}
+
+static void jw__configure_curl_ca(CURL *curl) {
+    static const char *ca_files[] = {
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/cert.pem",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/run/libreelec/cacert.pem",
+        NULL,
+    };
+    for (int i = 0; ca_files[i]; i++) {
+        if (jw__path_exists(ca_files[i])) {
+            curl_easy_setopt(curl, CURLOPT_CAINFO, ca_files[i]);
+            return;
+        }
+    }
+    if (jw__path_exists("/etc/ssl/certs")) {
+        curl_easy_setopt(curl, CURLOPT_CAPATH, "/etc/ssl/certs");
+    }
 }
 
 static bool jw__is_dir(const char *path) {
@@ -110,6 +131,38 @@ static int jw__mkdir_parent(const char *path) {
         *slash = '\0';
     }
     return jw__mkdir_p(parent, 0755);
+}
+
+static void jw__pakrat_log(const jw_pakrat_context *ctx, const char *fmt, ...) {
+    if (!ctx || !ctx->state_dir[0] || !fmt) {
+        return;
+    }
+    char log_dir[PATH_MAX];
+    char log_path[PATH_MAX];
+    if (jw__join3(log_dir, sizeof(log_dir), ctx->state_dir, "store", "logs") != 0 ||
+        jw__join2(log_path, sizeof(log_path), log_dir, "pakrat.log") != 0 ||
+        jw__mkdir_p(log_dir, 0755) != 0) {
+        return;
+    }
+    FILE *fp = fopen(log_path, "a");
+    if (!fp) {
+        return;
+    }
+
+    char timestamp[32];
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S%z", &tm_now);
+    fprintf(fp, "%s ", timestamp);
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(fp, fmt, args);
+    va_end(args);
+
+    fputc('\n', fp);
+    fclose(fp);
 }
 
 static int jw__remove_tree(const char *path) {
@@ -215,7 +268,11 @@ static int jw__download_file(const char *url, const char *path) {
         unlink(tmp);
         return -1;
     }
+    char error[CURL_ERROR_SIZE] = {0};
     curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
+    jw__configure_curl_ca(curl);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, JW_PAKRAT_CONNECT_TIMEOUT_S);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, JW_PAKRAT_LOW_SPEED_LIMIT_BPS);
@@ -228,6 +285,9 @@ static int jw__download_file(const char *url, const char *path) {
     curl_easy_cleanup(curl);
     int close_rc = fclose(fp);
     if (rc != CURLE_OK || close_rc != 0 || (http != 0 && http >= 400)) {
+        fprintf(stderr, "Pak Rat download failed: url=%s curl=%d http=%ld%s%s\n",
+                url, (int)rc, http, error[0] ? " error=" : "",
+                error[0] ? error : "");
         unlink(tmp);
         return -1;
     }
@@ -415,6 +475,20 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
     char artifact_path[PATH_MAX] = "";
     char app_stage_dir[PATH_MAX] = "";
     char target_tmp[PATH_MAX] = "";
+    char catalog_url[1200] = "";
+    char catalog_base[1024] = "";
+    int catalog_is_dev = 0;
+    if (jw_pakrat_catalog_base_url(ctx->state_dir, catalog_base,
+                                   sizeof(catalog_base),
+                                   &catalog_is_dev) == 0 &&
+        catalog_base[0]) {
+        snprintf(catalog_url, sizeof(catalog_url), "%sstorefront.json",
+                 catalog_base);
+    }
+    jw__pakrat_log(ctx, "install-start store_id=%s platform=%s catalog_mode=%s catalog_url=%s",
+                   store_id, ctx->platform,
+                   catalog_is_dev ? "dev" : "official",
+                   catalog_url[0] ? catalog_url : "-");
 
     jw_pakrat_catalog_package pkg;
     int is_dev = 0;
@@ -474,6 +548,10 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
         goto cleanup;
     }
 
+    jw__pakrat_log(ctx,
+                   "download-start store_id=%s version=%s target=Apps/%s artifact_url=%s artifact_sha256=%s artifact_size=%lld",
+                   store_id, pkg.version, pkg.install_path,
+                   pkg.artifact_url, pkg.artifact_sha256, pkg.artifact_size);
     printf("download: %s\n", pkg.artifact_url);
     if (jw__download_file(pkg.artifact_url, artifact_path) != 0) {
         fprintf(stderr, "download failed\n");
@@ -521,9 +599,14 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
 
     printf("installed: %s %s -> Apps/%s\n", store_id, pkg.version,
            pkg.install_path);
+    jw__pakrat_log(ctx, "install-complete store_id=%s version=%s target=Apps/%s",
+                   store_id, pkg.version, pkg.install_path);
     rc = 0;
 
 cleanup:
+    if (rc != 0) {
+        jw__pakrat_log(ctx, "install-failed store_id=%s", store_id);
+    }
     if (artifact_path[0]) {
         (void)jw__remove_tree(artifact_path);
     }

@@ -46,6 +46,25 @@ static int jw__path_exists(const char *path) {
     return path && stat(path, &st) == 0;
 }
 
+static void jw__configure_curl_ca(CURL *curl) {
+    static const char *ca_files[] = {
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/cert.pem",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/run/libreelec/cacert.pem",
+        NULL,
+    };
+    for (int i = 0; ca_files[i]; i++) {
+        if (jw__path_exists(ca_files[i])) {
+            curl_easy_setopt(curl, CURLOPT_CAINFO, ca_files[i]);
+            return;
+        }
+    }
+    if (jw__path_exists("/etc/ssl/certs")) {
+        curl_easy_setopt(curl, CURLOPT_CAPATH, "/etc/ssl/certs");
+    }
+}
+
 static const char *jw__json_string(const cJSON *obj, const char *key) {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
@@ -87,7 +106,11 @@ static int jw__fetch_url(const char *url, jw_mem *out) {
     if (!curl) {
         return -1;
     }
+    char error[CURL_ERROR_SIZE] = {0};
     curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
+    jw__configure_curl_ca(curl);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, JW_PAKRAT_CONNECT_TIMEOUT_S);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, JW_PAKRAT_TRANSFER_TIMEOUT_S);
@@ -99,6 +122,9 @@ static int jw__fetch_url(const char *url, jw_mem *out) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
     curl_easy_cleanup(curl);
     if (rc != CURLE_OK || (http != 0 && http >= 400)) {
+        fprintf(stderr, "Pak Rat fetch failed: url=%s curl=%d http=%ld%s%s\n",
+                url, (int)rc, http, error[0] ? " error=" : "",
+                error[0] ? error : "");
         free(out->data);
         memset(out, 0, sizeof(*out));
         return -1;
