@@ -53,7 +53,7 @@ endif
 
 CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
-CFLAGS_UI := $(CFLAGS_COMMON) -I$(CATASTROPHE_INCLUDE) $(SDL_CFLAGS) $(CURL_CFLAGS)
+CFLAGS_UI := $(CFLAGS_COMMON) -I$(CATASTROPHE_INCLUDE) -Ithird_party/miniz $(SDL_CFLAGS) $(CURL_CFLAGS)
 LDLIBS_COMMON := -lsqlite3
 LDLIBS_DAEMON := $(LDLIBS_COMMON)
 LDLIBS_UI := $(LDLIBS_COMMON) $(SDL_LDFLAGS) $(CURL_LDFLAGS) -lm -lpthread
@@ -225,7 +225,10 @@ UI_SRCS := \
 	internal/storage/sources.c \
 	internal/store/catalog_source.c \
 	internal/store/managed_apps.c \
+	internal/store/pakrat.c \
 	internal/store/pakrat_state.c \
+	internal/update/sha256.c \
+	internal/discovery/discovery.c \
 	internal/db/db.c \
 	internal/launcher/console_colors.c \
 	internal/launcher/game_switcher.c \
@@ -234,7 +237,11 @@ UI_SRCS := \
 	internal/settings/appearance.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
-	third_party/cjson/cJSON.c
+	third_party/cjson/cJSON.c \
+	third_party/miniz/miniz.c \
+	third_party/miniz/miniz_tdef.c \
+	third_party/miniz/miniz_tinfl.c \
+	third_party/miniz/miniz_zip.c
 
 ALL_BINS := \
 	$(BUILD)/bin/jawakad \

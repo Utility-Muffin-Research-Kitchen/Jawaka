@@ -24,6 +24,7 @@
 
 #include <SDL2/SDL.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1372,6 +1373,26 @@ static const char *jw__pakrat_status_label(jw_pakrat_app_status status) {
     }
 }
 
+static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *app) {
+    if (!app) {
+        return "Select";
+    }
+    if (app->managed) {
+        return "Blocked";
+    }
+    switch (app->status) {
+        case JW_PAKRAT_APP_AVAILABLE:        return "Install";
+        case JW_PAKRAT_APP_INSTALLED:        return "Reinstall";
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Update";
+        case JW_PAKRAT_APP_STALE:            return "Restore";
+        default:                             return "Select";
+    }
+}
+
+static bool jw__pakrat_can_uninstall(const jw_pakrat_app_state *app) {
+    return app && !app->managed && app->installed_owned;
+}
+
 static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
                                  bool selected, void *user) {
     jw__pakrat_ctx *ctx = (jw__pakrat_ctx *)user;
@@ -1627,14 +1648,28 @@ static int jw__draw_pakrat_header(const jw_launcher_state *state) {
     int tab_h = jw__draw_menu_tab_bar(state);
     ap_theme *theme = cat_get_theme();
     TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int margin = CAT_S(12);
     int y = tab_h + margin;
     int w = cat_get_screen_width() - margin * 2;
     int large_h = TTF_FontHeight(large);
+    int title_max = w - CAT_S(8);
+
+    if (state && state->pakrat_message[0] && small) {
+        int msg_w = w / 2;
+        int msg_x = margin + w - msg_w - CAT_S(4);
+        int msg_y = y + (large_h - TTF_FontHeight(small)) / 2;
+        cat_draw_text_ellipsized(small, state->pakrat_message,
+                                 msg_x, msg_y, theme->hint, msg_w);
+        title_max = msg_x - margin - CAT_S(12);
+        if (title_max < CAT_S(96)) {
+            title_max = w - CAT_S(8);
+        }
+    }
 
     cat_draw_text_ellipsized(large, "Pak Rat",
                              margin + CAT_S(4), y,
-                             theme->text, w - CAT_S(8));
+                             theme->text, title_max);
     cat_draw_rect(margin, y + large_h + CAT_S(4), w, 1,
                   cat_hex_to_color("#ffffff20"));
     return tab_h + jw__pakrat_title_h();
@@ -1676,12 +1711,23 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
             jw__draw_pakrat_item, &ctx);
     }
 
-    cat_footer_item footer[] = {
-        { CAT_BTN_X, "Refresh", false, JW_HINT("X") },
-        { CAT_BTN_B, "Back",    true,  JW_HINT("B") },
-        { CAT_BTN_A, "View",    true,  JW_HINT("A") },
+    const jw_pakrat_app_state *selected = NULL;
+    if (state->pakrat_app_count > 0 &&
+        state->pakrat_list.cursor >= 0 &&
+        state->pakrat_list.cursor < state->pakrat_app_count) {
+        selected = &state->pakrat_apps[state->pakrat_list.cursor];
+    }
+    cat_footer_item footer[4];
+    int footer_count = 0;
+    footer[footer_count++] = (cat_footer_item){ CAT_BTN_X, "Refresh", false, JW_HINT("X") };
+    if (jw__pakrat_can_uninstall(selected)) {
+        footer[footer_count++] = (cat_footer_item){ CAT_BTN_Y, "Uninstall", false, JW_HINT("Y") };
+    }
+    footer[footer_count++] = (cat_footer_item){ CAT_BTN_B, "Back", true, JW_HINT("B") };
+    footer[footer_count++] = (cat_footer_item){
+        CAT_BTN_A, jw__pakrat_primary_action_label(selected), true, JW_HINT("A")
     };
-    jw__draw_footer(state, footer, 3);
+    jw__draw_footer(state, footer, footer_count);
     cat_present();
 }
 
@@ -4381,20 +4427,185 @@ static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
     return 0;
 }
 
-static void jw__describe_selected_pakrat(jw_launcher_state *state) {
+typedef enum {
+    JW_PAKRAT_UI_INSTALL = 0,
+    JW_PAKRAT_UI_UNINSTALL,
+} jw_pakrat_ui_action;
+
+typedef struct {
+    jw_pakrat_context ctx;
+    char store_id[128];
+    jw_pakrat_ui_action action;
+} jw_pakrat_ui_job;
+
+static int jw__pakrat_ui_worker(void *userdata) {
+    jw_pakrat_ui_job *job = (jw_pakrat_ui_job *)userdata;
+    if (!job) {
+        return -1;
+    }
+    if (job->action == JW_PAKRAT_UI_UNINSTALL) {
+        return jw_pakrat_uninstall_app(&job->ctx, job->store_id);
+    }
+    return jw_pakrat_install_app(&job->ctx, job->store_id);
+}
+
+static bool jw__confirm_pakrat_uninstall(const jw_pakrat_app_state *app) {
+    if (!app) {
+        return false;
+    }
+    char message[512];
+    snprintf(message, sizeof(message),
+             "Uninstall %.180s?\n\nUser data is preserved.",
+             app->package.name[0] ? app->package.name : app->package.id);
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel",    .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Uninstall", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static bool jw__confirm_pakrat_reinstall(const jw_pakrat_app_state *app) {
+    if (!app) {
+        return false;
+    }
+    char message[512];
+    snprintf(message, sizeof(message),
+             "Reinstall %.180s?\n\nThe app package will be replaced. User data is preserved.",
+             app->package.name[0] ? app->package.name : app->package.id);
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel",    .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Reinstall", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static const char *jw__pakrat_running_label(const jw_pakrat_app_state *app,
+                                            jw_pakrat_ui_action action) {
+    if (action == JW_PAKRAT_UI_UNINSTALL) {
+        return "Uninstalling Pak Rat app";
+    }
+    if (!app) {
+        return "Installing Pak Rat app";
+    }
+    switch (app->status) {
+        case JW_PAKRAT_APP_INSTALLED:        return "Reinstalling Pak Rat app";
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Updating Pak Rat app";
+        case JW_PAKRAT_APP_STALE:            return "Restoring Pak Rat app";
+        default:                             return "Installing Pak Rat app";
+    }
+}
+
+static const char *jw__pakrat_done_label(const jw_pakrat_app_state *app,
+                                         jw_pakrat_ui_action action) {
+    if (action == JW_PAKRAT_UI_UNINSTALL) {
+        return "Uninstalled";
+    }
+    if (!app) {
+        return "Installed";
+    }
+    switch (app->status) {
+        case JW_PAKRAT_APP_INSTALLED:        return "Reinstalled";
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Updated";
+        case JW_PAKRAT_APP_STALE:            return "Restored";
+        default:                             return "Installed";
+    }
+}
+
+static void jw__set_pakrat_message(jw_launcher_state *state, const char *fmt, ...) {
+    if (!state || !fmt) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(state->pakrat_message, sizeof(state->pakrat_message), fmt, ap);
+    va_end(ap);
+    snprintf(state->status, sizeof(state->status), "%s", state->pakrat_message);
+}
+
+static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
+                                  jw_pakrat_ui_action action) {
     if (!state || state->pakrat_app_count <= 0 ||
         state->pakrat_list.cursor < 0 ||
         state->pakrat_list.cursor >= state->pakrat_app_count) {
-        snprintf(state->status, sizeof(state->status), "%s",
-                 state && state->pakrat_message[0]
-                    ? state->pakrat_message
-                    : "No Pak Rat app selected");
+        jw__set_pakrat_message(state, "%s", "No Pak Rat app selected");
         return;
     }
 
-    const jw_pakrat_app_state *app = &state->pakrat_apps[state->pakrat_list.cursor];
-    snprintf(state->status, sizeof(state->status), "%.120s: %.80s",
-             app->package.name, jw__pakrat_status_label(app->status));
+    jw_pakrat_app_state app = state->pakrat_apps[state->pakrat_list.cursor];
+    const char *name = app.package.name[0] ? app.package.name : app.package.id;
+    if (app.managed) {
+        jw__set_pakrat_message(state, "%.120s is release-managed", name);
+        return;
+    }
+    if (action == JW_PAKRAT_UI_UNINSTALL) {
+        if (!jw__pakrat_can_uninstall(&app)) {
+            jw__set_pakrat_message(state, "%.120s is not installed by Pak Rat", name);
+            return;
+        }
+        if (!jw__confirm_pakrat_uninstall(&app)) {
+            jw__set_pakrat_message(state, "Uninstall cancelled: %.120s", name);
+            return;
+        }
+    } else if (app.status == JW_PAKRAT_APP_INSTALLED &&
+               !jw__confirm_pakrat_reinstall(&app)) {
+        jw__set_pakrat_message(state, "Reinstall cancelled: %.120s", name);
+        return;
+    }
+
+    jw_pakrat_context ctx;
+    if (jw__pakrat_context_from_state(state, &ctx) != 0) {
+        jw__set_pakrat_message(state, "%s", "Pak Rat runtime paths unavailable");
+        return;
+    }
+
+    jw_pakrat_ui_job job;
+    memset(&job, 0, sizeof(job));
+    job.ctx = ctx;
+    job.action = action;
+    snprintf(job.store_id, sizeof(job.store_id), "%s", app.package.id);
+
+    char detail[320];
+    snprintf(detail, sizeof(detail), "%.240s", name);
+    char *dynamic_message = detail;
+    cat_process_opts opts = {
+        .message = jw__pakrat_running_label(&app, action),
+        .show_progress = false,
+        .progress = NULL,
+        .interrupt_signal = NULL,
+        .interrupt_button = CAT_BTN_NONE,
+        .dynamic_message = &dynamic_message,
+        .message_lines = 1,
+    };
+    int old_cursor = state->pakrat_list.cursor;
+    int rc = cat_process_message(&opts, jw__pakrat_ui_worker, &job);
+    int reload_rc = jw__reload_library_from_db(db_path, state);
+    if (reload_rc != 0) {
+        jw__load_pakrat_store(state);
+    }
+    cat_list_state_jump(&state->pakrat_list, old_cursor, state->pakrat_app_count);
+
+    if (rc == 0) {
+        jw__set_pakrat_message(state, "%.80s %.120s",
+                               jw__pakrat_done_label(&app, action), name);
+    } else {
+        jw__set_pakrat_message(state, "Pak Rat action failed: %.120s", name);
+    }
+    if (rc == 0 && reload_rc != 0) {
+        jw__set_pakrat_message(state, "%.120s changed; refresh failed", name);
+    }
+    cat_request_frame();
 }
 
 static void jw__open_apps(jw_launcher_state *state) {
@@ -5495,7 +5706,8 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
     }
 }
 
-static void jw__handle_pakrat_input(jw_launcher_state *state, cat_button button) {
+static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *state,
+                                    cat_button button) {
     if (!state) {
         return;
     }
@@ -5521,7 +5733,10 @@ static void jw__handle_pakrat_input(jw_launcher_state *state, cat_button button)
             jw__switch_system_tab(state, button == CAT_BTN_L1 ? -1 : 1);
             break;
         case CAT_BTN_A:
-            jw__describe_selected_pakrat(state);
+            jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_INSTALL);
+            break;
+        case CAT_BTN_Y:
+            jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_UNINSTALL);
             break;
         case CAT_BTN_X: {
             int old_cursor = state->pakrat_list.cursor;
@@ -5575,7 +5790,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     }
 
     if (state->pakrat_open) {
-        jw__handle_pakrat_input(state, button);
+        jw__handle_pakrat_input(db_path, state, button);
         return;
     }
 
