@@ -10,6 +10,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 static const char *jw_ra_platform_id(void) {
     return jw_platform_compiled_id();
@@ -679,6 +680,14 @@ bool jw_ra_core_is_packaged_retroarch(const jw_ra_core *core) {
            core->file_name[0];
 }
 
+static bool jw_ra_core_is_packaged_path(const jw_ra_core *core) {
+    return core &&
+           strcmp(core->type, "path") == 0 &&
+           strcmp(core->status, "packaged") == 0 &&
+           core->path &&
+           core->path[0];
+}
+
 static bool jw_ra_core_file_exists(const char *core_dir, const char *file_name) {
     char path[PATH_MAX];
     if (!core_dir || !file_name || !file_name[0]) {
@@ -688,6 +697,27 @@ static bool jw_ra_core_file_exists(const char *core_dir, const char *file_name) 
         return false;
     }
     return jw_ra_path_exists(path) != 0;
+}
+
+static bool jw_ra_path_core_executable_exists(const char *platform_dir,
+                                              const jw_ra_core *core) {
+    char path[PATH_MAX];
+    if (!jw_ra_core_is_packaged_path(core)) {
+        return false;
+    }
+    if (core->path[0] == '/') {
+        if (snprintf(path, sizeof(path), "%s", core->path) >=
+            (int)sizeof(path)) {
+            return false;
+        }
+    } else {
+        if (!platform_dir || !platform_dir[0] ||
+            snprintf(path, sizeof(path), "%s/%s", platform_dir,
+                     core->path) >= (int)sizeof(path)) {
+            return false;
+        }
+    }
+    return access(path, X_OK) == 0;
 }
 
 static const jw_ra_system *jw_ra_catalog_find_system_any(const jw_ra_catalog *catalog,
@@ -737,10 +767,14 @@ static int jw_ra_add_core_choice(const jw_ra_core *core, bool is_default,
     snprintf(choice->id, sizeof(choice->id), "%s", core->id ? core->id : "");
     snprintf(choice->display_name, sizeof(choice->display_name), "%s",
              core->display_name && core->display_name[0] ? core->display_name : core->id);
+    snprintf(choice->type, sizeof(choice->type), "%s",
+             core->type ? core->type : "");
     snprintf(choice->file_name, sizeof(choice->file_name), "%s",
              core->file_name ? core->file_name : "");
     snprintf(choice->config_folder, sizeof(choice->config_folder), "%s",
              core->config_folder ? core->config_folder : "");
+    snprintf(choice->path, sizeof(choice->path), "%s",
+             core->path ? core->path : "");
     choice->supports_menu = core->supports_menu;
     choice->supports_savestate = core->supports_savestate;
     choice->supports_disk_control = core->supports_disk_control;
@@ -760,13 +794,14 @@ static int jw_ra_copy(char *out, size_t out_size, const char *value) {
 int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
                                     const char *system_id,
                                     const char *core_dir,
+                                    const char *platform_dir,
                                     jw_ra_core_choice *out,
                                     size_t max_count,
                                     size_t *out_count) {
     if (out_count) {
         *out_count = 0;
     }
-    if (!catalog || !system_id || !system_id[0] || !core_dir || !out || !out_count) {
+    if (!catalog || !system_id || !system_id[0] || !out || !out_count) {
         return -1;
     }
     if (max_count > 0) {
@@ -779,16 +814,18 @@ int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
     }
 
     const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
-    if (jw_ra_core_is_packaged_retroarch(core) &&
-        jw_ra_core_file_exists(core_dir, core->file_name)) {
+    if ((jw_ra_core_is_packaged_retroarch(core) &&
+         jw_ra_core_file_exists(core_dir, core->file_name)) ||
+        jw_ra_path_core_executable_exists(platform_dir, core)) {
         jw_ra_add_core_choice(core, true, out, max_count, out_count);
     }
 
     for (size_t i = 0; i < system->alternate_cores.count; i++) {
         const jw_ra_core *alternate =
             jw_ra_catalog_find_core(catalog, system->alternate_cores.items[i]);
-        if (!jw_ra_core_is_packaged_retroarch(alternate) ||
-            !jw_ra_core_file_exists(core_dir, alternate->file_name)) {
+        if (!((jw_ra_core_is_packaged_retroarch(alternate) &&
+               jw_ra_core_file_exists(core_dir, alternate->file_name)) ||
+              jw_ra_path_core_executable_exists(platform_dir, alternate))) {
             continue;
         }
         jw_ra_add_core_choice(alternate, false, out, max_count, out_count);

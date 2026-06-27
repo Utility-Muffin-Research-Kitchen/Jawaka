@@ -210,6 +210,12 @@ PAKRAT_SMOKE_SRCS := \
 	third_party/miniz/miniz_tinfl.c \
 	third_party/miniz/miniz_zip.c
 
+CATALOG_SMOKE_SRCS := \
+	cmd/jawaka-catalog-smoke/main.c \
+	$(PLATFORM_ID_SRC) \
+	internal/retroarch/catalog.c \
+	third_party/cjson/cJSON.c
+
 UI_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
@@ -257,7 +263,7 @@ ifeq ($(PLATFORM),mlp1)
 ALL_BINS += $(BUILD)/bin/jawaka-ledd
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl
 
 all: $(ALL_BINS)
 
@@ -279,6 +285,7 @@ endif
 jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 jawaka-scrape-smoke: $(BUILD)/bin/jawaka-scrape-smoke
 jawaka-pakrat-smoke: $(BUILD)/bin/jawaka-pakrat-smoke
+jawaka-catalog-smoke: $(BUILD)/bin/jawaka-catalog-smoke
 
 $(BUILD)/bin:
 	@mkdir -p $(BUILD)/bin
@@ -335,6 +342,9 @@ $(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) | $(BUILD)/bin
 $(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -Ithird_party/miniz -o $@ $(PAKRAT_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lm
 
+$(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(CATALOG_SMOKE_SRCS)
+
 ifeq ($(PLATFORM),mlp1)
 $(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ cmd/jawaka-ledd/main.c
@@ -342,6 +352,9 @@ endif
 
 phase3-fixture-scan-smoke:
 	scripts/phase3-fixture-scan-smoke.sh
+
+phase3-core-choice-smoke:
+	scripts/phase3-core-choice-smoke.sh
 
 pakrat-state-smoke:
 	scripts/pakrat-state-smoke.sh
@@ -440,6 +453,7 @@ help:
 	@echo "  make jawaka-retroarch-runner Build RetroArch app/config runner"
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
+	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
 	@echo "  make pakrat-state-smoke      Exercise Pak Rat stale + managed-state safeguards"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"
@@ -451,6 +465,7 @@ help:
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"
 	@echo "  make mlp1-adb-ra-command-smoke  Run RetroArch command feature smoke over ADB"
 	@echo "  make phase3-fixture-scan-smoke  Run metadata-aware scan fixture checks"
+	@echo "  make phase3-core-choice-smoke  Run core picker path-core fixture checks"
 	@echo ""
 	@echo "Environment variables"
 	@echo "====================="

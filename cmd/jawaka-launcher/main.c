@@ -4118,6 +4118,7 @@ static void jw__action_refresh_core_choices(const char *db_path,
         ? state->action_game.system
         : state->action_system;
     (void)jw_ra_catalog_list_system_cores(catalog, system, cores_dir,
+                                          state->platform_root,
                                           state->action_core_choices,
                                           JW_MAX_CORE_CHOICES,
                                           &state->action_core_count);
@@ -4125,16 +4126,11 @@ static void jw__action_refresh_core_choices(const char *db_path,
     const char *preferred = state->action_core_game_override[0]
         ? state->action_core_game_override
         : state->action_core_system_override;
-    char diagnostic[256];
-    char core_file[PATH_MAX];
-    if (jw_ra_catalog_resolve_core_file_for_choice(catalog, system,
-                                                   preferred && preferred[0] ? preferred : NULL,
-                                                   cores_dir,
-                                                   core_file, sizeof(core_file),
-                                                   state->action_core_effective,
-                                                   sizeof(state->action_core_effective),
-                                                   diagnostic, sizeof(diagnostic)) != 0 &&
-        state->action_core_count > 0) {
+    if (preferred && preferred[0] &&
+        jw__action_find_core(state, preferred) >= 0) {
+        snprintf(state->action_core_effective,
+                 sizeof(state->action_core_effective), "%s", preferred);
+    } else if (state->action_core_count > 0) {
         snprintf(state->action_core_effective,
                  sizeof(state->action_core_effective), "%s",
                  state->action_core_choices[0].id);

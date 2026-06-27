@@ -240,6 +240,18 @@ static bool jw__standalone_session_is_drastic(const jw_daemon_state *state) {
            strstr(session->core_path, "/DraStic") != NULL;
 }
 
+static bool jw__standalone_session_is_mupen64plus(const jw_daemon_state *state) {
+    if (!jw__has_standalone_session(state)) {
+        return false;
+    }
+
+    const jw_retroarch_session *session = &state->retroarch_session;
+    return strcmp(session->core_id, "mupen64plus_standalone") == 0 ||
+           strcmp(session->core_id, "mupen64plus") == 0 ||
+           strstr(session->core_path, "/mupen64plus/") != NULL ||
+           strstr(session->core_path, "/Mupen64Plus") != NULL;
+}
+
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -2997,6 +3009,10 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
         if (jw__try_path_core(state, catalog, core, target)) {
             return true;
         }
+        if (core && core->type && strcmp(core->type, "retroarch") == 0 &&
+            core->status && strcmp(core->status, "packaged") == 0) {
+            return false;
+        }
     }
 
     const jw_ra_core *core = jw_ra_catalog_find_core(catalog, ra_system->default_core);
@@ -3380,12 +3396,14 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
                      state->sdcard_root ? state->sdcard_root : "");
         }
 
-        char target_core_diagnostic[256];
-        target_core = jw__resolve_launch_core_path(state, system, rom_path,
-                                                   target_core_id,
-                                                   sizeof(target_core_id),
-                                                   target_core_diagnostic,
-                                                   sizeof(target_core_diagnostic));
+        jw_launch_target target;
+        bool target_is_retroarch =
+            jw__resolve_launch_target(state, system, rom_path, &target) == 0 &&
+            target.kind == JW_LAUNCH_TARGET_RETROARCH;
+        if (target_is_retroarch) {
+            snprintf(target_core_id, sizeof(target_core_id), "%s", target.core_id);
+            target_core = strdup(target.path);
+        }
         resident_eligible =
             target_core && target_core[0] &&
             (resident_switch_max < 0 ||
@@ -3988,6 +4006,11 @@ static bool jw__input_menu_tap(void *userdata) {
         if (jw__standalone_session_is_drastic(state)) {
             state->standalone_quit_request_ms = 0;
             jw_log_info("menu tap: letting DraStic handle native menu pid=%d", (int)pid);
+            return true;
+        }
+        if (jw__standalone_session_is_mupen64plus(state)) {
+            state->standalone_quit_request_ms = 0;
+            jw_log_info("menu tap: letting Mupen64Plus handle embedded menu pid=%d", (int)pid);
             return true;
         }
 

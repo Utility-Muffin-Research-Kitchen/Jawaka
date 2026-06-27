@@ -53,8 +53,10 @@ typedef struct {
 typedef struct {
     char id[64];
     char display_name[128];
+    char type[32];
     char file_name[256];
     char config_folder[128];
+    char path[256];
     bool supports_menu;
     bool supports_savestate;
     bool supports_disk_control;
@@ -77,6 +79,7 @@ bool jw_ra_core_is_packaged_retroarch(const jw_ra_core *core);
 int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
                                     const char *system_id,
                                     const char *core_dir,
+                                    const char *platform_dir,
                                     jw_ra_core_choice *out,
                                     size_t max_count,
                                     size_t *out_count);
