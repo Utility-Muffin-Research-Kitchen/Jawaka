@@ -1014,6 +1014,38 @@ static void jw__refresh_result_counts(sqlite3 *db, jw_scan_result *out) {
         }
         sqlite3_finalize(stmt);
     }
+    /* Recompute from the table rather than trusting the insert tally: alias
+       dedup deletes rows after they were counted, so the tally would overcount. */
+    stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM games;", -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            out->game_count = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+}
+
+static int jw__dedup_folder_aliases(sqlite3 *db, const char *sdcard_root) {
+    /* After folder folding, a legacy alias folder (e.g. Roms/FC) and the
+       canonical public folder (Roms/NES) both resolve to one system, so the
+       same title can land twice. Collapse each system's duplicates, preferring
+       the copy under the canonical public folder. Only metadata mode folds
+       folders, so compat mode (no catalog) has nothing to dedup. */
+    char error[256];
+    const jw_ra_catalog *catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
+    if (!catalog) {
+        return 0;
+    }
+    for (size_t i = 0; i < catalog->system_count; i++) {
+        const jw_ra_system *system = &catalog->systems[i];
+        if (!system->id || !system->id[0] || !system->rom_root || !system->rom_root[0]) {
+            continue;
+        }
+        if (jw_db_dedup_system_aliases(db, system->id, system->rom_root) != 0) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
@@ -1038,6 +1070,7 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     }
 
     if (jw__scan_tx_begin(&tx) != 0 ||
+        jw__dedup_folder_aliases(db, sdcard_root) != 0 ||
         jw_db_scan_prune(db) != 0 ||
         jw__scan_tx_commit(&tx) != 0) {
         jw__scan_tx_rollback(&tx);

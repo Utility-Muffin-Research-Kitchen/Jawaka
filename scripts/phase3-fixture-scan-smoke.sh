@@ -19,6 +19,8 @@ mkdir -p \
     "$SD_ROOT/Roms/MD" \
     "$SD_ROOT/Roms/GBA" \
     "$SD_ROOT/Roms/ARCADE" \
+    "$SD_ROOT/Roms/NES" \
+    "$SD_ROOT/Roms/FC" \
     "$SD_ROOT/Roms/PS" \
     "$SD_ROOT/Roms/PORTS" \
     "$SD_ROOT/Roms/UNKNOWN" \
@@ -28,6 +30,7 @@ mkdir -p \
     "$SD_ROOT/Apps/tg5040/WrongDevice.pak" \
     "$SD_ROOT/Apps/FlatLegacy.pak" \
     "$SECONDARY_ROOT/Apps/mlp1/SecondaryNative.pak" \
+    "$SECONDARY_ROOT/Roms/FC" \
     "$SECONDARY_ROOT/Roms/GBA/Imgs"
 
 cp "$UMRK_ROOT/miniloong-launcher-switcher/device/mlp1/defaults/cores.json" \
@@ -40,6 +43,12 @@ printf 'archive\n' >"$SD_ROOT/Roms/MD/Sonic.md.zip"
 printf 'archive\n' >"$SD_ROOT/Roms/GBA/Example.gba.zip"
 printf 'bios\n' >"$SD_ROOT/Roms/ARCADE/neogeo.zip"
 printf 'rom\n' >"$SD_ROOT/Roms/ARCADE/mslug.zip"
+# Folder folding: Roms/NES and Roms/FC both resolve to system FC. The same
+# title under both must collapse to one entry, preferring the canonical public
+# folder (Roms/NES). An alias-only title (no canonical twin) must be kept.
+printf 'rom\n' >"$SD_ROOT/Roms/NES/Mario.nes"
+printf 'rom\n' >"$SD_ROOT/Roms/FC/Mario.nes"
+printf 'rom\n' >"$SD_ROOT/Roms/FC/AliasOnly.nes"
 printf 'disc\n' >"$SD_ROOT/Roms/PS/Game.m3u"
 printf 'echo test\n' >"$SD_ROOT/Roms/PORTS/Test.sh"
 printf 'ignore me\n' >"$SD_ROOT/Roms/UNKNOWN/readme.txt"
@@ -58,6 +67,9 @@ printf '{ "name": "Flat Legacy", "icon": "icon.png", "platform": "mlp1", "pak_ve
     >"$SD_ROOT/Apps/FlatLegacy.pak/pak.json"
 printf 'secondary duplicate\n' >"$SECONDARY_ROOT/Roms/GBA/Example.gba.zip"
 printf 'secondary\n' >"$SECONDARY_ROOT/Roms/GBA/Secondary.gba"
+# Same title as the primary canonical NES copy, but on another storage source.
+# It must not be collapsed across sources.
+printf 'secondary alias\n' >"$SECONDARY_ROOT/Roms/FC/Mario.nes"
 : >"$SECONDARY_ROOT/Roms/GBA/Imgs/Secondary.png"
 printf '#!/bin/sh\n' >"$SECONDARY_ROOT/Apps/mlp1/SecondaryNative.pak/launch.sh"
 printf '{ "name": "Secondary Native", "icon": "icon.png", "platform": "mlp1", "pak_version": "1", "min_jawaka_version": "0" }\n' \
@@ -72,7 +84,19 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PATH"
 
-grep -F $'summary\tgames=7\tsystems=4\tapps=3' "$OUT_PATH" >/dev/null
+grep -F $'summary\tgames=10\tsystems=5\tapps=3' "$OUT_PATH" >/dev/null
+# Alias dedup: primary has one FC "Mario", and it is the canonical Roms/NES copy, not Roms/FC.
+# A secondary source alias copy with the same title remains separate.
+[ "$(grep -cF $'game\tFC\tMario\t' "$OUT_PATH")" = "2" ]
+grep -F $'game\tFC\tMario\tRoms/NES/Mario.nes\t' "$OUT_PATH" >/dev/null
+grep -F $'game\tFC\tMario\t'"$SECONDARY_ROOT"$'/Roms/FC/Mario.nes\t' "$OUT_PATH" >/dev/null
+if grep -F $'game\tFC\tMario\tRoms/FC/Mario.nes\t' "$OUT_PATH" >/dev/null; then
+    cat "$OUT_PATH" >&2
+    echo "alias dedup kept the legacy Roms/FC copy instead of canonical Roms/NES" >&2
+    exit 1
+fi
+# Alias-only title (no canonical twin) is preserved, still under system FC.
+grep -F $'game\tFC\tAliasOnly\tRoms/FC/AliasOnly.nes\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tMD\tSonic\tRoms/MD/Sonic.md\tImages/MD/Sonic.png' "$OUT_PATH" >/dev/null
 grep -F $'game\tMD\tSonic\tRoms/MD/Sonic.md.zip\tImages/MD/Sonic.png' "$OUT_PATH" >/dev/null
 grep -F $'game\tGBA\tExample\tRoms/GBA/Example.gba.zip\t' "$OUT_PATH" >/dev/null
@@ -95,7 +119,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PRUNE_PATH"
 
-grep -F $'summary\tgames=5\tsystems=4\tapps=2' "$OUT_PRUNE_PATH" >/dev/null
+grep -F $'summary\tgames=7\tsystems=5\tapps=2' "$OUT_PRUNE_PATH" >/dev/null
 if grep -F "$SECONDARY_ROOT" "$OUT_PRUNE_PATH" >/dev/null ||
    grep -F $'game\tGBA\tSecondary' "$OUT_PRUNE_PATH" >/dev/null ||
    grep -F $'app\tSecondary Native' "$OUT_PRUNE_PATH" >/dev/null; then

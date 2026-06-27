@@ -298,6 +298,96 @@ int jw_db_scan_begin(sqlite3 *db) {
         "DELETE FROM _seen_apps;");
 }
 
+int jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *canonical_rom_root) {
+    /* Drop a legacy-alias-folder copy of a title only when a copy under the
+       canonical public folder also exists, so the library shows it once and
+       prefers the canonical folder. Before deleting the alias copy, its launcher
+       metadata (favorites, recents, per-game settings, playtime, last-played) is
+       transferred to the canonical survivor so existing libraries don't lose it.
+       Deliberately surgical: copies that share the canonical folder name across
+       storage sources (e.g. the same Roms/GBA game on two SD cards) are NOT
+       collapsed, and an alias-folder copy with no canonical twin is kept so the
+       game still appears. The AFTER DELETE FTS trigger keeps the search index in
+       sync; jw_db_scan_prune (run next) sweeps any leftover orphaned rows. */
+    static const char *setup_sql =
+        "CREATE TEMP TABLE IF NOT EXISTS _dedup_candidates ("
+        "    id INTEGER PRIMARY KEY, name TEXT, source_key TEXT, is_canonical INTEGER"
+        ");"
+        "CREATE TEMP TABLE IF NOT EXISTS _dedup_map (loser INTEGER PRIMARY KEY, winner INTEGER);"
+        "DELETE FROM _dedup_candidates;"
+        "DELETE FROM _dedup_map;";
+    static const char *fill_candidates_sql =
+        "INSERT INTO _dedup_candidates(id, name, source_key, is_canonical) "
+        "SELECT id, name, "
+        "       CASE WHEN instr(rom_path, 'Roms/') > 0 "
+        "            THEN substr(rom_path, 1, instr(rom_path, 'Roms/') - 1) "
+        "            ELSE '' END, "
+        "       CASE WHEN rom_path LIKE ?2 THEN 1 ELSE 0 END "
+        "  FROM games WHERE system = ?1;";
+    static const char *fill_map_sql =
+        "INSERT INTO _dedup_map(loser, winner) "
+        "SELECT l.id, "
+        "       (SELECT w.id FROM _dedup_candidates w "
+        "          WHERE w.name = l.name AND w.source_key = l.source_key AND w.is_canonical = 1 "
+        "          ORDER BY w.id LIMIT 1) "
+        "  FROM _dedup_candidates l "
+        " WHERE l.is_canonical = 0 "
+        "   AND EXISTS (SELECT 1 FROM _dedup_candidates c "
+        "                WHERE c.name = l.name AND c.source_key = l.source_key AND c.is_canonical = 1);";
+    /* Transfer metadata to the survivor, then delete the losers. UPDATE OR IGNORE
+       keeps the canonical row's own metadata when both rows had it; the leftover
+       loser rows are removed by the final DELETE and the prune cascade. */
+    static const char *transfer_sql =
+        "UPDATE OR IGNORE favorites SET target_id = "
+        "    (SELECT winner FROM _dedup_map WHERE loser = favorites.target_id) "
+        "  WHERE kind = 'game' AND target_id IN (SELECT loser FROM _dedup_map);"
+        "UPDATE OR IGNORE recents SET target_id = "
+        "    (SELECT winner FROM _dedup_map WHERE loser = recents.target_id) "
+        "  WHERE kind = 'game' AND target_id IN (SELECT loser FROM _dedup_map);"
+        "UPDATE OR IGNORE game_settings SET game_id = "
+        "    (SELECT winner FROM _dedup_map WHERE loser = game_settings.game_id) "
+        "  WHERE game_id IN (SELECT loser FROM _dedup_map);"
+        "UPDATE games SET "
+        "    playtime_s = playtime_s + COALESCE("
+        "        (SELECT SUM(l.playtime_s) FROM games l JOIN _dedup_map m ON l.id = m.loser "
+        "          WHERE m.winner = games.id), 0), "
+        "    last_played = NULLIF(MAX(COALESCE(last_played, 0), COALESCE("
+        "        (SELECT MAX(l.last_played) FROM games l JOIN _dedup_map m ON l.id = m.loser "
+        "          WHERE m.winner = games.id), 0)), 0) "
+        "  WHERE id IN (SELECT winner FROM _dedup_map);"
+        "DELETE FROM games WHERE id IN (SELECT loser FROM _dedup_map);";
+    sqlite3_stmt *stmt = NULL;
+    char pattern[512];
+    int rc;
+
+    if (!db || !system || !system[0] || !canonical_rom_root || !canonical_rom_root[0]) {
+        return -1;
+    }
+    if ((size_t)snprintf(pattern, sizeof(pattern), "%%%s/%%", canonical_rom_root) >= sizeof(pattern)) {
+        return -1;
+    }
+    /* Per-call map of dropped alias rows -> their canonical survivor. The
+       source key is the path prefix before Roms/, so primary relative paths
+       (empty key) never collapse into secondary absolute paths. */
+    if (jw__exec(db, setup_sql) != 0) {
+        return -1;
+    }
+    if (sqlite3_prepare_v2(db, fill_candidates_sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    sqlite3_bind_text(stmt, 1, system, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, pattern, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(stmt);
+    if (rc != 0) {
+        return -1;
+    }
+    if (jw__exec(db, fill_map_sql) != 0) {
+        return -1;
+    }
+    return jw__exec(db, transfer_sql);
+}
+
 int jw_db_scan_prune(sqlite3 *db) {
     if (!db) {
         return -1;

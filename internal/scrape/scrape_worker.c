@@ -3,6 +3,7 @@
 #include "internal/scrape/ss_client.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
+#include "internal/retroarch/catalog.h"
 #include "internal/storage/sources.h"
 
 #include <libgen.h>
@@ -26,6 +27,10 @@
 typedef struct {
     unsigned row_id;
     char system[64];
+    /* Canonical public image folder (basename of the catalog image_root, e.g.
+       "NES" for system "FC"), resolved on the enqueue/main thread so the worker
+       never touches the unsynchronized catalog cache. */
+    char image_dir[64];
     char rom_path[512];
 } jw__scrape_item;
 
@@ -330,6 +335,26 @@ static void jw__count_rows_locked(int *total, int *done, int *found,
 /* Resolve everything needed to land art for one item. dest_abs is the target
    PNG; image_db is the games.image_path value (relative on the primary
    source, absolute elsewhere). */
+/* Canonical public image folder for a system. Games store the canonical catalog
+   id (e.g. "FC") whose image_root is the public folder ("Images/NES"); art must
+   be written/checked there, not under the internal id, or it lands in a duplicate
+   alias folder and reads back as missing. Falls back to the system id when the
+   catalog or system is unavailable (compat mode). Call only on a thread that owns
+   catalog access (enqueue/main thread) — jw_ra_catalog_get's cache is not
+   synchronized; the worker reads the pre-resolved item->image_dir instead. */
+static void jw__image_dir_for_system(const char *system, char *out, size_t out_size) {
+    snprintf(out, out_size, "%s", system ? system : "");
+    if (!system || !system[0]) return;
+    char error[256];
+    const jw_ra_catalog *catalog = jw_ra_catalog_get(jw__w.sdcard_root, error, sizeof(error));
+    if (!catalog) return;
+    const jw_ra_system *sys = jw_ra_catalog_find_system(catalog, system);
+    if (!sys || !sys->image_root || !sys->image_root[0]) return;
+    const char *slash = strrchr(sys->image_root, '/');
+    const char *dir = slash ? slash + 1 : sys->image_root;
+    if (dir[0]) snprintf(out, out_size, "%s", dir);
+}
+
 static int jw__resolve_paths(const jw__scrape_item *item,
                              char *rom_abs, size_t rom_abs_size,
                              char *rom_name, size_t rom_name_size,
@@ -357,13 +382,14 @@ static int jw__resolve_paths(const jw__scrape_item *item,
     if (!source) source = jw_storage_sources_primary(&sources);
     if (!source) return -1;
 
+    const char *image_dir = item->image_dir[0] ? item->image_dir : item->system;
     int n = snprintf(dest_abs, dest_abs_size, "%s/%s/%s.png",
-                     source->images_path, item->system, base);
+                     source->images_path, image_dir, base);
     if (n <= 0 || n >= (int)dest_abs_size) return -1;
 
     char image_rel[512];
     snprintf(image_rel, sizeof(image_rel), "Images/%s/%s.png",
-             item->system, base);
+             image_dir, base);
     return jw_storage_db_path_for_source(source, image_rel, dest_abs,
                                          image_db, image_db_size);
 }
@@ -416,6 +442,7 @@ static int jw__queue_push(const char *system, const char *rom_path) {
         &jw__w.queue[(jw__w.head + jw__w.count) % JW__SCRAPE_QUEUE_MAX];
     slot->row_id = row->id;
     snprintf(slot->system, sizeof(slot->system), "%s", system);
+    jw__image_dir_for_system(system, slot->image_dir, sizeof(slot->image_dir));
     snprintf(slot->rom_path, sizeof(slot->rom_path), "%s", rom_path);
     jw__w.count++;
     return 1;
@@ -809,9 +836,11 @@ static bool jw__game_art_exists(const jw_storage_source_list *sources,
     const jw_storage_source *source =
         jw_storage_sources_find_for_path(sources, rom_abs);
     if (!source) source = jw_storage_sources_primary(sources);
+    char image_dir[64];
+    jw__image_dir_for_system(system, image_dir, sizeof(image_dir));
     return source &&
            snprintf(art_abs, sizeof(art_abs), "%s/%s/%s.png",
-                    source->images_path, system, base) < (int)sizeof(art_abs) &&
+                    source->images_path, image_dir, base) < (int)sizeof(art_abs) &&
            access(art_abs, R_OK) == 0;
 }
 

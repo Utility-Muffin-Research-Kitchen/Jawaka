@@ -189,6 +189,14 @@ Cheats/
 .umrk/<platform>/library.db
 ```
 
+`<SYSTEM_CODE>` is matched against the platform `systems.json` catalog, where
+each user system has one canonical public folder plus legacy aliases in its
+`patterns[]`. Alias folders (`Roms/FC` → NES, `Roms/MGBA` → GBA, …) fold into the
+one canonical system, so they show as a single library; when the same title
+exists under both an alias and the canonical folder, discovery keeps one entry
+and prefers the canonical-folder copy. Emulator variants are a core choice under
+that one system, not separate folders.
+
 For app paks, `pak.json.platform` must match the containing platform directory
 or be `shared`. Icon paths are relative to the containing `.pak` directory
 unless they are absolute. Flat `Apps/<Name>.pak/` entries are ignored.

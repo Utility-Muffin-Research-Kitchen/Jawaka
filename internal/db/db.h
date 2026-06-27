@@ -101,6 +101,12 @@ int  jw_db_reset_library(sqlite3 *db);
    removes only rows whose ROM/pak vanished plus any orphaned favorites/recents.
    Call inside a transaction: scan_begin -> inserts... -> scan_prune. */
 int  jw_db_scan_begin(sqlite3 *db);
+/* Collapse duplicate library entries for one system: when the same title exists
+   under both the canonical public folder and a legacy alias folder (both fold
+   to one system), keep a single entry, preferring the copy whose rom_path is
+   under canonical_rom_root (e.g. "Roms/NES"). Run after inserts, before prune,
+   so prune's cascade cleans favorites/recents that referenced a dropped copy. */
+int  jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *canonical_rom_root);
 int  jw_db_scan_prune(sqlite3 *db);
 int  jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path);
 int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version);
