@@ -252,6 +252,16 @@ static bool jw__standalone_session_is_mupen64plus(const jw_daemon_state *state) 
            strstr(session->core_path, "/Mupen64Plus") != NULL;
 }
 
+static bool jw__standalone_target_is_mupen64plus(const jw_launch_target *target) {
+    if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
+        return false;
+    }
+    return strcmp(target->core_id, "mupen64plus_standalone") == 0 ||
+           strcmp(target->core_id, "mupen64plus") == 0 ||
+           strstr(target->path, "/mupen64plus/") != NULL ||
+           strstr(target->path, "/Mupen64Plus") != NULL;
+}
+
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -4324,6 +4334,28 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         snprintf(source_root, sizeof(source_root), "%s", state->sdcard_root);
     }
 
+    bool switcher_resume = state->pending_launch_resume_switcher;
+    bool have_standalone_resume = false;
+    int standalone_resume_slot = 0;
+    char standalone_resume_path[PATH_MAX];
+    standalone_resume_path[0] = '\0';
+    if (switcher_resume && jw__standalone_target_is_mupen64plus(target)) {
+        char states_dir[PATH_MAX];
+        if (snprintf(states_dir, sizeof(states_dir), "%s/States", source_root) <
+                (int)sizeof(states_dir) &&
+            jw_ra_find_resume_state(states_dir, rom_abs,
+                                    JW_RA_GAME_SWITCHER_STATE_SLOT,
+                                    &standalone_resume_slot,
+                                    standalone_resume_path,
+                                    sizeof(standalone_resume_path))) {
+            have_standalone_resume = true;
+            jw_log_info("standalone resume: state slot=%d path=%s",
+                        standalone_resume_slot, standalone_resume_path);
+        } else {
+            jw_log_info("standalone resume: no prelaunch state found for %s", rom_abs);
+        }
+    }
+
     char exec_error[256];
     if (!jw_sdcard_exec_available_for_path(target->path, exec_error, sizeof(exec_error))) {
         jw_log_error("cannot launch standalone emulator from SD: %s", exec_error);
@@ -4374,6 +4406,11 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
         setenv("JAWAKA_GAME_CORE_ID", target->core_id, 1);
+        if (have_standalone_resume) {
+            char slot_env[16];
+            snprintf(slot_env, sizeof(slot_env), "%d", standalone_resume_slot);
+            setenv("EMU_RESUME_SLOT", slot_env, 1);
+        }
 
         char *const argv[] = {
             (char *)target->path,
