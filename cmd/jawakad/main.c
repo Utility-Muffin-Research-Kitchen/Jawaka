@@ -4410,6 +4410,8 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
             char slot_env[16];
             snprintf(slot_env, sizeof(slot_env), "%d", standalone_resume_slot);
             setenv("EMU_RESUME_SLOT", slot_env, 1);
+        } else {
+            unsetenv("EMU_RESUME_SLOT");
         }
 
         char *const argv[] = {
