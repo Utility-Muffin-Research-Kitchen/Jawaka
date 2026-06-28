@@ -4118,8 +4118,8 @@ static bool jw__input_menu_tap(void *userdata) {
         }
         if (jw__standalone_session_is_mupen64plus(state)) {
             state->standalone_quit_request_ms = 0;
-            jw_log_info("menu tap: letting Mupen64Plus handle embedded menu pid=%d", (int)pid);
-            return true;
+            jw_log_info("menu tap: forwarding to Mupen64Plus embedded menu pid=%d", (int)pid);
+            return false;
         }
 
         long long now = jw__monotonic_ms();
@@ -4467,16 +4467,34 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_log_info("standalone emulator launch transition readiness code=%s",
                 jw_platform_result_code_name(ready_result.code));
 
-    /* The emulator reads the physical pad directly (suspend the grab, like app
-       launches - SDL emulators bind pad 0, which must be the real device), but
-       jawakad still needs the hotkeys: re-open the pad in watch-only mode so
-       volume/brightness keep working and Menu can route to the emulator's
-       native menu or the generic standalone exit path. */
-    jw__suspend_input_proxy_for_app(state);
-    if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
-                                  jw__input_volume_delta, jw__input_menu_tap,
-                                  jw__input_game_switcher, state) != 0) {
-        jw_log_warn("input watch: init failed; Menu exit unavailable this session");
+    if (jw__standalone_target_is_mupen64plus(target)) {
+        /* Mupen64Plus needs the same calibrated virtual gamepad path as
+           RetroArch. Keep the full grab-and-forward proxy active so Joe's
+           calibration is applied by loong_pangu before SDL sees the axes. */
+        jw__start_input_proxy(state);
+        if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
+            int joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);
+            jw_log_info("standalone input proxy: physical=%s virtual=%s joypad_index=%d",
+                        state->input_proxy.physical_event_path[0]
+                            ? state->input_proxy.physical_event_path
+                            : "(unknown)",
+                        state->input_proxy.virtual_event_path,
+                        joypad_index);
+        } else {
+            jw_log_warn("standalone input proxy: calibrated virtual gamepad unavailable; falling back to direct SDL input");
+            jw__publish_direct_input_env();
+        }
+    } else {
+        /* Other standalone emulators read the physical pad directly (suspend the
+           grab, like app launches), but jawakad still needs the hotkeys: re-open
+           the pad in watch-only mode so volume/brightness keep working and Menu
+           can route to the emulator's native menu or generic exit path. */
+        jw__suspend_input_proxy_for_app(state);
+        if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
+                                      jw__input_volume_delta, jw__input_menu_tap,
+                                      jw__input_game_switcher, state) != 0) {
+            jw_log_warn("input watch: init failed; Menu exit unavailable this session");
+        }
     }
     jw__reconcile_audio(state, "standalone-launch", false);
     jw__publish_audio_env(state);
