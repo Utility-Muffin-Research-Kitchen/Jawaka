@@ -77,6 +77,12 @@ typedef enum {
     JW_LAUNCH_TARGET_STANDALONE
 } jw_launch_target_kind;
 
+typedef enum {
+    JW_STANDBY_NONE = 0,
+    JW_STANDBY_AUTOSLEEP,
+    JW_STANDBY_POWER_CHARGING
+} jw_standby_reason;
+
 typedef struct {
     bool active;
     pid_t pid;
@@ -188,7 +194,11 @@ typedef struct {
     int       autosleep_timeout_s;        /* cached from DB; 0 = disabled */
     int       autosleep_platform_synced_s;/* last value mirrored to stock power policy */
     long long autosleep_setting_next_ms;  /* throttle for re-reading the DB setting */
-    bool      autosleep_screen_off;       /* currently in the screen-off (pre-suspend) stage */
+    jw_standby_reason standby_reason;     /* screen-off standby state, or NONE when lit */
+    long long standby_entered_ms;         /* monotonic ms for wake-input detection */
+    bool      autosleep_charging_logged;  /* log the charging hold once per standby */
+    int       charging_cached;            /* -1 unknown, 0 unplugged, 1 charging */
+    long long charging_next_poll_ms;       /* throttle platform status reads in standby */
     bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
     bool      power_held;                 /* power key currently held (for long-press detect) */
     long long power_down_ms;              /* when the current power press started */
@@ -4814,6 +4824,7 @@ fail:
                                                  reliable; auto-sleep is opt-in. */
 #define JW_AUTOSLEEP_SUSPEND_GRACE_MS 30000   /* screen-off → suspend after this much more idle */
 #define JW_AUTOSLEEP_SETTING_POLL_MS  2000    /* re-read the DB setting at most this often */
+#define JW_CHARGING_STATUS_POLL_MS    1000    /* while in standby, notice unplug promptly */
 #define JW_POWER_LONGPRESS_MS         2000    /* power held this long → clean power off (before
                                                  the PMIC hard-cut at ~6s) */
 
@@ -4836,6 +4847,74 @@ static void jw__screen_set(jw_daemon_state *state, bool on) {
                                on ? JW_PLATFORM_ACTION_SCREEN_ON
                                   : JW_PLATFORM_ACTION_SCREEN_OFF,
                                0, &result);
+}
+
+static bool jw__standby_active(const jw_daemon_state *state) {
+    return state && state->standby_reason != JW_STANDBY_NONE;
+}
+
+static bool jw__charging_online(jw_daemon_state *state, bool force) {
+    if (!state) {
+        return false;
+    }
+
+    long long now = jw__monotonic_ms();
+    if (!force && state->charging_cached >= 0 && now < state->charging_next_poll_ms) {
+        return state->charging_cached == 1;
+    }
+
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+    jw__cache_platform_status(state, &status);
+    state->charging_cached = status.charging;
+    state->charging_next_poll_ms = now + JW_CHARGING_STATUS_POLL_MS;
+    return status.charging == 1;
+}
+
+static void jw__enter_standby_screen_off(jw_daemon_state *state,
+                                         jw_standby_reason reason,
+                                         bool reset_idle) {
+    if (!state) {
+        return;
+    }
+
+    if (reset_idle) {
+        jw_input_proxy_mark_activity(&state->input_proxy);
+    }
+    if (!jw__standby_active(state)) {
+        jw__screen_set(state, false);
+        jw_input_proxy_set_swallow(&state->input_proxy, true);
+    }
+    state->standby_reason = reason;
+    state->standby_entered_ms = jw__monotonic_ms();
+    state->power_sleep_armed = false;
+    state->autosleep_charging_logged = false;
+}
+
+static void jw__leave_standby_screen_off(jw_daemon_state *state) {
+    if (!jw__standby_active(state)) {
+        return;
+    }
+
+    jw__screen_set(state, true);
+    jw_input_proxy_set_swallow(&state->input_proxy, false);
+    state->standby_reason = JW_STANDBY_NONE;
+    state->standby_entered_ms = 0;
+    state->autosleep_charging_logged = false;
+}
+
+static bool jw__standby_has_wake_activity(jw_daemon_state *state) {
+    if (!jw__standby_active(state) || state->standby_entered_ms <= 0) {
+        return false;
+    }
+
+    long long now = jw__monotonic_ms();
+    if (now <= state->standby_entered_ms) {
+        return false;
+    }
+    uint64_t since_standby_ms = (uint64_t)(now - state->standby_entered_ms);
+    uint64_t idle_ms = jw_input_proxy_idle_ms(&state->input_proxy);
+    return idle_ms < since_standby_ms;
 }
 
 /* Keep STOCK loong_power's auto-sleep DISABLED. jawakad owns auto-sleep through the
@@ -4887,7 +4966,9 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     state->power_sleep_armed = false;
     state->power_held = false;
     jw_input_proxy_mark_activity(&state->input_proxy);
-    state->autosleep_screen_off = false;
+    state->standby_reason = JW_STANDBY_NONE;
+    state->standby_entered_ms = 0;
+    state->autosleep_charging_logged = false;
     state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
 }
 
@@ -5024,7 +5105,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             if (edge.down) {
                 state->power_held = true;
                 state->power_down_ms = (long long)edge.ms;
-                if (state->autosleep_screen_off) {
+                if (jw__standby_active(state)) {
                     jw_input_proxy_mark_activity(&state->input_proxy);  /* wake the dark screen */
                     state->power_sleep_armed = false;
                 } else {
@@ -5045,8 +5126,13 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             }
             if (state->power_sleep_armed) {
                 state->power_sleep_armed = false;
-                jw_log_info("power: sleep (tap)");
-                jw__deep_suspend(state);
+                if (jw__charging_online(state, true)) {
+                    jw_log_info("power: standby while charging (tap)");
+                    jw__enter_standby_screen_off(state, JW_STANDBY_POWER_CHARGING, true);
+                } else {
+                    jw_log_info("power: sleep (tap)");
+                    jw__deep_suspend(state);
+                }
                 return;
             }
         }
@@ -5062,12 +5148,37 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         }
     }
 
-    /* Disabled or shutting down: ensure the screen is on and bail. */
-    if (state->autosleep_timeout_s <= 0 || state->shutdown_requested) {
-        if (state->autosleep_screen_off) {
-            jw__screen_set(state, true);
-            jw_input_proxy_set_swallow(&state->input_proxy, false);
-            state->autosleep_screen_off = false;
+    if (jw__standby_has_wake_activity(state)) {
+        jw_log_info("standby: wake on input");
+        jw__leave_standby_screen_off(state);
+        return;
+    }
+
+    /* Shutting down: ensure the screen is on and bail. */
+    if (state->shutdown_requested) {
+        jw__leave_standby_screen_off(state);
+        return;
+    }
+
+    if (state->standby_reason == JW_STANDBY_POWER_CHARGING &&
+        !jw__charging_online(state, false)) {
+        long long standby_ms = state->standby_entered_ms > 0
+            ? now - state->standby_entered_ms
+            : JW_AUTOSLEEP_SUSPEND_GRACE_MS;
+        if (standby_ms >= JW_AUTOSLEEP_SUSPEND_GRACE_MS) {
+            jw_log_info("standby: charger unplugged -> sleep (standby %lldms)",
+                        standby_ms);
+            jw__deep_suspend(state);
+        }
+        return;
+    }
+
+    /* Auto-sleep disabled: undo only an auto-sleep blank. Power-button charging
+       standby is handled above: it stays dark while plugged in, or suspends once
+       unplugged after the usual grace window. */
+    if (state->autosleep_timeout_s <= 0) {
+        if (state->standby_reason == JW_STANDBY_AUTOSLEEP) {
+            jw__leave_standby_screen_off(state);
         }
         return;
     }
@@ -5077,11 +5188,10 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     uint64_t suspend_at = screen_off_at + JW_AUTOSLEEP_SUSPEND_GRACE_MS;
 
     if (idle_ms < screen_off_at) {
-        /* Active: undo a prior blank, resume forwarding input. */
-        if (state->autosleep_screen_off) {
-            jw__screen_set(state, true);
-            jw_input_proxy_set_swallow(&state->input_proxy, false);
-            state->autosleep_screen_off = false;
+        /* Active: undo an auto-sleep blank. Manual charging standby stays dark
+           until the wake-activity check above sees a new button press. */
+        if (state->standby_reason == JW_STANDBY_AUTOSLEEP) {
+            jw__leave_standby_screen_off(state);
         }
         return;
     }
@@ -5091,12 +5201,22 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
            press resets the idle timer (waking the screen next tick) but is NOT
            forwarded, so the wake press only wakes the screen instead of also firing
            a navigation action. A power press here is routed above and wakes too. */
-        if (!state->autosleep_screen_off) {
+        if (!jw__standby_active(state)) {
             jw_log_info("auto-sleep: screen off (idle %llums)",
                         (unsigned long long)idle_ms);
-            jw__screen_set(state, false);
-            jw_input_proxy_set_swallow(&state->input_proxy, true);
-            state->autosleep_screen_off = true;
+            jw__enter_standby_screen_off(state, JW_STANDBY_AUTOSLEEP, false);
+        }
+        return;
+    }
+
+    if (jw__charging_online(state, false)) {
+        if (!jw__standby_active(state)) {
+            jw__enter_standby_screen_off(state, JW_STANDBY_AUTOSLEEP, false);
+        }
+        if (!state->autosleep_charging_logged) {
+            jw_log_info("auto-sleep: standby while charging (idle %llums)",
+                        (unsigned long long)idle_ms);
+            state->autosleep_charging_logged = true;
         }
         return;
     }
@@ -6242,6 +6362,7 @@ int main(int argc, char *argv[]) {
     state.ledd_pid = -1;
     state.led_configured = false;
     state.autosleep_platform_synced_s = -1;
+    state.charging_cached = -1;
     state.perf_global_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
     state.perf_active_profile = JW_PLATFORM_PERF_PROFILE_FRONTEND;
     state.perf_session_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
