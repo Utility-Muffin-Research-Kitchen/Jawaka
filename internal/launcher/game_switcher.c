@@ -265,6 +265,21 @@ void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
     sw->anim_active = false;
 }
 
+bool jw_game_switcher_select(jw_game_switcher *sw, const char *system,
+                             const char *rom_path) {
+    if (!sw || !rom_path || !rom_path[0]) {
+        return false;
+    }
+    for (int i = 0; i < sw->count; i++) {
+        if (jw__switcher_same_game(sw, &sw->entries[i], system, rom_path)) {
+            sw->cursor = i;
+            sw->anim_active = false;
+            return true;
+        }
+    }
+    return false;
+}
+
 void jw_game_switcher_set_current_texture(jw_game_switcher *sw, SDL_Texture *tex) {
     if (!sw) {
         return;

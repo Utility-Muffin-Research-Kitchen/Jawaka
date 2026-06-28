@@ -166,6 +166,11 @@ typedef struct {
     char pending_launch_system[64];
     char pending_launch_rom_path[PATH_MAX];
     bool pending_launch_resume_switcher;
+    /* Standalone emulator asked (via Menu+Select marker) to reopen the launcher
+       straight into the switcher carousel, seeded on the just-exited game. */
+    bool launcher_open_switcher;
+    char launcher_switcher_system[64];
+    char launcher_switcher_rom[PATH_MAX];
     bool post_launch_resume_pending;
     int post_launch_resume_attempts;
     long long post_launch_resume_next_ms;
@@ -2250,6 +2255,89 @@ static void jw__retroarch_session_record_play(jw_daemon_state *state,
     } else {
         jw_log_warn("could not record play for rom=%s", db_rom);
     }
+}
+
+/* On a standalone (mupen64plus) Menu+Select quit, the emulator drops
+   "<runtime_dir>/standalone-switcher-request" (system + absolute ROM, one per
+   line) before it exits. Consume it here, *before* the session is cleared:
+   always unlink so a leftover can't leak to a later/foreign session, and honor
+   it only when it belongs to the still-active mupen64plus session that just
+   exited (core, ROM, and a mtime newer than the session start). On honor, arm
+   the launcher to reopen straight into the switcher carousel seeded on this
+   game, and make sure the game is at the front of Recents even for an instant
+   chord (record_play skips runtime_s <= 0, so touch with duration 0 to bump
+   last_opened without inflating playtime). */
+static void jw__consume_standalone_switcher_marker(jw_daemon_state *state, pid_t exited_pid) {
+    if (!state || !state->runtime_dir) {
+        return;
+    }
+
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/standalone-switcher-request",
+                 state->runtime_dir) >= (int)sizeof(path)) {
+        return;
+    }
+
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return;
+    }
+
+    char marker_system[64] = {0};
+    char marker_rom[PATH_MAX] = {0};
+    FILE *f = fopen(path, "r");
+    if (f) {
+        if (fgets(marker_system, sizeof(marker_system), f)) {
+            marker_system[strcspn(marker_system, "\r\n")] = '\0';
+        }
+        if (fgets(marker_rom, sizeof(marker_rom), f)) {
+            marker_rom[strcspn(marker_rom, "\r\n")] = '\0';
+        }
+        fclose(f);
+    }
+    /* Consume unconditionally so it can never affect a later or foreign exit. */
+    unlink(path);
+
+    /* NOTE: jw__handle_child_exit() has already reset child_kind to
+       JW_CHILD_NONE by the time we run, so jw__standalone_session_is_mupen64plus()
+       (which gates on child_kind == JW_CHILD_EMULATOR) would wrongly report
+       false. Check the still-intact session's core directly instead. */
+    const jw_retroarch_session *session = &state->retroarch_session;
+    bool session_is_mupen64plus = session->active &&
+        (strcmp(session->core_id, "mupen64plus_standalone") == 0 ||
+         strcmp(session->core_id, "mupen64plus") == 0 ||
+         strstr(session->core_path, "/mupen64plus/") != NULL ||
+         strstr(session->core_path, "/Mupen64Plus") != NULL);
+    if (!session_is_mupen64plus || session->pid != exited_pid) {
+        return;
+    }
+
+    bool rom_matches = marker_rom[0] &&
+        (strcmp(marker_rom, session->rom_path) == 0 ||
+         strcmp(marker_rom, session->db_rom_path) == 0);
+    if (!rom_matches || st.st_mtime < session->started_at) {
+        jw_log_warn("switcher marker rejected rom='%s' session_rom='%s' mtime=%ld started_at=%ld",
+                    marker_rom, session->rom_path, (long)st.st_mtime,
+                    (long)session->started_at);
+        return;
+    }
+
+    if (jw__retroarch_session_runtime_s(session) <= 0 && state->db_path) {
+        const char *db_rom = session->db_rom_path[0]
+            ? session->db_rom_path
+            : session->rom_path;
+        if (db_rom[0]) {
+            jw_db_record_play(state->db_path, db_rom, 0);
+        }
+    }
+
+    state->launcher_open_switcher = true;
+    snprintf(state->launcher_switcher_system, sizeof(state->launcher_switcher_system),
+             "%s", marker_system[0] ? marker_system : session->system);
+    snprintf(state->launcher_switcher_rom, sizeof(state->launcher_switcher_rom),
+             "%s", session->rom_path);
+    jw_log_info("switcher marker honored: reopen launcher in switcher system=%s rom=%s",
+                state->launcher_switcher_system, state->launcher_switcher_rom);
 }
 
 static void jw__retroarch_session_retarget(jw_daemon_state *state,
@@ -5939,6 +6027,9 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         }
     }
     if (exited_kind == JW_CHILD_EMULATOR) {
+        /* Inspect the switcher-request marker while the session is still intact,
+           so it can be validated against the just-exited game. */
+        jw__consume_standalone_switcher_marker(state, exited_pid);
         jw__standalone_session_finish(state, exited_pid, status);
     }
 
@@ -5998,7 +6089,22 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     if (exited_kind == JW_CHILD_RETROARCH || exited_kind == JW_CHILD_EMULATOR) {
-        jw__spawn_child(state, JW_CHILD_LAUNCHER);
+        if (state->launcher_open_switcher) {
+            /* A standalone Menu+Select asked us to reopen the launcher straight
+               into the switcher, seeded on the just-exited game. The launcher
+               inherits these env vars (execv keeps environ) and acts on them on
+               its first frame; clear them again so later restarts start normally. */
+            setenv("JAWAKA_OPEN_SWITCHER", "1", 1);
+            setenv("JAWAKA_SWITCHER_SELECT_SYSTEM", state->launcher_switcher_system, 1);
+            setenv("JAWAKA_SWITCHER_SELECT_ROM", state->launcher_switcher_rom, 1);
+            state->launcher_open_switcher = false;
+            jw__spawn_child(state, JW_CHILD_LAUNCHER);
+            unsetenv("JAWAKA_OPEN_SWITCHER");
+            unsetenv("JAWAKA_SWITCHER_SELECT_SYSTEM");
+            unsetenv("JAWAKA_SWITCHER_SELECT_ROM");
+        } else {
+            jw__spawn_child(state, JW_CHILD_LAUNCHER);
+        }
         return;
     }
 

@@ -6289,6 +6289,21 @@ int main(void) {
     if (have_resume)
         jw__apply_resume(db_path, &state, &resume);
 
+    /* A standalone Menu+Select asked jawakad to reopen us straight into the
+       switcher carousel, seeded on the just-exited game (env set by the daemon
+       on respawn). Open it after the library/layout/resume are settled but
+       before the first frame so it shows immediately. */
+    if (getenv("JAWAKA_OPEN_SWITCHER")) {
+        jw__open_switcher(db_path, &state);
+        const char *sel_system = getenv("JAWAKA_SWITCHER_SELECT_SYSTEM");
+        const char *sel_rom = getenv("JAWAKA_SWITCHER_SELECT_ROM");
+        if (sel_rom && sel_rom[0])
+            jw_game_switcher_select(&state.switcher, sel_system, sel_rom);
+        unsetenv("JAWAKA_OPEN_SWITCHER");
+        unsetenv("JAWAKA_SWITCHER_SELECT_SYSTEM");
+        unsetenv("JAWAKA_SWITCHER_SELECT_ROM");
+    }
+
     jw_autodemo demo;
     jw_autodemo_init(&demo);
     bool running = true;

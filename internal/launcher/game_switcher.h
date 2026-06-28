@@ -59,6 +59,13 @@ void jw_game_switcher_set_current(jw_game_switcher *sw, const char *system,
                                   const char *rom_path, const char *name,
                                   const char *image_path);
 
+/* Move the cursor to the entry matching system + ROM path without marking it as
+   the running game (current_index is untouched, so Y removal still works). Used
+   when reopening the launcher straight into the switcher seeded on a game.
+   Returns true when a matching entry was found and selected. */
+bool jw_game_switcher_select(jw_game_switcher *sw, const char *system,
+                             const char *rom_path);
+
 /* Provide a borrowed texture (not owned by the switcher) to render as the
    current game's tile art, overriding cover/savestate-thumb art for that tile.
    The in-game overlay passes its captured paused-frame still so the current tile
