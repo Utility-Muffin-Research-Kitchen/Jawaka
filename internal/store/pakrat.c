@@ -29,6 +29,34 @@ static int jw__curl_ready = 0;
 #define JW_PAKRAT_CONNECT_TIMEOUT_S 10L
 #define JW_PAKRAT_LOW_SPEED_LIMIT_BPS 1024L
 #define JW_PAKRAT_LOW_SPEED_TIME_S 30L
+#define JW_PAKRAT_MAX_REDIRS 5L
+/* Hard ceiling on a downloaded artifact regardless of the catalog's advertised
+   size, so a lying catalog cannot fill the (writable) SD and flip it read-only. */
+#define JW_PAKRAT_DOWNLOAD_ABS_MAX_BYTES (384LL * 1024LL * 1024LL)
+/* Slack added over the catalog's advertised size before aborting the transfer. */
+#define JW_PAKRAT_DOWNLOAD_SLACK_BYTES (64LL * 1024LL)
+
+typedef struct {
+    FILE *fp;
+    curl_off_t written;
+    curl_off_t ceiling;
+} jw_download_sink;
+
+static size_t jw__download_write(void *ptr, size_t size, size_t nmemb,
+                                 void *userdata) {
+    jw_download_sink *sink = (jw_download_sink *)userdata;
+    size_t bytes = size * nmemb;
+    if (size != 0 && bytes / size != nmemb) {
+        return 0;
+    }
+    if ((curl_off_t)bytes > sink->ceiling - sink->written) {
+        /* Returning short of nmemb aborts the transfer (CURLE_WRITE_ERROR). */
+        return 0;
+    }
+    size_t got = fwrite(ptr, 1, bytes, sink->fp);
+    sink->written += (curl_off_t)got;
+    return got;
+}
 
 static int jw__ensure_curl(void) {
     if (jw__curl_ready) {
@@ -249,7 +277,8 @@ static const char *jw__json_string(const cJSON *obj, const char *key) {
     return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
 }
 
-static int jw__download_file(const char *url, const char *path) {
+static int jw__download_file(const char *url, const char *path,
+                             long long expected_size, int is_dev) {
     if (jw__ensure_curl() != 0) {
         return -1;
     }
@@ -257,6 +286,15 @@ static int jw__download_file(const char *url, const char *path) {
     if (snprintf(tmp, sizeof(tmp), "%s.partial", path) >= (int)sizeof(tmp) ||
         jw__mkdir_parent(path) != 0) {
         return -1;
+    }
+    /* Bound the transfer to the catalog's advertised size (plus a little slack),
+       clamped to an absolute ceiling. If the size is unknown (<= 0), fall back to
+       the absolute ceiling so the download is still bounded. */
+    curl_off_t ceiling = JW_PAKRAT_DOWNLOAD_ABS_MAX_BYTES;
+    if (expected_size > 0 &&
+        expected_size <=
+            JW_PAKRAT_DOWNLOAD_ABS_MAX_BYTES - JW_PAKRAT_DOWNLOAD_SLACK_BYTES) {
+        ceiling = (curl_off_t)(expected_size + JW_PAKRAT_DOWNLOAD_SLACK_BYTES);
     }
     FILE *fp = fopen(tmp, "wb");
     if (!fp) {
@@ -268,16 +306,30 @@ static int jw__download_file(const char *url, const char *path) {
         unlink(tmp);
         return -1;
     }
+    jw_download_sink sink = {fp, 0, ceiling};
     char error[CURL_ERROR_SIZE] = {0};
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
     jw__configure_curl_ca(curl);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, JW_PAKRAT_MAX_REDIRS);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, is_dev ? "http,https" : "https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR,
+                     is_dev ? "http,https" : "https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS,
+                     is_dev ? (CURLPROTO_HTTPS | CURLPROTO_HTTP) : CURLPROTO_HTTPS);
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS,
+                     is_dev ? (CURLPROTO_HTTPS | CURLPROTO_HTTP) : CURLPROTO_HTTPS);
+#endif
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, ceiling);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, JW_PAKRAT_CONNECT_TIMEOUT_S);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, JW_PAKRAT_LOW_SPEED_LIMIT_BPS);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, JW_PAKRAT_LOW_SPEED_TIME_S);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, jw__download_write);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "jawaka-pakrat/1");
     CURLcode rc = curl_easy_perform(curl);
     long http = 0;
@@ -450,7 +502,16 @@ int jw_pakrat_rescan(const jw_pakrat_context *ctx) {
     if (jw__validate_context(ctx) != 0 || jw__mkdir_parent(ctx->db_path) != 0) {
         return -1;
     }
-    setenv("PLATFORM", ctx->platform, 1);
+    /* jw_scan_library reads getenv("PLATFORM"); install/uninstall run this on a
+       worker thread while the render thread is live, and POSIX setenv is not
+       thread-safe against a concurrent getenv. ctx->platform is the compiled
+       platform id (process-wide constant), so only write when the value is
+       actually missing or wrong -- the steady-state rescan then performs no env
+       mutation and races nothing. */
+    const char *cur_platform = getenv("PLATFORM");
+    if (!cur_platform || strcmp(cur_platform, ctx->platform) != 0) {
+        setenv("PLATFORM", ctx->platform, 1);
+    }
     sqlite3 *db = NULL;
     if (jw_db_open(ctx->db_path, &db) != 0 || !db) {
         return -1;
@@ -466,7 +527,8 @@ int jw_pakrat_rescan(const jw_pakrat_context *ctx) {
     return rc;
 }
 
-int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
+int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id,
+                          int allow_adopt) {
     if (jw__validate_context(ctx) != 0 || !store_id || !store_id[0]) {
         return -1;
     }
@@ -527,8 +589,8 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
             (int)sizeof(target_tmp)) {
         goto cleanup;
     }
-    if (jw__path_exists(target) && install_row != 0) {
-        fprintf(stderr, "target exists without Pak Rat ownership; adoption is deferred\n");
+    if (jw__path_exists(target) && install_row != 0 && !allow_adopt) {
+        fprintf(stderr, "target exists without Pak Rat ownership; adoption requires consent\n");
         goto cleanup;
     }
     if (install_row == 0 && strcmp(existing.install_path, pkg.install_path) != 0) {
@@ -553,7 +615,8 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id) {
                    store_id, pkg.version, pkg.install_path,
                    pkg.artifact_url, pkg.artifact_sha256, pkg.artifact_size);
     printf("download: %s\n", pkg.artifact_url);
-    if (jw__download_file(pkg.artifact_url, artifact_path) != 0) {
+    if (jw__download_file(pkg.artifact_url, artifact_path, pkg.artifact_size,
+                          is_dev) != 0) {
         fprintf(stderr, "download failed\n");
         goto cleanup;
     }

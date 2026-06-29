@@ -22,7 +22,8 @@ typedef enum {
     JW_PAKRAT_APP_AVAILABLE = 0,
     JW_PAKRAT_APP_INSTALLED,
     JW_PAKRAT_APP_UPDATE_AVAILABLE,
-    JW_PAKRAT_APP_STALE
+    JW_PAKRAT_APP_STALE,
+    JW_PAKRAT_APP_UNMANAGED      /* present on disk but not installed by Pak Rat */
 } jw_pakrat_app_status;
 
 typedef struct {

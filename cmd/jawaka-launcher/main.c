@@ -156,6 +156,8 @@ typedef struct {
     int                pakrat_load_rc;
     char               pakrat_message[160];
     bool               pakrat_open;
+    bool               pakrat_detail_open;     /* drilled into a pak's full detail page */
+    cat_scroll_state   pakrat_detail_scroll;
     cat_list_state     pakrat_list;
     jw_game_entry     *games;
     int                game_count;
@@ -1369,6 +1371,7 @@ static const char *jw__pakrat_status_label(jw_pakrat_app_status status) {
         case JW_PAKRAT_APP_INSTALLED:        return "Installed";
         case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Update";
         case JW_PAKRAT_APP_STALE:            return "Stale";
+        case JW_PAKRAT_APP_UNMANAGED:        return "Manual";
         default:                             return "";
     }
 }
@@ -1385,6 +1388,7 @@ static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *ap
         case JW_PAKRAT_APP_INSTALLED:        return "Reinstall";
         case JW_PAKRAT_APP_UPDATE_AVAILABLE: return "Update";
         case JW_PAKRAT_APP_STALE:            return "Restore";
+        case JW_PAKRAT_APP_UNMANAGED:        return "Install";
         default:                             return "Select";
     }
 }
@@ -1579,61 +1583,31 @@ static void jw__render_apps(const jw_launcher_state *state,
     }
 }
 
+/* List-page preview pane: just the pak's description. The name is already in the
+   list on the left and the metadata lives on the detail page (A), so this pane
+   only carries the blurb. Clipped to the box so a long description can't bleed;
+   the full text is always readable on the detail page. */
 static void jw__draw_pakrat_detail(const jw_launcher_state *state,
                                    const jw_pakrat_app_state *app,
                                    int detail_x, int detail_y,
                                    int detail_w, int detail_h) {
     (void)state;
     ap_theme *theme = cat_get_theme();
-    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
 
     cat_draw_rounded_rect(detail_x, detail_y, detail_w, detail_h, CAT_S(8),
                           cat_hex_to_color("#ffffff10"));
-    if (!app) {
+    if (!app || !app->package.summary[0]) {
         return;
     }
 
     int pad = CAT_S(18);
-    int x = detail_x + pad;
-    int y = detail_y + pad;
-    int max_w = detail_w - pad * 2;
-
-    cat_draw_text_ellipsized(large, app->package.name,
-                             x, y, theme->text, max_w);
-    y += TTF_FontHeight(large) + CAT_S(8);
-
-    const char *status = jw__pakrat_status_label(app->status);
-    cat_draw_text(small, status, x, y,
-                  app->status == JW_PAKRAT_APP_STALE ? theme->highlight : theme->hint);
-    y += TTF_FontHeight(small) + CAT_S(16);
-
-    if (app->package.summary[0]) {
-        cat_draw_text_wrapped(body, app->package.summary,
-                              x, y, max_w, theme->text, CAT_ALIGN_LEFT);
-        y += cat_measure_wrapped_text_height(body, app->package.summary, max_w) +
-             CAT_S(18);
-    }
-
-    char line[768];
-    snprintf(line, sizeof(line), "Catalog version: %s", app->package.version);
-    cat_draw_text_ellipsized(small, line, x, y, theme->hint, max_w);
-    y += TTF_FontHeight(small) + CAT_S(8);
-
-    snprintf(line, sizeof(line), "Installed version: %s",
-             app->installed_version[0] ? app->installed_version : "-");
-    cat_draw_text_ellipsized(small, line, x, y, theme->hint, max_w);
-    y += TTF_FontHeight(small) + CAT_S(8);
-
-    snprintf(line, sizeof(line), "Path: Apps/%s", app->package.install_path);
-    cat_draw_text_ellipsized(small, line, x, y, theme->hint, max_w);
-    y += TTF_FontHeight(small) + CAT_S(8);
-
-    if (app->managed) {
-        cat_draw_text_ellipsized(small, "Release-managed path",
-                                 x, y, theme->hint, max_w);
-    }
+    SDL_Rect clip = { detail_x, detail_y, detail_w, detail_h };
+    SDL_RenderSetClipRect(cat_get_renderer(), &clip);
+    cat_draw_text_wrapped(body, app->package.summary,
+                          detail_x + pad, detail_y + pad, detail_w - pad * 2,
+                          theme->text, CAT_ALIGN_LEFT);
+    SDL_RenderSetClipRect(cat_get_renderer(), NULL);
 }
 
 static int jw__pakrat_title_h(void) {
@@ -1644,7 +1618,7 @@ static int jw__pakrat_header_h(void) {
     return cat_get_tab_bar_height() + jw__pakrat_title_h();
 }
 
-static int jw__draw_pakrat_header(const jw_launcher_state *state) {
+static int jw__draw_pakrat_header(const jw_launcher_state *state, const char *title) {
     int tab_h = jw__draw_menu_tab_bar(state);
     ap_theme *theme = cat_get_theme();
     TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
@@ -1667,7 +1641,7 @@ static int jw__draw_pakrat_header(const jw_launcher_state *state) {
         }
     }
 
-    cat_draw_text_ellipsized(large, "Pak Rat",
+    cat_draw_text_ellipsized(large, title,
                              margin + CAT_S(4), y,
                              theme->text, title_max);
     cat_draw_rect(margin, y + large_h + CAT_S(4), w, 1,
@@ -1675,41 +1649,95 @@ static int jw__draw_pakrat_header(const jw_launcher_state *state) {
     return tab_h + jw__pakrat_title_h();
 }
 
+typedef struct {
+    const jw_pakrat_app_state *app;
+    TTF_Font *body;
+    TTF_Font *small;
+} jw__pakrat_detail_ctx;
+
+/* Natural height of the drilled-in detail content (status + full description +
+   the version/path rows). Mirrors the layout jw__draw_pakrat_detail_content
+   draws, so the scroll view bounds it correctly. */
+static int jw__pakrat_detail_content_h(const jw_pakrat_app_state *app,
+                                       TTF_Font *body, TTF_Font *small, int w) {
+    int h = TTF_FontHeight(small) + CAT_S(14);   /* status line */
+    if (app->package.summary[0]) {
+        h += cat_measure_wrapped_text_height(body, app->package.summary, w) + CAT_S(18);
+    }
+    int row_h = TTF_FontHeight(small) + CAT_S(8);
+    int rows = 3 + (app->managed ? 1 : 0);        /* catalog / installed / path [/ managed] */
+    h += rows * row_h;
+    return h;
+}
+
+/* Scroll-view content callback for the Pak Rat detail page: status, the full
+   description (it scrolls, so nothing is clipped or shrunk), then the
+   version/path metadata. */
+static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
+    const jw__pakrat_detail_ctx *c = (const jw__pakrat_detail_ctx *)user;
+    const jw_pakrat_app_state *app = c->app;
+    ap_theme *theme = cat_get_theme();
+    int cy = y;
+
+    const char *status = jw__pakrat_status_label(app->status);
+    cat_draw_text(c->small, status, x, cy,
+                  app->status == JW_PAKRAT_APP_STALE ? theme->highlight : theme->hint);
+    cy += TTF_FontHeight(c->small) + CAT_S(14);
+
+    if (app->package.summary[0]) {
+        cat_draw_text_wrapped(c->body, app->package.summary, x, cy, w,
+                              theme->text, CAT_ALIGN_LEFT);
+        cy += cat_measure_wrapped_text_height(c->body, app->package.summary, w) +
+              CAT_S(18);
+    }
+
+    int row_h = TTF_FontHeight(c->small) + CAT_S(8);
+    char line[768];
+    snprintf(line, sizeof(line), "Catalog version: %s", app->package.version);
+    cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
+    cy += row_h;
+    snprintf(line, sizeof(line), "Installed version: %s",
+             app->installed_version[0] ? app->installed_version : "-");
+    cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
+    cy += row_h;
+    snprintf(line, sizeof(line), "Path: Apps/%s", app->package.install_path);
+    cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
+    cy += row_h;
+    if (app->managed) {
+        cat_draw_text_ellipsized(c->small, "Release-managed path", x, cy, theme->hint, w);
+    }
+}
+
+/* The drilled-in full-info page for one pak: the same tab bar + a pak-name title
+   as the store header, with a scrollable body so a long description and all the
+   metadata are fully readable inside the content box. */
+static void jw__render_pakrat_detail_page(const jw_launcher_state *state,
+                                          const jw_pakrat_app_state *app) {
+    int header_h = jw__draw_pakrat_header(state, app->package.name);
+
+    int margin = CAT_S(12);
+    int hints_h = jw__footer_height(state);
+    int hint_pad = (hints_h > 0) ? margin : 0;
+    int x = margin;
+    int w = cat_get_screen_width() - margin * 2;
+    int top = header_h + margin;
+    int h = cat_get_screen_height() - hints_h - hint_pad - top;
+
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int content_h = jw__pakrat_detail_content_h(app, body, small, w);
+
+    jw__pakrat_detail_ctx ctx = { app, body, small };
+    cat_draw_scroll_view(x, top, w, h, content_h,
+                         (cat_scroll_state *)&state->pakrat_detail_scroll,
+                         jw__draw_pakrat_detail_content, &ctx);
+}
+
 static void jw__render_pakrat_store(const jw_launcher_state *state) {
     cat_clear_screen();
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
-
-    int header_h = jw__draw_pakrat_header(state);
     int margin = CAT_S(12);
-
-    SDL_Rect list, detail;
-    int item_h;
-    jw__browse_boxes(state, header_h, state->pakrat_app_count,
-                     &state->pakrat_list, &list, &detail, &item_h);
-
-    if (state->pakrat_app_count > 0 &&
-        state->pakrat_list.cursor < state->pakrat_app_count) {
-        jw__draw_pakrat_detail(state, &state->pakrat_apps[state->pakrat_list.cursor],
-                               detail.x, detail.y, detail.w, detail.h);
-    } else {
-        cat_draw_rounded_rect(detail.x, detail.y, detail.w, detail.h, CAT_S(8),
-            cat_hex_to_color("#ffffff18"));
-    }
-
-    if (state->pakrat_app_count == 0) {
-        const char *msg = state->pakrat_message[0]
-            ? state->pakrat_message
-            : "No Pak Rat apps found";
-        cat_draw_text_wrapped(body, msg,
-            list.x + CAT_S(8), list.y + CAT_S(8),
-            list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
-    } else {
-        jw__pakrat_ctx ctx = { state->pakrat_apps };
-        cat_draw_list_pane(list.x, list.y, list.w, list.h,
-            state->pakrat_app_count, &state->pakrat_list, item_h,
-            jw__draw_pakrat_item, &ctx);
-    }
 
     const jw_pakrat_app_state *selected = NULL;
     if (state->pakrat_app_count > 0 &&
@@ -1717,16 +1745,58 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
         state->pakrat_list.cursor < state->pakrat_app_count) {
         selected = &state->pakrat_apps[state->pakrat_list.cursor];
     }
+    bool detail = state->pakrat_detail_open && selected != NULL;
+
+    if (detail) {
+        jw__render_pakrat_detail_page(state, selected);
+    } else {
+        int header_h = jw__draw_pakrat_header(state, "Pak Rat");
+
+        SDL_Rect list, image;
+        int item_h;
+        jw__browse_boxes(state, header_h, state->pakrat_app_count,
+                         &state->pakrat_list, &list, &image, &item_h);
+
+        if (selected) {
+            jw__draw_pakrat_detail(state, selected,
+                                   image.x, image.y, image.w, image.h);
+        } else {
+            cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
+                cat_hex_to_color("#ffffff18"));
+        }
+
+        if (state->pakrat_app_count == 0) {
+            const char *msg = state->pakrat_message[0]
+                ? state->pakrat_message
+                : "No Pak Rat apps found";
+            cat_draw_text_wrapped(body, msg,
+                list.x + CAT_S(8), list.y + CAT_S(8),
+                list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
+        } else {
+            jw__pakrat_ctx ctx = { state->pakrat_apps };
+            cat_draw_list_pane(list.x, list.y, list.w, list.h,
+                state->pakrat_app_count, &state->pakrat_list, item_h,
+                jw__draw_pakrat_item, &ctx);
+        }
+    }
+
     cat_footer_item footer[4];
     int footer_count = 0;
     footer[footer_count++] = (cat_footer_item){ CAT_BTN_X, "Refresh", false, JW_HINT("X") };
-    if (jw__pakrat_can_uninstall(selected)) {
-        footer[footer_count++] = (cat_footer_item){ CAT_BTN_Y, "Uninstall", false, JW_HINT("Y") };
+    if (detail) {
+        if (jw__pakrat_can_uninstall(selected)) {
+            footer[footer_count++] = (cat_footer_item){ CAT_BTN_Y, "Uninstall", false, JW_HINT("Y") };
+        }
+        footer[footer_count++] = (cat_footer_item){ CAT_BTN_B, "Back", true, JW_HINT("B") };
+        footer[footer_count++] = (cat_footer_item){
+            CAT_BTN_A, jw__pakrat_primary_action_label(selected), true, JW_HINT("A")
+        };
+    } else {
+        footer[footer_count++] = (cat_footer_item){ CAT_BTN_B, "Back", true, JW_HINT("B") };
+        footer[footer_count++] = (cat_footer_item){
+            CAT_BTN_A, "Details", selected != NULL, JW_HINT("A")
+        };
     }
-    footer[footer_count++] = (cat_footer_item){ CAT_BTN_B, "Back", true, JW_HINT("B") };
-    footer[footer_count++] = (cat_footer_item){
-        CAT_BTN_A, jw__pakrat_primary_action_label(selected), true, JW_HINT("A")
-    };
     jw__draw_footer(state, footer, footer_count);
     cat_present();
 }
@@ -3903,6 +3973,7 @@ static void jw__open_pakrat_store(jw_launcher_state *state) {
     int old_cursor = state->pakrat_list.cursor;
     state->menu_open = false;
     state->pakrat_open = true;
+    state->pakrat_detail_open = false;
     state->menu_tab = JW_SMTAB_ACTIONS;
     jw_settings_ui_close(&state->settings);
 
@@ -4432,6 +4503,7 @@ typedef struct {
     jw_pakrat_context ctx;
     char store_id[128];
     jw_pakrat_ui_action action;
+    int allow_adopt;   /* install may replace a manually-installed pak */
 } jw_pakrat_ui_job;
 
 static int jw__pakrat_ui_worker(void *userdata) {
@@ -4442,7 +4514,7 @@ static int jw__pakrat_ui_worker(void *userdata) {
     if (job->action == JW_PAKRAT_UI_UNINSTALL) {
         return jw_pakrat_uninstall_app(&job->ctx, job->store_id);
     }
-    return jw_pakrat_install_app(&job->ctx, job->store_id);
+    return jw_pakrat_install_app(&job->ctx, job->store_id, job->allow_adopt);
 }
 
 static bool jw__confirm_pakrat_uninstall(const jw_pakrat_app_state *app) {
@@ -4477,6 +4549,30 @@ static bool jw__confirm_pakrat_reinstall(const jw_pakrat_app_state *app) {
     cat_footer_item footer[] = {
         { .button = CAT_BTN_B, .label = "Cancel",    .is_confirm = false },
         { .button = CAT_BTN_A, .label = "Reinstall", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+/* Confirm taking over a pak that is already on disk from a manual install.
+   Replacing a file the user placed themselves should never be silent. */
+static bool jw__confirm_pakrat_adopt(const jw_pakrat_app_state *app) {
+    if (!app) {
+        return false;
+    }
+    char message[512];
+    snprintf(message, sizeof(message),
+             "%.180s is already installed manually.\n\nReplace it with the Pak Rat "
+             "version so it can be updated? User data is preserved.",
+             app->package.name[0] ? app->package.name : app->package.id);
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel",  .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Replace", .is_confirm = true },
     };
     cat_message_opts opts = {
         .message = message,
@@ -4545,6 +4641,7 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
         jw__set_pakrat_message(state, "%.120s is release-managed", name);
         return;
     }
+    bool allow_adopt = false;
     if (action == JW_PAKRAT_UI_UNINSTALL) {
         if (!jw__pakrat_can_uninstall(&app)) {
             jw__set_pakrat_message(state, "%.120s is not installed by Pak Rat", name);
@@ -4554,6 +4651,12 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
             jw__set_pakrat_message(state, "Uninstall cancelled: %.120s", name);
             return;
         }
+    } else if (app.status == JW_PAKRAT_APP_UNMANAGED) {
+        if (!jw__confirm_pakrat_adopt(&app)) {
+            jw__set_pakrat_message(state, "Install cancelled: %.120s", name);
+            return;
+        }
+        allow_adopt = true;
     } else if (app.status == JW_PAKRAT_APP_INSTALLED &&
                !jw__confirm_pakrat_reinstall(&app)) {
         jw__set_pakrat_message(state, "Reinstall cancelled: %.120s", name);
@@ -4570,6 +4673,7 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     memset(&job, 0, sizeof(job));
     job.ctx = ctx;
     job.action = action;
+    job.allow_adopt = allow_adopt ? 1 : 0;
     snprintf(job.store_id, sizeof(job.store_id), "%s", app.package.id);
 
     char detail[320];
@@ -5535,6 +5639,8 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
             bool theme_changed = false;
             jw_settings_ui_handle_button(ui, ev.button, status, sizeof(status),
                                          &theme_changed);
+            if (theme_changed)
+                jw__rebuild_for_layout(state);
             if (!jw_settings_ui_is_open(ui) ||
                 jw_settings_ui_screen(ui) == JW_SETTINGS_HOME) {
                 running = false;
@@ -5708,6 +5814,64 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
         return;
     }
 
+    /* Drilled into a pak's full detail page: the d-pad scrolls the body and the
+       install/uninstall actions live here; B returns to the store list. */
+    if (state->pakrat_detail_open) {
+        int line_h = TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + CAT_S(8);
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_scroll_state_move(&state->pakrat_detail_scroll, -line_h);
+                break;
+            case CAT_BTN_DOWN:
+                cat_scroll_state_move(&state->pakrat_detail_scroll, +line_h);
+                break;
+            case CAT_BTN_LEFT:
+                cat_scroll_state_move(&state->pakrat_detail_scroll, -line_h * 4);
+                break;
+            case CAT_BTN_RIGHT:
+                cat_scroll_state_move(&state->pakrat_detail_scroll, +line_h * 4);
+                break;
+            case CAT_BTN_A:
+                jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_INSTALL);
+                break;
+            case CAT_BTN_Y:
+                jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_UNINSTALL);
+                break;
+            case CAT_BTN_X: {
+                int old_cursor = state->pakrat_list.cursor;
+                jw__load_pakrat_store(state);
+                cat_list_state_jump(&state->pakrat_list, old_cursor,
+                                    state->pakrat_app_count);
+                snprintf(state->status, sizeof(state->status), "%s",
+                         state->pakrat_message[0]
+                            ? state->pakrat_message
+                            : "Pak Rat refreshed");
+                break;
+            }
+            case CAT_BTN_B:
+                state->pakrat_detail_open = false;
+                state->status[0] = '\0';
+                break;
+            case CAT_BTN_L1:
+            case CAT_BTN_R1:
+                state->pakrat_detail_open = false;
+                state->pakrat_open = false;
+                state->menu_open = true;
+                state->status[0] = '\0';
+                jw__switch_system_tab(state, button == CAT_BTN_L1 ? -1 : 1);
+                break;
+            case CAT_BTN_MENU:
+                state->pakrat_detail_open = false;
+                state->pakrat_open = false;
+                state->menu_open = false;
+                state->status[0] = '\0';
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->pakrat_list, -1, state->pakrat_app_count);
@@ -5729,10 +5893,13 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
             jw__switch_system_tab(state, button == CAT_BTN_L1 ? -1 : 1);
             break;
         case CAT_BTN_A:
-            jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_INSTALL);
-            break;
-        case CAT_BTN_Y:
-            jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_UNINSTALL);
+            if (state->pakrat_app_count > 0 &&
+                state->pakrat_list.cursor >= 0 &&
+                state->pakrat_list.cursor < state->pakrat_app_count) {
+                state->pakrat_detail_open = true;
+                cat_scroll_state_init(&state->pakrat_detail_scroll);
+                state->status[0] = '\0';
+            }
             break;
         case CAT_BTN_X: {
             int old_cursor = state->pakrat_list.cursor;

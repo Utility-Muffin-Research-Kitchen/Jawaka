@@ -14,9 +14,13 @@ typedef struct {
 static void jw__usage(const char *argv0) {
     fprintf(stderr,
         "usage: %s [options] install <store-id>\n"
+        "       %s [options] adopt <store-id>\n"
         "       %s [options] uninstall <store-id>\n"
         "       %s [options] rescan\n"
         "       %s [options] list\n"
+        "\n"
+        "  install replaces only paks Pak Rat owns; adopt also takes over a pak\n"
+        "  already present on disk from a manual install.\n"
         "\n"
         "options:\n"
         "  --platform <id>        target platform namespace (default: PLATFORM or mac)\n"
@@ -25,7 +29,7 @@ static void jw__usage(const char *argv0) {
         "  --db <path>            library DB (default: <state-dir>/library.db)\n"
         "  --platform-root <path> active platform manifest root (default: <root>/.system/leaf/platforms/<platform>)\n"
         "  --socket <path>        optional jawakad socket to notify after install/uninstall\n",
-        argv0, argv0, argv0, argv0);
+        argv0, argv0, argv0, argv0, argv0);
 }
 
 static const char *jw__env_or_null(const char *name) {
@@ -201,7 +205,9 @@ int main(int argc, char **argv) {
 
     int rc = -1;
     if (strcmp(opts.action, "install") == 0) {
-        rc = jw_pakrat_install_app(&opts.ctx, opts.store_id);
+        rc = jw_pakrat_install_app(&opts.ctx, opts.store_id, 0);
+    } else if (strcmp(opts.action, "adopt") == 0) {
+        rc = jw_pakrat_install_app(&opts.ctx, opts.store_id, 1);
     } else if (strcmp(opts.action, "uninstall") == 0) {
         rc = jw_pakrat_uninstall_app(&opts.ctx, opts.store_id);
     } else if (strcmp(opts.action, "rescan") == 0) {
