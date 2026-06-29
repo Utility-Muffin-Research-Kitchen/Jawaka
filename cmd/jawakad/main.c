@@ -998,26 +998,65 @@ static void jw__refresh_platform_cache(jw_daemon_state *state) {
     jw__cache_platform_status(state, &status);
 }
 
-/* Export stored RetroAchievements credentials (Settings > Accounts) so the
-   RetroArch session config writer can enable cheevos; RetroArch validates
-   them with the service at launch. No credentials = leave whatever the user
-   configured inside RetroArch itself untouched. */
-static void jw__publish_cheevos_env(jw_daemon_state *state) {
-    char user[64] = "";
-    char pass[128] = "";
+/* Stored RetroAchievements credentials (Settings > Accounts). Resolved from the
+   DB in the daemon parent, then applied to the environment of the forked
+   RetroArch child only — never the long-lived daemon — so the plaintext
+   password is not inherited by the launcher, OSD, ledd, or app-store apps. */
+typedef struct {
+    char user[64];
+    char pass[128];
+} jw_cheevos_creds;
+
+/* Read the credentials from the DB. Opening SQLite happens in the parent before
+   fork(); the resulting struct is applied child-side via jw__cheevos_apply_env. */
+static void jw__cheevos_resolve(jw_daemon_state *state, jw_cheevos_creds *creds) {
+    creds->user[0] = '\0';
+    creds->pass[0] = '\0';
     if (state && state->db_path) {
         (void)jw_db_get_setting(state->db_path, "retroachievements_user",
-                                user, sizeof(user));
+                                creds->user, sizeof(creds->user));
         (void)jw_db_get_setting(state->db_path, "retroachievements_pass",
-                                pass, sizeof(pass));
+                                creds->pass, sizeof(creds->pass));
     }
-    if (user[0] && pass[0]) {
-        setenv("JAWAKA_CHEEVOS_USERNAME", user, 1);
-        setenv("JAWAKA_CHEEVOS_PASSWORD", pass, 1);
+}
+
+/* Apply the credentials to the CURRENT process environment. The RetroArch
+   session config writer (jw_prepare_retroarch_config) reads JAWAKA_CHEEVOS_* via
+   getenv to put cheevos_username/password into the per-launch config that
+   RetroArch validates at launch. Empty credentials clear the vars, leaving
+   whatever the user configured inside RetroArch untouched. Because the writer
+   runs in the daemon parent, callers there must clear the env again right after
+   the config is written so the plaintext password does not persist. */
+static void jw__cheevos_apply_env(const jw_cheevos_creds *creds) {
+    if (creds->user[0] && creds->pass[0]) {
+        setenv("JAWAKA_CHEEVOS_USERNAME", creds->user, 1);
+        setenv("JAWAKA_CHEEVOS_PASSWORD", creds->pass, 1);
     } else {
         unsetenv("JAWAKA_CHEEVOS_USERNAME");
         unsetenv("JAWAKA_CHEEVOS_PASSWORD");
     }
+}
+
+/* Drop any cheevos credentials from the current process environment. Paired with
+   jw__cheevos_apply_env around a config write in the parent. */
+static void jw__cheevos_clear_env(void) {
+    unsetenv("JAWAKA_CHEEVOS_USERNAME");
+    unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+}
+
+/* True when the pak dir refers to the bundled RetroArch app — the one app whose
+   runner builds its own RetroArch config and so legitimately consumes the
+   cheevos credentials. Case-insensitive match on "retroarch". */
+static bool jw__pak_dir_is_retroarch(const char *pak_dir) {
+    if (!pak_dir || !pak_dir[0]) {
+        return false;
+    }
+    for (const char *p = pak_dir; *p; p++) {
+        if ((*p == 'r' || *p == 'R') && strncasecmp(p, "retroarch", 9) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void jw__publish_audio_env(jw_daemon_state *state) {
@@ -2439,6 +2478,13 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
                     switcher_transition ? "true" : "false");
     }
 
+    /* Drop the per-session runtime config; it holds the plaintext cheevos
+       password and is regenerated on the next launch. Ignore errors (the file
+       may already be gone). */
+    if (session->config_path[0]) {
+        (void)unlink(session->config_path);
+    }
+
     /* Record recents + playtime for real sessions only. A crash at launch gives
        runtime_s=0, so it never pollutes the list or playtime totals. The session
        stores the same path form that games.rom_path used at launch. */
@@ -3726,6 +3772,35 @@ static void jw__handle_osd_exit(jw_daemon_state *state) {
     }
 }
 
+static void jw__apply_led_config(jw_daemon_state *state, const jw_led_config *led);
+
+static void jw__handle_ledd_exit(jw_daemon_state *state) {
+    if (!state || state->ledd_pid <= 0) {
+        return;
+    }
+
+    int status = 0;
+    pid_t waited = waitpid(state->ledd_pid, &status, WNOHANG);
+    if (waited == 0 || waited < 0) {
+        return;
+    }
+
+    state->ledd_pid = -1;
+    if (WIFEXITED(status)) {
+        jw_log_info("jawaka-ledd exited status=%d", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        jw_log_warn("jawaka-ledd terminated signal=%d", WTERMSIG(status));
+    }
+
+    /* Re-apply the cached LED config so a mid-session crash recovers the effect.
+       jw__apply_led_config calls jw__stop_ledd first, which no-ops now that
+       ledd_pid is cleared. */
+    if (!state->shutdown_requested && !g_shutdown_requested &&
+        state->led_configured) {
+        jw__apply_led_config(state, &state->cached_led);
+    }
+}
+
 static int jw__osd_show_brightness(jw_daemon_state *state, int percent) {
     if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
         return -1;
@@ -4366,13 +4441,20 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
     jw__reconcile_audio(state, "app-launch", false);
     jw__publish_audio_env(state);
-    jw__publish_cheevos_env(state);   /* the RetroArch.pak runner builds its own config */
     (void)jw__perf_apply_frontend(state, "app-launch");
 
     /* Resolve appearance from the DB here in the parent — opening SQLite between
        fork() and execv() is not fork-safe on macOS (os_log landmine). */
     jw_appearance_env appearance;
     jw_appearance_resolve(state->db_path, &appearance);
+
+    /* The RetroArch.pak runner builds its own RA config (reading JAWAKA_CHEEVOS_*),
+       so it legitimately needs the cheevos creds; every other app must not see
+       them. Resolve in the parent (SQLite open is not fork-safe post-fork) and
+       apply child-side only for the RetroArch app. */
+    jw_cheevos_creds cheevos;
+    jw__cheevos_resolve(state, &cheevos);
+    bool app_is_retroarch = jw__pak_dir_is_retroarch(state->pending_app_pak_dir);
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -4386,6 +4468,14 @@ static int jw__spawn_app(jw_daemon_state *state) {
     if (pid == 0) {
         jw_appearance_apply_env(&appearance);
         jw__publish_source_content_env(app_source);
+        /* Only the RetroArch runner gets cheevos creds (it writes its own RA
+           config); every other app has them explicitly cleared so the plaintext
+           password never reaches third-party app code. */
+        if (app_is_retroarch) {
+            jw__cheevos_apply_env(&cheevos);
+        } else {
+            jw__cheevos_clear_env();
+        }
         if (chdir(pak_abs) != 0) {
             perror("chdir");
             _exit(127);
@@ -4624,7 +4714,15 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         strcmp(getenv("JAWAKA_AUDIO_OUTPUT") ? getenv("JAWAKA_AUDIO_OUTPUT") : "",
                "BLUETOOTH") == 0;
     jw__publish_display_env(state);
-    jw__publish_cheevos_env(state);
+
+    /* Resolve cheevos creds here (SQLite open is not fork-safe between fork and
+       execv). They are applied to the parent env only briefly around the config
+       write below — jw_prepare_retroarch_config reads JAWAKA_CHEEVOS_* to bake
+       cheevos_username/password into the per-launch config — then cleared, so the
+       plaintext password reaches the RA config but never persists in the daemon
+       env or leaks to later children. */
+    jw_cheevos_creds cheevos;
+    jw__cheevos_resolve(state, &cheevos);
 
     if (!retroarch || !jw__path_exists(retroarch)) {
         jw_log_error("RetroArch binary missing: %s", retroarch ? retroarch : "(null)");
@@ -4684,6 +4782,9 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
        is still excluded separately via switcher_transition at the write-back.) */
     bool persist_config = true;
     long long config_start_ms = jw__monotonic_ms();
+    /* Bake cheevos creds into the config write, then clear them from the parent
+       env immediately so the plaintext password never persists in the daemon. */
+    jw__cheevos_apply_env(&cheevos);
     runtime_config = jw_prepare_retroarch_config(state->runtime_dir,
                                                 source_root,
                                                 core,
@@ -4691,6 +4792,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                                                 persist_config,
                                                 config_error,
                                                 sizeof(config_error));
+    jw__cheevos_clear_env();
     jw__restore_env(storage_env, 3);
     if (!runtime_config) {
         jw_log_error("could not prepare RetroArch config: %s",
@@ -6582,6 +6684,7 @@ int main(int argc, char *argv[]) {
         jw__tick_in_game_menu_prewarm(&state);
         jw__handle_menu_exit(&state);
         jw__handle_osd_exit(&state);
+        jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
         unsigned audio_events = jw_platform_audio_tick(&state.platform);
         if (audio_events & JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED) {

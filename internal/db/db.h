@@ -164,7 +164,8 @@ typedef struct {
 } jw_db_setting_query;
 
 /* Set a game's image_path by rom_path (scrape worker: art landed outside a
-   scan). Returns 0 on success, 1 when no game row matched, -1 on error. */
+   scan). Returns 0 on success, 1 when no game row matched, -2 on a transient
+   lock (SQLITE_BUSY/LOCKED, caller may retry), -1 on any other error. */
 int  jw_db_set_game_image(const char *db_path, const char *rom_path,
                           const char *image_path);
 

@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -30,6 +31,18 @@ static void jw__set_cloexec(int fd) {
     if (flags >= 0) {
         fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
     }
+}
+
+static void jw__set_io_timeout(int fd, int seconds) {
+    struct timeval tv;
+    if (fd < 0) {
+        return;
+    }
+
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
 static int jw__write_all(int fd, const void *buf, size_t len) {
@@ -117,6 +130,10 @@ int jw_ipc_server_listen(const char *socket_path, jw_ipc_server **out) {
         return -1;
     }
 
+    if (chmod(socket_path, 0600) != 0) {
+        /* Best effort: a wider mode is undesirable but not fatal. */
+    }
+
     if (listen(fd, 8) != 0) {
         close(fd);
         unlink(socket_path);
@@ -177,6 +194,7 @@ int jw_ipc_server_accept(jw_ipc_server *server, jw_ipc_client **out_client, int 
         return -1;
     }
     jw__set_cloexec(client_fd);
+    jw__set_io_timeout(client_fd, 5);
 
     jw_ipc_client *client = (jw_ipc_client *)calloc(1, sizeof(*client));
     if (!client) {
@@ -226,6 +244,11 @@ int jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out) {
         close(fd);
         return -1;
     }
+
+    /* Bound every request so the daemon (and CLI tools) can never block
+       forever on a wedged peer. 30s leaves headroom for a synchronous
+       scan-library reply while still guaranteeing forward progress. */
+    jw__set_io_timeout(fd, 30);
 
     jw_ipc_client *client = (jw_ipc_client *)calloc(1, sizeof(*client));
     if (!client) {

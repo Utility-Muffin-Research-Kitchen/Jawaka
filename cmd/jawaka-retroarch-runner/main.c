@@ -197,6 +197,10 @@ static int jw__launch_menu(void) {
         goto done;
     }
 
+    /* Drop the runtime config now that it is backed up; it holds the plaintext
+       cheevos password. Ignore errors (the file may already be gone). */
+    (void)unlink(runtime_config);
+
     if (WIFEXITED(status)) {
         exit_code = WEXITSTATUS(status);
     } else if (WIFSIGNALED(status)) {

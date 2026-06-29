@@ -818,30 +818,39 @@ static int jw__mlp1_power_transition_async(int cmd) {
         return -1;
     }
     if (pid == 0) {
-        usleep(250000);   /* let the IPC reply flush and the menu close */
+        /* Double-fork: the grandchild reparents to init and is auto-reaped, so
+           the long-lived daemon leaves no zombie. The intermediate child exits
+           immediately and the original parent reaps only it (below). */
+        pid_t grandchild = fork();
+        if (grandchild == 0) {
+            usleep(250000);   /* let the IPC reply flush and the menu close */
 
-        /* Take the filesystems down cleanly before the abrupt reboot(2). The SD
-           is FAT32 and busy — our own binary executes from it and the library DB
-           is open — so `mount -o remount,ro` returns EBUSY. The kernel's
-           emergency remount-ro (magic SysRq 'u') forces every mounted fs
-           read-only regardless of open files, flushing the FAT and directory
-           entries so an immediate reboot/power-off can't corrupt the card.
-           Without this, repeated reboots have produced FAT32 corruption.
-           Sequence mirrors REISUB's tail: enable sysrq, Sync, Unmount(ro), Sync. */
-        (void)jw__write_text_file("/proc/sys/kernel/sysrq", "1\n");
-        sync();
-        (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
-        (void)jw__write_text_file("/proc/sysrq-trigger", "u\n");   /* remount-ro all */
-        (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
-        usleep(400000);   /* let the emergency remount-ro and flush settle */
+            /* Take the filesystems down cleanly before the abrupt reboot(2). The SD
+               is FAT32 and busy — our own binary executes from it and the library DB
+               is open — so `mount -o remount,ro` returns EBUSY. The kernel's
+               emergency remount-ro (magic SysRq 'u') forces every mounted fs
+               read-only regardless of open files, flushing the FAT and directory
+               entries so an immediate reboot/power-off can't corrupt the card.
+               Without this, repeated reboots have produced FAT32 corruption.
+               Sequence mirrors REISUB's tail: enable sysrq, Sync, Unmount(ro), Sync. */
+            (void)jw__write_text_file("/proc/sys/kernel/sysrq", "1\n");
+            sync();
+            (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
+            (void)jw__write_text_file("/proc/sysrq-trigger", "u\n");   /* remount-ro all */
+            (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
+            usleep(400000);   /* let the emergency remount-ro and flush settle */
 
-        reboot(cmd);
-        /* reboot(2) only returns on failure; fall back to a magic SysRq reboot. */
-        sleep(1);
-        (void)jw__write_text_file("/proc/sysrq-trigger",
-                                  cmd == RB_POWER_OFF ? "o\n" : "b\n");
-        _exit(0);
+            reboot(cmd);
+            /* reboot(2) only returns on failure; fall back to a magic SysRq reboot. */
+            sleep(1);
+            (void)jw__write_text_file("/proc/sysrq-trigger",
+                                      cmd == RB_POWER_OFF ? "o\n" : "b\n");
+            _exit(0);
+        }
+        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
     }
+    int status = 0;
+    waitpid(pid, &status, 0);   /* reap the intermediate child only */
     return 0;
 }
 
@@ -1172,20 +1181,29 @@ static int jw__mlp1_set_refresh_rate(int hz) {
        launcher AND the OSD so jawakad respawns fresh ones that reconnect to the
        new compositor and repaint (both Wayland clients black-screen across a
        restart — the old OSD survives the kill of Weston but never redraws).
-       Detached child so the action returns to the caller immediately. */
+       Detached child so the action returns to the caller immediately. Double-fork
+       so the grandchild reparents to init and is auto-reaped (no zombie). */
     pid_t pid = fork();
     if (pid == 0) {
-        setsid();
-        int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
+        pid_t grandchild = fork();
+        if (grandchild == 0) {
+            setsid();
+            int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+            }
+            execl("/bin/sh", "sh", "-c",
+                  "/etc/init.d/S49weston restart; sleep 1; "
+                  "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
+                  (char *)NULL);
+            _exit(127);
         }
-        execl("/bin/sh", "sh", "-c",
-              "/etc/init.d/S49weston restart; sleep 1; "
-              "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
-              (char *)NULL);
-        _exit(127);
+        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
+    }
+    if (pid > 0) {
+        int status = 0;
+        waitpid(pid, &status, 0);   /* reap the intermediate child only */
     }
     return 0;
 }
@@ -1257,20 +1275,28 @@ static int jw__mlp1_set_hdmi_output(int mode) {
             JW_MLP1_WESTON_OVERRIDE_INI, modestr, rectline);
     }
 
+    /* Double-fork so the grandchild reparents to init and is auto-reaped (no
+       zombie); the original parent reaps only the intermediate child. */
     pid_t pid = fork();
     if (pid == 0) {
-        setsid();
-        int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
+        pid_t grandchild = fork();
+        if (grandchild == 0) {
+            setsid();
+            int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+            }
+            execl("/bin/sh", "sh", "-c", script, (char *)NULL);
+            _exit(127);
         }
-        execl("/bin/sh", "sh", "-c", script, (char *)NULL);
-        _exit(127);
+        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
     }
     if (pid < 0) {
         return -1;
     }
+    int status = 0;
+    waitpid(pid, &status, 0);   /* reap the intermediate child only */
     s_mlp1_hdmi_mode = mode;
     return 0;
 }
@@ -2137,12 +2163,23 @@ static int jw__mlp1_jack_input_state(void) {
             }
             close(f);
         }
+        if (fd < 0) {
+            /* Found nothing (e.g. the codec input device hasn't appeared yet at
+               boot) — reset to the "not probed" sentinel so the next call
+               re-scans instead of caching the miss forever. */
+            fd = -2;
+            return -1;
+        }
     }
     if (fd < 0) {
         return -1;
     }
     unsigned long bits[2] = {0};   /* SW_HEADPHONE_INSERT (2) lives in word 0 */
     if (ioctl(fd, EVIOCGSW(sizeof(bits)), bits) < 0) {
+        /* The cached node went stale (driver rebind, suspend/resume) — drop it
+           and reset to the "not probed" sentinel so the next call re-probes. */
+        close(fd);
+        fd = -2;
         return -1;
     }
     return (bits[0] >> SW_HEADPHONE_INSERT) & 1UL ? 1 : 0;
@@ -2820,18 +2857,27 @@ static int jw__mlp1_spawn_loong_power(void) {
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
-        chdir("/loong");
-        const char *old_ld = getenv("LD_LIBRARY_PATH");
-        char ld[512];
-        if (old_ld && old_ld[0]) {
-            snprintf(ld, sizeof(ld), "./:%s", old_ld);
-        } else {
-            snprintf(ld, sizeof(ld), "%s", "./");
+        /* Double-fork: the grandchild reparents to init and is auto-reaped, so
+           we leave no zombie. The intermediate exits immediately; the original
+           parent reaps only it (below). */
+        pid_t grandchild = fork();
+        if (grandchild == 0) {
+            chdir("/loong");
+            const char *old_ld = getenv("LD_LIBRARY_PATH");
+            char ld[512];
+            if (old_ld && old_ld[0]) {
+                snprintf(ld, sizeof(ld), "./:%s", old_ld);
+            } else {
+                snprintf(ld, sizeof(ld), "%s", "./");
+            }
+            setenv("LD_LIBRARY_PATH", ld, 1);
+            execl("/loong/loong_power", "loong_power", JW_MLP1_POWER_CFG, (char *)NULL);
+            _exit(127);
         }
-        setenv("LD_LIBRARY_PATH", ld, 1);
-        execl("/loong/loong_power", "loong_power", JW_MLP1_POWER_CFG, (char *)NULL);
-        _exit(127);
+        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
     }
+    int status = 0;
+    waitpid(pid, &status, 0);   /* reap the intermediate child only */
     return 0;
 }
 

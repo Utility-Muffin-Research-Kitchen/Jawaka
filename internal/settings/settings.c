@@ -388,7 +388,6 @@ static void jw__refresh_volume(jw_settings_ui *ui) {
     if (!ui || !ui->socket_path[0]) return;
     int percent = -1;
     if (jw_ipc_platform_volume(ui->socket_path, &percent) == 0 && percent >= 0) {
-        if (percent < 0) percent = 0;
         if (percent > 100) percent = 100;
         ui->volume_percent = percent;
     }
@@ -1241,6 +1240,11 @@ void jw_settings_ui_close(jw_settings_ui *ui) {
         ui->bt_op = JW_BT_OP_NONE;
         ui->bt_op_manual = false;
     }
+    if (ui->scrape_detail_art) {
+        SDL_DestroyTexture(ui->scrape_detail_art);
+        ui->scrape_detail_art = NULL;
+    }
+    ui->scrape_detail_art_w = ui->scrape_detail_art_h = 0;
     ui->open = false;
     ui->screen = JW_SETTINGS_HOME;
 }
@@ -1251,6 +1255,7 @@ void jw_settings_ui_close(jw_settings_ui *ui) {
    Update; mirrors the per-screen entry priming the home A-handler does. */
 static void jw__update_check_releases(jw_settings_ui *ui, char *status_buf,
                                       size_t status_size);
+static void jw__stats_snapshot_invalidate(void);
 void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
     if (!ui) return;
     ui->open = true;
@@ -1274,8 +1279,10 @@ void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
         cat_scroll_state_init(&ui->about_scroll);   /* start at top */
     } else if (screen == JW_SETTINGS_LIBRARY) {
         cat_scroll_state_init(&ui->library_scroll);
+        jw__stats_snapshot_invalidate();   /* re-read fresh on first frame */
     } else if (screen == JW_SETTINGS_PLAYTIME) {
         cat_scroll_state_init(&ui->playtime_scroll);
+        jw__stats_snapshot_invalidate();   /* re-read fresh on first frame */
     }
 }
 
@@ -3534,6 +3541,12 @@ static void jw__fmt_ago(long long when, char *buf, size_t n) {
     else              snprintf(buf, n, "%lld year%s ago",  d / 365, d / 365 == 1 ? "" : "s");
 }
 
+/* Set by jw_settings_ui_open for the Info pages so the first frame after a
+   (re)open re-reads fresh, instead of serving a snapshot up to 1s stale (e.g.
+   right after a rescan). The 1s TTL still applies to subsequent frames. */
+static bool jw__stats_force_reread = false;
+static void jw__stats_snapshot_invalidate(void) { jw__stats_force_reread = true; }
+
 /* Refresh the shared stats snapshot about once a second (cheap reads; only one
    Info page is live at a time, so a single static cache is fine). */
 static const jw_library_stats *jw__stats_snapshot(const jw_settings_ui *ui) {
@@ -3541,10 +3554,11 @@ static const jw_library_stats *jw__stats_snapshot(const jw_settings_ui *ui) {
     static uint32_t last = 0;
     static bool     have = false;
     uint32_t now = SDL_GetTicks();
-    if (!have || now - last > 1000) {
+    if (!have || jw__stats_force_reread || now - last > 1000) {
         if (jw_db_read_stats(ui->db_path, &st) != 0) memset(&st, 0, sizeof(st));
         last = now;
         have = true;
+        jw__stats_force_reread = false;
     }
     return &st;
 }

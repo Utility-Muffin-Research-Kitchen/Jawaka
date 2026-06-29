@@ -485,6 +485,9 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "video_scale_integer",
 #endif
         "input_player1_joypad_index",
+        "cheevos_enable",
+        "cheevos_username",
+        "cheevos_password",
     };
 
     if (!key || !key[0]) {
@@ -1085,9 +1088,12 @@ bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t err
 
     char mountpoint[4096];
     char opts[2048];
+    char line[8192];
     bool found = false;
-    while (fscanf(fp, "%*255s %4095s %*63s %2047s %*d %*d",
-                  mountpoint, opts) == 2) {
+    while (fgets(line, sizeof(line), fp)) {
+        if (sscanf(line, "%*s %4095s %*s %2047s", mountpoint, opts) != 2) {
+            continue;
+        }
         if (strcmp(mountpoint, sdcard_abs) == 0) {
             found = true;
             break;
@@ -1482,6 +1488,9 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
         jw__set_error(error, error_size, "could not write RetroArch runtime config");
         return NULL;
     }
+    /* The runtime cfg can hold the RetroAchievements password in cleartext, so
+       keep it readable only by the owner. */
+    (void)fchmod(fileno(fp), S_IRUSR | S_IWUSR);
 
     if (defaults_text) {
         jw__write_retroarch_cfg_filtered(fp, defaults_text, shared_text, false);

@@ -322,7 +322,7 @@ int jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *cano
         "       CASE WHEN instr(rom_path, 'Roms/') > 0 "
         "            THEN substr(rom_path, 1, instr(rom_path, 'Roms/') - 1) "
         "            ELSE '' END, "
-        "       CASE WHEN rom_path LIKE ?2 THEN 1 ELSE 0 END "
+        "       CASE WHEN rom_path LIKE ?2 ESCAPE '\\' THEN 1 ELSE 0 END "
         "  FROM games WHERE system = ?1;";
     static const char *fill_map_sql =
         "INSERT INTO _dedup_map(loser, winner) "
@@ -357,13 +357,28 @@ int jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *cano
         "  WHERE id IN (SELECT winner FROM _dedup_map);"
         "DELETE FROM games WHERE id IN (SELECT loser FROM _dedup_map);";
     sqlite3_stmt *stmt = NULL;
+    char escaped_root[512];
     char pattern[512];
     int rc;
 
     if (!db || !system || !system[0] || !canonical_rom_root || !canonical_rom_root[0]) {
         return -1;
     }
-    if ((size_t)snprintf(pattern, sizeof(pattern), "%%%s/%%", canonical_rom_root) >= sizeof(pattern)) {
+    /* Escape LIKE wildcards in the path so a folder containing '%' or '_' does
+       not over-match (paired with ESCAPE '\' on the LIKE clause). Backslash is
+       escaped first so it doesn't double-escape the wildcards added after it. */
+    size_t ei = 0;
+    for (const char *p = canonical_rom_root; *p; p++) {
+        if (*p == '\\' || *p == '%' || *p == '_') {
+            if (ei + 2 >= sizeof(escaped_root)) return -1;
+            escaped_root[ei++] = '\\';
+        } else if (ei + 1 >= sizeof(escaped_root)) {
+            return -1;
+        }
+        escaped_root[ei++] = *p;
+    }
+    escaped_root[ei] = '\0';
+    if ((size_t)snprintf(pattern, sizeof(pattern), "%%%s/%%", escaped_root) >= sizeof(pattern)) {
         return -1;
     }
     /* Per-call map of dropped alias rows -> their canonical survivor. The
@@ -719,8 +734,15 @@ int jw_db_set_game_image(const char *db_path, const char *rom_path,
     }
     sqlite3_bind_text(stmt, 2, rom_path, -1, SQLITE_TRANSIENT);
 
-    int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
-    if (rc == 0 && sqlite3_changes(db) == 0) rc = 1;
+    int step_rc = sqlite3_step(stmt);
+    int rc;
+    if (step_rc == SQLITE_DONE) {
+        rc = (sqlite3_changes(db) == 0) ? 1 : 0;
+    } else if (step_rc == SQLITE_BUSY || step_rc == SQLITE_LOCKED) {
+        rc = -2; /* transient lock: caller may retry (vs -1 hard failure). */
+    } else {
+        rc = -1;
+    }
     sqlite3_finalize(stmt);
     jw_db_close(db);
     return rc;
@@ -804,7 +826,11 @@ int jw_db_set_settings(const char *db_path, const char *const *keys,
         return -1;
     }
 
-    sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
+    if (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        jw_db_close(db);
+        return -1;
+    }
     int rc = 0;
     for (int i = 0; i < count; i++) {
         if (!keys[i] || !values[i]) { rc = -1; break; }
@@ -815,7 +841,13 @@ int jw_db_set_settings(const char *db_path, const char *const *keys,
         sqlite3_clear_bindings(stmt);
         if (rc != 0) break;
     }
-    sqlite3_exec(db, rc == 0 ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+    /* A failed COMMIT (busy/disk-full/ro-flip) leaves nothing durably written,
+       so surface it as an error rather than reporting success. */
+    if (rc == 0) {
+        if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) rc = -1;
+    } else {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
 
     sqlite3_finalize(stmt);
     jw_db_close(db);
@@ -1500,18 +1532,30 @@ int jw_db_record_play(const char *db_path, const char *rom_path, int duration_s)
         return -1;
     }
 
+    /* Wrap both writes so playtime and recents update together: under
+       SQLITE_BUSY past the busy timeout one write can fail while the other
+       succeeds, silently desyncing stats. ROLLBACK on any failure and report
+       it so the caller knows the session wasn't recorded. */
+    if (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+    int rc = 0;
+
     /* Cumulative playtime + last-played timestamp on the game row. */
     if (sqlite3_prepare_v2(db,
             "UPDATE games SET playtime_s = playtime_s + ?, last_played = strftime('%s','now') "
             "WHERE id = ?;", -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_int(stmt, 1, duration_s);
         sqlite3_bind_int(stmt, 2, id);
-        sqlite3_step(stmt);
+        if (sqlite3_step(stmt) != SQLITE_DONE) rc = -1;
         sqlite3_finalize(stmt);
+    } else {
+        rc = -1;
     }
 
     /* Recents row: newest open wins; duration_s holds the last session length. */
-    if (sqlite3_prepare_v2(db,
+    if (rc == 0 && sqlite3_prepare_v2(db,
             "INSERT INTO recents (kind, target_id, last_opened, duration_s) "
             "VALUES ('game', ?, strftime('%s','now'), ?) "
             "ON CONFLICT(kind, target_id) DO UPDATE SET "
@@ -1519,12 +1563,16 @@ int jw_db_record_play(const char *db_path, const char *rom_path, int duration_s)
             -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_int(stmt, 1, id);
         sqlite3_bind_int(stmt, 2, duration_s);
-        sqlite3_step(stmt);
+        if (sqlite3_step(stmt) != SQLITE_DONE) rc = -1;
         sqlite3_finalize(stmt);
+    } else if (rc == 0) {
+        rc = -1;
     }
 
+    sqlite3_exec(db, rc == 0 ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
+
     jw_db_close(db);
-    return 0;
+    return rc;
 }
 
 int jw_db_list_recent_games(const char *db_path, jw_game_entry *out,

@@ -409,8 +409,12 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             snprintf(state->status, sizeof(state->status), "%s", "Sleeping…");
             cat_request_frame();
             jw__render_menu(state);
-            jw_ipc_platform_action(socket_path, "sleep", 0);
-            state->status[0] = '\0';
+            if (jw_ipc_platform_action(socket_path, "sleep", 0) != 0) {
+                /* Daemon unreachable: keep the feedback up instead of flashing. */
+                snprintf(state->status, sizeof(state->status), "%s", "Sleep failed");
+            } else {
+                state->status[0] = '\0';
+            }
             return 0;
         case JW_MENU_EXIT_STOCK:
             jw_ipc_exit_stock(socket_path);
@@ -514,20 +518,25 @@ static void jw__ingame_resolve_titles(jw_ingame_state *state) {
 
     sqlite3 *db = NULL;
     if (state->db_path && jw_db_open(state->db_path, &db) == 0) {
+        int name_rc = -1;
         char *sd_root = jw_sdcard_root();
         if (sd_root && sd_root[0]) {
             size_t root_len = strlen(sd_root);
             if (strncmp(state->session.rom_path, sd_root, root_len) == 0 &&
                 state->session.rom_path[root_len] == '/') {
-                jw__db_game_name(db, state->session.rom_path + root_len + 1,
-                                 state->game_title, sizeof(state->game_title));
+                name_rc = jw__db_game_name(db, state->session.rom_path + root_len + 1,
+                                           state->game_title, sizeof(state->game_title));
             }
         }
         if (sd_root) {
             free(sd_root);
         }
-        jw__db_game_name(db, state->session.rom_path,
-                         state->game_title, sizeof(state->game_title));
+        /* The DB keys games by SD-relative path, so this absolute lookup only
+           helps if the relative one missed (or didn't apply). */
+        if (name_rc != 0) {
+            jw__db_game_name(db, state->session.rom_path,
+                             state->game_title, sizeof(state->game_title));
+        }
         jw_db_close(db);
     }
 
@@ -1722,8 +1731,15 @@ static void jw__ingame_adjust(const char *socket_path, jw_ingame_state *state,
             return;
         }
         int quick_count = JW_INGAME_PERF_PROFILE_COUNT - 1; /* keep Custom in the tuner */
-        state->perf_profile_index =
-            (state->perf_profile_index + delta + quick_count) % quick_count;
+        if (state->perf_profile_index >= quick_count) {
+            /* On CUSTOM (a custom session override is live): the quick-cycle
+               can't represent it, so enter the cycle at a defined endpoint
+               rather than mod-wrapping an out-of-range index. */
+            state->perf_profile_index = 0;
+        } else {
+            state->perf_profile_index =
+                (state->perf_profile_index + delta + quick_count) % quick_count;
+        }
         jw__ingame_perf_apply_profile(socket_path, state);
         return;
     }

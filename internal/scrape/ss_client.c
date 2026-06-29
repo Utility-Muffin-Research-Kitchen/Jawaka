@@ -64,6 +64,11 @@ typedef struct {
     size_t size;
 } jw__curl_buffer;
 
+/* Hard ceiling on any single HTTP response we buffer in RAM. Box art is well
+   under a few MB; this guards a 1GB device against an unbounded body (up to 4
+   workers download concurrently). */
+#define JW__SS_MAX_BODY_BYTES (16 * 1024 * 1024)
+
 static pthread_once_t jw__curl_once = PTHREAD_ONCE_INIT;
 static CURLcode jw__curl_global_result = CURLE_OK;
 
@@ -112,6 +117,8 @@ static size_t jw__curl_write_cb(void *ptr, size_t size, size_t nmemb,
                                 void *userdata) {
     size_t total = size * nmemb;
     jw__curl_buffer *buf = (jw__curl_buffer *)userdata;
+    if (buf->size + total > JW__SS_MAX_BODY_BYTES)
+        return 0; /* abort the transfer: response exceeds the in-RAM ceiling */
     char *tmp = realloc(buf->data, buf->size + total + 1);
     if (!tmp)
         return 0;
@@ -160,6 +167,8 @@ static int jw__http_get(const jw_ss_client *client, const char *url,
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE,
+                     (curl_off_t)JW__SS_MAX_BODY_BYTES);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, jw__curl_xferinfo_cb);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, interrupt);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
@@ -222,14 +231,20 @@ static int jw__http_get(const jw_ss_client *client, const char *url,
 
 /* ── URL building ─────────────────────────────────────────────────────── */
 
-/* Append "&key=urlencode(value)" to a malloc'd URL under construction. */
+/* Append "&key=urlencode(value)" to a malloc'd URL under construction.
+   Returns false on encode failure or if the append would truncate; truncation
+   is fatal because advancing *len past url_cap underflows the next size_t
+   capacity calc and writes out of bounds. */
 static bool jw__url_append_kv(CURL *curl, char *url, size_t url_cap,
                               int *len, const char *key, const char *value) {
     char *enc = curl_easy_escape(curl, value, 0);
     if (!enc)
         return false;
-    *len += snprintf(url + *len, url_cap - (size_t)*len, "&%s=%s", key, enc);
+    int r = snprintf(url + *len, url_cap - (size_t)*len, "&%s=%s", key, enc);
     curl_free(enc);
+    if (r < 0 || (size_t)r >= url_cap - (size_t)*len)
+        return false;
+    *len += r;
     return true;
 }
 
@@ -242,7 +257,9 @@ static char *jw__build_api_url(const jw_ss_client *client, const char *endpoint,
         return NULL;
     }
 
-    size_t url_cap = 2048;
+    /* Two 255-char credentials plus an escaped ROM name (escaping ~triples a
+       worst-case value) legitimately exceed 2048. */
+    size_t url_cap = 4096;
     char *url = malloc(url_cap);
     if (!url) {
         jw__ss_set_error("out of memory while building request");
@@ -262,6 +279,10 @@ static char *jw__build_api_url(const jw_ss_client *client, const char *endpoint,
     curl_free(enc_devid);
     curl_free(enc_devpwd);
     enc_devid = enc_devpwd = NULL;
+    if (len < 0 || (size_t)len >= url_cap) {
+        jw__ss_set_error("ScreenScraper request URL too long");
+        goto fail;
+    }
 
     if (client->username[0]) {
         if (!jw__url_append_kv(curl, url, url_cap, &len, "ssid",
@@ -278,11 +299,25 @@ static char *jw__build_api_url(const jw_ss_client *client, const char *endpoint,
             jw__ss_set_error("failed to encode ScreenScraper request");
             goto fail;
         }
-        len += snprintf(url + len, url_cap - (size_t)len,
-                        "&systemeid=%d", system_id);
+        int r = snprintf(url + len, url_cap - (size_t)len,
+                         "&systemeid=%d", system_id);
+        if (r < 0 || (size_t)r >= url_cap - (size_t)len) {
+            jw__ss_set_error("ScreenScraper request URL too long");
+            goto fail;
+        }
+        len += r;
         if (md5_hash && md5_hash[0]) {
-            len += snprintf(url + len, url_cap - (size_t)len,
-                            "&md5=%s&romtaille=%ld", md5_hash, file_size);
+            if (!jw__url_append_kv(curl, url, url_cap, &len, "md5", md5_hash)) {
+                jw__ss_set_error("failed to encode ScreenScraper request");
+                goto fail;
+            }
+            r = snprintf(url + len, url_cap - (size_t)len,
+                         "&romtaille=%ld", file_size);
+            if (r < 0 || (size_t)r >= url_cap - (size_t)len) {
+                jw__ss_set_error("ScreenScraper request URL too long");
+                goto fail;
+            }
+            len += r;
         }
     }
 

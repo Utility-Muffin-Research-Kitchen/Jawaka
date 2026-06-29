@@ -597,6 +597,13 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     if (rc == 0) {
         int db_rc = jw_db_set_game_image(jw__w.db_path, item->rom_path,
                                          image_db);
+        /* -2 = SQLITE_BUSY: the DB is briefly locked by another writer; retry
+           a few times before giving up. */
+        for (int attempt = 0; db_rc == -2 && attempt < 3; attempt++) {
+            usleep(75 * 1000);
+            db_rc = jw_db_set_game_image(jw__w.db_path, item->rom_path,
+                                         image_db);
+        }
         if (db_rc != 0) {
             jw_log_info("scrape: image saved but no game row for %s (rc=%d)",
                         item->rom_path, db_rc);
