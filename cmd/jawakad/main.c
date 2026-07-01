@@ -277,6 +277,21 @@ static bool jw__standalone_target_is_mupen64plus(const jw_launch_target *target)
            strstr(target->path, "/Mupen64Plus") != NULL;
 }
 
+static bool jw__standalone_target_is_ports(const jw_launch_target *target) {
+    if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
+        return false;
+    }
+    return strcmp(target->core_id, "ports") == 0 ||
+           strstr(target->path, "/emulators/ports/") != NULL ||
+           strstr(target->path, "/Roms/PORTS") != NULL;
+}
+
+static bool jw__standalone_target_uses_calibrated_virtual_input(
+        const jw_launch_target *target) {
+    return jw__standalone_target_is_mupen64plus(target) ||
+           jw__standalone_target_is_ports(target);
+}
+
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -2190,6 +2205,7 @@ static void jw__publish_retroarch_input_env(jw_daemon_state *state) {
     if (!state || !state->input_proxy.enabled ||
         !state->input_proxy.virtual_event_path[0]) {
         unsetenv("CAT_INPUT_WAKE_EVENT");
+        unsetenv("JAWAKA_INPUT_VIRTUAL_EVENT");
         unsetenv("JAWAKA_RETROARCH_VIRTUAL_EVENT");
         unsetenv("JAWAKA_RETROARCH_INPUT_DEVICE");
         unsetenv("JAWAKA_RETROARCH_JOYPAD_INDEX");
@@ -2197,6 +2213,8 @@ static void jw__publish_retroarch_input_env(jw_daemon_state *state) {
     }
 
     setenv("CAT_INPUT_WAKE_EVENT", state->input_proxy.virtual_event_path, 1);
+    setenv("JAWAKA_INPUT_VIRTUAL_EVENT",
+           state->input_proxy.virtual_event_path, 1);
     setenv("JAWAKA_RETROARCH_VIRTUAL_EVENT",
            state->input_proxy.virtual_event_path, 1);
     if (state->input_proxy.device_name[0]) {
@@ -2222,6 +2240,7 @@ static void jw__publish_retroarch_input_env(jw_daemon_state *state) {
 
 static void jw__publish_direct_input_env(void) {
     unsetenv("CAT_INPUT_WAKE_EVENT");
+    unsetenv("JAWAKA_INPUT_VIRTUAL_EVENT");
     unsetenv("JAWAKA_RETROARCH_VIRTUAL_EVENT");
     unsetenv("JAWAKA_RETROARCH_INPUT_DEVICE");
     setenv("JAWAKA_RETROARCH_JOYPAD_INDEX", "0", 1);
@@ -4557,10 +4576,10 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_log_info("standalone emulator launch transition readiness code=%s",
                 jw_platform_result_code_name(ready_result.code));
 
-    if (jw__standalone_target_is_mupen64plus(target)) {
-        /* Mupen64Plus needs the same calibrated virtual gamepad path as
-           RetroArch. Keep the full grab-and-forward proxy active so Joe's
-           calibration is applied by loong_pangu before SDL sees the axes. */
+    if (jw__standalone_target_uses_calibrated_virtual_input(target)) {
+        /* Mupen64Plus and PortMaster ports need the same calibrated virtual
+           gamepad path as RetroArch. Keep the full grab-and-forward proxy
+           active so Joe's calibration is applied before SDL sees the axes. */
         jw__start_input_proxy(state);
         if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
             int joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);
