@@ -143,6 +143,10 @@ typedef struct {
 typedef struct {
     /* tabbed mode */
     jw_tab             current_tab;
+    /* Visible home tabs in display order (built from the "home_tab_order"
+       setting): the launcher only ever shows/cycles these. */
+    jw_tab             visible_tabs[JW_TAB_COUNT];
+    int                visible_tab_count;
     /* all modes */
     cat_list_state     list;
     /* data */
@@ -240,6 +244,58 @@ typedef struct {
     bool               library_populated;
     int                library_generation;
 } jw_launcher_state;
+
+/* ─── Home-tab visibility (hide + reorder) ────────────────────────────────── */
+
+/* Parse the "home_tab_order" setting (CSV of visible jw_tab indices in display
+   order) into state->visible_tabs[]/visible_tab_count. Defensive: dedupe, drop
+   out-of-range/invalid tokens; an empty/missing/all-invalid value falls back to
+   all tabs visible in natural order. Always yields at least one visible tab. */
+static void jw__load_visible_tabs(jw_launcher_state *state, const char *db_path) {
+    char csv[64] = { 0 };
+    if (db_path && db_path[0])
+        (void)jw_db_get_setting(db_path, "home_tab_order", csv, sizeof(csv));
+
+    bool used[JW_TAB_COUNT] = { false };
+    int n = 0;
+    const char *p = csv[0] ? csv : NULL;
+    while (p && *p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        char *end = NULL;
+        long v = strtol(p, &end, 10);
+        if (end == p) { p++; continue; }
+        p = end;
+        if (v >= 0 && v < JW_TAB_COUNT && !used[(int)v]) {
+            state->visible_tabs[n++] = (jw_tab)v;
+            used[(int)v] = true;
+        }
+    }
+    if (n == 0) {
+        for (int i = 0; i < JW_TAB_COUNT; i++) state->visible_tabs[i] = (jw_tab)i;
+        n = JW_TAB_COUNT;
+    }
+    state->visible_tab_count = n;
+}
+
+static bool jw__tab_is_visible(const jw_launcher_state *state, jw_tab tab) {
+    for (int i = 0; i < state->visible_tab_count; i++)
+        if (state->visible_tabs[i] == tab) return true;
+    return false;
+}
+
+/* Position of tab within the visible set, or 0 if it isn't in it. */
+static int jw__visible_tab_pos(const jw_launcher_state *state, jw_tab tab) {
+    for (int i = 0; i < state->visible_tab_count; i++)
+        if (state->visible_tabs[i] == tab) return i;
+    return 0;
+}
+
+/* Snap current_tab onto the visible set if it points at a hidden tab. */
+static void jw__reconcile_current_tab(jw_launcher_state *state) {
+    if (state->visible_tab_count > 0 && !jw__tab_is_visible(state, state->current_tab))
+        state->current_tab = state->visible_tabs[0];
+}
 
 static void jw__draw_app_detail(const jw_launcher_state *state,
                                 const jw_app_entry *app,
@@ -489,7 +545,13 @@ static int jw__draw_tab_header(const jw_launcher_state *state) {
     sb.use_y      = true;
     sb.y_position = (bar_h - pill_h) / 2;
     cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
-    cat_draw_tab_bar(kTabs, JW_TAB_COUNT, (int)state->current_tab);
+    /* Draw only the visible tabs, in the user's display order, with the active
+       highlight tracking current_tab's position within that set. */
+    const char *labels[JW_TAB_COUNT];
+    for (int i = 0; i < state->visible_tab_count; i++)
+        labels[i] = kTabs[state->visible_tabs[i]];
+    cat_draw_tab_bar(labels, state->visible_tab_count,
+                     jw__visible_tab_pos(state, state->current_tab));
     cat_draw_status_bar(&sb);
     return bar_h;
 }
@@ -630,6 +692,14 @@ static void jw__draw_settings_footer(const jw_launcher_state *state) {
                              ? "Missing Only" : "Replace All", false, JW_HINT("Y") },
             { CAT_BTN_B, "Back",   true, JW_HINT("B") },
             { CAT_BTN_A, "Scrape", true, JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 3);
+    } else if (scr == JW_SETTINGS_HOME_TABS) {
+        bool grab = state->settings.home_tabs_grabbed;
+        cat_footer_item footer[] = {
+            { CAT_BTN_X, grab ? "Drop" : "Reorder",   false, JW_HINT("X") },
+            { CAT_BTN_B, "Back",                       true,  JW_HINT("B") },
+            { CAT_BTN_A, grab ? "Drop" : "Show/Hide",  true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 3);
     } else {
@@ -1310,12 +1380,13 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
 
 static void jw__switch_tab(jw_launcher_state *state, int direction, const char *db_path) {
     if (!state) return;
-    /* Cast to int and add COUNT before the modulo: jw_tab is an unsigned enum
-       on the device toolchain, so (0u + -1) would wrap to UINT_MAX and
-       UINT_MAX % COUNT is 0, not COUNT-1 — breaking the backward wrap at the
-       first tab. Adding COUNT keeps the dividend non-negative for dir = +/-1. */
-    int next = ((int)state->current_tab + direction + JW_TAB_COUNT) % JW_TAB_COUNT;
-    state->current_tab = (jw_tab)next;
+    /* Cycle by POSITION within the visible set (tabs can be hidden/reordered),
+       adding visible_tab_count before the modulo so dir = -1 wraps to the last
+       visible tab rather than an out-of-range index. */
+    int n = state->visible_tab_count > 0 ? state->visible_tab_count : 1;
+    int pos = jw__visible_tab_pos(state, state->current_tab);
+    int next_pos = (pos + direction + n) % n;
+    state->current_tab = state->visible_tabs[next_pos];
     /* Favorites/Recents are reloaded on entry so newly toggled/played items appear. */
     if (state->current_tab == JW_TAB_FAVORITES)
         jw__load_favorites_tab(db_path, state);
@@ -4781,7 +4852,17 @@ static bool jw__load_resume(jw_resume *out) {
    stale indices (a removed game) just land on the nearest row. */
 static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
                              const jw_resume *r) {
-    if (r->games_open) {
+    /* Only restore a drilled-in system-games browser if the Games tab is still
+       visible (it's hideable). Favorites/Recents drills belong to their own tabs
+       and are gated by current_tab already being reconciled onto the visible set. */
+    bool restore_games = r->games_open;
+    if (restore_games) {
+        bool recents = (strcmp(r->game_system, "Recently Played") == 0);
+        bool system_drill = !r->games_fav && !recents;
+        if (system_drill && !jw__tab_is_visible(state, JW_TAB_GAMES))
+            restore_games = false;
+    }
+    if (restore_games) {
         bool recents = (strcmp(r->game_system, "Recently Played") == 0);
         int rc;
         if (r->games_fav)   rc = jw__open_favorites(db_path, state);
@@ -6391,6 +6472,9 @@ int main(void) {
        (Settings > Behavior > Startup Tab), default Games. Index mirrors jw_tab. */
     jw_resume resume;
     bool have_resume = jw__load_resume(&resume);
+    /* Build the visible-tab set first (tabs can be hidden/reordered), so the
+       resume/startup choice below can fall back to the first visible tab. */
+    jw__load_visible_tabs(&state, db_path);
     state.current_tab = JW_TAB_GAMES;
     if (have_resume && resume.tab >= 0 && resume.tab < JW_TAB_COUNT) {
         state.current_tab = (jw_tab)resume.tab;
@@ -6403,6 +6487,8 @@ int main(void) {
                 state.current_tab = (jw_tab)idx;
         }
     }
+    /* If the chosen tab is hidden, fall back to the first visible tab. */
+    jw__reconcile_current_tab(&state);
     snprintf(state.sdcard_root, sizeof(state.sdcard_root), "%s", sdcard_root);
     snprintf(state.socket_path, sizeof(state.socket_path), "%s", socket_path);
     snprintf(state.db_path, sizeof(state.db_path), "%s", db_path);
@@ -6521,10 +6607,35 @@ int main(void) {
     while (running) {
         cat_input_event ev;
         bool had_input = false;
+        bool was_menu_open = state.menu_open;
+        bool was_settings_open = jw_settings_ui_is_open(&state.settings);
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
             had_input = true;
             jw__handle_input(socket_path, db_path, &state, ev.button, &running);
+        }
+
+        /* The Home Tabs editor lives on the Settings UI (reached via the System
+           menu's Settings tab). When the menu / settings overlay closes back to
+           Content, re-read the visible-tab set from the DB so any hide/reorder
+           takes effect live, and snap current_tab back onto it if it was pointing
+           at a now-hidden tab. */
+        if ((was_menu_open && !state.menu_open) ||
+            (was_settings_open && !jw_settings_ui_is_open(&state.settings))) {
+            jw_tab prev_tab = state.current_tab;
+            jw__load_visible_tabs(&state, db_path);
+            jw__reconcile_current_tab(&state);
+            /* If reconciling moved us off a now-hidden tab, load the new tab's
+               contents (Favorites/Recents load lazily) and reset the cursor —
+               mirroring jw__switch_tab's on-entry refresh. */
+            if (state.current_tab != prev_tab &&
+                cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED) {
+                if (state.current_tab == JW_TAB_FAVORITES)
+                    jw__load_favorites_tab(db_path, &state);
+                else if (state.current_tab == JW_TAB_RECENTS)
+                    jw__load_recents_tab(db_path, &state);
+                cat_list_state_jump(&state.list, 0, jw__tab_list_count(&state));
+            }
         }
 
         if (demo.enabled && !demo.fired) {

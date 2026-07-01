@@ -48,6 +48,7 @@ typedef enum {
     JW_SETTINGS_SCRAPE_QUEUE_DETAIL, /* one job's result (native page, was cat_detail_screen) */
     JW_SETTINGS_SCRAPE_DOWNLOAD,   /* pick All Systems / a system to scrape missing art */
     JW_SETTINGS_BEHAVIOR,
+    JW_SETTINGS_HOME_TABS,   /* hide + reorder the launcher's home tabs */
     JW_SETTINGS_UPDATE,
     JW_SETTINGS_UPDATE_PICKER,
     JW_SETTINGS_TIMEZONE_PICKER,
@@ -130,14 +131,20 @@ typedef enum {
 #define JW_SCRAPE_PRIO_SLOTS  16
 
 /* Behavior page */
-#define JW_BEHAVIOR_STARTUP_TAB 0
-#define JW_BEHAVIOR_AUTO_SLEEP  1
-#define JW_BEHAVIOR_BOOT_SPLASH 2
-#define JW_BEHAVIOR_PERFORMANCE 3
+#define JW_BEHAVIOR_AUTO_SLEEP  0
+#define JW_BEHAVIOR_PERFORMANCE 1
+#define JW_BEHAVIOR_STARTUP_TAB 2
+#define JW_BEHAVIOR_HOME_TABS   3   /* opens the Home Tabs editor screen */
 #define JW_BEHAVIOR_TIMEZONE    4   /* opens the Time Zone picker screen */
-#define JW_BEHAVIOR_RESET_RETROARCH   5   /* maintenance, moved from Library */
-#define JW_BEHAVIOR_UNMOUNT_SECONDARY 6
-#define JW_BEHAVIOR_ROW_COUNT   7
+#define JW_BEHAVIOR_BOOT_SPLASH 5
+#define JW_BEHAVIOR_RESET_RETROARCH   6   /* maintenance, moved from Library */
+#define JW_BEHAVIOR_UNMOUNT_SECONDARY 7
+#define JW_BEHAVIOR_ROW_COUNT   8
+
+/* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
+   The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of
+   home_tab_order carry the current arrangement, each a jw_tab index. */
+#define JW_HOME_TABS_COUNT 4
 
 /* System Update page */
 #define JW_UPDATE_ROW_CHECK     0
@@ -235,6 +242,14 @@ typedef struct {
     char               ra_username[64];     /* RetroAchievements account ("" = signed out); exported
                                                to RetroArch's session config, which validates it */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
+    /* Home Tabs editor. home_tab_order holds all JW_HOME_TABS_COUNT tabs in
+       display order (each a jw_tab index); the first home_tab_visible entries are
+       shown, the rest are hidden. Serialized to the "home_tab_order" setting as a
+       CSV of the visible tab indices. */
+    int                home_tab_order[JW_HOME_TABS_COUNT];
+    int                home_tab_visible;    /* count of visible tabs (>= 1) */
+    cat_list_state     home_tabs_list;
+    bool               home_tabs_grabbed;   /* X grabbed the cursor row to reorder */
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;

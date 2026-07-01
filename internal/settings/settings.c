@@ -146,6 +146,7 @@ typedef enum {
     JW_SETTING_REFRESH_RATE_HZ,
     JW_SETTING_BFI_ENABLED,
     JW_SETTING_HDMI_OUTPUT_MODE,
+    JW_SETTING_HOME_TAB_ORDER,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -189,6 +190,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_REFRESH_RATE_HZ] = "refresh_rate_hz",
     [JW_SETTING_BFI_ENABLED] = "bfi_enabled",
     [JW_SETTING_HDMI_OUTPUT_MODE] = "hdmi_output_mode",
+    [JW_SETTING_HOME_TAB_ORDER] = "home_tab_order",
 };
 
 static const char *const kTabSwitchLabels[] = { "Snap", "Glide" };
@@ -287,6 +289,68 @@ static const char *kStartupTabLabels[] = {
 };
 #define JW_STARTUP_TAB_COUNT ((int)(sizeof(kStartupTabLabels) / sizeof(kStartupTabLabels[0])))
 #define JW_STARTUP_TAB_DEFAULT 2   /* Games */
+
+/* Parse the "home_tab_order" CSV (visible jw_tab indices in display order) into
+   order[JW_HOME_TABS_COUNT] + *visible. Defensive: dedupe, drop out-of-range /
+   invalid tokens, then append any tabs not listed (hidden) after the visible
+   ones. An empty/missing/all-invalid CSV falls back to all tabs visible in
+   natural order. *visible is always >= 1. */
+static void jw__parse_home_tab_order(const char *csv, int *order, int *visible) {
+    bool used[JW_HOME_TABS_COUNT] = { false };
+    int vis = 0;
+
+    const char *p = (csv && csv[0]) ? csv : NULL;
+    while (p && *p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        char *end = NULL;
+        long v = strtol(p, &end, 10);
+        if (end == p) { p++; continue; }   /* not a number: skip a char */
+        p = end;
+        if (v >= 0 && v < JW_HOME_TABS_COUNT && !used[(int)v]) {
+            order[vis++] = (int)v;
+            used[(int)v] = true;
+        }
+    }
+
+    /* Empty / all-invalid → default to every tab visible in natural order. */
+    if (vis == 0) {
+        for (int i = 0; i < JW_HOME_TABS_COUNT; i++) { order[i] = i; used[i] = true; }
+        vis = JW_HOME_TABS_COUNT;
+    } else {
+        /* Append the hidden tabs after the visible ones so the editor can list
+           and re-enable them. */
+        int tail = vis;
+        for (int i = 0; i < JW_HOME_TABS_COUNT; i++)
+            if (!used[i]) order[tail++] = i;
+    }
+    *visible = vis;
+}
+
+/* Serialize order[]/visible into a CSV of the visible jw_tab indices, e.g.
+   "2,1,3,0" or "2,1,3". */
+static void jw__home_tab_order_to_csv(const int *order, int visible,
+                                      char *csv, size_t csv_size) {
+    size_t len = 0;
+    if (csv_size > 0) csv[0] = '\0';
+    for (int i = 0; i < visible && i < JW_HOME_TABS_COUNT; i++) {
+        int n = snprintf(csv + len, csv_size - len, "%s%d",
+                         i > 0 ? "," : "", order[i]);
+        if (n < 0 || (size_t)n >= csv_size - len) break;
+        len += (size_t)n;
+    }
+}
+
+/* Move order[from] to position to, shifting the entries between. */
+static void jw__home_tab_order_move(int *order, int from, int to) {
+    if (from == to) return;
+    int v = order[from];
+    if (from < to)
+        memmove(order + from, order + from + 1, (size_t)(to - from) * sizeof(int));
+    else
+        memmove(order + to + 1, order + to, (size_t)(from - to) * sizeof(int));
+    order[to] = v;
+}
 
 /* Auto-sleep options for Settings > Behavior. The label index is persisted as
    "auto_sleep_seconds" (the value, not the index) so the daemon reads seconds
@@ -1005,6 +1069,24 @@ static void jw__persist_int(const jw_settings_ui *ui, const char *key, int val) 
     jw__persist(ui, key, buf);
 }
 
+/* Persist the current Home Tabs arrangement to "home_tab_order" and, if the
+   persisted Startup Tab is now hidden, snap it to the first visible tab and
+   persist that too (so the launcher never boots onto a hidden tab). */
+static void jw__home_tabs_persist(jw_settings_ui *ui) {
+    char csv[JW_SETTINGS_VALUE_MAX] = "";
+    jw__home_tab_order_to_csv(ui->home_tab_order, ui->home_tab_visible,
+                              csv, sizeof(csv));
+    jw__persist(ui, "home_tab_order", csv);
+
+    bool startup_visible = false;
+    for (int i = 0; i < ui->home_tab_visible; i++)
+        if (ui->home_tab_order[i] == ui->startup_tab_index) { startup_visible = true; break; }
+    if (!startup_visible && ui->home_tab_visible > 0) {
+        ui->startup_tab_index = ui->home_tab_order[0];
+        jw__persist_int(ui, "startup_tab_index", ui->startup_tab_index);
+    }
+}
+
 static void jw__persist_bool(const jw_settings_ui *ui, const char *key, bool val) {
     jw__persist(ui, key, val ? "1" : "0");
 }
@@ -1046,6 +1128,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->scrape_edit_list, 8);
     cat_list_state_init(&ui->scrape_download_list, 8);
     cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
+    cat_list_state_init(&ui->home_tabs_list,   JW_HOME_TABS_COUNT);
     cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
     cat_list_state_init(&ui->update_picker_list, JW_UPDATE_PICKER_VISIBLE_ROWS);
     cat_list_state_init(&ui->timezone_picker_list, JW_TIMEZONE_VISIBLE_ROWS);
@@ -1066,6 +1149,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->show_bluetooth    = true;
     ui->show_volume       = true;
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
+    jw__parse_home_tab_order(NULL, ui->home_tab_order, &ui->home_tab_visible);
+    ui->home_tabs_grabbed = false;
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
@@ -1180,6 +1265,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 if (idx >= 0 && idx < JW_STARTUP_TAB_COUNT)
                     ui->startup_tab_index = idx;
             }
+            jw__parse_home_tab_order(
+                jw__setting_has(values, found, JW_SETTING_HOME_TAB_ORDER)
+                    ? values[JW_SETTING_HOME_TAB_ORDER] : NULL,
+                ui->home_tab_order, &ui->home_tab_visible);
             /* Stored as seconds (what the daemon reads); map back to the label index. */
             if (jw__setting_has(values, found, JW_SETTING_AUTO_SLEEP_SECONDS)) {
                 int seconds = atoi(values[JW_SETTING_AUTO_SLEEP_SECONDS]);
@@ -3660,19 +3749,12 @@ static void jw__render_playtime(const jw_settings_ui *ui, int x, int y, int w, i
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("General", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
-    int tab = (ui->startup_tab_index >= 0 && ui->startup_tab_index < JW_STARTUP_TAB_COUNT)
-              ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_STARTUP_TAB,
-                        "Startup Tab", kStartupTabLabels[tab], true);
+
     int sleep_idx = (ui->auto_sleep_index >= 0 && ui->auto_sleep_index < JW_AUTO_SLEEP_COUNT)
                     ? ui->auto_sleep_index : JW_AUTO_SLEEP_DEFAULT;
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_AUTO_SLEEP,
                         "Auto Sleep", kAutoSleepLabels[sleep_idx], true);
-    const char *splash = ui->boot_splash_supported
-                         ? (ui->boot_splash_enabled ? "On" : "Off")
-                         : "Unavailable";
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
-                        "Boot Splash", splash, ui->boot_splash_supported);
+
     int perf_idx = (ui->game_perf_profile >= 0 &&
                     ui->game_perf_profile < JW_GAME_PERF_PROFILE_COUNT)
                  ? ui->game_perf_profile
@@ -3682,14 +3764,89 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                      : "Unavailable";
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_PERFORMANCE,
                         "Game Performance", perf, ui->performance_supported);
+
+    int tab = (ui->startup_tab_index >= 0 && ui->startup_tab_index < JW_STARTUP_TAB_COUNT)
+              ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_STARTUP_TAB,
+                        "Startup Tab", kStartupTabLabels[tab], true);
+    jw__render_nav_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_HOME_TABS,
+                       "Home Tabs");
+
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_TIMEZONE,
                         "Time Zone", jw__timezone_label(ui->timezone), true);
+
+    const char *splash = ui->boot_splash_supported
+                         ? (ui->boot_splash_enabled ? "On" : "Off")
+                         : "Unavailable";
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
+                        "Boot Splash", splash, ui->boot_splash_supported);
+
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_RESET_RETROARCH,
                         "Reset RetroArch Config", "Defaults", true);
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_UNMOUNT_SECONDARY,
                         "Unmount Secondary SD",
                         ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
                         true);
+}
+
+/* Home Tabs editor — hide/reorder the launcher's home tabs. Modeled on the
+   scrape-priority editor: rows are the tabs in display order, the first
+   home_tab_visible are shown ("On"), the rest hidden ("Off"). A toggles
+   visibility (guarded to keep at least one visible), X grabs the row to reorder
+   with Up/Down. */
+typedef struct { const jw_settings_ui *ui; } jw__home_tabs_ctx;
+
+static void jw__draw_home_tab_item(int idx, int ix, int iy, int iw, int ih,
+                                   bool selected, void *user) {
+    jw__home_tabs_ctx *ctx = (jw__home_tabs_ctx *)user;
+    const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
+    if (!ui || idx < 0 || idx >= JW_HOME_TABS_COUNT) return;
+
+    int tab = ui->home_tab_order[idx];
+    if (tab < 0 || tab >= JW_STARTUP_TAB_COUNT) return;
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    bool grabbed_row = selected && ui->home_tabs_grabbed;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h,
+                      grabbed_row ? theme->accent : theme->highlight);
+
+    bool is_visible = idx < ui->home_tab_visible;
+    ap_color label_c = selected ? theme->highlighted_text
+                                : (is_visible ? theme->text : theme->hint);
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    cat_draw_text_ellipsized(body, kStartupTabLabels[tab], ix + cat_scale(12), ty,
+                             label_c, iw * 2 / 3);
+
+    const char *value = grabbed_row ? "Moving" : (is_visible ? "On" : "Off");
+    int vw = cat_measure_text(body, value);
+    cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+}
+
+static void jw__render_home_tabs(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Home Tabs", x, y, w);
+
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    /* Button hints live in the footer bar (jw__draw_settings_footer), not on the
+       page. */
+    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
+
+    int count = JW_HOME_TABS_COUNT;
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    cat_box lb = { c.x, c.y, c.w, c.h, 0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
+    ((cat_list_state *)&ui->home_tabs_list)->visible_rows = vis;
+    jw__home_tabs_ctx ctx = { ui };
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count,
+                       &ui->home_tabs_list, item_h,
+                       jw__draw_home_tab_item, &ctx);
 }
 
 static void jw__format_update_size(long long bytes, char *out, size_t out_size) {
@@ -4169,6 +4326,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_SCRAPE_QUEUE_DETAIL: jw__render_scrape_queue_detail(ui, x, y, w, h); break;
         case JW_SETTINGS_SCRAPE_DOWNLOAD: jw__render_scrape_download(ui, x, y, w, h);     break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
+        case JW_SETTINGS_HOME_TABS:  jw__render_home_tabs(ui, x, y, w, h);               break;
         case JW_SETTINGS_UPDATE:     jw__render_update(ui, x, y, w, h);                  break;
         case JW_SETTINGS_UPDATE_PICKER: jw__render_update_picker(ui, x, y, w, h);        break;
         case JW_SETTINGS_TIMEZONE_PICKER: jw__render_timezone_picker(ui, x, y, w, h);   break;
@@ -6077,6 +6235,77 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         break;
     }
 
+    /* ── Home Tabs editor ─────────────────────────────────────────────── */
+    case JW_SETTINGS_HOME_TABS: {
+        int cursor = ui->home_tabs_list.cursor;
+        int count = JW_HOME_TABS_COUNT;
+        switch (button) {
+            case CAT_BTN_UP:
+            case CAT_BTN_DOWN: {
+                int dir = button == CAT_BTN_UP ? -1 : +1;
+                if (ui->home_tabs_grabbed) {
+                    /* Reorder within the visible zone only. */
+                    int target = cursor + dir;
+                    if (target >= 0 && target < ui->home_tab_visible) {
+                        jw__home_tab_order_move(ui->home_tab_order, cursor, target);
+                        cat_list_state_move(&ui->home_tabs_list, dir, count);
+                        jw__home_tabs_persist(ui);
+                    }
+                } else {
+                    cat_list_state_move(&ui->home_tabs_list, dir, count);
+                }
+                break;
+            }
+            case CAT_BTN_A: {
+                if (ui->home_tabs_grabbed) {
+                    ui->home_tabs_grabbed = false;
+                    break;
+                }
+                if (cursor < ui->home_tab_visible) {
+                    /* Hiding: never drop the last visible tab (min-one guard). */
+                    if (ui->home_tab_visible <= 1) {
+                        snprintf(status_buf, status_size,
+                                 "At least one tab must stay visible");
+                        break;
+                    }
+                    /* Sink to the top of the hidden zone. */
+                    jw__home_tab_order_move(ui->home_tab_order, cursor,
+                                            ui->home_tab_visible - 1);
+                    ui->home_tab_visible -= 1;
+                    cat_list_state_jump(&ui->home_tabs_list, ui->home_tab_visible, count);
+                } else {
+                    /* Showing: append to the visible zone. */
+                    jw__home_tab_order_move(ui->home_tab_order, cursor,
+                                            ui->home_tab_visible);
+                    ui->home_tab_visible += 1;
+                    cat_list_state_jump(&ui->home_tabs_list,
+                                        ui->home_tab_visible - 1, count);
+                }
+                jw__home_tabs_persist(ui);
+                break;
+            }
+            case CAT_BTN_X:
+                if (ui->home_tabs_grabbed) {
+                    ui->home_tabs_grabbed = false;
+                } else if (cursor < ui->home_tab_visible) {
+                    ui->home_tabs_grabbed = true;
+                } else {
+                    snprintf(status_buf, status_size,
+                             "Hidden tabs cannot be reordered");
+                }
+                break;
+            case CAT_BTN_B:
+                if (ui->home_tabs_grabbed)
+                    ui->home_tabs_grabbed = false;
+                else
+                    ui->screen = JW_SETTINGS_BEHAVIOR;
+                break;
+            default:
+                break;
+        }
+        break;
+    }
+
     /* ── System Update ───────────────────────────────────────────────── */
     case JW_SETTINGS_UPDATE:
         switch (button) {
@@ -6185,10 +6414,24 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_A: {
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
                 if (ui->behavior_list.cursor == JW_BEHAVIOR_STARTUP_TAB) {
-                    int next = (ui->startup_tab_index + dir + JW_STARTUP_TAB_COUNT)
-                               % JW_STARTUP_TAB_COUNT;
-                    ui->startup_tab_index = next;
-                    jw__persist_int(ui, "startup_tab_index", next);
+                    /* Cycle only over the currently-visible tabs (Home Tabs can
+                       hide some), so Startup Tab can never point at a hidden tab.
+                       Find where the current startup tab sits in the visible set,
+                       step by dir within it, and adopt that tab. */
+                    int vis = ui->home_tab_visible > 0 ? ui->home_tab_visible : 1;
+                    int pos = 0;
+                    for (int i = 0; i < vis; i++)
+                        if (ui->home_tab_order[i] == ui->startup_tab_index) { pos = i; break; }
+                    int next_pos = (pos + dir + vis) % vis;
+                    ui->startup_tab_index = ui->home_tab_order[next_pos];
+                    jw__persist_int(ui, "startup_tab_index", ui->startup_tab_index);
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_HOME_TABS) {
+                    if (button == CAT_BTN_A || button == CAT_BTN_RIGHT) {
+                        ui->home_tabs_grabbed = false;
+                        ui->home_tabs_list.cursor = 0;
+                        ui->home_tabs_list.scroll_offset = 0;
+                        ui->screen = JW_SETTINGS_HOME_TABS;
+                    }
                 } else if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
                     int next = (ui->auto_sleep_index + dir + JW_AUTO_SLEEP_COUNT)
                                % JW_AUTO_SLEEP_COUNT;
