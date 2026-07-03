@@ -1154,6 +1154,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
+    ui->layout_mode = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
+                          ? 1 : 0;
     ui->refresh_rate_hz   = 60;
     ui->refresh_rate_supported = false;
     ui->bfi_enabled       = false;
@@ -1722,6 +1724,8 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
 static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Layout", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_HOME_STYLE,
+                        "Home Layout", ui->layout_mode == 1 ? "Coverflow" : "Tabs", true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
                         "List Style", kPillShapeLabels[ui->pill_shape_index], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_FAMILY,
@@ -4390,6 +4394,27 @@ static void jw__cycle_color_scheme(jw_settings_ui *ui, int direction, bool *them
     jw__apply_color_scheme(ui, next, theme_changed);
 }
 
+/* Switch the home layout (Tabs <-> Coverflow) live. Loading the matching theme
+   makes its bundled assets resolve (e.g. the Coverflow console icons) and sets the
+   layout; cat_stylesheet_apply overwrites the theme colours, so re-apply the user's
+   colour scheme afterwards. Persist the choice as the theme name so a cold boot
+   restores it, and signal a rebuild so the home list is rebuilt for the layout. */
+static void jw__apply_layout(jw_settings_ui *ui, int mode, bool *theme_changed) {
+    const char *tn = (mode == 1) ? "Jawaka-Coverflow" : "Jawaka-Tabs";
+    cat_stylesheet ss;
+    if (cat_stylesheet_load_theme(&ss, tn) != CAT_OK)
+        return;
+    cat_stylesheet_apply(&ss);
+    if (ui->color_scheme_index >= 0) {
+        bool ignored = false;
+        jw__apply_color_scheme(ui, ui->color_scheme_index, &ignored);
+    }
+    ui->layout_mode = mode;
+    if (ui->db_path[0])
+        jw_db_set_setting(ui->db_path, "theme_name", tn);
+    if (theme_changed) *theme_changed = true;
+}
+
 static void jw__change_brightness(jw_settings_ui *ui, int delta,
                                   char *status_buf, size_t status_size) {
     int next = jw_platform_clamp_brightness_percent(ui->brightness_percent + delta);
@@ -5292,7 +5317,11 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_A: {
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
                 int row = ui->layout_list.cursor;
-                if (row == JW_LAYOUT_PILL_SHAPE) {
+                if (row == JW_LAYOUT_HOME_STYLE) {
+                    int next = (ui->layout_mode + dir + 2) % 2;
+                    if (next != ui->layout_mode)
+                        jw__apply_layout(ui, next, theme_changed);
+                } else if (row == JW_LAYOUT_PILL_SHAPE) {
                     int next = (ui->pill_shape_index + dir + JW_SETTINGS_PILL_SHAPE_COUNT) % JW_SETTINGS_PILL_SHAPE_COUNT;
                     ui->pill_shape_index = next;
                     cat_get_theme()->pill_radius_ratio = kJawakaPillRadiusValues[next];

@@ -138,6 +138,21 @@ typedef struct {
     uint32_t  start_ms;
 } jw_coverflow_anim;
 
+/* Continuous, wrapping carousel position for the games-level coverflow. vpos/
+   target are CONTINUOUS (can drift outside [0,count)) so a wrap from the last
+   cover to the first is a single-card slide, not a full-list rewind. The visible
+   cursor is always game_list.cursor; these just drive the smooth motion. */
+typedef struct {
+    bool      inited;
+    int       count_seen;    /* list size when last initialised (re-init on change) */
+    int       last_cursor;   /* last observed game_list.cursor */
+    bool      active;
+    float     vpos;          /* current visual centre (continuous) */
+    float     from;          /* tween start */
+    float     target;        /* tween target (stays ≡ cursor mod count) */
+    uint32_t  start_ms;
+} jw_games_cf;
+
 /* ─── Launcher state ──────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -192,6 +207,9 @@ typedef struct {
     cat_list_state     tools_list;
     /* coverflow animation */
     jw_coverflow_anim  coverflow_anim;
+    /* coverflow: album-card carousel state — games level + systems level */
+    jw_games_cf        games_cf;
+    jw_games_cf        systems_cf;
     /* Tab-switch slide (Glide setting): two content snapshots cross-slide. */
     bool               tab_anim_active;
     int                tab_anim_dir;        /* +1 = next (from right), -1 = prev */
@@ -527,6 +545,9 @@ static int jw__flat_cursor_for_system(const jw_launcher_state *state,
 }
 
 static void jw__draw_status_bar(const jw_launcher_state *state) {
+    /* Coverflow hides the status bar entirely for now — chrome-light stage. */
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
+        return;
     cat_status_bar_opts opts = {0};
     jw_settings_status_bar_opts(&state->settings, &opts);
     cat_draw_status_bar(&opts);
@@ -3055,125 +3076,52 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
                              theme->hint, max_w);
 }
 
-/* ─── Coverflow: animation helpers ───────────────────────────────────────── */
+/* ─── Coverflow: shared album-card carousel ──────────────────────────────────
+ * The card renderer + tween live below (they depend on helpers defined later);
+ * forward-declared here so the systems renderer can use them. */
+typedef SDL_Texture *(*jw_cf_icon_fn)(jw_launcher_state *state, int idx,
+                                      int *tw, int *th);
+static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
+                              int count, int cursor, jw_cf_icon_fn icon_fn);
+static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx,
+                                       int *tw, int *th);
 
-static float jw__ease_out_cubic(float t) {
-    float u = 1.0f - t;
-    return 1.0f - u * u * u;
-}
-
-static float jw__coverflow_visual_cursor(const jw_launcher_state *state) {
-    const jw_coverflow_anim *a = &state->coverflow_anim;
-    if (!a->active) return (float)state->list.cursor;
-    const cat_stylesheet *ss = cat_get_stylesheet();
-    uint32_t elapsed = SDL_GetTicks() - a->start_ms;
-    if (elapsed >= ss->launcher.coverflow_anim_ms) return (float)a->to_cursor;
-    float t = (float)elapsed / (float)ss->launcher.coverflow_anim_ms;
-    float eased = jw__ease_out_cubic(t);
-    return a->from_visual + ((float)a->to_cursor - a->from_visual) * eased;
-}
-
-static void jw__coverflow_start_anim(jw_launcher_state *state, int new_cursor) {
-    jw_coverflow_anim *a = &state->coverflow_anim;
-    a->from_visual = jw__coverflow_visual_cursor(state);
-    a->to_cursor   = new_cursor;
-    a->start_ms    = SDL_GetTicks();
-    a->active      = true;
-    state->list.cursor = new_cursor;
-}
-
-/* ─── Coverflow: render ───────────────────────────────────────────────────── */
-
+/* ─── Coverflow (systems level): the console carousel, card-styled ──────────── */
 static void jw__render_coverflow(jw_launcher_state *state) {
-    cat_clear_screen();
-    jw__draw_status_bar(state);
-
-    const cat_stylesheet *ss = cat_get_stylesheet();
-    ap_theme *theme    = cat_get_theme();
-    TTF_Font *label_font = cat_get_font(CAT_FONT_EXTRA_LARGE);
-    TTF_Font *small_font = cat_get_font(CAT_FONT_SMALL);
-
+    SDL_Renderer *ren = cat_get_renderer();
+    ap_theme *theme = cat_get_theme();
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
     int fh = jw__footer_height(state);
 
-    int icon_c  = CAT_S(ss->launcher.coverflow_icon_size);
-    int icon_s  = CAT_S(ss->launcher.coverflow_side_size);
-    int spacing = CAT_S(ss->launcher.coverflow_spacing);
-    int cx0     = sw / 2;
-    int cy      = sh / 2 - fh / 2 - CAT_S(20);
-    int count   = state->flat_count;
+    SDL_SetRenderDrawColor(ren, 6, 7, 9, 255);   /* glossy black stage (matches games) */
+    SDL_RenderClear(ren);
+    cat_set_shoulder_repeat(true);                /* hold L1/R1 to keep flowing */
 
-    /* Retire animation when finished */
-    jw_coverflow_anim *a = &state->coverflow_anim;
-    if (a->active && SDL_GetTicks() - a->start_ms >= ss->launcher.coverflow_anim_ms) {
-        a->active = false;
-    }
+    int count = state->flat_count;
+    if (count > 0) {
+        int cur = state->list.cursor;
+        jw__cf_draw_cards(state, &state->systems_cf, count, cur, jw__cf_icon_system);
 
-    float v_cursor = jw__coverflow_visual_cursor(state);
-
-    /* Request another frame while animation is in flight */
-    if (a->active) cat_request_frame();
-
-    int lo = (int)floorf(v_cursor) - 1;
-    int hi = (int)floorf(v_cursor) + 2;
-    if (lo < 0)           lo = 0;
-    if (hi > count - 1)   hi = count - 1;
-
-    /* Two-pass draw: sides first so center overlaps them */
-    for (int pass = 0; pass < 2; pass++) {
-        for (int i = lo; i <= hi; i++) {
-            float dist  = (float)i - v_cursor;
-            float adist = fabsf(dist);
-            if (adist > 2.0f) continue;
-
-            bool is_center_pass = adist < 0.5f;
-            if (pass == 0 && is_center_pass)  continue;
-            if (pass == 1 && !is_center_pass) continue;
-
-            /* c = 1 at center, 0 at side */
-            float c = 1.0f - fminf(adist, 1.0f);
-            if (c < 0.0f) c = 0.0f;
-
-            int size_px = (int)((1.0f - c) * (float)icon_s + c * (float)icon_c);
-            uint8_t alpha = (uint8_t)((1.0f - c) * (float)ss->launcher.coverflow_side_alpha
-                                      + c * 255.0f);
-            int cx = cx0 + (int)(dist * (float)spacing);
-
-            const jw_flat_item *it = &state->flat_items[i];
-            const char *code;
-            if (it->kind == JW_FLAT_SYSTEM)     code = state->systems[it->system_idx].name;
-            else if (it->kind == JW_FLAT_TOOLS) code = "_tools";
-            else                                continue;
-
-            int tw, th;
-            SDL_Texture *tex = jw__load_system_icon(code, &tw, &th);
-            if (!tex) continue;
-
-            SDL_SetTextureAlphaMod(tex, alpha);
-            jw__draw_image_fit(tex, tw, th,
-                               cx - size_px / 2, cy - size_px / 2,
-                               size_px, size_px);
-            SDL_SetTextureAlphaMod(tex, 255);
-        }
-    }
-
-    /* Label + game count for the logical (target) cursor item */
-    if (count > 0 && state->list.cursor < count) {
-        const jw_flat_item *it = &state->flat_items[state->list.cursor];
-        const char *label = jw__flat_label(state, state->list.cursor);
-        int lw = cat_measure_text(label_font, label);
-        int ly = cy + icon_c / 2 + CAT_S(20);
-        cat_draw_text(label_font, label, (sw - lw) / 2, ly, theme->text);
-
-        if (it->kind == JW_FLAT_SYSTEM) {
-            char cnt[32];
-            snprintf(cnt, sizeof(cnt), "%d games",
-                     state->systems[it->system_idx].game_count);
-            int cw = cat_measure_text(small_font, cnt);
-            cat_draw_text(small_font, cnt, (sw - cw) / 2,
-                          ly + TTF_FontHeight(label_font) + CAT_S(6),
-                          theme->hint);
+        /* System name + game count near the top (matches the games title). */
+        if (cur >= 0 && cur < count) {
+            const jw_flat_item *it = &state->flat_items[cur];
+            const char *label = jw__flat_label(state, cur);
+            TTF_Font *font  = cat_get_font(CAT_FONT_LARGE);
+            TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+            cat_draw_color white = { 236, 238, 240, 255 };
+            cat_draw_color dim   = { 150, 168, 150, 255 };
+            int lw = cat_measure_text(font, label);
+            int ty = CAT_S(12);
+            cat_draw_text(font, label, (sw - lw) / 2, ty, white);
+            if (it->kind == JW_FLAT_SYSTEM) {
+                char cnt[32];
+                snprintf(cnt, sizeof(cnt), "%d games",
+                         state->systems[it->system_idx].game_count);
+                int cw = cat_measure_text(small, cnt);
+                cat_draw_text(small, cnt, (sw - cw) / 2,
+                              ty + TTF_FontHeight(font) + CAT_S(4), dim);
+            }
         }
     }
 
@@ -3183,7 +3131,6 @@ static void jw__render_coverflow(jw_launcher_state *state) {
 
     /* Settings overlay */
     if (jw_settings_ui_is_open(&state->settings)) {
-        SDL_Renderer *ren = cat_get_renderer();
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 200);
         SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
         SDL_Rect full = { 0, 0, sw, sh };
@@ -3213,6 +3160,263 @@ static void jw__render_coverflow(jw_launcher_state *state) {
         };
         jw__draw_footer(state, footer, 4);
     }
+    cat_present();
+}
+
+/* ─── Coverflow (games level): angled album cards + floor reflection ──────────
+ * Prototype. Renders the drilled-in system's games as a Cover Flow carousel:
+ * uniform album cards drawn as perspective quads (SDL_RenderGeometry) on a
+ * glossy-black stage, each mirrored into a fading floor reflection. Reuses the
+ * cover thumbnail cache + background prewarm, and an ease-out tween on the
+ * game_list cursor. Active only when the launcher layout is coverflow. */
+
+static float jw__clampf(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+/* Ease-in-out: starts and ends at zero velocity, so the flow glides instead of
+   lurching from full speed the way a pure ease-out does. */
+static float jw__ease_in_out_cubic(float t) {
+    if (t < 0.5f) return 4.f * t * t * t;
+    float u = -2.f * t + 2.f;
+    return 1.f - (u * u * u) * 0.5f;
+}
+
+#define JW_GAMES_CF_ANIM_MS 260u
+
+static float jw__games_cf_vpos_now(const jw_games_cf *cf) {
+    if (!cf->active) return cf->vpos;
+    uint32_t elapsed = SDL_GetTicks() - cf->start_ms;
+    if (elapsed >= JW_GAMES_CF_ANIM_MS) return cf->target;
+    float t = (float)elapsed / (float)JW_GAMES_CF_ANIM_MS;
+    return cf->from + (cf->target - cf->from) * jw__ease_in_out_cubic(t);
+}
+
+/* One textured (tex==NULL -> solid) quad via SDL_RenderGeometry. p/uv/col are
+ * the four corners in TL,TR,BR,BL order. */
+static void jw__cf_quad(SDL_Texture *tex, const SDL_FPoint p[4],
+                        const SDL_FPoint uv[4], const SDL_Color col[4]) {
+    SDL_Vertex v[4];
+    for (int k = 0; k < 4; k++) {
+        v[k].position  = p[k];
+        v[k].tex_coord = uv[k];
+        v[k].color     = col[k];
+    }
+    static const int idx[6] = { 0, 1, 2, 0, 2, 3 };
+    SDL_RenderGeometry(cat_get_renderer(), tex, v, 4, idx, 6);
+}
+
+/* Draw one album card (perspective-rotated about its vertical axis) plus a
+ * short fading reflection beneath it. (ox,oy) is the card centre on screen;
+ * hw/hh are the uniform card half-extents; ang is the tilt in radians; alpha
+ * dims sides. The cover is CONTAIN-fit (never cropped) inside a uniform card
+ * backing, so mismatched box-art aspect ratios keep the same outer shape while
+ * still showing every edge of the art. */
+static void jw__cf_draw_card(SDL_Texture *tex, int tw, int th,
+                             float ox, float oy, float hw, float hh,
+                             float ang, uint8_t alpha) {
+    float ca = cosf(ang), sa = sinf(ang);
+    const float F = hw * 6.0f + 1.0f;            /* perspective focal length */
+
+    /* Project a local (lx,ly) through the shared rotation+perspective. */
+    #define CF_PROJ(LX, LY, OUT) do {                              \
+        float _xr = (LX) * ca, _zr = (LX) * sa;                    \
+        float _pp = F / (F + _zr);                                 \
+        (OUT).x = ox + _xr * _pp; (OUT).y = oy + (LY) * _pp;       \
+    } while (0)
+
+    SDL_FPoint fulluv[4] = { {0,0}, {1,0}, {1,1}, {0,1} };
+
+    /* Missing art -> a dark placeholder card so the slot still reads. Real covers
+       draw at their NATIVE aspect (below) with no case: within a system all box
+       art shares a shape, so the flow stays uniform without forcing one frame. */
+    if (!tex || tw <= 0 || th <= 0) {
+        SDL_FPoint bp[4];
+        CF_PROJ(-hw, -hh, bp[0]); CF_PROJ(+hw, -hh, bp[1]);
+        CF_PROJ(+hw, +hh, bp[2]); CF_PROJ(-hw, +hh, bp[3]);
+        SDL_Color bc[4] = { {26,28,35,alpha}, {26,28,35,alpha},
+                            {16,17,22,alpha}, {16,17,22,alpha} };
+        jw__cf_quad(NULL, bp, fulluv, bc);
+        goto done;
+    }
+
+    /* Contain the cover inside the frame: fit the tighter axis, centre the rest. */
+    float frameAR = hw / hh;
+    float texAR   = (float)tw / (float)th;
+    float ahw = hw, ahh = hh;
+    if (texAR > frameAR) ahh = hw / texAR;       /* wider -> letterbox top/bottom */
+    else                 ahw = hh * texAR;       /* taller -> pillarbox left/right */
+
+    SDL_FPoint p[4];
+    CF_PROJ(-ahw, -ahh, p[0]); CF_PROJ(+ahw, -ahh, p[1]);
+    CF_PROJ(+ahw, +ahh, p[2]); CF_PROJ(-ahw, +ahh, p[3]);
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+
+    /* Reflection: mirror the cover's bottom edge downward ~55%, fading out. */
+    const float f = 0.55f;
+    SDL_FPoint rp[4] = {
+        p[3], p[2],
+        { p[2].x + f * (p[2].x - p[1].x), p[2].y + f * (p[2].y - p[1].y) },
+        { p[3].x + f * (p[3].x - p[0].x), p[3].y + f * (p[3].y - p[0].y) },
+    };
+    float vb = 1.f - f;
+    SDL_FPoint ruv[4] = { {0,1}, {1,1}, {1,vb}, {0,vb} };
+    uint8_t ra = (uint8_t)((int)alpha * 90 / 255);
+    SDL_Color rcol[4] = { {255,255,255,ra}, {255,255,255,ra},
+                          {255,255,255,0},  {255,255,255,0} };
+    jw__cf_quad(tex, rp, ruv, rcol);
+
+    /* The cover. */
+    SDL_Color col[4] = { {255,255,255,alpha}, {255,255,255,alpha},
+                         {255,255,255,alpha}, {255,255,255,alpha} };
+    jw__cf_quad(tex, p, fulluv, col);
+
+done:
+    #undef CF_PROJ
+    return;
+}
+
+/* Icon source: a game's box art via the thumbnail cache (NULL while it streams). */
+static SDL_Texture *jw__cf_icon_game(jw_launcher_state *state, int idx,
+                                     int *tw, int *th) {
+    *tw = 0; *th = 0;
+    const jw_game_entry *g = &state->games[idx];
+    if (!g->image_path[0]) return NULL;
+    char abs[PATH_MAX];
+    if (jw__resolve_sdcard_path(state, g->image_path, abs, sizeof(abs)) != 0) return NULL;
+    bool pending = false;
+    return jw__load_cover(state, abs, tw, th, &pending);
+}
+
+/* Icon source: a system's console art (or the Tools tile). */
+static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx,
+                                       int *tw, int *th) {
+    const jw_flat_item *it = &state->flat_items[idx];
+    const char *code;
+    if (it->kind == JW_FLAT_SYSTEM)     code = state->systems[it->system_idx].name;
+    else if (it->kind == JW_FLAT_TOOLS) code = "_tools";
+    else                                code = "_default";
+    return jw__load_system_icon(code, tw, th);
+}
+
+/* Shared card carousel: advance the continuous wrap tween on `cursor`, then draw
+   the window of angled album cards (one texture per item via icon_fn) with floor
+   reflections. The caller clears the stage, draws labels/overlays, and presents. */
+static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
+                              int count, int cursor, jw_cf_icon_fn icon_fn) {
+    if (count <= 0) return;
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+
+    /* Continuous, wrapping carousel position; re-init on entry / list change. */
+    if (!cf->inited || cf->count_seen != count) {
+        cf->inited = true;
+        cf->count_seen = count;
+        cf->vpos = cf->from = cf->target = (float)cursor;
+        cf->last_cursor = cursor;
+        cf->active = false;
+    }
+    if (cursor != cf->last_cursor) {
+        int raw = cursor - cf->last_cursor;           /* shortest wrapped direction */
+        while (raw >  count / 2) raw -= count;
+        while (raw < -count / 2) raw += count;
+        cf->last_cursor = cursor;
+        if (raw > 6 || raw < -6) {                    /* letter jump / big -> snap */
+            cf->target += (float)raw;
+            cf->vpos = cf->from = cf->target;
+            cf->active = false;
+        } else {
+            cf->from = jw__games_cf_vpos_now(cf);      /* glide from where it sits now */
+            cf->target += (float)raw;
+            cf->start_ms = SDL_GetTicks();
+            cf->active = true;
+        }
+    }
+    float vc = jw__games_cf_vpos_now(cf);
+    if (cf->active) {
+        if (SDL_GetTicks() - cf->start_ms >= JW_GAMES_CF_ANIM_MS) {
+            cf->active = false;
+            cf->vpos = cf->target;
+            /* Renormalise toward [0,count) so the continuous position never drifts far. */
+            while (cf->vpos >= count) { cf->vpos -= count; cf->target -= count; }
+            while (cf->vpos < 0)      { cf->vpos += count; cf->target += count; }
+            vc = cf->vpos;
+        } else {
+            cf->vpos = vc;
+            cat_request_frame();
+        }
+    }
+
+    /* Card geometry as fractions of the screen (resolution-independent). */
+    float CH = sh * 0.60f;
+    float CW = CH * 0.70f;
+    float oy = sh * 0.45f;                        /* lower, so the title clears the art */
+    float cx = sw * 0.5f;
+    float STEP = CW * 0.70f;
+    const float   SIDE_SCALE = 0.66f;
+    const uint8_t SIDE_ALPHA = 160;
+    const float   TILT       = 0.80f;            /* ~46 deg */
+    const int     W = 3;                          /* slots drawn each side */
+
+    int base = (int)floorf(vc + 0.5f);
+
+    /* Draw far -> near so nearer cards overlap; modular indices wrap the ends so
+       the flow is a true, endless carousel (last card slides into the first). */
+    for (int ring = W; ring >= 0; ring--) {
+        for (int o = -W; o <= W; o++) {
+            int slot = base + o;
+            float d = (float)slot - vc;
+            if (fabsf(d) > (float)W + 0.5f) continue;
+            if ((int)(fabsf(d) + 0.5f) != ring) continue;
+
+            float ad = fabsf(d);
+            float c  = 1.0f - jw__clampf(ad, 0.f, 1.f);      /* 1 centre .. 0 side */
+            float scale = SIDE_SCALE + (1.0f - SIDE_SCALE) * c;
+            float hw  = CW * 0.5f * scale;
+            float hh  = CH * 0.5f * scale;
+            /* Tilt so each side card's OUTER edge faces the viewer. */
+            float ang = -TILT * jw__clampf(d, -1.f, 1.f);
+            uint8_t alpha = (uint8_t)(SIDE_ALPHA + (int)((255 - SIDE_ALPHA) * c));
+            float ox = cx + d * STEP;
+
+            int idx = ((slot % count) + count) % count;
+            int tw = 0, th = 0;
+            SDL_Texture *tex = icon_fn(state, idx, &tw, &th);
+            jw__cf_draw_card(tex, tw, th, ox, oy, hw, hh, ang, alpha);
+        }
+    }
+}
+
+static void jw__render_coverflow_games(jw_launcher_state *state) {
+    SDL_Renderer *ren = cat_get_renderer();
+    int sw = cat_get_screen_width();
+
+    SDL_SetRenderDrawColor(ren, 6, 7, 9, 255);   /* glossy black stage */
+    SDL_RenderClear(ren);
+
+    int count = state->game_count;
+    if (count <= 0) { cat_present(); return; }
+    int cur = state->game_list.cursor;
+
+    /* Prewarm covers around the cursor (reuses the game-grid pipeline). */
+    jw__cover_prewarm(state, state->games, count, cur);
+
+    jw__cf_draw_cards(state, &state->games_cf, count, cur, jw__cf_icon_game);
+
+    /* Centred game title, near the top. Tags like " (USA)" / " [!]" stripped. */
+    if (cur >= 0 && cur < count) {
+        TTF_Font *font = cat_get_font(CAT_FONT_LARGE);
+        char title[192];
+        jw__clean_rom_name(state->games[cur].name, title, sizeof(title));
+        int maxw = sw - CAT_S(96);
+        int nw   = cat_measure_text(font, title);
+        int tx   = (sw - (nw < maxw ? nw : maxw)) / 2;
+        int ty   = CAT_S(12);
+        cat_draw_color white = { 236, 238, 240, 255 };
+        if (nw > maxw) cat_draw_text_ellipsized(font, title, tx, ty, white, maxw);
+        else           cat_draw_text(font, title, tx, ty, white);
+    }
+
     cat_present();
 }
 
@@ -4056,6 +4260,10 @@ static void jw__open_pakrat_store(jw_launcher_state *state) {
 }
 
 static void jw__render_launcher(jw_launcher_state *state) {
+    /* L1/R1 hold-repeat is opt-in and only wanted in the coverflow game carousel;
+       default it off each frame so the shoulders stay single-shot tab switches. */
+    cat_set_shoulder_repeat(false);
+
     if (state->switcher_open) {
         jw__render_switcher(state);
         return;
@@ -4082,7 +4290,12 @@ static void jw__render_launcher(jw_launcher_state *state) {
     }
 
     if (state->games_open) {
-        jw__render_game_browser(state);
+        if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
+            cat_set_shoulder_repeat(true);   /* hold L1/R1 to keep flowing */
+            jw__render_coverflow_games(state);
+        } else {
+            jw__render_game_browser(state);
+        }
         return;
     }
 
@@ -5534,21 +5747,43 @@ static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state 
 /* Drop the selected game from the Recents tab's play-history and reload the list,
    keeping the cursor near its prior spot. The game and any favorite are untouched
    — it just leaves Recents. */
+/* Label accessor for alphabetical letter-jump in the coverflow game carousel. */
+static const char *jw__games_label_cb(int i, void *user) {
+    const jw_launcher_state *st = (const jw_launcher_state *)user;
+    return (i >= 0 && i < st->game_count) ? st->games[i].name : "";
+}
+
 static void jw__handle_game_browser_input(const char *socket_path, const char *db_path,
                                           jw_launcher_state *state,
                                           cat_button button, bool *running) {
+    /* Coverflow reads the game list as a horizontal carousel: Left/Right (and the
+       L1/R1 shoulders) step one cover with wrap-around, Up/Down jump to the next
+       alphabetical letter. The grid layouts keep their row/page navigation. */
+    bool cf = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW);
     switch (button) {
         case CAT_BTN_UP:
-            cat_list_state_move(&state->game_list, -1, state->game_count);
+            if (cf) cat_list_state_jump_letter(&state->game_list, jw__games_label_cb,
+                                               state, state->game_count, -1);
+            else    cat_list_state_move(&state->game_list, -1, state->game_count);
             break;
         case CAT_BTN_DOWN:
-            cat_list_state_move(&state->game_list, +1, state->game_count);
+            if (cf) cat_list_state_jump_letter(&state->game_list, jw__games_label_cb,
+                                               state, state->game_count, +1);
+            else    cat_list_state_move(&state->game_list, +1, state->game_count);
             break;
         case CAT_BTN_LEFT:
-            cat_list_state_page(&state->game_list, -1, state->game_count);
+            if (cf) cat_list_state_move(&state->game_list, -1, state->game_count);
+            else    cat_list_state_page(&state->game_list, -1, state->game_count);
             break;
         case CAT_BTN_RIGHT:
-            cat_list_state_page(&state->game_list, +1, state->game_count);
+            if (cf) cat_list_state_move(&state->game_list, +1, state->game_count);
+            else    cat_list_state_page(&state->game_list, +1, state->game_count);
+            break;
+        case CAT_BTN_L1:
+            if (cf) cat_list_state_move(&state->game_list, -1, state->game_count);
+            break;
+        case CAT_BTN_R1:
+            if (cf) cat_list_state_move(&state->game_list, +1, state->game_count);
             break;
         case CAT_BTN_A:
             jw__launch_selected_game(socket_path, state, running);
@@ -6194,32 +6429,29 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             cat_list_state_move(&state->list, +1, count);
             break;
         case CAT_BTN_LEFT:
-            if (layout == CAT_LAUNCHER_COVERFLOW) {
-                int nc = state->list.cursor > 0 ? state->list.cursor - 1 : 0;
-                if (nc != state->list.cursor) jw__coverflow_start_anim(state, nc);
-            } else if (layout == CAT_LAUNCHER_HORIZONTAL) {
+            /* Coverflow + Horizontal flow one item with wrap-around; tabbed pages. */
+            if (layout == CAT_LAUNCHER_COVERFLOW || layout == CAT_LAUNCHER_HORIZONTAL)
                 cat_list_state_move(&state->list, -1, count);
-            } else {
+            else
                 cat_list_state_page(&state->list, -1, count);
-            }
             break;
         case CAT_BTN_RIGHT:
-            if (layout == CAT_LAUNCHER_COVERFLOW) {
-                int nc = state->list.cursor < count - 1 ? state->list.cursor + 1 : count - 1;
-                if (nc != state->list.cursor) jw__coverflow_start_anim(state, nc);
-            } else if (layout == CAT_LAUNCHER_HORIZONTAL) {
+            if (layout == CAT_LAUNCHER_COVERFLOW || layout == CAT_LAUNCHER_HORIZONTAL)
                 cat_list_state_move(&state->list, +1, count);
-            } else {
+            else
                 cat_list_state_page(&state->list, +1, count);
-            }
             break;
-        case CAT_BTN_L1:   /* L1/R1 tab between sections (L2/R2 reserved for future use) */
+        case CAT_BTN_L1:   /* Tabbed: tab between sections. Coverflow: flow one item. */
             if (layout == CAT_LAUNCHER_TABBED)
                 jw__switch_tab_slide(state, -1, db_path);
+            else if (layout == CAT_LAUNCHER_COVERFLOW)
+                cat_list_state_move(&state->list, -1, count);
             break;
         case CAT_BTN_R1:
             if (layout == CAT_LAUNCHER_TABBED)
                 jw__switch_tab_slide(state, +1, db_path);
+            else if (layout == CAT_LAUNCHER_COVERFLOW)
+                cat_list_state_move(&state->list, +1, count);
             break;
         case CAT_BTN_A:
             if (layout == CAT_LAUNCHER_TABBED)

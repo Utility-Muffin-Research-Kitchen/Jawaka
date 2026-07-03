@@ -77,11 +77,12 @@ typedef enum {
 #define JW_COLOR_ROW_COUNT   7
 
 /* Layout page */
-#define JW_LAYOUT_PILL_SHAPE  0
-#define JW_LAYOUT_FONT_FAMILY 1
-#define JW_LAYOUT_FONT_SIZE   2
-#define JW_LAYOUT_TAB_SWITCH  3
-#define JW_LAYOUT_ROW_COUNT   4
+#define JW_LAYOUT_HOME_STYLE  0   /* Tabs vs Coverflow home layout */
+#define JW_LAYOUT_PILL_SHAPE  1
+#define JW_LAYOUT_FONT_FAMILY 2
+#define JW_LAYOUT_FONT_SIZE   3
+#define JW_LAYOUT_TAB_SWITCH  4
+#define JW_LAYOUT_ROW_COUNT   5
 
 /* Status Bar page */
 #define JW_STATUSBAR_HINTS   0
@@ -209,6 +210,7 @@ typedef struct {
     int                font_family_index;
     int                font_size_index;
     int                tab_glide;            /* 0 = Snap (instant), 1 = Glide (slide) */
+    int                layout_mode;          /* 0 = Tabs, 1 = Coverflow (home layout) */
     bool               show_hints;
     int                clock_style_index;
     bool               show_battery;
