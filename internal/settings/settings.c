@@ -3367,6 +3367,7 @@ static const jw__about_credit kAboutCredits[] = {
     { "SQLite",                                 "Public Domain" },
     { "cJSON",                                  "MIT" },
     { "System icons (libretro Systematic)",     "CC BY-SA 4.0" },
+    { "Coverflow console art (Evan-Amos)",       "Public Domain" },
     { "Fonts: Space Grotesk, Inter, Rounded M+, Nunito, Baloo 2, Fredoka, "
       "Lexend, IBM Plex Sans, Noto Sans, Source Han Sans", "SIL OFL 1.1" },
     { "Keyboard icons (Nerd Fonts)",            "MIT" },
