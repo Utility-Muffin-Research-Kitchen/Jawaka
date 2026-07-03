@@ -3,12 +3,27 @@ SHELL := /bin/bash
 CC ?= cc
 CSTD := -std=c11
 CWARN := -Wall -Wextra -Wpedantic -Wno-unused-parameter
-CDEBUG ?= -g -O0
 BUILD ?= build
 CFLAGS_PLATFORM ?=
+LDFLAGS_PLATFORM ?=
 PLATFORM ?= mac
 MLP1_TOOLCHAIN_IMAGE ?= ghcr.io/utility-muffin-research-kitchen/mlp1-toolchain:local
+MLP1_BUILD_PROFILE ?= release
 WORKSPACE_ROOT ?= $(abspath ..)
+
+ifeq ($(PLATFORM),mlp1)
+MLP1_FLAGS_MK ?= $(firstword $(wildcard /opt/mlp1-toolchain/umrk/mlp1-build-flags.mk $(WORKSPACE_ROOT)/mlp1-toolchain/flags/mlp1-build-flags.mk ../mlp1-toolchain/flags/mlp1-build-flags.mk))
+ifneq ($(MLP1_FLAGS_MK),)
+include $(MLP1_FLAGS_MK)
+else
+UMRK_MLP1_PROFILE_CFLAGS ?= -O2 -mcpu=cortex-a55 -mtune=cortex-a55 -ffunction-sections -fdata-sections -DNDEBUG
+UMRK_MLP1_PROFILE_LDFLAGS ?= -Wl,--gc-sections
+endif
+CDEBUG ?= $(UMRK_MLP1_PROFILE_CFLAGS)
+LDFLAGS_PLATFORM += $(UMRK_MLP1_PROFILE_LDFLAGS)
+else
+CDEBUG ?= -g -O0
+endif
 
 ifeq ($(PLATFORM),mlp1)
 CFLAGS_PLATFORM += -DPLATFORM_MLP1
@@ -54,7 +69,7 @@ endif
 CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
 CFLAGS_UI := $(CFLAGS_COMMON) -I$(CATASTROPHE_INCLUDE) -Ithird_party/miniz $(SDL_CFLAGS) $(CURL_CFLAGS)
-LDLIBS_COMMON := -lsqlite3
+LDLIBS_COMMON := $(LDFLAGS_PLATFORM) -lsqlite3
 LDLIBS_DAEMON := $(LDLIBS_COMMON)
 LDLIBS_UI := $(LDLIBS_COMMON) $(SDL_LDFLAGS) $(CURL_LDFLAGS) -lm -lpthread
 ifeq ($(shell uname -s),Darwin)
@@ -262,10 +277,15 @@ ALL_BINS := \
 ifeq ($(PLATFORM),mlp1)
 ALL_BINS += $(BUILD)/bin/jawaka-ledd
 endif
+ifeq ($(PLATFORM),mlp1)
+ALL_OUTPUTS := $(ALL_BINS) $(BUILD)/build-manifest.json
+else
+ALL_OUTPUTS := $(ALL_BINS)
+endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
-all: $(ALL_BINS)
+all: $(ALL_OUTPUTS)
 
 jawakad: $(BUILD)/bin/jawakad
 jawaka-launcher: $(BUILD)/bin/jawaka-launcher
@@ -348,6 +368,23 @@ $(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
 ifeq ($(PLATFORM),mlp1)
 $(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ cmd/jawaka-ledd/main.c
+
+$(BUILD)/build-manifest.json: $(ALL_BINS) FORCE
+	@mkdir -p "$(BUILD)"
+	@{ \
+		printf '{\n'; \
+		printf '  "platform": "mlp1",\n'; \
+		printf '  "target_soc": "%s",\n' "$(UMRK_MLP1_TARGET_SOC)"; \
+		printf '  "target_cpu": "%s",\n' "$(UMRK_MLP1_TARGET_CPU)"; \
+		printf '  "build_profile": "%s",\n' "$(MLP1_BUILD_PROFILE)"; \
+		printf '  "cflags": "%s",\n' "$(CDEBUG)"; \
+		printf '  "ldflags": "%s",\n' "$(LDFLAGS_PLATFORM)"; \
+		printf '  "binaries": ["jawakad", "jawaka-launcher", "jawaka-menu", "jawaka-osd", "jawaka-retroarchctl", "jawaka-retroarch-runner", "jawaka-update-runner", "jawaka-platformctl", "jawaka-ledd"],\n'; \
+		printf '  "exceptions": []\n'; \
+		printf '}\n'; \
+	} > "$@"
+
+FORCE:
 endif
 
 phase3-fixture-scan-smoke:
@@ -415,6 +452,7 @@ tg5040 tg5050 my355:
 
 mlp1:
 	docker run --rm \
+		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		-v "$(WORKSPACE_ROOT)":/workspace \
 		-w /workspace/Jawaka \
 		"$(MLP1_TOOLCHAIN_IMAGE)" \
@@ -422,6 +460,7 @@ mlp1:
 
 mlp1-pakrat-smoke:
 	docker run --rm \
+		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		-v "$(WORKSPACE_ROOT)":/workspace \
 		-w /workspace/Jawaka \
 		"$(MLP1_TOOLCHAIN_IMAGE)" \
