@@ -152,6 +152,12 @@ typedef struct {
     uint32_t  last_ms;
 } jw_games_cf;
 
+typedef struct {
+    bool done;
+    char code[64];
+    char path[PATH_MAX];     /* empty when every candidate is known missing */
+} jw_system_icon_memo;
+
 /* ─── Launcher state ──────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -166,6 +172,7 @@ typedef struct {
     /* data */
     jw_library_summary summary;
     jw_system_entry    systems[JW_MAX_SYSTEMS];
+    jw_system_icon_memo system_icon_memos[JW_MAX_SYSTEMS];
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
@@ -270,6 +277,11 @@ typedef struct {
     bool               library_populated;
     int                library_generation;
 } jw_launcher_state;
+
+static void jw__system_icon_memo_clear(jw_launcher_state *state) {
+    if (!state) return;
+    memset(state->system_icon_memos, 0, sizeof(state->system_icon_memos));
+}
 
 /* ─── Home-tab visibility (hide + reorder) ────────────────────────────────── */
 
@@ -848,6 +860,7 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
 
     jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
     jw__resolve_system_names(db_path, state);
+    jw__system_icon_memo_clear(state);
     jw_db_list_apps(db_path, state->apps, JW_MAX_APPS, &state->app_count);
 
     /* Dev-only layout filler: JAWAKA_FAKE_APPS=N appends N synthetic rows to
@@ -2549,6 +2562,18 @@ static SDL_Texture *jw__load_cached_image(const char *path, int *out_w, int *out
     return tex;
 }
 
+static bool jw__readable_path(const char *path) {
+    return path && path[0] && access(path, R_OK) == 0;
+}
+
+static bool jw__copy_path(char *out, size_t out_size, const char *path) {
+    if (!out || out_size == 0 || !path) {
+        return false;
+    }
+    int n = snprintf(out, out_size, "%s", path);
+    return n >= 0 && (size_t)n < out_size;
+}
+
 /* Box-art covers are large (~1MB, ~1000px PNGs) and decoding one blocks the UI
    thread ~200ms — and the texture cache only holds a handful of entries, so
    scrolling a big system re-decodes the full image on nearly every step and the
@@ -2836,6 +2861,67 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
     return NULL;
 }
 
+/* Coverflow cards share the cover loader's "no inline decode while moving"
+   discipline. This is used for system/app icons as well as art, so a cold image
+   miss shows the normal placeholder card instead of stalling the carousel. */
+static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *out_h) {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    if (!path || !path[0]) {
+        return NULL;
+    }
+
+    int w = 0, h = 0;
+    SDL_Texture *cached = cat_cache_get(path, &w, &h);
+    if (cached) {
+        if (out_w) *out_w = w;
+        if (out_h) *out_h = h;
+        return cached;
+    }
+
+    char thumb[PATH_MAX];
+    const char *thumb_path = jw__cover_thumb_path(path, thumb, sizeof(thumb))
+                                 ? thumb : NULL;
+
+    if (!jw__cf_animating && jw__cover_inline_decodes_this_frame < 1) {
+        jw__cover_inline_decodes_this_frame++;
+        SDL_Texture *tex = NULL;
+        if (thumb_path) {
+            tex = cat_load_image_thumbnail(path, thumb_path, JW_COVER_THUMB_MAX, &w, &h);
+        } else {
+            tex = cat_load_image(path);
+            if (tex &&
+                (SDL_QueryTexture(tex, NULL, NULL, &w, &h) != 0 || w <= 0 || h <= 0)) {
+                SDL_DestroyTexture(tex);
+                tex = NULL;
+            }
+        }
+        if (tex) {
+            cat_cache_put(path, tex, w, h);
+            if (out_w) *out_w = w;
+            if (out_h) *out_h = h;
+            return tex;
+        }
+    }
+
+    SDL_Surface *surf = NULL;
+    if (jw__cover_async_take(path, thumb_path, &surf)) {
+        SDL_Texture *tex = cat_texture_from_surface(surf);
+        w = surf->w;
+        h = surf->h;
+        SDL_FreeSurface(surf);
+        if (tex) {
+            cat_cache_put(path, tex, w, h);
+            if (out_w) *out_w = w;
+            if (out_h) *out_h = h;
+            return tex;
+        }
+    }
+
+    cat_request_frame_in(40);
+    return NULL;
+}
+
 /* Pre-warm covers around the cursor so navigating lands on art that is already
    built. Windows the work (a few behind, more ahead) so even huge systems only
    enqueue near-cursor covers, while small lists (Favorites/Recents) fill within a
@@ -2912,6 +2998,82 @@ static void jw__draw_cover_fit(SDL_Texture *tex, int tex_w, int tex_h,
 }
 
 /* ─── System icon loader (shared across themes) ──────────────────────────── */
+
+static bool jw__resolve_system_icon_path(const jw_launcher_state *state,
+                                         const char *system_code,
+                                         char *out, size_t out_size) {
+    if (out && out_size > 0) {
+        out[0] = '\0';
+    }
+    if (!system_code || !system_code[0] || !out || out_size == 0) {
+        return false;
+    }
+
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    const char *theme_dir = cat_get_active_theme_dir();
+    const char *theme_name = cat_get_active_theme_name();
+    const char *icon_dir = (ss && ss->launcher.coverflow_icon_dir[0])
+                               ? ss->launcher.coverflow_icon_dir : "system_icons";
+    char path[PATH_MAX];
+    int n = 0;
+
+    if (system_code[0] != '_' && state && state->sdcard_root[0]) {
+        n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
+                     state->sdcard_root, system_code);
+        if (n >= 0 && (size_t)n < sizeof(path) && jw__readable_path(path)) {
+            return jw__copy_path(out, out_size, path);
+        }
+    }
+
+    if (theme_dir && theme_dir[0] && theme_name && theme_name[0]) {
+        n = snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
+                     theme_dir, theme_name, icon_dir, system_code);
+        if (n >= 0 && (size_t)n < sizeof(path) && jw__readable_path(path)) {
+            return jw__copy_path(out, out_size, path);
+        }
+    }
+
+    if (theme_dir && theme_dir[0]) {
+        n = snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
+                     theme_dir, system_code);
+        if (n >= 0 && (size_t)n < sizeof(path) && jw__readable_path(path)) {
+            return jw__copy_path(out, out_size, path);
+        }
+
+        n = snprintf(path, sizeof(path), "%s/../system_icons/_default.png",
+                     theme_dir);
+        if (n >= 0 && (size_t)n < sizeof(path) && jw__readable_path(path)) {
+            return jw__copy_path(out, out_size, path);
+        }
+    }
+
+    return false;
+}
+
+static const char *jw__cf_system_icon_path(jw_launcher_state *state, int idx) {
+    if (!state || idx < 0 || idx >= state->system_count) {
+        return NULL;
+    }
+
+    const char *code = state->systems[idx].name;
+    if (!code[0]) {
+        return NULL;
+    }
+
+    jw_system_icon_memo *memo = &state->system_icon_memos[idx];
+    if (!memo->done || strcmp(memo->code, code) != 0) {
+        memset(memo, 0, sizeof(*memo));
+        memo->done = true;
+        size_t i = 0;
+        for (; i + 1 < sizeof(memo->code) && code[i]; ++i) {
+            memo->code[i] = code[i];
+        }
+        memo->code[i] = '\0';
+        (void)jw__resolve_system_icon_path(state, code, memo->path, sizeof(memo->path));
+    }
+
+    return memo->path[0] ? memo->path : NULL;
+}
 
 /* Loader order:
  *   1. <sdcard_root>/Roms/<SYSTEM>/icon.png       (user override; skipped for codes starting with '_')
@@ -3331,14 +3493,15 @@ static SDL_Texture *jw__cf_icon_recent(jw_launcher_state *state, int idx, int *t
 }
 static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx, int *tw, int *th) {
     /* Games channel: idx is a system index. */
-    return jw__load_system_icon(state->systems[idx].name, tw, th);
+    const char *path = jw__cf_system_icon_path(state, idx);
+    return jw__load_coverflow_image(path, tw, th);
 }
 static SDL_Texture *jw__cf_icon_app(jw_launcher_state *state, int idx, int *tw, int *th) {
     *tw = 0; *th = 0;
     const jw_app_entry *app = &state->apps[idx];
     char abs[PATH_MAX];
     if (jw__resolve_app_icon_path(state, app, abs, sizeof(abs)) == 0)
-        return jw__load_cached_image(abs, tw, th);
+        return jw__load_coverflow_image(abs, tw, th);
     return NULL;
 }
 
@@ -5913,6 +6076,7 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
     state->apps_open = false;
     memset(&state->coverflow_anim, 0, sizeof(state->coverflow_anim));
     jw__tab_anim_clear(state);   /* cancel any in-flight tab slide on layout/theme change */
+    jw__system_icon_memo_clear(state);
 
     /* Refresh per-console color palette from the active theme stylesheet.
      * Empty / missing maps degrade to hash-derived colors in the carousel. */
