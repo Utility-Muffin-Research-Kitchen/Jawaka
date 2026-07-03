@@ -210,6 +210,15 @@ typedef struct {
     /* coverflow: album-card carousel state — games level + systems level */
     jw_games_cf        games_cf;
     jw_games_cf        systems_cf;
+    /* coverflow: vertical channel switch, animated as a rotating cube — the two
+       channels are snapshot to textures and drawn as adjacent cube faces. */
+    struct {
+        bool         active;
+        int          dir;        /* +1 = down/next (in from below), -1 = up/prev */
+        uint32_t     start_ms;
+        SDL_Texture *out_tex;    /* outgoing channel snapshot (render target) */
+        SDL_Texture *in_tex;     /* incoming channel snapshot */
+    } chan_cube;
     /* Tab-switch slide (Glide setting): two content snapshots cross-slide. */
     bool               tab_anim_active;
     int                tab_anim_dir;        /* +1 = next (from right), -1 = prev */
@@ -908,7 +917,7 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
 
     const cat_stylesheet *ss = cat_get_stylesheet();
     cat_launcher_layout layout = ss->launcher.layout;
-    if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW) {
+    if (layout == CAT_LAUNCHER_HORIZONTAL) {
         jw__build_carousel_list(state);
         int count = state->flat_count;
         if (selected_system[0]) {
@@ -3083,8 +3092,15 @@ typedef SDL_Texture *(*jw_cf_icon_fn)(jw_launcher_state *state, int idx,
                                       int *tw, int *th);
 static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
                               int count, int cursor, jw_cf_icon_fn icon_fn);
-static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx,
-                                       int *tw, int *th);
+static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx, int *tw, int *th);
+static SDL_Texture *jw__cf_icon_favorite(jw_launcher_state *state, int idx, int *tw, int *th);
+static SDL_Texture *jw__cf_icon_recent(jw_launcher_state *state, int idx, int *tw, int *th);
+static SDL_Texture *jw__cf_icon_app(jw_launcher_state *state, int idx, int *tw, int *th);
+static void jw__cf_draw_channel(jw_launcher_state *state);
+static void jw__cf_draw_cube(jw_launcher_state *state, uint32_t elapsed);
+static void jw__cf_channel_begin(jw_launcher_state *state, int dir, const char *db_path);
+static void jw__cf_draw_channel_hint(jw_launcher_state *state);
+#define JW_CHAN_CUBE_MS 360u
 
 /* ─── Coverflow (systems level): the console carousel, card-styled ──────────── */
 static void jw__render_coverflow(jw_launcher_state *state) {
@@ -3098,31 +3114,19 @@ static void jw__render_coverflow(jw_launcher_state *state) {
     SDL_RenderClear(ren);
     cat_set_shoulder_repeat(true);                /* hold L1/R1 to keep flowing */
 
-    int count = state->flat_count;
-    if (count > 0) {
-        int cur = state->list.cursor;
-        jw__cf_draw_cards(state, &state->systems_cf, count, cur, jw__cf_icon_system);
-
-        /* System name + game count near the top (matches the games title). */
-        if (cur >= 0 && cur < count) {
-            const jw_flat_item *it = &state->flat_items[cur];
-            const char *label = jw__flat_label(state, cur);
-            TTF_Font *font  = cat_get_font(CAT_FONT_LARGE);
-            TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-            cat_draw_color white = { 236, 238, 240, 255 };
-            cat_draw_color dim   = { 150, 168, 150, 255 };
-            int lw = cat_measure_text(font, label);
-            int ty = CAT_S(12);
-            cat_draw_text(font, label, (sw - lw) / 2, ty, white);
-            if (it->kind == JW_FLAT_SYSTEM) {
-                char cnt[32];
-                snprintf(cnt, sizeof(cnt), "%d games",
-                         state->systems[it->system_idx].game_count);
-                int cw = cat_measure_text(small, cnt);
-                cat_draw_text(small, cnt, (sw - cw) / 2,
-                              ty + TTF_FontHeight(font) + CAT_S(4), dim);
-            }
+    /* Channel content: a cube-rotation transition while switching channels,
+       otherwise the current channel's carousel. */
+    if (state->chan_cube.active) {
+        uint32_t el = SDL_GetTicks() - state->chan_cube.start_ms;
+        if (el >= JW_CHAN_CUBE_MS) {
+            state->chan_cube.active = false;
+            jw__cf_draw_channel(state);
+        } else {
+            jw__cf_draw_cube(state, el);
+            cat_request_frame();
         }
+    } else {
+        jw__cf_draw_channel(state);
     }
 
     /* Tools overlay */
@@ -3151,14 +3155,11 @@ static void jw__render_coverflow(jw_launcher_state *state) {
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 2);
-    } else {
-        cat_footer_item footer[] = {
-            { CAT_BTN_X,    "Options",  false, JW_HINT("X") },
-            { CAT_BTN_MENU, "Menu",     false, JW_HINT("H") },
-            { CAT_BTN_Y,    "Rescan",   true,  JW_HINT("Y") },
-            { CAT_BTN_A,    "Select",   true,  JW_HINT("A") },
-        };
-        jw__draw_footer(state, footer, 4);
+    } else if (!state->tools_open && !state->chan_cube.active &&
+               state->visible_tab_count > 1) {
+        /* Chrome-light home: no footer hints; a small ▲▼ in the corner cues the
+           Up/Down channel switch. */
+        jw__cf_draw_channel_hint(state);
     }
     cat_present();
 }
@@ -3276,11 +3277,11 @@ done:
     return;
 }
 
-/* Icon source: a game's box art via the thumbnail cache (NULL while it streams). */
-static SDL_Texture *jw__cf_icon_game(jw_launcher_state *state, int idx,
-                                     int *tw, int *th) {
+/* Box art for a game entry (favorites / recents / drilled games) via the thumb
+   cache; NULL while it streams in or has no art. */
+static SDL_Texture *jw__cf_cover(jw_launcher_state *state, const jw_game_entry *g,
+                                 int *tw, int *th) {
     *tw = 0; *th = 0;
-    const jw_game_entry *g = &state->games[idx];
     if (!g->image_path[0]) return NULL;
     char abs[PATH_MAX];
     if (jw__resolve_sdcard_path(state, g->image_path, abs, sizeof(abs)) != 0) return NULL;
@@ -3288,15 +3289,27 @@ static SDL_Texture *jw__cf_icon_game(jw_launcher_state *state, int idx,
     return jw__load_cover(state, abs, tw, th, &pending);
 }
 
-/* Icon source: a system's console art (or the Tools tile). */
-static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx,
-                                       int *tw, int *th) {
-    const jw_flat_item *it = &state->flat_items[idx];
-    const char *code;
-    if (it->kind == JW_FLAT_SYSTEM)     code = state->systems[it->system_idx].name;
-    else if (it->kind == JW_FLAT_TOOLS) code = "_tools";
-    else                                code = "_default";
-    return jw__load_system_icon(code, tw, th);
+/* Per-channel icon sources (Games=systems, Favorites/Recents=box art, Apps=icons). */
+static SDL_Texture *jw__cf_icon_game(jw_launcher_state *state, int idx, int *tw, int *th) {
+    return jw__cf_cover(state, &state->games[idx], tw, th);
+}
+static SDL_Texture *jw__cf_icon_favorite(jw_launcher_state *state, int idx, int *tw, int *th) {
+    return jw__cf_cover(state, &state->favorites[idx], tw, th);
+}
+static SDL_Texture *jw__cf_icon_recent(jw_launcher_state *state, int idx, int *tw, int *th) {
+    return jw__cf_cover(state, &state->recents[idx], tw, th);
+}
+static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx, int *tw, int *th) {
+    /* Games channel: idx is a system index. */
+    return jw__load_system_icon(state->systems[idx].name, tw, th);
+}
+static SDL_Texture *jw__cf_icon_app(jw_launcher_state *state, int idx, int *tw, int *th) {
+    *tw = 0; *th = 0;
+    const jw_app_entry *app = &state->apps[idx];
+    char abs[PATH_MAX];
+    if (jw__resolve_app_icon_path(state, app, abs, sizeof(abs)) == 0)
+        return jw__load_cached_image(abs, tw, th);
+    return NULL;
 }
 
 /* Shared card carousel: advance the continuous wrap tween on `cursor`, then draw
@@ -3385,6 +3398,186 @@ static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
             jw__cf_draw_card(tex, tw, th, ox, oy, hw, hh, ang, alpha);
         }
     }
+}
+
+/* ── Coverflow channels: draw + snapshot + cube-rotation transition ─────────── */
+
+/* Draw the current channel's carousel + labels into the active render target. */
+static void jw__cf_draw_channel(jw_launcher_state *state) {
+    int sw = cat_get_screen_width();
+    int count = jw__tab_list_count(state);
+
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    cat_draw_color white = { 236, 238, 240, 255 };
+    const char *chan = kTabs[state->current_tab];
+    int chw = cat_measure_text(small, chan);
+    int cy0 = CAT_S(6);
+    cat_draw_text(small, chan, (sw - chw) / 2, cy0, white);   /* channel name, always */
+
+    if (count <= 0) return;
+
+    int cur = state->list.cursor;
+    jw_tab tab = state->current_tab;
+    jw_cf_icon_fn icon_fn = jw__cf_icon_system;
+    if (tab == JW_TAB_FAVORITES)    icon_fn = jw__cf_icon_favorite;
+    else if (tab == JW_TAB_RECENTS) icon_fn = jw__cf_icon_recent;
+    else if (tab == JW_TAB_APPS)    icon_fn = jw__cf_icon_app;
+    jw__cf_draw_cards(state, &state->systems_cf, count, cur, icon_fn);
+
+    char labelbuf[192];
+    const char *label = "";
+    if (cur >= 0 && cur < count) {
+        if (tab == JW_TAB_GAMES)      label = state->systems[cur].display_name;
+        else if (tab == JW_TAB_APPS)  label = state->apps[cur].name;
+        else {
+            const jw_game_entry *g = (tab == JW_TAB_FAVORITES)
+                                         ? &state->favorites[cur] : &state->recents[cur];
+            jw__clean_rom_name(g->name, labelbuf, sizeof(labelbuf));
+            label = labelbuf;
+        }
+    }
+    TTF_Font *font = cat_get_font(CAT_FONT_LARGE);
+    int ty   = cy0 + TTF_FontHeight(small) + CAT_S(2);
+    int maxw = sw - CAT_S(96);
+    int lw   = cat_measure_text(font, label);
+    int lx   = (sw - (lw < maxw ? lw : maxw)) / 2;
+    if (lw > maxw) cat_draw_text_ellipsized(font, label, lx, ty, white, maxw);
+    else           cat_draw_text(font, label, lx, ty, white);
+}
+
+/* Snapshot the current channel into `tex` (a render-target texture). */
+static void jw__cf_capture_channel(jw_launcher_state *state, SDL_Texture *tex) {
+    SDL_Renderer *ren = cat_get_renderer();
+    SDL_SetRenderTarget(ren, tex);
+    SDL_SetRenderDrawColor(ren, 6, 7, 9, 255);
+    SDL_RenderClear(ren);
+    jw__cf_draw_channel(state);
+    SDL_SetRenderTarget(ren, NULL);
+}
+
+/* Rotate the outgoing + incoming channel snapshots as two adjacent cube faces
+   about the horizontal axis. */
+/* Draw one cube face, subdivided into horizontal strips. SDL_RenderGeometry maps
+   textures affinely per triangle, so a single strongly-foreshortened quad shears
+   along its diagonal; thin strips keep each triangle near-planar and the warp
+   disappears. kind 0 = front (outgoing); kind 1 = incoming (hinged below when
+   dir>0, above when dir<0). */
+static void jw__cf_face(SDL_Texture *tex, int kind, int dir,
+                        float W, float H, float cx, float cy,
+                        float C, float S, float cphi, float sphi) {
+    const int N = 16;
+    for (int r = 0; r < N; r++) {
+        float ev[2] = { (float)r / N, (float)(r + 1) / N };
+        SDL_FPoint p[4], uv[4];
+        for (int e = 0; e < 2; e++) {
+            float vv = ev[e];
+            float Y, Z, texv;
+            if (kind == 0)    { Y = -H*0.5f + vv*H; Z = +H*0.5f;        texv = vv; }
+            else if (dir > 0) { Y = -H*0.5f;        Z = +H*0.5f - vv*H; texv = 1.f - vv; }
+            else              { Y = +H*0.5f;        Z = +H*0.5f - vv*H; texv = vv; }
+            float _y = Y*cphi - Z*sphi;
+            float _z = Y*sphi + Z*cphi;
+            float _p = C / (C - _z);
+            float sxL = cx + (-W*0.5f) * _p * S;
+            float sxR = cx + (+W*0.5f) * _p * S;
+            float sy  = cy + _y * _p * S;
+            int a = (e == 0) ? 0 : 3;   /* top edge -> TL,TR (0,1); bottom -> BL,BR (3,2) */
+            int b = (e == 0) ? 1 : 2;
+            p[a].x = sxL; p[a].y = sy; uv[a].x = 0.f; uv[a].y = texv;
+            p[b].x = sxR; p[b].y = sy; uv[b].x = 1.f; uv[b].y = texv;
+        }
+        SDL_Color c4[4] = { {255,255,255,255}, {255,255,255,255},
+                            {255,255,255,255}, {255,255,255,255} };
+        jw__cf_quad(tex, p, uv, c4);
+    }
+}
+
+static void jw__cf_draw_cube(jw_launcher_state *state, uint32_t elapsed) {
+    SDL_Texture *out_tex = state->chan_cube.out_tex;
+    SDL_Texture *in_tex  = state->chan_cube.in_tex;
+    if (!out_tex || !in_tex) return;
+
+    float sw = (float)cat_get_screen_width();
+    float sh = (float)cat_get_screen_height();
+    float t  = (float)elapsed / (float)JW_CHAN_CUBE_MS;
+    if (t > 1.f) t = 1.f;
+    t = jw__ease_in_out_cubic(t);
+
+    int   dir = state->chan_cube.dir;                 /* +1 down, -1 up */
+    float phi = -(float)dir * 1.5707963f * t;         /* rotate about X axis */
+    float W = sw, H = sh, cx = sw * 0.5f, cy = sh * 0.5f;
+    float C = 1.35f * H;                               /* camera distance (close = strong
+                                                          perspective; strips below keep
+                                                          the warp from shearing) */
+    float S = (C - H * 0.5f) / C;                      /* front face fills at t=0 */
+    float cphi = cosf(phi), sphi = sinf(phi);
+
+    SDL_SetTextureBlendMode(out_tex, SDL_BLENDMODE_NONE);
+    SDL_SetTextureBlendMode(in_tex,  SDL_BLENDMODE_NONE);
+
+    /* Draw the farther face first (front centre depth vs incoming centre depth). */
+    float zf = (H * 0.5f) * cphi;
+    float zg = (dir > 0) ? -(H * 0.5f) * sphi : (H * 0.5f) * sphi;
+    if (zf >= zg) {
+        jw__cf_face(in_tex,  1, dir, W, H, cx, cy, C, S, cphi, sphi);
+        jw__cf_face(out_tex, 0, dir, W, H, cx, cy, C, S, cphi, sphi);
+    } else {
+        jw__cf_face(out_tex, 0, dir, W, H, cx, cy, C, S, cphi, sphi);
+        jw__cf_face(in_tex,  1, dir, W, H, cx, cy, C, S, cphi, sphi);
+    }
+}
+
+/* Begin a channel switch: snapshot outgoing, switch, snapshot incoming, and start
+   the cube rotation. Falls back to an instant switch if targets are unavailable. */
+static void jw__cf_channel_begin(jw_launcher_state *state, int dir, const char *db_path) {
+    SDL_Renderer *ren = cat_get_renderer();
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    if (!state->chan_cube.out_tex) {
+        state->chan_cube.out_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888,
+                                                     SDL_TEXTUREACCESS_TARGET, sw, sh);
+        state->chan_cube.in_tex  = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888,
+                                                     SDL_TEXTUREACCESS_TARGET, sw, sh);
+    }
+    if (!state->chan_cube.out_tex || !state->chan_cube.in_tex) {
+        jw__switch_tab(state, dir, db_path);           /* fallback: instant switch */
+        state->systems_cf.inited = false;
+        return;
+    }
+    jw__cf_capture_channel(state, state->chan_cube.out_tex);
+    jw__switch_tab(state, dir, db_path);
+    state->systems_cf.inited = false;
+    jw__cf_capture_channel(state, state->chan_cube.in_tex);
+    state->chan_cube.active   = true;
+    state->chan_cube.dir      = dir;
+    state->chan_cube.start_ms = SDL_GetTicks();
+}
+
+/* Small ▲▼ (side by side) in the bottom-right corner cueing the channel switch. */
+static void jw__cf_draw_channel_hint(jw_launcher_state *state) {
+    (void)state;
+    SDL_Renderer *ren = cat_get_renderer();
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    float s   = (float)CAT_S(9);          /* half-width */
+    float h   = s * 0.7f;                  /* half-height */
+    float gap = (float)CAT_S(10);
+    float cyc = (float)sh - CAT_S(34);     /* vertical centre of the pair */
+    float dx  = (float)sw - CAT_S(26) - s; /* down triangle (rightmost) centre */
+    float ux  = dx - (2.f * s + gap);      /* up triangle centre, to its left */
+    SDL_Color w = { 236, 238, 240, 255 };
+    SDL_Vertex up[3] = {                                  /* pointing up */
+        { { ux,     cyc - h }, w, {0,0} },
+        { { ux - s, cyc + h }, w, {0,0} },
+        { { ux + s, cyc + h }, w, {0,0} },
+    };
+    SDL_RenderGeometry(ren, NULL, up, 3, NULL, 0);
+    SDL_Vertex dn[3] = {                                  /* pointing down */
+        { { dx - s, cyc - h }, w, {0,0} },
+        { { dx + s, cyc - h }, w, {0,0} },
+        { { dx,     cyc + h }, w, {0,0} },
+    };
+    SDL_RenderGeometry(ren, NULL, dn, 3, NULL, 0);
 }
 
 static void jw__render_coverflow_games(jw_launcher_state *state) {
@@ -6414,19 +6607,30 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         return;
     }
 
-    int count = (layout == CAT_LAUNCHER_TABBED) ? jw__tab_list_count(state)
-                                                 : state->flat_count;
+    /* Coverflow shares the tabbed data model (current_tab + per-tab lists); the
+       carousel is that tab's content, and Up/Down switches channel. */
+    bool cf_channels = (layout == CAT_LAUNCHER_COVERFLOW);
+    int count = (layout == CAT_LAUNCHER_TABBED || cf_channels)
+                    ? jw__tab_list_count(state) : state->flat_count;
 
     switch (button) {
         case CAT_BTN_UP:
-            if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW)
+            if (cf_channels) {
+                jw__cf_channel_begin(state, -1, db_path);   /* previous channel (cube up) */
+            } else if (layout == CAT_LAUNCHER_HORIZONTAL) {
                 break;
-            cat_list_state_move(&state->list, -1, count);
+            } else {
+                cat_list_state_move(&state->list, -1, count);
+            }
             break;
         case CAT_BTN_DOWN:
-            if (layout == CAT_LAUNCHER_HORIZONTAL || layout == CAT_LAUNCHER_COVERFLOW)
+            if (cf_channels) {
+                jw__cf_channel_begin(state, +1, db_path);   /* next channel (cube down) */
+            } else if (layout == CAT_LAUNCHER_HORIZONTAL) {
                 break;
-            cat_list_state_move(&state->list, +1, count);
+            } else {
+                cat_list_state_move(&state->list, +1, count);
+            }
             break;
         case CAT_BTN_LEFT:
             /* Coverflow + Horizontal flow one item with wrap-around; tabbed pages. */
@@ -6454,7 +6658,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                 cat_list_state_move(&state->list, +1, count);
             break;
         case CAT_BTN_A:
-            if (layout == CAT_LAUNCHER_TABBED)
+            if (layout == CAT_LAUNCHER_TABBED || cf_channels)
                 jw__activate_tabbed(socket_path, db_path, state, running);
             else
                 jw__activate_flat(socket_path, db_path, state, running);
