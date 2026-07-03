@@ -148,9 +148,8 @@ typedef struct {
     int       last_cursor;   /* last observed game_list.cursor */
     bool      active;
     float     vpos;          /* current visual centre (continuous) */
-    float     from;          /* tween start */
     float     target;        /* tween target (stays ≡ cursor mod count) */
-    uint32_t  start_ms;
+    uint32_t  last_ms;
 } jw_games_cf;
 
 /* ─── Launcher state ──────────────────────────────────────────────────────── */
@@ -2606,8 +2605,9 @@ static bool jw__cover_thumb_path(const char *cover_abs, char *out, size_t out_si
        thumbnail to disk; the surface is discarded, so when the cursor later lands
        on that cover jw__load_cover hits the fast on-disk thumbnail path.
    Net effect: scroll freely while covers fill in a beat ahead of the cursor, in
-   Favorites/Recents/search/systems alike. Covers whose thumbnail already exists
-   never reach the worker (the small thumbnail decodes fast enough inline). */
+   Favorites/Recents/search/systems alike. Existing thumbnails usually decode
+   inline, but coverflow motion can route them through the worker to avoid
+   mid-animation hitches. */
 #define JW_COVER_QUEUE_MAX 48          /* pre-warm backlog cap (ring buffer) */
 
 typedef struct {
@@ -2638,6 +2638,9 @@ static jw_cover_loader jw__cover_loader = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .cond = PTHREAD_COND_INITIALIZER,
 };
+
+static bool jw__cf_animating;
+static int  jw__cover_inline_decodes_this_frame;
 
 static void *jw__cover_worker(void *arg) {
     jw_cover_loader *L = (jw_cover_loader *)arg;
@@ -2735,11 +2738,10 @@ static bool jw__cover_async_take(const char *path, const char *thumb, SDL_Surfac
         L->has_done = false;
         got = true;
     } else {
-        if (L->has_done && L->done_surf) {     /* stale result for another cover */
-            SDL_FreeSurface(L->done_surf);
-            L->done_surf = NULL;
-            L->has_done = false;
-        }
+        /* Keep an unmatched result for the rest of this draw pass. Coverflow draws
+           side cards before the centre card, so dropping it here can discard the
+           cover that is about to be requested later in the same frame. The worker
+           still replaces stale results when a newer decode completes. */
         if (!L->has_req || strcmp(L->req_path, path) != 0) {
             snprintf(L->req_path, sizeof(L->req_path), "%s", path);
             snprintf(L->req_thumb, sizeof(L->req_thumb), "%s", thumb ? thumb : "");
@@ -2795,17 +2797,22 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
     const char *thumb_path = jw__cover_thumb_path(cover_abs, thumb, sizeof(thumb))
                                  ? thumb : NULL;
 
-    /* Fast path: a thumbnail already exists -> decode it inline (cheap). */
+    /* Fast path: a thumbnail already exists. Decode at most one inline per frame
+       while settled, and none during card motion; the worker can decode the same
+       small thumbnail off-thread and the main thread will only upload it. */
     if (thumb_path && cat_thumbnail_is_cached(cover_abs, thumb_path)) {
-        SDL_Texture *tex = cat_load_image_thumbnail(cover_abs, thumb_path,
-                                                    JW_COVER_THUMB_MAX, &w, &h);
-        if (tex) {
-            cat_cache_put(cover_abs, tex, w, h);
-            if (out_w) *out_w = w;
-            if (out_h) *out_h = h;
-            return tex;
+        if (!jw__cf_animating && jw__cover_inline_decodes_this_frame < 1) {
+            jw__cover_inline_decodes_this_frame++;
+            SDL_Texture *tex = cat_load_image_thumbnail(cover_abs, thumb_path,
+                                                        JW_COVER_THUMB_MAX, &w, &h);
+            if (tex) {
+                cat_cache_put(cover_abs, tex, w, h);
+                if (out_w) *out_w = w;
+                if (out_h) *out_h = h;
+                return tex;
+            }
+            /* unreadable thumbnail -> fall through and let the worker rebuild it */
         }
-        /* unreadable thumbnail -> fall through and let the worker rebuild it */
     }
 
     /* Slow path: building the thumbnail needs a full decode -> do it off-thread. */
@@ -3168,29 +3175,52 @@ static void jw__render_coverflow(jw_launcher_state *state) {
  * Prototype. Renders the drilled-in system's games as a Cover Flow carousel:
  * uniform album cards drawn as perspective quads (SDL_RenderGeometry) on a
  * glossy-black stage, each mirrored into a fading floor reflection. Reuses the
- * cover thumbnail cache + background prewarm, and an ease-out tween on the
- * game_list cursor. Active only when the launcher layout is coverflow. */
+ * cover thumbnail cache + background prewarm, and a continuous exponential
+ * approach on the game_list cursor. Active only when the launcher layout is
+ * coverflow. */
 
 static float jw__clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/* Ease-in-out: starts and ends at zero velocity, so the flow glides instead of
-   lurching from full speed the way a pure ease-out does. */
 static float jw__ease_in_out_cubic(float t) {
     if (t < 0.5f) return 4.f * t * t * t;
     float u = -2.f * t + 2.f;
     return 1.f - (u * u * u) * 0.5f;
 }
 
-#define JW_GAMES_CF_ANIM_MS 260u
+static uint32_t jw__cf_anim_ms(void) {
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    uint32_t ms = ss ? ss->launcher.coverflow_anim_ms : 180u;
+    if (ms == 0) ms = 180u;
+    if (ms < 80u) ms = 80u;
+    if (ms > 600u) ms = 600u;
+    return ms;
+}
 
-static float jw__games_cf_vpos_now(const jw_games_cf *cf) {
-    if (!cf->active) return cf->vpos;
-    uint32_t elapsed = SDL_GetTicks() - cf->start_ms;
-    if (elapsed >= JW_GAMES_CF_ANIM_MS) return cf->target;
-    float t = (float)elapsed / (float)JW_GAMES_CF_ANIM_MS;
-    return cf->from + (cf->target - cf->from) * jw__ease_in_out_cubic(t);
+static void jw__games_cf_renormalize(jw_games_cf *cf, int count) {
+    if (!cf || count <= 0) return;
+    while (cf->vpos >= (float)count) {
+        cf->vpos -= (float)count;
+        cf->target -= (float)count;
+    }
+    while (cf->vpos < 0.f) {
+        cf->vpos += (float)count;
+        cf->target += (float)count;
+    }
+}
+
+static void jw__games_cf_step(jw_games_cf *cf, uint32_t now) {
+    if (!cf || !cf->active) return;
+
+    uint32_t dt = now - cf->last_ms;
+    cf->last_ms = now;
+    if (dt == 0) dt = 1;
+    if (dt > 100) dt = 100;
+
+    float tau = jw__clampf((float)jw__cf_anim_ms() * 0.25f, 25.f, 150.f);
+    float k = 1.0f - expf(-(float)dt / tau);
+    cf->vpos += (cf->target - cf->vpos) * k;
 }
 
 /* One textured (tex==NULL -> solid) quad via SDL_RenderGeometry. p/uv/col are
@@ -3320,13 +3350,15 @@ static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
     if (count <= 0) return;
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
+    uint32_t now = SDL_GetTicks();
 
     /* Continuous, wrapping carousel position; re-init on entry / list change. */
     if (!cf->inited || cf->count_seen != count) {
         cf->inited = true;
         cf->count_seen = count;
-        cf->vpos = cf->from = cf->target = (float)cursor;
+        cf->vpos = cf->target = (float)cursor;
         cf->last_cursor = cursor;
+        cf->last_ms = now;
         cf->active = false;
     }
     if (cursor != cf->last_cursor) {
@@ -3336,29 +3368,28 @@ static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
         cf->last_cursor = cursor;
         if (raw > 6 || raw < -6) {                    /* letter jump / big -> snap */
             cf->target += (float)raw;
-            cf->vpos = cf->from = cf->target;
+            cf->vpos = cf->target;
+            cf->last_ms = now;
             cf->active = false;
+            jw__games_cf_renormalize(cf, count);
         } else {
-            cf->from = jw__games_cf_vpos_now(cf);      /* glide from where it sits now */
             cf->target += (float)raw;
-            cf->start_ms = SDL_GetTicks();
+            if (!cf->active) cf->last_ms = (now > 16u) ? now - 16u : 0u;
             cf->active = true;
         }
     }
-    float vc = jw__games_cf_vpos_now(cf);
     if (cf->active) {
-        if (SDL_GetTicks() - cf->start_ms >= JW_GAMES_CF_ANIM_MS) {
+        jw__games_cf_step(cf, now);
+        if (fabsf(cf->target - cf->vpos) < 0.003f) {
             cf->active = false;
             cf->vpos = cf->target;
-            /* Renormalise toward [0,count) so the continuous position never drifts far. */
-            while (cf->vpos >= count) { cf->vpos -= count; cf->target -= count; }
-            while (cf->vpos < 0)      { cf->vpos += count; cf->target += count; }
-            vc = cf->vpos;
+            jw__games_cf_renormalize(cf, count);
         } else {
-            cf->vpos = vc;
             cat_request_frame();
         }
     }
+    jw__cf_animating = jw__cf_animating || cf->active;
+    float vc = cf->vpos;
 
     /* Card geometry as fractions of the screen (resolution-independent). */
     float CH = sh * 0.60f;
@@ -3580,7 +3611,49 @@ static void jw__cf_draw_channel_hint(jw_launcher_state *state) {
     SDL_RenderGeometry(ren, NULL, dn, 3, NULL, 0);
 }
 
+static bool jw__coverflow_frame_log_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("JAWAKA_FRAME_LOG");
+        enabled = (v && v[0] && strcmp(v, "0") != 0) ? 1 : 0;
+    }
+    return enabled != 0;
+}
+
+static void jw__coverflow_frame_log(uint32_t frame_start_ms, uint32_t render_done_ms) {
+    static uint32_t last_frame_start_ms;
+    static uint32_t report_start_ms;
+    static int frames;
+    static int slow_frames;
+    static uint32_t max_start_delta_ms;
+    static uint32_t max_render_ms;
+
+    uint32_t render_ms = render_done_ms - frame_start_ms;
+    uint32_t start_delta_ms = 0;
+    if (last_frame_start_ms != 0) {
+        start_delta_ms = frame_start_ms - last_frame_start_ms;
+        if (start_delta_ms > max_start_delta_ms) max_start_delta_ms = start_delta_ms;
+    }
+    last_frame_start_ms = frame_start_ms;
+    if (render_ms > max_render_ms) max_render_ms = render_ms;
+    if (render_ms > 17 || start_delta_ms > 20) slow_frames++;
+    frames++;
+
+    if (report_start_ms == 0) report_start_ms = frame_start_ms;
+    if (render_done_ms - report_start_ms >= 1000u) {
+        cat_log("coverflow frame stats: frames=%d slow=%d max_delta_ms=%u max_render_ms=%u",
+                frames, slow_frames, max_start_delta_ms, max_render_ms);
+        report_start_ms = render_done_ms;
+        frames = 0;
+        slow_frames = 0;
+        max_start_delta_ms = 0;
+        max_render_ms = 0;
+    }
+}
+
 static void jw__render_coverflow_games(jw_launcher_state *state) {
+    bool frame_log = jw__coverflow_frame_log_enabled();
+    uint32_t frame_start_ms = frame_log ? SDL_GetTicks() : 0;
     SDL_Renderer *ren = cat_get_renderer();
     int sw = cat_get_screen_width();
 
@@ -3588,7 +3661,12 @@ static void jw__render_coverflow_games(jw_launcher_state *state) {
     SDL_RenderClear(ren);
 
     int count = state->game_count;
-    if (count <= 0) { cat_present(); return; }
+    if (count <= 0) {
+        uint32_t render_done_ms = frame_log ? SDL_GetTicks() : 0;
+        cat_present();
+        if (frame_log) jw__coverflow_frame_log(frame_start_ms, render_done_ms);
+        return;
+    }
     int cur = state->game_list.cursor;
 
     /* Prewarm covers around the cursor (reuses the game-grid pipeline). */
@@ -3610,7 +3688,9 @@ static void jw__render_coverflow_games(jw_launcher_state *state) {
         else           cat_draw_text(font, title, tx, ty, white);
     }
 
+    uint32_t render_done_ms = frame_log ? SDL_GetTicks() : 0;
     cat_present();
+    if (frame_log) jw__coverflow_frame_log(frame_start_ms, render_done_ms);
 }
 
 /* Top header height of the system game browser: the tab bar + system-name
@@ -4453,6 +4533,9 @@ static void jw__open_pakrat_store(jw_launcher_state *state) {
 }
 
 static void jw__render_launcher(jw_launcher_state *state) {
+    jw__cf_animating = false;
+    jw__cover_inline_decodes_this_frame = 0;
+
     /* L1/R1 hold-repeat is opt-in and only wanted in the coverflow game carousel;
        default it off each frame so the shoulders stay single-shot tab switches. */
     cat_set_shoulder_repeat(false);
