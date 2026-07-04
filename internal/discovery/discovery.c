@@ -628,6 +628,347 @@ static int jw__name_is_m3u_member(const char *name, char members[][JW_M3U_MEMBER
     return 0;
 }
 
+/* Cap how deep the recursive ROM walk descends. Real layouts are 1-2 levels
+   (per-game folders, hack subfolders); this is a safety bound against pathological
+   trees, not a functional limit. */
+#define JW_SCAN_MAX_DEPTH 8
+
+/* Directory names that hold art/media/support files, never games. Skipped by the
+   recursive walk so they aren't descended (and so a stray file inside them can't
+   masquerade as a game). Matched case-insensitively against the folder name. */
+static int jw__is_skippable_subdir(const char *name) {
+    static const char *const kSkip[] = {
+        "imgs", "images", "media", "boxart", "covers", "snaps", "screenshots",
+        "titles", "logos", "marquees", "bezels", "overlays", "videos", "manuals",
+    };
+    for (size_t i = 0; i < sizeof(kSkip) / sizeof(kSkip[0]); i++) {
+        if (strcasecmp(name, kSkip[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Detect a multi-disc marker — "(Disc 1)", "(Disc 2 of 3)", "(Disk 1)", "(CD 1)",
+   "(CD1)" — in a content filename. On a match, writes the base title (the stem with
+   the disc parenthetical removed and the extension stripped) and the disc number,
+   and returns 1. The digit requirement after the keyword rejects words that merely
+   start with "disc"/"cd" (e.g. "Discovery"). Case-insensitive. */
+static int jw__parse_disc(const char *filename, char *base_out, size_t base_size,
+                          int *disc_no) {
+    if (!filename || !base_out || base_size == 0 || !disc_no) {
+        return 0;
+    }
+    char stem[PATH_MAX];
+    snprintf(stem, sizeof(stem), "%s", filename);
+    jw__strip_last_extension(stem);
+
+    for (char *p = strchr(stem, '('); p; p = strchr(p + 1, '(')) {
+        const char *q = p + 1;
+        while (*q == ' ') q++;
+        int kw = 0;
+        if (strncasecmp(q, "disc", 4) == 0) kw = 4;
+        else if (strncasecmp(q, "disk", 4) == 0) kw = 4;
+        else if (strncasecmp(q, "cd", 2) == 0) kw = 2;
+        if (!kw) {
+            continue;
+        }
+        const char *r = q + kw;
+        while (*r == ' ') r++;
+        if (!isdigit((unsigned char)*r)) {
+            continue;
+        }
+        int num = (int)strtol(r, NULL, 10);
+        const char *close = strchr(r, ')');
+        if (!close || num < 1) {
+            continue;
+        }
+
+        char tmp[PATH_MAX];
+        size_t ti = 0;
+        for (const char *s = stem; s < p && ti + 1 < sizeof(tmp); s++) tmp[ti++] = *s;
+        for (const char *s = close + 1; *s && ti + 1 < sizeof(tmp); s++) tmp[ti++] = *s;
+        tmp[ti] = '\0';
+
+        /* Collapse the space runs left by removing the parenthetical, then trim. */
+        char clean[PATH_MAX];
+        size_t ci = 0;
+        int prev_space = 0;
+        for (size_t i = 0; tmp[i] && ci + 1 < sizeof(clean); i++) {
+            if (tmp[i] == ' ') {
+                if (prev_space) continue;
+                prev_space = 1;
+            } else {
+                prev_space = 0;
+            }
+            clean[ci++] = tmp[i];
+        }
+        while (ci > 0 && clean[ci - 1] == ' ') ci--;
+        clean[ci] = '\0';
+
+        snprintf(base_out, base_size, "%s", clean);
+        *disc_no = num;
+        return 1;
+    }
+    return 0;
+}
+
+#define JW_DISC_MAX_GROUPS  64
+#define JW_DISC_MAX_MEMBERS 16
+
+typedef struct {
+    char base[PATH_MAX];
+    char files[JW_DISC_MAX_MEMBERS][JW_M3U_MEMBER_LEN];
+    int  disc_no[JW_DISC_MAX_MEMBERS];
+    int  count;
+} jw_disc_group;
+
+/* Phase 2 — auto-m3u. For a directory belonging to an m3u-capable system,
+   synthesize a "<base>.m3u" for every multi-disc set (>= 2 discs) that doesn't
+   already have one, so the set is discovered as a single launchable entry with
+   in-game disc swapping. Safe by construction: it never overwrites an existing
+   .m3u, skips a set already referenced by a hand-made .m3u, and silently does
+   nothing if the directory can't be written. The generated playlist lists bare
+   disc filenames, which RetroArch resolves relative to the playlist's folder. */
+static void jw__maybe_generate_disc_m3u(const jw_ra_system *system, const char *dir_abs) {
+    if (!system || !dir_abs) {
+        return;
+    }
+    if (!jw_ra_string_list_contains_casefold(&system->playlist_extensions, "m3u")) {
+        return;
+    }
+    if (system->m3u_generation && strcmp(system->m3u_generation, "none") == 0) {
+        return;
+    }
+
+    /* Discs already claimed by an existing .m3u here → leave those sets alone. */
+    char existing[JW_M3U_MAX_MEMBERS][JW_M3U_MEMBER_LEN];
+    int existing_count = 0;
+    jw__collect_m3u_members(system, dir_abs, existing, &existing_count);
+
+    DIR *dir = opendir(dir_abs);
+    if (!dir) {
+        return;
+    }
+    jw_disc_group *groups = calloc(JW_DISC_MAX_GROUPS, sizeof(*groups));
+    if (!groups) {
+        closedir(dir);
+        return;
+    }
+    int group_count = 0;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (jw__is_hidden(entry->d_name) || jw__is_private_rom_name(entry->d_name)) {
+            continue;
+        }
+        char ext[16];
+        jw__extension_lower(entry->d_name, ext, sizeof(ext));
+        if (!ext[0] || !jw_ra_string_list_contains_casefold(&system->extensions, ext)) {
+            continue;   /* only real disc-image content, never m3u/other */
+        }
+        char base[PATH_MAX];
+        int disc_no = 0;
+        if (!jw__parse_disc(entry->d_name, base, sizeof(base), &disc_no) || !base[0]) {
+            continue;
+        }
+        int gi = -1;
+        for (int i = 0; i < group_count; i++) {
+            if (strcasecmp(groups[i].base, base) == 0) {
+                gi = i;
+                break;
+            }
+        }
+        if (gi < 0) {
+            if (group_count >= JW_DISC_MAX_GROUPS) {
+                continue;
+            }
+            gi = group_count++;
+            snprintf(groups[gi].base, sizeof(groups[gi].base), "%s", base);
+            groups[gi].count = 0;
+        }
+        if (groups[gi].count < JW_DISC_MAX_MEMBERS) {
+            int mi = groups[gi].count++;
+            snprintf(groups[gi].files[mi], JW_M3U_MEMBER_LEN, "%s", entry->d_name);
+            groups[gi].disc_no[mi] = disc_no;
+        }
+    }
+    closedir(dir);
+
+    for (int i = 0; i < group_count; i++) {
+        jw_disc_group *g = &groups[i];
+        if (g->count < 2) {
+            continue;
+        }
+        int already = 0;
+        for (int m = 0; m < g->count && !already; m++) {
+            if (jw__name_is_m3u_member(g->files[m], existing, existing_count)) {
+                already = 1;
+            }
+        }
+        if (already) {
+            continue;
+        }
+        char m3u_abs[PATH_MAX];
+        if (snprintf(m3u_abs, sizeof(m3u_abs), "%s/%s.m3u", dir_abs, g->base) >=
+            (int)sizeof(m3u_abs)) {
+            continue;
+        }
+        if (jw__is_file(m3u_abs)) {
+            continue;   /* already generated on a prior scan — idempotent */
+        }
+
+        /* Insertion-sort the members by disc number so discs list in order. */
+        for (int a = 1; a < g->count; a++) {
+            char ftmp[JW_M3U_MEMBER_LEN];
+            snprintf(ftmp, sizeof(ftmp), "%s", g->files[a]);
+            int dtmp = g->disc_no[a];
+            int b = a - 1;
+            while (b >= 0 && g->disc_no[b] > dtmp) {
+                snprintf(g->files[b + 1], JW_M3U_MEMBER_LEN, "%s", g->files[b]);
+                g->disc_no[b + 1] = g->disc_no[b];
+                b--;
+            }
+            snprintf(g->files[b + 1], JW_M3U_MEMBER_LEN, "%s", ftmp);
+            g->disc_no[b + 1] = dtmp;
+        }
+
+        FILE *fp = fopen(m3u_abs, "w");
+        if (!fp) {
+            continue;   /* read-only source or similar — skip generation, no error */
+        }
+        for (int m = 0; m < g->count; m++) {
+            fprintf(fp, "%s\n", g->files[m]);
+        }
+        fclose(fp);
+        fprintf(stderr, "RetroArch discovery: generated %s (%d discs)\n", m3u_abs, g->count);
+    }
+
+    free(groups);
+}
+
+/* Recursively scan one directory of a system's ROM tree. Files are indexed as
+   games (honoring the extension allowlist and .m3u disc-hiding); subdirectories
+   are descended so per-game folders (PSX .cue/.bin) and hack subfolders show up.
+   rel_subpath is the path under the system folder ("" at the system root), which
+   is folded into the stored rom_path so nested games launch by their real path. */
+static int jw__scan_system_dir(jw_scan_tx *tx,
+                               const jw_storage_source *source,
+                               const jw_ra_system *system,
+                               const char *system_folder,
+                               const char *dir_abs,
+                               const char *rel_subpath,
+                               int depth,
+                               jw_scan_result *out,
+                               int *system_has_games,
+                               int *logged_archive_policy,
+                               int *logged_m3u_policy) {
+    if (depth > JW_SCAN_MAX_DEPTH) {
+        return 0;
+    }
+
+    /* Phase 2: fill in .m3u playlists for any multi-disc set lacking one before
+       we enumerate, so the generated playlist is picked up in this same pass. */
+    jw__maybe_generate_disc_m3u(system, dir_abs);
+
+    /* Pre-pass: gather disc files referenced by any .m3u in THIS directory so
+       they can be hidden below (one entry per game; the m3u handles swapping). */
+    char m3u_members[JW_M3U_MAX_MEMBERS][JW_M3U_MEMBER_LEN];
+    int m3u_member_count = 0;
+    jw__collect_m3u_members(system, dir_abs, m3u_members, &m3u_member_count);
+
+    DIR *dir = opendir(dir_abs);
+    if (!dir) {
+        return 0;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (jw__is_hidden(entry->d_name) || jw__is_private_rom_name(entry->d_name)) {
+            continue;
+        }
+
+        char abs[PATH_MAX];
+        if (snprintf(abs, sizeof(abs), "%s/%s", dir_abs, entry->d_name) >= (int)sizeof(abs)) {
+            continue;
+        }
+
+        if (jw__is_directory(abs)) {
+            if (jw__is_skippable_subdir(entry->d_name)) {
+                continue;
+            }
+            char child_rel[PATH_MAX];
+            int n = rel_subpath[0]
+                ? snprintf(child_rel, sizeof(child_rel), "%s/%s", rel_subpath, entry->d_name)
+                : snprintf(child_rel, sizeof(child_rel), "%s", entry->d_name);
+            if (n >= (int)sizeof(child_rel)) {
+                continue;
+            }
+            if (jw__scan_system_dir(tx, source, system, system_folder, abs, child_rel,
+                                    depth + 1, out, system_has_games,
+                                    logged_archive_policy, logged_m3u_policy) != 0) {
+                closedir(dir);
+                return -1;
+            }
+            continue;
+        }
+
+        if (!jw__is_file(abs)) {
+            continue;
+        }
+        if (!jw__metadata_accepts_rom(system, entry->d_name,
+                                      logged_archive_policy, logged_m3u_policy)) {
+            continue;
+        }
+
+        /* Hide disc files that an .m3u in this directory references — the .m3u is
+           the single list entry for that game / multi-disc set. */
+        if (m3u_member_count > 0) {
+            char this_ext[16];
+            jw__extension_lower(entry->d_name, this_ext, sizeof(this_ext));
+            if (!jw_ra_string_list_contains_casefold(&system->playlist_extensions, this_ext) &&
+                jw__name_is_m3u_member(entry->d_name, m3u_members, m3u_member_count)) {
+                continue;
+            }
+        }
+
+        char title[PATH_MAX];
+        char rom_rel[PATH_MAX];
+        char image_abs[PATH_MAX];
+        char image_rel[PATH_MAX];
+        const char *image_path = NULL;
+
+        jw__title_from_metadata_filename(system, entry->d_name, title, sizeof(title));
+
+        char rom_rel_candidate[PATH_MAX];
+        int n = rel_subpath[0]
+            ? snprintf(rom_rel_candidate, sizeof(rom_rel_candidate), "Roms/%s/%s/%s",
+                       system_folder, rel_subpath, entry->d_name)
+            : snprintf(rom_rel_candidate, sizeof(rom_rel_candidate), "Roms/%s/%s",
+                       system_folder, entry->d_name);
+        if (n >= (int)sizeof(rom_rel_candidate) ||
+            jw_storage_db_path_for_source(source, rom_rel_candidate, abs,
+                                          rom_rel, sizeof(rom_rel)) != 0) {
+            continue;
+        }
+
+        image_path = jw__metadata_image_path(system, source, system_folder, title,
+                                             image_abs, sizeof(image_abs),
+                                             image_rel, sizeof(image_rel));
+
+        if (jw__scan_insert_game(tx, system->id, title, rom_rel, image_path) == 0) {
+            out->game_count += 1;
+            *system_has_games = 1;
+        } else {
+            closedir(dir);
+            return -1;
+        }
+    }
+
+    closedir(dir);
+    return 0;
+}
+
 static int jw__scan_roms_metadata(jw_scan_tx *tx,
                                   const char *sdcard_root,
                                   const jw_storage_source *source,
@@ -669,93 +1010,23 @@ static int jw__scan_roms_metadata(jw_scan_tx *tx,
             continue;
         }
 
-        DIR *files = opendir(system_dir);
-        if (!files) {
-            continue;
-        }
-
         int system_has_games = 0;
         int logged_archive_policy = 0;
         int logged_m3u_policy = 0;
 
-        /* Pre-pass: gather disc files referenced by any .m3u so they can be
-           hidden below (one entry per game; the m3u handles disc swapping). */
-        char m3u_members[JW_M3U_MAX_MEMBERS][JW_M3U_MEMBER_LEN];
-        int m3u_member_count = 0;
-        jw__collect_m3u_members(system, system_dir, m3u_members, &m3u_member_count);
-
-        struct dirent *file_entry;
-        while ((file_entry = readdir(files)) != NULL) {
-            if (jw__is_hidden(file_entry->d_name) ||
-                jw__is_private_rom_name(file_entry->d_name)) {
-                continue;
-            }
-
-            char rom_abs[PATH_MAX];
-            if (snprintf(rom_abs, sizeof(rom_abs), "%s/%s",
-                         system_dir, file_entry->d_name) >= (int)sizeof(rom_abs)) {
-                continue;
-            }
-            if (!jw__is_file(rom_abs)) {
-                continue;
-            }
-
-            if (!jw__metadata_accepts_rom(system, file_entry->d_name,
-                                          &logged_archive_policy,
-                                          &logged_m3u_policy)) {
-                continue;
-            }
-
-            /* Hide disc files (.cue/.iso/.chd) that an .m3u references — the
-               .m3u is the single list entry for that game / multi-disc set. */
-            if (m3u_member_count > 0) {
-                char this_ext[16];
-                jw__extension_lower(file_entry->d_name, this_ext, sizeof(this_ext));
-                if (!jw_ra_string_list_contains_casefold(&system->playlist_extensions, this_ext) &&
-                    jw__name_is_m3u_member(file_entry->d_name, m3u_members, m3u_member_count)) {
-                    continue;
-                }
-            }
-
-            char title[PATH_MAX];
-            char rom_rel[PATH_MAX];
-            char image_abs[PATH_MAX];
-            char image_rel[PATH_MAX];
-            const char *image_path = NULL;
-
-            jw__title_from_metadata_filename(system, file_entry->d_name, title, sizeof(title));
-            char rom_rel_candidate[PATH_MAX];
-            if (snprintf(rom_rel_candidate, sizeof(rom_rel_candidate), "Roms/%s/%s",
-                         system_entry->d_name, file_entry->d_name) >=
-                (int)sizeof(rom_rel_candidate) ||
-                jw_storage_db_path_for_source(source, rom_rel_candidate, rom_abs,
-                                              rom_rel, sizeof(rom_rel)) != 0) {
-                continue;
-            }
-            image_path = jw__metadata_image_path(system,
-                                                 source,
-                                                 system_entry->d_name,
-                                                 title,
-                                                 image_abs,
-                                                 sizeof(image_abs),
-                                                 image_rel,
-                                                 sizeof(image_rel));
-
-            if (jw__scan_insert_game(tx, system->id, title, rom_rel, image_path) == 0) {
-                out->game_count += 1;
-                system_has_games = 1;
-            } else {
-                closedir(files);
-                closedir(systems);
-                return -1;
-            }
+        /* Walk the system folder recursively so games staged in per-game
+           subfolders (PSX .cue/.bin, ROM-hack subfolders) are indexed too, not
+           just files sitting at the top level. */
+        if (jw__scan_system_dir(tx, source, system, system_entry->d_name,
+                                system_dir, "", 0, out, &system_has_games,
+                                &logged_archive_policy, &logged_m3u_policy) != 0) {
+            closedir(systems);
+            return -1;
         }
 
         if (system_has_games) {
             jw__count_system_once(out, counted_systems, &counted_system_count, system->id);
         }
-
-        closedir(files);
     }
 
     closedir(systems);
