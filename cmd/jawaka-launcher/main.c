@@ -2924,6 +2924,32 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
         return NULL;
     }
 
+    /* Degraded fallback: if the worker thread could not be started there is no
+       async path, so decode inline (bounded to one per frame, matching the cover
+       budget) rather than marking the cover pending forever. Leaving out_pending
+       false lets the caller show its system-icon fallback until art arrives. */
+    if (!jw__cover_loader.started) {
+        if (!jw__cf_animating && jw__cover_inline_decodes_this_frame < 1) {
+            jw__cover_inline_decodes_this_frame++;
+            SDL_Surface *isurf = cat_decode_thumbnail_surface(cover_abs, thumb_path,
+                                                              JW_COVER_THUMB_MAX);
+            if (isurf) {
+                SDL_Texture *tex = cat_texture_from_surface(isurf);
+                w = isurf->w;
+                h = isurf->h;
+                SDL_FreeSurface(isurf);
+                if (tex) {
+                    cat_cache_put(cover_abs, tex, w, h);
+                    if (out_w) *out_w = w;
+                    if (out_h) *out_h = h;
+                    return tex;
+                }
+            }
+        }
+        cat_request_frame_in(40);              /* decode the rest over later frames */
+        return NULL;
+    }
+
     if (out_pending) *out_pending = true;
     cat_request_frame_in(40);                  /* re-check until the worker finishes */
     return NULL;
@@ -3025,6 +3051,10 @@ static void jw__cover_prewarm(const jw_launcher_state *state,
    the carousel did not move (e.g. moving key-to-key on the keyboard) needlessly
    stalls the frame. Reset to -1 whenever the result set changes. */
 static int s_search_prewarm_cursor = -1;
+/* Set when the search results change (open / new query) so jw__render_search_cf
+   re-seats its carousel to the new cursor instead of animating from a stale
+   position (which briefly shows the wrong centered card on a same-count re-query). */
+static bool s_search_cf_reset = false;
 
 static void jw__cover_prewarm_search(const jw_launcher_state *state,
                                      const jw_search_result *results,
@@ -3391,7 +3421,9 @@ static void jw__render_coverflow(jw_launcher_state *state) {
 
     SDL_SetRenderDrawColor(ren, 6, 7, 9, 255);   /* glossy black stage (matches games) */
     SDL_RenderClear(ren);
-    cat_set_shoulder_repeat(true);                /* hold L1/R1 to keep flowing */
+    /* L1/R1 hold-repeat is set once per frame in jw__render_launcher (see
+       jw__view_wants_shoulder_repeat); enabling it here too would re-clear/re-arm
+       the deadline each frame and break held-shoulder flow. */
 
     /* Channel content: a cube-rotation transition while switching channels,
        otherwise the current channel's carousel. */
@@ -4441,6 +4473,7 @@ static void jw__cf_open_search(jw_launcher_state *state, const char *db_path) {
     s_cf_focus_results = false;
     s_cf_focus_t = 0.0f;
     s_search_prewarm_cursor = -1;
+    s_search_cf_reset = true;
     cat_request_frame();
 }
 
@@ -4604,6 +4637,10 @@ static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
    and apps) on the glossy black stage, with the inline keyboard below. */
 static void jw__render_search_cf(jw_launcher_state *state) {
     static jw_games_cf s_cf;
+    if (s_search_cf_reset) {
+        s_cf.inited = false;   /* re-seat to the new cursor (jw__cf_draw_cards re-inits) */
+        s_search_cf_reset = false;
+    }
     SDL_Renderer *r = cat_get_renderer();
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
@@ -5099,13 +5136,30 @@ static void jw__open_pakrat_store(jw_launcher_state *state) {
              state->pakrat_message[0] ? state->pakrat_message : "Pak Rat");
 }
 
+/* Views where a held L1/R1 should hold-repeat to keep the carousel flowing: the
+   Cover Flow home channels and the drilled-in Cover Flow game carousel. Every
+   overlay (menu/search/actions/apps/etc.) and the non-Cover-Flow layouts keep the
+   shoulders single-shot. Mirrors the jw__render_launcher dispatch below. */
+static bool jw__view_wants_shoulder_repeat(const jw_launcher_state *state) {
+    if (cat_get_stylesheet()->launcher.layout != CAT_LAUNCHER_COVERFLOW) {
+        return false;
+    }
+    if (state->switcher_open || state->pakrat_open || state->menu_open ||
+        state->search_open || state->actions_open || state->apps_open) {
+        return false;
+    }
+    return true;   /* home channels, or the drilled-in games carousel */
+}
+
 static void jw__render_launcher(jw_launcher_state *state) {
     jw__cf_animating = false;
     jw__cover_inline_decodes_this_frame = 0;
 
-    /* L1/R1 hold-repeat is opt-in and only wanted in the coverflow game carousel;
-       default it off each frame so the shoulders stay single-shot tab switches. */
-    cat_set_shoulder_repeat(false);
+    /* Set the L1/R1 hold-repeat state ONCE per frame from the active view. Toggling
+       it off-then-on within a frame would clear the repeat deadline the input poll
+       just armed (cat_set_shoulder_repeat(false) clears it), so a held shoulder
+       would never repeat — it must be the final desired value, set a single time. */
+    cat_set_shoulder_repeat(jw__view_wants_shoulder_repeat(state));
 
     if (state->switcher_open) {
         jw__render_switcher(state);
@@ -5137,7 +5191,7 @@ static void jw__render_launcher(jw_launcher_state *state) {
 
     if (state->games_open) {
         if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
-            cat_set_shoulder_repeat(true);   /* hold L1/R1 to keep flowing */
+            /* hold-repeat already set for this frame in jw__render_launcher */
             jw__render_coverflow_games(state);
         } else {
             jw__render_game_browser(state);
@@ -5523,6 +5577,7 @@ static int jw__perform_search(const char *db_path, jw_launcher_state *state,
     jw__str_copy(state->search_query, sizeof(state->search_query), query);
     state->search_count = 0;
     s_search_prewarm_cursor = -1;   /* results changed — force a re-sweep */
+    s_search_cf_reset = true;       /* results changed — re-seat the CF carousel */
 
     if (jw_db_search_library(db_path, state->search_query, state->search_results,
                              JW_MAX_SEARCH_RESULTS, &state->search_count) != 0) {
