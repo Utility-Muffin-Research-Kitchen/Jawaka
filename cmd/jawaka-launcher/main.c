@@ -335,6 +335,14 @@ static void jw__reconcile_current_tab(jw_launcher_state *state) {
         state->current_tab = state->visible_tabs[0];
 }
 
+/* Cover Flow reuses the tabbed data model (current_tab + per-tab lists +
+   state->list.cursor), so any channel-aware logic — the Y favorite/remove
+   handler, the hidden-tab cursor reconciliation — must treat both layouts the
+   same. Widen a bare `layout == CAT_LAUNCHER_TABBED` check to this. */
+static bool jw__layout_uses_channels(int layout) {
+    return layout == CAT_LAUNCHER_TABBED || layout == CAT_LAUNCHER_COVERFLOW;
+}
+
 static void jw__draw_app_detail(const jw_launcher_state *state,
                                 const jw_app_entry *app,
                                 int detail_x, int detail_y,
@@ -6945,7 +6953,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                (the row's star updates in place); on the Favorites tab, Y removes
                the selected favorite and reloads the list; everywhere else Y
                rescans the library. */
-            if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_RECENTS) {
+            if (jw__layout_uses_channels(layout) && state->current_tab == JW_TAB_RECENTS) {
                 if (state->recents_count > 0 && state->list.cursor < state->recents_count) {
                     jw_game_entry *rec = &state->recents[state->list.cursor];
                     int want_on = !rec->favorite;
@@ -6960,7 +6968,7 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
                 }
                 break;
             }
-            if (layout == CAT_LAUNCHER_TABBED && state->current_tab == JW_TAB_FAVORITES) {
+            if (jw__layout_uses_channels(layout) && state->current_tab == JW_TAB_FAVORITES) {
                 if (state->favorites_count > 0 && state->list.cursor < state->favorites_count) {
                     const jw_game_entry *fav = &state->favorites[state->list.cursor];
                     if (jw_db_set_favorite(db_path, "game", fav->id, 0) == 0) {
@@ -7336,7 +7344,7 @@ int main(void) {
                contents (Favorites/Recents load lazily) and reset the cursor —
                mirroring jw__switch_tab's on-entry refresh. */
             if (state.current_tab != prev_tab &&
-                cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED) {
+                jw__layout_uses_channels(cat_get_stylesheet()->launcher.layout)) {
                 if (state.current_tab == JW_TAB_FAVORITES)
                     jw__load_favorites_tab(db_path, &state);
                 else if (state.current_tab == JW_TAB_RECENTS)

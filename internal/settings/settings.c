@@ -4410,6 +4410,13 @@ static void jw__apply_layout(jw_settings_ui *ui, int mode, bool *theme_changed) 
         bool ignored = false;
         jw__apply_color_scheme(ui, ui->color_scheme_index, &ignored);
     }
+    /* cat_stylesheet_apply reset the theme to the new stylesheet's defaults,
+       clobbering the user's persisted pill shape / font family / font size (the
+       color scheme above is re-asserted for the same reason). Re-apply them so a
+       live layout switch keeps appearance overrides instead of dropping them
+       until another setting change or relaunch. */
+    if (ui->db_path[0])
+        jw_settings_apply_persisted_overrides(ui->db_path);
     ui->layout_mode = mode;
     if (ui->db_path[0])
         jw_db_set_setting(ui->db_path, "theme_name", tn);
