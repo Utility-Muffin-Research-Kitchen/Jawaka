@@ -243,7 +243,12 @@ static void jw__row_set_output(unsigned row_id, const char *output_path) {
     pthread_mutex_lock(&jw__w.mu);
     jw__scrape_row *row = jw__row_find_locked(row_id);
     if (row && output_path) {
-        snprintf(row->output_path, sizeof(row->output_path), "%s", output_path);
+        size_t n = strlen(output_path);
+        if (n >= sizeof(row->output_path)) {
+            n = sizeof(row->output_path) - 1;
+        }
+        memcpy(row->output_path, output_path, n);
+        row->output_path[n] = '\0';
     }
     pthread_mutex_unlock(&jw__w.mu);
 }

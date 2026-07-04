@@ -53,7 +53,15 @@ static void jw__bt_copy(char *dst, size_t dst_len, const char *src) {
     if (!dst || dst_len == 0) {
         return;
     }
-    snprintf(dst, dst_len, "%s", src ? src : "");
+    if (!src) {
+        src = "";
+    }
+    size_t n = strlen(src);
+    if (n >= dst_len) {
+        n = dst_len - 1;
+    }
+    memcpy(dst, src, n);
+    dst[n] = '\0';
 }
 
 static char *jw__bt_trim(char *s) {

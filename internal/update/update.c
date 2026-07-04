@@ -32,7 +32,15 @@ static void jw__copy_string(char *out, size_t out_size, const char *value) {
     if (!out || out_size == 0) {
         return;
     }
-    snprintf(out, out_size, "%s", value ? value : "");
+    if (!value) {
+        value = "";
+    }
+    size_t n = strlen(value);
+    if (n >= out_size) {
+        n = out_size - 1;
+    }
+    memcpy(out, value, n);
+    out[n] = '\0';
 }
 
 static void jw__set_message(jw_update_status *status, const char *fmt, ...) {

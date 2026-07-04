@@ -464,6 +464,24 @@ static int jw__load_system_games_full(const char *db_path, const char *system,
     return 0;
 }
 
+/* Bounded string copy into a fixed field. Clipping here is intentional (the
+   destinations are display/id fields sized for expected values), so this is an
+   explicit truncating copy rather than a snprintf the optimizer flags. */
+static void jw__str_copy(char *dst, size_t dst_len, const char *src) {
+    if (!dst || dst_len == 0) {
+        return;
+    }
+    if (!src) {
+        src = "";
+    }
+    size_t n = strlen(src);
+    if (n >= dst_len) {
+        n = dst_len - 1;
+    }
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
 /* Strips trailing region/dump tags — " (USA)", " (E)", " [!]", etc. — from a
    ROM name for display only. The stored name (derived from the filename) is
    left intact so box-art matching and search keep working on the full name. */
@@ -3104,28 +3122,34 @@ static SDL_Texture *jw__load_system_icon(const char *system_code,
 
     /* (2) theme-bundled override, if the theme ships its own system_icons/ */
     if (theme_dir[0] && theme_name[0]) {
-        snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
-                 theme_dir, theme_name,
-                 ss->launcher.coverflow_icon_dir, system_code);
-        SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
-        if (t) return t;
+        int n = snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
+                         theme_dir, theme_name,
+                         ss->launcher.coverflow_icon_dir, system_code);
+        if (n > 0 && (size_t)n < sizeof(path)) {
+            SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
+            if (t) return t;
+        }
     }
 
     /* (3) shared baseline at <themes_dir_parent>/system_icons/<SYSTEM>.png.
      * The shared icons live next to the active theme root. */
     if (theme_dir[0]) {
-        snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
-                 theme_dir, system_code);
-        SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
-        if (t) return t;
+        int n = snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
+                         theme_dir, system_code);
+        if (n > 0 && (size_t)n < sizeof(path)) {
+            SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
+            if (t) return t;
+        }
     }
 
     /* (4) shared _default.png */
     if (theme_dir[0]) {
-        snprintf(path, sizeof(path), "%s/../system_icons/_default.png",
-                 theme_dir);
-        SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
-        if (t) return t;
+        int n = snprintf(path, sizeof(path), "%s/../system_icons/_default.png",
+                         theme_dir);
+        if (n > 0 && (size_t)n < sizeof(path)) {
+            SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
+            if (t) return t;
+        }
     }
 
     return NULL;
@@ -4288,7 +4312,7 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             } else {
                 char name[256];
                 jw__clean_rom_name(state->action_game.name, name, sizeof(name));
-                snprintf(value, value_size, "%s", name[0] ? name : "Scanned");
+                jw__str_copy(value, value_size, name[0] ? name : "Scanned");
             }
             break;
         }
@@ -4922,12 +4946,12 @@ static void jw__action_refresh_core_choices(const char *db_path,
         : state->action_core_system_override;
     if (preferred && preferred[0] &&
         jw__action_find_core(state, preferred) >= 0) {
-        snprintf(state->action_core_effective,
-                 sizeof(state->action_core_effective), "%s", preferred);
+        jw__str_copy(state->action_core_effective,
+                     sizeof(state->action_core_effective), preferred);
     } else if (state->action_core_count > 0) {
-        snprintf(state->action_core_effective,
-                 sizeof(state->action_core_effective), "%s",
-                 state->action_core_choices[0].id);
+        jw__str_copy(state->action_core_effective,
+                     sizeof(state->action_core_effective),
+                     state->action_core_choices[0].id);
     }
 }
 
@@ -5113,7 +5137,7 @@ static bool jw__open_context_actions(const char *db_path, jw_launcher_state *sta
 
 static int jw__perform_search(const char *db_path, jw_launcher_state *state,
                               const char *query) {
-    snprintf(state->search_query, sizeof(state->search_query), "%s", query ? query : "");
+    jw__str_copy(state->search_query, sizeof(state->search_query), query);
     state->search_count = 0;
 
     if (jw_db_search_library(db_path, state->search_query, state->search_results,
@@ -5489,7 +5513,7 @@ static bool jw__load_resume(jw_resume *out) {
         else if (sscanf(line, "games_fav=%d", &v) == 1) out->games_fav = v;
         else if (sscanf(line, "game_cursor=%d", &v) == 1) out->game_cursor = v;
         else if (strncmp(line, "game_system=", 12) == 0) {
-            snprintf(out->game_system, sizeof(out->game_system), "%s", line + 12);
+            jw__str_copy(out->game_system, sizeof(out->game_system), line + 12);
             out->game_system[strcspn(out->game_system, "\r\n")] = '\0';
         }
     }

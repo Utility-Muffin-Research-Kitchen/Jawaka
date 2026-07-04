@@ -462,8 +462,16 @@ static const char *jw__basename_const(const char *path) {
 }
 
 static void jw__title_from_filename(const char *path, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
     const char *base = jw__basename_const(path);
-    snprintf(out, out_size, "%s", base);
+    size_t n = strlen(base);
+    if (n >= out_size) {
+        n = out_size - 1;
+    }
+    memcpy(out, base, n);
+    out[n] = '\0';
     char *dot = strrchr(out, '.');
     if (dot) {
         *dot = '\0';
