@@ -167,6 +167,9 @@ typedef struct {
        setting): the launcher only ever shows/cycles these. */
     jw_tab             visible_tabs[JW_TAB_COUNT];
     int                visible_tab_count;
+    /* Per-channel carousel cursor, so switching channels (Cover Flow Up/Down)
+       returns to where you were in each rather than snapping back to the start. */
+    int                tab_cursor[JW_TAB_COUNT];
     /* all modes */
     cat_list_state     list;
     /* data */
@@ -1448,6 +1451,10 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
 
 static void jw__switch_tab(jw_launcher_state *state, int direction, const char *db_path) {
     if (!state) return;
+    /* Remember the cursor in the channel we're leaving so a later return lands
+       where we were, not back at the start. */
+    if (state->current_tab >= 0 && state->current_tab < JW_TAB_COUNT)
+        state->tab_cursor[state->current_tab] = state->list.cursor;
     /* Cycle by POSITION within the visible set (tabs can be hidden/reordered),
        adding visible_tab_count before the modulo so dir = -1 wraps to the last
        visible tab rather than an out-of-range index. */
@@ -1460,7 +1467,14 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
         jw__load_favorites_tab(db_path, state);
     else if (state->current_tab == JW_TAB_RECENTS)
         jw__load_recents_tab(db_path, state);
-    cat_list_state_jump(&state->list, 0, jw__tab_list_count(state));
+    /* Restore the saved cursor for the channel we're entering (clamped — the list
+       may have shrunk since we were last here, e.g. Recents/Favorites reloads). */
+    int count   = jw__tab_list_count(state);
+    int restore = (state->current_tab >= 0 && state->current_tab < JW_TAB_COUNT)
+                      ? state->tab_cursor[state->current_tab] : 0;
+    if (restore < 0) restore = 0;
+    if (restore > count - 1) restore = count > 0 ? count - 1 : 0;
+    cat_list_state_jump(&state->list, restore, count);
 }
 
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
@@ -2558,6 +2572,33 @@ static int jw__resolve_platform_root(const char *sdcard_root,
     return needed >= 0 && (size_t)needed < out_size ? 0 : -1;
 }
 
+/* Negative cache for image loads that fail (missing / unreadable file). Cold
+   Cover Flow frames — search results and never-browsed systems — request the
+   same absent paths on every frame: the per-game art that doesn't exist, and the
+   sdcard/theme system-icon overrides that most systems don't ship. Without this,
+   each miss is a fresh open() on the SD card every frame for every visible card,
+   which stalls navigation. A miss is remembered for a short TTL, then re-checked
+   so a file that appears later is still picked up. Keyed by FNV-1a of the path. */
+#define JW_IMG_MISS_SLOTS  256
+#define JW_IMG_MISS_TTL_MS 5000u
+static struct { uint64_t hash; uint32_t ts; } jw__img_miss[JW_IMG_MISS_SLOTS];
+
+static uint64_t jw__img_path_hash(const char *s) {
+    uint64_t h = 1469598103934665603ULL;
+    for (; *s; ++s) { h ^= (unsigned char)*s; h *= 1099511628211ULL; }
+    return h;
+}
+static bool jw__img_miss_recent(uint64_t hash, uint32_t now) {
+    const size_t slot = (size_t)(hash % JW_IMG_MISS_SLOTS);
+    return jw__img_miss[slot].hash == hash && jw__img_miss[slot].ts != 0 &&
+           (now - jw__img_miss[slot].ts) < JW_IMG_MISS_TTL_MS;
+}
+static void jw__img_miss_mark(uint64_t hash, uint32_t now) {
+    const size_t slot = (size_t)(hash % JW_IMG_MISS_SLOTS);
+    jw__img_miss[slot].hash = hash;
+    jw__img_miss[slot].ts   = now ? now : 1u;
+}
+
 static SDL_Texture *jw__load_cached_image(const char *path, int *out_w, int *out_h) {
     if (!path || !path[0]) {
         return NULL;
@@ -2572,8 +2613,16 @@ static SDL_Texture *jw__load_cached_image(const char *path, int *out_w, int *out
         return tex;
     }
 
+    /* Skip the filesystem entirely if this path missed recently. */
+    uint64_t hash = jw__img_path_hash(path);
+    uint32_t now  = SDL_GetTicks();
+    if (jw__img_miss_recent(hash, now)) {
+        return NULL;
+    }
+
     tex = cat_load_image(path);
     if (!tex) {
+        jw__img_miss_mark(hash, now);
         return NULL;
     }
 
@@ -2692,6 +2741,12 @@ static jw_cover_loader jw__cover_loader = {
 
 static bool jw__cf_animating;
 static int  jw__cover_inline_decodes_this_frame;
+/* Set for the single render that follows a button press. A cover decode is
+   synchronous (~tens of ms on the A55), and while covers stream in the frame
+   loop stays "active" (never idles on input) — so a decode landing on the same
+   frame as a d-pad press stalls the highlight move. Skipping the inline decode
+   on input frames keeps navigation instant; covers still decode on idle frames. */
+static bool jw__suppress_inline_decode;
 
 static void *jw__cover_worker(void *arg) {
     jw_cover_loader *L = (jw_cover_loader *)arg;
@@ -2848,25 +2903,12 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
     const char *thumb_path = jw__cover_thumb_path(cover_abs, thumb, sizeof(thumb))
                                  ? thumb : NULL;
 
-    /* Fast path: a thumbnail already exists. Decode at most one inline per frame
-       while settled, and none during card motion; the worker can decode the same
-       small thumbnail off-thread and the main thread will only upload it. */
-    if (thumb_path && cat_thumbnail_is_cached(cover_abs, thumb_path)) {
-        if (!jw__cf_animating && jw__cover_inline_decodes_this_frame < 1) {
-            jw__cover_inline_decodes_this_frame++;
-            SDL_Texture *tex = cat_load_image_thumbnail(cover_abs, thumb_path,
-                                                        JW_COVER_THUMB_MAX, &w, &h);
-            if (tex) {
-                cat_cache_put(cover_abs, tex, w, h);
-                if (out_w) *out_w = w;
-                if (out_h) *out_h = h;
-                return tex;
-            }
-            /* unreadable thumbnail -> fall through and let the worker rebuild it */
-        }
-    }
-
-    /* Slow path: building the thumbnail needs a full decode -> do it off-thread. */
+    /* Decode entirely off the main thread. Even a small thumbnail decode + GPU
+       upload is tens of ms on the A55/Mali, and this runs on the same thread that
+       services input — an inline decode freezes navigation until it finishes.
+       Hand the cover to the worker (priority slot, newest-wins) and only upload
+       the surface it returns; the carousel keeps moving while art streams in. The
+       worker decodes the on-disk thumbnail when present, else the source. */
     SDL_Surface *surf = NULL;
     if (jw__cover_async_take(cover_abs, thumb_path, &surf)) {
         SDL_Texture *tex = cat_texture_from_surface(surf);
@@ -2909,7 +2951,8 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
     const char *thumb_path = jw__cover_thumb_path(path, thumb, sizeof(thumb))
                                  ? thumb : NULL;
 
-    if (!jw__cf_animating && jw__cover_inline_decodes_this_frame < 1) {
+    if (!jw__cf_animating && !jw__suppress_inline_decode &&
+        jw__cover_inline_decodes_this_frame < 1) {
         jw__cover_inline_decodes_this_frame++;
         SDL_Texture *tex = NULL;
         if (thumb_path) {
@@ -2971,6 +3014,40 @@ static void jw__cover_prewarm(const jw_launcher_state *state,
         char thumb[PATH_MAX];
         const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(abs, tp)) continue;  /* already built */
+        jw__cover_prewarm_enqueue(abs, tp);
+    }
+}
+
+/* Same windowed prefetch as jw__cover_prewarm, but over search results (game
+   covers only; app icons are tiny and load inline). */
+/* Cursor last swept by jw__cover_prewarm_search. The sweep stats every cover in
+   its window (two SD-card stat() calls each), so re-running it on frames where
+   the carousel did not move (e.g. moving key-to-key on the keyboard) needlessly
+   stalls the frame. Reset to -1 whenever the result set changes. */
+static int s_search_prewarm_cursor = -1;
+
+static void jw__cover_prewarm_search(const jw_launcher_state *state,
+                                     const jw_search_result *results,
+                                     int count, int cursor) {
+    if (!state || !results || count <= 0) return;
+    if (cursor == s_search_prewarm_cursor) return;   /* window unchanged */
+    s_search_prewarm_cursor = cursor;
+    /* Wider window than the main carousels: search surfaces games the user has
+       never browsed, so their thumbnails are cold and must be built ahead. */
+    int from = cursor - 8;
+    if (from < 0) from = 0;
+    int to = cursor + 32;
+    if (to > count - 1) to = count - 1;
+    for (int i = from; i <= to; ++i) {
+        if (results[i].kind != JW_SEARCH_GAME) continue;
+        const char *rel = results[i].image_path;
+        if (!rel[0]) continue;
+        char abs[PATH_MAX];
+        if (jw__resolve_sdcard_path(state, rel, abs, sizeof(abs)) != 0) continue;
+        if (cat_cache_get(abs, NULL, NULL)) continue;
+        char thumb[PATH_MAX];
+        const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
+        if (tp && cat_thumbnail_is_cached(abs, tp)) continue;
         jw__cover_prewarm_enqueue(abs, tp);
     }
 }
@@ -3292,7 +3369,8 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
 typedef SDL_Texture *(*jw_cf_icon_fn)(jw_launcher_state *state, int idx,
                                       int *tw, int *th);
 static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
-                              int count, int cursor, jw_cf_icon_fn icon_fn);
+                              int count, int cursor, jw_cf_icon_fn icon_fn,
+                              float ch_frac, float oy_frac);
 static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx, int *tw, int *th);
 static SDL_Texture *jw__cf_icon_favorite(jw_launcher_state *state, int idx, int *tw, int *th);
 static SDL_Texture *jw__cf_icon_recent(jw_launcher_state *state, int idx, int *tw, int *th);
@@ -3541,7 +3619,8 @@ static SDL_Texture *jw__cf_icon_app(jw_launcher_state *state, int idx, int *tw, 
    the window of angled album cards (one texture per item via icon_fn) with floor
    reflections. The caller clears the stage, draws labels/overlays, and presents. */
 static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
-                              int count, int cursor, jw_cf_icon_fn icon_fn) {
+                              int count, int cursor, jw_cf_icon_fn icon_fn,
+                              float ch_frac, float oy_frac) {
     if (count <= 0) return;
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
@@ -3587,9 +3666,9 @@ static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
     float vc = cf->vpos;
 
     /* Card geometry as fractions of the screen (resolution-independent). */
-    float CH = sh * 0.60f;
+    float CH = sh * ch_frac;
     float CW = CH * 0.70f;
-    float oy = sh * 0.45f;                        /* lower, so the title clears the art */
+    float oy = sh * oy_frac;                      /* lower, so the title clears the art */
     float cx = sw * 0.5f;
     float STEP = CW * 0.70f;
     const float   SIDE_SCALE = 0.66f;
@@ -3648,7 +3727,7 @@ static void jw__cf_draw_channel(jw_launcher_state *state) {
     if (tab == JW_TAB_FAVORITES)    icon_fn = jw__cf_icon_favorite;
     else if (tab == JW_TAB_RECENTS) icon_fn = jw__cf_icon_recent;
     else if (tab == JW_TAB_APPS)    icon_fn = jw__cf_icon_app;
-    jw__cf_draw_cards(state, &state->systems_cf, count, cur, icon_fn);
+    jw__cf_draw_cards(state, &state->systems_cf, count, cur, icon_fn, 0.60f, 0.45f);
 
     char labelbuf[192];
     const char *label = "";
@@ -3867,7 +3946,7 @@ static void jw__render_coverflow_games(jw_launcher_state *state) {
     /* Prewarm covers around the cursor (reuses the game-grid pipeline). */
     jw__cover_prewarm(state, state->games, count, cur);
 
-    jw__cf_draw_cards(state, &state->games_cf, count, cur, jw__cf_icon_game);
+    jw__cf_draw_cards(state, &state->games_cf, count, cur, jw__cf_icon_game, 0.60f, 0.45f);
 
     /* Centred game title, near the top. Tags like " (USA)" / " [!]" stripped. */
     if (cur >= 0 && cur < count) {
@@ -4286,6 +4365,299 @@ static void jw__render_search(const jw_launcher_state *state) {
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
     jw__draw_footer(state, footer, 3);
+    cat_present();
+}
+
+/* Card art for a search result: game box art (system-icon fallback) or app icon.
+   Matches the jw_cf_icon_fn signature so the shared CF carousel can draw it. */
+static SDL_Texture *jw__cf_icon_search(jw_launcher_state *state, int idx, int *tw, int *th) {
+    *tw = 0; *th = 0;
+    const jw_search_result *sr = &state->search_results[idx];
+    char abs[PATH_MAX];
+    if (sr->kind == JW_SEARCH_APP) {
+        jw_app_entry app;
+        memset(&app, 0, sizeof(app));
+        snprintf(app.pak_dir, sizeof(app.pak_dir), "%s", sr->pak_dir);
+        snprintf(app.icon, sizeof(app.icon), "%s", sr->icon);
+        if (jw__resolve_app_icon_path(state, &app, abs, sizeof(abs)) == 0)
+            return jw__load_cached_image(abs, tw, th);
+        return NULL;
+    }
+    bool pending = false;
+    if (sr->image_path[0] &&
+        jw__resolve_sdcard_path(state, sr->image_path, abs, sizeof(abs)) == 0) {
+        SDL_Texture *t = jw__load_cover(state, abs, tw, th, &pending);
+        if (t) return t;
+    }
+    if (pending) return NULL;                       /* streaming in — leave blank */
+    return jw__load_system_icon(sr->system, tw, th); /* no cover -> system icon */
+}
+
+/* ── Cover Flow inline search keyboard ─────────────────────────────────────── */
+/* Lowercase only — library search is case-insensitive, so no shift is needed.
+   Row 4 is the action row: a wide Space and a Del (backspace). */
+static const char *const kCfKbRows[] = { "1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm" };
+#define JW_CF_KB_LETTER_ROWS 4
+#define JW_CF_KB_ROWS        5
+static int  s_cf_kb_row = 1, s_cf_kb_col = 0;
+/* Focus zone: false = the on-screen keyboard, true = the results carousel.
+   Up off the keyboard's top row jumps into the results; Down (or B) drops back. */
+static bool  s_cf_focus_results = false;
+/* Eased 0..1 driver for the focus transition (0 = keyboard, 1 = results): the
+   keyboard slides down out of frame while the result cards grow and drop into the
+   vacated space. Stepped each render toward the s_cf_focus_results target. */
+static float s_cf_focus_t = 0.0f;
+
+static float jw__lerpf(float a, float b, float t) { return a + (b - a) * t; }
+
+/* Advance s_cf_focus_t toward its target with an ease-out approach; request another
+   frame while it is still moving. Returns true while animating. */
+static bool jw__cf_focus_step(void) {
+    float target = s_cf_focus_results ? 1.0f : 0.0f;
+    if (s_cf_focus_t == target) return false;
+    s_cf_focus_t += (target - s_cf_focus_t) * 0.30f;      /* exponential ease-out */
+    if (fabsf(target - s_cf_focus_t) < 0.004f) s_cf_focus_t = target;
+    cat_request_frame();
+    return true;
+}
+
+static int jw__perform_search(const char *db_path, jw_launcher_state *state, const char *query);
+static int jw__launch_selected_search_result(const char *socket_path,
+                                             jw_launcher_state *state, bool *running);
+
+static int jw__cf_kb_row_len(int row) {
+    if (row >= 0 && row < JW_CF_KB_LETTER_ROWS) return (int)strlen(kCfKbRows[row]);
+    return 1;   /* action row: space (Delete is on B) */
+}
+
+/* Open the Cover Flow inline search overlay — no blocking system keyboard. */
+static void jw__cf_open_search(jw_launcher_state *state, const char *db_path) {
+    (void)db_path;
+    state->search_query[0] = '\0';
+    state->search_count    = 0;
+    state->search_open     = true;
+    s_cf_kb_row = 1;   /* start on 'q' */
+    s_cf_kb_col = 0;
+    s_cf_focus_results = false;
+    s_cf_focus_t = 0.0f;
+    s_search_prewarm_cursor = -1;
+    cat_request_frame();
+}
+
+/* CF search uses a fixed selection color, not the per-theme accent, so the look
+   stays consistent with Cover Flow's black/white stage across all schemes. Soft
+   platinum gray: bright enough to read as "selected" on the dark keys and the
+   near-black stage, used for both the highlighted key and the focused title. */
+static const cat_draw_color kCfSelect = { 182, 189, 199, 255 };
+
+static void jw__cf_draw_keyboard(const jw_launcher_state *state) {
+    (void)state;
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    TTF_Font *font = cat_get_font(CAT_FONT_MEDIUM);
+    cat_draw_color white   = { 236, 238, 240, 255 };
+    cat_draw_color keybg   = { 30, 34, 42, 235 };
+    cat_draw_color sel     = kCfSelect;
+    cat_draw_color seltext = { 12, 14, 18, 255 };
+
+    /* Slide the whole keyboard down and out of frame as focus moves to the
+       results (s_cf_focus_t: 0 = seated, 1 = fully below the bottom edge). */
+    if (s_cf_focus_t >= 0.995f) return;
+    int kb_top = (int)(sh * 0.56f);
+    int kb_bot = sh - CAT_S(14);
+    int slide  = (int)(s_cf_focus_t * (float)(sh - kb_top + CAT_S(24)));
+    kb_top += slide;
+    kb_bot += slide;
+    int gap    = CAT_S(6);
+    int key_h  = (kb_bot - kb_top - gap * (JW_CF_KB_ROWS - 1)) / JW_CF_KB_ROWS;
+    int side   = CAT_S(24);
+    int key_w  = (sw - side * 2 - gap * 9) / 10;   /* sized to a 10-key row */
+    int fh     = TTF_FontHeight(font);
+
+    for (int rw = 0; rw < JW_CF_KB_ROWS; rw++) {
+        int ky = kb_top + rw * (key_h + gap);
+        if (rw < JW_CF_KB_LETTER_ROWS) {
+            int rlen  = (int)strlen(kCfKbRows[rw]);
+            int row_w = rlen * key_w + (rlen - 1) * gap;
+            int kx    = (sw - row_w) / 2;
+            for (int c = 0; c < rlen; c++, kx += key_w + gap) {
+                bool k = !s_cf_focus_results && (rw == s_cf_kb_row && c == s_cf_kb_col);
+                cat_draw_rounded_rect(kx, ky, key_w, key_h, CAT_S(6), k ? sel : keybg);
+                char ch[2] = { kCfKbRows[rw][c], 0 };
+                int cw = cat_measure_text(font, ch);
+                cat_draw_text(font, ch, kx + (key_w - cw) / 2, ky + (key_h - fh) / 2,
+                              k ? seltext : white);
+            }
+        } else {
+            /* Action row: a single wide Space (Delete lives on B). */
+            int w  = key_w * 7 + gap * 6;
+            int kx = (sw - w) / 2;
+            bool k = !s_cf_focus_results && (rw == s_cf_kb_row && s_cf_kb_col == 0);
+            cat_draw_rounded_rect(kx, ky, w, key_h, CAT_S(6), k ? sel : keybg);
+            int cw = cat_measure_text(font, "space");
+            cat_draw_text(font, "space", kx + (w - cw) / 2, ky + (key_h - fh) / 2,
+                          k ? seltext : white);
+        }
+    }
+}
+
+static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
+                             jw_launcher_state *state, cat_button button, bool *running) {
+    /* X closes search from anywhere — no need to empty the query first. */
+    if (button == CAT_BTN_X) {
+        state->search_open = false;
+        state->status[0] = '\0';
+        cat_request_frame();
+        return;
+    }
+
+    /* Results can't hold focus once they're gone (e.g. after a backspace). */
+    if (s_cf_focus_results && state->search_count <= 0) s_cf_focus_results = false;
+
+    /* Focus in the results carousel: flow the cards, A launches, Down/B drops
+       back to the keyboard. */
+    if (s_cf_focus_results) {
+        switch (button) {
+            case CAT_BTN_DOWN:
+            case CAT_BTN_B:
+                s_cf_focus_results = false;
+                break;
+            case CAT_BTN_LEFT:
+            case CAT_BTN_L1:
+                cat_list_state_move(&state->search_list, -1, state->search_count);
+                break;
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_R1:
+                cat_list_state_move(&state->search_list, +1, state->search_count);
+                break;
+            case CAT_BTN_A:
+                jw__launch_selected_search_result(socket_path, state, running);
+                break;
+            default: break;
+        }
+        cat_request_frame();
+        return;
+    }
+
+    /* Focus on the keyboard. */
+    switch (button) {
+        case CAT_BTN_UP:
+            if (s_cf_kb_row > 0) s_cf_kb_row--;
+            else if (state->search_count > 0) s_cf_focus_results = true; /* jump to results */
+            break;
+        case CAT_BTN_DOWN:  if (s_cf_kb_row < JW_CF_KB_ROWS - 1) s_cf_kb_row++; break;
+        case CAT_BTN_LEFT: {   /* wrap within the row */
+            int rl = jw__cf_kb_row_len(s_cf_kb_row);
+            s_cf_kb_col = (s_cf_kb_col - 1 + rl) % rl;
+            break;
+        }
+        case CAT_BTN_RIGHT: {
+            int rl = jw__cf_kb_row_len(s_cf_kb_row);
+            s_cf_kb_col = (s_cf_kb_col + 1) % rl;
+            break;
+        }
+        case CAT_BTN_A: {   /* type the selected key, then re-run the search live */
+            size_t len = strlen(state->search_query);
+            bool edited = false;
+            if (s_cf_kb_row < JW_CF_KB_LETTER_ROWS) {
+                if (len + 1 < sizeof(state->search_query)) {
+                    state->search_query[len]     = kCfKbRows[s_cf_kb_row][s_cf_kb_col];
+                    state->search_query[len + 1] = '\0';
+                    edited = true;
+                }
+            } else {                                       /* space */
+                if (len + 1 < sizeof(state->search_query)) {
+                    state->search_query[len]     = ' ';
+                    state->search_query[len + 1] = '\0';
+                    edited = true;
+                }
+            }
+            if (edited) {
+                char q[256];
+                snprintf(q, sizeof(q), "%s", state->search_query);
+                jw__perform_search(db_path, state, q);
+            }
+            break;
+        }
+        case CAT_BTN_B: {   /* backspace, or close when the query is empty */
+            size_t len = strlen(state->search_query);
+            if (len > 0) {
+                state->search_query[len - 1] = '\0';
+                char q[256];
+                snprintf(q, sizeof(q), "%s", state->search_query);
+                jw__perform_search(db_path, state, q);
+            } else {
+                state->search_open = false;
+                state->status[0] = '\0';
+            }
+            break;
+        }
+        default: break;
+    }
+    int rl = jw__cf_kb_row_len(s_cf_kb_row);
+    if (s_cf_kb_col > rl - 1) s_cf_kb_col = rl - 1;
+    if (s_cf_kb_col < 0)      s_cf_kb_col = 0;
+    cat_request_frame();
+}
+
+/* Cover Flow search results: the query header + a card carousel of hits (games
+   and apps) on the glossy black stage, with the inline keyboard below. */
+static void jw__render_search_cf(jw_launcher_state *state) {
+    static jw_games_cf s_cf;
+    SDL_Renderer *r = cat_get_renderer();
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    cat_draw_color white = { 236, 238, 240, 255 };
+    cat_draw_color dim   = { 150, 154, 160, 255 };
+
+    SDL_SetRenderDrawColor(r, 6, 7, 9, 255);
+    SDL_RenderClear(r);
+
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
+
+    char hdr[320];
+    if (state->search_query[0])
+        snprintf(hdr, sizeof(hdr), "Search: %s", state->search_query);
+    else
+        snprintf(hdr, sizeof(hdr), "%s", "Search");
+    int maxhw = sw - CAT_S(40);
+    int hw = cat_measure_text(small, hdr);
+    int hx = (sw - (hw < maxhw ? hw : maxhw)) / 2;
+    cat_draw_text_ellipsized(small, hdr, hx, CAT_S(6), white, maxhw);
+
+    if (state->search_count <= 0) {
+        const char *msg = state->search_query[0] ? "No results" : "Type to search";
+        int mw = cat_measure_text(large, msg);
+        cat_draw_text(large, msg, (sw - mw) / 2, (int)(sh * 0.28f), dim);
+    } else {
+        int cur = state->search_list.cursor;
+        if (cur < 0) cur = 0;
+        if (cur >= state->search_count) cur = state->search_count - 1;
+
+        char namebuf[256];
+        jw__clean_rom_name(state->search_results[cur].name, namebuf, sizeof(namebuf));
+        int ty   = CAT_S(6) + TTF_FontHeight(small) + CAT_S(2);
+        int maxw = sw - CAT_S(96);
+        int lw   = cat_measure_text(large, namebuf);
+        int lx   = (sw - (lw < maxw ? lw : maxw)) / 2;
+        /* When the carousel holds focus, the selected name switches to the same
+           fixed selection color as the keyboard's highlighted key. */
+        cat_draw_color name_col = s_cf_focus_results ? kCfSelect : white;
+        if (lw > maxw) cat_draw_text_ellipsized(large, namebuf, lx, ty, name_col, maxw);
+        else           cat_draw_text(large, namebuf, lx, ty, name_col);
+
+        jw__cover_prewarm_search(state, state->search_results, state->search_count, cur);
+        /* Cards grow and drop as focus moves from the keyboard (t=0: small, seated
+           high above the keyboard) to the results (t=1: large, dropped into the
+           space the keyboard vacates). */
+        float ch = jw__lerpf(0.30f, 0.56f, s_cf_focus_t);
+        float oy = jw__lerpf(0.31f, 0.45f, s_cf_focus_t);
+        jw__cf_draw_cards(state, &s_cf, state->search_count, cur, jw__cf_icon_search, ch, oy);
+    }
+
+    jw__cf_draw_keyboard(state);
+    jw__cf_focus_step();
     cat_present();
 }
 
@@ -4751,7 +5123,10 @@ static void jw__render_launcher(jw_launcher_state *state) {
     }
 
     if (state->search_open) {
-        jw__render_search(state);
+        if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
+            jw__render_search_cf(state);
+        else
+            jw__render_search(state);
         return;
     }
 
@@ -5147,6 +5522,7 @@ static int jw__perform_search(const char *db_path, jw_launcher_state *state,
                               const char *query) {
     jw__str_copy(state->search_query, sizeof(state->search_query), query);
     state->search_count = 0;
+    s_search_prewarm_cursor = -1;   /* results changed — force a re-sweep */
 
     if (jw_db_search_library(db_path, state->search_query, state->search_results,
                              JW_MAX_SEARCH_RESULTS, &state->search_count) != 0) {
@@ -6149,6 +6525,11 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
 static void jw__handle_search_input(const char *socket_path, const char *db_path,
                                     jw_launcher_state *state,
                                     cat_button button, bool *running) {
+    /* Cover Flow uses the inline keyboard, not the list-nav search input. */
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
+        jw__cf_kbd_input(socket_path, db_path, state, button, running);
+        return;
+    }
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->search_list, -1, state->search_count);
@@ -6157,10 +6538,18 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
             cat_list_state_move(&state->search_list, +1, state->search_count);
             break;
         case CAT_BTN_LEFT:
-            cat_list_state_page(&state->search_list, -1, state->search_count);
+            /* Cover Flow flows one card with wrap-around (drives the tween);
+               other layouts page the list. */
+            if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
+                cat_list_state_move(&state->search_list, -1, state->search_count);
+            else
+                cat_list_state_page(&state->search_list, -1, state->search_count);
             break;
         case CAT_BTN_RIGHT:
-            cat_list_state_page(&state->search_list, +1, state->search_count);
+            if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
+                cat_list_state_move(&state->search_list, +1, state->search_count);
+            else
+                cat_list_state_page(&state->search_list, +1, state->search_count);
             break;
         case CAT_BTN_A:
             jw__launch_selected_search_result(socket_path, state, running);
@@ -6174,11 +6563,14 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
             break;
         case CAT_BTN_L1:
         case CAT_BTN_R1:
-            /* The search results header shows the section tabs, so L1/R1 tabs
-               away — closing search and gliding to the adjacent section (search
-               results show the tab bar). Tabbed layout only. */
+            /* Tabbed: the results header shows the section tabs, so L1/R1 tabs
+               away (closing search, gliding to the adjacent section). Cover Flow:
+               L1/R1 flow the carousel one card with wrap. */
             if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED)
                 jw__switch_tab_slide(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
+            else if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
+                cat_list_state_move(&state->search_list, button == CAT_BTN_L1 ? -1 : +1,
+                                    state->search_count);
             break;
         default:
             break;
@@ -6873,6 +7265,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     }
 
     if (button == CAT_BTN_X) {
+        /* Cover Flow: X opens the inline search overlay (no per-item Options menu,
+           no blocking system keyboard). */
+        if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
+            jw__cf_open_search(state, db_path);
+            return;
+        }
         if (!jw__open_context_actions(db_path, state)) {
             jw__open_search(db_path, state);
         }
@@ -7430,7 +7828,13 @@ int main(void) {
            shorter ticks above still fire sooner). */
         cat_request_frame_in(1000);
 
+        /* Keep navigation instant while cover art streams in: skip the one
+           synchronous cover decode on the frame that handled a button press, so
+           the highlight/carousel moves without waiting on a decode. Covers keep
+           decoding on the idle frames between presses. */
+        jw__suppress_inline_decode = had_input;
         jw__render_launcher(&state);
+        jw__suppress_inline_decode = false;
     }
 
     jw__status_poller_shutdown();
