@@ -2701,6 +2701,17 @@ static int jw__request_open_in_game_switcher(jw_daemon_state *state) {
     return jw__request_open_in_game_ui(state, "switcher");
 }
 
+/* Unpause the game when leaving the in-game menu. First release any button still
+   held on the virtual pad — the press that triggered the menu action (e.g. A on
+   Save State) is usually still physically down, and without this the core reads
+   it as a fresh in-game input on resume (the "character jumps after save state"
+   bug). evdev is edge-based, so a still-held physical button won't re-fire until
+   it is released and pressed again. */
+static jw_ra_result jw__resume_game_after_menu(jw_daemon_state *state, jw_ra_client *ra) {
+    jw_input_proxy_release_buttons(&state->input_proxy);
+    return jw_ra_resume_direct(ra);
+}
+
 /* Close the visible standby menu (the Menu button toggles it shut): resume the
    game and tell the menu to hide back to standby. Mirror image of the open
    path; uses explicit UNPAUSE so the game always resumes. */
@@ -2710,7 +2721,7 @@ static int jw__request_close_in_game_menu(jw_daemon_state *state) {
     }
 
     jw_ra_client client = jw_ra_client_default();
-    jw_ra_resume_direct(&client);
+    jw__resume_game_after_menu(state, &client);
     state->menu_visible = false;
     if (state->menu_pid > 0) {
         kill(state->menu_pid, SIGUSR2);
@@ -5642,7 +5653,7 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
         /* Explicit UNPAUSE, symmetric with the explicit PAUSE on open. The
            status-polling jw_ra_resume() could leave the game stuck paused when
            GET_STATUS misreports (e.g. right after a state load). */
-        result = jw_ra_resume_direct(&ra);
+        result = jw__resume_game_after_menu(state, &ra);
         if (result == JW_RA_OK) {
             state->retroarch_resume_on_menu_exit = false;
             state->menu_visible = false;
@@ -5695,7 +5706,7 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             /* Reset/Save/Load close the menu (the UI sets running=false), so
                resume the game now. The resident menu never exits, so the old
                resume-on-menu-exit path can't do it for us. */
-            jw_ra_resume_direct(&ra);
+            jw__resume_game_after_menu(state, &ra);
             state->retroarch_resume_on_menu_exit = false;
             state->menu_visible = false;
         }
@@ -5708,7 +5719,7 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             result = jw_ra_save_state(&ra);
         }
         if (result == JW_RA_OK) {
-            jw_ra_resume_direct(&ra);
+            jw__resume_game_after_menu(state, &ra);
             state->retroarch_resume_on_menu_exit = false;
             state->menu_visible = false;
         }
@@ -5721,7 +5732,7 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             result = jw_ra_load_state(&ra);
         }
         if (result == JW_RA_OK) {
-            jw_ra_resume_direct(&ra);
+            jw__resume_game_after_menu(state, &ra);
             state->retroarch_resume_on_menu_exit = false;
             state->menu_visible = false;
         }

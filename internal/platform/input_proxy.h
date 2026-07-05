@@ -63,6 +63,14 @@ void     jw_input_proxy_flush(jw_input_proxy *proxy);
  * launcher — so the wake press only wakes the screen instead of also firing a
  * navigation action. Turn it off once the screen is back on. */
 void     jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow);
+/* Emit a release on the virtual pad for every button currently held-forwarded,
+ * so a consumer reading it sees a neutral state. Call right before unpausing
+ * RetroArch when closing the in-game menu: the button that triggered the menu
+ * action (e.g. A on Save State) is often still physically down, and without this
+ * the core reads it as a fresh in-game press on resume. evdev is edge-based, so
+ * a still-held physical button will not re-fire until released and pressed again.
+ * Safe to call when disabled. */
+void     jw_input_proxy_release_buttons(jw_input_proxy *proxy);
 /* One power-key press or release edge, stamped with when the key actually moved
  * (kernel event time, CLOCK_MONOTONIC ms) — not when the daemon got around to
  * consuming it. The distinction matters for long-press detection: if a tick

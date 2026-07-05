@@ -54,6 +54,7 @@ typedef struct {
     int32_t obs_x_min, obs_x_max;  /* observed stick extremes (measure mode only) */
     int32_t obs_y_min, obs_y_max;
     uint64_t last_cal_log_ms;      /* throttle for the measure-mode extremes log */
+    unsigned char held_keys[(KEY_MAX + 8) / 8];  /* buttons currently forwarded-down */
 } jw_mlp1_input_proxy_data;
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
@@ -261,6 +262,15 @@ static void jw__write_event(jw_mlp1_input_proxy_data *data,
 
 static void jw__forward_event(jw_mlp1_input_proxy_data *data,
                               const struct input_event *ev) {
+    /* Track which buttons are held-down on the virtual pad so the in-game menu
+       can neutralize them before unpausing (see jw_input_proxy_release_buttons). */
+    if (ev->type == EV_KEY && ev->code <= KEY_MAX) {
+        if (ev->value > 0) {
+            data->held_keys[ev->code / 8] |= (unsigned char)(1u << (ev->code % 8));
+        } else {
+            data->held_keys[ev->code / 8] &= (unsigned char)~(1u << (ev->code % 8));
+        }
+    }
     if (write(data->uinput_fd, ev, sizeof(*ev)) != (ssize_t)sizeof(*ev)) {
         jw_log_warn("input proxy: uinput forward failed: %s", strerror(errno));
     }
@@ -706,6 +716,27 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
     }
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
     data->swallow = swallow;
+}
+
+void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->backend_data) {
+        return;
+    }
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    if (data->uinput_fd < 0) {
+        return;   /* watch-only mode: nothing forwarded to release */
+    }
+    bool released_any = false;
+    for (int code = 0; code <= KEY_MAX; code++) {
+        if (jw__bit_is_set(data->held_keys, code)) {
+            jw__write_event(data, EV_KEY, (uint16_t)code, 0);
+            data->held_keys[code / 8] &= (unsigned char)~(1u << (code % 8));
+            released_any = true;
+        }
+    }
+    if (released_any) {
+        jw__emit_syn(data);
+    }
 }
 
 bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) {
