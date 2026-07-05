@@ -810,6 +810,7 @@ static void jw__refresh_bluetooth_lists(jw_settings_ui *ui) {
         ui->bt_nearby_count = 0;
         ui->bluetooth_list.cursor = 0;
         ui->bluetooth_list.scroll_offset = 0;
+        ui->bt_state_cached = 0;
         return;
     }
 
@@ -861,6 +862,14 @@ clamp_cursor:
     }
     if (ui->bluetooth_list.cursor >= rows) {
         ui->bluetooth_list.cursor = rows - 1;
+    }
+    /* Keep the status-bar icon in sync with the radio. While the Bluetooth page
+       is open the background status poller masks the BT sample (the page owns the
+       live read), so the icon's cached state is only refreshed from here. */
+    if (ui->show_bluetooth) {
+        ui->bt_state_cached = ui->bt_radio_on
+                                  ? (jw_bt_any_connected() == 1 ? 2 : 1)
+                                  : 0;
     }
 }
 
