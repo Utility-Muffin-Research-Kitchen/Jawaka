@@ -470,6 +470,7 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "check_firmware_before_loading",
         "load_dummy_on_core_shutdown",
         "menu_show_load_content_animation",
+        "menu_swap_ok_cancel_buttons",
         "notification_show_autoconfig",
         "notification_show_autoconfig_fails",
         "notification_show_config_override_load",
@@ -1369,6 +1370,13 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
                                  (bfi && bfi[0] == '1') ? "1" : "0");
     }
     jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
+    /* The MLP1 is a Nintendo-style layout (A=East confirms) that reports
+       Xbox-style SDL button indices, so RetroArch's OK/Cancel default lands on
+       the wrong face button when swapped. RA's default (false) puts menu OK on
+       the A/East button — matching the OS. Pin it here so RA menus are correct
+       from the first launch on fresh installs AND upgrades, overriding any stale
+       user value persisted by save-on-exit. */
+    jw__retroarch_cfg_string(fp, "menu_swap_ok_cancel_buttons", "false");
     jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
     jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
     jw__retroarch_cfg_string(fp, "builtin_imageviewer_enable", "false");
@@ -1731,6 +1739,13 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
                                  (bfi && bfi[0] == '1') ? "1" : "0");
     }
     jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
+    /* The MLP1 is a Nintendo-style layout (A=East confirms) that reports
+       Xbox-style SDL button indices, so RetroArch's OK/Cancel default lands on
+       the wrong face button when swapped. RA's default (false) puts menu OK on
+       the A/East button — matching the OS. Pin it here so RA menus are correct
+       from the first launch on fresh installs AND upgrades, overriding any stale
+       user value persisted by save-on-exit. */
+    jw__retroarch_cfg_string(fp, "menu_swap_ok_cancel_buttons", "false");
     jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
     jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
     jw__retroarch_cfg_string(fp, "builtin_imageviewer_enable", "false");
