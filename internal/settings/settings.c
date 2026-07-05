@@ -5694,6 +5694,13 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     } else {
                         jw__bt_msg(ui, turning_on ? "Bluetooth on"
                                                   : "Bluetooth off");
+                        /* Persist the choice so jawakad restores it at boot: the
+                           stock BLUETOOTH_PARAM flag gets clobbered back to on at
+                           boot, so it can't hold the user's "keep it off". */
+                        if (ui->db_path[0]) {
+                            jw_db_set_setting(ui->db_path, "platform.bluetooth_enabled",
+                                              turning_on ? "1" : "0");
+                        }
                     }
                     jw__refresh_bluetooth_lists(ui);
                     ui->bt_next_poll_ms = SDL_GetTicks() + JW_BT_POLL_INTERVAL_MS;

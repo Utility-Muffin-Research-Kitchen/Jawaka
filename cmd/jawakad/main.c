@@ -3,6 +3,7 @@
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
 #include "internal/ipc/ipc.h"
+#include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/paths.h"
@@ -5479,6 +5480,26 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
    forward by the frontend-ready handler (fallback deadline covers a launcher
    that never reports ready). Tiny maintenance still runs inline; the library
    scan is handed to a worker so the daemon IPC loop stays responsive. */
+/* Restore the user's Bluetooth on/off choice at boot. The preference is kept in
+   Leaf's own settings DB, not the stock BLUETOOTH_PARAM flag — stock re-enables
+   BT and rewrites that flag on boot, so it can't hold a "keep it off". Absent key
+   (user never toggled) → leave the boot default alone. */
+static void jw__apply_persisted_bluetooth(jw_daemon_state *state) {
+    char value[32];
+    if (!state || !state->db_path[0] ||
+        jw_db_get_setting(state->db_path, "platform.bluetooth_enabled",
+                          value, sizeof(value)) != 0 ||
+        !value[0]) {
+        return;
+    }
+    bool on = (strcmp(value, "0") != 0);
+    if (jw_bt_set_radio(on) == 0) {
+        jw_log_info("applied persisted bluetooth enabled=%d", on ? 1 : 0);
+    } else {
+        jw_log_warn("persisted bluetooth apply failed (enabled=%d)", on ? 1 : 0);
+    }
+}
+
 static void jw__tick_startup_maintenance(jw_daemon_state *state) {
     if (!state || !state->startup_maintenance_pending) {
         return;
@@ -5498,6 +5519,10 @@ static void jw__tick_startup_maintenance(jw_daemon_state *state) {
         int hardened = jw_wifi_harden();
         jw_log_info("wifi startup maintenance restore=%d harden=%d total_ms=%lld",
                     restored, hardened, jw__monotonic_ms() - wifi_start_ms);
+        /* Restore the user's Bluetooth on/off preference (see above): stock boot
+           leaves the radio powered regardless, so without this a device the user
+           turned BT off on comes back up with it on. */
+        jw__apply_persisted_bluetooth(state);
         state->startup_maintenance_phase = 1;
         state->startup_maintenance_next_ms = jw__monotonic_ms();
         return;
@@ -6106,6 +6131,15 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
             }
         } else if (action == JW_PLATFORM_ACTION_SLEEP) {
             jw__platform_sleep_with_performance(state, &result);
+        } else if (action == JW_PLATFORM_ACTION_BLUETOOTH_ON ||
+                   action == JW_PLATFORM_ACTION_BLUETOOTH_OFF) {
+            jw_platform_perform_action(&state->platform, action, value, &result);
+            if (result.code == JW_PLATFORM_RESULT_OK && state->db_path[0]) {
+                /* Persist the choice in Leaf's DB so it survives a reboot; the
+                   stock BLUETOOTH_PARAM flag gets clobbered back to on at boot. */
+                jw_db_set_setting(state->db_path, "platform.bluetooth_enabled",
+                                  action == JW_PLATFORM_ACTION_BLUETOOTH_ON ? "1" : "0");
+            }
         } else {
             jw_platform_perform_action(&state->platform, action, value, &result);
         }
