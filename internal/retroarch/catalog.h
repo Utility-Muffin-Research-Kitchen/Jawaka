@@ -37,6 +37,7 @@ typedef struct {
     jw_ra_string_list ignore_file_names;
     jw_ra_string_list playlist_extensions;
     char *m3u_generation;
+    bool name_map;
     char *default_core;
     jw_ra_string_list alternate_cores;
     char *rom_root;
@@ -66,6 +67,12 @@ typedef struct {
 
 jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t error_size);
 const jw_ra_catalog *jw_ra_catalog_get(const char *sdcard_root, char *error, size_t error_size);
+
+/* Resolve the platform defaults directory (where cores.json/systems.json/
+   arcade_names.txt live). Honors UMRK_PLATFORM_PATH / SYSTEM_PATH overrides,
+   otherwise derives <sdcard_root>/<.system|UMRK>/<platform_id>/defaults.
+   Returns 0 on success (out holds a NUL-terminated path), -1 on error. */
+int jw_ra_defaults_dir(const char *sdcard_root, char *out, size_t out_size);
 void jw_ra_catalog_free(jw_ra_catalog *catalog);
 
 const jw_ra_system *jw_ra_catalog_find_system(const jw_ra_catalog *catalog, const char *system_id);

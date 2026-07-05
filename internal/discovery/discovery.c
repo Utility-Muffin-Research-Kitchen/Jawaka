@@ -1296,6 +1296,197 @@ static void jw__refresh_result_counts(sqlite3 *db, jw_scan_result *out) {
     }
 }
 
+/* Normalize a name-map key: strip a trailing .zip/.7z and lowercase, so both a
+   bare romname ("mslug") and a filename ("MSLUG.zip") resolve to one key that
+   matches lower(games.name) (games.name is stored as the ROM's filename stem). */
+static void jw__name_map_normalize_key(const char *in, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    size_t len = in ? strlen(in) : 0;
+    if (len > 4 && strncasecmp(in + len - 4, ".zip", 4) == 0) {
+        len -= 4;
+    } else if (len > 3 && strncasecmp(in + len - 3, ".7z", 3) == 0) {
+        len -= 3;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < len && n + 1 < out_size; i++) {
+        out[n++] = (char)tolower((unsigned char)in[i]);
+    }
+    out[n] = '\0';
+}
+
+/* Load a "romname<TAB or =>Friendly Title" map file into the _arcade_names temp
+   table. Absent file is not an error. override=0 keeps the first value seen
+   (bundled catalog); override=1 lets a per-folder user map.txt win. */
+static int jw__load_name_map_file(sqlite3 *db, const char *path, int override) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return 0;
+    }
+    const char *sql = override
+        ? "INSERT OR REPLACE INTO _arcade_names(romname, title) VALUES(?1, ?2);"
+        : "INSERT OR IGNORE INTO _arcade_names(romname, title) VALUES(?1, ?2);";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fclose(fp);
+        return -1;
+    }
+    int status = 0;
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        size_t ll = strlen(line);
+        while (ll > 0 && (line[ll - 1] == '\n' || line[ll - 1] == '\r')) {
+            line[--ll] = '\0';
+        }
+        if (ll == 0 || line[0] == '#') {
+            continue;
+        }
+        char *sep = strchr(line, '\t');
+        if (!sep) {
+            sep = strchr(line, '=');
+        }
+        if (!sep) {
+            continue;
+        }
+        *sep = '\0';
+        const char *raw_key = line;
+        const char *title = sep + 1;
+        while (*title == ' ' || *title == '\t') {
+            title++;
+        }
+        char key[256];
+        jw__name_map_normalize_key(raw_key, key, sizeof(key));
+        if (!key[0] || !title[0]) {
+            continue;
+        }
+        sqlite3_reset(stmt);
+        sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, title, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            status = -1;
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    fclose(fp);
+    return status;
+}
+
+/* Overwrite games.name with a friendly title for arcade-style systems flagged
+   name_map in the catalog. Source of truth is the bundled arcade_names.txt
+   (generated from the core DATs); a per-folder Roms/<pattern>/map.txt lets the
+   user override or add entries. A user rename lives in game_settings.display_name
+   and still wins at display time via COALESCE(display_name, name); FTS on
+   games.name (kept in sync by the games_au trigger) gives friendly search. Rows
+   with no romname match are left byte-for-byte untouched, so non-arcade systems
+   and unmapped arcade roms are unaffected. */
+static int jw__apply_arcade_names(sqlite3 *db, const char *sdcard_root) {
+    char error[256];
+    const jw_ra_catalog *catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
+    if (!catalog) {
+        /* Compat mode (no metadata): nothing declares name_map. */
+        return 0;
+    }
+
+    int have_name_map = 0;
+    for (size_t i = 0; i < catalog->system_count; i++) {
+        if (catalog->systems[i].name_map) {
+            have_name_map = 1;
+            break;
+        }
+    }
+    if (!have_name_map) {
+        return 0;
+    }
+
+    if (jw__exec(db,
+                 "CREATE TEMP TABLE IF NOT EXISTS _arcade_names("
+                 "romname TEXT PRIMARY KEY, title TEXT NOT NULL);") != 0) {
+        return -1;
+    }
+    /* Clear any residue from an earlier scan on this connection. */
+    (void)jw__exec(db, "DELETE FROM _arcade_names;");
+
+    /* Bundled map from the platform defaults dir. */
+    char defaults_dir[PATH_MAX];
+    if (jw_ra_defaults_dir(sdcard_root, defaults_dir, sizeof(defaults_dir)) == 0) {
+        char bundled[PATH_MAX];
+        if (snprintf(bundled, sizeof(bundled), "%s/arcade_names.txt", defaults_dir) <
+                (int)sizeof(bundled)) {
+            if (jw__load_name_map_file(db, bundled, 0) != 0) {
+                (void)jw__exec(db, "DROP TABLE IF EXISTS _arcade_names;");
+                return -1;
+            }
+        }
+    }
+
+    /* Per-folder user overrides: Roms/<pattern>/map.txt on every storage source.
+       Heap-allocate the source list — it is large and this runs deep in the
+       scan call chain. */
+    jw_storage_source_list *sources = malloc(sizeof(*sources));
+    if (!sources) {
+        (void)jw__exec(db, "DROP TABLE IF EXISTS _arcade_names;");
+        return -1;
+    }
+    if (jw_storage_sources_resolve(sdcard_root, sources) == 0) {
+        for (int s = 0; s < sources->count; s++) {
+            const jw_storage_source *src = &sources->sources[s];
+            for (size_t i = 0; i < catalog->system_count; i++) {
+                const jw_ra_system *system = &catalog->systems[i];
+                if (!system->name_map) {
+                    continue;
+                }
+                for (size_t p = 0; p < system->patterns.count; p++) {
+                    const char *pat = system->patterns.items[p];
+                    if (!pat || !pat[0]) {
+                        continue;
+                    }
+                    char mappath[PATH_MAX];
+                    if (snprintf(mappath, sizeof(mappath), "%s/%s/map.txt",
+                                 src->roms_path, pat) >= (int)sizeof(mappath)) {
+                        continue;
+                    }
+                    if (jw__load_name_map_file(db, mappath, 1) != 0) {
+                        free(sources);
+                        (void)jw__exec(db, "DROP TABLE IF EXISTS _arcade_names;");
+                        return -1;
+                    }
+                }
+            }
+        }
+    }
+    free(sources);
+
+    sqlite3_stmt *upd = NULL;
+    const char *usql =
+        "UPDATE games SET name = ("
+        "  SELECT t.title FROM _arcade_names t WHERE t.romname = lower(games.name)) "
+        "WHERE system = ?1 "
+        "  AND lower(games.name) IN (SELECT romname FROM _arcade_names);";
+    if (sqlite3_prepare_v2(db, usql, -1, &upd, NULL) != SQLITE_OK) {
+        (void)jw__exec(db, "DROP TABLE IF EXISTS _arcade_names;");
+        return -1;
+    }
+    int status = 0;
+    for (size_t i = 0; i < catalog->system_count; i++) {
+        const jw_ra_system *system = &catalog->systems[i];
+        if (!system->name_map || !system->id || !system->id[0]) {
+            continue;
+        }
+        sqlite3_reset(upd);
+        sqlite3_bind_text(upd, 1, system->id, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(upd) != SQLITE_DONE) {
+            status = -1;
+            break;
+        }
+    }
+    sqlite3_finalize(upd);
+
+    (void)jw__exec(db, "DROP TABLE IF EXISTS _arcade_names;");
+    return status;
+}
+
 static int jw__dedup_folder_aliases(sqlite3 *db, const char *sdcard_root) {
     /* After folder folding, a legacy alias folder (e.g. Roms/FC) and the
        canonical public folder (Roms/NES) both resolve to one system, so the
@@ -1343,6 +1534,7 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     if (jw__scan_tx_begin(&tx) != 0 ||
         jw__dedup_folder_aliases(db, sdcard_root) != 0 ||
         jw_db_scan_prune(db) != 0 ||
+        jw__apply_arcade_names(db, sdcard_root) != 0 ||
         jw__scan_tx_commit(&tx) != 0) {
         jw__scan_tx_rollback(&tx);
         return -1;

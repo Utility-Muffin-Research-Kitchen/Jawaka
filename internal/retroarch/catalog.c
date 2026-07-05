@@ -23,6 +23,33 @@ static int jw_ra_platform_uses_dot_system(const char *platform_id) {
             strcmp(platform_id, "my355") == 0);
 }
 
+int jw_ra_defaults_dir(const char *sdcard_root, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+    const char *platform_path = getenv("UMRK_PLATFORM_PATH");
+    const char *system_path = getenv("SYSTEM_PATH");
+    int written;
+    if (platform_path && platform_path[0]) {
+        written = snprintf(out, out_size, "%s/defaults", platform_path);
+    } else if (system_path && system_path[0]) {
+        written = snprintf(out, out_size, "%s/defaults", system_path);
+    } else {
+        if (!sdcard_root || !sdcard_root[0]) {
+            return -1;
+        }
+        const char *platform_id = jw_ra_platform_id();
+        const char *prefix = jw_ra_platform_uses_dot_system(platform_id) ? ".system" : "UMRK";
+        written = snprintf(out, out_size, "%s/%s/%s/defaults", sdcard_root, prefix, platform_id);
+    }
+    if (written < 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return -1;
+    }
+    return 0;
+}
+
 static void jw_ra_set_error(char *error, size_t error_size, const char *message) {
     if (error && error_size > 0) {
         snprintf(error, error_size, "%s", message ? message : "");
@@ -245,6 +272,7 @@ static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
     out->name = jw_ra_json_string(row, "name");
     out->archive_mode = jw_ra_json_string(row, "archive_mode");
     out->m3u_generation = jw_ra_json_string(row, "m3u_generation");
+    out->name_map = jw_ra_json_bool(row, "name_map", false);
     out->default_core = jw_ra_json_string(row, "default_core");
     out->rom_root = jw_ra_json_string(row, "rom_root");
     out->image_root = jw_ra_json_string(row, "image_root");
