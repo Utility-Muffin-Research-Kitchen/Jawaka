@@ -57,6 +57,10 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
     (void)swallow;
 }
 
+void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
+    (void)proxy;   /* mock: no virtual pad to release; safe no-op */
+}
+
 bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) {
     (void)proxy;
     (void)edge;
