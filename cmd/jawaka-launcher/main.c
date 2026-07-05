@@ -3957,9 +3957,10 @@ static void jw__coverflow_frame_log(uint32_t frame_start_ms, uint32_t render_don
     }
 }
 
-static void jw__render_coverflow_games(jw_launcher_state *state) {
-    bool frame_log = jw__coverflow_frame_log_enabled();
-    uint32_t frame_start_ms = frame_log ? SDL_GetTicks() : 0;
+/* Draw the Cover Flow games stage — clear, card carousel, and the centered game
+   title — WITHOUT presenting. Shared by the games view and the actions overlay
+   (which dims this and floats the action list on top). */
+static void jw__draw_coverflow_games_stage(jw_launcher_state *state) {
     SDL_Renderer *ren = cat_get_renderer();
     int sw = cat_get_screen_width();
 
@@ -3968,9 +3969,6 @@ static void jw__render_coverflow_games(jw_launcher_state *state) {
 
     int count = state->game_count;
     if (count <= 0) {
-        uint32_t render_done_ms = frame_log ? SDL_GetTicks() : 0;
-        cat_present();
-        if (frame_log) jw__coverflow_frame_log(frame_start_ms, render_done_ms);
         return;
     }
     int cur = state->game_list.cursor;
@@ -3993,6 +3991,13 @@ static void jw__render_coverflow_games(jw_launcher_state *state) {
         if (nw > maxw) cat_draw_text_ellipsized(font, title, tx, ty, white, maxw);
         else           cat_draw_text(font, title, tx, ty, white);
     }
+}
+
+static void jw__render_coverflow_games(jw_launcher_state *state) {
+    bool frame_log = jw__coverflow_frame_log_enabled();
+    uint32_t frame_start_ms = frame_log ? SDL_GetTicks() : 0;
+
+    jw__draw_coverflow_games_stage(state);
 
     uint32_t render_done_ms = frame_log ? SDL_GetTicks() : 0;
     cat_present();
@@ -4831,7 +4836,84 @@ static int jw__actions_header_h(void) {
     return CAT_DS(34);
 }
 
+/* Cover Flow styling for the game actions menu. The tabbed box-model panel
+   clashes with Cover Flow's minimal look, so render the same action rows over
+   the near-black CF backdrop with the platinum-gray selection — matching the CF
+   search + keyboard. Full functionality, CF chrome. */
+static void jw__render_actions_cf(jw_launcher_state *state) {
+    SDL_Renderer *r = cat_get_renderer();
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    cat_draw_color white   = { 236, 238, 240, 255 };
+    cat_draw_color dim     = { 150, 154, 160, 255 };
+    cat_draw_color sel     = kCfSelect;
+    cat_draw_color seltext = { 12, 14, 18, 255 };
+    cat_draw_color selval  = { 58, 64, 72, 255 };
+
+    /* Backdrop: the live Cover Flow game stage, dimmed — the menu floats over the
+       game rather than replacing it. */
+    if (state->action_scope == JW_ACTION_GAME) {
+        jw__draw_coverflow_games_stage(state);
+    } else {
+        SDL_SetRenderDrawColor(r, 6, 7, 9, 255);
+        SDL_RenderClear(r);
+    }
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 172);
+    SDL_RenderFillRect(r, NULL);
+
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
+
+    int n = state->action_row_count;
+    if (n > 0) {
+        int cur = state->action_list.cursor;
+        if (cur < 0) cur = 0;
+        if (cur >= n) cur = n - 1;
+
+        int row_h   = TTF_FontHeight(body) + CAT_S(16);
+        int cell_h  = row_h - CAT_S(6);
+        int col_w   = sw - CAT_S(72);
+        int col_x   = (sw - col_w) / 2;
+        int top     = CAT_S(12) + TTF_FontHeight(large) + CAT_S(16);
+        int start_y = top + ((sh - top) - n * row_h) / 2;
+        if (start_y < top) start_y = top;
+
+        int val_w = col_w * 44 / 100;
+        int ttl_w = col_w - val_w - CAT_S(20);
+
+        for (int i = 0; i < n; i++) {
+            char title[96], value[160];
+            jw__action_row_strings(state, state->action_rows[i],
+                                   title, sizeof(title), value, sizeof(value));
+            bool s  = (i == cur);
+            int  ry = start_y + i * row_h;
+            if (s) {
+                cat_draw_rounded_rect(col_x - CAT_S(14), ry,
+                                      col_w + CAT_S(28), cell_h, CAT_S(8), sel);
+            }
+            int text_y = ry + (cell_h - TTF_FontHeight(body)) / 2;
+            cat_draw_text_ellipsized(body, title, col_x, text_y,
+                                     s ? seltext : white, ttl_w);
+            if (value[0]) {
+                int vw = cat_measure_text(small, value);
+                int vx = col_x + col_w - (vw < val_w ? vw : val_w);
+                int vy = ry + (cell_h - TTF_FontHeight(small)) / 2;
+                cat_draw_text_ellipsized(small, value, vx, vy,
+                                         s ? selval : dim, val_w);
+            }
+        }
+    }
+
+    cat_present();
+}
+
 static void jw__render_actions(const jw_launcher_state *state) {
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
+        jw__render_actions_cf((jw_launcher_state *)state);
+        return;
+    }
     cat_clear_screen();
 
     ap_theme *theme = cat_get_theme();
@@ -6229,9 +6311,59 @@ static void jw__edit_action_display_name(const char *db_path,
         ? state->action_system_display
         : state->action_game.name;
     cat_keyboard_result result;
-    int rc = cat_keyboard(current,
+
+    /* Cover Flow: float the keyboard over a dimmed snapshot of the game stage,
+       dressed in the platinum CF palette — matching the CF actions overlay.
+       Other layouts fall through to the standard themed keyboard. */
+    SDL_Texture *cf_backdrop = NULL;
+    cat_theme *cf_theme = NULL;
+    cat_draw_color sv_hl = {0}, sv_hltxt = {0}, sv_accent = {0}, sv_hint = {0};
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
+        SDL_Renderer *ren = cat_get_renderer();
+        int sw = cat_get_screen_width();
+        int sh = cat_get_screen_height();
+        cf_backdrop = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888,
+                                        SDL_TEXTUREACCESS_TARGET, sw, sh);
+        if (cf_backdrop) {
+            SDL_SetRenderTarget(ren, cf_backdrop);
+            if (state->action_scope == JW_ACTION_GAME) {
+                jw__draw_coverflow_games_stage(state);
+            } else {
+                SDL_SetRenderDrawColor(ren, 6, 7, 9, 255);
+                SDL_RenderClear(ren);
+            }
+            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(ren, 0, 0, 0, 172);
+            SDL_RenderFillRect(ren, NULL);
+            SDL_SetRenderTarget(ren, NULL);
+
+            cf_theme  = cat_get_theme();
+            sv_hl     = cf_theme->highlight;
+            sv_hltxt  = cf_theme->highlighted_text;
+            sv_accent = cf_theme->accent;
+            sv_hint   = cf_theme->hint;
+            cat_draw_color cf_sel     = kCfSelect;               /* selected key + input pill */
+            cat_draw_color cf_seltext = {  12,  14,  18, 255 };  /* dark text on the platinum pill */
+            cat_draw_color cf_keybg   = {  30,  34,  42, 255 };  /* unselected key bg */
+            cat_draw_color cf_keytxt  = { 236, 238, 240, 255 };  /* unselected key text */
+            cf_theme->highlight        = cf_sel;
+            cf_theme->highlighted_text = cf_seltext;
+            cf_theme->accent           = cf_keybg;
+            cf_theme->hint             = cf_keytxt;
+        }
+    }
+
+    int rc = cat_keyboard_ex(current,
                           "Start: Confirm\nY: Cancel\nLeave empty to reset",
-                          CAT_KB_GENERAL, &result);
+                          CAT_KB_GENERAL, cf_backdrop, &result);
+
+    if (cf_theme) {
+        cf_theme->highlight        = sv_hl;
+        cf_theme->highlighted_text = sv_hltxt;
+        cf_theme->accent           = sv_accent;
+        cf_theme->hint             = sv_hint;
+    }
+    if (cf_backdrop) SDL_DestroyTexture(cf_backdrop);
     if (rc == CAT_OK) {
         if (result.text[0]) {
             int write_rc = state->action_scope == JW_ACTION_SYSTEM
@@ -6442,6 +6574,7 @@ static void jw__handle_actions_input(const char *socket_path, const char *db_pat
         case CAT_BTN_A:
             jw__select_action_row(socket_path, db_path, state, running);
             break;
+        case CAT_BTN_X:   /* X opened the menu; let it toggle closed too */
         case CAT_BTN_B:
             state->actions_open = false;
             state->action_scope = JW_ACTION_NONE;
