@@ -62,6 +62,9 @@
 #define JW_MLP1_PLAYBACK_PATH_SPK "amixer -c 1 cset numid=13 2 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_HP  "amixer -c 1 cset numid=13 3 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_BT  "amixer -c 1 cset numid=13 5 >/dev/null 2>&1"
+/* Playback Path item #0 = OFF: disconnects the codec output stage. Used to mute
+   before suspend so the powered-but-idle analog output doesn't hiss. */
+#define JW_MLP1_PLAYBACK_PATH_OFF "amixer -c 1 cset numid=13 0 >/dev/null 2>&1"
 #define JW_MLP1_HP_JACK_CMD "amixer -c 1 cget numid=1 2>/dev/null"
 #define JW_MLP1_HDMI_STATUS "/sys/class/drm/card0-HDMI-A-1/status"
 
@@ -2546,11 +2549,24 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
            wake press and re-suspend us (the two-press-wake gotcha); the PMIC wake
            source (rk805-pwrkey) resumes the kernel on a single press. The write
            blocks here until we resume. */
+        /* Disconnect the codec output path (Playback Path -> OFF) before suspend:
+           our raw `echo mem` skips stock's powerStandby codec mute, so the
+           powered-but-idle analog output stage hisses (worst on headphones, and
+           sometimes on the speaker). Re-routed on resume. */
+        (void)jw__exec_shell(JW_MLP1_PLAYBACK_PATH_OFF);
         int sfd = open("/sys/power/state", O_WRONLY | O_CLOEXEC);
         int rc = -1;
         if (sfd >= 0) {
             rc = (write(sfd, "mem\n", 4) == 4) ? 0 : -1;   /* blocks until resume */
             close(sfd);
+        }
+        /* Resumed: re-detect and re-apply the correct output (path + DAC floor +
+           stored volume). The jack/BT state may have changed while suspended, so
+           re-derive rather than restore a captured value. */
+        {
+            jw_platform_result audio_res;
+            (void)jw__mlp1_set_audio_output(jw__mlp1_desired_audio_output(true),
+                                            &audio_res);
         }
         jw_platform_result_set(out,
                                rc == 0 ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED,
