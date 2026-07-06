@@ -2293,18 +2293,10 @@ static uint32_t jw__str_hash(const char *s) {
     return h;
 }
 
-/* Draw a filled parallelogram quad using SDL_RenderGeometry.
-   quad[0]=TL, quad[1]=TR, quad[2]=BR, quad[3]=BL (clockwise). */
+/* Fill a solid-colour quad. quad[0]=TL, quad[1]=TR, quad[2]=BR, quad[3]=BL. */
 static void jw__fill_quad(const SDL_FPoint quad[4], SDL_Color c) {
-    SDL_Renderer *ren = cat_get_renderer();
-    SDL_Vertex verts[4] = {
-        { { quad[0].x, quad[0].y }, c, { 0, 0 } },
-        { { quad[1].x, quad[1].y }, c, { 1, 0 } },
-        { { quad[2].x, quad[2].y }, c, { 1, 1 } },
-        { { quad[3].x, quad[3].y }, c, { 0, 1 } },
-    };
-    int idx[6] = { 0, 1, 2, 0, 2, 3 };
-    SDL_RenderGeometry(ren, NULL, verts, 4, idx, 6);
+    SDL_Color col[4] = { c, c, c, c };
+    cat_draw_textured_quad(NULL, quad, NULL, col);
 }
 
 /* Draw a single carousel tile centered at cx, cy. */
@@ -3552,20 +3544,6 @@ static void jw__games_cf_step(jw_games_cf *cf, uint32_t now) {
     cf->vpos += (cf->target - cf->vpos) * k;
 }
 
-/* One textured (tex==NULL -> solid) quad via SDL_RenderGeometry. p/uv/col are
- * the four corners in TL,TR,BR,BL order. */
-static void jw__cf_quad(SDL_Texture *tex, const SDL_FPoint p[4],
-                        const SDL_FPoint uv[4], const SDL_Color col[4]) {
-    SDL_Vertex v[4];
-    for (int k = 0; k < 4; k++) {
-        v[k].position  = p[k];
-        v[k].tex_coord = uv[k];
-        v[k].color     = col[k];
-    }
-    static const int idx[6] = { 0, 1, 2, 0, 2, 3 };
-    SDL_RenderGeometry(cat_get_renderer(), tex, v, 4, idx, 6);
-}
-
 /* Draw one album card (perspective-rotated about its vertical axis) plus a
  * short fading reflection beneath it. (ox,oy) is the card centre on screen;
  * hw/hh are the uniform card half-extents; ang is the tilt in radians; alpha
@@ -3596,7 +3574,7 @@ static void jw__cf_draw_card(SDL_Texture *tex, int tw, int th,
         CF_PROJ(+hw, +hh, bp[2]); CF_PROJ(-hw, +hh, bp[3]);
         SDL_Color bc[4] = { {26,28,35,alpha}, {26,28,35,alpha},
                             {16,17,22,alpha}, {16,17,22,alpha} };
-        jw__cf_quad(NULL, bp, fulluv, bc);
+        cat_draw_textured_quad(NULL, bp, fulluv, bc);
         goto done;
     }
 
@@ -3637,14 +3615,14 @@ static void jw__cf_draw_card(SDL_Texture *tex, int tw, int th,
         SDL_FPoint ruv[4]  = { {u0,1}, {u1,1}, {u1,vb}, {u0,vb} };
         SDL_Color  rcol[4] = { {255,255,255,ra}, {255,255,255,ra},
                                {255,255,255,0},  {255,255,255,0} };
-        jw__cf_quad(tex, rp, ruv, rcol);
+        cat_draw_textured_quad(tex, rp, ruv, rcol);
 
         /* Cover strip. */
         SDL_FPoint cp[4]  = { tl, tr, br, bl };
         SDL_FPoint cuv[4] = { {u0,0}, {u1,0}, {u1,1}, {u0,1} };
         SDL_Color  col[4] = { {255,255,255,alpha}, {255,255,255,alpha},
                               {255,255,255,alpha}, {255,255,255,alpha} };
-        jw__cf_quad(tex, cp, cuv, col);
+        cat_draw_textured_quad(tex, cp, cuv, col);
     }
 
 done:
@@ -3868,7 +3846,7 @@ static void jw__cf_face(SDL_Texture *tex, int kind, int dir,
         }
         SDL_Color c4[4] = { {255,255,255,255}, {255,255,255,255},
                             {255,255,255,255}, {255,255,255,255} };
-        jw__cf_quad(tex, p, uv, c4);
+        cat_draw_textured_quad(tex, p, uv, c4);
     }
 }
 
