@@ -3398,10 +3398,34 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
  * forward-declared here so the systems renderer can use them. */
 typedef SDL_Texture *(*jw_cf_icon_fn)(jw_launcher_state *state, int idx,
                                       int *tw, int *th);
+/* Per-section Cover Flow card metrics (data, not code). size = card height as a
+   fraction of screen height; oy = vertical centre fraction; step = neighbour
+   spacing as a fraction of card width; side_scale = how big side cards stay toward
+   the edges. One profile per carousel section so each tunes independently. */
+typedef struct {
+    float size, oy, step, side_scale;
+} jw_cf_layout;
+
+typedef enum {
+    JW_CF_SECTION_SYSTEMS = 0,
+    JW_CF_SECTION_FAVORITES,
+    JW_CF_SECTION_RECENTS,
+    JW_CF_SECTION_APPS,
+    JW_CF_SECTION_GAMES,
+    JW_CF_SECTION_COUNT
+} jw_cf_section;
+
+static const jw_cf_layout kCfLayouts[JW_CF_SECTION_COUNT] = {
+    [JW_CF_SECTION_SYSTEMS]   = { 0.90f, 0.45f, 0.70f, 0.66f },
+    [JW_CF_SECTION_FAVORITES] = { 0.72f, 0.45f, 0.70f, 0.66f },
+    [JW_CF_SECTION_RECENTS]   = { 0.72f, 0.45f, 0.70f, 0.66f },
+    [JW_CF_SECTION_APPS]      = { 0.80f, 0.45f, 0.70f, 0.66f },
+    [JW_CF_SECTION_GAMES]     = { 0.72f, 0.45f, 0.70f, 0.66f },
+};
+
 static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
                               int count, int cursor, jw_cf_icon_fn icon_fn,
-                              float ch_frac, float oy_frac, float step_frac,
-                              float side_scale);
+                              jw_cf_layout layout);
 static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx, int *tw, int *th);
 static SDL_Texture *jw__cf_icon_favorite(jw_launcher_state *state, int idx, int *tw, int *th);
 static SDL_Texture *jw__cf_icon_recent(jw_launcher_state *state, int idx, int *tw, int *th);
@@ -3669,8 +3693,7 @@ static SDL_Texture *jw__cf_icon_app(jw_launcher_state *state, int idx, int *tw, 
    reflections. The caller clears the stage, draws labels/overlays, and presents. */
 static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
                               int count, int cursor, jw_cf_icon_fn icon_fn,
-                              float ch_frac, float oy_frac, float step_frac,
-                              float side_scale) {
+                              jw_cf_layout layout) {
     if (count <= 0) return;
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
@@ -3716,12 +3739,12 @@ static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
     float vc = cf->vpos;
 
     /* Card geometry as fractions of the screen (resolution-independent). */
-    float CH = sh * ch_frac;
+    float CH = sh * layout.size;
     float CW = CH * 0.70f;
-    float oy = sh * oy_frac;                      /* lower, so the title clears the art */
+    float oy = sh * layout.oy;                    /* lower, so the title clears the art */
     float cx = sw * 0.5f;
-    float STEP = CW * step_frac;
-    const float   SIDE_SCALE = side_scale;
+    float STEP = CW * layout.step;
+    const float   SIDE_SCALE = layout.side_scale;
     const uint8_t SIDE_ALPHA = 160;
     const float   TILT       = 0.80f;            /* ~46 deg */
     const int     W = 3;                          /* slots drawn each side */
@@ -3774,16 +3797,12 @@ static void jw__cf_draw_channel(jw_launcher_state *state) {
     int cur = state->list.cursor;
     jw_tab tab = state->current_tab;
     jw_cf_icon_fn icon_fn = jw__cf_icon_system;
-    /* Per-section card size (ch_frac), neighbour spacing (step_frac, a fraction of
-       card width) and side-card scale (side_scale, how much side cards shrink
-       toward the edges). Systems show console renders (mostly landscape, so
-       width-constrained) and can go large; Favorites/Recents show game box art and
-       match the Games carousel; Apps are square icons. */
-    float ch_frac = 0.90f, step_frac = 0.70f, side_scale = 0.66f;      /* systems  */
-    if (tab == JW_TAB_FAVORITES)    { icon_fn = jw__cf_icon_favorite; ch_frac = 0.72f; step_frac = 0.70f; side_scale = 0.66f; }
-    else if (tab == JW_TAB_RECENTS) { icon_fn = jw__cf_icon_recent;   ch_frac = 0.72f; step_frac = 0.70f; side_scale = 0.66f; }
-    else if (tab == JW_TAB_APPS)    { icon_fn = jw__cf_icon_app;      ch_frac = 0.80f; step_frac = 0.70f; side_scale = 0.66f; }
-    jw__cf_draw_cards(state, &state->systems_cf, count, cur, icon_fn, ch_frac, 0.45f, step_frac, side_scale);
+    /* Pick this channel's icon source + layout profile (see kCfLayouts). */
+    jw_cf_section sec = JW_CF_SECTION_SYSTEMS;
+    if (tab == JW_TAB_FAVORITES)    { icon_fn = jw__cf_icon_favorite; sec = JW_CF_SECTION_FAVORITES; }
+    else if (tab == JW_TAB_RECENTS) { icon_fn = jw__cf_icon_recent;   sec = JW_CF_SECTION_RECENTS; }
+    else if (tab == JW_TAB_APPS)    { icon_fn = jw__cf_icon_app;      sec = JW_CF_SECTION_APPS; }
+    jw__cf_draw_cards(state, &state->systems_cf, count, cur, icon_fn, kCfLayouts[sec]);
 
     char labelbuf[192];
     const char *label = "";
@@ -4000,7 +4019,8 @@ static void jw__draw_coverflow_games_stage(jw_launcher_state *state) {
     /* Prewarm covers around the cursor (reuses the game-grid pipeline). */
     jw__cover_prewarm(state, state->games, count, cur);
 
-    jw__cf_draw_cards(state, &state->games_cf, count, cur, jw__cf_icon_game, 0.72f, 0.45f, 0.70f, 0.66f);
+    jw__cf_draw_cards(state, &state->games_cf, count, cur, jw__cf_icon_game,
+                      kCfLayouts[JW_CF_SECTION_GAMES]);
 
     /* Centred game title, near the top. Tags like " (USA)" / " [!]" stripped. */
     if (cur >= 0 && cur < count) {
@@ -4719,7 +4739,10 @@ static void jw__render_search_cf(jw_launcher_state *state) {
            space the keyboard vacates). */
         float ch = jw__lerpf(0.30f, 0.56f, s_cf_focus_t);
         float oy = jw__lerpf(0.31f, 0.45f, s_cf_focus_t);
-        jw__cf_draw_cards(state, &s_cf, state->search_count, cur, jw__cf_icon_search, ch, oy, 0.70f, 0.66f);
+        jw_cf_layout search_layout = kCfLayouts[JW_CF_SECTION_GAMES];
+        search_layout.size = ch;                  /* animated: grows as focus drops in */
+        search_layout.oy   = oy;
+        jw__cf_draw_cards(state, &s_cf, state->search_count, cur, jw__cf_icon_search, search_layout);
     }
 
     jw__cf_draw_keyboard(state);
