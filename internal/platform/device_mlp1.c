@@ -81,13 +81,28 @@
     "sed -n 's/.*: values=\\([0-9]*\\).*/\\1/p' | head -1); " \
     "if [ -n \"$v\" ] && [ \"$v\" -lt 210 ]; then " \
     "amixer -c 1 cset numid=16 210,210 >/dev/null 2>&1; fi"
-/* A raw `echo mem` system suspend leaves PulseAudio's sink (and the ALSA device
-   it owns) in a stale state, so a game that was playing never gets its audio
-   back on resume. Cycling the sink's suspend flag forces PA to close and re-open
-   the ALSA device, which recovers the stream. */
-#define JW_MLP1_PA_RESUME_SINK \
-    "pactl suspend-sink @DEFAULT_SINK@ 1 >/dev/null 2>&1; " \
-    "pactl suspend-sink @DEFAULT_SINK@ 0 >/dev/null 2>&1"
+/* Suspend/resume the PulseAudio sink around a system suspend. Suspending the sink
+   closes the ALSA device, which powers the codec output stage down through the
+   driver's DAPM sequence (pop-free, unlike an amixer Playback Path switch) - the
+   same quiescing that happens when audio idles, which is why an idle sleep never
+   hisses. Resuming re-opens the device so a game/music stream continues (a raw
+   `echo mem` otherwise leaves the sink and its ALSA device stale = silent). */
+#define JW_MLP1_PA_SUSPEND_SINK "pactl suspend-sink @DEFAULT_SINK@ 1 >/dev/null 2>&1"
+#define JW_MLP1_PA_RESUME_SINK  "pactl suspend-sink @DEFAULT_SINK@ 0 >/dev/null 2>&1"
+/* The rk817 headphone output amp has no external gate (unlike the speaker's
+   spk_ctl), so it stays biased through `echo mem` and hisses once the SoC's I2S
+   clocks stop. The codec's Playback Path control (numid=13) is a no-op at the
+   register level, so it cannot power the amp down. Instead power down just the
+   analog headphone stage over i2c (bus 0, addr 0x20): AHP_CFG0 0x3d=0xe0 and its
+   charge pump AHP_CP 0x3f=0x09 — the same values the codec driver uses, so it is
+   pop-free. Crucially this touches ONLY the headphone amp, not the shared DAC
+   (DDAC_MUTE_MIXCTL/ADAC_CFG1): the DAC stays live so PulseAudio's open device is
+   never disturbed (muting it under a live sink crashed PA) and the speaker path
+   (same DAC) is unaffected. The two register values are read and restored on
+   resume (see the SLEEP action). */
+#define JW_MLP1_HP_POWERDOWN \
+    "i2cset -f -y 0 0x20 0x3d 0xe0 >/dev/null 2>&1; " \
+    "i2cset -f -y 0 0x20 0x3f 0x09 >/dev/null 2>&1"
 #define JW_MLP1_WIFI_PROC "/proc/net/wireless"
 #define JW_MLP1_SECONDARY_SOURCE_ID "secondary_sd"
 #define JW_MLP1_SECONDARY_LABEL "Secondary SD"
@@ -2521,6 +2536,47 @@ static void jw__mlp1_play_test_sound(jw_platform_result *out) {
     jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "playing test sound");
 }
 
+/* True when the PulseAudio sink is actively playing (a game/music stream is
+   pulling it). Used to decide whether to quiesce/restore audio around suspend:
+   if nothing is playing, PA has already powered the codec down, and forcing the
+   sink back open on resume would power an idle output stage back up — which
+   hisses — for no benefit (there is nothing to recover). */
+static bool jw__mlp1_pa_sink_running(void) {
+    FILE *fp = popen("pactl list short sinks 2>/dev/null", "r");
+    if (!fp) {
+        return false;
+    }
+    char line[256];
+    bool running = false;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "RUNNING")) {
+            running = true;
+            break;
+        }
+    }
+    pclose(fp);
+    return running;
+}
+
+/* Read one rk817 codec register over i2c (bus 0, addr 0x20). Returns the byte
+   value (0-255) or -1 on failure. Used to snapshot the headphone-amp registers
+   before the pre-suspend power-down so they can be restored exactly on resume. */
+static int jw__mlp1_read_codec_reg(int reg) {
+    char cmd[80];
+    snprintf(cmd, sizeof(cmd), "i2cget -f -y 0 0x20 0x%02x 2>/dev/null", reg & 0xff);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return -1;
+    }
+    char buf[32];
+    int val = -1;
+    if (fgets(buf, sizeof(buf), fp)) {
+        val = (int)strtol(buf, NULL, 0);
+    }
+    pclose(fp);
+    return (val >= 0 && val <= 0xff) ? val : -1;
+}
+
 static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                     int value, jw_platform_result *out) {
     if (action == JW_PLATFORM_ACTION_PLAY_TEST_SOUND) {
@@ -2556,27 +2612,55 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
            wake press and re-suspend us (the two-press-wake gotcha); the PMIC wake
            source (rk805-pwrkey) resumes the kernel on a single press. The write
            blocks here until we resume. */
-        /* Do NOT mute the codec around suspend. The Playback Path enum is the
-           codec's ONLY output control, and switching it (OFF<->SPK) toggles the
-           analog output stage, which POPS the speaker on both sleep and wake
-           regardless of the digital level. The earlier Playback Path -> OFF was
-           added for a suspend "hiss" that was never reproducible on this device;
-           the pop is real and loud, so the mute is not worth it. The analog stage
-           stays powered through suspend (which is why it could hiss), so leaving
-           the path untouched means no switch and no pop. */
+        /* Two independent audio problems across suspend:
+
+           1. Audio return. A raw `echo mem` leaves an open PulseAudio sink / ALSA
+              device stale, so a live game/music stream comes back silent until it
+              is relaunched. When a stream is playing, suspend the sink first to
+              close the device cleanly, and un-suspend on resume to continue it.
+
+           2. Headphone hiss. The rk817 headphone amp has no external gate (the
+              speaker's spk_ctl is dropped at idle, so speaker sleeps are already
+              silent), so it stays biased through `echo mem` and hisses once the
+              I2S clocks stop — whether or not anything was playing, and suspending
+              the sink does NOT fix it (verified: it re-hisses through a real
+              suspend). The Playback Path control is a register-level no-op. What
+              works is powering the analog HP stage down over i2c (AHP_CFG0 + its
+              charge pump) before suspend and restoring it on resume. This touches
+              ONLY the HP amp, never the shared DAC, so PulseAudio's open device is
+              undisturbed (muting the DAC under a live sink crashed PA) and the
+              speaker is unaffected. Done unconditionally — it is cheap and DAC-safe
+              — so a jack change during sleep can never leave a biased amp hissing.
+              Snapshot the two registers first so the restore matches the live
+              state (idle vs active playback). */
+        bool audio_playing = jw__mlp1_pa_sink_running();
+        int hp_r3d = jw__mlp1_read_codec_reg(0x3d);
+        int hp_r3f = jw__mlp1_read_codec_reg(0x3f);
+        if (audio_playing) {
+            (void)jw__exec_shell(JW_MLP1_PA_SUSPEND_SINK);
+            usleep(200000);
+        }
+        (void)jw__exec_shell(JW_MLP1_HP_POWERDOWN);
         int sfd = open("/sys/power/state", O_WRONLY | O_CLOEXEC);
         int rc = -1;
         if (sfd >= 0) {
             rc = (write(sfd, "mem\n", 4) == 4) ? 0 : -1;   /* blocks until resume */
             close(sfd);
         }
-        /* Resumed: leave the codec routing exactly as it was (no path toggle = no
-           pop). Just re-assert the DAC floor (PulseAudio can drift it low) and
-           cycle the PulseAudio sink so a game's audio stream resumes — a system
-           suspend leaves the sink and its ALSA device stale. A jack change during
-           suspend is picked up by the normal jack-detect path after resume. */
+        /* Resumed: restore the two HP-amp registers (charge pump then output
+           stage), falling back to the codec's power-up defaults if a snapshot read
+           failed. Re-assert the DAC floor (PulseAudio can drift it low) and
+           un-suspend the sink if we suspended it so a live stream continues. */
+        char hp_restore[160];
+        snprintf(hp_restore, sizeof(hp_restore),
+                 "i2cset -f -y 0 0x20 0x3f 0x%02x >/dev/null 2>&1; "
+                 "i2cset -f -y 0 0x20 0x3d 0x%02x >/dev/null 2>&1",
+                 hp_r3f >= 0 ? hp_r3f : 0x11, hp_r3d >= 0 ? hp_r3d : 0x80);
+        (void)jw__exec_shell(hp_restore);
         (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
-        (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
+        if (audio_playing) {
+            (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
+        }
         jw_platform_result_set(out,
                                rc == 0 ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED,
                                rc == 0 ? "suspended" : "sleep failed");
