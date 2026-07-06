@@ -150,6 +150,8 @@ typedef struct {
                                  to SIGKILL */
     bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
+    bool direct_drm_active;
+    bool direct_drm_weston_stopped;
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
     int cached_brightness_percent;
     int cached_volume_percent;
@@ -278,6 +280,9 @@ static bool jw__standalone_target_is_mupen64plus(const jw_launch_target *target)
            strstr(target->path, "/Mupen64Plus") != NULL;
 }
 
+static bool jw__env_is_disabled(const char *name);
+static bool jw__env_is_truthy(const char *name);
+
 static bool jw__standalone_target_is_ports(const jw_launch_target *target) {
     if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
         return false;
@@ -285,6 +290,85 @@ static bool jw__standalone_target_is_ports(const jw_launch_target *target) {
     return strcmp(target->core_id, "ports") == 0 ||
            strstr(target->path, "/emulators/ports/") != NULL ||
            strstr(target->path, "/Roms/PORTS") != NULL;
+}
+
+static bool jw__file_contains_text(const char *path, const char *needle,
+                                   size_t max_bytes) {
+    if (!path || !needle || !needle[0]) {
+        return false;
+    }
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return false;
+    }
+
+    char line[512];
+    size_t total = 0;
+    bool found = false;
+    while (fgets(line, sizeof(line), fp)) {
+        total += strlen(line);
+        if (strstr(line, needle)) {
+            found = true;
+            break;
+        }
+        if (max_bytes > 0 && total >= max_bytes) {
+            break;
+        }
+    }
+    fclose(fp);
+    return found;
+}
+
+static bool jw__portmaster_drm_rotate_available(const jw_daemon_state *state) {
+    if (!state || !state->sdcard_root || !state->sdcard_root[0]) {
+        return false;
+    }
+
+    const char *platform = state->platform.platform_id[0]
+        ? state->platform.platform_id
+        : "mlp1";
+
+    char hook[PATH_MAX];
+    char shim[PATH_MAX];
+    int hook_rc = snprintf(hook, sizeof(hook),
+                           "%s/.userdata/%s/portmaster/PortMaster/leaf-armhf-env.sh",
+                           state->sdcard_root, platform);
+    int shim_rc = snprintf(shim, sizeof(shim),
+                           "%s/.userdata/%s/portmaster/compat/drm/aarch64/leaf-drm-rotate.so",
+                           state->sdcard_root, platform);
+    if (hook_rc < 0 || hook_rc >= (int)sizeof(hook) ||
+        shim_rc < 0 || shim_rc >= (int)sizeof(shim)) {
+        return false;
+    }
+
+    return access(hook, R_OK) == 0 && access(shim, R_OK) == 0;
+}
+
+static bool jw__standalone_target_requests_direct_drm(
+        const jw_daemon_state *state,
+        const jw_launch_target *target,
+        const char *rom_abs) {
+    if (!state || !jw__standalone_target_is_ports(target) || !rom_abs) {
+        return false;
+    }
+    if (jw__env_is_disabled("JAWAKA_DIRECT_DRM")) {
+        return false;
+    }
+    if (strcmp(state->platform.platform_id, "mlp1") != 0) {
+        return false;
+    }
+    if (!jw__portmaster_drm_rotate_available(state)) {
+        return false;
+    }
+    if (jw__env_is_truthy("JAWAKA_DIRECT_DRM")) {
+        return true;
+    }
+
+    return jw__file_contains_text(
+        rom_abs,
+        "LEAF_PM_RUNTIME_COMPAT_GOTHIC_MACHISMO_VULKAN_ROTATE=1",
+        128 * 1024);
 }
 
 static bool jw__standalone_target_uses_calibrated_virtual_input(
@@ -3741,6 +3825,28 @@ static bool jw__env_is_truthy(const char *name) {
            strcmp(value, "false") != 0 && strcmp(value, "no") != 0;
 }
 
+static void jw__stop_osd_child(jw_daemon_state *state) {
+    if (!state || state->osd_pid <= 0) {
+        return;
+    }
+
+    pid_t pid = state->osd_pid;
+    kill(pid, SIGTERM);
+    for (int attempt = 0; attempt < 10; attempt++) {
+        int status = 0;
+        pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid || (waited < 0 && errno == ECHILD)) {
+            state->osd_pid = -1;
+            return;
+        }
+        usleep(50000);
+    }
+
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    state->osd_pid = -1;
+}
+
 static int jw__spawn_osd(jw_daemon_state *state) {
     if (!state || state->osd_pid > 0 || jw__env_is_disabled("JAWAKA_OSD")) {
         return 0;
@@ -3798,7 +3904,8 @@ static void jw__handle_osd_exit(jw_daemon_state *state) {
         jw_log_warn("jawaka-osd terminated signal=%d", WTERMSIG(status));
     }
 
-    if (!state->shutdown_requested && !g_shutdown_requested) {
+    if (!state->shutdown_requested && !g_shutdown_requested &&
+        !state->direct_drm_active) {
         jw__spawn_osd(state);
     }
 }
@@ -4553,6 +4660,8 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         snprintf(source_root, sizeof(source_root), "%s", state->sdcard_root);
     }
 
+    bool direct_drm = jw__standalone_target_requests_direct_drm(state, target, rom_abs);
+
     bool switcher_resume = state->pending_launch_resume_switcher;
     bool have_standalone_resume = false;
     int standalone_resume_slot = 0;
@@ -4626,9 +4735,31 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_appearance_env appearance;
     jw_appearance_resolve(state->db_path, &appearance);
 
+    if (direct_drm) {
+        jw_log_info("direct DRM handoff requested for port=%s", rom_abs);
+        jw__stop_osd_child(state);
+        int stop_rc = system("/etc/init.d/S49weston stop </dev/null >/dev/null 2>&1; "
+                             "for i in 1 2 3 4 5 6 7 8 9 10; do "
+                             "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
+                             "done; exit 0");
+        if (stop_rc == -1) {
+            jw_log_warn("direct DRM handoff: could not invoke Weston stop");
+        }
+        state->direct_drm_active = true;
+        state->direct_drm_weston_stopped = true;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
+        if (direct_drm) {
+            state->direct_drm_active = false;
+            if (state->direct_drm_weston_stopped) {
+                (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                state->direct_drm_weston_stopped = false;
+                jw__spawn_osd(state);
+            }
+        }
         jw_input_proxy_shutdown(&state->input_proxy);  /* drop the watch-only proxy */
         jw__start_input_proxy(state);
         state->pending_launch = false;
@@ -4643,6 +4774,11 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
         setenv("JAWAKA_GAME_CORE_ID", target->core_id, 1);
+        if (direct_drm) {
+            setenv("JAWAKA_DIRECT_DRM", "1", 1);
+            setenv("LEAF_PM_GOTHIC_MACHISMO_VULKAN_ROTATE", "1", 1);
+            setenv("LEAF_PM_GOTHIC_MACHISMO_VULKAN_ROTATE_STOP_DISPLAY", "0", 1);
+        }
         if (have_standalone_resume) {
             char slot_env[16];
             snprintf(slot_env, sizeof(slot_env), "%d", standalone_resume_slot);
@@ -6335,6 +6471,18 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
            so it can be validated against the just-exited game. */
         jw__consume_standalone_switcher_marker(state, exited_pid);
         jw__standalone_session_finish(state, exited_pid, status);
+        if (state->direct_drm_active) {
+            state->direct_drm_active = false;
+            if (state->direct_drm_weston_stopped) {
+                jw_log_info("direct DRM handoff ended; restarting Weston");
+                (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                sleep(1);
+                state->direct_drm_weston_stopped = false;
+            }
+            if (!state->shutdown_requested && !g_shutdown_requested) {
+                jw__spawn_osd(state);
+            }
+        }
     }
 
     if (state->shutdown_requested || g_shutdown_requested) {
