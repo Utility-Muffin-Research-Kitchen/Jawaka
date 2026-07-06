@@ -3400,7 +3400,8 @@ typedef SDL_Texture *(*jw_cf_icon_fn)(jw_launcher_state *state, int idx,
                                       int *tw, int *th);
 static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
                               int count, int cursor, jw_cf_icon_fn icon_fn,
-                              float ch_frac, float oy_frac);
+                              float ch_frac, float oy_frac, float step_frac,
+                              float side_scale);
 static SDL_Texture *jw__cf_icon_system(jw_launcher_state *state, int idx, int *tw, int *th);
 static SDL_Texture *jw__cf_icon_favorite(jw_launcher_state *state, int idx, int *tw, int *th);
 static SDL_Texture *jw__cf_icon_recent(jw_launcher_state *state, int idx, int *tw, int *th);
@@ -3582,29 +3583,45 @@ static void jw__cf_draw_card(SDL_Texture *tex, int tw, int th,
     if (texAR > frameAR) ahh = hw / texAR;       /* wider -> letterbox top/bottom */
     else                 ahw = hh * texAR;       /* taller -> pillarbox left/right */
 
-    SDL_FPoint p[4];
-    CF_PROJ(-ahw, -ahh, p[0]); CF_PROJ(+ahw, -ahh, p[1]);
-    CF_PROJ(+ahw, +ahh, p[2]); CF_PROJ(-ahw, +ahh, p[3]);
     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
 
-    /* Reflection: mirror the cover's bottom edge downward ~55%, fading out. */
-    const float f = 0.55f;
-    SDL_FPoint rp[4] = {
-        p[3], p[2],
-        { p[2].x + f * (p[2].x - p[1].x), p[2].y + f * (p[2].y - p[1].y) },
-        { p[3].x + f * (p[3].x - p[0].x), p[3].y + f * (p[3].y - p[0].y) },
-    };
-    float vb = 1.f - f;
-    SDL_FPoint ruv[4] = { {0,1}, {1,1}, {1,vb}, {0,vb} };
+    /* Draw the cover (and its reflection) as N vertical strips instead of one
+       quad. SDL_RenderGeometry maps textures affinely per triangle, so a single
+       perspective-foreshortened card shears along its diagonal as it turns (the
+       "skew" artifact). CF_PROJ foreshortens horizontally (rotation about the
+       vertical axis), so slicing the card into thin vertical columns keeps each
+       strip near-planar and the warp disappears — the same trick the channel cube
+       uses with horizontal strips. */
+    const int   N  = 16;
+    const float f  = 0.55f;                       /* reflection drop fraction */
+    const float vb = 1.f - f;
     uint8_t ra = (uint8_t)((int)alpha * 90 / 255);
-    SDL_Color rcol[4] = { {255,255,255,ra}, {255,255,255,ra},
-                          {255,255,255,0},  {255,255,255,0} };
-    jw__cf_quad(tex, rp, ruv, rcol);
+    for (int i = 0; i < N; i++) {
+        float u0 = (float)i / (float)N, u1 = (float)(i + 1) / (float)N;
+        float lx0 = -ahw + u0 * (2.f * ahw);
+        float lx1 = -ahw + u1 * (2.f * ahw);
+        SDL_FPoint tl, tr, br, bl;
+        CF_PROJ(lx0, -ahh, tl); CF_PROJ(lx1, -ahh, tr);
+        CF_PROJ(lx1, +ahh, br); CF_PROJ(lx0, +ahh, bl);
 
-    /* The cover. */
-    SDL_Color col[4] = { {255,255,255,alpha}, {255,255,255,alpha},
-                         {255,255,255,alpha}, {255,255,255,alpha} };
-    jw__cf_quad(tex, p, fulluv, col);
+        /* Reflection strip: mirror the bottom edge downward, fading out. */
+        SDL_FPoint rp[4] = {
+            bl, br,
+            { br.x + f * (br.x - tr.x), br.y + f * (br.y - tr.y) },
+            { bl.x + f * (bl.x - tl.x), bl.y + f * (bl.y - tl.y) },
+        };
+        SDL_FPoint ruv[4]  = { {u0,1}, {u1,1}, {u1,vb}, {u0,vb} };
+        SDL_Color  rcol[4] = { {255,255,255,ra}, {255,255,255,ra},
+                               {255,255,255,0},  {255,255,255,0} };
+        jw__cf_quad(tex, rp, ruv, rcol);
+
+        /* Cover strip. */
+        SDL_FPoint cp[4]  = { tl, tr, br, bl };
+        SDL_FPoint cuv[4] = { {u0,0}, {u1,0}, {u1,1}, {u0,1} };
+        SDL_Color  col[4] = { {255,255,255,alpha}, {255,255,255,alpha},
+                              {255,255,255,alpha}, {255,255,255,alpha} };
+        jw__cf_quad(tex, cp, cuv, col);
+    }
 
 done:
     #undef CF_PROJ
@@ -3652,7 +3669,8 @@ static SDL_Texture *jw__cf_icon_app(jw_launcher_state *state, int idx, int *tw, 
    reflections. The caller clears the stage, draws labels/overlays, and presents. */
 static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
                               int count, int cursor, jw_cf_icon_fn icon_fn,
-                              float ch_frac, float oy_frac) {
+                              float ch_frac, float oy_frac, float step_frac,
+                              float side_scale) {
     if (count <= 0) return;
     int sw = cat_get_screen_width();
     int sh = cat_get_screen_height();
@@ -3702,8 +3720,8 @@ static void jw__cf_draw_cards(jw_launcher_state *state, jw_games_cf *cf,
     float CW = CH * 0.70f;
     float oy = sh * oy_frac;                      /* lower, so the title clears the art */
     float cx = sw * 0.5f;
-    float STEP = CW * 0.70f;
-    const float   SIDE_SCALE = 0.66f;
+    float STEP = CW * step_frac;
+    const float   SIDE_SCALE = side_scale;
     const uint8_t SIDE_ALPHA = 160;
     const float   TILT       = 0.80f;            /* ~46 deg */
     const int     W = 3;                          /* slots drawn each side */
@@ -3756,10 +3774,16 @@ static void jw__cf_draw_channel(jw_launcher_state *state) {
     int cur = state->list.cursor;
     jw_tab tab = state->current_tab;
     jw_cf_icon_fn icon_fn = jw__cf_icon_system;
-    if (tab == JW_TAB_FAVORITES)    icon_fn = jw__cf_icon_favorite;
-    else if (tab == JW_TAB_RECENTS) icon_fn = jw__cf_icon_recent;
-    else if (tab == JW_TAB_APPS)    icon_fn = jw__cf_icon_app;
-    jw__cf_draw_cards(state, &state->systems_cf, count, cur, icon_fn, 0.60f, 0.45f);
+    /* Per-section card size (ch_frac), neighbour spacing (step_frac, a fraction of
+       card width) and side-card scale (side_scale, how much side cards shrink
+       toward the edges). Systems show console renders (mostly landscape, so
+       width-constrained) and can go large; Favorites/Recents show game box art and
+       match the Games carousel; Apps are square icons. */
+    float ch_frac = 0.90f, step_frac = 0.70f, side_scale = 0.66f;      /* systems  */
+    if (tab == JW_TAB_FAVORITES)    { icon_fn = jw__cf_icon_favorite; ch_frac = 0.72f; step_frac = 0.70f; side_scale = 0.66f; }
+    else if (tab == JW_TAB_RECENTS) { icon_fn = jw__cf_icon_recent;   ch_frac = 0.72f; step_frac = 0.70f; side_scale = 0.66f; }
+    else if (tab == JW_TAB_APPS)    { icon_fn = jw__cf_icon_app;      ch_frac = 0.80f; step_frac = 0.70f; side_scale = 0.66f; }
+    jw__cf_draw_cards(state, &state->systems_cf, count, cur, icon_fn, ch_frac, 0.45f, step_frac, side_scale);
 
     char labelbuf[192];
     const char *label = "";
@@ -3976,7 +4000,7 @@ static void jw__draw_coverflow_games_stage(jw_launcher_state *state) {
     /* Prewarm covers around the cursor (reuses the game-grid pipeline). */
     jw__cover_prewarm(state, state->games, count, cur);
 
-    jw__cf_draw_cards(state, &state->games_cf, count, cur, jw__cf_icon_game, 0.60f, 0.45f);
+    jw__cf_draw_cards(state, &state->games_cf, count, cur, jw__cf_icon_game, 0.72f, 0.45f, 0.70f, 0.66f);
 
     /* Centred game title, near the top. Tags like " (USA)" / " [!]" stripped. */
     if (cur >= 0 && cur < count) {
@@ -4695,7 +4719,7 @@ static void jw__render_search_cf(jw_launcher_state *state) {
            space the keyboard vacates). */
         float ch = jw__lerpf(0.30f, 0.56f, s_cf_focus_t);
         float oy = jw__lerpf(0.31f, 0.45f, s_cf_focus_t);
-        jw__cf_draw_cards(state, &s_cf, state->search_count, cur, jw__cf_icon_search, ch, oy);
+        jw__cf_draw_cards(state, &s_cf, state->search_count, cur, jw__cf_icon_search, ch, oy, 0.70f, 0.66f);
     }
 
     jw__cf_draw_keyboard(state);
