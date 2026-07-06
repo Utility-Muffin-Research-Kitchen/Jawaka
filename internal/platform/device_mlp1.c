@@ -81,6 +81,13 @@
     "sed -n 's/.*: values=\\([0-9]*\\).*/\\1/p' | head -1); " \
     "if [ -n \"$v\" ] && [ \"$v\" -lt 210 ]; then " \
     "amixer -c 1 cset numid=16 210,210 >/dev/null 2>&1; fi"
+/* A raw `echo mem` system suspend leaves PulseAudio's sink (and the ALSA device
+   it owns) in a stale state, so a game that was playing never gets its audio
+   back on resume. Cycling the sink's suspend flag forces PA to close and re-open
+   the ALSA device, which recovers the stream. */
+#define JW_MLP1_PA_RESUME_SINK \
+    "pactl suspend-sink @DEFAULT_SINK@ 1 >/dev/null 2>&1; " \
+    "pactl suspend-sink @DEFAULT_SINK@ 0 >/dev/null 2>&1"
 #define JW_MLP1_WIFI_PROC "/proc/net/wireless"
 #define JW_MLP1_SECONDARY_SOURCE_ID "secondary_sd"
 #define JW_MLP1_SECONDARY_LABEL "Secondary SD"
@@ -2549,25 +2556,27 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
            wake press and re-suspend us (the two-press-wake gotcha); the PMIC wake
            source (rk805-pwrkey) resumes the kernel on a single press. The write
            blocks here until we resume. */
-        /* Disconnect the codec output path (Playback Path -> OFF) before suspend:
-           our raw `echo mem` skips stock's powerStandby codec mute, so the
-           powered-but-idle analog output stage hisses (worst on headphones, and
-           sometimes on the speaker). Re-routed on resume. */
-        (void)jw__exec_shell(JW_MLP1_PLAYBACK_PATH_OFF);
+        /* Do NOT mute the codec around suspend. The Playback Path enum is the
+           codec's ONLY output control, and switching it (OFF<->SPK) toggles the
+           analog output stage, which POPS the speaker on both sleep and wake
+           regardless of the digital level. The earlier Playback Path -> OFF was
+           added for a suspend "hiss" that was never reproducible on this device;
+           the pop is real and loud, so the mute is not worth it. The analog stage
+           stays powered through suspend (which is why it could hiss), so leaving
+           the path untouched means no switch and no pop. */
         int sfd = open("/sys/power/state", O_WRONLY | O_CLOEXEC);
         int rc = -1;
         if (sfd >= 0) {
             rc = (write(sfd, "mem\n", 4) == 4) ? 0 : -1;   /* blocks until resume */
             close(sfd);
         }
-        /* Resumed: re-detect and re-apply the correct output (path + DAC floor +
-           stored volume). The jack/BT state may have changed while suspended, so
-           re-derive rather than restore a captured value. */
-        {
-            jw_platform_result audio_res;
-            (void)jw__mlp1_set_audio_output(jw__mlp1_desired_audio_output(true),
-                                            &audio_res);
-        }
+        /* Resumed: leave the codec routing exactly as it was (no path toggle = no
+           pop). Just re-assert the DAC floor (PulseAudio can drift it low) and
+           cycle the PulseAudio sink so a game's audio stream resumes — a system
+           suspend leaves the sink and its ALSA device stale. A jack change during
+           suspend is picked up by the normal jack-detect path after resume. */
+        (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
+        (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
         jw_platform_result_set(out,
                                rc == 0 ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED,
                                rc == 0 ? "suspended" : "sleep failed");
