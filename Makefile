@@ -252,6 +252,7 @@ UI_SRCS := \
 	internal/discovery/discovery.c \
 	internal/db/db.c \
 	internal/launcher/console_colors.c \
+	internal/launcher/coverflow.c \
 	internal/launcher/game_switcher.c \
 	internal/launcher/system_names.c \
 	internal/scrape/scrape_catalog.c \
