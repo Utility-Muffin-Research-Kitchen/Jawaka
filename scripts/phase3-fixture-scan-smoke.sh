@@ -16,6 +16,7 @@ OUT_PRUNE_PATH="$TMP_ROOT/scan-prune.tsv"
 
 mkdir -p \
     "$SD_ROOT/.system/leaf/platforms/mlp1/defaults" \
+    "$SD_ROOT/.system/leaf/platforms/mlp1/emulators/ports" \
     "$SD_ROOT/Roms/MD" \
     "$SD_ROOT/Roms/GBA" \
     "$SD_ROOT/Roms/ARCADE" \
@@ -37,6 +38,8 @@ cp "$UMRK_ROOT/miniloong-launcher-switcher/device/mlp1/defaults/cores.json" \
    "$SD_ROOT/.system/leaf/platforms/mlp1/defaults/cores.json"
 cp "$UMRK_ROOT/miniloong-launcher-switcher/device/mlp1/defaults/systems.json" \
    "$SD_ROOT/.system/leaf/platforms/mlp1/defaults/systems.json"
+printf '#!/bin/sh\nexec "$1"\n' >"$SD_ROOT/.system/leaf/platforms/mlp1/emulators/ports/launch.sh"
+chmod 755 "$SD_ROOT/.system/leaf/platforms/mlp1/emulators/ports/launch.sh"
 
 printf 'rom\n' >"$SD_ROOT/Roms/MD/Sonic.md"
 printf 'archive\n' >"$SD_ROOT/Roms/MD/Sonic.md.zip"
@@ -84,7 +87,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PATH"
 
-grep -F $'summary\tgames=10\tsystems=5\tapps=3' "$OUT_PATH" >/dev/null
+grep -F $'summary\tgames=11\tsystems=6\tapps=3' "$OUT_PATH" >/dev/null
 # Alias dedup: primary has one FC "Mario", and it is the canonical Roms/NES copy, not Roms/FC.
 # A secondary source alias copy with the same title remains separate.
 [ "$(grep -cF $'game\tFC\tMario\t' "$OUT_PATH")" = "2" ]
@@ -104,11 +107,12 @@ grep -F "game"$'\t'"GBA"$'\t'"Example"$'\t'"$SECONDARY_ROOT/Roms/GBA/Example.gba
 grep -F "game"$'\t'"GBA"$'\t'"Secondary"$'\t'"$SECONDARY_ROOT/Roms/GBA/Secondary.gba"$'\t'"$SECONDARY_ROOT/Roms/GBA/Imgs/Secondary.png" "$OUT_PATH" >/dev/null
 grep -F $'game\tARCADE\tmslug\tRoms/ARCADE/mslug.zip\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPS\tGame\tRoms/PS/Game.m3u\t' "$OUT_PATH" >/dev/null
+grep -F $'game\tPORTS\tTest\tRoms/PORTS/Test.sh\t' "$OUT_PATH" >/dev/null
 grep -F $'app\tFixture Native\tApps/mlp1/FixtureNative.pak\tmlp1\ticon.png' "$OUT_PATH" >/dev/null
 grep -F $'app\tFixture Shared\tApps/shared/FixtureShared.pak\tshared\ticon.png' "$OUT_PATH" >/dev/null
 grep -F "app"$'\t'"Secondary Native"$'\t'"$SECONDARY_ROOT/Apps/mlp1/SecondaryNative.pak"$'\t'"mlp1"$'\t'"icon.png" "$OUT_PATH" >/dev/null
 
-if grep -E 'neogeo|UNKNOWN|readme|PORTS|Test\.sh|WrongDevice|FlatLegacy' "$OUT_PATH" >/dev/null; then
+if grep -E 'neogeo|UNKNOWN|readme|WrongDevice|FlatLegacy' "$OUT_PATH" >/dev/null; then
     cat "$OUT_PATH" >&2
     echo "phase3 fixture scan included an ignored, unknown, unsupported, or wrong-platform file" >&2
     exit 1
@@ -119,7 +123,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PRUNE_PATH"
 
-grep -F $'summary\tgames=7\tsystems=5\tapps=2' "$OUT_PRUNE_PATH" >/dev/null
+grep -F $'summary\tgames=8\tsystems=6\tapps=2' "$OUT_PRUNE_PATH" >/dev/null
 if grep -F "$SECONDARY_ROOT" "$OUT_PRUNE_PATH" >/dev/null ||
    grep -F $'game\tGBA\tSecondary' "$OUT_PRUNE_PATH" >/dev/null ||
    grep -F $'app\tSecondary Native' "$OUT_PRUNE_PATH" >/dev/null; then

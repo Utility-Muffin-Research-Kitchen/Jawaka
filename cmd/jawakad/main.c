@@ -3152,8 +3152,6 @@ static bool jw__core_is_packaged_path(const jw_ra_core *core) {
     return core &&
            core->type &&
            strcmp(core->type, "path") == 0 &&
-           core->status &&
-           strcmp(core->status, "packaged") == 0 &&
            core->path &&
            core->path[0];
 }

@@ -23,7 +23,7 @@ static int jw_ra_platform_uses_dot_system(const char *platform_id) {
             strcmp(platform_id, "my355") == 0);
 }
 
-int jw_ra_defaults_dir(const char *sdcard_root, char *out, size_t out_size) {
+static int jw_ra_resolve_defaults_dir(const char *sdcard_root, char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return -1;
     }
@@ -40,14 +40,31 @@ int jw_ra_defaults_dir(const char *sdcard_root, char *out, size_t out_size) {
             return -1;
         }
         const char *platform_id = jw_ra_platform_id();
-        const char *prefix = jw_ra_platform_uses_dot_system(platform_id) ? ".system" : "UMRK";
-        written = snprintf(out, out_size, "%s/%s/%s/defaults", sdcard_root, prefix, platform_id);
+        char leaf_path[PATH_MAX];
+        written = snprintf(leaf_path, sizeof(leaf_path),
+                           "%s/.system/leaf/platforms/%s/defaults",
+                           sdcard_root, platform_id);
+        if (written < 0 || (size_t)written >= sizeof(leaf_path)) {
+            return -1;
+        }
+        struct stat st;
+        if (stat(leaf_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            written = snprintf(out, out_size, "%s", leaf_path);
+        } else {
+            const char *prefix = jw_ra_platform_uses_dot_system(platform_id) ? ".system" : "UMRK";
+            written = snprintf(out, out_size, "%s/%s/%s/defaults",
+                               sdcard_root, prefix, platform_id);
+        }
     }
     if (written < 0 || (size_t)written >= out_size) {
         out[0] = '\0';
         return -1;
     }
     return 0;
+}
+
+int jw_ra_defaults_dir(const char *sdcard_root, char *out, size_t out_size) {
+    return jw_ra_resolve_defaults_dir(sdcard_root, out, out_size);
 }
 
 static void jw_ra_set_error(char *error, size_t error_size, const char *message) {
@@ -358,11 +375,9 @@ static int jw_ra_metadata_signature_load(const char *sdcard_root,
             return -1;
         }
     } else {
-        const char *platform_id = jw_ra_platform_id();
-        const char *prefix = jw_ra_platform_uses_dot_system(platform_id) ? ".system" : "UMRK";
-        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/%s/%s/defaults",
-                     sdcard_root, prefix, platform_id) >= (int)sizeof(defaults_dir)) {
-            jw_ra_set_error(error, error_size, "defaults path too long");
+        if (jw_ra_resolve_defaults_dir(sdcard_root, defaults_dir,
+                                       sizeof(defaults_dir)) != 0) {
+            jw_ra_set_error(error, error_size, "could not resolve defaults path");
             return -1;
         }
     }
@@ -435,11 +450,9 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
             return NULL;
         }
     } else {
-        const char *platform_id = jw_ra_platform_id();
-        const char *prefix = jw_ra_platform_uses_dot_system(platform_id) ? ".system" : "UMRK";
-        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/%s/%s/defaults",
-                     sdcard_root, prefix, platform_id) >= (int)sizeof(defaults_dir)) {
-            jw_ra_set_error(error, error_size, "defaults path too long");
+        if (jw_ra_resolve_defaults_dir(sdcard_root, defaults_dir,
+                                       sizeof(defaults_dir)) != 0) {
+            jw_ra_set_error(error, error_size, "could not resolve defaults path");
             return NULL;
         }
     }
@@ -711,7 +724,6 @@ bool jw_ra_core_is_packaged_retroarch(const jw_ra_core *core) {
 static bool jw_ra_core_is_packaged_path(const jw_ra_core *core) {
     return core &&
            strcmp(core->type, "path") == 0 &&
-           strcmp(core->status, "packaged") == 0 &&
            core->path &&
            core->path[0];
 }
