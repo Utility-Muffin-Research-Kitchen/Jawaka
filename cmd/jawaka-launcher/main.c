@@ -3449,11 +3449,16 @@ static void jw__render_coverflow(jw_launcher_state *state) {
 static SDL_Texture *jw__cf_cover(jw_launcher_state *state, const jw_game_entry *g,
                                  int *tw, int *th) {
     *tw = 0; *th = 0;
-    if (!g->image_path[0]) return NULL;
-    char abs[PATH_MAX];
-    if (jw__resolve_sdcard_path(state, g->image_path, abs, sizeof(abs)) != 0) return NULL;
     bool pending = false;
-    return jw__load_cover(state, abs, tw, th, &pending);
+    if (g->image_path[0]) {
+        char abs[PATH_MAX];
+        if (jw__resolve_sdcard_path(state, g->image_path, abs, sizeof(abs)) == 0) {
+            SDL_Texture *t = jw__load_cover(state, abs, tw, th, &pending);
+            if (t) return t;
+        }
+    }
+    if (pending) return NULL;                         /* streaming in — leave blank */
+    return jw__load_system_icon(g->system, tw, th);   /* no cover -> system icon */
 }
 
 /* Per-channel icon sources (Games=systems, Favorites/Recents=box art, Apps=icons).
