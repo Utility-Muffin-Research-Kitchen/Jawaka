@@ -70,7 +70,15 @@ bool jw_cf_draw_cards(jw_games_cf *cf, int count, int cursor,
     int sh = cat_get_screen_height();
     uint32_t now = SDL_GetTicks();
 
-    /* Continuous, wrapping carousel position; re-init on entry / list change. */
+    /* Window geometry: W slots each side of centre, so up to VISIBLE cards are on
+       screen at once. The carousel only wraps into an endless ring when there are
+       at least that many distinct items; with fewer, it clamps at the ends so a
+       card is never drawn twice — equivalently, it never shows more cards than
+       there are items (a 1-item list is a single centred card). */
+    const int  W     = JW_CF_WINDOW;
+    const bool loops = jw_cf_list_loops(count);
+
+    /* Continuous carousel position; re-init on entry / list change. */
     if (!cf->inited || cf->count_seen != count) {
         cf->inited = true;
         cf->count_seen = count;
@@ -80,16 +88,18 @@ bool jw_cf_draw_cards(jw_games_cf *cf, int count, int cursor,
         cf->active = false;
     }
     if (cursor != cf->last_cursor) {
-        int raw = cursor - cf->last_cursor;           /* shortest wrapped direction */
-        while (raw >  count / 2) raw -= count;
-        while (raw < -count / 2) raw += count;
+        int raw = cursor - cf->last_cursor;
+        if (loops) {                                  /* take the shortest way round the ring */
+            while (raw >  count / 2) raw -= count;
+            while (raw < -count / 2) raw += count;
+        }
         cf->last_cursor = cursor;
         if (raw > 6 || raw < -6) {                    /* letter jump / big -> snap */
             cf->target += (float)raw;
             cf->vpos = cf->target;
             cf->last_ms = now;
             cf->active = false;
-            jw_games_cf_renormalize(cf, count);
+            if (loops) jw_games_cf_renormalize(cf, count);
         } else {
             cf->target += (float)raw;
             if (!cf->active) cf->last_ms = (now > 16u) ? now - 16u : 0u;
@@ -101,7 +111,7 @@ bool jw_cf_draw_cards(jw_games_cf *cf, int count, int cursor,
         if (fabsf(cf->target - cf->vpos) < 0.003f) {
             cf->active = false;
             cf->vpos = cf->target;
-            jw_games_cf_renormalize(cf, count);
+            if (loops) jw_games_cf_renormalize(cf, count);
         } else {
             cat_request_frame();
         }
@@ -117,12 +127,13 @@ bool jw_cf_draw_cards(jw_games_cf *cf, int count, int cursor,
     const float   SIDE_SCALE = layout.side_scale;
     const uint8_t SIDE_ALPHA = 160;
     const float   TILT       = 0.80f;            /* ~46 deg */
-    const int     W = 3;                          /* slots drawn each side */
 
     int base = (int)floorf(vc + 0.5f);
 
-    /* Draw far -> near so nearer cards overlap; modular indices wrap the ends so
-       the flow is a true, endless carousel (last card slides into the first). */
+    /* Draw far -> near so nearer cards overlap. When looping, indices wrap the
+       ends into an endless ring (last card slides into the first); when clamped
+       (fewer items than the window), slots past either end are skipped so no card
+       is ever drawn twice. */
     for (int ring = W; ring >= 0; ring--) {
         for (int o = -W; o <= W; o++) {
             int slot = base + o;
@@ -140,7 +151,13 @@ bool jw_cf_draw_cards(jw_games_cf *cf, int count, int cursor,
             uint8_t alpha = (uint8_t)(SIDE_ALPHA + (int)((255 - SIDE_ALPHA) * c));
             float ox = cx + d * STEP;
 
-            int idx = ((slot % count) + count) % count;
+            int idx;
+            if (loops) {
+                idx = ((slot % count) + count) % count;
+            } else {
+                if (slot < 0 || slot >= count) continue;   /* clamp: no card past the ends */
+                idx = slot;
+            }
             int tw = 0, th = 0;
             SDL_Texture *tex = icon_fn(ctx, idx, &tw, &th);
             jw_cf_draw_card(tex, tw, th, ox, oy, hw, hh, ang, alpha);

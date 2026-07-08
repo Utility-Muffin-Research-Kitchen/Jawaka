@@ -43,6 +43,17 @@ typedef struct {
 /* Duration of the channel-switch cube rotation. */
 #define JW_CF_CUBE_MS 360u
 
+/* Cover Flow window: JW_CF_WINDOW cover slots each side of centre, so up to
+   JW_CF_VISIBLE covers are on screen at once. The carousel only wraps into an
+   endless ring when there are at least this many items; with fewer it clamps at
+   the ends (a cover is never drawn twice, and navigation never snaps across the
+   row). Render (jw_cf_draw_cards) and input (the launcher's carousel stepping)
+   must agree on this, so it lives in the header. */
+#define JW_CF_WINDOW  3
+#define JW_CF_VISIBLE (2 * JW_CF_WINDOW + 1)
+
+static inline bool jw_cf_list_loops(int count) { return count >= JW_CF_VISIBLE; }
+
 /* The launcher's Cover Flow runtime state, bundled so the launcher embeds one
    handle rather than three loose fields. systems_cf = the systems/favorites/
    recents/apps channel carousel; games_cf = the drilled-in games carousel;

@@ -4204,6 +4204,18 @@ static void jw__cf_draw_keyboard(const jw_launcher_state *state) {
     }
 }
 
+/* One Cover Flow carousel step. A CF list only wraps when it has enough covers to
+   fill the on-screen window (jw_cf_list_loops); a shorter list clamps at the ends
+   so pressing past the last cover doesn't snap the row back to the other side.
+   This mirrors the render-side clamp in jw_cf_draw_cards. Non-CF layouts always
+   wrap (their rows have no such window). */
+static void jw__cf_carousel_step(cat_list_state *s, int dir, int count, int layout) {
+    if (layout == CAT_LAUNCHER_COVERFLOW && !jw_cf_list_loops(count))
+        cat_list_state_jump(s, s->cursor + dir, count);   /* clamp at the ends */
+    else
+        cat_list_state_move(s, dir, count);               /* wrap around the ring */
+}
+
 static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
                              jw_launcher_state *state, cat_button button, bool *running) {
     /* X closes search from anywhere — no need to empty the query first. */
@@ -4227,11 +4239,13 @@ static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
                 break;
             case CAT_BTN_LEFT:
             case CAT_BTN_L1:
-                cat_list_state_move(&state->search_list, -1, state->search_count);
+                jw__cf_carousel_step(&state->search_list, -1, state->search_count,
+                                     CAT_LAUNCHER_COVERFLOW);
                 break;
             case CAT_BTN_RIGHT:
             case CAT_BTN_R1:
-                cat_list_state_move(&state->search_list, +1, state->search_count);
+                jw__cf_carousel_step(&state->search_list, +1, state->search_count,
+                                     CAT_LAUNCHER_COVERFLOW);
                 break;
             case CAT_BTN_A:
                 jw__launch_selected_search_result(socket_path, state, running);
@@ -6394,16 +6408,18 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
             cat_list_state_move(&state->search_list, +1, state->search_count);
             break;
         case CAT_BTN_LEFT:
-            /* Cover Flow flows one card with wrap-around (drives the tween);
+            /* Cover Flow flows one card (wrap only when the list fills the window);
                other layouts page the list. */
             if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
-                cat_list_state_move(&state->search_list, -1, state->search_count);
+                jw__cf_carousel_step(&state->search_list, -1, state->search_count,
+                                     CAT_LAUNCHER_COVERFLOW);
             else
                 cat_list_state_page(&state->search_list, -1, state->search_count);
             break;
         case CAT_BTN_RIGHT:
             if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
-                cat_list_state_move(&state->search_list, +1, state->search_count);
+                jw__cf_carousel_step(&state->search_list, +1, state->search_count,
+                                     CAT_LAUNCHER_COVERFLOW);
             else
                 cat_list_state_page(&state->search_list, +1, state->search_count);
             break;
@@ -6425,8 +6441,8 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
             if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED)
                 jw__switch_tab_slide(state, button == CAT_BTN_L1 ? -1 : +1, db_path);
             else if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
-                cat_list_state_move(&state->search_list, button == CAT_BTN_L1 ? -1 : +1,
-                                    state->search_count);
+                jw__cf_carousel_step(&state->search_list, button == CAT_BTN_L1 ? -1 : +1,
+                                     state->search_count, CAT_LAUNCHER_COVERFLOW);
             break;
         default:
             break;
@@ -6492,18 +6508,22 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
             else    cat_list_state_move(&state->game_list, +1, state->game_count);
             break;
         case CAT_BTN_LEFT:
-            if (cf) cat_list_state_move(&state->game_list, -1, state->game_count);
+            if (cf) jw__cf_carousel_step(&state->game_list, -1, state->game_count,
+                                         CAT_LAUNCHER_COVERFLOW);
             else    cat_list_state_page(&state->game_list, -1, state->game_count);
             break;
         case CAT_BTN_RIGHT:
-            if (cf) cat_list_state_move(&state->game_list, +1, state->game_count);
+            if (cf) jw__cf_carousel_step(&state->game_list, +1, state->game_count,
+                                         CAT_LAUNCHER_COVERFLOW);
             else    cat_list_state_page(&state->game_list, +1, state->game_count);
             break;
         case CAT_BTN_L1:
-            if (cf) cat_list_state_move(&state->game_list, -1, state->game_count);
+            if (cf) jw__cf_carousel_step(&state->game_list, -1, state->game_count,
+                                         CAT_LAUNCHER_COVERFLOW);
             break;
         case CAT_BTN_R1:
-            if (cf) cat_list_state_move(&state->game_list, +1, state->game_count);
+            if (cf) jw__cf_carousel_step(&state->game_list, +1, state->game_count,
+                                         CAT_LAUNCHER_COVERFLOW);
             break;
         case CAT_BTN_A:
             jw__launch_selected_game(socket_path, state, running);
@@ -7166,15 +7186,16 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             }
             break;
         case CAT_BTN_LEFT:
-            /* Coverflow + Horizontal flow one item with wrap-around; tabbed pages. */
+            /* Coverflow flows one item (wrap only when the list fills the window);
+               Horizontal wraps; tabbed pages. */
             if (layout == CAT_LAUNCHER_COVERFLOW || layout == CAT_LAUNCHER_HORIZONTAL)
-                cat_list_state_move(&state->list, -1, count);
+                jw__cf_carousel_step(&state->list, -1, count, layout);
             else
                 cat_list_state_page(&state->list, -1, count);
             break;
         case CAT_BTN_RIGHT:
             if (layout == CAT_LAUNCHER_COVERFLOW || layout == CAT_LAUNCHER_HORIZONTAL)
-                cat_list_state_move(&state->list, +1, count);
+                jw__cf_carousel_step(&state->list, +1, count, layout);
             else
                 cat_list_state_page(&state->list, +1, count);
             break;
@@ -7182,13 +7203,13 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
             if (layout == CAT_LAUNCHER_TABBED)
                 jw__switch_tab_slide(state, -1, db_path);
             else if (layout == CAT_LAUNCHER_COVERFLOW)
-                cat_list_state_move(&state->list, -1, count);
+                jw__cf_carousel_step(&state->list, -1, count, layout);
             break;
         case CAT_BTN_R1:
             if (layout == CAT_LAUNCHER_TABBED)
                 jw__switch_tab_slide(state, +1, db_path);
             else if (layout == CAT_LAUNCHER_COVERFLOW)
-                cat_list_state_move(&state->list, +1, count);
+                jw__cf_carousel_step(&state->list, +1, count, layout);
             break;
         case CAT_BTN_A:
             if (layout == CAT_LAUNCHER_TABBED || cf_channels)
