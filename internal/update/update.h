@@ -165,6 +165,9 @@ void jw_update_refresh_install_result(jw_update_status *status,
                                       const char *state_dir,
                                       const char *sdcard_root);
 
+/* Explicit local-manifest checks may provide artifact.url for developer/RC
+   testing. The URL must use HTTPS; normal GitHub discovery ignores manifest
+   URLs and resolves release assets by name. */
 int jw_update_check_local_manifest(jw_update_status *status,
                                    const char *state_dir,
                                    const char *platform_id,

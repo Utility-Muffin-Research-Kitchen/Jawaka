@@ -231,6 +231,12 @@ CATALOG_SMOKE_SRCS := \
 	internal/retroarch/catalog.c \
 	third_party/cjson/cJSON.c
 
+UPDATE_SMOKE_SRCS := \
+	cmd/jawaka-update-smoke/main.c \
+	internal/update/update.c \
+	internal/update/sha256.c \
+	third_party/cjson/cJSON.c
+
 UI_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
@@ -284,7 +290,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-update-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -307,6 +313,10 @@ jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 jawaka-scrape-smoke: $(BUILD)/bin/jawaka-scrape-smoke
 jawaka-pakrat-smoke: $(BUILD)/bin/jawaka-pakrat-smoke
 jawaka-catalog-smoke: $(BUILD)/bin/jawaka-catalog-smoke
+jawaka-update-smoke: $(BUILD)/bin/jawaka-update-smoke
+
+update-local-manifest-smoke:
+	@scripts/update-local-manifest-smoke.sh
 
 $(BUILD)/bin:
 	@mkdir -p $(BUILD)/bin
@@ -365,6 +375,9 @@ $(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
 
 $(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(CATALOG_SMOKE_SRCS)
+
+$(BUILD)/bin/jawaka-update-smoke: $(UPDATE_SMOKE_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -o $@ $(UPDATE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread
 
 ifeq ($(PLATFORM),mlp1)
 $(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
@@ -494,6 +507,7 @@ help:
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
 	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
+	@echo "  make update-local-manifest-smoke  Validate developer artifact.url handling"
 	@echo "  make pakrat-state-smoke      Exercise Pak Rat stale + managed-state safeguards"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"

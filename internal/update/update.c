@@ -875,7 +875,8 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
                                                     const char *state_dir,
                                                     const char *platform_id,
                                                     const char *manifest_path,
-                                                    int artifact_index) {
+                                                    int artifact_index,
+                                                    bool allow_explicit_urls) {
     if (!status) {
         return -1;
     }
@@ -973,12 +974,21 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
     const char *artifact_kind = jw__json_string(artifact, "kind");
     const char *artifact_name = jw__json_string(artifact, "name");
     const char *artifact_sha256 = jw__json_string(artifact, "sha256");
+    const char *artifact_url = allow_explicit_urls
+        ? jw__json_string(artifact, "url")
+        : NULL;
     if (!cJSON_IsObject(artifact) ||
         !artifact_kind || !artifact_kind[0] ||
         !jw__filename_safe(artifact_name) ||
         !jw__sha256_looks_valid(artifact_sha256)) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Platform artifact metadata is incomplete");
+        cJSON_Delete(root);
+        return -1;
+    }
+    if (artifact_url && !jw__https_url_safe(artifact_url)) {
+        status->status = JW_UPDATE_STATUS_ERROR;
+        jw__set_message(status, "%s", "Local manifest artifact URL must use HTTPS");
         cJSON_Delete(root);
         return -1;
     }
@@ -997,6 +1007,8 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
                     artifact_name);
     jw__copy_string(status->artifact_sha256, sizeof(status->artifact_sha256),
                     artifact_sha256);
+    jw__copy_string(status->artifact_url, sizeof(status->artifact_url),
+                    artifact_url);
     status->artifact_size = jw__json_ll(artifact, "size");
     status->installed_size = jw__json_ll(artifact, "installed_size");
 
@@ -1058,7 +1070,7 @@ int jw_update_check_local_manifest(jw_update_status *status,
         jw__clear_options(status);
     }
     int rc = jw__update_check_local_manifest_artifact(status, state_dir, platform_id,
-                                                     manifest_path, 0);
+                                                     manifest_path, 0, true);
     if (rc == 0 && status && status->compatible) {
         jw__copy_status_to_option(status, &status->options[0], 0);
         status->option_count = 1;
@@ -1340,7 +1352,8 @@ int jw_update_check_github(jw_update_status *status,
             if (jw__update_check_local_manifest_artifact(status, state_dir,
                                                          platform_id,
                                                          manifest_path,
-                                                         artifact_index) != 0) {
+                                                         artifact_index,
+                                                         false) != 0) {
                 snprintf(last_message, sizeof(last_message), "%s", status->message);
                 continue;
             }

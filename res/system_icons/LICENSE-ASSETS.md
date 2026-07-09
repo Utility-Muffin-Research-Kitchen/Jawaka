@@ -1,8 +1,8 @@
 # Asset attribution
 
-The console icons in `system_icons/` (excluding the original `_*.png` badges:
-`_tools.png`, `_default.png`, `_apps.png`) are derived from the libretro
-Systematic asset pack:
+The console icons in `system_icons/` (excluding `PORTS.png` and the original
+`_*.png` badges: `_tools.png`, `_default.png`, `_apps.png`) are derived from the
+libretro Systematic asset pack:
 
   Source:  https://git.libretro.com/libretro-assets/retroarch-assets
   Mirror:  https://github.com/libretro/retroarch-assets (same files; the GitHub
@@ -17,6 +17,10 @@ their libretro display names to Jawaka short codes during import — see
 `scripts/fetch-system-icons.sh` for the mapping. Alias codes that share a
 console's artwork (e.g. NES/FC, SNES/SFC, GEN/GENESIS/MD, PSX/PS, TG16/PCE,
 MD32X/32X, the MAME variants) are local copies of the same Systematic icon.
+
+`PORTS.png` is the 512px Ports artwork also used by the PortMaster manager pak.
+It is derived from the Cover Flow theme's public-domain Evan Amos source art;
+see `res/themes/Jawaka-Coverflow/system_icons/LICENSE-ASSETS.md` for attribution.
 
 `_tools.png`, `_default.png`, and `_apps.png` (the Leaf badge, the fallback for
 apps that ship no icon) are original work, MIT-licensed under the top-level
