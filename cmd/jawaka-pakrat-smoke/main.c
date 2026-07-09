@@ -109,6 +109,7 @@ static int jw__parse_args(int argc, char **argv, pakrat_smoke_opts *opts) {
     }
     opts->action = argv[i++];
     if (strcmp(opts->action, "install") == 0 ||
+        strcmp(opts->action, "adopt") == 0 ||
         strcmp(opts->action, "uninstall") == 0) {
         if (i >= argc || !argv[i][0]) {
             return -1;
