@@ -1156,6 +1156,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->timezone[0]       = '\0';  /* "" = follow system tz until the user picks */
     ui->font_size_index   = 1;
     ui->tab_glide         = 1;     /* Glide by default — matches Leaf's soft feel; Snap is opt-out */
+    ui->update_channel_index = JW_UPDATE_CHANNEL_STABLE_IDX;  /* Stable unless loaded below */
     ui->show_hints        = true;
     ui->clock_style_index = 1;
     ui->show_battery      = true;
@@ -1224,6 +1225,12 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             }
             if (jw__setting_has(values, found, JW_SETTING_TAB_GLIDE))
                 ui->tab_glide = (strcmp(values[JW_SETTING_TAB_GLIDE], "0") != 0) ? 1 : 0;
+            {
+                char chan[16] = "";
+                if (jw_db_get_setting(db_path, "update_channel", chan, sizeof(chan)) == 0)
+                    ui->update_channel_index = (strcmp(chan, "beta") == 0)
+                        ? JW_UPDATE_CHANNEL_BETA_IDX : JW_UPDATE_CHANNEL_STABLE_IDX;
+            }
             if (jw__setting_has(values, found, JW_SETTING_SHOW_HINTS))
                 ui->show_hints = (strcmp(values[JW_SETTING_SHOW_HINTS], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_CLOCK_STYLE_INDEX)) {
@@ -1577,9 +1584,10 @@ static SDL_Rect jw__settings_boxes(int x, int y, int w, int h,
     return cat_box_content(&page);
 }
 
-static void jw__render_list_row_h(const cat_list_state *list, int x, int y,
-                                  int w, int row, const char *label,
-                                  const char *value, bool cycler, int item_h) {
+static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
+                                     int w, int row, const char *label,
+                                     const char *value, bool cycler, int item_h,
+                                     const ap_color *value_override) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int iy = y + row * item_h;
@@ -1590,7 +1598,10 @@ static void jw__render_list_row_h(const cat_list_state *list, int x, int y,
         cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
 
     ap_color label_c = selected ? theme->highlighted_text : theme->text;
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    /* Unselected rows may override the value color (e.g. a warning tint on the
+       Beta update channel); the selected pill always uses highlighted_text. */
+    ap_color value_c = selected ? theme->highlighted_text
+                                : (value_override ? *value_override : theme->hint);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
@@ -1622,12 +1633,27 @@ static void jw__render_list_row_h(const cat_list_state *list, int x, int y,
     }
 }
 
+/* Backward-compatible wrapper: no value-color override. */
+static void jw__render_list_row_h(const cat_list_state *list, int x, int y,
+                                  int w, int row, const char *label,
+                                  const char *value, bool cycler, int item_h) {
+    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, NULL);
+}
+
 /* The canonical settings list row: medium font + cat_scale(12) padding. */
 static void jw__render_list_row(const cat_list_state *list, int x, int y,
                                 int w, int row, const char *label,
                                 const char *value, bool cycler) {
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
     jw__render_list_row_h(list, x, y, w, row, label, value, cycler, item_h);
+}
+
+/* Canonical row with a value-color override (unselected rows only). */
+static void jw__render_list_row_vc(const cat_list_state *list, int x, int y,
+                                   int w, int row, const char *label,
+                                   const char *value, bool cycler, ap_color value_c) {
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, &value_c);
 }
 
 /* Row pitch for the Display & Sound page. The Brightness/Volume sliders need the
@@ -4153,6 +4179,17 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
         snprintf(candidate_value, sizeof(candidate_value), "%s", "-");
     }
 
+    bool on_beta = (ui->update_channel_index == JW_UPDATE_CHANNEL_BETA_IDX);
+    if (on_beta) {
+        /* Amber-tint the value so "you're on the tester channel" reads at a glance. */
+        ap_color warn = cat_hex_to_color("#E8A44C");
+        jw__render_list_row_vc(&ui->update_list, x, ly, w, JW_UPDATE_ROW_CHANNEL,
+                               "Update Channel", "Beta", true, warn);
+    } else {
+        jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_CHANNEL,
+                            "Update Channel", "Stable", true);
+    }
+
     jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_CHECK,
                         "Check Releases", check_value, false);
     jw__render_list_row(&ui->update_list, x, ly, w, JW_UPDATE_ROW_DOWNLOAD,
@@ -5171,6 +5208,44 @@ static void jw__safe_unmount_secondary_sd(jw_settings_ui *ui,
         snprintf(status_buf, status_size, "%s", "Unmount failed");
     }
     jw__refresh_secondary_sd_status(ui);
+}
+
+static bool jw__confirm_beta_channel(void) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Switch", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = "Beta builds are tester previews and may be unstable or lose "
+                   "data. Switch to the Beta update channel?",
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+/* Toggle the update channel (Stable <-> Beta) from the System Update page.
+   Switching TO Beta requires a confirm; switching back to Stable is silent. An
+   active download/install/armed-reboot locks the toggle. On a real change we
+   persist the key and re-run the check against the new channel. */
+static void jw__cycle_update_channel(jw_settings_ui *ui, char *status_buf,
+                                     size_t status_size) {
+    if (ui->update.download_active || ui->update.install_active ||
+        ui->update.install_armed) {
+        jw__copy_status(status_buf, status_size,
+                        "Finish the current update before switching channels");
+        return;
+    }
+    bool to_beta = (ui->update_channel_index != JW_UPDATE_CHANNEL_BETA_IDX);
+    if (to_beta && !jw__confirm_beta_channel())
+        return;   /* cancelled — stay on Stable */
+
+    ui->update_channel_index = to_beta ? JW_UPDATE_CHANNEL_BETA_IDX
+                                       : JW_UPDATE_CHANNEL_STABLE_IDX;
+    jw__persist(ui, "update_channel", to_beta ? "beta" : "stable");
+    /* Re-check against the new channel so the release rows repopulate. */
+    jw__update_check_releases(ui, status_buf, status_size);
 }
 
 /* ─── Input dispatch ───────────────────────────────────────────────────── */
@@ -6393,6 +6468,11 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_DOWN:
                 cat_list_state_move(&ui->update_list, +1, JW_UPDATE_ROW_COUNT);
                 break;
+            case CAT_BTN_LEFT:
+            case CAT_BTN_RIGHT:
+                if (ui->update_list.cursor == JW_UPDATE_ROW_CHANNEL)
+                    jw__cycle_update_channel(ui, status_buf, status_size);
+                break;
             case CAT_BTN_X:
                 if (ui->update.download_active) {
                     jw__update_download_or_cancel(ui, status_buf, status_size);
@@ -6401,7 +6481,9 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 }
                 break;
             case CAT_BTN_A:
-                if (ui->update_list.cursor == JW_UPDATE_ROW_CHECK) {
+                if (ui->update_list.cursor == JW_UPDATE_ROW_CHANNEL) {
+                    jw__cycle_update_channel(ui, status_buf, status_size);
+                } else if (ui->update_list.cursor == JW_UPDATE_ROW_CHECK) {
                     jw__update_check_releases(ui, status_buf, status_size);
                 } else if (ui->update_list.cursor == JW_UPDATE_ROW_DOWNLOAD) {
                     jw__update_download_or_cancel(ui, status_buf, status_size);

@@ -148,12 +148,17 @@ typedef enum {
 #define JW_HOME_TABS_COUNT 4
 
 /* System Update page */
-#define JW_UPDATE_ROW_CHECK     0
-#define JW_UPDATE_ROW_DOWNLOAD  1
-#define JW_UPDATE_ROW_INSTALL   2
-#define JW_UPDATE_ROW_CURRENT   3
-#define JW_UPDATE_ROW_AVAILABLE 4
-#define JW_UPDATE_ROW_COUNT     5
+#define JW_UPDATE_ROW_CHANNEL   0   /* Stable / Beta update channel cycler */
+#define JW_UPDATE_ROW_CHECK     1
+#define JW_UPDATE_ROW_DOWNLOAD  2
+#define JW_UPDATE_ROW_INSTALL   3
+#define JW_UPDATE_ROW_CURRENT   4
+#define JW_UPDATE_ROW_AVAILABLE 5
+#define JW_UPDATE_ROW_COUNT     6
+
+/* Update channel setting values (DB key "update_channel"). */
+#define JW_UPDATE_CHANNEL_STABLE_IDX 0
+#define JW_UPDATE_CHANNEL_BETA_IDX   1
 
 /* ─── State ────────────────────────────────────────────────────────────── */
 
@@ -198,6 +203,7 @@ typedef struct {
     bool               scrape_download_replace;      /* Y toggles missing-only vs replace-all */
     cat_list_state     behavior_list;
     cat_list_state     update_list;
+    int                update_channel_index;   /* 0 = Stable, 1 = Beta */
     cat_list_state     update_picker_list;
     cat_list_state     timezone_picker_list;
     cat_list_state     placeholder_list;

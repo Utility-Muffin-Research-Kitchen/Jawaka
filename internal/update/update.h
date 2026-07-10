@@ -140,6 +140,13 @@ typedef struct {
     char result_path[JW_UPDATE_PATH_MAX];
 } jw_update_install_job;
 
+/* Update channel: which GitHub repo the release check pulls from. Stable and
+   Beta live in separate repos, so the channel just selects the source URL. */
+typedef enum {
+    JW_UPDATE_CHANNEL_STABLE = 0,   /* the Leaf repo */
+    JW_UPDATE_CHANNEL_BETA          /* the Leaf-beta repo (tester builds) */
+} jw_update_channel;
+
 /* Async release check. The GitHub fetch is a blocking libcurl call (up to 15s on
    bad Wi-Fi); running it on the daemon's request path froze the launcher render
    loop, so we thread it. The worker fills `scratch`; the main loop's poll copies
@@ -152,6 +159,7 @@ typedef struct {
     jw_update_status scratch;
     char state_dir[JW_UPDATE_PATH_MAX];
     char platform_id[JW_UPDATE_PLATFORM_ID_MAX];
+    jw_update_channel channel;
 } jw_update_check_job;
 
 const char *jw_update_status_name(jw_update_status_code status);
@@ -174,14 +182,16 @@ int jw_update_check_local_manifest(jw_update_status *status,
                                    const char *manifest_path);
 int jw_update_check_github(jw_update_status *status,
                            const char *state_dir,
-                           const char *platform_id);
+                           const char *platform_id,
+                           jw_update_channel channel);
 void jw_update_check_job_init(jw_update_check_job *job);
 /* Kick off an async GitHub release check. Sets status to CHECKING and returns
    immediately; the result lands via jw_update_check_poll(). No-op (returns 0) if
    a check is already in flight. */
 int jw_update_check_start(jw_update_status *status,
                           jw_update_check_job *job,
-                          const char *state_dir);
+                          const char *state_dir,
+                          jw_update_channel channel);
 void jw_update_check_poll(jw_update_status *status,
                           jw_update_check_job *job);
 void jw_update_check_job_wait(jw_update_check_job *job);

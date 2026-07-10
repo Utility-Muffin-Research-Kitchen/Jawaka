@@ -1813,12 +1813,22 @@ static int jw__handle_update_check(jw_daemon_state *state,
                                        state->platform.platform_id,
                                        manifest_path);
     } else {
+        /* Resolve the update channel (Stable = Leaf repo, Beta = Leaf-beta repo)
+           from the persisted setting; default Stable. */
+        jw_update_channel channel = JW_UPDATE_CHANNEL_STABLE;
+        char chan[16] = "";
+        if (state->db_path[0] &&
+            jw_db_get_setting(state->db_path, "update_channel", chan, sizeof(chan)) == 0 &&
+            strcmp(chan, "beta") == 0) {
+            channel = JW_UPDATE_CHANNEL_BETA;
+        }
         /* Run the GitHub release check on a worker thread so the blocking fetch
            doesn't freeze the launcher; reply immediately with state=checking and
            let the launcher's status poll pick up the result. */
         jw_update_check_start(&state->update_status,
                               &state->update_check_job,
-                              state->state_dir);
+                              state->state_dir,
+                              channel);
     }
     cJSON *root = jw_update_status_to_json(&state->update_status);
     return jw__reply_json(client, root);

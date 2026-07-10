@@ -21,7 +21,11 @@
 
 #define JW_UPDATE_INSTALLED_SCHEMA 1
 #define JW_UPDATE_MANIFEST_MAX_BYTES (1024 * 1024)
-#define JW_UPDATE_RELEASES_URL "https://api.github.com/repos/Utility-Muffin-Research-Kitchen/Leaf/releases?per_page=20"
+/* Stable and Beta live in separate repos; the channel just selects the source.
+   Beta builds are published as regular (non-prerelease) releases in Leaf-beta,
+   so the prerelease-skipping selection logic below needs no channel awareness. */
+#define JW_UPDATE_RELEASES_URL_STABLE "https://api.github.com/repos/Utility-Muffin-Research-Kitchen/Leaf/releases?per_page=20"
+#define JW_UPDATE_RELEASES_URL_BETA   "https://api.github.com/repos/Utility-Muffin-Research-Kitchen/Leaf-beta/releases?per_page=20"
 #define JW_UPDATE_USER_AGENT "Leaf-Jawaka-Updater/1"
 #define JW_UPDATE_MIN_DOWNLOAD_FREE_BYTES (64LL * 1024LL * 1024LL)
 #define JW_UPDATE_INSTALL_HEADROOM_BYTES (64LL * 1024LL * 1024LL)
@@ -1248,9 +1252,15 @@ static const char *jw__release_asset_download_url(const cJSON *asset) {
     return NULL;
 }
 
+static const char *jw__releases_url(jw_update_channel channel) {
+    return channel == JW_UPDATE_CHANNEL_BETA ? JW_UPDATE_RELEASES_URL_BETA
+                                             : JW_UPDATE_RELEASES_URL_STABLE;
+}
+
 int jw_update_check_github(jw_update_status *status,
                            const char *state_dir,
-                           const char *platform_id) {
+                           const char *platform_id,
+                           jw_update_channel channel) {
     if (!status) {
         return -1;
     }
@@ -1276,7 +1286,7 @@ int jw_update_check_github(jw_update_status *status,
     }
 
     char error[256];
-    if (jw__fetch_https_to_file(JW_UPDATE_RELEASES_URL, releases_path,
+    if (jw__fetch_https_to_file(jw__releases_url(channel), releases_path,
                                 "application/vnd.github+json",
                                 error, sizeof(error)) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
@@ -1751,7 +1761,7 @@ void jw_update_download_poll(jw_update_status *status,
 static void *jw__update_check_worker(void *arg) {
     jw_update_check_job *job = (jw_update_check_job *)arg;
     job->result = jw_update_check_github(&job->scratch, job->state_dir,
-                                         job->platform_id);
+                                         job->platform_id, job->channel);
     atomic_store_explicit(&job->done, true, memory_order_release);
     return NULL;
 }
@@ -1766,7 +1776,8 @@ void jw_update_check_job_init(jw_update_check_job *job) {
 
 int jw_update_check_start(jw_update_status *status,
                           jw_update_check_job *job,
-                          const char *state_dir) {
+                          const char *state_dir,
+                          jw_update_channel channel) {
     if (!status || !job) {
         return -1;
     }
@@ -1779,6 +1790,7 @@ int jw_update_check_start(jw_update_status *status,
     job->scratch = *status;
     atomic_store_explicit(&job->done, false, memory_order_relaxed);
     job->result = 0;
+    job->channel = channel;
     jw__copy_string(job->state_dir, sizeof(job->state_dir),
                     state_dir ? state_dir : "");
     jw__copy_string(job->platform_id, sizeof(job->platform_id),
@@ -1787,7 +1799,7 @@ int jw_update_check_start(jw_update_status *status,
     if (pthread_create(&job->thread, NULL, jw__update_check_worker, job) != 0) {
         /* Threading failed: fall back to a synchronous check so the feature still
            works. This blocks (the old behaviour) but is not a regression. */
-        jw_update_check_github(status, state_dir, status->platform_id);
+        jw_update_check_github(status, state_dir, status->platform_id, channel);
         return 0;
     }
 
