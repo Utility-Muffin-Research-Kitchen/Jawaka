@@ -23,10 +23,17 @@
 #include <time.h>
 #include <unistd.h>
 
-/* MLP1 backlight usable range: raw 61-135 out of 0-255.
-   Below 61 the screen goes black. Above 135 there is no visible change.
-   We remap the 0-100% OSD range onto this usable hardware range. */
-#define JW_MLP1_BACKLIGHT_RAW_MIN 61
+/* MLP1 backlight. Empirically bisected on hardware: raw 56 is the dimmest
+   stable-and-visible step, raw 55 starts to flicker (the PWM floor), and
+   raw <= 53 is fully black; above 135 there is no visible change. (The original
+   61 floor was conservative and left usable dimming unused.)
+
+   We map the 0-100% OSD range onto RAW_MIN..135. RAW_MIN is 54 - a hair BELOW
+   the visible floor on purpose - so the 5% minimum clamp (the lowest the user
+   can select) lands on raw 58: the dimmest setting we can offer while keeping a
+   safe +3 margin above the raw-55 flicker edge (allowing for panel-to-panel PWM
+   variation). Percents below 5% (raw 54-57) are clamped away and never written. */
+#define JW_MLP1_BACKLIGHT_RAW_MIN 54
 #define JW_MLP1_BACKLIGHT_RAW_MAX 135
 
 #define JW_MLP1_BACKLIGHT_DIR "/sys/class/backlight/backlight"
@@ -634,7 +641,7 @@ static void jw__mlp1_apply_performance(jw_platform_context *ctx,
     jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "performance applied");
 }
 
-/* Map raw backlight value (61-135) to 0-100% for the user-facing OSD. */
+/* Map raw backlight value (54-135) to 0-100% for the user-facing OSD. */
 static int jw__brightness_raw_to_percent(int raw, int max_raw) {
     (void)max_raw;
     if (raw < 0) {
@@ -647,7 +654,7 @@ static int jw__brightness_raw_to_percent(int raw, int max_raw) {
     return ((raw - JW_MLP1_BACKLIGHT_RAW_MIN) * 100 + range / 2) / range;
 }
 
-/* Map 0-100% OSD value to the usable raw range (61-135). */
+/* Map 0-100% OSD value to the usable raw range (54-135). */
 static int jw__brightness_percent_to_raw(int percent, int max_raw) {
     (void)max_raw;
     if (percent < 0) percent = 0;
