@@ -99,6 +99,12 @@ static const jw__color_scheme kColorSchemes[] = {
     { "Sky",       "#9CC3E0", "#BFCED7", "#1B2A33", "#5A7280", "#6FA8DC", "#1B2A33", "#6FA8DC" },
     { "Periwinkle","#BFC0E6", "#CFCFE2", "#22243A", "#6E708E", "#8088E6", "#22243A", "#8088E6" },
     { "Lavender",  "#D0BCE4", "#D2C9DC", "#2A2238", "#786E8A", "#BE8FE2", "#2A2238", "#BE8FE2" },
+    /* Mono — a grayscale dark/light pair, deliberately OUTSIDE the two ROYGBIV
+       runs (achromatic, so no hue slot / hue-twin). Pure neutral grays; the
+       selection pill carries the contrast by VALUE since there's no hue to lean
+       on (light pill on the dark page, dark pill on the light page). */
+    { "Ebony",     "#262626", "#0E0E0E", "#ECECEC", "#8C8C8C", "#CFCFCF", "#0E0E0E", "#CFCFCF" },
+    { "Birch",     "#D8D8D8", "#EDEDED", "#1A1A1A", "#767676", "#4A4A4A", "#EDEDED", "#4A4A4A" },
 };
 #define JW_COLOR_SCHEME_COUNT ((int)(sizeof(kColorSchemes) / sizeof(kColorSchemes[0])))
 #define JW_COLOR_SCHEME_DEFAULT 0   /* Leaf — the Dweezil/Leaf identity theme */
@@ -1743,6 +1749,13 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
                         "Font Size", kFontSizeLabels[ui->font_size_index], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_TAB_SWITCH,
                         "Tab Switching", kTabSwitchLabels[ui->tab_glide ? 1 : 0], true);
+
+    int tab = (ui->startup_tab_index >= 0 && ui->startup_tab_index < JW_STARTUP_TAB_COUNT)
+              ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_STARTUP_TAB,
+                        "Startup Tab", kStartupTabLabels[tab], true);
+    jw__render_nav_row(&ui->layout_list, x, ly, w, JW_LAYOUT_HOME_TABS,
+                       "Home Tabs");
 }
 
 /* The Status Bar "Battery" row cycles four display modes. They're stored as the
@@ -3779,13 +3792,6 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_PERFORMANCE,
                         "Game Performance", perf, ui->performance_supported);
 
-    int tab = (ui->startup_tab_index >= 0 && ui->startup_tab_index < JW_STARTUP_TAB_COUNT)
-              ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_STARTUP_TAB,
-                        "Startup Tab", kStartupTabLabels[tab], true);
-    jw__render_nav_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_HOME_TABS,
-                       "Home Tabs");
-
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_TIMEZONE,
                         "Time Zone", jw__timezone_label(ui->timezone), true);
 
@@ -5382,6 +5388,25 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     int next = (ui->tab_glide + dir + JW_TAB_SWITCH_COUNT) % JW_TAB_SWITCH_COUNT;
                     ui->tab_glide = next;
                     jw__persist_int(ui, "tab_glide", next);
+                } else if (row == JW_LAYOUT_STARTUP_TAB) {
+                    /* Cycle only over the currently-visible tabs (Home Tabs can
+                       hide some), so Startup Tab can never point at a hidden tab.
+                       Find where the current startup tab sits in the visible set,
+                       step by dir within it, and adopt that tab. */
+                    int vis = ui->home_tab_visible > 0 ? ui->home_tab_visible : 1;
+                    int pos = 0;
+                    for (int i = 0; i < vis; i++)
+                        if (ui->home_tab_order[i] == ui->startup_tab_index) { pos = i; break; }
+                    int next_pos = (pos + dir + vis) % vis;
+                    ui->startup_tab_index = ui->home_tab_order[next_pos];
+                    jw__persist_int(ui, "startup_tab_index", ui->startup_tab_index);
+                } else if (row == JW_LAYOUT_HOME_TABS) {
+                    if (button == CAT_BTN_A || button == CAT_BTN_RIGHT) {
+                        ui->home_tabs_grabbed = false;
+                        ui->home_tabs_list.cursor = 0;
+                        ui->home_tabs_list.scroll_offset = 0;
+                        ui->screen = JW_SETTINGS_HOME_TABS;
+                    }
                 }
                 break;
             }
@@ -6351,7 +6376,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                 if (ui->home_tabs_grabbed)
                     ui->home_tabs_grabbed = false;
                 else
-                    ui->screen = JW_SETTINGS_BEHAVIOR;
+                    ui->screen = JW_SETTINGS_LAYOUT;
                 break;
             default:
                 break;
@@ -6466,26 +6491,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
-                if (ui->behavior_list.cursor == JW_BEHAVIOR_STARTUP_TAB) {
-                    /* Cycle only over the currently-visible tabs (Home Tabs can
-                       hide some), so Startup Tab can never point at a hidden tab.
-                       Find where the current startup tab sits in the visible set,
-                       step by dir within it, and adopt that tab. */
-                    int vis = ui->home_tab_visible > 0 ? ui->home_tab_visible : 1;
-                    int pos = 0;
-                    for (int i = 0; i < vis; i++)
-                        if (ui->home_tab_order[i] == ui->startup_tab_index) { pos = i; break; }
-                    int next_pos = (pos + dir + vis) % vis;
-                    ui->startup_tab_index = ui->home_tab_order[next_pos];
-                    jw__persist_int(ui, "startup_tab_index", ui->startup_tab_index);
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_HOME_TABS) {
-                    if (button == CAT_BTN_A || button == CAT_BTN_RIGHT) {
-                        ui->home_tabs_grabbed = false;
-                        ui->home_tabs_list.cursor = 0;
-                        ui->home_tabs_list.scroll_offset = 0;
-                        ui->screen = JW_SETTINGS_HOME_TABS;
-                    }
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
+                if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
                     int next = (ui->auto_sleep_index + dir + JW_AUTO_SLEEP_COUNT)
                                % JW_AUTO_SLEEP_COUNT;
                     ui->auto_sleep_index = next;

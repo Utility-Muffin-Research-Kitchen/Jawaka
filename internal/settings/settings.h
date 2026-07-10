@@ -82,7 +82,9 @@ typedef enum {
 #define JW_LAYOUT_FONT_FAMILY 2
 #define JW_LAYOUT_FONT_SIZE   3
 #define JW_LAYOUT_TAB_SWITCH  4
-#define JW_LAYOUT_ROW_COUNT   5
+#define JW_LAYOUT_STARTUP_TAB 5   /* which tab the launcher opens on */
+#define JW_LAYOUT_HOME_TABS   6   /* opens the Home Tabs hide/reorder editor */
+#define JW_LAYOUT_ROW_COUNT   7
 
 /* Status Bar page */
 #define JW_STATUSBAR_HINTS   0
@@ -134,13 +136,11 @@ typedef enum {
 /* Behavior page */
 #define JW_BEHAVIOR_AUTO_SLEEP  0
 #define JW_BEHAVIOR_PERFORMANCE 1
-#define JW_BEHAVIOR_STARTUP_TAB 2
-#define JW_BEHAVIOR_HOME_TABS   3   /* opens the Home Tabs editor screen */
-#define JW_BEHAVIOR_TIMEZONE    4   /* opens the Time Zone picker screen */
-#define JW_BEHAVIOR_BOOT_SPLASH 5
-#define JW_BEHAVIOR_RESET_RETROARCH   6   /* maintenance, moved from Library */
-#define JW_BEHAVIOR_UNMOUNT_SECONDARY 7
-#define JW_BEHAVIOR_ROW_COUNT   8
+#define JW_BEHAVIOR_TIMEZONE    2   /* opens the Time Zone picker screen */
+#define JW_BEHAVIOR_BOOT_SPLASH 3
+#define JW_BEHAVIOR_RESET_RETROARCH   4   /* maintenance, moved from Library */
+#define JW_BEHAVIOR_UNMOUNT_SECONDARY 5
+#define JW_BEHAVIOR_ROW_COUNT   6
 
 /* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
    The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of
