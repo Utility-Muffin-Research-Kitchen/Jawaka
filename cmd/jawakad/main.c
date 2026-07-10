@@ -515,6 +515,72 @@ static void jw__print_usage(FILE *stream) {
     fprintf(stream, "Usage: jawakad [--daemon-only] [--help]\n");
 }
 
+/* True if Roms/<name>/ exists as a directory. */
+static bool jw__roms_has_dir(const char *roms, const char *name) {
+    if (!name || !name[0]) return false;
+    char probe[PATH_MAX];
+    if (snprintf(probe, sizeof(probe), "%s/%s", roms, name) >= (int)sizeof(probe))
+        return false;
+    struct stat st;
+    return stat(probe, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* First-run seed: create the empty per-system Roms/ folder for every catalogued
+   system so a fresh card carries all the drop-in folders and users don't have to
+   consult the docs and make each by hand. The folder created is the RECOMMENDED
+   name (systems.json rom_root, e.g. FC -> "Roms/NES"), NOT the internal id, and a
+   system is skipped when the user already has a folder for it under the
+   recommended name, the id, or any accepted alias pattern (never a second folder
+   for a system they've set up). One-time — gated by a hidden marker in Roms/ (the
+   scanner skips hidden entries and non-directories, so it's inert), so a folder
+   the user deletes stays gone. Best-effort: a missing catalog or an un-writable
+   card just skips. */
+static void jw__seed_rom_folders(const jw_daemon_state *state) {
+    const char *roms = getenv("ROMS_PATH");
+    if (!roms || !roms[0]) return;
+
+    char marker[PATH_MAX];
+    if (snprintf(marker, sizeof(marker), "%s/.leaf_seeded", roms) >= (int)sizeof(marker))
+        return;
+    if (access(marker, F_OK) == 0) return;   /* already seeded once */
+
+    char error[256] = "";
+    const jw_ra_catalog *catalog = jw_ra_catalog_get(state->sdcard_root,
+                                                     error, sizeof(error));
+    if (!catalog) return;   /* no system list -> nothing to seed */
+
+    mkdir(roms, 0777);   /* ensure Roms/ itself (best-effort; usually exists) */
+
+    int made = 0;
+    for (size_t i = 0; i < catalog->system_count; i++) {
+        const jw_ra_system *s = &catalog->systems[i];
+        if (!s->id || !s->id[0] || s->id[0] == '_') continue;  /* skip pseudo ids (_tools) */
+
+        /* Recommended folder = last path element of rom_root ("Roms/NES" -> "NES"),
+           falling back to the id. */
+        const char *rec = s->id;
+        if (s->rom_root && s->rom_root[0]) {
+            const char *slash = strrchr(s->rom_root, '/');
+            rec = (slash && slash[1]) ? slash + 1 : s->rom_root;
+        }
+
+        /* Already have a folder for this system under any accepted name? Skip. */
+        bool have = jw__roms_has_dir(roms, rec) || jw__roms_has_dir(roms, s->id);
+        for (size_t j = 0; !have && j < s->patterns.count; j++)
+            have = jw__roms_has_dir(roms, s->patterns.items[j]);
+        if (have) continue;
+
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", roms, rec) >= (int)sizeof(path))
+            continue;
+        if (mkdir(path, 0777) == 0) made++;
+    }
+
+    FILE *f = fopen(marker, "w");   /* mark done so this runs only once */
+    if (f) { fputs("1\n", f); fclose(f); }
+    jw_log_info("seeded %d ROM folder(s) under %s", made, roms);
+}
+
 static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     if (!state || !state->runtime_dir || !state->sdcard_root) {
         return;
@@ -6774,6 +6840,10 @@ int main(int argc, char *argv[]) {
     /* Exported so child processes receive them via execv's inherited environment. */
     jw__publish_runtime_path_env(&state);
     jw__publish_audio_env(&state);
+
+    /* One-time: pre-create the per-system Roms/ folders so a fresh card is ready
+       for drop-in ROMs without hunting the docs (needs ROMS_PATH above). */
+    jw__seed_rom_folders(&state);
 
     /* Export the user's time zone so launched apps (and the daemon's own
        localtime) use it. The launcher re-applies it live when changed. */
