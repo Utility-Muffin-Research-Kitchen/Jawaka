@@ -1478,7 +1478,8 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
         "g.rom_path, COALESCE(g.image_path, '') "
         "FROM games g JOIN favorites f ON f.kind = 'game' AND f.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
-        "ORDER BY f.added_at DESC, COALESCE(NULLIF(gs.value, ''), g.name) LIMIT ?;";
+        "ORDER BY COALESCE(NULLIF(gs.value, ''), g.name) COLLATE NOCASE ASC, "
+        "         f.added_at DESC LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
