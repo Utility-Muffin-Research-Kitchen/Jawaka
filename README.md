@@ -231,6 +231,20 @@ Jawaka exports Catastrophe `CAT_*` appearance variables before launching
 `jawaka-launcher`, `jawaka-menu`, and Catastrophe-based `.pak` apps. Apps should
 consume the inherited environment rather than read Jawaka's SQLite DB.
 
+### Suspend inhibitors
+
+Long-running apps can acquire a daemon-owned `block-suspend` lease over the
+length-prefixed JSON socket at `UMRK_DAEMON_SOCKET`. The request types are
+`suspend-inhibit-acquire`, `suspend-inhibit-release`, and
+`suspend-inhibit-status`. Jawaka derives ownership from Unix peer credentials,
+reaps dead holders, keeps stage-1 screen blanking active, and defers only deep
+suspend until the final lease is released. Status diagnostics expose holder
+reasons and age, never opaque tokens.
+
+Use `make suspend-inhibit-test suspend-inhibit-ipc-smoke` for native policy and
+IPC coverage. `make mlp1-adb-inhibit-smoke` runs the intentionally intrusive
+device suspend/reap smoke after `CONFIRM_SUSPEND_SMOKE=1` is supplied.
+
 ## Repo Notes
 
 - `scripts/mockgen.sh` creates the local mock SD-card tree.

@@ -8,7 +8,7 @@ BUILD ?= build/mlp1
 CATASTROPHE_DIR ?= /workspace/Catastrophe
 MLP1_BUILD_PROFILE ?= release
 
-.PHONY: all pakrat-smoke clean
+.PHONY: all pakrat-smoke inhibit-smoke clean
 
 all:
 	$(MAKE) -C "$(JAWAKA_DIR)" \
@@ -27,6 +27,15 @@ pakrat-smoke:
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
 		jawaka-pakrat-smoke
+
+inhibit-smoke:
+	$(MAKE) -C "$(JAWAKA_DIR)" \
+		BUILD="$(BUILD)" \
+		CSTD="-std=gnu11" \
+		PLATFORM=mlp1 \
+		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
+		jawaka-inhibitctl jawaka-platformctl
 
 clean:
 	$(MAKE) -C "$(JAWAKA_DIR)" BUILD="$(BUILD)" clean

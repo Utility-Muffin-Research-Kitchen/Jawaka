@@ -2,6 +2,7 @@
 #define JW_IPC_H
 
 #include <stddef.h>
+#include <sys/types.h>
 
 #define JW_IPC_MAX_FRAME (16u * 1024u * 1024u)
 
@@ -18,6 +19,8 @@ void jw_ipc_server_close(jw_ipc_server *server);
 int  jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out);
 int  jw_ipc_client_send(jw_ipc_client *client, const char *json, size_t len);
 int  jw_ipc_client_recv(jw_ipc_client *client, char **out_json, size_t *out_len);
+/* Resolves the server-side Unix peer pid from kernel credentials. */
+int  jw_ipc_client_peer_pid(jw_ipc_client *client, pid_t *out_pid);
 void jw_ipc_client_close(jw_ipc_client *client);
 
 int  jw_ipc_request(const char *socket_path, const char *json, size_t len, char **out_json, size_t *out_len);

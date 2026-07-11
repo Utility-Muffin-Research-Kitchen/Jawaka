@@ -8,6 +8,7 @@
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/paths.h"
 #include "internal/platform/wifi.h"
+#include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/retroarch/states.h"
@@ -81,7 +82,8 @@ typedef enum {
 typedef enum {
     JW_STANDBY_NONE = 0,
     JW_STANDBY_AUTOSLEEP,
-    JW_STANDBY_POWER_CHARGING
+    JW_STANDBY_POWER_CHARGING,
+    JW_STANDBY_INHIBITED_POWER
 } jw_standby_reason;
 
 typedef struct {
@@ -205,6 +207,8 @@ typedef struct {
     bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
     bool      power_held;                 /* power key currently held (for long-press detect) */
     long long power_down_ms;              /* when the current power press started */
+    jw_suspend_inhibitor suspend_inhibitor;
+    jw_suspend_policy    suspend_policy;
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
     long long hdmi_next_poll_ms;          /* throttle for the HDMI hotplug poll */
     long long hdmi_revert_deadline_ms;    /* 0 = none; auto-revert 1080p120 if not kept */
@@ -659,6 +663,10 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
 
     setenv("JAWAKA_RUNTIME_DIR", state->runtime_dir, 1);
     setenv("JAWAKA_SDCARD_ROOT", state->sdcard_root, 1);
+    jw__setenv_default("UMRK_DAEMON_SOCKET", state->socket_path);
+    if (getenv("UMRK_DAEMON_SOCKET")) {
+        setenv("JAWAKA_SOCKET_PATH", getenv("UMRK_DAEMON_SOCKET"), 1);
+    }
     if (getenv("UMRK_RETROARCH_BIN")) {
         setenv("JAWAKA_RETROARCH_BIN", getenv("UMRK_RETROARCH_BIN"), 1);
     }
@@ -5310,6 +5318,19 @@ static void jw__autosleep_sync_platform(jw_daemon_state *state) {
    that queued while asleep (gamepad replay + the wake press itself) and reset the
    idle timer so the countdown restarts fresh after waking. */
 static void jw__deep_suspend(jw_daemon_state *state) {
+    int active_leases = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+    if (active_leases > 0) {
+        bool newly_pending = state->suspend_policy.pending == JW_SUSPEND_PENDING_NONE;
+        if (newly_pending) state->suspend_policy.pending = JW_SUSPEND_PENDING_EXPLICIT;
+        if (!jw__standby_active(state)) {
+            jw__enter_standby_screen_off(state, JW_STANDBY_INHIBITED_POWER, true);
+        }
+        if (newly_pending) {
+            jw_log_info("sleep: deferred by %d suspend inhibitor lease(s)", active_leases);
+        }
+        return;
+    }
+    state->suspend_policy.pending = JW_SUSPEND_PENDING_NONE;
     jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
     jw__screen_set(state, false);
     jw_input_proxy_set_swallow(&state->input_proxy, true);
@@ -5333,6 +5354,29 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     state->standby_entered_ms = 0;
     state->autosleep_charging_logged = false;
     state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
+}
+
+static void jw__tick_suspend_inhibitors(jw_daemon_state *state) {
+    int reaped = jw_suspend_inhibitor_reap(&state->suspend_inhibitor);
+    if (reaped > 0) {
+        jw_log_info("suspend-inhibit: reaped %d dead holder lease(s); active=%d",
+                    reaped, jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    }
+    /* Let the auto-sleep tick below process and log wake activity before a
+       last-release transition can perform a queued suspend. */
+    if (state->suspend_policy.pending != JW_SUSPEND_PENDING_NONE &&
+        jw__standby_has_wake_activity(state)) {
+        return;
+    }
+    jw_suspend_pending pending = state->suspend_policy.pending;
+    jw_suspend_decision decision = jw_suspend_policy_leases_changed(
+        &state->suspend_policy,
+        jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    if (decision == JW_SUSPEND_DECISION_DEEP_SLEEP) {
+        jw_log_info("sleep: performing pending %s suspend after last inhibitor release",
+                    pending == JW_SUSPEND_PENDING_EXPLICIT ? "explicit" : "automatic");
+        jw__deep_suspend(state);
+    }
 }
 
 /* HDMI hotplug: on plug, apply the persisted HDMI output mode (4:3/stretch); on
@@ -5482,6 +5526,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             state->power_held = false;
             if (was_held && held_ms >= JW_POWER_LONGPRESS_MS) {
                 state->power_sleep_armed = false;
+                jw_suspend_policy_long_press(&state->suspend_policy);
                 jw_log_info("power: long-press (%lldms) -> clean power off", held_ms);
                 jw_platform_result poff;
                 jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
@@ -5489,7 +5534,13 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             }
             if (state->power_sleep_armed) {
                 state->power_sleep_armed = false;
-                if (jw__charging_online(state, true)) {
+                int active_leases = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+                if (active_leases > 0) {
+                    jw_suspend_policy_power_tap(&state->suspend_policy, active_leases);
+                    jw_log_info("power: sleep tap deferred by %d suspend inhibitor lease(s)",
+                                active_leases);
+                    jw__enter_standby_screen_off(state, JW_STANDBY_INHIBITED_POWER, true);
+                } else if (jw__charging_online(state, true)) {
                     jw_log_info("power: standby while charging (tap)");
                     jw__enter_standby_screen_off(state, JW_STANDBY_POWER_CHARGING, true);
                 } else {
@@ -5504,6 +5555,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         if (state->power_held && now - state->power_down_ms >= JW_POWER_LONGPRESS_MS) {
             state->power_held = false;
             state->power_sleep_armed = false;
+            jw_suspend_policy_long_press(&state->suspend_policy);
             jw_log_info("power: long-press -> clean power off");
             jw_platform_result poff;
             jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
@@ -5512,6 +5564,13 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     }
 
     if (jw__standby_has_wake_activity(state)) {
+        jw_suspend_pending cancelled =
+            jw_suspend_policy_cancel_for_activity(&state->suspend_policy);
+        if (cancelled == JW_SUSPEND_PENDING_AUTO) {
+            jw_log_info("auto-sleep: pending suspend cancelled by user input");
+        } else if (cancelled == JW_SUSPEND_PENDING_EXPLICIT) {
+            jw_log_info("power: explicit pending sleep cancelled by user input");
+        }
         jw_log_info("standby: wake on input");
         jw__leave_standby_screen_off(state);
         return;
@@ -5585,6 +5644,20 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     }
 
     /* Stage 2 — real suspend-to-RAM. */
+    bool newly_inhibited = state->suspend_policy.pending == JW_SUSPEND_PENDING_NONE;
+    jw_suspend_decision sleep_decision = jw_suspend_policy_auto_stage2(
+        &state->suspend_policy,
+        jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    if (sleep_decision == JW_SUSPEND_DECISION_SCREEN_OFF) {
+        if (newly_inhibited) {
+            jw_log_info("auto-sleep: deep suspend deferred by %d inhibitor lease(s)",
+                        jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+        }
+        if (!jw__standby_active(state)) {
+            jw__enter_standby_screen_off(state, JW_STANDBY_AUTOSLEEP, false);
+        }
+        return;
+    }
     jw_log_info("auto-sleep: suspending (idle %llums)", (unsigned long long)idle_ms);
     jw__deep_suspend(state);
 }
@@ -5988,6 +6061,96 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
     return jw__reply_retroarch_result(client, action, result);
 }
 
+static pid_t jw__suspend_request_pid(jw_ipc_client *client, cJSON *request) {
+    pid_t pid = 0;
+    if (jw_ipc_client_peer_pid(client, &pid) == 0 && pid > 0) return pid;
+#if defined(__APPLE__)
+    /* Native/mock-only fallback for platforms without Unix peer credentials. */
+    cJSON *test_pid = cJSON_GetObjectItemCaseSensitive(request, "test_pid");
+    if (cJSON_IsNumber(test_pid) && test_pid->valueint > 0)
+        return (pid_t)test_pid->valueint;
+#else
+    (void)request;
+#endif
+    return 0;
+}
+
+static int jw__reply_suspend_acquired(jw_ipc_client *client, const char *token,
+                                      int active_count) {
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "suspend-inhibit-acquired");
+    cJSON_AddStringToObject(reply, "token", token);
+    cJSON_AddNumberToObject(reply, "active_count", active_count);
+    return jw__reply_json(client, reply);
+}
+
+static int jw__reply_suspend_status(jw_daemon_state *state, jw_ipc_client *client) {
+    jw_suspend_inhibitor_reap(&state->suspend_inhibitor);
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "suspend-inhibit-status");
+    cJSON_AddNumberToObject(reply, "active_count",
+                            jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    cJSON *holders = cJSON_AddArrayToObject(reply, "holders");
+    long long now = jw__monotonic_ms();
+    for (int i = 0; i < JW_SUSPEND_INHIBIT_MAX_LEASES; i++) {
+        const jw_suspend_lease *lease = &state->suspend_inhibitor.leases[i];
+        if (!lease->active) continue;
+        cJSON *holder = cJSON_CreateObject();
+        cJSON_AddNumberToObject(holder, "pid", (double)lease->pid);
+        cJSON_AddStringToObject(holder, "scope", lease->scope);
+        cJSON_AddStringToObject(holder, "reason", lease->reason);
+        cJSON_AddNumberToObject(holder, "age_ms",
+                                now > lease->acquired_ms ? (double)(now - lease->acquired_ms) : 0);
+        cJSON_AddItemToArray(holders, holder);
+    }
+    cJSON_AddStringToObject(reply, "pending_sleep",
+        state->suspend_policy.pending == JW_SUSPEND_PENDING_EXPLICIT ? "explicit" :
+        state->suspend_policy.pending == JW_SUSPEND_PENDING_AUTO ? "automatic" : "none");
+    return jw__reply_json(client, reply);
+}
+
+static int jw__handle_suspend_inhibit(jw_daemon_state *state,
+                                      jw_ipc_client *client,
+                                      cJSON *request,
+                                      const char *type) {
+    if (strcmp(type, "suspend-inhibit-status") == 0)
+        return jw__reply_suspend_status(state, client);
+
+    pid_t pid = jw__suspend_request_pid(client, request);
+    if (pid <= 0) return jw__reply_error(client, "Unix peer pid unavailable");
+
+    if (strcmp(type, "suspend-inhibit-acquire") == 0) {
+        cJSON *scope = cJSON_GetObjectItemCaseSensitive(request, "scope");
+        cJSON *reason = cJSON_GetObjectItemCaseSensitive(request, "reason");
+        if (!cJSON_IsString(scope) || !scope->valuestring ||
+            !cJSON_IsString(reason) || !reason->valuestring)
+            return jw__reply_error(client, "missing suspend inhibitor scope or reason");
+        char token[JW_SUSPEND_INHIBIT_TOKEN_LEN + 1];
+        jw_suspend_lease_result result = jw_suspend_inhibitor_acquire(
+            &state->suspend_inhibitor, pid, scope->valuestring, reason->valuestring,
+            jw__monotonic_ms(), token);
+        if (result != JW_SUSPEND_LEASE_OK)
+            return jw__reply_error(client, jw_suspend_lease_result_name(result));
+        int count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+        jw_log_info("suspend-inhibit: acquired pid=%d reason=%s active=%d",
+                    (int)pid, reason->valuestring, count);
+        return jw__reply_suspend_acquired(client, token, count);
+    }
+
+    cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "token");
+    if (!cJSON_IsString(token) || !token->valuestring)
+        return jw__reply_error(client, "missing suspend inhibitor token");
+    bool released = false;
+    jw_suspend_lease_result result = jw_suspend_inhibitor_release(
+        &state->suspend_inhibitor, pid, token->valuestring, &released);
+    if (result != JW_SUSPEND_LEASE_OK)
+        return jw__reply_error(client, jw_suspend_lease_result_name(result));
+    int count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+    jw_log_info("suspend-inhibit: %s pid=%d active=%d",
+                released ? "released" : "duplicate release", (int)pid, count);
+    return jw__reply_ok(client, "suspend-inhibit-release", NULL);
+}
+
 static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, const char *body) {
     cJSON *root = cJSON_Parse(body);
     if (!root) {
@@ -5999,6 +6162,14 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     if (!cJSON_IsString(type) || !type->valuestring) {
         cJSON_Delete(root);
         return jw__reply_error(client, "missing type");
+    }
+
+    if (strcmp(type->valuestring, "suspend-inhibit-acquire") == 0 ||
+        strcmp(type->valuestring, "suspend-inhibit-release") == 0 ||
+        strcmp(type->valuestring, "suspend-inhibit-status") == 0) {
+        int rc = jw__handle_suspend_inhibit(state, client, root, type->valuestring);
+        cJSON_Delete(root);
+        return rc;
     }
 
     if (strcmp(type->valuestring, "hello") == 0) {
@@ -6342,7 +6513,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
                 jw__publish_audio_env(state);
             }
         } else if (action == JW_PLATFORM_ACTION_SLEEP) {
-            jw__platform_sleep_with_performance(state, &result);
+            bool inhibited = jw_suspend_inhibitor_count(&state->suspend_inhibitor) > 0;
+            jw__deep_suspend(state);
+            memset(&result, 0, sizeof(result));
+            result.code = JW_PLATFORM_RESULT_OK;
+            snprintf(result.message, sizeof(result.message), "%s",
+                     inhibited ? "sleep pending: suspend inhibited" : "sleep resumed");
         } else if (action == JW_PLATFORM_ACTION_BLUETOOTH_ON ||
                    action == JW_PLATFORM_ACTION_BLUETOOTH_OFF) {
             jw_platform_perform_action(&state->platform, action, value, &result);
@@ -6744,6 +6920,13 @@ static void jw__cleanup(jw_daemon_state *state) {
     jw_update_check_job_wait(&state->update_check_job);
     jw_scrape_worker_stop();
     jw__scan_job_shutdown(state);
+    int inhibitor_count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+    if (inhibitor_count > 0) {
+        jw_log_info("suspend-inhibit: releasing %d lease(s) on daemon shutdown",
+                    inhibitor_count);
+    }
+    jw_suspend_inhibitor_clear(&state->suspend_inhibitor);
+    jw_suspend_policy_init(&state->suspend_policy);
     jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
@@ -6775,6 +6958,8 @@ int main(int argc, char *argv[]) {
     state.perf_active_profile = JW_PLATFORM_PERF_PROFILE_FRONTEND;
     state.perf_session_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
     jw__perf_request_init(&state.perf_custom_request);
+    jw_suspend_inhibitor_init(&state.suspend_inhibitor);
+    jw_suspend_policy_init(&state.suspend_policy);
     jw_update_download_job_init(&state.update_download_job);
     jw_update_install_job_init(&state.update_install_job);
     jw_update_check_job_init(&state.update_check_job);
@@ -6983,6 +7168,7 @@ int main(int argc, char *argv[]) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
         }
         jw__tick_retroarch_audio_reinit(&state);
+        jw__tick_suspend_inhibitors(&state);
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
         if (jw_platform_storage_tick(&state.platform)) {

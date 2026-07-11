@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 struct jw_ipc_server {
@@ -305,6 +306,31 @@ int jw_ipc_client_recv(jw_ipc_client *client, char **out_json, size_t *out_len) 
     *out_json = json;
     *out_len = (size_t)payload_len;
     return 0;
+}
+
+int jw_ipc_client_peer_pid(jw_ipc_client *client, pid_t *out_pid) {
+    if (!client || !out_pid) return -1;
+#if defined(__APPLE__) && defined(LOCAL_PEERPID)
+    pid_t pid = 0;
+    socklen_t len = sizeof(pid);
+    if (getsockopt(client->fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0 && pid > 0) {
+        *out_pid = pid;
+        return 0;
+    }
+#elif defined(SO_PEERCRED)
+    struct {
+        pid_t pid;
+        uid_t uid;
+        gid_t gid;
+    } credentials;
+    socklen_t len = sizeof(credentials);
+    if (getsockopt(client->fd, SOL_SOCKET, SO_PEERCRED, &credentials, &len) == 0 &&
+        credentials.pid > 0) {
+        *out_pid = credentials.pid;
+        return 0;
+    }
+#endif
+    return -1;
 }
 
 void jw_ipc_client_close(jw_ipc_client *client) {
