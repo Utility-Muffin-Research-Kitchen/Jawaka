@@ -158,7 +158,7 @@ Important variables:
 | `PLATFORM` / `DEVICE` | platform id, usually `mac` or `mlp1` |
 | `SDCARD_PATH` | mock or device SD-card root |
 | `SDCARD_PATHS` | colon-separated SD roots, primary first |
-| `ROMS_PATHS`, `IMAGES_PATHS`, `APPS_PATHS` | plural content roots scanned by Jawaka |
+| `ROMS_PATHS`, `IMAGES_PATHS`, `MUSIC_PATHS`, `APPS_PATHS` | indexed plural content roots, aligned with `SDCARD_PATHS` |
 | `UMRK_RUNTIME_PATH` | runtime socket and scratch directory |
 | `UMRK_PLATFORM_PATH` / `SYSTEM_PATH` | platform payload root |
 | `UMRK_INTERNAL_DATA_PATH` | launcher-owned state root |
@@ -180,6 +180,7 @@ Jawaka scans content from the Leaf/UMRK SD shape:
 ```text
 Roms/<SYSTEM_CODE>/<title>.<ext>
 Images/<SYSTEM_CODE>/<title>.png
+Music/<artist>/<album>/<track>
 Apps/<platform>/<Name>.pak/
 Apps/shared/<Name>.pak/
 BIOS/

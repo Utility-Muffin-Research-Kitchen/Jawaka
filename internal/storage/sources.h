@@ -19,6 +19,7 @@ typedef struct {
     char root_abs[JW_STORAGE_PATH_MAX];
     char roms_path[JW_STORAGE_PATH_MAX];
     char images_path[JW_STORAGE_PATH_MAX];
+    char music_path[JW_STORAGE_PATH_MAX];
     char apps_path[JW_STORAGE_PATH_MAX];
     char bios_path[JW_STORAGE_PATH_MAX];
     char saves_path[JW_STORAGE_PATH_MAX];
