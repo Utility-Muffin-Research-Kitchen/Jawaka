@@ -26,6 +26,9 @@ DELAY="${DELAY:-2}"          # polite pause between downloads (seconds)
 
 # Distinct downloads: jawaka_code|libretro filename (no .png suffix).
 # One entry per unique console artwork.
+# PICO8.png is intentionally not listed: it is checked-in artwork rasterized
+# from CentralScrutinizer/web/public/platforms/PICO8.svg, not an upstream
+# Systematic PNG. Keep it when refreshing this fetched icon set.
 declare -a DOWNLOADS=(
   # Nintendo
   "GB|Nintendo - Game Boy"
@@ -141,4 +144,5 @@ if [ "${#failures[@]}" -gt 0 ]; then
   exit 1
 fi
 echo "Done. $(( ${#DOWNLOADS[@]} + ${#ALIASES[@]} )) system icons in $DEST"
-echo "Note: _tools.png and _default.png are hand-authored and shipped in the repo."
+echo "Note: _tools.png and _default.png are hand-authored; PICO8.png is a checked-in"
+echo "      rasterization of Central Scrutinizer artwork and is not fetched here."

@@ -1,8 +1,8 @@
 # Asset attribution
 
-The console icons in `system_icons/` (excluding `PORTS.png` and the original
-`_*.png` badges: `_tools.png`, `_default.png`, `_apps.png`) are derived from the
-libretro Systematic asset pack:
+The console icons in `system_icons/` (excluding `PORTS.png`, `PICO8.png`, and
+the original `_*.png` badges: `_tools.png`, `_default.png`, `_apps.png`) are
+derived from the libretro Systematic asset pack:
 
   Source:  https://git.libretro.com/libretro-assets/retroarch-assets
   Mirror:  https://github.com/libretro/retroarch-assets (same files; the GitHub
@@ -21,6 +21,12 @@ MD32X/32X, the MAME variants) are local copies of the same Systematic icon.
 `PORTS.png` is the 512px Ports artwork also used by the PortMaster manager pak.
 It is derived from the Cover Flow theme's public-domain Evan Amos source art;
 see `res/themes/Jawaka-Coverflow/system_icons/LICENSE-ASSETS.md` for attribution.
+
+`PICO8.png` is a 256px PNG rasterization of
+`CentralScrutinizer/web/public/platforms/PICO8.svg`. Its attribution follows
+Central Scrutinizer's existing libretro Systematic-theme credit (CC BY 4.0).
+It is checked into this repository because that artwork is not one of the
+upstream PNG files fetched by `scripts/fetch-system-icons.sh`.
 
 `_tools.png`, `_default.png`, and `_apps.png` (the Leaf badge, the fallback for
 apps that ship no icon) are original work, MIT-licensed under the top-level
