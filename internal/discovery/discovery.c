@@ -1375,8 +1375,8 @@ static int jw__load_name_map_file(sqlite3 *db, const char *path, int override) {
    name_map in the catalog. Source of truth is the bundled arcade_names.txt
    (generated from the core DATs); a per-folder Roms/<pattern>/map.txt lets the
    user override or add entries. A user rename lives in game_settings.display_name
-   and still wins at display time via COALESCE(display_name, name); FTS on
-   games.name (kept in sync by the games_au trigger) gives friendly search. Rows
+   and still wins over imported_display_name and games.name at display time; FTS
+   on games.name (kept in sync by the games_au trigger) gives friendly search. Rows
    with no romname match are left byte-for-byte untouched, so non-arcade systems
    and unmapped arcade roms are unaffected. */
 static int jw__apply_arcade_names(sqlite3 *db, const char *sdcard_root) {

@@ -440,8 +440,14 @@ static int jw__queue_push(const char *system, const char *rom_path) {
     row->state = JW_SCRAPE_ROW_QUEUED;
     snprintf(row->system, sizeof(row->system), "%s", system);
     snprintf(row->rom_path, sizeof(row->rom_path), "%s", rom_path);
-    jw__display_name_from_rom_path(rom_path, row->display_name,
-                                   sizeof(row->display_name));
+    jw_game_entry game;
+    if (!jw__w.db_path[0] ||
+        jw_db_get_game_by_rom_path(jw__w.db_path, rom_path, &game) != 0) {
+        jw__display_name_from_rom_path(rom_path, row->display_name,
+                                       sizeof(row->display_name));
+    } else {
+        snprintf(row->display_name, sizeof(row->display_name), "%s", game.name);
+    }
 
     jw__scrape_item *slot =
         &jw__w.queue[(jw__w.head + jw__w.count) % JW__SCRAPE_QUEUE_MAX];

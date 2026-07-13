@@ -488,10 +488,12 @@ static int jw__db_game_name(sqlite3 *db, const char *rom_path,
     }
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
-                           "SELECT COALESCE(NULLIF(gs.value, ''), g.name) "
+                           "SELECT COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) "
                            "FROM games g "
                            "LEFT JOIN game_settings gs "
                            "ON gs.game_id = g.id AND gs.key = 'display_name' "
+                           "LEFT JOIN game_settings ig "
+                           "ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
                            "WHERE g.rom_path = ? LIMIT 1;",
                            -1, &stmt, NULL) != SQLITE_OK) {
         return -1;
