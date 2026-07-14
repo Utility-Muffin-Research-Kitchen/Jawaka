@@ -149,7 +149,8 @@ int  jw_db_search_library(const char *db_path, const char *query,
 
 /* Favorites. kind is "game" or "app"; target_id is the games/apps id.
    set_favorite adds (on != 0) or removes (on == 0); it is idempotent.
-   list_favorite_games returns favorited games newest-first (by added_at). */
+   list_favorite_games returns favorited games in case-insensitive alphabetical
+   order by display name (added_at is only a tiebreaker). */
 int  jw_db_set_favorite(const char *db_path, const char *kind, int target_id, int on);
 int  jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
                                int max_count, int *out_count);

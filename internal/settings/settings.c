@@ -5231,10 +5231,19 @@ static bool jw__confirm_beta_channel(void) {
    persist the key and re-run the check against the new channel. */
 static void jw__cycle_update_channel(jw_settings_ui *ui, char *status_buf,
                                      size_t status_size) {
-    if (ui->update.download_active || ui->update.install_active ||
-        ui->update.install_armed) {
+    /* Lock the toggle while any check or transfer is in flight. A running check
+       won't restart for the new channel (the daemon no-ops a second check), so
+       the old channel's results would populate the UI; and a completed-but-
+       uninstalled download would be discarded by the re-check the switch kicks
+       off (jw__clear_candidate clears downloaded/download_path). */
+    bool checking = ui->update_have_status &&
+                    strcmp(ui->update.state, "checking") == 0;
+    if (checking || ui->update.download_active || ui->update.install_active ||
+        ui->update.install_armed || ui->update.downloaded) {
         jw__copy_status(status_buf, status_size,
-                        "Finish the current update before switching channels");
+                        checking
+                        ? "Wait for the release check to finish before switching channels"
+                        : "Finish the current update before switching channels");
         return;
     }
     bool to_beta = (ui->update_channel_index != JW_UPDATE_CHANNEL_BETA_IDX);

@@ -729,6 +729,7 @@ static void jw__seed_rom_folders(const jw_daemon_state *state) {
     mkdir(roms, 0777);   /* ensure Roms/ itself (best-effort; usually exists) */
 
     int made = 0;
+    bool all_ok = true;   /* a real (non-EEXIST) mkdir failure holds off the marker */
     for (size_t i = 0; i < catalog->system_count; i++) {
         const jw_ra_system *s = &catalog->systems[i];
         if (!s->id || !s->id[0] || s->id[0] == '_') continue;  /* skip pseudo ids (_tools) */
@@ -751,11 +752,18 @@ static void jw__seed_rom_folders(const jw_daemon_state *state) {
         if (snprintf(path, sizeof(path), "%s/%s", roms, rec) >= (int)sizeof(path))
             continue;
         if (mkdir(path, 0777) == 0) made++;
+        else if (errno != EEXIST) all_ok = false;   /* transient/permission failure -> retry */
     }
 
-    FILE *f = fopen(marker, "w");   /* mark done so this runs only once */
-    if (f) { fputs("1\n", f); fclose(f); }
-    jw_log_info("seeded %d ROM folder(s) under %s", made, roms);
+    /* Only mark done once every eligible folder exists, so a transient failure
+       (card briefly read-only, etc.) is retried on the next boot rather than
+       skipped forever. */
+    if (all_ok) {
+        FILE *f = fopen(marker, "w");
+        if (f) { fputs("1\n", f); fclose(f); }
+    }
+    jw_log_info("seeded %d ROM folder(s) under %s%s", made, roms,
+                all_ok ? "" : " (some failed; will retry next boot)");
 }
 
 static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
