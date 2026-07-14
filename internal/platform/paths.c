@@ -721,6 +721,10 @@ char *jw_state_dir(void) {
 }
 
 char *jw_socket_path(void) {
+    const char *env = getenv("UMRK_DAEMON_SOCKET");
+    if (!env || !env[0]) env = getenv("JAWAKA_SOCKET_PATH");
+    if (env && env[0]) return jw__dup_printf("%s", env);
+
     char *runtime_dir = jw_runtime_dir();
     if (!runtime_dir) {
         return NULL;

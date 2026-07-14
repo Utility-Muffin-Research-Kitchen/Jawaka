@@ -138,6 +138,7 @@ DAEMON_SRCS := \
 	$(INPUT_PROXY_SRC) \
 	internal/platform/calibration.c \
 	internal/platform/paths.c \
+	internal/power/suspend_inhibit.c \
 	internal/retroarch/catalog.c \
 	internal/retroarch/command.c \
 	internal/retroarch/states.c \
@@ -237,6 +238,11 @@ UPDATE_SMOKE_SRCS := \
 	internal/update/sha256.c \
 	third_party/cjson/cJSON.c
 
+INHIBIT_CTL_SRCS := \
+	cmd/jawaka-inhibitctl/main.c \
+	internal/ipc/ipc.c \
+	third_party/cjson/cJSON.c
+
 UI_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
@@ -290,7 +296,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-update-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-update-smoke jawaka-inhibitctl storage-sources-test imported-title-test imported-title-ipc-smoke suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-inhibit-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -314,6 +320,28 @@ jawaka-scrape-smoke: $(BUILD)/bin/jawaka-scrape-smoke
 jawaka-pakrat-smoke: $(BUILD)/bin/jawaka-pakrat-smoke
 jawaka-catalog-smoke: $(BUILD)/bin/jawaka-catalog-smoke
 jawaka-update-smoke: $(BUILD)/bin/jawaka-update-smoke
+jawaka-inhibitctl: $(BUILD)/bin/jawaka-inhibitctl
+
+storage-sources-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/storage-sources-test \
+		internal/storage/sources_test.c internal/storage/sources.c
+	$(BUILD)/bin/storage-sources-test
+
+imported-title-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/imported-title-test \
+		internal/db/imported_title_test.c internal/db/db.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/imported-title-test
+
+imported-title-ipc-smoke:
+	scripts/imported-title-ipc-smoke.sh
+
+suspend-inhibit-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/suspend-inhibit-test \
+		internal/power/suspend_inhibit_test.c internal/power/suspend_inhibit.c
+	$(BUILD)/bin/suspend-inhibit-test
+
+suspend-inhibit-ipc-smoke:
+	scripts/suspend-inhibit-ipc-smoke.sh
 
 update-local-manifest-smoke:
 	@scripts/update-local-manifest-smoke.sh
@@ -378,6 +406,9 @@ $(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
 
 $(BUILD)/bin/jawaka-update-smoke: $(UPDATE_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -o $@ $(UPDATE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread
+
+$(BUILD)/bin/jawaka-inhibitctl: $(INHIBIT_CTL_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(INHIBIT_CTL_SRCS)
 
 ifeq ($(PLATFORM),mlp1)
 $(BUILD)/bin/jawaka-ledd: cmd/jawaka-ledd/main.c | $(BUILD)/bin
@@ -480,8 +511,19 @@ mlp1-pakrat-smoke:
 		"$(MLP1_TOOLCHAIN_IMAGE)" \
 		make -f ports/mlp1/Makefile pakrat-smoke
 
+mlp1-inhibit-smoke:
+	docker run --rm \
+		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		-v "$(WORKSPACE_ROOT)":/workspace \
+		-w /workspace/Jawaka \
+		"$(MLP1_TOOLCHAIN_IMAGE)" \
+		make -f ports/mlp1/Makefile inhibit-smoke
+
 mlp1-adb-smoke:
 	scripts/adb-mlp1-smoke.sh
+
+mlp1-adb-inhibit-smoke:
+	scripts/adb-mlp1-suspend-inhibit-smoke.sh
 
 mlp1-adb-input-capture:
 	scripts/adb-mlp1-input-capture.sh
@@ -503,6 +545,8 @@ help:
 	@echo "  make run-menu                Run jawaka-menu directly"
 	@echo "  make jawaka-osd              Build the daemon-owned brightness OSD"
 	@echo "  make jawaka-platformctl      Build platform status/control helper"
+	@echo "  make jawaka-inhibitctl       Build suspend-inhibitor diagnostic helper"
+	@echo "  make suspend-inhibit-test suspend-inhibit-ipc-smoke  Run native lease/power tests"
 	@echo "  make jawaka-retroarch-runner Build RetroArch app/config runner"
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
@@ -515,6 +559,7 @@ help:
 	@echo "  make my355         Placeholder cross-compile target"
 	@echo "  make mlp1          Cross-compile for Miniloong Pocket 1"
 	@echo "  make mlp1-pakrat-smoke  Cross-compile local Pak Rat smoke helper for MLP1"
+	@echo "  make mlp1-adb-inhibit-smoke  Run the RTC-woken MLP1 suspend/reap smoke"
 	@echo "  make mlp1-adb-smoke  Build, push to /tmp, and run an ADB UI smoke"
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"
 	@echo "  make mlp1-adb-ra-command-smoke  Run RetroArch command feature smoke over ADB"

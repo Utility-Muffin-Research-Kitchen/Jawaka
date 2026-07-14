@@ -160,6 +160,9 @@ int jw_storage_sources_resolve(const char *primary_root, jw_storage_source_list 
                 jw__source_child_path("IMAGES_PATHS", "IMAGES_PATH", source->root,
                                       "Images", index, source->images_path,
                                       sizeof(source->images_path)) != 0 ||
+                jw__source_child_path("MUSIC_PATHS", "MUSIC_PATH", source->root,
+                                      "Music", index, source->music_path,
+                                      sizeof(source->music_path)) != 0 ||
                 jw__source_child_path("APPS_PATHS", "APPS_PATH", source->root,
                                       "Apps", index, source->apps_path,
                                       sizeof(source->apps_path)) != 0 ||

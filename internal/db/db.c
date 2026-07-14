@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define JW_DB_SCHEMA_VERSION 5
@@ -247,6 +248,149 @@ int jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const c
     }
 
     return jw__mark_seen(db, "INSERT OR IGNORE INTO _seen_games (rom_path) VALUES (?);", rom_path);
+}
+
+typedef struct {
+    int   game_id;
+    char *scanned_name;
+} jw__imported_title_match;
+
+static int jw__upsert_game_setting(sqlite3_stmt *stmt, int game_id,
+                                   const char *key, const char *value) {
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    sqlite3_bind_int(stmt, 1, game_id);
+    sqlite3_bind_text(stmt, 2, key, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, value, -1, SQLITE_TRANSIENT);
+    return sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+}
+
+int jw_db_apply_imported_title_groups(sqlite3 *db,
+                                      const jw_db_imported_title_group *groups,
+                                      int group_count,
+                                      jw_db_imported_title_result *out) {
+    static const char *lookup_sql =
+        "SELECT id, name FROM games WHERE rom_path = ? LIMIT 1;";
+    static const char *upsert_sql =
+        "INSERT INTO game_settings (game_id, key, value, updated_at) "
+        "VALUES (?, ?, ?, strftime('%s','now')) "
+        "ON CONFLICT(game_id, key) DO UPDATE SET "
+        "value = excluded.value, updated_at = excluded.updated_at;";
+    sqlite3_stmt *lookup = NULL;
+    sqlite3_stmt *upsert = NULL;
+    jw_db_imported_title_result result = {0};
+    int status = -1;
+
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!db || group_count < 0 || (group_count > 0 && !groups)) {
+        return -1;
+    }
+    if (group_count == 0) {
+        return 0;
+    }
+    if (sqlite3_prepare_v2(db, lookup_sql, -1, &lookup, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db, upsert_sql, -1, &upsert, NULL) != SQLITE_OK ||
+        sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+        goto done;
+    }
+
+    for (int i = 0; i < group_count; i++) {
+        const jw_db_imported_title_group *group = &groups[i];
+        if (!group->provider || !group->provider[0] || !group->title ||
+            !group->title[0] || !group->rom_paths || group->rom_path_count <= 0) {
+            goto rollback;
+        }
+        result.groups++;
+        result.paths += group->rom_path_count;
+
+        jw__imported_title_match *matches =
+            calloc((size_t)group->rom_path_count, sizeof(*matches));
+        if (!matches) {
+            goto rollback;
+        }
+        int match_count = 0;
+        for (int p = 0; p < group->rom_path_count; p++) {
+            const char *rom_path = group->rom_paths[p];
+            if (!rom_path || !rom_path[0]) {
+                free(matches);
+                goto rollback;
+            }
+            sqlite3_reset(lookup);
+            sqlite3_clear_bindings(lookup);
+            sqlite3_bind_text(lookup, 1, rom_path, -1, SQLITE_TRANSIENT);
+            int rc = sqlite3_step(lookup);
+            if (rc == SQLITE_DONE) {
+                result.unmatched++;
+                continue;
+            }
+            if (rc != SQLITE_ROW) {
+                free(matches);
+                goto rollback;
+            }
+            const unsigned char *name = sqlite3_column_text(lookup, 1);
+            matches[match_count].game_id = sqlite3_column_int(lookup, 0);
+            matches[match_count].scanned_name = strdup(name ? (const char *)name : "");
+            if (!matches[match_count].scanned_name) {
+                for (int m = 0; m < match_count; m++) free(matches[m].scanned_name);
+                free(matches);
+                goto rollback;
+            }
+            match_count++;
+            result.matched++;
+        }
+
+        for (int m = 0; m < match_count; m++) {
+            const char *imported = group->title;
+            char *composed = NULL;
+            if (match_count > 1) {
+                size_t needed = strlen(group->title) + strlen(matches[m].scanned_name) + 6u;
+                composed = malloc(needed);
+                if (!composed) {
+                    for (int n = 0; n < match_count; n++) free(matches[n].scanned_name);
+                    free(matches);
+                    goto rollback;
+                }
+                snprintf(composed, needed, "%s — %s", group->title,
+                         matches[m].scanned_name);
+                imported = composed;
+            }
+            if (jw__upsert_game_setting(upsert, matches[m].game_id,
+                                        JW_GAME_SETTING_IMPORTED_DISPLAY_NAME,
+                                        imported) != 0 ||
+                jw__upsert_game_setting(upsert, matches[m].game_id,
+                                        JW_GAME_SETTING_IMPORTED_DISPLAY_NAME_PROVIDER,
+                                        group->provider) != 0) {
+                free(composed);
+                for (int n = 0; n < match_count; n++) free(matches[n].scanned_name);
+                free(matches);
+                goto rollback;
+            }
+            free(composed);
+            result.applied++;
+        }
+        for (int m = 0; m < match_count; m++) free(matches[m].scanned_name);
+        free(matches);
+    }
+
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        goto rollback;
+    }
+    status = 0;
+    goto done;
+
+rollback:
+    (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    status = -1;
+
+done:
+    sqlite3_finalize(lookup);
+    sqlite3_finalize(upsert);
+    if (status == 0 && out) {
+        *out = result;
+    }
+    return status;
 }
 
 int jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version) {
@@ -498,8 +642,17 @@ int jw_db_read_stats(const char *db_path, jw_library_stats *out) {
 
     /* Most-played games (only those actually played). */
     if (sqlite3_prepare_v2(db,
-            "SELECT name, system, playtime_s, COALESCE(last_played, 0) FROM games "
-            "WHERE playtime_s > 0 ORDER BY playtime_s DESC, name LIMIT ?;",
+            "SELECT COALESCE(NULLIF(manual.value, ''), NULLIF(imported.value, ''), g.name), "
+            "       g.system, g.playtime_s, COALESCE(g.last_played, 0) "
+            "FROM games g "
+            "LEFT JOIN game_settings manual "
+            "  ON manual.game_id = g.id AND manual.key = 'display_name' "
+            "LEFT JOIN game_settings imported "
+            "  ON imported.game_id = g.id AND imported.key = 'imported_display_name' "
+            "WHERE g.playtime_s > 0 "
+            "ORDER BY g.playtime_s DESC, "
+            "         COALESCE(NULLIF(manual.value, ''), NULLIF(imported.value, ''), g.name) "
+            "LIMIT ?;",
             -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int(st, 1, JW_STATS_TOP_MAX);
         while (sqlite3_step(st) == SQLITE_ROW && out->top_count < JW_STATS_TOP_MAX) {
@@ -602,7 +755,13 @@ int jw_db_read_summary(const char *db_path, jw_library_summary *out) {
         out->systems_summary, sizeof(out->systems_summary));
     rc |= jw__query_string(db,
         "SELECT group_concat(name, ', ') FROM ("
-        "SELECT name FROM games ORDER BY name LIMIT 4"
+        "SELECT COALESCE(NULLIF(manual.value, ''), NULLIF(imported.value, ''), g.name) AS name "
+        "FROM games g "
+        "LEFT JOIN game_settings manual "
+        "  ON manual.game_id = g.id AND manual.key = 'display_name' "
+        "LEFT JOIN game_settings imported "
+        "  ON imported.game_id = g.id AND imported.key = 'imported_display_name' "
+        "ORDER BY name LIMIT 4"
         ");",
         out->sample_summary, sizeof(out->sample_summary));
 
@@ -1136,12 +1295,13 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
     }
 
     static const char *sql =
-        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), g.name), "
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.rom_path, COALESCE(g.image_path, ''), "
         "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
-        "WHERE g.system = ? ORDER BY COALESCE(NULLIF(gs.value, ''), g.name) LIMIT ?;";
+        "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
+        "WHERE g.system = ? ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -1244,11 +1404,12 @@ int jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
     }
 
     static const char *sql =
-        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), g.name), "
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.rom_path, COALESCE(g.image_path, ''), "
         "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
+        "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
         "WHERE g.rom_path = ? LIMIT 1;";
 
     sqlite3_stmt *stmt = NULL;
@@ -1474,11 +1635,12 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
     }
 
     static const char *sql =
-        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), g.name), "
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.rom_path, COALESCE(g.image_path, '') "
         "FROM games g JOIN favorites f ON f.kind = 'game' AND f.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
-        "ORDER BY COALESCE(NULLIF(gs.value, ''), g.name) COLLATE NOCASE ASC, "
+        "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
+        "ORDER BY COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name) COLLATE NOCASE ASC, "
         "         f.added_at DESC LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
@@ -1597,11 +1759,12 @@ int jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
     /* Most-recently-opened first; carry the favorite flag so recents rows show
        the star too. */
     static const char *sql =
-        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), g.name), "
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.rom_path, COALESCE(g.image_path, ''), "
         "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
         "FROM games g JOIN recents r ON r.kind = 'game' AND r.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
+        "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
         "ORDER BY r.last_opened DESC LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
@@ -1756,19 +1919,21 @@ int jw_db_search_library(const char *db_path, const char *query,
 
     static const char *sql =
         "SELECT kind, name, system, rom_path, image_path, pak_dir, icon FROM ("
-        "  SELECT 0 AS kind, COALESCE(NULLIF(gs.value, ''), games.name) AS name, games.system AS system,"
+        "  SELECT 0 AS kind, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) AS name, games.system AS system,"
         "         games.rom_path AS rom_path, COALESCE(games.image_path, '') AS image_path,"
         "         '' AS pak_dir, '' AS icon, bm25(games_fts) AS score"
         "    FROM games_fts JOIN games ON games_fts.rowid = games.id"
         "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
+        "    LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name'"
         "   WHERE games_fts MATCH ?"
         "  UNION ALL"
-        "  SELECT 0 AS kind, gs.value AS name, games.system AS system,"
+        "  SELECT 0 AS kind, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) AS name, games.system AS system,"
         "         games.rom_path AS rom_path, COALESCE(games.image_path, '') AS image_path,"
         "         '' AS pak_dir, '' AS icon, 1000000.0 AS score"
-        "    FROM games JOIN game_settings gs ON gs.game_id = games.id"
-        "   WHERE gs.key = 'display_name' AND gs.value <> ''"
-        "     AND lower(gs.value) LIKE ?"
+        "    FROM games"
+        "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
+        "    LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name'"
+        "   WHERE lower(COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name)) LIKE ?"
         "     AND games.id NOT IN (SELECT rowid FROM games_fts WHERE games_fts MATCH ?)"
         "  UNION ALL"
         "  SELECT 1 AS kind, apps.name AS name, '' AS system,"

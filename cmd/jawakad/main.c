@@ -8,6 +8,7 @@
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/paths.h"
 #include "internal/platform/wifi.h"
+#include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/retroarch/states.h"
@@ -18,6 +19,7 @@
 #include "internal/update/update.h"
 
 #include <dirent.h>
+#include <ctype.h>
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
@@ -25,6 +27,7 @@
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,7 +84,8 @@ typedef enum {
 typedef enum {
     JW_STANDBY_NONE = 0,
     JW_STANDBY_AUTOSLEEP,
-    JW_STANDBY_POWER_CHARGING
+    JW_STANDBY_POWER_CHARGING,
+    JW_STANDBY_INHIBITED_POWER
 } jw_standby_reason;
 
 typedef struct {
@@ -107,6 +111,21 @@ typedef struct {
     char diagnostic[256];
 } jw_launch_target;
 
+#define JW_SCAN_TITLE_PROVIDER_MAX 96
+#define JW_SCAN_TITLE_MAX 256
+
+typedef struct {
+    char   provider[JW_SCAN_TITLE_PROVIDER_MAX];
+    char   title[JW_SCAN_TITLE_MAX];
+    char **rom_paths;
+    int    rom_path_count;
+} jw_scan_title_group;
+
+typedef struct {
+    jw_scan_title_group *groups;
+    int                  group_count;
+} jw_scan_title_list;
+
 typedef struct {
     pthread_t       thread;
     pthread_mutex_t mu;
@@ -123,6 +142,10 @@ typedef struct {
     long long       started_ms;
     long long       finished_ms;
     jw_scan_result  result;
+    jw_scan_title_list titles;
+    jw_scan_title_list pending_titles;
+    jw_db_imported_title_result title_result;
+    char            title_error[160];
     char            error[160];
 } jw_scan_job;
 
@@ -205,6 +228,8 @@ typedef struct {
     bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
     bool      power_held;                 /* power key currently held (for long-press detect) */
     long long power_down_ms;              /* when the current power press started */
+    jw_suspend_inhibitor suspend_inhibitor;
+    jw_suspend_policy    suspend_policy;
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
     long long hdmi_next_poll_ms;          /* throttle for the HDMI hotplug poll */
     long long hdmi_revert_deadline_ms;    /* 0 = none; auto-revert 1080p120 if not kept */
@@ -221,6 +246,158 @@ typedef struct {
     jw_update_install_job update_install_job;
     jw_update_check_job update_check_job;
 } jw_daemon_state;
+
+static void jw__scan_title_list_free(jw_scan_title_list *list) {
+    if (!list) return;
+    for (int i = 0; i < list->group_count; i++) {
+        for (int p = 0; p < list->groups[i].rom_path_count; p++) {
+            free(list->groups[i].rom_paths[p]);
+        }
+        free(list->groups[i].rom_paths);
+    }
+    free(list->groups);
+    memset(list, 0, sizeof(*list));
+}
+
+static size_t jw__scan_title_list_bytes(const jw_scan_title_list *list) {
+    /* This is a conservative serialized-JSON upper bound, not merely the
+       allocation size. A quoted byte can expand to a six-byte \u00xx escape;
+       structural overhead is charged per group/path. This keeps merged queued
+       requests inside the same cap as one IPC frame. */
+    size_t total = 32u;
+    if (!list) return 0;
+    for (int i = 0; i < list->group_count; i++) {
+        const jw_scan_title_group *group = &list->groups[i];
+        size_t provider_len = strlen(group->provider);
+        size_t title_len = strlen(group->title);
+        if (total > SIZE_MAX - 64u) return SIZE_MAX;
+        if (provider_len > (SIZE_MAX - total - 64u) / 6u) return SIZE_MAX;
+        total += provider_len * 6u + 64u;
+        if (title_len > (SIZE_MAX - total) / 6u) return SIZE_MAX;
+        total += title_len * 6u;
+        for (int p = 0; p < group->rom_path_count; p++) {
+            size_t path_len = strlen(group->rom_paths[p]);
+            if (total > SIZE_MAX - 8u) return SIZE_MAX;
+            if (path_len > (SIZE_MAX - total - 8u) / 6u) return SIZE_MAX;
+            total += path_len * 6u + 8u;
+        }
+    }
+    return total;
+}
+
+static int jw__scan_title_list_path_count(const jw_scan_title_list *list) {
+    int total = 0;
+    if (!list) return 0;
+    for (int i = 0; i < list->group_count; i++) {
+        if (list->groups[i].rom_path_count > INT_MAX - total) return INT_MAX;
+        total += list->groups[i].rom_path_count;
+    }
+    return total;
+}
+
+static int jw__scan_title_list_append(jw_scan_title_list *list,
+                                      const jw_scan_title_group *source) {
+    if (!list || !source || !source->provider[0] || !source->title[0] ||
+        !source->rom_paths || source->rom_path_count <= 0) {
+        return -1;
+    }
+    jw_scan_title_group *groups = realloc(
+        list->groups, (size_t)(list->group_count + 1) * sizeof(*groups));
+    if (!groups) return -1;
+    list->groups = groups;
+    jw_scan_title_group *dest = &list->groups[list->group_count];
+    memset(dest, 0, sizeof(*dest));
+    snprintf(dest->provider, sizeof(dest->provider), "%s", source->provider);
+    snprintf(dest->title, sizeof(dest->title), "%s", source->title);
+    dest->rom_paths = calloc((size_t)source->rom_path_count,
+                             sizeof(*dest->rom_paths));
+    if (!dest->rom_paths) return -1;
+    for (int p = 0; p < source->rom_path_count; p++) {
+        dest->rom_paths[p] = strdup(source->rom_paths[p]);
+        if (!dest->rom_paths[p]) {
+            for (int n = 0; n < p; n++) free(dest->rom_paths[n]);
+            free(dest->rom_paths);
+            memset(dest, 0, sizeof(*dest));
+            return -1;
+        }
+        dest->rom_path_count++;
+    }
+    list->group_count++;
+    return 0;
+}
+
+static void jw__scan_title_list_remove_path(jw_scan_title_list *list,
+                                            const char *rom_path) {
+    if (!list || !rom_path) return;
+    for (int i = 0; i < list->group_count;) {
+        jw_scan_title_group *group = &list->groups[i];
+        for (int p = 0; p < group->rom_path_count;) {
+            if (strcmp(group->rom_paths[p], rom_path) == 0) {
+                free(group->rom_paths[p]);
+                memmove(&group->rom_paths[p], &group->rom_paths[p + 1],
+                        (size_t)(group->rom_path_count - p - 1) *
+                            sizeof(*group->rom_paths));
+                group->rom_path_count--;
+                continue;
+            }
+            p++;
+        }
+        if (group->rom_path_count == 0) {
+            free(group->rom_paths);
+            memmove(&list->groups[i], &list->groups[i + 1],
+                    (size_t)(list->group_count - i - 1) * sizeof(*list->groups));
+            list->group_count--;
+            continue;
+        }
+        i++;
+    }
+}
+
+static int jw__scan_title_list_clone(jw_scan_title_list *dest,
+                                     const jw_scan_title_list *source) {
+    memset(dest, 0, sizeof(*dest));
+    if (!source) return 0;
+    for (int i = 0; i < source->group_count; i++) {
+        if (jw__scan_title_list_append(dest, &source->groups[i]) != 0) {
+            jw__scan_title_list_free(dest);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Merge by normalized ROM path. Later groups win, including when several scan
+   requests arrive while another scan is already running. */
+static int jw__scan_title_list_merge(jw_scan_title_list *dest,
+                                     const jw_scan_title_list *source) {
+    jw_scan_title_list merged;
+    if (jw__scan_title_list_clone(&merged, dest) != 0) return -1;
+    if (source) {
+        for (int i = 0; i < source->group_count; i++) {
+            const jw_scan_title_group *group = &source->groups[i];
+            for (int p = 0; p < group->rom_path_count; p++) {
+                jw__scan_title_list_remove_path(&merged, group->rom_paths[p]);
+            }
+            if (jw__scan_title_list_append(&merged, group) != 0) {
+                jw__scan_title_list_free(&merged);
+                return -1;
+            }
+        }
+    }
+    if (jw__scan_title_list_bytes(&merged) > JW_IPC_MAX_FRAME) {
+        jw__scan_title_list_free(&merged);
+        return -1;
+    }
+    jw__scan_title_list_free(dest);
+    *dest = merged;
+    return 0;
+}
+
+static void jw__scan_title_list_move(jw_scan_title_list *dest,
+                                     jw_scan_title_list *source) {
+    *dest = *source;
+    memset(source, 0, sizeof(*source));
+}
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
@@ -648,6 +825,7 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     }
     jw__setenvf_default("ROMS_PATH", "%s/Roms", state->sdcard_root);
     jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
+    jw__setenvf_default("MUSIC_PATH", "%s/Music", state->sdcard_root);
     jw__setenvf_default("APPS_PATH", "%s/Apps", state->sdcard_root);
     jw__setenvf_default("BIOS_PATH", "%s/BIOS", state->sdcard_root);
     jw__setenvf_default("SAVES_PATH", "%s/Saves", state->sdcard_root);
@@ -666,6 +844,10 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
 
     setenv("JAWAKA_RUNTIME_DIR", state->runtime_dir, 1);
     setenv("JAWAKA_SDCARD_ROOT", state->sdcard_root, 1);
+    jw__setenv_default("UMRK_DAEMON_SOCKET", state->socket_path);
+    if (getenv("UMRK_DAEMON_SOCKET")) {
+        setenv("JAWAKA_SOCKET_PATH", getenv("UMRK_DAEMON_SOCKET"), 1);
+    }
     if (getenv("UMRK_RETROARCH_BIN")) {
         setenv("JAWAKA_RETROARCH_BIN", getenv("UMRK_RETROARCH_BIN"), 1);
     }
@@ -703,6 +885,16 @@ static int jw__reply_ok(jw_ipc_client *client, const char *action, const jw_scan
         cJSON_AddNumberToObject(root, "app_count", scan_result->app_count);
         cJSON_AddNumberToObject(root, "system_count", scan_result->system_count);
     }
+    return jw__reply_json(client, root);
+}
+
+static int jw__reply_scan_ok(jw_ipc_client *client, const char *action,
+                             int title_hints_accepted) {
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "ok");
+    cJSON_AddStringToObject(root, "action", action);
+    cJSON_AddStringToObject(root, "message", action);
+    cJSON_AddNumberToObject(root, "title_hints_accepted", title_hints_accepted);
     return jw__reply_json(client, root);
 }
 
@@ -2040,6 +2232,197 @@ static void jw__bump_library_generation(jw_daemon_state *state) {
     jw__persist_library_generation(state);
 }
 
+static bool jw__scan_title_provider_valid(const char *provider) {
+    if (!provider || !provider[0] ||
+        strlen(provider) >= JW_SCAN_TITLE_PROVIDER_MAX ||
+        !isalnum((unsigned char)provider[0])) {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)provider; *p; p++) {
+        if (!isalnum(*p) && *p != '.' && *p != '_' && *p != '-') return false;
+    }
+    return true;
+}
+
+static bool jw__scan_title_text_valid(const char *title) {
+    if (!title || !title[0] || strlen(title) >= JW_SCAN_TITLE_MAX) return false;
+    for (const unsigned char *p = (const unsigned char *)title; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f) return false;
+        if (*p < 0x80) continue;
+        int need = 0;
+        unsigned int value = 0;
+        unsigned int minimum = 0;
+        if ((*p & 0xe0) == 0xc0) {
+            need = 1; value = *p & 0x1f; minimum = 0x80;
+        } else if ((*p & 0xf0) == 0xe0) {
+            need = 2; value = *p & 0x0f; minimum = 0x800;
+        } else if ((*p & 0xf8) == 0xf0) {
+            need = 3; value = *p & 0x07; minimum = 0x10000;
+        } else {
+            return false;
+        }
+        for (int i = 0; i < need; i++) {
+            p++;
+            if ((*p & 0xc0) != 0x80) return false;
+            value = (value << 6) | (*p & 0x3f);
+        }
+        if (value < minimum || value > 0x10ffff ||
+            (value >= 0xd800 && value <= 0xdfff)) return false;
+    }
+    return true;
+}
+
+static bool jw__scan_path_within(const char *path, const char *root) {
+    if (!path || !root || !root[0]) return false;
+    size_t root_len = strlen(root);
+    while (root_len > 1 && root[root_len - 1] == '/') root_len--;
+    return strncmp(path, root, root_len) == 0 &&
+           (path[root_len] == '/' || path[root_len] == '\0');
+}
+
+static int jw__normalize_scan_title_path(const jw_storage_source_list *sources,
+                                         const char *requested,
+                                         char *out, size_t out_size) {
+    char candidate[PATH_MAX];
+    char resolved[PATH_MAX];
+    struct stat st;
+    if (!sources || !requested || !requested[0] || !out || out_size == 0 ||
+        jw_storage_resolve_path(sources, requested, candidate,
+                                sizeof(candidate)) != 0 ||
+        !realpath(candidate, resolved) || stat(resolved, &st) != 0 ||
+        !S_ISREG(st.st_mode)) {
+        return -1;
+    }
+
+    const jw_storage_source *matched = NULL;
+    char matched_root[PATH_MAX] = "";
+    char matched_roms[PATH_MAX] = "";
+    for (int i = 0; i < sources->count; i++) {
+        char root[PATH_MAX];
+        char roms[PATH_MAX];
+        const jw_storage_source *source = &sources->sources[i];
+        if (!realpath(source->root, root) || !realpath(source->roms_path, roms)) {
+            continue;
+        }
+        if (jw__scan_path_within(resolved, roms) &&
+            (!matched || strlen(root) > strlen(matched_root))) {
+            matched = source;
+            snprintf(matched_root, sizeof(matched_root), "%s", root);
+            snprintf(matched_roms, sizeof(matched_roms), "%s", roms);
+        }
+    }
+    if (!matched || !jw__scan_path_within(resolved, matched_root)) return -1;
+
+    const char *inside_roms = resolved + strlen(matched_roms);
+    while (*inside_roms == '/') inside_roms++;
+    char relative[PATH_MAX];
+    char scanner_absolute[PATH_MAX];
+    int rel_len = snprintf(relative, sizeof(relative), "Roms/%s", inside_roms);
+    int abs_len = snprintf(scanner_absolute, sizeof(scanner_absolute), "%s/%s",
+                           matched->roms_path, inside_roms);
+    if (rel_len < 0 || rel_len >= (int)sizeof(relative) ||
+        abs_len < 0 || abs_len >= (int)sizeof(scanner_absolute)) {
+        return -1;
+    }
+    return jw_storage_db_path_for_source(matched, relative, scanner_absolute,
+                                         out, out_size);
+}
+
+static int jw__parse_scan_title_groups(jw_daemon_state *state, cJSON *request,
+                                       jw_scan_title_list *out,
+                                       const char **out_error) {
+    memset(out, 0, sizeof(*out));
+    cJSON *groups_json = cJSON_GetObjectItemCaseSensitive(request, "title_groups");
+    if (!groups_json) return 0;
+    if (!cJSON_IsArray(groups_json)) {
+        if (out_error) *out_error = "title_groups must be an array";
+        return -1;
+    }
+
+    jw_storage_source_list sources;
+    if (!state || jw_storage_sources_resolve(state->sdcard_root, &sources) != 0) {
+        if (out_error) *out_error = "storage sources unavailable";
+        return -1;
+    }
+
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, groups_json) {
+        cJSON *provider = cJSON_GetObjectItemCaseSensitive(item, "provider");
+        cJSON *title = cJSON_GetObjectItemCaseSensitive(item, "title");
+        cJSON *paths = cJSON_GetObjectItemCaseSensitive(item, "rom_paths");
+        if (!cJSON_IsObject(item) || !cJSON_IsString(provider) ||
+            !jw__scan_title_provider_valid(provider->valuestring) ||
+            !cJSON_IsString(title) || !jw__scan_title_text_valid(title->valuestring) ||
+            !cJSON_IsArray(paths) || cJSON_GetArraySize(paths) <= 0) {
+            if (out_error) *out_error = "invalid title group";
+            goto fail;
+        }
+
+        jw_scan_title_group group;
+        memset(&group, 0, sizeof(group));
+        snprintf(group.provider, sizeof(group.provider), "%s", provider->valuestring);
+        snprintf(group.title, sizeof(group.title), "%s", title->valuestring);
+        int requested_count = cJSON_GetArraySize(paths);
+        group.rom_paths = calloc((size_t)requested_count, sizeof(*group.rom_paths));
+        if (!group.rom_paths) {
+            if (out_error) *out_error = "out of memory";
+            goto fail;
+        }
+
+        cJSON *path_json = NULL;
+        cJSON_ArrayForEach(path_json, paths) {
+            char normalized[PATH_MAX];
+            if (!cJSON_IsString(path_json) || !path_json->valuestring[0] ||
+                jw__normalize_scan_title_path(&sources, path_json->valuestring,
+                                              normalized, sizeof(normalized)) != 0) {
+                if (out_error) *out_error = "title path is not a mounted ROM file";
+                for (int p = 0; p < group.rom_path_count; p++) free(group.rom_paths[p]);
+                free(group.rom_paths);
+                goto fail;
+            }
+            bool duplicate = false;
+            for (int p = 0; p < group.rom_path_count; p++) {
+                if (strcmp(group.rom_paths[p], normalized) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+            group.rom_paths[group.rom_path_count] = strdup(normalized);
+            if (!group.rom_paths[group.rom_path_count]) {
+                if (out_error) *out_error = "out of memory";
+                for (int p = 0; p < group.rom_path_count; p++) free(group.rom_paths[p]);
+                free(group.rom_paths);
+                goto fail;
+            }
+            group.rom_path_count++;
+        }
+        if (group.rom_path_count == 0) {
+            if (out_error) *out_error = "title group has no ROM paths";
+            free(group.rom_paths);
+            goto fail;
+        }
+
+        jw_scan_title_list one = {0};
+        if (jw__scan_title_list_append(&one, &group) != 0 ||
+            jw__scan_title_list_merge(out, &one) != 0) {
+            if (out_error) *out_error = "title groups exceed the IPC budget";
+            jw__scan_title_list_free(&one);
+            for (int p = 0; p < group.rom_path_count; p++) free(group.rom_paths[p]);
+            free(group.rom_paths);
+            goto fail;
+        }
+        jw__scan_title_list_free(&one);
+        for (int p = 0; p < group.rom_path_count; p++) free(group.rom_paths[p]);
+        free(group.rom_paths);
+    }
+    return 0;
+
+fail:
+    jw__scan_title_list_free(out);
+    return -1;
+}
+
 static void jw__scan_job_init(jw_daemon_state *state) {
     if (!state || state->scan_job.initialized) {
         return;
@@ -2053,15 +2436,21 @@ static void *jw__scan_job_main(void *arg) {
     char db_path[PATH_MAX];
     char sdcard_root[PATH_MAX];
     char reason[96];
+    jw_scan_title_list titles = {0};
 
     pthread_mutex_lock(&job->mu);
     snprintf(db_path, sizeof(db_path), "%s", job->db_path);
     snprintf(sdcard_root, sizeof(sdcard_root), "%s", job->sdcard_root);
     snprintf(reason, sizeof(reason), "%s", job->reason);
+    jw__scan_title_list_move(&titles, &job->titles);
     pthread_mutex_unlock(&job->mu);
 
     jw_scan_result result;
     memset(&result, 0, sizeof(result));
+    jw_db_imported_title_result title_result = {0};
+    title_result.groups = titles.group_count;
+    title_result.paths = jw__scan_title_list_path_count(&titles);
+    char title_error[160] = "";
     char error[160] = "";
     int ok = 0;
 
@@ -2078,12 +2467,40 @@ static void *jw__scan_job_main(void *arg) {
         jw_db_close(db);
         ok = 0;
     } else {
+        if (titles.group_count > 0) {
+            jw_db_imported_title_group *groups =
+                calloc((size_t)titles.group_count, sizeof(*groups));
+            if (!groups) {
+                snprintf(title_error, sizeof(title_error), "%s",
+                         "could not allocate imported-title groups");
+            } else {
+                for (int i = 0; i < titles.group_count; i++) {
+                    groups[i].provider = titles.groups[i].provider;
+                    groups[i].title = titles.groups[i].title;
+                    groups[i].rom_paths = (const char *const *)titles.groups[i].rom_paths;
+                    groups[i].rom_path_count = titles.groups[i].rom_path_count;
+                }
+                jw_db_imported_title_result applied = {0};
+                if (jw_db_apply_imported_title_groups(db, groups,
+                                                      titles.group_count,
+                                                      &applied) != 0) {
+                    snprintf(title_error, sizeof(title_error), "%s",
+                             "could not apply imported titles");
+                } else {
+                    title_result = applied;
+                }
+                free(groups);
+            }
+        }
         jw_db_close(db);
         ok = 1;
     }
+    jw__scan_title_list_free(&titles);
 
     pthread_mutex_lock(&job->mu);
     job->result = result;
+    job->title_result = title_result;
+    snprintf(job->title_error, sizeof(job->title_error), "%s", title_error);
     job->ok = ok != 0;
     snprintf(job->error, sizeof(job->error), "%s",
              error[0] ? error : (ok ? "" : "scan failed"));
@@ -2094,7 +2511,9 @@ static void *jw__scan_job_main(void *arg) {
     return NULL;
 }
 
-static int jw__start_scan_job(jw_daemon_state *state, const char *reason) {
+static int jw__start_scan_job_with_titles(jw_daemon_state *state,
+                                          const char *reason,
+                                          const jw_scan_title_list *titles) {
     if (!state || !state->scan_job.initialized) {
         return -1;
     }
@@ -2102,6 +2521,10 @@ static int jw__start_scan_job(jw_daemon_state *state, const char *reason) {
     jw_scan_job *job = &state->scan_job;
     pthread_mutex_lock(&job->mu);
     if (job->running || job->completed) {
+        if (jw__scan_title_list_merge(&job->pending_titles, titles) != 0) {
+            pthread_mutex_unlock(&job->mu);
+            return -1;
+        }
         job->pending_rescan = true;
         snprintf(job->pending_reason, sizeof(job->pending_reason), "%s",
                  reason && reason[0] ? reason : "pending");
@@ -2111,7 +2534,13 @@ static int jw__start_scan_job(jw_daemon_state *state, const char *reason) {
         return 1;
     }
 
+    if (jw__scan_title_list_merge(&job->titles, titles) != 0) {
+        pthread_mutex_unlock(&job->mu);
+        return -1;
+    }
+
     memset(&job->result, 0, sizeof(job->result));
+    memset(&job->title_result, 0, sizeof(job->title_result));
     job->ok = false;
     job->completed = false;
     job->running = true;
@@ -2119,6 +2548,7 @@ static int jw__start_scan_job(jw_daemon_state *state, const char *reason) {
     job->started_ms = jw__monotonic_ms();
     job->finished_ms = 0;
     job->error[0] = '\0';
+    job->title_error[0] = '\0';
     snprintf(job->reason, sizeof(job->reason), "%s",
              reason && reason[0] ? reason : "requested");
     snprintf(job->db_path, sizeof(job->db_path), "%s", state->db_path);
@@ -2128,6 +2558,7 @@ static int jw__start_scan_job(jw_daemon_state *state, const char *reason) {
     if (rc != 0) {
         job->running = false;
         job->thread_started = false;
+        jw__scan_title_list_free(&job->titles);
         snprintf(job->error, sizeof(job->error), "%s", "could not start scan worker");
         pthread_mutex_unlock(&job->mu);
         return -1;
@@ -2138,6 +2569,10 @@ static int jw__start_scan_job(jw_daemon_state *state, const char *reason) {
 
     jw_log_info("scan-library started reason=%s", started_reason);
     return 0;
+}
+
+static int jw__start_scan_job(jw_daemon_state *state, const char *reason) {
+    return jw__start_scan_job_with_titles(state, reason, NULL);
 }
 
 static void jw__tick_scan_job(jw_daemon_state *state) {
@@ -2151,9 +2586,12 @@ static void jw__tick_scan_job(jw_daemon_state *state) {
     bool ok = false;
     bool pending = false;
     jw_scan_result result;
+    jw_db_imported_title_result title_result = {0};
+    jw_scan_title_list pending_titles = {0};
     char reason[96];
     char pending_reason[96];
     char error[160];
+    char title_error[160];
     long long elapsed_ms = 0;
 
     pthread_mutex_lock(&job->mu);
@@ -2162,9 +2600,12 @@ static void jw__tick_scan_job(jw_daemon_state *state) {
         join = true;
         ok = job->ok;
         result = job->result;
+        title_result = job->title_result;
         snprintf(reason, sizeof(reason), "%s", job->reason);
         snprintf(error, sizeof(error), "%s", job->error);
+        snprintf(title_error, sizeof(title_error), "%s", job->title_error);
         pending = job->pending_rescan;
+        jw__scan_title_list_move(&pending_titles, &job->pending_titles);
         snprintf(pending_reason, sizeof(pending_reason), "%s",
                  job->pending_reason[0] ? job->pending_reason : "pending");
         elapsed_ms = job->finished_ms > job->started_ms
@@ -2194,15 +2635,34 @@ static void jw__tick_scan_job(jw_daemon_state *state) {
                     state->library_generation);
         jw_log_info("scan-library timings reason=%s total_ms=%lld",
                     reason[0] ? reason : "completed", elapsed_ms);
+        if (title_result.paths > 0) {
+            if (title_error[0]) {
+                jw_log_warn("scan-library imported-titles accepted=%d applied=%d unmatched=%d error=%s",
+                            title_result.paths, title_result.applied,
+                            title_result.unmatched, title_error);
+            } else {
+                jw_log_info("scan-library imported-titles accepted=%d applied=%d unmatched=%d",
+                            title_result.paths, title_result.applied,
+                            title_result.unmatched);
+            }
+        }
     } else {
         jw_log_warn("scan-library failed reason=%s error=%s",
                     reason[0] ? reason : "unknown",
                     error[0] ? error : "unknown");
+        if (title_result.paths > 0) {
+            jw_log_warn("scan-library imported-titles accepted=%d applied=0 scan-failed",
+                        title_result.paths);
+        }
     }
 
     if (pending && !state->shutdown_requested) {
-        (void)jw__start_scan_job(state, pending_reason);
+        if (jw__start_scan_job_with_titles(state, pending_reason,
+                                           &pending_titles) < 0) {
+            jw_log_warn("scan-library queued request could not start");
+        }
     }
+    jw__scan_title_list_free(&pending_titles);
 }
 
 static void jw__scan_job_shutdown(jw_daemon_state *state) {
@@ -2226,6 +2686,10 @@ static void jw__scan_job_shutdown(jw_daemon_state *state) {
         pthread_join(thread, NULL);
     }
 
+    pthread_mutex_lock(&job->mu);
+    jw__scan_title_list_free(&job->titles);
+    jw__scan_title_list_free(&job->pending_titles);
+    pthread_mutex_unlock(&job->mu);
     pthread_mutex_destroy(&job->mu);
     job->initialized = false;
 }
@@ -2986,6 +3450,7 @@ static void jw__publish_source_content_env(const jw_storage_source *source) {
        durable state follows USERDATA_PATH. Only content roots become source-specific. */
     setenv("ROMS_PATH", source->roms_path, 1);
     setenv("IMAGES_PATH", source->images_path, 1);
+    setenv("MUSIC_PATH", source->music_path, 1);
     setenv("APPS_PATH", source->apps_path, 1);
     setenv("BIOS_PATH", source->bios_path, 1);
     setenv("SAVES_PATH", source->saves_path, 1);
@@ -5316,6 +5781,19 @@ static void jw__autosleep_sync_platform(jw_daemon_state *state) {
    that queued while asleep (gamepad replay + the wake press itself) and reset the
    idle timer so the countdown restarts fresh after waking. */
 static void jw__deep_suspend(jw_daemon_state *state) {
+    int active_leases = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+    if (active_leases > 0) {
+        bool newly_pending = state->suspend_policy.pending == JW_SUSPEND_PENDING_NONE;
+        if (newly_pending) state->suspend_policy.pending = JW_SUSPEND_PENDING_EXPLICIT;
+        if (!jw__standby_active(state)) {
+            jw__enter_standby_screen_off(state, JW_STANDBY_INHIBITED_POWER, true);
+        }
+        if (newly_pending) {
+            jw_log_info("sleep: deferred by %d suspend inhibitor lease(s)", active_leases);
+        }
+        return;
+    }
+    state->suspend_policy.pending = JW_SUSPEND_PENDING_NONE;
     jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
     jw__screen_set(state, false);
     jw_input_proxy_set_swallow(&state->input_proxy, true);
@@ -5339,6 +5817,29 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     state->standby_entered_ms = 0;
     state->autosleep_charging_logged = false;
     state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
+}
+
+static void jw__tick_suspend_inhibitors(jw_daemon_state *state) {
+    int reaped = jw_suspend_inhibitor_reap(&state->suspend_inhibitor);
+    if (reaped > 0) {
+        jw_log_info("suspend-inhibit: reaped %d dead holder lease(s); active=%d",
+                    reaped, jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    }
+    /* Let the auto-sleep tick below process and log wake activity before a
+       last-release transition can perform a queued suspend. */
+    if (state->suspend_policy.pending != JW_SUSPEND_PENDING_NONE &&
+        jw__standby_has_wake_activity(state)) {
+        return;
+    }
+    jw_suspend_pending pending = state->suspend_policy.pending;
+    jw_suspend_decision decision = jw_suspend_policy_leases_changed(
+        &state->suspend_policy,
+        jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    if (decision == JW_SUSPEND_DECISION_DEEP_SLEEP) {
+        jw_log_info("sleep: performing pending %s suspend after last inhibitor release",
+                    pending == JW_SUSPEND_PENDING_EXPLICIT ? "explicit" : "automatic");
+        jw__deep_suspend(state);
+    }
 }
 
 /* HDMI hotplug: on plug, apply the persisted HDMI output mode (4:3/stretch); on
@@ -5488,6 +5989,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             state->power_held = false;
             if (was_held && held_ms >= JW_POWER_LONGPRESS_MS) {
                 state->power_sleep_armed = false;
+                jw_suspend_policy_long_press(&state->suspend_policy);
                 jw_log_info("power: long-press (%lldms) -> clean power off", held_ms);
                 jw_platform_result poff;
                 jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
@@ -5495,7 +5997,13 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             }
             if (state->power_sleep_armed) {
                 state->power_sleep_armed = false;
-                if (jw__charging_online(state, true)) {
+                int active_leases = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+                if (active_leases > 0) {
+                    jw_suspend_policy_power_tap(&state->suspend_policy, active_leases);
+                    jw_log_info("power: sleep tap deferred by %d suspend inhibitor lease(s)",
+                                active_leases);
+                    jw__enter_standby_screen_off(state, JW_STANDBY_INHIBITED_POWER, true);
+                } else if (jw__charging_online(state, true)) {
                     jw_log_info("power: standby while charging (tap)");
                     jw__enter_standby_screen_off(state, JW_STANDBY_POWER_CHARGING, true);
                 } else {
@@ -5510,6 +6018,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
         if (state->power_held && now - state->power_down_ms >= JW_POWER_LONGPRESS_MS) {
             state->power_held = false;
             state->power_sleep_armed = false;
+            jw_suspend_policy_long_press(&state->suspend_policy);
             jw_log_info("power: long-press -> clean power off");
             jw_platform_result poff;
             jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
@@ -5518,6 +6027,13 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     }
 
     if (jw__standby_has_wake_activity(state)) {
+        jw_suspend_pending cancelled =
+            jw_suspend_policy_cancel_for_activity(&state->suspend_policy);
+        if (cancelled == JW_SUSPEND_PENDING_AUTO) {
+            jw_log_info("auto-sleep: pending suspend cancelled by user input");
+        } else if (cancelled == JW_SUSPEND_PENDING_EXPLICIT) {
+            jw_log_info("power: explicit pending sleep cancelled by user input");
+        }
         jw_log_info("standby: wake on input");
         jw__leave_standby_screen_off(state);
         return;
@@ -5591,6 +6107,20 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     }
 
     /* Stage 2 — real suspend-to-RAM. */
+    bool newly_inhibited = state->suspend_policy.pending == JW_SUSPEND_PENDING_NONE;
+    jw_suspend_decision sleep_decision = jw_suspend_policy_auto_stage2(
+        &state->suspend_policy,
+        jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    if (sleep_decision == JW_SUSPEND_DECISION_SCREEN_OFF) {
+        if (newly_inhibited) {
+            jw_log_info("auto-sleep: deep suspend deferred by %d inhibitor lease(s)",
+                        jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+        }
+        if (!jw__standby_active(state)) {
+            jw__enter_standby_screen_off(state, JW_STANDBY_AUTOSLEEP, false);
+        }
+        return;
+    }
     jw_log_info("auto-sleep: suspending (idle %llums)", (unsigned long long)idle_ms);
     jw__deep_suspend(state);
 }
@@ -5768,13 +6298,23 @@ static void jw__tick_startup_maintenance(jw_daemon_state *state) {
     }
 }
 
-static int jw__handle_scan(jw_daemon_state *state, jw_ipc_client *client) {
-    int rc = jw__start_scan_job(state, "requested");
+static int jw__handle_scan(jw_daemon_state *state, jw_ipc_client *client,
+                           cJSON *request) {
+    jw_scan_title_list titles = {0};
+    const char *parse_error = NULL;
+    if (jw__parse_scan_title_groups(state, request, &titles, &parse_error) != 0) {
+        return jw__reply_error(client, parse_error ? parse_error : "invalid title groups");
+    }
+    int accepted = jw__scan_title_list_path_count(&titles);
+    int rc = jw__start_scan_job_with_titles(state, "requested", &titles);
+    jw__scan_title_list_free(&titles);
     if (rc < 0) {
         return jw__reply_error(client, "scan-library could not start");
     }
 
-    return jw__reply_ok(client, rc > 0 ? "scan-library queued" : "scan-library started", NULL);
+    return jw__reply_scan_ok(client,
+                             rc > 0 ? "scan-library queued" : "scan-library started",
+                             accepted);
 }
 
 static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *client) {
@@ -5994,6 +6534,96 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
     return jw__reply_retroarch_result(client, action, result);
 }
 
+static pid_t jw__suspend_request_pid(jw_ipc_client *client, cJSON *request) {
+    pid_t pid = 0;
+    if (jw_ipc_client_peer_pid(client, &pid) == 0 && pid > 0) return pid;
+#if defined(__APPLE__)
+    /* Native/mock-only fallback for platforms without Unix peer credentials. */
+    cJSON *test_pid = cJSON_GetObjectItemCaseSensitive(request, "test_pid");
+    if (cJSON_IsNumber(test_pid) && test_pid->valueint > 0)
+        return (pid_t)test_pid->valueint;
+#else
+    (void)request;
+#endif
+    return 0;
+}
+
+static int jw__reply_suspend_acquired(jw_ipc_client *client, const char *token,
+                                      int active_count) {
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "suspend-inhibit-acquired");
+    cJSON_AddStringToObject(reply, "token", token);
+    cJSON_AddNumberToObject(reply, "active_count", active_count);
+    return jw__reply_json(client, reply);
+}
+
+static int jw__reply_suspend_status(jw_daemon_state *state, jw_ipc_client *client) {
+    jw_suspend_inhibitor_reap(&state->suspend_inhibitor);
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "suspend-inhibit-status");
+    cJSON_AddNumberToObject(reply, "active_count",
+                            jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    cJSON *holders = cJSON_AddArrayToObject(reply, "holders");
+    long long now = jw__monotonic_ms();
+    for (int i = 0; i < JW_SUSPEND_INHIBIT_MAX_LEASES; i++) {
+        const jw_suspend_lease *lease = &state->suspend_inhibitor.leases[i];
+        if (!lease->active) continue;
+        cJSON *holder = cJSON_CreateObject();
+        cJSON_AddNumberToObject(holder, "pid", (double)lease->pid);
+        cJSON_AddStringToObject(holder, "scope", lease->scope);
+        cJSON_AddStringToObject(holder, "reason", lease->reason);
+        cJSON_AddNumberToObject(holder, "age_ms",
+                                now > lease->acquired_ms ? (double)(now - lease->acquired_ms) : 0);
+        cJSON_AddItemToArray(holders, holder);
+    }
+    cJSON_AddStringToObject(reply, "pending_sleep",
+        state->suspend_policy.pending == JW_SUSPEND_PENDING_EXPLICIT ? "explicit" :
+        state->suspend_policy.pending == JW_SUSPEND_PENDING_AUTO ? "automatic" : "none");
+    return jw__reply_json(client, reply);
+}
+
+static int jw__handle_suspend_inhibit(jw_daemon_state *state,
+                                      jw_ipc_client *client,
+                                      cJSON *request,
+                                      const char *type) {
+    if (strcmp(type, "suspend-inhibit-status") == 0)
+        return jw__reply_suspend_status(state, client);
+
+    pid_t pid = jw__suspend_request_pid(client, request);
+    if (pid <= 0) return jw__reply_error(client, "Unix peer pid unavailable");
+
+    if (strcmp(type, "suspend-inhibit-acquire") == 0) {
+        cJSON *scope = cJSON_GetObjectItemCaseSensitive(request, "scope");
+        cJSON *reason = cJSON_GetObjectItemCaseSensitive(request, "reason");
+        if (!cJSON_IsString(scope) || !scope->valuestring ||
+            !cJSON_IsString(reason) || !reason->valuestring)
+            return jw__reply_error(client, "missing suspend inhibitor scope or reason");
+        char token[JW_SUSPEND_INHIBIT_TOKEN_LEN + 1];
+        jw_suspend_lease_result result = jw_suspend_inhibitor_acquire(
+            &state->suspend_inhibitor, pid, scope->valuestring, reason->valuestring,
+            jw__monotonic_ms(), token);
+        if (result != JW_SUSPEND_LEASE_OK)
+            return jw__reply_error(client, jw_suspend_lease_result_name(result));
+        int count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+        jw_log_info("suspend-inhibit: acquired pid=%d reason=%s active=%d",
+                    (int)pid, reason->valuestring, count);
+        return jw__reply_suspend_acquired(client, token, count);
+    }
+
+    cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "token");
+    if (!cJSON_IsString(token) || !token->valuestring)
+        return jw__reply_error(client, "missing suspend inhibitor token");
+    bool released = false;
+    jw_suspend_lease_result result = jw_suspend_inhibitor_release(
+        &state->suspend_inhibitor, pid, token->valuestring, &released);
+    if (result != JW_SUSPEND_LEASE_OK)
+        return jw__reply_error(client, jw_suspend_lease_result_name(result));
+    int count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+    jw_log_info("suspend-inhibit: %s pid=%d active=%d",
+                released ? "released" : "duplicate release", (int)pid, count);
+    return jw__reply_ok(client, "suspend-inhibit-release", NULL);
+}
+
 static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, const char *body) {
     cJSON *root = cJSON_Parse(body);
     if (!root) {
@@ -6005,6 +6635,14 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     if (!cJSON_IsString(type) || !type->valuestring) {
         cJSON_Delete(root);
         return jw__reply_error(client, "missing type");
+    }
+
+    if (strcmp(type->valuestring, "suspend-inhibit-acquire") == 0 ||
+        strcmp(type->valuestring, "suspend-inhibit-release") == 0 ||
+        strcmp(type->valuestring, "suspend-inhibit-status") == 0) {
+        int rc = jw__handle_suspend_inhibit(state, client, root, type->valuestring);
+        cJSON_Delete(root);
+        return rc;
     }
 
     if (strcmp(type->valuestring, "hello") == 0) {
@@ -6044,8 +6682,9 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     }
 
     if (strcmp(type->valuestring, "scan-library") == 0) {
+        int rc = jw__handle_scan(state, client, root);
         cJSON_Delete(root);
-        return jw__handle_scan(state, client);
+        return rc;
     }
 
     if (strcmp(type->valuestring, "scrape-validate") == 0) {
@@ -6348,7 +6987,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
                 jw__publish_audio_env(state);
             }
         } else if (action == JW_PLATFORM_ACTION_SLEEP) {
-            jw__platform_sleep_with_performance(state, &result);
+            bool inhibited = jw_suspend_inhibitor_count(&state->suspend_inhibitor) > 0;
+            jw__deep_suspend(state);
+            memset(&result, 0, sizeof(result));
+            result.code = JW_PLATFORM_RESULT_OK;
+            snprintf(result.message, sizeof(result.message), "%s",
+                     inhibited ? "sleep pending: suspend inhibited" : "sleep resumed");
         } else if (action == JW_PLATFORM_ACTION_BLUETOOTH_ON ||
                    action == JW_PLATFORM_ACTION_BLUETOOTH_OFF) {
             jw_platform_perform_action(&state->platform, action, value, &result);
@@ -6750,6 +7394,13 @@ static void jw__cleanup(jw_daemon_state *state) {
     jw_update_check_job_wait(&state->update_check_job);
     jw_scrape_worker_stop();
     jw__scan_job_shutdown(state);
+    int inhibitor_count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
+    if (inhibitor_count > 0) {
+        jw_log_info("suspend-inhibit: releasing %d lease(s) on daemon shutdown",
+                    inhibitor_count);
+    }
+    jw_suspend_inhibitor_clear(&state->suspend_inhibitor);
+    jw_suspend_policy_init(&state->suspend_policy);
     jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
@@ -6781,6 +7432,8 @@ int main(int argc, char *argv[]) {
     state.perf_active_profile = JW_PLATFORM_PERF_PROFILE_FRONTEND;
     state.perf_session_profile = JW_PLATFORM_PERF_PROFILE_AUTO;
     jw__perf_request_init(&state.perf_custom_request);
+    jw_suspend_inhibitor_init(&state.suspend_inhibitor);
+    jw_suspend_policy_init(&state.suspend_policy);
     jw_update_download_job_init(&state.update_download_job);
     jw_update_install_job_init(&state.update_install_job);
     jw_update_check_job_init(&state.update_check_job);
@@ -6989,6 +7642,7 @@ int main(int argc, char *argv[]) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
         }
         jw__tick_retroarch_audio_reinit(&state);
+        jw__tick_suspend_inhibitors(&state);
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
         if (jw_platform_storage_tick(&state.platform)) {

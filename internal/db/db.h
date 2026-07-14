@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <sqlite3.h>
 
+#define JW_GAME_SETTING_IMPORTED_DISPLAY_NAME "imported_display_name"
+#define JW_GAME_SETTING_IMPORTED_DISPLAY_NAME_PROVIDER "imported_display_name_provider"
+
 typedef struct {
     int game_count;
     int app_count;
@@ -110,6 +113,30 @@ int  jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *can
 int  jw_db_scan_prune(sqlite3 *db);
 int  jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path);
 int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version);
+
+/* Optional source-provided display titles applied immediately after a library
+   scan. rom_paths use the exact primary-relative / secondary-absolute form
+   stored in games.rom_path. Manual display_name remains the highest-precedence
+   user override; imported titles are the fallback ahead of the scanned stem. */
+typedef struct {
+    const char        *provider;
+    const char        *title;
+    const char *const *rom_paths;
+    int                rom_path_count;
+} jw_db_imported_title_group;
+
+typedef struct {
+    int groups;
+    int paths;
+    int matched;
+    int applied;
+    int unmatched;
+} jw_db_imported_title_result;
+
+int  jw_db_apply_imported_title_groups(sqlite3 *db,
+                                       const jw_db_imported_title_group *groups,
+                                       int group_count,
+                                       jw_db_imported_title_result *out);
 int  jw_db_read_summary(const char *db_path, jw_library_summary *out);
 int  jw_db_read_stats(const char *db_path, jw_library_stats *out);
 int  jw_db_list_systems(const char *db_path, jw_system_entry *out, int max_count, int *out_count);

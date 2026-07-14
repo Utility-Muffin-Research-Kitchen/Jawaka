@@ -158,7 +158,7 @@ Important variables:
 | `PLATFORM` / `DEVICE` | platform id, usually `mac` or `mlp1` |
 | `SDCARD_PATH` | mock or device SD-card root |
 | `SDCARD_PATHS` | colon-separated SD roots, primary first |
-| `ROMS_PATHS`, `IMAGES_PATHS`, `APPS_PATHS` | plural content roots scanned by Jawaka |
+| `ROMS_PATHS`, `IMAGES_PATHS`, `MUSIC_PATHS`, `APPS_PATHS` | indexed plural content roots, aligned with `SDCARD_PATHS` |
 | `UMRK_RUNTIME_PATH` | runtime socket and scratch directory |
 | `UMRK_PLATFORM_PATH` / `SYSTEM_PATH` | platform payload root |
 | `UMRK_INTERNAL_DATA_PATH` | launcher-owned state root |
@@ -180,6 +180,7 @@ Jawaka scans content from the Leaf/UMRK SD shape:
 ```text
 Roms/<SYSTEM_CODE>/<title>.<ext>
 Images/<SYSTEM_CODE>/<title>.png
+Music/<artist>/<album>/<track>
 Apps/<platform>/<Name>.pak/
 Apps/shared/<Name>.pak/
 BIOS/
@@ -229,6 +230,20 @@ session/power actions (return to launcher, sleep, exit to stock, reboot, power o
 Jawaka exports Catastrophe `CAT_*` appearance variables before launching
 `jawaka-launcher`, `jawaka-menu`, and Catastrophe-based `.pak` apps. Apps should
 consume the inherited environment rather than read Jawaka's SQLite DB.
+
+### Suspend inhibitors
+
+Long-running apps can acquire a daemon-owned `block-suspend` lease over the
+length-prefixed JSON socket at `UMRK_DAEMON_SOCKET`. The request types are
+`suspend-inhibit-acquire`, `suspend-inhibit-release`, and
+`suspend-inhibit-status`. Jawaka derives ownership from Unix peer credentials,
+reaps dead holders, keeps stage-1 screen blanking active, and defers only deep
+suspend until the final lease is released. Status diagnostics expose holder
+reasons and age, never opaque tokens.
+
+Use `make suspend-inhibit-test suspend-inhibit-ipc-smoke` for native policy and
+IPC coverage. `make mlp1-adb-inhibit-smoke` runs the intentionally intrusive
+device suspend/reap smoke after `CONFIRM_SUSPEND_SMOKE=1` is supplied.
 
 ## Repo Notes
 
