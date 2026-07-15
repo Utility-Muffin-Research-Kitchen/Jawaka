@@ -29,6 +29,13 @@ static void expect_path(const char *label, const char *got, const char *want) {
     }
 }
 
+static bool has_slot(const jw_ra_slot_info *slots, int count, int want) {
+    for (int i = 0; i < count; i++) {
+        if (slots[i].slot == want) return true;
+    }
+    return false;
+}
+
 int main(void) {
     char root[] = "/tmp/jawaka-states-core.XXXXXX";
     int fd = mkstemp(root);
@@ -59,6 +66,27 @@ int main(void) {
     make_file(flat_state);
     make_file(mgba_state);
     make_file(gpsp_other);
+
+    char core_states[PATH_MAX];
+    if (!jw_ra_core_states_dir(root, "gpSP", core_states, sizeof(core_states))) {
+        fail("gpSP state namespace was not resolved");
+    }
+    expect_path("gpSP namespace", core_states, gpsp_dir);
+    if (jw_ra_core_states_dir(root, "../mGBA", core_states, sizeof(core_states)) ||
+        jw_ra_core_states_dir(root, "nested/gpSP", core_states,
+                              sizeof(core_states))) {
+        fail("state namespace accepted traversal or a nested path");
+    }
+
+    /* The IGM passes this resolved directory to the generic slot enumerator.
+       It must see gpSP slot 1 without surfacing mGBA/flat slot 99. */
+    jw_ra_slot_info slots[8];
+    int count = 0;
+    if (!jw_ra_list_slots(gpsp_dir, "smoke.gba", slots, 8, &count) ||
+        count != 1 || !has_slot(slots, count, 1) ||
+        has_slot(slots, count, JW_RA_GAME_SWITCHER_STATE_SLOT)) {
+        fail("core-scoped slot enumeration mixed namespaces");
+    }
 
     int slot = 0;
     char resolved[PATH_MAX];

@@ -573,29 +573,46 @@ static void jw__ingame_resolve_titles(jw_ingame_state *state) {
 
 /* ── Decoupled Save/Load slot selection (Item 3) ──────────────────────────── */
 
-/* Resolve the in-game States/ root like the switcher overlay: the daemon's
-   source-aware dir, then STATES_PATH, then <sdcard>/States. */
-static bool jw__ingame_states_dir(char *out, size_t out_size) {
+/* Resolve the active core's in-game state namespace. Start with the daemon's
+   source-aware States/ root (or the normal fallbacks), then append only the
+   catalog config_folder for the running core. Failing closed here keeps the
+   IGM list, previews, and Keep action from surfacing another core's states. */
+static bool jw__ingame_states_dir(const jw_ingame_state *state,
+                                  char *out, size_t out_size) {
+    if (!state || !state->session.core_id[0] || !out || out_size == 0) {
+        return false;
+    }
+
+    char root[PATH_MAX];
+    root[0] = '\0';
     const char *states = getenv("JAWAKA_INGAME_STATEDIR");
     if (states && states[0]) {
-        snprintf(out, out_size, "%s", states);
-        return true;
+        snprintf(root, sizeof(root), "%s", states);
+    } else {
+        const char *sp = getenv("STATES_PATH");
+        if (sp && sp[0]) {
+            snprintf(root, sizeof(root), "%s", sp);
+        }
     }
-    const char *sp = getenv("STATES_PATH");
-    if (sp && sp[0]) {
-        snprintf(out, out_size, "%s", sp);
-        return true;
-    }
+
     char *sd = jw_sdcard_root();
-    bool ok = false;
-    if (sd && sd[0]) {
-        snprintf(out, out_size, "%s/States", sd);
-        ok = true;
+    if (!root[0] && sd && sd[0]) {
+        snprintf(root, sizeof(root), "%s/States", sd);
     }
-    free(sd);
-    if (!ok) {
+    if (!root[0] || !sd || !sd[0]) {
+        free(sd);
         out[0] = '\0';
+        return false;
     }
+
+    char error[256];
+    const jw_ra_catalog *catalog = jw_ra_catalog_get(sd, error, sizeof(error));
+    const jw_ra_core *core =
+        catalog ? jw_ra_catalog_find_core(catalog, state->session.core_id) : NULL;
+    bool ok = core && core->config_folder && core->config_folder[0] &&
+              jw_ra_core_states_dir(root, core->config_folder, out, out_size);
+    free(sd);
+    if (!ok) out[0] = '\0';
     return ok;
 }
 
@@ -704,7 +721,7 @@ static void jw__ingame_rebuild_slots(jw_ingame_state *state) {
         return;
     }
     char dir[PATH_MAX];
-    if (!jw__ingame_states_dir(dir, sizeof(dir))) {
+    if (!jw__ingame_states_dir(state, dir, sizeof(dir))) {
         return;
     }
 
@@ -1048,12 +1065,11 @@ static void jw__ingame_capture_still(jw_ingame_state *state) {
     free(out);
 }
 
-/* Locate the savestate thumbnail PNG for the active slot via the shared
-   RetroArch states helper (flat layout first, then per-core subfolders). */
+/* Locate the savestate thumbnail PNG inside the active core namespace. */
 static bool jw__slot_thumb_path(const jw_ingame_state *state, int slot,
                                 char *out, size_t out_size) {
     char dir[PATH_MAX];
-    if (!jw__ingame_states_dir(dir, sizeof(dir))) {
+    if (!jw__ingame_states_dir(state, dir, sizeof(dir))) {
         return false;
     }
     return jw_ra_find_slot_thumb(dir, state->session.rom_path, slot,
@@ -1797,7 +1813,7 @@ static void jw__handle_ingame_input(const char *socket_path,
                 state->load_entries[state->load_index].is_latest) {
                 char dir[PATH_MAX];
                 int kept = -1;
-                if (jw__ingame_states_dir(dir, sizeof(dir)) &&
+                if (jw__ingame_states_dir(state, dir, sizeof(dir)) &&
                     jw_ra_promote_switcher_slot(dir, state->session.rom_path,
                                                 &kept)) {
                     snprintf(state->status, sizeof(state->status),

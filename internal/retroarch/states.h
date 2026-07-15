@@ -7,6 +7,12 @@
 #define JW_RA_AUTO_STATE_SLOT (-1)
 #define JW_RA_GAME_SWITCHER_STATE_SLOT 99
 
+/* Resolve a validated States/<core_folder> namespace. core_folder must be one
+   path component (normally the catalog's config_folder); traversal and nested
+   paths fail closed. */
+bool jw_ra_core_states_dir(const char *states_dir, const char *core_folder,
+                           char *out, size_t out_size);
+
 /* RetroArch savestate thumbnail lookup.
 
    RetroArch writes a PNG beside each savestate (e.g. <rom>.state1.png, and
