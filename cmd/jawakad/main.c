@@ -3881,6 +3881,23 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
     return 0;
 }
 
+static const char *jw__state_core_folder(const jw_daemon_state *state,
+                                         const char *core_id) {
+    if (!state || !core_id || !core_id[0]) {
+        return NULL;
+    }
+    char error[256];
+    const jw_ra_catalog *catalog =
+        jw_ra_catalog_get(state->sdcard_root, error, sizeof(error));
+    if (!catalog) {
+        return NULL;
+    }
+    const jw_ra_core *core = jw_ra_catalog_find_core(catalog, core_id);
+    return core && core->config_folder && core->config_folder[0]
+        ? core->config_folder
+        : NULL;
+}
+
 static jw_platform_perf_profile jw__perf_requested_for_launch(
         jw_daemon_state *state, const char *system, const char *rom_path) {
     if (!state) {
@@ -4098,13 +4115,16 @@ static void jw__wait_for_savestate_write(const jw_daemon_state *state, int slot)
     int stable = 0;
     int elapsed = 0;
     char path[PATH_MAX];
+    const char *core_folder =
+        jw__state_core_folder(state, state->retroarch_session.core_id);
     while (elapsed < timeout_ms) {
         struct timespec ts = { poll_ms / 1000, (long)(poll_ms % 1000) * 1000000L };
         nanosleep(&ts, NULL);
         elapsed += poll_ms;
 
         struct stat st;
-        if (!jw_ra_find_slot_state(states_dir, rom, slot, path, sizeof(path)) ||
+        if (!jw_ra_find_slot_state_for_core(states_dir, core_folder, rom, slot,
+                                             path, sizeof(path)) ||
             stat(path, &st) != 0) {
             continue;   /* not created yet */
         }
@@ -4248,11 +4268,11 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
 
             if (snprintf(states_dir, sizeof(states_dir), "%s/States",
                          target_source_root) < (int)sizeof(states_dir)) {
-                have_resume_state =
-                    jw_ra_find_resume_state(states_dir, target_rom_abs,
-                                            JW_RA_GAME_SWITCHER_STATE_SLOT,
-                                            &slot,
-                                            state_path, sizeof(state_path));
+                have_resume_state = jw_ra_find_resume_state_for_core(
+                    states_dir,
+                    jw__state_core_folder(state, target_core_id),
+                    target_rom_abs, JW_RA_GAME_SWITCHER_STATE_SLOT,
+                    &slot, state_path, sizeof(state_path));
             }
 
             jw__retroarch_session_retarget(state, system, target_rom_abs,
@@ -5529,10 +5549,10 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         resolved_path[0] = '\0';
         if (snprintf(states_dir, sizeof(states_dir), "%s/States", source_root) <
                 (int)sizeof(states_dir) &&
-            jw_ra_find_resume_state(states_dir, rom_abs,
-                                    JW_RA_GAME_SWITCHER_STATE_SLOT,
-                                    &resolved_slot,
-                                    resolved_path, sizeof(resolved_path))) {
+            jw_ra_find_resume_state_for_core(
+                states_dir, jw__state_core_folder(state, core_id), rom_abs,
+                JW_RA_GAME_SWITCHER_STATE_SLOT, &resolved_slot,
+                resolved_path, sizeof(resolved_path))) {
             /* Resume via the post-launch network load-state command (below), NOT
                RetroArch's --entryslot. RA 1.22.2's --entryslot resolves a separate
                "<rom>.stateN.entry" file and does not reliably load our regular
@@ -6191,9 +6211,12 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
     char state_path[PATH_MAX];
     state_path[0] = '\0';
     if (!give_up &&
-        !jw_ra_find_resume_state(states_dir, state->retroarch_session.rom_path,
-                                 JW_RA_GAME_SWITCHER_STATE_SLOT,
-                                 &slot, state_path, sizeof(state_path))) {
+        !jw_ra_find_resume_state_for_core(
+            states_dir,
+            jw__state_core_folder(state, state->retroarch_session.core_id),
+            state->retroarch_session.rom_path,
+            JW_RA_GAME_SWITCHER_STATE_SLOT,
+            &slot, state_path, sizeof(state_path))) {
         jw_log_info("switcher resume: no state found for %s",
                     state->retroarch_session.rom_path);
         give_up = true;

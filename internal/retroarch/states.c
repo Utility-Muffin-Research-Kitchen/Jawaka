@@ -151,6 +151,40 @@ bool jw_ra_find_slot_state(const char *states_dir, const char *rom_path,
     return found;
 }
 
+static bool jw__states_core_dir(const char *states_dir,
+                                const char *core_folder,
+                                char *out, size_t out_size) {
+    if (!states_dir || !states_dir[0] || !core_folder || !core_folder[0] ||
+        !out || out_size == 0 || strchr(core_folder, '/') ||
+        strchr(core_folder, '\\') || strcmp(core_folder, ".") == 0 ||
+        strcmp(core_folder, "..") == 0) {
+        return false;
+    }
+    return snprintf(out, out_size, "%s/%s", states_dir, core_folder) <
+           (int)out_size;
+}
+
+bool jw_ra_find_slot_state_for_core(const char *states_dir,
+                                    const char *core_folder,
+                                    const char *rom_path,
+                                    int slot, char *out, size_t out_size) {
+    if (!core_folder || !core_folder[0] || !rom_path || !rom_path[0] ||
+        !out || out_size == 0) {
+        return false;
+    }
+
+    char core_dir[PATH_MAX];
+    if (!jw__states_core_dir(states_dir, core_folder,
+                             core_dir, sizeof(core_dir))) {
+        return false;
+    }
+    char stem[512];
+    jw__states_rom_stem(rom_path, stem, sizeof(stem));
+    char name[576];
+    jw__states_slot_name(stem, slot, false, name, sizeof(name));
+    return jw__states_try(core_dir, name, out, out_size);
+}
+
 static bool jw__states_parse_suffix(const char *suffix, bool thumb, int *out_slot) {
     if (!suffix || !out_slot) {
         return false;
@@ -307,6 +341,43 @@ bool jw_ra_find_resume_state(const char *states_dir, const char *rom_path,
     best.slot = 0;
 
     jw__states_scan_resume_dir(&best, states_dir, stem, true);
+    if (!best.found) {
+        return false;
+    }
+
+    *out_slot = best.slot;
+    snprintf(out, out_size, "%s", best.path);
+    return true;
+}
+
+bool jw_ra_find_resume_state_for_core(const char *states_dir,
+                                      const char *core_folder,
+                                      const char *rom_path,
+                                      int preferred_slot, int *out_slot,
+                                      char *out, size_t out_size) {
+    if (!states_dir || !states_dir[0] || !core_folder || !core_folder[0] ||
+        !rom_path || !rom_path[0] ||
+        !out_slot || !out || out_size == 0) {
+        return false;
+    }
+
+    if (jw_ra_find_slot_state_for_core(states_dir, core_folder, rom_path,
+                                       preferred_slot, out, out_size)) {
+        *out_slot = preferred_slot;
+        return true;
+    }
+
+    char core_dir[PATH_MAX];
+    if (!jw__states_core_dir(states_dir, core_folder,
+                             core_dir, sizeof(core_dir))) {
+        return false;
+    }
+    char stem[512];
+    jw__states_rom_stem(rom_path, stem, sizeof(stem));
+    jw__state_candidate best;
+    memset(&best, 0, sizeof(best));
+    best.slot = 0;
+    jw__states_scan_resume_dir(&best, core_dir, stem, false);
     if (!best.found) {
         return false;
     }

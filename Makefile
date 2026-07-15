@@ -232,6 +232,13 @@ CATALOG_SMOKE_SRCS := \
 	internal/retroarch/catalog.c \
 	third_party/cjson/cJSON.c
 
+CORE_OVERRIDE_SMOKE_SRCS := \
+	cmd/jawaka-core-override-smoke/main.c \
+	$(PLATFORM_ID_SRC) \
+	internal/db/db.c \
+	internal/retroarch/catalog.c \
+	third_party/cjson/cJSON.c
+
 UPDATE_SMOKE_SRCS := \
 	cmd/jawaka-update-smoke/main.c \
 	internal/update/update.c \
@@ -296,7 +303,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-update-smoke jawaka-inhibitctl storage-sources-test imported-title-test imported-title-ipc-smoke suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-inhibit-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl storage-sources-test imported-title-test imported-title-ipc-smoke states-core-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-inhibit-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -319,6 +326,7 @@ jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 jawaka-scrape-smoke: $(BUILD)/bin/jawaka-scrape-smoke
 jawaka-pakrat-smoke: $(BUILD)/bin/jawaka-pakrat-smoke
 jawaka-catalog-smoke: $(BUILD)/bin/jawaka-catalog-smoke
+jawaka-core-override-smoke: $(BUILD)/bin/jawaka-core-override-smoke
 jawaka-update-smoke: $(BUILD)/bin/jawaka-update-smoke
 jawaka-inhibitctl: $(BUILD)/bin/jawaka-inhibitctl
 
@@ -334,6 +342,11 @@ imported-title-test: | $(BUILD)/bin
 
 imported-title-ipc-smoke:
 	scripts/imported-title-ipc-smoke.sh
+
+states-core-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/states-core-test \
+		internal/retroarch/states_core_test.c internal/retroarch/states.c
+	$(BUILD)/bin/states-core-test
 
 suspend-inhibit-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/suspend-inhibit-test \
@@ -403,6 +416,9 @@ $(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
 
 $(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(CATALOG_SMOKE_SRCS)
+
+$(BUILD)/bin/jawaka-core-override-smoke: $(CORE_OVERRIDE_SMOKE_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(CORE_OVERRIDE_SMOKE_SRCS) $(LDLIBS_COMMON)
 
 $(BUILD)/bin/jawaka-update-smoke: $(UPDATE_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -o $@ $(UPDATE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread

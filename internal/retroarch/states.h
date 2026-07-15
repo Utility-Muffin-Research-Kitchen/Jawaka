@@ -28,12 +28,27 @@ bool jw_ra_find_slot_thumb(const char *states_dir, const char *rom_path,
 bool jw_ra_find_slot_state(const char *states_dir, const char *rom_path,
                            int slot, char *out, size_t out_size);
 
+/* Core-isolated lookup for launch/resume paths. core_folder is required and
+   only States/<core_folder> is searched; flat files and other core folders are
+   deliberately ignored. This prevents a core override from loading a state
+   produced by another libretro core. */
+bool jw_ra_find_slot_state_for_core(const char *states_dir,
+                                    const char *core_folder,
+                                    const char *rom_path,
+                                    int slot, char *out, size_t out_size);
+
 /* Find the state the switcher should resume. preferred_slot wins when present;
    otherwise the newest existing state for the ROM is selected. Writes the
    resolved slot and path when found. */
 bool jw_ra_find_resume_state(const char *states_dir, const char *rom_path,
                              int preferred_slot, int *out_slot,
                              char *out, size_t out_size);
+
+bool jw_ra_find_resume_state_for_core(const char *states_dir,
+                                      const char *core_folder,
+                                      const char *rom_path,
+                                      int preferred_slot, int *out_slot,
+                                      char *out, size_t out_size);
 
 /* Thumbnail index: scans a States/ root once (flat + one level of subfolders)
    so the carousel can look up many ROMs without re-walking the tree per game. */

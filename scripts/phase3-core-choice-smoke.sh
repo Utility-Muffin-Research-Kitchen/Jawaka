@@ -51,6 +51,36 @@ cat >"$DEFAULTS_DIR/cores.json" <<'JSON'
       "supports_disk_control": false,
       "needs_swap": false,
       "status": "packaged"
+    },
+    {
+      "id": "mgba",
+      "display_name": "mGBA",
+      "type": "retroarch",
+      "libretro_name": "mgba",
+      "file_name": "mgba_libretro.so",
+      "config_folder": "mGBA",
+      "info_name": "mgba_libretro.info",
+      "path": null,
+      "supports_menu": true,
+      "supports_savestate": true,
+      "supports_disk_control": false,
+      "needs_swap": false,
+      "status": "packaged"
+    },
+    {
+      "id": "gpsp",
+      "display_name": "gpSP",
+      "type": "retroarch",
+      "libretro_name": "gpsp",
+      "file_name": "gpsp_libretro.so",
+      "config_folder": "gpSP",
+      "info_name": "gpsp_libretro.info",
+      "path": null,
+      "supports_menu": true,
+      "supports_savestate": true,
+      "supports_disk_control": false,
+      "needs_swap": false,
+      "status": "packaged"
     }
   ]
 }
@@ -96,6 +126,24 @@ cat >"$DEFAULTS_DIR/systems.json" <<'JSON'
       "rom_root": "Roms/N64",
       "image_root": "Images/N64",
       "bios_notes": []
+    },
+    {
+      "id": "GBA",
+      "name": "Game Boy Advance",
+      "patterns": ["GBA"],
+      "extensions": ["gba"],
+      "archive_extensions": ["zip"],
+      "archive_inner_extensions": ["gba"],
+      "archive_mode": "pass_through",
+      "file_names": [],
+      "ignore_file_names": [],
+      "playlist_extensions": [],
+      "m3u_generation": "none",
+      "default_core": "mgba",
+      "alternate_cores": ["gpsp"],
+      "rom_root": "Roms/GBA",
+      "image_root": "Images/GBA",
+      "bios_notes": []
     }
   ]
 }
@@ -104,14 +152,20 @@ JSON
 printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/mupen64plus/launch.sh"
 chmod 755 "$PLATFORM_ROOT/emulators/mupen64plus/launch.sh"
 : >"$CORES_DIR/mupen64plus_next_libretro.dylib"
+: >"$CORES_DIR/mgba_libretro.so"
+: >"$CORES_DIR/gpsp_libretro.so"
 
-make -C "$JAWAKA_DIR" BUILD="$BUILD_DIR" jawaka-catalog-smoke >/dev/null
+make -C "$JAWAKA_DIR" BUILD="$BUILD_DIR" \
+    jawaka-catalog-smoke jawaka-core-override-smoke >/dev/null
 SMOKE="$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-catalog-smoke"
+OVERRIDE_SMOKE="$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-core-override-smoke"
 
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$SMOKE" "$SD_ROOT" N64 "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/n64.tsv"
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$SMOKE" "$SD_ROOT" N64ALT "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/n64alt.tsv"
+UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+    "$SMOKE" "$SD_ROOT" GBA "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/gba.tsv"
 
 grep -F $'count\t2' "$TMP_ROOT/n64.tsv" >/dev/null
 grep -F $'choice\t0\tmupen64plus_standalone\tpath\tdefault\tMupen64Plus Standalone\temulators/mupen64plus/launch.sh' "$TMP_ROOT/n64.tsv" >/dev/null
@@ -120,6 +174,19 @@ grep -F $'choice\t1\tmupen64plus_next\tretroarch\talternate\tMupen64Plus Next\tm
 grep -F $'count\t2' "$TMP_ROOT/n64alt.tsv" >/dev/null
 grep -F $'choice\t0\tmupen64plus_next\tretroarch\tdefault\tMupen64Plus Next\tmupen64plus_next_libretro.dylib' "$TMP_ROOT/n64alt.tsv" >/dev/null
 grep -F $'choice\t1\tmupen64plus_standalone\tpath\talternate\tMupen64Plus Standalone\temulators/mupen64plus/launch.sh' "$TMP_ROOT/n64alt.tsv" >/dev/null
+
+grep -F $'count\t2' "$TMP_ROOT/gba.tsv" >/dev/null
+grep -F $'choice\t0\tmgba\tretroarch\tdefault\tmGBA\tmgba_libretro.so' "$TMP_ROOT/gba.tsv" >/dev/null
+grep -F $'choice\t1\tgpsp\tretroarch\talternate\tgpSP\tgpsp_libretro.so' "$TMP_ROOT/gba.tsv" >/dev/null
+
+UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+    "$OVERRIDE_SMOKE" "$SD_ROOT" GBA "$CORES_DIR" "$PLATFORM_ROOT" \
+    "$TMP_ROOT/library.db" "Roms/GBA/smoke.gba" gpsp >"$TMP_ROOT/gba-override.tsv"
+grep -F $'choices\tmgba\tgpsp' "$TMP_ROOT/gba-override.tsv" >/dev/null
+grep -F $'persisted\tsystem\tgpsp' "$TMP_ROOT/gba-override.tsv" >/dev/null
+grep -F $'persisted\tgame\tgpsp' "$TMP_ROOT/gba-override.tsv" >/dev/null
+grep -F $'fallback\tmgba' "$TMP_ROOT/gba-override.tsv" >/dev/null
+grep -F 'PASS core-override-smoke' "$TMP_ROOT/gba-override.tsv" >/dev/null
 
 chmod 644 "$PLATFORM_ROOT/emulators/mupen64plus/launch.sh"
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
@@ -135,3 +202,5 @@ fi
 cat "$TMP_ROOT/n64.tsv"
 cat "$TMP_ROOT/n64alt.tsv"
 cat "$TMP_ROOT/n64-noexec.tsv"
+cat "$TMP_ROOT/gba.tsv"
+cat "$TMP_ROOT/gba-override.tsv"

@@ -1319,6 +1319,12 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "system_directory", system_dir);
     jw__retroarch_cfg_string(fp, "savefile_directory", saves_dir);
     jw__retroarch_cfg_string(fp, "savestate_directory", states_dir);
+    /* Core overrides make cross-core state loads unsafe. Keep RetroArch's
+       per-core namespaces protected even if a persisted user config disabled
+       the upstream defaults. Battery saves remain isolated until device
+       round-trip testing proves that two cores may safely share them. */
+    jw__retroarch_cfg_string(fp, "sort_savefiles_enable", "true");
+    jw__retroarch_cfg_string(fp, "sort_savestates_enable", "true");
     /* Emit a PNG next to each savestate so the in-game menu can preview slots. */
     jw__retroarch_cfg_string(fp, "savestate_thumbnail_enable", "true");
     /* Steer manual/command screenshots to an ephemeral tmpfs dir the in-game
@@ -1697,6 +1703,8 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     jw__retroarch_cfg_string(fp, "system_directory", system_dir);
     jw__retroarch_cfg_string(fp, "savefile_directory", saves_dir);
     jw__retroarch_cfg_string(fp, "savestate_directory", states_dir);
+    jw__retroarch_cfg_string(fp, "sort_savefiles_enable", "true");
+    jw__retroarch_cfg_string(fp, "sort_savestates_enable", "true");
     jw__retroarch_cfg_string(fp, "libretro_directory", core_dir);
     if (info_dir && jw__is_directory(info_dir)) {
         jw__retroarch_cfg_string(fp, "libretro_info_path", info_dir);
