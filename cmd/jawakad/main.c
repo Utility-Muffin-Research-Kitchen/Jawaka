@@ -11,6 +11,7 @@
 #include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
 #include "internal/retroarch/catalog.h"
+#include "internal/retroarch/legacy_migration.h"
 #include "internal/retroarch/states.h"
 #include "internal/scrape/scrape_worker.h"
 #include "internal/scrape/ss_client.h"
@@ -98,16 +99,22 @@ typedef struct {
     char source_root[PATH_MAX];
     char core_path[PATH_MAX];
     char core_id[64];
+    char core_config_folder[256];
     char config_path[PATH_MAX];
     int resident_switches;
     bool persist_config;
     bool audio_bluetooth;
+    bool warning_pending;
+    int warning_attempts;
+    long long warning_next_ms;
+    char warning[256];
 } jw_retroarch_session;
 
 typedef struct {
     jw_launch_target_kind kind;
     char path[PATH_MAX];
     char core_id[64];
+    char core_config_folder[256];
     char diagnostic[256];
 } jw_launch_target;
 
@@ -2893,9 +2900,11 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         const char *source_root,
                                         const char *core_path,
                                         const char *core_id,
+                                        const char *core_config_folder,
                                         const char *config_path,
                                         bool persist_config,
-                                        bool audio_bluetooth) {
+                                        bool audio_bluetooth,
+                                        const char *warning) {
     if (!state || pid <= 0) {
         return;
     }
@@ -2913,18 +2922,24 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
              source_root ? source_root : "");
     snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
     snprintf(session->core_id, sizeof(session->core_id), "%s", core_id ? core_id : "");
+    snprintf(session->core_config_folder, sizeof(session->core_config_folder), "%s",
+             core_config_folder ? core_config_folder : "");
     snprintf(session->config_path, sizeof(session->config_path), "%s",
              config_path ? config_path : "");
     session->persist_config = persist_config;
     session->audio_bluetooth = audio_bluetooth;
+    snprintf(session->warning, sizeof(session->warning), "%s",
+             warning ? warning : "");
+    session->warning_pending = session->warning[0] != '\0';
 
     /* Fresh session: no menu shown yet, reset the standby respawn guard. */
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
 
-    jw_log_info("RetroArch session started pid=%d system=%s source=%s core=%s core_id=%s config=%s rom=%s",
+    jw_log_info("RetroArch session started pid=%d system=%s source=%s core=%s core_id=%s core_folder=%s config=%s rom=%s",
                 (int)pid, session->system, session->source_root,
                 session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
+                session->core_config_folder[0] ? session->core_config_folder : "(unavailable)",
                 session->config_path, session->rom_path);
 }
 
@@ -3047,7 +3062,9 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
                                            const char *db_rom_path,
                                            const char *source_root,
                                            const char *core_path,
-                                           const char *core_id) {
+                                           const char *core_id,
+                                           const char *core_config_folder,
+                                           const char *warning) {
     if (!state || !state->retroarch_session.active) {
         return;
     }
@@ -3066,6 +3083,13 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
              source_root ? source_root : "");
     snprintf(session->core_path, sizeof(session->core_path), "%s", core_path ? core_path : "");
     snprintf(session->core_id, sizeof(session->core_id), "%s", core_id ? core_id : "");
+    snprintf(session->core_config_folder, sizeof(session->core_config_folder), "%s",
+             core_config_folder ? core_config_folder : "");
+    snprintf(session->warning, sizeof(session->warning), "%s",
+             warning ? warning : "");
+    session->warning_pending = session->warning[0] != '\0';
+    session->warning_attempts = 0;
+    session->warning_next_ms = 0;
     session->resident_switches = resident_switches;
 
     state->post_launch_resume_pending = false;
@@ -3075,10 +3099,11 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
 
-    jw_log_info("RetroArch session retargeted in-process pid=%d runtime_s=%ld resident_switches=%d system=%s source=%s core=%s core_id=%s rom=%s",
+    jw_log_info("RetroArch session retargeted in-process pid=%d runtime_s=%ld resident_switches=%d system=%s source=%s core=%s core_id=%s core_folder=%s rom=%s",
                 (int)session->pid, runtime_s, session->resident_switches,
                 session->system, session->source_root,
                 session->core_path, session->core_id[0] ? session->core_id : "(unknown)",
+                session->core_config_folder[0] ? session->core_config_folder : "(unavailable)",
                 session->rom_path);
 }
 
@@ -3634,6 +3659,8 @@ static char *jw__resolve_launch_core_path(jw_daemon_state *state,
                                           const char *rom_path,
                                           char *out_core_id,
                                           size_t out_core_id_size,
+                                          char *out_config_folder,
+                                          size_t out_config_folder_size,
                                           char *diagnostic,
                                           size_t diagnostic_size) {
     if (out_core_id && out_core_id_size > 0) {
@@ -3641,6 +3668,9 @@ static char *jw__resolve_launch_core_path(jw_daemon_state *state,
     }
     if (diagnostic && diagnostic_size > 0) {
         diagnostic[0] = '\0';
+    }
+    if (out_config_folder && out_config_folder_size > 0) {
+        out_config_folder[0] = '\0';
     }
 
     jw_game_entry game;
@@ -3672,6 +3702,8 @@ static char *jw__resolve_launch_core_path(jw_daemon_state *state,
                                                           preferred[0] ? preferred : NULL,
                                                           out_core_id,
                                                           out_core_id_size,
+                                                          out_config_folder,
+                                                          out_config_folder_size,
                                                           diagnostic,
                                                           diagnostic_size);
     if (core && source && preferred[0]) {
@@ -3860,9 +3892,12 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
     }
 
     char core_id[64];
+    char core_config_folder[256];
     char diagnostic[256];
     char *core = jw__resolve_launch_core_path(state, system, rom_path,
                                               core_id, sizeof(core_id),
+                                              core_config_folder,
+                                              sizeof(core_config_folder),
                                               diagnostic, sizeof(diagnostic));
     if (!core) {
         if (diagnostic[0]) {
@@ -3874,6 +3909,8 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
     target->kind = JW_LAUNCH_TARGET_RETROARCH;
     snprintf(target->path, sizeof(target->path), "%s", core);
     snprintf(target->core_id, sizeof(target->core_id), "%s", core_id);
+    snprintf(target->core_config_folder, sizeof(target->core_config_folder), "%s",
+             core_config_folder);
     if (diagnostic[0]) {
         snprintf(target->diagnostic, sizeof(target->diagnostic), "%s", diagnostic);
     }
@@ -3881,21 +3918,154 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
     return 0;
 }
 
-static const char *jw__state_core_folder(const jw_daemon_state *state,
-                                         const char *core_id) {
-    if (!state || !core_id || !core_id[0]) {
-        return NULL;
+static void jw__rom_stem(const char *path, char *out, size_t out_size) {
+    const char *base = path ? strrchr(path, '/') : NULL;
+    base = base && base[1] ? base + 1 : (path ? path : "");
+    snprintf(out, out_size, "%s", base);
+    char *dot = strrchr(out, '.');
+    if (dot) *dot = '\0';
+}
+
+static const jw_ra_system *jw__legacy_system(const jw_ra_catalog *catalog,
+                                             const char *system_id) {
+    const jw_ra_system *system = jw_ra_catalog_find_system(catalog, system_id);
+    return system ? system : jw_ra_catalog_match_system_folder(catalog, system_id);
+}
+
+/* Flat files are keyed only by ROM stem. If this source contains another known
+   game with the same stem but a different declared historical owner, assigning
+   the file would be guesswork, so recovery fails closed. */
+static bool jw__legacy_flat_ambiguous(jw_daemon_state *state,
+                                      const jw_ra_catalog *catalog,
+                                      const char *source_root,
+                                      const char *rom_path,
+                                      const char *legacy_owner) {
+    if (!state || !state->db || !catalog || !source_root || !rom_path ||
+        !legacy_owner || !legacy_owner[0]) {
+        return false;
     }
+    char wanted_stem[512];
+    jw__rom_stem(rom_path, wanted_stem, sizeof(wanted_stem));
+    if (!wanted_stem[0]) return false;
+
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0) return false;
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(state->db, "SELECT system, rom_path FROM games;",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        return false;
+    }
+    bool ambiguous = false;
+    while (!ambiguous && sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *candidate_system =
+            (const char *)sqlite3_column_text(stmt, 0);
+        const char *candidate_path =
+            (const char *)sqlite3_column_text(stmt, 1);
+        char candidate_stem[512];
+        jw__rom_stem(candidate_path, candidate_stem, sizeof(candidate_stem));
+        if (!candidate_system || !candidate_path ||
+            strcasecmp(candidate_stem, wanted_stem) != 0) {
+            continue;
+        }
+
+        char candidate_abs[PATH_MAX];
+        if (jw__resolve_rom_path(state, candidate_path,
+                                 candidate_abs, sizeof(candidate_abs)) != 0) {
+            continue;
+        }
+        const jw_storage_source *candidate_source =
+            jw_storage_sources_find_for_path(&sources, candidate_abs);
+        if (!candidate_source || strcmp(candidate_source->root, source_root) != 0) {
+            continue;
+        }
+        const jw_ra_system *system = jw__legacy_system(catalog, candidate_system);
+        const char *candidate_owner = system ? system->legacy_flat_core : NULL;
+        if (!candidate_owner || !candidate_owner[0] ||
+            strcmp(candidate_owner, legacy_owner) != 0) {
+            ambiguous = true;
+        }
+    }
+    sqlite3_finalize(stmt);
+    return ambiguous;
+}
+
+static void jw__recover_legacy_flat(jw_daemon_state *state,
+                                    const char *system_id,
+                                    const char *rom_path,
+                                    const char *source_root,
+                                    const char *core_id,
+                                    const char *core_config_folder,
+                                    char *warning, size_t warning_size) {
+    if (warning && warning_size > 0) warning[0] = '\0';
+    if (!core_config_folder || !core_config_folder[0]) {
+        jw_log_warn("state features disabled: core=%s has no safe config_folder",
+                    core_id && core_id[0] ? core_id : "(unknown)");
+        if (warning && warning_size > 0) {
+            snprintf(warning, warning_size,
+                     "Save-state features disabled: core metadata is unavailable");
+        }
+        return;
+    }
+
     char error[256];
     const jw_ra_catalog *catalog =
         jw_ra_catalog_get(state->sdcard_root, error, sizeof(error));
     if (!catalog) {
-        return NULL;
+        /* The session folder is already authoritative. A transient catalog
+           failure must not disable an otherwise valid running namespace. */
+        jw_log_warn("legacy recovery metadata unavailable: %s",
+                    error[0] ? error : "unknown error");
+        return;
     }
-    const jw_ra_core *core = jw_ra_catalog_find_core(catalog, core_id);
-    return core && core->config_folder && core->config_folder[0]
-        ? core->config_folder
-        : NULL;
+
+    jw_game_entry game;
+    memset(&game, 0, sizeof(game));
+    bool have_game = jw__lookup_launch_game(state, rom_path, &game) == 0;
+    const char *system_key = jw__launch_system_key(system_id,
+                                                   have_game ? &game : NULL);
+    const jw_ra_system *system = jw__legacy_system(catalog, system_key);
+    const char *legacy_owner = system ? system->legacy_flat_core : NULL;
+    if (!legacy_owner || !legacy_owner[0] || !core_id ||
+        strcmp(core_id, legacy_owner) != 0 ||
+        !jw_ra_legacy_flat_files_need_recovery(source_root, rom_path,
+                                               core_config_folder)) {
+        return;
+    }
+    bool ambiguous = jw__legacy_flat_ambiguous(state, catalog, source_root,
+                                               rom_path, legacy_owner);
+    jw_ra_legacy_migration_report report;
+    jw_ra_legacy_migration_result result =
+        jw_ra_migrate_legacy_flat_files(source_root, rom_path, core_id,
+                                        core_config_folder, legacy_owner,
+                                        ambiguous, &report);
+    switch (result) {
+        case JW_RA_LEGACY_MIGRATION_COPIED:
+            jw_log_info("legacy save recovery: system=%s rom=%s core=%s folder=%s %s",
+                        system_key ? system_key : "(unknown)", rom_path,
+                        core_id, core_config_folder, report.detail);
+            break;
+        case JW_RA_LEGACY_MIGRATION_AMBIGUOUS:
+            jw_log_warn("legacy save recovery skipped as ambiguous: system=%s rom=%s core=%s detail=%s",
+                        system_key ? system_key : "(unknown)", rom_path,
+                        core_id, report.detail);
+            if (warning && warning_size > 0) {
+                snprintf(warning, warning_size,
+                         "Legacy save recovery skipped: ambiguous ROM name");
+            }
+            break;
+        case JW_RA_LEGACY_MIGRATION_FAILED:
+            jw_log_warn("legacy save recovery failed: system=%s rom=%s core=%s detail=%s",
+                        system_key ? system_key : "(unknown)", rom_path,
+                        core_id, report.detail);
+            if (warning && warning_size > 0) {
+                snprintf(warning, warning_size,
+                         "Legacy save recovery failed; original files were retained");
+            }
+            break;
+        default:
+            break;
+    }
 }
 
 static jw_platform_perf_profile jw__perf_requested_for_launch(
@@ -4115,8 +4285,11 @@ static void jw__wait_for_savestate_write(const jw_daemon_state *state, int slot)
     int stable = 0;
     int elapsed = 0;
     char path[PATH_MAX];
-    const char *core_folder =
-        jw__state_core_folder(state, state->retroarch_session.core_id);
+    const char *core_folder = state->retroarch_session.core_config_folder;
+    if (!core_folder[0]) {
+        jw_log_warn("savestate settle skipped: active core has no safe config_folder");
+        return;
+    }
     while (elapsed < timeout_ms) {
         struct timespec ts = { poll_ms / 1000, (long)(poll_ms % 1000) * 1000000L };
         nanosleep(&ts, NULL);
@@ -4176,6 +4349,12 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         return 0;
     }
 
+    if (!state->retroarch_session.core_config_folder[0]) {
+        jw_log_warn("switch-game disabled: active core has no safe config_folder");
+        if (out_error) *out_error = "savestate namespace unavailable";
+        return -1;
+    }
+
     jw_ra_client ra = jw_ra_client_default();
 
     jw_ra_info info;
@@ -4212,6 +4391,10 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     target_source_root[0] = '\0';
     char target_core_id[64];
     target_core_id[0] = '\0';
+    char target_core_folder[256];
+    target_core_folder[0] = '\0';
+    char target_warning[256];
+    target_warning[0] = '\0';
     char *target_core = NULL;
     bool resident_eligible = false;
     int resident_switch_max = jw__resident_switch_max();
@@ -4238,7 +4421,15 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
             target.kind == JW_LAUNCH_TARGET_RETROARCH;
         if (target_is_retroarch) {
             snprintf(target_core_id, sizeof(target_core_id), "%s", target.core_id);
+            snprintf(target_core_folder, sizeof(target_core_folder), "%s",
+                     target.core_config_folder);
             target_core = strdup(target.path);
+            if (!target_core_folder[0] &&
+                strcmp(target.path, state->retroarch_session.core_path) == 0 &&
+                strcmp(target.core_id, state->retroarch_session.core_id) == 0) {
+                snprintf(target_core_folder, sizeof(target_core_folder), "%s",
+                         state->retroarch_session.core_config_folder);
+            }
         }
         resident_eligible =
             target_core && target_core[0] &&
@@ -4252,6 +4443,10 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     }
 
     if (resident_eligible) {
+        jw__recover_legacy_flat(state, system, target_rom_abs,
+                                target_source_root, target_core_id,
+                                target_core_folder, target_warning,
+                                sizeof(target_warning));
         (void)jw__perf_apply_launch_game(state, system, rom_path, "resident-switch");
         long long resident_start_ms = jw__monotonic_ms();
         char load_reply[JW_RA_REPLY_MAX];
@@ -4270,7 +4465,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
                          target_source_root) < (int)sizeof(states_dir)) {
                 have_resume_state = jw_ra_find_resume_state_for_core(
                     states_dir,
-                    jw__state_core_folder(state, target_core_id),
+                    target_core_folder,
                     target_rom_abs, JW_RA_GAME_SWITCHER_STATE_SLOT,
                     &slot, state_path, sizeof(state_path));
             }
@@ -4278,7 +4473,9 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
             jw__retroarch_session_retarget(state, system, target_rom_abs,
                                            rom_path, target_source_root,
                                            target_core,
-                                           target_core_id);
+                                           target_core_id,
+                                           target_core_folder,
+                                           target_warning);
 
             if (have_resume_state) {
                 char load_state_reply[JW_RA_REPLY_MAX];
@@ -5072,6 +5269,8 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
             setenv("JAWAKA_INGAME_ROM", state->retroarch_session.rom_path, 1);
             setenv("JAWAKA_INGAME_CORE", state->retroarch_session.core_path, 1);
             setenv("JAWAKA_INGAME_CORE_ID", state->retroarch_session.core_id, 1);
+            setenv("JAWAKA_INGAME_CORE_FOLDER",
+                   state->retroarch_session.core_config_folder, 1);
         }
         setenv("JAWAKA_INGAME_AUTOSHOW", show_now ? "1" : "0", 1);
         char dir_buf[PATH_MAX];
@@ -5431,11 +5630,16 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
 
     char *retroarch = jw_retroarch_bin_path();
     char core_id[64];
+    char core_config_folder[256];
     char core_diagnostic[256];
+    char launch_warning[256];
+    launch_warning[0] = '\0';
     char *core = jw__resolve_launch_core_path(state,
                                               state->pending_launch_system,
                                               state->pending_launch_rom_path,
                                               core_id, sizeof(core_id),
+                                              core_config_folder,
+                                              sizeof(core_config_folder),
                                               core_diagnostic,
                                               sizeof(core_diagnostic));
     char *runtime_config = NULL;
@@ -5473,6 +5677,10 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         jw_log_error("cannot launch RetroArch core from SD: %s", exec_error);
         goto fail;
     }
+
+    jw__recover_legacy_flat(state, state->pending_launch_system, rom_abs,
+                            source_root, core_id, core_config_folder,
+                            launch_warning, sizeof(launch_warning));
 
     jw_platform_result ready_result;
     jw_platform_frontend_ready(&state->platform, "launcher", &ready_result);
@@ -5550,7 +5758,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         if (snprintf(states_dir, sizeof(states_dir), "%s/States", source_root) <
                 (int)sizeof(states_dir) &&
             jw_ra_find_resume_state_for_core(
-                states_dir, jw__state_core_folder(state, core_id), rom_abs,
+                states_dir, core_config_folder, rom_abs,
                 JW_RA_GAME_SWITCHER_STATE_SLOT, &resolved_slot,
                 resolved_path, sizeof(resolved_path))) {
             /* Resume via the post-launch network load-state command (below), NOT
@@ -5624,9 +5832,11 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
     jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs,
                                 state->pending_launch_rom_path, source_root,
-                                core, core_id, runtime_config, persist_config,
-                                audio_bluetooth);
-    bool post_launch_resume = switcher_resume && !entryslot_resume;
+                                core, core_id, core_config_folder,
+                                runtime_config, persist_config,
+                                audio_bluetooth, launch_warning);
+    bool post_launch_resume = switcher_resume && !entryslot_resume &&
+                              core_config_folder[0];
     if (post_launch_resume) {
         state->post_launch_resume_pending = true;
         state->post_launch_resume_attempts = 0;
@@ -6213,7 +6423,7 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
     if (!give_up &&
         !jw_ra_find_resume_state_for_core(
             states_dir,
-            jw__state_core_folder(state, state->retroarch_session.core_id),
+            state->retroarch_session.core_config_folder,
             state->retroarch_session.rom_path,
             JW_RA_GAME_SWITCHER_STATE_SLOT,
             &slot, state_path, sizeof(state_path))) {
@@ -6245,6 +6455,36 @@ static void jw__tick_post_launch_resume(jw_daemon_state *state) {
     state->post_launch_resume_next_ms = 0;
     jw__schedule_in_game_menu_prewarm(state,
                                       JW_INGAME_MENU_PREWARM_AFTER_RESUME_MS);
+}
+
+/* Deliver launch/recovery warnings through RetroArch exactly once, after its
+   command socket becomes ready. Failure is bounded and never delays gameplay. */
+static void jw__tick_retroarch_warning(jw_daemon_state *state) {
+    if (!state || !state->retroarch_session.warning_pending) return;
+    jw_retroarch_session *session = &state->retroarch_session;
+    if (!session->active || state->child_kind != JW_CHILD_RETROARCH) {
+        session->warning_pending = false;
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    if (session->warning_next_ms > now) return;
+
+    session->warning_attempts++;
+    jw_ra_client ra = jw_ra_client_default();
+    ra.timeout_ms = 100u;
+    jw_ra_result result = jw_ra_show_message(&ra, session->warning);
+    if (result == JW_RA_OK) {
+        jw_log_info("RetroArch warning shown: %s", session->warning);
+        session->warning_pending = false;
+        return;
+    }
+    if (session->warning_attempts >= JW_SWITCHER_RESUME_MAX_ATTEMPTS) {
+        jw_log_warn("RetroArch warning could not be shown result=%s message=%s",
+                    jw_ra_result_string(result), session->warning);
+        session->warning_pending = false;
+        return;
+    }
+    session->warning_next_ms = now + JW_SWITCHER_RESUME_RETRY_MS;
 }
 
 /* One-shot startup maintenance, armed before the launcher spawns and pulled
@@ -6358,6 +6598,8 @@ static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *cl
     cJSON_AddStringToObject(root, "rom_path", state->retroarch_session.rom_path);
     cJSON_AddStringToObject(root, "core_path", state->retroarch_session.core_path);
     cJSON_AddStringToObject(root, "core_id", state->retroarch_session.core_id);
+    cJSON_AddStringToObject(root, "core_config_folder",
+                           state->retroarch_session.core_config_folder);
     cJSON_AddNumberToObject(root, "resident_switches",
                             state->retroarch_session.resident_switches);
 
@@ -6375,7 +6617,8 @@ static int jw__reply_retroarch_session(jw_daemon_state *state, jw_ipc_client *cl
             cJSON_AddNullToObject(root, "disk_slot");
         }
         cJSON_AddBoolToObject(root, "savestate_supported",
-                              info.savestate_supported);
+                              info.savestate_supported &&
+                              state->retroarch_session.core_config_folder[0]);
         cJSON_AddNumberToObject(root, "state_slot", info.state_slot);
     }
 
@@ -6484,7 +6727,8 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
            jw__request_switch_game. */
         jw_ra_info info;
         memset(&info, 0, sizeof(info));
-        if (jw_ra_get_info(&ra, &info) == JW_RA_OK && info.savestate_supported) {
+        if (state->retroarch_session.core_config_folder[0] &&
+            jw_ra_get_info(&ra, &info) == JW_RA_OK && info.savestate_supported) {
             char reply[JW_RA_REPLY_MAX];
             jw_ra_result sv = jw_ra_save_state_slot(
                 &ra, JW_RA_GAME_SWITCHER_STATE_SLOT, reply, sizeof(reply));
@@ -6517,6 +6761,9 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             state->menu_visible = false;
         }
     } else if (strcmp(action, "save-state") == 0) {
+        if (!state->retroarch_session.core_config_folder[0]) {
+            return jw__reply_error(client, "savestate namespace unavailable");
+        }
         if (has_value) {
             /* value >= -1: the slot variant handles the auto slot (-1) too. */
             char reply[JW_RA_REPLY_MAX];
@@ -6530,6 +6777,9 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             state->menu_visible = false;
         }
     } else if (strcmp(action, "load-state") == 0) {
+        if (!state->retroarch_session.core_config_folder[0]) {
+            return jw__reply_error(client, "savestate namespace unavailable");
+        }
         if (has_value) {
             /* value >= -1: the slot variant handles the auto slot (-1) too. */
             char reply[JW_RA_REPLY_MAX];
@@ -6543,8 +6793,14 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             state->menu_visible = false;
         }
     } else if (strcmp(action, "state-slot-prev") == 0) {
+        if (!state->retroarch_session.core_config_folder[0]) {
+            return jw__reply_error(client, "savestate namespace unavailable");
+        }
         result = jw__set_state_slot_delta(&ra, -1);
     } else if (strcmp(action, "state-slot-next") == 0) {
+        if (!state->retroarch_session.core_config_folder[0]) {
+            return jw__reply_error(client, "savestate namespace unavailable");
+        }
         result = jw__set_state_slot_delta(&ra, +1);
     } else if (strcmp(action, "disk-prev") == 0) {
         result = jw__set_disk_slot_delta(&ra, -1);
@@ -7655,6 +7911,7 @@ int main(int argc, char *argv[]) {
         jw_update_check_poll(&state.update_status, &state.update_check_job);
         jw__handle_child_exit(&state);
         jw__tick_post_launch_resume(&state);
+        jw__tick_retroarch_warning(&state);
         jw__tick_in_game_menu_prewarm(&state);
         jw__handle_menu_exit(&state);
         jw__handle_osd_exit(&state);

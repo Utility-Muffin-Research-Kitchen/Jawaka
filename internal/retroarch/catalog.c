@@ -241,6 +241,7 @@ static void jw_ra_system_free(jw_ra_system *system) {
     jw_ra_string_list_free(&system->playlist_extensions);
     free(system->m3u_generation);
     free(system->default_core);
+    free(system->legacy_flat_core);
     jw_ra_string_list_free(&system->alternate_cores);
     free(system->rom_root);
     free(system->image_root);
@@ -291,6 +292,7 @@ static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
     out->m3u_generation = jw_ra_json_string(row, "m3u_generation");
     out->name_map = jw_ra_json_bool(row, "name_map", false);
     out->default_core = jw_ra_json_string(row, "default_core");
+    out->legacy_flat_core = jw_ra_json_string(row, "legacy_flat_core");
     out->rom_root = jw_ra_json_string(row, "rom_root");
     out->image_root = jw_ra_json_string(row, "image_root");
 
@@ -674,6 +676,71 @@ static int jw_ra_validate_unique_systems(const jw_ra_catalog *catalog, char *err
     return 0;
 }
 
+bool jw_ra_core_folder_is_safe(const char *folder) {
+    if (!folder || !folder[0] || strcmp(folder, ".") == 0 ||
+        strcmp(folder, "..") == 0) {
+        return false;
+    }
+    size_t len = strlen(folder);
+    if (len > 255u || folder[len - 1u] == ' ' || folder[len - 1u] == '.') {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)folder; *p; p++) {
+        if (*p < 0x20u || strchr("/\\:*?\"<>|", (int)*p)) {
+            return false;
+        }
+    }
+    char stem[16];
+    size_t stem_len = strcspn(folder, ".");
+    if (stem_len > 0 && stem_len < sizeof(stem)) {
+        memcpy(stem, folder, stem_len);
+        stem[stem_len] = '\0';
+        if (strcasecmp(stem, "CON") == 0 || strcasecmp(stem, "PRN") == 0 ||
+            strcasecmp(stem, "AUX") == 0 || strcasecmp(stem, "NUL") == 0 ||
+            (stem_len == 4u &&
+             (strncasecmp(stem, "COM", 3u) == 0 ||
+              strncasecmp(stem, "LPT", 3u) == 0) &&
+             stem[3] >= '1' && stem[3] <= '9')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int jw_ra_validate_core_folders(const jw_ra_catalog *catalog,
+                                       char *error, size_t error_size) {
+    for (size_t i = 0; i < catalog->core_count; i++) {
+        const jw_ra_core *core = &catalog->cores[i];
+        if (!jw_ra_core_is_packaged_retroarch(core)) {
+            continue;
+        }
+        if (!jw_ra_core_folder_is_safe(core->config_folder)) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "packaged RetroArch core has unsafe config_folder: %s",
+                     core->id ? core->id : "(unknown)");
+            jw_ra_set_error(error, error_size, message);
+            return -1;
+        }
+        for (size_t j = i + 1u; j < catalog->core_count; j++) {
+            const jw_ra_core *other = &catalog->cores[j];
+            if (!jw_ra_core_is_packaged_retroarch(other) ||
+                !other->config_folder ||
+                strcasecmp(core->config_folder, other->config_folder) != 0) {
+                continue;
+            }
+            char message[256];
+            snprintf(message, sizeof(message),
+                     "case-folding config_folder collision: %s and %s",
+                     core->id ? core->id : "(unknown)",
+                     other->id ? other->id : "(unknown)");
+            jw_ra_set_error(error, error_size, message);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int jw_ra_validate_system_defaults(const jw_ra_catalog *catalog, char *error, size_t error_size) {
     /* Core presence is a launch-time concern, not a catalog-validity one. A
        system may have no default_core at all (discovered but not launchable), or
@@ -695,6 +762,7 @@ static int jw_ra_validate_catalog(const jw_ra_catalog *catalog, char *error, siz
     }
     if (jw_ra_validate_unique_cores(catalog, error, error_size) != 0 ||
         jw_ra_validate_unique_systems(catalog, error, error_size) != 0 ||
+        jw_ra_validate_core_folders(catalog, error, error_size) != 0 ||
         jw_ra_validate_system_defaults(catalog, error, error_size) != 0) {
         return -1;
     }

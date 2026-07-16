@@ -20,6 +20,8 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                const char *preferred_core_id,
                                                char *out_core_id,
                                                size_t out_core_id_size,
+                                               char *out_config_folder,
+                                               size_t out_config_folder_size,
                                                char *diagnostic,
                                                size_t diagnostic_size);
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size);

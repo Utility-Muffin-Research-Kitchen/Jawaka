@@ -39,6 +39,9 @@ typedef struct {
     char *m3u_generation;
     bool name_map;
     char *default_core;
+    /* Optional owner of save/state files from RetroArch's historical flat
+       layout. Legacy files may only be recovered for this core. */
+    char *legacy_flat_core;
     jw_ra_string_list alternate_cores;
     char *rom_root;
     char *image_root;
@@ -56,7 +59,7 @@ typedef struct {
     char display_name[128];
     char type[32];
     char file_name[256];
-    char config_folder[128];
+    char config_folder[256];
     char path[256];
     bool supports_menu;
     bool supports_savestate;
@@ -82,6 +85,8 @@ const jw_ra_core *jw_ra_catalog_find_core(const jw_ra_catalog *catalog, const ch
 bool jw_ra_string_list_contains(const jw_ra_string_list *list, const char *value);
 bool jw_ra_string_list_contains_casefold(const jw_ra_string_list *list, const char *value);
 bool jw_ra_core_is_packaged_retroarch(const jw_ra_core *core);
+/* RetroArch uses library_name verbatim as a FAT32 directory component. */
+bool jw_ra_core_folder_is_safe(const char *folder);
 
 int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
                                     const char *system_id,

@@ -11,7 +11,6 @@
 #include "internal/launcher/game_switcher.h"
 #include "internal/platform/cat_services.h"
 #include "internal/platform/paths.h"
-#include "internal/retroarch/catalog.h"
 #include "internal/retroarch/states.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
@@ -512,9 +511,9 @@ static int jw__db_game_name(sqlite3 *db, const char *rom_path,
 }
 
 /* Resolve the header game title and console subtitle for the active session.
-   Game title prefers the user display name/library name keyed by rom_path, falling
-   back to a cleaned ROM basename; console prefers the RA catalog display name,
-   falling back to the raw system id. */
+   Game title prefers the user display name/library name keyed by rom_path,
+   falling back to a cleaned ROM basename. The console uses the launch-time
+   system id so an active IGM never depends on replaceable metadata. */
 static void jw__ingame_resolve_titles(jw_ingame_state *state) {
     if (!state->session.active) {
         snprintf(state->game_title, sizeof(state->game_title), "%s",
@@ -554,32 +553,17 @@ static void jw__ingame_resolve_titles(jw_ingame_state *state) {
 
     snprintf(state->console_title, sizeof(state->console_title), "%s",
              state->session.system[0] ? state->session.system : "");
-    char *sd_root = jw_sdcard_root();
-    if (sd_root) {
-        char error[256];
-        const jw_ra_catalog *catalog = jw_ra_catalog_get(sd_root, error, sizeof(error));
-        const jw_ra_system *system =
-            jw_ra_catalog_find_system(catalog, state->session.system);
-        if (!system) {
-            system = jw_ra_catalog_match_system_folder(catalog, state->session.system);
-        }
-        if (system && system->name && system->name[0]) {
-            snprintf(state->console_title, sizeof(state->console_title), "%s",
-                     system->name);
-        }
-        free(sd_root);
-    }
 }
 
 /* ── Decoupled Save/Load slot selection (Item 3) ──────────────────────────── */
 
-/* Resolve the active core's in-game state namespace. Start with the daemon's
-   source-aware States/ root (or the normal fallbacks), then append only the
-   catalog config_folder for the running core. Failing closed here keeps the
-   IGM list, previews, and Keep action from surfacing another core's states. */
+/* Resolve the active core's in-game state namespace from the folder captured
+   by the daemon at launch. This keeps a live session independent of later
+   metadata removal/replacement and prevents cross-core state exposure. */
 static bool jw__ingame_states_dir(const jw_ingame_state *state,
                                   char *out, size_t out_size) {
-    if (!state || !state->session.core_id[0] || !out || out_size == 0) {
+    if (!state || !state->session.core_config_folder[0] ||
+        !out || out_size == 0) {
         return false;
     }
 
@@ -599,18 +583,13 @@ static bool jw__ingame_states_dir(const jw_ingame_state *state,
     if (!root[0] && sd && sd[0]) {
         snprintf(root, sizeof(root), "%s/States", sd);
     }
-    if (!root[0] || !sd || !sd[0]) {
+    if (!root[0]) {
         free(sd);
         out[0] = '\0';
         return false;
     }
-
-    char error[256];
-    const jw_ra_catalog *catalog = jw_ra_catalog_get(sd, error, sizeof(error));
-    const jw_ra_core *core =
-        catalog ? jw_ra_catalog_find_core(catalog, state->session.core_id) : NULL;
-    bool ok = core && core->config_folder && core->config_folder[0] &&
-              jw_ra_core_states_dir(root, core->config_folder, out, out_size);
+    bool ok = jw_ra_core_states_dir(root, state->session.core_config_folder,
+                                    out, out_size);
     free(sd);
     if (!ok) out[0] = '\0';
     return ok;
@@ -1633,6 +1612,9 @@ static bool jw__prime_ingame_session_from_env(jw_ingame_state *state) {
     jw__copy_env_string("JAWAKA_INGAME_CORE_ID",
                         state->session.core_id,
                         sizeof(state->session.core_id));
+    jw__copy_env_string("JAWAKA_INGAME_CORE_FOLDER",
+                        state->session.core_config_folder,
+                        sizeof(state->session.core_config_folder));
     snprintf(state->session.command_result,
              sizeof(state->session.command_result), "%s", "pending");
     state->status[0] = '\0';

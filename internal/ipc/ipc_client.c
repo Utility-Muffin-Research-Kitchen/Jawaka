@@ -574,6 +574,8 @@ int jw_ipc_get_retroarch_session(const char *socket_path,
     const cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(resp, "rom_path");
     const cJSON *core_path = cJSON_GetObjectItemCaseSensitive(resp, "core_path");
     const cJSON *core_id = cJSON_GetObjectItemCaseSensitive(resp, "core_id");
+    const cJSON *core_config_folder =
+        cJSON_GetObjectItemCaseSensitive(resp, "core_config_folder");
     const cJSON *disk_count = cJSON_GetObjectItemCaseSensitive(resp, "disk_count");
     const cJSON *disk_slot = cJSON_GetObjectItemCaseSensitive(resp, "disk_slot");
     const cJSON *savestate_supported =
@@ -597,6 +599,11 @@ int jw_ipc_get_retroarch_session(const char *socket_path,
     }
     if (cJSON_IsString(core_id) && core_id->valuestring) {
         ipc__copy_string(out->core_id, sizeof(out->core_id), core_id->valuestring);
+    }
+    if (cJSON_IsString(core_config_folder) && core_config_folder->valuestring) {
+        ipc__copy_string(out->core_config_folder,
+                         sizeof(out->core_config_folder),
+                         core_config_folder->valuestring);
     }
     if (cJSON_IsNumber(disk_count)) {
         out->disk_count = disk_count->valueint;

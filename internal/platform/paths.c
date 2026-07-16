@@ -360,22 +360,6 @@ static char *jw__platform_defaults_path(const char *sdcard_root, const char *fil
     return jw__path_exists(path) ? jw__dup_realpath_or_literal(path) : NULL;
 }
 
-static int jw__write_text_file_contents(FILE *fp, const char *path) {
-    char *text = jw__read_text_file(path, 64u * 1024u);
-    if (!text) {
-        return -1;
-    }
-
-    fputs(text, fp);
-    size_t len = strlen(text);
-    if (len == 0 || text[len - 1] != '\n') {
-        fputc('\n', fp);
-    }
-
-    free(text);
-    return ferror(fp) ? -1 : 0;
-}
-
 static bool jw__retroarch_cfg_line_has_key(const char *line, size_t len, const char *key) {
     if (!line || !key) {
         return false;
@@ -451,6 +435,8 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "system_directory",
         "savefile_directory",
         "savestate_directory",
+        "sort_savefiles_enable",
+        "sort_savestates_enable",
         "libretro_directory",
         "libretro_info_path",
         "config_save_on_exit",
@@ -556,30 +542,6 @@ static int jw__write_retroarch_cfg_filtered(FILE *fp, const char *text,
         line = next + 1;
     }
 
-    return ferror(fp) ? -1 : 0;
-}
-
-static int jw__write_text_file_contents_skip_key(FILE *fp, const char *path, const char *skip_key) {
-    char *text = jw__read_text_file(path, 64u * 1024u);
-    if (!text) {
-        return -1;
-    }
-
-    const char *line = text;
-    while (*line) {
-        const char *next = strchr(line, '\n');
-        size_t len = next ? (size_t)(next - line) : strlen(line);
-        if (!jw__retroarch_cfg_line_has_key(line, len, skip_key)) {
-            fwrite(line, 1, len, fp);
-            fputc('\n', fp);
-        }
-        if (!next) {
-            break;
-        }
-        line = next + 1;
-    }
-
-    free(text);
     return ferror(fp) ? -1 : 0;
 }
 
@@ -953,6 +915,8 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                const char *preferred_core_id,
                                                char *out_core_id,
                                                size_t out_core_id_size,
+                                               char *out_config_folder,
+                                               size_t out_config_folder_size,
                                                char *diagnostic,
                                                size_t diagnostic_size) {
     if (!system || !system[0]) {
@@ -960,6 +924,9 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
     }
     if (out_core_id && out_core_id_size > 0) {
         out_core_id[0] = '\0';
+    }
+    if (out_config_folder && out_config_folder_size > 0) {
+        out_config_folder[0] = '\0';
     }
     if (diagnostic && diagnostic_size > 0) {
         diagnostic[0] = '\0';
@@ -989,6 +956,15 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
                 }
                 if (out_core_id && out_core_id_size > 0) {
                     snprintf(out_core_id, out_core_id_size, "%s", core_id);
+                }
+                const jw_ra_core *resolved_core =
+                    jw_ra_catalog_find_core(catalog, core_id);
+                if (out_config_folder && out_config_folder_size > 0 &&
+                    resolved_core &&
+                    jw_ra_core_folder_is_safe(resolved_core->config_folder) &&
+                    strlen(resolved_core->config_folder) < out_config_folder_size) {
+                    snprintf(out_config_folder, out_config_folder_size, "%s",
+                             resolved_core->config_folder);
                 }
                 if (diagnostic && diagnostic_size > 0 && local_diagnostic[0]) {
                     snprintf(diagnostic, diagnostic_size, "%s", local_diagnostic);
@@ -1048,7 +1024,8 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
 }
 
 char *jw_retroarch_core_path_for_system(const char *system) {
-    return jw_retroarch_core_path_for_system_choice(system, NULL, NULL, 0, NULL, 0);
+    return jw_retroarch_core_path_for_system_choice(system, NULL, NULL, 0,
+                                                    NULL, 0, NULL, 0);
 }
 
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size) {
@@ -1693,11 +1670,12 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     }
 
     if (defaults_path) {
-        if (player1_joypad_index >= 0) {
-            jw__write_text_file_contents_skip_key(fp, defaults_path,
-                                                  "input_player1_joypad_index");
-        } else {
-            jw__write_text_file_contents(fp, defaults_path);
+        char *defaults_text = jw__read_text_file(defaults_path, 256u * 1024u);
+        if (defaults_text) {
+            /* The append-config compatibility path obeys the same protected
+               key contract as the normal merged session config. */
+            jw__write_retroarch_cfg_filtered(fp, defaults_text, NULL, true);
+            free(defaults_text);
         }
     }
     jw__retroarch_cfg_string(fp, "system_directory", system_dir);

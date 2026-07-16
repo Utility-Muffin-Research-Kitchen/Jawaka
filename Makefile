@@ -141,6 +141,7 @@ DAEMON_SRCS := \
 	internal/power/suspend_inhibit.c \
 	internal/retroarch/catalog.c \
 	internal/retroarch/command.c \
+	internal/retroarch/legacy_migration.c \
 	internal/retroarch/states.c \
 	internal/storage/sources.c \
 	internal/store/catalog_source.c \
@@ -303,7 +304,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl storage-sources-test imported-title-test imported-title-ipc-smoke states-core-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-inhibit-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl storage-sources-test imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-config-test catalog-folder-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -347,6 +348,26 @@ states-core-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/states-core-test \
 		internal/retroarch/states_core_test.c internal/retroarch/states.c
 	$(BUILD)/bin/states-core-test
+
+legacy-migration-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/legacy-migration-test \
+		internal/retroarch/legacy_migration_test.c \
+		internal/retroarch/legacy_migration.c internal/retroarch/catalog.c \
+		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/legacy-migration-test
+
+retroarch-config-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/retroarch-config-test \
+		internal/platform/paths_config_test.c internal/platform/paths.c \
+		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
+		internal/core/log.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/retroarch-config-test
+
+catalog-folder-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/catalog-folder-test \
+		internal/retroarch/catalog_folder_test.c internal/retroarch/catalog.c \
+		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/catalog-folder-test
 
 suspend-inhibit-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/suspend-inhibit-test \
