@@ -205,6 +205,7 @@ typedef struct {
     bool pending_launch;
     char pending_launch_system[64];
     char pending_launch_rom_path[PATH_MAX];
+    char pending_launch_core_id[64];
     bool pending_launch_resume_switcher;
     /* Standalone emulator asked (via Menu+Select marker) to reopen the launcher
        straight into the switcher carousel, seeded on the just-exited game. */
@@ -3889,11 +3890,48 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
 static int jw__resolve_launch_target(jw_daemon_state *state,
                                      const char *system,
                                      const char *rom_path,
+                                     const char *requested_core_id,
                                      jw_launch_target *target) {
     if (!target) {
         return -1;
     }
     memset(target, 0, sizeof(*target));
+
+    if (requested_core_id && requested_core_id[0]) {
+        jw_game_entry game;
+        memset(&game, 0, sizeof(game));
+        bool have_game = jw__lookup_launch_game(state, rom_path, &game) == 0;
+        const char *system_key =
+            jw__launch_system_key(system, have_game ? &game : NULL);
+
+        char error[256];
+        const jw_ra_catalog *catalog =
+            jw_ra_catalog_get(state->sdcard_root, error, sizeof(error));
+        if (!catalog) {
+            if (error[0]) {
+                jw_log_warn("requested launch core metadata unavailable: %s", error);
+            }
+            return -1;
+        }
+
+        const jw_ra_system *ra_system =
+            jw__catalog_find_launch_system(catalog, system_key);
+        if (!ra_system ||
+            !jw__catalog_system_allows_core(ra_system, requested_core_id)) {
+            jw_log_warn("requested launch core is not allowed: system=%s core=%s",
+                        system_key ? system_key : "(none)", requested_core_id);
+            return -1;
+        }
+
+        const jw_ra_core *core =
+            jw_ra_catalog_find_core(catalog, requested_core_id);
+        if (!jw__try_path_core(state, catalog, core, target)) {
+            jw_log_warn("requested launch core is not an executable packaged path: core=%s",
+                        requested_core_id);
+            return -1;
+        }
+        return 0;
+    }
 
     if (jw__resolve_standalone_launch_target(state, system, rom_path, target)) {
         return 0;
@@ -4128,15 +4166,22 @@ static int jw__perf_apply_launch_game(jw_daemon_state *state, const char *system
 }
 
 static int jw__validate_launch_request(jw_daemon_state *state, const char *system,
-                                       const char *rom_path, const char **out_error) {
+                                       const char *rom_path,
+                                       const char *requested_core_id,
+                                       const char **out_error) {
     if (!state || !system || !system[0] || !rom_path || !rom_path[0]) {
         if (out_error) *out_error = "missing launch payload";
         return -1;
     }
 
     jw_launch_target target;
-    if (jw__resolve_launch_target(state, system, rom_path, &target) != 0) {
-        if (out_error) *out_error = "unsupported system";
+    if (jw__resolve_launch_target(state, system, rom_path,
+                                  requested_core_id, &target) != 0) {
+        if (out_error) {
+            *out_error = requested_core_id && requested_core_id[0]
+                ? "requested core unavailable"
+                : "unsupported system";
+        }
         return -1;
     }
 
@@ -4177,14 +4222,19 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
 }
 
 static int jw__request_launch_game(jw_daemon_state *state, const char *system,
-                                   const char *rom_path, bool switcher_resume,
+                                   const char *rom_path,
+                                   const char *requested_core_id,
+                                   bool switcher_resume,
                                    const char **out_error) {
-    if (jw__validate_launch_request(state, system, rom_path, out_error) != 0) {
+    if (jw__validate_launch_request(state, system, rom_path,
+                                    requested_core_id, out_error) != 0) {
         return -1;
     }
 
     snprintf(state->pending_launch_system, sizeof(state->pending_launch_system), "%s", system);
     snprintf(state->pending_launch_rom_path, sizeof(state->pending_launch_rom_path), "%s", rom_path);
+    snprintf(state->pending_launch_core_id, sizeof(state->pending_launch_core_id),
+             "%s", requested_core_id ? requested_core_id : "");
     state->pending_launch_resume_switcher = switcher_resume;
     state->pending_launch = true;
 
@@ -4335,7 +4385,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         if (out_error) *out_error = "no active RetroArch session";
         return -1;
     }
-    if (jw__validate_launch_request(state, system, rom_path, out_error) != 0) {
+    if (jw__validate_launch_request(state, system, rom_path, NULL, out_error) != 0) {
         return -1;
     }
 
@@ -4425,7 +4475,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
 
         jw_launch_target target;
         bool target_is_retroarch =
-            jw__resolve_launch_target(state, system, rom_path, &target) == 0 &&
+            jw__resolve_launch_target(state, system, rom_path, NULL, &target) == 0 &&
             target.kind == JW_LAUNCH_TARGET_RETROARCH;
         if (target_is_retroarch) {
             snprintf(target_core_id, sizeof(target_core_id), "%s", target.core_id);
@@ -5598,6 +5648,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
     jw_launch_target target;
     if (jw__resolve_launch_target(state, state->pending_launch_system,
                                   state->pending_launch_rom_path,
+                                  state->pending_launch_core_id,
                                   &target) != 0) {
         jw_log_error("could not resolve launch target for system=%s rom=%s",
                      state->pending_launch_system,
@@ -7101,7 +7152,19 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     if (strcmp(type->valuestring, "launch-game") == 0) {
         cJSON *system = cJSON_GetObjectItemCaseSensitive(root, "system");
         cJSON *rom_path = cJSON_GetObjectItemCaseSensitive(root, "rom_path");
+        cJSON *core_id = cJSON_GetObjectItemCaseSensitive(root, "core_id");
         cJSON *resume_policy = cJSON_GetObjectItemCaseSensitive(root, "resume_policy");
+        const char *requested_core_id = NULL;
+        if (core_id) {
+            if (!cJSON_IsString(core_id) || !core_id->valuestring ||
+                !core_id->valuestring[0] ||
+                strlen(core_id->valuestring) >=
+                    sizeof(state->pending_launch_core_id)) {
+                cJSON_Delete(root);
+                return jw__reply_error(client, "invalid core id");
+            }
+            requested_core_id = core_id->valuestring;
+        }
         bool switcher_resume = false;
         if (cJSON_IsString(resume_policy) && resume_policy->valuestring &&
             resume_policy->valuestring[0]) {
@@ -7115,13 +7178,15 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         if (!cJSON_IsString(system) || !system->valuestring ||
             !cJSON_IsString(rom_path) || !rom_path->valuestring ||
             jw__request_launch_game(state, system->valuestring, rom_path->valuestring,
-                                    switcher_resume, &error_message) != 0) {
+                                    requested_core_id, switcher_resume,
+                                    &error_message) != 0) {
             cJSON_Delete(root);
             return jw__reply_error(client, error_message ? error_message : "launch-game failed");
         }
 
-        jw_log_info("launch-game requested system=%s rom=%s resume=%s",
+        jw_log_info("launch-game requested system=%s rom=%s core=%s resume=%s",
                     system->valuestring, rom_path->valuestring,
+                    requested_core_id ? requested_core_id : "(default)",
                     switcher_resume ? "switcher-latest" : "none");
         cJSON_Delete(root);
         return jw__reply_ok(client, "launch-game", NULL);
