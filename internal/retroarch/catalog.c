@@ -277,6 +277,7 @@ static int jw_ra_load_core(cJSON *row, jw_ra_core *out) {
     out->supports_savestate = jw_ra_json_bool(row, "supports_savestate", false);
     out->supports_disk_control = jw_ra_json_bool(row, "supports_disk_control", false);
     out->needs_swap = jw_ra_json_bool(row, "needs_swap", false);
+    out->requires_direct_drm = jw_ra_json_bool(row, "requires_direct_drm", false);
 
     if (!out->id || !out->type || !out->status || !out->id[0] || !out->type[0] || !out->status[0]) {
         return -1;
@@ -887,6 +888,7 @@ static int jw_ra_add_core_choice(const jw_ra_core *core, bool is_default,
     choice->supports_savestate = core->supports_savestate;
     choice->supports_disk_control = core->supports_disk_control;
     choice->needs_swap = core->needs_swap;
+    choice->requires_direct_drm = core->requires_direct_drm;
     choice->is_default = is_default;
     (*count)++;
     return 0;
