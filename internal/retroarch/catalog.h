@@ -22,6 +22,7 @@ typedef struct {
     bool supports_savestate;
     bool supports_disk_control;
     bool needs_swap;
+    bool requires_direct_drm;
     char *status;
 } jw_ra_core;
 
@@ -65,6 +66,7 @@ typedef struct {
     bool supports_savestate;
     bool supports_disk_control;
     bool needs_swap;
+    bool requires_direct_drm;
     bool is_default;
 } jw_ra_core_choice;
 

@@ -115,6 +115,7 @@ typedef struct {
     char path[PATH_MAX];
     char core_id[64];
     char core_config_folder[256];
+    bool requires_direct_drm;
     char diagnostic[256];
 } jw_launch_target;
 
@@ -533,7 +534,7 @@ static bool jw__standalone_target_requests_direct_drm(
         const jw_daemon_state *state,
         const jw_launch_target *target,
         const char *rom_abs) {
-    if (!state || !jw__standalone_target_is_ports(target) || !rom_abs) {
+    if (!state || !target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
         return false;
     }
     if (jw__env_is_disabled("JAWAKA_DIRECT_DRM")) {
@@ -542,11 +543,17 @@ static bool jw__standalone_target_requests_direct_drm(
     if (strcmp(state->platform.platform_id, "mlp1") != 0) {
         return false;
     }
-    if (!jw__portmaster_drm_rotate_available(state)) {
-        return false;
+    if (target->requires_direct_drm) {
+        return true;
     }
     if (jw__env_is_truthy("JAWAKA_DIRECT_DRM")) {
         return true;
+    }
+    if (!jw__standalone_target_is_ports(target) || !rom_abs) {
+        return false;
+    }
+    if (!jw__portmaster_drm_rotate_available(state)) {
+        return false;
     }
 
     return jw__file_contains_text(
@@ -3808,6 +3815,7 @@ static bool jw__try_path_core(const jw_daemon_state *state,
     target->kind = JW_LAUNCH_TARGET_STANDALONE;
     snprintf(target->path, sizeof(target->path), "%s", exec_path);
     snprintf(target->core_id, sizeof(target->core_id), "%s", core->id ? core->id : "");
+    target->requires_direct_drm = core->requires_direct_drm;
     return true;
 }
 
@@ -5502,7 +5510,8 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_appearance_resolve(state->db_path, &appearance);
 
     if (direct_drm) {
-        jw_log_info("direct DRM handoff requested for port=%s", rom_abs);
+        jw_log_info("direct DRM handoff requested for core=%s rom=%s",
+                    target->core_id, rom_abs);
         jw__stop_osd_child(state);
         int stop_rc = system("/etc/init.d/S49weston stop </dev/null >/dev/null 2>&1; "
                              "for i in 1 2 3 4 5 6 7 8 9 10; do "
@@ -5542,6 +5551,8 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         setenv("JAWAKA_GAME_CORE_ID", target->core_id, 1);
         if (direct_drm) {
             setenv("JAWAKA_DIRECT_DRM", "1", 1);
+        }
+        if (direct_drm && jw__standalone_target_is_ports(target)) {
             setenv("LEAF_PM_GOTHIC_MACHISMO_VULKAN_ROTATE", "1", 1);
             setenv("LEAF_PM_GOTHIC_MACHISMO_VULKAN_ROTATE_STOP_DISPLAY", "0", 1);
         }
