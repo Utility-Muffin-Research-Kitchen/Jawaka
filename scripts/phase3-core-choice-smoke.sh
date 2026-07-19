@@ -172,8 +172,8 @@ cat >"$DEFAULTS_DIR/systems.json" <<'JSON'
       "ignore_file_names": [],
       "playlist_extensions": ["m3u"],
       "m3u_generation": "manual",
-      "default_core": "flycast",
-      "alternate_cores": ["flycast_standalone"],
+      "default_core": "flycast_standalone",
+      "alternate_cores": ["flycast"],
       "rom_root": "Roms/DC",
       "image_root": "Images/DC",
       "bios_notes": []
@@ -232,8 +232,8 @@ grep -F $'choice\t0\tmupen64plus_next\tretroarch\tdefault\tMupen64Plus Next\tmup
 grep -F $'choice\t1\tmupen64plus_standalone\tpath\talternate\tMupen64Plus Standalone\temulators/mupen64plus/launch.sh' "$TMP_ROOT/n64alt.tsv" >/dev/null
 
 grep -F $'count\t2' "$TMP_ROOT/dc.tsv" >/dev/null
-grep -F $'choice\t0\tflycast\tretroarch\tdefault\tFlycast\tflycast_libretro.dylib\tshared-drm' "$TMP_ROOT/dc.tsv" >/dev/null
-grep -F $'choice\t1\tflycast_standalone\tpath\talternate\tFlycast Standalone\temulators/flycast/launch.sh\tdirect-drm' "$TMP_ROOT/dc.tsv" >/dev/null
+grep -F $'choice\t0\tflycast_standalone\tpath\tdefault\tFlycast Standalone\temulators/flycast/launch.sh\tdirect-drm' "$TMP_ROOT/dc.tsv" >/dev/null
+grep -F $'choice\t1\tflycast\tretroarch\talternate\tFlycast\tflycast_libretro.dylib\tshared-drm' "$TMP_ROOT/dc.tsv" >/dev/null
 
 grep -F $'count\t2' "$TMP_ROOT/gba.tsv" >/dev/null
 grep -F $'choice\t0\tmgba\tretroarch\tdefault\tmGBA\tmgba_libretro.so' "$TMP_ROOT/gba.tsv" >/dev/null
@@ -263,7 +263,7 @@ chmod 644 "$PLATFORM_ROOT/emulators/flycast/launch.sh"
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$SMOKE" "$SD_ROOT" DC "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/dc-noexec.tsv"
 grep -F $'count\t1' "$TMP_ROOT/dc-noexec.tsv" >/dev/null
-grep -F $'choice\t0\tflycast\tretroarch\tdefault\tFlycast\tflycast_libretro.dylib\tshared-drm' "$TMP_ROOT/dc-noexec.tsv" >/dev/null
+grep -F $'choice\t0\tflycast\tretroarch\talternate\tFlycast\tflycast_libretro.dylib\tshared-drm' "$TMP_ROOT/dc-noexec.tsv" >/dev/null
 if grep -F 'flycast_standalone' "$TMP_ROOT/dc-noexec.tsv" >/dev/null; then
     cat "$TMP_ROOT/dc-noexec.tsv" >&2
     echo "non-executable Flycast path core appeared in core choices" >&2
