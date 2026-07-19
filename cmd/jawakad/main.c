@@ -3,6 +3,7 @@
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
 #include "internal/ipc/ipc.h"
+#include "internal/launcher/standalone_policy.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
@@ -460,10 +461,7 @@ static bool jw__standalone_target_is_mupen64plus(const jw_launch_target *target)
     if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
         return false;
     }
-    return strcmp(target->core_id, "mupen64plus_standalone") == 0 ||
-           strcmp(target->core_id, "mupen64plus") == 0 ||
-           strstr(target->path, "/mupen64plus/") != NULL ||
-           strstr(target->path, "/Mupen64Plus") != NULL;
+    return jw_standalone_policy_is_mupen64plus(target->core_id, target->path);
 }
 
 static bool jw__env_is_disabled(const char *name);
@@ -473,9 +471,7 @@ static bool jw__standalone_target_is_ports(const jw_launch_target *target) {
     if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
         return false;
     }
-    return strcmp(target->core_id, "ports") == 0 ||
-           strstr(target->path, "/emulators/ports/") != NULL ||
-           strstr(target->path, "/Roms/PORTS") != NULL;
+    return jw_standalone_policy_is_ports(target->core_id, target->path);
 }
 
 static bool jw__file_contains_text(const char *path, const char *needle,
@@ -544,7 +540,8 @@ static bool jw__standalone_target_requests_direct_drm(
     if (strcmp(state->platform.platform_id, "mlp1") != 0) {
         return false;
     }
-    if (target->requires_direct_drm) {
+    if (jw_standalone_policy_requires_direct_drm(
+            target->core_id, target->path, target->requires_direct_drm)) {
         return true;
     }
     if (jw__env_is_truthy("JAWAKA_DIRECT_DRM")) {
@@ -565,8 +562,9 @@ static bool jw__standalone_target_requests_direct_drm(
 
 static bool jw__standalone_target_uses_calibrated_virtual_input(
         const jw_launch_target *target) {
-    return jw__standalone_target_is_mupen64plus(target) ||
-           jw__standalone_target_is_ports(target);
+    return target && target->kind == JW_LAUNCH_TARGET_STANDALONE &&
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               target->core_id, target->path);
 }
 
 static long long jw__monotonic_ms(void) {
@@ -5522,9 +5520,10 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                 jw_platform_result_code_name(ready_result.code));
 
     if (jw__standalone_target_uses_calibrated_virtual_input(target)) {
-        /* Mupen64Plus and PortMaster ports need the same calibrated virtual
-           gamepad path as RetroArch. Keep the full grab-and-forward proxy
-           active so Joe's calibration is applied before SDL sees the axes. */
+        /* Mupen64Plus, Flycast, and PortMaster ports need the same calibrated
+           virtual gamepad path as RetroArch. Keep the full grab-and-forward
+           proxy active so Joe's calibration is applied before SDL sees the
+           axes. */
         jw__start_input_proxy(state);
         if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
             int joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);

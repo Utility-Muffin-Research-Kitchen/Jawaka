@@ -129,6 +129,7 @@ DAEMON_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
+	internal/launcher/standalone_policy.c \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
 	$(BLUETOOTH_SRC) \
@@ -304,7 +305,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl storage-sources-test imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-config-test catalog-folder-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl storage-sources-test imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -368,6 +369,12 @@ catalog-folder-test: | $(BUILD)/bin
 		internal/retroarch/catalog_folder_test.c internal/retroarch/catalog.c \
 		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/catalog-folder-test
+
+standalone-policy-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/standalone-policy-test \
+		internal/launcher/standalone_policy_test.c \
+		internal/launcher/standalone_policy.c
+	$(BUILD)/bin/standalone-policy-test
 
 suspend-inhibit-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/suspend-inhibit-test \
@@ -588,6 +595,7 @@ help:
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
 	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
+	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
 	@echo "  make update-local-manifest-smoke  Validate developer artifact.url handling"
 	@echo "  make pakrat-state-smoke      Exercise Pak Rat stale + managed-state safeguards"
 	@echo "  make clean         Remove build artifacts"
