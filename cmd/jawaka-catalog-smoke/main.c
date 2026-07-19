@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
 
     printf("count\t%zu\n", count);
     for (size_t i = 0; i < count; i++) {
-        printf("choice\t%zu\t%s\t%s\t%s\t%s\t%s\n",
+        printf("choice\t%zu\t%s\t%s\t%s\t%s\t%s\t%s\n",
                i,
                choices[i].id,
                choices[i].type,
@@ -40,7 +40,8 @@ int main(int argc, char **argv) {
                choices[i].display_name,
                choices[i].type[0] && choices[i].type[0] == 'p'
                    ? choices[i].path
-                   : choices[i].file_name);
+                   : choices[i].file_name,
+               choices[i].requires_direct_drm ? "direct-drm" : "shared-drm");
     }
 
     jw_ra_catalog_free(catalog);
