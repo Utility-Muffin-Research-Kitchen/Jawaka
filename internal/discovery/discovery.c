@@ -8,6 +8,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <limits.h>
 #include <sqlite3.h>
 #include <stdarg.h>
@@ -87,15 +88,83 @@ static int jw__scan_tx_note_write(jw_scan_tx *tx) {
     return 0;
 }
 
+static bool jw__relative_to_existing_root(const char *path, const char *root,
+                                          char *out, size_t out_size) {
+    if (!path || path[0] != '/' || !root || !root[0] || !out || out_size == 0) {
+        return false;
+    }
+    char path_abs[PATH_MAX];
+    char root_abs[PATH_MAX];
+    if (!realpath(path, path_abs) || !realpath(root, root_abs)) {
+        return false;
+    }
+    size_t root_len = strlen(root_abs);
+    if (strncmp(path_abs, root_abs, root_len) != 0 ||
+        path_abs[root_len] != '/' ||
+        snprintf(out, out_size, "%s", path_abs + root_len + 1) >=
+            (int)out_size) {
+        return false;
+    }
+    return jw_storage_relative_path_valid(out);
+}
+
 static int jw__scan_insert_game(jw_scan_tx *tx,
+                                const jw_storage_source *source,
                                 const char *system,
                                 const char *name,
+                                const char *rom_relpath,
                                 const char *rom_path,
                                 const char *image_path) {
     if (jw__scan_tx_begin(tx) != 0) {
         return -1;
     }
-    if (jw_db_insert_game(tx->db, system, name, rom_path, image_path) != 0) {
+    const char *image_root_kind = NULL;
+    const char *image_relpath = NULL;
+    const char *marker = NULL;
+    char image_relative[PATH_MAX];
+    if (image_path &&
+        jw__relative_to_existing_root(image_path, source->images_path,
+                                      image_relative, sizeof(image_relative))) {
+        image_root_kind = "images";
+        image_relpath = image_relative;
+    } else if (image_path &&
+               jw__relative_to_existing_root(image_path, source->roms_path,
+                                             image_relative,
+                                             sizeof(image_relative))) {
+        image_root_kind = "roms";
+        image_relpath = image_relative;
+    } else if (image_path &&
+               jw__relative_to_existing_root(image_path, source->root,
+                                             image_relative,
+                                             sizeof(image_relative))) {
+        image_root_kind = "source";
+        image_relpath = image_relative;
+    } else if (image_path && strncmp(image_path, "Images/", 7) == 0) {
+        image_root_kind = "images";
+        image_relpath = image_path + 7;
+    } else if (image_path && (marker = strstr(image_path, "/Images/"))) {
+        image_root_kind = "images";
+        image_relpath = marker + 8;
+    } else if (image_path && strncmp(image_path, "Roms/", 5) == 0) {
+        image_root_kind = "roms";
+        image_relpath = image_path + 5;
+    } else if (image_path && (marker = strstr(image_path, "/Roms/"))) {
+        image_root_kind = "roms";
+        image_relpath = marker + 6;
+    } else if (image_path && image_path[0] == '/') {
+        size_t root_len = strlen(source->root);
+        if (strncmp(image_path, source->root, root_len) == 0 &&
+            image_path[root_len] == '/') {
+            image_root_kind = "source";
+            image_relpath = image_path + root_len + 1;
+        }
+    } else if (image_path && image_path[0]) {
+        image_root_kind = "source";
+        image_relpath = image_path;
+    }
+    if (jw_db_insert_game_stable(tx->db, system, name, source->id,
+                                 rom_relpath, rom_path, image_root_kind,
+                                 image_relpath, image_path) != 0) {
         return -1;
     }
     return jw__scan_tx_note_write(tx);
@@ -460,11 +529,18 @@ static int jw__scan_roms_compat(jw_scan_tx *tx, const jw_storage_source *source,
                                 jw_scan_result *out) {
     DIR *systems = opendir(source->roms_path);
     if (!systems) {
-        return 0;
+        return 1;
     }
 
     struct dirent *system_entry;
-    while ((system_entry = readdir(systems)) != NULL) {
+    int systems_read_error = 0;
+    for (;;) {
+        errno = 0;
+        system_entry = readdir(systems);
+        if (!system_entry) {
+            systems_read_error = errno;
+            break;
+        }
         if (jw__is_hidden(system_entry->d_name)) {
             continue;
         }
@@ -480,12 +556,20 @@ static int jw__scan_roms_compat(jw_scan_tx *tx, const jw_storage_source *source,
 
         DIR *files = opendir(system_dir);
         if (!files) {
-            continue;
+            closedir(systems);
+            return 1;
         }
 
         int system_has_games = 0;
         struct dirent *file_entry;
-        while ((file_entry = readdir(files)) != NULL) {
+        int files_read_error = 0;
+        for (;;) {
+            errno = 0;
+            file_entry = readdir(files);
+            if (!file_entry) {
+                files_read_error = errno;
+                break;
+            }
             if (jw__is_hidden(file_entry->d_name)) {
                 continue;
             }
@@ -532,8 +616,14 @@ static int jw__scan_roms_compat(jw_scan_tx *tx, const jw_storage_source *source,
                 image_path = image_rel;
             }
 
-            if (jw__scan_insert_game(tx, system_entry->d_name, title,
-                                     rom_rel, image_path) == 0) {
+            char stable_rom_rel[PATH_MAX];
+            if (snprintf(stable_rom_rel, sizeof(stable_rom_rel), "%s/%s",
+                         system_entry->d_name, file_entry->d_name) >=
+                (int)sizeof(stable_rom_rel)) {
+                continue;
+            }
+            if (jw__scan_insert_game(tx, source, system_entry->d_name, title,
+                                     stable_rom_rel, rom_rel, image_path) == 0) {
                 out->game_count += 1;
                 system_has_games = 1;
             } else {
@@ -541,6 +631,11 @@ static int jw__scan_roms_compat(jw_scan_tx *tx, const jw_storage_source *source,
                 closedir(systems);
                 return -1;
             }
+        }
+        if (files_read_error != 0) {
+            closedir(files);
+            closedir(systems);
+            return 1;
         }
 
         if (system_has_games) {
@@ -550,6 +645,10 @@ static int jw__scan_roms_compat(jw_scan_tx *tx, const jw_storage_source *source,
         closedir(files);
     }
 
+    if (systems_read_error != 0) {
+        closedir(systems);
+        return 1;
+    }
     closedir(systems);
     return 0;
 }
@@ -877,11 +976,18 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
 
     DIR *dir = opendir(dir_abs);
     if (!dir) {
-        return 0;
+        return 1;
     }
 
     struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
+    int read_error = 0;
+    for (;;) {
+        errno = 0;
+        entry = readdir(dir);
+        if (!entry) {
+            read_error = errno;
+            break;
+        }
         if (jw__is_hidden(entry->d_name) || jw__is_private_rom_name(entry->d_name)) {
             continue;
         }
@@ -902,11 +1008,13 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
             if (n >= (int)sizeof(child_rel)) {
                 continue;
             }
-            if (jw__scan_system_dir(tx, source, system, system_folder, abs, child_rel,
-                                    depth + 1, out, system_has_games,
-                                    logged_archive_policy, logged_m3u_policy) != 0) {
+            int child_rc = jw__scan_system_dir(
+                tx, source, system, system_folder, abs, child_rel,
+                depth + 1, out, system_has_games,
+                logged_archive_policy, logged_m3u_policy);
+            if (child_rc != 0) {
                 closedir(dir);
-                return -1;
+                return child_rc;
             }
             continue;
         }
@@ -954,7 +1062,17 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
                                              image_abs, sizeof(image_abs),
                                              image_rel, sizeof(image_rel));
 
-        if (jw__scan_insert_game(tx, system->id, title, rom_rel, image_path) == 0) {
+        char stable_rom_rel[PATH_MAX];
+        n = rel_subpath[0]
+            ? snprintf(stable_rom_rel, sizeof(stable_rom_rel), "%s/%s/%s",
+                       system_folder, rel_subpath, entry->d_name)
+            : snprintf(stable_rom_rel, sizeof(stable_rom_rel), "%s/%s",
+                       system_folder, entry->d_name);
+        if (n >= (int)sizeof(stable_rom_rel)) {
+            continue;
+        }
+        if (jw__scan_insert_game(tx, source, system->id, title, stable_rom_rel,
+                                 rom_rel, image_path) == 0) {
             out->game_count += 1;
             *system_has_games = 1;
         } else {
@@ -963,6 +1081,10 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
         }
     }
 
+    if (read_error != 0) {
+        closedir(dir);
+        return 1;
+    }
     closedir(dir);
     return 0;
 }
@@ -974,13 +1096,20 @@ static int jw__scan_roms_metadata(jw_scan_tx *tx,
                                   jw_scan_result *out) {
     DIR *systems = opendir(source->roms_path);
     if (!systems) {
-        return 0;
+        return 1;
     }
 
     char counted_systems[128][64];
     int counted_system_count = 0;
     struct dirent *system_entry;
-    while ((system_entry = readdir(systems)) != NULL) {
+    int read_error = 0;
+    for (;;) {
+        errno = 0;
+        system_entry = readdir(systems);
+        if (!system_entry) {
+            read_error = errno;
+            break;
+        }
         if (jw__is_hidden(system_entry->d_name)) {
             continue;
         }
@@ -1015,11 +1144,13 @@ static int jw__scan_roms_metadata(jw_scan_tx *tx,
         /* Walk the system folder recursively so games staged in per-game
            subfolders (PSX .cue/.bin, ROM-hack subfolders) are indexed too, not
            just files sitting at the top level. */
-        if (jw__scan_system_dir(tx, source, system, system_entry->d_name,
-                                system_dir, "", 0, out, &system_has_games,
-                                &logged_archive_policy, &logged_m3u_policy) != 0) {
+        int system_rc = jw__scan_system_dir(
+            tx, source, system, system_entry->d_name,
+            system_dir, "", 0, out, &system_has_games,
+            &logged_archive_policy, &logged_m3u_policy);
+        if (system_rc != 0) {
             closedir(systems);
-            return -1;
+            return system_rc;
         }
 
         if (system_has_games) {
@@ -1027,45 +1158,88 @@ static int jw__scan_roms_metadata(jw_scan_tx *tx,
         }
     }
 
+    if (read_error != 0) {
+        closedir(systems);
+        return 1;
+    }
     closedir(systems);
     return 0;
 }
 
 static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root, jw_scan_result *out) {
-    jw_storage_source_list sources;
-    if (jw_storage_sources_resolve(sdcard_root, &sources) != 0) {
+    /* Source lists are path-heavy. Keep both the scan snapshot and the
+       post-enumeration revalidation snapshot off the small pthread stack. */
+    jw_storage_source_list *sources = malloc(sizeof(*sources));
+    jw_storage_source_list *current = malloc(sizeof(*current));
+    if (!sources || !current ||
+        jw_storage_sources_resolve(sdcard_root, sources) != 0) {
+        free(sources);
+        free(current);
         return -1;
     }
 
     const char *disable_v2 = getenv("JAWAKA_DISABLE_RETROARCH_V2");
+    const jw_ra_catalog *catalog = NULL;
+    bool compatibility = disable_v2 && strcmp(disable_v2, "1") == 0;
     if (disable_v2 && strcmp(disable_v2, "1") == 0) {
         fprintf(stderr, "RetroArch discovery: metadata disabled, using compatibility scanner\n");
-        for (int i = 0; i < sources.count; i++) {
-            if (jw__scan_roms_compat(tx, &sources.sources[i], out) != 0) {
-                return -1;
-            }
+    } else {
+        char error[256];
+        catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
+        if (!catalog) {
+            compatibility = true;
+            fprintf(stderr,
+                    "RetroArch discovery: metadata unavailable (%s), using compatibility scanner\n",
+                    error[0] ? error : "unknown error");
         }
-        return 0;
     }
 
-    char error[256];
-    const jw_ra_catalog *catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
-    if (!catalog) {
-        fprintf(stderr, "RetroArch discovery: metadata unavailable (%s), using compatibility scanner\n",
-                error[0] ? error : "unknown error");
-        for (int i = 0; i < sources.count; i++) {
-            if (jw__scan_roms_compat(tx, &sources.sources[i], out) != 0) {
-                return -1;
-            }
+    for (int i = 0; i < sources->count; i++) {
+        const jw_storage_source *source = &sources->sources[i];
+        if (!source->available) {
+            fprintf(stderr, "ROM discovery: retaining unavailable source %s (%s)\n",
+                    source->id, source->root);
+            continue;
         }
-        return 0;
-    }
-
-    for (int i = 0; i < sources.count; i++) {
-        if (jw__scan_roms_metadata(tx, sdcard_root, &sources.sources[i], catalog, out) != 0) {
+        int scan_rc = compatibility
+            ? jw__scan_roms_compat(tx, source, out)
+            : jw__scan_roms_metadata(tx, sdcard_root, source, catalog, out);
+        if (scan_rc < 0) {
+            free(current);
+            free(sources);
+            return -1;
+        }
+        if (scan_rc > 0) {
+            fprintf(stderr,
+                    "ROM discovery: enumeration failed for source %s; retaining prior rows\n",
+                    source->id);
+            continue;
+        }
+        const jw_storage_source *after = NULL;
+        if (jw_storage_sources_resolve(sdcard_root, current) == 0) {
+            after = jw_storage_sources_find_by_id(current, source->id);
+        }
+        if (!after || !after->available ||
+            after->device_id != source->device_id ||
+            after->roms_device_id != source->roms_device_id ||
+            after->mount_id != source->mount_id ||
+            after->roms_mount_id != source->roms_mount_id ||
+            strcmp(after->root_abs, source->root_abs) != 0) {
+            fprintf(stderr,
+                    "ROM discovery: source %s changed during scan; retaining prior rows\n",
+                    source->id);
+            continue;
+        }
+        if (jw__scan_tx_begin(tx) != 0 ||
+            jw_db_scan_source_complete(tx->db, source->id) != 0 ||
+            jw__scan_tx_note_write(tx) != 0) {
+            free(current);
+            free(sources);
             return -1;
         }
     }
+    free(current);
+    free(sources);
     return 0;
 }
 
@@ -1258,15 +1432,30 @@ static int jw__scan_apps_source(jw_scan_tx *tx, const jw_storage_source *source,
 }
 
 static int jw__scan_apps(jw_scan_tx *tx, const char *sdcard_root, jw_scan_result *out) {
-    jw_storage_source_list sources;
-    if (jw_storage_sources_resolve(sdcard_root, &sources) != 0) {
+    jw_storage_source_list *sources = malloc(sizeof(*sources));
+    if (!sources || jw_storage_sources_resolve(sdcard_root, sources) != 0) {
+        free(sources);
         return -1;
     }
     const char *platform = jw__scan_platform();
-    for (int i = 0; i < sources.count; i++) {
-        if (jw__scan_apps_source(tx, &sources.sources[i], platform, out) != 0) {
+    for (int i = 0; i < sources->count; i++) {
+        if (!sources->sources[i].available) {
+            fprintf(stderr,
+                    "App discovery: retaining rows because source %s is unavailable\n",
+                    sources->sources[i].id);
+            free(sources);
+            return 0;
+        }
+        if (jw__scan_apps_source(tx, &sources->sources[i], platform, out) != 0) {
+            free(sources);
             return -1;
         }
+    }
+    free(sources);
+    if (jw__scan_tx_begin(tx) != 0 ||
+        jw_db_scan_apps_complete(tx->db) != 0 ||
+        jw__scan_tx_note_write(tx) != 0) {
+        return -1;
     }
     return 0;
 }
@@ -1289,6 +1478,13 @@ static void jw__refresh_result_counts(sqlite3 *db, jw_scan_result *out) {
     if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM games;", -1, &stmt, NULL) == SQLITE_OK) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             out->game_count = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM apps;", -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            out->app_count = sqlite3_column_int(stmt, 0);
         }
         sqlite3_finalize(stmt);
     }

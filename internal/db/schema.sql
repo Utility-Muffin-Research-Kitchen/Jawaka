@@ -4,17 +4,24 @@
 -- later codegen replaces this duplication.
 
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 4;
 
 CREATE TABLE IF NOT EXISTS games (
     id          INTEGER PRIMARY KEY,
     system      TEXT    NOT NULL,
     name        TEXT    NOT NULL,
-    rom_path    TEXT    NOT NULL UNIQUE,
+    source_id   TEXT    NOT NULL,
+    rom_relpath TEXT    NOT NULL,
+    rom_path    TEXT    NOT NULL,
+    image_root_kind TEXT CHECK (image_root_kind IN ('images','roms','source')),
+    image_relpath TEXT,
     image_path  TEXT,
     last_played INTEGER,
-    playtime_s  INTEGER NOT NULL DEFAULT 0
+    playtime_s  INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (source_id, rom_relpath)
 );
+
+CREATE INDEX IF NOT EXISTS games_rom_path_idx ON games(rom_path);
+CREATE INDEX IF NOT EXISTS games_image_path_idx ON games(image_path);
 
 CREATE TABLE IF NOT EXISTS apps (
     id                  INTEGER PRIMARY KEY,
@@ -104,3 +111,56 @@ CREATE TABLE IF NOT EXISTS game_settings (
     PRIMARY KEY (game_id, key),
     FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS pakrat_installs (
+    store_id        TEXT PRIMARY KEY,
+    version         TEXT NOT NULL,
+    platform        TEXT NOT NULL,
+    install_path    TEXT NOT NULL,
+    artifact_sha256 TEXT NOT NULL,
+    installed_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx
+    ON pakrat_installs(install_path);
+
+CREATE TABLE IF NOT EXISTS library_relocation_ops (
+    operation_id          TEXT PRIMARY KEY,
+    state                 TEXT NOT NULL CHECK (
+        state IN ('prepared','committed','reverted','finishing','finished','aborted')
+    ),
+    expected_generation   INTEGER NOT NULL,
+    mapping_generation    INTEGER NOT NULL DEFAULT 0,
+    scan_ticket_generation INTEGER NOT NULL DEFAULT 0,
+    item_count            INTEGER NOT NULL,
+    request_fingerprint   TEXT NOT NULL,
+    updated_at            INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS library_relocation_items (
+    operation_id       TEXT NOT NULL,
+    ordinal            INTEGER NOT NULL,
+    game_id            INTEGER NOT NULL,
+    old_source_id      TEXT NOT NULL,
+    old_rom_relpath    TEXT NOT NULL,
+    old_image_root_kind TEXT NOT NULL,
+    old_image_relpath  TEXT NOT NULL,
+    old_rom_path       TEXT NOT NULL,
+    old_image_path     TEXT NOT NULL,
+    new_source_id      TEXT NOT NULL,
+    new_rom_relpath    TEXT NOT NULL,
+    new_image_root_kind TEXT NOT NULL,
+    new_image_relpath  TEXT NOT NULL,
+    new_rom_path       TEXT NOT NULL,
+    new_image_path     TEXT NOT NULL,
+    old_source_snapshot TEXT NOT NULL,
+    new_source_snapshot TEXT NOT NULL,
+    PRIMARY KEY (operation_id, ordinal),
+    FOREIGN KEY (operation_id) REFERENCES library_relocation_ops(operation_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS library_relocation_items_game_idx
+    ON library_relocation_items(game_id);
+
+PRAGMA user_version = 6;

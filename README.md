@@ -245,6 +245,45 @@ Use `make suspend-inhibit-test suspend-inhibit-ipc-smoke` for native policy and
 IPC coverage. `make mlp1-adb-inhibit-smoke` runs the intentionally intrusive
 device suspend/reap smoke after `CONFIRM_SUSPEND_SMOKE=1` is supplied.
 
+### Library relocation reservations
+
+The daemon advertises `relocate-games-v1` in `hello-ok.features`. A mover first
+sends the complete stable-identity batch to `library-relocate-prepare`, then
+uses `status`, `commit`, `revert`, `abort`, and `finish` operations. Prepared,
+committed, and reverted batches persist in Primary-owned SQLite. During that
+reservation, scans suppress only the batch's exact old/new keys and launches
+of the affected game ids fail with `game is relocating`.
+
+Commit and revert preserve `games.id` and bump `library.generation` exactly
+once inside the mapping transaction. `finish` releases the reservation and
+returns `scan_ticket_generation`; the operation becomes `finished` only after
+a successful reconciliation scan publishes a generation greater than the
+current commit/revert mapping generation.
+
+`jawaka-platformctl` provides typed commands:
+
+```sh
+jawaka-platformctl capabilities
+jawaka-platformctl relocate-prepare OP GENERATION ITEMS_JSON
+jawaka-platformctl relocate-status OP
+jawaka-platformctl relocate-commit OP
+jawaka-platformctl relocate-revert OP
+jawaka-platformctl relocate-abort OP
+jawaka-platformctl relocate-finish OP
+```
+
+The client uses the full 16 MiB framed transport, strictly parses daemon JSON,
+and exits nonzero for daemon errors or unexpected state/generation replies.
+Socket resolution is `UMRK_DAEMON_SOCKET`, then `JAWAKA_SOCKET_PATH`, then the
+runtime-derived default. Use
+`make relocation-test relocation-ipc-smoke` for transaction and native IPC
+coverage.
+
+The MLP1 launcher payload also installs `jawaka-inhibitctl`. PortMaster uses
+its `hold` command for the full lifetime of a journaled cross-card package
+move, so an automatic or explicit suspend cannot interrupt an active copy or
+publication phase.
+
 ## Repo Notes
 
 - `scripts/mockgen.sh` creates the local mock SD-card tree.
