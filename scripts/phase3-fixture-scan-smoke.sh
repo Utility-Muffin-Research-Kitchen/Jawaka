@@ -61,7 +61,7 @@ printf 'echo test\n' >"$SD_ROOT/Roms/PORTS/Test.sh"
 printf 'ignore me\n' >"$SD_ROOT/Roms/UNKNOWN/readme.txt"
 : >"$SD_ROOT/Images/MD/Sonic.png"
 printf '#!/bin/sh\n' >"$SD_ROOT/Apps/mlp1/FixtureNative.pak/launch.sh"
-printf '{ "name": "Fixture Native", "icon": "icon.png", "platform": "mlp1", "pak_version": "1", "min_jawaka_version": "0" }\n' \
+printf '{ "name": "Fixture Native", "icon": "icon.png", "platform": "mlp1", "pak_version": "1.2.3", "min_jawaka_version": "0", "min_leaf_version": "0.7.0" }\n' \
     >"$SD_ROOT/Apps/mlp1/FixtureNative.pak/pak.json"
 printf '#!/bin/sh\n' >"$SD_ROOT/Apps/shared/FixtureShared.pak/launch.sh"
 printf '{ "name": "Fixture Shared", "icon": "icon.png", "platform": "shared", "pak_version": "1", "min_jawaka_version": "0" }\n' \
@@ -113,7 +113,7 @@ grep -F "game"$'\t'"GBA"$'\t'"Secondary"$'\t'"$SECONDARY_ROOT/Roms/GBA/Secondary
 grep -F $'game\tARCADE\tmslug\tRoms/ARCADE/mslug.zip\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPS\tGame\tRoms/PS/Game.m3u\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPORTS\tTest\tRoms/PORTS/Test.sh\t' "$OUT_PATH" >/dev/null
-grep -F $'app\tFixture Native\tApps/mlp1/FixtureNative.pak\tmlp1\ticon.png' "$OUT_PATH" >/dev/null
+grep -F $'app\tFixture Native\tApps/mlp1/FixtureNative.pak\tmlp1\ticon.png\t0.7.0' "$OUT_PATH" >/dev/null
 grep -F $'app\tFixture Shared\tApps/shared/FixtureShared.pak\tshared\ticon.png' "$OUT_PATH" >/dev/null
 grep -F "app"$'\t'"Secondary Native"$'\t'"$SECONDARY_ROOT/Apps/mlp1/SecondaryNative.pak"$'\t'"mlp1"$'\t'"icon.png" "$OUT_PATH" >/dev/null
 grep -F "secondary_sd|GBA/Secondary.gba|roms|GBA/Imgs/Secondary.png" \
@@ -124,6 +124,10 @@ grep -F "primary|MD/Sonic.md|images|MD/Sonic.png" \
     < <(sqlite3 "$DB_PATH" \
         "SELECT source_id||'|'||rom_relpath||'|'||image_root_kind||'|'||image_relpath
          FROM games WHERE name='Sonic' AND rom_relpath='MD/Sonic.md';") >/dev/null
+grep -F "1.2.3|0|0.7.0" \
+    < <(sqlite3 "$DB_PATH" \
+        "SELECT pak_version||'|'||min_jawaka_version||'|'||min_leaf_version
+         FROM apps WHERE name='Fixture Native';") >/dev/null
 
 if grep -E 'neogeo|UNKNOWN|readme|WrongDevice|FlatLegacy' "$OUT_PATH" >/dev/null; then
     cat "$OUT_PATH" >&2

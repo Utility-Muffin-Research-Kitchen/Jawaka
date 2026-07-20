@@ -1,5 +1,6 @@
 #include "internal/update/update.h"
 #include "internal/update/sha256.h"
+#include "internal/platform/leaf_version.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -679,36 +680,18 @@ void jw_update_refresh_installed(jw_update_status *status,
     status->current_release_id[0] = '\0';
     status->current_version[0] = '\0';
 
-    char path[PATH_MAX];
-    if (!jw__join_path(path, sizeof(path), state_dir, "release.json")) {
+    jw_installed_release installed;
+    if (jw_installed_release_read(state_dir, &installed) != 0) {
         return;
     }
 
-    char error[128];
-    char *text = jw__read_text_file(path, error, sizeof(error));
-    if (!text) {
-        return;
-    }
-
-    cJSON *root = cJSON_Parse(text);
-    free(text);
-    if (!root) {
-        return;
-    }
-
-    const cJSON *schema = cJSON_GetObjectItemCaseSensitive(root, "schema");
-    if (cJSON_IsNumber(schema)) {
-        status->installed_schema = schema->valueint;
-    }
-
-    const char *release_id = jw__json_string(root, "release_id");
-    if (!release_id) {
-        release_id = jw__json_string(root, "version");
-    }
-    const char *version = jw__json_string(root, "version");
-    if (!version) {
-        version = release_id;
-    }
+    status->installed_schema = installed.schema;
+    const char *release_id = installed.release_id[0]
+                                 ? installed.release_id
+                                 : installed.version;
+    const char *version = installed.version[0]
+                              ? installed.version
+                              : release_id;
 
     if (release_id && release_id[0]) {
         jw__copy_string(status->current_release_id,
@@ -717,8 +700,6 @@ void jw_update_refresh_installed(jw_update_status *status,
                         sizeof(status->current_version), version);
         status->current_unknown = false;
     }
-
-    cJSON_Delete(root);
 }
 
 void jw_update_refresh_install_result(jw_update_status *status,

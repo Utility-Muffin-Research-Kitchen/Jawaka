@@ -41,7 +41,8 @@ static const char *kSchemaSql =
     "    icon                TEXT,\n"
     "    platform            TEXT,\n"
     "    pak_version         TEXT,\n"
-    "    min_jawaka_version  TEXT\n"
+    "    min_jawaka_version  TEXT,\n"
+    "    min_leaf_version    TEXT\n"
     ");\n"
     "\n"
     "CREATE TABLE IF NOT EXISTS favorites (\n"
@@ -194,6 +195,69 @@ static int jw__schema_version(sqlite3 *db, int *out_version) {
     }
     sqlite3_finalize(stmt);
     return rc == SQLITE_ROW ? 0 : -1;
+}
+
+static int jw__table_has_column(sqlite3 *db, const char *table,
+                                const char *column, int *out_present) {
+    if (!db || !table || !table[0] || !column || !column[0] ||
+        !out_present) {
+        return -1;
+    }
+    *out_present = 0;
+    char sql[256];
+    if (snprintf(sql, sizeof(sql), "PRAGMA table_info(%s);", table) >=
+        (int)sizeof(sql)) {
+        return -1;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return -1;
+    }
+    int step = SQLITE_ROW;
+    while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(stmt, 1);
+        if (name && strcmp((const char *)name, column) == 0) {
+            *out_present = 1;
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    return step == SQLITE_ROW || step == SQLITE_DONE ? 0 : -1;
+}
+
+static int jw__ensure_apps_min_leaf_version(sqlite3 *db) {
+    int present = 0;
+    if (jw__table_has_column(db, "apps", "min_leaf_version",
+                             &present) != 0) {
+        return -1;
+    }
+    if (present) {
+        return 0;
+    }
+
+    char *error = NULL;
+    int rc = sqlite3_exec(
+        db, "ALTER TABLE apps ADD COLUMN min_leaf_version TEXT;",
+        NULL, NULL, &error);
+    if (rc == SQLITE_OK) {
+        sqlite3_free(error);
+        return 0;
+    }
+
+    /* Two launcher processes can discover the absent column concurrently.
+       If the other connection won the ALTER race, the end state is already
+       correct and this call remains idempotent. */
+    int now_present = 0;
+    if (jw__table_has_column(db, "apps", "min_leaf_version",
+                             &now_present) == 0 &&
+        now_present) {
+        sqlite3_free(error);
+        return 0;
+    }
+    fprintf(stderr, "sqlite apps min_leaf_version migration failed: %s\n",
+            error ? error : sqlite3_errmsg(db));
+    sqlite3_free(error);
+    return -1;
 }
 
 static int jw__backup_before_v6(sqlite3 *db) {
@@ -555,20 +619,26 @@ int jw_db_apply_schema(sqlite3 *db) {
     if (version == JW_DB_SCHEMA_VERSION) {
         /* Schema-v6 receives additive protocol tables without changing the
            stable games schema or forcing a migration/backup cycle. */
-        return jw__exec(db, kRelocationSchemaSql);
+        return jw__ensure_apps_min_leaf_version(db) == 0
+                   ? jw__exec(db, kRelocationSchemaSql)
+                   : -1;
     }
     if (version > 0 && jw__migrate_to_v6(db) != 0) {
         return -1;
     }
     if (version > 0) {
-        return jw__exec(db, kSchemaSql) == 0
-            ? jw__exec(db, kRelocationSchemaSql) : -1;
+        return jw__exec(db, kSchemaSql) == 0 &&
+                       jw__ensure_apps_min_leaf_version(db) == 0
+                   ? jw__exec(db, kRelocationSchemaSql)
+                   : -1;
     }
     if (jw__exec(db, "PRAGMA foreign_keys = ON;") != 0) {
         return -1;
     }
-    return jw__exec(db, kSchemaSql) == 0
-        ? jw__exec(db, kRelocationSchemaSql) : -1;
+    return jw__exec(db, kSchemaSql) == 0 &&
+                   jw__ensure_apps_min_leaf_version(db) == 0
+               ? jw__exec(db, kRelocationSchemaSql)
+               : -1;
 }
 
 void jw_db_close(sqlite3 *db) {
@@ -865,15 +935,22 @@ done:
     return status;
 }
 
-int jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version) {
+int jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name,
+                     const char *icon, const char *platform,
+                     const char *pak_version,
+                     const char *min_jawaka_version,
+                     const char *min_leaf_version) {
     /* Upsert keyed on the UNIQUE pak_dir, mirroring jw_db_insert_game, so an
        app keeps its id across rescans. */
     static const char *sql =
-        "INSERT INTO apps (pak_dir, name, icon, platform, pak_version, min_jawaka_version) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
+        "INSERT INTO apps (pak_dir, name, icon, platform, pak_version, "
+        "min_jawaka_version, min_leaf_version) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(pak_dir) DO UPDATE SET "
         "name = excluded.name, icon = excluded.icon, platform = excluded.platform, "
-        "pak_version = excluded.pak_version, min_jawaka_version = excluded.min_jawaka_version;";
+        "pak_version = excluded.pak_version, "
+        "min_jawaka_version = excluded.min_jawaka_version, "
+        "min_leaf_version = excluded.min_leaf_version;";
     sqlite3_stmt *stmt = NULL;
 
     if (!db || !pak_dir || !name) {
@@ -890,6 +967,7 @@ int jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const c
     if (platform && platform[0]) sqlite3_bind_text(stmt, 4, platform, -1, SQLITE_TRANSIENT); else sqlite3_bind_null(stmt, 4);
     if (pak_version && pak_version[0]) sqlite3_bind_text(stmt, 5, pak_version, -1, SQLITE_TRANSIENT); else sqlite3_bind_null(stmt, 5);
     if (min_jawaka_version && min_jawaka_version[0]) sqlite3_bind_text(stmt, 6, min_jawaka_version, -1, SQLITE_TRANSIENT); else sqlite3_bind_null(stmt, 6);
+    if (min_leaf_version && min_leaf_version[0]) sqlite3_bind_text(stmt, 7, min_leaf_version, -1, SQLITE_TRANSIENT); else sqlite3_bind_null(stmt, 7);
 
     int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
     sqlite3_finalize(stmt);
@@ -1736,14 +1814,21 @@ int jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *
     }
 
     *out_count = 0;
+    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
 
     sqlite3 *db = NULL;
     if (jw_db_open(db_path, &db) != 0) {
         return -1;
     }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
 
     static const char *sql =
-        "SELECT name, pak_dir, icon FROM apps ORDER BY name LIMIT ?;";
+        "SELECT name,pak_dir,icon,platform,pak_version,"
+        "min_jawaka_version,min_leaf_version "
+        "FROM apps ORDER BY name LIMIT ?;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -1757,10 +1842,34 @@ int jw_db_list_apps(const char *db_path, jw_app_entry *out, int max_count, int *
         const unsigned char *name = sqlite3_column_text(stmt, 0);
         const unsigned char *pak_dir = sqlite3_column_text(stmt, 1);
         const unsigned char *icon = sqlite3_column_text(stmt, 2);
+        const unsigned char *platform = sqlite3_column_text(stmt, 3);
+        const unsigned char *pak_version = sqlite3_column_text(stmt, 4);
+        const unsigned char *min_jawaka_version =
+            sqlite3_column_text(stmt, 5);
+        const unsigned char *min_leaf_version =
+            sqlite3_column_text(stmt, 6);
         int i = *out_count;
         if (name) snprintf(out[i].name, sizeof(out[i].name), "%s", name);
         if (pak_dir) snprintf(out[i].pak_dir, sizeof(out[i].pak_dir), "%s", pak_dir);
         if (icon) snprintf(out[i].icon, sizeof(out[i].icon), "%s", icon);
+        if (platform) {
+            snprintf(out[i].platform, sizeof(out[i].platform), "%s",
+                     platform);
+        }
+        if (pak_version) {
+            snprintf(out[i].pak_version, sizeof(out[i].pak_version), "%s",
+                     pak_version);
+        }
+        if (min_jawaka_version) {
+            snprintf(out[i].min_jawaka_version,
+                     sizeof(out[i].min_jawaka_version), "%s",
+                     min_jawaka_version);
+        }
+        if (min_leaf_version) {
+            snprintf(out[i].min_leaf_version,
+                     sizeof(out[i].min_leaf_version), "%s",
+                     min_leaf_version);
+        }
         (*out_count)++;
     }
 

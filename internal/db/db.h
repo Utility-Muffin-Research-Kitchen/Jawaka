@@ -56,6 +56,10 @@ typedef struct {
     char name[256];
     char pak_dir[512];
     char icon[256];
+    char platform[64];
+    char pak_version[64];
+    char min_jawaka_version[64];
+    char min_leaf_version[64];
 } jw_app_entry;
 
 typedef struct {
@@ -130,7 +134,11 @@ int  jw_db_insert_game_stable(sqlite3 *db, const char *system, const char *name,
                               const char *image_root_kind,
                               const char *image_relpath,
                               const char *image_path);
-int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version);
+int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name,
+                      const char *icon, const char *platform,
+                      const char *pak_version,
+                      const char *min_jawaka_version,
+                      const char *min_leaf_version);
 
 /* Optional source-provided display titles applied immediately after a library
    scan. rom_paths use the exact primary-relative / secondary-absolute form

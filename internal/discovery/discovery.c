@@ -176,12 +176,14 @@ static int jw__scan_insert_app(jw_scan_tx *tx,
                                const char *icon,
                                const char *platform,
                                const char *pak_version,
-                               const char *min_jawaka_version) {
+                               const char *min_jawaka_version,
+                               const char *min_leaf_version) {
     if (jw__scan_tx_begin(tx) != 0) {
         return -1;
     }
     if (jw_db_insert_app(tx->db, pak_dir, name, icon, platform,
-                         pak_version, min_jawaka_version) != 0) {
+                         pak_version, min_jawaka_version,
+                         min_leaf_version) != 0) {
         return -1;
     }
     return jw__scan_tx_note_write(tx);
@@ -1274,8 +1276,10 @@ static bool jw__load_pak_manifest(const char *pak_abs,
                                   size_t platform_size,
                                   char *pak_version_buf,
                                   size_t pak_version_size,
-                                  char *min_version_buf,
-                                  size_t min_version_size) {
+                                  char *min_jawaka_version_buf,
+                                  size_t min_jawaka_version_size,
+                                  char *min_leaf_version_buf,
+                                  size_t min_leaf_version_size) {
     char pak_json_path[PATH_MAX];
     if (jw__format_string(pak_json_path, sizeof(pak_json_path), "%s/pak.json", pak_abs) != 0 ||
         !jw__is_file(pak_json_path)) {
@@ -1318,7 +1322,15 @@ static bool jw__load_pak_manifest(const char *pak_abs,
                     }
                     item = cJSON_GetObjectItem(root, "min_jawaka_version");
                     if (cJSON_IsString(item) && item->valuestring) {
-                        snprintf(min_version_buf, min_version_size, "%s", item->valuestring);
+                        snprintf(min_jawaka_version_buf,
+                                 min_jawaka_version_size, "%s",
+                                 item->valuestring);
+                    }
+                    item = cJSON_GetObjectItem(root, "min_leaf_version");
+                    if (cJSON_IsString(item) && item->valuestring) {
+                        snprintf(min_leaf_version_buf,
+                                 min_leaf_version_size, "%s",
+                                 item->valuestring);
                     }
                     ok = platform_buf[0] != '\0';
                     cJSON_Delete(root);
@@ -1381,20 +1393,25 @@ static int jw__scan_apps_dir(jw_scan_tx *tx, const jw_storage_source *source,
         char icon_buf[256];
         char platform_buf[64];
         char pak_version_buf[64];
-        char min_version_buf[64];
+        char min_jawaka_version_buf[64];
+        char min_leaf_version_buf[64];
 
         snprintf(name_buf, sizeof(name_buf), "%s", default_name);
         icon_buf[0] = '\0';
         platform_buf[0] = '\0';
         pak_version_buf[0] = '\0';
-        min_version_buf[0] = '\0';
+        min_jawaka_version_buf[0] = '\0';
+        min_leaf_version_buf[0] = '\0';
 
         if (!jw__load_pak_manifest(pak_abs,
                                    name_buf, sizeof(name_buf),
                                    icon_buf, sizeof(icon_buf),
                                    platform_buf, sizeof(platform_buf),
                                    pak_version_buf, sizeof(pak_version_buf),
-                                   min_version_buf, sizeof(min_version_buf))) {
+                                   min_jawaka_version_buf,
+                                   sizeof(min_jawaka_version_buf),
+                                   min_leaf_version_buf,
+                                   sizeof(min_leaf_version_buf))) {
             continue;
         }
 
@@ -1406,7 +1423,9 @@ static int jw__scan_apps_dir(jw_scan_tx *tx, const jw_storage_source *source,
         }
 
         if (jw__scan_insert_app(tx, pak_rel, name_buf, icon_buf, platform_buf,
-                                pak_version_buf, min_version_buf) == 0) {
+                                pak_version_buf,
+                                min_jawaka_version_buf,
+                                min_leaf_version_buf) == 0) {
             out->app_count += 1;
         } else {
             closedir(apps);

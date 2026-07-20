@@ -1413,6 +1413,9 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
     } else if (rc > 0) {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
                  "%s", "Pak Rat catalog not configured");
+    } else if (rc == JW_PAKRAT_CATALOG_REQUIRES_NEWER_LEAF) {
+        snprintf(state->pakrat_message, sizeof(state->pakrat_message),
+                 "%s", "Pak Rat catalog requires a newer Leaf");
     } else {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
                  "%s", "Pak Rat catalog unavailable");
@@ -1505,6 +1508,9 @@ static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *ap
     }
     if (app->managed) {
         return "Blocked";
+    }
+    if (!app->primary_action_allowed) {
+        return "Unavailable";
     }
     switch (app->status) {
         case JW_PAKRAT_APP_AVAILABLE:        return "Install";
@@ -1787,6 +1793,22 @@ static int jw__pakrat_detail_content_h(const jw_pakrat_app_state *app,
     if (app->package.summary[0]) {
         h += cat_measure_wrapped_text_height(body, app->package.summary, w) + CAT_S(18);
     }
+    if (app->gated_version[0] && app->gated_min_leaf_version[0]) {
+        char gate[256];
+        snprintf(gate, sizeof(gate),
+                 "Version %s requires Leaf v%s — update Leaf in Settings to get it.",
+                 app->gated_version, app->gated_min_leaf_version);
+        h += cat_measure_wrapped_text_height(body, gate, w) + CAT_S(18);
+    }
+    if (app->installed_version_missing_from_history &&
+        app->installed_version[0]) {
+        char missing[256];
+        snprintf(missing, sizeof(missing),
+                 "%s unavailable: version %s is missing from catalog history.",
+                 app->status == JW_PAKRAT_APP_STALE ? "Restore" : "Reinstall",
+                 app->installed_version);
+        h += cat_measure_wrapped_text_height(body, missing, w) + CAT_S(18);
+    }
     int row_h = TTF_FontHeight(small) + CAT_S(8);
     int rows = 3 + (app->managed ? 1 : 0);        /* catalog / installed / path [/ managed] */
     h += rows * row_h;
@@ -1814,8 +1836,27 @@ static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
               CAT_S(18);
     }
 
-    int row_h = TTF_FontHeight(c->small) + CAT_S(8);
     char line[768];
+    if (app->gated_version[0] && app->gated_min_leaf_version[0]) {
+        snprintf(line, sizeof(line),
+                 "Version %s requires Leaf v%s — update Leaf in Settings to get it.",
+                 app->gated_version, app->gated_min_leaf_version);
+        cat_draw_text_wrapped(c->body, line, x, cy, w,
+                              theme->highlight, CAT_ALIGN_LEFT);
+        cy += cat_measure_wrapped_text_height(c->body, line, w) + CAT_S(18);
+    }
+    if (app->installed_version_missing_from_history &&
+        app->installed_version[0]) {
+        snprintf(line, sizeof(line),
+                 "%s unavailable: version %s is missing from catalog history.",
+                 app->status == JW_PAKRAT_APP_STALE ? "Restore" : "Reinstall",
+                 app->installed_version);
+        cat_draw_text_wrapped(c->body, line, x, cy, w,
+                              theme->highlight, CAT_ALIGN_LEFT);
+        cy += cat_measure_wrapped_text_height(c->body, line, w) + CAT_S(18);
+    }
+
+    int row_h = TTF_FontHeight(c->small) + CAT_S(8);
     snprintf(line, sizeof(line), "Catalog version: %s", app->package.version);
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
@@ -3314,14 +3355,24 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
         return;
     }
 
-    /* Icon sizing mirrors jw__draw_system_preview so both panes match. */
+    int metadata_lines = 1 +
+                         (app->pak_version[0] ? 1 : 0) +
+                         (app->min_leaf_version[0] ? 1 : 0);
+    int sub_h = TTF_FontHeight(small);
+    int line_gap = CAT_S(4);
+    int text_h = metadata_lines * sub_h +
+                 (metadata_lines - 1) * line_gap;
+    int gap = CAT_S(12);
+
+    /* Icon sizing mirrors jw__draw_system_preview, with enough space reserved
+       for the runtime compatibility diagnostics below it. */
     int icon_max = CAT_S(340);
     int icon_box = detail_w * 88 / 100;
     if (icon_box > icon_max)           icon_box = icon_max;
     if (icon_box > detail_h * 72 / 100) icon_box = detail_h * 72 / 100;
-
-    int sub_h = TTF_FontHeight(small);
-    int gap   = CAT_S(12);
+    int icon_height_limit = detail_h - text_h - gap - CAT_S(16);
+    if (icon_box > icon_height_limit) icon_box = icon_height_limit;
+    if (icon_box < 0) icon_box = 0;
 
     SDL_Texture *tex = NULL;
     int icon_w = 0, icon_h = 0;
@@ -3334,13 +3385,12 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
         tex = jw__load_system_icon("_apps", &icon_w, &icon_h);
     }
 
-    /* Vertical stack: icon + name, centered in the pane (matches the system
-       preview's icon + count layout). */
-    int block_h = (tex ? icon_box : 0) + gap + sub_h;
+    /* Vertical stack: icon + runtime metadata, centered in the pane. */
+    int block_h = (tex && icon_box > 0 ? icon_box + gap : 0) + text_h;
     int top_y   = detail_y + (detail_h - block_h) / 2;
 
     int label_y = top_y;
-    if (tex) {
+    if (tex && icon_box > 0) {
         jw__draw_image_fit(tex, icon_w, icon_h,
                            detail_x + (detail_w - icon_box) / 2, top_y,
                            icon_box, icon_box);
@@ -3353,6 +3403,28 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
     cat_draw_text_ellipsized(small, app->name,
                              detail_x + (detail_w - name_w) / 2, label_y,
                              theme->hint, max_w);
+    label_y += sub_h + line_gap;
+
+    char metadata[160];
+    if (app->pak_version[0]) {
+        snprintf(metadata, sizeof(metadata), "Version %s",
+                 app->pak_version);
+        int metadata_w = cat_measure_text(small, metadata);
+        if (metadata_w > max_w) metadata_w = max_w;
+        cat_draw_text_ellipsized(
+            small, metadata, detail_x + (detail_w - metadata_w) / 2,
+            label_y, theme->hint, max_w);
+        label_y += sub_h + line_gap;
+    }
+    if (app->min_leaf_version[0]) {
+        snprintf(metadata, sizeof(metadata), "Requires Leaf v%s",
+                 app->min_leaf_version);
+        int metadata_w = cat_measure_text(small, metadata);
+        if (metadata_w > max_w) metadata_w = max_w;
+        cat_draw_text_ellipsized(
+            small, metadata, detail_x + (detail_w - metadata_w) / 2,
+            label_y, theme->highlight, max_w);
+    }
 }
 
 /* ─── Coverflow: shared album-card carousel ──────────────────────────────────
@@ -5453,8 +5525,10 @@ typedef enum {
 typedef struct {
     jw_pakrat_context ctx;
     char store_id[128];
+    char target_version[64];
     jw_pakrat_ui_action action;
     int allow_adopt;   /* install may replace a manually-installed pak */
+    int repair_exact;
 } jw_pakrat_ui_job;
 
 static int jw__pakrat_ui_worker(void *userdata) {
@@ -5465,7 +5539,12 @@ static int jw__pakrat_ui_worker(void *userdata) {
     if (job->action == JW_PAKRAT_UI_UNINSTALL) {
         return jw_pakrat_uninstall_app(&job->ctx, job->store_id);
     }
-    return jw_pakrat_install_app(&job->ctx, job->store_id, job->allow_adopt);
+    if (job->repair_exact) {
+        return jw_pakrat_repair_app_version(
+            &job->ctx, job->store_id, job->target_version);
+    }
+    return jw_pakrat_install_app_target(
+        &job->ctx, job->store_id, job->target_version, job->allow_adopt);
 }
 
 static bool jw__confirm_pakrat_uninstall(const jw_pakrat_app_state *app) {
@@ -5592,6 +5671,24 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
         jw__set_pakrat_message(state, "%.120s is release-managed", name);
         return;
     }
+    if (action != JW_PAKRAT_UI_UNINSTALL &&
+        !app.primary_action_allowed) {
+        if (app.installed_version_missing_from_history &&
+            app.installed_version[0]) {
+            jw__set_pakrat_message(
+                state, "Version %.40s is missing from catalog history",
+                app.installed_version);
+        } else if (app.gated_version[0] &&
+                   app.gated_min_leaf_version[0]) {
+            jw__set_pakrat_message(
+                state, "Version %.40s requires Leaf v%.40s",
+                app.gated_version, app.gated_min_leaf_version);
+        } else {
+            jw__set_pakrat_message(
+                state, "%.120s has no compatible install action", name);
+        }
+        return;
+    }
     bool allow_adopt = false;
     if (action == JW_PAKRAT_UI_UNINSTALL) {
         if (!jw__pakrat_can_uninstall(&app)) {
@@ -5625,7 +5722,10 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     job.ctx = ctx;
     job.action = action;
     job.allow_adopt = allow_adopt ? 1 : 0;
+    job.repair_exact = app.action_uses_history;
     snprintf(job.store_id, sizeof(job.store_id), "%s", app.package.id);
+    snprintf(job.target_version, sizeof(job.target_version), "%s",
+             app.action_version);
 
     char detail[320];
     snprintf(detail, sizeof(detail), "%.240s", name);

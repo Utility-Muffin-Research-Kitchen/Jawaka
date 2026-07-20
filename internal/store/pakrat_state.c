@@ -1,9 +1,10 @@
 #include "internal/store/pakrat_state.h"
 
-#include "cJSON.h"
 #include "internal/db/db.h"
+#include "internal/platform/leaf_version.h"
 #include "internal/store/catalog_source.h"
 #include "internal/store/managed_apps.h"
+#include "internal/store/pakrat_state_logic.h"
 
 #include <curl/curl.h>
 #include <stdio.h>
@@ -78,16 +79,6 @@ static void jw__configure_curl_ca(CURL *curl) {
     if (jw__path_exists("/etc/ssl/certs")) {
         curl_easy_setopt(curl, CURLOPT_CAPATH, "/etc/ssl/certs");
     }
-}
-
-static const char *jw__json_string(const cJSON *obj, const char *key) {
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
-    return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
-}
-
-static long long jw__json_ll(const cJSON *obj, const char *key) {
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
-    return cJSON_IsNumber(item) ? (long long)item->valuedouble : 0;
 }
 
 static size_t jw__curl_mem_write(void *ptr, size_t size, size_t nmemb,
@@ -189,107 +180,38 @@ static int jw__fetch_storefront(const jw_pakrat_context *ctx, jw_mem *out,
     return 0;
 }
 
-static int jw__package_valid(const jw_pakrat_catalog_package *pkg) {
-    return pkg && pkg->id[0] && pkg->name[0] && pkg->version[0] &&
-           pkg->platform[0] && pkg->install_name[0] && pkg->install_path[0] &&
-           pkg->artifact_url[0] && pkg->artifact_name[0] &&
-           pkg->artifact_sha256[0] && pkg->artifact_size > 0;
+static const char *jw__installed_leaf_version(const jw_pakrat_context *ctx,
+                                               jw_installed_release *release) {
+    memset(release, 0, sizeof(*release));
+    return jw_installed_release_read(ctx->state_dir, release) == 0
+               ? release->version
+               : "";
 }
 
-static int jw__fill_package(const cJSON *app, const cJSON *pkg,
-                            jw_pakrat_catalog_package *out) {
-    const cJSON *artifact = cJSON_GetObjectItemCaseSensitive(pkg, "artifact");
-    if (!cJSON_IsObject(artifact)) {
+static int jw__version_cmp_text(const char *left, const char *right,
+                                int *out_cmp) {
+    int left_version[3];
+    int right_version[3];
+    if (!left || !right || !out_cmp ||
+        jw_pak_version_parse(left, left_version) != 0 ||
+        jw_pak_version_parse(right, right_version) != 0) {
         return -1;
     }
-
-    memset(out, 0, sizeof(*out));
-    if (jw__copy(out->id, sizeof(out->id), jw__json_string(app, "id")) != 0 ||
-        jw__copy(out->name, sizeof(out->name), jw__json_string(app, "name")) != 0 ||
-        jw__copy(out->summary, sizeof(out->summary), jw__json_string(app, "summary")) != 0 ||
-        jw__copy(out->platform, sizeof(out->platform), jw__json_string(pkg, "platform")) != 0 ||
-        jw__copy(out->version, sizeof(out->version), jw__json_string(pkg, "version")) != 0 ||
-        jw__copy(out->install_name, sizeof(out->install_name),
-                 jw__json_string(pkg, "install_name")) != 0 ||
-        jw__copy(out->runtime_manifest_path, sizeof(out->runtime_manifest_path),
-                 jw__json_string(pkg, "runtime_manifest_path")) != 0 ||
-        jw__copy(out->artifact_url, sizeof(out->artifact_url),
-                 jw__json_string(artifact, "url")) != 0 ||
-        jw__copy(out->artifact_name, sizeof(out->artifact_name),
-                 jw__json_string(artifact, "name")) != 0 ||
-        jw__copy(out->artifact_sha256, sizeof(out->artifact_sha256),
-                 jw__json_string(artifact, "sha256")) != 0) {
-        return -1;
-    }
-    if (!out->runtime_manifest_path[0] &&
-        jw__copy(out->runtime_manifest_path,
-                 sizeof(out->runtime_manifest_path), "pak.json") != 0) {
-        return -1;
-    }
-    if (snprintf(out->install_path, sizeof(out->install_path), "%s/%s",
-                 out->platform, out->install_name) >=
-        (int)sizeof(out->install_path)) {
-        return -1;
-    }
-    out->artifact_size = jw__json_ll(artifact, "size");
-    return jw__package_valid(out) ? 0 : -1;
-}
-
-static int jw__parse_storefront_packages(const char *json, const char *platform,
-                                         jw_pakrat_catalog_package *out,
-                                         int max_count, int *out_count) {
-    if (!json || !platform || !platform[0] || !out || max_count <= 0 ||
-        !out_count) {
-        return -1;
-    }
-    *out_count = 0;
-    memset(out, 0, sizeof(out[0]) * (size_t)max_count);
-
-    cJSON *root = cJSON_Parse(json);
-    if (!root) {
-        return -1;
-    }
-    if (strcmp(jw__json_string(root, "product"), "pak-rat") != 0) {
-        cJSON_Delete(root);
-        return -1;
-    }
-    const cJSON *apps = cJSON_GetObjectItemCaseSensitive(root, "apps");
-    if (!cJSON_IsArray(apps)) {
-        cJSON_Delete(root);
-        return -1;
-    }
-
-    const cJSON *app = NULL;
-    cJSON_ArrayForEach(app, apps) {
-        if (!cJSON_IsObject(app)) {
-            cJSON_Delete(root);
-            return -1;
-        }
-        const cJSON *packages = cJSON_GetObjectItemCaseSensitive(app, "packages");
-        if (!cJSON_IsArray(packages)) {
-            cJSON_Delete(root);
-            return -1;
-        }
-        const cJSON *pkg = NULL;
-        cJSON_ArrayForEach(pkg, packages) {
-            if (!cJSON_IsObject(pkg) ||
-                strcmp(jw__json_string(pkg, "platform"), platform) != 0) {
-                continue;
-            }
-            if (*out_count >= max_count) {
-                cJSON_Delete(root);
-                return -1;
-            }
-            if (jw__fill_package(app, pkg, &out[*out_count]) != 0) {
-                cJSON_Delete(root);
-                return -1;
-            }
-            (*out_count)++;
-        }
-    }
-
-    cJSON_Delete(root);
+    *out_cmp = jw_version_cmp(left_version, right_version);
     return 0;
+}
+
+static void jw__hide_obsolete_gate(jw_pakrat_app_state *state) {
+    if (!state->gated_version[0] || !state->installed_owned) {
+        return;
+    }
+    int cmp = 0;
+    if (jw__version_cmp_text(state->gated_version,
+                             state->installed_version, &cmp) != 0 ||
+        cmp <= 0) {
+        state->gated_version[0] = '\0';
+        state->gated_min_leaf_version[0] = '\0';
+    }
 }
 
 const char *jw_pakrat_app_status_name(jw_pakrat_app_status status) {
@@ -324,21 +246,21 @@ int jw_pakrat_find_catalog_package(const jw_pakrat_context *ctx,
         return fetch_rc;
     }
 
-    jw_pakrat_catalog_package packages[128];
+    jw_installed_release release;
+    jw_pakrat_catalog_selection selections[128];
     int count = 0;
-    int parse_rc = jw__parse_storefront_packages(storefront.data, ctx->platform,
-                                                 packages,
-                                                 (int)(sizeof(packages) /
-                                                       sizeof(packages[0])),
-                                                 &count);
+    int parse_rc = jw_pakrat_catalog_parse_and_select(
+        storefront.data, ctx->platform,
+        jw__installed_leaf_version(ctx, &release), is_dev,
+        selections, (int)(sizeof(selections) / sizeof(selections[0])), &count);
     free(storefront.data);
     if (parse_rc != 0) {
-        return -1;
+        return parse_rc;
     }
 
     for (int i = 0; i < count; i++) {
-        if (strcmp(packages[i].id, store_id) == 0) {
-            *out = packages[i];
+        if (strcmp(selections[i].package.id, store_id) == 0) {
+            *out = selections[i].package;
             if (out_is_dev_override) {
                 *out_is_dev_override = is_dev;
             }
@@ -346,6 +268,33 @@ int jw_pakrat_find_catalog_package(const jw_pakrat_context *ctx,
         }
     }
     return 1;
+}
+
+int jw_pakrat_find_catalog_package_version(
+    const jw_pakrat_context *ctx,
+    const char *store_id,
+    const char *version,
+    jw_pakrat_catalog_package *out,
+    int *out_is_dev_override) {
+    if (!ctx || !ctx->platform[0] || !store_id || !store_id[0] ||
+        !version || !version[0] || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+
+    jw_mem storefront;
+    int is_dev = 0;
+    int fetch_rc = jw__fetch_storefront(ctx, &storefront, &is_dev);
+    if (fetch_rc != 0) {
+        return fetch_rc;
+    }
+    int parse_rc = jw_pakrat_catalog_find_exact(
+        storefront.data, ctx->platform, store_id, version, out);
+    free(storefront.data);
+    if (parse_rc == 0 && out_is_dev_override) {
+        *out_is_dev_override = is_dev;
+    }
+    return parse_rc;
 }
 
 int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
@@ -360,33 +309,44 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
     memset(out, 0, sizeof(out[0]) * (size_t)max_count);
 
     jw_mem storefront;
-    int fetch_rc = jw__fetch_storefront(ctx, &storefront, NULL);
+    int is_dev = 0;
+    int fetch_rc = jw__fetch_storefront(ctx, &storefront, &is_dev);
     if (fetch_rc != 0) {
         return fetch_rc;
     }
 
-    jw_pakrat_catalog_package packages[128];
+    jw_installed_release release;
+    jw_pakrat_catalog_selection selections[128];
     int package_count = 0;
-    int parse_rc = jw__parse_storefront_packages(storefront.data, ctx->platform,
-                                                 packages,
-                                                 (int)(sizeof(packages) /
-                                                       sizeof(packages[0])),
-                                                 &package_count);
-    free(storefront.data);
+    int parse_rc = jw_pakrat_catalog_parse_and_select(
+        storefront.data, ctx->platform,
+        jw__installed_leaf_version(ctx, &release), is_dev,
+        selections, (int)(sizeof(selections) / sizeof(selections[0])),
+        &package_count);
     if (parse_rc != 0) {
-        return -1;
+        free(storefront.data);
+        return parse_rc;
     }
 
     jw_pakrat_managed_apps managed;
     if (jw_pakrat_load_managed_apps(ctx->platform_root, &managed) != 0) {
+        free(storefront.data);
         return -1;
     }
     int db_available = jw__path_exists(ctx->db_path);
 
     for (int i = 0; i < package_count && *out_count < max_count; i++) {
         jw_pakrat_app_state *state = &out[*out_count];
-        state->package = packages[i];
+        state->package = selections[i].package;
         state->status = JW_PAKRAT_APP_AVAILABLE;
+        state->primary_action_allowed = 1;
+        jw__copy(state->action_version, sizeof(state->action_version),
+                 state->package.version);
+        jw__copy(state->gated_version, sizeof(state->gated_version),
+                 selections[i].gated_version);
+        jw__copy(state->gated_min_leaf_version,
+                 sizeof(state->gated_min_leaf_version),
+                 selections[i].gated_min_leaf_version);
         state->managed =
             jw_pakrat_managed_app_path_blocked(&managed,
                                                state->package.install_path) > 0;
@@ -397,6 +357,7 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
                                      &install) :
             1;
         if (install_rc < 0) {
+            free(storefront.data);
             return -1;
         }
         if (install_rc == 0) {
@@ -410,13 +371,46 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
             jw__copy(state->app_pak_dir, sizeof(state->app_pak_dir),
                      install.app_pak_dir);
 
-            if (!install.app_present) {
-                state->status = JW_PAKRAT_APP_STALE;
-            } else if (strcmp(install.version, state->package.version) != 0) {
-                state->status = JW_PAKRAT_APP_UPDATE_AVAILABLE;
-            } else {
-                state->status = JW_PAKRAT_APP_INSTALLED;
+            state->status = jw_pakrat_resolve_owned_state(
+                state->package.version, install.version, install.app_present,
+                &state->primary_action_allowed);
+
+            int needs_exact =
+                state->status == JW_PAKRAT_APP_STALE ||
+                state->status == JW_PAKRAT_APP_INSTALLED;
+            if (needs_exact &&
+                strcmp(state->package.version, install.version) == 0) {
+                state->primary_action_allowed = 1;
+                jw__copy(state->action_version,
+                         sizeof(state->action_version), install.version);
+                state->action_uses_history =
+                    state->status == JW_PAKRAT_APP_STALE;
+            } else if (needs_exact) {
+                int installed_parsed[3];
+                jw_pakrat_catalog_package exact;
+                int exact_rc =
+                    jw_pak_version_parse(install.version,
+                                         installed_parsed) == 0
+                        ? jw_pakrat_catalog_find_exact(
+                              storefront.data, ctx->platform,
+                              state->package.id, install.version, &exact)
+                        : 1;
+                if (exact_rc < 0) {
+                    free(storefront.data);
+                    return exact_rc;
+                }
+                if (exact_rc == 0) {
+                    state->primary_action_allowed = 1;
+                    state->action_uses_history = 1;
+                    jw__copy(state->action_version,
+                             sizeof(state->action_version), install.version);
+                } else {
+                    state->primary_action_allowed = 0;
+                    state->action_version[0] = '\0';
+                    state->installed_version_missing_from_history = 1;
+                }
             }
+            jw__hide_obsolete_gate(state);
         } else {
             /* No ownership row: if the pak is already on disk it was installed
                manually (or by an older tool). Surface it as unmanaged so the UI
@@ -433,5 +427,6 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
         (*out_count)++;
     }
 
+    free(storefront.data);
     return package_count <= max_count ? 0 : -1;
 }

@@ -43,11 +43,44 @@ int main(void) {
         scalar(db, "PRAGMA user_version") != 6 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('games') "
                    "WHERE name IN ('source_id','rom_relpath','image_root_kind',"
-                   "'image_relpath')") != 4) {
+                   "'image_relpath')") != 4 ||
+        scalar(db, "SELECT COUNT(*) FROM pragma_table_info('apps') "
+                   "WHERE name='min_leaf_version'") != 1) {
         fail(db, "fresh v6 schema");
     }
     sqlite3_close(db);
     unlink(fresh);
+
+    char current[] = "/tmp/jawaka-schema-current-v6.XXXXXX";
+    int current_fd = mkstemp(current);
+    if (current_fd < 0) fail(NULL, "current v6 mkstemp");
+    close(current_fd);
+    if (sqlite3_open(current, &db) != SQLITE_OK) fail(db, "current v6 open");
+    exec_ok(db,
+        "PRAGMA user_version=6;"
+        "CREATE TABLE apps("
+        "id INTEGER PRIMARY KEY,pak_dir TEXT NOT NULL UNIQUE,"
+        "name TEXT NOT NULL,icon TEXT,platform TEXT,pak_version TEXT,"
+        "min_jawaka_version TEXT);"
+        "INSERT INTO apps(pak_dir,name,pak_version,min_jawaka_version)"
+        "VALUES('Apps/mlp1/Existing.pak','Existing','1.0.0','0.0.1');");
+    if (jw_db_apply_schema(db) != 0 ||
+        jw_db_apply_schema(db) != 0 ||
+        scalar(db, "SELECT COUNT(*) FROM pragma_table_info('apps') "
+                   "WHERE name='min_leaf_version'") != 1 ||
+        scalar(db, "SELECT COUNT(*) FROM apps "
+                   "WHERE pak_dir='Apps/mlp1/Existing.pak' "
+                   "AND pak_version='1.0.0'") != 1 ||
+        jw_db_scan_begin(db) != 0 ||
+        jw_db_insert_app(db, "Apps/mlp1/Existing.pak", "Existing", "",
+                         "mlp1", "1.0.1", "0.0.1", "0.7.0") != 0 ||
+        scalar(db, "SELECT COUNT(*) FROM apps "
+                   "WHERE pak_version='1.0.1' "
+                   "AND min_leaf_version='0.7.0'") != 1) {
+        fail(db, "current v6 additive migration");
+    }
+    sqlite3_close(db);
+    unlink(current);
 
     char path[] = "/tmp/jawaka-schema-v6.XXXXXX";
     int fd = mkstemp(path);

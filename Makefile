@@ -105,6 +105,9 @@ OSD_CFLAGS := $(CFLAGS_UI)
 OSD_LDLIBS := $(LDLIBS_UI)
 endif
 PLATFORM_COMMON_SRC := internal/platform/platform_common.c
+LEAF_VERSION_SRC := internal/platform/leaf_version.c
+PAKRAT_CATALOG_SRC := internal/store/pakrat_catalog.c
+PAKRAT_STATE_LOGIC_SRC := internal/store/pakrat_state_logic.c
 
 # ScreenScraper scrape engine (daemon-side; curl + vendored stb/miniz/md5).
 SCRAPE_SRCS := \
@@ -138,6 +141,7 @@ DAEMON_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	$(INPUT_PROXY_SRC) \
 	internal/platform/calibration.c \
+	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
 	internal/power/suspend_inhibit.c \
 	internal/retroarch/catalog.c \
@@ -216,6 +220,9 @@ SCRAPE_SMOKE_SRCS := \
 
 PAKRAT_SMOKE_SRCS := \
 	cmd/jawaka-pakrat-smoke/main.c \
+	$(LEAF_VERSION_SRC) \
+	$(PAKRAT_CATALOG_SRC) \
+	$(PAKRAT_STATE_LOGIC_SRC) \
 	internal/store/pakrat.c \
 	internal/store/pakrat_state.c \
 	internal/ipc/ipc.c \
@@ -250,6 +257,7 @@ CORE_OVERRIDE_SMOKE_SRCS := \
 
 UPDATE_SMOKE_SRCS := \
 	cmd/jawaka-update-smoke/main.c \
+	$(LEAF_VERSION_SRC) \
 	internal/update/update.c \
 	internal/update/sha256.c \
 	third_party/cjson/cJSON.c
@@ -266,6 +274,7 @@ UI_SRCS := \
 	$(PLATFORM_COMMON_SRC) \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/cat_services.c \
+	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
 	$(BLUETOOTH_SRC) \
 	$(WIFI_SRC) \
@@ -274,6 +283,8 @@ UI_SRCS := \
 	internal/storage/sources.c \
 	internal/store/catalog_source.c \
 	internal/store/managed_apps.c \
+	$(PAKRAT_CATALOG_SRC) \
+	$(PAKRAT_STATE_LOGIC_SRC) \
 	internal/store/pakrat.c \
 	internal/store/pakrat_state.c \
 	internal/update/sha256.c \
@@ -314,7 +325,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl storage-sources-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -340,6 +351,25 @@ jawaka-catalog-smoke: $(BUILD)/bin/jawaka-catalog-smoke
 jawaka-core-override-smoke: $(BUILD)/bin/jawaka-core-override-smoke
 jawaka-update-smoke: $(BUILD)/bin/jawaka-update-smoke
 jawaka-inhibitctl: $(BUILD)/bin/jawaka-inhibitctl
+
+leaf-version-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/leaf-version-test \
+		internal/platform/leaf_version_test.c $(LEAF_VERSION_SRC) \
+		third_party/cjson/cJSON.c
+	$(BUILD)/bin/leaf-version-test
+
+pakrat-catalog-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/pakrat-catalog-test \
+		internal/store/pakrat_catalog_test.c $(PAKRAT_CATALOG_SRC) \
+		$(LEAF_VERSION_SRC) third_party/cjson/cJSON.c
+	$(BUILD)/bin/pakrat-catalog-test
+
+pakrat-state-logic-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/pakrat-state-logic-test \
+		internal/store/pakrat_state_logic_test.c \
+		$(PAKRAT_STATE_LOGIC_SRC) $(LEAF_VERSION_SRC) \
+		third_party/cjson/cJSON.c
+	$(BUILD)/bin/pakrat-state-logic-test
 
 storage-sources-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/storage-sources-test \
@@ -509,6 +539,9 @@ phase3-core-choice-smoke:
 
 pakrat-state-smoke:
 	scripts/pakrat-state-smoke.sh
+
+pakrat-history-smoke:
+	scripts/pakrat-history-smoke.sh
 
 mockgen:
 	bash scripts/mockgen.sh

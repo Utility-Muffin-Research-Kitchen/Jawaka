@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS apps (
     icon                TEXT,
     platform            TEXT,
     pak_version         TEXT,
-    min_jawaka_version  TEXT
+    min_jawaka_version  TEXT,
+    min_leaf_version    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS favorites (
