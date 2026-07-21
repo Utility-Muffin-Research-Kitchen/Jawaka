@@ -2,6 +2,7 @@
 #include "internal/core/log.h"
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
+#include "internal/focus/focus.h"
 #include "internal/ipc/ipc.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/platform/bluetooth.h"
@@ -255,6 +256,11 @@ typedef struct {
     jw_update_download_job update_download_job;
     jw_update_install_job update_install_job;
     jw_update_check_job update_check_job;
+    /* 5-Game Mode (focus mode): resolved once at boot from the persisted config
+       + the SD recovery lock file. Later phases render the focus screen and gate
+       the launcher off this. See plans/five-game-mode.md. */
+    jw_focus_boot_decision focus_boot;
+    jw_focus_config        focus_cfg;
 } jw_daemon_state;
 
 static void jw__scan_title_list_free(jw_scan_title_list *list) {
@@ -5280,6 +5286,16 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     jw_appearance_env appearance;
     jw_appearance_resolve(state->db_path, &appearance);
 
+    /* Re-resolve 5-Game Mode from the DB + SD lock file on every launcher spawn
+       (parent side, fork-safe) so an in-launcher unlock — which clears the flag
+       and removes the lock file — is honored on the next spawn instead of a
+       stale boot-time cache re-entering focus. */
+    if (kind == JW_CHILD_LAUNCHER) {
+        state->focus_boot = jw_focus_resolve_boot(state->db_path,
+                                                  state->sdcard_root,
+                                                  &state->focus_cfg);
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
@@ -5288,6 +5304,23 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
 
     if (pid == 0) {
         jw_appearance_apply_env(&appearance);
+        /* 5-Game Mode: while active, every launcher spawn (incl. return-from-game)
+           re-enters the focus screen. Pass the chosen set + style so the launcher
+           renders focus mode instead of the normal tab UI. */
+        if (kind == JW_CHILD_LAUNCHER &&
+            state->focus_boot == JW_FOCUS_BOOT_ENTER) {
+            char ids_csv[128];
+            jw_focus_ids_to_csv(state->focus_cfg.ids, state->focus_cfg.id_count,
+                                ids_csv, sizeof(ids_csv));
+            setenv("JAWAKA_FOCUS_MODE", "1", 1);
+            setenv("JAWAKA_FOCUS_IDS", ids_csv, 1);
+            setenv("JAWAKA_FOCUS_STYLE",
+                   jw_focus_style_name(state->focus_cfg.style), 1);
+            setenv("JAWAKA_FOCUS_LOCK",
+                   jw_focus_lock_name(state->focus_cfg.lock), 1);
+        } else {
+            unsetenv("JAWAKA_FOCUS_MODE");
+        }
         char *const argv[] = { (char *)path, NULL };
         execv(path, argv);
         perror("execv");
@@ -6609,6 +6642,13 @@ static void jw__tick_startup_maintenance(jw_daemon_state *state) {
            leaves the radio powered regardless, so without this a device the user
            turned BT off on comes back up with it on. */
         jw__apply_persisted_bluetooth(state);
+        /* 5-Game Mode keeps Wi-Fi off. The wifi-disabled marker survives a
+           reboot, but jw_wifi_restore() above may have re-enabled the radio, so
+           force it back off when booting into focus mode. */
+        if (state->focus_boot == JW_FOCUS_BOOT_ENTER && jw_wifi_available()) {
+            jw_wifi_set_radio(false);
+            jw_log_info("5-game mode: Wi-Fi forced off (focus active)");
+        }
         state->startup_maintenance_phase = 1;
         state->startup_maintenance_next_ms = jw__monotonic_ms();
         return;
@@ -7865,6 +7905,31 @@ int main(int argc, char *argv[]) {
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
     jw__apply_persisted_led(&state);
+
+    /* 5-Game Mode boot check: decide whether to enter the locked focus screen
+       (active + SD recovery lock file present) or boot normally. A missing lock
+       file on an active device is the documented "delete the file to unlock"
+       recovery. jw_focus_resolve_boot performs that clear; we note the pre-state
+       only to log which path was taken. Phase 2 consumes state.focus_boot to
+       render the focus screen; for now this just resolves + logs the state. */
+    {
+        jw_focus_config pre;
+        jw_focus_config_load(state.db_path, &pre);
+        bool lock_present = jw_focus_lock_exists(state.sdcard_root);
+        state.focus_boot = jw_focus_resolve_boot(state.db_path, state.sdcard_root,
+                                                 &state.focus_cfg);
+        if (state.focus_boot == JW_FOCUS_BOOT_ENTER) {
+            jw_log_info("5-game mode: active (lock=%s, style=%s, %d game(s)) — "
+                        "entering focus mode",
+                        jw_focus_lock_name(state.focus_cfg.lock),
+                        jw_focus_style_name(state.focus_cfg.style),
+                        state.focus_cfg.id_count);
+        } else if (pre.active && !lock_present) {
+            jw_log_warn("5-game mode: active but recovery lock file absent — "
+                        "unlocking (cleared five_game_active)");
+        }
+    }
+
     /* HDMI boot-apply happens via the first hotplug poll; defer it a few seconds
        so the launcher + OSD are up before any TV-switch weston restart. */
     state.hdmi_last_connected = -1;

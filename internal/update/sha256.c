@@ -167,6 +167,30 @@ static void jw__sha256_final(jw_sha256_ctx *ctx, unsigned char digest[32]) {
     }
 }
 
+static void jw__sha256_digest_to_hex(const unsigned char digest[32],
+                                     char out_hex[65]) {
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out_hex[i * 2] = hex[digest[i] >> 4u];
+        out_hex[i * 2 + 1] = hex[digest[i] & 0x0fu];
+    }
+    out_hex[64] = '\0';
+}
+
+void jw_sha256_buf_hex(const void *data, size_t len, char out_hex[65]) {
+    if (!out_hex) {
+        return;
+    }
+    jw_sha256_ctx ctx;
+    jw__sha256_init(&ctx);
+    if (data && len > 0) {
+        jw__sha256_update(&ctx, (const unsigned char *)data, len);
+    }
+    unsigned char digest[32];
+    jw__sha256_final(&ctx, digest);
+    jw__sha256_digest_to_hex(digest, out_hex);
+}
+
 int jw_sha256_file_hex(const char *path,
                        char out_hex[65],
                        char *error,
@@ -216,11 +240,6 @@ int jw_sha256_file_hex(const char *path,
 
     unsigned char digest[32];
     jw__sha256_final(&ctx, digest);
-    static const char hex[] = "0123456789abcdef";
-    for (int i = 0; i < 32; i++) {
-        out_hex[i * 2] = hex[digest[i] >> 4u];
-        out_hex[i * 2 + 1] = hex[digest[i] & 0x0fu];
-    }
-    out_hex[64] = '\0';
+    jw__sha256_digest_to_hex(digest, out_hex);
     return 0;
 }

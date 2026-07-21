@@ -8,11 +8,14 @@
 #include "internal/core/env.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
+#include "internal/focus/focus.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/coverflow.h"
+#include "internal/launcher/focus_screen.h"
 #include "internal/launcher/game_switcher.h"
 #include "internal/launcher/system_names.h"
+#include "internal/platform/bluetooth.h"
 #include "internal/platform/cat_services.h"
 #include "internal/platform/device.h"
 #include "internal/platform/paths.h"
@@ -25,6 +28,7 @@
 
 #include <SDL2/SDL.h>
 #include <stdatomic.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -141,6 +145,21 @@ typedef struct {
 
 /* ─── Launcher state ──────────────────────────────────────────────────────── */
 
+/* Failsafe unlock chord: all five buttons pressed within the window, then held
+   for the hold time, exits focus mode regardless of lock. */
+#define JW_FOCUS_CHORD_WINDOW_MS 1000u
+#define JW_FOCUS_CHORD_HOLD_MS   2000u
+
+/* 5-Game Mode setup wizard steps (Actions tab -> Start 5-Game Mode). */
+typedef enum {
+    JW_FSETUP_PICK = 0,   /* multi-select up to 5 games from the browser */
+    JW_FSETUP_ARRANGE,    /* reorder the picked tiles (X-grab) */
+    JW_FSETUP_LOCK,       /* None / PIN (combo deferred) */
+    JW_FSETUP_PIN,        /* set + confirm the PIN (when lock == pin) */
+    JW_FSETUP_STYLE,      /* Theme / Black & white */
+    JW_FSETUP_CONFIRM,    /* preview + Start */
+} jw_focus_setup_step;
+
 typedef struct {
     /* tabbed mode */
     jw_tab             current_tab;
@@ -249,6 +268,62 @@ typedef struct {
     bool               scan_running;
     bool               library_populated;
     int                library_generation;
+    /* 5-Game Mode (focus mode): when active, the launcher renders only the
+       curated focus screen and swallows normal navigation. Populated at startup
+       from the JAWAKA_FOCUS_* env the daemon sets on each launcher spawn (so it
+       survives return-from-game). See plans/five-game-mode.md. */
+    bool               focus_active;
+    bool               focus_bw;         /* style: Black & white vs Theme */
+    jw_focus_lock      focus_lock;       /* none/pin/combo (Phase 3 unlock) */
+    int                focus_cursor;     /* selected tile 0..focus_count-1 */
+    int                focus_count;      /* resolved games (danglers dropped) */
+    jw_game_entry      focus_games[JW_FOCUS_SCREEN_MAX_TILES];
+    /* Focus-mode battery: the shared status poller publishes battery as a
+       consume-once mailbox that only the normal render path drains, so focus
+       mode reads power directly via IPC on its own ~5s cadence. */
+    int                focus_batt_pct;   /* -1 unknown */
+    int                focus_batt_chg;   /* -1 unknown, 0/1 */
+    uint32_t           focus_batt_next_ms;
+    /* Focus-mode Bluetooth: a paired-but-disconnected headset shows a corner pip
+       and a Reconnect action in the unlock overlay. Polled on a throttle (the
+       paired-list read shells out, so keep it off every frame). */
+    bool               focus_bt_pip;
+    char               focus_bt_headset_mac[24];
+    uint32_t           focus_bt_next_ms;
+    /* Failsafe unlock chord (always active in focus mode, any lock type): hold
+       Menu+Select+Start+L2+R2 for ~2s to exit. A 5-button hold no kid hits by
+       accident; the on-device "forgot the PIN" escape hatch. */
+    bool               focus_chord_held;
+    uint32_t           focus_chord_start_ms;
+    /* MENU unlock overlay (the only way out of focus mode). */
+    bool               focus_unlock_open;
+    int                focus_pin[JW_FOCUS_PIN_LEN];
+    int                focus_pin_slot;
+    bool               focus_pin_error;
+    char               focus_pin_hash[65]; /* from the DB, verified on submit */
+    int                focus_unlock_confirm; /* 0 none, 1 reboot, 2 power off */
+    /* Setup wizard (Actions tab -> Start 5-Game Mode). Reuses the games browser
+       for the Pick step, marking into focus_setup_ids. */
+    bool                focus_setup_open;
+    jw_focus_setup_step focus_setup_step;
+    int                 focus_setup_ids[JW_FOCUS_SCREEN_MAX_TILES]; /* picked, ordered */
+    int                 focus_setup_count;
+    jw_focus_lock       focus_setup_lock;
+    jw_focus_style      focus_setup_style;
+    int                 focus_setup_choice;   /* cursor within Lock/Style menus */
+    /* Arrange step: X-grab reorder of the picked tiles. */
+    int                 focus_setup_arrange_cursor;
+    bool                focus_setup_grabbed;
+    /* PIN set step: enter then confirm. */
+    int                 focus_setup_pin[JW_FOCUS_PIN_LEN];
+    int                 focus_setup_pin2[JW_FOCUS_PIN_LEN];
+    int                 focus_setup_pin_slot;
+    bool                focus_setup_pin_confirming; /* false=enter, true=re-enter */
+    bool                focus_setup_pin_mismatch;
+    /* Pick: a mode overlaid on the real Games-tab browser (systems -> games with
+       the box-art pane). A toggles a game into focus_setup_ids; not a wizard step. */
+    bool                focus_pick_active;
+    char                focus_setup_note[96];   /* transient nudge, e.g. "5 max" */
 } jw_launcher_state;
 
 static void jw__system_icon_memo_clear(jw_launcher_state *state) {
@@ -1450,8 +1525,36 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
 typedef struct { const jw_app_entry   *apps;    } jw__apps_ctx;
 typedef struct { const jw_pakrat_app_state *apps; } jw__pakrat_ctx;
-typedef struct { const jw_game_entry  *games;   } jw__roms_ctx;
+typedef struct { const jw_game_entry  *games; const jw_launcher_state *st; } jw__roms_ctx;
 typedef struct { const jw_search_result *results; } jw__search_ctx;
+
+/* Is a games.id currently in the 5-Game Mode pick set? (defined with the wizard) */
+static bool jw__fsetup_is_picked(const jw_launcher_state *st, int id);
+
+/* Filled thick line segment (for the pick checkmark). */
+static void jw__thick_line(float x0, float y0, float x1, float y1, float t,
+                           SDL_Color c) {
+    float dx = x1 - x0, dy = y1 - y0;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 0.001f) return;
+    float nx = -dy / len * (t * 0.5f), ny = dx / len * (t * 0.5f);
+    SDL_Vertex v[4];
+    SDL_FPoint p[4] = { { x0 + nx, y0 + ny }, { x1 + nx, y1 + ny },
+                        { x1 - nx, y1 - ny }, { x0 - nx, y0 - ny } };
+    for (int i = 0; i < 4; i++) {
+        v[i].position = p[i]; v[i].color = c;
+        v[i].tex_coord.x = 0; v[i].tex_coord.y = 0;
+    }
+    int idx[6] = { 0, 1, 2, 0, 2, 3 };
+    SDL_RenderGeometry(cat_get_renderer(), NULL, v, 4, idx, 6);
+}
+
+/* A checkmark centered at (cx,cy) fitting radius r. */
+static void jw__draw_check(int cx, int cy, int r, SDL_Color c) {
+    float t = r * 0.44f;
+    jw__thick_line(cx - r * 0.60f, cy + r * 0.04f, cx - r * 0.12f, cy + r * 0.52f, t, c);
+    jw__thick_line(cx - r * 0.12f, cy + r * 0.52f, cx + r * 0.62f, cy - r * 0.52f, t, c);
+}
 
 static void jw__draw_game_item(int idx, int ix, int iy, int iw, int ih,
                                 bool selected, void *user) {
@@ -1573,7 +1676,19 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
     int name_max = iw - CAT_S(20);
 
     int name_x = ix + CAT_S(10);
-    if (ctx->games[idx].favorite) {
+    if (ctx->st && ctx->st->focus_pick_active) {
+        /* 5-Game Mode Pick: a clear checkmark on chosen games (favorites are
+           irrelevant here). */
+        if (jw__fsetup_is_picked(ctx->st, ctx->games[idx].id)) {
+            ap_color chk_c = selected ? theme->highlighted_text : theme->highlight;
+            int body_h = TTF_FontHeight(body);
+            int r = body_h * 36 / 100;
+            jw__draw_check(name_x + r, text_y + body_h / 2, r, chk_c);
+            int advance = r * 2 + CAT_S(8);
+            name_x += advance;
+            name_max -= advance;
+        }
+    } else if (ctx->games[idx].favorite) {
         /* Drawn star (not a font glyph — the body font lacks U+2605). Use the
            bright selection-pill color on a normal row (the accent/chrome tone is
            too dark to read on the row bg), and highlighted_text on a selected
@@ -2069,7 +2184,15 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
         jw__render_tab_content(state, content_y, content_h, margin);
     }
 
-    if (jw_settings_ui_is_open(&state->settings)) {
+    if (state->focus_pick_active) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_Y,     "Clear",  false, JW_HINT("Y") },
+            { CAT_BTN_B,     "Cancel", false, JW_HINT("B") },
+            { CAT_BTN_START, "Done",   true,  JW_HINT("Start") },
+            { CAT_BTN_A,     "Open",   true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 4);
+    } else if (jw_settings_ui_is_open(&state->settings)) {
         /* Dead in practice now (settings is only open inside the MENU page, which
            skips this render path), but kept correct via the shared helper. */
         jw__draw_settings_footer(state);
@@ -3092,6 +3215,166 @@ static void jw__draw_cover_fit(SDL_Texture *tex, int tex_w, int tex_h,
     cat_draw_image_rounded_ex(tex, draw_x, draw_y, draw_w, draw_h, radius, corners);
 }
 
+/* ─── 5-Game Mode (focus mode) ───────────────────────────────────────────── */
+
+/* Resolve the focus config the daemon passed via env into state->focus_games.
+   Danglers (a picked game whose ROM was removed → no DB row) are dropped so a
+   deleted game can't wedge the mode; if that empties the set we fall back to the
+   normal launcher (can't lock an empty focus screen). */
+static void jw__focus_init(jw_launcher_state *state) {
+    state->focus_active = false;
+    state->focus_cursor = 0;
+    state->focus_count = 0;
+    state->focus_batt_pct = -1;
+    state->focus_batt_chg = -1;
+    state->focus_batt_next_ms = 0;
+    const char *fm = getenv("JAWAKA_FOCUS_MODE");
+    if (!fm || fm[0] != '1') {
+        return;
+    }
+
+    const char *style = getenv("JAWAKA_FOCUS_STYLE");
+    state->focus_bw = (style && strcmp(style, "bw") == 0);
+    state->focus_lock = jw_focus_lock_parse(getenv("JAWAKA_FOCUS_LOCK"));
+    /* PIN hash comes from the DB (never the env) so the hash isn't exposed in
+       /proc/<pid>/environ. */
+    state->focus_pin_hash[0] = '\0';
+    jw_db_get_setting(state->db_path, JW_FOCUS_KEY_PIN_HASH,
+                      state->focus_pin_hash, sizeof(state->focus_pin_hash));
+    state->focus_unlock_open = false;
+    state->focus_pin_slot = 0;
+    state->focus_pin_error = false;
+    for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) state->focus_pin[i] = 0;
+
+    int ids[JW_FOCUS_MAX_GAMES];
+    int n = 0;
+    jw_focus_ids_parse(getenv("JAWAKA_FOCUS_IDS"), ids, &n);
+
+    int count = 0;
+    for (int i = 0; i < n && count < JW_FOCUS_SCREEN_MAX_TILES; i++) {
+        jw_game_entry g;
+        if (jw_db_get_game_by_id(state->db_path, ids[i], &g) == 0) {
+            state->focus_games[count++] = g;
+        } else {
+            jw_log_warn("focus: picked game id=%d no longer resolves; dropping", ids[i]);
+        }
+    }
+    state->focus_count = count;
+    state->focus_active = (count > 0);
+    if (!state->focus_active) {
+        jw_log_warn("focus: no picked games resolved; falling back to normal launcher");
+    } else {
+        jw_log_info("focus: active with %d game(s), style=%s",
+                    count, state->focus_bw ? "bw" : "theme");
+    }
+}
+
+/* Render one focus-mode frame: resolve each tile's cover (async cache; title
+   fallback while it streams) + the live battery, then hand off to the pure
+   focus-screen renderer. */
+static void jw__render_focus(jw_launcher_state *state) {
+    cat_clear_screen();
+
+    jw_focus_tile tiles[JW_FOCUS_SCREEN_MAX_TILES];
+    memset(tiles, 0, sizeof(tiles));
+    bool any_pending = false;
+    for (int i = 0; i < state->focus_count; i++) {
+        const jw_game_entry *g = &state->focus_games[i];
+        tiles[i].title = g->name;
+        char abs[PATH_MAX];
+        int w = 0, h = 0;
+        bool pending = false;
+        if (g->image_path[0] &&
+            jw__resolve_sdcard_path(state, g->image_path, abs, sizeof(abs)) == 0) {
+            SDL_Texture *t = jw__load_cover(state, abs, &w, &h, &pending);
+            if (t) {
+                tiles[i].art = t;
+                tiles[i].art_w = w;
+                tiles[i].art_h = h;
+            }
+        }
+        if (pending) any_pending = true;
+    }
+
+    /* Refresh battery directly (~5s cadence); the main loop's 1s idle frame keeps
+       this re-polling even without input. */
+    uint32_t now = SDL_GetTicks();
+    if (state->focus_batt_next_ms == 0 || now >= state->focus_batt_next_ms) {
+        int b = -1, c = -1;
+        if (jw_ipc_platform_power_status(state->socket_path, &b, &c) == 0) {
+            state->focus_batt_pct = b;
+            state->focus_batt_chg = c;
+        }
+        state->focus_batt_next_ms = now + 5000;
+    }
+    jw_focus_battery batt;
+    batt.percent = state->focus_batt_pct < 0 ? 0 : state->focus_batt_pct;
+    batt.charging = (state->focus_batt_chg == 1);
+    /* Keep re-rendering so the critical-battery blink animates. */
+    if (!batt.charging && batt.percent >= 0 && batt.percent <= 10)
+        cat_request_frame_in(450);
+
+    /* Poll for a paired-but-disconnected headset on a slow throttle (the paired
+       list shells out to bluetoothctl; the focus screen is static so an
+       occasional hitch is invisible). */
+    if (state->focus_bt_next_ms == 0 || now >= state->focus_bt_next_ms) {
+        state->focus_bt_pip = false;
+        state->focus_bt_headset_mac[0] = '\0';
+        if (jw_bt_available() && jw_bt_radio_is_on()) {
+            jw_bt_device_t devs[JW_BT_MAX_DEVICES];
+            int nd = jw_bt_list_paired(devs, JW_BT_MAX_DEVICES);
+            for (int i = 0; i < nd; i++) {
+                bool audio = devs[i].kind == JW_BT_DEVICE_HEADSET ||
+                             devs[i].has_audio_sink || devs[i].has_a2dp;
+                if (devs[i].paired && !devs[i].connected && audio) {
+                    state->focus_bt_pip = true;
+                    snprintf(state->focus_bt_headset_mac,
+                             sizeof(state->focus_bt_headset_mac), "%s", devs[i].mac);
+                    break;
+                }
+            }
+        }
+        state->focus_bt_next_ms = now + 10000;
+    }
+
+    jw_focus_screen_render(tiles, state->focus_count, state->focus_cursor,
+                           state->focus_bw, batt, state->focus_bt_pip);
+
+    if (state->focus_unlock_open) {
+        jw_focus_unlock_view uv;
+        memset(&uv, 0, sizeof(uv));
+        uv.pin_mode = (state->focus_lock == JW_FOCUS_LOCK_PIN);
+        uv.pin = state->focus_pin;
+        uv.pin_slot = state->focus_pin_slot;
+        uv.error = state->focus_pin_error;
+        if (state->focus_unlock_confirm == 1) {
+            uv.confirm = "Reboot?";
+        } else if (state->focus_unlock_confirm == 2) {
+            uv.confirm = "Shut Down?";
+        } else {
+            int r = 0;
+            if (uv.pin_mode) {
+                uv.title = "Enter PIN to exit";
+                uv.rows[r++] = (jw_focus_hint_row){ "Up/Down", "Digit",
+                                                    "Left/Right", "Slot", false };
+            } else {
+                uv.title = "Exit 5-Game Mode?";
+            }
+            uv.rows[r++] = (jw_focus_hint_row){ "B", "Cancel", "A", "Confirm", false };
+            uv.rows[r++] = (jw_focus_hint_row){ "L1", "Reboot", "R1", "Shut Down", false };
+            if (state->focus_bt_pip)
+                uv.rows[r++] = (jw_focus_hint_row){ "Y", "Reconnect Bluetooth",
+                                                    NULL, NULL, true };
+            uv.row_count = r;
+        }
+        jw_focus_screen_render_unlock(state->focus_bw, &uv);
+    }
+    cat_present();
+
+    /* Covers decode off-thread; nudge a re-render so art appears promptly. */
+    if (any_pending) cat_request_frame_in(150);
+}
+
 /* ─── System icon loader (shared across themes) ──────────────────────────── */
 
 static bool jw__resolve_system_icon_path(const jw_launcher_state *state,
@@ -3735,7 +4018,10 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
     int region_h = cat_get_screen_height() - header_h - jw__footer_height(state);
 
     char title[96];
-    if (state->games_are_favorites)
+    if (state->focus_pick_active)
+        snprintf(title, sizeof(title), "%s   %d / %d", state->game_system_display,
+                 state->focus_setup_count, JW_FOCUS_SCREEN_MAX_TILES);
+    else if (state->games_are_favorites)
         snprintf(title, sizeof(title), "%s", "Favorites");
     else
         snprintf(title, sizeof(title), "%s", state->game_system_display);
@@ -3772,7 +4058,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
-        jw__roms_ctx ctx = { state->games };
+        jw__roms_ctx ctx = { state->games, state };
         cat_draw_list_pane(list.x, list.y, list.w, list.h,
             state->game_count, &state->game_list, item_h,
             jw__draw_rom_item, &ctx);
@@ -3812,7 +4098,15 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         }
     }
 
-    if (tabbed) {
+    if (state->focus_pick_active) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_Y,     "Clear",  false, JW_HINT("Y") },
+            { CAT_BTN_B,     "Systems", false, JW_HINT("B") },
+            { CAT_BTN_START, "Done",   true,  JW_HINT("Start") },
+            { CAT_BTN_A,     "Select", true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 4);
+    } else if (tabbed) {
         cat_footer_item footer[] = {
             { CAT_BTN_L1, "Tab",      false, JW_HINT_DEVICE(";/t", "L1/R1") },
             { CAT_BTN_X,  "Options",  false, JW_HINT("X") },
@@ -3855,7 +4149,7 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
         return;
     }
 
-    jw__roms_ctx ctx = { entries };
+    jw__roms_ctx ctx = { entries, state };
     cat_draw_list_pane(list.x, list.y, list.w, list.h,
         count, &state->list, item_h, jw__draw_rom_item, &ctx);
 
@@ -4737,10 +5031,10 @@ static const char *const kSysMenuTabs[] = { "Settings", "Actions", "Info" };
 enum { JW_SMTAB_SETTINGS = 0, JW_SMTAB_ACTIONS, JW_SMTAB_INFO, JW_SMTAB_COUNT };
 
 static const char *const kSysActions[] = {
-    "Search", "Pak Rat", "System Update", "Rescan Library",
+    "Search", "Pak Rat", "System Update", "Rescan Library", "Start 5-Game Mode",
     "Sleep", "Exit to Stock", "Reboot", "Power Off",
 };
-enum { JW_SA_SEARCH = 0, JW_SA_PAKRAT, JW_SA_UPDATE, JW_SA_RESCAN,
+enum { JW_SA_SEARCH = 0, JW_SA_PAKRAT, JW_SA_UPDATE, JW_SA_RESCAN, JW_SA_START_5GAME,
        JW_SA_SLEEP, JW_SA_EXIT_STOCK, JW_SA_REBOOT, JW_SA_POWEROFF, JW_SA_COUNT };
 
 static const char *const kSysInfo[] = { "Device", "Library", "Playtime" };
@@ -4916,6 +5210,10 @@ static bool jw__view_wants_shoulder_repeat(const jw_launcher_state *state) {
     return true;   /* home channels, or the drilled-in games carousel */
 }
 
+/* 5-Game Mode setup wizard — defined later, referenced by the render/menu paths. */
+static void jw__render_focus_setup(jw_launcher_state *state);
+static void jw__focus_setup_begin(jw_launcher_state *state);
+
 static void jw__render_launcher(jw_launcher_state *state) {
     jw__cf_animating = false;
     jw__cover_inline_decodes_this_frame = 0;
@@ -4925,6 +5223,16 @@ static void jw__render_launcher(jw_launcher_state *state) {
        just armed (cat_set_shoulder_repeat(false) clears it), so a held shoulder
        would never repeat — it must be the final desired value, set a single time. */
     cat_set_shoulder_repeat(jw__view_wants_shoulder_repeat(state));
+
+    if (state->focus_active) {
+        jw__render_focus(state);
+        return;
+    }
+
+    if (state->focus_setup_open) {
+        jw__render_focus_setup(state);
+        return;
+    }
 
     if (state->switcher_open) {
         jw__render_switcher(state);
@@ -6757,6 +7065,10 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
             state->menu_open = false;
             jw__open_search(db_path, state);
             break;
+        case JW_SA_START_5GAME:
+            state->menu_open = false;
+            jw__focus_setup_begin(state);
+            break;
         case JW_SA_PAKRAT:
             jw__open_pakrat_store(state);
             break;
@@ -6989,6 +7301,748 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
     }
 }
 
+/* Directional move across the 2-up/3-down tile grid: pick the tile whose center
+   lies furthest in `dir` with the least cross-axis drift. Returns the new cursor
+   (unchanged when nothing lies that way). */
+static int jw__focus_nav(int cursor, int count, cat_button dir) {
+    SDL_Rect cur;
+    if (!jw_focus_screen_tile_rect(cursor, count, &cur)) return cursor;
+    int cx = cur.x + cur.w / 2;
+    int cy = cur.y + cur.h / 2;
+
+    int best = cursor;
+    long best_cost = -1;
+    for (int i = 0; i < count; i++) {
+        if (i == cursor) continue;
+        SDL_Rect r;
+        if (!jw_focus_screen_tile_rect(i, count, &r)) continue;
+        int ix = r.x + r.w / 2;
+        int iy = r.y + r.h / 2;
+        int dx = ix - cx;
+        int dy = iy - cy;
+        long cost;
+        switch (dir) {
+            case CAT_BTN_RIGHT: if (dx <= 0) continue; cost = dx + labs(dy) * 4; break;
+            case CAT_BTN_LEFT:  if (dx >= 0) continue; cost = -dx + labs(dy) * 4; break;
+            case CAT_BTN_DOWN:  if (dy <= 0) continue; cost = dy + labs(dx) * 4; break;
+            case CAT_BTN_UP:    if (dy >= 0) continue; cost = -dy + labs(dx) * 4; break;
+            default: return cursor;
+        }
+        if (best_cost < 0 || cost < best_cost) { best_cost = cost; best = i; }
+    }
+    return best;
+}
+
+/* Leave focus mode: clear the persisted active flag + the SD recovery lock file,
+   then drop to the normal launcher in place. The daemon re-reads focus state on
+   each launcher spawn, so a later respawn won't re-enter focus. */
+static void jw__focus_unlock_exit(jw_launcher_state *state) {
+    /* Restore the Wi-Fi radio to its pre-focus state (only re-enable if it was on
+       when the mode was turned on; if it was off, leave it off). */
+    char wprev[8] = "";
+    if (jw_wifi_available() &&
+        jw_db_get_setting(state->db_path, JW_FOCUS_KEY_WIFI_PREV,
+                          wprev, sizeof(wprev)) == 0 && wprev[0] == '1') {
+        jw_wifi_set_radio(true);
+    }
+    jw_db_set_setting(state->db_path, JW_FOCUS_KEY_ACTIVE, "0");
+    jw_focus_lock_remove(state->sdcard_root);
+    state->focus_active = false;
+    state->focus_unlock_open = false;
+    jw_log_info("focus: unlocked; returning to the normal launcher");
+    cat_request_frame();
+}
+
+/* Commit the setup wizard's result: persist the config + write the SD lock file,
+   then enter focus mode in place (no reboot — the daemon re-resolves focus on
+   each launcher spawn, so the persisted state carries forward). */
+static void jw__focus_setup_commit(jw_launcher_state *state) {
+    jw_focus_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.active = true;
+    cfg.id_count = state->focus_setup_count;
+    for (int i = 0; i < cfg.id_count; i++) cfg.ids[i] = state->focus_setup_ids[i];
+    cfg.lock = state->focus_setup_lock;
+    cfg.style = state->focus_setup_style;
+    /* Capture the current Wi-Fi radio state so it can be restored on exit, then
+       turn Wi-Fi off (v1: helps BT coexistence + battery; RetroAchievements,
+       the only thing that needs Wi-Fi here, is deferred). */
+    cfg.wifi_prev = jw_wifi_radio_is_on() ? 1 : 0;
+    if (cfg.lock == JW_FOCUS_LOCK_PIN) {
+        char pin[JW_FOCUS_PIN_LEN + 1];
+        for (int i = 0; i < JW_FOCUS_PIN_LEN; i++)
+            pin[i] = (char)('0' + (state->focus_setup_pin[i] % 10));
+        pin[JW_FOCUS_PIN_LEN] = '\0';
+        jw_focus_pin_hash(pin, cfg.pin_hash);
+    }
+
+    char ids_csv[128];
+    jw_focus_ids_to_csv(cfg.ids, cfg.id_count, ids_csv, sizeof(ids_csv));
+    char wifi_prev[4];
+    snprintf(wifi_prev, sizeof(wifi_prev), "%d", cfg.wifi_prev);
+    const char *keys[] = {
+        JW_FOCUS_KEY_IDS, JW_FOCUS_KEY_LOCK, JW_FOCUS_KEY_PIN_HASH,
+        JW_FOCUS_KEY_STYLE, JW_FOCUS_KEY_WIFI_PREV, JW_FOCUS_KEY_ACTIVE,
+    };
+    const char *vals[] = {
+        ids_csv, jw_focus_lock_name(cfg.lock), cfg.pin_hash,
+        jw_focus_style_name(cfg.style), wifi_prev, "1",
+    };
+    jw_db_set_settings(state->db_path, keys, vals,
+                       (int)(sizeof(keys) / sizeof(keys[0])));
+    jw_focus_lock_write(state->sdcard_root, &cfg);
+    if (jw_wifi_available()) jw_wifi_set_radio(false);
+
+    /* Enter focus mode in place: mirror what jw__focus_init would resolve. */
+    state->focus_lock = cfg.lock;
+    state->focus_bw = (cfg.style == JW_FOCUS_STYLE_BW);
+    strncpy(state->focus_pin_hash, cfg.pin_hash, sizeof(state->focus_pin_hash) - 1);
+    state->focus_pin_hash[sizeof(state->focus_pin_hash) - 1] = '\0';
+    state->focus_count = 0;
+    for (int i = 0; i < cfg.id_count; i++) {
+        jw_game_entry g;
+        if (jw_db_get_game_by_id(state->db_path, cfg.ids[i], &g) == 0)
+            state->focus_games[state->focus_count++] = g;
+    }
+    state->focus_cursor = 0;
+    state->focus_unlock_open = false;
+    state->focus_setup_open = false;
+    state->focus_active = (state->focus_count > 0);
+    jw_log_info("focus: setup committed; entering focus mode (%d game(s), lock=%s, style=%s)",
+                state->focus_count, jw_focus_lock_name(cfg.lock),
+                jw_focus_style_name(cfg.style));
+    cat_request_frame();
+}
+
+/* ─── 5-Game Mode setup wizard ───────────────────────────────────────────── */
+
+static bool jw__fsetup_is_picked(const jw_launcher_state *st, int id) {
+    for (int i = 0; i < st->focus_setup_count; i++)
+        if (st->focus_setup_ids[i] == id) return true;
+    return false;
+}
+
+static void jw__fsetup_toggle(jw_launcher_state *st, int id) {
+    st->focus_setup_note[0] = '\0';
+    for (int i = 0; i < st->focus_setup_count; i++) {
+        if (st->focus_setup_ids[i] == id) {
+            for (int j = i; j < st->focus_setup_count - 1; j++)
+                st->focus_setup_ids[j] = st->focus_setup_ids[j + 1];
+            st->focus_setup_count--;
+            return;
+        }
+    }
+    if (st->focus_setup_count >= JW_FOCUS_SCREEN_MAX_TILES) {
+        snprintf(st->focus_setup_note, sizeof(st->focus_setup_note),
+                 "5 games max — deselect one first");
+        return;
+    }
+    st->focus_setup_ids[st->focus_setup_count++] = id;
+}
+
+/* Force the Games-tab systems list (the base of Pick). */
+static void jw__pick_show_systems(jw_launcher_state *state) {
+    if (state->games_open) jw__close_game_browser(state);
+    state->current_tab = JW_TAB_GAMES;
+    cat_list_state_jump(&state->list, 0, state->system_count);
+}
+
+static void jw__focus_setup_begin(jw_launcher_state *state) {
+    state->focus_setup_open = false;
+    state->focus_setup_count = 0;
+    state->focus_setup_lock = JW_FOCUS_LOCK_NONE;
+    state->focus_setup_style = JW_FOCUS_STYLE_THEME;
+    state->focus_setup_choice = 0;
+    state->focus_setup_note[0] = '\0';
+
+    /* Pre-fill the remembered set (last chosen games that still resolve). */
+    char csv[128] = "";
+    if (jw_db_get_setting(state->db_path, JW_FOCUS_KEY_IDS, csv, sizeof(csv)) == 0 &&
+        csv[0]) {
+        int ids[JW_FOCUS_MAX_GAMES], n = 0;
+        jw_focus_ids_parse(csv, ids, &n);
+        for (int i = 0; i < n &&
+             state->focus_setup_count < JW_FOCUS_SCREEN_MAX_TILES; i++) {
+            jw_game_entry g;
+            if (jw_db_get_game_by_id(state->db_path, ids[i], &g) == 0)
+                state->focus_setup_ids[state->focus_setup_count++] = ids[i];
+        }
+    }
+
+    /* Overlay pick mode on the real Games-tab browser. */
+    jw__pick_show_systems(state);
+    state->focus_pick_active = true;
+    cat_request_frame();
+}
+
+/* Re-enter Pick from a later step (Arrange), keeping the current selection. */
+static void jw__focus_pick_reenter(jw_launcher_state *state) {
+    state->focus_setup_open = false;
+    jw__pick_show_systems(state);
+    state->focus_pick_active = true;
+    cat_request_frame();
+}
+
+static void jw__pick_clear(jw_launcher_state *state) {
+    state->focus_setup_count = 0;
+    for (int i = 0; i < JW_FOCUS_SCREEN_MAX_TILES; i++) state->focus_setup_ids[i] = 0;
+    snprintf(state->focus_setup_note, sizeof(state->focus_setup_note), "Cleared");
+}
+
+static void jw__pick_done(jw_launcher_state *state) {
+    if (state->focus_setup_count <= 0) {
+        snprintf(state->focus_setup_note, sizeof(state->focus_setup_note),
+                 "Pick at least one game");
+        return;
+    }
+    if (state->games_open) jw__close_game_browser(state);
+    state->focus_pick_active = false;
+    state->focus_setup_open = true;
+    state->focus_setup_step = JW_FSETUP_ARRANGE;
+    state->focus_setup_arrange_cursor = 0;
+    state->focus_setup_grabbed = false;
+}
+
+static void jw__pick_cancel(jw_launcher_state *state) {
+    if (state->games_open) jw__close_game_browser(state);
+    state->focus_pick_active = false;
+    state->status[0] = '\0';
+}
+
+/* Pick input: reuse the real browser's systems->games navigation, but A toggles
+   a game into the set (not launch), Y clears, Start advances, and everything
+   else is constrained (handled in jw__handle_input's pick branch). */
+static void jw__handle_pick_input(const char *db_path, jw_launcher_state *state,
+                                  cat_button button) {
+    state->focus_setup_note[0] = '\0';
+    if (state->games_open) {
+        switch (button) {
+            case CAT_BTN_UP:    cat_list_state_move(&state->game_list, -1, state->game_count); break;
+            case CAT_BTN_DOWN:  cat_list_state_move(&state->game_list, +1, state->game_count); break;
+            case CAT_BTN_LEFT:  cat_list_state_page(&state->game_list, -1, state->game_count); break;
+            case CAT_BTN_RIGHT: cat_list_state_page(&state->game_list, +1, state->game_count); break;
+            case CAT_BTN_A:
+                if (state->game_count > 0 && state->game_list.cursor < state->game_count)
+                    jw__fsetup_toggle(state, state->games[state->game_list.cursor].id);
+                break;
+            case CAT_BTN_Y:     jw__pick_clear(state); break;
+            case CAT_BTN_START: jw__pick_done(state); break;
+            case CAT_BTN_B:     jw__close_game_browser(state); state->status[0] = '\0'; break;
+            default: break;
+        }
+    } else {
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&state->list, -1, state->system_count); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&state->list, +1, state->system_count); break;
+            case CAT_BTN_A:
+                if (state->system_count > 0 && state->list.cursor < state->system_count)
+                    jw__open_system_games(db_path, state->systems[state->list.cursor].name, state);
+                break;
+            case CAT_BTN_Y:     jw__pick_clear(state); break;
+            case CAT_BTN_START: jw__pick_done(state); break;
+            case CAT_BTN_B:     jw__pick_cancel(state); break;
+            default: break;
+        }
+    }
+    cat_request_frame();
+}
+
+/* ---- shared chrome ---- */
+
+static int jw__fsetup_font_h(TTF_Font *f) {
+    int h = 0;
+    TTF_SizeUTF8(f, "Ay", NULL, &h);
+    return h;
+}
+
+static void jw__fsetup_header(const char *title, const char *right) {
+    const cat_theme *th = cat_get_theme();
+    int sw = cat_get_screen_width();
+    TTF_Font *f = cat_get_font(CAT_FONT_LARGE);
+    int y = CAT_S(24);
+    cat_draw_text(f, title, CAT_S(28), y, th->text);
+    if (right && right[0]) {
+        int w = cat_measure_text(f, right);
+        cat_draw_text(f, right, sw - CAT_S(28) - w, y, th->emphasis);
+    }
+}
+
+static void jw__fsetup_footer(jw_launcher_state *state, const char *hint) {
+    const cat_theme *th = cat_get_theme();
+    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+    TTF_Font *f = cat_get_font(CAT_FONT_SMALL);
+    if (state->focus_setup_note[0]) {
+        int w = cat_measure_text(f, state->focus_setup_note);
+        cat_draw_text(f, state->focus_setup_note, (sw - w) / 2, sh - CAT_S(64),
+                      th->emphasis);
+    }
+    int w = cat_measure_text(f, hint);
+    cat_draw_text(f, hint, (sw - w) / 2, sh - CAT_S(36), th->hint);
+}
+
+/* option-menu (Lock / Style): highlight the cursor row. */
+static void jw__fsetup_options(const char *const *opts, int n, int cursor) {
+    const cat_theme *th = cat_get_theme();
+    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+    TTF_Font *f = cat_get_font(CAT_FONT_MEDIUM);
+    int ih = CAT_S(60), gap = CAT_S(14), w = CAT_S(380), x = (sw - w) / 2;
+    int total = n * ih + (n - 1) * gap;
+    int y0 = (sh - total) / 2;
+    int fh = jw__fsetup_font_h(f);
+    for (int i = 0; i < n; i++) {
+        int y = y0 + i * (ih + gap);
+        bool sel = (i == cursor);
+        if (sel) cat_draw_pill(x, y, w, ih, th->highlight);
+        int tw = cat_measure_text(f, opts[i]);
+        cat_draw_text(f, opts[i], x + (w - tw) / 2, y + (ih - fh) / 2,
+                      sel ? th->highlighted_text : th->text);
+    }
+}
+
+/* 4 PIN slots centered at y; active slot highlighted. */
+static void jw__fsetup_pin_slots(const int *pin, int slot) {
+    const cat_theme *th = cat_get_theme();
+    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+    TTF_Font *f = cat_get_font(CAT_FONT_LARGE);
+    int s = CAT_S(72), gap = CAT_S(20);
+    int total = JW_FOCUS_PIN_LEN * s + (JW_FOCUS_PIN_LEN - 1) * gap;
+    int x0 = (sw - total) / 2, y = (sh - s) / 2;
+    int bw = CAT_S(4);
+    for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) {
+        int x = x0 + i * (s + gap);
+        bool active = (i == slot);
+        cat_draw_rounded_rect(x, y, s, s, CAT_S(12), active ? th->emphasis : th->hint);
+        cat_draw_rounded_rect(x + bw, y + bw, s - 2 * bw, s - 2 * bw, CAT_S(9),
+                              th->background);
+        char d[2] = { (char)('0' + (pin[i] % 10)), '\0' };
+        int dw = cat_measure_text(f, d), dh = jw__fsetup_font_h(f);
+        cat_draw_text(f, d, x + (s - dw) / 2, y + (s - dh) / 2, th->text);
+    }
+}
+
+/* ---- per-step render ---- */
+
+static void jw__fsetup_render_arrange(jw_launcher_state *state) {
+    const cat_theme *th = cat_get_theme();
+    jw__fsetup_header("Arrange", NULL);
+    TTF_Font *f = cat_get_font(CAT_FONT_SMALL);
+    int fh = jw__fsetup_font_h(f);
+    for (int i = 0; i < state->focus_setup_count; i++) {
+        SDL_Rect r;
+        if (!jw_focus_screen_tile_rect(i, state->focus_setup_count, &r)) continue;
+        bool sel = (i == state->focus_setup_arrange_cursor);
+        bool grab = sel && state->focus_setup_grabbed;
+        SDL_Color bc = grab ? th->accent : (sel ? th->emphasis : th->hint);
+        int bw = grab ? CAT_S(7) : (sel ? CAT_S(5) : CAT_S(3));
+        cat_draw_rounded_rect(r.x, r.y, r.w, r.h, CAT_S(14), bc);
+        cat_draw_rounded_rect(r.x + bw, r.y + bw, r.w - 2 * bw, r.h - 2 * bw,
+                              CAT_S(12), th->background);
+        jw_game_entry g;
+        const char *nm = "";
+        if (state->focus_setup_ids[i] > 0 &&
+            jw_db_get_game_by_id(state->db_path, state->focus_setup_ids[i], &g) == 0)
+            nm = g.name;
+        int pad = CAT_S(10);
+        int ty = r.y + (r.h - fh) / 2;
+        cat_draw_text_wrapped(f, nm, r.x + pad, ty, r.w - 2 * pad,
+                              th->text, CAT_ALIGN_CENTER);
+    }
+    jw__fsetup_footer(state,
+        state->focus_setup_grabbed ? "Move with the D-pad   X drop"
+                                   : "X grab   Y remove   A next   B back");
+}
+
+static void jw__fsetup_render_lock(jw_launcher_state *state) {
+    static const char *const opts[] = { "No lock", "PIN" };
+    jw__fsetup_header("Lock", NULL);
+    jw__fsetup_options(opts, 2, state->focus_setup_choice);
+    jw__fsetup_footer(state, "A choose   B back");
+}
+
+static void jw__fsetup_render_style(jw_launcher_state *state) {
+    static const char *const opts[] = { "Theme colors", "Black & white" };
+    jw__fsetup_header("Style", NULL);
+    jw__fsetup_options(opts, 2, state->focus_setup_choice);
+    jw__fsetup_footer(state, "A choose   B back");
+}
+
+static void jw__fsetup_render_pin(jw_launcher_state *state) {
+    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+    jw__fsetup_header(state->focus_setup_pin_confirming ? "Re-enter PIN"
+                                                        : "Set a PIN", NULL);
+    jw__fsetup_pin_slots(state->focus_setup_pin_confirming ? state->focus_setup_pin2
+                                                           : state->focus_setup_pin,
+                         state->focus_setup_pin_slot);
+    if (state->focus_setup_pin_mismatch) {
+        TTF_Font *f = cat_get_font(CAT_FONT_SMALL);
+        const char *m = "PINs did not match — try again";
+        int w = cat_measure_text(f, m);
+        cat_draw_text(f, m, (sw - w) / 2, sh / 2 + CAT_S(70),
+                      (SDL_Color){ 0xFF, 0x3B, 0x30, 0xFF });
+    }
+    jw__fsetup_footer(state, "Up/Down digit   Left/Right slot   A ok   B back");
+}
+
+static void jw__fsetup_render_confirm(jw_launcher_state *state) {
+    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+
+    /* True preview: draw the focus screen exactly as it will appear. */
+    jw_focus_tile tiles[JW_FOCUS_SCREEN_MAX_TILES];
+    memset(tiles, 0, sizeof(tiles));
+    static jw_game_entry games[JW_FOCUS_SCREEN_MAX_TILES];
+    int n = 0;
+    for (int i = 0; i < state->focus_setup_count; i++) {
+        if (jw_db_get_game_by_id(state->db_path, state->focus_setup_ids[i],
+                                 &games[n]) != 0)
+            continue;
+        tiles[n].title = games[n].name;
+        char abs[PATH_MAX];
+        int w = 0, h = 0; bool pending = false;
+        if (games[n].image_path[0] &&
+            jw__resolve_sdcard_path(state, games[n].image_path, abs, sizeof(abs)) == 0) {
+            SDL_Texture *t = jw__load_cover(state, abs, &w, &h, &pending);
+            if (t) { tiles[n].art = t; tiles[n].art_w = w; tiles[n].art_h = h; }
+        }
+        n++;
+    }
+    jw_focus_battery batt = { state->focus_batt_pct < 0 ? 100 : state->focus_batt_pct,
+                              state->focus_batt_chg == 1 };
+    jw_focus_screen_render(tiles, n, -1, state->focus_setup_style == JW_FOCUS_STYLE_BW,
+                           batt, false);
+
+    /* Prompt bar. */
+    SDL_Renderer *rend = cat_get_renderer();
+    SDL_BlendMode prev;
+    SDL_GetRenderDrawBlendMode(rend, &prev);
+    SDL_SetRenderDrawBlendMode(rend, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(rend, 0, 0, 0, 150);
+    SDL_Rect bar = { 0, sh - CAT_S(96), sw, CAT_S(96) };
+    SDL_RenderFillRect(rend, &bar);
+    SDL_SetRenderDrawBlendMode(rend, prev);
+    TTF_Font *f = cat_get_font(CAT_FONT_MEDIUM);
+    const char *t1 = "Start 5-Game Mode?";
+    const char *t2 = "A start   B back";
+    int w1 = cat_measure_text(f, t1);
+    cat_draw_text(f, t1, (sw - w1) / 2, sh - CAT_S(84),
+                  (SDL_Color){ 255, 255, 255, 255 });
+    TTF_Font *fs = cat_get_font(CAT_FONT_SMALL);
+    int w2 = cat_measure_text(fs, t2);
+    cat_draw_text(fs, t2, (sw - w2) / 2, sh - CAT_S(44),
+                  (SDL_Color){ 210, 210, 210, 255 });
+}
+
+static void jw__render_focus_setup(jw_launcher_state *state) {
+    cat_clear_screen();
+    switch (state->focus_setup_step) {
+        case JW_FSETUP_PICK:    break;   /* Pick renders via the real browser */
+        case JW_FSETUP_ARRANGE: jw__fsetup_render_arrange(state); break;
+        case JW_FSETUP_LOCK:    jw__fsetup_render_lock(state); break;
+        case JW_FSETUP_PIN:     jw__fsetup_render_pin(state); break;
+        case JW_FSETUP_STYLE:   jw__fsetup_render_style(state); break;
+        case JW_FSETUP_CONFIRM: jw__fsetup_render_confirm(state); break;
+    }
+    cat_present();
+}
+
+/* ---- input ---- */
+
+static void jw__fsetup_pin_reset(jw_launcher_state *state) {
+    state->focus_setup_pin_slot = 0;
+    state->focus_setup_pin_confirming = false;
+    state->focus_setup_pin_mismatch = false;
+    for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) {
+        state->focus_setup_pin[i] = 0;
+        state->focus_setup_pin2[i] = 0;
+    }
+}
+
+static void jw__handle_focus_setup_input(const char *db_path,
+                                         jw_launcher_state *state,
+                                         cat_button button) {
+    state->focus_setup_note[0] = '\0';
+    switch (state->focus_setup_step) {
+
+    case JW_FSETUP_PICK:   /* Pick is a mode outside the wizard now; never here. */
+        break;
+
+    case JW_FSETUP_ARRANGE: {
+        int n = state->focus_setup_count;
+        switch (button) {
+            case CAT_BTN_LEFT: case CAT_BTN_RIGHT:
+            case CAT_BTN_UP:   case CAT_BTN_DOWN: {
+                if (state->focus_setup_grabbed) {
+                    /* move the grabbed tile in the arranged order */
+                    int cur = state->focus_setup_arrange_cursor;
+                    int dst = jw__focus_nav(cur, n, button);
+                    if (dst != cur) {
+                        int v = state->focus_setup_ids[cur];
+                        if (cur < dst)
+                            for (int i = cur; i < dst; i++) state->focus_setup_ids[i] = state->focus_setup_ids[i + 1];
+                        else
+                            for (int i = cur; i > dst; i--) state->focus_setup_ids[i] = state->focus_setup_ids[i - 1];
+                        state->focus_setup_ids[dst] = v;
+                        state->focus_setup_arrange_cursor = dst;
+                    }
+                } else {
+                    state->focus_setup_arrange_cursor =
+                        jw__focus_nav(state->focus_setup_arrange_cursor, n, button);
+                }
+                break;
+            }
+            case CAT_BTN_X:
+                if (n > 0) state->focus_setup_grabbed = !state->focus_setup_grabbed;
+                break;
+            case CAT_BTN_Y:   /* remove the highlighted game from the set */
+                if (!state->focus_setup_grabbed && n > 0) {
+                    int cur = state->focus_setup_arrange_cursor;
+                    for (int i = cur; i < state->focus_setup_count - 1; i++)
+                        state->focus_setup_ids[i] = state->focus_setup_ids[i + 1];
+                    state->focus_setup_count--;
+                    if (state->focus_setup_count == 0) {
+                        jw__focus_pick_reenter(state);   /* nothing left -> back to Pick */
+                    } else if (state->focus_setup_arrange_cursor >= state->focus_setup_count) {
+                        state->focus_setup_arrange_cursor = state->focus_setup_count - 1;
+                    }
+                }
+                break;
+            case CAT_BTN_A:
+                if (state->focus_setup_grabbed) { state->focus_setup_grabbed = false; break; }
+                state->focus_setup_step = JW_FSETUP_LOCK;
+                state->focus_setup_choice = (state->focus_setup_lock == JW_FOCUS_LOCK_PIN) ? 1 : 0;
+                break;
+            case CAT_BTN_B:
+                if (state->focus_setup_grabbed) { state->focus_setup_grabbed = false; break; }
+                jw__focus_pick_reenter(state);   /* back to Pick (keep selection) */
+                break;
+            default: break;
+        }
+        break;
+    }
+
+    case JW_FSETUP_LOCK:
+        switch (button) {
+            case CAT_BTN_UP:   state->focus_setup_choice = (state->focus_setup_choice + 1) % 2; break;
+            case CAT_BTN_DOWN: state->focus_setup_choice = (state->focus_setup_choice + 1) % 2; break;
+            case CAT_BTN_A:
+                if (state->focus_setup_choice == 1) {
+                    state->focus_setup_lock = JW_FOCUS_LOCK_PIN;
+                    jw__fsetup_pin_reset(state);
+                    state->focus_setup_step = JW_FSETUP_PIN;
+                } else {
+                    state->focus_setup_lock = JW_FOCUS_LOCK_NONE;
+                    state->focus_setup_step = JW_FSETUP_STYLE;
+                    state->focus_setup_choice = (state->focus_setup_style == JW_FOCUS_STYLE_BW) ? 1 : 0;
+                }
+                break;
+            case CAT_BTN_B: state->focus_setup_step = JW_FSETUP_ARRANGE; break;
+            default: break;
+        }
+        break;
+
+    case JW_FSETUP_PIN: {
+        int *pin = state->focus_setup_pin_confirming ? state->focus_setup_pin2
+                                                     : state->focus_setup_pin;
+        int *slot = &state->focus_setup_pin_slot;
+        switch (button) {
+            case CAT_BTN_UP:   pin[*slot] = (pin[*slot] + 1) % 10; state->focus_setup_pin_mismatch = false; break;
+            case CAT_BTN_DOWN: pin[*slot] = (pin[*slot] + 9) % 10; state->focus_setup_pin_mismatch = false; break;
+            case CAT_BTN_LEFT:  if (*slot > 0) (*slot)--; break;
+            case CAT_BTN_RIGHT: if (*slot < JW_FOCUS_PIN_LEN - 1) (*slot)++; break;
+            case CAT_BTN_A:
+                if (!state->focus_setup_pin_confirming) {
+                    state->focus_setup_pin_confirming = true;
+                    state->focus_setup_pin_slot = 0;
+                } else {
+                    bool match = true;
+                    for (int i = 0; i < JW_FOCUS_PIN_LEN; i++)
+                        if (state->focus_setup_pin[i] != state->focus_setup_pin2[i]) match = false;
+                    if (match) {
+                        state->focus_setup_step = JW_FSETUP_STYLE;
+                        state->focus_setup_choice = (state->focus_setup_style == JW_FOCUS_STYLE_BW) ? 1 : 0;
+                    } else {
+                        state->focus_setup_pin_mismatch = true;
+                        state->focus_setup_pin_confirming = false;
+                        state->focus_setup_pin_slot = 0;
+                        for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) {
+                            state->focus_setup_pin[i] = 0;
+                            state->focus_setup_pin2[i] = 0;
+                        }
+                    }
+                }
+                break;
+            case CAT_BTN_B:
+                if (state->focus_setup_pin_confirming) {
+                    state->focus_setup_pin_confirming = false;
+                    state->focus_setup_pin_slot = 0;
+                    state->focus_setup_pin_mismatch = false;
+                } else {
+                    state->focus_setup_step = JW_FSETUP_LOCK;
+                }
+                break;
+            default: break;
+        }
+        break;
+    }
+
+    case JW_FSETUP_STYLE:
+        switch (button) {
+            case CAT_BTN_UP:   state->focus_setup_choice = (state->focus_setup_choice + 1) % 2; break;
+            case CAT_BTN_DOWN: state->focus_setup_choice = (state->focus_setup_choice + 1) % 2; break;
+            case CAT_BTN_A:
+                state->focus_setup_style = state->focus_setup_choice == 1 ? JW_FOCUS_STYLE_BW
+                                                                          : JW_FOCUS_STYLE_THEME;
+                state->focus_setup_step = JW_FSETUP_CONFIRM;
+                break;
+            case CAT_BTN_B:
+                state->focus_setup_step = (state->focus_setup_lock == JW_FOCUS_LOCK_PIN)
+                                          ? JW_FSETUP_PIN : JW_FSETUP_LOCK;
+                if (state->focus_setup_step == JW_FSETUP_PIN) jw__fsetup_pin_reset(state);
+                break;
+            default: break;
+        }
+        break;
+
+    case JW_FSETUP_CONFIRM:
+        switch (button) {
+            case CAT_BTN_A:
+                jw__focus_setup_commit(state);
+                break;
+            case CAT_BTN_B:
+                state->focus_setup_step = JW_FSETUP_STYLE;
+                state->focus_setup_choice = (state->focus_setup_style == JW_FOCUS_STYLE_BW) ? 1 : 0;
+                break;
+            default: break;
+        }
+        break;
+    }
+    cat_request_frame();
+}
+
+/* Input while the MENU unlock overlay is open. */
+static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *state,
+                                   cat_button button, bool *running) {
+    /* Reboot / Power off confirm sub-prompt (open to everyone — powering off or
+       rebooting doesn't escape the lock, it comes right back into focus mode). */
+    if (state->focus_unlock_confirm != 0) {
+        switch (button) {
+            case CAT_BTN_A:
+                jw_ipc_platform_action(socket_path,
+                    state->focus_unlock_confirm == 1 ? "reboot" : "poweroff", 0);
+                cat_hide_window();
+                *running = false;
+                break;
+            case CAT_BTN_B:
+            case CAT_BTN_MENU:
+                state->focus_unlock_confirm = 0; cat_request_frame(); break;
+            default: break;
+        }
+        return;
+    }
+    /* L1/R1 open the reboot / power-off confirms. */
+    if (button == CAT_BTN_L1) { state->focus_unlock_confirm = 1; cat_request_frame(); return; }
+    if (button == CAT_BTN_R1) { state->focus_unlock_confirm = 2; cat_request_frame(); return; }
+
+    /* Y reconnects a paired-but-disconnected headset (works in both PIN and
+       confirm modes). The BT stack does the connect asynchronously; we just kick
+       it off — the corner pip clears on the next poll if it succeeds. */
+    if (button == CAT_BTN_Y && state->focus_bt_pip &&
+        state->focus_bt_headset_mac[0]) {
+        jw_bt_connect_start(state->focus_bt_headset_mac, false);
+        state->focus_bt_next_ms = 0;   /* re-poll soon to refresh the pip */
+        cat_request_frame();
+        return;
+    }
+    if (state->focus_lock == JW_FOCUS_LOCK_PIN) {
+        int *slot = &state->focus_pin[state->focus_pin_slot];
+        switch (button) {
+            case CAT_BTN_UP:
+                *slot = (*slot + 1) % 10;
+                state->focus_pin_error = false; cat_request_frame(); break;
+            case CAT_BTN_DOWN:
+                *slot = (*slot + 9) % 10;
+                state->focus_pin_error = false; cat_request_frame(); break;
+            case CAT_BTN_LEFT:
+                if (state->focus_pin_slot > 0) state->focus_pin_slot--;
+                cat_request_frame(); break;
+            case CAT_BTN_RIGHT:
+                if (state->focus_pin_slot < JW_FOCUS_PIN_LEN - 1) state->focus_pin_slot++;
+                cat_request_frame(); break;
+            case CAT_BTN_A: {
+                char pin[JW_FOCUS_PIN_LEN + 1];
+                for (int i = 0; i < JW_FOCUS_PIN_LEN; i++)
+                    pin[i] = (char)('0' + (state->focus_pin[i] % 10));
+                pin[JW_FOCUS_PIN_LEN] = '\0';
+                if (jw_focus_pin_verify(pin, state->focus_pin_hash)) {
+                    jw__focus_unlock_exit(state);
+                } else {
+                    state->focus_pin_error = true;
+                    state->focus_pin_slot = 0;
+                    for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) state->focus_pin[i] = 0;
+                    cat_request_frame();
+                }
+                break;
+            }
+            case CAT_BTN_B:
+            case CAT_BTN_MENU:
+                state->focus_unlock_open = false; cat_request_frame(); break;
+            default: break;
+        }
+    } else {
+        /* lock == none (or the not-yet-built combo): a plain Exit? confirm. */
+        switch (button) {
+            case CAT_BTN_A:
+                jw__focus_unlock_exit(state); break;
+            case CAT_BTN_B:
+            case CAT_BTN_MENU:
+                state->focus_unlock_open = false; cat_request_frame(); break;
+            default: break;
+        }
+    }
+}
+
+/* Focus-mode input: grid navigation + launch, and MENU opens the unlock overlay
+   (the only way out). Everything else is swallowed so the mode stays a locked,
+   minimal surface. */
+static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *state,
+                                   cat_button button, bool *running) {
+    if (state->focus_unlock_open) {
+        jw__focus_unlock_input(socket_path, state, button, running);
+        return;
+    }
+
+    switch (button) {
+        case CAT_BTN_LEFT:
+        case CAT_BTN_RIGHT:
+        case CAT_BTN_UP:
+        case CAT_BTN_DOWN: {
+            int next = jw__focus_nav(state->focus_cursor, state->focus_count, button);
+            if (next != state->focus_cursor) {
+                state->focus_cursor = next;
+                cat_request_frame();
+            }
+            break;
+        }
+        case CAT_BTN_A:
+            if (state->focus_count > 0) {
+                jw__launch_game_entry(socket_path, state,
+                                      &state->focus_games[state->focus_cursor],
+                                      running);
+            }
+            break;
+        case CAT_BTN_MENU:
+            /* Open the unlock overlay, fresh. */
+            state->focus_unlock_open = true;
+            state->focus_unlock_confirm = 0;
+            state->focus_pin_error = false;
+            state->focus_pin_slot = 0;
+            for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) state->focus_pin[i] = 0;
+            cat_request_frame();
+            break;
+        default:
+            break;   /* swallow B/X/Y/Select/shoulders */
+    }
+}
+
 static void jw__handle_input(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, cat_button button, bool *running) {
     const cat_stylesheet *ss = cat_get_stylesheet();
@@ -6999,6 +8053,26 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     if (button == CAT_BTN_QUIT) {
         jw_ipc_shutdown(socket_path);
         *running = false;
+        return;
+    }
+
+    /* 5-Game Mode swallows all normal input: only the focus grid + launch (and,
+       from Phase 3, the MENU unlock) are reachable. Kept above every overlay and
+       the LED shortcut so nothing leaks the device out of the locked surface. */
+    if (state->focus_active) {
+        jw__focus_handle_input(socket_path, state, button, running);
+        return;
+    }
+
+    if (state->focus_setup_open) {
+        jw__handle_focus_setup_input(db_path, state, button);
+        return;
+    }
+
+    /* Pick mode overlays the real Games-tab browser but stays locked to it:
+       fully intercept input (no tab-switch / system menu / context / switcher). */
+    if (state->focus_pick_active) {
+        jw__handle_pick_input(db_path, state, button);
         return;
     }
 
@@ -7436,6 +8510,15 @@ int main(void) {
         return 1;
     }
     jw_cat_services_install(socket_path);
+    /* Register the failsafe unlock chord (acted on only while focus mode is
+       active — see the main loop). */
+    {
+        cat_button chord[] = { CAT_BTN_MENU, CAT_BTN_SELECT, CAT_BTN_START,
+                               CAT_BTN_L2, CAT_BTN_R2 };
+        cat_register_chord("focus-unlock", chord,
+                           (int)(sizeof(chord) / sizeof(chord[0])),
+                           JW_FOCUS_CHORD_WINDOW_MS);
+    }
     long long cat_done_ms = jw__monotonic_ms();
 
     /* Resolve theme: env > DB > default Jawaka-Tabs */
@@ -7491,6 +8574,12 @@ int main(void) {
                                   sizeof(state.platform_root)) != 0) {
         state.platform_root[0] = '\0';
     }
+
+    /* 5-Game Mode: if the daemon spawned us into focus mode, resolve the curated
+       set now (before the first frame) so the very first render is the focus
+       screen, not a flash of the normal launcher. */
+    jw__focus_init(&state);
+
     snprintf(state.status, sizeof(state.status), "%s", "loading library...");
 
     long long cache_start_ms = jw__monotonic_ms();
@@ -7603,6 +8692,34 @@ int main(void) {
             if (!ev.pressed) continue;
             had_input = true;
             jw__handle_input(socket_path, db_path, &state, ev.button, &running);
+        }
+
+        /* Failsafe unlock chord: drain combo events every frame (act only in
+           focus mode); once the chord has been held for JW_FOCUS_CHORD_HOLD_MS,
+           exit focus mode. Keep waking while it is held so the hold timer runs. */
+        {
+            cat_combo_event ce;
+            while (cat_poll_combo(&ce)) {
+                if (state.focus_active && ce.id &&
+                    strcmp(ce.id, "focus-unlock") == 0) {
+                    if (ce.triggered) {
+                        state.focus_chord_held = true;
+                        state.focus_chord_start_ms = SDL_GetTicks();
+                    } else {
+                        state.focus_chord_held = false;
+                    }
+                }
+            }
+            if (state.focus_active && state.focus_chord_held) {
+                if (SDL_GetTicks() - state.focus_chord_start_ms >=
+                        JW_FOCUS_CHORD_HOLD_MS) {
+                    state.focus_chord_held = false;
+                    jw_log_info("focus: failsafe unlock chord held; exiting");
+                    jw__focus_unlock_exit(&state);
+                } else {
+                    cat_request_frame_in(120);
+                }
+            }
         }
 
         /* The Home Tabs editor lives on the Settings UI (reached via the System

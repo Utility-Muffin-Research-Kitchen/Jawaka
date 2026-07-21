@@ -1440,6 +1440,59 @@ int jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
     return rc;
 }
 
+int jw_db_get_game_by_id(const char *db_path, int game_id, jw_game_entry *out) {
+    if (!db_path || game_id <= 0 || !out) {
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) {
+        return -1;
+    }
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql =
+        "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
+        "g.rom_path, COALESCE(g.image_path, ''), "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "FROM games g "
+        "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
+        "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
+        "WHERE g.id = ? LIMIT 1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, game_id);
+
+    int rc = 1;   /* no row matched */
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *system_text = sqlite3_column_text(stmt, 1);
+        const unsigned char *name_text = sqlite3_column_text(stmt, 2);
+        const unsigned char *rom_text = sqlite3_column_text(stmt, 3);
+        const unsigned char *image_text = sqlite3_column_text(stmt, 4);
+        out->id = sqlite3_column_int(stmt, 0);
+        if (system_text) snprintf(out->system, sizeof(out->system), "%s", system_text);
+        if (name_text) snprintf(out->name, sizeof(out->name), "%s", name_text);
+        if (rom_text) snprintf(out->rom_path, sizeof(out->rom_path), "%s", rom_text);
+        if (image_text) snprintf(out->image_path, sizeof(out->image_path), "%s", image_text);
+        out->favorite = sqlite3_column_int(stmt, 5);
+        rc = 0;
+    }
+
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
 static int jw__get_scoped_setting(const char *db_path, const char *sql,
                                   const char *scope, int game_id,
                                   const char *key, char *out, size_t out_size) {
