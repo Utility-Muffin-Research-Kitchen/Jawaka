@@ -110,6 +110,7 @@ int main(void) {
         jw_db_insert_game(db, "PS", "game", "Roms/PS/game.cue", NULL) != 0 ||
         jw_db_insert_game(db, "PICO8", "cart-a", "Roms/PICO8/cart-a.p8", NULL) != 0 ||
         jw_db_insert_game(db, "PICO8", "cart-b", "Roms/PICO8/cart-b.p8", NULL) != 0 ||
+        jw_db_scan_source_complete(db, "primary") != 0 ||
         jw_db_scan_prune(db) != 0) {
         fail("rescan fixture failed");
     }
@@ -121,6 +122,7 @@ int main(void) {
         jw_db_scan_begin(db) != 0 ||
         jw_db_insert_game(db, "PICO8", "cart-a", "Roms/PICO8/cart-a.p8", NULL) != 0 ||
         jw_db_insert_game(db, "PICO8", "cart-b", "Roms/PICO8/cart-b.p8", NULL) != 0 ||
+        jw_db_scan_source_complete(db, "primary") != 0 ||
         jw_db_scan_prune(db) != 0) {
         fail("removal scan failed");
     }

@@ -26,6 +26,17 @@ typedef struct {
     char states_path[JW_STORAGE_PATH_MAX];
     char cheats_path[JW_STORAGE_PATH_MAX];
     bool primary;
+    bool configured;
+    bool available;
+    unsigned long long device_id;
+    unsigned long long roms_device_id;
+    unsigned long long images_device_id;
+    int mount_id;
+    int roms_mount_id;
+    int images_mount_id;
+    char filesystem_fingerprint[128];
+    char roms_filesystem_fingerprint[128];
+    char images_filesystem_fingerprint[128];
 } jw_storage_source;
 
 typedef struct {
@@ -47,5 +58,10 @@ int jw_storage_db_path_for_source(const jw_storage_source *source,
                                   const char *relative_path,
                                   const char *absolute_path,
                                   char *out, size_t out_size);
+bool jw_storage_relative_path_valid(const char *path);
+int jw_storage_resolve_rom(const jw_storage_source *source,
+                           const char *rom_relpath,
+                           bool require_regular_file,
+                           char *out, size_t out_size);
 
 #endif /* JW_STORAGE_SOURCES_H */

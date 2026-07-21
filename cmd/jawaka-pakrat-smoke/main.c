@@ -8,13 +8,16 @@
 typedef struct {
     const char *action;
     const char *store_id;
+    const char *version;
     jw_pakrat_context ctx;
 } pakrat_smoke_opts;
 
 static void jw__usage(const char *argv0) {
     fprintf(stderr,
         "usage: %s [options] install <store-id>\n"
+        "       %s [options] install-target <store-id> <version>\n"
         "       %s [options] adopt <store-id>\n"
+        "       %s [options] repair <store-id> <version>\n"
         "       %s [options] uninstall <store-id>\n"
         "       %s [options] rescan\n"
         "       %s [options] list\n"
@@ -29,7 +32,7 @@ static void jw__usage(const char *argv0) {
         "  --db <path>            library DB (default: <state-dir>/library.db)\n"
         "  --platform-root <path> active platform manifest root (default: <root>/.system/leaf/platforms/<platform>)\n"
         "  --socket <path>        optional jawakad socket to notify after install/uninstall\n",
-        argv0, argv0, argv0, argv0, argv0);
+        argv0, argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 static const char *jw__env_or_null(const char *name) {
@@ -109,12 +112,21 @@ static int jw__parse_args(int argc, char **argv, pakrat_smoke_opts *opts) {
     }
     opts->action = argv[i++];
     if (strcmp(opts->action, "install") == 0 ||
+        strcmp(opts->action, "install-target") == 0 ||
         strcmp(opts->action, "adopt") == 0 ||
+        strcmp(opts->action, "repair") == 0 ||
         strcmp(opts->action, "uninstall") == 0) {
         if (i >= argc || !argv[i][0]) {
             return -1;
         }
         opts->store_id = argv[i++];
+    }
+    if (strcmp(opts->action, "repair") == 0 ||
+        strcmp(opts->action, "install-target") == 0) {
+        if (i >= argc || !argv[i][0]) {
+            return -1;
+        }
+        opts->version = argv[i++];
     }
     if (i != argc) {
         return -1;
@@ -179,6 +191,10 @@ static int jw__print_list(const jw_pakrat_context *ctx) {
         printf("Pak Rat catalog URL is not configured\n");
         return 0;
     }
+    if (rc == JW_PAKRAT_CATALOG_REQUIRES_NEWER_LEAF) {
+        fprintf(stderr, "Pak Rat catalog requires a newer Leaf\n");
+        return -1;
+    }
     if (rc < 0) {
         fprintf(stderr, "failed to load Pak Rat app states\n");
         return -1;
@@ -186,13 +202,23 @@ static int jw__print_list(const jw_pakrat_context *ctx) {
 
     for (int i = 0; i < count; i++) {
         const jw_pakrat_app_state *state = &states[i];
-        printf("%s\t%s\t%s\tinstalled=%s\tmanaged=%d\tpath=Apps/%s\n",
+        printf("%s\t%s\t%s\tinstalled=%s\tmanaged=%d\tpath=Apps/%s"
+               "\taction=%d\ttarget=%s\thistory=%d\tmissing_history=%d"
+               "\tgated=%s\tmin_leaf=%s\n",
                jw_pakrat_app_status_name(state->status),
                state->package.id,
                state->package.version,
                state->installed_version[0] ? state->installed_version : "-",
                state->managed,
-               state->package.install_path);
+               state->package.install_path,
+               state->primary_action_allowed,
+               state->action_version[0] ? state->action_version : "-",
+               state->action_uses_history,
+               state->installed_version_missing_from_history,
+               state->gated_version[0] ? state->gated_version : "-",
+               state->gated_min_leaf_version[0]
+                   ? state->gated_min_leaf_version
+                   : "-");
     }
     return 0;
 }
@@ -207,8 +233,14 @@ int main(int argc, char **argv) {
     int rc = -1;
     if (strcmp(opts.action, "install") == 0) {
         rc = jw_pakrat_install_app(&opts.ctx, opts.store_id, 0);
+    } else if (strcmp(opts.action, "install-target") == 0) {
+        rc = jw_pakrat_install_app_target(
+            &opts.ctx, opts.store_id, opts.version, 0);
     } else if (strcmp(opts.action, "adopt") == 0) {
         rc = jw_pakrat_install_app(&opts.ctx, opts.store_id, 1);
+    } else if (strcmp(opts.action, "repair") == 0) {
+        rc = jw_pakrat_repair_app_version(
+            &opts.ctx, opts.store_id, opts.version);
     } else if (strcmp(opts.action, "uninstall") == 0) {
         rc = jw_pakrat_uninstall_app(&opts.ctx, opts.store_id);
     } else if (strcmp(opts.action, "rescan") == 0) {

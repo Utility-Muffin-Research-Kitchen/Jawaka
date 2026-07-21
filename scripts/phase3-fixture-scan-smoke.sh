@@ -6,7 +6,11 @@ JAWAKA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 UMRK_ROOT="$(cd "$JAWAKA_DIR/.." && pwd)"
 BUILD_DIR="${BUILD:-build/phase3-fixture}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jawaka-phase3-scan.XXXXXX")"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+if [[ "${KEEP_TEMP:-0}" != "1" ]]; then
+    trap 'rm -rf "$TMP_ROOT"' EXIT
+else
+    echo "phase3 fixture temp: $TMP_ROOT" >&2
+fi
 
 SD_ROOT="$TMP_ROOT/sd"
 SECONDARY_ROOT="$TMP_ROOT/secondary-sd"
@@ -57,7 +61,7 @@ printf 'echo test\n' >"$SD_ROOT/Roms/PORTS/Test.sh"
 printf 'ignore me\n' >"$SD_ROOT/Roms/UNKNOWN/readme.txt"
 : >"$SD_ROOT/Images/MD/Sonic.png"
 printf '#!/bin/sh\n' >"$SD_ROOT/Apps/mlp1/FixtureNative.pak/launch.sh"
-printf '{ "name": "Fixture Native", "icon": "icon.png", "platform": "mlp1", "pak_version": "1", "min_jawaka_version": "0" }\n' \
+printf '{ "name": "Fixture Native", "icon": "icon.png", "platform": "mlp1", "pak_version": "1.2.3", "min_jawaka_version": "0", "min_leaf_version": "0.7.0" }\n' \
     >"$SD_ROOT/Apps/mlp1/FixtureNative.pak/pak.json"
 printf '#!/bin/sh\n' >"$SD_ROOT/Apps/shared/FixtureShared.pak/launch.sh"
 printf '{ "name": "Fixture Shared", "icon": "icon.png", "platform": "shared", "pak_version": "1", "min_jawaka_version": "0" }\n' \
@@ -81,6 +85,7 @@ printf '{ "name": "Secondary Native", "icon": "icon.png", "platform": "mlp1", "p
 make -C "$JAWAKA_DIR" \
     BUILD="$BUILD_DIR" \
     PLATFORM=mlp1 \
+    LDFLAGS_PLATFORM= \
     jawaka-scan-smoke >/dev/null
 
 UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
@@ -108,9 +113,21 @@ grep -F "game"$'\t'"GBA"$'\t'"Secondary"$'\t'"$SECONDARY_ROOT/Roms/GBA/Secondary
 grep -F $'game\tARCADE\tmslug\tRoms/ARCADE/mslug.zip\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPS\tGame\tRoms/PS/Game.m3u\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPORTS\tTest\tRoms/PORTS/Test.sh\t' "$OUT_PATH" >/dev/null
-grep -F $'app\tFixture Native\tApps/mlp1/FixtureNative.pak\tmlp1\ticon.png' "$OUT_PATH" >/dev/null
+grep -F $'app\tFixture Native\tApps/mlp1/FixtureNative.pak\tmlp1\ticon.png\t0.7.0' "$OUT_PATH" >/dev/null
 grep -F $'app\tFixture Shared\tApps/shared/FixtureShared.pak\tshared\ticon.png' "$OUT_PATH" >/dev/null
 grep -F "app"$'\t'"Secondary Native"$'\t'"$SECONDARY_ROOT/Apps/mlp1/SecondaryNative.pak"$'\t'"mlp1"$'\t'"icon.png" "$OUT_PATH" >/dev/null
+grep -F "secondary_sd|GBA/Secondary.gba|roms|GBA/Imgs/Secondary.png" \
+    < <(sqlite3 "$DB_PATH" \
+        "SELECT source_id||'|'||rom_relpath||'|'||image_root_kind||'|'||image_relpath
+         FROM games WHERE name='Secondary';") >/dev/null
+grep -F "primary|MD/Sonic.md|images|MD/Sonic.png" \
+    < <(sqlite3 "$DB_PATH" \
+        "SELECT source_id||'|'||rom_relpath||'|'||image_root_kind||'|'||image_relpath
+         FROM games WHERE name='Sonic' AND rom_relpath='MD/Sonic.md';") >/dev/null
+grep -F "1.2.3|0|0.7.0" \
+    < <(sqlite3 "$DB_PATH" \
+        "SELECT pak_version||'|'||min_jawaka_version||'|'||min_leaf_version
+         FROM apps WHERE name='Fixture Native';") >/dev/null
 
 if grep -E 'neogeo|UNKNOWN|readme|WrongDevice|FlatLegacy' "$OUT_PATH" >/dev/null; then
     cat "$OUT_PATH" >&2
@@ -123,12 +140,12 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PRUNE_PATH"
 
-grep -F $'summary\tgames=8\tsystems=6\tapps=2' "$OUT_PRUNE_PATH" >/dev/null
-if grep -F "$SECONDARY_ROOT" "$OUT_PRUNE_PATH" >/dev/null ||
-   grep -F $'game\tGBA\tSecondary' "$OUT_PRUNE_PATH" >/dev/null ||
-   grep -F $'app\tSecondary Native' "$OUT_PRUNE_PATH" >/dev/null; then
+grep -F $'summary\tgames=11\tsystems=6\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
+if ! grep -F "$SECONDARY_ROOT" "$OUT_PRUNE_PATH" >/dev/null ||
+   ! grep -F $'game\tGBA\tSecondary' "$OUT_PRUNE_PATH" >/dev/null ||
+   ! grep -F $'app\tSecondary Native' "$OUT_PRUNE_PATH" >/dev/null; then
     cat "$OUT_PRUNE_PATH" >&2
-    echo "phase3 fixture scan did not prune removed secondary SD rows" >&2
+    echo "phase3 fixture scan pruned unavailable secondary SD rows" >&2
     exit 1
 fi
 

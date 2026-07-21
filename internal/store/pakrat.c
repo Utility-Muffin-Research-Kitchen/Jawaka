@@ -4,6 +4,7 @@
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
 #include "internal/ipc/ipc.h"
+#include "internal/platform/leaf_version.h"
 #include "internal/store/catalog_source.h"
 #include "internal/store/managed_apps.h"
 #include "internal/update/sha256.h"
@@ -459,8 +460,11 @@ static int jw__validate_runtime_manifest(const jw_pakrat_catalog_package *pkg,
     if (!root) {
         return -1;
     }
-    int ok = strcmp(jw__json_string(root, "platform"), pkg->platform) == 0 &&
-             strcmp(jw__json_string(root, "pak_version"), pkg->version) == 0;
+    int ok =
+        strcmp(jw__json_string(root, "platform"), pkg->platform) == 0 &&
+        strcmp(jw__json_string(root, "pak_version"), pkg->version) == 0 &&
+        strcmp(jw__json_string(root, "min_leaf_version"),
+               pkg->min_leaf_version) == 0;
     cJSON_Delete(root);
     return ok ? 0 : -1;
 }
@@ -527,9 +531,16 @@ int jw_pakrat_rescan(const jw_pakrat_context *ctx) {
     return rc;
 }
 
-int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id,
-                          int allow_adopt) {
-    if (jw__validate_context(ctx) != 0 || !store_id || !store_id[0]) {
+static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
+                                  const char *store_id,
+                                  const char *expected_version,
+                                  int repair_exact,
+                                  int allow_adopt) {
+    int expected_parsed[3];
+    if (jw__validate_context(ctx) != 0 || !store_id || !store_id[0] ||
+        (expected_version && expected_version[0] &&
+         jw_pak_version_parse(expected_version, expected_parsed) != 0) ||
+        (repair_exact && (!expected_version || !expected_version[0]))) {
         return -1;
     }
 
@@ -547,18 +558,40 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id,
         snprintf(catalog_url, sizeof(catalog_url), "%sstorefront.json",
                  catalog_base);
     }
-    jw__pakrat_log(ctx, "install-start store_id=%s platform=%s catalog_mode=%s catalog_url=%s",
-                   store_id, ctx->platform,
-                   catalog_is_dev ? "dev" : "official",
-                   catalog_url[0] ? catalog_url : "-");
+    jw__pakrat_log(
+        ctx,
+        "install-start store_id=%s platform=%s catalog_mode=%s catalog_url=%s target_version=%s repair=%d",
+        store_id, ctx->platform, catalog_is_dev ? "dev" : "official",
+        catalog_url[0] ? catalog_url : "-",
+        expected_version && expected_version[0] ? expected_version : "auto",
+        repair_exact);
 
     jw_pakrat_catalog_package pkg;
     int is_dev = 0;
-    int parse_rc = jw_pakrat_find_catalog_package(ctx, store_id, &pkg, &is_dev);
+    int parse_rc =
+        repair_exact
+            ? jw_pakrat_find_catalog_package_version(
+                  ctx, store_id, expected_version, &pkg, &is_dev)
+            : jw_pakrat_find_catalog_package(ctx, store_id, &pkg, &is_dev);
     if (parse_rc != 0) {
-        fprintf(stderr, parse_rc > 0 ?
-                "Pak Rat catalog URL is not configured or store id/platform not found\n" :
-                "invalid storefront\n");
+        if (parse_rc == JW_PAKRAT_CATALOG_REQUIRES_NEWER_LEAF) {
+            fprintf(stderr, "Pak Rat catalog requires a newer Leaf\n");
+        } else if (repair_exact && parse_rc > 0) {
+            fprintf(stderr,
+                    "installed version %s is missing from catalog history\n",
+                    expected_version);
+        } else {
+            fprintf(stderr, parse_rc > 0 ?
+                    "Pak Rat catalog URL is not configured or store id/platform not found\n" :
+                    "invalid storefront\n");
+        }
+        goto cleanup;
+    }
+    if (!repair_exact && expected_version && expected_version[0] &&
+        strcmp(pkg.version, expected_version) != 0) {
+        fprintf(stderr,
+                "requested version %s is no longer compatible; catalog now selects %s\n",
+                expected_version, pkg.version);
         goto cleanup;
     }
 
@@ -581,6 +614,24 @@ int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id,
     int install_row = jw_db_pakrat_get_install(ctx->db_path, store_id, &existing);
     if (install_row < 0) {
         goto cleanup;
+    }
+    if (repair_exact &&
+        (install_row != 0 ||
+         strcmp(existing.version, expected_version) != 0)) {
+        fprintf(stderr,
+                "historical repair target does not match the owned installed version\n");
+        goto cleanup;
+    }
+    if (!repair_exact && install_row == 0) {
+        int selected_version[3];
+        int installed_version[3];
+        if (jw_pak_version_parse(pkg.version, selected_version) != 0 ||
+            jw_pak_version_parse(existing.version, installed_version) != 0 ||
+            jw_version_cmp(selected_version, installed_version) < 0) {
+            fprintf(stderr,
+                    "catalog selection would downgrade the installed package\n");
+            goto cleanup;
+        }
     }
 
     char target[PATH_MAX];
@@ -680,6 +731,25 @@ cleanup:
         (void)jw__remove_tree(target_tmp);
     }
     return rc;
+}
+
+int jw_pakrat_install_app(const jw_pakrat_context *ctx, const char *store_id,
+                          int allow_adopt) {
+    return jw__pakrat_install_app(ctx, store_id, NULL, 0, allow_adopt);
+}
+
+int jw_pakrat_install_app_target(const jw_pakrat_context *ctx,
+                                 const char *store_id,
+                                 const char *expected_version,
+                                 int allow_adopt) {
+    return jw__pakrat_install_app(ctx, store_id, expected_version, 0,
+                                  allow_adopt);
+}
+
+int jw_pakrat_repair_app_version(const jw_pakrat_context *ctx,
+                                 const char *store_id,
+                                 const char *version) {
+    return jw__pakrat_install_app(ctx, store_id, version, 1, 0);
 }
 
 int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) {

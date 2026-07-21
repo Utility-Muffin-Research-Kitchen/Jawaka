@@ -1,6 +1,7 @@
 #include "cJSON.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
+#include "internal/db/relocation.h"
 #include "internal/discovery/discovery.h"
 #include "internal/ipc/ipc.h"
 #include "internal/launcher/standalone_policy.h"
@@ -93,6 +94,7 @@ typedef enum {
 typedef struct {
     bool active;
     pid_t pid;
+    int game_id;
     time_t started_at;
     char system[64];
     char rom_path[PATH_MAX];
@@ -204,6 +206,7 @@ typedef struct {
     bool library_scanned_since_boot;
     bool pending_menu;
     bool pending_launch;
+    int pending_launch_game_id;
     char pending_launch_system[64];
     char pending_launch_rom_path[PATH_MAX];
     char pending_launch_core_id[64];
@@ -896,6 +899,8 @@ static int jw__reply_hello_ok(jw_ipc_client *client) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "hello-ok");
     cJSON_AddStringToObject(root, "version", "0.0.1");
+    cJSON *features = cJSON_AddArrayToObject(root, "features");
+    cJSON_AddItemToArray(features, cJSON_CreateString("relocate-games-v1"));
     return jw__reply_json(client, root);
 }
 
@@ -2484,12 +2489,20 @@ static void *jw__scan_job_main(void *arg) {
             jw_db_close(db);
         }
         ok = 0;
-    } else if (jw_scan_library(db, sdcard_root, &result) != 0) {
+    } else {
+        const char *test_delay = getenv("JAWAKA_SCAN_TEST_DELAY_MS");
+        if (test_delay && test_delay[0]) {
+            char *end = NULL;
+            long delay_ms = strtol(test_delay, &end, 10);
+            if (end && *end == '\0' && delay_ms > 0 && delay_ms <= 5000)
+                usleep((useconds_t)delay_ms * 1000u);
+        }
+        if (jw_scan_library(db, sdcard_root, &result) != 0) {
         snprintf(error, sizeof(error), "scan failed reason=%s",
                  reason[0] ? reason : "unknown");
         jw_db_close(db);
         ok = 0;
-    } else {
+        } else {
         if (titles.group_count > 0) {
             jw_db_imported_title_group *groups =
                 calloc((size_t)titles.group_count, sizeof(*groups));
@@ -2517,6 +2530,7 @@ static void *jw__scan_job_main(void *arg) {
         }
         jw_db_close(db);
         ok = 1;
+        }
     }
     jw__scan_title_list_free(&titles);
 
@@ -2650,6 +2664,9 @@ static void jw__tick_scan_job(jw_daemon_state *state) {
 
     if (ok) {
         jw__bump_library_generation(state);
+        if (jw_db_relocation_note_scan(state->db, state->library_generation) != 0) {
+            jw_log_warn("could not publish relocation reconciliation scan");
+        }
         state->library_scanned_since_boot = true;
         state->library_populated = result.game_count > 0 || result.app_count > 0;
         jw_log_info("scan-library %s", reason[0] ? reason : "completed");
@@ -2727,7 +2744,9 @@ static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *clien
         char reason[96] = "";
         char error[160] = "";
         pthread_mutex_lock(&state->scan_job.mu);
-        running = state->scan_job.running;
+        /* completed still awaits the main-loop join/generation publish and is
+           therefore not idle from a relocation client's perspective. */
+        running = state->scan_job.running || state->scan_job.completed;
         pending = state->scan_job.pending_rescan;
         snprintf(reason, sizeof(reason), "%s", state->scan_job.reason);
         snprintf(error, sizeof(error), "%s", state->scan_job.error);
@@ -2911,6 +2930,7 @@ static void jw__retroarch_session_clear(jw_retroarch_session *session) {
 }
 
 static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
+                                        int game_id,
                                         const char *system, const char *rom_path,
                                         const char *db_rom_path,
                                         const char *source_root,
@@ -2929,6 +2949,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     jw__retroarch_session_clear(session);
     session->active = true;
     session->pid = pid;
+    session->game_id = game_id;
     session->started_at = time(NULL);
     snprintf(session->system, sizeof(session->system), "%s", system ? system : "");
     snprintf(session->rom_path, sizeof(session->rom_path), "%s", rom_path ? rom_path : "");
@@ -2975,17 +2996,16 @@ static void jw__retroarch_session_record_play(jw_daemon_state *state,
                                               const jw_retroarch_session *session,
                                               long runtime_s) {
     if (!state || !session || runtime_s <= 0 ||
-        !state->db_path || !session->rom_path[0]) {
+        !state->db_path || session->game_id <= 0) {
         return;
     }
 
-    const char *db_rom = session->db_rom_path[0]
-        ? session->db_rom_path
-        : session->rom_path;
-    if (jw_db_record_play(state->db_path, db_rom, (int)runtime_s) == 0) {
-        jw_log_info("recorded play rom=%s duration_s=%ld", db_rom, runtime_s);
+    if (jw_db_record_play_by_id(state->db_path, session->game_id,
+                                (int)runtime_s) == 0) {
+        jw_log_info("recorded play game_id=%d duration_s=%ld",
+                    session->game_id, runtime_s);
     } else {
-        jw_log_warn("could not record play for rom=%s", db_rom);
+        jw_log_warn("could not record play for game_id=%d", session->game_id);
     }
 }
 
@@ -3055,11 +3075,8 @@ static void jw__consume_standalone_switcher_marker(jw_daemon_state *state, pid_t
     }
 
     if (jw__retroarch_session_runtime_s(session) <= 0 && state->db_path) {
-        const char *db_rom = session->db_rom_path[0]
-            ? session->db_rom_path
-            : session->rom_path;
-        if (db_rom[0]) {
-            jw_db_record_play(state->db_path, db_rom, 0);
+        if (session->game_id > 0) {
+            jw_db_record_play_by_id(state->db_path, session->game_id, 0);
         }
     }
 
@@ -3073,6 +3090,7 @@ static void jw__consume_standalone_switcher_marker(jw_daemon_state *state, pid_t
 }
 
 static void jw__retroarch_session_retarget(jw_daemon_state *state,
+                                           int game_id,
                                            const char *system,
                                            const char *rom_path,
                                            const char *db_rom_path,
@@ -3091,6 +3109,7 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
     int resident_switches = session->resident_switches + 1;
 
     session->started_at = time(NULL);
+    session->game_id = game_id;
     snprintf(session->system, sizeof(session->system), "%s", system ? system : "");
     snprintf(session->rom_path, sizeof(session->rom_path), "%s", rom_path ? rom_path : "");
     snprintf(session->db_rom_path, sizeof(session->db_rom_path), "%s",
@@ -3180,7 +3199,7 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
 
     /* Record recents + playtime for real sessions only. A crash at launch gives
        runtime_s=0, so it never pollutes the list or playtime totals. The session
-       stores the same path form that games.rom_path used at launch. */
+       retains games.id so mountpoint/cache changes cannot misattribute play. */
     jw__retroarch_session_record_play(state, session, runtime_s);
 
     state->post_launch_resume_pending = false;
@@ -3196,6 +3215,7 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
 }
 
 static void jw__standalone_session_start(jw_daemon_state *state, pid_t pid,
+                                         int game_id,
                                          const char *system, const char *rom_path,
                                          const char *db_rom_path,
                                          const char *source_root,
@@ -3209,6 +3229,7 @@ static void jw__standalone_session_start(jw_daemon_state *state, pid_t pid,
     jw__retroarch_session_clear(session);
     session->active = true;
     session->pid = pid;
+    session->game_id = game_id;
     session->started_at = time(NULL);
     snprintf(session->system, sizeof(session->system), "%s", system ? system : "");
     snprintf(session->rom_path, sizeof(session->rom_path), "%s", rom_path ? rom_path : "");
@@ -3660,6 +3681,28 @@ static int jw__lookup_launch_game(jw_daemon_state *state, const char *rom_path,
         }
     }
     return -1;
+}
+
+static int jw__resolve_library_game(jw_daemon_state *state, int game_id,
+                                    jw_game_entry *out_game,
+                                    jw_storage_source_list *out_sources,
+                                    const jw_storage_source **out_source,
+                                    char *out_path, size_t out_path_size) {
+    if (!state || game_id <= 0 || !out_game || !out_sources || !out_source ||
+        !out_path || out_path_size == 0 ||
+        jw_db_get_game_by_id(state->db_path, game_id, out_game) != 0 ||
+        jw__storage_sources(state, out_sources) != 0) {
+        return -1;
+    }
+    const jw_storage_source *source =
+        jw_storage_sources_find_by_id(out_sources, out_game->source_id);
+    if (!source ||
+        jw_storage_resolve_rom(source, out_game->rom_relpath, true,
+                               out_path, out_path_size) != 0) {
+        return -1;
+    }
+    *out_source = source;
+    return 0;
 }
 
 static const char *jw__launch_system_key(const char *requested_system,
@@ -4182,6 +4225,13 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
         return -1;
     }
 
+    jw_game_entry reserved_game;
+    if (jw__lookup_launch_game(state, rom_path, &reserved_game) == 0 &&
+        jw_db_relocation_game_reserved(state->db, reserved_game.id)) {
+        if (out_error) *out_error = "game is relocating";
+        return -1;
+    }
+
     jw_launch_target target;
     if (jw__resolve_launch_target(state, system, rom_path,
                                   requested_core_id, &target) != 0) {
@@ -4220,12 +4270,15 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
     }
 
     char rom_abs[PATH_MAX];
-    if (jw__resolve_rom_path(state, rom_path, rom_abs, sizeof(rom_abs)) != 0 ||
-        !jw__path_exists(rom_abs)) {
+    jw_game_entry game;
+    jw_storage_source_list sources;
+    const jw_storage_source *source = NULL;
+    if (jw__lookup_launch_game(state, rom_path, &game) != 0 ||
+        jw__resolve_library_game(state, game.id, &game, &sources, &source,
+                                 rom_abs, sizeof(rom_abs)) != 0) {
         if (out_error) *out_error = "ROM path missing";
         return -1;
     }
-
     return 0;
 }
 
@@ -4238,7 +4291,13 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
                                     requested_core_id, out_error) != 0) {
         return -1;
     }
+    jw_game_entry game;
+    if (jw__lookup_launch_game(state, rom_path, &game) != 0) {
+        if (out_error) *out_error = "game no longer exists";
+        return -1;
+    }
 
+    state->pending_launch_game_id = game.id;
     snprintf(state->pending_launch_system, sizeof(state->pending_launch_system), "%s", system);
     snprintf(state->pending_launch_rom_path, sizeof(state->pending_launch_rom_path), "%s", rom_path);
     snprintf(state->pending_launch_core_id, sizeof(state->pending_launch_core_id),
@@ -4299,7 +4358,7 @@ static bool jw__force_retroarch_exit_if_needed(jw_daemon_state *state, pid_t pid
 
 /* True when system + resolved ROM path match the running session — used so a
    switch-game request targeting the current game resumes instead of switching. */
-static bool jw__is_current_session_game(const jw_daemon_state *state,
+static bool jw__is_current_session_game(jw_daemon_state *state,
                                         const char *system, const char *rom_path) {
     if (!jw__has_retroarch_session(state) || !rom_path) {
         return false;
@@ -4308,16 +4367,9 @@ static bool jw__is_current_session_game(const jw_daemon_state *state,
     if (system && system[0] && s->system[0] && strcmp(system, s->system) != 0) {
         return false;
     }
-    char target_abs[PATH_MAX];
-    if (jw__resolve_rom_path(state, rom_path, target_abs, sizeof(target_abs)) != 0) {
-        return false;
-    }
-
-    char current_abs[PATH_MAX];
-    if (realpath(s->rom_path, current_abs)) {
-        return strcmp(target_abs, current_abs) == 0;
-    }
-    return strcmp(target_abs, s->rom_path) == 0;
+    jw_game_entry game;
+    return jw__lookup_launch_game(state, rom_path, &game) == 0 &&
+           game.id == s->game_id;
 }
 
 /* RetroArch writes save states asynchronously — the SAVE_STATE command returns
@@ -4396,6 +4448,11 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     if (jw__validate_launch_request(state, system, rom_path, NULL, out_error) != 0) {
         return -1;
     }
+    jw_game_entry target_game;
+    if (jw__lookup_launch_game(state, rom_path, &target_game) != 0) {
+        if (out_error) *out_error = "game no longer exists";
+        return -1;
+    }
 
     /* Selecting the running game is a resume, not a switch. */
     if (jw__is_current_session_game(state, system, rom_path)) {
@@ -4465,14 +4522,12 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     bool resident_eligible = false;
     int resident_switch_max = jw__resident_switch_max();
 
-    if (jw__resolve_rom_path(state, rom_path,
-                             target_rom_abs, sizeof(target_rom_abs)) == 0) {
+    {
         jw_storage_source_list sources;
         const jw_storage_source *target_source = NULL;
-        if (jw__storage_sources(state, &sources) == 0) {
-            target_source = jw_storage_sources_find_for_path(&sources,
-                                                             target_rom_abs);
-        }
+        if (jw__resolve_library_game(state, target_game.id, &target_game,
+                                     &sources, &target_source, target_rom_abs,
+                                     sizeof(target_rom_abs)) == 0) {
         if (target_source) {
             snprintf(target_source_root, sizeof(target_source_root), "%s",
                      target_source->root);
@@ -4506,6 +4561,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
             target_source_root[0] &&
             state->retroarch_session.source_root[0] &&
             strcmp(target_source_root, state->retroarch_session.source_root) == 0;
+        }
     }
 
     if (resident_eligible) {
@@ -4536,7 +4592,8 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
                     &slot, state_path, sizeof(state_path));
             }
 
-            jw__retroarch_session_retarget(state, system, target_rom_abs,
+            jw__retroarch_session_retarget(state, target_game.id,
+                                           system, target_rom_abs,
                                            rom_path, target_source_root,
                                            target_core,
                                            target_core_id,
@@ -4593,6 +4650,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
 
     snprintf(state->pending_launch_system, sizeof(state->pending_launch_system),
              "%s", system);
+    state->pending_launch_game_id = target_game.id;
     snprintf(state->pending_launch_rom_path, sizeof(state->pending_launch_rom_path),
              "%s", rom_path);
     state->pending_launch_resume_switcher = true;
@@ -5475,18 +5533,17 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     }
 
     char rom_abs[PATH_MAX];
-    if (jw__resolve_rom_path(state, state->pending_launch_rom_path,
-                             rom_abs, sizeof(rom_abs)) != 0) {
-        jw_log_error("could not resolve ROM path: %s", state->pending_launch_rom_path);
+    jw_game_entry launch_game;
+    jw_storage_source_list sources;
+    const jw_storage_source *rom_source = NULL;
+    if (jw__resolve_library_game(state, state->pending_launch_game_id,
+                                 &launch_game, &sources, &rom_source,
+                                 rom_abs, sizeof(rom_abs)) != 0) {
+        jw_log_error("could not resolve stable game id=%d",
+                     state->pending_launch_game_id);
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
         return -1;
-    }
-
-    jw_storage_source_list sources;
-    const jw_storage_source *rom_source = NULL;
-    if (jw__storage_sources(state, &sources) == 0) {
-        rom_source = jw_storage_sources_find_for_path(&sources, rom_abs);
     }
 
     char source_root[PATH_MAX];
@@ -5647,7 +5704,8 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_log_info("spawned standalone emulator pid=%d launcher=%s core_id=%s",
                 (int)pid, target->path,
                 target->core_id[0] ? target->core_id : "(unknown)");
-    jw__standalone_session_start(state, pid, state->pending_launch_system, rom_abs,
+    jw__standalone_session_start(state, pid, state->pending_launch_game_id,
+                                 state->pending_launch_system, rom_abs,
                                  state->pending_launch_rom_path, source_root,
                                  target->path, target->core_id);
     return 0;
@@ -5685,16 +5743,17 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     bool switcher_resume = state->pending_launch_resume_switcher;
 
     char rom_abs[PATH_MAX];
-    if (jw__resolve_rom_path(state, state->pending_launch_rom_path, rom_abs, sizeof(rom_abs)) != 0) {
-        jw_log_error("could not resolve ROM path: %s", state->pending_launch_rom_path);
+    jw_game_entry launch_game;
+    jw_storage_source_list sources;
+    const jw_storage_source *rom_source = NULL;
+    if (jw__resolve_library_game(state, state->pending_launch_game_id,
+                                 &launch_game, &sources, &rom_source,
+                                 rom_abs, sizeof(rom_abs)) != 0) {
+        jw_log_error("could not resolve stable game id=%d",
+                     state->pending_launch_game_id);
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
         return -1;
-    }
-    jw_storage_source_list sources;
-    const jw_storage_source *rom_source = NULL;
-    if (jw__storage_sources(state, &sources) == 0) {
-        rom_source = jw_storage_sources_find_for_path(&sources, rom_abs);
     }
     char source_root[PATH_MAX];
     if (rom_source) {
@@ -5905,7 +5964,8 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     state->pending_launch = false;
     state->pending_launch_resume_switcher = false;
     jw_log_info("spawned RetroArch pid=%d retroarch=%s", (int)pid, retroarch);
-    jw__retroarch_session_start(state, pid, state->pending_launch_system, rom_abs,
+    jw__retroarch_session_start(state, pid, state->pending_launch_game_id,
+                                state->pending_launch_system, rom_abs,
                                 state->pending_launch_rom_path, source_root,
                                 core, core_id, core_config_folder,
                                 runtime_config, persist_config,
@@ -6978,6 +7038,353 @@ static int jw__handle_suspend_inhibit(jw_daemon_state *state,
     return jw__reply_ok(client, "suspend-inhibit-release", NULL);
 }
 
+static int jw__reply_relocation_error(jw_ipc_client *client, int code,
+                                      const char *message) {
+    const char *name =
+        code == JW_RELOCATION_NOT_FOUND ? "not-found" :
+        code == JW_RELOCATION_CONFLICT ? "conflict" :
+        code == JW_RELOCATION_STALE ? "stale-generation" :
+        code == JW_RELOCATION_BUSY ? "busy" :
+        code == JW_RELOCATION_BAD_STATE ? "bad-state" : "invalid";
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "error");
+    cJSON_AddStringToObject(reply, "code", name);
+    cJSON_AddStringToObject(reply, "message", message && message[0] ? message : name);
+    return jw__reply_json(client, reply);
+}
+
+static int jw__reply_relocation_status(jw_daemon_state *state,
+                                       jw_ipc_client *client,
+                                       const jw_relocation_status *status) {
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "library-relocate-status");
+    cJSON_AddStringToObject(reply, "operation_id", status->operation_id);
+    cJSON_AddStringToObject(reply, "state", status->state);
+    cJSON_AddNumberToObject(reply, "expected_generation",
+                           status->expected_generation);
+    cJSON_AddNumberToObject(reply, "mapping_generation",
+                           status->mapping_generation);
+    cJSON_AddNumberToObject(reply, "scan_ticket_generation",
+                           status->scan_ticket_generation);
+    cJSON_AddNumberToObject(reply, "item_count", status->item_count);
+    cJSON_AddNumberToObject(reply, "library_generation",
+                           state->library_generation);
+    cJSON *ids = cJSON_AddArrayToObject(reply, "game_ids");
+    jw_relocation_item items[JW_RELOCATION_MAX_ITEMS];
+    int count = 0;
+    if (jw_db_relocation_load_items(state->db, status->operation_id, items,
+                                    JW_RELOCATION_MAX_ITEMS, &count) == 0) {
+        for (int i = 0; i < count; i++)
+            cJSON_AddItemToArray(ids, cJSON_CreateNumber(items[i].game_id));
+    }
+    return jw__reply_json(client, reply);
+}
+
+static bool jw__relocation_scan_active(jw_daemon_state *state) {
+    bool active = false;
+    pthread_mutex_lock(&state->scan_job.mu);
+    active = state->scan_job.running || state->scan_job.completed;
+    pthread_mutex_unlock(&state->scan_job.mu);
+    return active;
+}
+
+static int jw__relocation_parse_identity(const cJSON *object,
+                                         jw_relocation_identity *out) {
+    if (!cJSON_IsObject(object) || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    const cJSON *source = cJSON_GetObjectItemCaseSensitive(object, "source_id");
+    const cJSON *rom = cJSON_GetObjectItemCaseSensitive(object, "rom_relpath");
+    const cJSON *kind = cJSON_GetObjectItemCaseSensitive(object, "image_root_kind");
+    const cJSON *image = cJSON_GetObjectItemCaseSensitive(object, "image_relpath");
+    if (!cJSON_IsString(source) || !source->valuestring || !source->valuestring[0] ||
+        strlen(source->valuestring) >= sizeof(out->source_id) ||
+        !cJSON_IsString(rom) || !rom->valuestring ||
+        strlen(rom->valuestring) >= sizeof(out->rom_relpath) ||
+        !jw_storage_relative_path_valid(rom->valuestring)) return -1;
+    snprintf(out->source_id, sizeof(out->source_id), "%s", source->valuestring);
+    snprintf(out->rom_relpath, sizeof(out->rom_relpath), "%s", rom->valuestring);
+    if (kind || image) {
+        if (!cJSON_IsString(kind) || !kind->valuestring ||
+            !cJSON_IsString(image) || !image->valuestring ||
+            strlen(kind->valuestring) >= sizeof(out->image_root_kind) ||
+            strlen(image->valuestring) >= sizeof(out->image_relpath) ||
+            (strcmp(kind->valuestring, "images") != 0 &&
+             strcmp(kind->valuestring, "roms") != 0 &&
+             strcmp(kind->valuestring, "source") != 0) ||
+            !jw_storage_relative_path_valid(image->valuestring)) return -1;
+        snprintf(out->image_root_kind, sizeof(out->image_root_kind), "%s",
+                 kind->valuestring);
+        snprintf(out->image_relpath, sizeof(out->image_relpath), "%s",
+                 image->valuestring);
+    }
+    return 0;
+}
+
+static int jw__relocation_snapshot(const jw_storage_source *source,
+                                   char *out, size_t out_size) {
+    if (!source || !source->configured || !source->available) return -1;
+    int n = snprintf(out, out_size,
+        "root=%s;root_dev=%llu;root_mount=%d;"
+        "root_fp=%s;roms=%s;roms_dev=%llu;roms_mount=%d;roms_fp=%s;"
+        "images=%s;images_dev=%llu;images_mount=%d;images_fp=%s",
+        source->root_abs[0] ? source->root_abs : source->root,
+        source->device_id, source->mount_id,
+        source->filesystem_fingerprint,
+        source->roms_path, source->roms_device_id, source->roms_mount_id,
+        source->roms_filesystem_fingerprint,
+        source->images_path, source->images_device_id, source->images_mount_id,
+        source->images_filesystem_fingerprint);
+    return n >= 0 && (size_t)n < out_size ? 0 : -1;
+}
+
+static int jw__relocation_materialize(const jw_storage_source *source,
+                                      const jw_relocation_identity *identity,
+                                      char *rom_path, size_t rom_path_size,
+                                      char *image_path, size_t image_path_size) {
+    char rom_abs[PATH_MAX];
+    if (!source || !identity ||
+        snprintf(rom_abs, sizeof(rom_abs), "%s/%s", source->roms_path,
+                 identity->rom_relpath) >= (int)sizeof(rom_abs)) return -1;
+    char rom_relative[PATH_MAX];
+    if (snprintf(rom_relative, sizeof(rom_relative), "Roms/%s",
+                 identity->rom_relpath) >= (int)sizeof(rom_relative) ||
+        jw_storage_db_path_for_source(source, rom_relative, rom_abs,
+                                      rom_path, rom_path_size) != 0) return -1;
+    image_path[0] = '\0';
+    if (!identity->image_root_kind[0]) return 0;
+    const char *base = strcmp(identity->image_root_kind, "images") == 0
+        ? source->images_path
+        : strcmp(identity->image_root_kind, "roms") == 0
+            ? source->roms_path : source->root;
+    const char *prefix = strcmp(identity->image_root_kind, "images") == 0
+        ? "Images" : strcmp(identity->image_root_kind, "roms") == 0
+            ? "Roms" : "";
+    char image_abs[PATH_MAX];
+    char image_relative[PATH_MAX];
+    if (snprintf(image_abs, sizeof(image_abs), "%s/%s", base,
+                 identity->image_relpath) >= (int)sizeof(image_abs) ||
+        snprintf(image_relative, sizeof(image_relative), "%s%s%s",
+                 prefix, prefix[0] ? "/" : "", identity->image_relpath) >=
+            (int)sizeof(image_relative) ||
+        jw_storage_db_path_for_source(source, image_relative, image_abs,
+                                      image_path, image_path_size) != 0) return -1;
+    return 0;
+}
+
+static int jw__relocation_game_id(sqlite3 *db,
+                                  const jw_relocation_identity *identity) {
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT id FROM games WHERE source_id=? AND rom_relpath=?;",
+            -1, &stmt, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_text(stmt, 1, identity->source_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, identity->rom_relpath, -1, SQLITE_TRANSIENT);
+    int id = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : 0;
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+static int jw__handle_relocation_prepare(jw_daemon_state *state,
+                                         jw_ipc_client *client,
+                                         cJSON *request) {
+    cJSON *operation = cJSON_GetObjectItemCaseSensitive(request, "operation_id");
+    cJSON *generation = cJSON_GetObjectItemCaseSensitive(request, "expected_generation");
+    cJSON *array = cJSON_GetObjectItemCaseSensitive(request, "items");
+    int count = cJSON_IsArray(array) ? cJSON_GetArraySize(array) : 0;
+    if (!cJSON_IsString(operation) || !operation->valuestring ||
+        !cJSON_IsNumber(generation) || count <= 0 ||
+        count > JW_RELOCATION_MAX_ITEMS)
+        return jw__reply_relocation_error(client, JW_RELOCATION_ERROR,
+                                           "invalid relocation prepare request");
+    if (jw__relocation_scan_active(state))
+        return jw__reply_relocation_error(client, JW_RELOCATION_BUSY,
+                                           "library scan is active");
+
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0)
+        return jw__reply_relocation_error(client, JW_RELOCATION_ERROR,
+                                           "storage sources unavailable");
+    jw_relocation_item items[JW_RELOCATION_MAX_ITEMS];
+    memset(items, 0, sizeof(items));
+    for (int i = 0; i < count; i++) {
+        cJSON *entry = cJSON_GetArrayItem(array, i);
+        if (!cJSON_IsObject(entry) ||
+            jw__relocation_parse_identity(
+                cJSON_GetObjectItemCaseSensitive(entry, "old"),
+                &items[i].old_identity) != 0 ||
+            jw__relocation_parse_identity(
+                cJSON_GetObjectItemCaseSensitive(entry, "new"),
+                &items[i].new_identity) != 0) {
+            return jw__reply_relocation_error(client, JW_RELOCATION_ERROR,
+                                               "invalid relocation item");
+        }
+        const jw_storage_source *old_source =
+            jw_storage_sources_find_by_id(&sources, items[i].old_identity.source_id);
+        const jw_storage_source *new_source =
+            jw_storage_sources_find_by_id(&sources, items[i].new_identity.source_id);
+        if (!old_source || !new_source || !old_source->available || !new_source->available ||
+            jw__relocation_snapshot(old_source, items[i].old_source_snapshot,
+                                    sizeof(items[i].old_source_snapshot)) != 0 ||
+            jw__relocation_snapshot(new_source, items[i].new_source_snapshot,
+                                    sizeof(items[i].new_source_snapshot)) != 0 ||
+            jw__relocation_materialize(new_source, &items[i].new_identity,
+                                       items[i].new_rom_path,
+                                       sizeof(items[i].new_rom_path),
+                                       items[i].new_image_path,
+                                       sizeof(items[i].new_image_path)) != 0) {
+            return jw__reply_relocation_error(client, JW_RELOCATION_ERROR,
+                                               "unknown or unavailable source");
+        }
+        int game_id = jw__relocation_game_id(state->db, &items[i].old_identity);
+        if (game_id > 0 &&
+            ((state->retroarch_session.active &&
+              state->retroarch_session.game_id == game_id) ||
+             (state->pending_launch &&
+              state->pending_launch_game_id == game_id))) {
+            return jw__reply_relocation_error(client, JW_RELOCATION_BUSY,
+                                               "affected game is active");
+        }
+    }
+    char *fingerprint = cJSON_PrintUnformatted(request);
+    if (!fingerprint)
+        return jw__reply_relocation_error(client, JW_RELOCATION_ERROR,
+                                           "could not encode relocation request");
+    jw_relocation_status status;
+    char error[256] = "";
+    int rc = jw_db_relocation_prepare(state->db, operation->valuestring,
+                                      generation->valueint, fingerprint,
+                                      items, count, &status,
+                                      error, sizeof(error));
+    cJSON_free(fingerprint);
+    if (rc != 0) return jw__reply_relocation_error(client, rc, error);
+    return jw__reply_relocation_status(state, client, &status);
+}
+
+static int jw__relocation_snapshots_match(jw_daemon_state *state,
+                                          const char *operation_id,
+                                          char *error, size_t error_size) {
+    jw_relocation_item items[JW_RELOCATION_MAX_ITEMS];
+    int count = 0;
+    if (jw_db_relocation_load_items(state->db, operation_id, items,
+                                    JW_RELOCATION_MAX_ITEMS, &count) != 0)
+        return -1;
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0) return -1;
+    static const char *fingerprint_keys[] = {"root_fp=", "roms_fp=", "images_fp="};
+    for (int i = 0; i < count; i++) {
+        const jw_storage_source *old_source =
+            jw_storage_sources_find_by_id(&sources, items[i].old_identity.source_id);
+        const jw_storage_source *new_source =
+            jw_storage_sources_find_by_id(&sources, items[i].new_identity.source_id);
+        char old_snapshot[1024], new_snapshot[1024];
+        if (jw__relocation_snapshot(old_source, old_snapshot, sizeof(old_snapshot)) != 0 ||
+            jw__relocation_snapshot(new_source, new_snapshot, sizeof(new_snapshot)) != 0) {
+            snprintf(error, error_size, "%s", "storage source identity changed");
+            return -1;
+        }
+        const char *recorded[2] = {
+            items[i].old_source_snapshot, items[i].new_source_snapshot
+        };
+        const char *current[2] = {old_snapshot, new_snapshot};
+        for (int side = 0; side < 2; side++) {
+            if (strcmp(recorded[side], current[side]) == 0) continue;
+            for (size_t k = 0;
+                 k < sizeof(fingerprint_keys) / sizeof(fingerprint_keys[0]); k++) {
+                const char *a = strstr(recorded[side], fingerprint_keys[k]);
+                const char *b = strstr(current[side], fingerprint_keys[k]);
+                if (!a || !b) {
+                    snprintf(error, error_size, "%s",
+                             "storage fingerprint unavailable after rebind");
+                    return -1;
+                }
+                a += strlen(fingerprint_keys[k]);
+                b += strlen(fingerprint_keys[k]);
+                size_t alen = strcspn(a, ";");
+                size_t blen = strcspn(b, ";");
+                if (alen == 0 || alen != blen || strncmp(a, b, alen) != 0) {
+                    snprintf(error, error_size, "%s",
+                             "storage filesystem fingerprint changed");
+                    return -1;
+                }
+            }
+        }
+        if (jw__relocation_materialize(old_source, &items[i].old_identity,
+                                       items[i].old_rom_path,
+                                       sizeof(items[i].old_rom_path),
+                                       items[i].old_image_path,
+                                       sizeof(items[i].old_image_path)) != 0 ||
+            jw__relocation_materialize(new_source, &items[i].new_identity,
+                                       items[i].new_rom_path,
+                                       sizeof(items[i].new_rom_path),
+                                       items[i].new_image_path,
+                                       sizeof(items[i].new_image_path)) != 0) {
+            snprintf(error, error_size, "%s", "could not rematerialize locator");
+            return -1;
+        }
+        snprintf(items[i].old_source_snapshot,
+                 sizeof(items[i].old_source_snapshot), "%s", old_snapshot);
+        snprintf(items[i].new_source_snapshot,
+                 sizeof(items[i].new_source_snapshot), "%s", new_snapshot);
+    }
+    if (jw_db_relocation_refresh_items(state->db, operation_id, items, count) != 0) {
+        snprintf(error, error_size, "%s", "could not refresh relocation snapshot");
+        return -1;
+    }
+    return 0;
+}
+
+static int jw__handle_relocation(jw_daemon_state *state, jw_ipc_client *client,
+                                 cJSON *request, const char *type) {
+    if (strcmp(type, "library-relocate-prepare") == 0)
+        return jw__handle_relocation_prepare(state, client, request);
+    cJSON *operation = cJSON_GetObjectItemCaseSensitive(request, "operation_id");
+    if (!cJSON_IsString(operation) || !operation->valuestring ||
+        !operation->valuestring[0])
+        return jw__reply_relocation_error(client, JW_RELOCATION_ERROR,
+                                           "missing operation id");
+    jw_relocation_status status;
+    char error[256] = "";
+    int rc = 0;
+    if (strcmp(type, "library-relocate-status") == 0) {
+        rc = jw_db_relocation_status(state->db, operation->valuestring, &status);
+    } else if (strcmp(type, "library-relocate-commit") == 0) {
+        rc = jw_db_relocation_status(state->db, operation->valuestring, &status);
+        if (rc == 0 && strcmp(status.state, "committed") == 0)
+            return jw__reply_relocation_status(state, client, &status);
+        if (rc != 0) return jw__reply_relocation_error(client, rc, error);
+        if (jw__relocation_snapshots_match(state, operation->valuestring,
+                                           error, sizeof(error)) != 0)
+            return jw__reply_relocation_error(client, JW_RELOCATION_CONFLICT, error);
+        rc = jw_db_relocation_commit(state->db, operation->valuestring,
+                                     &status, error, sizeof(error));
+        if (rc == 0) state->library_generation = status.mapping_generation;
+    } else if (strcmp(type, "library-relocate-revert") == 0) {
+        rc = jw_db_relocation_status(state->db, operation->valuestring, &status);
+        if (rc == 0 && strcmp(status.state, "reverted") == 0)
+            return jw__reply_relocation_status(state, client, &status);
+        if (rc != 0) return jw__reply_relocation_error(client, rc, error);
+        if (jw__relocation_snapshots_match(state, operation->valuestring,
+                                           error, sizeof(error)) != 0)
+            return jw__reply_relocation_error(client, JW_RELOCATION_CONFLICT, error);
+        rc = jw_db_relocation_revert(state->db, operation->valuestring,
+                                     &status, error, sizeof(error));
+        if (rc == 0) state->library_generation = status.mapping_generation;
+    } else if (strcmp(type, "library-relocate-abort") == 0) {
+        rc = jw_db_relocation_abort(state->db, operation->valuestring, &status);
+    } else if (strcmp(type, "library-relocate-finish") == 0) {
+        rc = jw_db_relocation_finish(state->db, operation->valuestring, &status);
+        if (rc == 0 && strcmp(status.state, "finished") != 0 &&
+            jw__start_scan_job(state, "relocation reconciliation") < 0)
+            return jw__reply_relocation_error(client, JW_RELOCATION_BUSY,
+                                               "reconciliation scan could not start");
+    } else {
+        return jw__reply_relocation_error(client, JW_RELOCATION_ERROR,
+                                           "unknown relocation operation");
+    }
+    if (rc != 0) return jw__reply_relocation_error(client, rc, error);
+    return jw__reply_relocation_status(state, client, &status);
+}
+
 static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, const char *body) {
     cJSON *root = cJSON_Parse(body);
     if (!root) {
@@ -6995,6 +7402,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         strcmp(type->valuestring, "suspend-inhibit-release") == 0 ||
         strcmp(type->valuestring, "suspend-inhibit-status") == 0) {
         int rc = jw__handle_suspend_inhibit(state, client, root, type->valuestring);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strncmp(type->valuestring, "library-relocate-", 17) == 0) {
+        int rc = jw__handle_relocation(state, client, root, type->valuestring);
         cJSON_Delete(root);
         return rc;
     }

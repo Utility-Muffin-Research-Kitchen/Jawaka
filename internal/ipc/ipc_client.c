@@ -20,7 +20,8 @@ static int ipc__request(const char *socket_path, cJSON *req, cJSON **out_resp) {
     cJSON_free(body);
     if (rc != 0) return -1;
 
-    cJSON *resp = cJSON_Parse(resp_json);
+    const char *parse_end = NULL;
+    cJSON *resp = cJSON_ParseWithOpts(resp_json, &parse_end, 1);
     free(resp_json);
     if (!resp) return -1;
 
@@ -201,6 +202,211 @@ int jw_ipc_hello(const char *socket_path, const char *role) {
     int ok = ipc__type_is(resp, "hello-ok");
     cJSON_Delete(resp);
     return ok ? 0 : -1;
+}
+
+int jw_ipc_has_feature(const char *socket_path, const char *feature,
+                       bool *out_supported) {
+    if (!feature || !feature[0] || !out_supported) return -1;
+    *out_supported = false;
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "hello");
+    cJSON_AddStringToObject(req, "role", "platformctl");
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0 ||
+        !ipc__type_is(resp, "hello-ok")) {
+        if (resp) cJSON_Delete(resp);
+        return -1;
+    }
+    const cJSON *features = cJSON_GetObjectItemCaseSensitive(resp, "features");
+    if (!cJSON_IsArray(features)) {
+        cJSON_Delete(resp);
+        return 0;
+    }
+    cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, features) {
+        if (cJSON_IsString(entry) && entry->valuestring &&
+            strcmp(entry->valuestring, feature) == 0) {
+            *out_supported = true;
+            break;
+        }
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
+static int ipc__relocation_parse(cJSON *resp, const char *operation_id,
+                                 const char *expected_state,
+                                 jw_ipc_relocation_status *out,
+                                 char *error, int error_len) {
+    if (!ipc__type_is(resp, "library-relocate-status")) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (error && error_len > 0)
+            snprintf(error, (size_t)error_len, "%s",
+                     cJSON_IsString(message) && message->valuestring
+                        ? message->valuestring : "daemon returned relocation error");
+        return -1;
+    }
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(resp, "operation_id");
+    const cJSON *state = cJSON_GetObjectItemCaseSensitive(resp, "state");
+    const cJSON *expected = cJSON_GetObjectItemCaseSensitive(resp, "expected_generation");
+    const cJSON *mapping = cJSON_GetObjectItemCaseSensitive(resp, "mapping_generation");
+    const cJSON *ticket = cJSON_GetObjectItemCaseSensitive(resp, "scan_ticket_generation");
+    const cJSON *library = cJSON_GetObjectItemCaseSensitive(resp, "library_generation");
+    const cJSON *count = cJSON_GetObjectItemCaseSensitive(resp, "item_count");
+    bool known_state = cJSON_IsString(state) && state->valuestring &&
+        (strcmp(state->valuestring, "prepared") == 0 ||
+         strcmp(state->valuestring, "committed") == 0 ||
+         strcmp(state->valuestring, "reverted") == 0 ||
+         strcmp(state->valuestring, "finishing") == 0 ||
+         strcmp(state->valuestring, "finished") == 0 ||
+         strcmp(state->valuestring, "aborted") == 0);
+    if (!cJSON_IsString(id) || !id->valuestring ||
+        strcmp(id->valuestring, operation_id) != 0 ||
+        !known_state ||
+        (expected_state && strcmp(state->valuestring, expected_state) != 0) ||
+        !cJSON_IsNumber(expected) || expected->valueint < 0 ||
+        !cJSON_IsNumber(mapping) || mapping->valueint < 0 ||
+        !cJSON_IsNumber(ticket) || ticket->valueint < 0 ||
+        !cJSON_IsNumber(library) || library->valueint < 0 ||
+        !cJSON_IsNumber(count) || count->valueint <= 0) {
+        if (error && error_len > 0)
+            snprintf(error, (size_t)error_len, "%s",
+                     "malformed or unexpected relocation response");
+        return -1;
+    }
+    if (((strcmp(state->valuestring, "committed") == 0 ||
+          strcmp(state->valuestring, "reverted") == 0 ||
+          strcmp(state->valuestring, "finishing") == 0 ||
+          strcmp(state->valuestring, "finished") == 0) &&
+         mapping->valueint <= 0) ||
+        ((strcmp(state->valuestring, "finishing") == 0 ||
+          strcmp(state->valuestring, "finished") == 0) &&
+         ticket->valueint <= mapping->valueint) ||
+        (strcmp(state->valuestring, "finished") == 0 &&
+         library->valueint < ticket->valueint)) {
+        if (error && error_len > 0)
+            snprintf(error, (size_t)error_len, "%s", "invalid relocation generation");
+        return -1;
+    }
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        ipc__copy_string(out->operation_id, sizeof(out->operation_id), id->valuestring);
+        ipc__copy_string(out->state, sizeof(out->state), state->valuestring);
+        out->expected_generation = expected->valueint;
+        out->mapping_generation = mapping->valueint;
+        out->scan_ticket_generation = ticket->valueint;
+        out->library_generation = library->valueint;
+        out->item_count = count->valueint;
+    }
+    return 0;
+}
+
+static int ipc__relocation_request(const char *socket_path, cJSON *req,
+                                   const char *operation_id,
+                                   const char *expected_state,
+                                   jw_ipc_relocation_status *out,
+                                   char *error, int error_len) {
+    if (error && error_len > 0) error[0] = '\0';
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (error && error_len > 0)
+            snprintf(error, (size_t)error_len, "%s", "daemon unavailable");
+        return -1;
+    }
+    int rc = ipc__relocation_parse(resp, operation_id, expected_state,
+                                   out, error, error_len);
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_relocation_prepare(const char *socket_path, const char *operation_id,
+                              int expected_generation,
+                              const jw_ipc_relocation_item *items, int item_count,
+                              jw_ipc_relocation_status *out,
+                              char *error, int error_len) {
+    if (!operation_id || !operation_id[0] || expected_generation < 0 ||
+        !items || item_count <= 0 || item_count > 256) return -1;
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "library-relocate-prepare");
+    cJSON_AddStringToObject(req, "operation_id", operation_id);
+    cJSON_AddNumberToObject(req, "expected_generation", expected_generation);
+    cJSON *array = cJSON_AddArrayToObject(req, "items");
+    for (int i = 0; i < item_count; i++) {
+        const jw_ipc_relocation_identity *identities[2] = {
+            &items[i].old_identity, &items[i].new_identity
+        };
+        const char *names[2] = {"old", "new"};
+        cJSON *item = cJSON_CreateObject();
+        for (int j = 0; j < 2; j++) {
+            cJSON *identity = cJSON_AddObjectToObject(item, names[j]);
+            cJSON_AddStringToObject(identity, "source_id",
+                                    identities[j]->source_id ? identities[j]->source_id : "");
+            cJSON_AddStringToObject(identity, "rom_relpath",
+                                    identities[j]->rom_relpath ? identities[j]->rom_relpath : "");
+            if (identities[j]->image_root_kind && identities[j]->image_root_kind[0]) {
+                cJSON_AddStringToObject(identity, "image_root_kind",
+                                        identities[j]->image_root_kind);
+                cJSON_AddStringToObject(identity, "image_relpath",
+                                        identities[j]->image_relpath
+                                            ? identities[j]->image_relpath : "");
+            }
+        }
+        cJSON_AddItemToArray(array, item);
+    }
+    return ipc__relocation_request(socket_path, req, operation_id, "prepared",
+                                   out, error, error_len);
+}
+
+static int ipc__relocation_simple(const char *socket_path, const char *type,
+                                  const char *operation_id,
+                                  const char *expected_state,
+                                  jw_ipc_relocation_status *out,
+                                  char *error, int error_len) {
+    if (!operation_id || !operation_id[0]) return -1;
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", type);
+    cJSON_AddStringToObject(req, "operation_id", operation_id);
+    return ipc__relocation_request(socket_path, req, operation_id, expected_state,
+                                   out, error, error_len);
+}
+
+int jw_ipc_relocation_get_status(const char *s, const char *id,
+                                 jw_ipc_relocation_status *out, char *e, int n) {
+    return ipc__relocation_simple(s, "library-relocate-status", id, NULL, out, e, n);
+}
+int jw_ipc_relocation_commit(const char *s, const char *id,
+                             jw_ipc_relocation_status *out, char *e, int n) {
+    return ipc__relocation_simple(s, "library-relocate-commit", id, "committed", out, e, n);
+}
+int jw_ipc_relocation_revert(const char *s, const char *id,
+                             jw_ipc_relocation_status *out, char *e, int n) {
+    return ipc__relocation_simple(s, "library-relocate-revert", id, "reverted", out, e, n);
+}
+int jw_ipc_relocation_abort(const char *s, const char *id,
+                            jw_ipc_relocation_status *out, char *e, int n) {
+    return ipc__relocation_simple(s, "library-relocate-abort", id, "aborted", out, e, n);
+}
+int jw_ipc_relocation_finish(const char *s, const char *id,
+                             jw_ipc_relocation_status *out, char *e, int n) {
+    int rc = ipc__relocation_simple(s, "library-relocate-finish", id, NULL, out, e, n);
+    if (rc == 0 && out && strcmp(out->state, "finishing") != 0 &&
+        strcmp(out->state, "finished") != 0) {
+        if (e && n > 0) snprintf(e, (size_t)n, "%s", "unexpected finish state");
+        return -1;
+    }
+    if (rc == 0 && out && strcmp(out->state, "finishing") == 0 &&
+        out->scan_ticket_generation <= out->mapping_generation) {
+        if (e && n > 0) snprintf(e, (size_t)n, "%s", "invalid reconciliation ticket");
+        return -1;
+    }
+    if (rc == 0 && out && strcmp(out->state, "finished") == 0 &&
+        (out->scan_ticket_generation <= out->mapping_generation ||
+         out->library_generation < out->scan_ticket_generation)) {
+        if (e && n > 0) snprintf(e, (size_t)n, "%s",
+                                 "invalid completed reconciliation generation");
+        return -1;
+    }
+    return rc;
 }
 
 int jw_ipc_scan_library(const char *socket_path, char *status, int status_len) {
