@@ -660,6 +660,15 @@ static int jw__draw_tab_header(const jw_launcher_state *state) {
     sb.use_y      = true;
     sb.y_position = (bar_h - pill_h) / 2;
     cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
+    /* Pick mode: the other tabs are non-navigable here, so collapse the bar to a
+       single "Pick 5 Games" title (same chrome, so the header height + status bar
+       stay put) instead of the confusing full four-tab bar. */
+    if (state->focus_pick_active) {
+        const char *pick_label = "Pick 5 Games";
+        cat_draw_tab_bar(&pick_label, 1, 0);
+        cat_draw_status_bar(&sb);
+        return bar_h;
+    }
     /* Draw only the visible tabs, in the user's display order, with the active
        highlight tracking current_tab's position within that set. */
     const char *labels[JW_TAB_COUNT];
