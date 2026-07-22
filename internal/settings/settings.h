@@ -138,9 +138,10 @@ typedef enum {
 #define JW_BEHAVIOR_PERFORMANCE 1
 #define JW_BEHAVIOR_TIMEZONE    2   /* opens the Time Zone picker screen */
 #define JW_BEHAVIOR_BOOT_SPLASH 3
-#define JW_BEHAVIOR_RESET_RETROARCH   4   /* maintenance, moved from Library */
-#define JW_BEHAVIOR_UNMOUNT_SECONDARY 5
-#define JW_BEHAVIOR_ROW_COUNT   6
+#define JW_BEHAVIOR_SCREENSHOTS 4   /* Menu+L1 screenshot hotkey on/off */
+#define JW_BEHAVIOR_RESET_RETROARCH   5   /* maintenance, moved from Library */
+#define JW_BEHAVIOR_UNMOUNT_SECONDARY 6
+#define JW_BEHAVIOR_ROW_COUNT   7
 
 /* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
    The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of
@@ -261,6 +262,7 @@ typedef struct {
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;
+    bool               screenshots_enabled; /* Menu+L1 screenshot hotkey (daemon reads the DB key) */
     int                game_perf_profile;   /* Settings > Behavior game profile */
     bool               performance_supported;
     int                brightness_percent;

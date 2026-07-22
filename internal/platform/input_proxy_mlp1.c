@@ -39,6 +39,8 @@ typedef struct {
     bool chord_active;
     bool select_chord_consumed;   /* a Menu+Select chord ate the Select press;
                                      swallow its matching release too */
+    bool screenshot_chord_consumed; /* a Menu+L1 screenshot chord ate the L1 press;
+                                       swallow its matching release too */
     bool deferred_menu_release;
     uint64_t deferred_menu_release_at_ms;
     uint64_t last_brightness_ms;
@@ -426,6 +428,30 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                 return; /* keep the deferred Menu unflushed; drop Select press */
             }
             /* Not handled: fall through so the deferred Menu flushes and Select
+               forwards as an ordinary Menu+key chord. */
+        }
+    }
+
+    /* Menu + L1: take a screenshot. Mirrors Menu + Select — jawakad consumes the
+       chord and neither Menu nor L1 reaches the running game. If the callback
+       declines (feature disabled), fall through so L1 forwards normally. */
+    if (ev->code == BTN_TL) {
+        if (ev->value == 0 && data->screenshot_chord_consumed) {
+            data->screenshot_chord_consumed = false;
+            return;
+        }
+        /* value==1 only: a held L1 emits autorepeat (value==2); consuming that
+           would leave the earlier real press forwarded-down (held_keys set) and
+           then swallow its release, sticking L1 down in the game. */
+        if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
+            bool handled = proxy->screenshot &&
+                           proxy->screenshot(proxy->userdata);
+            if (handled) {
+                data->chord_active = true;             /* suppress the Menu tap */
+                data->screenshot_chord_consumed = true; /* suppress L1 release */
+                return;                                 /* drop the L1 press */
+            }
+            /* Not handled: fall through so the deferred Menu flushes and L1
                forwards as an ordinary Menu+key chord. */
         }
     }
