@@ -128,6 +128,7 @@ typedef enum {
     JW_SETTING_STARTUP_TAB_INDEX,
     JW_SETTING_AUTO_SLEEP_SECONDS,
     JW_SETTING_BOOT_SPLASH_ENABLED,
+    JW_SETTING_SCREENSHOTS_ENABLED,
     JW_SETTING_GAME_PERFORMANCE_PROFILE,
     JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT,
     JW_SETTING_PLATFORM_VOLUME_PERCENT,
@@ -172,6 +173,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_STARTUP_TAB_INDEX] = "startup_tab_index",
     [JW_SETTING_AUTO_SLEEP_SECONDS] = "auto_sleep_seconds",
     [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
+    [JW_SETTING_SCREENSHOTS_ENABLED] = "screenshots_enabled",
     [JW_SETTING_GAME_PERFORMANCE_PROFILE] = "platform.performance.game_profile",
     [JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT] = "platform.brightness_percent",
     [JW_SETTING_PLATFORM_VOLUME_PERCENT] = "platform.volume_percent",
@@ -1171,6 +1173,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
+    ui->screenshots_enabled = false;   /* opt-in */
     ui->layout_mode = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
                           ? 1 : 0;
     ui->refresh_rate_hz   = 60;
@@ -1303,6 +1306,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             }
             if (jw__setting_has(values, found, JW_SETTING_BOOT_SPLASH_ENABLED))
                 ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_SCREENSHOTS_ENABLED))
+                ui->screenshots_enabled = (strcmp(values[JW_SETTING_SCREENSHOTS_ENABLED], "1") == 0);
             if (jw__setting_has(values, found, JW_SETTING_REFRESH_RATE_HZ)) {
                 int hz = atoi(values[JW_SETTING_REFRESH_RATE_HZ]);
                 if (hz == 60 || hz == 90 || hz == 120) ui->refresh_rate_hz = hz;
@@ -3801,6 +3806,9 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                          : "Unavailable";
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
                         "Boot Splash", splash, ui->boot_splash_supported);
+
+    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_SCREENSHOTS,
+                        "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
 
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_RESET_RETROARCH,
                         "Reset RetroArch Config", "Defaults", true);
@@ -6567,6 +6575,11 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     (void)dir;
                     jw__set_boot_splash(ui, !ui->boot_splash_enabled,
                                         status_buf, status_size);
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_SCREENSHOTS) {
+                    (void)dir;
+                    ui->screenshots_enabled = !ui->screenshots_enabled;
+                    /* Persist only; the daemon reads the DB key on each hotkey. */
+                    jw__persist_bool(ui, "screenshots_enabled", ui->screenshots_enabled);
                 } else if (ui->behavior_list.cursor == JW_BEHAVIOR_PERFORMANCE) {
                     if (!ui->performance_supported) {
                         if (status_buf && status_size > 0) {

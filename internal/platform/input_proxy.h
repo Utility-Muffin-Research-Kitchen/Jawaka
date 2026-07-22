@@ -15,6 +15,11 @@ typedef bool (*jw_input_menu_tap_cb)(void *userdata);
    chord was consumed (the proxy then swallows Select and the Menu tap); return
    false to let the events forward normally. */
 typedef bool (*jw_input_game_switcher_cb)(void *userdata);
+/* Menu + L1 chord: take a screenshot. Same contract as the switcher — return
+   true when consumed (proxy swallows L1 + the Menu tap), false to forward the
+   events normally (e.g. the feature is disabled). Optional; leave NULL to skip.
+   Assign directly on the proxy struct after init; it is read on the next tick. */
+typedef bool (*jw_input_screenshot_cb)(void *userdata);
 
 typedef struct {
     bool enabled;
@@ -26,6 +31,7 @@ typedef struct {
     jw_input_volume_delta_cb volume_delta;
     jw_input_menu_tap_cb menu_tap;
     jw_input_game_switcher_cb game_switcher;
+    jw_input_screenshot_cb screenshot;
     void *userdata;
 } jw_input_proxy;
 

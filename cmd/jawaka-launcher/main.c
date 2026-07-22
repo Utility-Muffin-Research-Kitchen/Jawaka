@@ -221,6 +221,7 @@ typedef struct {
     bool               tab_anim_active;
     int                tab_anim_dir;        /* +1 = next (from right), -1 = prev */
     uint32_t           tab_anim_start_ms;
+    uint32_t           flash_until_ms;   /* screenshot flash: white until this tick (0 = off) */
     SDL_Texture       *tab_anim_from;
     SDL_Texture       *tab_anim_to;
     int                tab_anim_y, tab_anim_h;
@@ -362,6 +363,17 @@ static void jw__load_visible_tabs(jw_launcher_state *state, const char *db_path)
         n = JW_TAB_COUNT;
     }
     state->visible_tab_count = n;
+}
+
+/* Present wrapper used everywhere instead of cat_present(). Normally a straight
+   passthrough; while the screenshot flash is compositing, g_defer_present lets a
+   render pass draw without presenting so the flash can lay a translucent white
+   overlay over the finished scene and present once itself. */
+static bool g_defer_present = false;
+static void jw__present(void) {
+    if (!g_defer_present) {
+        cat_present();
+    }
 }
 
 static bool jw__tab_is_visible(const jw_launcher_state *state, jw_tab tab) {
@@ -2086,7 +2098,7 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
         };
     }
     jw__draw_footer(state, footer, footer_count);
-    cat_present();
+    jw__present();
 }
 
 static void jw__render_settings(const jw_launcher_state *state,
@@ -2271,7 +2283,7 @@ static void jw__render_tabbed(const jw_launcher_state *state) {
         };
         jw__draw_footer(state, footer, 3);
     }
-    cat_present();
+    jw__present();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -2422,7 +2434,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
         };
         jw__draw_footer(state, footer, 4);
     }
-    cat_present();
+    jw__present();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -2672,7 +2684,7 @@ static void jw__render_horizontal(jw_launcher_state *state) {
         };
         jw__draw_footer(state, footer, 4);
     }
-    cat_present();
+    jw__present();
 }
 
 static int jw__resolve_sdcard_path(const jw_launcher_state *state, const char *path,
@@ -3454,7 +3466,7 @@ static void jw__render_focus(jw_launcher_state *state) {
         }
         jw_focus_screen_render_unlock(state->focus_bw, &uv);
     }
-    cat_present();
+    jw__present();
 
     /* Covers decode off-thread; nudge a re-render so art appears promptly. */
     if (any_pending) cat_request_frame_in(150);
@@ -3828,7 +3840,7 @@ static void jw__render_coverflow(jw_launcher_state *state) {
            Up/Down channel switch. */
         jw_cf_draw_channel_hint();
     }
-    cat_present();
+    jw__present();
 }
 
 /* ─── Coverflow (games level): angled album cards + floor reflection ──────────
@@ -4063,7 +4075,7 @@ static void jw__render_coverflow_games(jw_launcher_state *state) {
     jw__draw_coverflow_games_stage(state);
 
     uint32_t render_done_ms = frame_log ? SDL_GetTicks() : 0;
-    cat_present();
+    jw__present();
     if (frame_log) jw__coverflow_frame_log(frame_start_ms, render_done_ms);
 }
 
@@ -4240,7 +4252,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
         };
         jw__draw_footer(state, footer, 4);
     }
-    cat_present();
+    jw__present();
 }
 
 /* Shared tabbed-tab content for game lists (Favorites, Recents): the list with
@@ -4364,7 +4376,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
     cat_draw_footer(footer, 3);
-    cat_present();
+    jw__present();
 }
 
 static void jw__render_search(const jw_launcher_state *state) {
@@ -4476,7 +4488,7 @@ static void jw__render_search(const jw_launcher_state *state) {
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
     jw__draw_footer(state, footer, 3);
-    cat_present();
+    jw__present();
 }
 
 /* Card art for a search result: game box art (system-icon fallback) or app icon.
@@ -4793,7 +4805,7 @@ static void jw__render_search_cf(jw_launcher_state *state) {
 
     jw__cf_draw_keyboard(state);
     jw__cf_focus_step();
-    cat_present();
+    jw__present();
 }
 
 typedef struct { const jw_launcher_state *state; } jw__actions_ctx;
@@ -4999,7 +5011,7 @@ static void jw__render_actions_cf(jw_launcher_state *state) {
         }
     }
 
-    cat_present();
+    jw__present();
 }
 
 static void jw__render_actions(const jw_launcher_state *state) {
@@ -5099,7 +5111,7 @@ static void jw__render_actions(const jw_launcher_state *state) {
     };
     cat_footer_item *footer_items = tabbed ? footer : footer + 1;
     jw__draw_footer(state, footer_items, tabbed ? 3 : 2);
-    cat_present();
+    jw__present();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -5133,7 +5145,7 @@ static void jw__render_switcher(jw_launcher_state *state) {
         { CAT_BTN_A, "Resume", true,  JW_HINT("A") },
     };
     jw__draw_footer(state, footer, 3);
-    cat_present();
+    jw__present();
 }
 
 /* ─── System menu overlay (MENU) ────────────────────────────────────────────
@@ -5216,7 +5228,7 @@ static void jw__render_menu(const jw_launcher_state *state) {
         int content_h = cat_get_screen_height() - header_h - jw__footer_height(state);
         jw__render_settings(state, header_h, content_h, margin);
         jw__draw_settings_footer(state);
-        cat_present();
+        jw__present();
         return;
     }
 
@@ -5263,7 +5275,7 @@ static void jw__render_menu(const jw_launcher_state *state) {
         { CAT_BTN_A,  "Select", true,  JW_HINT("A") },
     };
     jw__draw_footer(state, footer, 2);
-    cat_present();
+    jw__present();
 }
 
 /* Open the System menu fresh on the Settings tab (the leftmost/primary tab).
@@ -7180,7 +7192,7 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
                 cat_draw_footer(f, 3);
             }
         }
-        cat_present();
+        jw__present();
     }
     jw_settings_ui_close(ui);
     cat_request_frame();
@@ -7881,7 +7893,7 @@ static void jw__render_focus_setup(jw_launcher_state *state) {
         case JW_FSETUP_STYLE:   jw__fsetup_render_style(state); break;
         case JW_FSETUP_CONFIRM: jw__fsetup_render_confirm(state); break;
     }
-    cat_present();
+    jw__present();
 }
 
 /* ---- input ---- */
@@ -8606,11 +8618,26 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         /* Request a frame so cat_present takes the active 60fps-paced path instead
            of its idle sleep — otherwise the countdown bar freezes on frame one. */
         cat_request_frame();
-        cat_present();
+        jw__present();
     }
 }
 
+/* Screenshot flash: jawakad sends SIGUSR1 after saving a UI/focus screenshot; the
+   main loop covers the screen white briefly so the capture is visibly acknowledged.
+   The handler only sets a flag (async-signal-safe); the loop does the drawing. */
+#define JW_SCREENSHOT_FLASH_MS        130
+#define JW_SCREENSHOT_FLASH_ALPHA     175  /* starting white opacity (0-255); fades out */
+#define JW_SCREENSHOT_FLASH_MIN_ALPHA 18   /* end the flash here so the faint tail can't linger */
+static volatile sig_atomic_t g_screenshot_flash = 0;
+static void jw__screenshot_flash_handler(int sig) {
+    (void)sig;
+    g_screenshot_flash = 1;
+}
+
 int main(void) {
+    /* Install before anything can signal us — SIGUSR1's default disposition is to
+       terminate the process. */
+    signal(SIGUSR1, jw__screenshot_flash_handler);
     long long process_start_ms = jw__monotonic_ms();
     char *socket_path = jw_socket_path();
     char *db_path     = jw_db_path();
@@ -8970,6 +8997,44 @@ int main(void) {
            synchronous cover decode on the frame that handled a button press, so
            the highlight/carousel moves without waiting on a decode. Covers keep
            decoding on the idle frames between presses. */
+        /* Screenshot flash (SIGUSR1 from jawakad after a UI/focus capture): a
+           translucent white that fades out over the live scene, like RetroArch's.
+           Render the scene with its present deferred, lay the fading white on top,
+           then present once. Covers focus mode too — same process. */
+        if (g_screenshot_flash) {
+            g_screenshot_flash = 0;
+            state.flash_until_ms = SDL_GetTicks() + JW_SCREENSHOT_FLASH_MS;
+        }
+        if (state.flash_until_ms != 0) {
+            int32_t rem = (int32_t)(state.flash_until_ms - SDL_GetTicks());
+            int alpha = (rem > 0)
+                ? JW_SCREENSHOT_FLASH_ALPHA * rem / JW_SCREENSHOT_FLASH_MS
+                : 0;
+            /* Time-based, so a dropped frame never lengthens it; end at the min
+               alpha so the near-invisible tail can't sit on screen an extra frame. */
+            if (alpha > JW_SCREENSHOT_FLASH_MIN_ALPHA) {
+                /* Schedule the next fade frame BEFORE presenting: the idle-wait
+                   lives inside cat_present() and sleeps until the earliest pending
+                   frame request, so requesting after it would let the frame linger
+                   until unrelated input. */
+                cat_request_frame_in(16);
+                g_defer_present = true;
+                jw__render_launcher(&state);   /* draw the scene, hold the present */
+                g_defer_present = false;
+                SDL_Renderer *r = cat_get_renderer();
+                SDL_BlendMode prev;
+                SDL_GetRenderDrawBlendMode(r, &prev);
+                SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(r, 255, 255, 255, (Uint8)alpha);
+                SDL_RenderFillRect(r, NULL);
+                SDL_SetRenderDrawBlendMode(r, prev);
+                cat_present();
+                continue;   /* skip the normal render below */
+            }
+            state.flash_until_ms = 0;
+            cat_request_frame();   /* resume the normal scene */
+        }
+
         jw__suppress_inline_decode = had_input;
         jw__render_launcher(&state);
         jw__suppress_inline_decode = false;
