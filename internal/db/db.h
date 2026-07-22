@@ -199,6 +199,8 @@ int  jw_db_remove_recent(const char *db_path, const char *kind, int target_id);
    normally be deleted by callers rather than stored. */
 int  jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
                                 jw_game_entry *out);
+/* Resolve a stable games.id to a full entry. Returns 0 when found, -1 when no
+   row matched (e.g. a picked game whose ROM was removed) or on error. */
 int  jw_db_get_game_by_id(const char *db_path, int game_id, jw_game_entry *out);
 int  jw_db_get_game_setting(const char *db_path, int game_id,
                             const char *key, char *out, size_t out_size);
