@@ -18,13 +18,14 @@ static int g_failures = 0;
 
 static void test_lock_style_enums(void) {
     CHECK(jw_focus_lock_parse("pin") == JW_FOCUS_LOCK_PIN);
-    CHECK(jw_focus_lock_parse("combo") == JW_FOCUS_LOCK_COMBO);
     CHECK(jw_focus_lock_parse("none") == JW_FOCUS_LOCK_NONE);
     CHECK(jw_focus_lock_parse("") == JW_FOCUS_LOCK_NONE);
     CHECK(jw_focus_lock_parse(NULL) == JW_FOCUS_LOCK_NONE);
     CHECK(jw_focus_lock_parse("garbage") == JW_FOCUS_LOCK_NONE);
+    /* "combo" is not a lock type (the button chord is a universal failsafe, not a
+       selectable lock) — it must fall back to NONE, never a bare free-exit lock. */
+    CHECK(jw_focus_lock_parse("combo") == JW_FOCUS_LOCK_NONE);
     CHECK(strcmp(jw_focus_lock_name(JW_FOCUS_LOCK_PIN), "pin") == 0);
-    CHECK(strcmp(jw_focus_lock_name(JW_FOCUS_LOCK_COMBO), "combo") == 0);
     CHECK(strcmp(jw_focus_lock_name(JW_FOCUS_LOCK_NONE), "none") == 0);
 
     CHECK(jw_focus_style_parse("bw") == JW_FOCUS_STYLE_BW);

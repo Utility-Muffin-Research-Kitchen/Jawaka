@@ -188,13 +188,22 @@ static void jw__focus_draw_battery(int right_x, int top_y, int h,
     cat_draw_rect(body_x + body_w - fw, body_y, fw, h, c);              /* right */
     cat_draw_rect(right_x - nub_w, body_y + (h - nub_h) / 2, nub_w, nub_h, c); /* nub */
 
-    /* Fill proportional to percent, inset from the frame. */
-    int pct = b.percent < 0 ? 0 : (b.percent > 100 ? 100 : b.percent);
-    int inset = fw + (int)(h * 0.10f);
-    int fill_max_w = body_w - 2 * inset;
-    int fill_w = fill_max_w * pct / 100;
-    if (fill_w > 0) {
-        cat_draw_rect(body_x + inset, body_y + inset, fill_w, h - 2 * inset, c);
+    if (b.percent < 0) {
+        /* Unknown reading (e.g. a transient IPC miss at spawn): a centered "?" so
+           it reads as "unknown", not an empty cell that looks like a dead battery.
+           No fill, and the caller suppresses the critical blink for percent < 0. */
+        TTF_Font *qf = cat_get_font(CAT_FONT_SMALL);
+        int qw = 0, qh = 0;
+        TTF_SizeUTF8(qf, "?", &qw, &qh);
+        cat_draw_text(qf, "?", body_x + (body_w - qw) / 2, body_y + (h - qh) / 2, c);
+    } else {
+        /* Fill proportional to percent, inset from the frame. */
+        int pct = b.percent > 100 ? 100 : b.percent;
+        int inset = fw + (int)(h * 0.10f);
+        int fill_max_w = body_w - 2 * inset;
+        int fill_w = fill_max_w * pct / 100;
+        if (fill_w > 0)
+            cat_draw_rect(body_x + inset, body_y + inset, fill_w, h - 2 * inset, c);
     }
 
     if (b.charging) {

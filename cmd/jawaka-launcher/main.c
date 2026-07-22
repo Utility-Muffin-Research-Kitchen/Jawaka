@@ -154,7 +154,7 @@ typedef struct {
 typedef enum {
     JW_FSETUP_PICK = 0,   /* multi-select up to 5 games from the browser */
     JW_FSETUP_ARRANGE,    /* reorder the picked tiles (X-grab) */
-    JW_FSETUP_LOCK,       /* None / PIN (combo deferred) */
+    JW_FSETUP_LOCK,       /* None / PIN */
     JW_FSETUP_PIN,        /* set + confirm the PIN (when lock == pin) */
     JW_FSETUP_STYLE,      /* Theme / Black & white */
     JW_FSETUP_CONFIRM,    /* preview + Start */
@@ -274,7 +274,7 @@ typedef struct {
        survives return-from-game). See plans/five-game-mode.md. */
     bool               focus_active;
     bool               focus_bw;         /* style: Black & white vs Theme */
-    jw_focus_lock      focus_lock;       /* none/pin/combo (Phase 3 unlock) */
+    jw_focus_lock      focus_lock;       /* none/pin */
     int                focus_cursor;     /* selected tile 0..focus_count-1 */
     int                focus_count;      /* resolved games (danglers dropped) */
     jw_game_entry      focus_games[JW_FOCUS_SCREEN_MAX_TILES];
@@ -3269,9 +3269,15 @@ static void jw__focus_init(jw_launcher_state *state) {
         }
     }
     state->focus_count = count;
-    state->focus_active = (count > 0);
-    if (!state->focus_active) {
-        jw_log_warn("focus: no picked games resolved; falling back to normal launcher");
+    /* We only reach here because the daemon spawned us into focus mode (the env
+       gate at the top), so stay locked even if some — or all — picked games no
+       longer resolve. Otherwise a library change that drops every id would
+       silently fall through to the full, unlocked launcher and defeat the lock.
+       With count == 0 the focus screen shows a "no games" note and MENU still
+       reaches the unlock/exit path. */
+    state->focus_active = true;
+    if (count == 0) {
+        jw_log_warn("focus: no picked games resolved; showing empty locked screen");
     } else {
         jw_log_info("focus: active with %d game(s), style=%s",
                     count, state->focus_bw ? "bw" : "theme");
@@ -3317,9 +3323,9 @@ static void jw__render_focus(jw_launcher_state *state) {
         state->focus_batt_next_ms = now + 5000;
     }
     jw_focus_battery batt;
-    batt.percent = state->focus_batt_pct < 0 ? 0 : state->focus_batt_pct;
+    batt.percent = state->focus_batt_pct;   /* <0 = unknown; drawn as "?", no blink */
     batt.charging = (state->focus_batt_chg == 1);
-    /* Keep re-rendering so the critical-battery blink animates. */
+    /* Keep re-rendering so the critical-battery blink animates (known % only). */
     if (!batt.charging && batt.percent >= 0 && batt.percent <= 10)
         cat_request_frame_in(450);
 
@@ -3348,6 +3354,21 @@ static void jw__render_focus(jw_launcher_state *state) {
 
     jw_focus_screen_render(tiles, state->focus_count, state->focus_cursor,
                            state->focus_bw, batt, state->focus_bt_pip);
+
+    /* All picked games vanished (removed/renamed since setup): the screen would be
+       empty, so tell the user why and how to leave. Still fully locked. */
+    if (state->focus_count == 0) {
+        int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+        SDL_Color fg = { 235, 235, 235, 255 };
+        TTF_Font *f = cat_get_font(CAT_FONT_MEDIUM);
+        const char *m = "No games available";
+        int w = cat_measure_text(f, m);
+        cat_draw_text(f, m, (sw - w) / 2, sh / 2 - CAT_S(24), fg);
+        TTF_Font *fs = cat_get_font(CAT_FONT_SMALL);
+        const char *m2 = "Press MENU to exit";
+        int w2 = cat_measure_text(fs, m2);
+        cat_draw_text(fs, m2, (sw - w2) / 2, sh / 2 + CAT_S(16), fg);
+    }
 
     if (state->focus_unlock_open) {
         jw_focus_unlock_view uv;
@@ -7354,8 +7375,14 @@ static void jw__focus_unlock_exit(jw_launcher_state *state) {
                           wprev, sizeof(wprev)) == 0 && wprev[0] == '1') {
         jw_wifi_set_radio(true);
     }
-    jw_db_set_setting(state->db_path, JW_FOCUS_KEY_ACTIVE, "0");
-    jw_focus_lock_remove(state->sdcard_root);
+    int rc_db   = jw_db_set_setting(state->db_path, JW_FOCUS_KEY_ACTIVE, "0");
+    int rc_lock = jw_focus_lock_remove(state->sdcard_root);
+    sync();   /* flush both writes so the exit survives a later power-off, and so a
+                 read-only-flipped card surfaces as a failed write above */
+    if (rc_db != 0 || rc_lock != 0)
+        jw_log_warn("focus: exit did not fully persist (db=%d lock=%d); the SD card "
+                    "may be read-only — focus mode could re-lock on next boot",
+                    rc_db, rc_lock);
     state->focus_active = false;
     state->focus_unlock_open = false;
     jw_log_info("focus: unlocked; returning to the normal launcher");
@@ -7397,9 +7424,15 @@ static void jw__focus_setup_commit(jw_launcher_state *state) {
         ids_csv, jw_focus_lock_name(cfg.lock), cfg.pin_hash,
         jw_focus_style_name(cfg.style), wifi_prev, "1",
     };
-    jw_db_set_settings(state->db_path, keys, vals,
-                       (int)(sizeof(keys) / sizeof(keys[0])));
-    jw_focus_lock_write(state->sdcard_root, &cfg);
+    int rc_db   = jw_db_set_settings(state->db_path, keys, vals,
+                                     (int)(sizeof(keys) / sizeof(keys[0])));
+    int rc_lock = jw_focus_lock_write(state->sdcard_root, &cfg);
+    sync();   /* persist the config + lock file before we start locking the UI, so
+                 a power-off can't leave the mode half-enabled */
+    if (rc_db != 0 || rc_lock != 0)
+        jw_log_warn("focus: setup did not fully persist (db=%d lock=%d); the SD card "
+                    "may be read-only — the lock may not survive a reboot",
+                    rc_db, rc_lock);
     if (jw_wifi_available()) jw_wifi_set_radio(false);
 
     /* Enter focus mode in place: mirror what jw__focus_init would resolve. */
@@ -7416,7 +7449,7 @@ static void jw__focus_setup_commit(jw_launcher_state *state) {
     state->focus_cursor = 0;
     state->focus_unlock_open = false;
     state->focus_setup_open = false;
-    state->focus_active = (state->focus_count > 0);
+    state->focus_active = true;   /* wizard guarantees >=1 pick; enter focus mode */
     jw_log_info("focus: setup committed; entering focus mode (%d game(s), lock=%s, style=%s)",
                 state->focus_count, jw_focus_lock_name(cfg.lock),
                 jw_focus_style_name(cfg.style));
@@ -7981,7 +8014,8 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
             default: break;
         }
     } else {
-        /* lock == none (or the not-yet-built combo): a plain Exit? confirm. */
+        /* lock == none: a plain Exit? confirm. PIN is the only other lock type;
+           there is no free-exit path for anything but an explicit no-lock. */
         switch (button) {
             case CAT_BTN_A:
                 jw__focus_unlock_exit(state); break;

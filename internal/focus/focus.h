@@ -38,7 +38,6 @@
 typedef enum {
     JW_FOCUS_LOCK_NONE = 0,
     JW_FOCUS_LOCK_PIN,
-    JW_FOCUS_LOCK_COMBO,
 } jw_focus_lock;
 
 typedef enum {
@@ -65,7 +64,7 @@ typedef enum {
 
 /* --- enum <-> string (for the settings values) --- */
 jw_focus_lock  jw_focus_lock_parse(const char *s);   /* default NONE */
-const char    *jw_focus_lock_name(jw_focus_lock v);  /* "none"|"pin"|"combo" */
+const char    *jw_focus_lock_name(jw_focus_lock v);  /* "none"|"pin" */
 jw_focus_style jw_focus_style_parse(const char *s);  /* default THEME */
 const char    *jw_focus_style_name(jw_focus_style v);/* "theme"|"bw" */
 

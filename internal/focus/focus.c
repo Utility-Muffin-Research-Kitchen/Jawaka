@@ -17,16 +17,14 @@
 /* ---------- enum <-> string ---------- */
 
 jw_focus_lock jw_focus_lock_parse(const char *s) {
-    if (s && strcmp(s, "pin") == 0)   return JW_FOCUS_LOCK_PIN;
-    if (s && strcmp(s, "combo") == 0) return JW_FOCUS_LOCK_COMBO;
+    if (s && strcmp(s, "pin") == 0) return JW_FOCUS_LOCK_PIN;
     return JW_FOCUS_LOCK_NONE;
 }
 
 const char *jw_focus_lock_name(jw_focus_lock v) {
     switch (v) {
-        case JW_FOCUS_LOCK_PIN:   return "pin";
-        case JW_FOCUS_LOCK_COMBO: return "combo";
-        case JW_FOCUS_LOCK_NONE:  break;
+        case JW_FOCUS_LOCK_PIN:  return "pin";
+        case JW_FOCUS_LOCK_NONE: break;
     }
     return "none";
 }
