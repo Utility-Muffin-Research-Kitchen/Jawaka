@@ -310,10 +310,10 @@ static int jw__hint_span(TTF_Font *f, const char *s, int a, int b,
 
 /* Render a "KEY: Value   KEY: Value" hint line centered at cx, coloring the
    "KEY:" tokens in key_color and the values in val_color. Segments are split on
-   runs of 2+ spaces; a value may contain single spaces ("Shut Down"). This is
-   the one two-tone hint style shared by the wizard footers, the confirm popup,
-   and (via jw__focus_hint_cell) the unlock legend, so key/value colors match
-   everywhere. */
+   runs of 3+ spaces, so a value may safely contain up to a double space
+   ("Shut Down", "1  2"). This is the one two-tone hint style shared by the
+   wizard footers, the confirm popup, and (via jw__focus_hint_cell) the unlock
+   legend, so key/value colors match everywhere. */
 void jw_focus_draw_hint_kv(TTF_Font *f, const char *s, int cx, int y,
                            SDL_Color key_color, SDL_Color val_color) {
     if (!s || !s[0]) return;
@@ -327,7 +327,8 @@ void jw_focus_draw_hint_kv(TTF_Font *f, const char *s, int cx, int y,
                 tok = i + 1; in_value = 1;
             }
             i++;
-        } else if (s[i] == ' ' && i + 1 < len && s[i + 1] == ' ') {
+        } else if (s[i] == ' ' && i + 2 < len &&
+                   s[i + 1] == ' ' && s[i + 2] == ' ') {
             int j = i;
             while (j < len && s[j] == ' ') j++;
             x += jw__hint_span(f, s, tok, j, x, y, val_color);

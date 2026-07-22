@@ -80,8 +80,9 @@ typedef struct {
 void jw_focus_screen_render_unlock(bool bw, const jw_focus_unlock_view *v);
 
 /* Draw a "KEY: Value   KEY: Value" hint line centered at cx, "KEY:" tokens in
-   key_color and values in val_color (segments split on runs of 2+ spaces). The
-   shared two-tone hint style so key/value colors match across the focus UI. */
+   key_color and values in val_color (segments split on runs of 3+ spaces, so a
+   value may contain a double space). The shared two-tone hint style so key/value
+   colors match across the focus UI. */
 void jw_focus_draw_hint_kv(TTF_Font *f, const char *s, int cx, int y,
                            SDL_Color key_color, SDL_Color val_color);
 

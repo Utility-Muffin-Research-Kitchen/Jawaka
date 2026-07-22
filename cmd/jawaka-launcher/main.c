@@ -3246,10 +3246,24 @@ static void jw__focus_init(jw_launcher_state *state) {
     state->focus_bw = (style && strcmp(style, "bw") == 0);
     state->focus_lock = jw_focus_lock_parse(getenv("JAWAKA_FOCUS_LOCK"));
     /* PIN hash comes from the DB (never the env) so the hash isn't exposed in
-       /proc/<pid>/environ. */
+       /proc/<pid>/environ. The lock type is from the env but the hash from the
+       DB: a transient sqlite-busy on this one read (jw_db_get_setting returns -1
+       only on a real open/busy failure, 0 for an absent key) would leave
+       lock==PIN with an empty hash and disable the PIN for the whole session, so
+       retry briefly when the lock is PIN. The common case succeeds first try and
+       never sleeps. */
     state->focus_pin_hash[0] = '\0';
-    jw_db_get_setting(state->db_path, JW_FOCUS_KEY_PIN_HASH,
-                      state->focus_pin_hash, sizeof(state->focus_pin_hash));
+    int hrc = jw_db_get_setting(state->db_path, JW_FOCUS_KEY_PIN_HASH,
+                                state->focus_pin_hash, sizeof(state->focus_pin_hash));
+    for (int tries = 0; hrc != 0 && state->focus_lock == JW_FOCUS_LOCK_PIN &&
+                        tries < 4; tries++) {
+        usleep(40000);   /* 40ms; runs only on a genuine read failure */
+        hrc = jw_db_get_setting(state->db_path, JW_FOCUS_KEY_PIN_HASH,
+                                state->focus_pin_hash, sizeof(state->focus_pin_hash));
+    }
+    if (state->focus_lock == JW_FOCUS_LOCK_PIN && state->focus_pin_hash[0] == '\0')
+        jw_log_warn("focus: PIN hash unreadable at spawn; PIN disabled this session "
+                    "(failsafe chord + SD-delete still recover)");
     state->focus_unlock_open = false;
     state->focus_pin_slot = 0;
     state->focus_pin_error = false;
@@ -8828,8 +8842,11 @@ int main(void) {
         /* 1080p120 auto-revert: when the daemon has armed a revert (after a
            deliberate switch to a 120Hz TV mode), show the blocking keep-or-revert
            prompt so the user can confirm the TV actually lit up. Throttled so a
-           held d-pad doesn't spam the IPC. */
-        {
+           held d-pad doesn't spam the IPC. Suppressed in focus mode: the device is
+           a locked kiosk there (no way to reach the mode switch), a blocking prompt
+           would swallow the failsafe unlock chord, and if a revert was somehow
+           armed the daemon still auto-reverts to the safe mode on its own timer. */
+        if (!state.focus_active) {
             static uint32_t s_revert_poll = 0;
             uint32_t rn = SDL_GetTicks();
             if (s_revert_poll == 0 || rn - s_revert_poll >= 700) {
