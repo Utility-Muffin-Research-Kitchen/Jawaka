@@ -56,6 +56,10 @@ typedef struct {
     char name[256];
     char pak_dir[512];
     char icon[256];
+    char platform[64];
+    char pak_version[64];
+    char min_jawaka_version[64];
+    char min_leaf_version[64];
 } jw_app_entry;
 
 typedef struct {
@@ -74,6 +78,10 @@ typedef struct {
     int  id;
     char system[64];
     char name[256];
+    char source_id[32];
+    char rom_relpath[512];
+    char image_root_kind[16];
+    char image_relpath[512];
     char rom_path[512];
     char image_path[512];
     int  favorite;   /* 1 if present in favorites, else 0 */
@@ -86,8 +94,13 @@ typedef enum {
 
 typedef struct {
     jw_search_kind kind;
+    int id;
     char name[256];
     char system[64];
+    char source_id[32];
+    char rom_relpath[512];
+    char image_root_kind[16];
+    char image_relpath[512];
     char rom_path[512];
     char image_path[512];
     char pak_dir[512];
@@ -100,10 +113,13 @@ void jw_db_close(sqlite3 *db);
 
 int  jw_db_reset_library(sqlite3 *db);
 /* Non-destructive rescan helpers. scan_begin sets up per-scan "seen" tracking;
-   insert_game/insert_app upsert (preserving id) and record seen; scan_prune
-   removes only rows whose ROM/pak vanished plus any orphaned favorites/recents.
-   Call inside a transaction: scan_begin -> inserts... -> scan_prune. */
+   stable game upserts preserve id and record (source_id,rom_relpath).
+   Mark only successfully enumerated sources complete before scan_prune; rows
+   belonging to unavailable/failed/unmarked sources are retained. App pruning
+   is enabled only after the complete configured source set was enumerated. */
 int  jw_db_scan_begin(sqlite3 *db);
+int  jw_db_scan_source_complete(sqlite3 *db, const char *source_id);
+int  jw_db_scan_apps_complete(sqlite3 *db);
 /* Collapse duplicate library entries for one system: when the same title exists
    under both the canonical public folder and a legacy alias folder (both fold
    to one system), keep a single entry, preferring the copy whose rom_path is
@@ -112,7 +128,17 @@ int  jw_db_scan_begin(sqlite3 *db);
 int  jw_db_dedup_system_aliases(sqlite3 *db, const char *system, const char *canonical_rom_root);
 int  jw_db_scan_prune(sqlite3 *db);
 int  jw_db_insert_game(sqlite3 *db, const char *system, const char *name, const char *rom_path, const char *image_path);
-int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name, const char *icon, const char *platform, const char *pak_version, const char *min_jawaka_version);
+int  jw_db_insert_game_stable(sqlite3 *db, const char *system, const char *name,
+                              const char *source_id, const char *rom_relpath,
+                              const char *rom_path,
+                              const char *image_root_kind,
+                              const char *image_relpath,
+                              const char *image_path);
+int  jw_db_insert_app(sqlite3 *db, const char *pak_dir, const char *name,
+                      const char *icon, const char *platform,
+                      const char *pak_version,
+                      const char *min_jawaka_version,
+                      const char *min_leaf_version);
 
 /* Optional source-provided display titles applied immediately after a library
    scan. rom_paths use the exact primary-relative / secondary-absolute form
@@ -155,10 +181,12 @@ int  jw_db_set_favorite(const char *db_path, const char *kind, int target_id, in
 int  jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
                                int max_count, int *out_count);
 
-/* Recents + playtime. record_play (called when a game session ends) bumps the
-   game's cumulative playtime_s + last_played and upserts its recents row.
+/* Recents + playtime. record_play_by_id is authoritative for active sessions;
+   the path variant remains a compatibility wrapper. Both bump cumulative
+   playtime_s + last_played and upsert the recents row.
    list_recent_games returns games most-recently-opened first. */
 int  jw_db_record_play(const char *db_path, const char *rom_path, int duration_s);
+int  jw_db_record_play_by_id(const char *db_path, int game_id, int duration_s);
 int  jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
                              int max_count, int *out_count);
 /* Drop a single play-history row (kind 'game'/'app'). Does not touch the
@@ -171,8 +199,8 @@ int  jw_db_remove_recent(const char *db_path, const char *kind, int target_id);
    normally be deleted by callers rather than stored. */
 int  jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
                                 jw_game_entry *out);
-/* Resolve a stable games.id to a full entry. Returns 0 when found, 1 when no
-   row matched (e.g. a picked game whose ROM was removed), -1 on error. */
+/* Resolve a stable games.id to a full entry. Returns 0 when found, -1 when no
+   row matched (e.g. a picked game whose ROM was removed) or on error. */
 int  jw_db_get_game_by_id(const char *db_path, int game_id, jw_game_entry *out);
 int  jw_db_get_game_setting(const char *db_path, int game_id,
                             const char *key, char *out, size_t out_size);

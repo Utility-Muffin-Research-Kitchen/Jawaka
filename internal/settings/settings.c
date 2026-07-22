@@ -4,6 +4,7 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/system_names.h"
 #include "internal/platform/device.h"
+#include "internal/platform/leaf_version.h"
 #include "internal/platform/platform_id.h"
 #include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
@@ -3513,39 +3514,6 @@ static void jw__about_push(jw__about_row *rows, int *n, jw__about_kind kind,
     (*n)++;
 }
 
-/* Read the installed Leaf release from release.json (written by the installer /
-   OTA runner). Fills version and release_id; either may stay empty. Returns true
-   if at least one was found. The version is the canonical "current installed
-   version" shown in About; per the OTA contract an absent file means an older
-   install and is shown as "Unknown" rather than blocking anything. */
-static bool jw__read_installed_release(char *version, size_t version_size,
-                                       char *release_id, size_t release_id_size) {
-    if (version_size) version[0] = '\0';
-    if (release_id_size) release_id[0] = '\0';
-    const char *internal = getenv("UMRK_INTERNAL_DATA_PATH");
-    if (!internal || !internal[0]) return false;
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/release.json", internal);
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return false;
-    char buf[1024];
-    size_t got = fread(buf, 1, sizeof(buf) - 1, fp);
-    fclose(fp);
-    buf[got] = '\0';
-
-    cJSON *root = cJSON_Parse(buf);
-    if (!root) return false;
-    cJSON *v = cJSON_GetObjectItemCaseSensitive(root, "version");
-    cJSON *r = cJSON_GetObjectItemCaseSensitive(root, "release_id");
-    if (version_size && cJSON_IsString(v) && v->valuestring)
-        snprintf(version, version_size, "%s", v->valuestring);
-    if (release_id_size && cJSON_IsString(r) && r->valuestring)
-        snprintf(release_id, release_id_size, "%s", r->valuestring);
-    cJSON_Delete(root);
-    return version[0] || release_id[0];
-}
-
 /* Page title for the Info pages (Device / Library / Playtime), matching the game
    browser's drilled-in title: CAT_FONT_EXTRA_LARGE, theme text, no underline — so
    the system side reads the same as the content side. Returns the content top y
@@ -3583,19 +3551,26 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
     int n = 0;
     char buf[72];
 
-    char leaf_version[64], leaf_release_id[128];
-    bool have_release = jw__read_installed_release(leaf_version, sizeof(leaf_version),
-                                                   leaf_release_id, sizeof(leaf_release_id));
+    jw_installed_release release;
+    memset(&release, 0, sizeof(release));
+    const char *internal_data = getenv("UMRK_INTERNAL_DATA_PATH");
+    bool have_release =
+        internal_data && internal_data[0] &&
+        jw_installed_release_read(internal_data, &release) == 0 &&
+        (release.version[0] || release.release_id[0]);
     char identity[96];
     snprintf(identity, sizeof(identity), "Leaf  %s",
-             (have_release && leaf_version[0]) ? leaf_version : "Unknown");
+             (have_release && release.version[0]) ? release.version : "Unknown");
     jw__about_push(rows, &n, JW_ABOUT_PLAIN, identity, "");
 
     jw__about_push(rows, &n, JW_ABOUT_HEADING, "System", "");
     /* Release id pins the exact installed artifact; show it when it adds info
        beyond the version string (per the OTA installed-version contract). */
-    if (have_release && leaf_release_id[0] && strcmp(leaf_release_id, leaf_version) != 0)
-        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Release", leaf_release_id);
+    if (have_release && release.release_id[0] &&
+        strcmp(release.release_id, release.version) != 0) {
+        jw__about_push(rows, &n, JW_ABOUT_FIELD, "Release",
+                       release.release_id);
+    }
     snprintf(buf, sizeof(buf), "%s", info.os_version[0] ? info.os_version : "?");
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "OS", buf);
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "Kernel", info.kernel[0] ? info.kernel : "—");

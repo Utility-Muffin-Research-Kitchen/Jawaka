@@ -32,7 +32,8 @@ static int jw__print_games(sqlite3 *db) {
 
 static int jw__print_apps(sqlite3 *db) {
     static const char *sql =
-        "SELECT name, pak_dir, platform, COALESCE(icon, '') "
+        "SELECT name,pak_dir,platform,COALESCE(icon,''),"
+        "COALESCE(min_leaf_version,'') "
         "FROM apps ORDER BY pak_dir;";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -45,11 +46,14 @@ static int jw__print_apps(sqlite3 *db) {
         const unsigned char *pak_dir = sqlite3_column_text(stmt, 1);
         const unsigned char *platform = sqlite3_column_text(stmt, 2);
         const unsigned char *icon = sqlite3_column_text(stmt, 3);
-        printf("app\t%s\t%s\t%s\t%s\n",
+        const unsigned char *min_leaf_version =
+            sqlite3_column_text(stmt, 4);
+        printf("app\t%s\t%s\t%s\t%s\t%s\n",
                name ? (const char *)name : "",
                pak_dir ? (const char *)pak_dir : "",
                platform ? (const char *)platform : "",
-               icon ? (const char *)icon : "");
+               icon ? (const char *)icon : "",
+               min_leaf_version ? (const char *)min_leaf_version : "");
     }
 
     sqlite3_finalize(stmt);

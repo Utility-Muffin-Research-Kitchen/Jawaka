@@ -74,6 +74,51 @@ typedef struct {
 } jw_ipc_library_status_info;
 
 typedef struct {
+    const char *source_id;
+    const char *rom_relpath;
+    const char *image_root_kind;
+    const char *image_relpath;
+} jw_ipc_relocation_identity;
+
+typedef struct {
+    jw_ipc_relocation_identity old_identity;
+    jw_ipc_relocation_identity new_identity;
+} jw_ipc_relocation_item;
+
+typedef struct {
+    char operation_id[96];
+    char state[16];
+    int expected_generation;
+    int mapping_generation;
+    int scan_ticket_generation;
+    int library_generation;
+    int item_count;
+} jw_ipc_relocation_status;
+
+int jw_ipc_has_feature(const char *socket_path, const char *feature,
+                       bool *out_supported);
+int jw_ipc_relocation_prepare(const char *socket_path, const char *operation_id,
+                              int expected_generation,
+                              const jw_ipc_relocation_item *items, int item_count,
+                              jw_ipc_relocation_status *out,
+                              char *error, int error_len);
+int jw_ipc_relocation_get_status(const char *socket_path, const char *operation_id,
+                                 jw_ipc_relocation_status *out,
+                                 char *error, int error_len);
+int jw_ipc_relocation_commit(const char *socket_path, const char *operation_id,
+                             jw_ipc_relocation_status *out,
+                             char *error, int error_len);
+int jw_ipc_relocation_revert(const char *socket_path, const char *operation_id,
+                             jw_ipc_relocation_status *out,
+                             char *error, int error_len);
+int jw_ipc_relocation_abort(const char *socket_path, const char *operation_id,
+                            jw_ipc_relocation_status *out,
+                            char *error, int error_len);
+int jw_ipc_relocation_finish(const char *socket_path, const char *operation_id,
+                             jw_ipc_relocation_status *out,
+                             char *error, int error_len);
+
+typedef struct {
     int index;
     bool selected;
     bool installed;
