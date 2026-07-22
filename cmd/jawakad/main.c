@@ -32,6 +32,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -177,7 +178,9 @@ typedef struct {
     jw_input_proxy input_proxy;
     pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
     jw_child_kind child_kind;
-    uint64_t last_screenshot_ms; /* debounce for the Menu+L1 screenshot hotkey */
+    uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
+    bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
+    uint64_t screenshots_checked_ms;     /* when the flag was last read from the DB */
     pid_t menu_pid;           /* resident warm-standby in-game menu while RetroArch is alive */
     bool menu_in_game;
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
@@ -5304,15 +5307,21 @@ static bool jw__input_game_switcher(void *userdata) {
 #define JW_SS_SCANOUT_W   720   /* panel native (portrait); UI runs landscape */
 #define JW_SS_SCANOUT_H   960
 #define JW_SS_THROTTLE_MS 1000
+#define JW_SS_ENABLE_TTL_MS 2000  /* re-read the opt-in flag from the DB at most this often */
+#define JW_SS_PRE_MAX     64      /* max pre-existing PNGs tracked for the in-game diff */
 
 typedef struct {
     char  sdcard_root[PATH_MAX];
     char  db_path[PATH_MAX];
     char  shots_dir[PATH_MAX];   /* RA's tmpfs screenshot dir (in-game only) */
     char  rom_name[128];         /* sanitized running-game name (in-game only) */
-    pid_t flash_pid;   /* launcher to flash after a UI capture (0 = none) */
     bool  in_game;     /* RA session running -> use the RA SCREENSHOT command */
 } jw__screenshot_job;
+
+/* Set by a UI-capture worker when its PNG is written; the main loop drains it and
+   flashes the launcher (revalidating that the launcher is still foreground, so a
+   stale/reused pid is never signalled). */
+static atomic_int g_ss_flash_request;
 
 static uint64_t jw__screenshot_now_ms(void) {
     struct timespec ts;
@@ -5491,18 +5500,37 @@ static void *jw__screenshot_worker(void *arg) {
             free(job);
             return NULL;
         }
-        time_t t0 = time(NULL);
+        /* Snapshot the PNGs already in the dir so we only accept the file RA
+           writes for THIS command — the pause-menu background writes here too, and
+           1-second mtime granularity can't distinguish one from an existing frame. */
+        char pre[JW_SS_PRE_MAX][256];   /* per-worker (concurrent captures allowed) */
+        int pre_n = 0;
+        {
+            DIR *d = opendir(job->shots_dir);
+            if (d) {
+                struct dirent *e;
+                while ((e = readdir(d)) != NULL && pre_n < JW_SS_PRE_MAX) {
+                    const char *dot = strrchr(e->d_name, '.');
+                    if (dot && strcasecmp(dot, ".png") == 0) {
+                        snprintf(pre[pre_n++], sizeof(pre[0]), "%s", e->d_name);
+                    }
+                }
+                closedir(d);
+            }
+        }
+
         jw_ra_client ra = jw_ra_client_default();
         if (jw_ra_screenshot(&ra) != JW_RA_OK) {
             jw_log_warn("screenshot: RA SCREENSHOT command failed");
             free(job);
             return NULL;
         }
+
         char newest[PATH_MAX] = "";
         off_t prev_size = -1;
         for (int tries = 0; tries < 30; tries++) {   /* up to ~3s */
             usleep(100000);   /* 100ms */
-            /* newest .png with mtime >= t0 and a non-zero size */
+            /* newest PNG that was NOT already present, with a non-zero size */
             time_t best_mt = 0;
             char  cand[PATH_MAX] = "";
             off_t cand_size = 0;
@@ -5516,6 +5544,16 @@ static void *jw__screenshot_worker(void *arg) {
                 if (!dot || strcasecmp(dot, ".png") != 0) {
                     continue;
                 }
+                bool preexisting = false;
+                for (int i = 0; i < pre_n; i++) {
+                    if (strcmp(pre[i], e->d_name) == 0) {
+                        preexisting = true;
+                        break;
+                    }
+                }
+                if (preexisting) {
+                    continue;
+                }
                 char full[PATH_MAX];
                 if (snprintf(full, sizeof(full), "%s/%s", job->shots_dir, e->d_name) >=
                         (int)sizeof(full)) {
@@ -5525,7 +5563,7 @@ static void *jw__screenshot_worker(void *arg) {
                 if (stat(full, &st) != 0) {
                     continue;
                 }
-                if (st.st_size > 0 && st.st_mtime >= t0 && st.st_mtime >= best_mt) {
+                if (st.st_size > 0 && st.st_mtime >= best_mt) {
                     best_mt = st.st_mtime;
                     snprintf(cand, sizeof(cand), "%s", full);
                     cand_size = st.st_size;
@@ -5596,9 +5634,7 @@ static void *jw__screenshot_worker(void *arg) {
     free(rgb);
     if (ok) {
         jw_log_info("screenshot: saved %s", path);
-        if (job->flash_pid > 0) {
-            kill(job->flash_pid, SIGUSR1);   /* brief on-screen flash in the launcher */
-        }
+        atomic_store(&g_ss_flash_request, 1);   /* main loop flashes the launcher */
     } else {
         jw_log_warn("screenshot: failed to write %s", path);
     }
@@ -5614,13 +5650,22 @@ static bool jw__on_screenshot_hotkey(void *userdata) {
         return false;
     }
 
-    char en[8] = "";
-    if (jw_db_get_setting(state->db_path, "screenshots_enabled", en, sizeof(en)) != 0 ||
-        strcmp(en, "1") != 0) {
-        return false;   /* opt-in: decline so Menu+L1 forwards to the app */
+    uint64_t now = jw__screenshot_now_ms();
+
+    /* Opt-in gate. Reading the flag opens/closes sqlite, and this runs on the
+       input tick, so cache it and refresh at most every JW_SS_ENABLE_TTL_MS. */
+    if (state->screenshots_checked_ms == 0 ||
+        now - state->screenshots_checked_ms >= JW_SS_ENABLE_TTL_MS) {
+        char en[8] = "";
+        state->screenshots_enabled_cached =
+            (jw_db_get_setting(state->db_path, "screenshots_enabled", en, sizeof(en)) == 0 &&
+             strcmp(en, "1") == 0);
+        state->screenshots_checked_ms = now;
+    }
+    if (!state->screenshots_enabled_cached) {
+        return false;   /* decline so Menu+L1 forwards to the app */
     }
 
-    uint64_t now = jw__screenshot_now_ms();
     if (state->last_screenshot_ms != 0 &&
         now - state->last_screenshot_ms < JW_SS_THROTTLE_MS) {
         return true;   /* consume, but debounce rapid repeats */
@@ -5643,9 +5688,6 @@ static bool jw__on_screenshot_hotkey(void *userdata) {
         jw__screenshot_rom_name(state->retroarch_session.rom_path,
                                 job->rom_name, sizeof(job->rom_name));
     }
-    /* Only the launcher (foreground) can show the on-screen flash; in-game RA
-       shows its own toast, so no flash there. */
-    job->flash_pid = (state->child_kind == JW_CHILD_LAUNCHER) ? state->child_pid : 0;
 
     pthread_t th;
     pthread_attr_t attr;
@@ -8852,6 +8894,12 @@ int main(int argc, char *argv[]) {
         jw__handle_osd_exit(&state);
         jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
+        /* A UI screenshot finished: flash the launcher, but only if it is still the
+           foreground child (revalidated with the live pid, never a stale snapshot). */
+        if (atomic_exchange(&g_ss_flash_request, 0) &&
+            state.child_kind == JW_CHILD_LAUNCHER && state.child_pid > 0) {
+            kill(state.child_pid, SIGUSR1);
+        }
         unsigned audio_events = jw_platform_audio_tick(&state.platform);
         if (audio_events & JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");

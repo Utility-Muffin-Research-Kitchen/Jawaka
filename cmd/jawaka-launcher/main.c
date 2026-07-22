@@ -9003,7 +9003,10 @@ int main(void) {
            then present once. Covers focus mode too — same process. */
         if (g_screenshot_flash) {
             g_screenshot_flash = 0;
-            state.flash_until_ms = SDL_GetTicks() + JW_SCREENSHOT_FLASH_MS;
+            /* Arm only when not already flashing: a burst of SIGUSR1 must not keep
+               re-extending the fade (which would hold the screen white). */
+            if (state.flash_until_ms == 0)
+                state.flash_until_ms = SDL_GetTicks() + JW_SCREENSHOT_FLASH_MS;
         }
         if (state.flash_until_ms != 0) {
             int32_t rem = (int32_t)(state.flash_until_ms - SDL_GetTicks());
@@ -9019,7 +9022,9 @@ int main(void) {
                    until unrelated input. */
                 cat_request_frame_in(16);
                 g_defer_present = true;
+                jw__suppress_inline_decode = true;   /* no cover decodes during the fade */
                 jw__render_launcher(&state);   /* draw the scene, hold the present */
+                jw__suppress_inline_decode = false;
                 g_defer_present = false;
                 SDL_Renderer *r = cat_get_renderer();
                 SDL_BlendMode prev;

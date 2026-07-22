@@ -440,7 +440,10 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
             data->screenshot_chord_consumed = false;
             return;
         }
-        if (ev->value > 0 && data->menu_held && !data->menu_forwarded) {
+        /* value==1 only: a held L1 emits autorepeat (value==2); consuming that
+           would leave the earlier real press forwarded-down (held_keys set) and
+           then swallow its release, sticking L1 down in the game. */
+        if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
             bool handled = proxy->screenshot &&
                            proxy->screenshot(proxy->userdata);
             if (handled) {
