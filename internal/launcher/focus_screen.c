@@ -280,9 +280,54 @@ static void jw__focus_hint_cell(int x, int y, const char *key, const char *label
                                 SDL_Color kc, SDL_Color lc) {
     if (!key || !key[0]) return;
     TTF_Font *f = cat_get_font(CAT_FONT_SMALL);
-    int kw = cat_draw_text(f, key, x, y, kc);
+    char keybuf[24];
+    snprintf(keybuf, sizeof(keybuf), "%s:", key);
+    int kw = cat_draw_text(f, keybuf, x, y, kc);
     if (label && label[0])
-        cat_draw_text(f, label, x + kw + cat_measure_text(f, "  "), y, lc);
+        cat_draw_text(f, label, x + kw + cat_measure_text(f, " "), y, lc);
+}
+
+/* Draw the substring s[a..b) in color c at (x,y); return its advance width. */
+static int jw__hint_span(TTF_Font *f, const char *s, int a, int b,
+                         int x, int y, SDL_Color c) {
+    if (b <= a) return 0;
+    char buf[128];
+    int n = b - a;
+    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+    memcpy(buf, s + a, (size_t)n);
+    buf[n] = '\0';
+    return cat_draw_text(f, buf, x, y, c);
+}
+
+/* Render a "KEY: Value   KEY: Value" hint line centered at cx, coloring the
+   "KEY:" tokens in key_color and the values in val_color. Segments are split on
+   runs of 2+ spaces; a value may contain single spaces ("Shut Down"). This is
+   the one two-tone hint style shared by the wizard footers, the confirm popup,
+   and (via jw__focus_hint_cell) the unlock legend, so key/value colors match
+   everywhere. */
+void jw_focus_draw_hint_kv(TTF_Font *f, const char *s, int cx, int y,
+                           SDL_Color key_color, SDL_Color val_color) {
+    if (!s || !s[0]) return;
+    int len = (int)strlen(s);
+    int x = cx - cat_measure_text(f, s) / 2;
+    int tok = 0, i = 0, in_value = 0;
+    while (i < len) {
+        if (!in_value) {
+            if (s[i] == ':') {
+                x += jw__hint_span(f, s, tok, i + 1, x, y, key_color);
+                tok = i + 1; in_value = 1;
+            }
+            i++;
+        } else if (s[i] == ' ' && i + 1 < len && s[i + 1] == ' ') {
+            int j = i;
+            while (j < len && s[j] == ' ') j++;
+            x += jw__hint_span(f, s, tok, j, x, y, val_color);
+            tok = j; in_value = 0; i = j;
+        } else {
+            i++;
+        }
+    }
+    jw__hint_span(f, s, tok, len, x, y, in_value ? val_color : key_color);
 }
 
 void jw_focus_screen_render_unlock(bool bw, const jw_focus_unlock_view *v) {
@@ -337,8 +382,10 @@ void jw_focus_screen_render_unlock(bool bw, const jw_focus_unlock_view *v) {
 
     /* Confirm prompt (Reboot? / Shut Down?) takes over the panel. */
     if (v->confirm) {
-        jw__focus_text_centered(hint_font, "A  Confirm      B  Back",
-                                cx, py + ph - pad - hh, pal.text);
+        jw_focus_draw_hint_kv(hint_font,
+                              v->confirm_hint ? v->confirm_hint
+                                              : "B: Back      A: Confirm",
+                              cx, py + ph - pad - hh, pal.sel, pal.text);
         return;
     }
 
@@ -381,8 +428,10 @@ void jw_focus_screen_render_unlock(bool bw, const jw_focus_unlock_view *v) {
         if (v->rows[r].center) {
             const char *k = v->rows[r].lkey ? v->rows[r].lkey : "";
             const char *l = v->rows[r].llabel ? v->rows[r].llabel : "";
-            int total = cat_measure_text(hint_font, k);
-            if (l[0]) total += cat_measure_text(hint_font, "  ") +
+            char kbuf[24];
+            snprintf(kbuf, sizeof(kbuf), "%s:", k);
+            int total = cat_measure_text(hint_font, kbuf);
+            if (l[0]) total += cat_measure_text(hint_font, " ") +
                                cat_measure_text(hint_font, l);
             jw__focus_hint_cell(cx - total / 2, ry, v->rows[r].lkey,
                                 v->rows[r].llabel, pal.sel, pal.text);

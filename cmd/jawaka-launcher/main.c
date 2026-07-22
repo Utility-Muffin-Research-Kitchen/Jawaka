@@ -7582,11 +7582,10 @@ static void jw__fsetup_footer(jw_launcher_state *state, const char *hint) {
     TTF_Font *f = cat_get_font(CAT_FONT_SMALL);
     if (state->focus_setup_note[0]) {
         int w = cat_measure_text(f, state->focus_setup_note);
-        cat_draw_text(f, state->focus_setup_note, (sw - w) / 2, sh - CAT_S(64),
+        cat_draw_text(f, state->focus_setup_note, (sw - w) / 2, sh - CAT_S(84),
                       th->emphasis);
     }
-    int w = cat_measure_text(f, hint);
-    cat_draw_text(f, hint, (sw - w) / 2, sh - CAT_S(36), th->hint);
+    jw_focus_draw_hint_kv(f, hint, sw / 2, sh - CAT_S(56), th->emphasis, th->text);
 }
 
 /* option-menu (Lock / Style): highlight the cursor row. */
@@ -7657,22 +7656,22 @@ static void jw__fsetup_render_arrange(jw_launcher_state *state) {
                               th->text, CAT_ALIGN_CENTER);
     }
     jw__fsetup_footer(state,
-        state->focus_setup_grabbed ? "Move with the D-pad   X drop"
-                                   : "X grab   Y remove   A next   B back");
+        state->focus_setup_grabbed ? "X: Drop   D-pad: Move"
+                                   : "X: Grab   Y: Remove   B: Back   A: Next");
 }
 
 static void jw__fsetup_render_lock(jw_launcher_state *state) {
     static const char *const opts[] = { "No lock", "PIN" };
     jw__fsetup_header("Lock", NULL);
     jw__fsetup_options(opts, 2, state->focus_setup_choice);
-    jw__fsetup_footer(state, "A choose   B back");
+    jw__fsetup_footer(state, "B: Back   A: Next");
 }
 
 static void jw__fsetup_render_style(jw_launcher_state *state) {
     static const char *const opts[] = { "Theme colors", "Black & white" };
     jw__fsetup_header("Style", NULL);
     jw__fsetup_options(opts, 2, state->focus_setup_choice);
-    jw__fsetup_footer(state, "A choose   B back");
+    jw__fsetup_footer(state, "B: Back   A: Next");
 }
 
 static void jw__fsetup_render_pin(jw_launcher_state *state) {
@@ -7689,12 +7688,10 @@ static void jw__fsetup_render_pin(jw_launcher_state *state) {
         cat_draw_text(f, m, (sw - w) / 2, sh / 2 + CAT_S(70),
                       (SDL_Color){ 0xFF, 0x3B, 0x30, 0xFF });
     }
-    jw__fsetup_footer(state, "Up/Down digit   Left/Right slot   A ok   B back");
+    jw__fsetup_footer(state, "D-pad: Value/Position   B: Back   A: Next");
 }
 
 static void jw__fsetup_render_confirm(jw_launcher_state *state) {
-    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
-
     /* True preview: draw the focus screen exactly as it will appear. */
     jw_focus_tile tiles[JW_FOCUS_SCREEN_MAX_TILES];
     memset(tiles, 0, sizeof(tiles));
@@ -7714,30 +7711,17 @@ static void jw__fsetup_render_confirm(jw_launcher_state *state) {
         }
         n++;
     }
+    bool bw = state->focus_setup_style == JW_FOCUS_STYLE_BW;
     jw_focus_battery batt = { state->focus_batt_pct < 0 ? 100 : state->focus_batt_pct,
                               state->focus_batt_chg == 1 };
-    jw_focus_screen_render(tiles, n, -1, state->focus_setup_style == JW_FOCUS_STYLE_BW,
-                           batt, false);
+    jw_focus_screen_render(tiles, n, -1, bw, batt, false);
 
-    /* Prompt bar. */
-    SDL_Renderer *rend = cat_get_renderer();
-    SDL_BlendMode prev;
-    SDL_GetRenderDrawBlendMode(rend, &prev);
-    SDL_SetRenderDrawBlendMode(rend, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(rend, 0, 0, 0, 150);
-    SDL_Rect bar = { 0, sh - CAT_S(96), sw, CAT_S(96) };
-    SDL_RenderFillRect(rend, &bar);
-    SDL_SetRenderDrawBlendMode(rend, prev);
-    TTF_Font *f = cat_get_font(CAT_FONT_MEDIUM);
-    const char *t1 = "Start 5-Game Mode?";
-    const char *t2 = "A start   B back";
-    int w1 = cat_measure_text(f, t1);
-    cat_draw_text(f, t1, (sw - w1) / 2, sh - CAT_S(84),
-                  (SDL_Color){ 255, 255, 255, 255 });
-    TTF_Font *fs = cat_get_font(CAT_FONT_SMALL);
-    int w2 = cat_measure_text(fs, t2);
-    cat_draw_text(fs, t2, (sw - w2) / 2, sh - CAT_S(44),
-                  (SDL_Color){ 210, 210, 210, 255 });
+    /* Confirmation popup over the dimmed preview — same panel as the exit overlay. */
+    jw_focus_unlock_view uv;
+    memset(&uv, 0, sizeof(uv));
+    uv.confirm      = "Start 5-Game Mode?";
+    uv.confirm_hint = "B: Back      A: Start";
+    jw_focus_screen_render_unlock(bw, &uv);
 }
 
 static void jw__render_focus_setup(jw_launcher_state *state) {

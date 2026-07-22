@@ -2,6 +2,7 @@
 #define JW_LAUNCHER_FOCUS_SCREEN_H
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
 #include <stdbool.h>
 
 /* 5-Game Mode focus screen — the stripped, locked home for a curated set of up
@@ -69,6 +70,7 @@ typedef struct {
     const char *title;       /* e.g. "Enter PIN to exit" / "Exit 5-Game Mode?" */
     const char *confirm;     /* when set (e.g. "Reboot?"), show a plain A/B
                                 confirm instead of the exit / PIN UI */
+    const char *confirm_hint; /* confirm-mode footer; NULL = "B: Back  A: Confirm" */
     jw_focus_hint_row rows[JW_FOCUS_HINT_ROWS];  /* 2-column button legend */
     int         row_count;
 } jw_focus_unlock_view;
@@ -76,5 +78,11 @@ typedef struct {
 /* Dim the whole screen and draw the unlock panel on top. Call AFTER
    jw_focus_screen_render (which draws the grid), BEFORE presenting. */
 void jw_focus_screen_render_unlock(bool bw, const jw_focus_unlock_view *v);
+
+/* Draw a "KEY: Value   KEY: Value" hint line centered at cx, "KEY:" tokens in
+   key_color and values in val_color (segments split on runs of 2+ spaces). The
+   shared two-tone hint style so key/value colors match across the focus UI. */
+void jw_focus_draw_hint_kv(TTF_Font *f, const char *s, int cx, int y,
+                           SDL_Color key_color, SDL_Color val_color);
 
 #endif /* JW_LAUNCHER_FOCUS_SCREEN_H */
