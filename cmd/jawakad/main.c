@@ -8750,6 +8750,14 @@ int main(int argc, char *argv[]) {
         } else if (pre.active && !lock_present) {
             jw_log_warn("5-game mode: active but recovery lock file absent — "
                         "unlocking (cleared five_game_active)");
+            /* Entering focus mode turns the radio off and stashes the prior state,
+               and the in-launcher exit restores it. This recovery path bypasses that
+               exit, so without this the user would land in the normal launcher with
+               Wi-Fi still off and no indication why. Restore it the same way. */
+            if (pre.wifi_prev == 1 && jw_wifi_available()) {
+                jw_log_info("5-game mode: restoring Wi-Fi after lock-file recovery");
+                jw_wifi_set_radio(true);
+            }
         }
     }
 
