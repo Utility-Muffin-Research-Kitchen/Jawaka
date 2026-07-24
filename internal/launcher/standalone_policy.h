@@ -7,6 +7,8 @@ bool jw_standalone_policy_is_mupen64plus(const char *core_id,
                                          const char *launcher_path);
 bool jw_standalone_policy_is_flycast(const char *core_id,
                                      const char *launcher_path);
+bool jw_standalone_policy_is_ppsspp(const char *core_id,
+                                    const char *launcher_path);
 bool jw_standalone_policy_is_ports(const char *core_id,
                                    const char *launcher_path);
 

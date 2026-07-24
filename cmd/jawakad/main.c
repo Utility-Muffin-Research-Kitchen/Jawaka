@@ -444,9 +444,8 @@ static bool jw__standalone_session_is_ppsspp(const jw_daemon_state *state) {
     }
 
     const jw_retroarch_session *session = &state->retroarch_session;
-    return strcmp(session->core_id, "ppsspp") == 0 ||
-           strstr(session->core_path, "/ppsspp/") != NULL ||
-           strstr(session->core_path, "/PPSSPP") != NULL;
+    return jw_standalone_policy_is_ppsspp(session->core_id,
+                                          session->core_path);
 }
 
 static bool jw__standalone_session_is_drastic(const jw_daemon_state *state) {
@@ -6034,10 +6033,10 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                 jw_platform_result_code_name(ready_result.code));
 
     if (jw__standalone_target_uses_calibrated_virtual_input(target)) {
-        /* Mupen64Plus, Flycast, and PortMaster ports need the same calibrated
-           virtual gamepad path as RetroArch. Keep the full grab-and-forward
-           proxy active so Joe's calibration is applied before SDL sees the
-           axes. */
+        /* Mupen64Plus, Flycast, PPSSPP, and PortMaster ports need the same
+           calibrated virtual gamepad path as RetroArch. Keep the full
+           grab-and-forward proxy active so Joe's calibration is applied
+           before SDL sees the axes. */
         jw__start_input_proxy(state);
         if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
             int joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);
