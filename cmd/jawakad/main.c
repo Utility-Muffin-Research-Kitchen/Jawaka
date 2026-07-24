@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -181,6 +182,12 @@ typedef struct {
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
     bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
     uint64_t screenshots_checked_ms;     /* when the flag was last read from the DB */
+    /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
+       input tick, so avoid a sqlite open per event). */
+    bool     rumble_enabled_cached;
+    int      rumble_strength_cached;     /* 0-100 %  */
+    bool     rumble_nav_cached;          /* per-move navigation tick (opt-in) */
+    uint64_t rumble_checked_ms;
     pid_t menu_pid;           /* resident warm-standby in-game menu while RetroArch is alive */
     bool menu_in_game;
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
@@ -749,6 +756,153 @@ static bool jw__roms_has_dir(const char *roms, const char *name) {
    scanner skips hidden entries and non-directories, so it's inert), so a folder
    the user deletes stays gone. Best-effort: a missing catalog or an un-writable
    card just skips. */
+/* ---- Rumble / haptics (PWM motor) --------------------------------------
+ * The MLP1 rumble motor is a single PWM channel (pwmchip0/pwm0, 1 kHz), not a
+ * Linux force-feedback device. We configure it ONCE and then only modulate
+ * duty_cycle: a buzz is duty>0, "off" is duty=0 with the channel left enabled.
+ * We never toggle enable and never unexport -- both latch the motor on for this
+ * driver, which is how it got stranded during bring-up. See plans/rumble.md.
+ * Amplitude barely differentiates by feel (mostly changes the audible buzz);
+ * short burst PATTERNS do, so the vocabulary is 1/2/3 ticks by event weight. */
+#define JW_RUMBLE_CHIP    "/sys/class/pwm/pwmchip0"
+#define JW_RUMBLE_PWM     JW_RUMBLE_CHIP "/pwm0"
+#define JW_RUMBLE_PERIOD  1000000L   /* ns, 1 kHz -- matches stock S50loong */
+#define JW_RUMBLE_FLOOR   40         /* % of period below which the motor won't move */
+#define JW_RUMBLE_TICK_MS 40
+#define JW_RUMBLE_GAP_MS  80
+#define JW_RUMBLE_CACHE_TTL_MS 1000
+
+static pthread_mutex_t g_rumble_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_rumble_cv   = PTHREAD_COND_INITIALIZER;
+static int  g_rumble_bursts = 0;     /* pending pattern: 1/2/3, 0 = idle */
+static long g_rumble_duty   = 0;     /* duty (ns) for the pending pulse */
+static bool g_rumble_ready  = false; /* channel configured */
+
+static void jw__rumble_write(const char *path, const char *val) {
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    (void)!write(fd, val, strlen(val));
+    close(fd);
+}
+static void jw__rumble_write_long(const char *path, long v) {
+    char b[24];
+    int n = snprintf(b, sizeof(b), "%ld", v);
+    if (n > 0 && n < (int)sizeof(b)) jw__rumble_write(path, b);
+}
+
+/* One-time channel setup: export, normal polarity, 1 kHz, held off at 0%. */
+static void jw__rumble_init(void) {
+    struct stat st;
+    if (stat(JW_RUMBLE_PWM, &st) != 0)
+        jw__rumble_write(JW_RUMBLE_CHIP "/export", "0");
+    if (stat(JW_RUMBLE_PWM, &st) != 0) {
+        jw_log_warn("rumble: pwm0 not available; haptics disabled");
+        return;
+    }
+    jw__rumble_write(JW_RUMBLE_PWM "/enable", "0");   /* polarity needs disabled */
+    jw__rumble_write(JW_RUMBLE_PWM "/polarity", "normal");
+    jw__rumble_write_long(JW_RUMBLE_PWM "/period", JW_RUMBLE_PERIOD);
+    jw__rumble_write(JW_RUMBLE_PWM "/duty_cycle", "0");
+    jw__rumble_write(JW_RUMBLE_PWM "/enable", "1");   /* enabled, idle at 0% = off */
+    g_rumble_ready = true;
+    jw_log_info("rumble: motor ready (pwmchip0/pwm0, %ldns period)", JW_RUMBLE_PERIOD);
+}
+
+/* Bulletproof off: drive 0% (never disable/unexport). Safe to call any time. */
+static void jw__rumble_off(void) {
+    if (g_rumble_ready) jw__rumble_write(JW_RUMBLE_PWM "/duty_cycle", "0");
+}
+
+/* Map a 0-100 strength onto [FLOOR,100]% of the period (below FLOOR the motor
+   won't reliably move). Returns duty in ns. */
+static long jw__rumble_duty_for(int strength_pct) {
+    if (strength_pct <= 0) return 0;
+    if (strength_pct > 100) strength_pct = 100;
+    int eff = JW_RUMBLE_FLOOR + (100 - JW_RUMBLE_FLOOR) * strength_pct / 100;
+    return JW_RUMBLE_PERIOD * eff / 100;
+}
+
+static void jw__rumble_msleep(int ms) {
+    struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+/* Worker: waits for a pattern request and pulses duty off the input path so the
+   IPC loop never blocks. A new request coalesces (latest wins) rather than
+   queueing, so rapid input can't back up a buzz train. */
+static void *jw__rumble_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        int bursts; long duty;
+        pthread_mutex_lock(&g_rumble_lock);
+        while (g_rumble_bursts == 0)
+            pthread_cond_wait(&g_rumble_cv, &g_rumble_lock);
+        bursts = g_rumble_bursts; duty = g_rumble_duty;
+        g_rumble_bursts = 0;
+        pthread_mutex_unlock(&g_rumble_lock);
+        for (int i = 0; i < bursts; i++) {
+            jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", duty);
+            jw__rumble_msleep(JW_RUMBLE_TICK_MS);
+            jw__rumble_write(JW_RUMBLE_PWM "/duty_cycle", "0");
+            if (i + 1 < bursts) jw__rumble_msleep(JW_RUMBLE_GAP_MS);
+        }
+    }
+    return NULL;
+}
+
+static void jw__rumble_queue(int bursts, long duty) {
+    if (!g_rumble_ready || bursts <= 0 || duty <= 0) return;
+    pthread_mutex_lock(&g_rumble_lock);
+    g_rumble_bursts = bursts;   /* latest wins */
+    g_rumble_duty   = duty;
+    pthread_cond_signal(&g_rumble_cv);
+    pthread_mutex_unlock(&g_rumble_lock);
+}
+
+/* Refresh the TTL-cached rumble settings from the DB (mirrors the screenshot
+   flag: cheap on the input path, picks up changes within the TTL). */
+static void jw__rumble_refresh_cache(jw_daemon_state *state, uint64_t now_ms) {
+    if (state->rumble_checked_ms != 0 &&
+        now_ms - state->rumble_checked_ms < (uint64_t)JW_RUMBLE_CACHE_TTL_MS)
+        return;
+    char v[8] = "";
+    state->rumble_enabled_cached =
+        !(jw_db_get_setting(state->db_path, "rumble_enabled", v, sizeof(v)) == 0 &&
+          strcmp(v, "0") == 0);                    /* default ON when unset */
+    v[0] = '\0';
+    state->rumble_strength_cached =
+        (jw_db_get_setting(state->db_path, "rumble_strength", v, sizeof(v)) == 0 && v[0])
+            ? atoi(v) : 65;                          /* default ~Medium */
+    v[0] = '\0';
+    state->rumble_nav_cached =
+        (jw_db_get_setting(state->db_path, "rumble_nav", v, sizeof(v)) == 0 &&
+         strcmp(v, "1") == 0);                       /* default OFF */
+    state->rumble_checked_ms = now_ms;
+}
+
+/* Map a named UI event to a pattern and queue it, honouring the cached
+   settings. nav = single (opt-in), select = single, commit = double,
+   blocked = triple. */
+static void jw__rumble_event(jw_daemon_state *state, const char *event) {
+    if (!g_rumble_ready || !event) return;
+    jw__rumble_refresh_cache(state, (uint64_t)jw__monotonic_ms());
+    if (!state->rumble_enabled_cached) return;
+    int bursts;
+    if (strcmp(event, "nav") == 0) {
+        if (!state->rumble_nav_cached) return;
+        bursts = 1;
+    } else if (strcmp(event, "select") == 0) {
+        bursts = 1;
+    } else if (strcmp(event, "commit") == 0) {
+        bursts = 2;
+    } else if (strcmp(event, "blocked") == 0) {
+        bursts = 3;
+    } else {
+        return;
+    }
+    jw__rumble_queue(bursts, jw__rumble_duty_for(state->rumble_strength_cached));
+}
+
 static void jw__seed_rom_folders(const jw_daemon_state *state) {
     const char *roms = getenv("ROMS_PATH");
     if (!roms || !roms[0]) return;
@@ -6084,6 +6238,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         }
         state->direct_drm_active = true;
         state->direct_drm_weston_stopped = true;
+        jw__rumble_off();   /* never strand a UI pulse across a game handoff */
     }
 
     pid_t pid = fork();
@@ -7897,6 +8052,22 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_json(client, reply);
     }
 
+    if (strcmp(type->valuestring, "rumble") == 0) {
+        cJSON *ev = cJSON_GetObjectItemCaseSensitive(root, "event");
+        const char *event = cJSON_IsString(ev) ? ev->valuestring : NULL;
+        if (event && strcmp(event, "preview") == 0) {
+            /* Live slider preview: one tick at the exact passed strength (not the
+               TTL cache), so the user feels the level as they drag. */
+            cJSON *s = cJSON_GetObjectItemCaseSensitive(root, "strength");
+            int strength = cJSON_IsNumber(s) ? (int)s->valuedouble : 65;
+            jw__rumble_queue(1, jw__rumble_duty_for(strength));
+        } else if (event) {
+            jw__rumble_event(state, event);
+        }
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "rumble", NULL);
+    }
+
     if (strcmp(type->valuestring, "scan-library") == 0) {
         int rc = jw__handle_scan(state, client, root);
         cJSON_Delete(root);
@@ -8779,6 +8950,15 @@ int main(int argc, char *argv[]) {
        for drop-in ROMs without hunting the docs (needs ROMS_PATH above). */
     jw__seed_rom_folders(&state);
 
+    /* Bring up the rumble motor (configure the PWM once, held off) and start the
+       non-blocking pulse worker. Haptics no-op cleanly if the node is absent. */
+    jw__rumble_init();
+    {
+        pthread_t rumble_thread;
+        if (pthread_create(&rumble_thread, NULL, jw__rumble_worker, NULL) == 0)
+            pthread_detach(rumble_thread);
+    }
+
     /* Export the user's time zone so launched apps (and the daemon's own
        localtime) use it. The launcher re-applies it live when changed. */
     {
@@ -8953,6 +9133,8 @@ int main(int argc, char *argv[]) {
             jw_log_warn("ipc loop iteration failed");
         }
     }
+
+    jw__rumble_off();   /* leave the motor off on the way out */
 
     /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
        knows this was an intentional shutdown, not a crash. The marker lives in
