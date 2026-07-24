@@ -36,10 +36,14 @@ int main(void) {
            jw_standalone_policy_requires_direct_drm(
                "ppsspp", "/sd/emulators/ppsspp/launch.sh", true),
            true);
-    expect("PPSSPP direct input",
+    expect("PPSSPP calibrated input",
            jw_standalone_policy_uses_calibrated_virtual_input(
                "ppsspp", "/sd/emulators/ppsspp/launch.sh"),
-           false);
+           true);
+    expect("PPSSPP GLES calibrated input by path",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "ppsspp_gles", "/sd/emulators/ppsspp/launch-gles.sh"),
+           true);
 
     expect("Mupen calibrated input",
            jw_standalone_policy_uses_calibrated_virtual_input(
