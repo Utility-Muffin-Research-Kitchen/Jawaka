@@ -1096,6 +1096,13 @@ void jw_settings_toggle_led(jw_settings_ui *ui) {
 static void jw__persist(const jw_settings_ui *ui, const char *key, const char *val) {
     if (ui->db_path[0])
         jw_db_set_setting(ui->db_path, key, val);
+    /* Haptic: a setting changed. Skip keys with their own live feedback
+       (strength = slider preview, enable = confirmation buzz). Gated in the
+       daemon by rumble_enabled, so nothing buzzes when haptics are off. */
+    if (ui->socket_path[0] &&
+        strcmp(key, "rumble_strength") != 0 &&
+        strcmp(key, "rumble_enabled") != 0)
+        jw_ipc_rumble(ui->socket_path, "select");
 }
 
 static void jw__persist_int(const jw_settings_ui *ui, const char *key, int val) {
@@ -5281,7 +5288,7 @@ static void jw__cycle_update_channel(jw_settings_ui *ui, char *status_buf,
 
 /* ─── Input dispatch ───────────────────────────────────────────────────── */
 
-bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
+static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button button,
                                     char *status_buf, size_t status_size,
                                     bool *theme_changed) {
     if (!ui || !ui->open) return false;
@@ -6747,4 +6754,49 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
     }
 
     return ui->open;
+}
+
+/* Sum of every settings list's cursor. Only the active screen's list moves on a
+   given press, so a change in the sum means the cursor moved — lets us detect a
+   real move (nav) vs a boundary (blocked) without a per-screen accessor. */
+static long jw__settings_cursor_sig(const jw_settings_ui *ui) {
+    return (long)ui->home_list.cursor + ui->appearance_list.cursor
+         + ui->colors_list.cursor + ui->layout_list.cursor
+         + ui->statusbar_list.cursor + ui->display_list.cursor
+         + ui->network_list.cursor + ui->bluetooth_list.cursor
+         + ui->lighting_list.cursor + ui->accounts_list.cursor
+         + ui->scraping_list.cursor + ui->scrape_edit_list.cursor
+         + ui->scrape_queue_list.cursor + ui->scrape_download_list.cursor
+         + ui->behavior_list.cursor + ui->controls_list.cursor
+         + ui->update_list.cursor + ui->update_picker_list.cursor
+         + ui->timezone_picker_list.cursor + ui->placeholder_list.cursor
+         + ui->home_tabs_list.cursor;
+}
+
+/* Public entry: run the real handler, then emit one UI haptic. Up/Down that
+   moves the cursor taps once (nav, opt-in) or buzzes at a list end (blocked); a
+   page change (enter a sub-page or back out) taps once (select). Value changes
+   (Left/Right/A on a row) buzz via jw__persist, so they are not handled here. */
+bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
+                                  char *status_buf, size_t status_size,
+                                  bool *theme_changed) {
+    if (!ui || !ui->open)
+        return jw__settings_handle_button_inner(ui, button, status_buf,
+                                                status_size, theme_changed);
+
+    int  scr0    = (int)ui->screen;
+    long sig0    = jw__settings_cursor_sig(ui);
+    bool nav_btn = (button == CAT_BTN_UP || button == CAT_BTN_DOWN);
+
+    bool still_open = jw__settings_handle_button_inner(ui, button, status_buf,
+                                                       status_size, theme_changed);
+
+    if (ui->socket_path[0]) {
+        if ((int)ui->screen != scr0)
+            jw_ipc_rumble(ui->socket_path, "select");           /* page enter / back */
+        else if (nav_btn)
+            jw_ipc_rumble(ui->socket_path,
+                          jw__settings_cursor_sig(ui) != sig0 ? "nav" : "blocked");
+    }
+    return still_open;
 }
