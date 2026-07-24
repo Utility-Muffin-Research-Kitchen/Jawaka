@@ -446,6 +446,32 @@ int jw_ipc_scan_library(const char *socket_path, char *status, int status_len) {
     return 0;
 }
 
+int jw_ipc_rumble(const char *socket_path, const char *event) {
+    if (!event) return -1;
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "rumble");
+    cJSON_AddStringToObject(req, "event", event);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) return -1;
+    int ok = ipc__type_is(resp, "ok") ? 0 : -1;
+    cJSON_Delete(resp);
+    return ok;
+}
+
+int jw_ipc_rumble_preview(const char *socket_path, int strength) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "rumble");
+    cJSON_AddStringToObject(req, "event", "preview");
+    cJSON_AddNumberToObject(req, "strength", strength);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) return -1;
+    int ok = ipc__type_is(resp, "ok") ? 0 : -1;
+    cJSON_Delete(resp);
+    return ok;
+}
+
 int jw_ipc_library_status_full(const char *socket_path, jw_ipc_library_status_info *out) {
     if (out) {
         memset(out, 0, sizeof(*out));

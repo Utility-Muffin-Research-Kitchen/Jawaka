@@ -139,16 +139,16 @@ typedef enum {
 #define JW_BEHAVIOR_PERFORMANCE 1
 #define JW_BEHAVIOR_TIMEZONE    2   /* opens the Time Zone picker screen */
 #define JW_BEHAVIOR_BOOT_SPLASH 3
-#define JW_BEHAVIOR_SCREENSHOTS 4   /* Menu+L1 screenshot hotkey on/off */
-#define JW_BEHAVIOR_RESET_RETROARCH   5   /* maintenance, moved from Library */
-#define JW_BEHAVIOR_UNMOUNT_SECONDARY 6
-#define JW_BEHAVIOR_ROW_COUNT   7
+#define JW_BEHAVIOR_RESET_RETROARCH   4   /* maintenance, moved from Library */
+#define JW_BEHAVIOR_UNMOUNT_SECONDARY 5
+#define JW_BEHAVIOR_ROW_COUNT   6
 
 /* Controls & Feedback page */
-#define JW_CONTROLS_RUMBLE     0   /* master on/off */
-#define JW_CONTROLS_STRENGTH   1   /* 0-100 %, left/right adjust */
-#define JW_CONTROLS_NAV        2   /* per-move navigation tick (opt-in) */
-#define JW_CONTROLS_ROW_COUNT  3
+#define JW_CONTROLS_RUMBLE      0   /* master on/off */
+#define JW_CONTROLS_STRENGTH    1   /* 0-100 %, left/right adjust */
+#define JW_CONTROLS_NAV         2   /* per-move navigation tick (opt-in) */
+#define JW_CONTROLS_SCREENSHOTS 3   /* Menu+L1 screenshot hotkey on/off */
+#define JW_CONTROLS_ROW_COUNT   4
 
 /* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
    The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of

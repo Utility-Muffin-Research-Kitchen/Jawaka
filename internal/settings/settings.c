@@ -3815,6 +3815,9 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_NAV,
                         "Navigation Tick",
                         ui->rumble_enabled ? (ui->rumble_nav ? "On" : "Off") : "-", true);
+
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SCREENSHOTS,
+                        "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
 }
 
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
@@ -3844,9 +3847,6 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                          : "Unavailable";
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
                         "Boot Splash", splash, ui->boot_splash_supported);
-
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_SCREENSHOTS,
-                        "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
 
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_RESET_RETROARCH,
                         "Reset RetroArch Config", "Defaults", true);
@@ -6612,18 +6612,30 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     (void)dir;
                     ui->rumble_enabled = !ui->rumble_enabled;
                     jw__persist_bool(ui, "rumble_enabled", ui->rumble_enabled);
+                    /* Confirmation buzz when switching haptics on. */
+                    if (ui->rumble_enabled)
+                        jw_ipc_rumble_preview(ui->socket_path, ui->rumble_strength);
                 } else if (ui->controls_list.cursor == JW_CONTROLS_STRENGTH) {
                     if (!ui->rumble_enabled) break;
                     int s = ui->rumble_strength + dir * 5;
                     if (s < 0) s = 0;
                     if (s > 100) s = 100;
-                    ui->rumble_strength = s;
-                    jw__persist_int(ui, "rumble_strength", s);
+                    if (s != ui->rumble_strength) {
+                        ui->rumble_strength = s;
+                        jw__persist_int(ui, "rumble_strength", s);
+                        /* Live preview: feel the exact new strength as you slide. */
+                        jw_ipc_rumble_preview(ui->socket_path, s);
+                    }
                 } else if (ui->controls_list.cursor == JW_CONTROLS_NAV) {
                     if (!ui->rumble_enabled) break;
                     (void)dir;
                     ui->rumble_nav = !ui->rumble_nav;
                     jw__persist_bool(ui, "rumble_nav", ui->rumble_nav);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_SCREENSHOTS) {
+                    (void)dir;
+                    ui->screenshots_enabled = !ui->screenshots_enabled;
+                    /* Persist only; the daemon reads the DB key on each hotkey. */
+                    jw__persist_bool(ui, "screenshots_enabled", ui->screenshots_enabled);
                 }
                 break;
             }
@@ -6651,11 +6663,6 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     (void)dir;
                     jw__set_boot_splash(ui, !ui->boot_splash_enabled,
                                         status_buf, status_size);
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_SCREENSHOTS) {
-                    (void)dir;
-                    ui->screenshots_enabled = !ui->screenshots_enabled;
-                    /* Persist only; the daemon reads the DB key on each hotkey. */
-                    jw__persist_bool(ui, "screenshots_enabled", ui->screenshots_enabled);
                 } else if (ui->behavior_list.cursor == JW_BEHAVIOR_PERFORMANCE) {
                     if (!ui->performance_supported) {
                         if (status_buf && status_size > 0) {

@@ -327,6 +327,32 @@ typedef struct {
     char                focus_setup_note[96];   /* transient nudge, e.g. "5 max" */
 } jw_launcher_state;
 
+/* Fire a semantic UI haptic (see internal/ipc jw_ipc_rumble). Fire-and-forget:
+   the daemon owns the vocabulary (single/double/triple tick) and the
+   enable/nav gating, so call sites only name the event. */
+static inline void jw__haptic(const jw_launcher_state *state, const char *event) {
+    if (state && state->socket_path[0]) jw_ipc_rumble(state->socket_path, event);
+}
+
+/* True when `button` maps to a real cursor/channel/tab movement in this home
+   layout, so an unchanged position after the press is a genuine boundary
+   (blocked tick) rather than an inert key. */
+static bool jw__home_nav_moves(cat_launcher_layout layout, cat_button button) {
+    switch (button) {
+        case CAT_BTN_LEFT:
+        case CAT_BTN_RIGHT:
+            return true;   /* every home layout moves horizontally */
+        case CAT_BTN_UP:
+        case CAT_BTN_DOWN:
+            return layout != CAT_LAUNCHER_HORIZONTAL;   /* horizontal ignores ▲▼ */
+        case CAT_BTN_L1:
+        case CAT_BTN_R1:
+            return layout == CAT_LAUNCHER_TABBED || layout == CAT_LAUNCHER_COVERFLOW;
+        default:
+            return false;
+    }
+}
+
 static void jw__system_icon_memo_clear(jw_launcher_state *state) {
     if (!state) return;
     memset(state->system_icon_memos, 0, sizeof(state->system_icon_memos));
@@ -5285,6 +5311,7 @@ static void jw__open_menu(jw_launcher_state *state) {
     state->menu_open = true;
     state->menu_tab  = JW_SMTAB_SETTINGS;
     jw_settings_ui_enter(&state->settings);
+    jw__haptic(state, "select");
 }
 
 static void jw__switch_system_tab(jw_launcher_state *state, int direction) {
@@ -5833,6 +5860,7 @@ static int jw__open_system_games(const char *db_path, const char *system,
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     snprintf(state->status, sizeof(state->status), "%d %s games",
              state->game_count, state->game_system_display);
+    jw__haptic(state, "select");   /* single tick: drilled into a system */
     return 0;
 }
 
@@ -5856,6 +5884,7 @@ static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
     } else {
         snprintf(state->status, sizeof(state->status), "%d favorites", state->game_count);
     }
+    jw__haptic(state, "select");   /* single tick: opened Favorites */
     return 0;
 }
 
@@ -5878,6 +5907,7 @@ static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
     } else {
         snprintf(state->status, sizeof(state->status), "%d recent", state->game_count);
     }
+    jw__haptic(state, "select");   /* single tick: opened Recently Played */
     return 0;
 }
 
@@ -6133,6 +6163,7 @@ static void jw__open_apps(jw_launcher_state *state) {
         snprintf(state->status, sizeof(state->status), "%s",
                  state->scan_ready ? "No apps found" : "Scanning library...");
     }
+    jw__haptic(state, "select");   /* single tick: opened Apps */
 }
 
 /* ─── Navigation resume (breadcrumb) ─────────────────────────────────────────
@@ -6234,6 +6265,7 @@ static int jw__launch_app_request(const char *socket_path, const char *name,
     }
 
     jw__set_launching_status(state, name, "app");
+    jw__haptic(state, "commit");   /* double tick: leaving into the app */
     cat_request_frame();
     jw__render_launcher(state);
 
@@ -6274,6 +6306,7 @@ static int jw__launch_game_entry_with_mode(const char *socket_path,
     }
 
     jw__set_launching_status(state, game->name, "game");
+    jw__haptic(state, "commit");   /* double tick: leaving into the game */
     cat_request_frame();
     jw__render_launcher(state);
 
@@ -6326,6 +6359,7 @@ static int jw__launch_selected_search_result(const char *socket_path,
     }
 
     jw__set_launching_status(state, result->name, "game");
+    jw__haptic(state, "commit");   /* double tick: leaving into the game */
     cat_request_frame();
     jw__render_launcher(state);
 
@@ -6960,6 +6994,12 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
        L1/R1 shoulders) step one cover with wrap-around, Up/Down jump to the next
        alphabetical letter. The grid layouts keep their row/page navigation. */
     bool cf = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW);
+    /* Haptics: tick on a real cursor move (nav, opt-in) or buzz at a list
+       boundary (blocked). L1/R1 only move in coverflow. */
+    bool nav_btn = (button == CAT_BTN_UP || button == CAT_BTN_DOWN ||
+                    button == CAT_BTN_LEFT || button == CAT_BTN_RIGHT ||
+                    (cf && (button == CAT_BTN_L1 || button == CAT_BTN_R1)));
+    int  cur0 = state->game_list.cursor;
     switch (button) {
         case CAT_BTN_UP:
             if (cf) cat_list_state_jump_letter(&state->game_list, jw__games_label_cb,
@@ -7002,6 +7042,9 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
         default:
             break;
     }
+
+    if (nav_btn)
+        jw__haptic(state, state->game_list.cursor != cur0 ? "nav" : "blocked");
 }
 
 static void jw__handle_app_browser_input(const char *socket_path,
@@ -7048,6 +7091,7 @@ static void jw__open_switcher(const char *db_path, jw_launcher_state *state) {
     jw_game_switcher_resolve_thumbnails(&state->switcher);
     state->switcher_open = true;
     state->status[0] = '\0';
+    jw__haptic(state, "select");   /* single tick: opened the switcher */
 }
 
 /* Y in the switcher: drop the selected game from Recents only (id, artwork,
@@ -8393,6 +8437,14 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     int count = (layout == CAT_LAUNCHER_TABBED || cf_channels)
                     ? jw__tab_list_count(state) : state->flat_count;
 
+    /* Haptics: snapshot the home position so a directional press taps once on a
+       real move (nav, opt-in) or buzzes on a hard boundary (blocked). Channel and
+       tab switches update current_tab synchronously, list moves update the cursor,
+       so a diff of the two catches every genuine movement. */
+    bool nav_btn  = jw__home_nav_moves(layout, button);
+    int  pos_tab0 = (int)state->current_tab;
+    int  pos_cur0 = state->list.cursor;
+
     switch (button) {
         case CAT_BTN_UP:
             if (cf_channels) {
@@ -8503,6 +8555,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         }
         default:
             break;
+    }
+
+    if (nav_btn) {
+        bool moved = ((int)state->current_tab != pos_tab0) ||
+                     (state->list.cursor != pos_cur0);
+        jw__haptic(state, moved ? "nav" : "blocked");
     }
 }
 
