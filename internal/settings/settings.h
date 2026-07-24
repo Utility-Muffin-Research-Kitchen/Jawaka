@@ -48,6 +48,7 @@ typedef enum {
     JW_SETTINGS_SCRAPE_QUEUE_DETAIL, /* one job's result (native page, was cat_detail_screen) */
     JW_SETTINGS_SCRAPE_DOWNLOAD,   /* pick All Systems / a system to scrape missing art */
     JW_SETTINGS_BEHAVIOR,
+    JW_SETTINGS_CONTROLS,    /* Controls & Feedback: rumble/haptics */
     JW_SETTINGS_HOME_TABS,   /* hide + reorder the launcher's home tabs */
     JW_SETTINGS_UPDATE,
     JW_SETTINGS_UPDATE_PICKER,
@@ -143,6 +144,12 @@ typedef enum {
 #define JW_BEHAVIOR_UNMOUNT_SECONDARY 6
 #define JW_BEHAVIOR_ROW_COUNT   7
 
+/* Controls & Feedback page */
+#define JW_CONTROLS_RUMBLE     0   /* master on/off */
+#define JW_CONTROLS_STRENGTH   1   /* 0-100 %, left/right adjust */
+#define JW_CONTROLS_NAV        2   /* per-move navigation tick (opt-in) */
+#define JW_CONTROLS_ROW_COUNT  3
+
 /* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
    The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of
    home_tab_order carry the current arrangement, each a jw_tab index. */
@@ -203,6 +210,7 @@ typedef struct {
     bool               scrape_missing_have_cache;
     bool               scrape_download_replace;      /* Y toggles missing-only vs replace-all */
     cat_list_state     behavior_list;
+    cat_list_state     controls_list;    /* Controls & Feedback page */
     cat_list_state     update_list;
     int                update_channel_index;   /* 0 = Stable, 1 = Beta */
     cat_list_state     update_picker_list;
@@ -263,6 +271,9 @@ typedef struct {
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;
     bool               screenshots_enabled; /* Menu+L1 screenshot hotkey (daemon reads the DB key) */
+    bool               rumble_enabled;    /* Controls & Feedback: haptics master (daemon reads DB) */
+    int                rumble_strength;   /* 0-100 % */
+    bool               rumble_nav;        /* per-move navigation tick */
     int                game_perf_profile;   /* Settings > Behavior game profile */
     bool               performance_supported;
     int                brightness_percent;

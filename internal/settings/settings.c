@@ -403,10 +403,11 @@ static const char *kHomeCategoryLabels[] = {
     "Game Art",
     "Accounts",
     "General",
+    "Controls & Feedback",
 };
 /* System Update and About are not listed here — they live in the System menu
    (the Menu-button popup), hosted there via jw_settings_ui_open(). */
-#define JW_SETTINGS_CATEGORY_COUNT 8
+#define JW_SETTINGS_CATEGORY_COUNT 9
 
 /* Visible rows in the Network page's scanned-network list (scrolls beyond). */
 #define JW_WIFI_LIST_ROWS 6
@@ -546,6 +547,22 @@ static void jw__refresh_adb(jw_settings_ui *ui) {
         ui->adb_enabled = enabled;
         ui->adb_intent_enabled = intent;
     }
+}
+
+/* Load the rumble/haptics settings straight from the DB (the daemon reads the
+   same keys; defaults match the init defaults). */
+static void jw__refresh_rumble(jw_settings_ui *ui) {
+    char v[16] = "";
+    if (jw_db_get_setting(ui->db_path, "rumble_enabled", v, sizeof(v)) == 0 && v[0])
+        ui->rumble_enabled = (strcmp(v, "0") != 0);
+    v[0] = '\0';
+    if (jw_db_get_setting(ui->db_path, "rumble_strength", v, sizeof(v)) == 0 && v[0]) {
+        int s = atoi(v);
+        ui->rumble_strength = s < 0 ? 0 : (s > 100 ? 100 : s);
+    }
+    v[0] = '\0';
+    if (jw_db_get_setting(ui->db_path, "rumble_nav", v, sizeof(v)) == 0 && v[0])
+        ui->rumble_nav = (strcmp(v, "1") == 0);
 }
 
 static void jw__refresh_boot_splash(jw_settings_ui *ui) {
@@ -1146,6 +1163,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->scrape_edit_list, 8);
     cat_list_state_init(&ui->scrape_download_list, 8);
     cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
+    cat_list_state_init(&ui->controls_list,     JW_CONTROLS_ROW_COUNT);
     cat_list_state_init(&ui->home_tabs_list,   JW_HOME_TABS_COUNT);
     cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
     cat_list_state_init(&ui->update_picker_list, JW_UPDATE_PICKER_VISIBLE_ROWS);
@@ -1174,6 +1192,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
     ui->screenshots_enabled = false;   /* opt-in */
+    ui->rumble_enabled = true;    /* haptics default on */
+    ui->rumble_strength = 65;     /* ~Medium */
+    ui->rumble_nav = false;       /* per-move tick opt-in */
     ui->layout_mode = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
                           ? 1 : 0;
     ui->refresh_rate_hz   = 60;
@@ -3779,6 +3800,23 @@ static void jw__render_playtime(const jw_settings_ui *ui, int x, int y, int w, i
                          jw__draw_about_rows, &ctx);
 }
 
+static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Controls & Feedback", x, y, w);
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RUMBLE,
+                        "Rumble", ui->rumble_enabled ? "On" : "Off", true);
+
+    char strength[16];
+    snprintf(strength, sizeof(strength), "%d%%", ui->rumble_strength);
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_STRENGTH,
+                        "Strength", ui->rumble_enabled ? strength : "-", true);
+
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_NAV,
+                        "Navigation Tick",
+                        ui->rumble_enabled ? (ui->rumble_nav ? "On" : "Off") : "-", true);
+}
+
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("General", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
@@ -4366,6 +4404,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_SCRAPE_QUEUE_DETAIL: jw__render_scrape_queue_detail(ui, x, y, w, h); break;
         case JW_SETTINGS_SCRAPE_DOWNLOAD: jw__render_scrape_download(ui, x, y, w, h);     break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
+        case JW_SETTINGS_CONTROLS:   jw__render_controls(ui, x, y, w, h);                 break;
         case JW_SETTINGS_HOME_TABS:  jw__render_home_tabs(ui, x, y, w, h);               break;
         case JW_SETTINGS_UPDATE:     jw__render_update(ui, x, y, w, h);                  break;
         case JW_SETTINGS_UPDATE_PICKER: jw__render_update_picker(ui, x, y, w, h);        break;
@@ -5319,6 +5358,10 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                     jw__refresh_boot_splash(ui);
                     jw__refresh_performance(ui);
                     jw__refresh_secondary_sd_status(ui);   /* Unmount SD row lives here now */
+                }
+                else if (idx == 8) {
+                    ui->screen = JW_SETTINGS_CONTROLS;
+                    jw__refresh_rumble(ui);
                 }
                 break;
             }
@@ -6555,6 +6598,39 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         }
         break;
     }
+
+    /* ── Controls & Feedback ─────────────────────────────────────────── */
+    case JW_SETTINGS_CONTROLS:
+        switch (button) {
+            case CAT_BTN_UP:   cat_list_state_move(&ui->controls_list, -1, JW_CONTROLS_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->controls_list, +1, JW_CONTROLS_ROW_COUNT); break;
+            case CAT_BTN_LEFT:
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A: {
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
+                if (ui->controls_list.cursor == JW_CONTROLS_RUMBLE) {
+                    (void)dir;
+                    ui->rumble_enabled = !ui->rumble_enabled;
+                    jw__persist_bool(ui, "rumble_enabled", ui->rumble_enabled);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_STRENGTH) {
+                    if (!ui->rumble_enabled) break;
+                    int s = ui->rumble_strength + dir * 5;
+                    if (s < 0) s = 0;
+                    if (s > 100) s = 100;
+                    ui->rumble_strength = s;
+                    jw__persist_int(ui, "rumble_strength", s);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_NAV) {
+                    if (!ui->rumble_enabled) break;
+                    (void)dir;
+                    ui->rumble_nav = !ui->rumble_nav;
+                    jw__persist_bool(ui, "rumble_nav", ui->rumble_nav);
+                }
+                break;
+            }
+            case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
+            default: break;
+        }
+        break;
 
     /* ── Behavior ────────────────────────────────────────────────────── */
     case JW_SETTINGS_BEHAVIOR:
