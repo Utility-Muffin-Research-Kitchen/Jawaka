@@ -774,9 +774,10 @@ static bool jw__roms_has_dir(const char *roms, const char *name) {
 
 static pthread_mutex_t g_rumble_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_rumble_cv   = PTHREAD_COND_INITIALIZER;
-static int  g_rumble_bursts = 0;     /* pending pattern: 1/2/3, 0 = idle */
-static long g_rumble_duty   = 0;     /* duty (ns) for the pending pulse */
-static bool g_rumble_ready  = false; /* channel configured */
+static int  g_rumble_bursts   = 0;   /* pending pattern: 1/2/3, 0 = idle */
+static long g_rumble_duty     = 0;   /* on-strength duty (ns), pre-polarity */
+static bool g_rumble_ready    = false; /* channel configured */
+static bool g_rumble_inversed = false; /* actual polarity, read back at init */
 
 static void jw__rumble_write(const char *path, const char *val) {
     int fd = open(path, O_WRONLY | O_CLOEXEC);
@@ -790,7 +791,25 @@ static void jw__rumble_write_long(const char *path, long v) {
     if (n > 0 && n < (int)sizeof(b)) jw__rumble_write(path, b);
 }
 
-/* One-time channel setup: export, normal polarity, 1 kHz, held off at 0%. */
+static bool jw__rumble_is_inversed(void) {
+    char pol[16] = "";
+    int fd = open(JW_RUMBLE_PWM "/polarity", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    ssize_t n = read(fd, pol, sizeof(pol) - 1);
+    close(fd);
+    if (n > 0) pol[n] = '\0';
+    return strncmp(pol, "inversed", 8) == 0;
+}
+
+/* The "off" duty for the polarity actually in effect: normal -> 0, inversed ->
+   period. NEVER assume -- a boot race can leave the stock inversed default, and
+   under inversed a duty of 0 is FULL ON (this stranded the motor on once). */
+static long jw__rumble_off_duty(void) {
+    return g_rumble_inversed ? JW_RUMBLE_PERIOD : 0;
+}
+
+/* One-time channel setup: export, force off in the inherited polarity, try to
+   normalize, then rest at the TRUE off for whatever polarity actually stuck. */
 static void jw__rumble_init(void) {
     struct stat st;
     if (stat(JW_RUMBLE_PWM, &st) != 0)
@@ -799,18 +818,25 @@ static void jw__rumble_init(void) {
         jw_log_warn("rumble: pwm0 not available; haptics disabled");
         return;
     }
-    jw__rumble_write(JW_RUMBLE_PWM "/enable", "0");   /* polarity needs disabled */
+    /* Force off in whatever polarity we inherited BEFORE anything else. */
+    g_rumble_inversed = jw__rumble_is_inversed();
+    jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty());
+    /* Try to normalize (needs the channel disabled), set 1 kHz. */
+    jw__rumble_write(JW_RUMBLE_PWM "/enable", "0");
     jw__rumble_write(JW_RUMBLE_PWM "/polarity", "normal");
     jw__rumble_write_long(JW_RUMBLE_PWM "/period", JW_RUMBLE_PERIOD);
-    jw__rumble_write(JW_RUMBLE_PWM "/duty_cycle", "0");
-    jw__rumble_write(JW_RUMBLE_PWM "/enable", "1");   /* enabled, idle at 0% = off */
+    /* Re-read: if "normal" didn't take, adapt instead of trusting it. */
+    g_rumble_inversed = jw__rumble_is_inversed();
+    jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty());
+    jw__rumble_write(JW_RUMBLE_PWM "/enable", "1");   /* enabled, resting OFF */
     g_rumble_ready = true;
-    jw_log_info("rumble: motor ready (pwmchip0/pwm0, %ldns period)", JW_RUMBLE_PERIOD);
+    jw_log_info("rumble: motor ready (polarity=%s, %ldns period)",
+                g_rumble_inversed ? "inversed" : "normal", JW_RUMBLE_PERIOD);
 }
 
-/* Bulletproof off: drive 0% (never disable/unexport). Safe to call any time. */
+/* Bulletproof off: drive the polarity-correct 0% (never disable/unexport). */
 static void jw__rumble_off(void) {
-    if (g_rumble_ready) jw__rumble_write(JW_RUMBLE_PWM "/duty_cycle", "0");
+    if (g_rumble_ready) jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty());
 }
 
 /* Map a 0-100 strength onto [FLOOR,100]% of the period (below FLOOR the motor
@@ -840,10 +866,12 @@ static void *jw__rumble_worker(void *arg) {
         bursts = g_rumble_bursts; duty = g_rumble_duty;
         g_rumble_bursts = 0;
         pthread_mutex_unlock(&g_rumble_lock);
+        long on  = g_rumble_inversed ? (JW_RUMBLE_PERIOD - duty) : duty;
+        long off = jw__rumble_off_duty();
         for (int i = 0; i < bursts; i++) {
-            jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", duty);
+            jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", on);
             jw__rumble_msleep(JW_RUMBLE_TICK_MS);
-            jw__rumble_write(JW_RUMBLE_PWM "/duty_cycle", "0");
+            jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", off);
             if (i + 1 < bursts) jw__rumble_msleep(JW_RUMBLE_GAP_MS);
         }
     }
