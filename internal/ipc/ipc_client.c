@@ -446,17 +446,32 @@ int jw_ipc_scan_library(const char *socket_path, char *status, int status_len) {
     return 0;
 }
 
+/* Send without waiting for the reply. Haptics fire on every cursor move, and a
+   full request/response round trip on the UI thread would stall drawing for as
+   long as the daemon takes to answer -- worst in a held-direction repeat, where
+   it happens once per repeat before the next frame. The daemon ignores SIGPIPE,
+   so it is safe for it to answer a socket we have already closed. */
+static int ipc__notify(const char *socket_path, cJSON *req) {
+    char *body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    if (!body) return -1;
+
+    jw_ipc_client *client = NULL;
+    int rc = jw_ipc_client_connect(socket_path, &client);
+    if (rc == 0) {
+        rc = jw_ipc_client_send(client, body, strlen(body));
+        jw_ipc_client_close(client);
+    }
+    cJSON_free(body);
+    return rc;
+}
+
 int jw_ipc_rumble(const char *socket_path, const char *event) {
     if (!event) return -1;
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "rumble");
     cJSON_AddStringToObject(req, "event", event);
-
-    cJSON *resp = NULL;
-    if (ipc__request(socket_path, req, &resp) != 0) return -1;
-    int ok = ipc__type_is(resp, "ok") ? 0 : -1;
-    cJSON_Delete(resp);
-    return ok;
+    return ipc__notify(socket_path, req);
 }
 
 int jw_ipc_rumble_preview(const char *socket_path, int strength) {
@@ -464,12 +479,7 @@ int jw_ipc_rumble_preview(const char *socket_path, int strength) {
     cJSON_AddStringToObject(req, "type", "rumble");
     cJSON_AddStringToObject(req, "event", "preview");
     cJSON_AddNumberToObject(req, "strength", strength);
-
-    cJSON *resp = NULL;
-    if (ipc__request(socket_path, req, &resp) != 0) return -1;
-    int ok = ipc__type_is(resp, "ok") ? 0 : -1;
-    cJSON_Delete(resp);
-    return ok;
+    return ipc__notify(socket_path, req);
 }
 
 int jw_ipc_library_status_full(const char *socket_path, jw_ipc_library_status_info *out) {

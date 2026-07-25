@@ -325,13 +325,17 @@ typedef struct {
        the box-art pane). A toggles a game into focus_setup_ids; not a wizard step. */
     bool                focus_pick_active;
     char                focus_setup_note[96];   /* transient nudge, e.g. "5 max" */
+    /* Suppresses haptics while the UI moves itself rather than the user moving
+       it -- restoring a breadcrumb on startup, or reloading a list in place. */
+    bool                haptics_muted;
 } jw_launcher_state;
 
 /* Fire a semantic UI haptic (see internal/ipc jw_ipc_rumble). Fire-and-forget:
    the daemon owns the vocabulary (single/double/triple tick) and the
    enable/nav gating, so call sites only name the event. */
 static inline void jw__haptic(const jw_launcher_state *state, const char *event) {
-    if (state && state->socket_path[0]) jw_ipc_rumble(state->socket_path, event);
+    if (state && state->socket_path[0] && !state->haptics_muted)
+        jw_ipc_rumble(state->socket_path, event);
 }
 
 /* True when `button` maps to a real cursor/channel/tab movement in this home
@@ -6240,6 +6244,10 @@ static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
     if (restore_games) {
         bool recents = (strcmp(r->game_system, "Recently Played") == 0);
         int rc;
+        /* Reopening the breadcrumbed list is not a user action -- without this
+           the launcher buzzes to itself every time you exit a game. */
+        bool was_muted = state->haptics_muted;
+        state->haptics_muted = true;
         if (r->games_fav)   rc = jw__open_favorites(db_path, state);
         else if (recents)   rc = jw__open_recents(db_path, state);
         else                rc = jw__open_system_games(db_path, r->game_system, state);
@@ -6247,6 +6255,7 @@ static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
             /* Recents reorders the just-played game to the top -> land on row 0. */
             cat_list_state_jump(&state->game_list, recents ? 0 : r->game_cursor,
                                 state->game_count);
+        state->haptics_muted = was_muted;
     }
     /* Every tabbed tab list (Recents/Favorites/Games systems/Apps) navigates
        state->list. Recents reorders the just-played game to the top -> land on 0. */
@@ -6818,9 +6827,11 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
     const jw_flat_item *it = &state->flat_items[state->list.cursor];
     switch (it->kind) {
         case JW_FLAT_SETTINGS:
+            jw__haptic(state, "select");
             jw_settings_ui_enter(&state->settings);
             break;
         case JW_FLAT_TOOLS:
+            jw__haptic(state, "select");
             state->tools_open = true;
             cat_list_state_init(&state->tools_list, 4);
             break;
@@ -6964,7 +6975,11 @@ static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state 
        reload the list and keep the cursor near its prior position. */
     if (state->games_are_favorites && !want_on) {
         int prev_cursor = state->game_list.cursor;
+        /* Reloading the list in place is not "opened Favorites". */
+        bool was_muted = state->haptics_muted;
+        state->haptics_muted = true;
         jw__open_favorites(db_path, state);
+        state->haptics_muted = was_muted;
         if (state->game_count > 0) {
             int c = prev_cursor >= state->game_count ? state->game_count - 1 : prev_cursor;
             cat_list_state_jump(&state->game_list, c, state->game_count);
@@ -8250,6 +8265,8 @@ static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *s
                 jw__launch_game_entry(socket_path, state,
                                       &state->focus_games[state->focus_cursor],
                                       running);
+            } else {
+                jw__haptic(state, "blocked");
             }
             break;
         case CAT_BTN_MENU:
