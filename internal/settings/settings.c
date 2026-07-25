@@ -563,6 +563,9 @@ static void jw__refresh_rumble(jw_settings_ui *ui) {
     v[0] = '\0';
     if (jw_db_get_setting(ui->db_path, "rumble_nav", v, sizeof(v)) == 0 && v[0])
         ui->rumble_nav = (strcmp(v, "1") == 0);
+    v[0] = '\0';
+    if (jw_db_get_setting(ui->db_path, "rumble_game", v, sizeof(v)) == 0 && v[0])
+        ui->rumble_game = (strcmp(v, "0") != 0);
 }
 
 static void jw__refresh_boot_splash(jw_settings_ui *ui) {
@@ -1202,6 +1205,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->rumble_enabled = true;    /* haptics default on */
     ui->rumble_strength = 65;     /* ~Medium */
     ui->rumble_nav = false;       /* per-move tick opt-in */
+    ui->rumble_game = true;       /* in-game rumble default on */
     ui->layout_mode = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
                           ? 1 : 0;
     ui->refresh_rate_hz   = 60;
@@ -3822,6 +3826,10 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_NAV,
                         "Navigation Tick",
                         ui->rumble_enabled ? (ui->rumble_nav ? "On" : "Off") : "-", true);
+
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_GAME,
+                        "Game Rumble",
+                        ui->rumble_enabled ? (ui->rumble_game ? "On" : "Off") : "-", true);
 
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SCREENSHOTS,
                         "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
@@ -6638,6 +6646,13 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     (void)dir;
                     ui->rumble_nav = !ui->rumble_nav;
                     jw__persist_bool(ui, "rumble_nav", ui->rumble_nav);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_GAME) {
+                    if (!ui->rumble_enabled) break;
+                    (void)dir;
+                    ui->rumble_game = !ui->rumble_game;
+                    /* Read by the daemon at game launch, so it takes effect on
+                       the next launch -- no need to touch a running game. */
+                    jw__persist_bool(ui, "rumble_game", ui->rumble_game);
                 } else if (ui->controls_list.cursor == JW_CONTROLS_SCREENSHOTS) {
                     (void)dir;
                     ui->screenshots_enabled = !ui->screenshots_enabled;

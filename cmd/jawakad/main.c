@@ -187,6 +187,7 @@ typedef struct {
     bool     rumble_enabled_cached;
     int      rumble_strength_cached;     /* 0-100 %  */
     bool     rumble_nav_cached;          /* per-move navigation tick (opt-in) */
+    bool     rumble_game_cached;         /* hand the motor to emulators in-game */
     uint64_t rumble_checked_ms;
     pid_t menu_pid;           /* resident warm-standby in-game menu while RetroArch is alive */
     bool menu_in_game;
@@ -848,6 +849,12 @@ static long jw__rumble_duty_for(int strength_pct) {
     return JW_RUMBLE_PERIOD * eff / 100;
 }
 
+/* Turn a strength duty into the value to actually write, for the polarity in
+   effect (under inversed a high duty is weak, so it mirrors around the period). */
+static long jw__rumble_polarize(long duty) {
+    return g_rumble_inversed ? (JW_RUMBLE_PERIOD - duty) : duty;
+}
+
 static void jw__rumble_msleep(int ms) {
     struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
@@ -866,7 +873,7 @@ static void *jw__rumble_worker(void *arg) {
         bursts = g_rumble_bursts; duty = g_rumble_duty;
         g_rumble_bursts = 0;
         pthread_mutex_unlock(&g_rumble_lock);
-        long on  = g_rumble_inversed ? (JW_RUMBLE_PERIOD - duty) : duty;
+        long on  = jw__rumble_polarize(duty);
         long off = jw__rumble_off_duty();
         for (int i = 0; i < bursts; i++) {
             jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", on);
@@ -905,6 +912,10 @@ static void jw__rumble_refresh_cache(jw_daemon_state *state, uint64_t now_ms) {
     state->rumble_nav_cached =
         (jw_db_get_setting(state->db_path, "rumble_nav", v, sizeof(v)) == 0 &&
          strcmp(v, "1") == 0);                       /* default OFF */
+    v[0] = '\0';
+    state->rumble_game_cached =
+        !(jw_db_get_setting(state->db_path, "rumble_game", v, sizeof(v)) == 0 &&
+          strcmp(v, "0") == 0);                      /* default ON when unset */
     state->rumble_checked_ms = now_ms;
 }
 
@@ -929,6 +940,43 @@ static void jw__rumble_event(jw_daemon_state *state, const char *event) {
         return;
     }
     jw__rumble_queue(bursts, jw__rumble_duty_for(state->rumble_strength_cached));
+}
+
+/* ---- Game rumble handoff (Phase 2) -------------------------------------
+ * Emulators can't reach the motor on their own (no FF input device), so the
+ * patched RetroArch writes duty_cycle directly via its sysfs-rumble fallback.
+ * jawakad keeps owning the channel -- it stays exported, enabled and resting
+ * off -- and hands the game ready-made duty endpoints so the emulator needs no
+ * knowledge of polarity, period or the stiction floor. MAX is the user's
+ * strength setting, so the slider acts as the in-game intensity ceiling.
+ * Resolved in the parent (it reads the DB) and applied in the forked child, so
+ * the daemon's own environment never carries these. */
+typedef struct {
+    bool on;
+    long off, min, max;
+} jw_rumble_game_env;
+
+static void jw__rumble_resolve_game_env(jw_daemon_state *state,
+                                        jw_rumble_game_env *out) {
+    memset(out, 0, sizeof(*out));
+    if (!g_rumble_ready || !state) return;
+    jw__rumble_refresh_cache(state, (uint64_t)jw__monotonic_ms());
+    if (!state->rumble_enabled_cached || !state->rumble_game_cached) return;
+    long max = jw__rumble_duty_for(state->rumble_strength_cached);
+    if (max <= 0) return;
+    out->off = jw__rumble_off_duty();
+    out->min = jw__rumble_polarize(JW_RUMBLE_PERIOD * JW_RUMBLE_FLOOR / 100);
+    out->max = jw__rumble_polarize(max);
+    out->on  = true;
+}
+
+static void jw__rumble_apply_game_env(const jw_rumble_game_env *env) {
+    char b[24];
+    if (!env || !env->on) return;
+    setenv("RUMBLE_PWM_PATH", JW_RUMBLE_PWM "/duty_cycle", 1);
+    snprintf(b, sizeof(b), "%ld", env->off); setenv("RUMBLE_PWM_OFF", b, 1);
+    snprintf(b, sizeof(b), "%ld", env->min); setenv("RUMBLE_PWM_MIN", b, 1);
+    snprintf(b, sizeof(b), "%ld", env->max); setenv("RUMBLE_PWM_MAX", b, 1);
 }
 
 static void jw__seed_rom_folders(const jw_daemon_state *state) {
@@ -6554,6 +6602,12 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                     "may fall back to device internal storage");
     }
 
+    /* Never strand a UI pulse across the handoff, then resolve the duty
+       endpoints the game will drive the motor with (if game rumble is on). */
+    jw__rumble_off();
+    jw_rumble_game_env rumble_env;
+    jw__rumble_resolve_game_env(state, &rumble_env);
+
     long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
     if (pid < 0) {
@@ -6565,6 +6619,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         if (ra_home && ra_home[0]) {
             setenv("HOME", ra_home, 1);
         }
+        jw__rumble_apply_game_env(&rumble_env);
         char *argv[9];
         int argc = 0;
         argv[argc++] = retroarch;
@@ -8605,6 +8660,9 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     pid_t exited_pid = waited;
     state->child_pid = -1;
     state->child_kind = JW_CHILD_NONE;
+
+    /* Reclaim the motor: a game that died mid-buzz can't have cleared it. */
+    jw__rumble_off();
 
     const char *name = jw__child_name(exited_kind);
     if (WIFEXITED(status)) {

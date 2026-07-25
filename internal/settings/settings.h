@@ -147,8 +147,9 @@ typedef enum {
 #define JW_CONTROLS_RUMBLE      0   /* master on/off */
 #define JW_CONTROLS_STRENGTH    1   /* 0-100 %, left/right adjust */
 #define JW_CONTROLS_NAV         2   /* per-move navigation tick (opt-in) */
-#define JW_CONTROLS_SCREENSHOTS 3   /* Menu+L1 screenshot hotkey on/off */
-#define JW_CONTROLS_ROW_COUNT   4
+#define JW_CONTROLS_GAME        3   /* hand the motor to emulators in-game */
+#define JW_CONTROLS_SCREENSHOTS 4   /* Menu+L1 screenshot hotkey on/off */
+#define JW_CONTROLS_ROW_COUNT   5
 
 /* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
    The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of
@@ -274,6 +275,7 @@ typedef struct {
     bool               rumble_enabled;    /* Controls & Feedback: haptics master (daemon reads DB) */
     int                rumble_strength;   /* 0-100 % */
     bool               rumble_nav;        /* per-move navigation tick */
+    bool               rumble_game;       /* in-game emulator rumble */
     int                game_perf_profile;   /* Settings > Behavior game profile */
     bool               performance_supported;
     int                brightness_percent;

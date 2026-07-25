@@ -58,10 +58,11 @@ From then on:
 
 Decisions and rationale:
 
-- **`polarity=normal`** (not the stock `inversed`). Verified on device that normal polarity
-  with a positive duty buzzes and `duty=0` is off. Normal gives the intuitive frame
-  (higher duty = stronger, `0` = off) with no inversion math. Inversed would also work with
-  `off = duty=period`, but normal is proven and simpler.
+- **Polarity is read back, never assumed.** The plan was to normalize to `polarity=normal`,
+  but this driver **rejects the write and stays `inversed`** — and under inversed a
+  `duty_cycle` of `0` is FULL ON, which stranded the motor during bring-up. So the daemon
+  attempts the normalize, re-reads `polarity`, and derives off/on from whatever actually
+  stuck (`off = period` when inversed, `0` when normal).
 - **Always-enabled / modulate-duty-only** is what makes "off" bulletproof — it is impossible
   to strand the motor because the channel is always actively driving a defined level.
 - **Energy:** keeping the channel enabled at 0% costs nothing meaningful. The motor draws
@@ -159,25 +160,44 @@ link, and the Phase-2 game-rumble toggle.
 
 ---
 
-## 5. Phase 2 — game rumble (documented; built after Phase 1)
+## 5. Phase 2 — game rumble
+
+**2a (RetroArch) is built.** 2b (standalone emulators) remains deferred.
 
 Because the motor is not an FF/SDL device, emulator rumble needs an explicit path to the PWM.
 
-### RetroArch cores (the bulk of systems) — Phase 2a
+### RetroArch cores (the bulk of systems) — Phase 2a  ✅ built
 
-- Enable the deferred **`retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch`**
-  in the RA build, targeting our PWM. The patch writes sysfs directly when the joypad
-  driver's native rumble returns false (it always will here — no FF device).
-- Because the drive model leaves the channel **always enabled at duty 0**, RA only has to
-  **write `duty_cycle`** to buzz and `0` to stop — it never touches export/polarity/period/
-  enable. Adapt the patch's motor mode to write the strength value to
-  `/sys/class/pwm/pwmchip0/pwm0/duty_cycle`.
-- **jawakad pre-arms the PWM and injects env at RA launch** (it already sets launch env via
-  `jw__setenv_default`): e.g. `RUMBLE_SYSFS_PATH=/sys/class/pwm/pwmchip0/pwm0/duty_cycle`
-  plus a scale, only when Leaf rumble + game-rumble are enabled. On game exit the daemon
-  forces `duty=0` and reclaims the channel.
-- RA core rumble (N64/PSX/GBA etc. emit it via the libretro rumble interface) scales into
-  duty, **capped by the strength slider**.
+`retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch` is enabled in the MLP1
+build as the patch-set entry **`sysfs-rumble`** (the shipped set is now
+`portrait-rotation,command-menu,jawaka-load-content,sysfs-rumble`). It writes sysfs directly
+when the joypad driver's native rumble returns false — which it always does here, since
+there is no FF device.
+
+The patch gained a **PWM duty mode** for this device. jawakad keeps owning the channel
+(exported, enabled, resting off), so RetroArch only ever writes `duty_cycle` and never
+touches export/polarity/period/enable. Rather than teach RA about polarity, the period or
+the stiction floor, the daemon hands it ready-made duty endpoints:
+
+| Env var | Meaning |
+| --- | --- |
+| `RUMBLE_PWM_PATH` | the `duty_cycle` node |
+| `RUMBLE_PWM_OFF`  | duty that means off (polarity-dependent: `0` or `period`) |
+| `RUMBLE_PWM_MIN`  | duty at the weakest magnitude that still moves the motor (the floor) |
+| `RUMBLE_PWM_MAX`  | duty at full magnitude, already capped to the user's strength setting |
+
+Core magnitude (0-65535) maps linearly onto `[MIN,MAX]`; MIN/MAX may run in either
+direction, so inversed polarity needs no special case in RA. The patch skips the sysfs
+write when the computed duty is unchanged, since cores re-assert rumble every frame.
+
+jawakad resolves the endpoints in the parent (it reads the DB) and applies them with
+`setenv` in the forked child, so the daemon's own environment never carries them. It forces
+`duty=off` immediately before the launch fork and again when any child exits, so a game that
+dies mid-buzz cannot strand the motor.
+
+**Permission: resolved.** Everything on this device runs as root — jawakad, its launcher
+child, and RetroArch (verified `uid=0` on Puff) — so `duty_cycle` being root-owned is a
+non-issue. No `chmod` dance is needed.
 
 ### Standalone emulators (Flycast / PPSSPP / DraStic / mupen64) — Phase 2b
 
@@ -187,9 +207,10 @@ the motor. Each needs its own small patch to route its rumble to the same `duty_
 
 ### Settings
 
-A **Game rumble** sub-toggle in Controls & Feedback (default on), sharing the master Rumble
-on/off and the strength slider (slider acts as the intensity ceiling; game supplies the
-variable magnitude). Lets a user keep UI haptics without game rumble, or vice versa.
+**Game Rumble** in Controls & Feedback (DB key `rumble_game`, default on), gated by the
+master Rumble toggle and using the strength slider as the intensity ceiling (the game
+supplies the variable magnitude). Lets a user keep UI haptics without game rumble, or vice
+versa. Read at game launch, so a change takes effect on the next launch.
 
 ### Ownership / arbitration
 
@@ -198,9 +219,7 @@ the session and reclaims it (forces off) on exit — still a single-owner PWM.
 
 ### Open Phase-2 details (flagged, not solved here)
 
-- **sysfs permission:** `duty_cycle` is root-owned; the game may not run as root. Either the
-  daemon `chmod`s the node writable around a game launch and reverts on exit, or confirm the
-  emulator already runs as root. TBC.
+- ~~**sysfs permission**~~ — resolved: everything runs as root (see 2a).
 - **Standalone scope:** decide per-emulator whether the payoff justifies the patch, or leave
   standalone game-rumble off.
 
