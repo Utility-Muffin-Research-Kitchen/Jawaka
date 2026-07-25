@@ -792,8 +792,14 @@ static bool jw__roms_has_dir(const char *roms, const char *name) {
 
 static pthread_mutex_t g_rumble_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_rumble_cv   = PTHREAD_COND_INITIALIZER;
+/* Both timed waits below use CLOCK_MONOTONIC, set up in jw__rumble_init. The
+   default REALTIME clock is steppable and this handheld has no battery-backed
+   RTC, so the first time-sync after boot jumps the wall clock by hours -- which
+   would fire every deadline here instantly. */
 static pthread_cond_t  g_rumble_idle_cv = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  g_rumble_wake_cv = PTHREAD_COND_INITIALIZER;
 static bool g_rumble_busy     = false; /* worker is mid-pattern (see quiesce) */
+static unsigned g_rumble_gen  = 0;     /* bumped to abort the pattern in flight */
 static bool g_rumble_gated    = false; /* screen off/suspended: swallow all events */
 static int  g_rumble_bursts   = 0;   /* pending pattern: 1/2/3, 0 = idle */
 static long g_rumble_duty     = 0;   /* on-strength duty (ns), pre-polarity */
@@ -840,6 +846,18 @@ static void jw__rumble_init(void) {
         jw_log_warn("rumble: pwm0 not available; haptics disabled");
         return;
     }
+    /* Both timed waits use CLOCK_MONOTONIC deadlines, so the condvars have to
+       agree -- the default is CLOCK_REALTIME and a wall-clock step would then
+       fire every deadline instantly. */
+    {
+        pthread_condattr_t attr;
+        if (pthread_condattr_init(&attr) == 0) {
+            pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+            pthread_cond_init(&g_rumble_idle_cv, &attr);
+            pthread_cond_init(&g_rumble_wake_cv, &attr);
+            pthread_condattr_destroy(&attr);
+        }
+    }
     /* Force off in whatever polarity we inherited BEFORE anything else. */
     g_rumble_inversed = jw__rumble_is_inversed();
     jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty());
@@ -876,9 +894,34 @@ static long jw__rumble_polarize(long duty) {
     return g_rumble_inversed ? (JW_RUMBLE_PERIOD - duty) : duty;
 }
 
-static void jw__rumble_msleep(int ms) {
-    struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
+static void jw__rumble_deadline(struct timespec *ts, int ms) {
+    clock_gettime(CLOCK_MONOTONIC, ts);
+    ts->tv_sec  += ms / 1000;
+    ts->tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (ts->tv_nsec >= 1000000000L) {
+        ts->tv_sec++;
+        ts->tv_nsec -= 1000000000L;
+    }
+}
+
+/* Sleep inside a pattern, but wake at once if a quiesce bumps the generation.
+   Returns true if this pattern has been cancelled and must stop now. A plain
+   nanosleep here is what let a timed-out quiesce be undone: the worker would
+   wake after the force-off and re-energise the motor. */
+static bool jw__rumble_pattern_wait(int ms, unsigned my_gen) {
+    struct timespec deadline;
+    jw__rumble_deadline(&deadline, ms);
+    bool cancelled;
+    pthread_mutex_lock(&g_rumble_lock);
+    while (g_rumble_gen == my_gen) {
+        if (pthread_cond_timedwait(&g_rumble_wake_cv, &g_rumble_lock,
+                                   &deadline) != 0) {
+            break;   /* slept the full tick/gap */
+        }
+    }
+    cancelled = g_rumble_gen != my_gen;
+    pthread_mutex_unlock(&g_rumble_lock);
+    return cancelled;
 }
 
 /* Worker: waits for a pattern request and pulses duty off the input path so the
@@ -892,6 +935,7 @@ static void *jw__rumble_worker(void *arg) {
         while (g_rumble_bursts == 0)
             pthread_cond_wait(&g_rumble_cv, &g_rumble_lock);
         bursts = g_rumble_bursts; duty = g_rumble_duty; tick_ms = g_rumble_tick_ms;
+        unsigned my_gen = g_rumble_gen;
         g_rumble_bursts = 0;
         g_rumble_busy = true;
         pthread_mutex_unlock(&g_rumble_lock);
@@ -899,9 +943,13 @@ static void *jw__rumble_worker(void *arg) {
         long off = jw__rumble_off_duty();
         for (int i = 0; i < bursts; i++) {
             jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", on);
-            jw__rumble_msleep(tick_ms);
+            bool cancelled = jw__rumble_pattern_wait(tick_ms, my_gen);
+            /* Always write off before reacting to a cancel, so the motor is
+               never left energised on the way out. */
             jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", off);
-            if (i + 1 < bursts) jw__rumble_msleep(JW_RUMBLE_GAP_MS);
+            if (cancelled) break;
+            if (i + 1 < bursts &&
+                jw__rumble_pattern_wait(JW_RUMBLE_GAP_MS, my_gen)) break;
         }
         pthread_mutex_lock(&g_rumble_lock);
         g_rumble_busy = false;
@@ -911,22 +959,24 @@ static void *jw__rumble_worker(void *arg) {
     return NULL;
 }
 
-/* Stop cleanly before the system freezes. A plain force-off races the worker:
-   suspend halts every thread, so a pattern caught mid-burst would leave the
-   motor energised for the whole sleep -- the exact way it got stranded during
-   bring-up. Drop anything queued, give an in-flight pattern a moment to finish
-   (the longest is 3 bursts, ~460 ms), then force off regardless. */
+/* Stop cleanly before the motor changes hands or the system freezes. A plain
+   force-off races the worker -- suspend halts every thread, so a pattern caught
+   mid-burst stays energised for the whole sleep, the exact way it got stranded
+   during bring-up. Bumping the generation cancels the pattern in flight and
+   wakes the worker out of its tick, so this genuinely stops it rather than
+   hoping it finishes first. The bounded wait is belt and braces. */
 static void jw__rumble_quiesce(void) {
     if (!g_rumble_ready) return;
     struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += 1;
+    jw__rumble_deadline(&deadline, 1000);
     pthread_mutex_lock(&g_rumble_lock);
     g_rumble_bursts = 0;                       /* nothing new starts */
+    g_rumble_gen++;                            /* cancel what is running */
+    pthread_cond_broadcast(&g_rumble_wake_cv);
     while (g_rumble_busy) {
         if (pthread_cond_timedwait(&g_rumble_idle_cv, &g_rumble_lock,
                                    &deadline) != 0) {
-            jw_log_warn("rumble: worker still busy at suspend; forcing off");
+            jw_log_warn("rumble: worker did not stop within 1s; forcing off");
             break;
         }
     }
@@ -3642,6 +3692,12 @@ static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode)
                     jw_ra_result_string(pause_result));
         return -1;
     }
+
+    /* Pausing stops the core asking for rumble, but it does not clear whatever
+       duty the core last set -- so a game paused mid-effect leaves the motor
+       running behind the menu until something else happens to write the node.
+       Reclaim it now that RetroArch is quiet and we are the only writer. */
+    jw__rumble_quiesce();
 
     /* Tell the resident UI which surface to show before we wake it. */
     jw__write_ingame_ui_mode(mode);
@@ -6368,7 +6424,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         }
         state->direct_drm_active = true;
         state->direct_drm_weston_stopped = true;
-        jw__rumble_off();   /* never strand a UI pulse across a game handoff */
+        jw__rumble_quiesce();   /* stop the worker, don't just outrun it */
     }
 
     pid_t pid = fork();
@@ -6656,9 +6712,12 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                     "may fall back to device internal storage");
     }
 
-    /* Never strand a UI pulse across the handoff, then resolve the duty
-       endpoints the game will drive the motor with (if game rumble is on). */
-    jw__rumble_off();
+    /* Stop any UI pulse before the handoff, then resolve the duty endpoints
+       the game will drive the motor with (if game rumble is on). A bare
+       force-off here was routinely undone: the launcher fires its commit tick
+       (280 ms) immediately before this IPC, so the worker re-energised the
+       motor a moment later. */
+    jw__rumble_quiesce();
     jw_rumble_game_env rumble_env;
     jw__rumble_resolve_game_env(state, &rumble_env);
 
@@ -8741,7 +8800,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     state->child_kind = JW_CHILD_NONE;
 
     /* Reclaim the motor: a game that died mid-buzz can't have cleared it. */
-    jw__rumble_off();
+    jw__rumble_quiesce();
 
     const char *name = jw__child_name(exited_kind);
     if (WIFEXITED(status)) {
@@ -9299,7 +9358,10 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    jw__rumble_off();   /* leave the motor off on the way out */
+    /* Quiesce, not a bare off: the worker is detached, so if a pattern is in
+       flight when main returns the process dies mid-tick and the motor is
+       stranded ON with nothing left to clear it. */
+    jw__rumble_quiesce();
 
     /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
        knows this was an intentional shutdown, not a crash. The marker lives in
