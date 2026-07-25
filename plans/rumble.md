@@ -1,9 +1,11 @@
 # Rumble / haptics for Leaf (MLP1)
 
-Status: **Phase 1 and Phase 2a built, tuned and verified on Puff** (2026-07-24). Design
-settled with Eric the same day via an on-device exploration of the motor plus a full design
-grill; the timings and floors were then measured on the device (section 6). Phase 2b
-(standalone emulators) stays deferred.
+Status: **Phase 1 and Phase 2a built, tuned, audited and in review** (2026-07-25). Design
+settled with Eric via an on-device exploration of the motor plus a full design grill; the
+timings and floors were then measured on the device (section 6); a multi-agent audit then
+found and fixed a further round of defects (section 8). Open PRs: Jawaka #11, retroarch-builds
+#2, Leaf #17 - merge retroarch-builds #2 before Leaf #17. Phase 2b (standalone emulators) and
+the variable-magnitude check are deliberately held as separate work (section 9).
 
 The MLP1 has a rumble motor. Stock LoongOS drives it; Leaf never has. This wires it up.
 
@@ -298,6 +300,76 @@ still perceptible at the 5% strength setting.
   `agent/sysfs-rumble-pwm`, `c09a7e6`).
 - Docs (leaf-docs) — still to write, at release time.
 
-Branch `agent/rumble-haptics`: `ee1d082` plan, `a8d9e62` motor core, `394b20b` Controls &
-Feedback page, `db6e4d5` polarity fix, `8676468` launcher haptics, `47b992c` settings-screen
-haptics, `b4c3d73` phase 2a.
+Branch `agent/rumble-haptics` (PR #11): `ee1d082` plan, `a8d9e62` motor core, `394b20b`
+Controls & Feedback page, `db6e4d5` polarity fix, `8676468` launcher haptics, `47b992c`
+settings-screen haptics, `b4c3d73` phase 2a, `7673dd5` measured timings, `8b7d921` +
+`1a3489a` pre-existing input bugs, `473add8` gate + UI coverage, `69c3378` deep-suspend
+release, `78edc5d` stoppable worker, `33afe3f` call sites + async IPC, `5afc86b` deferred
+motor reclaim.
+
+---
+
+## 8. Audit (2026-07-25) - what a review pass found
+
+Five parallel reviewers over the finished branch. Everything below was verified against the
+code before fixing; all of it is fixed and on device.
+
+**The motor could still be stranded.** The quiesce added for suspend did not stop the worker:
+on timeout it forced the motor off and returned while the worker re-energised it on its next
+burst, and suspend froze it that way for the whole sleep - the exact outcome its own comment
+claimed to prevent. The worker is now cancellable via a generation counter. Both timed waits
+were also on `CLOCK_REALTIME`, and with no battery-backed RTC the first time-sync steps the
+clock hours forward and fires every deadline instantly, making that race a certainty rather
+than a possibility. Now `CLOCK_MONOTONIC`.
+
+**Four bare force-offs raced the worker** and were usually no-ops, including on daemon exit,
+where the detached worker can die mid-tick leaving the motor on with no owner left to clear
+it. All now quiesce.
+
+**The in-game menu left the motor running.** Pausing RetroArch stops the core asking for
+rumble but does not clear the duty it last set. Worse, `jw_ra_pause_direct` sends `PAUSE` as a
+fire-and-forget datagram, so RetroArch can run another frame and re-assert the duty *after*
+the reclaim. Fixed with an immediate reclaim plus a deferred one 250 ms later, driven from the
+main loop so the latency-sensitive menu open is not blocked.
+
+**The release build omitted the patch entirely** - see Leaf #17. Two separate stale patch-set
+defaults, plus no check that an existing binary matches the requested set.
+
+**RetroArch-side:** no validation on the `RUMBLE_PWM_*` values, where a malformed entry became
+duty 0, which under inverted polarity is full on; and a write cache that went stale whenever
+the daemon touched the node, silently dropping rumble a core had asked for.
+
+**Haptic call sites** claimed outcomes they had not checked, and `jw_ipc_rumble` was never
+fire-and-forget despite three comments saying so - every cursor move was a blocking round trip
+on the UI thread.
+
+### Two pre-existing bugs it surfaced
+
+Neither is rumble's fault; haptics just made them perceptible.
+
+- `jw_input_proxy_release_buttons` walked `EV_KEY` only, but the D-pad is an ABS hat and the
+  stick two more axes, so "release everything" left directions pinned. That half-fixed
+  `a9adfb6` (the in-game-menu resume leak).
+- Entering standby swallows input, so the launcher never saw a held direction's release and
+  auto-repeated it behind a dark screen, still scrolling on wake. Present since jawakad took
+  the power key. The deep-suspend path needed the same fix separately, and is the path a
+  power tap actually takes.
+
+---
+
+## 9. Next (held as separate work)
+
+- **Phase 2b - standalone emulators.** Flycast / PPSSPP / DraStic / mupen64 each need their
+  own patch to write `duty_cycle`. Now covers PSP, DS, N64 **and** Dreamcast, since standalone
+  is the default for all four. Decide per emulator whether the payoff justifies it.
+- **Variable-magnitude verification.** Only ever proven with a GB rumble cart, which is binary
+  on/off, so the 25% game floor and the whole `[MIN,MAX]` lerp are untested against a core
+  that sends intermediate magnitudes. Needs a PS1 title with `input_libretro_device_p1` set to
+  DualShock.
+- **Release-day docs.** leaf-docs has `guide/rumble.md` written and live behind a Soon banner
+  plus a sidebar badge in `astro.config.mjs`; both must come off when this ships. Also
+  `guide/screenshots.md` still says Settings > General, and that row moves to Controls &
+  Feedback - its annotated screenshot needs retaking too.
+- **Known residue.** A held direction may still advance the cursor one position across a
+  sleep/wake. Suspected to be events already buffered in the launcher's own SDL queue, which
+  the daemon cannot reach, so any fix is launcher-side.
