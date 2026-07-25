@@ -6816,13 +6816,14 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
     }
     if (!jw__standby_active(state)) {
         jw__screen_set(state, false);
-        /* Release anything still held on the virtual pad BEFORE swallowing.
-           Swallowing stops new events reaching the launcher, including the
-           release -- and evdev is edge-based, so the launcher would go on
-           auto-repeating a direction that is physically already up: the list
-           scrolls invisibly behind a dark screen (buzzing, once haptics exist)
-           and is still scrolling when you wake it. Same edge-based trap the
-           in-game menu resume already guards against. */
+        /* Synthesize a release for anything still held on the virtual pad.
+           Swallowing drops the physical release, and evdev is edge-based, so
+           without this the launcher goes on auto-repeating a direction that is
+           physically already up: the list scrolls invisibly behind a dark
+           screen (buzzing, once haptics exist) and is still scrolling when you
+           wake it. Same edge-based trap the in-game menu resume guards against.
+           (Ordering vs set_swallow is irrelevant -- release_buttons writes
+           straight to uinput and never consults the swallow flag.) */
         jw_input_proxy_release_buttons(&state->input_proxy);
         jw_input_proxy_set_swallow(&state->input_proxy, true);
         g_rumble_gated = true;   /* no haptics behind a dark screen */
@@ -6908,6 +6909,12 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     g_rumble_gated = true;
     jw__rumble_quiesce();   /* never carry a live pulse into the freeze */
     jw__screen_set(state, false);
+    /* Same reason as the standby path: a direction still held here is never
+       released to the launcher, because the resume flush discards the physical
+       release rather than forwarding it. This is the path a power tap takes
+       (it skips standby entirely), so without this the wake resumes into a
+       phantom held direction. */
+    jw_input_proxy_release_buttons(&state->input_proxy);
     jw_input_proxy_set_swallow(&state->input_proxy, true);
     jw_platform_result result;
     jw__platform_sleep_with_performance(state, &result);   /* blocks until resume */
