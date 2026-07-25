@@ -236,6 +236,10 @@ typedef struct {
     long long post_launch_resume_next_ms;
     bool in_game_menu_prewarm_pending;
     long long in_game_menu_prewarm_next_ms;
+    /* Deferred motor reclaim after opening an in-game surface: RetroArch is
+       told to pause over a fire-and-forget UDP command, so it can still run a
+       frame or two and re-assert rumble after we force the motor off. */
+    long long rumble_reclaim_ms;
     bool retroarch_audio_reinit_pending;
     long long retroarch_audio_reinit_next_ms;
     long long retroarch_audio_reinit_deadline_ms;
@@ -1875,6 +1879,21 @@ static void jw__schedule_retroarch_audio_reinit_if_bluetooth(jw_daemon_state *st
     if (jw__retroarch_bluetooth_audio_active(state)) {
         jw__schedule_retroarch_audio_reinit(state, reason);
     }
+}
+
+/* Reclaim the motor once the PAUSE we sent has certainly been acted on. Without
+   this a game paused mid-rumble keeps the motor running for the whole time the
+   menu is up: the core stops being called, so nothing ever writes the duty back
+   down. */
+static void jw__tick_rumble_reclaim(jw_daemon_state *state) {
+    if (!state || state->rumble_reclaim_ms <= 0) {
+        return;
+    }
+    if (jw__monotonic_ms() < state->rumble_reclaim_ms) {
+        return;
+    }
+    state->rumble_reclaim_ms = 0;
+    jw__rumble_quiesce();
 }
 
 static void jw__tick_retroarch_audio_reinit(jw_daemon_state *state) {
@@ -3694,10 +3713,12 @@ static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode)
     }
 
     /* Pausing stops the core asking for rumble, but it does not clear whatever
-       duty the core last set -- so a game paused mid-effect leaves the motor
-       running behind the menu until something else happens to write the node.
-       Reclaim it now that RetroArch is quiet and we are the only writer. */
+       duty the core last set, so a game paused mid-effect would leave the motor
+       running behind the menu. Reclaim now AND again shortly: PAUSE goes out as
+       a fire-and-forget datagram, so RetroArch may still run a frame after this
+       and re-assert the duty it was last driving. */
     jw__rumble_quiesce();
+    state->rumble_reclaim_ms = jw__monotonic_ms() + 250;
 
     /* Tell the resident UI which surface to show before we wake it. */
     jw__write_ingame_ui_mode(mode);
@@ -9316,6 +9337,7 @@ int main(int argc, char *argv[]) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
         }
         jw__tick_retroarch_audio_reinit(&state);
+        jw__tick_rumble_reclaim(&state);
         jw__tick_suspend_inhibitors(&state);
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
