@@ -760,16 +760,33 @@ static bool jw__roms_has_dir(const char *roms, const char *name) {
 /* ---- Rumble / haptics (PWM motor) --------------------------------------
  * The MLP1 rumble motor is a single PWM channel (pwmchip0/pwm0, 1 kHz), not a
  * Linux force-feedback device. We configure it ONCE and then only modulate
- * duty_cycle: a buzz is duty>0, "off" is duty=0 with the channel left enabled.
- * We never toggle enable and never unexport -- both latch the motor on for this
- * driver, which is how it got stranded during bring-up. See plans/rumble.md.
- * Amplitude barely differentiates by feel (mostly changes the audible buzz);
- * short burst PATTERNS do, so the vocabulary is 1/2/3 ticks by event weight. */
+ * duty_cycle, and which duty means "off" depends on the polarity the driver
+ * actually accepted -- this one REJECTS "normal" and stays "inversed", where off
+ * is duty=period and duty=0 is FULL ON. Never assume: jw__rumble_off_duty() reads
+ * the polarity back. We never toggle enable and never unexport -- both latch the
+ * motor on for this driver, which is how it got stranded during bring-up.
+ * Amplitude only differentiates across a narrow band (see the floors below), so
+ * the vocabulary is 1/2/3 burst PATTERNS by event weight. See plans/rumble.md. */
 #define JW_RUMBLE_CHIP    "/sys/class/pwm/pwmchip0"
 #define JW_RUMBLE_PWM     JW_RUMBLE_CHIP "/pwm0"
 #define JW_RUMBLE_PERIOD  1000000L   /* ns, 1 kHz -- matches stock S50loong */
-#define JW_RUMBLE_FLOOR   40         /* % of period below which the motor won't move */
-#define JW_RUMBLE_TICK_MS 40
+/* Floors and tick length are MEASURED on Puff (2026-07-24), not guessed. This
+   motor spins up slowly, so perceptibility is duty x duration, not either alone:
+   a 40 ms pulse needs ~75% duty, 90 ms needs ~60%, 350 ms needs only ~20-23%.
+   Two independent ladders landed on the same (60%, 90 ms) threshold corner, so a
+   ~100 ms tick at a 60% floor is the shortest crisp tick this motor can produce.
+   Sustained rumble is a different regime, hence the lower game floor below.
+   Coast-down, by contrast, is fast -- 60 ms already separates a double cleanly,
+   so the 80 ms gap keeps the 1/2/3-burst vocabulary legible with margin. */
+#define JW_RUMBLE_FLOOR   60         /* % of period: min duty a short tick can be felt at */
+#define JW_RUMBLE_GAME_FLOOR 25      /* % of period: min for SUSTAINED (game) rumble */
+#define JW_RUMBLE_TICK_MS 100
+/* Nav is the one event that can fire continuously: Catastrophe repeats a held
+   direction every CAT_INPUT_REPEAT_RATE (100 ms), so a 100 ms tick would leave no
+   gap and a held scroll would read as one unbroken buzz. A shorter nav tick keeps
+   a tick per move -- honest one-for-one feedback -- while leaving the motor a gap
+   to fall into. 60% is still the floor at this length, so no separate floor. */
+#define JW_RUMBLE_NAV_TICK_MS 70
 #define JW_RUMBLE_GAP_MS  80
 #define JW_RUMBLE_CACHE_TTL_MS 1000
 
@@ -777,6 +794,7 @@ static pthread_mutex_t g_rumble_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_rumble_cv   = PTHREAD_COND_INITIALIZER;
 static int  g_rumble_bursts   = 0;   /* pending pattern: 1/2/3, 0 = idle */
 static long g_rumble_duty     = 0;   /* on-strength duty (ns), pre-polarity */
+static int  g_rumble_tick_ms  = JW_RUMBLE_TICK_MS;  /* per-pattern burst length */
 static bool g_rumble_ready    = false; /* channel configured */
 static bool g_rumble_inversed = false; /* actual polarity, read back at init */
 
@@ -866,18 +884,18 @@ static void jw__rumble_msleep(int ms) {
 static void *jw__rumble_worker(void *arg) {
     (void)arg;
     for (;;) {
-        int bursts; long duty;
+        int bursts, tick_ms; long duty;
         pthread_mutex_lock(&g_rumble_lock);
         while (g_rumble_bursts == 0)
             pthread_cond_wait(&g_rumble_cv, &g_rumble_lock);
-        bursts = g_rumble_bursts; duty = g_rumble_duty;
+        bursts = g_rumble_bursts; duty = g_rumble_duty; tick_ms = g_rumble_tick_ms;
         g_rumble_bursts = 0;
         pthread_mutex_unlock(&g_rumble_lock);
         long on  = jw__rumble_polarize(duty);
         long off = jw__rumble_off_duty();
         for (int i = 0; i < bursts; i++) {
             jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", on);
-            jw__rumble_msleep(JW_RUMBLE_TICK_MS);
+            jw__rumble_msleep(tick_ms);
             jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", off);
             if (i + 1 < bursts) jw__rumble_msleep(JW_RUMBLE_GAP_MS);
         }
@@ -885,11 +903,12 @@ static void *jw__rumble_worker(void *arg) {
     return NULL;
 }
 
-static void jw__rumble_queue(int bursts, long duty) {
+static void jw__rumble_queue(int bursts, long duty, int tick_ms) {
     if (!g_rumble_ready || bursts <= 0 || duty <= 0) return;
     pthread_mutex_lock(&g_rumble_lock);
-    g_rumble_bursts = bursts;   /* latest wins */
-    g_rumble_duty   = duty;
+    g_rumble_bursts  = bursts;   /* latest wins */
+    g_rumble_duty    = duty;
+    g_rumble_tick_ms = tick_ms;
     pthread_cond_signal(&g_rumble_cv);
     pthread_mutex_unlock(&g_rumble_lock);
 }
@@ -926,10 +945,11 @@ static void jw__rumble_event(jw_daemon_state *state, const char *event) {
     if (!g_rumble_ready || !event) return;
     jw__rumble_refresh_cache(state, (uint64_t)jw__monotonic_ms());
     if (!state->rumble_enabled_cached) return;
-    int bursts;
+    int bursts, tick_ms = JW_RUMBLE_TICK_MS;
     if (strcmp(event, "nav") == 0) {
         if (!state->rumble_nav_cached) return;
-        bursts = 1;
+        bursts  = 1;
+        tick_ms = JW_RUMBLE_NAV_TICK_MS;   /* short enough to survive held repeat */
     } else if (strcmp(event, "select") == 0) {
         bursts = 1;
     } else if (strcmp(event, "commit") == 0) {
@@ -939,7 +959,7 @@ static void jw__rumble_event(jw_daemon_state *state, const char *event) {
     } else {
         return;
     }
-    jw__rumble_queue(bursts, jw__rumble_duty_for(state->rumble_strength_cached));
+    jw__rumble_queue(bursts, jw__rumble_duty_for(state->rumble_strength_cached), tick_ms);
 }
 
 /* ---- Game rumble handoff (Phase 2) -------------------------------------
@@ -965,7 +985,10 @@ static void jw__rumble_resolve_game_env(jw_daemon_state *state,
     long max = jw__rumble_duty_for(state->rumble_strength_cached);
     if (max <= 0) return;
     out->off = jw__rumble_off_duty();
-    out->min = jw__rumble_polarize(JW_RUMBLE_PERIOD * JW_RUMBLE_FLOOR / 100);
+    /* Game rumble is SUSTAINED, so it uses the lower sustained floor -- holding it
+       to the short-tick floor would make a core's weakest effect feel near-full and
+       throw away most of the magnitude range the core is asking for. */
+    out->min = jw__rumble_polarize(JW_RUMBLE_PERIOD * JW_RUMBLE_GAME_FLOOR / 100);
     out->max = jw__rumble_polarize(max);
     out->on  = true;
 }
@@ -8143,7 +8166,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
                TTL cache), so the user feels the level as they drag. */
             cJSON *s = cJSON_GetObjectItemCaseSensitive(root, "strength");
             int strength = cJSON_IsNumber(s) ? (int)s->valuedouble : 65;
-            jw__rumble_queue(1, jw__rumble_duty_for(strength));
+            jw__rumble_queue(1, jw__rumble_duty_for(strength), JW_RUMBLE_TICK_MS);
         } else if (event) {
             jw__rumble_event(state, event);
         }

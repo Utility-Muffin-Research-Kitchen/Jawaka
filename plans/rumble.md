@@ -1,9 +1,9 @@
 # Rumble / haptics for Leaf (MLP1)
 
-Status: **Phase 1 and Phase 2a built and verified on Puff** (2026-07-24). Design settled
-with Eric the same day via an on-device exploration of the motor plus a full design grill.
-Phase 2b (standalone emulators) stays deferred; the timings and stiction floor still want a
-hands-on tuning pass (section 6).
+Status: **Phase 1 and Phase 2a built, tuned and verified on Puff** (2026-07-24). Design
+settled with Eric the same day via an on-device exploration of the motor plus a full design
+grill; the timings and floors were then measured on the device (section 6). Phase 2b
+(standalone emulators) stays deferred.
 
 The MLP1 has a rumble motor. Stock LoongOS drives it; Leaf never has. This wires it up.
 
@@ -82,11 +82,8 @@ perceived force** — a light vs strong duty is hard to tell apart by feel, easy
 - **Strength** (duty) is a single user intensity control on top; it is a scale/ceiling, not
   the differentiator.
 
-Tick shape that felt right in testing: **~40 ms on**, **~80 ms gap** between bursts in a
-pattern. Strength → duty mapping is a slider percentage of the 1,000,000 ns period, **to be
-tuned on device**: motor response is non-linear and low duty may not overcome stiction, so
-there is likely a **hard floor (~40%)** below which the motor will not reliably move. Map
-the slider `0–100%` onto `[floor%, 100%]` of period.
+Tick shape and floors were later **measured** on Puff rather than guessed - see section 6,
+which supersedes the ~40 ms / ~40% floor figures this section originally carried.
 
 ---
 
@@ -226,17 +223,65 @@ the session and reclaims it (forces off) on exit — still a single-owner PWM.
 
 ---
 
-## 6. To tune / verify on device
+## 6. Tuning — MEASURED on Puff (2026-07-24)
 
-Everything here is a feel judgement, so it needs Eric with the device in hand — the shipped
-values are educated guesses that work but were never A/B'd.
+Done with Eric holding the device, driving `duty_cycle` from a shell script rather than
+rebuilding per candidate. Every ladder anchored each test pulse behind a full-strength
+marker buzz, so a step was identified by counting always-felt markers instead of trying to
+count things that might not be felt at all.
 
-- Strength→duty curve and the **stiction floor** (the min duty that reliably moves the motor).
-  Shipped as `JW_RUMBLE_FLOOR` = 40%, guessed.
-- Final tick/gap timings for single/double/triple. Shipped at 40 ms on / 80 ms gap.
-- Confirm the live-preview-on-slide feel.
-- Game rumble: whether the strength slider reads as a sensible ceiling in an actual game.
+### The motor's response curve
+
+Perceptibility is **duty x duration**, not either alone — this motor spins up slowly:
+
+| Pulse length | Duty needed to be clearly felt |
+| --- | --- |
+| 40 ms  | ~75% |
+| 70 ms  | ~60% |
+| 90 ms  | ~60% |
+| 350 ms | ~20-23% |
+
+Two independent ladders (descending duty at fixed length, ascending length at fixed duty)
+converged on the same **(60%, 90 ms)** corner, which is the cross-check that makes the rest
+trustworthy. The curve is flat from ~70 ms to ~90 ms and only climbs below that.
+
+**Coast-down is fast even though spin-up is slow.** A 60 ms gap already separates a double
+burst cleanly at full duty (the worst case), so the 80 ms gap ships unchanged, with margin.
+
+### What that forced
+
+- **The original 40 ms tick was unusable.** At 40 ms nothing under ~75% duty registers, which
+  would have pinned the floor at 75% and collapsed the strength slider to a 75-100 range.
+  The tick had to grow to **100 ms** for the slider to mean anything.
+- **Short and sustained pulses need different floors.** One 40% floor was wrong in both
+  directions: too low for a UI tick, too high for game rumble. Hence `JW_RUMBLE_FLOOR` 60%
+  for ticks and `JW_RUMBLE_GAME_FLOOR` 25% for sustained game rumble — holding a core's
+  weakest effect to the tick floor would have thrown away most of its magnitude range.
+- **Nav needed its own tick length.** Catastrophe repeats a held direction every 100 ms
+  (`CAT_INPUT_REPEAT_RATE`), so a 100 ms nav tick left zero gap and a held scroll read as one
+  unbroken buzz — confirmed by feel and by the constant. Note a rate limit *cannot* fix this
+  finely: events only arrive every 100 ms, so dropping them yields 200/300 ms and nothing in
+  between. The fix is a shorter nav tick (**70 ms**, tick-per-move preserved, 30 ms gap),
+  chosen by A/B against 200 ms cadence and against "first move only, silence while held".
+  60% is still the floor at 70 ms, so nav needs no separate floor.
+
+### Shipped values
+
+| Constant | Value |
+| --- | --- |
+| `JW_RUMBLE_FLOOR` | 60% |
+| `JW_RUMBLE_GAME_FLOOR` | 25% |
+| `JW_RUMBLE_TICK_MS` | 100 |
+| `JW_RUMBLE_NAV_TICK_MS` | 70 |
+| `JW_RUMBLE_GAP_MS` | 80 |
+
+Verified after deploy: previews at strength 1 / 50 / 100 wrote duty `400000` / `200000` / `0`
+(inversed, so lower is stronger) — exactly 60% / 80% / 100%. Confirmed by feel in the UI, and
+still perceptible at the 5% strength setting.
+
 - ~~Phase 2: sysfs write permission for the game process~~ — resolved, everything runs as root.
+- Still open: whether the strength slider reads as a sensible ceiling inside an actual game
+  (the game floor of 25% has not been feel-checked in a rumbling game, only the math).
 
 ## 7. Files
 
