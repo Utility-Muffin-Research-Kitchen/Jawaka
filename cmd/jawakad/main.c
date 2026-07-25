@@ -6913,9 +6913,6 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     jw__platform_sleep_with_performance(state, &result);   /* blocks until resume */
     jw_log_info("sleep: resumed");
     jw__rumble_off();   /* belt and braces if the quiesce above timed out */
-    /* Stay gated if we resumed back into screen-off standby; leaving standby
-       clears it. */
-    g_rumble_gated = jw__standby_active(state);
     jw__screen_set(state, true);
     jw__reconcile_audio(state, "wake", true);
     jw_input_proxy_set_swallow(&state->input_proxy, false);
@@ -6930,6 +6927,10 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     state->power_held = false;
     jw_input_proxy_mark_activity(&state->input_proxy);
     state->standby_reason = JW_STANDBY_NONE;
+    /* This clears standby directly rather than via jw__leave_standby_screen_off,
+       so the rumble gate has to be released here too -- otherwise suspending out
+       of screen-off standby wakes with haptics silently dead for good. */
+    g_rumble_gated = false;
     state->standby_entered_ms = 0;
     state->autosleep_charging_logged = false;
     state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
