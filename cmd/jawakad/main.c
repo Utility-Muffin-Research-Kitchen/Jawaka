@@ -6785,6 +6785,14 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
     }
     if (!jw__standby_active(state)) {
         jw__screen_set(state, false);
+        /* Release anything still held on the virtual pad BEFORE swallowing.
+           Swallowing stops new events reaching the launcher, including the
+           release -- and evdev is edge-based, so the launcher would go on
+           auto-repeating a direction that is physically already up: the list
+           scrolls invisibly behind a dark screen and is still scrolling when
+           you wake it. Same edge-based trap the in-game menu resume already
+           guards against. */
+        jw_input_proxy_release_buttons(&state->input_proxy);
         jw_input_proxy_set_swallow(&state->input_proxy, true);
     }
     state->standby_reason = reason;
