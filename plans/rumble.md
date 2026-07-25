@@ -1,8 +1,9 @@
 # Rumble / haptics for Leaf (MLP1)
 
-Status: **designed, not built.** Design settled with Eric on 2026-07-24 via an
-on-device exploration of the motor plus a full design grill. Phase 1 (UI haptics)
-is built first; Phase 2 (game rumble) is documented here and built after.
+Status: **Phase 1 and Phase 2a built and verified on Puff** (2026-07-24). Design settled
+with Eric the same day via an on-device exploration of the motor plus a full design grill.
+Phase 2b (standalone emulators) stays deferred; the timings and stiction floor still want a
+hands-on tuning pass (section 6).
 
 The MLP1 has a rumble motor. Stock LoongOS drives it; Leaf never has. This wires it up.
 
@@ -227,21 +228,31 @@ the session and reclaims it (forces off) on exit — still a single-owner PWM.
 
 ## 6. To tune / verify on device
 
-- Strength→duty curve and the **stiction floor** (the min duty that reliably moves the motor).
-- Final tick/gap timings for single/double/triple (start ~40 ms on / ~80 ms gap).
-- Confirm the live-preview-on-slide feel.
-- Phase 2: sysfs write permission for the game process.
+Everything here is a feel judgement, so it needs Eric with the device in hand — the shipped
+values are educated guesses that work but were never A/B'd.
 
-## 7. Files (anticipated)
+- Strength→duty curve and the **stiction floor** (the min duty that reliably moves the motor).
+  Shipped as `JW_RUMBLE_FLOOR` = 40%, guessed.
+- Final tick/gap timings for single/double/triple. Shipped at 40 ms on / 80 ms gap.
+- Confirm the live-preview-on-slide feel.
+- Game rumble: whether the strength slider reads as a sensible ceiling in an actual game.
+- ~~Phase 2: sysfs write permission for the game process~~ — resolved, everything runs as root.
+
+## 7. Files
 
 - `cmd/jawakad/main.c` — rumble module: channel init, `jw__rumble_*` worker + event→pattern
   table + duty scaling + safe-stop, force-off on launch/sleep/shutdown, `rumble` IPC action,
   cache the three DB settings, Phase-2 env injection at RA launch.
 - `internal/settings/settings.{c,h}` — new **Controls & Feedback** page + rows (Rumble,
-  Strength slider, Navigation tick, migrated Screenshots); new DB keys; page enum + top-level
-  list entry.
+  Strength slider, Navigation tick, Game Rumble, migrated Screenshots); new DB keys; page enum
+  + top-level list entry.
 - `cmd/jawaka-launcher/main.c` (+ menu) — emit named rumble events at select / commit /
   boundary / (optional) nav sites; strength-slider live preview.
-- `retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch` — Phase 2: enable +
-  adapt to write `duty_cycle`.
-- Docs (leaf-docs) at release time.
+- `retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch` — the `SR_PWM` duty mode,
+  wired into `build-mlp1.sh` as the `sysfs-rumble` patch-set entry (branch
+  `agent/sysfs-rumble-pwm`, `c09a7e6`).
+- Docs (leaf-docs) — still to write, at release time.
+
+Branch `agent/rumble-haptics`: `ee1d082` plan, `a8d9e62` motor core, `394b20b` Controls &
+Feedback page, `db6e4d5` polarity fix, `8676468` launcher haptics, `47b992c` settings-screen
+haptics, `b4c3d73` phase 2a.
