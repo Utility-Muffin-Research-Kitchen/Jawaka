@@ -364,6 +364,17 @@ static void jw__render_menu(const jw_menu_state *state) {
     cat_present();
 }
 
+/* Fire a semantic UI haptic (see internal/ipc jw_ipc_rumble). Fire-and-forget:
+   the daemon owns the vocabulary (single/double/triple tick) and the enable/nav
+   gating, so call sites only name the event.
+
+   Safe to use from the in-game menu even though a game normally owns the motor:
+   jawakad pauses RetroArch before showing this menu, so the core is not driving
+   rumble and the daemon is the only writer while the menu is up. */
+static inline void jw__haptic(const char *socket_path, const char *event) {
+    if (socket_path && socket_path[0]) jw_ipc_rumble(socket_path, event);
+}
+
 static int jw__activate(const char *socket_path, jw_menu_state *state, bool *running) {
     switch (state->list.cursor) {
         case JW_MENU_SEARCH: {
@@ -437,17 +448,21 @@ static void jw__handle_input(const char *socket_path, jw_menu_state *state,
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->list, -1, JW_MENU_COUNT);
+            jw__haptic(socket_path, "nav");   /* the list wraps, so never blocked */
             state->status[0] = '\0';   /* a moved cursor dismisses stale feedback */
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->list, +1, JW_MENU_COUNT);
+            jw__haptic(socket_path, "nav");
             state->status[0] = '\0';
             break;
         case CAT_BTN_A:
         case CAT_BTN_START:
+            jw__haptic(socket_path, "commit");
             jw__activate(socket_path, state, running);
             break;
         case CAT_BTN_B:
+            jw__haptic(socket_path, "select");
             *running = false;
             break;
         default:
@@ -1527,18 +1542,23 @@ static void jw__ingame_show_performance(const char *socket_path,
             switch (ev.button) {
                 case CAT_BTN_UP:
                     cat_list_state_move(&list, -1, JW_INGAME_PERF_ROWS);
+                    jw__haptic(socket_path, "nav");
                     break;
                 case CAT_BTN_DOWN:
                     cat_list_state_move(&list, +1, JW_INGAME_PERF_ROWS);
+                    jw__haptic(socket_path, "nav");
                     break;
                 case CAT_BTN_LEFT:
+                    jw__haptic(socket_path, "nav");
                     jw__ingame_perf_adjust(socket_path, state, &list, -1);
                     break;
                 case CAT_BTN_RIGHT:
+                    jw__haptic(socket_path, "nav");
                     jw__ingame_perf_adjust(socket_path, state, &list, +1);
                     break;
                 case CAT_BTN_A:
                 case CAT_BTN_START:
+                    jw__haptic(socket_path, "commit");
                     if (list.cursor == JW_INGAME_PERF_RESET) {
                         jw__ingame_perf_reset(socket_path, state);
                     } else if (list.cursor == JW_INGAME_PERF_PROFILE) {
@@ -1548,6 +1568,7 @@ static void jw__ingame_show_performance(const char *socket_path,
                     }
                     break;
                 case CAT_BTN_B:
+                    jw__haptic(socket_path, "select");
                     running = false;
                     break;
                 default:
@@ -1768,21 +1789,27 @@ static void jw__handle_ingame_input(const char *socket_path,
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->list, -1, JW_INGAME_COUNT);
+            jw__haptic(socket_path, "nav");   /* the list wraps, so never blocked */
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->list, +1, JW_INGAME_COUNT);
+            jw__haptic(socket_path, "nav");
             break;
         case CAT_BTN_LEFT:
+            jw__haptic(socket_path, "nav");
             jw__ingame_adjust(socket_path, state, -1);
             break;
         case CAT_BTN_RIGHT:
+            jw__haptic(socket_path, "nav");
             jw__ingame_adjust(socket_path, state, +1);
             break;
         case CAT_BTN_A:
         case CAT_BTN_START:
+            jw__haptic(socket_path, "commit");
             jw__ingame_activate(socket_path, state, running);
             break;
         case CAT_BTN_B:
+            jw__haptic(socket_path, "commit");   /* double tick: back into the game */
             jw__ingame_continue(socket_path, state, running);
             break;
         case CAT_BTN_Y:
@@ -1886,16 +1913,20 @@ static void jw__handle_ingame_switcher_input(const char *socket_path,
         case CAT_BTN_LEFT:
         case CAT_BTN_UP:
             jw_game_switcher_move(switcher, -1);
+            jw__haptic(socket_path, "nav");
             break;
         case CAT_BTN_RIGHT:
         case CAT_BTN_DOWN:
             jw_game_switcher_move(switcher, +1);
+            jw__haptic(socket_path, "nav");
             break;
         case CAT_BTN_A: {
             const jw_game_entry *sel = jw_game_switcher_selected(switcher);
             if (!sel) {
+                jw__haptic(socket_path, "blocked");
                 break;
             }
+            jw__haptic(socket_path, "commit");   /* double tick: leaving into a game */
             if (jw_game_switcher_selected_is_current(switcher)) {
                 jw__ingame_switcher_resume(socket_path, state, running);
             } else if (jw_ipc_switch_game(socket_path, sel->system, sel->rom_path,
@@ -1908,10 +1939,12 @@ static void jw__handle_ingame_switcher_input(const char *socket_path,
             break;
         }
         case CAT_BTN_B:
+            jw__haptic(socket_path, "commit");   /* double tick: back into the game */
             jw__ingame_switcher_resume(socket_path, state, running);
             break;
         case CAT_BTN_Y: {
             if (jw_game_switcher_selected_is_current(switcher)) {
+                jw__haptic(socket_path, "blocked");
                 break; /* never remove the running game from the overlay */
             }
             const jw_game_entry *sel = jw_game_switcher_selected(switcher);

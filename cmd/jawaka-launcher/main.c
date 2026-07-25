@@ -8122,6 +8122,7 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
     if (state->focus_unlock_confirm != 0) {
         switch (button) {
             case CAT_BTN_A:
+                jw__haptic(state, "commit");   /* double tick: rebooting/powering off */
                 jw_ipc_platform_action(socket_path,
                     state->focus_unlock_confirm == 1 ? "reboot" : "poweroff", 0);
                 cat_hide_window();
@@ -8129,14 +8130,21 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
                 break;
             case CAT_BTN_B:
             case CAT_BTN_MENU:
+                jw__haptic(state, "select");
                 state->focus_unlock_confirm = 0; cat_request_frame(); break;
             default: break;
         }
         return;
     }
     /* L1/R1 open the reboot / power-off confirms. */
-    if (button == CAT_BTN_L1) { state->focus_unlock_confirm = 1; cat_request_frame(); return; }
-    if (button == CAT_BTN_R1) { state->focus_unlock_confirm = 2; cat_request_frame(); return; }
+    if (button == CAT_BTN_L1) {
+        jw__haptic(state, "select");
+        state->focus_unlock_confirm = 1; cat_request_frame(); return;
+    }
+    if (button == CAT_BTN_R1) {
+        jw__haptic(state, "select");
+        state->focus_unlock_confirm = 2; cat_request_frame(); return;
+    }
 
     /* Y reconnects a paired-but-disconnected headset (works in both PIN and
        confirm modes). The BT stack does the connect asynchronously; we just kick
@@ -8153,14 +8161,19 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
         switch (button) {
             case CAT_BTN_UP:
                 *slot = (*slot + 1) % 10;
+                jw__haptic(state, "nav");   /* digits wrap, so never blocked */
                 state->focus_pin_error = false; cat_request_frame(); break;
             case CAT_BTN_DOWN:
                 *slot = (*slot + 9) % 10;
+                jw__haptic(state, "nav");
                 state->focus_pin_error = false; cat_request_frame(); break;
             case CAT_BTN_LEFT:
+                jw__haptic(state, state->focus_pin_slot > 0 ? "nav" : "blocked");
                 if (state->focus_pin_slot > 0) state->focus_pin_slot--;
                 cat_request_frame(); break;
             case CAT_BTN_RIGHT:
+                jw__haptic(state, state->focus_pin_slot < JW_FOCUS_PIN_LEN - 1
+                                      ? "nav" : "blocked");
                 if (state->focus_pin_slot < JW_FOCUS_PIN_LEN - 1) state->focus_pin_slot++;
                 cat_request_frame(); break;
             case CAT_BTN_A: {
@@ -8169,8 +8182,13 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
                     pin[i] = (char)('0' + (state->focus_pin[i] % 10));
                 pin[JW_FOCUS_PIN_LEN] = '\0';
                 if (jw_focus_pin_verify(pin, state->focus_pin_hash)) {
+                    /* The one place the blocked/commit distinction really earns
+                       its keep: right PIN and wrong PIN feel different without
+                       having to read the screen. */
+                    jw__haptic(state, "commit");
                     jw__focus_unlock_exit(state);
                 } else {
+                    jw__haptic(state, "blocked");
                     state->focus_pin_error = true;
                     state->focus_pin_slot = 0;
                     for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) state->focus_pin[i] = 0;
@@ -8180,6 +8198,7 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
             }
             case CAT_BTN_B:
             case CAT_BTN_MENU:
+                jw__haptic(state, "select");
                 state->focus_unlock_open = false; cat_request_frame(); break;
             default: break;
         }
@@ -8188,9 +8207,11 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
            there is no free-exit path for anything but an explicit no-lock. */
         switch (button) {
             case CAT_BTN_A:
+                jw__haptic(state, "commit");
                 jw__focus_unlock_exit(state); break;
             case CAT_BTN_B:
             case CAT_BTN_MENU:
+                jw__haptic(state, "select");
                 state->focus_unlock_open = false; cat_request_frame(); break;
             default: break;
         }
@@ -8213,14 +8234,19 @@ static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *s
         case CAT_BTN_UP:
         case CAT_BTN_DOWN: {
             int next = jw__focus_nav(state->focus_cursor, state->focus_count, button);
-            if (next != state->focus_cursor) {
+            bool moved = next != state->focus_cursor;
+            if (moved) {
                 state->focus_cursor = next;
                 cat_request_frame();
             }
+            /* Same boundary feedback as the home grid: a tick when the cursor
+               moves, the blocked pattern at the edge of the tile set. */
+            jw__haptic(state, moved ? "nav" : "blocked");
             break;
         }
         case CAT_BTN_A:
             if (state->focus_count > 0) {
+                /* jw__launch_game_entry fires the commit tick itself. */
                 jw__launch_game_entry(socket_path, state,
                                       &state->focus_games[state->focus_cursor],
                                       running);
@@ -8228,6 +8254,7 @@ static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *s
             break;
         case CAT_BTN_MENU:
             /* Open the unlock overlay, fresh. */
+            jw__haptic(state, "select");
             state->focus_unlock_open = true;
             state->focus_unlock_confirm = 0;
             state->focus_pin_error = false;

@@ -792,6 +792,9 @@ static bool jw__roms_has_dir(const char *roms, const char *name) {
 
 static pthread_mutex_t g_rumble_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_rumble_cv   = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  g_rumble_idle_cv = PTHREAD_COND_INITIALIZER;
+static bool g_rumble_busy     = false; /* worker is mid-pattern (see quiesce) */
+static bool g_rumble_gated    = false; /* screen off/suspended: swallow all events */
 static int  g_rumble_bursts   = 0;   /* pending pattern: 1/2/3, 0 = idle */
 static long g_rumble_duty     = 0;   /* on-strength duty (ns), pre-polarity */
 static int  g_rumble_tick_ms  = JW_RUMBLE_TICK_MS;  /* per-pattern burst length */
@@ -890,6 +893,7 @@ static void *jw__rumble_worker(void *arg) {
             pthread_cond_wait(&g_rumble_cv, &g_rumble_lock);
         bursts = g_rumble_bursts; duty = g_rumble_duty; tick_ms = g_rumble_tick_ms;
         g_rumble_bursts = 0;
+        g_rumble_busy = true;
         pthread_mutex_unlock(&g_rumble_lock);
         long on  = jw__rumble_polarize(duty);
         long off = jw__rumble_off_duty();
@@ -899,12 +903,39 @@ static void *jw__rumble_worker(void *arg) {
             jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", off);
             if (i + 1 < bursts) jw__rumble_msleep(JW_RUMBLE_GAP_MS);
         }
+        pthread_mutex_lock(&g_rumble_lock);
+        g_rumble_busy = false;
+        pthread_cond_signal(&g_rumble_idle_cv);
+        pthread_mutex_unlock(&g_rumble_lock);
     }
     return NULL;
 }
 
+/* Stop cleanly before the system freezes. A plain force-off races the worker:
+   suspend halts every thread, so a pattern caught mid-burst would leave the
+   motor energised for the whole sleep -- the exact way it got stranded during
+   bring-up. Drop anything queued, give an in-flight pattern a moment to finish
+   (the longest is 3 bursts, ~460 ms), then force off regardless. */
+static void jw__rumble_quiesce(void) {
+    if (!g_rumble_ready) return;
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 1;
+    pthread_mutex_lock(&g_rumble_lock);
+    g_rumble_bursts = 0;                       /* nothing new starts */
+    while (g_rumble_busy) {
+        if (pthread_cond_timedwait(&g_rumble_idle_cv, &g_rumble_lock,
+                                   &deadline) != 0) {
+            jw_log_warn("rumble: worker still busy at suspend; forcing off");
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_rumble_lock);
+    jw__rumble_off();
+}
+
 static void jw__rumble_queue(int bursts, long duty, int tick_ms) {
-    if (!g_rumble_ready || bursts <= 0 || duty <= 0) return;
+    if (!g_rumble_ready || g_rumble_gated || bursts <= 0 || duty <= 0) return;
     pthread_mutex_lock(&g_rumble_lock);
     g_rumble_bursts  = bursts;   /* latest wins */
     g_rumble_duty    = duty;
@@ -6789,11 +6820,13 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
            Swallowing stops new events reaching the launcher, including the
            release -- and evdev is edge-based, so the launcher would go on
            auto-repeating a direction that is physically already up: the list
-           scrolls invisibly behind a dark screen and is still scrolling when
-           you wake it. Same edge-based trap the in-game menu resume already
-           guards against. */
+           scrolls invisibly behind a dark screen (buzzing, once haptics exist)
+           and is still scrolling when you wake it. Same edge-based trap the
+           in-game menu resume already guards against. */
         jw_input_proxy_release_buttons(&state->input_proxy);
         jw_input_proxy_set_swallow(&state->input_proxy, true);
+        g_rumble_gated = true;   /* no haptics behind a dark screen */
+        jw__rumble_quiesce();
     }
     state->standby_reason = reason;
     state->standby_entered_ms = jw__monotonic_ms();
@@ -6808,6 +6841,7 @@ static void jw__leave_standby_screen_off(jw_daemon_state *state) {
 
     jw__screen_set(state, true);
     jw_input_proxy_set_swallow(&state->input_proxy, false);
+    g_rumble_gated = false;
     state->standby_reason = JW_STANDBY_NONE;
     state->standby_entered_ms = 0;
     state->autosleep_charging_logged = false;
@@ -6871,11 +6905,17 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     }
     state->suspend_policy.pending = JW_SUSPEND_PENDING_NONE;
     jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
+    g_rumble_gated = true;
+    jw__rumble_quiesce();   /* never carry a live pulse into the freeze */
     jw__screen_set(state, false);
     jw_input_proxy_set_swallow(&state->input_proxy, true);
     jw_platform_result result;
     jw__platform_sleep_with_performance(state, &result);   /* blocks until resume */
     jw_log_info("sleep: resumed");
+    jw__rumble_off();   /* belt and braces if the quiesce above timed out */
+    /* Stay gated if we resumed back into screen-off standby; leaving standby
+       clears it. */
+    g_rumble_gated = jw__standby_active(state);
     jw__screen_set(state, true);
     jw__reconcile_audio(state, "wake", true);
     jw_input_proxy_set_swallow(&state->input_proxy, false);
