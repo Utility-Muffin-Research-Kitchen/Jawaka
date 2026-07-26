@@ -6598,8 +6598,14 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         }
         state->direct_drm_active = true;
         state->direct_drm_weston_stopped = true;
-        jw__rumble_quiesce();   /* stop the worker, don't just outrun it */
     }
+
+    /* Hand the motor over exactly as the RetroArch path does. The quiesce was
+       previously inside the direct-DRM branch, so a standalone emulator that
+       does not take the display could inherit a UI pulse still in flight. */
+    jw__rumble_quiesce();
+    jw_rumble_game_env rumble_env;
+    jw__rumble_resolve_game_env(state, &rumble_env);
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -6621,6 +6627,9 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
 
     if (pid == 0) {
         jw_appearance_apply_env(&appearance);
+        /* Same RUMBLE_PWM_* contract RetroArch consumes: the daemon owns the
+           channel's polarity and floors, the emulator only writes duty_cycle. */
+        jw__rumble_apply_game_env(&rumble_env);
         jw__publish_source_content_env(rom_source);
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
