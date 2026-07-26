@@ -61,11 +61,20 @@ From then on:
 
 Decisions and rationale:
 
-- **Polarity is read back, never assumed.** The plan was to normalize to `polarity=normal`,
-  but this driver **rejects the write and stays `inversed`** — and under inversed a
-  `duty_cycle` of `0` is FULL ON, which stranded the motor during bring-up. So the daemon
-  attempts the normalize, re-reads `polarity`, and derives off/on from whatever actually
-  stuck (`off = period` when inversed, `0` when normal).
+- **Polarity is read back, never assumed** - and the channel now comes up **`normal`**.
+  For most of this project we believed the driver *rejected* `polarity=normal` and forced us
+  to live with `inversed`, where `duty_cycle = 0` is FULL ON. That was a misdiagnosis, found
+  2026-07-26: the driver rejects the polarity write only while `period` is still `0`, which
+  is the state of a freshly exported channel. The old init wrote polarity **before** period,
+  so the write always failed with EINVAL, the read-back said `inversed`, and we concluded the
+  hardware refused. **Write `period` first and `normal` takes.** On a fresh export this
+  driver also rejects `duty_cycle` and `enable` for the same reason, so period is simply the
+  write that makes every other one legal.
+
+  This is why the ordering is load-bearing rather than stylistic, and it defuses the whole
+  feature's marquee hazard: under `normal`, a failed or zeroed duty write means **off**, not
+  full power. The daemon still re-reads and adapts (`off = 0` when normal, `period` when
+  inversed), because a channel someone else left inversed must still be handled.
 - **Always-enabled / modulate-duty-only** is what makes "off" bulletproof — it is impossible
   to strand the motor because the channel is always actively driving a defined level.
 - **Energy:** keeping the channel enabled at 0% costs nothing meaningful. The motor draws
