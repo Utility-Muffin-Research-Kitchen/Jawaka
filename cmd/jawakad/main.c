@@ -1256,6 +1256,10 @@ typedef struct {
 static bool g_rumble_ff_on  = false;
 static long g_rumble_ff_min = 0;
 static long g_rumble_ff_max = 0;
+/* Set while the in-game menu is up. Separate from the endpoints because this is
+   a pause, not a teardown -- the session is still live and must resume with the
+   same numbers. See jw__rumble_ff_suspend for why a quiesce alone is not enough. */
+static bool g_rumble_ff_suspended = false;
 
 static void jw__rumble_resolve_game_env(jw_daemon_state *state,
                                         jw_rumble_game_env *out) {
@@ -1299,6 +1303,23 @@ static void jw__rumble_publish_ff(const jw_rumble_game_env *env) {
     if (was_on && !(env && env->on)) jw__rumble_quiesce();
 }
 
+/* Hold the force-feedback route shut while the in-game menu is up.
+ *
+ * Quiescing the motor is not enough on its own, and the reason is subtle: the
+ * emulator's SDL still believes its effect is playing, because nothing told it
+ * otherwise. SDL periodically resends a live effect to keep it alive, and a
+ * resend arriving after the reclaim would start the motor up again behind the
+ * menu -- the same "rumble runs non-stop in the menu" bug as before, just on a
+ * longer fuse and only when the menu is opened mid-effect.
+ *
+ * Refusing the resend outright is deterministic; timing the reclaim to outlast
+ * SDL's resend interval would be a guess about someone else's internals. */
+static void jw__rumble_ff_suspend(bool suspended) {
+    pthread_mutex_lock(&g_rumble_lock);
+    g_rumble_ff_suspended = suspended;
+    pthread_mutex_unlock(&g_rumble_lock);
+}
+
 /* An emulator played (or stopped) an FF_RUMBLE effect on the virtual pad.
    Runs on the proxy's force-feedback thread, so it touches nothing but the
    lock-guarded endpoints and the worker. */
@@ -1321,7 +1342,7 @@ static void jw__rumble_ff(void *userdata, uint16_t magnitude, uint32_t duration_
 
     long min, max;
     pthread_mutex_lock(&g_rumble_lock);
-    bool on = g_rumble_ff_on;
+    bool on = g_rumble_ff_on && !g_rumble_ff_suspended;
     min = g_rumble_ff_min;
     max = g_rumble_ff_max;
     pthread_mutex_unlock(&g_rumble_lock);
@@ -2152,7 +2173,19 @@ static void jw__schedule_retroarch_audio_reinit_if_bluetooth(jw_daemon_state *st
    menu is up: the core stops being called, so nothing ever writes the duty back
    down. */
 static void jw__tick_rumble_reclaim(jw_daemon_state *state) {
-    if (!state || state->rumble_reclaim_ms <= 0) {
+    if (!state) {
+        return;
+    }
+
+    /* Reconcile the force-feedback suspension against the menu rather than
+       trusting the close paths to unset it. The menu is left by a dozen routes
+       (resume, exit, switcher, game swap, crash), and a flag that got stuck on
+       would silently kill rumble for the rest of the session -- a worse bug than
+       the one suspending it prevents. menu_visible is cleared on all of them, so
+       deriving from it cannot stick. */
+    jw__rumble_ff_suspend(state->menu_visible);
+
+    if (state->rumble_reclaim_ms <= 0) {
         return;
     }
     if (jw__monotonic_ms() < state->rumble_reclaim_ms) {
@@ -3984,6 +4017,9 @@ static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode)
        a fire-and-forget datagram, so RetroArch may still run a frame after this
        and re-assert the duty it was last driving. */
     jw__rumble_quiesce();
+    /* Immediately, not on the next tick: a resend can land inside the 50ms the
+       reconcile would take to notice the menu is up. */
+    jw__rumble_ff_suspend(true);
     state->rumble_reclaim_ms = jw__monotonic_ms() + 250;
 
     /* Tell the resident UI which surface to show before we wake it. */
