@@ -65,6 +65,7 @@ static bool jw_ra__exact_supported(const char *command) {
         "GET_DISK_COUNT",
         "GET_DISK_SLOT",
         "GET_INFO",
+        "GET_PERF_INFO",
         "GET_STATE_SLOT",
         "GET_STATUS",
         "LOAD_STATE",
@@ -123,6 +124,7 @@ bool jw_ra_raw_command_supported(const char *command) {
            jw_ra__starts_with_word(command, "SEEK_REPLAY") ||
            jw_ra__starts_with_word(command, "SAVE_STATE_SLOT") ||
            jw_ra__starts_with_word(command, "SET_DISK_SLOT") ||
+           jw_ra__starts_with_word(command, "SET_SHADER") ||
            jw_ra__starts_with_word(command, "SET_STATE_SLOT") ||
            jw_ra__starts_with_word(command, "SHOW_MSG") ||
            jw_ra__starts_with_word(command, "WRITE_CORE_MEMORY");
