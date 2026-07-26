@@ -6274,11 +6274,11 @@ static int jw__launch_app_request(const char *socket_path, const char *name,
     }
 
     jw__set_launching_status(state, name, "app");
-    jw__haptic(state, "commit");   /* double tick: leaving into the app */
     cat_request_frame();
     jw__render_launcher(state);
 
     if (jw_ipc_launch_app(socket_path, pak_dir, state->status, sizeof(state->status)) != 0) {
+        jw__haptic(state, "blocked");   /* refused: the launcher is still here */
         return -1;
     }
 
@@ -6315,7 +6315,6 @@ static int jw__launch_game_entry_with_mode(const char *socket_path,
     }
 
     jw__set_launching_status(state, game->name, "game");
-    jw__haptic(state, "commit");   /* double tick: leaving into the game */
     cat_request_frame();
     jw__render_launcher(state);
 
@@ -6325,8 +6324,16 @@ static int jw__launch_game_entry_with_mode(const char *socket_path,
         : jw_ipc_launch_game(socket_path, game->system, game->rom_path,
                              state->status, sizeof(state->status));
     if (rc != 0) {
+        /* The launcher stays up on a refusal, so this is the one outcome worth
+           reporting by touch. */
+        jw__haptic(state, "blocked");
         return -1;
     }
+    /* No success pattern on the way out. A commit here was fired BEFORE the IPC,
+       so it claimed success the daemon had not granted yet -- and it could not
+       finish regardless: the daemon quiesces the worker to hand the motor to the
+       emulator, truncating whatever was mid-flight. Ownership transfers cleanly
+       instead of two writers racing for the channel. */
 
     jw__save_resume(state);
     cat_hide_window();
@@ -6368,12 +6375,12 @@ static int jw__launch_selected_search_result(const char *socket_path,
     }
 
     jw__set_launching_status(state, result->name, "game");
-    jw__haptic(state, "commit");   /* double tick: leaving into the game */
     cat_request_frame();
     jw__render_launcher(state);
 
     if (jw_ipc_launch_game(socket_path, result->system, result->rom_path,
                            state->status, sizeof(state->status)) != 0) {
+        jw__haptic(state, "blocked");   /* refused: the launcher is still here */
         return -1;
     }
 
@@ -8136,13 +8143,17 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
        rebooting doesn't escape the lock, it comes right back into focus mode). */
     if (state->focus_unlock_confirm != 0) {
         switch (button) {
-            case CAT_BTN_A:
-                jw__haptic(state, "commit");   /* double tick: rebooting/powering off */
-                jw_ipc_platform_action(socket_path,
+            case CAT_BTN_A: {
+                /* Tick on the answer, not the intent: if the daemon refuses,
+                   nothing is rebooting and the buzz should say so. */
+                int prc = jw_ipc_platform_action(socket_path,
                     state->focus_unlock_confirm == 1 ? "reboot" : "poweroff", 0);
+                jw__haptic(state, prc == 0 ? "commit" : "blocked");
+                if (prc != 0) break;
                 cat_hide_window();
                 *running = false;
                 break;
+            }
             case CAT_BTN_B:
             case CAT_BTN_MENU:
                 jw__haptic(state, "select");
@@ -8261,7 +8272,7 @@ static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *s
         }
         case CAT_BTN_A:
             if (state->focus_count > 0) {
-                /* jw__launch_game_entry fires the commit tick itself. */
+                /* Launch reports only failure by touch -- see the helper. */
                 jw__launch_game_entry(socket_path, state,
                                       &state->focus_games[state->focus_cursor],
                                       running);

@@ -420,11 +420,13 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             cat_request_frame();
             jw__render_menu(state);
             if (jw_ipc_platform_action(socket_path, "sleep", 0) != 0) {
-                /* Daemon unreachable: keep the feedback up instead of flashing. */
+                /* Daemon unreachable: keep the feedback up instead of flashing.
+                   Return the failure too, or the caller's haptic contradicts
+                   the status line the user is looking at. */
                 snprintf(state->status, sizeof(state->status), "%s", "Sleep failed");
-            } else {
-                state->status[0] = '\0';
+                return -1;
             }
+            state->status[0] = '\0';
             return 0;
         case JW_MENU_EXIT_STOCK:
             jw_ipc_exit_stock(socket_path);
@@ -1725,9 +1727,13 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
     }
 
     if (jw_ipc_retroarch_action(socket_path, action, value,
-                                state->status, sizeof(state->status)) == 0) {
-        *running = false;
+                                state->status, sizeof(state->status)) != 0) {
+        /* Report the refusal. Returning 0 here made a failed save/load/reset
+           feel identical to a successful one, while the status line said the
+           opposite. */
+        return -1;
     }
+    *running = false;
     return 0;
 }
 

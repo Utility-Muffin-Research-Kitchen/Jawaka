@@ -6774,18 +6774,46 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
 /* Sum of every settings list's cursor. Only the active screen's list moves on a
    given press, so a change in the sum means the cursor moved — lets us detect a
    real move (nav) vs a boundary (blocked) without a per-screen accessor. */
-static long jw__settings_cursor_sig(const jw_settings_ui *ui) {
-    return (long)ui->home_list.cursor + ui->appearance_list.cursor
-         + ui->colors_list.cursor + ui->layout_list.cursor
-         + ui->statusbar_list.cursor + ui->display_list.cursor
-         + ui->network_list.cursor + ui->bluetooth_list.cursor
-         + ui->lighting_list.cursor + ui->accounts_list.cursor
-         + ui->scraping_list.cursor + ui->scrape_edit_list.cursor
-         + ui->scrape_queue_list.cursor + ui->scrape_download_list.cursor
-         + ui->behavior_list.cursor + ui->controls_list.cursor
-         + ui->update_list.cursor + ui->update_picker_list.cursor
-         + ui->timezone_picker_list.cursor + ui->placeholder_list.cursor
-         + ui->home_tabs_list.cursor;
+/* Where the ACTIVE screen's selection currently sits, so a press can be judged
+   as moved-or-blocked by looking only at the control the user is driving.
+
+   This used to sum every list cursor in the UI, which was wrong twice over: the
+   scroll-only pages (About, Library, Playtime) contributed nothing at all, so a
+   successful scroll reported "blocked", and a sum can also cancel out when two
+   cursors move opposite ways. Screens are paired with their control exactly as
+   the render dispatch pairs them with their renderer.
+
+   Scroll pages compare `target`, not `offset`: offset eases toward target over
+   several frames, so immediately after a press it has not moved yet and would
+   read as blocked. */
+static long jw__settings_active_pos(const jw_settings_ui *ui) {
+    switch (ui->screen) {
+        case JW_SETTINGS_HOME:            return ui->home_list.cursor;
+        case JW_SETTINGS_APPEARANCE:      return ui->appearance_list.cursor;
+        case JW_SETTINGS_COLORS:          return ui->colors_list.cursor;
+        case JW_SETTINGS_LAYOUT:          return ui->layout_list.cursor;
+        case JW_SETTINGS_STATUS_BAR:      return ui->statusbar_list.cursor;
+        case JW_SETTINGS_DISPLAY:         return ui->display_list.cursor;
+        case JW_SETTINGS_NETWORK:         return ui->network_list.cursor;
+        case JW_SETTINGS_BLUETOOTH:       return ui->bluetooth_list.cursor;
+        case JW_SETTINGS_LIGHTING:        return ui->lighting_list.cursor;
+        case JW_SETTINGS_ACCOUNTS:        return ui->accounts_list.cursor;
+        case JW_SETTINGS_SCRAPING:        return ui->scraping_list.cursor;
+        case JW_SETTINGS_SCRAPE_PRIORITY: return ui->scrape_edit_list.cursor;
+        case JW_SETTINGS_SCRAPE_QUEUE:    return ui->scrape_queue_list.cursor;
+        case JW_SETTINGS_SCRAPE_QUEUE_DETAIL: return ui->placeholder_list.cursor;
+        case JW_SETTINGS_SCRAPE_DOWNLOAD: return ui->scrape_download_list.cursor;
+        case JW_SETTINGS_BEHAVIOR:        return ui->behavior_list.cursor;
+        case JW_SETTINGS_CONTROLS:        return ui->controls_list.cursor;
+        case JW_SETTINGS_HOME_TABS:       return ui->home_tabs_list.cursor;
+        case JW_SETTINGS_UPDATE:          return ui->update_list.cursor;
+        case JW_SETTINGS_UPDATE_PICKER:   return ui->update_picker_list.cursor;
+        case JW_SETTINGS_TIMEZONE_PICKER: return ui->timezone_picker_list.cursor;
+        case JW_SETTINGS_ABOUT:           return ui->about_scroll.target;
+        case JW_SETTINGS_LIBRARY:         return ui->library_scroll.target;
+        case JW_SETTINGS_PLAYTIME:        return ui->playtime_scroll.target;
+    }
+    return 0;
 }
 
 /* Public entry: run the real handler, then emit one UI haptic. Up/Down that
@@ -6800,7 +6828,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                                 status_size, theme_changed);
 
     int  scr0    = (int)ui->screen;
-    long sig0    = jw__settings_cursor_sig(ui);
+    long pos0    = jw__settings_active_pos(ui);
     bool nav_btn = (button == CAT_BTN_UP || button == CAT_BTN_DOWN);
 
     bool still_open = jw__settings_handle_button_inner(ui, button, status_buf,
@@ -6811,7 +6839,7 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             jw_ipc_rumble(ui->socket_path, "select");           /* page enter / back */
         else if (nav_btn)
             jw_ipc_rumble(ui->socket_path,
-                          jw__settings_cursor_sig(ui) != sig0 ? "nav" : "blocked");
+                          jw__settings_active_pos(ui) != pos0 ? "nav" : "blocked");
     }
     return still_open;
 }
