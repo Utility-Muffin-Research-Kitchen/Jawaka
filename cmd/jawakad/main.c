@@ -792,6 +792,10 @@ static bool jw__roms_has_dir(const char *roms, const char *name) {
    to fall into. 60% is still the floor at this length, so no separate floor. */
 #define JW_RUMBLE_NAV_TICK_MS 70
 #define JW_RUMBLE_GAP_MS  80
+/* Longest a single force-feedback effect is held before it lapses. SDL clamps
+   its own rumble to 0x7FFF ms and resends to keep a continuous effect alive, so
+   anything genuinely still playing is refreshed well inside this. */
+#define JW_RUMBLE_FF_MAX_HOLD_MS 0x7FFFu
 #define JW_RUMBLE_CACHE_TTL_MS 1000
 
 /* pthread_condattr_setclock is POSIX but absent on Darwin, where a condvar can
@@ -1151,6 +1155,27 @@ static void jw__rumble_queue(int bursts, long duty, int tick_ms) {
     pthread_mutex_unlock(&g_rumble_lock);
 }
 
+/* Sustained rumble at one level, as a game asks for rather than as the UI does.
+   A single burst held for `ms` IS a sustained buzz, so this reuses the worker
+   and gets its auto-stop and its cancel-on-suspend for free.
+
+   The difference from jw__rumble_queue is that this preempts. Queueing is
+   "latest wins" but only at the next pattern boundary, which is right for UI
+   ticks and wrong here: a game changing intensity has to be heard now, not after
+   the previous level finishes playing out. Bumping the generation cancels what
+   is running so the worker picks this up immediately. */
+static void jw__rumble_hold(long duty, int ms) {
+    if (!g_rumble_ready || g_rumble_gated || duty <= 0 || ms <= 0) return;
+    pthread_mutex_lock(&g_rumble_lock);
+    g_rumble_bursts  = 1;
+    g_rumble_duty    = duty;
+    g_rumble_tick_ms = ms;
+    g_rumble_gen++;                              /* cancel the level in flight */
+    if (g_rumble_cv_ready) pthread_cond_broadcast(&g_rumble_wake_cv);
+    pthread_cond_signal(&g_rumble_cv);
+    pthread_mutex_unlock(&g_rumble_lock);
+}
+
 /* Refresh the TTL-cached rumble settings from the DB (mirrors the screenshot
    flag: cheap on the input path, picks up changes within the TTL). */
 static void jw__rumble_refresh_cache(jw_daemon_state *state, uint64_t now_ms) {
@@ -1200,19 +1225,37 @@ static void jw__rumble_event(jw_daemon_state *state, const char *event) {
     jw__rumble_queue(bursts, jw__rumble_duty_for(state->rumble_strength_cached), tick_ms);
 }
 
-/* ---- Game rumble handoff (Phase 2) -------------------------------------
- * Emulators can't reach the motor on their own (no FF input device), so the
- * patched RetroArch writes duty_cycle directly via its sysfs-rumble fallback.
- * jawakad keeps owning the channel -- it stays exported, enabled and resting
- * off -- and hands the game ready-made duty endpoints so the emulator needs no
- * knowledge of polarity, period or the stiction floor. MAX is the user's
- * strength setting, so the slider acts as the in-game intensity ceiling.
- * Resolved in the parent (it reads the DB) and applied in the forked child, so
- * the daemon's own environment never carries these. */
+/* ---- Game rumble (Phase 2) ----------------------------------------------
+ * Two routes reach the motor from a game, because two kinds of consumer ask for
+ * it differently.
+ *
+ * The one that matters most is force feedback on jawakad's own virtual gamepad:
+ * the pad advertises FF_RUMBLE, so an emulator rumbling through plain SDL or
+ * evdev lands in jw__rumble_ff below and needs no patch of its own. That covers
+ * every standalone that runs on the calibrated pad.
+ *
+ * RetroArch does not take that route -- its sysfs-rumble fallback writes
+ * duty_cycle itself -- so it still gets the endpoints by environment. Both
+ * routes share the same numbers, and they cannot collide: the fallback only
+ * engages when the joypad driver's native rumble declines.
+ *
+ * Either way jawakad keeps owning the channel (exported, enabled, resting off)
+ * and the consumer never needs to know the polarity, the period or the motor's
+ * stiction floor. MAX is the user's strength setting, so the slider acts as the
+ * in-game intensity ceiling. Endpoints are held unpolarized here and converted
+ * at the point of use, because the worker polarizes on its own. */
 typedef struct {
     bool on;
-    long off, min, max;
+    long off;        /* absolute duty meaning "off" (already polarity-correct) */
+    long min, max;   /* magnitude endpoints, pre-polarity */
 } jw_rumble_game_env;
+
+/* The endpoints the FF path maps a magnitude onto, published for the life of a
+   game session. Read by the force-feedback thread and written by the main loop,
+   so they live under g_rumble_lock like everything else the worker shares. */
+static bool g_rumble_ff_on  = false;
+static long g_rumble_ff_min = 0;
+static long g_rumble_ff_max = 0;
 
 static void jw__rumble_resolve_game_env(jw_daemon_state *state,
                                         jw_rumble_game_env *out) {
@@ -1226,8 +1269,8 @@ static void jw__rumble_resolve_game_env(jw_daemon_state *state,
     /* Game rumble is SUSTAINED, so it uses the lower sustained floor -- holding it
        to the short-tick floor would make a core's weakest effect feel near-full and
        throw away most of the magnitude range the core is asking for. */
-    out->min = jw__rumble_polarize(JW_RUMBLE_PERIOD * JW_RUMBLE_GAME_FLOOR / 100);
-    out->max = jw__rumble_polarize(max);
+    out->min = JW_RUMBLE_PERIOD * JW_RUMBLE_GAME_FLOOR / 100;
+    out->max = max;
     out->on  = true;
 }
 
@@ -1236,8 +1279,78 @@ static void jw__rumble_apply_game_env(const jw_rumble_game_env *env) {
     if (!env || !env->on) return;
     setenv("RUMBLE_PWM_PATH", JW_RUMBLE_PWM "/duty_cycle", 1);
     snprintf(b, sizeof(b), "%ld", env->off); setenv("RUMBLE_PWM_OFF", b, 1);
-    snprintf(b, sizeof(b), "%ld", env->min); setenv("RUMBLE_PWM_MIN", b, 1);
-    snprintf(b, sizeof(b), "%ld", env->max); setenv("RUMBLE_PWM_MAX", b, 1);
+    snprintf(b, sizeof(b), "%ld", jw__rumble_polarize(env->min));
+    setenv("RUMBLE_PWM_MIN", b, 1);
+    snprintf(b, sizeof(b), "%ld", jw__rumble_polarize(env->max));
+    setenv("RUMBLE_PWM_MAX", b, 1);
+}
+
+/* Open or close the force-feedback route. Called with the resolved endpoints
+   when a game starts and with NULL when it ends -- closing it also stops any
+   effect still running, so a game killed mid-rumble cannot strand the motor. */
+static void jw__rumble_publish_ff(const jw_rumble_game_env *env) {
+    bool was_on;
+    pthread_mutex_lock(&g_rumble_lock);
+    was_on = g_rumble_ff_on;
+    g_rumble_ff_on  = env && env->on;
+    g_rumble_ff_min = (env && env->on) ? env->min : 0;
+    g_rumble_ff_max = (env && env->on) ? env->max : 0;
+    pthread_mutex_unlock(&g_rumble_lock);
+    if (was_on && !(env && env->on)) jw__rumble_quiesce();
+}
+
+/* An emulator played (or stopped) an FF_RUMBLE effect on the virtual pad.
+   Runs on the proxy's force-feedback thread, so it touches nothing but the
+   lock-guarded endpoints and the worker. */
+static void jw__rumble_ff(void *userdata, uint16_t magnitude, uint32_t duration_ms) {
+    (void)userdata;
+    /* Logged on transitions only, never per magnitude change: a game can retune
+       intensity every frame, and this is the input path. Enough to answer "is
+       the emulator asking for rumble at all", which is the question that costs
+       an hour when a new emulator turns out to be silent. */
+    static bool logged_on = false;
+
+    if (magnitude == 0) {
+        if (logged_on) {
+            logged_on = false;
+            jw_log_info("rumble: force feedback stopped");
+        }
+        jw__rumble_quiesce();
+        return;
+    }
+
+    long min, max;
+    pthread_mutex_lock(&g_rumble_lock);
+    bool on = g_rumble_ff_on;
+    min = g_rumble_ff_min;
+    max = g_rumble_ff_max;
+    pthread_mutex_unlock(&g_rumble_lock);
+    if (!on || max <= 0) {
+        /* Worth saying out loud: an emulator asking for rumble and getting
+           silence looks identical to one that never asked. */
+        if (!logged_on) {
+            logged_on = true;
+            jw_log_info("rumble: force feedback requested but the route is closed "
+                        "(no game session, or game rumble is off)");
+        }
+        return;
+    }
+
+    long duty = min + (max - min) * (long)magnitude / 0xFFFF;
+    if (!logged_on) {
+        logged_on = true;
+        jw_log_info("rumble: force feedback started magnitude=%u duty=%ld",
+                    (unsigned)magnitude, duty);
+    }
+
+    /* A zero replay length means "until stopped" in evdev, but the motor must
+       never be left with no deadline at all -- if the emulator dies mid-effect
+       the stop never comes. Hold it for the same span SDL uses between its own
+       rumble resends, so a genuinely continuous effect is refreshed long before
+       this runs out and an abandoned one dies on its own. */
+    uint32_t ms = duration_ms ? duration_ms : JW_RUMBLE_FF_MAX_HOLD_MS;
+    if (ms > JW_RUMBLE_FF_MAX_HOLD_MS) ms = JW_RUMBLE_FF_MAX_HOLD_MS;
+    jw__rumble_hold(duty, (int)ms);
 }
 
 static void jw__seed_rom_folders(const jw_daemon_state *state) {
@@ -6228,6 +6341,7 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
                             jw__input_volume_delta, jw__input_menu_tap,
                             jw__input_game_switcher, state) == 0) {
         state->input_proxy.screenshot = jw__on_screenshot_hotkey;
+        state->input_proxy.rumble = jw__rumble_ff;
         jw__publish_retroarch_input_env(state);
     }
 }
@@ -6606,10 +6720,14 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw__rumble_quiesce();
     jw_rumble_game_env rumble_env;
     jw__rumble_resolve_game_env(state, &rumble_env);
+    /* Open the force-feedback route for the session: an emulator on the
+       calibrated virtual pad rumbles through SDL and needs no env contract. */
+    jw__rumble_publish_ff(&rumble_env);
 
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
+        jw__rumble_publish_ff(NULL);
         if (direct_drm) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
@@ -6903,11 +7021,17 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw__rumble_quiesce();
     jw_rumble_game_env rumble_env;
     jw__rumble_resolve_game_env(state, &rumble_env);
+    /* RetroArch gets the route open too. Now that the virtual pad advertises
+       FF_RUMBLE its udev joypad driver will rumble natively and the sysfs
+       fallback will stand down, so without this the env contract alone would
+       leave RetroArch silent. */
+    jw__rumble_publish_ff(&rumble_env);
 
     long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
+        jw__rumble_publish_ff(NULL);
         goto fail;
     }
 
@@ -8982,7 +9106,10 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     state->child_pid = -1;
     state->child_kind = JW_CHILD_NONE;
 
-    /* Reclaim the motor: a game that died mid-buzz can't have cleared it. */
+    /* Reclaim the motor: a game that died mid-buzz can't have cleared it. Close
+       the force-feedback route with it, so a stale effect id left behind by the
+       dead session can't drive the motor for the next one. */
+    jw__rumble_publish_ff(NULL);
     jw__rumble_quiesce();
 
     const char *name = jw__child_name(exited_kind);

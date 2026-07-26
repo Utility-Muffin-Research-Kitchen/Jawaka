@@ -210,9 +210,48 @@ non-issue. No `chmod` dance is needed.
 
 ### Standalone emulators (Flycast / PPSSPP / DraStic / mupen64) — Phase 2b
 
-Each has its own vibration setting (`VirtualGamepadVibration`, `rumble_power`) but no path to
-the motor. Each needs its own small patch to route its rumble to the same `duty_cycle` write.
-**Deferred** — RA covers most systems first.
+The first answer here was wrong, and it is worth recording why, because the better one was
+sitting underneath the whole time.
+
+The premise was that an emulator has "no path to the motor", so each would need its own patch
+writing `duty_cycle`. That is how Flycast got done. But the premise only held because of a
+detail we had put there ourselves: the joystick these emulators open is **not** the physical
+pad, it is jawakad's own calibrated virtual gamepad, and `input_proxy_mlp1.c` was building it
+by copying `EV_KEY` and `EV_ABS` from the hardware and stopping. The pad reported no force
+feedback because we never gave it any.
+
+So the pad advertises `FF_RUMBLE` now. The daemon created the device, which means the kernel
+routes every `EVIOCSFF` upload and every `EV_FF` play back to the daemon — where the motor
+already lives. An emulator rumbling through ordinary SDL reaches the PWM with **no patch of
+its own**: `SDL_JoystickRumble` → `EVIOCSFF` → jawakad → `duty_cycle`. Verified on Puff with
+Ocarina of Time, which needed only a config change (below) and not one line of C.
+
+Two consequences worth stating plainly:
+
+- **`main.c:6549` decides who benefits.** Mupen64Plus, Flycast, PPSSPP and PortMaster ports all
+  run on the calibrated virtual pad, so all four are covered. An emulator that reads the
+  physical pad directly is not, and would still need a sink.
+- **RetroArch changes route.** Its udev joypad driver will now find real force feedback and use
+  it, which means the sysfs fallback stands down on its own. That is why the daemon publishes
+  the FF endpoints for the RetroArch launch too — the env contract alone would leave it silent.
+  The two cannot both drive the motor: the fallback only engages when native rumble declines.
+
+**Latency is the reason this has its own thread.** `EVIOCSFF` blocks the calling emulator until
+the daemon answers it, and SDL re-uploads on every magnitude change. Served from the 50 ms
+housekeeping loop that would be a three-frame stall each time rumble starts or stops, so the
+proxy runs a thread blocked in `poll()` instead and answers in well under a millisecond.
+
+**Magnitude:** one motor, two channels, so the louder of strong/weak wins. Averaging would
+dilute a strong-only effect and could drop a weak-only one under the stiction floor — the two
+most common single-channel cases both come out wrong.
+
+**N64 needed a config change, not code.** The N64 had one expansion slot and so does
+mupen64plus: `plugin = 5` (raw / Rumble Pak) reaches the motor, `plugin = 2` (Mem pak) gives a
+Controller Pak, and the runtime pak-switch code is compiled out on SDL ≥ 2.0.18. The default
+moved to Rumble Pak with a one-time version-stamped merge for existing configs, and the
+in-game Options menu (Controls → Expansion Pak) switches back for anyone who wants Controller
+Pak saves. mupen64plus also self-heals — it reverts `PLUGIN_RAW` to `PLUGIN_MEMPAK` when the
+pad reports no rumble — so the config change is inert rather than harmful if FF is missing.
 
 ### Settings
 
@@ -229,8 +268,10 @@ the session and reclaims it (forces off) on exit — still a single-owner PWM.
 ### Open Phase-2 details (flagged, not solved here)
 
 - ~~**sysfs permission**~~ — resolved: everything runs as root (see 2a).
-- **Standalone scope:** decide per-emulator whether the payoff justifies the patch, or leave
-  standalone game-rumble off.
+- ~~**Standalone scope:** decide per-emulator whether the payoff justifies the patch~~ —
+  resolved by force feedback on the virtual pad: there is no per-emulator patch to justify.
+  The open question shrank to whether Flycast's own sink is still worth keeping now that the
+  generic route covers it.
 
 ---
 
@@ -307,6 +348,12 @@ still perceptible at the 5% strength setting.
 - `retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch` — the `SR_PWM` duty mode,
   wired into `build-mlp1.sh` as the `sysfs-rumble` patch-set entry (branch
   `agent/sysfs-rumble-pwm`, `c09a7e6`).
+- `internal/platform/input_proxy_mlp1.c` + `input_proxy.h` — `FF_RUMBLE` on the virtual pad and
+  the uinput force-feedback service (upload / erase / play) on its own poll thread, plus the
+  `jw_input_rumble_cb` hook the daemon hangs the motor off.
+- `N64-standalone` (`config/shared/default.cfg`, `config/shared/overlay_settings.json`,
+  `config/mlp1/launch.sh`) — Rumble Pak by default, one-time migration, Options-menu switch
+  back to the Controller Pak. No emulator source change.
 - Docs (leaf-docs) — still to write, at release time.
 
 Branch `agent/rumble-haptics` (PR #11): `ee1d082` plan, `a8d9e62` motor core, `394b20b`

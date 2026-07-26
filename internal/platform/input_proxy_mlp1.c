@@ -6,6 +6,8 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <poll.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,6 +24,10 @@
 #define JW_MLP1_BRIGHTNESS_REPEAT_MS 120u
 #define JW_MLP1_MENU_TAP_MS 80u
 #define JW_MLP1_POWER_EDGE_MAX 8   /* pending press/release edges (4 full taps) */
+/* Force-feedback slots the virtual pad offers. SDL only ever holds one rumble
+   effect per joystick, but a client may re-upload before erasing the old one, so
+   leave headroom rather than making a re-upload fail. */
+#define JW_MLP1_FF_EFFECTS_MAX 8
 
 /* Older kernel uapi headers predate the y2038 input_event_sec accessors. */
 #ifndef input_event_sec
@@ -61,6 +67,18 @@ typedef struct {
     int32_t obs_y_min, obs_y_max;
     uint64_t last_cal_log_ms;      /* throttle for the measure-mode extremes log */
     unsigned char held_keys[(KEY_MAX + 8) / 8];  /* buttons currently forwarded-down */
+    /* Force-feedback effects uploaded by whoever holds the virtual pad. The
+       kernel hands us the effect on upload and only the id on playback, so the
+       magnitude has to be remembered here to be there when the play arrives. */
+    struct {
+        bool     used;
+        uint16_t magnitude;   /* strong and weak collapsed to one 0..0xFFFF */
+        uint32_t length_ms;   /* replay length; 0 = until stopped */
+    } ff_effects[JW_MLP1_FF_EFFECTS_MAX];
+    bool ff_playing;          /* an effect is currently driving the motor */
+    pthread_t ff_thread;
+    bool      ff_thread_running;
+    int       ff_quit_pipe[2];
 } jw_mlp1_input_proxy_data;
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
@@ -204,7 +222,10 @@ static void jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
 }
 
 static int jw__create_virtual_gamepad(int input_fd) {
-    int ufd = open("/dev/uinput", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    /* O_RDWR, not O_WRONLY: force-feedback upload requests and playback commands
+       come back to us *through* this fd, so the write-only handle the pad used
+       before FF existed can no longer serve the device. */
+    int ufd = open("/dev/uinput", O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (ufd < 0) {
         return -1;
     }
@@ -212,6 +233,17 @@ static int jw__create_virtual_gamepad(int input_fd) {
     if (jw__uinput_copy_capabilities(input_fd, ufd) != 0) {
         close(ufd);
         return -1;
+    }
+
+    /* FF_RUMBLE is *added*, not copied: the physical Loong Gamepad has no force
+       feedback at all -- the motor hangs off a PWM channel jawakad owns. Putting
+       it on the virtual pad is what lets an emulator rumble through the ordinary
+       SDL/evdev path and reach that channel, with no per-emulator sysfs sink. */
+    bool have_ff = ioctl(ufd, UI_SET_EVBIT, EV_FF) >= 0 &&
+                   ioctl(ufd, UI_SET_FFBIT, FF_RUMBLE) >= 0;
+    if (!have_ff) {
+        jw_log_warn("input proxy: force feedback unavailable on the virtual pad: %s",
+                    strerror(errno));
     }
 
     struct input_id id;
@@ -227,6 +259,7 @@ static int jw__create_virtual_gamepad(int input_fd) {
     memset(&setup, 0, sizeof(setup));
     snprintf(setup.name, sizeof(setup.name), "%s", JW_MLP1_INPUT_NAME);
     setup.id = id;
+    setup.ff_effects_max = have_ff ? JW_MLP1_FF_EFFECTS_MAX : 0;
     if (ioctl(ufd, UI_DEV_SETUP, &setup) < 0 ||
         ioctl(ufd, UI_DEV_CREATE) < 0) {
         close(ufd);
@@ -501,6 +534,197 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
     jw__forward_event(data, ev);
 }
 
+/* ---- Force feedback -----------------------------------------------------
+ *
+ * uinput turns evdev force feedback inside out. A client that uploads an effect
+ * with EVIOCSFF, or plays one by writing EV_FF, is not talking to the kernel --
+ * the kernel relays the request back to whoever created the device, here. So the
+ * pad's own creator has to answer them.
+ *
+ * That makes latency the whole design. EVIOCSFF *blocks the calling emulator*
+ * until we answer it, and SDL re-uploads on every magnitude change, so serving
+ * this from the daemon's 50ms housekeeping loop would stall the emulation thread
+ * for up to three frames every time rumble starts or stops. It gets its own
+ * thread blocked in poll() instead, which answers in well under a millisecond.
+ */
+static void jw__ff_handle_upload(jw_mlp1_input_proxy_data *data, int32_t request_id) {
+    struct uinput_ff_upload upload;
+    memset(&upload, 0, sizeof(upload));
+    upload.request_id = (uint32_t)request_id;
+    if (ioctl(data->uinput_fd, UI_BEGIN_FF_UPLOAD, &upload) < 0) {
+        jw_log_warn("input proxy: FF upload begin failed: %s", strerror(errno));
+        return;
+    }
+
+    int id = upload.effect.id;
+    if (id < 0 || id >= JW_MLP1_FF_EFFECTS_MAX || upload.effect.type != FF_RUMBLE) {
+        /* FF_RUMBLE is all the pad claims, so anything else is a client bug --
+           and an out-of-range id would be a kernel one. Refuse rather than
+           silently accepting an effect we would never play. */
+        upload.retval = -EINVAL;
+    } else {
+        /* One motor, two magnitudes. Take the louder channel rather than
+           averaging: a mix would dilute a strong-only effect and could leave a
+           weak-only one below the motor's stiction floor, so the two most
+           common single-channel cases both come out wrong. */
+        uint16_t strong = upload.effect.u.rumble.strong_magnitude;
+        uint16_t weak   = upload.effect.u.rumble.weak_magnitude;
+        data->ff_effects[id].used      = true;
+        data->ff_effects[id].magnitude = strong > weak ? strong : weak;
+        data->ff_effects[id].length_ms = upload.effect.replay.length;
+        upload.retval = 0;
+    }
+
+    if (ioctl(data->uinput_fd, UI_END_FF_UPLOAD, &upload) < 0) {
+        jw_log_warn("input proxy: FF upload end failed: %s", strerror(errno));
+    }
+}
+
+static void jw__ff_handle_erase(jw_mlp1_input_proxy_data *data, int32_t request_id) {
+    struct uinput_ff_erase erase;
+    memset(&erase, 0, sizeof(erase));
+    erase.request_id = (uint32_t)request_id;
+    if (ioctl(data->uinput_fd, UI_BEGIN_FF_ERASE, &erase) < 0) {
+        jw_log_warn("input proxy: FF erase begin failed: %s", strerror(errno));
+        return;
+    }
+
+    if (erase.effect_id < JW_MLP1_FF_EFFECTS_MAX) {
+        data->ff_effects[erase.effect_id].used = false;
+        erase.retval = 0;
+    } else {
+        erase.retval = -EINVAL;
+    }
+
+    if (ioctl(data->uinput_fd, UI_END_FF_ERASE, &erase) < 0) {
+        jw_log_warn("input proxy: FF erase end failed: %s", strerror(errno));
+    }
+}
+
+/* EV_FF: code is the effect id, value the repeat count (0 = stop). Note that
+   SDL never sends a stop -- it stops by re-uploading the effect at magnitude 0
+   and playing that -- so a zero magnitude has to mean stop as surely as a zero
+   value does. */
+static void jw__ff_handle_play(jw_input_proxy *proxy,
+                               jw_mlp1_input_proxy_data *data,
+                               uint16_t effect_id, int32_t value) {
+    /* EV_FF also carries FF_GAIN and FF_AUTOCENTER, whose codes sit well above
+       any effect id. The bound check is what keeps them out. */
+    if (effect_id >= JW_MLP1_FF_EFFECTS_MAX || !data->ff_effects[effect_id].used) {
+        return;
+    }
+
+    uint16_t magnitude = data->ff_effects[effect_id].magnitude;
+    if (value == 0 || magnitude == 0) {
+        if (!data->ff_playing) {
+            return;
+        }
+        data->ff_playing = false;
+        if (proxy->rumble) {
+            proxy->rumble(proxy->userdata, 0, 0);
+        }
+        return;
+    }
+
+    data->ff_playing = true;
+    if (proxy->rumble) {
+        proxy->rumble(proxy->userdata, magnitude,
+                      data->ff_effects[effect_id].length_ms);
+    }
+}
+
+static void jw__ff_drain(jw_input_proxy *proxy, jw_mlp1_input_proxy_data *data) {
+    struct input_event ev;
+    while (read(data->uinput_fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+        if (ev.type == EV_UINPUT) {
+            if (ev.code == UI_FF_UPLOAD) {
+                jw__ff_handle_upload(data, ev.value);
+            } else if (ev.code == UI_FF_ERASE) {
+                jw__ff_handle_erase(data, ev.value);
+            }
+        } else if (ev.type == EV_FF) {
+            jw__ff_handle_play(proxy, data, ev.code, ev.value);
+        }
+    }
+}
+
+static void *jw__ff_thread_main(void *arg) {
+    jw_input_proxy *proxy = (jw_input_proxy *)arg;
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+
+    for (;;) {
+        struct pollfd fds[2];
+        fds[0].fd = data->uinput_fd;
+        fds[0].events = POLLIN;
+        fds[0].revents = 0;
+        fds[1].fd = data->ff_quit_pipe[0];
+        fds[1].events = POLLIN;
+        fds[1].revents = 0;
+
+        if (poll(fds, 2, -1) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            jw_log_warn("input proxy: FF poll failed: %s", strerror(errno));
+            break;
+        }
+        if (fds[1].revents) {
+            break;              /* shutdown asked us to stop */
+        }
+        if (fds[0].revents & POLLIN) {
+            jw__ff_drain(proxy, data);
+        }
+    }
+
+    /* Never hand the motor back still running: if the emulator is killed
+       mid-rumble there is no one left to send the stop. */
+    if (data->ff_playing) {
+        data->ff_playing = false;
+        if (proxy->rumble) {
+            proxy->rumble(proxy->userdata, 0, 0);
+        }
+    }
+    return NULL;
+}
+
+static void jw__ff_thread_start(jw_input_proxy *proxy,
+                                jw_mlp1_input_proxy_data *data) {
+    if (data->uinput_fd < 0) {
+        return;
+    }
+    if (pipe(data->ff_quit_pipe) != 0) {
+        jw_log_warn("input proxy: FF quit pipe failed: %s", strerror(errno));
+        data->ff_quit_pipe[0] = data->ff_quit_pipe[1] = -1;
+        return;
+    }
+    if (pthread_create(&data->ff_thread, NULL, jw__ff_thread_main, proxy) != 0) {
+        jw_log_warn("input proxy: FF thread failed to start; rumble unavailable");
+        close(data->ff_quit_pipe[0]);
+        close(data->ff_quit_pipe[1]);
+        data->ff_quit_pipe[0] = data->ff_quit_pipe[1] = -1;
+        return;
+    }
+    data->ff_thread_running = true;
+}
+
+/* Stop the thread before anything it touches goes away. It must be joined, not
+   just signalled: it owns the uinput fd for reads and the rumble callback, and
+   both are torn down the instant this returns. */
+static void jw__ff_thread_stop(jw_mlp1_input_proxy_data *data) {
+    if (!data->ff_thread_running) {
+        return;
+    }
+    if (data->ff_quit_pipe[1] >= 0) {
+        ssize_t ignored = write(data->ff_quit_pipe[1], "q", 1);
+        (void)ignored;
+    }
+    pthread_join(data->ff_thread, NULL);
+    data->ff_thread_running = false;
+    if (data->ff_quit_pipe[0] >= 0) close(data->ff_quit_pipe[0]);
+    if (data->ff_quit_pipe[1] >= 0) close(data->ff_quit_pipe[1]);
+    data->ff_quit_pipe[0] = data->ff_quit_pipe[1] = -1;
+}
+
 static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
                                      jw_input_brightness_delta_cb brightness_delta,
                                      jw_input_volume_delta_cb volume_delta,
@@ -531,6 +755,7 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
     data->input_fd = -1;
     data->uinput_fd = -1;
     data->power_fd = -1;
+    data->ff_quit_pipe[0] = data->ff_quit_pipe[1] = -1;
     data->last_activity_ms = jw__monotonic_ms();   /* don't count boot as idle */
     data->obs_x_min = INT32_MAX;
     data->obs_x_max = INT32_MIN;
@@ -598,6 +823,9 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
 
     proxy->backend_data = data;
     proxy->enabled = true;
+    /* Safe to start before the caller assigns proxy->rumble: nothing has opened
+       the pad yet, so no effect can arrive until well after that write. */
+    jw__ff_thread_start(proxy, data);
     if (watch_only) {
         jw_log_info("input proxy: watching %s (no grab; hotkeys only)",
                     data->physical_path);
@@ -845,6 +1073,7 @@ void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     }
 
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw__ff_thread_stop(data);
     jw__release_deferred_menu_tap(data, true);
 
     if (data->input_fd >= 0) {
