@@ -3489,6 +3489,30 @@ typedef struct {
 /* cat_scroll_view content callback: lay out every row at its natural position.
    Long labels/values marquee instead of truncating; the scroll view applies the
    offset and clips. */
+/* Record how far this scroll view can actually travel, so the input path can
+   clamp before the haptic wrapper reads the position. cat_draw_scroll_view
+   derives the same number, but only at render time -- and by then the wrapper
+   has already decided a press that will be clamped away counted as movement. */
+static void jw__scroll_publish_max(int *out_max, int content_h, int view_h) {
+    int max_offset = content_h - view_h;
+    *out_max = max_offset > 0 ? max_offset : 0;
+}
+
+/* Move a scroll view and clamp BOTH ends. cat_scroll_state_move clamps only at
+   zero, which is why Up at the top already reports "blocked" correctly and Down
+   at the bottom did not: the target ran past the end, the haptic wrapper read a
+   changed position and called it movement, and the next render quietly clamped
+   it back. Clamping here makes the two ends behave the same way. */
+static void jw__scroll_move(cat_scroll_state *s, int delta_px, int max_offset) {
+    if (!s) return;
+    cat_scroll_state_move(s, delta_px);       /* handles the zero end */
+    if (max_offset > 0 && s->target > max_offset) {
+        s->target = max_offset;
+    } else if (max_offset <= 0) {
+        s->target = 0;                        /* content fits: nowhere to go */
+    }
+}
+
 static void jw__draw_about_rows(int x, int y, int w, void *user) {
     const jw__about_ctx *ctx = (const jw__about_ctx *)user;
     ap_theme *theme = cat_get_theme();
@@ -3668,6 +3692,7 @@ static void jw__render_about(const jw_settings_ui *ui, int x, int y, int w, int 
        frames, so this one field is the deliberate exception. */
     int row_h     = TTF_FontHeight(small) + cat_scale(8);
     int content_h = n * row_h;
+    jw__scroll_publish_max(&((jw_settings_ui *)ui)->about_scroll_max, content_h, view_h);
     jw__about_ctx ctx = { rows, n, small, row_h };
     cat_draw_scroll_view(x + pad, top, w - pad * 2, view_h, content_h,
                          (cat_scroll_state *)&ui->about_scroll,
@@ -3755,6 +3780,7 @@ static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, in
 
     int row_h = TTF_FontHeight(small) + cat_scale(8);
     jw__about_ctx ctx = { rows, n, small, row_h };
+    jw__scroll_publish_max(&((jw_settings_ui *)ui)->library_scroll_max, n * row_h, view_h);
     cat_draw_scroll_view(x + pad, top, w - pad * 2, view_h, n * row_h,
                          (cat_scroll_state *)&ui->library_scroll,
                          jw__draw_about_rows, &ctx);
@@ -3806,6 +3832,7 @@ static void jw__render_playtime(const jw_settings_ui *ui, int x, int y, int w, i
 
     int row_h = TTF_FontHeight(small) + cat_scale(8);
     jw__about_ctx ctx = { rows, n, small, row_h };
+    jw__scroll_publish_max(&((jw_settings_ui *)ui)->playtime_scroll_max, n * row_h, view_h);
     cat_draw_scroll_view(x + pad, top, w - pad * 2, view_h, n * row_h,
                          (cat_scroll_state *)&ui->playtime_scroll,
                          jw__draw_about_rows, &ctx);
@@ -6584,8 +6611,10 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
     case JW_SETTINGS_ABOUT: {
         int line_h = TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + cat_scale(8);
         switch (button) {
-            case CAT_BTN_UP:   cat_scroll_state_move(&ui->about_scroll, -line_h); break;
-            case CAT_BTN_DOWN: cat_scroll_state_move(&ui->about_scroll, +line_h); break;
+            case CAT_BTN_UP:   jw__scroll_move(&ui->about_scroll, -line_h,
+                                               ui->about_scroll_max); break;
+            case CAT_BTN_DOWN: jw__scroll_move(&ui->about_scroll, +line_h,
+                                               ui->about_scroll_max); break;
             case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
             default: break;
         }
@@ -6595,8 +6624,10 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
     case JW_SETTINGS_LIBRARY: {
         int line_h = TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + cat_scale(8);
         switch (button) {
-            case CAT_BTN_UP:   cat_scroll_state_move(&ui->library_scroll, -line_h); break;
-            case CAT_BTN_DOWN: cat_scroll_state_move(&ui->library_scroll, +line_h); break;
+            case CAT_BTN_UP:   jw__scroll_move(&ui->library_scroll, -line_h,
+                                               ui->library_scroll_max); break;
+            case CAT_BTN_DOWN: jw__scroll_move(&ui->library_scroll, +line_h,
+                                               ui->library_scroll_max); break;
             case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
             default: break;
         }
@@ -6606,8 +6637,10 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
     case JW_SETTINGS_PLAYTIME: {
         int line_h = TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + cat_scale(8);
         switch (button) {
-            case CAT_BTN_UP:   cat_scroll_state_move(&ui->playtime_scroll, -line_h); break;
-            case CAT_BTN_DOWN: cat_scroll_state_move(&ui->playtime_scroll, +line_h); break;
+            case CAT_BTN_UP:   jw__scroll_move(&ui->playtime_scroll, -line_h,
+                                               ui->playtime_scroll_max); break;
+            case CAT_BTN_DOWN: jw__scroll_move(&ui->playtime_scroll, +line_h,
+                                               ui->playtime_scroll_max); break;
             case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
             default: break;
         }

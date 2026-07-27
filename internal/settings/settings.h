@@ -220,6 +220,14 @@ typedef struct {
     cat_scroll_state   about_scroll;
     cat_scroll_state   library_scroll;
     cat_scroll_state   playtime_scroll;
+    /* Scroll ceiling for each of the three info pages, stashed by the render
+       pass that computes it. cat_scroll_state_move clamps only the bottom of
+       the range; without the top the haptic wrapper sees a target that moved
+       and calls it "nav", and the render then clamps it back to where it was.
+       Same deliberate render-writes-state exception as the scroll offsets. */
+    int                about_scroll_max;
+    int                library_scroll_max;
+    int                playtime_scroll_max;
     int                theme_index;
     int                color_scheme_index;   /* -1 = custom (manually edited) */
     int                pill_shape_index;
