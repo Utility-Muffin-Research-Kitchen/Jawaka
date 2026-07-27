@@ -10,6 +10,7 @@ REMOTE_SDCARD_PATH="${REMOTE_SDCARD_PATH:-$REMOTE_DIR/sd}"
 REMOTE_RUNTIME_PATH="${REMOTE_RUNTIME_PATH:-$REMOTE_DIR/run}"
 REMOTE_LOGS_PATH="${REMOTE_LOGS_PATH:-$REMOTE_DIR/logs}"
 RUN_SECONDS="${JAWAKA_MLP1_SMOKE_SECONDS:-12}"
+RECOVERY_STAGE_PATH="$REMOTE_SDCARD_PATH/Apps/mlp1/.pakrat-stage-org.umrk.adb-smoke"
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
     make -C "$ROOT_DIR" mlp1
@@ -58,7 +59,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Deploying Jawaka smoke bundle to $REMOTE_DIR"
-"${ADB[@]}" shell "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR/bundle' '$REMOTE_SDCARD_PATH/Roms/FC' '$REMOTE_SDCARD_PATH/Images/FC' '$REMOTE_SDCARD_PATH/Apps' '$REMOTE_SDCARD_PATH/BIOS' '$REMOTE_SDCARD_PATH/Saves' '$REMOTE_SDCARD_PATH/States' '$REMOTE_RUNTIME_PATH' '$REMOTE_LOGS_PATH'"
+"${ADB[@]}" shell "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR/bundle' '$REMOTE_SDCARD_PATH/Roms/FC' '$REMOTE_SDCARD_PATH/Images/FC' '$REMOTE_SDCARD_PATH/Apps' '$REMOTE_SDCARD_PATH/BIOS' '$REMOTE_SDCARD_PATH/Saves' '$REMOTE_SDCARD_PATH/States' '$REMOTE_SDCARD_PATH/.umrk/mlp1' '$REMOTE_RUNTIME_PATH' '$REMOTE_LOGS_PATH' '$RECOVERY_STAGE_PATH'"
 "${ADB[@]}" push "$BUNDLE_DIR/." "$REMOTE_DIR/bundle/" >/dev/null
 "${ADB[@]}" shell "chmod 755 '$REMOTE_DIR/bundle/bin/'* && printf 'mock rom\\n' > '$REMOTE_SDCARD_PATH/Roms/FC/Smoke Test.zip'"
 
@@ -81,6 +82,8 @@ CAT_THEMES_DIR='$REMOTE_DIR/bundle/res/themes' \
 CAT_FONTS_DIR='$REMOTE_DIR/bundle/res' \
 SDCARD_PATH='$REMOTE_SDCARD_PATH' \
 UMRK_RUNTIME_PATH='$REMOTE_RUNTIME_PATH' \
+UMRK_DAEMON_SOCKET='$REMOTE_RUNTIME_PATH/jawakad.sock' \
+UMRK_INTERNAL_DATA_PATH='$REMOTE_SDCARD_PATH/.umrk/mlp1' \
 JAWAKA_SDCARD_ROOT='$REMOTE_SDCARD_PATH' \
 JAWAKA_RUNTIME_DIR='$REMOTE_RUNTIME_PATH' \
 JAWAKA_AUTODEMO=1 \
@@ -98,5 +101,11 @@ if [ "$rc" -ne 0 ]; then
     echo "Jawaka smoke exited with status $rc" >&2
     exit "$rc"
 fi
+
+if ! "${ADB[@]}" shell "test ! -e '$RECOVERY_STAGE_PATH'"; then
+    echo "jawakad did not sweep the startup Pak Rat recovery fixture" >&2
+    exit 1
+fi
+echo "Pak Rat startup recovery fixture swept on device."
 
 echo "Jawaka MLP1 ADB smoke completed."

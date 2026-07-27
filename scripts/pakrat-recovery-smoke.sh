@@ -7,8 +7,8 @@
 # ran -- not merely that some complete package survived.
 set -euo pipefail
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-JAWAKA_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+JAWAKA_DIR="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD:-build/pakrat-recovery-smoke}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jawaka-pakrat-recovery.XXXXXX")"
 SERVER_PID=""
@@ -301,7 +301,20 @@ expect_crash "after-stage"
 run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "after-stage"
 
-# 3. Crash between rename(target, target_rollback) and rename(target_stage, target):
+# 3. Crash after the write-ahead origin marker but before moving the live tree:
+#    the live tree stays in place, while recovery discards the stage and marker.
+begin_scenario "crash after-origin-marker (live tree not moved yet)"
+install_old
+write_catalog new
+expect_crash "after-origin-marker"
+[ "$(target_version)" = "$OLD_VERSION" ] ||
+    fail "after-origin-marker: live tree changed before move-aside"
+[ -f "$APPS_DIR/.pakrat-origin-$STORE_ID" ] ||
+    fail "after-origin-marker: write-ahead marker missing before recovery"
+run_smoke recover
+expect_state "$OLD_VERSION" "$OLD_VERSION" "after-origin-marker"
+
+# 4. Crash between rename(target, target_rollback) and rename(target_stage, target):
 #    the rollback sibling is renamed back, the staged tree discarded.
 begin_scenario "crash before-promote (between the two renames)"
 install_old
@@ -312,7 +325,7 @@ run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "before-promote"
 expect_log "install-recover restored store_id=$STORE_ID" "before-promote"
 
-# 4. Crash after promote, before the install-record update: the transaction
+# 5. Crash after promote, before the install-record update: the transaction
 #    never committed, so recovery rolls BACK to the previously running tree.
 begin_scenario "crash after-promote (uncommitted promote rolls back)"
 install_old
@@ -331,7 +344,7 @@ run_smoke install "$STORE_ID" >"$TMP_ROOT/retry.out" ||
     { cat "$TMP_ROOT/retry.out" >&2; fail "after-promote: retry install failed"; }
 expect_state "$NEW_VERSION" "$NEW_VERSION" "after-promote retry"
 
-# 5. The record update itself fails (in-process error path, no crash):
+# 6. The record update itself fails (in-process error path, no crash):
 #    promote rolls back immediately and the row is left untouched.
 begin_scenario "during-record (record update fails, in-process rollback)"
 install_old
@@ -343,7 +356,7 @@ expect_log "install-rollback-restored store_id=$STORE_ID" "during-record"
 run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "during-record post-recover"
 
-# 6. Crash after the record update committed, before rollback cleanup:
+# 7. Crash after the record update committed, before rollback cleanup:
 #    recovery keeps the new tree and deletes the rollback sibling.
 begin_scenario "crash after-record (committed, cleanup pending)"
 install_old
@@ -358,7 +371,7 @@ run_smoke rescan >"$TMP_ROOT/rescan-after-record.out"
 [ "$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM apps WHERE pak_dir = 'Apps/mlp1/Recovery.pak';")" = "1" ] ||
     fail "after-record: library scan lost the committed app"
 
-# 7. Crash during rollback cleanup (same committed state as 6).
+# 8. Crash during rollback cleanup (same committed state as 7).
 begin_scenario "crash before-cleanup (committed, cleanup pending)"
 install_old
 write_catalog new
@@ -367,7 +380,7 @@ run_smoke recover
 expect_state "$NEW_VERSION" "$NEW_VERSION" "before-cleanup"
 expect_log "install-recover cleaned rollback store_id=$STORE_ID" "before-cleanup"
 
-# 8. pak.json truncated after promote: the tree cannot be identified, so
+# 9. pak.json truncated after promote: the tree cannot be identified, so
 #    recovery restores the tree that was already running.
 begin_scenario "truncated pak.json after promote (restores)"
 install_old
@@ -378,7 +391,7 @@ run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "truncated-manifest"
 expect_log "reason=manifest-unreadable" "truncated-manifest"
 
-# 9. Declared entry point deleted after promote (same-version repair, so the
+# 10. Declared entry point deleted after promote (same-version repair, so the
 #    manifest identity matches and only the entry point can decide): restore.
 begin_scenario "launch.sh deleted after promote (restores)"
 install_old
@@ -394,7 +407,30 @@ run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "missing-entry-point"
 expect_log "reason=entry-point-missing" "missing-entry-point"
 
-# 10. Same-version repair committed but cleanup pending: version identity
+# 11. A same-version promoted tree that declares the wrong platform is not the
+#     recorded app identity, so recovery restores the prior tree.
+begin_scenario "wrong platform after promote (restores)"
+install_old
+write_catalog new
+set +e
+JW_PAKRAT_FAULT_AT="after-promote" run_smoke repair "$STORE_ID" "$OLD_VERSION" \
+    >"$TMP_ROOT/crash-platform.out" 2>&1
+platform_rc=$?
+set -e
+[ "$platform_rc" -eq 42 ] || {
+    cat "$TMP_ROOT/crash-platform.out" >&2
+    fail "platform-mismatch: repair did not crash at after-promote"
+}
+printf '{"name":"Recovery Smoke","platform":"mac","pak_version":"%s"}\n' \
+    "$OLD_VERSION" >"$INSTALL_PATH/pak.json"
+printf 'promoted-but-wrong-platform\n' >"$INSTALL_PATH/payload.txt"
+run_smoke recover
+expect_state "$OLD_VERSION" "$OLD_VERSION" "platform-mismatch"
+[ "$(cat "$INSTALL_PATH/payload.txt")" = "old-payload" ] ||
+    fail "platform-mismatch: prior tree was not restored"
+expect_log "reason=platform-mismatch" "platform-mismatch"
+
+# 12. Same-version repair committed but cleanup pending: version identity
 #     matches the record, so recovery keeps the (repaired) tree and cleans up.
 begin_scenario "same-version repair, crash after-record (cleanup wins)"
 install_old
@@ -409,7 +445,7 @@ run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "repair-cleanup"
 expect_log "install-recover cleaned rollback store_id=$STORE_ID" "repair-cleanup"
 
-# 11. Interrupted first-time install: no install row exists, so only the Apps
+# 13. Interrupted first-time install: no install row exists, so only the Apps
 #     dir sweep can see the staged tree. It must not remain.
 begin_scenario "interrupted first install (orphaned stage swept)"
 write_catalog new
@@ -420,7 +456,31 @@ run_smoke recover
 expect_state "absent" "absent" "first-install"
 expect_log "install-recover swept orphan store_id=$STORE_ID" "first-install"
 
-# 12. An adopted install that crashes between the move-aside and the promote
+# 14. An adopted install that crashes after its write-ahead marker but before
+#     the move-aside keeps the original target in place. Recovery must discard
+#     both the staged tree and the now-unneeded marker even though no install
+#     row exists.
+begin_scenario "adopted install crash after origin marker (target stays live)"
+install_old
+sqlite3 "$DB_PATH" "DELETE FROM pakrat_installs;" >/dev/null
+write_catalog new
+set +e
+JW_PAKRAT_FAULT_AT=after-origin-marker run_smoke adopt "$STORE_ID" \
+    >"$TMP_ROOT/adopt-origin-crash.out" 2>&1
+adopt_origin_rc=$?
+set -e
+[ "$adopt_origin_rc" -eq 42 ] || {
+    cat "$TMP_ROOT/adopt-origin-crash.out" >&2
+    fail "adopted-origin: expected crash exit 42, got $adopt_origin_rc"
+}
+[ -d "$INSTALL_PATH" ] ||
+    fail "adopted-origin: target was moved before the write-ahead crash point"
+[ -f "$APPS_DIR/.pakrat-origin-$STORE_ID" ] ||
+    fail "adopted-origin: write-ahead marker missing before recovery"
+run_smoke recover
+expect_state "$OLD_VERSION" "absent" "adopted-origin"
+
+# 15. An adopted install that crashes between the move-aside and the promote
 #     has no install row yet, so it reaches the orphan sweep rather than
 #     reconcile. Its rollback sibling is the only surviving copy of the app the
 #     user already had: it must be restored from its origin marker, never
@@ -458,7 +518,7 @@ run_smoke recover
     fail "adopted: origin marker left behind"
 expect_log "install-recover restored unrecorded rollback store_id=$STORE_ID" "adopted"
 
-# 13. A rollback sibling with no origin marker cannot be mapped back to a
+# 16. A rollback sibling with no origin marker cannot be mapped back to a
 #     target, so it is retained and surfaced rather than deleted.
 begin_scenario "unidentifiable rollback retained, stage orphan still swept"
 rm -rf "$APPS_DIR"; mkdir -p "$APPS_DIR"
@@ -474,7 +534,7 @@ expect_log "install-recover retained unidentifiable rollback store_id=$STORE_ID"
     "unidentifiable"
 rm -rf "$APPS_DIR/.pakrat-rollback-$STORE_ID"
 
-# 12. A normal, uninterrupted update leaves exactly one tree and a matching
+# 17. A normal, uninterrupted update leaves exactly one tree and a matching
 #     record (regression guard: recovery changes nothing on the happy path).
 begin_scenario "normal update (one tree, matching record)"
 install_old

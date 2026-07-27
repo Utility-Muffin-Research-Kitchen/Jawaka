@@ -261,8 +261,12 @@ static int jw__extract_zip_single_pak(const char *zip_path, const char *stage_di
 static int jw__validate_runtime_manifest(const jw_pakrat_catalog_package *pkg,
                                          const char *pak_dir) {
     jw__pakrat_manifest manifest;
+    char entry_point[PATH_MAX];
     if (jw__pakrat_read_manifest(pak_dir, pkg->runtime_manifest_path,
-                                 &manifest) != 0) {
+                                 &manifest) != 0 ||
+        jw__pakrat_join2(entry_point, sizeof(entry_point), pak_dir,
+                         "launch.sh") != 0 ||
+        !jw__pakrat_is_regular_file(entry_point)) {
         return -1;
     }
     return strcmp(manifest.platform, pkg->platform) == 0 &&
@@ -436,6 +440,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
 
     if (!jw__pakrat_safe_name(pkg.install_name) ||
         !jw__has_suffix(pkg.install_name, ".pak") ||
+        strcmp(pkg.runtime_manifest_path, "pak.json") != 0 ||
         !jw__pakrat_safe_name(pkg.artifact_name) ||
         !jw_pakrat_catalog_url_allowed(pkg.artifact_url, is_dev)) {
         fprintf(stderr, "catalog package failed safety checks\n");
@@ -553,20 +558,26 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     }
     jw__fault_crash("after-stage");
     if (jw__pakrat_path_exists(target)) {
-        if (jw__pakrat_remove_tree(target_rollback) != 0 ||
-            rename(target, target_rollback) != 0) {
+        if (jw__pakrat_remove_tree(target_rollback) != 0) {
             fprintf(stderr, "install rollback move failed\n");
             goto cleanup;
         }
-        moved_live = 1;
-        /* Record where this tree came from. An adopted install has no install
-           row yet, so without this marker a crash before the promote would
-           leave a rollback that recovery cannot map back to a target. */
+        /* Write the recovery mapping before moving the live tree. An adopted
+           install has no install row yet, so a crash after move-aside but
+           before this marker existed would otherwise leave recovery unable to
+           map the only surviving copy back to its target. */
         if (jw__pakrat_write_origin_marker(target, store_id,
                                            pkg.install_path) != 0) {
             fprintf(stderr, "install rollback origin marker failed\n");
             goto cleanup;
         }
+        jw__fault_crash("after-origin-marker");
+        if (rename(target, target_rollback) != 0) {
+            jw__pakrat_clear_origin_marker(target, store_id);
+            fprintf(stderr, "install rollback move failed\n");
+            goto cleanup;
+        }
+        moved_live = 1;
     }
     jw__fault_crash("before-promote");
     if (rename(target_stage, target) != 0) {
@@ -608,12 +619,14 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
 
 cleanup:
     if (rc != 0) {
+        int live_restored = 0;
         if (promoted) {
             if (moved_live) {
-                (void)jw__pakrat_remove_tree(target);
-                if (rename(target_rollback, target) != 0) {
+                if (jw__pakrat_remove_tree(target) != 0 ||
+                    rename(target_rollback, target) != 0) {
                     jw__pakrat_log(ctx->state_dir, "install-rollback-restore-failed store_id=%s", store_id);
                 } else {
+                    live_restored = 1;
                     jw__pakrat_log(ctx->state_dir, "install-rollback-restored store_id=%s", store_id);
                 }
             } else {
@@ -623,10 +636,11 @@ cleanup:
             if (rename(target_rollback, target) != 0) {
                 jw__pakrat_log(ctx->state_dir, "install-rollback-restore-failed store_id=%s", store_id);
             } else {
+                live_restored = 1;
                 jw__pakrat_log(ctx->state_dir, "install-rollback-restored store_id=%s", store_id);
             }
         }
-        if (moved_live) {
+        if (live_restored) {
             jw__pakrat_clear_origin_marker(target, store_id);
         }
         if (install_record_written) {

@@ -14,6 +14,7 @@
 
 #define JW_PAKRAT_STAGE_PREFIX ".pakrat-stage-"
 #define JW_PAKRAT_ROLLBACK_PREFIX ".pakrat-rollback-"
+#define JW_PAKRAT_ORIGIN_PREFIX ".pakrat-origin-"
 #define JW_PAKRAT_ENTRY_POINT "launch.sh"
 #define JW_PAKRAT_MANIFEST_MAX_BYTES (1024L * 1024L)
 
@@ -26,12 +27,18 @@ int jw__pakrat_copy(char *out, size_t out_size, const char *value) {
 }
 
 int jw__pakrat_join2(char *out, size_t out_size, const char *a, const char *b) {
+    if (!out || out_size == 0 || !a || !b) {
+        return -1;
+    }
     int n = snprintf(out, out_size, "%s/%s", a, b);
     return n >= 0 && (size_t)n < out_size ? 0 : -1;
 }
 
 int jw__pakrat_join3(char *out, size_t out_size, const char *a, const char *b,
                      const char *c) {
+    if (!out || out_size == 0 || !a || !b || !c) {
+        return -1;
+    }
     int n = snprintf(out, out_size, "%s/%s/%s", a, b, c);
     return n >= 0 && (size_t)n < out_size ? 0 : -1;
 }
@@ -66,13 +73,15 @@ int jw__pakrat_mkdir_p(const char *path, mode_t mode) {
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
-            if (mkdir(tmp, mode) != 0 && errno != EEXIST) {
+            if (mkdir(tmp, mode) != 0 &&
+                (errno != EEXIST || !jw__pakrat_is_dir(tmp))) {
                 return -1;
             }
             *p = '/';
         }
     }
-    if (mkdir(tmp, mode) != 0 && errno != EEXIST) {
+    if (mkdir(tmp, mode) != 0 &&
+        (errno != EEXIST || !jw__pakrat_is_dir(tmp))) {
         return -1;
     }
     return 0;
@@ -97,7 +106,10 @@ int jw__pakrat_mkdir_parent(const char *path) {
 
 int jw__pakrat_remove_tree(const char *path) {
     struct stat st;
-    if (!path || !path[0] || lstat(path, &st) != 0) {
+    if (!path || !path[0]) {
+        return -1;
+    }
+    if (lstat(path, &st) != 0) {
         return errno == ENOENT ? 0 : -1;
     }
     if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
@@ -182,6 +194,10 @@ void jw__pakrat_log(const char *state_dir, const char *fmt, ...) {
 
 int jw__pakrat_target_path(const char *sdcard_root, const char *install_path,
                            char *out, size_t out_size) {
+    if (!sdcard_root || !sdcard_root[0] || !install_path || !out ||
+        out_size == 0) {
+        return -1;
+    }
     const char *path = install_path;
     if (strncmp(path, "Apps/", 5) == 0) {
         path += 5;
@@ -213,10 +229,8 @@ int jw__pakrat_target_sibling_path(const char *target, const char *store_id,
     } else {
         *slash = '\0';
     }
-    return snprintf(out, out_size, "%s/.pakrat-%s-%s", parent, kind, store_id) <
-                   (int)out_size
-               ? 0
-               : -1;
+    int n = snprintf(out, out_size, "%s/.pakrat-%s-%s", parent, kind, store_id);
+    return n >= 0 && (size_t)n < out_size ? 0 : -1;
 }
 
 /* ── Rollback origin marker ───────────────────────────────────────────────
@@ -225,13 +239,13 @@ int jw__pakrat_target_sibling_path(const char *target, const char *store_id,
    a recorded install through jw_db_pakrat_list_installs, but an adopted install
    that crashes before its first record is written has no row — and deleting its
    rollback would destroy the only copy of the app that was moved aside. The
-   marker records install_path at move-aside time so that case can be restored
-   instead of swept. */
+   marker records install_path before move-aside so that case can be restored
+   instead of swept without leaving an unmarked crash window. */
 
 int jw__pakrat_write_origin_marker(const char *target, const char *store_id,
                                    const char *install_path) {
     char marker[PATH_MAX];
-    if (!install_path || !install_path[0] ||
+    if (!jw__pakrat_safe_rel_path(install_path) ||
         jw__pakrat_target_sibling_path(target, store_id, "origin",
                                        marker, sizeof(marker)) != 0) {
         return -1;
@@ -244,16 +258,21 @@ int jw__pakrat_write_origin_marker(const char *target, const char *store_id,
     if (fflush(fp) != 0) {
         ok = 0;
     }
-    fclose(fp);
+    if (fclose(fp) != 0) {
+        ok = 0;
+    }
     return ok ? 0 : -1;
 }
 
 int jw__pakrat_read_origin_marker(const char *apps_dir, const char *store_id,
                                   char *out, size_t out_size) {
     char marker[PATH_MAX];
-    if (!apps_dir || !out || out_size == 0 || !jw__pakrat_safe_name(store_id) ||
-        snprintf(marker, sizeof(marker), "%s/.pakrat-origin-%s", apps_dir,
-                 store_id) >= (int)sizeof(marker)) {
+    if (!apps_dir || !out || out_size == 0 || !jw__pakrat_safe_name(store_id)) {
+        return -1;
+    }
+    int marker_n = snprintf(marker, sizeof(marker), "%s/%s%s", apps_dir,
+                            JW_PAKRAT_ORIGIN_PREFIX, store_id);
+    if (marker_n < 0 || (size_t)marker_n >= sizeof(marker)) {
         return -1;
     }
     FILE *fp = fopen(marker, "rb");
@@ -262,8 +281,10 @@ int jw__pakrat_read_origin_marker(const char *apps_dir, const char *store_id,
     }
     char line[PATH_MAX];
     char *got = fgets(line, (int)sizeof(line), fp);
-    fclose(fp);
-    if (!got) {
+    int complete = got && (strchr(line, '\n') != NULL || feof(fp));
+    int read_failed = ferror(fp);
+    int close_failed = fclose(fp) != 0;
+    if (!got || !complete || read_failed || close_failed) {
         return -1;
     }
     size_t len = strlen(line);
@@ -284,16 +305,20 @@ void jw__pakrat_clear_origin_marker(const char *target, const char *store_id) {
     }
 }
 
-static void jw__pakrat_manifest_string(const cJSON *obj, const char *key,
-                                       char *out, size_t out_size) {
+static int jw__pakrat_manifest_string(const cJSON *obj, const char *key,
+                                      char *out, size_t out_size) {
     if (!out || out_size == 0) {
-        return;
+        return -1;
     }
     out[0] = '\0';
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (cJSON_IsString(item) && item->valuestring) {
-        snprintf(out, out_size, "%s", item->valuestring);
+        int n = snprintf(out, out_size, "%s", item->valuestring);
+        if (n < 0 || (size_t)n >= out_size) {
+            return -1;
+        }
     }
+    return 0;
 }
 
 int jw__pakrat_read_manifest(const char *pak_dir, const char *manifest_rel,
@@ -326,10 +351,15 @@ int jw__pakrat_read_manifest(const char *pak_dir, const char *manifest_rel,
         return -1;
     }
     size_t got = fread(json, 1, (size_t)size, fp);
-    fclose(fp);
+    int read_failed = ferror(fp);
+    int close_failed = fclose(fp) != 0;
+    if (got != (size_t)size || read_failed || close_failed) {
+        free(json);
+        return -1;
+    }
     json[got] = '\0';
 
-    cJSON *root = cJSON_Parse(json);
+    cJSON *root = cJSON_ParseWithOpts(json, NULL, true);
     free(json);
     if (!root || !cJSON_IsObject(root)) {
         if (root) {
@@ -337,14 +367,16 @@ int jw__pakrat_read_manifest(const char *pak_dir, const char *manifest_rel,
         }
         return -1;
     }
-    jw__pakrat_manifest_string(root, "platform", out->platform,
-                               sizeof(out->platform));
-    jw__pakrat_manifest_string(root, "pak_version", out->pak_version,
-                               sizeof(out->pak_version));
-    jw__pakrat_manifest_string(root, "min_leaf_version", out->min_leaf_version,
-                               sizeof(out->min_leaf_version));
+    int fields_ok =
+        jw__pakrat_manifest_string(root, "platform", out->platform,
+                                   sizeof(out->platform)) == 0 &&
+        jw__pakrat_manifest_string(root, "pak_version", out->pak_version,
+                                   sizeof(out->pak_version)) == 0 &&
+        jw__pakrat_manifest_string(root, "min_leaf_version",
+                                   out->min_leaf_version,
+                                   sizeof(out->min_leaf_version)) == 0;
     cJSON_Delete(root);
-    return 0;
+    return fields_ok ? 0 : -1;
 }
 
 /* The promoted tree at |target| counts as committed only when its identity is
@@ -361,6 +393,10 @@ static const char *jw__uncommitted_promote_reason(const char *target,
     const char *record_version = install ? install->version : "";
     if (!record_version[0] || strcmp(manifest.pak_version, record_version) != 0) {
         return install ? "version-mismatch" : "no-record";
+    }
+    if (!manifest.platform[0] || !install->platform[0] ||
+        strcmp(manifest.platform, install->platform) != 0) {
+        return "platform-mismatch";
     }
     char entry_point[PATH_MAX];
     if (jw__pakrat_join2(entry_point, sizeof(entry_point), target,
@@ -387,6 +423,10 @@ static int jw__reconcile_record_to_tree(const jw_pakrat_recovery_context *ctx,
         strcmp(manifest.pak_version, install->version) == 0) {
         return 0;
     }
+    if (!manifest.platform[0] ||
+        strcmp(manifest.platform, install->platform) != 0) {
+        return -1;
+    }
     if (jw_db_pakrat_upsert_install(ctx->db_path, install->store_id,
                                     manifest.pak_version, install->platform,
                                     install->install_path,
@@ -406,6 +446,9 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
                                     const char *store_id,
                                     const char *install_path,
                                     const jw_pakrat_install *install) {
+    if (!ctx) {
+        return -1;
+    }
     char target[PATH_MAX];
     char target_stage[PATH_MAX];
     char target_rollback[PATH_MAX];
@@ -415,9 +458,12 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
         jw__pakrat_target_sibling_path(target, store_id, "stage",
                                        target_stage, sizeof(target_stage)) != 0 ||
         jw__pakrat_target_sibling_path(target, store_id, "rollback",
-                                       target_rollback, sizeof(target_rollback)) != 0 ||
-        snprintf(legacy_partial, sizeof(legacy_partial), "%s.partial", target) >=
-            (int)sizeof(legacy_partial)) {
+                                       target_rollback, sizeof(target_rollback)) != 0) {
+        return -1;
+    }
+    int legacy_n = snprintf(legacy_partial, sizeof(legacy_partial), "%s.partial",
+                            target);
+    if (legacy_n < 0 || (size_t)legacy_n >= sizeof(legacy_partial)) {
         return -1;
     }
 
@@ -478,6 +524,10 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
                 return -1;
             }
         }
+    } else if (!rollback_exists) {
+        /* A write-ahead origin marker can survive a crash just before the
+           move-aside rename. With no rollback tree it has no recovery role. */
+        jw__pakrat_clear_origin_marker(target, store_id);
     }
     return 0;
 }
@@ -490,19 +540,29 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                                             int install_count,
                                             const char *platform_dir) {
     char apps_dir[PATH_MAX];
-    if (jw__pakrat_join3(apps_dir, sizeof(apps_dir), ctx->sdcard_root, "Apps",
+    if (!jw__pakrat_safe_name(platform_dir) ||
+        jw__pakrat_join3(apps_dir, sizeof(apps_dir), ctx->sdcard_root, "Apps",
                          platform_dir) != 0) {
         return -1;
     }
     DIR *dir = opendir(apps_dir);
     if (!dir) {
-        return 0;
+        return errno == ENOENT ? 0 : -1;
     }
     int rc = 0;
     struct dirent *entry = NULL;
-    while ((entry = readdir(dir)) != NULL) {
+    for (;;) {
+        errno = 0;
+        entry = readdir(dir);
+        if (!entry) {
+            if (errno != 0) {
+                rc = -1;
+            }
+            break;
+        }
         const char *store_id = NULL;
         bool is_rollback = false;
+        bool is_origin = false;
         if (strncmp(entry->d_name, JW_PAKRAT_STAGE_PREFIX,
                     sizeof(JW_PAKRAT_STAGE_PREFIX) - 1) == 0) {
             store_id = entry->d_name + sizeof(JW_PAKRAT_STAGE_PREFIX) - 1;
@@ -510,13 +570,42 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                            sizeof(JW_PAKRAT_ROLLBACK_PREFIX) - 1) == 0) {
             store_id = entry->d_name + sizeof(JW_PAKRAT_ROLLBACK_PREFIX) - 1;
             is_rollback = true;
+        } else if (strncmp(entry->d_name, JW_PAKRAT_ORIGIN_PREFIX,
+                           sizeof(JW_PAKRAT_ORIGIN_PREFIX) - 1) == 0) {
+            store_id = entry->d_name + sizeof(JW_PAKRAT_ORIGIN_PREFIX) - 1;
+            is_origin = true;
         }
         if (!store_id || !jw__pakrat_safe_name(store_id)) {
             continue;
         }
+        char orphan[PATH_MAX];
+        if (jw__pakrat_join2(orphan, sizeof(orphan), apps_dir, entry->d_name) != 0) {
+            rc = -1;
+            break;
+        }
+
         bool owned = false;
         for (int i = 0; i < install_count; i++) {
-            if (strcmp(installs[i].store_id, store_id) == 0) {
+            if (strcmp(installs[i].store_id, store_id) != 0) {
+                continue;
+            }
+            const char *kind =
+                is_rollback ? "rollback" : (is_origin ? "origin" : "stage");
+            char expected_target[PATH_MAX];
+            char expected_sibling[PATH_MAX];
+            if (jw__pakrat_target_path(ctx->sdcard_root,
+                                       installs[i].install_path,
+                                       expected_target,
+                                       sizeof(expected_target)) != 0 ||
+                jw__pakrat_target_sibling_path(expected_target, store_id, kind,
+                                               expected_sibling,
+                                               sizeof(expected_sibling)) != 0) {
+                /* A malformed ownership row must never make recovery delete a
+                   possibly-related tree. The row-level reconcile reports it. */
+                owned = true;
+                break;
+            }
+            if (strcmp(expected_sibling, orphan) == 0) {
                 owned = true;
                 break;
             }
@@ -524,10 +613,30 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
         if (owned) {
             continue;
         }
-        char orphan[PATH_MAX];
-        if (jw__pakrat_join2(orphan, sizeof(orphan), apps_dir, entry->d_name) != 0) {
-            rc = -1;
-            break;
+
+        if (is_origin) {
+            char rollback[PATH_MAX];
+            int rollback_n =
+                snprintf(rollback, sizeof(rollback), "%s/%s%s", apps_dir,
+                         JW_PAKRAT_ROLLBACK_PREFIX, store_id);
+            if (rollback_n < 0 || (size_t)rollback_n >= sizeof(rollback)) {
+                rc = -1;
+                break;
+            }
+            if (jw__pakrat_path_exists(rollback)) {
+                continue;
+            }
+            if (unlink(orphan) != 0 && errno != ENOENT) {
+                fprintf(stderr,
+                        "could not remove orphaned Pak Rat origin marker: %s\n",
+                        orphan);
+                rc = -1;
+                break;
+            }
+            jw__pakrat_log(ctx->state_dir,
+                           "install-recover swept orphan origin store_id=%s path=Apps/%s/%s",
+                           store_id, platform_dir, entry->d_name);
+            continue;
         }
 
         /* A rollback tree may be the only surviving copy of an app: an adopted

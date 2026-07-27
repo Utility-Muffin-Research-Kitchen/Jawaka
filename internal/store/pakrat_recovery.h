@@ -42,7 +42,7 @@ int  jw__pakrat_target_sibling_path(const char *target, const char *store_id,
 /* Records the Apps-relative install_path a rollback sibling was moved aside
    from, so recovery can restore it even when no install row exists yet (an
    adopted install crashes before its first record is written). Written next to
-   the rollback tree, removed with it. */
+   the target before the move-aside rename, then removed with the rollback. */
 int  jw__pakrat_write_origin_marker(const char *target, const char *store_id,
                                     const char *install_path);
 int  jw__pakrat_read_origin_marker(const char *apps_dir, const char *store_id,
@@ -76,9 +76,9 @@ typedef struct {
    are always discarded. target absent + rollback present restores the
    rollback. target + rollback present is decided by the record: the promoted
    tree counts as committed only when its pak.json parses, its pak_version
-   matches the record, and its launch.sh entry point exists; anything else is
-   an uncommitted promote and rolls back to the sibling that was already
-   running. */
+   and platform match the record, and its launch.sh entry point exists;
+   anything else is an uncommitted promote and rolls back to the sibling that
+   was already running. */
 int  jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
                                      const char *store_id,
                                      const char *install_path,
