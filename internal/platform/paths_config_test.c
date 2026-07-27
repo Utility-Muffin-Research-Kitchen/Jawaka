@@ -63,13 +63,15 @@ static int key_count(const char *text, const char *key, const char *value) {
     return count;
 }
 
-static int verify_runtime(const char *path) {
+static int verify_runtime(const char *path, const char *shader_dir) {
     char *text = read_text(path);
     if (!text) return -1;
     int ok = key_count(text, "sort_savefiles_enable", NULL) == 1 &&
              key_count(text, "sort_savefiles_enable", "= \"true\"") == 1 &&
              key_count(text, "sort_savestates_enable", NULL) == 1 &&
-             key_count(text, "sort_savestates_enable", "= \"true\"") == 1;
+             key_count(text, "sort_savestates_enable", "= \"true\"") == 1 &&
+             (!shader_dir ||
+              key_count(text, "video_shader_dir", shader_dir) == 1);
     free(text);
     return ok ? 0 : -1;
 }
@@ -82,17 +84,24 @@ int main(void) {
     if (unlink(root) != 0 || mkdir_one(root) != 0) return fail("root mkdir failed");
 
     char platform[PATH_MAX], defaults[PATH_MAX], internal[PATH_MAX];
-    char runtime[PATH_MAX], cores[PATH_MAX], default_cfg[PATH_MAX];
+    char runtime[PATH_MAX], cores[PATH_MAX], shaders[PATH_MAX];
+    char user_shaders[PATH_MAX], custom_shaders[PATH_MAX];
+    char default_cfg[PATH_MAX];
     char retroarch_dir[PATH_MAX], shared_cfg[PATH_MAX];
     snprintf(platform, sizeof(platform), "%s/platform", root);
     snprintf(defaults, sizeof(defaults), "%s/defaults", platform);
     snprintf(internal, sizeof(internal), "%s/internal", root);
     snprintf(runtime, sizeof(runtime), "%s/runtime", root);
     snprintf(cores, sizeof(cores), "%s/cores", platform);
+    snprintf(shaders, sizeof(shaders), "%s/shaders", platform);
+    snprintf(user_shaders, sizeof(user_shaders),
+             "%s/retroarch/.config/retroarch/shaders", internal);
+    snprintf(custom_shaders, sizeof(custom_shaders), "%s/custom-shaders", root);
     snprintf(retroarch_dir, sizeof(retroarch_dir), "%s/retroarch", internal);
     snprintf(shared_cfg, sizeof(shared_cfg), "%s/retroarch.cfg", retroarch_dir);
     if (mkdir_one(platform) || mkdir_one(defaults) || mkdir_one(internal) ||
-        mkdir_one(runtime) || mkdir_one(cores) || mkdir_one(retroarch_dir)) {
+        mkdir_one(runtime) || mkdir_one(cores) || mkdir_one(shaders) ||
+        mkdir_one(custom_shaders) || mkdir_one(retroarch_dir)) {
         return fail("fixture mkdir failed");
     }
     snprintf(default_cfg, sizeof(default_cfg), "%s/retroarch.cfg", defaults);
@@ -114,11 +123,13 @@ int main(void) {
     setenv("SDCARD_PATH", root, 1);
     setenv("UMRK_PLATFORM_PATH", platform, 1);
     setenv("UMRK_INTERNAL_DATA_PATH", internal, 1);
+    setenv("UMRK_RETROARCH_SHADERS_DIR", shaders, 1);
+    setenv("UMRK_RETROARCH_USER_SHADERS_DIR", user_shaders, 1);
 
     char core[PATH_MAX];
     snprintf(core, sizeof(core), "%s/mgba_libretro.so", cores);
     char *append_cfg = jw_write_retroarch_append_config(runtime, root, core, -1);
-    if (!append_cfg || verify_runtime(append_cfg) != 0) {
+    if (!append_cfg || verify_runtime(append_cfg, NULL) != 0) {
         return fail("append config did not normalize protected sort keys");
     }
     unlink(append_cfg);
@@ -127,8 +138,13 @@ int main(void) {
     char error[256];
     char *runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
                                                     true, error, sizeof(error));
-    if (!runtime_cfg || verify_runtime(runtime_cfg) != 0) {
+    if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail(error[0] ? error : "protected keys not normalized");
+    }
+    struct stat user_shader_stat;
+    if (stat(user_shaders, &user_shader_stat) != 0 ||
+        !S_ISDIR(user_shader_stat.st_mode)) {
+        return fail("durable user shader directory was not created");
     }
     if (jw_backup_retroarch_config(runtime_cfg, root, error, sizeof(error)) != 0) {
         return fail(error[0] ? error : "backup failed");
@@ -144,11 +160,68 @@ int main(void) {
     unlink(runtime_cfg);
     free(runtime_cfg);
 
+    if (write_text(
+            shared_cfg,
+            "menu_driver = \"rgui\"\n"
+            "video_shader_dir = "
+            "\"/mnt/sdcard/.system/leaf/platforms/mlp1/shaders\"\n") != 0) {
+        return fail("stale release shader config write failed");
+    }
     runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
                                               true, error, sizeof(error));
-    if (!runtime_cfg || verify_runtime(runtime_cfg) != 0) {
-        return fail("protected keys not stable after regeneration");
+    if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
+        return fail("stale release shader directory did not migrate to user state");
     }
+    char *migrated_runtime = read_text(runtime_cfg);
+    if (!migrated_runtime ||
+        key_count(migrated_runtime, "video_shader_dir",
+                  "/mnt/sdcard/.system/leaf/platforms/mlp1/shaders") != 0) {
+        free(migrated_runtime);
+        return fail("stale release shader directory survived migration");
+    }
+    free(migrated_runtime);
+    unlink(runtime_cfg);
+    free(runtime_cfg);
+
+    char custom_cfg[PATH_MAX + 64];
+    snprintf(custom_cfg, sizeof(custom_cfg),
+             "menu_driver = \"rgui\"\nvideo_shader_dir = \"%s\"\n",
+             custom_shaders);
+    if (write_text(shared_cfg, custom_cfg) != 0) {
+        return fail("custom shader config write failed");
+    }
+    runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
+                                              true, error, sizeof(error));
+    if (!runtime_cfg || verify_runtime(runtime_cfg, custom_shaders) != 0) {
+        return fail("custom shader directory did not win over bundle fallback");
+    }
+    char *custom_runtime = read_text(runtime_cfg);
+    if (!custom_runtime ||
+        key_count(custom_runtime, "video_shader_dir", user_shaders) != 0) {
+        free(custom_runtime);
+        return fail("durable shader fallback overrode the custom shader directory");
+    }
+    free(custom_runtime);
+    unlink(runtime_cfg);
+    free(runtime_cfg);
+
+    if (rmdir(shaders) != 0 ||
+        write_text(shared_cfg, "menu_driver = \"rgui\"\n") != 0) {
+        return fail("missing shader bundle fixture setup failed");
+    }
+    runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
+                                              true, error, sizeof(error));
+    if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
+        return fail("missing shader bundle prevented config generation");
+    }
+    char *missing_runtime = read_text(runtime_cfg);
+    if (!missing_runtime ||
+        key_count(missing_runtime, "video_shader_dir", user_shaders) != 1) {
+        free(missing_runtime);
+        return fail("missing bundle did not retain the durable shader root");
+    }
+    free(missing_runtime);
+    unlink(runtime_cfg);
     free(runtime_cfg);
     printf("retroarch-config-test: ok\n");
     return 0;

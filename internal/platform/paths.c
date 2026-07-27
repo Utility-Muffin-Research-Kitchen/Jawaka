@@ -508,9 +508,75 @@ static bool jw__retroarch_cfg_text_has_key(const char *text, const char *key) {
     return false;
 }
 
-static int jw__write_retroarch_cfg_filtered(FILE *fp, const char *text,
-                                            const char *override_text,
-                                            bool dedupe) {
+static char *jw__retroarch_cfg_text_string_value(const char *text,
+                                                 const char *wanted_key) {
+    if (!text || !wanted_key || !wanted_key[0]) {
+        return NULL;
+    }
+
+    char *result = NULL;
+    const char *line = text;
+    while (*line) {
+        const char *next = strchr(line, '\n');
+        size_t len = next ? (size_t)(next - line) : strlen(line);
+        char key[128];
+        if (jw__retroarch_cfg_line_key(line, len, key, sizeof(key)) &&
+            strcmp(key, wanted_key) == 0) {
+            const char *equals = memchr(line, '=', len);
+            if (equals) {
+                const char *start = equals + 1;
+                const char *end = line + len;
+                while (start < end && (*start == ' ' || *start == '\t')) {
+                    start++;
+                }
+                while (end > start &&
+                       (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) {
+                    end--;
+                }
+                if (end > start && *start == '"') {
+                    start++;
+                    const char *quote = memchr(start, '"', (size_t)(end - start));
+                    if (quote) {
+                        end = quote;
+                    }
+                }
+                size_t value_len = (size_t)(end - start);
+                char *value = malloc(value_len + 1u);
+                if (!value) {
+                    free(result);
+                    return NULL;
+                }
+                memcpy(value, start, value_len);
+                value[value_len] = '\0';
+                free(result);
+                result = value;
+            }
+        }
+        if (!next) {
+            break;
+        }
+        line = next + 1;
+    }
+    return result;
+}
+
+static bool jw__release_managed_shader_dir(const char *path) {
+    static const char marker[] = "/.system/leaf/platforms/";
+    if (!path || !path[0]) {
+        return false;
+    }
+    const char *platform = strstr(path, marker);
+    if (!platform) {
+        return false;
+    }
+    platform += sizeof(marker) - 1u;
+    const char *suffix = strchr(platform, '/');
+    return suffix && strcmp(suffix, "/shaders") == 0;
+}
+
+static int jw__write_retroarch_cfg_filtered_skipping(
+    FILE *fp, const char *text, const char *override_text, bool dedupe,
+    const char *skip_key) {
     if (!fp || !text) {
         return -1;
     }
@@ -524,7 +590,8 @@ static int jw__write_retroarch_cfg_filtered(FILE *fp, const char *text,
         bool skip = false;
 
         if (has_key) {
-            skip = jw__retroarch_cfg_key_is_protected(key) ||
+            skip = (skip_key && strcmp(key, skip_key) == 0) ||
+                   jw__retroarch_cfg_key_is_protected(key) ||
                    (override_text && jw__retroarch_cfg_text_has_key(override_text, key)) ||
                    (dedupe && next && jw__retroarch_cfg_text_has_key(next + 1, key));
         } else if (len == strlen("# Jawaka protected runtime settings") &&
@@ -543,6 +610,13 @@ static int jw__write_retroarch_cfg_filtered(FILE *fp, const char *text,
     }
 
     return ferror(fp) ? -1 : 0;
+}
+
+static int jw__write_retroarch_cfg_filtered(FILE *fp, const char *text,
+                                            const char *override_text,
+                                            bool dedupe) {
+    return jw__write_retroarch_cfg_filtered_skipping(
+        fp, text, override_text, dedupe, NULL);
 }
 
 static int jw__mkdir_child(const char *root, const char *name) {
@@ -1234,6 +1308,78 @@ static char *jw__default_autoconfig_dir(const char *sdcard_root) {
     return NULL;
 }
 
+static char *jw__default_retroarch_user_shaders_dir(const char *sdcard_root) {
+    char *env_dir = jw__dup_env_value("UMRK_RETROARCH_USER_SHADERS_DIR");
+    if (env_dir) {
+        if (jw__mkdir_p(env_dir, 0755) == 0) {
+            return env_dir;
+        }
+        free(env_dir);
+    }
+
+    const char *internal_data = jw__env_value("UMRK_INTERNAL_DATA_PATH");
+    char internal_path[PATH_MAX];
+    if (internal_data) {
+        if (!jw__format_string(internal_path, sizeof(internal_path), "%s",
+                               internal_data)) {
+            return NULL;
+        }
+    } else if (!jw__format_default_internal_data(
+                   internal_path, sizeof(internal_path), sdcard_root)) {
+        return NULL;
+    }
+
+    char path[PATH_MAX];
+    if (!jw__format_string(path, sizeof(path),
+                           "%s/retroarch/.config/retroarch/shaders",
+                           internal_path) ||
+        jw__mkdir_p(path, 0755) != 0) {
+        return NULL;
+    }
+    return jw__dup_realpath_or_literal(path);
+}
+
+static char *jw__default_retroarch_shaders_dir(const char *sdcard_root) {
+    char *user_dir = jw__default_retroarch_user_shaders_dir(sdcard_root);
+    if (user_dir) {
+        return user_dir;
+    }
+
+    /* Last-resort compatibility fallback. New Leaf installs use the durable
+       user shader root above so RetroArch's online updater cannot mutate the
+       release-managed, manifest-validated bundle. */
+    char *env_dir = jw__dup_env_value("UMRK_RETROARCH_SHADERS_DIR");
+    if (env_dir) {
+        if (jw__is_directory(env_dir)) {
+            return env_dir;
+        }
+        free(env_dir);
+    }
+
+    const char *platform_path = jw__env_value("UMRK_PLATFORM_PATH");
+    char path[PATH_MAX];
+    if (platform_path && jw__format_string(path, sizeof(path), "%s/shaders",
+                                           platform_path) &&
+        jw__is_directory(path)) {
+        return jw__dup_realpath_or_literal(path);
+    }
+
+    const char *system_path = jw__env_value("SYSTEM_PATH");
+    if (system_path && jw__format_string(path, sizeof(path), "%s/shaders",
+                                         system_path) &&
+        jw__is_directory(path)) {
+        return jw__dup_realpath_or_literal(path);
+    }
+
+    if (sdcard_root &&
+        jw__format_default_system_child(path, sizeof(path), sdcard_root, "shaders") &&
+        jw__is_directory(path)) {
+        return jw__dup_realpath_or_literal(path);
+    }
+
+    return NULL;
+}
+
 static char *jw__retroarch_shared_config_path(const char *sdcard_root) {
     char *state_dir = jw_retroarch_state_dir(sdcard_root);
     if (!state_dir) {
@@ -1487,12 +1633,48 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
        keep it readable only by the owner. */
     (void)fchmod(fileno(fp), S_IRUSR | S_IWUSR);
 
+    bool defaults_have_shader_dir =
+        jw__retroarch_cfg_text_has_key(defaults_text, "video_shader_dir");
+    bool shared_has_shader_dir =
+        jw__retroarch_cfg_text_has_key(shared_text, "video_shader_dir");
+    bool migrate_release_shader_dir = false;
+    char *shaders_dir = NULL;
+    if (!defaults_have_shader_dir) {
+        shaders_dir = jw__default_retroarch_shaders_dir(config_sdroot_abs);
+        if (shaders_dir && shared_has_shader_dir) {
+            char *persisted_shader_dir =
+                jw__retroarch_cfg_text_string_value(shared_text, "video_shader_dir");
+            migrate_release_shader_dir =
+                persisted_shader_dir &&
+                strcmp(persisted_shader_dir, shaders_dir) != 0 &&
+                jw__release_managed_shader_dir(persisted_shader_dir);
+            if (migrate_release_shader_dir) {
+                jw_log_info("Migrating release-managed RetroArch shader directory "
+                            "from %s to %s",
+                            persisted_shader_dir, shaders_dir);
+            }
+            free(persisted_shader_dir);
+        }
+    }
+
     if (defaults_text) {
         jw__write_retroarch_cfg_filtered(fp, defaults_text, shared_text, false);
     }
     if (shared_text) {
-        jw__write_retroarch_cfg_filtered(fp, shared_text, NULL, true);
+        jw__write_retroarch_cfg_filtered_skipping(
+            fp, shared_text, NULL, true,
+            migrate_release_shader_dir ? "video_shader_dir" : NULL);
     }
+    /* Make the release-managed bundle browsable on first launch, but keep this
+       key outside the protected section. A packaged default or a value already
+       persisted by RetroArch always wins, except for a release-managed path
+       whose SD mount point changed. Save-on-exit may replace this fallback with
+       any genuine custom directory the user chooses. */
+    if (shaders_dir &&
+        (!shared_has_shader_dir || migrate_release_shader_dir)) {
+        jw__retroarch_cfg_string(fp, "video_shader_dir", shaders_dir);
+    }
+    free(shaders_dir);
     /* Ephemeral tmpfs dir for paused-frame screenshots the in-game menu reads.
        Best-effort: if it can't be made, screenshots simply won't be steered. */
     char shots_dir[PATH_MAX];
