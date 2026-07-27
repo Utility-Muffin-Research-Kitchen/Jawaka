@@ -768,6 +768,148 @@ char *jw_retroarch_state_dir(const char *sdcard_root) {
     return jw__dup_printf("%s/retroarch", state_root);
 }
 
+/* ---- Emulated controller type ------------------------------------------
+ *
+ * Some cores default to a pad that lacks hardware the user expects. PS1 is the
+ * live case: pcsx_rearmed's standard digital pad has no vibration motors, so
+ * rumble is not weak on PlayStation games, it is structurally impossible.
+ *
+ * This cannot be pinned in retroarch.cfg, which is the surprise. RetroArch reads
+ * input_libretro_device_p1 into its own settings quite happily -- the value reads
+ * back correctly -- but never pushes it to the core at boot, so the core keeps
+ * its default and the menu shows "standard" while the config says otherwise.
+ * Remap files are applied *after* the core declares its controller list, and
+ * RetroArch's remap loader calls retro_set_controller_port_device directly, which
+ * is the same path the in-game menu uses. So the pin has to live in the remap.
+ *
+ * Verified on Puff 2026-07-27: Tekken 3 is silent through the config route and
+ * rumbles through this one.
+ *
+ * The device ids are subclass-encoded and not published anywhere readable, so
+ * they were taken out of the core binary itself -- the retro_controller_description
+ * array, reached via the RELATIVE relocations that point at its name strings:
+ *
+ *     standard 1   dualshock 517   analog 261   negcon 773   guncon 260
+ *
+ * "analog" is the flight stick and has no motors; picking it would look like a
+ * fix and do nothing. Re-derive the same way if a core bump ever moves them. */
+typedef struct {
+    const char *core_id;
+    unsigned    device;
+    const char *why;
+} jw_core_device_pin;
+
+static const jw_core_device_pin k_core_device_pins[] = {
+    { "pcsx_rearmed", 517u, "DualShock, for rumble" },
+};
+
+/* Rewrite the core's remap, keeping every line the user (or RetroArch) put there
+   except the one key we own. Same shape as the protected block in retroarch.cfg:
+   Leaf owns this key, the rest is not ours to touch. Seeding only when the file
+   is absent would miss anyone whose remap already exists with the wrong pad --
+   which is exactly the upgrade case pinning exists for. */
+static int jw__write_core_device_remap(const char *remap_path, unsigned device) {
+    char *existing = jw__read_text_file(remap_path, 256u * 1024u);
+
+    char tmp_path[PATH_MAX];
+    if (!jw__format_string(tmp_path, sizeof(tmp_path), "%s.tmp", remap_path)) {
+        free(existing);
+        return -1;
+    }
+
+    FILE *fp = fopen(tmp_path, "wb");
+    if (!fp) {
+        free(existing);
+        return -1;
+    }
+
+    if (existing) {
+        const char *line = existing;
+        while (*line) {
+            const char *eol = strchr(line, '\n');
+            size_t len = eol ? (size_t)(eol - line) : strlen(line);
+            const char *scan = line;
+            while (scan < line + len && (*scan == ' ' || *scan == '\t')) {
+                scan++;
+            }
+            if (strncmp(scan, "input_libretro_device_p1",
+                        sizeof("input_libretro_device_p1") - 1u) != 0) {
+                fwrite(line, 1u, len, fp);
+                fputc('\n', fp);
+            }
+            if (!eol) {
+                break;
+            }
+            line = eol + 1;
+        }
+        free(existing);
+    }
+
+    fprintf(fp, "input_libretro_device_p1 = \"%u\"\n", device);
+
+    int failed = ferror(fp) != 0;
+    if (fclose(fp) != 0) {
+        failed = 1;
+    }
+    if (failed || rename(tmp_path, remap_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
+void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
+                                  const char *core_config_folder) {
+    if (!ra_home || !ra_home[0] || !core_id || !core_id[0] ||
+        !core_config_folder || !core_config_folder[0]) {
+        return;
+    }
+    /* The folder is a name, not a path: it comes from the catalog and is used
+       verbatim. Refuse anything that could climb out of the remap directory. */
+    if (strchr(core_config_folder, '/') || strcmp(core_config_folder, "..") == 0 ||
+        strcmp(core_config_folder, ".") == 0) {
+        return;
+    }
+
+    const jw_core_device_pin *pin = NULL;
+    for (size_t i = 0; i < sizeof(k_core_device_pins) / sizeof(k_core_device_pins[0]); i++) {
+        if (strcmp(core_id, k_core_device_pins[i].core_id) == 0) {
+            pin = &k_core_device_pins[i];
+            break;
+        }
+    }
+    if (!pin) {
+        return;   /* the overwhelmingly common path */
+    }
+
+    char remap_dir[PATH_MAX];
+    if (!jw__format_string(remap_dir, sizeof(remap_dir),
+                           "%s/.config/retroarch/config/remaps/%s",
+                           ra_home, core_config_folder)) {
+        jw_log_warn("rumble: remap path too long for %s", core_id);
+        return;
+    }
+    if (jw__mkdir_p(remap_dir, 0755) != 0) {
+        jw_log_warn("rumble: could not create remap dir %s: %s",
+                    remap_dir, strerror(errno));
+        return;
+    }
+
+    char remap_path[PATH_MAX];
+    if (!jw__format_string(remap_path, sizeof(remap_path), "%s/%s.rmp",
+                           remap_dir, core_config_folder)) {
+        return;
+    }
+
+    if (jw__write_core_device_remap(remap_path, pin->device) != 0) {
+        jw_log_warn("controller pin: could not write %s: %s",
+                    remap_path, strerror(errno));
+        return;
+    }
+    jw_log_info("controller pin: %s port 1 device=%u (%s)",
+                core_id, pin->device, pin->why);
+}
+
 char *jw_retroarch_bin_path(void) {
     const jw_path_layout *layout = jw__path_layout();
     char *path = jw__dup_env_value("UMRK_RETROARCH_BIN");

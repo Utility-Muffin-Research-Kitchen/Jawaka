@@ -36,5 +36,12 @@ int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdca
 int jw_reset_retroarch_shared_config(const char *sdcard_root,
                                      char *status, size_t status_size);
 char *jw_retroarch_state_dir(const char *sdcard_root);
+/* Pin the emulated controller type for cores whose default pad lacks hardware the
+ * user expects -- today only PS1, whose rumble needs a DualShock rather than the
+ * digital pad RetroArch hands it. No-op for every other core. Best effort: a
+ * failure costs that hardware, never the launch. See paths.c for why this cannot
+ * live in retroarch.cfg. */
+void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
+                                  const char *core_config_folder);
 
 #endif

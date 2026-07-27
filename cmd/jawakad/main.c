@@ -7031,6 +7031,11 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                     "may fall back to device internal storage");
     }
 
+    /* Pin the emulated pad for cores that need one the user's hardware expects
+       (PS1 wants a DualShock, or nothing can rumble). Must happen before the
+       fork: RetroArch reads the remap during startup. */
+    jw_retroarch_pin_core_device(ra_home, core_id, core_config_folder);
+
     /* Stop any UI pulse before the handoff, then resolve the duty endpoints
        the game will drive the motor with (if game rumble is on). A bare
        force-off here was routinely undone: the launcher fires its commit tick
