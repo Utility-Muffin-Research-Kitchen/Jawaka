@@ -1226,27 +1226,24 @@ static void jw__rumble_event(jw_daemon_state *state, const char *event) {
 }
 
 /* ---- Game rumble (Phase 2) ----------------------------------------------
- * Two routes reach the motor from a game, because two kinds of consumer ask for
- * it differently.
+ * One route, deliberately. Every game reaches the motor through force feedback
+ * on jawakad's own virtual gamepad: the pad advertises FF_RUMBLE, so an emulator
+ * rumbling through plain SDL or evdev lands in jw__rumble_ff below and needs no
+ * patch of its own. That covers RetroArch and every standalone alike.
  *
- * The one that matters most is force feedback on jawakad's own virtual gamepad:
- * the pad advertises FF_RUMBLE, so an emulator rumbling through plain SDL or
- * evdev lands in jw__rumble_ff below and needs no patch of its own. That covers
- * every standalone that runs on the calibrated pad.
+ * There used to be a second route -- endpoints handed out in RUMBLE_PWM_* so a
+ * patched emulator could write duty_cycle itself -- and it is gone on purpose.
+ * Nothing consumed it once force feedback worked, and leaving it published was
+ * an invitation to a second writer on a channel that only tolerates one: an
+ * emulator writing from its own thread while the worker writes from another,
+ * the two disagreeing about when to stop.
  *
- * RetroArch does not take that route -- its sysfs-rumble fallback writes
- * duty_cycle itself -- so it still gets the endpoints by environment. Both
- * routes share the same numbers, and they cannot collide: the fallback only
- * engages when the joypad driver's native rumble declines.
- *
- * Either way jawakad keeps owning the channel (exported, enabled, resting off)
- * and the consumer never needs to know the polarity, the period or the motor's
- * stiction floor. MAX is the user's strength setting, so the slider acts as the
- * in-game intensity ceiling. Endpoints are held unpolarized here and converted
- * at the point of use, because the worker polarizes on its own. */
+ * jawakad keeps owning the channel (exported, enabled, resting off), so nothing
+ * downstream needs to know the polarity, the period or the motor's stiction
+ * floor. MAX is the user's strength setting, so the slider acts as the in-game
+ * intensity ceiling. Endpoints are held unpolarized; the worker polarizes. */
 typedef struct {
     bool on;
-    long off;        /* absolute duty meaning "off" (already polarity-correct) */
     long min, max;   /* magnitude endpoints, pre-polarity */
 } jw_rumble_game_env;
 
@@ -1269,24 +1266,12 @@ static void jw__rumble_resolve_game_env(jw_daemon_state *state,
     if (!state->rumble_enabled_cached || !state->rumble_game_cached) return;
     long max = jw__rumble_duty_for(state->rumble_strength_cached);
     if (max <= 0) return;
-    out->off = jw__rumble_off_duty();
     /* Game rumble is SUSTAINED, so it uses the lower sustained floor -- holding it
        to the short-tick floor would make a core's weakest effect feel near-full and
        throw away most of the magnitude range the core is asking for. */
     out->min = JW_RUMBLE_PERIOD * JW_RUMBLE_GAME_FLOOR / 100;
     out->max = max;
     out->on  = true;
-}
-
-static void jw__rumble_apply_game_env(const jw_rumble_game_env *env) {
-    char b[24];
-    if (!env || !env->on) return;
-    setenv("RUMBLE_PWM_PATH", JW_RUMBLE_PWM "/duty_cycle", 1);
-    snprintf(b, sizeof(b), "%ld", env->off); setenv("RUMBLE_PWM_OFF", b, 1);
-    snprintf(b, sizeof(b), "%ld", jw__rumble_polarize(env->min));
-    setenv("RUMBLE_PWM_MIN", b, 1);
-    snprintf(b, sizeof(b), "%ld", jw__rumble_polarize(env->max));
-    setenv("RUMBLE_PWM_MAX", b, 1);
 }
 
 /* Open or close the force-feedback route. Called with the resolved endpoints
@@ -6781,14 +6766,6 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
 
     if (pid == 0) {
         jw_appearance_apply_env(&appearance);
-        /* No RUMBLE_PWM_* here, unlike the RetroArch path. A standalone on the
-           calibrated virtual pad rumbles through force feedback, so nothing
-           downstream reads these -- Flycast was the only consumer and its sink
-           is gone. Publishing them anyway would be worse than useless: any
-           emulator that later grew a sysfs sink would drive the motor from its
-           own thread while the daemon's worker drove it from another, and the
-           two disagree about when to stop. The endpoints are still resolved
-           above, for the force-feedback route. */
         jw__publish_source_content_env(rom_source);
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
@@ -7062,10 +7039,9 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw__rumble_quiesce();
     jw_rumble_game_env rumble_env;
     jw__rumble_resolve_game_env(state, &rumble_env);
-    /* RetroArch gets the route open too. Now that the virtual pad advertises
-       FF_RUMBLE its udev joypad driver will rumble natively and the sysfs
-       fallback will stand down, so without this the env contract alone would
-       leave RetroArch silent. */
+    /* RetroArch takes the same force-feedback route as everything else: its
+       SDL2 joypad driver finds FF_RUMBLE on the virtual pad and rumbles through
+       it. This is the only route now, so without it RetroArch is silent. */
     jw__rumble_publish_ff(&rumble_env);
 
     long long fork_start_ms = jw__monotonic_ms();
@@ -7080,7 +7056,6 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         if (ra_home && ra_home[0]) {
             setenv("HOME", ra_home, 1);
         }
-        jw__rumble_apply_game_env(&rumble_env);
         char *argv[9];
         int argc = 0;
         argv[argc++] = retroarch;
