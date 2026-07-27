@@ -793,6 +793,10 @@ char *jw_retroarch_state_dir(const char *sdcard_root) {
  *
  * "analog" is the flight stick and has no motors; picking it would look like a
  * fix and do nothing. Re-derive the same way if a core bump ever moves them. */
+/* RETRO_DEVICE_JOYPAD: the plain digital pad every core gets unless told
+   otherwise, and therefore the only value we treat as "unchosen". */
+#define JW_RA_DEVICE_JOYPAD 1u
+
 typedef struct {
     const char *core_id;
     unsigned    device;
@@ -809,54 +813,151 @@ static const jw_core_device_pin k_core_device_pins[] = {
    is absent would miss anyone whose remap already exists with the wrong pad --
    which is exactly the upgrade case pinning exists for. */
 static int jw__write_core_device_remap(const char *remap_path, unsigned device) {
+    struct stat st;
+    bool present = stat(remap_path, &st) == 0;
     char *existing = jw__read_text_file(remap_path, 256u * 1024u);
     /* A NULL read means "absent" or "there but unreadable", and those must not be
        treated alike: rewriting an unreadable file would replace the user's button
        remaps with a single line and never say so. Absent is fine, unreadable is a
        reason to leave it exactly where it is and go without the pin. */
-    if (!existing && jw__path_exists(remap_path)) {
+    if (!existing && present) {
         jw_log_warn("controller pin: %s exists but could not be read; "
                     "leaving it untouched", remap_path);
         return -1;
     }
-
-    char tmp_path[PATH_MAX];
-    if (!jw__format_string(tmp_path, sizeof(tmp_path), "%s.tmp", remap_path)) {
+    /* An interior NUL is the other way a read "succeeds" on content we cannot
+       safely rewrite: everything past it is invisible to the string walk below,
+       so we would silently truncate the user's remaps and then commit the
+       truncation. A half-flushed cluster after a power cut looks exactly like
+       this on FAT32. */
+    if (existing && present && strlen(existing) != (size_t)st.st_size) {
+        jw_log_warn("controller pin: %s contains embedded NULs (%zu of %lld bytes "
+                    "readable); leaving it untouched",
+                    remap_path, strlen(existing), (long long)st.st_size);
         free(existing);
         return -1;
     }
 
-    FILE *fp = fopen(tmp_path, "wb");
-    if (!fp) {
+    /* Build the result in memory first, so the common case -- the file already
+       says what we want -- costs a read and a compare instead of a write, an
+       fsync and a rename on every single launch. */
+    char *wanted = NULL;
+    size_t wanted_len = 0;
+    FILE *mem = open_memstream(&wanted, &wanted_len);
+    if (!mem) {
         free(existing);
         return -1;
     }
 
+    /* Only correct a default, never a decision. RetroArch's own menu lets a user
+       pick neGcon or a lightgun and save it to this very file, and silently
+       reverting that on every launch would be us owning a key that is theirs.
+       An absent value, or the standard digital pad, is what "nobody chose"
+       looks like -- and it is also exactly what every install predating this
+       has, so the upgrade case is untouched. */
     if (existing) {
         const char *line = existing;
         while (*line) {
             const char *eol = strchr(line, '\n');
             size_t len = eol ? (size_t)(eol - line) : strlen(line);
-            const char *scan = line;
-            while (scan < line + len && (*scan == ' ' || *scan == '\t')) {
-                scan++;
-            }
-            if (strncmp(scan, "input_libretro_device_p1",
-                        sizeof("input_libretro_device_p1") - 1u) != 0) {
-                fwrite(line, 1u, len, fp);
-                fputc('\n', fp);
+            if (jw__retroarch_cfg_line_has_key(line, len,
+                                               "input_libretro_device_p1")) {
+                unsigned current = 0;
+                const char *eq = memchr(line, '=', len);
+                if (eq && sscanf(eq + 1, " \"%u\"", &current) == 1 &&
+                    current != JW_RA_DEVICE_JOYPAD && current != device) {
+                    jw_log_info("controller pin: %s already selects device=%u; "
+                                "leaving the user's choice alone",
+                                remap_path, current);
+                    fclose(mem);
+                    free(wanted);
+                    free(existing);
+                    return 1;   /* deliberately not pinned; caller must not claim it was */
+                }
+                break;
             }
             if (!eol) {
                 break;
             }
             line = eol + 1;
         }
-        free(existing);
     }
 
-    fprintf(fp, "input_libretro_device_p1 = \"%u\"\n", device);
+    bool replaced = false;
+    if (existing) {
+        const char *line = existing;
+        while (*line) {
+            const char *eol = strchr(line, '\n');
+            size_t len = eol ? (size_t)(eol - line) : strlen(line);
+            /* Match on the whole key, not a prefix. A bare strncmp would also
+               swallow input_libretro_device_p10 through p16, which are real
+               RetroArch keys, and deleting one of those is silent data loss. */
+            if (jw__retroarch_cfg_line_has_key(line, len,
+                                               "input_libretro_device_p1")) {
+                /* Substituted where it stands rather than moved to the end.
+                   RetroArch rewrites this file itself on exit in its own order,
+                   so appending would make our output differ from its every time
+                   and defeat the unchanged check below -- an fsync per launch
+                   for a file that already says the right thing. Keeping the
+                   position means the two agree and we stop writing. */
+                if (!replaced) {
+                    fprintf(mem, "input_libretro_device_p1 = \"%u\"\n", device);
+                    replaced = true;
+                }
+            } else {
+                fwrite(line, 1u, len, mem);
+                fputc('\n', mem);
+            }
+            if (!eol) {
+                break;
+            }
+            line = eol + 1;
+        }
+    }
+    if (!replaced) {
+        fprintf(mem, "input_libretro_device_p1 = \"%u\"\n", device);
+    }
 
-    int failed = ferror(fp) != 0;
+    int failed = ferror(mem) != 0;
+    if (fclose(mem) != 0) {
+        failed = 1;
+    }
+    if (failed || !wanted) {
+        free(wanted);
+        free(existing);
+        return -1;
+    }
+
+    bool unchanged = existing && strcmp(existing, wanted) == 0;
+    free(existing);
+    if (unchanged) {
+        free(wanted);
+        return 0;   /* already correct: touch nothing */
+    }
+
+    char tmp_path[PATH_MAX];
+    if (!jw__format_string(tmp_path, sizeof(tmp_path), "%s.tmp", remap_path)) {
+        free(wanted);
+        return -1;
+    }
+
+    FILE *fp = fopen(tmp_path, "wb");
+    if (!fp) {
+        free(wanted);
+        return -1;
+    }
+    fwrite(wanted, 1u, wanted_len, fp);
+    free(wanted);
+
+    /* Get the bytes onto the card before the rename publishes them. fclose only
+       reaches the page cache, and vfat has no journal, so a hard power-off in
+       between leaves the directory entry pointing at a file whose contents were
+       never written -- with the user's original already unlinked. This device
+       gets hard-powered-off routinely. */
+    failed = ferror(fp) != 0;
+    if (!failed && (fflush(fp) != 0 || fsync(fileno(fp)) != 0)) {
+        failed = 1;
+    }
     if (fclose(fp) != 0) {
         failed = 1;
     }
@@ -867,8 +968,42 @@ static int jw__write_core_device_remap(const char *remap_path, unsigned device) 
     return 0;
 }
 
+/* RetroArch loads the first remap it finds -- game, then content directory, then
+   core -- and stops. A game remap therefore beats ours silently, and the user
+   sees a log line saying the pin succeeded while their pad stays standard. We do
+   not write game remaps (that is per-title and unbounded), but we can at least
+   say the pin will not apply, which is the difference between a one-line
+   diagnosis and an afternoon. */
+static void jw__warn_if_game_remap_wins(const char *remap_dir, const char *rom_path) {
+    if (!rom_path || !rom_path[0]) {
+        return;
+    }
+    const char *base = strrchr(rom_path, '/');
+    base = base ? base + 1 : rom_path;
+
+    char stem[256];
+    if (!jw__format_string(stem, sizeof(stem), "%s", base)) {
+        return;
+    }
+    char *dot = strrchr(stem, '.');
+    if (dot && dot != stem) {
+        *dot = '\0';
+    }
+
+    char game_remap[PATH_MAX];
+    if (!jw__format_string(game_remap, sizeof(game_remap), "%s/%s.rmp",
+                           remap_dir, stem)) {
+        return;
+    }
+    if (jw__path_exists(game_remap)) {
+        jw_log_warn("controller pin: %s exists and RetroArch prefers it, so the "
+                    "core pin will NOT apply to this game", game_remap);
+    }
+}
+
 void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
-                                  const char *core_config_folder) {
+                                  const char *core_config_folder,
+                                  const char *rom_path) {
     if (!ra_home || !ra_home[0] || !core_id || !core_id[0] ||
         !core_config_folder || !core_config_folder[0]) {
         return;
@@ -910,11 +1045,19 @@ void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
         return;
     }
 
-    if (jw__write_core_device_remap(remap_path, pin->device) != 0) {
-        jw_log_warn("controller pin: could not write %s: %s",
-                    remap_path, strerror(errno));
+    /* Three outcomes, and they must not be conflated in the log: pinned,
+       deliberately left alone, and failed. The callee reports the specific
+       reason for the latter two (errno is meaningless for most of them, so
+       don't dress them up as write errors here). */
+    int rc = jw__write_core_device_remap(remap_path, pin->device);
+    if (rc > 0) {
+        return;   /* user's own choice; callee already said so */
+    }
+    if (rc < 0) {
+        jw_log_warn("controller pin: %s not pinned", remap_path);
         return;
     }
+    jw__warn_if_game_remap_wins(remap_dir, rom_path);
     jw_log_info("controller pin: %s port 1 device=%u (%s)",
                 core_id, pin->device, pin->why);
 }

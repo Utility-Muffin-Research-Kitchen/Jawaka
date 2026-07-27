@@ -42,6 +42,7 @@ char *jw_retroarch_state_dir(const char *sdcard_root);
  * failure costs that hardware, never the launch. See paths.c for why this cannot
  * live in retroarch.cfg. */
 void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
-                                  const char *core_config_folder);
+                                  const char *core_config_folder,
+                                  const char *rom_path);
 
 #endif

@@ -820,7 +820,12 @@ static bool g_rumble_cv_ready  = false;  /* the two condvars above are usable */
 static clockid_t g_rumble_clock = CLOCK_REALTIME;  /* clock the condvars wait on */
 static bool g_rumble_busy     = false; /* worker is mid-pattern (see quiesce) */
 static unsigned g_rumble_gen  = 0;     /* bumped to abort the pattern in flight */
-static bool g_rumble_gated    = false; /* screen off/suspended: swallow all events */
+/* Screen off/suspended: swallow all events. Written only via jw__rumble_set_gated
+   and read only under g_rumble_lock -- the force-feedback thread reads it, so a
+   plain bool here would be a data race with no guarantee the store is ever
+   observed, which loses the gate in one direction and rumble for the rest of the
+   session in the other. */
+static bool g_rumble_gated    = false;
 static int  g_rumble_bursts   = 0;   /* pending pattern: 1/2/3, 0 = idle */
 static long g_rumble_duty     = 0;   /* on-strength duty (ns), pre-polarity */
 static int  g_rumble_tick_ms  = JW_RUMBLE_TICK_MS;  /* per-pattern burst length */
@@ -1145,9 +1150,22 @@ static void jw__rumble_quiesce(void) {
     jw__rumble_off();
 }
 
-static void jw__rumble_queue(int bursts, long duty, int tick_ms) {
-    if (!g_rumble_ready || g_rumble_gated || bursts <= 0 || duty <= 0) return;
+/* Raise or drop the gate. Under the lock so the force-feedback thread cannot
+   slip a hold past a gate-then-quiesce, and so it is guaranteed to see the
+   change at all. */
+static void jw__rumble_set_gated(bool gated) {
     pthread_mutex_lock(&g_rumble_lock);
+    g_rumble_gated = gated;
+    pthread_mutex_unlock(&g_rumble_lock);
+}
+
+static void jw__rumble_queue(int bursts, long duty, int tick_ms) {
+    if (!g_rumble_ready || bursts <= 0 || duty <= 0) return;
+    pthread_mutex_lock(&g_rumble_lock);
+    if (g_rumble_gated) {
+        pthread_mutex_unlock(&g_rumble_lock);
+        return;
+    }
     g_rumble_bursts  = bursts;   /* latest wins */
     g_rumble_duty    = duty;
     g_rumble_tick_ms = tick_ms;
@@ -1165,8 +1183,20 @@ static void jw__rumble_queue(int bursts, long duty, int tick_ms) {
    the previous level finishes playing out. Bumping the generation cancels what
    is running so the worker picks this up immediately. */
 static void jw__rumble_hold(long duty, int ms) {
-    if (!g_rumble_ready || g_rumble_gated || duty <= 0 || ms <= 0) return;
+    if (!g_rumble_ready || duty <= 0 || ms <= 0) return;
     pthread_mutex_lock(&g_rumble_lock);
+    /* The gate is read INSIDE the lock, unlike jw__rumble_queue, and the
+       difference is not cosmetic. This runs on the force-feedback thread, so a
+       check outside would be a check-then-act against a main thread that gates
+       and quiesces as it goes to sleep: gate reads false, main gates and
+       quiesces, this takes the lock and starts a hold, and the SoC suspends
+       with the motor energised and every thread frozen. That is hours of
+       buzzing in a bag, and it is the exact failure jw__rumble_quiesce was
+       written to prevent. */
+    if (g_rumble_gated) {
+        pthread_mutex_unlock(&g_rumble_lock);
+        return;
+    }
     g_rumble_bursts  = 1;
     g_rumble_duty    = duty;
     g_rumble_tick_ms = ms;
@@ -4001,10 +4031,14 @@ static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode)
        running behind the menu. Reclaim now AND again shortly: PAUSE goes out as
        a fire-and-forget datagram, so RetroArch may still run a frame after this
        and re-assert the duty it was last driving. */
-    jw__rumble_quiesce();
-    /* Immediately, not on the next tick: a resend can land inside the 50ms the
-       reconcile would take to notice the menu is up. */
+    /* Shut the route BEFORE quiescing, not after. The other order leaves a
+       window where the quiesce has already run and the route is still open, so
+       a resend arriving in between starts the motor behind the menu -- the very
+       thing the suspend exists to prevent, just narrower. Immediately rather
+       than on the next tick, because a resend can land inside the 50 ms the
+       reconcile would take to notice. */
     jw__rumble_ff_suspend(true);
+    jw__rumble_quiesce();
     state->rumble_reclaim_ms = jw__monotonic_ms() + 250;
 
     /* Tell the resident UI which surface to show before we wake it. */
@@ -6741,9 +6775,19 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw__rumble_quiesce();
     jw_rumble_game_env rumble_env;
     jw__rumble_resolve_game_env(state, &rumble_env);
-    /* Open the force-feedback route for the session: an emulator on the
-       calibrated virtual pad rumbles through SDL and needs no env contract. */
-    jw__rumble_publish_ff(&rumble_env);
+    /* Open the force-feedback route only for emulators that actually run on the
+       calibrated virtual pad, because that pad is the only thing carrying force
+       feedback. The others read the physical pad, where there is nothing to
+       carry it -- opening the route for them would leave the daemon reporting a
+       live rumble session that no effect can ever reach, and even the
+       "route is closed" diagnostic would stay silent. */
+    if (jw__standalone_target_uses_calibrated_virtual_input(target)) {
+        jw__rumble_publish_ff(&rumble_env);
+    } else {
+        jw__rumble_publish_ff(NULL);
+        jw_log_info("rumble: %s reads the physical pad, which has no force "
+                    "feedback; no game rumble this session", target->core_id);
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -7034,7 +7078,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     /* Pin the emulated pad for cores that need one the user's hardware expects
        (PS1 wants a DualShock, or nothing can rumble). Must happen before the
        fork: RetroArch reads the remap during startup. */
-    jw_retroarch_pin_core_device(ra_home, core_id, core_config_folder);
+    jw_retroarch_pin_core_device(ra_home, core_id, core_config_folder, rom_abs);
 
     /* Stop any UI pulse before the handoff, then resolve the duty endpoints
        the game will drive the motor with (if game rumble is on). A bare
@@ -7213,7 +7257,7 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
            straight to uinput and never consults the swallow flag.) */
         jw_input_proxy_release_buttons(&state->input_proxy);
         jw_input_proxy_set_swallow(&state->input_proxy, true);
-        g_rumble_gated = true;   /* no haptics behind a dark screen */
+        jw__rumble_set_gated(true);
         jw__rumble_quiesce();
     }
     state->standby_reason = reason;
@@ -7229,7 +7273,7 @@ static void jw__leave_standby_screen_off(jw_daemon_state *state) {
 
     jw__screen_set(state, true);
     jw_input_proxy_set_swallow(&state->input_proxy, false);
-    g_rumble_gated = false;
+    jw__rumble_set_gated(false);
     state->standby_reason = JW_STANDBY_NONE;
     state->standby_entered_ms = 0;
     state->autosleep_charging_logged = false;
@@ -7293,7 +7337,7 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     }
     state->suspend_policy.pending = JW_SUSPEND_PENDING_NONE;
     jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
-    g_rumble_gated = true;
+    jw__rumble_set_gated(true);
     jw__rumble_quiesce();   /* never carry a live pulse into the freeze */
     jw__screen_set(state, false);
     /* Same reason as the standby path: a direction still held here is never
@@ -7324,7 +7368,7 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     /* This clears standby directly rather than via jw__leave_standby_screen_off,
        so the rumble gate has to be released here too -- otherwise suspending out
        of screen-off standby wakes with haptics silently dead for good. */
-    g_rumble_gated = false;
+    jw__rumble_set_gated(false);
     state->standby_entered_ms = 0;
     state->autosleep_charging_logged = false;
     state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */

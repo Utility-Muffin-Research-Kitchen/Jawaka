@@ -183,10 +183,19 @@ build as the patch-set entry **`sysfs-rumble`** (the shipped set is now
 when the joypad driver's native rumble returns false — which it always does here, since
 there is no FF device.
 
+:::note[Superseded — kept for the record]
+Everything in this subsection describes the **first** Phase 2a design, which no longer
+exists. Force feedback on the virtual pad (§ Phase 2b) made every consumer of the
+`RUMBLE_PWM_*` contract redundant, and the contract was deleted in `c18ccbf` so the PWM
+would have exactly one writer. RetroArch now rumbles through the same route as everything
+else. It is preserved because the endpoint maths below still describes how magnitude maps
+onto duty, which the force-feedback path kept.
+:::
+
 The patch gained a **PWM duty mode** for this device. jawakad keeps owning the channel
 (exported, enabled, resting off), so RetroArch only ever writes `duty_cycle` and never
 touches export/polarity/period/enable. Rather than teach RA about polarity, the period or
-the stiction floor, the daemon hands it ready-made duty endpoints:
+the stiction floor, the daemon handed it ready-made duty endpoints:
 
 | Env var | Meaning |
 | --- | --- |

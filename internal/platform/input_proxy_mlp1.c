@@ -1,3 +1,8 @@
+/* pipe2, for an atomically close-on-exec pipe. Plain pipe() plus fcntl would
+   leave a window in which a fork on the daemon's main thread inherits the fds,
+   which is the race this is closing. Same pattern as legacy_migration.c. */
+#define _GNU_SOURCE
+
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/calibration.h"
 #include "internal/core/log.h"
@@ -75,7 +80,11 @@ typedef struct {
         uint16_t magnitude;   /* strong and weak collapsed to one 0..0xFFFF */
         uint32_t length_ms;   /* replay length; 0 = until stopped */
     } ff_effects[JW_MLP1_FF_EFFECTS_MAX];
-    bool ff_playing;          /* an effect is currently driving the motor */
+    /* Which effect is driving the motor, or -1. An id rather than a bool: a
+       client may hold several effects at once (RetroArch's udev joypad driver
+       uses one per rumble channel), and with only a flag a stop for effect B
+       would silence effect A and nothing would ever restart it. */
+    int ff_playing_id;
     pthread_t ff_thread;
     bool      ff_thread_running;
     int       ff_quit_pipe[2];
@@ -580,7 +589,9 @@ static void jw__ff_handle_upload(jw_mlp1_input_proxy_data *data, int32_t request
     }
 }
 
-static void jw__ff_handle_erase(jw_mlp1_input_proxy_data *data, int32_t request_id) {
+static void jw__ff_handle_erase(jw_input_proxy *proxy,
+                                jw_mlp1_input_proxy_data *data,
+                                int32_t request_id) {
     struct uinput_ff_erase erase;
     memset(&erase, 0, sizeof(erase));
     erase.request_id = (uint32_t)request_id;
@@ -590,6 +601,17 @@ static void jw__ff_handle_erase(jw_mlp1_input_proxy_data *data, int32_t request_
     }
 
     if (erase.effect_id < JW_MLP1_FF_EFFECTS_MAX) {
+        /* Erasing the effect that is driving the motor has to stop it. The
+           client is entitled to erase without stopping first, and after this
+           the slot is unused -- so any stop it does send afterwards would be
+           dropped, and nothing else would turn the motor off until the hold
+           timed out or the session ended. */
+        if (data->ff_playing_id == (int)erase.effect_id) {
+            data->ff_playing_id = -1;
+            if (proxy->rumble) {
+                proxy->rumble(proxy->userdata, 0, 0);
+            }
+        }
         data->ff_effects[erase.effect_id].used = false;
         erase.retval = 0;
     } else {
@@ -610,23 +632,33 @@ static void jw__ff_handle_play(jw_input_proxy *proxy,
                                uint16_t effect_id, int32_t value) {
     /* EV_FF also carries FF_GAIN and FF_AUTOCENTER, whose codes sit well above
        any effect id. The bound check is what keeps them out. */
-    if (effect_id >= JW_MLP1_FF_EFFECTS_MAX || !data->ff_effects[effect_id].used) {
+    if (effect_id >= JW_MLP1_FF_EFFECTS_MAX) {
         return;
     }
 
-    uint16_t magnitude = data->ff_effects[effect_id].magnitude;
+    /* A stop is honored even for a slot we no longer have, and that ordering
+       matters: refusing unknown effects first would swallow the stop for an
+       effect erased while it was still playing, and leave the motor running. */
+    bool known = data->ff_effects[effect_id].used;
+    uint16_t magnitude = known ? data->ff_effects[effect_id].magnitude : 0u;
     if (value == 0 || magnitude == 0) {
-        if (!data->ff_playing) {
+        /* Only the effect actually holding the motor may stop it. Otherwise a
+           client winding down one of several channels silences the others. */
+        if (data->ff_playing_id != (int)effect_id) {
             return;
         }
-        data->ff_playing = false;
+        data->ff_playing_id = -1;
         if (proxy->rumble) {
             proxy->rumble(proxy->userdata, 0, 0);
         }
         return;
     }
 
-    data->ff_playing = true;
+    if (!known) {
+        return;   /* play of an effect we were never given */
+    }
+
+    data->ff_playing_id = (int)effect_id;
     if (proxy->rumble) {
         proxy->rumble(proxy->userdata, magnitude,
                       data->ff_effects[effect_id].length_ms);
@@ -640,7 +672,7 @@ static void jw__ff_drain(jw_input_proxy *proxy, jw_mlp1_input_proxy_data *data) 
             if (ev.code == UI_FF_UPLOAD) {
                 jw__ff_handle_upload(data, ev.value);
             } else if (ev.code == UI_FF_ERASE) {
-                jw__ff_handle_erase(data, ev.value);
+                jw__ff_handle_erase(proxy, data, ev.value);
             }
         } else if (ev.type == EV_FF) {
             jw__ff_handle_play(proxy, data, ev.code, ev.value);
@@ -687,8 +719,8 @@ static void *jw__ff_thread_main(void *arg) {
 
     /* Never hand the motor back still running: if the emulator is killed
        mid-rumble there is no one left to send the stop. */
-    if (data->ff_playing) {
-        data->ff_playing = false;
+    if (data->ff_playing_id >= 0) {
+        data->ff_playing_id = -1;
         if (proxy->rumble) {
             proxy->rumble(proxy->userdata, 0, 0);
         }
@@ -701,7 +733,10 @@ static void jw__ff_thread_start(jw_input_proxy *proxy,
     if (data->uinput_fd < 0) {
         return;
     }
-    if (pipe(data->ff_quit_pipe) != 0) {
+    /* O_CLOEXEC, like every other fd here: the daemon forks and execs launchers,
+       emulators and third-party pak code constantly, and a plain pipe() would
+       hand all of them both ends of the daemon's own shutdown channel. */
+    if (pipe2(data->ff_quit_pipe, O_CLOEXEC) != 0) {
         jw_log_warn("input proxy: FF quit pipe failed: %s", strerror(errno));
         data->ff_quit_pipe[0] = data->ff_quit_pipe[1] = -1;
         return;
@@ -765,6 +800,9 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
     data->uinput_fd = -1;
     data->power_fd = -1;
     data->ff_quit_pipe[0] = data->ff_quit_pipe[1] = -1;
+    /* Explicit: calloc leaves this 0, which would read as "effect 0 is playing"
+       and let a stray stop for effect 0 through before anything was ever sent. */
+    data->ff_playing_id = -1;
     data->last_activity_ms = jw__monotonic_ms();   /* don't count boot as idle */
     data->obs_x_min = INT32_MAX;
     data->obs_x_max = INT32_MIN;
