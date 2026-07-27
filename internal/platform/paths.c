@@ -842,6 +842,358 @@ char *jw_retroarch_state_dir(const char *sdcard_root) {
     return jw__dup_printf("%s/retroarch", state_root);
 }
 
+/* ---- Emulated controller type ------------------------------------------
+ *
+ * Some cores default to a pad that lacks hardware the user expects. PS1 is the
+ * live case: pcsx_rearmed's standard digital pad has no vibration motors, so
+ * rumble is not weak on PlayStation games, it is structurally impossible.
+ *
+ * This cannot be pinned in retroarch.cfg, which is the surprise. RetroArch reads
+ * input_libretro_device_p1 into its own settings quite happily -- the value reads
+ * back correctly -- but never pushes it to the core at boot, so the core keeps
+ * its default and the menu shows "standard" while the config says otherwise.
+ * Remap files are applied *after* the core declares its controller list, and
+ * RetroArch's remap loader calls retro_set_controller_port_device directly, which
+ * is the same path the in-game menu uses. So the pin has to live in the remap.
+ *
+ * Verified on Puff 2026-07-27: Tekken 3 is silent through the config route and
+ * rumbles through this one.
+ *
+ * The device ids are subclass-encoded and not published anywhere readable, so
+ * they were taken out of the core binary itself -- the retro_controller_description
+ * array, reached via the RELATIVE relocations that point at its name strings:
+ *
+ *     standard 1   dualshock 517   analog 261   negcon 773   guncon 260
+ *
+ * "analog" is the flight stick and has no motors; picking it would look like a
+ * fix and do nothing. Re-derive the same way if a core bump ever moves them. */
+/* RETRO_DEVICE_JOYPAD: the plain digital pad every core gets unless told
+   otherwise, and therefore the only value we treat as "unchosen". */
+#define JW_RA_DEVICE_JOYPAD 1u
+
+typedef struct {
+    const char *core_id;
+    unsigned    device;
+    const char *why;
+} jw_core_device_pin;
+
+static const jw_core_device_pin k_core_device_pins[] = {
+    { "pcsx_rearmed", 517u, "DualShock, for rumble" },
+};
+
+/* Rewrite the core's remap, keeping every line the user (or RetroArch) put there
+   except the one key we own. Same shape as the protected block in retroarch.cfg:
+   Leaf owns this key, the rest is not ours to touch. Seeding only when the file
+   is absent would miss anyone whose remap already exists with the wrong pad --
+   which is exactly the upgrade case pinning exists for. */
+static int jw__write_core_device_remap(const char *remap_path, unsigned device) {
+    struct stat st;
+    bool present = stat(remap_path, &st) == 0;
+    char *existing = jw__read_text_file(remap_path, 256u * 1024u);
+    /* A NULL read means "absent" or "there but unreadable", and those must not be
+       treated alike: rewriting an unreadable file would replace the user's button
+       remaps with a single line and never say so. Absent is fine, unreadable is a
+       reason to leave it exactly where it is and go without the pin. */
+    if (!existing && present) {
+        jw_log_warn("controller pin: %s exists but could not be read; "
+                    "leaving it untouched", remap_path);
+        return -1;
+    }
+    /* An interior NUL is the other way a read "succeeds" on content we cannot
+       safely rewrite: everything past it is invisible to the string walk below,
+       so we would silently truncate the user's remaps and then commit the
+       truncation. A half-flushed cluster after a power cut looks exactly like
+       this on FAT32. */
+    if (existing && present && strlen(existing) != (size_t)st.st_size) {
+        jw_log_warn("controller pin: %s contains embedded NULs (%zu of %lld bytes "
+                    "readable); leaving it untouched",
+                    remap_path, strlen(existing), (long long)st.st_size);
+        free(existing);
+        return -1;
+    }
+
+    /* Build the result in memory first, so the common case -- the file already
+       says what we want -- costs a read and a compare instead of a write, an
+       fsync and a rename on every single launch. */
+    char *wanted = NULL;
+    size_t wanted_len = 0;
+    FILE *mem = open_memstream(&wanted, &wanted_len);
+    if (!mem) {
+        free(existing);
+        return -1;
+    }
+
+    /* Only correct a default, never a decision. RetroArch's own menu lets a user
+       pick neGcon or a lightgun and save it to this very file, and silently
+       reverting that on every launch would be us owning a key that is theirs.
+       An absent value, or the standard digital pad, is what "nobody chose"
+       looks like -- and it is also exactly what every install predating this
+       has, so the upgrade case is untouched. */
+    if (existing) {
+        const char *line = existing;
+        while (*line) {
+            const char *eol = strchr(line, '\n');
+            size_t len = eol ? (size_t)(eol - line) : strlen(line);
+            if (jw__retroarch_cfg_line_has_key(line, len,
+                                               "input_libretro_device_p1")) {
+                unsigned current = 0;
+                const char *eq = memchr(line, '=', len);
+                if (eq && sscanf(eq + 1, " \"%u\"", &current) == 1 &&
+                    current != JW_RA_DEVICE_JOYPAD && current != device) {
+                    jw_log_info("controller pin: %s already selects device=%u; "
+                                "leaving the user's choice alone",
+                                remap_path, current);
+                    fclose(mem);
+                    free(wanted);
+                    free(existing);
+                    return 1;   /* deliberately not pinned; caller must not claim it was */
+                }
+                break;
+            }
+            if (!eol) {
+                break;
+            }
+            line = eol + 1;
+        }
+    }
+
+    bool replaced = false;
+    if (existing) {
+        const char *line = existing;
+        while (*line) {
+            const char *eol = strchr(line, '\n');
+            size_t len = eol ? (size_t)(eol - line) : strlen(line);
+            /* Match on the whole key, not a prefix. A bare strncmp would also
+               swallow input_libretro_device_p10 through p16, which are real
+               RetroArch keys, and deleting one of those is silent data loss. */
+            if (jw__retroarch_cfg_line_has_key(line, len,
+                                               "input_libretro_device_p1")) {
+                /* Substituted where it stands rather than moved to the end.
+                   RetroArch rewrites this file itself on exit in its own order,
+                   so appending would make our output differ from its every time
+                   and defeat the unchanged check below -- an fsync per launch
+                   for a file that already says the right thing. Keeping the
+                   position means the two agree and we stop writing. */
+                if (!replaced) {
+                    fprintf(mem, "input_libretro_device_p1 = \"%u\"\n", device);
+                    replaced = true;
+                }
+            } else {
+                fwrite(line, 1u, len, mem);
+                fputc('\n', mem);
+            }
+            if (!eol) {
+                break;
+            }
+            line = eol + 1;
+        }
+    }
+    if (!replaced) {
+        fprintf(mem, "input_libretro_device_p1 = \"%u\"\n", device);
+    }
+
+    int failed = ferror(mem) != 0;
+    if (fclose(mem) != 0) {
+        failed = 1;
+    }
+    if (failed || !wanted) {
+        free(wanted);
+        free(existing);
+        return -1;
+    }
+
+    bool unchanged = existing && strcmp(existing, wanted) == 0;
+    free(existing);
+    if (unchanged) {
+        free(wanted);
+        return 0;   /* already correct: touch nothing */
+    }
+
+    char tmp_path[PATH_MAX];
+    if (!jw__format_string(tmp_path, sizeof(tmp_path), "%s.tmp", remap_path)) {
+        free(wanted);
+        return -1;
+    }
+
+    FILE *fp = fopen(tmp_path, "wb");
+    if (!fp) {
+        free(wanted);
+        return -1;
+    }
+    fwrite(wanted, 1u, wanted_len, fp);
+    free(wanted);
+
+    /* Get the bytes onto the card before the rename publishes them. fclose only
+       reaches the page cache, and vfat has no journal, so a hard power-off in
+       between leaves the directory entry pointing at a file whose contents were
+       never written -- with the user's original already unlinked. This device
+       gets hard-powered-off routinely. */
+    failed = ferror(fp) != 0;
+    if (!failed && (fflush(fp) != 0 || fsync(fileno(fp)) != 0)) {
+        failed = 1;
+    }
+    if (fclose(fp) != 0) {
+        failed = 1;
+    }
+    if (failed || rename(tmp_path, remap_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
+/* RetroArch loads the first remap it finds -- game, then content directory, then
+   core -- and stops. A game remap therefore beats ours silently, and the user
+   sees a log line saying the pin succeeded while their pad stays standard. We do
+   not write game remaps (that is per-title and unbounded), but we can at least
+   say the pin will not apply, which is the difference between a one-line
+   diagnosis and an afternoon. */
+/* RetroArch loads the FIRST remap it finds -- game, then content directory,
+   then core -- and stops. Writing the core file while a higher-priority one
+   exists produces a pin that is never read, and a log line claiming it worked.
+   So resolve the file RetroArch will actually load. When none exists the core
+   remap is the answer, because that is where RetroArch will look last and what
+   we are entitled to create. */
+static bool jw__resolve_winning_remap(char *out, size_t out_size,
+                                      const char *remap_dir,
+                                      const char *core_folder,
+                                      const char *rom_path) {
+    char candidate[PATH_MAX];
+
+    if (rom_path && rom_path[0]) {
+        const char *base = strrchr(rom_path, '/');
+        base = base ? base + 1 : rom_path;
+
+        /* Game remap: the ROM's own name without its extension. */
+        char stem[256];
+        if (jw__format_string(stem, sizeof(stem), "%s", base)) {
+            char *dot = strrchr(stem, '.');
+            if (dot && dot != stem) *dot = '\0';
+            if (jw__format_string(candidate, sizeof(candidate), "%s/%s.rmp",
+                                  remap_dir, stem) &&
+                jw__path_exists(candidate)) {
+                return jw__format_string(out, out_size, "%s", candidate);
+            }
+        }
+
+        /* Content-directory remap: the name of the folder holding the ROM. */
+        const char *slash = strrchr(rom_path, '/');
+        if (slash && slash != rom_path) {
+            const char *dir_end = slash;
+            const char *dir_start = dir_end;
+            while (dir_start > rom_path && dir_start[-1] != '/') dir_start--;
+            size_t dir_len = (size_t)(dir_end - dir_start);
+            char dir_name[256];
+            if (dir_len > 0 && dir_len < sizeof(dir_name)) {
+                memcpy(dir_name, dir_start, dir_len);
+                dir_name[dir_len] = '\0';
+                if (jw__format_string(candidate, sizeof(candidate), "%s/%s.rmp",
+                                      remap_dir, dir_name) &&
+                    jw__path_exists(candidate)) {
+                    return jw__format_string(out, out_size, "%s", candidate);
+                }
+            }
+        }
+    }
+
+    return jw__format_string(out, out_size, "%s/%s.rmp", remap_dir, core_folder);
+}
+
+/* One-time migration marker. The pin exists to move installs off RetroArch's
+   default pad, and a migration is by definition something that happens once --
+   re-running it every launch turns it into permanent ownership of a key the
+   user can edit in RetroArch's own menu, and makes "I want Standard" an opinion
+   the daemon overwrites forever. After this marker exists the file is theirs. */
+static bool jw__controller_pin_done(const char *ra_home, const char *core_id) {
+    char stamp[PATH_MAX];
+    if (!jw__format_string(stamp, sizeof(stamp), "%s/.leaf-controller-pin-%s-v1",
+                           ra_home, core_id)) {
+        return true;   /* cannot name it: treat as done rather than loop forever */
+    }
+    return jw__path_exists(stamp);
+}
+
+static void jw__controller_pin_mark_done(const char *ra_home, const char *core_id) {
+    char stamp[PATH_MAX];
+    if (!jw__format_string(stamp, sizeof(stamp), "%s/.leaf-controller-pin-%s-v1",
+                           ra_home, core_id)) {
+        return;
+    }
+    FILE *fp = fopen(stamp, "wb");
+    if (fp) {
+        fclose(fp);
+    }
+}
+
+void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
+                                  const char *core_config_folder,
+                                  const char *rom_path) {
+    if (!ra_home || !ra_home[0] || !core_id || !core_id[0] ||
+        !core_config_folder || !core_config_folder[0]) {
+        return;
+    }
+    /* The folder is a name, not a path: it comes from the catalog and is used
+       verbatim. Refuse anything that could climb out of the remap directory. */
+    if (strchr(core_config_folder, '/') || strcmp(core_config_folder, "..") == 0 ||
+        strcmp(core_config_folder, ".") == 0) {
+        return;
+    }
+
+    const jw_core_device_pin *pin = NULL;
+    for (size_t i = 0; i < sizeof(k_core_device_pins) / sizeof(k_core_device_pins[0]); i++) {
+        if (strcmp(core_id, k_core_device_pins[i].core_id) == 0) {
+            pin = &k_core_device_pins[i];
+            break;
+        }
+    }
+    if (!pin) {
+        return;   /* the overwhelmingly common path */
+    }
+    if (jw__controller_pin_done(ra_home, core_id)) {
+        return;   /* migrated already; the file belongs to the user now */
+    }
+
+    char remap_dir[PATH_MAX];
+    if (!jw__format_string(remap_dir, sizeof(remap_dir),
+                           "%s/.config/retroarch/config/remaps/%s",
+                           ra_home, core_config_folder)) {
+        jw_log_warn("rumble: remap path too long for %s", core_id);
+        return;
+    }
+    if (jw__mkdir_p(remap_dir, 0755) != 0) {
+        jw_log_warn("rumble: could not create remap dir %s: %s",
+                    remap_dir, strerror(errno));
+        return;
+    }
+
+    /* Migrate the file RetroArch will actually read, not the one we would
+       prefer to write. A game or content-directory remap outranks the core one,
+       so pinning the core file there would be a no-op wearing a success log. */
+    char remap_path[PATH_MAX];
+    if (!jw__resolve_winning_remap(remap_path, sizeof(remap_path), remap_dir,
+                                   core_config_folder, rom_path)) {
+        return;
+    }
+
+    /* Three outcomes, and they must not be conflated in the log: pinned,
+       deliberately left alone, and failed. The callee reports the specific
+       reason for the latter two (errno is meaningless for most of them, so
+       don't dress them up as write errors here). */
+    int rc = jw__write_core_device_remap(remap_path, pin->device);
+    if (rc < 0) {
+        jw_log_warn("controller pin: %s not pinned", remap_path);
+        return;   /* no stamp: a failed migration should be retried */
+    }
+    if (rc == 0) {
+        jw_log_info("controller pin: %s port 1 device=%u (%s) in %s",
+                    core_id, pin->device, pin->why, remap_path);
+    }
+    /* Stamp on "pinned" AND on "left the user's choice alone". Both are a
+       finished migration -- the second is a decision, not a failure, and
+       re-deciding it every launch is exactly what F4 was about. */
+    jw__controller_pin_mark_done(ra_home, core_id);
+}
+
 char *jw_retroarch_bin_path(void) {
     const jw_path_layout *layout = jw__path_layout();
     char *path = jw__dup_env_value("UMRK_RETROARCH_BIN");
