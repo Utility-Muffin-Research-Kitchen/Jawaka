@@ -6781,9 +6781,14 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
 
     if (pid == 0) {
         jw_appearance_apply_env(&appearance);
-        /* Same RUMBLE_PWM_* contract RetroArch consumes: the daemon owns the
-           channel's polarity and floors, the emulator only writes duty_cycle. */
-        jw__rumble_apply_game_env(&rumble_env);
+        /* No RUMBLE_PWM_* here, unlike the RetroArch path. A standalone on the
+           calibrated virtual pad rumbles through force feedback, so nothing
+           downstream reads these -- Flycast was the only consumer and its sink
+           is gone. Publishing them anyway would be worse than useless: any
+           emulator that later grew a sysfs sink would drive the motor from its
+           own thread while the daemon's worker drove it from another, and the
+           two disagree about when to stop. The endpoints are still resolved
+           above, for the force-feedback route. */
         jw__publish_source_content_env(rom_source);
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
