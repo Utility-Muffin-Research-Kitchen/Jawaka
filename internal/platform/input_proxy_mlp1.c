@@ -671,6 +671,15 @@ static void *jw__ff_thread_main(void *arg) {
         if (fds[1].revents) {
             break;              /* shutdown asked us to stop */
         }
+        /* Leave on any error condition. Without this an fd reporting POLLERR but
+           not POLLIN would neither drain nor break, and poll() would return
+           immediately every time round: a silent 100% CPU spin inside the
+           daemon, which is a far worse failure than losing rumble. */
+        if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            jw_log_warn("input proxy: FF fd error (revents=0x%x); stopping",
+                        (unsigned)fds[0].revents);
+            break;
+        }
         if (fds[0].revents & POLLIN) {
             jw__ff_drain(proxy, data);
         }

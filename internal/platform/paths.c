@@ -810,6 +810,15 @@ static const jw_core_device_pin k_core_device_pins[] = {
    which is exactly the upgrade case pinning exists for. */
 static int jw__write_core_device_remap(const char *remap_path, unsigned device) {
     char *existing = jw__read_text_file(remap_path, 256u * 1024u);
+    /* A NULL read means "absent" or "there but unreadable", and those must not be
+       treated alike: rewriting an unreadable file would replace the user's button
+       remaps with a single line and never say so. Absent is fine, unreadable is a
+       reason to leave it exactly where it is and go without the pin. */
+    if (!existing && jw__path_exists(remap_path)) {
+        jw_log_warn("controller pin: %s exists but could not be read; "
+                    "leaving it untouched", remap_path);
+        return -1;
+    }
 
     char tmp_path[PATH_MAX];
     if (!jw__format_string(tmp_path, sizeof(tmp_path), "%s.tmp", remap_path)) {
