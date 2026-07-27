@@ -45,6 +45,24 @@ static void jw__test_write_file(const char *path, const char *content) {
     fclose(fp);
 }
 
+static void jw__test_expect_rejected(const char *json,
+                                     const char *pak_root,
+                                     const char *userdata_root,
+                                     const char *expected_reason) {
+    jw_service_manifest m;
+    char reason[JW_SVC_REASON_BUF] = {0};
+    bool ok = jw_service_manifest_validate(json, pak_root, userdata_root,
+                                           &m, reason, sizeof(reason));
+    if (ok || strcmp(reason, expected_reason) != 0) {
+        fprintf(stderr, "FAIL inline rejection: expected %s, got ok=%d reason=%s\n",
+                expected_reason, ok, reason);
+        if (ok) {
+            jw_service_manifest_destroy(&m);
+        }
+        assert(false);
+    }
+}
+
 static void jw__test_inline_sanity(void) {
     char tmpl[] = "/tmp/jw-svc-manifest-test.XXXXXX";
     char *dir = mkdtemp(tmpl);
@@ -70,6 +88,7 @@ static void jw__test_inline_sanity(void) {
     assert(ok);
     assert(strcmp(m.id, "org.umrk.test") == 0);
     assert(m.stop_grace_ms == 5000); /* absent -> default */
+    jw_service_manifest_destroy(&m);
     free(json);
 
     /* Same manifest, but run.path is now absolute -- must be rejected with
@@ -84,6 +103,122 @@ static void jw__test_inline_sanity(void) {
     assert(strcmp(reason, "absolute-run-path") == 0);
     free(bad_json);
 
+    /* A leaf symlink whose first target is confined but whose second hop
+     * escapes must not inherit stat()/access() success from outside the pak. */
+    char outside_tmpl[] = "/tmp/jw-svc-manifest-outside.XXXXXX";
+    char *outside_dir = mkdtemp(outside_tmpl);
+    assert(outside_dir);
+    char outside_bin[512], hop_a[512], hop_b[512];
+    snprintf(outside_bin, sizeof(outside_bin), "%s/outside-svc", outside_dir);
+    snprintf(hop_a, sizeof(hop_a), "%s/hop-a", dir);
+    snprintf(hop_b, sizeof(hop_b), "%s/hop-b", dir);
+    jw__test_write_file(outside_bin, "#!/bin/sh\nexit 0\n");
+    chmod(outside_bin, 0755);
+    assert(symlink("hop-b", hop_a) == 0);
+    assert(symlink(outside_bin, hop_b) == 0);
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"hop-a\"},\"restart\":\"no\",\"default_enabled\":false}}",
+        dir, dir, "escaping-symlink");
+
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"svc\"},\"restart\":\"no\",\"default_enabled\":false},"
+        "\"state\":{\"root\":\"../../escape\",\"revoke_on_uninstall\":[\"token\"]}}",
+        dir, dir, "invalid-state-root");
+
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"svc\",\"args\":[42]},\"restart\":\"no\","
+        "\"default_enabled\":false}}",
+        dir, dir, "invalid-json-shape");
+
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"svc\"},\"restart\":\"no\",\"default_enabled\":false,"
+        "\"lifecycle\":{\"stop_on_suspend\":\"yes\"}}}",
+        dir, dir, "invalid-json-shape");
+
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"svc\"},\"restart\":\"no\",\"default_enabled\":false},"
+        "\"state\":{\"root\":\"State\",\"retained_roots\":[false]}}",
+        dir, dir, "invalid-json-shape");
+
+    jw__test_expect_rejected(
+        "{\"ID\":\"org.umrk.test\",\"SERVICE\":{\"SCHEMA\":1,\"ID\":\"org.umrk.test\","
+        "\"RUN\":{\"PATH\":\"svc\"},\"RESTART\":\"no\",\"DEFAULT_ENABLED\":false}}",
+        dir, dir, "missing-service");
+
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"svc\"},\"restart\":\"no\",\"default_enabled\":false,"
+        "\"unexpected\":true}}",
+        dir, dir, "invalid-json-shape");
+
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"svc\"},\"restart\":\"no\",\"default_enabled\":false}}garbage",
+        dir, dir, "invalid-json");
+
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\\u0000suffix\",\"service\":{\"schema\":1,"
+        "\"id\":\"org.umrk.test\\u0000suffix\",\"run\":{\"path\":\"svc\"},"
+        "\"restart\":\"no\",\"default_enabled\":false}}",
+        dir, dir, "invalid-json");
+
+    jw__test_expect_rejected(
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"svc\"},\"restart\":\"no\",\"default_enabled\":false},"
+        "\"state\":{\"root\":\"State\",\"revoke_on_uninstall\":[\"token\"]}}",
+        dir, NULL, "revoke-on-uninstall-root-unavailable");
+
+    const char *huge_grace =
+        "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,\"id\":\"org.umrk.test\","
+        "\"run\":{\"path\":\"svc\"},\"restart\":\"no\",\"default_enabled\":false,"
+        "\"stop_grace_ms\":1e100}}";
+    memset(reason, 0, sizeof(reason));
+    ok = jw_service_manifest_validate(huge_grace, dir, dir, &m,
+                                      reason, sizeof(reason));
+    assert(ok);
+    assert(m.stop_grace_ms == 15000);
+    jw_service_manifest_destroy(&m);
+
+    /* JSON Schema permits exactly 128 bytes for ids; storage needs the NUL. */
+    char max_id[JW_SVC_ID_BUF];
+    max_id[0] = 'a';
+    max_id[1] = '.';
+    memset(max_id + 2, 'b', JW_SVC_ID_MAX - 2);
+    max_id[JW_SVC_ID_MAX] = '\0';
+    char max_id_json[1024];
+    snprintf(max_id_json, sizeof(max_id_json),
+             "{\"id\":\"%s\",\"service\":{\"schema\":1,\"id\":\"%s\","
+             "\"run\":{\"path\":\"svc\"},\"restart\":\"no\","
+             "\"default_enabled\":false}}", max_id, max_id);
+    ok = jw_service_manifest_validate(max_id_json, dir, dir, &m,
+                                      reason, sizeof(reason));
+    assert(ok);
+    assert(strlen(m.id) == JW_SVC_ID_MAX);
+    jw_service_manifest_destroy(&m);
+
+    /* State paths have no SVC-1 length ceiling and must not be truncated. */
+    char long_state_path[701];
+    memset(long_state_path, 'p', sizeof(long_state_path) - 1);
+    long_state_path[sizeof(long_state_path) - 1] = '\0';
+    char long_state_json[2048];
+    snprintf(long_state_json, sizeof(long_state_json),
+             "{\"id\":\"org.umrk.test\",\"service\":{\"schema\":1,"
+             "\"id\":\"org.umrk.test\",\"run\":{\"path\":\"svc\"},"
+             "\"restart\":\"no\",\"default_enabled\":false},"
+             "\"state\":{\"root\":\"State\",\"retained_roots\":[\"%s\"]}}",
+             long_state_path);
+    ok = jw_service_manifest_validate(long_state_json, dir, dir, &m,
+                                      reason, sizeof(reason));
+    assert(ok);
+    assert(strlen(m.state_retained_roots[0]) == strlen(long_state_path));
+    assert(strcmp(m.state_retained_roots[0], long_state_path) == 0);
+    jw_service_manifest_destroy(&m);
+
     puts("PASS manifest-test inline sanity");
 }
 
@@ -91,17 +226,18 @@ static void jw__test_inline_sanity(void) {
  * Fixture-tree walk against the frozen A0 contract fixtures.
  *
  * contracts/leaf-services/README.md documents exactly two ways a consuming
- * repo references that directory: a local sibling checkout (this), or a
- * pinned commit SHA in CI. There is no CI in this repo yet, so this test
- * uses the sibling path and skips cleanly -- not a failure -- when it
- * isn't there, matching that documented contract instead of hardcoding an
- * assumption CI will eventually need to override anyway.
+ * repo references that directory: a local sibling checkout (the default
+ * below), or a pinned commit SHA in CI. Missing fixtures are a failure:
+ * otherwise this target can report PASS without exercising the contract it
+ * claims to test. CI may override JW_TEST_FIXTURES_ROOT at compile time.
  * ------------------------------------------------------------------------ */
 
+#ifndef JW_TEST_FIXTURES_ROOT
 #define JW_TEST_FIXTURES_ROOT "../umrk-workspace/contracts/leaf-services/manifests"
+#endif
 
 static bool jw__test_fixture_json_string(cJSON *obj, const char *key, char *out, size_t out_size) {
-    cJSON *item = cJSON_GetObjectItem(obj, key);
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (!cJSON_IsString(item) || !item->valuestring) {
         return false;
     }
@@ -127,7 +263,9 @@ static int jw__test_walk_valid(const char *dir_path) {
 
         struct stat st;
         if (stat(pak_path, &st) != 0) {
-            continue; /* not a fixture directory */
+            fprintf(stderr, "FAIL manifests/valid/%s: missing pak.json\n",
+                    entry->d_name);
+            assert(false);
         }
 
         char *pak_text = jw__test_read_file(pak_path);
@@ -146,7 +284,8 @@ static int jw__test_walk_valid(const char *dir_path) {
             assert(false);
         }
 
-        cJSON *resolved_item = cJSON_GetObjectItem(expect, "resolved_stop_grace_ms");
+        cJSON *resolved_item =
+            cJSON_GetObjectItemCaseSensitive(expect, "resolved_stop_grace_ms");
         if (cJSON_IsNumber(resolved_item)) {
             int want = (int)resolved_item->valuedouble;
             if (m.stop_grace_ms != want) {
@@ -159,6 +298,7 @@ static int jw__test_walk_valid(const char *dir_path) {
         printf("ok:   manifests/valid/%s\n", entry->d_name);
         count++;
 
+        jw_service_manifest_destroy(&m);
         cJSON_Delete(expect);
         free(pak_text);
         free(expect_text);
@@ -184,7 +324,9 @@ static int jw__test_walk_invalid(const char *dir_path) {
 
         struct stat st;
         if (stat(expect_path, &st) != 0) {
-            continue;
+            fprintf(stderr, "FAIL manifests/invalid/%s: missing expect.json\n",
+                    entry->d_name);
+            assert(false);
         }
         char *expect_text = jw__test_read_file(expect_path);
         assert(expect_text);
@@ -220,6 +362,8 @@ static int jw__test_walk_invalid(const char *dir_path) {
             }
             printf("ok:   manifests/invalid/duplicate-id (duplicate-service-id, both unavailable)\n");
             count++;
+            jw_service_manifest_destroy(&ma);
+            jw_service_manifest_destroy(&mb);
             cJSON_Delete(expect);
             free(expect_text);
             free(pak_a_text);
@@ -268,10 +412,11 @@ int main(void) {
 
     struct stat st;
     if (stat(valid_dir, &st) != 0) {
-        printf("SKIP manifest-test fixture walk: %s not found "
-               "(umrk-workspace not checked out as a sibling)\n", JW_TEST_FIXTURES_ROOT);
-        puts("PASS manifest-test");
-        return 0;
+        fprintf(stderr, "FAIL manifest-test fixture walk: %s not found; "
+                        "provide the sibling checkout or compile with "
+                        "-DJW_TEST_FIXTURES_ROOT=\\\"/pinned/path\\\"\n",
+                JW_TEST_FIXTURES_ROOT);
+        return 1;
     }
 
     int valid_count = jw__test_walk_valid(valid_dir);

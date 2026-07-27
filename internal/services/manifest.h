@@ -25,9 +25,10 @@
 #define JW_SVC_MAX_ARGS 16
 #define JW_SVC_MAX_ARG_LEN 256
 #define JW_SVC_MAX_STATE_LIST 16
-#define JW_SVC_ID_BUF 128
-#define JW_SVC_RUN_PATH_BUF 4096
-#define JW_SVC_STATE_PATH_BUF 512
+#define JW_SVC_ID_MAX 128
+#define JW_SVC_ID_BUF (JW_SVC_ID_MAX + 1)
+#define JW_SVC_RUN_PATH_MAX 4096
+#define JW_SVC_RUN_PATH_BUF (JW_SVC_RUN_PATH_MAX + 1)
 #define JW_SVC_REASON_BUF 64
 
 typedef enum {
@@ -58,10 +59,15 @@ typedef struct {
     bool stop_on_suspend;
 
     bool has_state;
-    char state_root[JW_SVC_STATE_PATH_BUF]; /* single path component */
-    char state_revoke_on_uninstall[JW_SVC_MAX_STATE_LIST][JW_SVC_STATE_PATH_BUF];
+    /* SVC-1 does not impose a string-length ceiling on state paths. These
+     * are therefore owned heap strings rather than truncating fixed-size
+     * buffers. Call jw_service_manifest_destroy() after a successful
+     * validation. state_root is non-NULL whenever has_state is true,
+     * including when the optional root field is absent (then it is ""). */
+    char *state_root; /* single path component when non-empty */
+    char *state_revoke_on_uninstall[JW_SVC_MAX_STATE_LIST];
     int state_revoke_count;
-    char state_retained_roots[JW_SVC_MAX_STATE_LIST][JW_SVC_STATE_PATH_BUF];
+    char *state_retained_roots[JW_SVC_MAX_STATE_LIST];
     int state_retained_count;
 } jw_service_manifest;
 
@@ -75,21 +81,22 @@ typedef struct {
  * regular file, and be executable.
  *
  * userdata_root_abs_or_null: absolute path to $USERDATA_PATH for this
- * service's installed package, or NULL/empty if not known/not yet
- * provisioned. When present, state.revoke_on_uninstall's "no existing
- * component may be a symlink" rule is checked against
- * userdata_root/state.root/<entry>; when absent, that filesystem check is
- * skipped (a component that doesn't exist yet is not a violation either
- * way -- only an EXISTING symlink is).
+ * service's installed package. It may be NULL/empty only when the manifest
+ * has no state.revoke_on_uninstall entries. The directory itself need not
+ * exist yet, but when revocation entries are declared the path is required
+ * so the "no existing component may be a symlink" rule can be proved.
  *
- * On success: returns true, fills *out, reason untouched.
- * On failure: returns false, *out is not meaningfully filled, and a stable
- * reason slug (e.g. "escaping-symlink") is copied into reason.
+ * On success: returns true, fills *out, reason untouched. The caller must
+ * eventually pass *out to jw_service_manifest_destroy().
+ * On failure: returns false, leaves *out zeroed, and copies a stable reason
+ * slug (e.g. "escaping-symlink") into reason.
  */
 bool jw_service_manifest_validate(const char *pak_json_text,
                                    const char *pak_abs_path,
                                    const char *userdata_root_abs_or_null,
                                    jw_service_manifest *out,
                                    char *reason, size_t reason_size);
+
+void jw_service_manifest_destroy(jw_service_manifest *manifest);
 
 #endif
