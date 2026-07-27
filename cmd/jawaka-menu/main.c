@@ -428,16 +428,32 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             }
             state->status[0] = '\0';
             return 0;
+        /* Close only once the daemon has accepted these. Discarding the result
+           and closing regardless means that with jawakad unreachable the menu
+           disappears and the caller's haptic says "committed" for something
+           that never happened -- the same contract the Sleep case above already
+           gets right. */
         case JW_MENU_EXIT_STOCK:
-            jw_ipc_exit_stock(socket_path);
+            if (jw_ipc_exit_stock(socket_path) != 0) {
+                snprintf(state->status, sizeof(state->status), "%s",
+                         "Exit to stock failed");
+                return -1;
+            }
             *running = false;
             return 0;
         case JW_MENU_REBOOT:
-            jw_ipc_platform_action(socket_path, "reboot", 0);
+            if (jw_ipc_platform_action(socket_path, "reboot", 0) != 0) {
+                snprintf(state->status, sizeof(state->status), "%s", "Reboot failed");
+                return -1;
+            }
             *running = false;
             return 0;
         case JW_MENU_POWEROFF:
-            jw_ipc_platform_action(socket_path, "poweroff", 0);
+            if (jw_ipc_platform_action(socket_path, "poweroff", 0) != 0) {
+                snprintf(state->status, sizeof(state->status), "%s",
+                         "Power off failed");
+                return -1;
+            }
             *running = false;
             return 0;
         default:
