@@ -164,6 +164,8 @@ Important variables:
 | `UMRK_INTERNAL_DATA_PATH` | launcher-owned state root |
 | `UMRK_LAUNCHER_PATH` | launcher bundle root |
 | `UMRK_RETROARCH_BIN`, `CORES_PATH`, `INFO_PATH` | RetroArch runtime paths |
+| `UMRK_RETROARCH_SHADERS_DIR` | release-managed Leaf shader source bundle |
+| `UMRK_RETROARCH_USER_SHADERS_DIR` | durable RetroArch shader browser and updater root |
 | `JAWAKA_THEME` | local preview theme override |
 | `JAWAKA_AUTODEMO` | `1` enables the short automated run-daemon flow |
 | `JAWAKA_AUTODEMO_DELAY_MS` | auto-demo delay, default `1200` |

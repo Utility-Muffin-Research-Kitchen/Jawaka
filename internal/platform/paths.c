@@ -1308,7 +1308,46 @@ static char *jw__default_autoconfig_dir(const char *sdcard_root) {
     return NULL;
 }
 
+static char *jw__default_retroarch_user_shaders_dir(const char *sdcard_root) {
+    char *env_dir = jw__dup_env_value("UMRK_RETROARCH_USER_SHADERS_DIR");
+    if (env_dir) {
+        if (jw__mkdir_p(env_dir, 0755) == 0) {
+            return env_dir;
+        }
+        free(env_dir);
+    }
+
+    const char *internal_data = jw__env_value("UMRK_INTERNAL_DATA_PATH");
+    char internal_path[PATH_MAX];
+    if (internal_data) {
+        if (!jw__format_string(internal_path, sizeof(internal_path), "%s",
+                               internal_data)) {
+            return NULL;
+        }
+    } else if (!jw__format_default_internal_data(
+                   internal_path, sizeof(internal_path), sdcard_root)) {
+        return NULL;
+    }
+
+    char path[PATH_MAX];
+    if (!jw__format_string(path, sizeof(path),
+                           "%s/retroarch/.config/retroarch/shaders",
+                           internal_path) ||
+        jw__mkdir_p(path, 0755) != 0) {
+        return NULL;
+    }
+    return jw__dup_realpath_or_literal(path);
+}
+
 static char *jw__default_retroarch_shaders_dir(const char *sdcard_root) {
+    char *user_dir = jw__default_retroarch_user_shaders_dir(sdcard_root);
+    if (user_dir) {
+        return user_dir;
+    }
+
+    /* Last-resort compatibility fallback. New Leaf installs use the durable
+       user shader root above so RetroArch's online updater cannot mutate the
+       release-managed, manifest-validated bundle. */
     char *env_dir = jw__dup_env_value("UMRK_RETROARCH_SHADERS_DIR");
     if (env_dir) {
         if (jw__is_directory(env_dir)) {

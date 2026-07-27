@@ -84,7 +84,8 @@ int main(void) {
     if (unlink(root) != 0 || mkdir_one(root) != 0) return fail("root mkdir failed");
 
     char platform[PATH_MAX], defaults[PATH_MAX], internal[PATH_MAX];
-    char runtime[PATH_MAX], cores[PATH_MAX], shaders[PATH_MAX], custom_shaders[PATH_MAX];
+    char runtime[PATH_MAX], cores[PATH_MAX], shaders[PATH_MAX];
+    char user_shaders[PATH_MAX], custom_shaders[PATH_MAX];
     char default_cfg[PATH_MAX];
     char retroarch_dir[PATH_MAX], shared_cfg[PATH_MAX];
     snprintf(platform, sizeof(platform), "%s/platform", root);
@@ -93,6 +94,8 @@ int main(void) {
     snprintf(runtime, sizeof(runtime), "%s/runtime", root);
     snprintf(cores, sizeof(cores), "%s/cores", platform);
     snprintf(shaders, sizeof(shaders), "%s/shaders", platform);
+    snprintf(user_shaders, sizeof(user_shaders),
+             "%s/retroarch/.config/retroarch/shaders", internal);
     snprintf(custom_shaders, sizeof(custom_shaders), "%s/custom-shaders", root);
     snprintf(retroarch_dir, sizeof(retroarch_dir), "%s/retroarch", internal);
     snprintf(shared_cfg, sizeof(shared_cfg), "%s/retroarch.cfg", retroarch_dir);
@@ -121,6 +124,7 @@ int main(void) {
     setenv("UMRK_PLATFORM_PATH", platform, 1);
     setenv("UMRK_INTERNAL_DATA_PATH", internal, 1);
     setenv("UMRK_RETROARCH_SHADERS_DIR", shaders, 1);
+    setenv("UMRK_RETROARCH_USER_SHADERS_DIR", user_shaders, 1);
 
     char core[PATH_MAX];
     snprintf(core, sizeof(core), "%s/mgba_libretro.so", cores);
@@ -134,8 +138,13 @@ int main(void) {
     char error[256];
     char *runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
                                                     true, error, sizeof(error));
-    if (!runtime_cfg || verify_runtime(runtime_cfg, shaders) != 0) {
+    if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail(error[0] ? error : "protected keys not normalized");
+    }
+    struct stat user_shader_stat;
+    if (stat(user_shaders, &user_shader_stat) != 0 ||
+        !S_ISDIR(user_shader_stat.st_mode)) {
+        return fail("durable user shader directory was not created");
     }
     if (jw_backup_retroarch_config(runtime_cfg, root, error, sizeof(error)) != 0) {
         return fail(error[0] ? error : "backup failed");
@@ -160,8 +169,8 @@ int main(void) {
     }
     runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
                                               true, error, sizeof(error));
-    if (!runtime_cfg || verify_runtime(runtime_cfg, shaders) != 0) {
-        return fail("stale release shader directory did not follow the active SD");
+    if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
+        return fail("stale release shader directory did not migrate to user state");
     }
     char *migrated_runtime = read_text(runtime_cfg);
     if (!migrated_runtime ||
@@ -188,9 +197,9 @@ int main(void) {
     }
     char *custom_runtime = read_text(runtime_cfg);
     if (!custom_runtime ||
-        key_count(custom_runtime, "video_shader_dir", shaders) != 0) {
+        key_count(custom_runtime, "video_shader_dir", user_shaders) != 0) {
         free(custom_runtime);
-        return fail("bundle fallback overrode the custom shader directory");
+        return fail("durable shader fallback overrode the custom shader directory");
     }
     free(custom_runtime);
     unlink(runtime_cfg);
@@ -202,14 +211,14 @@ int main(void) {
     }
     runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
                                               true, error, sizeof(error));
-    if (!runtime_cfg || verify_runtime(runtime_cfg, NULL) != 0) {
+    if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail("missing shader bundle prevented config generation");
     }
     char *missing_runtime = read_text(runtime_cfg);
     if (!missing_runtime ||
-        key_count(missing_runtime, "video_shader_dir", NULL) != 0) {
+        key_count(missing_runtime, "video_shader_dir", user_shaders) != 1) {
         free(missing_runtime);
-        return fail("missing shader bundle emitted an invalid fallback");
+        return fail("missing bundle did not retain the durable shader root");
     }
     free(missing_runtime);
     unlink(runtime_cfg);
