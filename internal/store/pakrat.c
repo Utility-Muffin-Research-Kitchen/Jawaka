@@ -502,8 +502,107 @@ static int jw__target_path_for_install(const jw_pakrat_context *ctx,
     return jw__join3(out, out_size, ctx->sdcard_root, "Apps", path);
 }
 
-int jw_pakrat_rescan(const jw_pakrat_context *ctx) {
+static int jw__target_sibling_path(const char *target,
+                                   const char *store_id,
+                                   const char *kind,
+                                   char *out, size_t out_size) {
+    if (!target || !target[0] || !store_id || !store_id[0] ||
+        !kind || !kind[0] || !out || out_size == 0 ||
+        !jw__safe_name(store_id) || !jw__safe_name(kind)) {
+        return -1;
+    }
+    char parent[PATH_MAX];
+    if (jw__copy(parent, sizeof(parent), target) != 0) {
+        return -1;
+    }
+    char *slash = strrchr(parent, '/');
+    if (!slash) {
+        return -1;
+    }
+    if (slash == parent) {
+        slash[1] = '\0';
+    } else {
+        *slash = '\0';
+    }
+    return snprintf(out, out_size, "%s/.pakrat-%s-%s", parent, kind, store_id) <
+                   (int)out_size
+               ? 0
+               : -1;
+}
+
+static int jw__reconcile_install_transition(const jw_pakrat_context *ctx,
+                                            const char *store_id,
+                                            const char *install_path) {
+    char target[PATH_MAX];
+    char target_stage[PATH_MAX];
+    char target_rollback[PATH_MAX];
+    char legacy_partial[PATH_MAX];
+    if (jw__target_path_for_install(ctx, install_path, target, sizeof(target)) != 0 ||
+        jw__target_sibling_path(target, store_id, "stage",
+                                target_stage, sizeof(target_stage)) != 0 ||
+        jw__target_sibling_path(target, store_id, "rollback",
+                                target_rollback, sizeof(target_rollback)) != 0 ||
+        snprintf(legacy_partial, sizeof(legacy_partial), "%s.partial", target) >=
+            (int)sizeof(legacy_partial)) {
+        return -1;
+    }
+
+    if (jw__path_exists(target_stage) && jw__remove_tree(target_stage) != 0) {
+        fprintf(stderr, "could not remove stale Pak Rat stage path: %s\n", target_stage);
+        return -1;
+    }
+    if (jw__path_exists(legacy_partial) && jw__remove_tree(legacy_partial) != 0) {
+        fprintf(stderr, "could not remove stale Pak Rat legacy stage path: %s\n",
+                legacy_partial);
+        return -1;
+    }
+
+    int target_exists = jw__path_exists(target);
+    int rollback_exists = jw__path_exists(target_rollback);
+    if (!target_exists && rollback_exists) {
+        if (rename(target_rollback, target) != 0) {
+            fprintf(stderr, "could not restore Pak Rat rollback path: %s\n", target);
+            return -1;
+        }
+        jw__pakrat_log(ctx, "install-recover restored store_id=%s target=Apps/%s",
+                       store_id, install_path);
+    } else if (target_exists && rollback_exists) {
+        if (jw__remove_tree(target_rollback) != 0) {
+            fprintf(stderr, "could not remove stale Pak Rat rollback path: %s\n",
+                    target_rollback);
+            return -1;
+        }
+        jw__pakrat_log(ctx, "install-recover cleaned rollback store_id=%s target=Apps/%s",
+                       store_id, install_path);
+    }
+    return 0;
+}
+
+static int jw__recover_pending_install_transitions(const jw_pakrat_context *ctx) {
+    enum { JW_PAKRAT_MAX_RECOVERY_INSTALLS = 1024 };
+    jw_pakrat_install installs[JW_PAKRAT_MAX_RECOVERY_INSTALLS];
+    int install_count = 0;
+    if (jw_db_pakrat_list_installs(ctx->db_path, installs,
+                                   JW_PAKRAT_MAX_RECOVERY_INSTALLS,
+                                   &install_count) != 0) {
+        return -1;
+    }
+    for (int i = 0; i < install_count; i++) {
+        if (jw__reconcile_install_transition(ctx, installs[i].store_id,
+                                             installs[i].install_path) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int jw__pakrat_rescan_impl(const jw_pakrat_context *ctx,
+                                  int recover_pending_installs) {
     if (jw__validate_context(ctx) != 0 || jw__mkdir_parent(ctx->db_path) != 0) {
+        return -1;
+    }
+    if (recover_pending_installs &&
+        jw__recover_pending_install_transitions(ctx) != 0) {
         return -1;
     }
     /* jw_scan_library reads getenv("PLATFORM"); install/uninstall run this on a
@@ -531,6 +630,10 @@ int jw_pakrat_rescan(const jw_pakrat_context *ctx) {
     return rc;
 }
 
+int jw_pakrat_rescan(const jw_pakrat_context *ctx) {
+    return jw__pakrat_rescan_impl(ctx, 1);
+}
+
 static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                                   const char *store_id,
                                   const char *expected_version,
@@ -547,10 +650,14 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     int rc = -1;
     char artifact_path[PATH_MAX] = "";
     char app_stage_dir[PATH_MAX] = "";
-    char target_tmp[PATH_MAX] = "";
+    char target_stage[PATH_MAX] = "";
+    char target_rollback[PATH_MAX] = "";
     char catalog_url[1200] = "";
     char catalog_base[1024] = "";
     int catalog_is_dev = 0;
+    int moved_live = 0;
+    int install_record_written = 0;
+    int promoted = 0;
     if (jw_pakrat_catalog_base_url(ctx->state_dir, catalog_base,
                                    sizeof(catalog_base),
                                    &catalog_is_dev) == 0 &&
@@ -636,8 +743,10 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
 
     char target[PATH_MAX];
     if (jw__target_path_for_install(ctx, pkg.install_path, target, sizeof(target)) != 0 ||
-        snprintf(target_tmp, sizeof(target_tmp), "%s.partial", target) >=
-            (int)sizeof(target_tmp)) {
+        jw__target_sibling_path(target, store_id, "stage",
+                                target_stage, sizeof(target_stage)) != 0 ||
+        jw__target_sibling_path(target, store_id, "rollback",
+                                target_rollback, sizeof(target_rollback)) != 0) {
         goto cleanup;
     }
     if (jw__path_exists(target) && install_row != 0 && !allow_adopt) {
@@ -695,18 +804,37 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         goto cleanup;
     }
 
-    if (jw__mkdir_parent(target) != 0 ||
-        jw__remove_tree(target_tmp) != 0 ||
-        rename(extracted_pak, target_tmp) != 0 ||
-        jw__remove_tree(target) != 0 ||
-        rename(target_tmp, target) != 0) {
+    if (jw__reconcile_install_transition(ctx, store_id, pkg.install_path) != 0 ||
+        jw__mkdir_parent(target) != 0 ||
+        jw__remove_tree(target_stage) != 0 ||
+        rename(extracted_pak, target_stage) != 0) {
+        fprintf(stderr, "install stage promotion failed\n");
+        goto cleanup;
+    }
+    if (jw__path_exists(target)) {
+        if (jw__remove_tree(target_rollback) != 0 ||
+            rename(target, target_rollback) != 0) {
+            fprintf(stderr, "install rollback move failed\n");
+            goto cleanup;
+        }
+        moved_live = 1;
+    }
+    if (rename(target_stage, target) != 0) {
         fprintf(stderr, "install target replacement failed\n");
         goto cleanup;
     }
+    promoted = 1;
 
     if (jw_db_pakrat_upsert_install(ctx->db_path, store_id, pkg.version,
-                                    pkg.platform, pkg.install_path, sha, NULL) != 0 ||
-        jw_pakrat_rescan(ctx) != 0) {
+                                    pkg.platform, pkg.install_path, sha, NULL) != 0) {
+        goto cleanup;
+    }
+    install_record_written = 1;
+    if (jw__pakrat_rescan_impl(ctx, 0) != 0) {
+        goto cleanup;
+    }
+    if (moved_live && jw__remove_tree(target_rollback) != 0) {
+        fprintf(stderr, "install rollback cleanup failed\n");
         goto cleanup;
     }
     (void)jw__notify_daemon_scan(ctx);
@@ -719,6 +847,37 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
 
 cleanup:
     if (rc != 0) {
+        if (promoted) {
+            if (moved_live) {
+                (void)jw__remove_tree(target);
+                if (rename(target_rollback, target) != 0) {
+                    jw__pakrat_log(ctx, "install-rollback-restore-failed store_id=%s", store_id);
+                } else {
+                    jw__pakrat_log(ctx, "install-rollback-restored store_id=%s", store_id);
+                }
+            } else {
+                (void)jw__remove_tree(target);
+            }
+        } else if (moved_live) {
+            if (rename(target_rollback, target) != 0) {
+                jw__pakrat_log(ctx, "install-rollback-restore-failed store_id=%s", store_id);
+            } else {
+                jw__pakrat_log(ctx, "install-rollback-restored store_id=%s", store_id);
+            }
+        }
+        if (install_record_written) {
+            if (install_row == 0) {
+                (void)jw_db_pakrat_remove_install(ctx->db_path, store_id);
+            } else {
+                (void)jw_db_pakrat_upsert_install(
+                    ctx->db_path, existing.store_id, existing.version,
+                    existing.platform, existing.install_path,
+                    existing.artifact_sha256, existing.installed_at);
+            }
+        }
+        (void)jw__remove_tree(target_stage);
+    }
+    if (rc != 0) {
         jw__pakrat_log(ctx, "install-failed store_id=%s", store_id);
     }
     if (artifact_path[0]) {
@@ -726,9 +885,6 @@ cleanup:
     }
     if (app_stage_dir[0]) {
         (void)jw__remove_tree(app_stage_dir);
-    }
-    if (rc != 0 && target_tmp[0]) {
-        (void)jw__remove_tree(target_tmp);
     }
     return rc;
 }
