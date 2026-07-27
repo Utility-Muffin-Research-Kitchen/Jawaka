@@ -52,6 +52,10 @@ typedef struct {
     jw_power_edge power_edges[JW_MLP1_POWER_EDGE_MAX];  /* ring of unconsumed edges */
     int power_edge_head;
     int power_edge_count;
+    /* Resting value per ABS axis, so a release can neutralize the stick and the
+       D-pad hat, not just the buttons. Hats rest at 0; sticks at their midpoint. */
+    bool abs_present[ABS_CNT];
+    int  abs_neutral[ABS_CNT];
     jw_stick_calibration cal;      /* analog-stick range normalization (if loaded) */
     int32_t obs_x_min, obs_x_max;  /* observed stick extremes (measure mode only) */
     int32_t obs_y_min, obs_y_max;
@@ -172,6 +176,31 @@ static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd) {
     }
 
     return 0;
+}
+
+/* Record where each ABS axis rests, for jw_input_proxy_release_buttons. A hat
+   rests at 0; a stick rests at the midpoint of its range. */
+static void jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
+    unsigned char abs_bits[(ABS_MAX + 8) / 8];
+    memset(abs_bits, 0, sizeof(abs_bits));
+    if (ioctl(data->input_fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits) < 0) {
+        return;
+    }
+    for (int code = 0; code <= ABS_MAX; code++) {
+        if (!jw__bit_is_set(abs_bits, code)) {
+            continue;
+        }
+        data->abs_present[code] = true;
+        if (code >= ABS_HAT0X && code <= ABS_HAT3Y) {
+            data->abs_neutral[code] = 0;
+            continue;
+        }
+        struct input_absinfo absinfo;
+        memset(&absinfo, 0, sizeof(absinfo));
+        if (ioctl(data->input_fd, EVIOCGABS(code), &absinfo) == 0) {
+            data->abs_neutral[code] = (absinfo.minimum + absinfo.maximum) / 2;
+        }
+    }
 }
 
 static int jw__create_virtual_gamepad(int input_fd) {
@@ -520,6 +549,7 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
     snprintf(proxy->device_name, sizeof(proxy->device_name), "%s", JW_MLP1_INPUT_NAME);
 
     if (!watch_only) {
+        jw__capture_abs_neutrals(data);
         data->uinput_fd = jw__create_virtual_gamepad(data->input_fd);
         if (data->uinput_fd < 0) {
             jw_log_warn("input proxy: could not create virtual gamepad: %s", strerror(errno));
@@ -757,6 +787,16 @@ void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
         if (jw__bit_is_set(data->held_keys, code)) {
             jw__write_event(data, EV_KEY, (uint16_t)code, 0);
             data->held_keys[code / 8] &= (unsigned char)~(1u << (code % 8));
+            released_any = true;
+        }
+    }
+    /* Buttons alone are not enough: on this pad the D-pad is an ABS hat, so a
+       key-only release leaves the hat pinned and the consumer keeps auto-
+       repeating a direction that is physically already up. Send every axis back
+       to rest as well. */
+    for (int code = 0; code <= ABS_MAX; code++) {
+        if (data->abs_present[code]) {
+            jw__write_event(data, EV_ABS, (uint16_t)code, data->abs_neutral[code]);
             released_any = true;
         }
     }

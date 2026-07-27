@@ -208,6 +208,16 @@ int jw_ipc_safe_unmount_storage(const char *socket_path, const char *source,
 /* Ask jawakad to show the menu overlay. Returns 0 on success, -1 on failure. */
 int jw_ipc_open_menu(const char *socket_path);
 
+/* Fire a haptic rumble by naming a semantic UI event. The daemon owns the
+ * vocabulary (single/double/triple tick) and gating (rumble_enabled, rumble_nav).
+ * event: "nav" | "select" | "commit" | "blocked". Fire-and-forget; the daemon
+ * queues the burst and replies immediately. Returns 0 on success, -1 on failure. */
+int jw_ipc_rumble(const char *socket_path, const char *event);
+
+/* Live one-tick preview at an exact strength (0-100), for the settings slider.
+ * Ignores the stored strength and the enabled gate. Returns 0/-1. */
+int jw_ipc_rumble_preview(const char *socket_path, int strength);
+
 /* Ask jawakad to launch a game through the daemon-owned RetroArch process.
  * rom_path may be absolute or relative to the SD-card root.
  * Populates status[status_len] with a human-readable result when provided. */

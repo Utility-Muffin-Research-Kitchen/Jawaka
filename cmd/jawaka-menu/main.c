@@ -364,6 +364,17 @@ static void jw__render_menu(const jw_menu_state *state) {
     cat_present();
 }
 
+/* Fire a semantic UI haptic (see internal/ipc jw_ipc_rumble). Fire-and-forget:
+   the daemon owns the vocabulary (single/double/triple tick) and the enable/nav
+   gating, so call sites only name the event.
+
+   Safe to use from the in-game menu even though a game normally owns the motor:
+   jawakad pauses RetroArch before showing this menu, so the core is not driving
+   rumble and the daemon is the only writer while the menu is up. */
+static inline void jw__haptic(const char *socket_path, const char *event) {
+    if (socket_path && socket_path[0]) jw_ipc_rumble(socket_path, event);
+}
+
 static int jw__activate(const char *socket_path, jw_menu_state *state, bool *running) {
     switch (state->list.cursor) {
         case JW_MENU_SEARCH: {
@@ -409,22 +420,40 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             cat_request_frame();
             jw__render_menu(state);
             if (jw_ipc_platform_action(socket_path, "sleep", 0) != 0) {
-                /* Daemon unreachable: keep the feedback up instead of flashing. */
+                /* Daemon unreachable: keep the feedback up instead of flashing.
+                   Return the failure too, or the caller's haptic contradicts
+                   the status line the user is looking at. */
                 snprintf(state->status, sizeof(state->status), "%s", "Sleep failed");
-            } else {
-                state->status[0] = '\0';
+                return -1;
             }
+            state->status[0] = '\0';
             return 0;
+        /* Close only once the daemon has accepted these. Discarding the result
+           and closing regardless means that with jawakad unreachable the menu
+           disappears and the caller's haptic says "committed" for something
+           that never happened -- the same contract the Sleep case above already
+           gets right. */
         case JW_MENU_EXIT_STOCK:
-            jw_ipc_exit_stock(socket_path);
+            if (jw_ipc_exit_stock(socket_path) != 0) {
+                snprintf(state->status, sizeof(state->status), "%s",
+                         "Exit to stock failed");
+                return -1;
+            }
             *running = false;
             return 0;
         case JW_MENU_REBOOT:
-            jw_ipc_platform_action(socket_path, "reboot", 0);
+            if (jw_ipc_platform_action(socket_path, "reboot", 0) != 0) {
+                snprintf(state->status, sizeof(state->status), "%s", "Reboot failed");
+                return -1;
+            }
             *running = false;
             return 0;
         case JW_MENU_POWEROFF:
-            jw_ipc_platform_action(socket_path, "poweroff", 0);
+            if (jw_ipc_platform_action(socket_path, "poweroff", 0) != 0) {
+                snprintf(state->status, sizeof(state->status), "%s",
+                         "Power off failed");
+                return -1;
+            }
             *running = false;
             return 0;
         default:
@@ -437,17 +466,30 @@ static void jw__handle_input(const char *socket_path, jw_menu_state *state,
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->list, -1, JW_MENU_COUNT);
+            jw__haptic(socket_path, "nav");   /* the list wraps, so never blocked */
             state->status[0] = '\0';   /* a moved cursor dismisses stale feedback */
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->list, +1, JW_MENU_COUNT);
+            jw__haptic(socket_path, "nav");
             state->status[0] = '\0';
             break;
         case CAT_BTN_A:
-        case CAT_BTN_START:
-            jw__activate(socket_path, state, running);
+        case CAT_BTN_START: {
+            /* Rows that only open another surface get the overlay-open tick the
+               launcher uses; the rest report what actually happened, since
+               Rescan and Sleep can come back having failed. */
+            int cur = state->list.cursor;
+            bool opens_surface = (cur == JW_MENU_SEARCH ||
+                                  cur == JW_MENU_UPDATE ||
+                                  cur == JW_MENU_ABOUT);
+            int rc = jw__activate(socket_path, state, running);
+            jw__haptic(socket_path,
+                       opens_surface ? "select" : (rc == 0 ? "commit" : "blocked"));
             break;
+        }
         case CAT_BTN_B:
+            jw__haptic(socket_path, "select");
             *running = false;
             break;
         default:
@@ -1368,17 +1410,19 @@ static void jw__ingame_perf_reset(const char *socket_path,
     }
 }
 
-static void jw__ingame_perf_adjust(const char *socket_path,
+/* Returns true when the press changed a value, so the caller can avoid ticking
+   "nav" on the Reset row or on a device with no performance control. */
+static bool jw__ingame_perf_adjust(const char *socket_path,
                                    jw_ingame_state *state,
                                    cat_list_state *list,
                                    int delta) {
     if (!state || !list) {
-        return;
+        return false;
     }
     if (!state->perf_ready || !state->perf.supported) {
         snprintf(state->status, sizeof(state->status), "%s",
                  "Performance unavailable");
-        return;
+        return false;
     }
     switch (list->cursor) {
         case JW_INGAME_PERF_PROFILE:
@@ -1386,27 +1430,27 @@ static void jw__ingame_perf_adjust(const char *socket_path,
                 (state->perf_profile_index + delta + JW_INGAME_PERF_PROFILE_COUNT) %
                 JW_INGAME_PERF_PROFILE_COUNT;
             jw__ingame_perf_apply_profile(socket_path, state);
-            break;
+            return true;
         case JW_INGAME_PERF_CPU:
             state->perf_cpu_index =
                 (state->perf_cpu_index + delta + JW_CPU_PERF_OPTION_COUNT) %
                 JW_CPU_PERF_OPTION_COUNT;
             jw__ingame_perf_apply_custom(socket_path, state);
-            break;
+            return true;
         case JW_INGAME_PERF_GPU:
             state->perf_gpu_index =
                 (state->perf_gpu_index + delta + JW_GPU_PERF_OPTION_COUNT) %
                 JW_GPU_PERF_OPTION_COUNT;
             jw__ingame_perf_apply_custom(socket_path, state);
-            break;
+            return true;
         case JW_INGAME_PERF_DMC:
             state->perf_dmc_index =
                 (state->perf_dmc_index + delta + JW_DMC_PERF_OPTION_COUNT) %
                 JW_DMC_PERF_OPTION_COUNT;
             jw__ingame_perf_apply_custom(socket_path, state);
-            break;
+            return true;
         default:
-            break;
+            return false;   /* Reset row adjusts nothing */
     }
 }
 
@@ -1527,18 +1571,25 @@ static void jw__ingame_show_performance(const char *socket_path,
             switch (ev.button) {
                 case CAT_BTN_UP:
                     cat_list_state_move(&list, -1, JW_INGAME_PERF_ROWS);
+                    jw__haptic(socket_path, "nav");
                     break;
                 case CAT_BTN_DOWN:
                     cat_list_state_move(&list, +1, JW_INGAME_PERF_ROWS);
+                    jw__haptic(socket_path, "nav");
                     break;
                 case CAT_BTN_LEFT:
-                    jw__ingame_perf_adjust(socket_path, state, &list, -1);
+                    jw__haptic(socket_path,
+                        jw__ingame_perf_adjust(socket_path, state, &list, -1)
+                            ? "nav" : "blocked");
                     break;
                 case CAT_BTN_RIGHT:
-                    jw__ingame_perf_adjust(socket_path, state, &list, +1);
+                    jw__haptic(socket_path,
+                        jw__ingame_perf_adjust(socket_path, state, &list, +1)
+                            ? "nav" : "blocked");
                     break;
                 case CAT_BTN_A:
                 case CAT_BTN_START:
+                    jw__haptic(socket_path, "commit");
                     if (list.cursor == JW_INGAME_PERF_RESET) {
                         jw__ingame_perf_reset(socket_path, state);
                     } else if (list.cursor == JW_INGAME_PERF_PROFILE) {
@@ -1548,6 +1599,7 @@ static void jw__ingame_show_performance(const char *socket_path,
                     }
                     break;
                 case CAT_BTN_B:
+                    jw__haptic(socket_path, "select");
                     running = false;
                     break;
                 default:
@@ -1691,20 +1743,28 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
     }
 
     if (jw_ipc_retroarch_action(socket_path, action, value,
-                                state->status, sizeof(state->status)) == 0) {
-        *running = false;
+                                state->status, sizeof(state->status)) != 0) {
+        /* Report the refusal. Returning 0 here made a failed save/load/reset
+           feel identical to a successful one, while the status line said the
+           opposite. */
+        return -1;
     }
+    *running = false;
     return 0;
 }
 
-static void jw__ingame_adjust(const char *socket_path, jw_ingame_state *state,
+/* Returns true when the press actually changed something, so the caller can
+   tick "nav" rather than claiming movement on a row that adjusts nothing (the
+   default Continue row on a single-disc game, Reset, Settings, and the
+   savestate rows when the core has no savestate support). */
+static bool jw__ingame_adjust(const char *socket_path, jw_ingame_state *state,
                               int delta) {
     const char *action = NULL;
     if (state->list.cursor == JW_INGAME_QUIT) {
         /* Left/Right toggles the quit mode between Save & Quit (default) and a
            plain discard Quit; no IPC until A confirms. */
         state->quit_save = !state->quit_save;
-        return;
+        return true;
     }
     if (state->list.cursor == JW_INGAME_CONTINUE &&
         state->session.disk_count > 1) {
@@ -1717,18 +1777,21 @@ static void jw__ingame_adjust(const char *socket_path, jw_ingame_state *state,
         if (s < -1) s = 9;
         if (s > 9) s = -1;
         state->save_slot = s;
-        return;
+        return true;
     } else if (state->list.cursor == JW_INGAME_LOAD &&
                state->session.savestate_supported) {
         /* Browse existing saves newest-first (the "Latest" switcher entry, when
            present, sits at index 0). Local only — no IPC. */
-        if (state->load_count > 0) {
+        if (state->load_count <= 0) {
+            return false;
+        }
+        {
             int i = state->load_index + delta;
             if (i < 0) i = state->load_count - 1;
             if (i >= state->load_count) i = 0;
             state->load_index = i;
         }
-        return;
+        return true;
     } else if (state->list.cursor == JW_INGAME_PERF) {
         if (!state->perf_ready) {
             jw__ingame_perf_refresh(socket_path, state);
@@ -1736,7 +1799,7 @@ static void jw__ingame_adjust(const char *socket_path, jw_ingame_state *state,
         if (!state->perf_ready || !state->perf.supported) {
             snprintf(state->status, sizeof(state->status), "%s",
                      "Performance unavailable");
-            return;
+            return false;
         }
         int quick_count = JW_INGAME_PERF_PROFILE_COUNT - 1; /* keep Custom in the tuner */
         if (state->perf_profile_index >= quick_count) {
@@ -1749,17 +1812,19 @@ static void jw__ingame_adjust(const char *socket_path, jw_ingame_state *state,
                 (state->perf_profile_index + delta + quick_count) % quick_count;
         }
         jw__ingame_perf_apply_profile(socket_path, state);
-        return;
+        return true;
     }
 
     if (!action) {
-        return;
+        return false;
     }
 
     if (jw_ipc_retroarch_action(socket_path, action, 0,
-                                state->status, sizeof(state->status)) == 0) {
-        jw__ingame_refresh(socket_path, state);
+                                state->status, sizeof(state->status)) != 0) {
+        return false;
     }
+    jw__ingame_refresh(socket_path, state);
+    return true;
 }
 
 static void jw__handle_ingame_input(const char *socket_path,
@@ -1768,21 +1833,36 @@ static void jw__handle_ingame_input(const char *socket_path,
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->list, -1, JW_INGAME_COUNT);
+            jw__haptic(socket_path, "nav");   /* the list wraps, so never blocked */
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->list, +1, JW_INGAME_COUNT);
+            jw__haptic(socket_path, "nav");
             break;
         case CAT_BTN_LEFT:
-            jw__ingame_adjust(socket_path, state, -1);
+            jw__haptic(socket_path,
+                       jw__ingame_adjust(socket_path, state, -1) ? "nav" : "blocked");
             break;
         case CAT_BTN_RIGHT:
-            jw__ingame_adjust(socket_path, state, +1);
+            jw__haptic(socket_path,
+                       jw__ingame_adjust(socket_path, state, +1) ? "nav" : "blocked");
             break;
         case CAT_BTN_A:
         case CAT_BTN_START:
-            jw__ingame_activate(socket_path, state, running);
+            /* Tick on the outcome: activate refuses when there is no session or
+               savestates are unavailable, and Performance only opens a submenu
+               (the launcher signals an overlay open with "select"). */
+            if (state->list.cursor == JW_INGAME_PERF) {
+                jw__haptic(socket_path, "select");
+                jw__ingame_activate(socket_path, state, running);
+            } else {
+                jw__haptic(socket_path,
+                           jw__ingame_activate(socket_path, state, running) == 0
+                               ? "commit" : "blocked");
+            }
             break;
         case CAT_BTN_B:
+            jw__haptic(socket_path, "commit");   /* double tick: back into the game */
             jw__ingame_continue(socket_path, state, running);
             break;
         case CAT_BTN_Y:
@@ -1885,17 +1965,25 @@ static void jw__handle_ingame_switcher_input(const char *socket_path,
     switch (button) {
         case CAT_BTN_LEFT:
         case CAT_BTN_UP:
-            jw_game_switcher_move(switcher, -1);
-            break;
         case CAT_BTN_RIGHT:
-        case CAT_BTN_DOWN:
-            jw_game_switcher_move(switcher, +1);
+        case CAT_BTN_DOWN: {
+            /* The strip clamps rather than wraps below JW_SWITCHER_LOOP_MIN
+               entries, so compare -- at the ends of a short Recents list an
+               unconditional tick would claim a move that did not happen. */
+            int before = switcher->cursor;
+            jw_game_switcher_move(switcher,
+                (button == CAT_BTN_LEFT || button == CAT_BTN_UP) ? -1 : +1);
+            jw__haptic(socket_path,
+                       switcher->cursor != before ? "nav" : "blocked");
             break;
+        }
         case CAT_BTN_A: {
             const jw_game_entry *sel = jw_game_switcher_selected(switcher);
             if (!sel) {
+                jw__haptic(socket_path, "blocked");
                 break;
             }
+            jw__haptic(socket_path, "commit");   /* double tick: leaving into a game */
             if (jw_game_switcher_selected_is_current(switcher)) {
                 jw__ingame_switcher_resume(socket_path, state, running);
             } else if (jw_ipc_switch_game(socket_path, sel->system, sel->rom_path,
@@ -1908,16 +1996,21 @@ static void jw__handle_ingame_switcher_input(const char *socket_path,
             break;
         }
         case CAT_BTN_B:
+            jw__haptic(socket_path, "commit");   /* double tick: back into the game */
             jw__ingame_switcher_resume(socket_path, state, running);
             break;
         case CAT_BTN_Y: {
             if (jw_game_switcher_selected_is_current(switcher)) {
+                jw__haptic(socket_path, "blocked");
                 break; /* never remove the running game from the overlay */
             }
             const jw_game_entry *sel = jw_game_switcher_selected(switcher);
             if (sel && sel->id >= 0 &&
                 jw_db_remove_recent(db_path, "game", sel->id) == 0) {
                 jw_game_switcher_remove_selected(switcher);
+                jw__haptic(socket_path, "commit");
+            } else {
+                jw__haptic(socket_path, "blocked");
             }
             break;
         }

@@ -325,7 +325,37 @@ typedef struct {
        the box-art pane). A toggles a game into focus_setup_ids; not a wizard step. */
     bool                focus_pick_active;
     char                focus_setup_note[96];   /* transient nudge, e.g. "5 max" */
+    /* Suppresses haptics while the UI moves itself rather than the user moving
+       it -- restoring a breadcrumb on startup, or reloading a list in place. */
+    bool                haptics_muted;
 } jw_launcher_state;
+
+/* Fire a semantic UI haptic (see internal/ipc jw_ipc_rumble). Fire-and-forget:
+   the daemon owns the vocabulary (single/double/triple tick) and the
+   enable/nav gating, so call sites only name the event. */
+static inline void jw__haptic(const jw_launcher_state *state, const char *event) {
+    if (state && state->socket_path[0] && !state->haptics_muted)
+        jw_ipc_rumble(state->socket_path, event);
+}
+
+/* True when `button` maps to a real cursor/channel/tab movement in this home
+   layout, so an unchanged position after the press is a genuine boundary
+   (blocked tick) rather than an inert key. */
+static bool jw__home_nav_moves(cat_launcher_layout layout, cat_button button) {
+    switch (button) {
+        case CAT_BTN_LEFT:
+        case CAT_BTN_RIGHT:
+            return true;   /* every home layout moves horizontally */
+        case CAT_BTN_UP:
+        case CAT_BTN_DOWN:
+            return layout != CAT_LAUNCHER_HORIZONTAL;   /* horizontal ignores ▲▼ */
+        case CAT_BTN_L1:
+        case CAT_BTN_R1:
+            return layout == CAT_LAUNCHER_TABBED || layout == CAT_LAUNCHER_COVERFLOW;
+        default:
+            return false;
+    }
+}
 
 static void jw__system_icon_memo_clear(jw_launcher_state *state) {
     if (!state) return;
@@ -5285,6 +5315,7 @@ static void jw__open_menu(jw_launcher_state *state) {
     state->menu_open = true;
     state->menu_tab  = JW_SMTAB_SETTINGS;
     jw_settings_ui_enter(&state->settings);
+    jw__haptic(state, "select");
 }
 
 static void jw__switch_system_tab(jw_launcher_state *state, int direction) {
@@ -5833,6 +5864,7 @@ static int jw__open_system_games(const char *db_path, const char *system,
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     snprintf(state->status, sizeof(state->status), "%d %s games",
              state->game_count, state->game_system_display);
+    jw__haptic(state, "select");   /* single tick: drilled into a system */
     return 0;
 }
 
@@ -5856,6 +5888,7 @@ static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
     } else {
         snprintf(state->status, sizeof(state->status), "%d favorites", state->game_count);
     }
+    jw__haptic(state, "select");   /* single tick: opened Favorites */
     return 0;
 }
 
@@ -5878,6 +5911,7 @@ static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
     } else {
         snprintf(state->status, sizeof(state->status), "%d recent", state->game_count);
     }
+    jw__haptic(state, "select");   /* single tick: opened Recently Played */
     return 0;
 }
 
@@ -6133,6 +6167,7 @@ static void jw__open_apps(jw_launcher_state *state) {
         snprintf(state->status, sizeof(state->status), "%s",
                  state->scan_ready ? "No apps found" : "Scanning library...");
     }
+    jw__haptic(state, "select");   /* single tick: opened Apps */
 }
 
 /* ─── Navigation resume (breadcrumb) ─────────────────────────────────────────
@@ -6209,6 +6244,10 @@ static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
     if (restore_games) {
         bool recents = (strcmp(r->game_system, "Recently Played") == 0);
         int rc;
+        /* Reopening the breadcrumbed list is not a user action -- without this
+           the launcher buzzes to itself every time you exit a game. */
+        bool was_muted = state->haptics_muted;
+        state->haptics_muted = true;
         if (r->games_fav)   rc = jw__open_favorites(db_path, state);
         else if (recents)   rc = jw__open_recents(db_path, state);
         else                rc = jw__open_system_games(db_path, r->game_system, state);
@@ -6216,6 +6255,7 @@ static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
             /* Recents reorders the just-played game to the top -> land on row 0. */
             cat_list_state_jump(&state->game_list, recents ? 0 : r->game_cursor,
                                 state->game_count);
+        state->haptics_muted = was_muted;
     }
     /* Every tabbed tab list (Recents/Favorites/Games systems/Apps) navigates
        state->list. Recents reorders the just-played game to the top -> land on 0. */
@@ -6238,6 +6278,7 @@ static int jw__launch_app_request(const char *socket_path, const char *name,
     jw__render_launcher(state);
 
     if (jw_ipc_launch_app(socket_path, pak_dir, state->status, sizeof(state->status)) != 0) {
+        jw__haptic(state, "blocked");   /* refused: the launcher is still here */
         return -1;
     }
 
@@ -6283,8 +6324,16 @@ static int jw__launch_game_entry_with_mode(const char *socket_path,
         : jw_ipc_launch_game(socket_path, game->system, game->rom_path,
                              state->status, sizeof(state->status));
     if (rc != 0) {
+        /* The launcher stays up on a refusal, so this is the one outcome worth
+           reporting by touch. */
+        jw__haptic(state, "blocked");
         return -1;
     }
+    /* No success pattern on the way out. A commit here was fired BEFORE the IPC,
+       so it claimed success the daemon had not granted yet -- and it could not
+       finish regardless: the daemon quiesces the worker to hand the motor to the
+       emulator, truncating whatever was mid-flight. Ownership transfers cleanly
+       instead of two writers racing for the channel. */
 
     jw__save_resume(state);
     cat_hide_window();
@@ -6331,6 +6380,7 @@ static int jw__launch_selected_search_result(const char *socket_path,
 
     if (jw_ipc_launch_game(socket_path, result->system, result->rom_path,
                            state->status, sizeof(state->status)) != 0) {
+        jw__haptic(state, "blocked");   /* refused: the launcher is still here */
         return -1;
     }
 
@@ -6784,9 +6834,11 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
     const jw_flat_item *it = &state->flat_items[state->list.cursor];
     switch (it->kind) {
         case JW_FLAT_SETTINGS:
+            jw__haptic(state, "select");
             jw_settings_ui_enter(&state->settings);
             break;
         case JW_FLAT_TOOLS:
+            jw__haptic(state, "select");
             state->tools_open = true;
             cat_list_state_init(&state->tools_list, 4);
             break;
@@ -6930,7 +6982,11 @@ static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state 
        reload the list and keep the cursor near its prior position. */
     if (state->games_are_favorites && !want_on) {
         int prev_cursor = state->game_list.cursor;
+        /* Reloading the list in place is not "opened Favorites". */
+        bool was_muted = state->haptics_muted;
+        state->haptics_muted = true;
         jw__open_favorites(db_path, state);
+        state->haptics_muted = was_muted;
         if (state->game_count > 0) {
             int c = prev_cursor >= state->game_count ? state->game_count - 1 : prev_cursor;
             cat_list_state_jump(&state->game_list, c, state->game_count);
@@ -6960,6 +7016,12 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
        L1/R1 shoulders) step one cover with wrap-around, Up/Down jump to the next
        alphabetical letter. The grid layouts keep their row/page navigation. */
     bool cf = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW);
+    /* Haptics: tick on a real cursor move (nav, opt-in) or buzz at a list
+       boundary (blocked). L1/R1 only move in coverflow. */
+    bool nav_btn = (button == CAT_BTN_UP || button == CAT_BTN_DOWN ||
+                    button == CAT_BTN_LEFT || button == CAT_BTN_RIGHT ||
+                    (cf && (button == CAT_BTN_L1 || button == CAT_BTN_R1)));
+    int  cur0 = state->game_list.cursor;
     switch (button) {
         case CAT_BTN_UP:
             if (cf) cat_list_state_jump_letter(&state->game_list, jw__games_label_cb,
@@ -7002,6 +7064,9 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
         default:
             break;
     }
+
+    if (nav_btn)
+        jw__haptic(state, state->game_list.cursor != cur0 ? "nav" : "blocked");
 }
 
 static void jw__handle_app_browser_input(const char *socket_path,
@@ -7048,6 +7113,7 @@ static void jw__open_switcher(const char *db_path, jw_launcher_state *state) {
     jw_game_switcher_resolve_thumbnails(&state->switcher);
     state->switcher_open = true;
     state->status[0] = '\0';
+    jw__haptic(state, "select");   /* single tick: opened the switcher */
 }
 
 /* Y in the switcher: drop the selected game from Recents only (id, artwork,
@@ -8077,22 +8143,34 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
        rebooting doesn't escape the lock, it comes right back into focus mode). */
     if (state->focus_unlock_confirm != 0) {
         switch (button) {
-            case CAT_BTN_A:
-                jw_ipc_platform_action(socket_path,
+            case CAT_BTN_A: {
+                /* Tick on the answer, not the intent: if the daemon refuses,
+                   nothing is rebooting and the buzz should say so. */
+                int prc = jw_ipc_platform_action(socket_path,
                     state->focus_unlock_confirm == 1 ? "reboot" : "poweroff", 0);
+                jw__haptic(state, prc == 0 ? "commit" : "blocked");
+                if (prc != 0) break;
                 cat_hide_window();
                 *running = false;
                 break;
+            }
             case CAT_BTN_B:
             case CAT_BTN_MENU:
+                jw__haptic(state, "select");
                 state->focus_unlock_confirm = 0; cat_request_frame(); break;
             default: break;
         }
         return;
     }
     /* L1/R1 open the reboot / power-off confirms. */
-    if (button == CAT_BTN_L1) { state->focus_unlock_confirm = 1; cat_request_frame(); return; }
-    if (button == CAT_BTN_R1) { state->focus_unlock_confirm = 2; cat_request_frame(); return; }
+    if (button == CAT_BTN_L1) {
+        jw__haptic(state, "select");
+        state->focus_unlock_confirm = 1; cat_request_frame(); return;
+    }
+    if (button == CAT_BTN_R1) {
+        jw__haptic(state, "select");
+        state->focus_unlock_confirm = 2; cat_request_frame(); return;
+    }
 
     /* Y reconnects a paired-but-disconnected headset (works in both PIN and
        confirm modes). The BT stack does the connect asynchronously; we just kick
@@ -8109,14 +8187,19 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
         switch (button) {
             case CAT_BTN_UP:
                 *slot = (*slot + 1) % 10;
+                jw__haptic(state, "nav");   /* digits wrap, so never blocked */
                 state->focus_pin_error = false; cat_request_frame(); break;
             case CAT_BTN_DOWN:
                 *slot = (*slot + 9) % 10;
+                jw__haptic(state, "nav");
                 state->focus_pin_error = false; cat_request_frame(); break;
             case CAT_BTN_LEFT:
+                jw__haptic(state, state->focus_pin_slot > 0 ? "nav" : "blocked");
                 if (state->focus_pin_slot > 0) state->focus_pin_slot--;
                 cat_request_frame(); break;
             case CAT_BTN_RIGHT:
+                jw__haptic(state, state->focus_pin_slot < JW_FOCUS_PIN_LEN - 1
+                                      ? "nav" : "blocked");
                 if (state->focus_pin_slot < JW_FOCUS_PIN_LEN - 1) state->focus_pin_slot++;
                 cat_request_frame(); break;
             case CAT_BTN_A: {
@@ -8125,8 +8208,13 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
                     pin[i] = (char)('0' + (state->focus_pin[i] % 10));
                 pin[JW_FOCUS_PIN_LEN] = '\0';
                 if (jw_focus_pin_verify(pin, state->focus_pin_hash)) {
+                    /* The one place the blocked/commit distinction really earns
+                       its keep: right PIN and wrong PIN feel different without
+                       having to read the screen. */
+                    jw__haptic(state, "commit");
                     jw__focus_unlock_exit(state);
                 } else {
+                    jw__haptic(state, "blocked");
                     state->focus_pin_error = true;
                     state->focus_pin_slot = 0;
                     for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) state->focus_pin[i] = 0;
@@ -8136,6 +8224,7 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
             }
             case CAT_BTN_B:
             case CAT_BTN_MENU:
+                jw__haptic(state, "select");
                 state->focus_unlock_open = false; cat_request_frame(); break;
             default: break;
         }
@@ -8144,9 +8233,11 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
            there is no free-exit path for anything but an explicit no-lock. */
         switch (button) {
             case CAT_BTN_A:
+                jw__haptic(state, "commit");
                 jw__focus_unlock_exit(state); break;
             case CAT_BTN_B:
             case CAT_BTN_MENU:
+                jw__haptic(state, "select");
                 state->focus_unlock_open = false; cat_request_frame(); break;
             default: break;
         }
@@ -8169,21 +8260,29 @@ static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *s
         case CAT_BTN_UP:
         case CAT_BTN_DOWN: {
             int next = jw__focus_nav(state->focus_cursor, state->focus_count, button);
-            if (next != state->focus_cursor) {
+            bool moved = next != state->focus_cursor;
+            if (moved) {
                 state->focus_cursor = next;
                 cat_request_frame();
             }
+            /* Same boundary feedback as the home grid: a tick when the cursor
+               moves, the blocked pattern at the edge of the tile set. */
+            jw__haptic(state, moved ? "nav" : "blocked");
             break;
         }
         case CAT_BTN_A:
             if (state->focus_count > 0) {
+                /* Launch reports only failure by touch -- see the helper. */
                 jw__launch_game_entry(socket_path, state,
                                       &state->focus_games[state->focus_cursor],
                                       running);
+            } else {
+                jw__haptic(state, "blocked");
             }
             break;
         case CAT_BTN_MENU:
             /* Open the unlock overlay, fresh. */
+            jw__haptic(state, "select");
             state->focus_unlock_open = true;
             state->focus_unlock_confirm = 0;
             state->focus_pin_error = false;
@@ -8393,6 +8492,14 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     int count = (layout == CAT_LAUNCHER_TABBED || cf_channels)
                     ? jw__tab_list_count(state) : state->flat_count;
 
+    /* Haptics: snapshot the home position so a directional press taps once on a
+       real move (nav, opt-in) or buzzes on a hard boundary (blocked). Channel and
+       tab switches update current_tab synchronously, list moves update the cursor,
+       so a diff of the two catches every genuine movement. */
+    bool nav_btn  = jw__home_nav_moves(layout, button);
+    int  pos_tab0 = (int)state->current_tab;
+    int  pos_cur0 = state->list.cursor;
+
     switch (button) {
         case CAT_BTN_UP:
             if (cf_channels) {
@@ -8503,6 +8610,12 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         }
         default:
             break;
+    }
+
+    if (nav_btn) {
+        bool moved = ((int)state->current_tab != pos_tab0) ||
+                     (state->list.cursor != pos_cur0);
+        jw__haptic(state, moved ? "nav" : "blocked");
     }
 }
 

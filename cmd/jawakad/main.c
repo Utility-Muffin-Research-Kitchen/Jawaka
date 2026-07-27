@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -181,6 +182,13 @@ typedef struct {
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
     bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
     uint64_t screenshots_checked_ms;     /* when the flag was last read from the DB */
+    /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
+       input tick, so avoid a sqlite open per event). */
+    bool     rumble_enabled_cached;
+    int      rumble_strength_cached;     /* 0-100 %  */
+    bool     rumble_nav_cached;          /* per-move navigation tick (opt-in) */
+    bool     rumble_game_cached;         /* hand the motor to emulators in-game */
+    uint64_t rumble_checked_ms;
     pid_t menu_pid;           /* resident warm-standby in-game menu while RetroArch is alive */
     bool menu_in_game;
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
@@ -228,6 +236,10 @@ typedef struct {
     long long post_launch_resume_next_ms;
     bool in_game_menu_prewarm_pending;
     long long in_game_menu_prewarm_next_ms;
+    /* Deferred motor reclaim after opening an in-game surface: RetroArch is
+       told to pause over a fire-and-forget UDP command, so it can still run a
+       frame or two and re-assert rumble after we force the motor off. */
+    long long rumble_reclaim_ms;
     bool retroarch_audio_reinit_pending;
     long long retroarch_audio_reinit_next_ms;
     long long retroarch_audio_reinit_deadline_ms;
@@ -749,6 +761,485 @@ static bool jw__roms_has_dir(const char *roms, const char *name) {
    scanner skips hidden entries and non-directories, so it's inert), so a folder
    the user deletes stays gone. Best-effort: a missing catalog or an un-writable
    card just skips. */
+/* ---- Rumble / haptics (PWM motor) --------------------------------------
+ * The MLP1 rumble motor is a single PWM channel (pwmchip0/pwm0, 1 kHz), not a
+ * Linux force-feedback device. We configure it ONCE and then only modulate
+ * duty_cycle, and which duty means "off" depends on the polarity the driver
+ * actually accepted -- this one REJECTS "normal" and stays "inversed", where off
+ * is duty=period and duty=0 is FULL ON. Never assume: jw__rumble_off_duty() reads
+ * the polarity back. We never toggle enable and never unexport -- both latch the
+ * motor on for this driver, which is how it got stranded during bring-up.
+ * Amplitude only differentiates across a narrow band (see the floors below), so
+ * the vocabulary is 1/2/3 burst PATTERNS by event weight. See plans/rumble.md. */
+#define JW_RUMBLE_CHIP    "/sys/class/pwm/pwmchip0"
+#define JW_RUMBLE_PWM     JW_RUMBLE_CHIP "/pwm0"
+#define JW_RUMBLE_PERIOD  1000000L   /* ns, 1 kHz -- matches stock S50loong */
+/* Floors and tick length are MEASURED on Puff (2026-07-24), not guessed. This
+   motor spins up slowly, so perceptibility is duty x duration, not either alone:
+   a 40 ms pulse needs ~75% duty, 90 ms needs ~60%, 350 ms needs only ~20-23%.
+   Two independent ladders landed on the same (60%, 90 ms) threshold corner, so a
+   ~100 ms tick at a 60% floor is the shortest crisp tick this motor can produce.
+   Sustained rumble is a different regime, hence the lower game floor below.
+   Coast-down, by contrast, is fast -- 60 ms already separates a double cleanly,
+   so the 80 ms gap keeps the 1/2/3-burst vocabulary legible with margin. */
+#define JW_RUMBLE_FLOOR   60         /* % of period: min duty a short tick can be felt at */
+#define JW_RUMBLE_GAME_FLOOR 25      /* % of period: min for SUSTAINED (game) rumble */
+#define JW_RUMBLE_TICK_MS 100
+/* Nav is the one event that can fire continuously: Catastrophe repeats a held
+   direction every CAT_INPUT_REPEAT_RATE (100 ms), so a 100 ms tick would leave no
+   gap and a held scroll would read as one unbroken buzz. A shorter nav tick keeps
+   a tick per move -- honest one-for-one feedback -- while leaving the motor a gap
+   to fall into. 60% is still the floor at this length, so no separate floor. */
+#define JW_RUMBLE_NAV_TICK_MS 70
+#define JW_RUMBLE_GAP_MS  80
+#define JW_RUMBLE_CACHE_TTL_MS 1000
+
+/* pthread_condattr_setclock is POSIX but absent on Darwin, where a condvar can
+   only wait on the realtime clock. Prefer CLOCK_MONOTONIC where it exists: this
+   handheld has no battery-backed RTC, so the first time-sync after boot steps
+   the wall clock by hours and would fire every deadline instantly. Whichever
+   clock the condvars end up on, the deadlines must be generated from that SAME
+   clock -- a monotonic deadline handed to a realtime condvar is the same bug in
+   a different disguise. */
+#if defined(_POSIX_CLOCK_SELECTION) && _POSIX_CLOCK_SELECTION > 0 && !defined(__APPLE__)
+#define JW_RUMBLE_HAVE_CONDATTR_CLOCK 1
+#endif
+
+static pthread_mutex_t g_rumble_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_rumble_cv   = PTHREAD_COND_INITIALIZER;
+/* Initialized exactly once in jw__rumble_init -- deliberately NOT given a static
+   initializer, because handing an already-initialized condvar to
+   pthread_cond_init is undefined behavior. */
+static pthread_cond_t  g_rumble_idle_cv;
+static pthread_cond_t  g_rumble_wake_cv;
+static bool g_rumble_cv_ready  = false;  /* the two condvars above are usable */
+static clockid_t g_rumble_clock = CLOCK_REALTIME;  /* clock the condvars wait on */
+static bool g_rumble_busy     = false; /* worker is mid-pattern (see quiesce) */
+static unsigned g_rumble_gen  = 0;     /* bumped to abort the pattern in flight */
+static bool g_rumble_gated    = false; /* screen off/suspended: swallow all events */
+static int  g_rumble_bursts   = 0;   /* pending pattern: 1/2/3, 0 = idle */
+static long g_rumble_duty     = 0;   /* on-strength duty (ns), pre-polarity */
+static int  g_rumble_tick_ms  = JW_RUMBLE_TICK_MS;  /* per-pattern burst length */
+static bool g_rumble_ready    = false; /* channel configured */
+
+/* Polarity is a THREE-state value on purpose. Treating "could not read it" as
+   "normal" is how this fails dangerously: under normal, off is duty 0, but the
+   MLP1 driver actually runs inversed, where duty 0 is FULL ON. A transient
+   sysfs failure would strand the motor at full power. Unknown must disable
+   rumble, not pick a default. */
+typedef enum {
+    JW_RUMBLE_POLARITY_UNKNOWN = 0,
+    JW_RUMBLE_POLARITY_NORMAL,
+    JW_RUMBLE_POLARITY_INVERSED,
+} jw_rumble_polarity;
+
+static jw_rumble_polarity g_rumble_polarity = JW_RUMBLE_POLARITY_UNKNOWN;
+
+/* Returns false on ANY failure, and says why. These writes configure a motor
+   that can be left physically energised, so "it probably worked" is not good
+   enough -- init refuses to mark the channel ready if one of them fails. */
+static bool jw__rumble_write(const char *path, const char *val) {
+    size_t len = strlen(val);
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) {
+        jw_log_warn("rumble: open %s failed: %s", path, strerror(errno));
+        return false;
+    }
+    ssize_t n;
+    do {
+        n = write(fd, val, len);
+    } while (n < 0 && errno == EINTR);
+    int saved = errno;
+    close(fd);
+    if (n < 0) {
+        jw_log_warn("rumble: write %s failed: %s", path, strerror(saved));
+        return false;
+    }
+    if ((size_t)n != len) {
+        jw_log_warn("rumble: short write to %s (%zd of %zu)", path, n, len);
+        return false;
+    }
+    return true;
+}
+
+static bool jw__rumble_write_long(const char *path, long v) {
+    char b[24];
+    int n = snprintf(b, sizeof(b), "%ld", v);
+    if (n <= 0 || n >= (int)sizeof(b)) return false;
+    return jw__rumble_write(path, b);
+}
+
+/* Read a long from a sysfs attribute. Returns -1 when it cannot be read. */
+static long jw__rumble_read_long(const char *path) {
+    char buf[32];
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t n;
+    do {
+        n = read(fd, buf, sizeof(buf) - 1);
+    } while (n < 0 && errno == EINTR);
+    close(fd);
+    if (n <= 0) return -1;
+    buf[n] = '\0';
+    errno = 0;
+    char *end = NULL;
+    long v = strtol(buf, &end, 10);
+    if (errno != 0 || end == buf || v < 0) return -1;
+    return v;
+}
+
+/* Read the channel's polarity. Anything we cannot positively identify as
+   "normal" or "inversed" comes back UNKNOWN -- see the enum for why guessing
+   here is the dangerous option. */
+static jw_rumble_polarity jw__rumble_read_polarity(void) {
+    char pol[32];
+    int fd = open(JW_RUMBLE_PWM "/polarity", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        jw_log_warn("rumble: open polarity failed: %s", strerror(errno));
+        return JW_RUMBLE_POLARITY_UNKNOWN;
+    }
+    ssize_t n;
+    do {
+        n = read(fd, pol, sizeof(pol) - 1);
+    } while (n < 0 && errno == EINTR);
+    int saved = errno;
+    close(fd);
+    if (n <= 0) {
+        jw_log_warn("rumble: read polarity failed: %s",
+                    n < 0 ? strerror(saved) : "empty");
+        return JW_RUMBLE_POLARITY_UNKNOWN;
+    }
+    pol[n] = '\0';
+    while (n > 0 && (pol[n - 1] == '\n' || pol[n - 1] == '\r' ||
+                     pol[n - 1] == ' '  || pol[n - 1] == '\t')) {
+        pol[--n] = '\0';
+    }
+    if (strcmp(pol, "inversed") == 0) return JW_RUMBLE_POLARITY_INVERSED;
+    if (strcmp(pol, "normal")   == 0) return JW_RUMBLE_POLARITY_NORMAL;
+    jw_log_warn("rumble: unrecognised polarity value \"%s\"", pol);
+    return JW_RUMBLE_POLARITY_UNKNOWN;
+}
+
+/* The "off" duty for the polarity actually in effect: normal -> 0, inversed ->
+   period. NEVER assume -- a boot race can leave the stock inversed default, and
+   under inversed a duty of 0 is FULL ON (this stranded the motor on once). */
+static long jw__rumble_off_duty(void) {
+    return g_rumble_polarity == JW_RUMBLE_POLARITY_INVERSED ? JW_RUMBLE_PERIOD : 0;
+}
+
+/* Create the two timed-wait condvars exactly once, on the best clock this
+   platform offers, and record which clock that was so the deadlines match. */
+static bool jw__rumble_sync_init(void) {
+    pthread_condattr_t attr;
+    pthread_condattr_t *use = NULL;
+    clockid_t clk = CLOCK_REALTIME;
+
+    if (pthread_condattr_init(&attr) == 0) {
+        use = &attr;
+#ifdef JW_RUMBLE_HAVE_CONDATTR_CLOCK
+        if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0) {
+            clk = CLOCK_MONOTONIC;
+        } else {
+            jw_log_warn("rumble: condattr_setclock failed; using realtime deadlines");
+        }
+#endif
+    }
+
+    bool ok = pthread_cond_init(&g_rumble_idle_cv, use) == 0;
+    if (ok && pthread_cond_init(&g_rumble_wake_cv, use) != 0) {
+        pthread_cond_destroy(&g_rumble_idle_cv);
+        ok = false;
+    }
+    if (use) pthread_condattr_destroy(use);
+
+    if (!ok) {
+        jw_log_warn("rumble: condvar init failed; haptics disabled");
+        return false;
+    }
+    g_rumble_clock    = clk;
+    g_rumble_cv_ready = true;
+    return true;
+}
+
+/* One-time channel setup. Fails closed at every step: nothing is written to the
+   motor until the polarity is positively known, and the channel is only marked
+   ready once every safety-critical write has succeeded. Never disables or
+   unexports as cleanup -- both latch this driver ON. */
+static void jw__rumble_init(void) {
+    struct stat st;
+    if (stat(JW_RUMBLE_PWM, &st) != 0)
+        jw__rumble_write(JW_RUMBLE_CHIP "/export", "0");
+    if (stat(JW_RUMBLE_PWM, &st) != 0) {
+        jw_log_warn("rumble: pwm0 not available; haptics disabled");
+        return;
+    }
+    if (!jw__rumble_sync_init()) return;
+
+    /* Read BEFORE writing anything. An unknown polarity means we cannot name a
+       duty that is guaranteed to be off, so the only safe move is to leave the
+       channel alone entirely. */
+    g_rumble_polarity = jw__rumble_read_polarity();
+    if (g_rumble_polarity == JW_RUMBLE_POLARITY_UNKNOWN) {
+        jw_log_warn("rumble: polarity unreadable; haptics disabled "
+                    "(refusing to guess an off duty)");
+        return;
+    }
+
+    /* PERIOD FIRST, and this ordering is load-bearing. On a freshly exported
+       channel period is 0, and this driver then rejects duty_cycle, enable AND
+       polarity writes with EINVAL -- measured, not assumed. Configuring in any
+       other order means the "force it off for safety" write silently fails and
+       leaves duty at 0, which under inversed polarity is FULL ON. Period is the
+       write that makes every other one legal. */
+    if (!jw__rumble_write_long(JW_RUMBLE_PWM "/period", JW_RUMBLE_PERIOD)) goto fail;
+    if (!jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty())) goto fail;
+
+    /* Now that the channel is legal, try to normalize the polarity. Both of
+       these are best-effort: this driver refuses "normal" and stays inversed,
+       which is fine because we re-read below and adapt to what actually stuck. */
+    (void)jw__rumble_write(JW_RUMBLE_PWM "/enable", "0");
+    (void)jw__rumble_write(JW_RUMBLE_PWM "/polarity", "normal");
+
+    /* Re-read rather than trusting the write: this driver rejects "normal" and
+       stays inversed, and acting on the value we asked for instead of the one
+       in effect is exactly how the motor got stranded during bring-up. */
+    g_rumble_polarity = jw__rumble_read_polarity();
+    if (g_rumble_polarity == JW_RUMBLE_POLARITY_UNKNOWN) {
+        jw_log_warn("rumble: polarity unreadable after configure; haptics disabled");
+        return;
+    }
+    if (!jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty())) goto fail;
+    if (!jw__rumble_write(JW_RUMBLE_PWM "/enable", "1")) goto fail;   /* enabled, resting OFF */
+
+    g_rumble_ready = true;
+    jw_log_info("rumble: motor ready (polarity=%s, %ldns period, %s deadlines)",
+                g_rumble_polarity == JW_RUMBLE_POLARITY_INVERSED ? "inversed" : "normal",
+                JW_RUMBLE_PERIOD,
+                g_rumble_clock == CLOCK_REALTIME ? "realtime" : "monotonic");
+    return;
+
+fail:
+    /* Polarity is known here, so the off duty is the right value -- but it can
+       only be written if period is non-zero, or the kernel rejects it and the
+       channel stays wherever it was. */
+    if (jw__rumble_read_long(JW_RUMBLE_PWM "/period") > 0) {
+        (void)jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty());
+    } else {
+        jw_log_warn("rumble: period unset, cannot express an off duty");
+    }
+    jw_log_warn("rumble: channel setup failed; haptics disabled");
+}
+
+/* Bulletproof off: drive the polarity-correct 0% (never disable/unexport). */
+static void jw__rumble_off(void) {
+    if (g_rumble_ready) jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty());
+}
+
+/* Map a 0-100 strength onto [FLOOR,100]% of the period (below FLOOR the motor
+   won't reliably move). Returns duty in ns. */
+static long jw__rumble_duty_for(int strength_pct) {
+    if (strength_pct <= 0) return 0;
+    if (strength_pct > 100) strength_pct = 100;
+    int eff = JW_RUMBLE_FLOOR + (100 - JW_RUMBLE_FLOOR) * strength_pct / 100;
+    return JW_RUMBLE_PERIOD * eff / 100;
+}
+
+/* Turn a strength duty into the value to actually write, for the polarity in
+   effect (under inversed a high duty is weak, so it mirrors around the period). */
+static long jw__rumble_polarize(long duty) {
+    return g_rumble_polarity == JW_RUMBLE_POLARITY_INVERSED
+               ? (JW_RUMBLE_PERIOD - duty) : duty;
+}
+
+static void jw__rumble_deadline(struct timespec *ts, int ms) {
+    clock_gettime(g_rumble_clock, ts);
+    ts->tv_sec  += ms / 1000;
+    ts->tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (ts->tv_nsec >= 1000000000L) {
+        ts->tv_sec++;
+        ts->tv_nsec -= 1000000000L;
+    }
+}
+
+/* Sleep inside a pattern, but wake at once if a quiesce bumps the generation.
+   Returns true if this pattern has been cancelled and must stop now. A plain
+   nanosleep here is what let a timed-out quiesce be undone: the worker would
+   wake after the force-off and re-energise the motor. */
+static bool jw__rumble_pattern_wait(int ms, unsigned my_gen) {
+    struct timespec deadline;
+    jw__rumble_deadline(&deadline, ms);
+    bool cancelled;
+    pthread_mutex_lock(&g_rumble_lock);
+    while (g_rumble_gen == my_gen) {
+        if (pthread_cond_timedwait(&g_rumble_wake_cv, &g_rumble_lock,
+                                   &deadline) != 0) {
+            break;   /* slept the full tick/gap */
+        }
+    }
+    cancelled = g_rumble_gen != my_gen;
+    pthread_mutex_unlock(&g_rumble_lock);
+    return cancelled;
+}
+
+/* Worker: waits for a pattern request and pulses duty off the input path so the
+   IPC loop never blocks. A new request coalesces (latest wins) rather than
+   queueing, so rapid input can't back up a buzz train. */
+static void *jw__rumble_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        int bursts, tick_ms; long duty;
+        pthread_mutex_lock(&g_rumble_lock);
+        while (g_rumble_bursts == 0)
+            pthread_cond_wait(&g_rumble_cv, &g_rumble_lock);
+        bursts = g_rumble_bursts; duty = g_rumble_duty; tick_ms = g_rumble_tick_ms;
+        unsigned my_gen = g_rumble_gen;
+        g_rumble_bursts = 0;
+        g_rumble_busy = true;
+        pthread_mutex_unlock(&g_rumble_lock);
+        long on  = jw__rumble_polarize(duty);
+        long off = jw__rumble_off_duty();
+        for (int i = 0; i < bursts; i++) {
+            jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", on);
+            bool cancelled = jw__rumble_pattern_wait(tick_ms, my_gen);
+            /* Always write off before reacting to a cancel, so the motor is
+               never left energised on the way out. */
+            jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", off);
+            if (cancelled) break;
+            if (i + 1 < bursts &&
+                jw__rumble_pattern_wait(JW_RUMBLE_GAP_MS, my_gen)) break;
+        }
+        pthread_mutex_lock(&g_rumble_lock);
+        g_rumble_busy = false;
+        pthread_cond_signal(&g_rumble_idle_cv);
+        pthread_mutex_unlock(&g_rumble_lock);
+    }
+    return NULL;
+}
+
+/* Stop cleanly before the motor changes hands or the system freezes. A plain
+   force-off races the worker -- suspend halts every thread, so a pattern caught
+   mid-burst stays energised for the whole sleep, the exact way it got stranded
+   during bring-up. Bumping the generation cancels the pattern in flight and
+   wakes the worker out of its tick, so this genuinely stops it rather than
+   hoping it finishes first. The bounded wait is belt and braces. */
+static void jw__rumble_quiesce(void) {
+    if (!g_rumble_ready) return;
+    struct timespec deadline;
+    jw__rumble_deadline(&deadline, 1000);
+    pthread_mutex_lock(&g_rumble_lock);
+    g_rumble_bursts = 0;                       /* nothing new starts */
+    g_rumble_gen++;                            /* cancel what is running */
+    pthread_cond_broadcast(&g_rumble_wake_cv);
+    while (g_rumble_busy) {
+        if (pthread_cond_timedwait(&g_rumble_idle_cv, &g_rumble_lock,
+                                   &deadline) != 0) {
+            jw_log_warn("rumble: worker did not stop within 1s; forcing off");
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_rumble_lock);
+    jw__rumble_off();
+}
+
+static void jw__rumble_queue(int bursts, long duty, int tick_ms) {
+    if (!g_rumble_ready || g_rumble_gated || bursts <= 0 || duty <= 0) return;
+    pthread_mutex_lock(&g_rumble_lock);
+    g_rumble_bursts  = bursts;   /* latest wins */
+    g_rumble_duty    = duty;
+    g_rumble_tick_ms = tick_ms;
+    pthread_cond_signal(&g_rumble_cv);
+    pthread_mutex_unlock(&g_rumble_lock);
+}
+
+/* Refresh the TTL-cached rumble settings from the DB (mirrors the screenshot
+   flag: cheap on the input path, picks up changes within the TTL). */
+static void jw__rumble_refresh_cache(jw_daemon_state *state, uint64_t now_ms) {
+    if (state->rumble_checked_ms != 0 &&
+        now_ms - state->rumble_checked_ms < (uint64_t)JW_RUMBLE_CACHE_TTL_MS)
+        return;
+    char v[8] = "";
+    state->rumble_enabled_cached =
+        !(jw_db_get_setting(state->db_path, "rumble_enabled", v, sizeof(v)) == 0 &&
+          strcmp(v, "0") == 0);                    /* default ON when unset */
+    v[0] = '\0';
+    state->rumble_strength_cached =
+        (jw_db_get_setting(state->db_path, "rumble_strength", v, sizeof(v)) == 0 && v[0])
+            ? atoi(v) : 65;                          /* default ~Medium */
+    v[0] = '\0';
+    state->rumble_nav_cached =
+        (jw_db_get_setting(state->db_path, "rumble_nav", v, sizeof(v)) == 0 &&
+         strcmp(v, "1") == 0);                       /* default OFF */
+    v[0] = '\0';
+    state->rumble_game_cached =
+        !(jw_db_get_setting(state->db_path, "rumble_game", v, sizeof(v)) == 0 &&
+          strcmp(v, "0") == 0);                      /* default ON when unset */
+    state->rumble_checked_ms = now_ms;
+}
+
+/* Map a named UI event to a pattern and queue it, honouring the cached
+   settings. nav = single (opt-in), select = single, commit = double,
+   blocked = triple. */
+static void jw__rumble_event(jw_daemon_state *state, const char *event) {
+    if (!g_rumble_ready || !event) return;
+    jw__rumble_refresh_cache(state, (uint64_t)jw__monotonic_ms());
+    if (!state->rumble_enabled_cached) return;
+    int bursts, tick_ms = JW_RUMBLE_TICK_MS;
+    if (strcmp(event, "nav") == 0) {
+        if (!state->rumble_nav_cached) return;
+        bursts  = 1;
+        tick_ms = JW_RUMBLE_NAV_TICK_MS;   /* short enough to survive held repeat */
+    } else if (strcmp(event, "select") == 0) {
+        bursts = 1;
+    } else if (strcmp(event, "commit") == 0) {
+        bursts = 2;
+    } else if (strcmp(event, "blocked") == 0) {
+        bursts = 3;
+    } else {
+        return;
+    }
+    jw__rumble_queue(bursts, jw__rumble_duty_for(state->rumble_strength_cached), tick_ms);
+}
+
+/* ---- Game rumble handoff (Phase 2) -------------------------------------
+ * Emulators can't reach the motor on their own (no FF input device), so the
+ * patched RetroArch writes duty_cycle directly via its sysfs-rumble fallback.
+ * jawakad keeps owning the channel -- it stays exported, enabled and resting
+ * off -- and hands the game ready-made duty endpoints so the emulator needs no
+ * knowledge of polarity, period or the stiction floor. MAX is the user's
+ * strength setting, so the slider acts as the in-game intensity ceiling.
+ * Resolved in the parent (it reads the DB) and applied in the forked child, so
+ * the daemon's own environment never carries these. */
+typedef struct {
+    bool on;
+    long off, min, max;
+} jw_rumble_game_env;
+
+static void jw__rumble_resolve_game_env(jw_daemon_state *state,
+                                        jw_rumble_game_env *out) {
+    memset(out, 0, sizeof(*out));
+    if (!g_rumble_ready || !state) return;
+    jw__rumble_refresh_cache(state, (uint64_t)jw__monotonic_ms());
+    if (!state->rumble_enabled_cached || !state->rumble_game_cached) return;
+    long max = jw__rumble_duty_for(state->rumble_strength_cached);
+    if (max <= 0) return;
+    out->off = jw__rumble_off_duty();
+    /* Game rumble is SUSTAINED, so it uses the lower sustained floor -- holding it
+       to the short-tick floor would make a core's weakest effect feel near-full and
+       throw away most of the magnitude range the core is asking for. */
+    out->min = jw__rumble_polarize(JW_RUMBLE_PERIOD * JW_RUMBLE_GAME_FLOOR / 100);
+    out->max = jw__rumble_polarize(max);
+    out->on  = true;
+}
+
+static void jw__rumble_apply_game_env(const jw_rumble_game_env *env) {
+    char b[24];
+    if (!env || !env->on) return;
+    setenv("RUMBLE_PWM_PATH", JW_RUMBLE_PWM "/duty_cycle", 1);
+    snprintf(b, sizeof(b), "%ld", env->off); setenv("RUMBLE_PWM_OFF", b, 1);
+    snprintf(b, sizeof(b), "%ld", env->min); setenv("RUMBLE_PWM_MIN", b, 1);
+    snprintf(b, sizeof(b), "%ld", env->max); setenv("RUMBLE_PWM_MAX", b, 1);
+}
+
 static void jw__seed_rom_folders(const jw_daemon_state *state) {
     const char *roms = getenv("ROMS_PATH");
     if (!roms || !roms[0]) return;
@@ -1541,6 +2032,21 @@ static void jw__schedule_retroarch_audio_reinit_if_bluetooth(jw_daemon_state *st
     if (jw__retroarch_bluetooth_audio_active(state)) {
         jw__schedule_retroarch_audio_reinit(state, reason);
     }
+}
+
+/* Reclaim the motor once the PAUSE we sent has certainly been acted on. Without
+   this a game paused mid-rumble keeps the motor running for the whole time the
+   menu is up: the core stops being called, so nothing ever writes the duty back
+   down. */
+static void jw__tick_rumble_reclaim(jw_daemon_state *state) {
+    if (!state || state->rumble_reclaim_ms <= 0) {
+        return;
+    }
+    if (jw__monotonic_ms() < state->rumble_reclaim_ms) {
+        return;
+    }
+    state->rumble_reclaim_ms = 0;
+    jw__rumble_quiesce();
 }
 
 static void jw__tick_retroarch_audio_reinit(jw_daemon_state *state) {
@@ -3358,6 +3864,14 @@ static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode)
                     jw_ra_result_string(pause_result));
         return -1;
     }
+
+    /* Pausing stops the core asking for rumble, but it does not clear whatever
+       duty the core last set, so a game paused mid-effect would leave the motor
+       running behind the menu. Reclaim now AND again shortly: PAUSE goes out as
+       a fire-and-forget datagram, so RetroArch may still run a frame after this
+       and re-assert the duty it was last driving. */
+    jw__rumble_quiesce();
+    state->rumble_reclaim_ms = jw__monotonic_ms() + 250;
 
     /* Tell the resident UI which surface to show before we wake it. */
     jw__write_ingame_ui_mode(mode);
@@ -6084,6 +6598,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         }
         state->direct_drm_active = true;
         state->direct_drm_weston_stopped = true;
+        jw__rumble_quiesce();   /* stop the worker, don't just outrun it */
     }
 
     pid_t pid = fork();
@@ -6371,6 +6886,15 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                     "may fall back to device internal storage");
     }
 
+    /* Stop any UI pulse before the handoff, then resolve the duty endpoints
+       the game will drive the motor with (if game rumble is on). A bare
+       force-off here was routinely undone: the launcher fires its commit tick
+       (280 ms) immediately before this IPC, so the worker re-energised the
+       motor a moment later. */
+    jw__rumble_quiesce();
+    jw_rumble_game_env rumble_env;
+    jw__rumble_resolve_game_env(state, &rumble_env);
+
     long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
     if (pid < 0) {
@@ -6382,6 +6906,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         if (ra_home && ra_home[0]) {
             setenv("HOME", ra_home, 1);
         }
+        jw__rumble_apply_game_env(&rumble_env);
         char *argv[9];
         int argc = 0;
         argv[argc++] = retroarch;
@@ -6524,7 +7049,18 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
     }
     if (!jw__standby_active(state)) {
         jw__screen_set(state, false);
+        /* Synthesize a release for anything still held on the virtual pad.
+           Swallowing drops the physical release, and evdev is edge-based, so
+           without this the launcher goes on auto-repeating a direction that is
+           physically already up: the list scrolls invisibly behind a dark
+           screen (buzzing, once haptics exist) and is still scrolling when you
+           wake it. Same edge-based trap the in-game menu resume guards against.
+           (Ordering vs set_swallow is irrelevant -- release_buttons writes
+           straight to uinput and never consults the swallow flag.) */
+        jw_input_proxy_release_buttons(&state->input_proxy);
         jw_input_proxy_set_swallow(&state->input_proxy, true);
+        g_rumble_gated = true;   /* no haptics behind a dark screen */
+        jw__rumble_quiesce();
     }
     state->standby_reason = reason;
     state->standby_entered_ms = jw__monotonic_ms();
@@ -6539,6 +7075,7 @@ static void jw__leave_standby_screen_off(jw_daemon_state *state) {
 
     jw__screen_set(state, true);
     jw_input_proxy_set_swallow(&state->input_proxy, false);
+    g_rumble_gated = false;
     state->standby_reason = JW_STANDBY_NONE;
     state->standby_entered_ms = 0;
     state->autosleep_charging_logged = false;
@@ -6602,11 +7139,20 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     }
     state->suspend_policy.pending = JW_SUSPEND_PENDING_NONE;
     jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
+    g_rumble_gated = true;
+    jw__rumble_quiesce();   /* never carry a live pulse into the freeze */
     jw__screen_set(state, false);
+    /* Same reason as the standby path: a direction still held here is never
+       released to the launcher, because the resume flush discards the physical
+       release rather than forwarding it. This is the path a power tap takes
+       (it skips standby entirely), so without this the wake resumes into a
+       phantom held direction. */
+    jw_input_proxy_release_buttons(&state->input_proxy);
     jw_input_proxy_set_swallow(&state->input_proxy, true);
     jw_platform_result result;
     jw__platform_sleep_with_performance(state, &result);   /* blocks until resume */
     jw_log_info("sleep: resumed");
+    jw__rumble_off();   /* belt and braces if the quiesce above timed out */
     jw__screen_set(state, true);
     jw__reconcile_audio(state, "wake", true);
     jw_input_proxy_set_swallow(&state->input_proxy, false);
@@ -6621,6 +7167,10 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     state->power_held = false;
     jw_input_proxy_mark_activity(&state->input_proxy);
     state->standby_reason = JW_STANDBY_NONE;
+    /* This clears standby directly rather than via jw__leave_standby_screen_off,
+       so the rumble gate has to be released here too -- otherwise suspending out
+       of screen-off standby wakes with haptics silently dead for good. */
+    g_rumble_gated = false;
     state->standby_entered_ms = 0;
     state->autosleep_charging_logged = false;
     state->autosleep_setting_next_ms = 0;   /* re-read the setting promptly after wake */
@@ -7897,6 +8447,22 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_json(client, reply);
     }
 
+    if (strcmp(type->valuestring, "rumble") == 0) {
+        cJSON *ev = cJSON_GetObjectItemCaseSensitive(root, "event");
+        const char *event = cJSON_IsString(ev) ? ev->valuestring : NULL;
+        if (event && strcmp(event, "preview") == 0) {
+            /* Live slider preview: one tick at the exact passed strength (not the
+               TTL cache), so the user feels the level as they drag. */
+            cJSON *s = cJSON_GetObjectItemCaseSensitive(root, "strength");
+            int strength = cJSON_IsNumber(s) ? (int)s->valuedouble : 65;
+            jw__rumble_queue(1, jw__rumble_duty_for(strength), JW_RUMBLE_TICK_MS);
+        } else if (event) {
+            jw__rumble_event(state, event);
+        }
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "rumble", NULL);
+    }
+
     if (strcmp(type->valuestring, "scan-library") == 0) {
         int rc = jw__handle_scan(state, client, root);
         cJSON_Delete(root);
@@ -8407,6 +8973,9 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     state->child_pid = -1;
     state->child_kind = JW_CHILD_NONE;
 
+    /* Reclaim the motor: a game that died mid-buzz can't have cleared it. */
+    jw__rumble_quiesce();
+
     const char *name = jw__child_name(exited_kind);
     if (WIFEXITED(status)) {
         jw_log_info("%s exited status=%d", name ? name : "child", WEXITSTATUS(status));
@@ -8779,6 +9348,23 @@ int main(int argc, char *argv[]) {
        for drop-in ROMs without hunting the docs (needs ROMS_PATH above). */
     jw__seed_rom_folders(&state);
 
+    /* Bring up the rumble motor (configure the PWM once, held off) and start the
+       non-blocking pulse worker. Haptics no-op cleanly if the node is absent. */
+    jw__rumble_init();
+    /* Only run the worker when the channel AND its condvars came up. Starting it
+       otherwise gives us a thread that can write duty values derived from an
+       unknown polarity. */
+    if (g_rumble_ready && g_rumble_cv_ready) {
+        pthread_t rumble_thread;
+        if (pthread_create(&rumble_thread, NULL, jw__rumble_worker, NULL) != 0) {
+            jw_log_warn("rumble: worker thread failed to start; haptics disabled");
+            g_rumble_ready = false;
+            jw__rumble_off();
+        } else {
+            pthread_detach(rumble_thread);
+        }
+    }
+
     /* Export the user's time zone so launched apps (and the daemon's own
        localtime) use it. The launcher re-applies it live when changed. */
     {
@@ -8912,6 +9498,7 @@ int main(int argc, char *argv[]) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
         }
         jw__tick_retroarch_audio_reinit(&state);
+        jw__tick_rumble_reclaim(&state);
         jw__tick_suspend_inhibitors(&state);
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
@@ -8953,6 +9540,11 @@ int main(int argc, char *argv[]) {
             jw_log_warn("ipc loop iteration failed");
         }
     }
+
+    /* Quiesce, not a bare off: the worker is detached, so if a pattern is in
+       flight when main returns the process dies mid-tick and the motor is
+       stranded ON with nothing left to clear it. */
+    jw__rumble_quiesce();
 
     /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
        knows this was an intentional shutdown, not a crash. The marker lives in

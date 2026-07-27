@@ -1,8 +1,11 @@
 # Rumble / haptics for Leaf (MLP1)
 
-Status: **designed, not built.** Design settled with Eric on 2026-07-24 via an
-on-device exploration of the motor plus a full design grill. Phase 1 (UI haptics)
-is built first; Phase 2 (game rumble) is documented here and built after.
+Status: **Phase 1 and Phase 2a built, tuned, audited and in review** (2026-07-25). Design
+settled with Eric via an on-device exploration of the motor plus a full design grill; the
+timings and floors were then measured on the device (section 6); a multi-agent audit then
+found and fixed a further round of defects (section 8). Open PRs: Jawaka #11, retroarch-builds
+#2, Leaf #17 - merge retroarch-builds #2 before Leaf #17. Phase 2b (standalone emulators) and
+the variable-magnitude check are deliberately held as separate work (section 9).
 
 The MLP1 has a rumble motor. Stock LoongOS drives it; Leaf never has. This wires it up.
 
@@ -58,10 +61,20 @@ From then on:
 
 Decisions and rationale:
 
-- **`polarity=normal`** (not the stock `inversed`). Verified on device that normal polarity
-  with a positive duty buzzes and `duty=0` is off. Normal gives the intuitive frame
-  (higher duty = stronger, `0` = off) with no inversion math. Inversed would also work with
-  `off = duty=period`, but normal is proven and simpler.
+- **Polarity is read back, never assumed** - and the channel now comes up **`normal`**.
+  For most of this project we believed the driver *rejected* `polarity=normal` and forced us
+  to live with `inversed`, where `duty_cycle = 0` is FULL ON. That was a misdiagnosis, found
+  2026-07-26: the driver rejects the polarity write only while `period` is still `0`, which
+  is the state of a freshly exported channel. The old init wrote polarity **before** period,
+  so the write always failed with EINVAL, the read-back said `inversed`, and we concluded the
+  hardware refused. **Write `period` first and `normal` takes.** On a fresh export this
+  driver also rejects `duty_cycle` and `enable` for the same reason, so period is simply the
+  write that makes every other one legal.
+
+  This is why the ordering is load-bearing rather than stylistic, and it defuses the whole
+  feature's marquee hazard: under `normal`, a failed or zeroed duty write means **off**, not
+  full power. The daemon still re-reads and adapts (`off = 0` when normal, `period` when
+  inversed), because a channel someone else left inversed must still be handled.
 - **Always-enabled / modulate-duty-only** is what makes "off" bulletproof — it is impossible
   to strand the motor because the channel is always actively driving a defined level.
 - **Energy:** keeping the channel enabled at 0% costs nothing meaningful. The motor draws
@@ -80,11 +93,8 @@ perceived force** — a light vs strong duty is hard to tell apart by feel, easy
 - **Strength** (duty) is a single user intensity control on top; it is a scale/ceiling, not
   the differentiator.
 
-Tick shape that felt right in testing: **~40 ms on**, **~80 ms gap** between bursts in a
-pattern. Strength → duty mapping is a slider percentage of the 1,000,000 ns period, **to be
-tuned on device**: motor response is non-linear and low duty may not overcome stiction, so
-there is likely a **hard floor (~40%)** below which the motor will not reliably move. Map
-the slider `0–100%` onto `[floor%, 100%]` of period.
+Tick shape and floors were later **measured** on Puff rather than guessed - see section 6,
+which supersedes the ~40 ms / ~40% floor figures this section originally carried.
 
 ---
 
@@ -159,25 +169,44 @@ link, and the Phase-2 game-rumble toggle.
 
 ---
 
-## 5. Phase 2 — game rumble (documented; built after Phase 1)
+## 5. Phase 2 — game rumble
+
+**2a (RetroArch) is built.** 2b (standalone emulators) remains deferred.
 
 Because the motor is not an FF/SDL device, emulator rumble needs an explicit path to the PWM.
 
-### RetroArch cores (the bulk of systems) — Phase 2a
+### RetroArch cores (the bulk of systems) — Phase 2a  ✅ built
 
-- Enable the deferred **`retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch`**
-  in the RA build, targeting our PWM. The patch writes sysfs directly when the joypad
-  driver's native rumble returns false (it always will here — no FF device).
-- Because the drive model leaves the channel **always enabled at duty 0**, RA only has to
-  **write `duty_cycle`** to buzz and `0` to stop — it never touches export/polarity/period/
-  enable. Adapt the patch's motor mode to write the strength value to
-  `/sys/class/pwm/pwmchip0/pwm0/duty_cycle`.
-- **jawakad pre-arms the PWM and injects env at RA launch** (it already sets launch env via
-  `jw__setenv_default`): e.g. `RUMBLE_SYSFS_PATH=/sys/class/pwm/pwmchip0/pwm0/duty_cycle`
-  plus a scale, only when Leaf rumble + game-rumble are enabled. On game exit the daemon
-  forces `duty=0` and reclaims the channel.
-- RA core rumble (N64/PSX/GBA etc. emit it via the libretro rumble interface) scales into
-  duty, **capped by the strength slider**.
+`retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch` is enabled in the MLP1
+build as the patch-set entry **`sysfs-rumble`** (the shipped set is now
+`portrait-rotation,command-menu,jawaka-load-content,sysfs-rumble`). It writes sysfs directly
+when the joypad driver's native rumble returns false — which it always does here, since
+there is no FF device.
+
+The patch gained a **PWM duty mode** for this device. jawakad keeps owning the channel
+(exported, enabled, resting off), so RetroArch only ever writes `duty_cycle` and never
+touches export/polarity/period/enable. Rather than teach RA about polarity, the period or
+the stiction floor, the daemon hands it ready-made duty endpoints:
+
+| Env var | Meaning |
+| --- | --- |
+| `RUMBLE_PWM_PATH` | the `duty_cycle` node |
+| `RUMBLE_PWM_OFF`  | duty that means off (polarity-dependent: `0` or `period`) |
+| `RUMBLE_PWM_MIN`  | duty at the weakest magnitude that still moves the motor (the floor) |
+| `RUMBLE_PWM_MAX`  | duty at full magnitude, already capped to the user's strength setting |
+
+Core magnitude (0-65535) maps linearly onto `[MIN,MAX]`; MIN/MAX may run in either
+direction, so inversed polarity needs no special case in RA. The patch skips the sysfs
+write when the computed duty is unchanged, since cores re-assert rumble every frame.
+
+jawakad resolves the endpoints in the parent (it reads the DB) and applies them with
+`setenv` in the forked child, so the daemon's own environment never carries them. It forces
+`duty=off` immediately before the launch fork and again when any child exits, so a game that
+dies mid-buzz cannot strand the motor.
+
+**Permission: resolved.** Everything on this device runs as root — jawakad, its launcher
+child, and RetroArch (verified `uid=0` on Puff) — so `duty_cycle` being root-owned is a
+non-issue. No `chmod` dance is needed.
 
 ### Standalone emulators (Flycast / PPSSPP / DraStic / mupen64) — Phase 2b
 
@@ -187,9 +216,10 @@ the motor. Each needs its own small patch to route its rumble to the same `duty_
 
 ### Settings
 
-A **Game rumble** sub-toggle in Controls & Feedback (default on), sharing the master Rumble
-on/off and the strength slider (slider acts as the intensity ceiling; game supplies the
-variable magnitude). Lets a user keep UI haptics without game rumble, or vice versa.
+**Game Rumble** in Controls & Feedback (DB key `rumble_game`, default on), gated by the
+master Rumble toggle and using the strength slider as the intensity ceiling (the game
+supplies the variable magnitude). Lets a user keep UI haptics without game rumble, or vice
+versa. Read at game launch, so a change takes effect on the next launch.
 
 ### Ownership / arbitration
 
@@ -198,31 +228,157 @@ the session and reclaims it (forces off) on exit — still a single-owner PWM.
 
 ### Open Phase-2 details (flagged, not solved here)
 
-- **sysfs permission:** `duty_cycle` is root-owned; the game may not run as root. Either the
-  daemon `chmod`s the node writable around a game launch and reverts on exit, or confirm the
-  emulator already runs as root. TBC.
+- ~~**sysfs permission**~~ — resolved: everything runs as root (see 2a).
 - **Standalone scope:** decide per-emulator whether the payoff justifies the patch, or leave
   standalone game-rumble off.
 
 ---
 
-## 6. To tune / verify on device
+## 6. Tuning — MEASURED on Puff (2026-07-24)
 
-- Strength→duty curve and the **stiction floor** (the min duty that reliably moves the motor).
-- Final tick/gap timings for single/double/triple (start ~40 ms on / ~80 ms gap).
-- Confirm the live-preview-on-slide feel.
-- Phase 2: sysfs write permission for the game process.
+Done with Eric holding the device, driving `duty_cycle` from a shell script rather than
+rebuilding per candidate. Every ladder anchored each test pulse behind a full-strength
+marker buzz, so a step was identified by counting always-felt markers instead of trying to
+count things that might not be felt at all.
 
-## 7. Files (anticipated)
+### The motor's response curve
+
+Perceptibility is **duty x duration**, not either alone — this motor spins up slowly:
+
+| Pulse length | Duty needed to be clearly felt |
+| --- | --- |
+| 40 ms  | ~75% |
+| 70 ms  | ~60% |
+| 90 ms  | ~60% |
+| 350 ms | ~20-23% |
+
+Two independent ladders (descending duty at fixed length, ascending length at fixed duty)
+converged on the same **(60%, 90 ms)** corner, which is the cross-check that makes the rest
+trustworthy. The curve is flat from ~70 ms to ~90 ms and only climbs below that.
+
+**Coast-down is fast even though spin-up is slow.** A 60 ms gap already separates a double
+burst cleanly at full duty (the worst case), so the 80 ms gap ships unchanged, with margin.
+
+### What that forced
+
+- **The original 40 ms tick was unusable.** At 40 ms nothing under ~75% duty registers, which
+  would have pinned the floor at 75% and collapsed the strength slider to a 75-100 range.
+  The tick had to grow to **100 ms** for the slider to mean anything.
+- **Short and sustained pulses need different floors.** One 40% floor was wrong in both
+  directions: too low for a UI tick, too high for game rumble. Hence `JW_RUMBLE_FLOOR` 60%
+  for ticks and `JW_RUMBLE_GAME_FLOOR` 25% for sustained game rumble — holding a core's
+  weakest effect to the tick floor would have thrown away most of its magnitude range.
+- **Nav needed its own tick length.** Catastrophe repeats a held direction every 100 ms
+  (`CAT_INPUT_REPEAT_RATE`), so a 100 ms nav tick left zero gap and a held scroll read as one
+  unbroken buzz — confirmed by feel and by the constant. Note a rate limit *cannot* fix this
+  finely: events only arrive every 100 ms, so dropping them yields 200/300 ms and nothing in
+  between. The fix is a shorter nav tick (**70 ms**, tick-per-move preserved, 30 ms gap),
+  chosen by A/B against 200 ms cadence and against "first move only, silence while held".
+  60% is still the floor at 70 ms, so nav needs no separate floor.
+
+### Shipped values
+
+| Constant | Value |
+| --- | --- |
+| `JW_RUMBLE_FLOOR` | 60% |
+| `JW_RUMBLE_GAME_FLOOR` | 25% |
+| `JW_RUMBLE_TICK_MS` | 100 |
+| `JW_RUMBLE_NAV_TICK_MS` | 70 |
+| `JW_RUMBLE_GAP_MS` | 80 |
+
+Verified after deploy: previews at strength 1 / 50 / 100 wrote duty `400000` / `200000` / `0`
+(inversed, so lower is stronger) — exactly 60% / 80% / 100%. Confirmed by feel in the UI, and
+still perceptible at the 5% strength setting.
+
+- ~~Phase 2: sysfs write permission for the game process~~ — resolved, everything runs as root.
+- Still open: whether the strength slider reads as a sensible ceiling inside an actual game
+  (the game floor of 25% has not been feel-checked in a rumbling game, only the math).
+
+## 7. Files
 
 - `cmd/jawakad/main.c` — rumble module: channel init, `jw__rumble_*` worker + event→pattern
   table + duty scaling + safe-stop, force-off on launch/sleep/shutdown, `rumble` IPC action,
   cache the three DB settings, Phase-2 env injection at RA launch.
 - `internal/settings/settings.{c,h}` — new **Controls & Feedback** page + rows (Rumble,
-  Strength slider, Navigation tick, migrated Screenshots); new DB keys; page enum + top-level
-  list entry.
+  Strength slider, Navigation tick, Game Rumble, migrated Screenshots); new DB keys; page enum
+  + top-level list entry.
 - `cmd/jawaka-launcher/main.c` (+ menu) — emit named rumble events at select / commit /
   boundary / (optional) nav sites; strength-slider live preview.
-- `retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch` — Phase 2: enable +
-  adapt to write `duty_cycle`.
-- Docs (leaf-docs) at release time.
+- `retroarch-builds/patches/common/0003-sysfs-rumble-fallback.patch` — the `SR_PWM` duty mode,
+  wired into `build-mlp1.sh` as the `sysfs-rumble` patch-set entry (branch
+  `agent/sysfs-rumble-pwm`, `c09a7e6`).
+- Docs (leaf-docs) — still to write, at release time.
+
+Branch `agent/rumble-haptics` (PR #11): `ee1d082` plan, `a8d9e62` motor core, `394b20b`
+Controls & Feedback page, `db6e4d5` polarity fix, `8676468` launcher haptics, `47b992c`
+settings-screen haptics, `b4c3d73` phase 2a, `7673dd5` measured timings, `8b7d921` +
+`1a3489a` pre-existing input bugs, `473add8` gate + UI coverage, `69c3378` deep-suspend
+release, `78edc5d` stoppable worker, `33afe3f` call sites + async IPC, `5afc86b` deferred
+motor reclaim.
+
+---
+
+## 8. Audit (2026-07-25) - what a review pass found
+
+Five parallel reviewers over the finished branch. Everything below was verified against the
+code before fixing; all of it is fixed and on device.
+
+**The motor could still be stranded.** The quiesce added for suspend did not stop the worker:
+on timeout it forced the motor off and returned while the worker re-energised it on its next
+burst, and suspend froze it that way for the whole sleep - the exact outcome its own comment
+claimed to prevent. The worker is now cancellable via a generation counter. Both timed waits
+were also on `CLOCK_REALTIME`, and with no battery-backed RTC the first time-sync steps the
+clock hours forward and fires every deadline instantly, making that race a certainty rather
+than a possibility. Now `CLOCK_MONOTONIC`.
+
+**Four bare force-offs raced the worker** and were usually no-ops, including on daemon exit,
+where the detached worker can die mid-tick leaving the motor on with no owner left to clear
+it. All now quiesce.
+
+**The in-game menu left the motor running.** Pausing RetroArch stops the core asking for
+rumble but does not clear the duty it last set. Worse, `jw_ra_pause_direct` sends `PAUSE` as a
+fire-and-forget datagram, so RetroArch can run another frame and re-assert the duty *after*
+the reclaim. Fixed with an immediate reclaim plus a deferred one 250 ms later, driven from the
+main loop so the latency-sensitive menu open is not blocked.
+
+**The release build omitted the patch entirely** - see Leaf #17. Two separate stale patch-set
+defaults, plus no check that an existing binary matches the requested set.
+
+**RetroArch-side:** no validation on the `RUMBLE_PWM_*` values, where a malformed entry became
+duty 0, which under inverted polarity is full on; and a write cache that went stale whenever
+the daemon touched the node, silently dropping rumble a core had asked for.
+
+**Haptic call sites** claimed outcomes they had not checked, and `jw_ipc_rumble` was never
+fire-and-forget despite three comments saying so - every cursor move was a blocking round trip
+on the UI thread.
+
+### Two pre-existing bugs it surfaced
+
+Neither is rumble's fault; haptics just made them perceptible.
+
+- `jw_input_proxy_release_buttons` walked `EV_KEY` only, but the D-pad is an ABS hat and the
+  stick two more axes, so "release everything" left directions pinned. That half-fixed
+  `a9adfb6` (the in-game-menu resume leak).
+- Entering standby swallows input, so the launcher never saw a held direction's release and
+  auto-repeated it behind a dark screen, still scrolling on wake. Present since jawakad took
+  the power key. The deep-suspend path needed the same fix separately, and is the path a
+  power tap actually takes.
+
+---
+
+## 9. Next (held as separate work)
+
+- **Phase 2b - standalone emulators.** Flycast / PPSSPP / DraStic / mupen64 each need their
+  own patch to write `duty_cycle`. Now covers PSP, DS, N64 **and** Dreamcast, since standalone
+  is the default for all four. Decide per emulator whether the payoff justifies it.
+- **Variable-magnitude verification.** Only ever proven with a GB rumble cart, which is binary
+  on/off, so the 25% game floor and the whole `[MIN,MAX]` lerp are untested against a core
+  that sends intermediate magnitudes. Needs a PS1 title with `input_libretro_device_p1` set to
+  DualShock.
+- **Release-day docs.** leaf-docs has `guide/rumble.md` written and live behind a Soon banner
+  plus a sidebar badge in `astro.config.mjs`; both must come off when this ships. Also
+  `guide/screenshots.md` still says Settings > General, and that row moves to Controls &
+  Feedback - its annotated screenshot needs retaking too.
+- **Known residue.** A held direction may still advance the cursor one position across a
+  sleep/wake. Suspected to be events already buffered in the launcher's own SDL queue, which
+  the daemon cannot reach, so any fix is launcher-side.
