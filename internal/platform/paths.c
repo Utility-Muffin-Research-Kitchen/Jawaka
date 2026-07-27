@@ -974,30 +974,80 @@ static int jw__write_core_device_remap(const char *remap_path, unsigned device) 
    not write game remaps (that is per-title and unbounded), but we can at least
    say the pin will not apply, which is the difference between a one-line
    diagnosis and an afternoon. */
-static void jw__warn_if_game_remap_wins(const char *remap_dir, const char *rom_path) {
-    if (!rom_path || !rom_path[0]) {
-        return;
-    }
-    const char *base = strrchr(rom_path, '/');
-    base = base ? base + 1 : rom_path;
+/* RetroArch loads the FIRST remap it finds -- game, then content directory,
+   then core -- and stops. Writing the core file while a higher-priority one
+   exists produces a pin that is never read, and a log line claiming it worked.
+   So resolve the file RetroArch will actually load. When none exists the core
+   remap is the answer, because that is where RetroArch will look last and what
+   we are entitled to create. */
+static bool jw__resolve_winning_remap(char *out, size_t out_size,
+                                      const char *remap_dir,
+                                      const char *core_folder,
+                                      const char *rom_path) {
+    char candidate[PATH_MAX];
 
-    char stem[256];
-    if (!jw__format_string(stem, sizeof(stem), "%s", base)) {
-        return;
-    }
-    char *dot = strrchr(stem, '.');
-    if (dot && dot != stem) {
-        *dot = '\0';
+    if (rom_path && rom_path[0]) {
+        const char *base = strrchr(rom_path, '/');
+        base = base ? base + 1 : rom_path;
+
+        /* Game remap: the ROM's own name without its extension. */
+        char stem[256];
+        if (jw__format_string(stem, sizeof(stem), "%s", base)) {
+            char *dot = strrchr(stem, '.');
+            if (dot && dot != stem) *dot = '\0';
+            if (jw__format_string(candidate, sizeof(candidate), "%s/%s.rmp",
+                                  remap_dir, stem) &&
+                jw__path_exists(candidate)) {
+                return jw__format_string(out, out_size, "%s", candidate);
+            }
+        }
+
+        /* Content-directory remap: the name of the folder holding the ROM. */
+        const char *slash = strrchr(rom_path, '/');
+        if (slash && slash != rom_path) {
+            const char *dir_end = slash;
+            const char *dir_start = dir_end;
+            while (dir_start > rom_path && dir_start[-1] != '/') dir_start--;
+            size_t dir_len = (size_t)(dir_end - dir_start);
+            char dir_name[256];
+            if (dir_len > 0 && dir_len < sizeof(dir_name)) {
+                memcpy(dir_name, dir_start, dir_len);
+                dir_name[dir_len] = '\0';
+                if (jw__format_string(candidate, sizeof(candidate), "%s/%s.rmp",
+                                      remap_dir, dir_name) &&
+                    jw__path_exists(candidate)) {
+                    return jw__format_string(out, out_size, "%s", candidate);
+                }
+            }
+        }
     }
 
-    char game_remap[PATH_MAX];
-    if (!jw__format_string(game_remap, sizeof(game_remap), "%s/%s.rmp",
-                           remap_dir, stem)) {
+    return jw__format_string(out, out_size, "%s/%s.rmp", remap_dir, core_folder);
+}
+
+/* One-time migration marker. The pin exists to move installs off RetroArch's
+   default pad, and a migration is by definition something that happens once --
+   re-running it every launch turns it into permanent ownership of a key the
+   user can edit in RetroArch's own menu, and makes "I want Standard" an opinion
+   the daemon overwrites forever. After this marker exists the file is theirs. */
+static bool jw__controller_pin_done(const char *ra_home, const char *core_id) {
+    char stamp[PATH_MAX];
+    if (!jw__format_string(stamp, sizeof(stamp), "%s/.leaf-controller-pin-%s-v1",
+                           ra_home, core_id)) {
+        return true;   /* cannot name it: treat as done rather than loop forever */
+    }
+    return jw__path_exists(stamp);
+}
+
+static void jw__controller_pin_mark_done(const char *ra_home, const char *core_id) {
+    char stamp[PATH_MAX];
+    if (!jw__format_string(stamp, sizeof(stamp), "%s/.leaf-controller-pin-%s-v1",
+                           ra_home, core_id)) {
         return;
     }
-    if (jw__path_exists(game_remap)) {
-        jw_log_warn("controller pin: %s exists and RetroArch prefers it, so the "
-                    "core pin will NOT apply to this game", game_remap);
+    FILE *fp = fopen(stamp, "wb");
+    if (fp) {
+        fclose(fp);
     }
 }
 
@@ -1025,6 +1075,9 @@ void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
     if (!pin) {
         return;   /* the overwhelmingly common path */
     }
+    if (jw__controller_pin_done(ra_home, core_id)) {
+        return;   /* migrated already; the file belongs to the user now */
+    }
 
     char remap_dir[PATH_MAX];
     if (!jw__format_string(remap_dir, sizeof(remap_dir),
@@ -1039,9 +1092,12 @@ void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
         return;
     }
 
+    /* Migrate the file RetroArch will actually read, not the one we would
+       prefer to write. A game or content-directory remap outranks the core one,
+       so pinning the core file there would be a no-op wearing a success log. */
     char remap_path[PATH_MAX];
-    if (!jw__format_string(remap_path, sizeof(remap_path), "%s/%s.rmp",
-                           remap_dir, core_config_folder)) {
+    if (!jw__resolve_winning_remap(remap_path, sizeof(remap_path), remap_dir,
+                                   core_config_folder, rom_path)) {
         return;
     }
 
@@ -1050,16 +1106,18 @@ void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
        reason for the latter two (errno is meaningless for most of them, so
        don't dress them up as write errors here). */
     int rc = jw__write_core_device_remap(remap_path, pin->device);
-    if (rc > 0) {
-        return;   /* user's own choice; callee already said so */
-    }
     if (rc < 0) {
         jw_log_warn("controller pin: %s not pinned", remap_path);
-        return;
+        return;   /* no stamp: a failed migration should be retried */
     }
-    jw__warn_if_game_remap_wins(remap_dir, rom_path);
-    jw_log_info("controller pin: %s port 1 device=%u (%s)",
-                core_id, pin->device, pin->why);
+    if (rc == 0) {
+        jw_log_info("controller pin: %s port 1 device=%u (%s) in %s",
+                    core_id, pin->device, pin->why, remap_path);
+    }
+    /* Stamp on "pinned" AND on "left the user's choice alone". Both are a
+       finished migration -- the second is a decision, not a failure, and
+       re-deciding it every launch is exactly what F4 was about. */
+    jw__controller_pin_mark_done(ra_home, core_id);
 }
 
 char *jw_retroarch_bin_path(void) {
