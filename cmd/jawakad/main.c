@@ -20,6 +20,7 @@
 #include "internal/scrape/ss_client.h"
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
+#include "internal/store/pakrat_recovery.h"
 #include "internal/update/update.h"
 
 #include "miniz.h"   /* tdefl_write_image_to_png_file_in_memory (screenshot encode) */
@@ -9610,6 +9611,28 @@ int main(int argc, char *argv[]) {
     jw_log_info("platform script dir: %s", state.platform.script_dir);
     if (state.daemon_only) {
         jw_log_info("daemon-only mode enabled");
+    }
+
+    /* Pak Rat: recover interrupted install transitions before the first
+       package discovery pass. A crash mid-update must never leave the app
+       missing from the scan or a half-promoted tree adopted as live; the
+       install-record update is the commit point and recovery enforces it on
+       observable filesystem state. Runs synchronously on the main thread
+       before any scan job can start. */
+    {
+        jw_pakrat_recovery_context recovery;
+        memset(&recovery, 0, sizeof(recovery));
+        snprintf(recovery.platform, sizeof(recovery.platform), "%s",
+                 jw_platform_compiled_id());
+        snprintf(recovery.sdcard_root, sizeof(recovery.sdcard_root), "%s",
+                 state.sdcard_root);
+        snprintf(recovery.state_dir, sizeof(recovery.state_dir), "%s",
+                 state.state_dir);
+        snprintf(recovery.db_path, sizeof(recovery.db_path), "%s",
+                 state.db_path);
+        if (jw_pakrat_recover_installs(&recovery) != 0) {
+            jw_log_warn("pakrat: install-transition recovery failed; continuing startup");
+        }
     }
 
     /* Use the cached DB for the first frame whenever possible. If the cache is

@@ -151,6 +151,7 @@ DAEMON_SRCS := \
 	internal/storage/sources.c \
 	internal/store/catalog_source.c \
 	internal/store/managed_apps.c \
+	internal/store/pakrat_recovery.c \
 	internal/update/update.c \
 	internal/update/sha256.c \
 	internal/db/db.c \
@@ -225,6 +226,7 @@ PAKRAT_SMOKE_SRCS := \
 	$(PAKRAT_CATALOG_SRC) \
 	$(PAKRAT_STATE_LOGIC_SRC) \
 	internal/store/pakrat.c \
+	internal/store/pakrat_recovery.c \
 	internal/store/pakrat_state.c \
 	internal/ipc/ipc.c \
 	$(PLATFORM_ID_SRC) \
@@ -287,6 +289,7 @@ UI_SRCS := \
 	$(PAKRAT_CATALOG_SRC) \
 	$(PAKRAT_STATE_LOGIC_SRC) \
 	internal/store/pakrat.c \
+	internal/store/pakrat_recovery.c \
 	internal/store/pakrat_state.c \
 	internal/update/sha256.c \
 	internal/discovery/discovery.c \
@@ -328,7 +331,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -558,6 +561,9 @@ pakrat-state-smoke:
 pakrat-history-smoke:
 	scripts/pakrat-history-smoke.sh
 
+pakrat-recovery-smoke:
+	scripts/pakrat-recovery-smoke.sh
+
 mockgen:
 	bash scripts/mockgen.sh
 
@@ -671,6 +677,7 @@ help:
 	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
 	@echo "  make update-local-manifest-smoke  Validate developer artifact.url handling"
 	@echo "  make pakrat-state-smoke      Exercise Pak Rat stale + managed-state safeguards"
+	@echo "  make pakrat-recovery-smoke   Exercise Pak Rat promote-transaction crash recovery"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"
 	@echo "  make tg5050        Placeholder cross-compile target"
