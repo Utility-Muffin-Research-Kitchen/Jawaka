@@ -1173,38 +1173,6 @@ static void jw__rumble_queue(int bursts, long duty, int tick_ms) {
     pthread_mutex_unlock(&g_rumble_lock);
 }
 
-/* Sustained rumble at one level, as a game asks for rather than as the UI does.
-   A single burst held for `ms` IS a sustained buzz, so this reuses the worker
-   and gets its auto-stop and its cancel-on-suspend for free.
-
-   The difference from jw__rumble_queue is that this preempts. Queueing is
-   "latest wins" but only at the next pattern boundary, which is right for UI
-   ticks and wrong here: a game changing intensity has to be heard now, not after
-   the previous level finishes playing out. Bumping the generation cancels what
-   is running so the worker picks this up immediately. */
-static void jw__rumble_hold(long duty, int ms) {
-    if (!g_rumble_ready || duty <= 0 || ms <= 0) return;
-    pthread_mutex_lock(&g_rumble_lock);
-    /* The gate is read INSIDE the lock, unlike jw__rumble_queue, and the
-       difference is not cosmetic. This runs on the force-feedback thread, so a
-       check outside would be a check-then-act against a main thread that gates
-       and quiesces as it goes to sleep: gate reads false, main gates and
-       quiesces, this takes the lock and starts a hold, and the SoC suspends
-       with the motor energised and every thread frozen. That is hours of
-       buzzing in a bag, and it is the exact failure jw__rumble_quiesce was
-       written to prevent. */
-    if (g_rumble_gated) {
-        pthread_mutex_unlock(&g_rumble_lock);
-        return;
-    }
-    g_rumble_bursts  = 1;
-    g_rumble_duty    = duty;
-    g_rumble_tick_ms = ms;
-    g_rumble_gen++;                              /* cancel the level in flight */
-    if (g_rumble_cv_ready) pthread_cond_broadcast(&g_rumble_wake_cv);
-    pthread_cond_signal(&g_rumble_cv);
-    pthread_mutex_unlock(&g_rumble_lock);
-}
 
 /* Refresh the TTL-cached rumble settings from the DB (mirrors the screenshot
    flag: cheap on the input path, picks up changes within the TTL). */
@@ -1335,6 +1303,55 @@ static void jw__rumble_ff_suspend(bool suspended) {
     pthread_mutex_unlock(&g_rumble_lock);
 }
 
+/* Approve, scale and queue a force-feedback request in ONE critical section.
+ *
+ * Sustained rather than patterned: a single burst held for `ms` IS a continuous
+ * buzz, so this reuses the worker and inherits its auto-stop and its
+ * cancel-on-suspend. Unlike jw__rumble_queue it preempts -- queueing is "latest
+ * wins" only at the next pattern boundary, which suits UI ticks and not a game
+ * changing intensity, which has to be heard now.
+ *
+ * Splitting those was the bug: reading "the route is open" under the lock,
+ * dropping it, and queueing afterwards is check-then-act against a main thread
+ * that closes the route and quiesces as a game exits or the menu opens. The FF
+ * thread would then energise the motor on an approval that had already expired,
+ * behind a menu or after the session it belonged to was gone.
+ *
+ * The endpoints are read here rather than passed in for the same reason -- they
+ * belong to the route being approved, and a caller holding its own copy is
+ * holding a stale one by definition.
+ *
+ * Returns 1 queued (with *out_duty set), 0 refused, -1 no motor. Logging is left
+ * to the caller so it happens outside the lock. */
+static int jw__rumble_hold_ff(uint16_t magnitude, int ms, long *out_duty) {
+    if (!g_rumble_ready || ms <= 0) return -1;
+
+    pthread_mutex_lock(&g_rumble_lock);
+    if (g_rumble_gated || !g_rumble_ff_on || g_rumble_ff_suspended ||
+        g_rumble_ff_max <= 0) {
+        pthread_mutex_unlock(&g_rumble_lock);
+        return 0;
+    }
+
+    long duty = g_rumble_ff_min +
+                (g_rumble_ff_max - g_rumble_ff_min) * (long)magnitude / 0xFFFF;
+    if (duty <= 0) {
+        pthread_mutex_unlock(&g_rumble_lock);
+        return 0;
+    }
+
+    g_rumble_bursts  = 1;
+    g_rumble_duty    = duty;
+    g_rumble_tick_ms = ms;
+    g_rumble_gen++;                              /* cancel the level in flight */
+    if (g_rumble_cv_ready) pthread_cond_broadcast(&g_rumble_wake_cv);
+    pthread_cond_signal(&g_rumble_cv);
+    pthread_mutex_unlock(&g_rumble_lock);
+
+    *out_duty = duty;
+    return 1;
+}
+
 /* An emulator played (or stopped) an FF_RUMBLE effect on the virtual pad.
    Runs on the proxy's force-feedback thread, so it touches nothing but the
    lock-guarded endpoints and the worker. */
@@ -1355,13 +1372,17 @@ static void jw__rumble_ff(void *userdata, uint16_t magnitude, uint32_t duration_
         return;
     }
 
-    long min, max;
-    pthread_mutex_lock(&g_rumble_lock);
-    bool on = g_rumble_ff_on && !g_rumble_ff_suspended;
-    min = g_rumble_ff_min;
-    max = g_rumble_ff_max;
-    pthread_mutex_unlock(&g_rumble_lock);
-    if (!on || max <= 0) {
+    /* A zero replay length means "until stopped" in evdev, but the motor must
+       never be left with no deadline at all -- if the emulator dies mid-effect
+       the stop never comes. Hold it for the same span SDL uses between its own
+       rumble resends, so a genuinely continuous effect is refreshed long before
+       this runs out and an abandoned one dies on its own. */
+    uint32_t ms = duration_ms ? duration_ms : JW_RUMBLE_FF_MAX_HOLD_MS;
+    if (ms > JW_RUMBLE_FF_MAX_HOLD_MS) ms = JW_RUMBLE_FF_MAX_HOLD_MS;
+
+    long duty = 0;
+    int rc = jw__rumble_hold_ff(magnitude, (int)ms, &duty);
+    if (rc <= 0) {
         /* Worth saying out loud: an emulator asking for rumble and getting
            silence looks identical to one that never asked. */
         if (!logged_on) {
@@ -1371,22 +1392,11 @@ static void jw__rumble_ff(void *userdata, uint16_t magnitude, uint32_t duration_
         }
         return;
     }
-
-    long duty = min + (max - min) * (long)magnitude / 0xFFFF;
     if (!logged_on) {
         logged_on = true;
         jw_log_info("rumble: force feedback started magnitude=%u duty=%ld",
                     (unsigned)magnitude, duty);
     }
-
-    /* A zero replay length means "until stopped" in evdev, but the motor must
-       never be left with no deadline at all -- if the emulator dies mid-effect
-       the stop never comes. Hold it for the same span SDL uses between its own
-       rumble resends, so a genuinely continuous effect is refreshed long before
-       this runs out and an abandoned one dies on its own. */
-    uint32_t ms = duration_ms ? duration_ms : JW_RUMBLE_FF_MAX_HOLD_MS;
-    if (ms > JW_RUMBLE_FF_MAX_HOLD_MS) ms = JW_RUMBLE_FF_MAX_HOLD_MS;
-    jw__rumble_hold(duty, (int)ms);
 }
 
 static void jw__seed_rom_folders(const jw_daemon_state *state) {
