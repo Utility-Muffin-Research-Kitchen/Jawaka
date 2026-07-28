@@ -14,13 +14,15 @@
  *
  *   - A `key: value` or `key=value` pair whose key (case-insensitively,
  *     with delimiter-adjacent whitespace trimmed) names a known-sensitive
- *     field. Unquoted keys use [A-Za-z0-9_-]; quoted structured-data keys
- *     may contain whitespace. Separator and camelCase variants, and
- *     compound names ending in a sensitive component (for example,
- *     `authToken`, `csrf_token`, and `five_game_pin_hash`), are recognized
- *     without treating names such as `cookie_count` or `password_policy`
- *     as secret. This covers API keys, tokens (including `Authorization:
- *     Bearer ...`), cookies, PINs, passwords, and labeled password hashes.
+ *     field. Unquoted keys use [A-Za-z0-9_-], plus the common two-word
+ *     `API key`, `private key`, and `password hash` forms; quoted
+ *     structured-data keys may contain whitespace. Separator and camelCase
+ *     variants, and compound names ending in a sensitive component (for
+ *     example, `authToken`, `csrf_token`, and `five_game_pin_hash`), are
+ *     recognized without treating names such as `cookie_count` or
+ *     `password_policy` as secret. This covers API keys, tokens (including
+ *     `Authorization: Bearer ...`), cookies, PINs, passwords, and labeled
+ *     password hashes.
  *     The ambiguous bare field `auth` passes through only for a small set
  *     of exact status values such as `enabled`, `disabled`, and `true`;
  *     other values are treated as credentials.

@@ -73,8 +73,12 @@ static bool jw__redact_has_component_suffix(const char *normalized,
 
 static jw__redact_key_kind jw__redact_classify_key(const char *key,
                                                     size_t key_len) {
-    if (key_len == 0 || key_len > JW__REDACT_KEY_MAX) {
+    if (key_len == 0) {
         return JW__REDACT_KEY_NONE;
+    }
+    if (key_len > JW__REDACT_KEY_MAX) {
+        key += key_len - JW__REDACT_KEY_MAX;
+        key_len = JW__REDACT_KEY_MAX;
     }
 
     /* CamelCase normalization can insert at most one separator between each
@@ -103,6 +107,11 @@ static jw__redact_key_kind jw__redact_classify_key(const char *key,
     }
     normalized[normalized_len] = '\0';
 
+    /* Jawaka's controller mapper uses "controller pin" to mean a persistent
+     * device assignment, not an authentication PIN. */
+    if (strcmp(normalized, "controller_pin") == 0) {
+        return JW__REDACT_KEY_NONE;
+    }
     if (strcmp(normalized, "auth") == 0) {
         return JW__REDACT_KEY_AUTH;
     }
@@ -203,9 +212,25 @@ static void jw__redact_append_str(char *out, size_t out_size, size_t *out_pos,
     jw__redact_append(out, out_size, out_pos, text, strlen(text));
 }
 
+static bool jw__redact_word_equals(const char *word, size_t word_len,
+                                   const char *expected) {
+    size_t expected_len = strlen(expected);
+    if (word_len != expected_len) {
+        return false;
+    }
+    for (size_t i = 0; i < word_len; i++) {
+        if (tolower((unsigned char)word[i]) !=
+            tolower((unsigned char)expected[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Finds a possibly quoted, delimiter-adjacent key. Unquoted keys use the
- * documented [A-Za-z0-9_-] alphabet. Quoted structured-data keys may also
- * use whitespace as a word separator (for example, `"API key"`). */
+ * documented [A-Za-z0-9_-] alphabet, with one preceding word included for
+ * the common `API key`, `private key`, and `password hash` shapes. Quoted
+ * structured-data keys may use arbitrary whitespace as a word separator. */
 static bool jw__redact_key_before_delimiter(const char *line, size_t delimiter,
                                             size_t *key_start_out,
                                             size_t *key_len_out) {
@@ -242,6 +267,25 @@ static bool jw__redact_key_before_delimiter(const char *line, size_t delimiter,
         key_start = key_end;
         while (key_start > 0 && jw__redact_is_key_char(line[key_start - 1])) {
             key_start--;
+        }
+
+        size_t last_word_len = key_end - key_start;
+        if (jw__redact_word_equals(line + key_start, last_word_len, "key") ||
+            jw__redact_word_equals(line + key_start, last_word_len, "hash") ||
+            jw__redact_word_equals(line + key_start, last_word_len, "pin")) {
+            size_t previous_end = key_start;
+            while (previous_end > 0 &&
+                   isspace((unsigned char)line[previous_end - 1])) {
+                previous_end--;
+            }
+            size_t previous_start = previous_end;
+            while (previous_start > 0 &&
+                   jw__redact_is_key_char(line[previous_start - 1])) {
+                previous_start--;
+            }
+            if (previous_start < previous_end) {
+                key_start = previous_start;
+            }
         }
     }
 

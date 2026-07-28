@@ -96,6 +96,18 @@ static void jw__test_key_spelling_variants_and_sensitive_suffixes(void) {
                                   sizeof(out)));
     assert(strcmp(out, "AUTHTOKEN=[REDACTED] XAPIKEY=[REDACTED]") == 0);
 
+    assert(jw_svc_log_redact_line("API key: abc", out, sizeof(out)));
+    assert(strcmp(out, "API key: [REDACTED]") == 0);
+
+    assert(jw_svc_log_redact_line(
+        "this_is_a_deliberately_long_service_namespace_that_exceeds_"
+        "sixty_four_chars_access_token=abc",
+        out, sizeof(out)));
+    assert(strcmp(
+               out,
+               "this_is_a_deliberately_long_service_namespace_that_exceeds_"
+               "sixty_four_chars_access_token=[REDACTED]") == 0);
+
     puts("PASS log-redact-test camelCase, separator, suffix, and compact key variants redact");
 }
 
@@ -130,7 +142,14 @@ static void jw__test_similar_non_secret_keys_pass_through(void) {
                   "2026-07-28 12:34:56 INFO "
                   "url=https://example.test:8443/path") == 0);
 
-    puts("PASS log-redact-test ambiguous auth, key prefixes, timestamps, and URLs pass through");
+    assert(!jw_svc_log_redact_line(
+        "controller pin: /dev/input/event0 already selects device=2", out,
+        sizeof(out)));
+    assert(strcmp(out,
+                  "controller pin: /dev/input/event0 already selects "
+                  "device=2") == 0);
+
+    puts("PASS log-redact-test ambiguous auth, similar keys, URLs, and controller pins pass through");
 }
 
 static void jw__test_auth_credentials_and_schemes_are_redacted(void) {
