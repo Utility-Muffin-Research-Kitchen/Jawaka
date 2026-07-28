@@ -14,10 +14,17 @@
  *   | PKG-1 / TXN-1                              | Fail the package operation. Never change bytes under a live process. |
  *
  * This module is that table alone, as a pure lookup: given which caller
- * is asking, it returns what to do when the caller already knows a
- * stop could not be verified absent. It does not decide whether a stop
- * IS verified (internal/services/stop.c and ownership.c do that); it
- * has no I/O and holds no state.
+ * is asking, it returns what to do with the caller's immediate operation
+ * when the caller already knows a stop could not be verified absent. It
+ * does not decide whether a stop IS verified
+ * (internal/services/stop.c and ownership.c do that); it has no I/O and
+ * holds no state.
+ *
+ * The five values below are the table's decision contexts, not every way
+ * a service can enter the stop sequence. In particular, CTL-1 Stop,
+ * Disable, and Restart do not add rows. Regardless of this lookup's
+ * result, the supervisor must not start a replacement group until the
+ * prior reserved group is proven absent.
  */
 
 typedef enum {
@@ -38,8 +45,8 @@ typedef enum {
 } jw_svc_stop_caller;
 
 typedef enum {
-    /* Proceed with the caller's own operation regardless; the caller
-     * must still record a warning naming the stuck service. */
+    /* Proceed with the caller's immediate operation; the caller must
+     * still record a warning naming the stuck service. */
     JW_SVC_UNVERIFIED_STOP_CONTINUE_WITH_WARNING = 0,
     /* Abort the caller's own operation entirely and report which
      * service is stuck. */
@@ -49,15 +56,21 @@ typedef enum {
     JW_SVC_UNVERIFIED_STOP_REQUIRE_OVERRIDE,
 } jw_svc_unverified_stop_action;
 
-/* Returns the table's action for `caller`. Every jw_svc_stop_caller
- * value is covered; there is no "unknown caller" case for this
- * function to handle since the enum is closed and every value is a
- * real, named row in the contract's table above.
+/* Returns the table's action for `caller`. Every named
+ * jw_svc_stop_caller value is covered. Because C permits an unchecked
+ * integer-to-enum cast, any other value fails closed with
+ * JW_SVC_UNVERIFIED_STOP_FAIL_OPERATION.
  *
  * Callers use this identically whether the underlying reason a stop
  * could not be verified was "outlived SIGKILL" or "an earlier
  * generation still holds the lease" -- contracts.md is explicit that
- * "the same table applies" to both. */
+ * "the same table applies" to both.
+ *
+ * This result does not grant permission to restart the service. For
+ * storage and suspend policy stops, contracts.md separately requires a
+ * previously running service to remain stuck and visible until its prior
+ * reserved group is proven absent (or reboot removes it); in particular,
+ * resume must not start a second group over an unverified suspend stop. */
 jw_svc_unverified_stop_action jw_svc_unverified_stop_action_for(jw_svc_stop_caller caller);
 
 #endif
