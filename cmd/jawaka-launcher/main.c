@@ -338,6 +338,31 @@ static inline void jw__haptic(const jw_launcher_state *state, const char *event)
         jw_ipc_rumble(state->socket_path, event);
 }
 
+static inline bool jw__is_dpad(cat_button button) {
+    return button == CAT_BTN_UP || button == CAT_BTN_DOWN ||
+           button == CAT_BTN_LEFT || button == CAT_BTN_RIGHT;
+}
+
+/* One number standing for "where the cursor is" across every 5-Game Mode
+   screen -- the picker's game and system lists, and the wizard's arrange, lock,
+   PIN and style steps. The caller only needs to know whether it changed, so the
+   fields are folded together rather than reported individually. The step is
+   mixed in so advancing between screens counts as movement too. */
+static long jw__focus_ui_pos(const jw_launcher_state *state) {
+    if (!state) return 0;
+    long pos = (long)state->focus_setup_step * 1000003L;
+    pos += (long)state->focus_setup_arrange_cursor * 10007L;
+    pos += (long)state->focus_setup_choice * 101L;
+    pos += (long)state->focus_setup_pin_slot * 17L;
+    for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) {
+        pos += (long)state->focus_setup_pin[i] * (3L + i);
+        pos += (long)state->focus_setup_pin2[i] * (23L + i);
+    }
+    pos += (long)state->game_list.cursor * 7L;
+    pos += (long)state->list.cursor;
+    return pos;
+}
+
 /* True when `button` maps to a real cursor/channel/tab movement in this home
    layout, so an unchanged position after the press is a genuine boundary
    (blocked tick) rather than an inert key. */
@@ -1574,6 +1599,7 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
     if (restore < 0) restore = 0;
     if (restore > count - 1) restore = count > 0 ? count - 1 : 0;
     cat_list_state_jump(&state->list, restore, count);
+
 }
 
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
@@ -5320,6 +5346,11 @@ static void jw__open_menu(jw_launcher_state *state) {
 
 static void jw__switch_system_tab(jw_launcher_state *state, int direction) {
     if (!state) return;
+    /* Moving along the System tab row is movement, so it ticks like the home tab
+       row does: "nav", gated on the opt-in navigation tick, rather than the
+       "select" a context change gets. The row wraps, so there is no boundary to
+       report blocked. */
+    jw__haptic(state, "nav");
     bool was_settings = (state->menu_tab == JW_SMTAB_SETTINGS);
     state->menu_tab = (state->menu_tab + direction + JW_SMTAB_COUNT) % JW_SMTAB_COUNT;
     bool now_settings = (state->menu_tab == JW_SMTAB_SETTINGS);
@@ -7358,6 +7389,7 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
             jw_settings_ui_close(&state->settings);
             state->menu_open = false;
             state->status[0] = '\0';
+            jw__haptic(state, "select");
             return;
         }
         bool theme_changed = false;
@@ -7377,21 +7409,31 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
     /* Actions / Info: simple selectable lists. */
     int tab_count;
     jw__menu_tab_items(state->menu_tab, &tab_count);
+    /* Same movement contract as the home list: tick on a real move, buzz at a
+       hard boundary. Snapshot before, compare after -- cat_list_state_move
+       clamps at the ends, so an unchanged cursor IS the boundary. */
+    int menu_cur0 = state->menu_list.cursor;
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->menu_list, -1, tab_count);
+            jw__haptic(state, state->menu_list.cursor != menu_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->menu_list, +1, tab_count);
+            jw__haptic(state, state->menu_list.cursor != menu_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_A:
             jw__menu_activate(socket_path, db_path, state, running);
             break;
         case CAT_BTN_MENU:
             /* MENU exits System back to Content; B stays inside System (no-op at
-               a tab's root — you leave via MENU). */
+               a tab's root — you leave via MENU). Ticks on the way out as well as
+               in: leaving a page is the same kind of event as entering one, and a
+               button that buzzes opening a screen but goes dead closing it reads
+               as a dropped input. */
             state->menu_open = false;
             state->status[0] = '\0';
+            jw__haptic(state, "select");
             break;
         default:
             break;
@@ -7455,6 +7497,7 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
                 state->pakrat_open = false;
                 state->menu_open = false;
                 state->status[0] = '\0';
+                jw__haptic(state, "select");
                 break;
             default:
                 break;
@@ -7462,18 +7505,24 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
         return;
     }
 
+    /* Movement ticks, boundaries buzz -- same contract as the home list. */
+    int pak_cur0 = state->pakrat_list.cursor;
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->pakrat_list, -1, state->pakrat_app_count);
+            jw__haptic(state, state->pakrat_list.cursor != pak_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->pakrat_list, +1, state->pakrat_app_count);
+            jw__haptic(state, state->pakrat_list.cursor != pak_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_LEFT:
             cat_list_state_page(&state->pakrat_list, -1, state->pakrat_app_count);
+            jw__haptic(state, state->pakrat_list.cursor != pak_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_RIGHT:
             cat_list_state_page(&state->pakrat_list, +1, state->pakrat_app_count);
+            jw__haptic(state, state->pakrat_list.cursor != pak_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_L1:
         case CAT_BTN_R1:
@@ -7517,6 +7566,7 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
             state->pakrat_open = false;
             state->menu_open = false;
             state->status[0] = '\0';
+            jw__haptic(state, "select");
             break;
         default:
             break;
@@ -8316,15 +8366,27 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         return;
     }
 
+    /* 5-Game Mode's wizard and picker each have several sub-screens with their
+       own cursors, so the movement haptic is applied HERE, once, rather than at
+       every case inside them: snapshot the active position, run the handler,
+       and let a changed position mean "moved". Same contract the home list and
+       the settings pages use, and the only reason it is duplicated a third time
+       is that those two grew their own copies first. */
     if (state->focus_setup_open) {
+        long pos0 = jw__focus_ui_pos(state);
         jw__handle_focus_setup_input(db_path, state, button);
+        if (jw__is_dpad(button))
+            jw__haptic(state, jw__focus_ui_pos(state) != pos0 ? "nav" : "blocked");
         return;
     }
 
     /* Pick mode overlays the real Games-tab browser but stays locked to it:
        fully intercept input (no tab-switch / system menu / context / switcher). */
     if (state->focus_pick_active) {
+        long pos0 = jw__focus_ui_pos(state);
         jw__handle_pick_input(db_path, state, button);
+        if (jw__is_dpad(button))
+            jw__haptic(state, jw__focus_ui_pos(state) != pos0 ? "nav" : "blocked");
         return;
     }
 
