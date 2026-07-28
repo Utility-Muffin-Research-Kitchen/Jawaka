@@ -139,7 +139,8 @@ int jw_svc_launch_open_log(const char *logs_dir, const char *service_id,
  *
  * Returns -1 on failure with a stable slug in `reason` (may be NULL):
  *   "invalid-request"   run_path_abs missing, args out of range, or
- *                       lease_fd < 0, or log_fd < -1
+ *                       lease_fd < 0, log_fd < -1, or the same descriptor
+ *                       supplied for both the lease and log
  *   "env-parse-failed"  env_json is not a flat JSON string object
  *   "open-log-failed"   a valid log_fd could not be used (see open_log)
  *   "fork-failed"       parent-side launch setup, fork(), child setup, or

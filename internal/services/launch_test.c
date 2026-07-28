@@ -586,6 +586,13 @@ static void jw__test_invalid_requests(void) {
     req.log_fd = -1;
 
     req.lease_fd = jw__open_lease_standin();
+    req.log_fd = req.lease_fd;
+    assert(jw_svc_launch(&req, reason, sizeof(reason)) < 0);
+    assert(strcmp(reason, "invalid-request") == 0);
+    close(req.lease_fd);
+    req.log_fd = -1;
+
+    req.lease_fd = jw__open_lease_standin();
     req.run_path_abs = NULL;
     assert(jw_svc_launch(&req, reason, sizeof(reason)) < 0);
     assert(strcmp(reason, "invalid-request") == 0);

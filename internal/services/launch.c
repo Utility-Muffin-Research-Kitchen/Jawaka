@@ -421,7 +421,8 @@ pid_t jw_svc_launch(const jw_svc_launch_request *req,
     if (!req || !req->run_path_abs || req->run_path_abs[0] == '\0' ||
         req->args_count < 0 || req->args_count > JW_SVC_LAUNCH_MAX_ARGS ||
         (req->args_count > 0 && !req->args) || req->lease_fd < 0 ||
-        req->log_fd < -1) {
+        req->log_fd < -1 ||
+        (req->log_fd >= 0 && req->log_fd == req->lease_fd)) {
         jw__set_slug(reason, reason_size, "invalid-request");
         return -1;
     }
