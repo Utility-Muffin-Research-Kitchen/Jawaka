@@ -16,9 +16,13 @@
  * the second (or later) one encountered. There is no notion of a
  * "first, legitimate" owner of a colliding id.
  *
- * Comparison is byte-for-byte case-sensitive strcmp(), the same
- * convention internal/services/manifest.c already uses when checking
- * a pak's top-level `id` against its `service.id`.
+ * Comparison is byte-for-byte case-sensitive strcmp(). The reverse-DNS
+ * grammar enforced by jw_service_manifest_validate() admits only
+ * lowercase ASCII letters and digits, so case variants cannot reach
+ * this function through its documented validated-input path;
+ * internal/services/manifest.c likewise uses strcmp() when checking a
+ * pak's top-level `id` against its `service.id`. This function does not
+ * normalize invalid or otherwise unvalidated input.
  *
  * This module does no I/O and knows nothing about pak.json, JSON, or
  * the filesystem: callers feed it the service_id strings they already
