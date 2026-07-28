@@ -5,7 +5,15 @@
 
 #include "internal/services/lease.h"
 
+/* This test deliberately uses assert() for both checks and fixture setup.
+ * Jawaka's device profile defines NDEBUG, so force assertions on before
+ * including <assert.h>; otherwise the profile silently removes forks,
+ * reads, closes, and the checks that make this test meaningful. */
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -32,6 +40,12 @@ static ino_t jw__test_fd_inode(int fd) {
     return st.st_ino;
 }
 
+static void jw__test_path(char *out, size_t out_size, const char *parent,
+                          const char *child) {
+    int n = snprintf(out, out_size, "%s/%s", parent, child);
+    assert(n > 0 && (size_t)n < out_size);
+}
+
 static void jw__test_basic_acquire_and_contention(void) {
     char runtime_dir[512]; jw__test_mkdtemp("basic", runtime_dir, sizeof(runtime_dir));
 
@@ -47,7 +61,19 @@ static void jw__test_basic_acquire_and_contention(void) {
     assert(fd2 == -1);
     assert(strcmp(reason, "stale-generation") == 0);
 
-    ino_t inode_before = jw__test_fd_inode(fd1);
+    char services_dir[600], service_dir[600], lease_path[600];
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    jw__test_path(service_dir, sizeof(service_dir), services_dir, "org.umrk.test");
+    jw__test_path(lease_path, sizeof(lease_path), service_dir, "generation.lease");
+
+    /* Keep an independent reference to the original inode after releasing
+     * the flock. If the implementation unlinks and recreates the pathname,
+     * the still-open old inode cannot be recycled and this comparison must
+     * differ; a bare close/reopen comparison can miss immediate inode-number
+     * reuse. */
+    int observer_fd = open(lease_path, O_RDONLY);
+    assert(observer_fd >= 0);
+    ino_t inode_before = jw__test_fd_inode(observer_fd);
     assert(close(fd1) == 0); /* releases the flock: last (only) holder closed it */
 
     memset(reason, 0, sizeof(reason));
@@ -58,6 +84,7 @@ static void jw__test_basic_acquire_and_contention(void) {
      * same path. */
     assert(jw__test_fd_inode(fd3) == inode_before);
     assert(close(fd3) == 0);
+    assert(close(observer_fd) == 0);
 
     puts("PASS lease-test basic acquire, same-process contention, inode preserved");
 }
@@ -91,6 +118,16 @@ static void jw__test_runtime_dir_unavailable(void) {
                                   reason, sizeof(reason));
     assert(fd == -1);
     assert(strcmp(reason, "runtime-dir-unavailable") == 0);
+
+    memset(reason, 0, sizeof(reason));
+    fd = jw_svc_lease_acquire("", "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "runtime-dir-unavailable") == 0);
+
+    memset(reason, 0, sizeof(reason));
+    fd = jw_svc_lease_acquire(NULL, "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "runtime-dir-unavailable") == 0);
     puts("PASS lease-test rejects an unavailable runtime_dir");
 }
 
@@ -100,18 +137,134 @@ static void jw__test_directories_are_owner_only(void) {
     int fd = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
     assert(fd >= 0);
 
-    char services_dir[600], service_dir[600];
-    snprintf(services_dir, sizeof(services_dir), "%s/services", runtime_dir);
-    snprintf(service_dir, sizeof(service_dir), "%s/services/org.umrk.test", runtime_dir);
+    char services_dir[600], service_dir[600], lease_path[600];
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    jw__test_path(service_dir, sizeof(service_dir), services_dir, "org.umrk.test");
+    jw__test_path(lease_path, sizeof(lease_path), service_dir, "generation.lease");
 
     struct stat st;
-    assert(stat(services_dir, &st) == 0);
+    assert(lstat(services_dir, &st) == 0);
+    assert(S_ISDIR(st.st_mode));
+    assert(st.st_uid == geteuid());
     assert((st.st_mode & 0777) == 0700);
-    assert(stat(service_dir, &st) == 0);
+    assert(lstat(service_dir, &st) == 0);
+    assert(S_ISDIR(st.st_mode));
+    assert(st.st_uid == geteuid());
     assert((st.st_mode & 0777) == 0700);
+    assert(lstat(lease_path, &st) == 0);
+    assert(S_ISREG(st.st_mode));
+    assert(st.st_uid == geteuid());
+    assert((st.st_mode & 0777) == 0600);
 
     assert(close(fd) == 0);
     puts("PASS lease-test creates owner-only directories");
+}
+
+static void jw__test_rejects_unsafe_existing_directories(void) {
+    char reason[JW_TEST_REASON_BUF] = {0};
+    char runtime_dir[512], services_dir[600], service_dir[600];
+
+    jw__test_mkdtemp("unsafe-services-mode", runtime_dir, sizeof(runtime_dir));
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    assert(mkdir(services_dir, 0700) == 0);
+    assert(chmod(services_dir, 0777) == 0);
+    int fd = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "mkdir-failed") == 0);
+
+    jw__test_mkdtemp("unsafe-service-mode", runtime_dir, sizeof(runtime_dir));
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    jw__test_path(service_dir, sizeof(service_dir), services_dir, "org.umrk.test");
+    assert(mkdir(services_dir, 0700) == 0);
+    assert(mkdir(service_dir, 0700) == 0);
+    assert(chmod(service_dir, 0777) == 0);
+    memset(reason, 0, sizeof(reason));
+    fd = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "mkdir-failed") == 0);
+
+    puts("PASS lease-test rejects unsafe existing directory permissions");
+}
+
+static void jw__test_rejects_symlinked_paths(void) {
+    char reason[JW_TEST_REASON_BUF] = {0};
+    char runtime_dir[512], outside_dir[512];
+    char services_dir[600], service_dir[600], lease_path[600], outside_child[600];
+
+    jw__test_mkdtemp("services-symlink", runtime_dir, sizeof(runtime_dir));
+    jw__test_mkdtemp("services-target", outside_dir, sizeof(outside_dir));
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    assert(symlink(outside_dir, services_dir) == 0);
+    int fd = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "mkdir-failed") == 0);
+    jw__test_path(outside_child, sizeof(outside_child), outside_dir, "org.umrk.test");
+    assert(lstat(outside_child, &(struct stat){0}) != 0 && errno == ENOENT);
+
+    jw__test_mkdtemp("service-symlink", runtime_dir, sizeof(runtime_dir));
+    jw__test_mkdtemp("service-target", outside_dir, sizeof(outside_dir));
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    jw__test_path(service_dir, sizeof(service_dir), services_dir, "org.umrk.test");
+    assert(mkdir(services_dir, 0700) == 0);
+    assert(symlink(outside_dir, service_dir) == 0);
+    memset(reason, 0, sizeof(reason));
+    fd = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "mkdir-failed") == 0);
+    jw__test_path(outside_child, sizeof(outside_child), outside_dir, "generation.lease");
+    assert(lstat(outside_child, &(struct stat){0}) != 0 && errno == ENOENT);
+
+    jw__test_mkdtemp("lease-symlink", runtime_dir, sizeof(runtime_dir));
+    jw__test_mkdtemp("lease-target-dir", outside_dir, sizeof(outside_dir));
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    jw__test_path(service_dir, sizeof(service_dir), services_dir, "org.umrk.test");
+    jw__test_path(lease_path, sizeof(lease_path), service_dir, "generation.lease");
+    jw__test_path(outside_child, sizeof(outside_child), outside_dir, "target");
+    assert(mkdir(services_dir, 0700) == 0);
+    assert(mkdir(service_dir, 0700) == 0);
+    int target_fd = open(outside_child, O_RDWR | O_CREAT, 0600);
+    assert(target_fd >= 0);
+    assert(close(target_fd) == 0);
+    assert(symlink(outside_child, lease_path) == 0);
+    memset(reason, 0, sizeof(reason));
+    fd = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "open-failed") == 0);
+
+    puts("PASS lease-test rejects symlinked lease paths");
+}
+
+static void jw__test_rejects_non_regular_or_unsafe_lease_files(void) {
+    char reason[JW_TEST_REASON_BUF] = {0};
+    char runtime_dir[512], services_dir[600], service_dir[600], lease_path[600];
+
+    jw__test_mkdtemp("lease-fifo", runtime_dir, sizeof(runtime_dir));
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    jw__test_path(service_dir, sizeof(service_dir), services_dir, "org.umrk.test");
+    jw__test_path(lease_path, sizeof(lease_path), service_dir, "generation.lease");
+    assert(mkdir(services_dir, 0700) == 0);
+    assert(mkdir(service_dir, 0700) == 0);
+    assert(mkfifo(lease_path, 0600) == 0);
+    int fd = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "open-failed") == 0);
+
+    jw__test_mkdtemp("lease-mode", runtime_dir, sizeof(runtime_dir));
+    jw__test_path(services_dir, sizeof(services_dir), runtime_dir, "services");
+    jw__test_path(service_dir, sizeof(service_dir), services_dir, "org.umrk.test");
+    jw__test_path(lease_path, sizeof(lease_path), service_dir, "generation.lease");
+    assert(mkdir(services_dir, 0700) == 0);
+    assert(mkdir(service_dir, 0700) == 0);
+    fd = open(lease_path, O_RDWR | O_CREAT, 0600);
+    assert(fd >= 0);
+    assert(close(fd) == 0);
+    assert(chmod(lease_path, 0666) == 0);
+    memset(reason, 0, sizeof(reason));
+    fd = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
+    assert(fd == -1);
+    assert(strcmp(reason, "open-failed") == 0);
+
+    puts("PASS lease-test rejects unsafe existing lease files");
 }
 
 /* The scenario contracts.md's daemon-restart-overlap section exists for:
@@ -173,6 +326,9 @@ int main(void) {
     jw__test_invalid_service_ids();
     jw__test_runtime_dir_unavailable();
     jw__test_directories_are_owner_only();
+    jw__test_rejects_unsafe_existing_directories();
+    jw__test_rejects_symlinked_paths();
+    jw__test_rejects_non_regular_or_unsafe_lease_files();
     jw__test_cross_process_contention();
     puts("PASS lease-test");
     return 0;

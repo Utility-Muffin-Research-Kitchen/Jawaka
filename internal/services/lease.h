@@ -38,12 +38,15 @@
  * (may be NULL to discard it):
  *   "invalid-service-id"      service_id is empty, contains '/', or is
  *                             exactly "." or ".."
- *   "runtime-dir-unavailable" runtime_dir does not exist or is not a
- *                             directory
+ *   "runtime-dir-unavailable" runtime_dir is empty, does not exist, or is
+ *                             not a directory
  *   "path-too-long"           a constructed path exceeded PATH_MAX
- *   "mkdir-failed"            could not create/verify a directory in the
+ *   "mkdir-failed"            could not create/verify an owner-owned,
+ *                             owner-only, non-symlink directory in the
  *                             services/<service_id>/ path
- *   "open-failed"             could not open/create the lease file
+ *   "open-failed"             could not open/create a regular,
+ *                             owner-owned, owner-only, non-symlink lease
+ *                             file
  *   "lock-failed"             flock() failed for a reason other than the
  *                             lock already being held
  *   "stale-generation"        the lock is already held (EWOULDBLOCK): an

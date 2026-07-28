@@ -41,27 +41,39 @@ static bool jw__lease_service_id_is_safe(const char *service_id) {
 }
 
 /* Creates `path` as a directory if it does not exist; if it already
- * exists, succeeds only when it is actually a directory (never removes
- * or replaces a same-named non-directory -- that is a caller/environment
- * error to surface as failure, not something to paper over). Does not
- * change the mode of an already-existing directory: an existing
- * generation.lease directory's permissions are not this function's to
- * rewrite each call. */
+ * exists, succeeds only when it is a real (not symlinked), owner-owned,
+ * owner-only directory. The services tree is part of the lease's trust
+ * boundary: accepting a writable-by-others directory would allow the
+ * stable lease pathname to be replaced, while following a directory
+ * symlink would move the lock outside the runtime tree. Never removes,
+ * replaces, or silently chmods an existing object; an unsafe pre-existing
+ * path fails closed for the caller/environment to repair. */
 static bool jw__lease_mkdir_if_missing(const char *path, mode_t mode) {
-    if (mkdir(path, mode) == 0) {
-        return true;
-    }
-    if (errno != EEXIST) {
+    if (mkdir(path, mode) != 0 && errno != EEXIST) {
         return false;
     }
+
     struct stat st;
-    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+    return lstat(path, &st) == 0 &&
+           S_ISDIR(st.st_mode) &&
+           st.st_uid == geteuid() &&
+           (st.st_mode & (S_IRWXG | S_IRWXO)) == 0;
+}
+
+static bool jw__lease_file_is_safe(const struct stat *st) {
+    return S_ISREG(st->st_mode) &&
+           st->st_uid == geteuid() &&
+           (st->st_mode & (S_IRWXG | S_IRWXO)) == 0;
 }
 
 int jw_svc_lease_acquire(const char *runtime_dir, const char *service_id,
                          char *reason, size_t reason_size) {
-    if (!runtime_dir || !runtime_dir[0] || !jw__lease_service_id_is_safe(service_id)) {
+    if (!jw__lease_service_id_is_safe(service_id)) {
         jw__lease_set_reason(reason, reason_size, "invalid-service-id");
+        return -1;
+    }
+    if (!runtime_dir || !runtime_dir[0]) {
+        jw__lease_set_reason(reason, reason_size, "runtime-dir-unavailable");
         return -1;
     }
 
@@ -100,13 +112,34 @@ int jw_svc_lease_acquire(const char *runtime_dir, const char *service_id,
         return -1;
     }
 
+    /* Refuse an unsafe existing object before open() so, for example, a
+     * FIFO or device is not opened for I/O. O_NOFOLLOW and the post-open
+     * fstat() close the symlink/type race around this advisory check. */
+    struct stat lease_st;
+    if (lstat(lease_path, &lease_st) == 0) {
+        if (!jw__lease_file_is_safe(&lease_st)) {
+            jw__lease_set_reason(reason, reason_size, "open-failed");
+            return -1;
+        }
+    } else if (errno != ENOENT) {
+        jw__lease_set_reason(reason, reason_size, "open-failed");
+        return -1;
+    }
+
     /* O_CREAT without O_TRUNC and without O_EXCL: create it if absent,
      * but an EXISTING lease file's inode identity and any lock a still-
      * running old generation holds on it must survive completely
      * untouched by this open() call -- that is the entire no-overlap
-     * mechanism this function exists to implement. */
-    int fd = open(lease_path, O_RDWR | O_CREAT, 0600);
+     * mechanism this function exists to implement. O_NOFOLLOW prevents a
+     * same-named symlink from redirecting the stable lock to another
+     * inode. */
+    int fd = open(lease_path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
     if (fd < 0) {
+        jw__lease_set_reason(reason, reason_size, "open-failed");
+        return -1;
+    }
+    if (fstat(fd, &lease_st) != 0 || !jw__lease_file_is_safe(&lease_st)) {
+        close(fd);
         jw__lease_set_reason(reason, reason_size, "open-failed");
         return -1;
     }
