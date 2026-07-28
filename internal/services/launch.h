@@ -29,13 +29,15 @@
  *                              signalling) targets, and the reason the
  *                              caller must not reap the leader early
  *                              (see below).
- *   2. dup2(lease_fd, 3)    -- the inherited generation lease on reserved
- *                              descriptor 3, FD_CLOEXEC CLEARED so it
- *                              survives exec, and UMRK_SERVICE_LEASE_FD=3
- *                              exported. Per SVC-1 the lock rides the
- *                              open file description across fork+exec and
- *                              is released only when the last duplicate
- *                              closes (ordinary process exit).
+ *   2. dup2(lease_fd, 3)    -- first relocate the caller's lease/log fds
+ *                              off all reserved descriptors, then place the
+ *                              inherited generation lease on descriptor 3
+ *                              with FD_CLOEXEC CLEARED so it survives exec.
+ *                              UMRK_SERVICE_LEASE_FD=3 was prepared in the
+ *                              parent-built child environment. Per SVC-1
+ *                              the lock rides the open file description
+ *                              across fork+exec and is released only when
+ *                              the last duplicate closes (ordinary exit).
  *   3. PR_SET_PDEATHSIG     -- Linux only (MLP1): ask the kernel to send
  *                              the service SIGTERM when its parent
  *                              (Jawaka) dies, closing the set-then-
@@ -68,10 +70,11 @@
 /* Rotating log caps, SVC-1 supervision step 5: "capped at 5 files x
  * 256 KiB" under $LOGS_PATH/services/<service-id>/. The current file is
  * <id>.log; rotated generations are <id>.log.1 (newest) .. .4 (oldest),
- * so at most JW_SVC_LOG_MAX_FILES files exist and the oldest is dropped
- * on rotation. A generation that has already reached the cap on open is
- * truncated rather than allowed to grow past it, so a slow writer can
- * never exceed the bound between rotations. */
+ * so at most JW_SVC_LOG_MAX_FILES managed files exist and the oldest is
+ * dropped on rotation. Rotation is deliberately checked only when a new
+ * generation opens the log: an active current file can temporarily grow
+ * beyond the cap, but it is truncated to JW_SVC_LOG_MAX_BYTES before it
+ * becomes an archived generation. */
 #define JW_SVC_LOG_MAX_FILES 5
 #define JW_SVC_LOG_MAX_BYTES (256 * 1024)
 
@@ -90,12 +93,12 @@ typedef struct {
 
     /* The Leaf runtime environment for the child, as a JSON object
      * serialized with cJSON_PrintUnformatted(): {"NAME":"value", ...}.
-     * Parsed and applied in the PARENT before fork (failures fail the
-     * launch, not the child); UMRK_SERVICE_LEASE_FD=3 is then set in the
-     * child on top. Passing it as text -- rather than mutating the real
-     * environ -- keeps the parent's own environment untouched and makes
-     * the child build its env explicitly. May be NULL/empty for no extra
-     * variables. */
+     * Parsed into a complete child-only environment in the PARENT before
+     * fork (failures fail the launch, not the child), with
+     * UMRK_SERVICE_LEASE_FD=3 forced on top. Passing it as text -- rather
+     * than mutating the real environ -- keeps the parent's environment
+     * untouched and lets the child call async-signal-safe execve()
+     * directly. May be NULL/empty for no extra variables. */
     const char *env_json;
 
     /* An open, locked descriptor from jw_svc_lease_acquire(). dup2()'d
@@ -115,11 +118,12 @@ typedef struct {
 
 /* Opens (creating if needed) the current rotating log for `service_id`
  * under `logs_dir` ($LOGS_PATH), applying the cap above: when the
- * current file has reached JW_SVC_LOG_MAX_BYTES it is first rotated to
- * <id>.log.1 (shifting .1->.2 ... .4 dropped) and a fresh current file
- * is opened. Creates logs_dir/services/<service_id>/ (owner-only) like
- * the lease tree. Returns an O_APPEND descriptor positioned for the
- * child to inherit, or -1 with a slug in `reason` (may be NULL):
+ * current file has reached JW_SVC_LOG_MAX_BYTES it is first bounded and
+ * rotated to <id>.log.1 (shifting .1->.2 ... .4 dropped), and a fresh
+ * current file is opened. Creates logs_dir/services/<service_id>/
+ * (owner-only) like the lease tree. Returns an O_APPEND|O_CLOEXEC
+ * descriptor for the child to inherit explicitly, or -1 with a slug in
+ * `reason` (may be NULL):
  *   "invalid-service-id" / "logs-dir-unavailable" / "path-too-long"
  *   "mkdir-failed" / "rotate-failed" / "open-failed"
  * The caller passes the result as jw_svc_launch_request.log_fd and
@@ -135,15 +139,15 @@ int jw_svc_launch_open_log(const char *logs_dir, const char *service_id,
  *
  * Returns -1 on failure with a stable slug in `reason` (may be NULL):
  *   "invalid-request"   run_path_abs missing, args out of range, or
- *                       lease_fd < 0
+ *                       lease_fd < 0, or log_fd < -1
  *   "env-parse-failed"  env_json is not a flat JSON string object
  *   "open-log-failed"   a valid log_fd could not be used (see open_log)
- *   "fork-failed"       fork() itself failed; nothing was launched
- * On "fork-failed" no child exists. Any failure AFTER a successful fork
- * is reported by the child exiting non-zero (it writes nothing to the
- * parent's stdout); the parent here only reports the fork itself, so a
- * returned pid always means "a child was created and is now the caller's
- * reservation responsibility," even if that child later fails to exec. */
+ *   "fork-failed"       parent-side launch setup, fork(), child setup, or
+ *                       execve() failed; no launched child remains
+ * Child setup/exec failures are reported synchronously over an internal
+ * CLOEXEC pipe, reaped here, and returned as -1. A returned pid therefore
+ * means execve() closed that pipe and the launched leader is now the
+ * caller's reservation responsibility. */
 pid_t jw_svc_launch(const jw_svc_launch_request *req,
                     char *reason, size_t reason_size);
 

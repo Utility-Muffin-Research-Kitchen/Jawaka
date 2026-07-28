@@ -11,6 +11,7 @@
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,13 +52,38 @@ static void jw__reap_expect(pid_t pid, int expect_status) {
     assert(WEXITSTATUS(status) == expect_status);
 }
 
+static void jw__write_all(int fd, const void *data, size_t size) {
+    const char *cursor = data;
+    size_t offset = 0;
+    while (offset < size) {
+        ssize_t written = write(fd, cursor + offset, size - offset);
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        assert(written > 0);
+        offset += (size_t)written;
+    }
+}
+
+static void jw__read_exact(int fd, void *data, size_t size) {
+    char *cursor = data;
+    size_t offset = 0;
+    while (offset < size) {
+        ssize_t n = read(fd, cursor + offset, size - offset);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        assert(n > 0);
+        offset += (size_t)n;
+    }
+}
+
 /* Writes `text` into `path`, creating it with mode 0700. */
 static void jw__write_file(const char *path, const char *text, mode_t mode) {
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
     assert(fd >= 0);
     size_t len = strlen(text);
-    ssize_t w = write(fd, text, len);
-    assert(w == (ssize_t)len);
+    jw__write_all(fd, text, len);
     close(fd);
 }
 
@@ -66,13 +92,32 @@ static char *jw__read_file(const char *path) {
     assert(fd >= 0);
     struct stat st;
     assert(fstat(fd, &st) == 0);
-    char *buf = malloc((size_t)st.st_size + 1u);
+    assert(st.st_size >= 0);
+    size_t size = (size_t)st.st_size;
+    assert(size < SIZE_MAX);
+    char *buf = malloc(size + 1u);
     assert(buf);
-    ssize_t n = read(fd, buf, (size_t)st.st_size);
-    assert(n == st.st_size);
-    buf[st.st_size] = '\0';
+    jw__read_exact(fd, buf, size);
+    buf[size] = '\0';
     close(fd);
     return buf;
+}
+
+static void jw__compile_helper(const char *name, const char *source,
+                               char *helper, size_t helper_size) {
+    int n = snprintf(helper, helper_size, "%s/%s", JW__TMP, name);
+    assert(n > 0 && (size_t)n < helper_size);
+
+    char src[PATH_MAX];
+    n = snprintf(src, sizeof(src), "%s.c", helper);
+    assert(n > 0 && (size_t)n < sizeof(src));
+    jw__write_file(src, source, 0600);
+
+    char cmd[PATH_MAX * 2];
+    n = snprintf(cmd, sizeof(cmd), "cc -std=c11 -O0 -o '%s' '%s'",
+                 helper, src);
+    assert(n > 0 && (size_t)n < sizeof(cmd));
+    assert(system(cmd) == 0);
 }
 
 /* A lease stand-in: a plain open file whose descriptor the child must
@@ -87,19 +132,24 @@ static int jw__open_lease_standin(void) {
     return fd;
 }
 
+/* $$ only proves a shell knows its pid, not that setpgid() worked. This
+ * helper checks the process-group identity from inside the exec'd image. */
+#define JW__PGID_HELPER_SRC                                             \
+    "#include <sys/types.h>\n#include <unistd.h>\n"                  \
+    "int main(void){return getpid()==getpgrp()?0:20;}\n"
+
 static void jw__test_group_and_exec(void) {
     puts("RUN launch-test: child runs in a new process group and execs");
 
-    char out[PATH_MAX];
-    int n = snprintf(out, sizeof(out), "%s/pgid.out", JW__TMP);
-    assert(n > 0 && n < (int)sizeof(out));
+    char helper[PATH_MAX];
+    jw__compile_helper("pgid-helper", JW__PGID_HELPER_SRC, helper,
+                       sizeof(helper));
 
     int lease = jw__open_lease_standin();
-    const char *args[] = {"-c", "echo $$ > \"$1\"", "sh", out};
     jw_svc_launch_request req = {
-        .run_path_abs = "/bin/sh",
-        .args = args,
-        .args_count = 4,
+        .run_path_abs = helper,
+        .args = NULL,
+        .args_count = 0,
         .env_json = NULL,
         .lease_fd = lease,
         .log_fd = -1,
@@ -110,14 +160,6 @@ static void jw__test_group_and_exec(void) {
     close(lease);
 
     jw__reap_expect(pid, 0);
-
-    char *written = jw__read_file(out);
-    pid_t child_pgid = (pid_t)atoi(written);
-    free(written);
-    /* $$ inside the child is its own pid, and setpgid(0,0) made the
-     * pgid equal to it -- and equal to the pid jw_svc_launch returned. */
-    assert(child_pgid == pid);
-    assert(getpgid(pid) == pid || errno == ESRCH); /* child already gone */
     puts("PASS launch-test: new process group + exec");
 }
 
@@ -125,10 +167,10 @@ static void jw__test_group_and_exec(void) {
  * child after exec, that descriptor 3 is a valid open descriptor with
  * FD_CLOEXEC clear, that UMRK_SERVICE_LEASE_FD names it, and that the
  * caller-supplied env arrived. Exits 0 on success, distinct non-zero
- * codes pinpointing the failing check. Compiled once in main(). */
+ * codes pinpointing the failing check. */
 #define JW__FD3_HELPER_SRC                                              \
-    "#include <errno.h>\n#include <fcntl.h>\n#include <stdio.h>\n"      \
-    "#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\n"   \
+    "#include <fcntl.h>\n#include <stdlib.h>\n#include <string.h>\n"    \
+    "#include <sys/stat.h>\n#include <unistd.h>\n"                      \
     "int main(void){\n"                                                 \
     " const char*e=getenv(\"UMRK_SERVICE_LEASE_FD\");\n"               \
     " if(!e||strcmp(e,\"3\")!=0) return 10;\n"                          \
@@ -137,6 +179,18 @@ static void jw__test_group_and_exec(void) {
     " if(fl&FD_CLOEXEC) return 12;\n"                                   \
     " const char*m=getenv(\"JW_TEST_MARKER\");\n"                       \
     " if(!m||strcmp(m,\"hello-leaf\")!=0) return 13;\n"                 \
+    " const char*o=getenv(\"JW_TEST_OVERRIDE\");\n"                     \
+    " if(!o||strcmp(o,\"child\")!=0) return 14;\n"                     \
+    " struct stat lease_st,log_st,st;\n"                              \
+    " if(fstat(3,&lease_st)!=0||fstat(1,&log_st)!=0) return 15;\n"      \
+    " for(int fd=4;fd<64;fd++){\n"                                     \
+    "  if(fstat(fd,&st)==0){\n"                                           \
+    "   if(st.st_dev==lease_st.st_dev&&st.st_ino==lease_st.st_ino)"    \
+    " return 16;\n"                                                       \
+    "   if(st.st_dev==log_st.st_dev&&st.st_ino==log_st.st_ino)"        \
+    " return 17;\n"                                                       \
+    "  }\n"                                                               \
+    " }\n"                                                                \
     " return 0;\n"                                                      \
     "}\n"
 
@@ -145,35 +199,41 @@ static void jw__test_lease_fd_and_env(void) {
          "env applied");
 
     char helper[PATH_MAX];
-    int n = snprintf(helper, sizeof(helper), "%s/fd3-helper", JW__TMP);
-    assert(n > 0 && n < (int)sizeof(helper));
-    char src[PATH_MAX];
-    n = snprintf(src, sizeof(src), "%s.c", helper);
-    assert(n > 0 && n < (int)sizeof(src));
-    jw__write_file(src, JW__FD3_HELPER_SRC, 0600);
-    char cmd[PATH_MAX * 2];
-    n = snprintf(cmd, sizeof(cmd), "cc -std=c11 -O0 -o '%s' '%s'",
-                 helper, src);
-    assert(n > 0 && n < (int)sizeof(cmd));
-    assert(system(cmd) == 0);
+    jw__compile_helper("fd3-helper", JW__FD3_HELPER_SRC, helper,
+                       sizeof(helper));
+
+    assert(unsetenv("JW_TEST_MARKER") == 0);
+    assert(setenv("JW_TEST_OVERRIDE", "parent", 1) == 0);
+    assert(setenv(JW_SVC_LAUNCH_LEASE_ENV, "parent-lease", 1) == 0);
 
     int lease = jw__open_lease_standin();
     jw_svc_launch_request req = {
         .run_path_abs = helper,
         .args = NULL,
         .args_count = 0,
-        .env_json = "{\"JW_TEST_MARKER\":\"hello-leaf\"}",
+        .env_json = "{\"JW_TEST_MARKER\":\"hello-leaf\","
+                    "\"JW_TEST_OVERRIDE\":\"child\","
+                    "\"UMRK_SERVICE_LEASE_FD\":\"99\"}",
         .lease_fd = lease,
         .log_fd = -1,
     };
     char reason[JW_SVC_LAUNCH_REASON_BUF];
     pid_t pid = jw_svc_launch(&req, reason, sizeof(reason));
     assert(pid > 0);
+    assert(getenv("JW_TEST_MARKER") == NULL);
+    const char *parent_override = getenv("JW_TEST_OVERRIDE");
+    const char *parent_lease_env = getenv(JW_SVC_LAUNCH_LEASE_ENV);
+    assert(parent_override != NULL);
+    assert(parent_lease_env != NULL);
+    assert(strcmp(parent_override, "parent") == 0);
+    assert(strcmp(parent_lease_env, "parent-lease") == 0);
     close(lease);
 
     /* Exit 0 means every in-child check passed; a 10/11/12/13 names the
      * exact failing one. */
     jw__reap_expect(pid, 0);
+    assert(unsetenv("JW_TEST_OVERRIDE") == 0);
+    assert(unsetenv(JW_SVC_LAUNCH_LEASE_ENV) == 0);
     puts("PASS launch-test: fd 3 lease (cloexec clear) + env");
 }
 
@@ -184,6 +244,8 @@ static void jw__test_log_capture_and_rotation(void) {
     int log_fd = jw_svc_launch_open_log(JW__LOGS, "svc.alpha", reason,
                                         sizeof(reason));
     assert(log_fd >= 0);
+    int descriptor_flags = fcntl(log_fd, F_GETFD);
+    assert(descriptor_flags >= 0 && (descriptor_flags & FD_CLOEXEC) != 0);
 
     int lease = jw__open_lease_standin();
     const char *script =
@@ -212,14 +274,13 @@ static void jw__test_log_capture_and_rotation(void) {
     assert(strstr(contents, "first-gen-stderr") != NULL);
     free(contents);
 
-    /* Fill the current file past the cap, then reopen: it must rotate to
-     * .log.1 and start a fresh current file. */
+    /* Fill the current file beyond the cap, then reopen: its archived
+     * generation must be trimmed to the per-file bound before rotation. */
     int fill = open(logpath, O_WRONLY | O_TRUNC);
     assert(fill >= 0);
-    static char big[JW_SVC_LOG_MAX_BYTES];
+    static char big[JW_SVC_LOG_MAX_BYTES + 4096];
     memset(big, 'x', sizeof(big));
-    ssize_t w = write(fill, big, sizeof(big));
-    assert(w == (ssize_t)sizeof(big));
+    jw__write_all(fill, big, sizeof(big));
     close(fill);
 
     int log_fd2 = jw_svc_launch_open_log(JW__LOGS, "svc.alpha", reason,
@@ -236,7 +297,78 @@ static void jw__test_log_capture_and_rotation(void) {
     /* The fresh current file is now empty again. */
     assert(stat(logpath, &st) == 0);
     assert(st.st_size == 0);
-    puts("PASS launch-test: log capture + rotation");
+
+    /* Drive enough full generations through the rotation to prove the
+     * oldest is dropped, no .5 is created, and every archive is bounded. */
+    for (int generation = 0; generation < JW_SVC_LOG_MAX_FILES; generation++) {
+        fill = open(logpath, O_WRONLY | O_TRUNC);
+        assert(fill >= 0);
+        jw__write_all(fill, big, JW_SVC_LOG_MAX_BYTES);
+        close(fill);
+
+        log_fd2 = jw_svc_launch_open_log(JW__LOGS, "svc.alpha", reason,
+                                         sizeof(reason));
+        assert(log_fd2 >= 0);
+        close(log_fd2);
+    }
+    for (int generation = 1; generation < JW_SVC_LOG_MAX_FILES; generation++) {
+        n = snprintf(rotated, sizeof(rotated), "%s.%d", logpath, generation);
+        assert(n > 0 && (size_t)n < sizeof(rotated));
+        assert(stat(rotated, &st) == 0);
+        assert(st.st_size == JW_SVC_LOG_MAX_BYTES);
+    }
+    n = snprintf(rotated, sizeof(rotated), "%s.%d", logpath,
+                 JW_SVC_LOG_MAX_FILES);
+    assert(n > 0 && (size_t)n < sizeof(rotated));
+    assert(stat(rotated, &st) != 0 && errno == ENOENT);
+
+    puts("PASS launch-test: log capture + bounded five-file rotation");
+}
+
+static void jw__test_log_path_safety(void) {
+    puts("RUN launch-test: log paths reject links and non-regular files");
+
+    char reason[JW_SVC_LAUNCH_REASON_BUF];
+    int log_fd = jw_svc_launch_open_log(JW__LOGS, "svc.hardlink", reason,
+                                        sizeof(reason));
+    assert(log_fd >= 0);
+    close(log_fd);
+
+    char logpath[PATH_MAX];
+    int n = snprintf(logpath, sizeof(logpath),
+                     "%s/services/svc.hardlink/svc.hardlink.log", JW__LOGS);
+    assert(n > 0 && (size_t)n < sizeof(logpath));
+    assert(unlink(logpath) == 0);
+
+    char victim[PATH_MAX];
+    n = snprintf(victim, sizeof(victim), "%s/hardlink-victim", JW__TMP);
+    assert(n > 0 && (size_t)n < sizeof(victim));
+    jw__write_file(victim, "must-not-become-a-log", 0600);
+    assert(link(victim, logpath) == 0);
+
+    /* O_NOFOLLOW alone does not stop a same-uid hard-link substitution.
+     * Refuse multiply-linked current files before append or truncation. */
+    assert(jw_svc_launch_open_log(JW__LOGS, "svc.hardlink", reason,
+                                  sizeof(reason)) < 0);
+    assert(strcmp(reason, "open-failed") == 0);
+    char *contents = jw__read_file(victim);
+    assert(strcmp(contents, "must-not-become-a-log") == 0);
+    free(contents);
+
+    char fifo_dir[PATH_MAX];
+    n = snprintf(fifo_dir, sizeof(fifo_dir), "%s/services/svc.fifo", JW__LOGS);
+    assert(n > 0 && (size_t)n < sizeof(fifo_dir));
+    assert(mkdir(fifo_dir, 0700) == 0);
+    n = snprintf(logpath, sizeof(logpath), "%s/svc.fifo.log", fifo_dir);
+    assert(n > 0 && (size_t)n < sizeof(logpath));
+    assert(mkfifo(logpath, 0600) == 0);
+    /* Opening a write-only FIFO normally blocks. The validator must reject
+     * it without waiting for a reader. */
+    assert(jw_svc_launch_open_log(JW__LOGS, "svc.fifo", reason,
+                                  sizeof(reason)) < 0);
+    assert(strcmp(reason, "open-failed") == 0);
+
+    puts("PASS launch-test: unsafe log path entries refused");
 }
 
 /* Regression for a real bug: the child used to dup2() the caller's raw
@@ -264,11 +396,15 @@ static void jw__test_reserved_fd_collision(void) {
         assert(log_raw >= 0);
         int lease_raw = jw__open_lease_standin();
 
-        assert(dup2(log_raw, 3) == 3);
-        if (log_raw != 3) close(log_raw);
+        /* Preserve the lease before dup2() can clobber fd 3. This ordering
+         * keeps the fixture deterministic even when log_raw is not itself
+         * 3 (for example, openat-based directory traversal can return 4
+         * after closing its temporary directory descriptors). */
         int lease = fcntl(lease_raw, F_DUPFD, 10);
         assert(lease >= 10);
         if (lease_raw != lease) close(lease_raw);
+        assert(dup2(log_raw, 3) == 3);
+        if (log_raw != 3) close(log_raw);
 
         const char *args[] = {"-c", "echo collide-stdout", "sh"};
         jw_svc_launch_request req = {
@@ -334,6 +470,72 @@ static void jw__test_reserved_fd_collision(void) {
     puts("PASS launch-test: reserved fd (3) collisions handled");
 }
 
+/* Run one launch from a disposable process whose low descriptors have been
+ * deliberately vacated. That makes pipe() deterministically allocate its
+ * write end on a descriptor that the child setup later reserves. */
+static void jw__error_pipe_collision_probe(bool close_all_stdio) {
+    int lease_raw = jw__open_lease_standin();
+    int lease = fcntl(lease_raw, F_DUPFD, 10);
+    assert(lease >= 10);
+    close(lease_raw);
+
+    if (close_all_stdio) {
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+        close(JW_SVC_LAUNCH_LEASE_FD);
+    } else {
+        /* pipe read == 2 and pipe write == 3: lease placement used to
+         * destroy the write end before execve() could report failure. */
+        close(STDERR_FILENO);
+        close(JW_SVC_LAUNCH_LEASE_FD);
+    }
+
+    jw_svc_launch_request req = {
+        .run_path_abs = "/definitely/not/a/service",
+        .args = NULL,
+        .args_count = 0,
+        .env_json = NULL,
+        .lease_fd = lease,
+        .log_fd = -1,
+    };
+    char reason[JW_SVC_LAUNCH_REASON_BUF];
+    pid_t pid = jw_svc_launch(&req, reason, sizeof(reason));
+    close(lease);
+    if (pid > 0) {
+        int status = 0;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+        _exit(20);
+    }
+    if (strcmp(reason, "fork-failed") != 0) {
+        _exit(21);
+    }
+    _exit(0);
+}
+
+static void jw__test_error_pipe_reserved_fd_collision(void) {
+    puts("RUN launch-test: error pipe survives reserved fd collisions");
+    assert(fflush(NULL) == 0);
+
+    pid_t probe = fork();
+    assert(probe >= 0);
+    if (probe == 0) {
+        /* pipe read == 0 and pipe write == 1: stdout placement used to
+         * destroy the write end before execve() failure reporting. */
+        jw__error_pipe_collision_probe(true);
+    }
+    jw__reap_expect(probe, 0);
+
+    probe = fork();
+    assert(probe >= 0);
+    if (probe == 0) {
+        jw__error_pipe_collision_probe(false);
+    }
+    jw__reap_expect(probe, 0);
+    puts("PASS launch-test: error pipe reserved fd collisions handled");
+}
+
 static void jw__test_exec_failure_reported(void) {
     puts("RUN launch-test: a non-executable run.path fails the launch "
          "synchronously");
@@ -377,6 +579,13 @@ static void jw__test_invalid_requests(void) {
     assert(strcmp(reason, "invalid-request") == 0);
 
     req.lease_fd = jw__open_lease_standin();
+    req.log_fd = -2;
+    assert(jw_svc_launch(&req, reason, sizeof(reason)) < 0);
+    assert(strcmp(reason, "invalid-request") == 0);
+    close(req.lease_fd);
+    req.log_fd = -1;
+
+    req.lease_fd = jw__open_lease_standin();
     req.run_path_abs = NULL;
     assert(jw_svc_launch(&req, reason, sizeof(reason)) < 0);
     assert(strcmp(reason, "invalid-request") == 0);
@@ -386,6 +595,14 @@ static void jw__test_invalid_requests(void) {
     req.run_path_abs = "/bin/true";
     req.lease_fd = jw__open_lease_standin();
     req.env_json = "not json";
+    assert(jw_svc_launch(&req, reason, sizeof(reason)) < 0);
+    assert(strcmp(reason, "env-parse-failed") == 0);
+
+    req.env_json = "{} trailing-garbage";
+    assert(jw_svc_launch(&req, reason, sizeof(reason)) < 0);
+    assert(strcmp(reason, "env-parse-failed") == 0);
+
+    req.env_json = "{\"BAD=NAME\":\"value\"}";
     assert(jw_svc_launch(&req, reason, sizeof(reason)) < 0);
     assert(strcmp(reason, "env-parse-failed") == 0);
     close(req.lease_fd);
@@ -409,6 +626,21 @@ static void jw__test_pdeathsig(void) {
     assert(middle >= 0);
     if (middle == 0) {
         close(sync_pipe[0]);
+
+        /* SIG_IGN and a blocked signal mask both survive exec. A launcher
+         * that merely arms PDEATHSIG would therefore leave /bin/sleep
+         * alive after this process exits. The pre-exec path must normalize
+         * SIGTERM without invoking any inherited handler. */
+        struct sigaction ignored;
+        memset(&ignored, 0, sizeof(ignored));
+        ignored.sa_handler = SIG_IGN;
+        assert(sigemptyset(&ignored.sa_mask) == 0);
+        assert(sigaction(SIGTERM, &ignored, NULL) == 0);
+        sigset_t blocked;
+        assert(sigemptyset(&blocked) == 0);
+        assert(sigaddset(&blocked, SIGTERM) == 0);
+        assert(sigprocmask(SIG_BLOCK, &blocked, NULL) == 0);
+
         int lease = jw__open_lease_standin();
         jw_svc_launch_request req = {
             .run_path_abs = "/bin/sleep",
@@ -421,17 +653,16 @@ static void jw__test_pdeathsig(void) {
         pid_t svc = jw_svc_launch(&req, NULL, 0);
         /* Tell the real parent the service pid, then die so the service
          * is orphaned-by-us -- PDEATHSIG should fire. */
-        ssize_t ignored = write(sync_pipe[1], &svc, sizeof(svc));
-        (void)ignored;
+        jw__write_all(sync_pipe[1], &svc, sizeof(svc));
         close(sync_pipe[1]);
         _exit(0); /* the service's parent exits here */
     }
 
     close(sync_pipe[1]);
     pid_t svc = 0;
-    ssize_t n = read(sync_pipe[0], &svc, sizeof(svc));
+    jw__read_exact(sync_pipe[0], &svc, sizeof(svc));
     close(sync_pipe[0]);
-    assert(n == (ssize_t)sizeof(svc) && svc > 0);
+    assert(svc > 0);
 
     /* Wait for the middle child to exit, then give PDEATHSIG a moment to
      * be delivered; the sleep should die on SIGTERM without us signalling
@@ -442,14 +673,26 @@ static void jw__test_pdeathsig(void) {
 
     bool gone = false;
     for (int i = 0; i < 100; i++) {
+        int svc_status = 0;
+        pid_t reaped = waitpid(svc, &svc_status, WNOHANG);
+        if (reaped == svc) {
+            assert(WIFSIGNALED(svc_status));
+            assert(WTERMSIG(svc_status) == SIGTERM);
+            gone = true;
+            break;
+        }
+        assert(reaped == 0 || (reaped < 0 && errno == ECHILD));
         if (kill(svc, 0) != 0 && errno == ESRCH) {
             gone = true;
             break;
         }
         usleep(10000);
     }
-    /* Reap the service if it became our child on reparenting. */
-    while (waitpid(-1, &status, WNOHANG) > 0) {
+    if (!gone) {
+        /* Do not strand a minute-long sleeper when this regression fires. */
+        kill(svc, SIGKILL);
+        while (waitpid(svc, &status, 0) < 0 && errno == EINTR) {
+        }
     }
     assert(gone);
     puts("PASS launch-test (linux): PDEATHSIG");
@@ -470,7 +713,9 @@ int main(void) {
     jw__test_group_and_exec();
     jw__test_lease_fd_and_env();
     jw__test_log_capture_and_rotation();
+    jw__test_log_path_safety();
     jw__test_reserved_fd_collision();
+    jw__test_error_pipe_reserved_fd_collision();
     jw__test_exec_failure_reported();
     jw__test_invalid_requests();
 #if defined(__linux__)
