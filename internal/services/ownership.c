@@ -16,8 +16,11 @@
  * suspend_inhibit.c's jw__process_start() -- this locates the LAST ')' on
  * the line and treats everything after it as the remaining space-
  * delimited fields, per proc(5). Field 3 is state (a single character,
- * 'Z' for zombie); field 5 is pgrp. */
-static bool jw__proc_stat_pgid_zombie(const char *line, pid_t *out_pgid, bool *out_zombie) {
+ * 'Z' for zombie), field 5 is pgrp, and field 20 is num_threads. The
+ * thread count matters because /proc/<pid>/task may be unavailable after
+ * a multithreaded process's leader has exited. */
+static bool jw__proc_stat_group_state(const char *line, pid_t *out_pgid,
+                                      bool *out_zombie, int *out_threads) {
     const char *close_paren = strrchr(line, ')');
     if (!close_paren || close_paren[1] != ' ') {
         return false;
@@ -31,19 +34,24 @@ static bool jw__proc_stat_pgid_zombie(const char *line, pid_t *out_pgid, bool *o
         return false;
     }
     cursor += 2; /* field 4: ppid */
-    for (int field = 4; field <= 5; field++) {
+    for (int field = 4; field <= 20; field++) {
         errno = 0;
         char *end = NULL;
-        long value = strtol(cursor, &end, 10);
+        long long value = strtoll(cursor, &end, 10);
         if (end == cursor || errno == ERANGE || *end != ' ') {
             return false;
         }
         if (field == 5) {
             pid_t pgid = (pid_t)value;
-            if (value <= 0 || (long)pgid != value) {
+            if (value <= 0 || (long long)pgid != value) {
                 return false;
             }
             *out_pgid = pgid;
+        } else if (field == 20) {
+            if (value < 0 || value > INT_MAX) {
+                return false;
+            }
+            *out_threads = (int)value;
             return true;
         }
         while (*end == ' ') {
@@ -83,7 +91,8 @@ typedef enum {
 
 static jw__proc_stat_result jw__read_proc_stat(const char *path,
                                                pid_t *out_pgid,
-                                               bool *out_zombie) {
+                                               bool *out_zombie,
+                                               int *out_threads) {
     errno = 0;
     FILE *fp = fopen(path, "r");
     if (!fp) {
@@ -109,67 +118,9 @@ static jw__proc_stat_result jw__read_proc_stat(const char *path,
         return JW__PROC_STAT_UNKNOWN;
     }
     stat_text[used] = '\0';
-    return jw__proc_stat_pgid_zombie(stat_text, out_pgid, out_zombie)
+    return jw__proc_stat_group_state(stat_text, out_pgid, out_zombie,
+                                     out_threads)
         ? JW__PROC_STAT_OK : JW__PROC_STAT_UNKNOWN;
-}
-
-static bool jw__live_thread_in_group(pid_t process_pid, pid_t target_pgid,
-                                     bool *out_live) {
-    *out_live = false;
-
-    char task_dir_path[64];
-    int n = snprintf(task_dir_path, sizeof(task_dir_path),
-                     "/proc/%ld/task", (long)process_pid);
-    if (n < 0 || (size_t)n >= sizeof(task_dir_path)) {
-        return false;
-    }
-
-    errno = 0;
-    DIR *tasks = opendir(task_dir_path);
-    if (!tasks) {
-        return errno == ENOENT || errno == ESRCH;
-    }
-
-    for (;;) {
-        errno = 0;
-        struct dirent *entry = readdir(tasks);
-        if (!entry) {
-            bool complete = errno == 0;
-            closedir(tasks);
-            return complete;
-        }
-
-        pid_t tid = 0;
-        if (!jw__pid_dir_name(entry->d_name, &tid)) {
-            continue;
-        }
-
-        char stat_path[96];
-        n = snprintf(stat_path, sizeof(stat_path),
-                     "/proc/%ld/task/%ld/stat",
-                     (long)process_pid, (long)tid);
-        if (n < 0 || (size_t)n >= sizeof(stat_path)) {
-            closedir(tasks);
-            return false;
-        }
-
-        pid_t member_pgid = 0;
-        bool zombie = false;
-        jw__proc_stat_result stat_result =
-            jw__read_proc_stat(stat_path, &member_pgid, &zombie);
-        if (stat_result == JW__PROC_STAT_GONE) {
-            continue;
-        }
-        if (stat_result == JW__PROC_STAT_UNKNOWN) {
-            closedir(tasks);
-            return false;
-        }
-        if (member_pgid == target_pgid && !zombie) {
-            *out_live = true;
-            closedir(tasks);
-            return true;
-        }
-    }
 }
 
 bool jw_svc_group_absent(pid_t pgid) {
@@ -205,8 +156,10 @@ bool jw_svc_group_absent(pid_t pgid) {
         }
         pid_t member_pgid = 0;
         bool zombie = false;
+        int member_threads = 0;
         jw__proc_stat_result stat_result =
-            jw__read_proc_stat(stat_path, &member_pgid, &zombie);
+            jw__read_proc_stat(stat_path, &member_pgid, &zombie,
+                               &member_threads);
         if (stat_result == JW__PROC_STAT_GONE) {
             continue; /* exited between readdir() and open/read */
         }
@@ -222,12 +175,11 @@ bool jw_svc_group_absent(pid_t pgid) {
             return false;
         }
 
-        /* /proc enumerates thread-group leaders, not every thread. A leader
-         * can be Z while worker threads remain live, so a zombie leader is
-         * not enough: inspect its task directory before ruling it out. */
-        bool live_thread = false;
-        if (!jw__live_thread_in_group(process_pid, pgid, &live_thread) ||
-            live_thread) {
+        /* /proc enumeration hides non-leader thread IDs, and /proc/PID/task
+         * is documented as potentially unavailable once the leader exits.
+         * A zombie leader with more than one thread therefore still has a
+         * live worker and is not absent. Zero/one means no worker remains. */
+        if (member_threads > 1) {
             closedir(proc);
             return false;
         }

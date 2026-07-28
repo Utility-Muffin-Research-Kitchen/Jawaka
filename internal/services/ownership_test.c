@@ -2,7 +2,15 @@
 
 #include "internal/services/ownership.h"
 
+/* The MLP1 release profile defines NDEBUG, but these fixtures intentionally
+ * use assert() for checked setup and cleanup as well as expectations. Keep
+ * assertions active so a release-flag ownership-test remains a real test and
+ * cannot silently omit fork/pipe/setpgid/kill/wait operations. */
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +19,6 @@
 #include <unistd.h>
 
 #if defined(__linux__)
-#include <dirent.h>
 #include <pthread.h>
 #include <sys/prctl.h>
 #endif
@@ -41,7 +48,8 @@ static bool jw__is_absent(pid_t pgid) {
 }
 
 #if defined(__linux__)
-static bool jw__kernel_reports_zombie(pid_t pid) {
+static bool jw__linux_stat_state_threads(pid_t pid, char *out_state,
+                                         int *out_threads) {
     char stat_path[64];
     int n = snprintf(stat_path, sizeof(stat_path), "/proc/%ld/stat", (long)pid);
     assert(n > 0 && (size_t)n < sizeof(stat_path));
@@ -59,7 +67,37 @@ static bool jw__kernel_reports_zombie(pid_t pid) {
     }
     stat_text[used] = '\0';
     const char *close_paren = strrchr(stat_text, ')');
-    return close_paren && close_paren[1] == ' ' && close_paren[2] == 'Z';
+    if (!close_paren || close_paren[1] != ' ' || close_paren[3] != ' ') {
+        return false;
+    }
+    *out_state = close_paren[2];
+
+    const char *cursor = close_paren + 4; /* field 4: ppid */
+    for (int field = 4; field <= 20; field++) {
+        char *end = NULL;
+        long long value = strtoll(cursor, &end, 10);
+        if (end == cursor || *end != ' ') {
+            return false;
+        }
+        if (field == 20) {
+            if (value < 0 || value > INT_MAX) {
+                return false;
+            }
+            *out_threads = (int)value;
+            return true;
+        }
+        while (*end == ' ') {
+            end++;
+        }
+        cursor = end;
+    }
+    return false;
+}
+
+static bool jw__kernel_reports_zombie(pid_t pid) {
+    char state = '\0';
+    int threads = 0;
+    return jw__linux_stat_state_threads(pid, &state, &threads) && state == 'Z';
 }
 #endif
 
@@ -227,35 +265,17 @@ static void *jw__live_worker(void *unused) {
     return NULL;
 }
 
-static bool jw__zombie_leader_has_multiple_tasks(pid_t pid) {
-    if (!jw__kernel_reports_zombie(pid)) {
-        return false;
-    }
-
-    char task_path[64];
-    int n = snprintf(task_path, sizeof(task_path),
-                     "/proc/%ld/task", (long)pid);
-    assert(n > 0 && (size_t)n < sizeof(task_path));
-    DIR *tasks = opendir(task_path);
-    if (!tasks) {
-        return false;
-    }
-
-    int task_count = 0;
-    struct dirent *entry = NULL;
-    while ((entry = readdir(tasks)) != NULL) {
-        if (entry->d_name[0] >= '0' && entry->d_name[0] <= '9') {
-            task_count++;
-        }
-    }
-    closedir(tasks);
-    return task_count > 1;
+static bool jw__zombie_leader_has_live_thread(pid_t pid) {
+    char state = '\0';
+    int threads = 0;
+    return jw__linux_stat_state_threads(pid, &state, &threads) &&
+           state == 'Z' && threads > 1;
 }
 
 /* Linux /proc's top-level numeric directories identify thread groups, not
  * every task. pthread_exit() can leave the leader task in Z while a worker
- * thread remains live, so the implementation must inspect /proc/PID/task
- * before excluding a zombie leader. */
+ * thread remains live. Field 20 of /proc/PID/stat must keep that worker
+ * visible even on kernels that hide /proc/PID/task after leader exit. */
 static void jw__test_zombie_leader_live_thread(void) {
     int ready_pipe[2];
     assert(pipe(ready_pipe) == 0);
@@ -276,7 +296,7 @@ static void jw__test_zombie_leader_live_thread(void) {
     assert(read(ready_pipe[0], &ready, 1) == 1);
     close(ready_pipe[0]);
     assert(ready == 'R');
-    assert(jw__wait_until(jw__zombie_leader_has_multiple_tasks, child, 2000));
+    assert(jw__wait_until(jw__zombie_leader_has_live_thread, child, 2000));
     assert(jw_svc_group_absent(child) == false);
 
     assert(kill(-child, SIGKILL) == 0);
