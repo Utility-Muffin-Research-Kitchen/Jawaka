@@ -3498,19 +3498,13 @@ static void jw__scroll_publish_max(int *out_max, int content_h, int view_h) {
     *out_max = max_offset > 0 ? max_offset : 0;
 }
 
-/* Move a scroll view and clamp BOTH ends. cat_scroll_state_move clamps only at
-   zero, which is why Up at the top already reports "blocked" correctly and Down
-   at the bottom did not: the target ran past the end, the haptic wrapper read a
-   changed position and called it movement, and the next render quietly clamped
-   it back. Clamping here makes the two ends behave the same way. */
+/* Move a scroll view, clamping BOTH ends. The clamp used to live here because
+   cat_scroll_state_move only handled the zero end, which made Down at the bottom
+   report movement that the next render quietly undid. It lives in the widget
+   now, which is also what lets it tell the bottom of the page from a real
+   scroll and report the boundary itself. */
 static void jw__scroll_move(cat_scroll_state *s, int delta_px, int max_offset) {
-    if (!s) return;
-    cat_scroll_state_move(s, delta_px);       /* handles the zero end */
-    if (max_offset > 0 && s->target > max_offset) {
-        s->target = max_offset;
-    } else if (max_offset <= 0) {
-        s->target = 0;                        /* content fits: nowhere to go */
-    }
+    cat_scroll_state_move_clamped(s, delta_px, max_offset);
 }
 
 static void jw__draw_about_rows(int x, int y, int w, void *user) {
@@ -3851,7 +3845,7 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
                         "Strength", ui->rumble_enabled ? strength : "-", true);
 
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_NAV,
-                        "Navigation Tick",
+                        "Cursor Movement",
                         ui->rumble_enabled ? (ui->rumble_nav ? "On" : "Off") : "-", true);
 
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_GAME,
@@ -4509,6 +4503,10 @@ static void jw__cycle_color_scheme(jw_settings_ui *ui, int direction, bool *them
     int next = (cur < 0) ? (direction > 0 ? 0 : n - 1)
                          : ((cur + direction + n) % n);
     jw__apply_color_scheme(ui, next, theme_changed);
+    /* The applier stays silent -- jw__apply_layout calls it too, and that would
+       double up. Cycling the scheme is the user action, so it ticks here. */
+    if (ui->socket_path[0])
+        jw_ipc_rumble(ui->socket_path, "select");
 }
 
 /* Switch the home layout (Tabs <-> Coverflow) live. Loading the matching theme
@@ -4534,8 +4532,10 @@ static void jw__apply_layout(jw_settings_ui *ui, int mode, bool *theme_changed) 
     if (ui->db_path[0])
         jw_settings_apply_persisted_overrides(ui->db_path);
     ui->layout_mode = mode;
-    if (ui->db_path[0])
-        jw_db_set_setting(ui->db_path, "theme_name", tn);
+    /* Through jw__persist, not jw_db_set_setting: the write and the "a setting
+       changed" tick are the same event, and splitting them is why this row was
+       the one silent row on the Layout page. */
+    jw__persist(ui, "theme_name", tn);
     if (theme_changed) *theme_changed = true;
 }
 
@@ -5883,10 +5883,8 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         /* Persist the choice so jawakad restores it at boot: the
                            stock BLUETOOTH_PARAM flag gets clobbered back to on at
                            boot, so it can't hold the user's "keep it off". */
-                        if (ui->db_path[0]) {
-                            jw_db_set_setting(ui->db_path, "platform.bluetooth_enabled",
-                                              turning_on ? "1" : "0");
-                        }
+                        jw__persist(ui, "platform.bluetooth_enabled",
+                                    turning_on ? "1" : "0");
                     }
                     jw__refresh_bluetooth_lists(ui);
                     ui->bt_next_poll_ms = SDL_GetTicks() + JW_BT_POLL_INTERVAL_MS;
@@ -6807,52 +6805,17 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
 /* Sum of every settings list's cursor. Only the active screen's list moves on a
    given press, so a change in the sum means the cursor moved — lets us detect a
    real move (nav) vs a boundary (blocked) without a per-screen accessor. */
-/* Where the ACTIVE screen's selection currently sits, so a press can be judged
-   as moved-or-blocked by looking only at the control the user is driving.
-
-   This used to sum every list cursor in the UI, which was wrong twice over: the
-   scroll-only pages (About, Library, Playtime) contributed nothing at all, so a
-   successful scroll reported "blocked", and a sum can also cancel out when two
-   cursors move opposite ways. Screens are paired with their control exactly as
-   the render dispatch pairs them with their renderer.
-
-   Scroll pages compare `target`, not `offset`: offset eases toward target over
-   several frames, so immediately after a press it has not moved yet and would
-   read as blocked. */
-static long jw__settings_active_pos(const jw_settings_ui *ui) {
-    switch (ui->screen) {
-        case JW_SETTINGS_HOME:            return ui->home_list.cursor;
-        case JW_SETTINGS_APPEARANCE:      return ui->appearance_list.cursor;
-        case JW_SETTINGS_COLORS:          return ui->colors_list.cursor;
-        case JW_SETTINGS_LAYOUT:          return ui->layout_list.cursor;
-        case JW_SETTINGS_STATUS_BAR:      return ui->statusbar_list.cursor;
-        case JW_SETTINGS_DISPLAY:         return ui->display_list.cursor;
-        case JW_SETTINGS_NETWORK:         return ui->network_list.cursor;
-        case JW_SETTINGS_BLUETOOTH:       return ui->bluetooth_list.cursor;
-        case JW_SETTINGS_LIGHTING:        return ui->lighting_list.cursor;
-        case JW_SETTINGS_ACCOUNTS:        return ui->accounts_list.cursor;
-        case JW_SETTINGS_SCRAPING:        return ui->scraping_list.cursor;
-        case JW_SETTINGS_SCRAPE_PRIORITY: return ui->scrape_edit_list.cursor;
-        case JW_SETTINGS_SCRAPE_QUEUE:    return ui->scrape_queue_list.cursor;
-        case JW_SETTINGS_SCRAPE_QUEUE_DETAIL: return ui->placeholder_list.cursor;
-        case JW_SETTINGS_SCRAPE_DOWNLOAD: return ui->scrape_download_list.cursor;
-        case JW_SETTINGS_BEHAVIOR:        return ui->behavior_list.cursor;
-        case JW_SETTINGS_CONTROLS:        return ui->controls_list.cursor;
-        case JW_SETTINGS_HOME_TABS:       return ui->home_tabs_list.cursor;
-        case JW_SETTINGS_UPDATE:          return ui->update_list.cursor;
-        case JW_SETTINGS_UPDATE_PICKER:   return ui->update_picker_list.cursor;
-        case JW_SETTINGS_TIMEZONE_PICKER: return ui->timezone_picker_list.cursor;
-        case JW_SETTINGS_ABOUT:           return ui->about_scroll.target;
-        case JW_SETTINGS_LIBRARY:         return ui->library_scroll.target;
-        case JW_SETTINGS_PLAYTIME:        return ui->playtime_scroll.target;
-    }
-    return 0;
-}
-
-/* Public entry: run the real handler, then emit one UI haptic. Up/Down that
-   moves the cursor taps once (nav, opt-in) or buzzes at a list end (blocked); a
-   page change (enter a sub-page or back out) taps once (select). Value changes
-   (Left/Right/A on a row) buzz via jw__persist, so they are not handled here. */
+/* Public entry: run the real handler, then tick if the page changed.
+ *
+ * Cursor movement is no longer detected here. The lists and scroll views report
+ * their own (see cat_ui_feedback_set), which is why the 24-case switch that used
+ * to pair every screen with its control is gone -- pairing them by hand meant a
+ * new screen was silent until someone remembered to add a case, and the
+ * scroll-only pages were silent for exactly that reason.
+ *
+ * A page change is not movement, so it stays here: entering a sub-page or
+ * backing out taps once. Value changes (Left/Right/A on a row) buzz via
+ * jw__persist. */
 bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                   char *status_buf, size_t status_size,
                                   bool *theme_changed) {
@@ -6860,19 +6823,12 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
         return jw__settings_handle_button_inner(ui, button, status_buf,
                                                 status_size, theme_changed);
 
-    int  scr0    = (int)ui->screen;
-    long pos0    = jw__settings_active_pos(ui);
-    bool nav_btn = (button == CAT_BTN_UP || button == CAT_BTN_DOWN);
+    int scr0 = (int)ui->screen;
 
     bool still_open = jw__settings_handle_button_inner(ui, button, status_buf,
                                                        status_size, theme_changed);
 
-    if (ui->socket_path[0]) {
-        if ((int)ui->screen != scr0)
-            jw_ipc_rumble(ui->socket_path, "select");           /* page enter / back */
-        else if (nav_btn)
-            jw_ipc_rumble(ui->socket_path,
-                          jw__settings_active_pos(ui) != pos0 ? "nav" : "blocked");
-    }
+    if (ui->socket_path[0] && (int)ui->screen != scr0)
+        jw_ipc_rumble(ui->socket_path, "select");              /* page enter / back */
     return still_open;
 }

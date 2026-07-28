@@ -375,6 +375,25 @@ static inline void jw__haptic(const char *socket_path, const char *event) {
     if (socket_path && socket_path[0]) jw_ipc_rumble(socket_path, event);
 }
 
+/* Catastrophe's widgets report what happened to them; this turns that into what
+   it feels like. Same mapping the launcher uses -- movement and committed values
+   both ride the opt-in navigation tick. */
+static void jw__ui_feedback(cat_ui_feedback what, void *user) {
+    const char *socket_path = (const char *)user;
+    switch (what) {
+        case CAT_UI_MOVED:
+        case CAT_UI_ENTERED:
+            jw__haptic(socket_path, "nav");
+            break;
+        case CAT_UI_SURFACE:
+            jw__haptic(socket_path, "select");
+            break;
+        case CAT_UI_EDGE:
+            jw__haptic(socket_path, "blocked");
+            break;
+    }
+}
+
 static int jw__activate(const char *socket_path, jw_menu_state *state, bool *running) {
     switch (state->list.cursor) {
         case JW_MENU_SEARCH: {
@@ -466,12 +485,10 @@ static void jw__handle_input(const char *socket_path, jw_menu_state *state,
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->list, -1, JW_MENU_COUNT);
-            jw__haptic(socket_path, "nav");   /* the list wraps, so never blocked */
             state->status[0] = '\0';   /* a moved cursor dismisses stale feedback */
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->list, +1, JW_MENU_COUNT);
-            jw__haptic(socket_path, "nav");
             state->status[0] = '\0';
             break;
         case CAT_BTN_A:
@@ -1571,11 +1588,9 @@ static void jw__ingame_show_performance(const char *socket_path,
             switch (ev.button) {
                 case CAT_BTN_UP:
                     cat_list_state_move(&list, -1, JW_INGAME_PERF_ROWS);
-                    jw__haptic(socket_path, "nav");
                     break;
                 case CAT_BTN_DOWN:
                     cat_list_state_move(&list, +1, JW_INGAME_PERF_ROWS);
-                    jw__haptic(socket_path, "nav");
                     break;
                 case CAT_BTN_LEFT:
                     jw__haptic(socket_path,
@@ -1833,11 +1848,9 @@ static void jw__handle_ingame_input(const char *socket_path,
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->list, -1, JW_INGAME_COUNT);
-            jw__haptic(socket_path, "nav");   /* the list wraps, so never blocked */
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->list, +1, JW_INGAME_COUNT);
-            jw__haptic(socket_path, "nav");
             break;
         case CAT_BTN_LEFT:
             jw__haptic(socket_path,
@@ -2294,6 +2307,9 @@ int main(int argc, char **argv) {
         free(db_path);
         return 1;
     }
+
+    /* From here on every list and keyboard reports its own movement. */
+    cat_ui_feedback_set(jw__ui_feedback, socket_path);
 
     long long hello_start_ms = jw__monotonic_ms();
     if (jw_ipc_hello(socket_path, in_game ? "ingame-menu" : "menu") != 0) {

@@ -5,6 +5,7 @@
 #include "internal/storage/sources.h"
 
 #include "catastrophe.h"
+#include "catastrophe_widgets.h"   /* cat_ui_feedback_emit */
 
 #include <SDL2/SDL.h>
 #include <math.h>
@@ -304,7 +305,9 @@ static float jw__switcher_visual_offset(const jw_game_switcher *sw) {
 }
 
 void jw_game_switcher_move(jw_game_switcher *sw, int delta) {
-    if (!sw || sw->count <= 0 || delta == 0) {
+    if (!sw || delta == 0) return;
+    if (sw->count <= 0) {
+        cat_ui_feedback_emit(CAT_UI_EDGE);   /* nothing to move between */
         return;
     }
     bool loops = jw__switcher_loops(sw);
@@ -318,8 +321,10 @@ void jw_game_switcher_move(jw_game_switcher *sw, int delta) {
         if (next > sw->count - 1) next = sw->count - 1;
     }
     if (next == sw->cursor) {
-        return; /* clamped at an end */
+        cat_ui_feedback_emit(CAT_UI_EDGE);   /* clamped at an end */
+        return;
     }
+    cat_ui_feedback_emit(CAT_UI_MOVED);
 
     /* Visual step = how many tiles the strip slides on screen. Normally next -
        cursor, but a seam wrap (e.g. last -> first) is logically a big index jump
