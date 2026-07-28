@@ -13,30 +13,42 @@
  * recognizes two kinds of secret:
  *
  *   - A `key: value` or `key=value` pair whose key (case-insensitively,
- *     trimmed) names a known-sensitive field. This covers API keys,
- *     tokens (including `Authorization: Bearer ...`), cookies, PINs,
- *     and passwords. A `key:` match redacts the rest of the line (the
- *     header-style convention of one value per line); a `key=` match
- *     redacts only that one token or quoted value, then scanning
- *     continues for further pairs later on the same line (the
- *     logfmt-style convention of several `key=value` pairs per line).
+ *     with delimiter-adjacent whitespace trimmed) names a known-sensitive
+ *     field. Unquoted keys use [A-Za-z0-9_-]; quoted structured-data keys
+ *     may contain whitespace. Separator and camelCase variants, and
+ *     compound names ending in a sensitive component (for example,
+ *     `authToken`, `csrf_token`, and `five_game_pin_hash`), are recognized
+ *     without treating names such as `cookie_count` or `password_policy`
+ *     as secret. This covers API keys, tokens (including `Authorization:
+ *     Bearer ...`), cookies, PINs, passwords, and labeled password hashes.
+ *     The ambiguous bare field `auth` passes through only for a small set
+ *     of exact status values such as `enabled`, `disabled`, and `true`;
+ *     other values are treated as credentials.
+ *
+ *     A `key:` match redacts the rest of the line (the header-style
+ *     convention of one value per line); a `key=` match redacts only that
+ *     one token or quoted value, then scanning continues for further pairs
+ *     later on the same line (the logfmt-style convention of several
+ *     `key=value` pairs per line). Existing whitespace after either
+ *     delimiter is preserved rather than synthesized.
  *
  *   - A small set of self-identifying markers, redacted by replacing
  *     the entire line (they have no clean "value" boundary to redact
- *     around safely): a crypt(3)-style hash prefix ($1$, $2a$/$2b$/
- *     $2x$/$2y$, $5$, $6$) -- which covers both a literal password hash
- *     and a /etc/shadow-style entry, since shadow's second
- *     colon-delimited field IS such a hash -- and the literal substring
- *     "PRIVATE KEY", covering PEM private-key markers.
+ *     around safely): common modular password-hash prefixes (including
+ *     MD5, bcrypt, SHA-crypt, scrypt, yescrypt, and Argon2); a complete
+ *     nine-field /etc/shadow record (including locked or empty password
+ *     fields); and the literal substring "PRIVATE KEY", covering PEM
+ *     private-key markers.
  *
  * What this does NOT cover, deliberately, to stay a bounded, honest
  * primitive rather than a general secret scanner: credentials embedded
  * in a URL's userinfo (user:pass@host), a bearer/JWT-shaped token with
- * no recognizable key at all, and the body of a multi-line PEM block
- * between its BEGIN/END markers (only the marker lines themselves,
- * which contain the literal "PRIVATE KEY" substring, are caught). A
- * caller piping arbitrary untrusted multi-line blobs through this needs
- * a different tool.
+ * no recognizable key at all, an unlabeled password hash with no
+ * recognized modular prefix, and the body of a multi-line PEM block
+ * between its BEGIN/END markers (only the marker lines themselves, which
+ * contain the literal "PRIVATE KEY" substring, are caught). A caller
+ * piping arbitrary untrusted multi-line blobs through this needs a
+ * different tool.
  */
 
 /* Copies `line` into `out` (bounded by out_size, always NUL-terminated
@@ -51,10 +63,10 @@
  * Returns false if `line` contained no recognized secret; `out` is then
  * a truncated copy of `line` unchanged.
  *
- * `line` and `out` must not be NULL and `out_size` must be nonzero, or
- * this returns false without touching `out` (there would be nowhere
- * safe to write a terminator). `line` should be a single line with no
- * embedded newline -- pass one line at a time. */
+ * `line` and `out` must not be NULL, must not overlap, and `out_size` must
+ * be nonzero, or this returns false without touching `out` (there would be
+ * nowhere safe to write a terminator). `line` should be a single line with
+ * no embedded newline -- pass one line at a time. */
 bool jw_svc_log_redact_line(const char *line, char *out, size_t out_size);
 
 #endif
