@@ -331,7 +331,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test lease-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -396,6 +396,11 @@ relocation-test: | $(BUILD)/bin
 
 relocation-ipc-smoke:
 	scripts/relocation-ipc-smoke.sh
+
+lease-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/lease-test \
+		internal/services/lease_test.c internal/services/lease.c
+	$(BUILD)/bin/lease-test
 
 imported-title-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/imported-title-test \
