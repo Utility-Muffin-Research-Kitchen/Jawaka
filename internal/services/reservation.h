@@ -12,7 +12,7 @@
  * the validated lifecycle policy... A missing/corrupt policy snapshot
  * fails safe after a daemon restart."
  *
- * This module is the record's storage alone: atomic write (temp file in
+ * This module is the record's storage alone: atomic write (unique temp file in
  * the same directory, full write, fsync, rename, then a parent-directory
  * fsync -- the exact recipe contracts.md's LIFE-1 section spells out for
  * its own active-launch record, reused verbatim here since it is the
@@ -51,18 +51,24 @@ typedef struct {
     bool stop_on_suspend;
 } jw_svc_reservation;
 
-/* CLOCK_MONOTONIC now, in microseconds, for populating launch_instant_us. */
+/* CLOCK_MONOTONIC now, in microseconds, for populating launch_instant_us.
+ * Returns -1 if the clock cannot be read or represented. */
 long long jw_svc_reservation_now_us(void);
 
 /* Atomically writes `reservation` as the ownership record for
  * `service_id` under `runtime_dir` (services/<service_id>/reservation),
  * replacing any existing record. Returns true on success.
  *
+ * The JSON object contains exactly the five keys `pgid`,
+ * `launch_instant_us`, `game`, `stop_on_storage_change`, and
+ * `stop_on_suspend`.
+ *
  * Returns false with a stable slug in `reason` (may be NULL to discard):
- *   "invalid-arguments"       service_id, reservation, or reservation->pgid
- *                             is invalid (service_id empty/contains '/'/
- *                             is "." or ".."; reservation NULL;
- *                             pgid <= 0)
+ *   "invalid-arguments"       service_id or reservation is invalid
+ *                             (empty/unsafe service id, non-positive or
+ *                             unrepresentable pgid, launch instant outside
+ *                             the lossless JSON integer range, or unknown
+ *                             game policy)
  *   "path-too-long"           a constructed path exceeded PATH_MAX
  *   "service-dir-unavailable" services/<service_id>/ does not exist (or
  *                             is not a directory) -- acquire the
@@ -89,6 +95,9 @@ bool jw_svc_reservation_write(const char *runtime_dir, const char *service_id,
  *                          exists but cannot be trusted must fail safe.
  *   "reservation-corrupt"  a record file exists but could not be read
  *                          fully, parsed, or type-checked field by field
+ *                          (unknown/duplicate keys, non-integral or
+ *                          out-of-range numbers, embedded NULs, and
+ *                          non-regular/symlinked records are also corrupt)
  */
 bool jw_svc_reservation_read(const char *runtime_dir, const char *service_id,
                              jw_svc_reservation *out,
