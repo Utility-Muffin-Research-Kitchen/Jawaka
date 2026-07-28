@@ -25,10 +25,22 @@
  * storage, and everything written to it stays until explicitly changed.
  * "Session" fields (currently just `session_run`) live in the same row
  * for simplicity but are NOT self-clearing -- contracts.md requires
- * session Run/Stop to reset on every daemon start, so a caller's startup
- * sequence MUST call jw_svc_control_store_clear_all_sessions() once,
- * before trusting any jw_svc_control_store_get() result, every time it
- * opens this store fresh after a restart.
+ * session Run/Stop to reset on every daemon start, so the daemon owner's
+ * startup sequence MUST call jw_svc_control_store_clear_all_sessions()
+ * once before trusting any jw_svc_control_store_get() result. Opening an
+ * additional handle (for example, in a CLI process) is not a daemon start
+ * and must not clear session state.
+ *
+ * SQLite's normal file locking plus a 2000 ms busy timeout makes each
+ * get(), put(), and clear operation atomic and safe with handles in
+ * multiple processes. This API does not make a get/modify/put sequence
+ * atomic across handles: concurrent whole-row writers are last-writer-
+ * wins and can overwrite one another's fields. The integration layer
+ * should designate one writer (normally jawakad, with CLIs using CTL-1)
+ * or provide its own serialization. This store does not force WAL mode;
+ * the default rollback journal is sufficient for these small operations
+ * and avoids imposing WAL filesystem requirements on the caller's
+ * eventual choice of durable path.
  *
  * This module does no process supervision, no manifest parsing, and
  * knows nothing about the other SVC-1 primitives' headers -- callers
@@ -92,7 +104,7 @@ typedef struct {
  * with a stable slug in `reason` (may be NULL to discard) and *out left
  * NULL:
  *   "invalid-arguments"  db_path or out is NULL, or db_path is empty
- *   "open-failed"        sqlite3_open() or the schema statement failed
+ *   "open-failed"        opening, initializing, or validating schema failed
  */
 bool jw_svc_control_store_open(const char *db_path, jw_svc_control_store **out,
                                 char *reason, size_t reason_size);
@@ -101,11 +113,12 @@ bool jw_svc_control_store_open(const char *db_path, jw_svc_control_store **out,
 void jw_svc_control_store_close(jw_svc_control_store *store);
 
 /* Resets session_run to false for every row in the store. A caller's
- * daemon-startup sequence must call this exactly once per fresh open,
+ * daemon-startup sequence must call this exactly once per daemon start,
  * before trusting any get() result, per SVC-1's requirement that session
- * Run/Stop does not survive a daemon restart. Returns true on success;
- * false with a slug in `reason` ("invalid-arguments" for a NULL store,
- * "write-failed" for a SQL failure). */
+ * Run/Stop does not survive a daemon restart. Opening an auxiliary handle
+ * is not a reason to call it. Returns true on success; false with a slug
+ * in `reason` ("invalid-arguments" for a NULL store, "write-failed" for a
+ * SQL failure). */
 bool jw_svc_control_store_clear_all_sessions(jw_svc_control_store *store,
                                               char *reason, size_t reason_size);
 
@@ -114,8 +127,10 @@ bool jw_svc_control_store_clear_all_sessions(jw_svc_control_store *store,
  * this is not an error; a service that was never enabled or run simply
  * has no row yet. Returns false only on an actual failure to query, with
  * a slug in `reason` ("invalid-arguments" for a NULL store/service_id/
- * out/out_found or a service_id longer than JW_SVC_CONTROL_ID_MAX, or
- * "read-failed" for a SQL failure). */
+ * out/out_found, an empty service_id, or a service_id longer than
+ * JW_SVC_CONTROL_ID_MAX; "read-failed" for a SQL failure or a row whose
+ * stored types, ranges, or string lengths do not fit
+ * jw_svc_control_state). */
 bool jw_svc_control_store_get(jw_svc_control_store *store, const char *service_id,
                                jw_svc_control_state *out, bool *out_found,
                                char *reason, size_t reason_size);
