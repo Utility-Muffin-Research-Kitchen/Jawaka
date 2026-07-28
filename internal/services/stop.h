@@ -50,9 +50,11 @@ typedef struct {
  * (skip straight to polling, i.e. an immediate escalation window) rather
  * than passed to a sleep call. `absence_check` must be non-NULL.
  *
- * pgid <= 0 or a NULL absence_check returns {false, false} immediately
- * without sending any signal -- there is no group to signal, and no way
- * to verify one either.
+ * pgid <= 0, pgid == 1, or a NULL absence_check returns {false, false}
+ * immediately without sending any signal. pgid == 1 is refused
+ * specifically because POSIX defines kill(-1, sig) as "every process the
+ * caller is permitted to signal", not "process group 1" -- accepting it
+ * here would turn a targeted stop into a system-wide signal broadcast.
  *
  * Sending SIGTERM/SIGKILL to a pgid that no longer exists (ESRCH) is not
  * a failure of this function: the subsequent absence poll simply

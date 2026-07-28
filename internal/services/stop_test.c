@@ -51,37 +51,57 @@ static bool jw__test_always_present(pid_t pgid) {
     return false;
 }
 
-static pid_t jw__test_fork_group_leader(void (*child_body)(void)) {
+/* child_body receives an fd to signal readiness on: it must write exactly
+ * one byte and close the fd only once EVERY piece of its own setup is
+ * complete (installing a signal disposition, etc.), then block. */
+typedef void (*jw__test_child_body_fn)(int ready_fd);
+
+static pid_t jw__test_fork_group_leader(jw__test_child_body_fn child_body) {
+    int ready_pipe[2];
+    assert(pipe(ready_pipe) == 0);
+
     pid_t pid = fork();
     assert(pid >= 0);
     if (pid == 0) {
+        close(ready_pipe[0]);
+        /* setpgid() must happen before child_body()'s own setup: this
+         * parent's kill(-pid, ...) calls target group `pid`, so nothing
+         * in the child may be considered "ready" until it has actually
+         * joined that group. */
         assert(setpgid(0, 0) == 0);
-        child_body();
+        child_body(ready_pipe[1]);
         _exit(1); /* child_body() must not return */
     }
 
-    /* setpgid() in the child races this parent's kill(-pid, ...) calls:
-     * until it has actually run, the child is still in THIS process's
-     * group, not its own, and a signal aimed at group `pid` would miss
-     * it entirely (or hit nothing, if that pgid has no members yet).
-     * Poll briefly rather than assume it already happened -- the same
-     * fix ownership_test.c needed for its simple-child fixture. */
-    for (int i = 0; i < 200; i++) {
-        if (getpgid(pid) == pid) {
-            return pid;
-        }
-        usleep(1000);
-    }
-    assert(getpgid(pid) == pid);
+    close(ready_pipe[1]);
+    /* Block until child_body() itself reports readiness, rather than
+     * polling getpgid() -- that would only prove the group was joined,
+     * not that a per-body setup step (e.g. installing SIG_IGN) has also
+     * finished, which is exactly the race that made the ignore-TERM
+     * fixture flaky: the parent could send SIGTERM after group-join but
+     * before SIG_IGN was installed, so the child died on the default
+     * disposition instead of ever needing escalation. */
+    char ready = 0;
+    ssize_t n = read(ready_pipe[0], &ready, 1);
+    close(ready_pipe[0]);
+    assert(n == 1);
     return pid;
 }
 
-static void jw__test_child_default_term(void) {
+static void jw__test_signal_ready(int ready_fd) {
+    char byte = 'R';
+    assert(write(ready_fd, &byte, 1) == 1);
+    close(ready_fd);
+}
+
+static void jw__test_child_default_term(int ready_fd) {
+    jw__test_signal_ready(ready_fd);
     pause(); /* default SIGTERM disposition terminates us immediately */
 }
 
-static void jw__test_child_ignores_term(void) {
+static void jw__test_child_ignores_term(int ready_fd) {
     assert(signal(SIGTERM, SIG_IGN) != SIG_ERR);
+    jw__test_signal_ready(ready_fd); /* only after SIG_IGN is installed */
     for (;;) {
         pause(); /* SIGTERM is ignored; only SIGKILL can end this */
     }
@@ -94,6 +114,12 @@ static void jw__test_rejects_invalid_args(void) {
     assert(!r.verified_absent && !r.escalated_to_kill);
 
     r = jw_svc_stop_group(-1, 100, jw__test_real_absent);
+    assert(!r.verified_absent && !r.escalated_to_kill);
+
+    /* pgid == 1 must be refused, not treated as an ordinary group: POSIX
+     * defines kill(-1, sig) as "every process the caller may signal", not
+     * "process group 1" -- this function must never send that. */
+    r = jw_svc_stop_group(1, 100, jw__test_always_present);
     assert(!r.verified_absent && !r.escalated_to_kill);
 
     r = jw_svc_stop_group(12345, 100, NULL);
