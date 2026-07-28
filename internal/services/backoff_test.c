@@ -4,20 +4,24 @@
 #undef NDEBUG
 #endif
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
+
+static const long long jw__expected_delays_ms[JW_SVC_BACKOFF_TRACKED] = {
+    1000, 2000, 4000, 8000, 16000,
+};
 
 static void jw__test_escalating_backoff_then_breaker(void) {
     jw_svc_backoff_state state;
     jw_svc_backoff_init(&state);
 
-    long long expected_ms[JW_SVC_BACKOFF_TRACKED] = {1000, 2000, 4000, 8000, 16000};
     long long now_ms = 0;
 
     for (int i = 0; i < JW_SVC_BACKOFF_TRACKED - 1; i++) {
         jw_svc_backoff_decision d = jw_svc_backoff_record_failure(&state, now_ms);
         assert(!d.breaker_open);
-        assert(d.delay_ms == expected_ms[i]);
+        assert(d.delay_ms == jw__expected_delays_ms[i]);
         now_ms += 1000; /* well within the 5-minute window */
     }
 
@@ -48,10 +52,10 @@ static void jw__test_widely_spaced_failures_never_trip_breaker(void) {
     for (int i = 0; i < 10; i++) {
         jw_svc_backoff_decision d = jw_svc_backoff_record_failure(&state, now_ms);
         assert(!d.breaker_open);
-        if (i < JW_SVC_BACKOFF_TRACKED - 1) {
-            assert(d.delay_ms < 16000);
+        if (i < JW_SVC_BACKOFF_TRACKED) {
+            assert(d.delay_ms == jw__expected_delays_ms[i]);
         } else {
-            assert(d.delay_ms == 16000);
+            assert(d.delay_ms == jw__expected_delays_ms[JW_SVC_BACKOFF_TRACKED - 1]);
         }
         now_ms += 10LL * 60LL * 1000LL;
     }
@@ -145,20 +149,67 @@ static void jw__test_null_state_is_handled(void) {
 }
 
 static void jw__test_out_of_order_timestamp_is_tolerated(void) {
-    /* A caller is expected to pass a monotonic clock, but a timestamp at
-     * or before the previous failure must not crash or underflow the
-     * span computation -- it is simply treated as coincident. */
+    /* Regressing timestamps are each clamped to the prior recorded
+     * instant. The first five effective timestamps below are therefore
+     * 0, 300001, 300001, 300001, 300001 (WINDOW_MS+1, repeated): not a
+     * breaker window. */
     jw_svc_backoff_state state;
     jw_svc_backoff_init(&state);
 
-    jw_svc_backoff_record_failure(&state, 10000);
-    jw_svc_backoff_record_failure(&state, 9000);
-    jw_svc_backoff_record_failure(&state, 5000);
-    jw_svc_backoff_record_failure(&state, 5000);
-    jw_svc_backoff_decision d = jw_svc_backoff_record_failure(&state, 4999);
+    jw_svc_backoff_record_failure(&state, 0);
+    jw_svc_backoff_record_failure(&state, JW_SVC_BACKOFF_WINDOW_MS + 1);
+    jw_svc_backoff_record_failure(&state, LLONG_MIN);
+    jw_svc_backoff_record_failure(&state, -1);
+    jw_svc_backoff_decision d = jw_svc_backoff_record_failure(&state, 0);
+    assert(!d.breaker_open);
+    assert(d.delay_ms == 16000);
+
+    /* Shifting out the initial zero leaves five coincident effective
+     * timestamps, so the next regressing input opens the breaker. */
+    d = jw_svc_backoff_record_failure(&state, LLONG_MIN);
     assert(d.breaker_open);
 
     puts("PASS backoff-test non-increasing timestamps are tolerated, not rejected");
+}
+
+static void jw__test_extreme_timestamp_range_does_not_overflow(void) {
+    jw_svc_backoff_state state;
+    jw_svc_backoff_init(&state);
+
+    jw_svc_backoff_record_failure(&state, LLONG_MIN);
+    jw_svc_backoff_record_failure(&state, LLONG_MAX);
+    jw_svc_backoff_record_failure(&state, LLONG_MAX);
+    jw_svc_backoff_record_failure(&state, LLONG_MAX);
+    jw_svc_backoff_decision d = jw_svc_backoff_record_failure(&state, LLONG_MAX);
+    assert(!d.breaker_open);
+    assert(d.delay_ms == 16000);
+
+    /* Once LLONG_MIN is evicted, the five retained LLONG_MAX failures
+     * are coincident and must open the breaker. */
+    d = jw_svc_backoff_record_failure(&state, LLONG_MAX);
+    assert(d.breaker_open);
+
+    puts("PASS backoff-test extreme timestamp range is handled without overflow");
+}
+
+static void jw__test_ring_shift_finds_new_cluster(void) {
+    jw_svc_backoff_state state;
+    jw_svc_backoff_init(&state);
+
+    jw_svc_backoff_record_failure(&state, 0);
+    for (int i = 0; i < JW_SVC_BACKOFF_TRACKED - 1; i++) {
+        jw_svc_backoff_decision d =
+            jw_svc_backoff_record_failure(&state, 10LL * 60LL * 1000LL + i);
+        assert(!d.breaker_open);
+    }
+
+    /* The distant first timestamp is now evicted. The five newest
+     * failures form a cluster, so this 6th failure opens the breaker. */
+    jw_svc_backoff_decision d =
+        jw_svc_backoff_record_failure(&state, 10LL * 60LL * 1000LL + 4);
+    assert(d.breaker_open);
+
+    puts("PASS backoff-test ring shift detects a cluster after evicting the oldest failure");
 }
 
 int main(void) {
@@ -170,6 +221,8 @@ int main(void) {
     jw__test_init_is_a_clean_slate();
     jw__test_null_state_is_handled();
     jw__test_out_of_order_timestamp_is_tolerated();
+    jw__test_extreme_timestamp_range_does_not_overflow();
+    jw__test_ring_shift_finds_new_cluster();
     puts("PASS backoff-test");
     return 0;
 }

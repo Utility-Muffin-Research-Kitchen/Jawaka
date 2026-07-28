@@ -29,6 +29,10 @@
  * crash loop -- but every individual failure still gets the escalating
  * backoff delay, capped at the sequence's last entry (16s) once 5 or
  * more consecutive failures have been recorded.
+ *
+ * This state is not thread-safe. A caller must serialize all init,
+ * record, and reset operations on each service's state (or provide its
+ * own locking around them).
  */
 
 #define JW_SVC_BACKOFF_TRACKED 5
@@ -58,20 +62,22 @@ typedef struct {
 
 /* Zeroes `state`: no recorded failures, breaker closed. Equivalent to a
  * zero-initialized jw_svc_backoff_state, provided for callers who prefer
- * not to rely on that. */
+ * not to rely on that. A NULL state is ignored. */
 void jw_svc_backoff_init(jw_svc_backoff_state *state);
 
 /* Records a failure occurring at `now_ms` and returns what the caller
- * should do next. `now_ms` must be nondecreasing across calls on the
- * same state (the caller's own clock is assumed monotonic); passing a
- * value at or before the most recently recorded failure is treated as
- * that same instant for windowing purposes, not rejected.
+ * should do next. `state` must previously have been initialized or
+ * zero-initialized and must not be modified directly. `now_ms` should
+ * normally be nondecreasing across calls on the same state (the caller's
+ * own clock is assumed monotonic), but all long long values are valid:
+ * passing a value before the most recently recorded failure is clamped
+ * to that prior instant for windowing purposes, not rejected.
  *
  * Calling this again after the breaker has already opened (without an
  * intervening jw_svc_backoff_reset()) simply returns {breaker_open:
  * true} again -- it does not re-arm or extend anything.
  *
- * `state` must not be NULL. */
+ * A NULL state defensively returns {breaker_open: true, delay_ms: 0}. */
 jw_svc_backoff_decision jw_svc_backoff_record_failure(jw_svc_backoff_state *state, long long now_ms);
 
 /* Clears all recorded failures and closes the breaker. Callers use this
@@ -81,7 +87,7 @@ jw_svc_backoff_decision jw_svc_backoff_record_failure(jw_svc_backoff_state *stat
  * that policy choice belongs to the caller, which is free to call this
  * after whatever grace period it chooses.
  *
- * `state` must not be NULL. */
+ * A NULL state is ignored. */
 void jw_svc_backoff_reset(jw_svc_backoff_state *state);
 
 #endif
