@@ -159,8 +159,19 @@ DAEMON_SRCS := \
 	internal/db/relocation.c \
 	internal/settings/appearance.c \
 	internal/settings/theme_resolve.c \
-	internal/discovery/discovery.c \
+internal/discovery/discovery.c \
 	$(SCRAPE_SRCS) \
+	internal/services/manifest.c \
+	internal/services/ownership.c \
+	internal/services/lease.c \
+	internal/services/stop.c \
+	internal/services/reservation.c \
+	internal/services/backoff.c \
+	internal/services/dup_ids.c \
+	internal/services/unverified_stop.c \
+	internal/services/control_state.c \
+	internal/services/log_redact.c \
+	internal/services/launch.c \
 	third_party/cjson/cJSON.c
 
 RETROARCH_CTL_SRCS := \
@@ -331,7 +342,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test log-redact-test launch-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -396,6 +407,65 @@ relocation-test: | $(BUILD)/bin
 
 relocation-ipc-smoke:
 	scripts/relocation-ipc-smoke.sh
+
+service-manifest-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-manifest-test \
+		internal/services/manifest_test.c internal/services/manifest.c \
+		third_party/cjson/cJSON.c
+	$(BUILD)/bin/service-manifest-test
+
+ownership-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ownership-test \
+		internal/services/ownership_test.c internal/services/ownership.c -lpthread
+	$(BUILD)/bin/ownership-test
+
+lease-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/lease-test \
+		internal/services/lease_test.c internal/services/lease.c
+	$(BUILD)/bin/lease-test
+
+stop-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/stop-test \
+		internal/services/stop_test.c internal/services/stop.c
+	$(BUILD)/bin/stop-test
+
+reservation-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/reservation-test \
+		internal/services/reservation_test.c internal/services/reservation.c \
+		third_party/cjson/cJSON.c
+	$(BUILD)/bin/reservation-test
+
+backoff-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/backoff-test \
+		internal/services/backoff_test.c internal/services/backoff.c
+	$(BUILD)/bin/backoff-test
+
+dup-ids-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/dup-ids-test \
+		internal/services/dup_ids_test.c internal/services/dup_ids.c
+	$(BUILD)/bin/dup-ids-test
+
+unverified-stop-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/unverified-stop-test \
+		internal/services/unverified_stop_test.c internal/services/unverified_stop.c
+	$(BUILD)/bin/unverified-stop-test
+
+control-state-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/control-state-test \
+		internal/services/control_state_test.c internal/services/control_state.c \
+		-lsqlite3
+	$(BUILD)/bin/control-state-test
+
+log-redact-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/log-redact-test \
+		internal/services/log_redact_test.c internal/services/log_redact.c
+	$(BUILD)/bin/log-redact-test
+
+launch-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/launch-test \
+		internal/services/launch_test.c internal/services/launch.c \
+		third_party/cjson/cJSON.c -lpthread
+	$(BUILD)/bin/launch-test
 
 imported-title-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/imported-title-test \
