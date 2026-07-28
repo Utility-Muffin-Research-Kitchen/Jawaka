@@ -338,47 +338,28 @@ static inline void jw__haptic(const jw_launcher_state *state, const char *event)
         jw_ipc_rumble(state->socket_path, event);
 }
 
-static inline bool jw__is_dpad(cat_button button) {
-    return button == CAT_BTN_UP || button == CAT_BTN_DOWN ||
-           button == CAT_BTN_LEFT || button == CAT_BTN_RIGHT;
-}
-
-/* One number standing for "where the cursor is" across every 5-Game Mode
-   screen -- the picker's game and system lists, and the wizard's arrange, lock,
-   PIN and style steps. The caller only needs to know whether it changed, so the
-   fields are folded together rather than reported individually. The step is
-   mixed in so advancing between screens counts as movement too. */
-static long jw__focus_ui_pos(const jw_launcher_state *state) {
-    if (!state) return 0;
-    long pos = (long)state->focus_setup_step * 1000003L;
-    pos += (long)state->focus_setup_arrange_cursor * 10007L;
-    pos += (long)state->focus_setup_choice * 101L;
-    pos += (long)state->focus_setup_pin_slot * 17L;
-    for (int i = 0; i < JW_FOCUS_PIN_LEN; i++) {
-        pos += (long)state->focus_setup_pin[i] * (3L + i);
-        pos += (long)state->focus_setup_pin2[i] * (23L + i);
-    }
-    pos += (long)state->game_list.cursor * 7L;
-    pos += (long)state->list.cursor;
-    return pos;
-}
-
-/* True when `button` maps to a real cursor/channel/tab movement in this home
-   layout, so an unchanged position after the press is a genuine boundary
-   (blocked tick) rather than an inert key. */
-static bool jw__home_nav_moves(cat_launcher_layout layout, cat_button button) {
-    switch (button) {
-        case CAT_BTN_LEFT:
-        case CAT_BTN_RIGHT:
-            return true;   /* every home layout moves horizontally */
-        case CAT_BTN_UP:
-        case CAT_BTN_DOWN:
-            return layout != CAT_LAUNCHER_HORIZONTAL;   /* horizontal ignores ▲▼ */
-        case CAT_BTN_L1:
-        case CAT_BTN_R1:
-            return layout == CAT_LAUNCHER_TABBED || layout == CAT_LAUNCHER_COVERFLOW;
-        default:
-            return false;
+/* Catastrophe's widgets report what happened to them; this turns that into what
+   it feels like. It replaces the three hand-written "did the cursor move"
+   checks this file and settings.c used to carry, each of which had to be
+   remembered on every new screen and only ever covered the screens someone
+   thought of.
+ *
+ * MOVED and ENTERED both ride the opt-in navigation tick. Typing is the
+ * highest-frequency movement on the device, so anyone who turned per-move
+ * feedback off wants the keyboard quiet too. */
+static void jw__ui_feedback(cat_ui_feedback what, void *user) {
+    const jw_launcher_state *state = (const jw_launcher_state *)user;
+    switch (what) {
+        case CAT_UI_MOVED:
+        case CAT_UI_ENTERED:
+            jw__haptic(state, "nav");
+            break;
+        case CAT_UI_SURFACE:
+            jw__haptic(state, "select");
+            break;
+        case CAT_UI_EDGE:
+            jw__haptic(state, "blocked");
+            break;
     }
 }
 
@@ -1575,6 +1556,11 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
 
 static void jw__switch_tab(jw_launcher_state *state, int direction, const char *db_path) {
     if (!state) return;
+    /* The tab row is a cursor Catastrophe does not own, so it reports its own
+       movement. Every caller is a button press (L1/R1, and the coverflow channel
+       cube), and the row wraps, so the only way this is not a move is a single
+       visible tab. */
+    jw_tab from_tab = state->current_tab;
     /* Remember the cursor in the channel we're leaving so a later return lands
        where we were, not back at the start. */
     if (state->current_tab >= 0 && state->current_tab < JW_TAB_COUNT)
@@ -1598,8 +1584,9 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
                       ? state->tab_cursor[state->current_tab] : 0;
     if (restore < 0) restore = 0;
     if (restore > count - 1) restore = count > 0 ? count - 1 : 0;
-    cat_list_state_jump(&state->list, restore, count);
+    cat_list_state_jump(&state->list, restore, count);   /* silent: a restore, not a press */
 
+    cat_ui_feedback_emit(state->current_tab != from_tab ? CAT_UI_MOVED : CAT_UI_EDGE);
 }
 
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
@@ -4714,6 +4701,7 @@ static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
             case CAT_BTN_DOWN:
             case CAT_BTN_B:
                 s_cf_focus_results = false;
+                cat_ui_feedback_emit(CAT_UI_MOVED);   /* zone hop back to the keys */
                 break;
             case CAT_BTN_LEFT:
             case CAT_BTN_L1:
@@ -4736,19 +4724,34 @@ static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
 
     /* Focus on the keyboard. */
     switch (button) {
+        /* This keyboard is hand-rolled rather than a cat_keyboard, so it reports
+           its own movement. Rows clamp; columns wrap within the row. */
         case CAT_BTN_UP:
-            if (s_cf_kb_row > 0) s_cf_kb_row--;
-            else if (state->search_count > 0) s_cf_focus_results = true; /* jump to results */
+            if (s_cf_kb_row > 0) {
+                s_cf_kb_row--;
+                cat_ui_feedback_emit(CAT_UI_MOVED);
+            } else if (state->search_count > 0) {
+                s_cf_focus_results = true;                /* jump to results */
+                cat_ui_feedback_emit(CAT_UI_MOVED);
+            } else {
+                cat_ui_feedback_emit(CAT_UI_EDGE);        /* top row, no results */
+            }
             break;
-        case CAT_BTN_DOWN:  if (s_cf_kb_row < JW_CF_KB_ROWS - 1) s_cf_kb_row++; break;
+        case CAT_BTN_DOWN:
+            cat_ui_feedback_emit(s_cf_kb_row < JW_CF_KB_ROWS - 1 ? CAT_UI_MOVED
+                                                                 : CAT_UI_EDGE);
+            if (s_cf_kb_row < JW_CF_KB_ROWS - 1) s_cf_kb_row++;
+            break;
         case CAT_BTN_LEFT: {   /* wrap within the row */
             int rl = jw__cf_kb_row_len(s_cf_kb_row);
             s_cf_kb_col = (s_cf_kb_col - 1 + rl) % rl;
+            cat_ui_feedback_emit(CAT_UI_MOVED);
             break;
         }
         case CAT_BTN_RIGHT: {
             int rl = jw__cf_kb_row_len(s_cf_kb_row);
             s_cf_kb_col = (s_cf_kb_col + 1) % rl;
+            cat_ui_feedback_emit(CAT_UI_MOVED);
             break;
         }
         case CAT_BTN_A: {   /* type the selected key, then re-run the search live */
@@ -4767,6 +4770,7 @@ static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
                     edited = true;
                 }
             }
+            cat_ui_feedback_emit(edited ? CAT_UI_ENTERED : CAT_UI_EDGE);
             if (edited) {
                 char q[256];
                 snprintf(q, sizeof(q), "%s", state->search_query);
@@ -4778,6 +4782,7 @@ static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
             size_t len = strlen(state->search_query);
             if (len > 0) {
                 state->search_query[len - 1] = '\0';
+                cat_ui_feedback_emit(CAT_UI_ENTERED);
                 char q[256];
                 snprintf(q, sizeof(q), "%s", state->search_query);
                 jw__perform_search(db_path, state, q);
@@ -5341,7 +5346,6 @@ static void jw__open_menu(jw_launcher_state *state) {
     state->menu_open = true;
     state->menu_tab  = JW_SMTAB_SETTINGS;
     jw_settings_ui_enter(&state->settings);
-    jw__haptic(state, "select");
 }
 
 static void jw__switch_system_tab(jw_launcher_state *state, int direction) {
@@ -5895,7 +5899,6 @@ static int jw__open_system_games(const char *db_path, const char *system,
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     snprintf(state->status, sizeof(state->status), "%d %s games",
              state->game_count, state->game_system_display);
-    jw__haptic(state, "select");   /* single tick: drilled into a system */
     return 0;
 }
 
@@ -5919,7 +5922,6 @@ static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
     } else {
         snprintf(state->status, sizeof(state->status), "%d favorites", state->game_count);
     }
-    jw__haptic(state, "select");   /* single tick: opened Favorites */
     return 0;
 }
 
@@ -5942,7 +5944,6 @@ static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
     } else {
         snprintf(state->status, sizeof(state->status), "%d recent", state->game_count);
     }
-    jw__haptic(state, "select");   /* single tick: opened Recently Played */
     return 0;
 }
 
@@ -6198,7 +6199,6 @@ static void jw__open_apps(jw_launcher_state *state) {
         snprintf(state->status, sizeof(state->status), "%s",
                  state->scan_ready ? "No apps found" : "Scanning library...");
     }
-    jw__haptic(state, "select");   /* single tick: opened Apps */
 }
 
 /* ─── Navigation resume (breadcrumb) ─────────────────────────────────────────
@@ -6865,11 +6865,9 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
     const jw_flat_item *it = &state->flat_items[state->list.cursor];
     switch (it->kind) {
         case JW_FLAT_SETTINGS:
-            jw__haptic(state, "select");
             jw_settings_ui_enter(&state->settings);
             break;
         case JW_FLAT_TOOLS:
-            jw__haptic(state, "select");
             state->tools_open = true;
             cat_list_state_init(&state->tools_list, 4);
             break;
@@ -7047,12 +7045,6 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
        L1/R1 shoulders) step one cover with wrap-around, Up/Down jump to the next
        alphabetical letter. The grid layouts keep their row/page navigation. */
     bool cf = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW);
-    /* Haptics: tick on a real cursor move (nav, opt-in) or buzz at a list
-       boundary (blocked). L1/R1 only move in coverflow. */
-    bool nav_btn = (button == CAT_BTN_UP || button == CAT_BTN_DOWN ||
-                    button == CAT_BTN_LEFT || button == CAT_BTN_RIGHT ||
-                    (cf && (button == CAT_BTN_L1 || button == CAT_BTN_R1)));
-    int  cur0 = state->game_list.cursor;
     switch (button) {
         case CAT_BTN_UP:
             if (cf) cat_list_state_jump_letter(&state->game_list, jw__games_label_cb,
@@ -7095,9 +7087,6 @@ static void jw__handle_game_browser_input(const char *socket_path, const char *d
         default:
             break;
     }
-
-    if (nav_btn)
-        jw__haptic(state, state->game_list.cursor != cur0 ? "nav" : "blocked");
 }
 
 static void jw__handle_app_browser_input(const char *socket_path,
@@ -7144,7 +7133,6 @@ static void jw__open_switcher(const char *db_path, jw_launcher_state *state) {
     jw_game_switcher_resolve_thumbnails(&state->switcher);
     state->switcher_open = true;
     state->status[0] = '\0';
-    jw__haptic(state, "select");   /* single tick: opened the switcher */
 }
 
 /* Y in the switcher: drop the selected game from Recents only (id, artwork,
@@ -7225,6 +7213,9 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
         jw_settings_ui_init(ui, db_path, theme_name, socket_path);
     }
     jw_settings_ui_open(ui, screen);
+    /* Blocking modal: it never returns to jw__handle_input, so the surface tick
+       has to come from here. The matching one fires when the loop ends. */
+    jw__haptic(state, "select");
 
     char status[256] = { 0 };
     bool hints = jw_settings_show_hints(&state->settings);
@@ -7292,6 +7283,7 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
         jw__present();
     }
     jw_settings_ui_close(ui);
+    jw__haptic(state, "select");   /* handed the screen back */
     cat_request_frame();
 }
 
@@ -7344,6 +7336,9 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
                 state->scan_ready = lib.library_populated || !lib.scan_running;
             }
             state->menu_scanning = state->scan_running;
+            /* Neither movement nor a surface change -- an action that ran and
+               came back, so it reports its own outcome. */
+            jw__haptic(state, buf[0] ? "commit" : "blocked");
             break;
         }
         case JW_SA_SLEEP:
@@ -7389,7 +7384,6 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
             jw_settings_ui_close(&state->settings);
             state->menu_open = false;
             state->status[0] = '\0';
-            jw__haptic(state, "select");
             return;
         }
         bool theme_changed = false;
@@ -7409,18 +7403,12 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
     /* Actions / Info: simple selectable lists. */
     int tab_count;
     jw__menu_tab_items(state->menu_tab, &tab_count);
-    /* Same movement contract as the home list: tick on a real move, buzz at a
-       hard boundary. Snapshot before, compare after -- cat_list_state_move
-       clamps at the ends, so an unchanged cursor IS the boundary. */
-    int menu_cur0 = state->menu_list.cursor;
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->menu_list, -1, tab_count);
-            jw__haptic(state, state->menu_list.cursor != menu_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->menu_list, +1, tab_count);
-            jw__haptic(state, state->menu_list.cursor != menu_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_A:
             jw__menu_activate(socket_path, db_path, state, running);
@@ -7433,7 +7421,6 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
                as a dropped input. */
             state->menu_open = false;
             state->status[0] = '\0';
-            jw__haptic(state, "select");
             break;
         default:
             break;
@@ -7497,7 +7484,6 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
                 state->pakrat_open = false;
                 state->menu_open = false;
                 state->status[0] = '\0';
-                jw__haptic(state, "select");
                 break;
             default:
                 break;
@@ -7505,24 +7491,18 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
         return;
     }
 
-    /* Movement ticks, boundaries buzz -- same contract as the home list. */
-    int pak_cur0 = state->pakrat_list.cursor;
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->pakrat_list, -1, state->pakrat_app_count);
-            jw__haptic(state, state->pakrat_list.cursor != pak_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_DOWN:
             cat_list_state_move(&state->pakrat_list, +1, state->pakrat_app_count);
-            jw__haptic(state, state->pakrat_list.cursor != pak_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_LEFT:
             cat_list_state_page(&state->pakrat_list, -1, state->pakrat_app_count);
-            jw__haptic(state, state->pakrat_list.cursor != pak_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_RIGHT:
             cat_list_state_page(&state->pakrat_list, +1, state->pakrat_app_count);
-            jw__haptic(state, state->pakrat_list.cursor != pak_cur0 ? "nav" : "blocked");
             break;
         case CAT_BTN_L1:
         case CAT_BTN_R1:
@@ -7566,7 +7546,6 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
             state->pakrat_open = false;
             state->menu_open = false;
             state->status[0] = '\0';
-            jw__haptic(state, "select");
             break;
         default:
             break;
@@ -7713,15 +7692,18 @@ static void jw__fsetup_toggle(jw_launcher_state *st, int id) {
             for (int j = i; j < st->focus_setup_count - 1; j++)
                 st->focus_setup_ids[j] = st->focus_setup_ids[j + 1];
             st->focus_setup_count--;
+            jw__haptic(st, "select");            /* deselected */
             return;
         }
     }
     if (st->focus_setup_count >= JW_FOCUS_SCREEN_MAX_TILES) {
         snprintf(st->focus_setup_note, sizeof(st->focus_setup_note),
                  "5 games max — deselect one first");
+        jw__haptic(st, "blocked");               /* refused: the set is full */
         return;
     }
     st->focus_setup_ids[st->focus_setup_count++] = id;
+    jw__haptic(st, "select");                    /* selected */
 }
 
 /* Force the Games-tab systems list (the base of Pick). */
@@ -7771,6 +7753,7 @@ static void jw__pick_clear(jw_launcher_state *state) {
     state->focus_setup_count = 0;
     for (int i = 0; i < JW_FOCUS_SCREEN_MAX_TILES; i++) state->focus_setup_ids[i] = 0;
     snprintf(state->focus_setup_note, sizeof(state->focus_setup_note), "Cleared");
+    jw__haptic(state, "select");
 }
 
 static void jw__pick_done(jw_launcher_state *state) {
@@ -8038,10 +8021,13 @@ static void jw__handle_focus_setup_input(const char *db_path,
         switch (button) {
             case CAT_BTN_LEFT: case CAT_BTN_RIGHT:
             case CAT_BTN_UP:   case CAT_BTN_DOWN: {
+                /* jw__focus_nav is a grid cursor Catastrophe does not own, so
+                   this reports its own movement. Grabbed or not, the cursor
+                   lands in the same place; only the tiles differ. */
+                int cur = state->focus_setup_arrange_cursor;
+                int dst = jw__focus_nav(cur, n, button);
                 if (state->focus_setup_grabbed) {
                     /* move the grabbed tile in the arranged order */
-                    int cur = state->focus_setup_arrange_cursor;
-                    int dst = jw__focus_nav(cur, n, button);
                     if (dst != cur) {
                         int v = state->focus_setup_ids[cur];
                         if (cur < dst)
@@ -8052,9 +8038,9 @@ static void jw__handle_focus_setup_input(const char *db_path,
                         state->focus_setup_arrange_cursor = dst;
                     }
                 } else {
-                    state->focus_setup_arrange_cursor =
-                        jw__focus_nav(state->focus_setup_arrange_cursor, n, button);
+                    state->focus_setup_arrange_cursor = dst;
                 }
+                cat_ui_feedback_emit(dst != cur ? CAT_UI_MOVED : CAT_UI_EDGE);
                 break;
             }
             case CAT_BTN_X:
@@ -8089,8 +8075,11 @@ static void jw__handle_focus_setup_input(const char *db_path,
 
     case JW_FSETUP_LOCK:
         switch (button) {
-            case CAT_BTN_UP:   state->focus_setup_choice = (state->focus_setup_choice + 1) % 2; break;
-            case CAT_BTN_DOWN: state->focus_setup_choice = (state->focus_setup_choice + 1) % 2; break;
+            /* Two options, so the choice always flips: never a boundary. */
+            case CAT_BTN_UP:   state->focus_setup_choice = (state->focus_setup_choice + 1) % 2;
+                               cat_ui_feedback_emit(CAT_UI_MOVED); break;
+            case CAT_BTN_DOWN: state->focus_setup_choice = (state->focus_setup_choice + 1) % 2;
+                               cat_ui_feedback_emit(CAT_UI_MOVED); break;
             case CAT_BTN_A:
                 if (state->focus_setup_choice == 1) {
                     state->focus_setup_lock = JW_FOCUS_LOCK_PIN;
@@ -8112,10 +8101,19 @@ static void jw__handle_focus_setup_input(const char *db_path,
                                                      : state->focus_setup_pin;
         int *slot = &state->focus_setup_pin_slot;
         switch (button) {
-            case CAT_BTN_UP:   pin[*slot] = (pin[*slot] + 1) % 10; state->focus_setup_pin_mismatch = false; break;
-            case CAT_BTN_DOWN: pin[*slot] = (pin[*slot] + 9) % 10; state->focus_setup_pin_mismatch = false; break;
-            case CAT_BTN_LEFT:  if (*slot > 0) (*slot)--; break;
-            case CAT_BTN_RIGHT: if (*slot < JW_FOCUS_PIN_LEN - 1) (*slot)++; break;
+            /* Digits wrap so they always move; the slot clamps at both ends. */
+            case CAT_BTN_UP:   pin[*slot] = (pin[*slot] + 1) % 10; state->focus_setup_pin_mismatch = false;
+                               cat_ui_feedback_emit(CAT_UI_MOVED); break;
+            case CAT_BTN_DOWN: pin[*slot] = (pin[*slot] + 9) % 10; state->focus_setup_pin_mismatch = false;
+                               cat_ui_feedback_emit(CAT_UI_MOVED); break;
+            case CAT_BTN_LEFT:
+                cat_ui_feedback_emit(*slot > 0 ? CAT_UI_MOVED : CAT_UI_EDGE);
+                if (*slot > 0) (*slot)--;
+                break;
+            case CAT_BTN_RIGHT:
+                cat_ui_feedback_emit(*slot < JW_FOCUS_PIN_LEN - 1 ? CAT_UI_MOVED : CAT_UI_EDGE);
+                if (*slot < JW_FOCUS_PIN_LEN - 1) (*slot)++;
+                break;
             case CAT_BTN_A:
                 if (!state->focus_setup_pin_confirming) {
                     state->focus_setup_pin_confirming = true;
@@ -8154,8 +8152,11 @@ static void jw__handle_focus_setup_input(const char *db_path,
 
     case JW_FSETUP_STYLE:
         switch (button) {
-            case CAT_BTN_UP:   state->focus_setup_choice = (state->focus_setup_choice + 1) % 2; break;
-            case CAT_BTN_DOWN: state->focus_setup_choice = (state->focus_setup_choice + 1) % 2; break;
+            /* Two options, so the choice always flips: never a boundary. */
+            case CAT_BTN_UP:   state->focus_setup_choice = (state->focus_setup_choice + 1) % 2;
+                               cat_ui_feedback_emit(CAT_UI_MOVED); break;
+            case CAT_BTN_DOWN: state->focus_setup_choice = (state->focus_setup_choice + 1) % 2;
+                               cat_ui_feedback_emit(CAT_UI_MOVED); break;
             case CAT_BTN_A:
                 state->focus_setup_style = state->focus_setup_choice == 1 ? JW_FOCUS_STYLE_BW
                                                                           : JW_FOCUS_STYLE_THEME;
@@ -8274,7 +8275,6 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
             }
             case CAT_BTN_B:
             case CAT_BTN_MENU:
-                jw__haptic(state, "select");
                 state->focus_unlock_open = false; cat_request_frame(); break;
             default: break;
         }
@@ -8287,7 +8287,6 @@ static void jw__focus_unlock_input(const char *socket_path, jw_launcher_state *s
                 jw__focus_unlock_exit(state); break;
             case CAT_BTN_B:
             case CAT_BTN_MENU:
-                jw__haptic(state, "select");
                 state->focus_unlock_open = false; cat_request_frame(); break;
             default: break;
         }
@@ -8332,7 +8331,6 @@ static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *s
             break;
         case CAT_BTN_MENU:
             /* Open the unlock overlay, fresh. */
-            jw__haptic(state, "select");
             state->focus_unlock_open = true;
             state->focus_unlock_confirm = 0;
             state->focus_pin_error = false;
@@ -8345,7 +8343,51 @@ static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *s
     }
 }
 
+/* Which surface owns input right now, folded to one number.
+ *
+ * The chain below mirrors the overlay precedence in jw__handle_input_inner
+ * exactly -- read them together, and add to both when a surface is added. That
+ * is what makes the surface tick symmetric: opening a screen and backing out of
+ * it are the same event to this function, so both feel the same. They used to
+ * be written by hand at each open site, which is why nearly every close was
+ * silent -- someone had to remember twice and only ever remembered once.
+ *
+ * Two deliberate omissions. Settings sub-pages are absent because
+ * jw_settings_ui_handle_button owns that tick; counting them here would double
+ * it. The System menu tab row is absent because moving along a tab row is
+ * navigation, not a surface change -- jw__switch_system_tab ticks it as "nav",
+ * matching the home tab row. */
+static long jw__surface_id(const jw_launcher_state *state) {
+    if (!state)                   return 0;
+    if (state->focus_active)      return state->focus_unlock_open ? 101 : 100;
+    if (state->focus_setup_open)  return 200 + (long)state->focus_setup_step;
+    if (state->focus_pick_active) return state->games_open ? 301 : 300;
+    if (state->pakrat_open)       return state->pakrat_detail_open ? 401 : 400;
+    if (state->menu_open)         return 500;
+    if (state->switcher_open)     return 600;
+    if (state->actions_open)      return 700;
+    if (state->search_open)       return 800;
+    if (state->games_open)        return 900;
+    if (state->apps_open)         return 1000;
+    if (state->tools_open)        return 1100;
+    if (jw_settings_ui_is_open(&state->settings)) return 1200;
+    return 0;   /* home */
+}
+
+static void jw__handle_input_inner(const char *socket_path, const char *db_path,
+                              jw_launcher_state *state, cat_button button, bool *running);
+
+/* Public entry: run the real dispatcher, then tick once if the press changed
+   which surface is on screen. */
 static void jw__handle_input(const char *socket_path, const char *db_path,
+                             jw_launcher_state *state, cat_button button, bool *running) {
+    long surf0 = jw__surface_id(state);
+    jw__handle_input_inner(socket_path, db_path, state, button, running);
+    if (jw__surface_id(state) != surf0)
+        jw__haptic(state, "select");
+}
+
+static void jw__handle_input_inner(const char *socket_path, const char *db_path,
                               jw_launcher_state *state, cat_button button, bool *running) {
     const cat_stylesheet *ss = cat_get_stylesheet();
     cat_launcher_layout layout = ss->launcher.layout;
@@ -8366,27 +8408,15 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         return;
     }
 
-    /* 5-Game Mode's wizard and picker each have several sub-screens with their
-       own cursors, so the movement haptic is applied HERE, once, rather than at
-       every case inside them: snapshot the active position, run the handler,
-       and let a changed position mean "moved". Same contract the home list and
-       the settings pages use, and the only reason it is duplicated a third time
-       is that those two grew their own copies first. */
     if (state->focus_setup_open) {
-        long pos0 = jw__focus_ui_pos(state);
         jw__handle_focus_setup_input(db_path, state, button);
-        if (jw__is_dpad(button))
-            jw__haptic(state, jw__focus_ui_pos(state) != pos0 ? "nav" : "blocked");
         return;
     }
 
     /* Pick mode overlays the real Games-tab browser but stays locked to it:
        fully intercept input (no tab-switch / system menu / context / switcher). */
     if (state->focus_pick_active) {
-        long pos0 = jw__focus_ui_pos(state);
         jw__handle_pick_input(db_path, state, button);
-        if (jw__is_dpad(button))
-            jw__haptic(state, jw__focus_ui_pos(state) != pos0 ? "nav" : "blocked");
         return;
     }
 
@@ -8554,14 +8584,6 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
     int count = (layout == CAT_LAUNCHER_TABBED || cf_channels)
                     ? jw__tab_list_count(state) : state->flat_count;
 
-    /* Haptics: snapshot the home position so a directional press taps once on a
-       real move (nav, opt-in) or buzzes on a hard boundary (blocked). Channel and
-       tab switches update current_tab synchronously, list moves update the cursor,
-       so a diff of the two catches every genuine movement. */
-    bool nav_btn  = jw__home_nav_moves(layout, button);
-    int  pos_tab0 = (int)state->current_tab;
-    int  pos_cur0 = state->list.cursor;
-
     switch (button) {
         case CAT_BTN_UP:
             if (cf_channels) {
@@ -8672,12 +8694,6 @@ static void jw__handle_input(const char *socket_path, const char *db_path,
         }
         default:
             break;
-    }
-
-    if (nav_btn) {
-        bool moved = ((int)state->current_tab != pos_tab0) ||
-                     (state->list.cursor != pos_cur0);
-        jw__haptic(state, moved ? "nav" : "blocked");
     }
 }
 
@@ -8908,6 +8924,9 @@ int main(void) {
     snprintf(state.sdcard_root, sizeof(state.sdcard_root), "%s", sdcard_root);
     snprintf(state.socket_path, sizeof(state.socket_path), "%s", socket_path);
     snprintf(state.db_path, sizeof(state.db_path), "%s", db_path);
+    /* From here on every list, scroll view and keyboard reports its own movement
+       (see jw__ui_feedback); screens no longer have to remember to. */
+    cat_ui_feedback_set(jw__ui_feedback, &state);
     char *state_dir = jw_state_dir();
     if (state_dir && state_dir[0]) {
         snprintf(state.state_dir, sizeof(state.state_dir), "%s", state_dir);

@@ -4089,6 +4089,14 @@ static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode)
                 done_ms - start_ms,
                 warm);
 
+    /* The surface tick for this one belongs to the daemon: nothing in the
+       launcher or the menu sees the reveal, because it is a signal to a resident
+       process rather than a button press either of them handled. Safe here even
+       though the motor was just quiesced -- the FF route is shut and the daemon
+       is the only writer while the menu is up, and a tick finishes long before
+       the 250 ms reclaim above. */
+    jw__rumble_event(state, "select");
+
     return 0;
 }
 
@@ -4120,6 +4128,9 @@ static int jw__request_close_in_game_menu(jw_daemon_state *state) {
     }
 
     jw_ra_client client = jw_ra_client_default();
+    /* Tick BEFORE resuming: once the game is running again the core owns the
+       motor, and a UI tick queued after that races whatever it starts driving. */
+    jw__rumble_event(state, "select");
     jw__resume_game_after_menu(state, &client);
     state->menu_visible = false;
     if (state->menu_pid > 0) {
