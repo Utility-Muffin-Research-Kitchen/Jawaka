@@ -399,7 +399,7 @@ relocation-ipc-smoke:
 
 ownership-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ownership-test \
-		internal/services/ownership_test.c internal/services/ownership.c
+		internal/services/ownership_test.c internal/services/ownership.c -lpthread
 	$(BUILD)/bin/ownership-test
 
 imported-title-test: | $(BUILD)/bin

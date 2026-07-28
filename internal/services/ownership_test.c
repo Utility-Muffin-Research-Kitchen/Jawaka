@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include "internal/services/ownership.h"
 
 #include <assert.h>
@@ -7,6 +9,12 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#if defined(__linux__)
+#include <dirent.h>
+#include <pthread.h>
+#include <sys/prctl.h>
+#endif
 
 /* Real fork()/setpgid() fixtures, not mocks -- the whole point of this
  * module is to be trustworthy against the actual kernel's process table,
@@ -32,6 +40,42 @@ static bool jw__is_absent(pid_t pgid) {
     return jw_svc_group_absent(pgid);
 }
 
+#if defined(__linux__)
+static bool jw__kernel_reports_zombie(pid_t pid) {
+    char stat_path[64];
+    int n = snprintf(stat_path, sizeof(stat_path), "/proc/%ld/stat", (long)pid);
+    assert(n > 0 && (size_t)n < sizeof(stat_path));
+
+    FILE *fp = fopen(stat_path, "r");
+    if (!fp) {
+        return false;
+    }
+    char stat_text[4096];
+    size_t used = fread(stat_text, 1, sizeof(stat_text) - 1, fp);
+    bool failed = ferror(fp);
+    fclose(fp);
+    if (failed || used == 0) {
+        return false;
+    }
+    stat_text[used] = '\0';
+    const char *close_paren = strrchr(stat_text, ')');
+    return close_paren && close_paren[1] == ' ' && close_paren[2] == 'Z';
+}
+#endif
+
+static void jw__wait_for_unreaped_zombie(pid_t pid) {
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    assert(waitid(P_PID, (id_t)pid, &info, WEXITED | WNOWAIT) == 0);
+    assert(info.si_pid == pid);
+    /* Linux also exposes the unreaped task as /proc state Z, so cross-check
+     * the actual parser input there. On macOS, waitid(WNOWAIT) is the kernel
+     * API that proves exit while preserving the child's waitable state. */
+#if defined(__linux__)
+    assert(jw__kernel_reports_zombie(pid));
+#endif
+}
+
 static void jw__test_rejects_nonpositive_pgid(void) {
     assert(jw_svc_group_absent(0) == false);
     assert(jw_svc_group_absent(-1) == false);
@@ -42,7 +86,7 @@ static void jw__test_simple_child(void) {
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
-        setpgid(0, 0); /* becomes its own group leader: pgid == its own pid */
+        assert(setpgid(0, 0) == 0); /* group leader: pgid == its own pid */
         pause();
         _exit(0);
     }
@@ -62,7 +106,7 @@ static void jw__test_simple_child(void) {
 
     assert(jw_svc_group_absent(child) == false);
 
-    kill(child, SIGKILL);
+    assert(kill(child, SIGKILL) == 0);
     int status = 0;
     assert(waitpid(child, &status, 0) == child);
 
@@ -82,19 +126,19 @@ static void jw__test_zombie_alone_is_absent(void) {
     pid_t leader = fork();
     assert(leader >= 0);
     if (leader == 0) {
-        setpgid(0, 0);
+        assert(setpgid(0, 0) == 0);
         _exit(0);
     }
 
     pid_t pgid = leader;
-    /* Deliberately no waitpid() here yet: leader is exiting/exited but
-     * unreaped, i.e. either still running for a moment or already a
-     * zombie -- exactly the state this checks. */
-    bool became_absent = jw__wait_until(jw__is_absent, pgid, 2000);
+    /* waitid(WNOWAIT) proves the leader has exited while deliberately
+     * leaving it unreaped; Linux additionally verifies /proc state Z. */
+    jw__wait_for_unreaped_zombie(leader);
+    assert(jw_svc_group_absent(pgid));
+
     int status = 0;
     pid_t reaped = waitpid(leader, &status, 0); /* cleanup */
     assert(reaped == leader);
-    assert(became_absent);
     puts("PASS ownership-test zombie alone (no descendant): absent without being reaped first");
 }
 
@@ -110,7 +154,7 @@ static void jw__test_zombie_leader_live_descendant(void) {
     assert(leader >= 0);
     if (leader == 0) {
         close(ready_pipe[0]);
-        setpgid(0, 0); /* leader's pgid becomes its own pid */
+        assert(setpgid(0, 0) == 0); /* leader's pgid becomes its own pid */
 
         pid_t grandchild = fork();
         assert(grandchild >= 0);
@@ -121,7 +165,8 @@ static void jw__test_zombie_leader_live_descendant(void) {
              * the test process never otherwise learns this pid). */
             char buf[32];
             int n = snprintf(buf, sizeof(buf), "%d\n", (int)getpid());
-            write(ready_pipe[1], buf, (size_t)n);
+            assert(n > 0 && (size_t)n < sizeof(buf));
+            assert(write(ready_pipe[1], buf, (size_t)n) == n);
             close(ready_pipe[1]);
             pause();
             _exit(0);
@@ -150,16 +195,16 @@ static void jw__test_zombie_leader_live_descendant(void) {
      * the time we get here. */
     pid_t pgid = leader;
 
-    /* Grandchild is confirmed alive (it wrote to the pipe) and the leader
-     * has not been reaped by anyone -- the group must not be absent. */
+    /* The pipe proves the descendant is live. Independently wait until the
+     * leader is an unreaped zombie so this cannot accidentally pass while
+     * the leader itself is still a live group member. */
+    jw__wait_for_unreaped_zombie(leader);
     assert(jw_svc_group_absent(pgid) == false);
 
-    kill(grandchild_pid, SIGKILL);
+    assert(kill(grandchild_pid, SIGKILL) == 0);
 
-    /* Reap the leader now. It has certainly already called _exit() (it
-     * did so before the grandchild could run far enough to write the
-     * pipe... actually the reverse ordering is fine either way: this
-     * waitpid blocks until the leader has exited, whenever that happens.) */
+    /* Reap the already-proven-zombie leader. The orphaned descendant is
+     * reaped by the platform's init process after SIGKILL. */
     int status = 0;
     assert(waitpid(leader, &status, 0) == leader);
 
@@ -168,11 +213,122 @@ static void jw__test_zombie_leader_live_descendant(void) {
          "not absent until BOTH are gone, reaping the leader last");
 }
 
+#if defined(__linux__)
+
+static int jw__thread_ready_fd = -1;
+
+static void *jw__live_worker(void *unused) {
+    (void)unused;
+    char ready = 'R';
+    assert(write(jw__thread_ready_fd, &ready, 1) == 1);
+    for (;;) {
+        pause();
+    }
+    return NULL;
+}
+
+static bool jw__zombie_leader_has_multiple_tasks(pid_t pid) {
+    if (!jw__kernel_reports_zombie(pid)) {
+        return false;
+    }
+
+    char task_path[64];
+    int n = snprintf(task_path, sizeof(task_path),
+                     "/proc/%ld/task", (long)pid);
+    assert(n > 0 && (size_t)n < sizeof(task_path));
+    DIR *tasks = opendir(task_path);
+    if (!tasks) {
+        return false;
+    }
+
+    int task_count = 0;
+    struct dirent *entry = NULL;
+    while ((entry = readdir(tasks)) != NULL) {
+        if (entry->d_name[0] >= '0' && entry->d_name[0] <= '9') {
+            task_count++;
+        }
+    }
+    closedir(tasks);
+    return task_count > 1;
+}
+
+/* Linux /proc's top-level numeric directories identify thread groups, not
+ * every task. pthread_exit() can leave the leader task in Z while a worker
+ * thread remains live, so the implementation must inspect /proc/PID/task
+ * before excluding a zombie leader. */
+static void jw__test_zombie_leader_live_thread(void) {
+    int ready_pipe[2];
+    assert(pipe(ready_pipe) == 0);
+
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(ready_pipe[0]);
+        assert(setpgid(0, 0) == 0);
+        jw__thread_ready_fd = ready_pipe[1];
+        pthread_t worker;
+        assert(pthread_create(&worker, NULL, jw__live_worker, NULL) == 0);
+        pthread_exit(NULL);
+    }
+
+    close(ready_pipe[1]);
+    char ready = '\0';
+    assert(read(ready_pipe[0], &ready, 1) == 1);
+    close(ready_pipe[0]);
+    assert(ready == 'R');
+    assert(jw__wait_until(jw__zombie_leader_has_multiple_tasks, child, 2000));
+    assert(jw_svc_group_absent(child) == false);
+
+    assert(kill(-child, SIGKILL) == 0);
+    assert(waitpid(child, NULL, 0) == child);
+    assert(jw__wait_until(jw__is_absent, child, 2000));
+    puts("PASS ownership-test zombie leader + live thread: not absent");
+}
+
+/* A Linux task name may contain a newline. /proc/PID/stat still contains
+ * the complete parenthesized comm field, so line-oriented fgets() parsing
+ * can stop early and accidentally skip a live member. */
+static void jw__test_newline_in_comm(void) {
+    int ready_pipe[2];
+    assert(pipe(ready_pipe) == 0);
+
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(ready_pipe[0]);
+        assert(setpgid(0, 0) == 0);
+        assert(prctl(PR_SET_NAME, "odd)\nname", 0, 0, 0) == 0);
+        char ready = 'R';
+        assert(write(ready_pipe[1], &ready, 1) == 1);
+        close(ready_pipe[1]);
+        pause();
+        _exit(0);
+    }
+
+    close(ready_pipe[1]);
+    char ready = '\0';
+    assert(read(ready_pipe[0], &ready, 1) == 1);
+    close(ready_pipe[0]);
+    assert(ready == 'R');
+    assert(jw_svc_group_absent(child) == false);
+
+    assert(kill(child, SIGKILL) == 0);
+    assert(waitpid(child, NULL, 0) == child);
+    assert(jw__wait_until(jw__is_absent, child, 2000));
+    puts("PASS ownership-test newline in comm: live group remains visible");
+}
+
+#endif
+
 int main(void) {
     jw__test_rejects_nonpositive_pgid();
     jw__test_simple_child();
     jw__test_zombie_alone_is_absent();
     jw__test_zombie_leader_live_descendant();
+#if defined(__linux__)
+    jw__test_zombie_leader_live_thread();
+    jw__test_newline_in_comm();
+#endif
     puts("PASS ownership-test");
     return 0;
 }

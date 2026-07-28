@@ -1,6 +1,8 @@
 #include "internal/services/ownership.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,13 +32,18 @@ static bool jw__proc_stat_pgid_zombie(const char *line, pid_t *out_pgid, bool *o
     }
     cursor += 2; /* field 4: ppid */
     for (int field = 4; field <= 5; field++) {
+        errno = 0;
         char *end = NULL;
         long value = strtol(cursor, &end, 10);
-        if (end == cursor) {
+        if (end == cursor || errno == ERANGE || *end != ' ') {
             return false;
         }
         if (field == 5) {
-            *out_pgid = (pid_t)value;
+            pid_t pgid = (pid_t)value;
+            if (value <= 0 || (long)pgid != value) {
+                return false;
+            }
+            *out_pgid = pgid;
             return true;
         }
         while (*end == ' ') {
@@ -47,7 +54,7 @@ static bool jw__proc_stat_pgid_zombie(const char *line, pid_t *out_pgid, bool *o
     return false;
 }
 
-static bool jw__all_digits(const char *s) {
+static bool jw__pid_dir_name(const char *s, pid_t *out_pid) {
     if (!s || !s[0]) {
         return false;
     }
@@ -56,7 +63,113 @@ static bool jw__all_digits(const char *s) {
             return false;
         }
     }
+    errno = 0;
+    char *end = NULL;
+    long value = strtol(s, &end, 10);
+    pid_t pid = (pid_t)value;
+    if (end == s || *end != '\0' || errno == ERANGE ||
+        value <= 0 || (long)pid != value) {
+        return false;
+    }
+    *out_pid = pid;
     return true;
+}
+
+typedef enum {
+    JW__PROC_STAT_OK,
+    JW__PROC_STAT_GONE,
+    JW__PROC_STAT_UNKNOWN,
+} jw__proc_stat_result;
+
+static jw__proc_stat_result jw__read_proc_stat(const char *path,
+                                               pid_t *out_pgid,
+                                               bool *out_zombie) {
+    errno = 0;
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return errno == ENOENT || errno == ESRCH
+            ? JW__PROC_STAT_GONE : JW__PROC_STAT_UNKNOWN;
+    }
+
+    /* comm is only TASK_COMM_LEN bytes, but it may contain a newline. Read
+     * the complete pseudo-file rather than using fgets(), which would stop
+     * inside the parenthesized field and make a live process unparseable. */
+    char stat_text[4096];
+    size_t used = fread(stat_text, 1, sizeof(stat_text) - 1, fp);
+    bool read_failed = ferror(fp);
+    bool truncated = false;
+    if (!read_failed && used == sizeof(stat_text) - 1) {
+        int extra = fgetc(fp);
+        truncated = extra != EOF;
+        read_failed = ferror(fp);
+    }
+    fclose(fp);
+
+    if (read_failed || truncated || used == 0) {
+        return JW__PROC_STAT_UNKNOWN;
+    }
+    stat_text[used] = '\0';
+    return jw__proc_stat_pgid_zombie(stat_text, out_pgid, out_zombie)
+        ? JW__PROC_STAT_OK : JW__PROC_STAT_UNKNOWN;
+}
+
+static bool jw__live_thread_in_group(pid_t process_pid, pid_t target_pgid,
+                                     bool *out_live) {
+    *out_live = false;
+
+    char task_dir_path[64];
+    int n = snprintf(task_dir_path, sizeof(task_dir_path),
+                     "/proc/%ld/task", (long)process_pid);
+    if (n < 0 || (size_t)n >= sizeof(task_dir_path)) {
+        return false;
+    }
+
+    errno = 0;
+    DIR *tasks = opendir(task_dir_path);
+    if (!tasks) {
+        return errno == ENOENT || errno == ESRCH;
+    }
+
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(tasks);
+        if (!entry) {
+            bool complete = errno == 0;
+            closedir(tasks);
+            return complete;
+        }
+
+        pid_t tid = 0;
+        if (!jw__pid_dir_name(entry->d_name, &tid)) {
+            continue;
+        }
+
+        char stat_path[96];
+        n = snprintf(stat_path, sizeof(stat_path),
+                     "/proc/%ld/task/%ld/stat",
+                     (long)process_pid, (long)tid);
+        if (n < 0 || (size_t)n >= sizeof(stat_path)) {
+            closedir(tasks);
+            return false;
+        }
+
+        pid_t member_pgid = 0;
+        bool zombie = false;
+        jw__proc_stat_result stat_result =
+            jw__read_proc_stat(stat_path, &member_pgid, &zombie);
+        if (stat_result == JW__PROC_STAT_GONE) {
+            continue;
+        }
+        if (stat_result == JW__PROC_STAT_UNKNOWN) {
+            closedir(tasks);
+            return false;
+        }
+        if (member_pgid == target_pgid && !zombie) {
+            *out_live = true;
+            closedir(tasks);
+            return true;
+        }
+    }
 }
 
 bool jw_svc_group_absent(pid_t pgid) {
@@ -69,38 +182,56 @@ bool jw_svc_group_absent(pid_t pgid) {
         return false; /* cannot enumerate: never claim absence */
     }
 
-    bool absent = true;
-    struct dirent *entry;
-    while ((entry = readdir(proc)) != NULL) {
-        if (!jw__all_digits(entry->d_name)) {
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(proc);
+        if (!entry) {
+            bool complete = errno == 0;
+            closedir(proc);
+            return complete;
+        }
+
+        pid_t process_pid = 0;
+        if (!jw__pid_dir_name(entry->d_name, &process_pid)) {
             continue; /* not a pid directory (".", "..", "self", "net", ...) */
         }
 
         char stat_path[64];
-        snprintf(stat_path, sizeof(stat_path), "/proc/%s/stat", entry->d_name);
-        FILE *fp = fopen(stat_path, "r");
-        if (!fp) {
-            continue; /* exited between readdir() and open(): not a member anymore */
+        int n = snprintf(stat_path, sizeof(stat_path),
+                         "/proc/%ld/stat", (long)process_pid);
+        if (n < 0 || (size_t)n >= sizeof(stat_path)) {
+            closedir(proc);
+            return false;
         }
-        char line[4096];
-        bool got_line = fgets(line, sizeof(line), fp) != NULL;
-        fclose(fp);
-        if (!got_line) {
-            continue;
-        }
-
         pid_t member_pgid = 0;
         bool zombie = false;
-        if (!jw__proc_stat_pgid_zombie(line, &member_pgid, &zombie)) {
-            continue; /* unparseable: treat as not a provable member, same as gone */
+        jw__proc_stat_result stat_result =
+            jw__read_proc_stat(stat_path, &member_pgid, &zombie);
+        if (stat_result == JW__PROC_STAT_GONE) {
+            continue; /* exited between readdir() and open/read */
         }
-        if (member_pgid == pgid && !zombie) {
-            absent = false;
-            break;
+        if (stat_result == JW__PROC_STAT_UNKNOWN) {
+            closedir(proc);
+            return false; /* unreadable/unparseable: absence is not proven */
+        }
+        if (member_pgid != pgid) {
+            continue;
+        }
+        if (!zombie) {
+            closedir(proc);
+            return false;
+        }
+
+        /* /proc enumerates thread-group leaders, not every thread. A leader
+         * can be Z while worker threads remain live, so a zombie leader is
+         * not enough: inspect its task directory before ruling it out. */
+        bool live_thread = false;
+        if (!jw__live_thread_in_group(process_pid, pgid, &live_thread) ||
+            live_thread) {
+            closedir(proc);
+            return false;
         }
     }
-    closedir(proc);
-    return absent;
 }
 
 #elif defined(__APPLE__)
@@ -118,51 +249,59 @@ bool jw_svc_group_absent(pid_t pgid) {
         return false;
     }
 
-    int needed = proc_listallpids(NULL, 0);
-    if (needed <= 0) {
-        return false;
-    }
-
-    /* The pid list can grow between the sizing call and the fetch; retry
-     * with slack a few times rather than silently under-covering it. */
+    /* Ask the kernel for this group specifically. Besides avoiding unrelated
+     * proc_pidinfo permission failures, this keeps the proof scoped to the
+     * only entries that could affect the answer. proc_listpgrppids() returns
+     * a PID COUNT (unlike proc_listpids(), whose return is bytes). */
     for (int attempt = 0; attempt < 4; attempt++) {
-        size_t capacity = (size_t)needed + 64 + (size_t)needed / 4;
+        errno = 0;
+        int needed = proc_listpgrppids(pgid, NULL, 0);
+        if (needed < 0 || (needed == 0 && errno != 0)) {
+            return false;
+        }
+        if (needed == 0) {
+            return true;
+        }
+
+        size_t capacity = (size_t)needed + 8 + (size_t)needed / 2;
+        if (capacity > (size_t)INT_MAX / sizeof(pid_t)) {
+            return false;
+        }
         pid_t *pids = (pid_t *)malloc(capacity * sizeof(pid_t));
         if (!pids) {
             return false;
         }
-        int got_bytes = proc_listallpids(pids, (int)(capacity * sizeof(pid_t)));
-        if (got_bytes < 0) {
+
+        errno = 0;
+        int got_count =
+            proc_listpgrppids(pgid, pids, (int)(capacity * sizeof(pid_t)));
+        if (got_count < 0 || (got_count == 0 && errno != 0)) {
             free(pids);
             return false;
         }
-        int got_count = got_bytes / (int)sizeof(pid_t);
         if ((size_t)got_count >= capacity) {
-            /* Filled the buffer exactly full: the table may have grown
-             * past what we sized for. Re-size and retry rather than risk
-             * missing a member. */
             free(pids);
-            needed = proc_listallpids(NULL, 0);
-            if (needed <= 0) {
-                return false;
-            }
             continue;
         }
 
-        bool absent = true;
         for (int i = 0; i < got_count; i++) {
             struct proc_bsdinfo info;
+            errno = 0;
             int r = proc_pidinfo(pids[i], PROC_PIDTBSDINFO, 0, &info, sizeof(info));
             if (r != (int)sizeof(info)) {
-                continue; /* exited or inaccessible: not a provable member */
+                if (r == 0 && errno == ESRCH) {
+                    continue; /* exited after the group listing */
+                }
+                free(pids);
+                return false; /* inaccessible/short result: absence not proven */
             }
             if ((pid_t)info.pbi_pgid == pgid && info.pbi_status != SZOMB) {
-                absent = false;
-                break;
+                free(pids);
+                return false;
             }
         }
         free(pids);
-        return absent;
+        return true;
     }
     return false; /* process table kept growing past every retry: cannot prove absence */
 }
