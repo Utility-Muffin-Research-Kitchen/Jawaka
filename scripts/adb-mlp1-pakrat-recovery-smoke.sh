@@ -47,7 +47,7 @@ cleanup() {
         wait "$SERVER_PID" >/dev/null 2>&1 || true
     fi
     if [ "$KEEP_DEVICE" != 1 ]; then
-        "${ADB[@]}" shell "umount '$BIND_ROOT' >/dev/null 2>&1 || true; rm -rf '$DEVICE_ROOT' '$BIND_ROOT' '$UNDERLAY'" \
+        "${ADB[@]}" shell "umount '$BIND_ROOT' >/dev/null 2>&1 || true; rm -rf '$DEVICE_ROOT' '$DEVICE_EVIDENCE' '$BIND_ROOT' '$UNDERLAY'" \
             >/dev/null 2>&1 || true
     fi
     rm -rf "$HOST_TMP"
