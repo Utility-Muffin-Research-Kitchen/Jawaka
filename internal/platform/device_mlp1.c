@@ -114,8 +114,6 @@
 #define JW_MLP1_WIFI_PROC "/proc/net/wireless"
 #define JW_MLP1_SECONDARY_SOURCE_ID "secondary_sd"
 #define JW_MLP1_SECONDARY_LABEL "Secondary SD"
-#define JW_MLP1_SECONDARY_DEVICE "/dev/mmcblk3p1"
-#define JW_MLP1_SECONDARY_MOUNT "/media/sdcard1"
 #define JW_MLP1_STORAGE_DEBOUNCE_MS 750
 
 /* The stock loong_light daemon owns the AW20036 LED ring. It reads this JSON
@@ -222,11 +220,43 @@ static bool jw__mlp1_source_is_secondary(const char *source_id) {
            strcmp(source_id, JW_MLP1_SECONDARY_SOURCE_ID) == 0;
 }
 
-static bool jw__mlp1_block_present(void) {
-    return access(JW_MLP1_SECONDARY_DEVICE, F_OK) == 0;
+static void jw__mlp1_secondary_mount(const jw_platform_context *ctx,
+                                     char *out, size_t out_size) {
+    const char *primary = ctx && ctx->sdcard_root[0]
+                              ? ctx->sdcard_root : "/mnt/sdcard";
+    const char *paths = getenv("SDCARD_PATHS");
+    if (paths && paths[0]) {
+        const char *cursor = paths;
+        while (*cursor) {
+            const char *separator = strchr(cursor, ':');
+            size_t length = separator ? (size_t)(separator - cursor)
+                                      : strlen(cursor);
+            bool known_mount =
+                (length == strlen("/mnt/sdcard") &&
+                 strncmp(cursor, "/mnt/sdcard", length) == 0) ||
+                (length == strlen("/media/sdcard1") &&
+                 strncmp(cursor, "/media/sdcard1", length) == 0);
+            if (known_mount &&
+                !(strlen(primary) == length &&
+                  strncmp(cursor, primary, length) == 0) &&
+                length + 1u <= out_size) {
+                memcpy(out, cursor, length);
+                out[length] = '\0';
+                return;
+            }
+            if (!separator) {
+                break;
+            }
+            cursor = separator + 1;
+        }
+    }
+    snprintf(out, out_size, "%s",
+             strcmp(primary, "/media/sdcard1") == 0
+                 ? "/mnt/sdcard" : "/media/sdcard1");
 }
 
-static bool jw__mlp1_mount_is_active(void) {
+static bool jw__mlp1_mount_lookup(const char *wanted_mount,
+                                  char *device, size_t device_size) {
     FILE *fp = fopen("/proc/mounts", "r");
     if (!fp) {
         return false;
@@ -238,7 +268,10 @@ static bool jw__mlp1_mount_is_active(void) {
     bool active = false;
     while (fscanf(fp, "%255s %255s %63s %*s %*d %*d\n",
                   dev, mount, type) == 3) {
-        if (strcmp(mount, JW_MLP1_SECONDARY_MOUNT) == 0) {
+        if (strcmp(mount, wanted_mount) == 0) {
+            if (device && device_size > 0) {
+                snprintf(device, device_size, "%s", dev);
+            }
             active = true;
             break;
         }
@@ -247,44 +280,94 @@ static bool jw__mlp1_mount_is_active(void) {
     return active;
 }
 
-static bool jw__mlp1_storage_busy(void) {
-    if (!jw__mlp1_mount_is_active()) {
+static bool jw__mlp1_secondary_device(const jw_platform_context *ctx,
+                                      char *out, size_t out_size) {
+    char secondary_mount[PATH_MAX];
+    char primary_device[PATH_MAX] = {0};
+    jw__mlp1_secondary_mount(ctx, secondary_mount, sizeof(secondary_mount));
+    if (jw__mlp1_mount_lookup(secondary_mount, out, out_size)) {
+        return true;
+    }
+    if (ctx && ctx->sdcard_root[0]) {
+        (void)jw__mlp1_mount_lookup(ctx->sdcard_root, primary_device,
+                                    sizeof(primary_device));
+    }
+    const char *candidates[] = {"/dev/mmcblk1p1", "/dev/mmcblk3p1"};
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (access(candidates[i], F_OK) == 0 &&
+            strcmp(candidates[i], primary_device) != 0) {
+            snprintf(out, out_size, "%s", candidates[i]);
+            return true;
+        }
+    }
+    if (out && out_size > 0) {
+        out[0] = '\0';
+    }
+    return false;
+}
+
+static bool jw__mlp1_block_present(const jw_platform_context *ctx) {
+    char device[PATH_MAX];
+    return jw__mlp1_secondary_device(ctx, device, sizeof(device));
+}
+
+static bool jw__mlp1_mount_is_active(const jw_platform_context *ctx) {
+    char mount[PATH_MAX];
+    jw__mlp1_secondary_mount(ctx, mount, sizeof(mount));
+    return jw__mlp1_mount_lookup(mount, NULL, 0);
+}
+
+static bool jw__mlp1_storage_busy(const jw_platform_context *ctx) {
+    char mount[PATH_MAX];
+    char command[PATH_MAX + 128];
+    jw__mlp1_secondary_mount(ctx, mount, sizeof(mount));
+    if (!jw__mlp1_mount_lookup(mount, NULL, 0)) {
         return false;
     }
 
     if (access("/usr/bin/fuser", X_OK) == 0 ||
         access("/bin/fuser", X_OK) == 0 ||
         access("/sbin/fuser", X_OK) == 0) {
-        return jw__exec_shell("fuser -m " JW_MLP1_SECONDARY_MOUNT " >/dev/null 2>&1") == 0;
+        snprintf(command, sizeof(command), "fuser -m %s >/dev/null 2>&1", mount);
+        return jw__exec_shell(command) == 0;
     }
 
     if (access("/usr/bin/lsof", X_OK) == 0 ||
         access("/bin/lsof", X_OK) == 0 ||
         access("/sbin/lsof", X_OK) == 0) {
-        return jw__exec_shell("lsof +f -- " JW_MLP1_SECONDARY_MOUNT
-                              " 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }'") == 0;
+        snprintf(command, sizeof(command),
+                 "lsof +f -- %s 2>/dev/null | "
+                 "awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }'",
+                 mount);
+        return jw__exec_shell(command) == 0;
     }
 
     return false;
 }
 
-static int jw__mlp1_mount_secondary_if_needed(void) {
-    if (!jw__mlp1_block_present()) {
+static int jw__mlp1_mount_secondary_if_needed(jw_platform_context *ctx) {
+    char mount[PATH_MAX];
+    char device[PATH_MAX];
+    char command[PATH_MAX * 2 + 256];
+    jw__mlp1_secondary_mount(ctx, mount, sizeof(mount));
+    if (!jw__mlp1_secondary_device(ctx, device, sizeof(device))) {
         return -1;
     }
 
-    mkdir(JW_MLP1_SECONDARY_MOUNT, 0755);
+    mkdir(mount, 0755);
 
-    if (jw__mlp1_mount_is_active()) {
-        return jw__exec_shell("mount -o remount,rw,exec,nosuid,nodev,noatime,nodiratime "
-                              JW_MLP1_SECONDARY_MOUNT " >/dev/null 2>&1");
+    if (jw__mlp1_mount_lookup(mount, NULL, 0)) {
+        snprintf(command, sizeof(command),
+                 "mount -o remount,rw,exec,nosuid,nodev,noatime,nodiratime "
+                 "%s >/dev/null 2>&1", mount);
+        return jw__exec_shell(command);
     }
 
-    return jw__exec_shell("mount -t vfat -o rw,exec,nosuid,nodev,noatime,nodiratime,"
-                          "fmask=0022,dmask=0022,iocharset=utf8,shortname=mixed,"
-                          "errors=remount-ro "
-                          JW_MLP1_SECONDARY_DEVICE " " JW_MLP1_SECONDARY_MOUNT
-                          " >/dev/null 2>&1");
+    snprintf(command, sizeof(command),
+             "mount -t vfat -o rw,exec,nosuid,nodev,noatime,nodiratime,"
+             "fmask=0022,dmask=0022,iocharset=utf8,shortname=mixed,"
+             "errors=remount-ro %s %s >/dev/null 2>&1", device, mount);
+    return jw__exec_shell(command);
 }
 
 static int jw__mlp1_open_uevent_socket(void) {
@@ -321,16 +404,16 @@ static int jw__mlp1_init(jw_platform_context *ctx) {
         jw_log_warn("storage hotplug: uevent socket unavailable: %s", strerror(errno));
     }
 
-    if (jw__mlp1_block_present()) {
-        if (jw__mlp1_mount_secondary_if_needed() == 0) {
+    if (jw__mlp1_block_present(ctx)) {
+        if (jw__mlp1_mount_secondary_if_needed(ctx) == 0) {
             jw_log_info("storage hotplug: secondary SD mounted/remounted");
         } else {
             jw_log_warn("storage hotplug: secondary SD mount/remount failed");
         }
     }
 
-    data->last_present = jw__mlp1_block_present() ? 1 : 0;
-    data->last_mounted = jw__mlp1_mount_is_active() ? 1 : 0;
+    data->last_present = jw__mlp1_block_present(ctx) ? 1 : 0;
+    data->last_mounted = jw__mlp1_mount_is_active(ctx) ? 1 : 0;
     ctx->backend_data = data;
     return 0;
 }
@@ -2841,7 +2924,7 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
                 break;
             }
             buf[n] = '\0';
-            if (strstr(buf, "mmcblk3") || strstr(buf, JW_MLP1_SECONDARY_DEVICE)) {
+            if (strstr(buf, "mmcblk1") || strstr(buf, "mmcblk3")) {
                 data->pending_storage_event = true;
                 data->debounce_until_ms = jw__monotonic_ms() + JW_MLP1_STORAGE_DEBOUNCE_MS;
             }
@@ -2849,21 +2932,21 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
     }
 
     bool changed = false;
-    int present = jw__mlp1_block_present() ? 1 : 0;
-    int mounted = jw__mlp1_mount_is_active() ? 1 : 0;
+    int present = jw__mlp1_block_present(ctx) ? 1 : 0;
+    int mounted = jw__mlp1_mount_is_active(ctx) ? 1 : 0;
 
     if (data->pending_storage_event &&
         jw__monotonic_ms() >= data->debounce_until_ms) {
         data->pending_storage_event = false;
         if (present) {
-            if (jw__mlp1_mount_secondary_if_needed() == 0) {
+            if (jw__mlp1_mount_secondary_if_needed(ctx) == 0) {
                 jw_log_info("storage hotplug: secondary SD mounted/remounted");
             } else {
                 jw_log_warn("storage hotplug: secondary SD mount/remount failed");
             }
         }
-        present = jw__mlp1_block_present() ? 1 : 0;
-        mounted = jw__mlp1_mount_is_active() ? 1 : 0;
+        present = jw__mlp1_block_present(ctx) ? 1 : 0;
+        mounted = jw__mlp1_mount_is_active(ctx) ? 1 : 0;
         changed = true;
     }
 
@@ -2883,7 +2966,6 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
 static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
                                         const char *source_id,
                                         jw_platform_storage_status *out) {
-    (void)ctx;
     if (!out) {
         return;
     }
@@ -2892,17 +2974,18 @@ static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
     snprintf(out->source_id, sizeof(out->source_id), "%s",
              source_id && source_id[0] ? source_id : JW_MLP1_SECONDARY_SOURCE_ID);
     snprintf(out->label, sizeof(out->label), "%s", JW_MLP1_SECONDARY_LABEL);
-    snprintf(out->mount_path, sizeof(out->mount_path), "%s", JW_MLP1_SECONDARY_MOUNT);
-    snprintf(out->device_path, sizeof(out->device_path), "%s", JW_MLP1_SECONDARY_DEVICE);
+    jw__mlp1_secondary_mount(ctx, out->mount_path, sizeof(out->mount_path));
+    (void)jw__mlp1_secondary_device(ctx, out->device_path,
+                                    sizeof(out->device_path));
 
     if (!jw__mlp1_source_is_secondary(source_id)) {
         snprintf(out->message, sizeof(out->message), "%s", "storage source unavailable");
         return;
     }
 
-    out->present = jw__mlp1_block_present();
-    out->mounted = jw__mlp1_mount_is_active();
-    out->busy = out->mounted ? jw__mlp1_storage_busy() : false;
+    out->present = jw__mlp1_block_present(ctx);
+    out->mounted = jw__mlp1_mount_is_active(ctx);
+    out->busy = out->mounted ? jw__mlp1_storage_busy(ctx) : false;
     out->can_unmount = out->mounted && !out->busy;
     snprintf(out->message, sizeof(out->message), "%s",
              out->busy ? "Busy" : (out->mounted ? "Mounted" : "Not mounted"));
@@ -2918,27 +3001,32 @@ static void jw__mlp1_safe_unmount_storage(jw_platform_context *ctx,
         return;
     }
 
-    if (!jw__mlp1_mount_is_active()) {
+    char mount[PATH_MAX];
+    char command[PATH_MAX + 64];
+    jw__mlp1_secondary_mount(ctx, mount, sizeof(mount));
+
+    if (!jw__mlp1_mount_is_active(ctx)) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
                                "Secondary SD is not mounted");
         return;
     }
 
-    if (jw__mlp1_storage_busy()) {
+    if (jw__mlp1_storage_busy(ctx)) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
                                "Secondary SD is busy");
         return;
     }
 
     sync();
-    if (jw__exec_shell("umount " JW_MLP1_SECONDARY_MOUNT " >/dev/null 2>&1") != 0) {
+    snprintf(command, sizeof(command), "umount %s >/dev/null 2>&1", mount);
+    if (jw__exec_shell(command) != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
                                "Secondary SD unmount failed");
         return;
     }
 
     if (data) {
-        data->last_present = jw__mlp1_block_present() ? 1 : 0;
+        data->last_present = jw__mlp1_block_present(ctx) ? 1 : 0;
         data->last_mounted = 0;
     }
     jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "Secondary SD unmounted");

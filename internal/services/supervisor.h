@@ -309,6 +309,11 @@ int jw_svc_supervisor_storage_change_begin(jw_svc_supervisor *sup,
                                            char *out_stuck_id,
                                            size_t stuck_id_size);
 
+/* Release storage-policy restarts only after the platform reports the source
+ * mounted and the daemon has rescanned it, or when a requested unmount failed
+ * and the original mounted topology never changed. */
+void jw_svc_supervisor_storage_change_resume(jw_svc_supervisor *sup);
+
 /* Side-effect-free pre-check for the safe-unmount caller. Reports the first
  * storage-sensitive service whose absence cannot presently be verified -- a
  * locked stale generation this daemon may not signal, a survivor that

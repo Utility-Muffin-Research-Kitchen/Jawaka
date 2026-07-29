@@ -3601,6 +3601,11 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
     state->services_storage_stop_done =
         jw_svc_storage_should_suppress_followup_tick(
             stopped, result.code == JW_PLATFORM_RESULT_OK);
+    if (state->services && result.code != JW_PLATFORM_RESULT_OK) {
+        /* The topology did not change, so undo the restart hold. A successful
+         * unmount stays held until a later mounted + rescanned storage tick. */
+        jw_svc_supervisor_storage_change_resume(state->services);
+    }
     if (result.code == JW_PLATFORM_RESULT_OK) {
         if (state->services && jw_svc_supervisor_scan(state->services) < 0) {
             jw_log_warn("safe-unmount: service rescan failed");
@@ -10311,6 +10316,11 @@ int main(int argc, char *argv[]) {
                 }
                 if (jw_svc_supervisor_scan(state.services) < 0) {
                     jw_log_warn("storage hotplug: service rescan failed");
+                }
+                if (!source_departed) {
+                    /* The mounted topology is now visible to the supervisor.
+                     * Only now may services stopped for the departure resume. */
+                    jw_svc_supervisor_storage_change_resume(state.services);
                 }
             }
             if (jw__start_scan_job(&state, "after storage change") < 0) {

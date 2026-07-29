@@ -58,6 +58,10 @@ struct jw_svc_supervisor {
     jw_svc_supervised *entries;  /* dynamic array, scan order */
     int count;
     int cap;
+    /* A storage-policy stop cannot resume merely because the synchronous
+     * stop sequence completed. Safe-unmount deliberately leaves the source
+     * absent; a later mounted-and-rescanned edge releases this gate. */
+    bool storage_restart_blocked;
 };
 
 /* ------------------------------------------------------------------ */
@@ -1758,7 +1762,10 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
         /* A service stopped for suspend/storage resumes exactly once. The
          * pending bit survives an unverified stop; pgid/state gates prevent a
          * replacement until the old reservation is proven absent. */
-        if (e->lifecycle_restart_pending && e->pgid <= 0 &&
+        if (e->lifecycle_restart_pending &&
+            !(sup->storage_restart_blocked &&
+              e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_STORAGE) &&
+            e->pgid <= 0 &&
             e->state != JW_SVC_STATE_STALE_GENERATION &&
             e->state != JW_SVC_STATE_STOPPING &&
             jw__entry_available(e)) {
@@ -2075,8 +2082,17 @@ int jw_svc_supervisor_suspend_begin(jw_svc_supervisor *sup,
 int jw_svc_supervisor_storage_change_begin(jw_svc_supervisor *sup,
                                            char *out_stuck_id,
                                            size_t stuck_id_size) {
+    if (sup) {
+        sup->storage_restart_blocked = true;
+    }
     return jw__lifecycle_stop_begin(
         sup, JW__SVC_LIFECYCLE_STORAGE_CHANGE, out_stuck_id, stuck_id_size);
+}
+
+void jw_svc_supervisor_storage_change_resume(jw_svc_supervisor *sup) {
+    if (sup) {
+        sup->storage_restart_blocked = false;
+    }
 }
 
 bool jw_svc_supervisor_storage_change_blocked(const jw_svc_supervisor *sup,

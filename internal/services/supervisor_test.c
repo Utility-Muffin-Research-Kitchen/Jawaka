@@ -1222,6 +1222,15 @@ static void test_lifecycle_stop_reasons_are_distinct(void) {
                           e->pending_stop_reason), "storage") == 0);
     CHECK(e && !e->backoff.breaker_open && e->backoff.count == 0);
     CHECK(e && e->lifecycle_restart_pending);
+    /* A stopped storage-sensitive service stays down while the source is
+     * absent; ordinary daemon ticks are not a remount signal. */
+    for (int i = 0; i < 20; i++) {
+        jw_svc_supervisor_tick(sup);
+        usleep(20000);
+    }
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.storagey");
+    CHECK(e && e->pgid <= 0 && e->lifecycle_restart_pending);
+    jw_svc_supervisor_storage_change_resume(sup);
     CHECK(wait_for_state(sup, "org.umrk.test.storagey",
                          JW_SVC_STATE_RUNNING, 3000));
     e = jw_svc_supervisor_find(sup, "org.umrk.test.storagey");
