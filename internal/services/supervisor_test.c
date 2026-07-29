@@ -11,7 +11,6 @@
 
 #include "internal/services/supervisor.h"
 #include "internal/services/lease.h"
-#include "cJSON.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -737,26 +736,6 @@ static void test_hostile_id_tail_bound_and_status_shape(void) {
     CHECK(e != NULL && e->control.last_transition_at_us >= epoch_floor_us);
     CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.status",
                                 reason, sizeof(reason)));
-    e = jw_svc_supervisor_find(sup, "org.umrk.test.status");
-    cJSON *status = cJSON_CreateObject();
-    CHECK(status != NULL);
-    CHECK(jw_svc_supervisor_status_json(e, status));
-    CHECK(cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(status, "ownership")));
-    CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(
-        status, "generation_lease_state")));
-    CHECK(cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(
-        status, "last_transition_at_us")));
-    CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(
-        status, "last_transition_reason")));
-    CHECK(cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(status,
-                                                          "restart_count")));
-    CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(
-        status, "installed_package_id")));
-    CHECK(cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(
-        status, "lifecycle_stop_in_force")));
-    CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(status,
-                                                          "coordination")));
-    cJSON_Delete(status);
     CHECK(jw_svc_supervisor_stop_all(sup) == 0);
 
     jw_svc_supervisor_close(sup);

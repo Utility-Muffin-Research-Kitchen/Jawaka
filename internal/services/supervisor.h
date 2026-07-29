@@ -245,11 +245,4 @@ bool jw_svc_supervisor_join_scan_root(char *out, size_t out_size,
                                       const char *root_name);
 bool jw_svc_supervisor_ctl_op_requires_id(const char *operation);
 
-struct cJSON;
-/* Appends the normative CTL-1 status fields to an existing JSON object.
- * This is additive to the existing supervisor API so the daemon and the
- * integration suite share one schema implementation. */
-bool jw_svc_supervisor_status_json(const jw_svc_supervised *entry,
-                                   struct cJSON *object);
-
 #endif /* JW_SERVICES_SUPERVISOR_H */
