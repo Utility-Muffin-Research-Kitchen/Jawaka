@@ -1170,6 +1170,16 @@ static int jw__refresh_services(jw_settings_ui *ui) {
         ui->services_list.scroll_offset = 0;
         if (ui->screen == JW_SETTINGS_SERVICES) {
             ui->screen = JW_SETTINGS_HOME;
+            /* The disappearing Services row was the final Home category.
+             * Clamp both list coordinates before the next render/input pass
+             * sees the now-shorter list. */
+            int home_count = JW_SETTINGS_CATEGORY_COUNT - 1;
+            if (ui->home_list.cursor >= home_count) {
+                ui->home_list.cursor = home_count - 1;
+            }
+            if (ui->home_list.scroll_offset > ui->home_list.cursor) {
+                ui->home_list.scroll_offset = ui->home_list.cursor;
+            }
         }
     } else if (ui->services_list.cursor >= visible) {
         ui->services_list.cursor = visible - 1;

@@ -10,6 +10,7 @@
 #endif
 
 #include "internal/services/supervisor.h"
+#include "internal/services/control_state.h"
 #include "internal/services/lease.h"
 #include "internal/services/reservation.h"
 
@@ -802,6 +803,43 @@ static void test_retained_control_row_survives_missing_package(void) {
     fixture_teardown(&f);
 }
 
+static void test_missing_package_scan_does_not_create_lease_tree(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.retained-only";
+    char reason[JW_SVC_REASON_BUF];
+    char db_path[PATH_MAX];
+    jw__join(db_path, sizeof(db_path), f.state, "services-control.db");
+
+    jw_svc_control_store *store = NULL;
+    CHECK(jw_svc_control_store_open(db_path, &store, reason, sizeof(reason)));
+    jw_svc_control_state control = {0};
+    control.start_with_leaf = true;
+    snprintf(control.installed_package_id,
+             sizeof(control.installed_package_id), "%s", "retained.pak");
+    snprintf(control.installed_package_version,
+             sizeof(control.installed_package_version), "%s", "1.2.3");
+    CHECK(store != NULL &&
+          jw_svc_control_store_put(store, id, &control,
+                                   reason, sizeof(reason)));
+    jw_svc_control_store_close(store);
+
+    char services_dir[PATH_MAX];
+    jw__join(services_dir, sizeof(services_dir), f.runtime, "services");
+    struct stat st;
+    CHECK(lstat(services_dir, &st) != 0 && errno == ENOENT);
+
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    const jw_svc_supervised *e = jw_svc_supervisor_find(sup, id);
+    CHECK(e != NULL && e->state == JW_SVC_STATE_UNAVAILABLE);
+    CHECK(lstat(services_dir, &st) != 0 && errno == ENOENT);
+
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
 static void test_locked_runtime_lease_survives_without_pak_or_control_row(void) {
     fixture f;
     fixture_setup(&f);
@@ -893,6 +931,7 @@ int main(int argc, char **argv) {
     test_hostile_id_tail_bound_and_status_shape();
     test_many_entries_do_not_use_uninitialized_runtime_fields();
     test_retained_control_row_survives_missing_package();
+    test_missing_package_scan_does_not_create_lease_tree();
     test_locked_runtime_lease_survives_without_pak_or_control_row();
     test_circuit_breaker_opens();
 

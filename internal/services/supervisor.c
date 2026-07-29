@@ -857,6 +857,7 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
     for (int i = 0; i < sup->count; i++) {
         jw_svc_supervised *e = &sup->entries[i];
         if (e->pgid > 0 ||
+            !jw__entry_available(e) ||
             !jw_svc_supervisor_service_id_is_safe(e->service_id)) {
             continue;
         }
