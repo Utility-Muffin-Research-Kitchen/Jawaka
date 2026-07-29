@@ -703,6 +703,37 @@ static void test_suspend_and_storage_lifecycle_stops(void) {
         jw_svc_supervisor_find(sup, suspend_id);
     pid_t first_suspend_pgid = suspend_entry ? suspend_entry->pgid : -1;
     char stuck[JW_SVC_SUPERVISOR_ID_BUF];
+
+    /* A lifecycle edge must not hijack a stop that another caller already
+     * owns, nor turn crash cleanup into an automatic post-transition resume. */
+    jw_svc_supervised *pending = (jw_svc_supervised *)suspend_entry;
+    bool old_autostart_pending = pending && pending->autostart_pending;
+    if (pending) {
+        pending->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
+    }
+    CHECK(jw_svc_supervisor_suspend_begin(sup, stuck, sizeof(stuck)) == 0);
+    suspend_entry = jw_svc_supervisor_find(sup, suspend_id);
+    CHECK(suspend_entry && suspend_entry->pgid == first_suspend_pgid);
+    CHECK(suspend_entry &&
+          suspend_entry->pending_stop_reason == JW_SVC_STOP_INTENTIONAL);
+    CHECK(suspend_entry && !suspend_entry->lifecycle_restart_pending);
+    CHECK(suspend_entry &&
+          suspend_entry->autostart_pending == old_autostart_pending);
+    pending = (jw_svc_supervised *)suspend_entry;
+    if (pending) {
+        pending->pending_stop_reason = JW_SVC_STOP_LEADER_EXITED;
+    }
+    CHECK(jw_svc_supervisor_suspend_begin(sup, stuck, sizeof(stuck)) == 0);
+    suspend_entry = jw_svc_supervisor_find(sup, suspend_id);
+    CHECK(suspend_entry && suspend_entry->pgid == first_suspend_pgid);
+    CHECK(suspend_entry &&
+          suspend_entry->pending_stop_reason == JW_SVC_STOP_LEADER_EXITED);
+    CHECK(suspend_entry && !suspend_entry->lifecycle_restart_pending);
+    pending = (jw_svc_supervised *)suspend_entry;
+    if (pending) {
+        pending->pending_stop_reason = JW_SVC_STOP_NONE;
+    }
+
     CHECK(jw_svc_supervisor_suspend_begin(sup, stuck, sizeof(stuck)) == 1);
     CHECK(stuck[0] == '\0');
     suspend_entry = jw_svc_supervisor_find(sup, suspend_id);

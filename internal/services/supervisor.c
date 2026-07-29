@@ -1752,6 +1752,12 @@ static int jw__lifecycle_stop_begin(jw_svc_supervisor *sup,
         if (e->pgid <= 0) {
             continue;
         }
+        /* A user request, shutdown, game stop, or crash-descendant cleanup
+         * already owns this generation's stop. Do not replace its reason or
+         * turn it into a lifecycle resume that could undo that intent. */
+        if (e->pending_stop_reason != JW_SVC_STOP_NONE) {
+            continue;
+        }
         e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
         e->autostart_pending = false;
         e->lifecycle_restart_pending = true;
