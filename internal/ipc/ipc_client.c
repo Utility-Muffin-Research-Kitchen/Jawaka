@@ -520,8 +520,14 @@ int jw_ipc_service_ctl(const char *socket_path, const char *op,
     }
 
     cJSON *response = NULL;
+    /* Settings -> Services calls this from the launcher's render thread, so
+     * the deadline has to stay short enough that a busy daemon degrades to
+     * "Request failed" instead of a frozen UI. Every CTL-1 control op now
+     * replies immediately -- stop/disable/restart initiate the stop sequence
+     * and let the daemon's tick complete it -- so no legitimate reply needs
+     * anywhere near the old 30 s ceiling. */
     if (ipc__request_max(socket_path, request, &response,
-                         JW_CTL1_MAX_PAYLOAD, true, 30000) != 0) {
+                         JW_CTL1_MAX_PAYLOAD, true, 2000) != 0) {
         if (status && status_len > 0) {
             snprintf(status, (size_t)status_len, "%s", "daemon unreachable");
         }

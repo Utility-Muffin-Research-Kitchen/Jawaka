@@ -6876,8 +6876,12 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 char status[128] = { 0 };
                 if (jw_ipc_service_ctl(ui->socket_path, op, svc->id,
                                        status, sizeof(status)) == 0) {
+                    /* The daemon acknowledges the request, it does not wait
+                       for the group to be gone -- the stop sequence runs on
+                       its tick. Report the transition, not a completion the
+                       poll below may well contradict a moment later. */
                     snprintf(ui->services_msg, sizeof(ui->services_msg),
-                             "%s %s", running ? "Stopped" : "Started",
+                             "%s %s", running ? "Stopping" : "Starting",
                              svc->id);
                 } else {
                     snprintf(ui->services_msg, sizeof(ui->services_msg),

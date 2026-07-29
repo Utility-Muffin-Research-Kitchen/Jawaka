@@ -106,10 +106,63 @@ static int fixture_wait_for_file(const char *leaf, int timeout_ms) {
     return -1;
 }
 
+/* Arm the parent-death signal for THIS process and close the standard
+ * set-then-recheck race: if the parent already died between fork and here,
+ * PR_SET_PDEATHSIG has nothing left to fire, so re-read getppid() after
+ * arming. SVC-1 puts this obligation on each supervised process itself --
+ * jw_svc_launch() also arms it pre-exec, but a first-party service must not
+ * depend on that, and this fixture is the reference other service paks copy. */
+static int fixture_arm_pdeathsig(pid_t expected_parent) {
+#if defined(__linux__)
+    if (prctl(PR_SET_PDEATHSIG, (unsigned long)SIGTERM, 0L, 0L, 0L) != 0) {
+        return -1;
+    }
+    if (getppid() != expected_parent) {
+        return -1; /* parent already gone; the signal will never arrive */
+    }
+#else
+    (void)expected_parent;
+#endif
+    return 0;
+}
+
+/* Wait for the supervising parent to die.
+ *
+ * On Linux the ONLY accepted signal is PDEATHSIG delivery: polling getppid()
+ * as well would be a second, independent exit path, and the no-overlap test
+ * would then still pass with PR_SET_PDEATHSIG entirely removed from the
+ * launcher -- exactly the assertion this fixture exists to make. Platforms
+ * without PDEATHSIG (macOS dev runs) keep the reparenting poll so the suite
+ * remains runnable there. */
 static void fixture_wait_for_parent_death(pid_t original_parent) {
+#if defined(__linux__)
+    (void)original_parent;
+    while (!g_term_requested) {
+        fixture_delay_ms(10);
+    }
+#else
     while (!g_term_requested && getppid() == original_parent) {
         fixture_delay_ms(10);
     }
+#endif
+}
+
+/* How long a dying generation keeps descriptor 3 (and therefore the
+ * generation lease) after its parent goes. The supervisor-death scenario
+ * needs a restarted daemon to observe `stale-generation` inside this window;
+ * a slower device needs a wider one, so it is tunable without editing the
+ * fixture. */
+static int fixture_death_hold_ms(void) {
+    const char *raw = getenv("UMRK_FIXTURE_DEATH_HOLD_MS");
+    if (!raw || !raw[0]) {
+        return 600;
+    }
+    char *end = NULL;
+    long value = strtol(raw, &end, 10);
+    if (!end || *end || value < 0 || value > 60000) {
+        return 600;
+    }
+    return (int)value;
 }
 
 static int fixture_normal_exit(void) {
@@ -167,7 +220,11 @@ static int fixture_daemonizes(void) {
 }
 
 static int fixture_supervisor_death(void) {
+    /* The leader arms its OWN parent-death signal, per SVC-1, rather than
+     * relying on the one jw_svc_launch() sets before exec. */
+    pid_t parent = getppid();
     if (fixture_install_term_handler() != 0 ||
+        fixture_arm_pdeathsig(parent) != 0 ||
         fixture_append_generation() != 0) {
         return 70;
     }
@@ -177,25 +234,20 @@ static int fixture_supervisor_death(void) {
         return 70;
     }
     if (child == 0) {
-        pid_t parent = getppid();
-        /* Signal dispositions are inherited across fork(), but establish the
-         * cooperative SIGTERM path explicitly in the descendant as well so
-         * PDEATHSIG cannot silently become an immediate default-action exit
-         * if the setup above is ever moved or narrowed. */
-        if (fixture_install_term_handler() != 0) {
+        /* PR_SET_PDEATHSIG is cleared in the child of fork(2), so the
+         * descendant must arm its own against ITS parent (this leader), and
+         * it inherits descriptor 3 -- the generation lease stays covered for
+         * the descendant's whole life. Signal dispositions are inherited too,
+         * but reinstall the cooperative handler explicitly so this guarantee
+         * survives future refactoring of the leader setup. */
+        pid_t own_parent = getppid();
+        if (fixture_install_term_handler() != 0 ||
+            fixture_arm_pdeathsig(own_parent) != 0 ||
+            fixture_touch("descendant-ready") != 0) {
             _exit(70);
         }
-#if defined(__linux__)
-        if (prctl(PR_SET_PDEATHSIG, (unsigned long)SIGTERM, 0L, 0L, 0L) !=
-            0 || getppid() != parent) {
-            _exit(70);
-        }
-#endif
-        if (fixture_touch("descendant-ready") != 0) {
-            _exit(70);
-        }
-        fixture_wait_for_parent_death(parent);
-        fixture_delay_ms(600);
+        fixture_wait_for_parent_death(own_parent);
+        fixture_delay_ms(fixture_death_hold_ms());
         _exit(0);
     }
 
@@ -204,9 +256,8 @@ static int fixture_supervisor_death(void) {
         kill(child, SIGKILL);
         return 70;
     }
-    pid_t parent = getppid();
     fixture_wait_for_parent_death(parent);
-    fixture_delay_ms(600);
+    fixture_delay_ms(fixture_death_hold_ms());
     return 0;
 }
 

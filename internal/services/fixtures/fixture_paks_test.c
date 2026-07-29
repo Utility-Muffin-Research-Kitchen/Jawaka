@@ -110,8 +110,8 @@ static void env_teardown(const test_env *env) {
 static jw_svc_supervisor *open_supervisor(test_env *env) {
     char reason[JW_SVC_REASON_BUF] = {0};
     jw_svc_supervisor *sup = jw_svc_supervisor_open(
-        env->runtime, env->logs, env->state, env->scan_roots, env->userdata,
-        reason, sizeof(reason));
+        env->runtime, env->logs, env->state, env->scan_roots, NULL,
+        env->userdata, reason, sizeof(reason));
     if (!sup) {
         fprintf(stderr, "open supervisor: %s\n", reason);
         g_failures++;
@@ -211,11 +211,19 @@ static void test_named_behavior_paks(void) {
     struct timespec start;
     struct timespec finish;
     clock_gettime(CLOCK_MONOTONIC, &start);
+    /* The CTL-1 call returns at once; tick drives TERM -> grace -> KILL ->
+     * verified absence against a service that ignores SIGTERM. */
     CHECK(jw_svc_supervisor_stop(sup, ignorer, reason, sizeof(reason)));
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+    long long call_ms = (long long)(finish.tv_sec - start.tv_sec) * 1000LL +
+                        (long long)(finish.tv_nsec - start.tv_nsec) / 1000000LL;
+    CHECK(call_ms < 250);
+    CHECK(wait_for_released(sup, ignorer, 4000));
     clock_gettime(CLOCK_MONOTONIC, &finish);
     long long elapsed_ms = (long long)(finish.tv_sec - start.tv_sec) * 1000LL +
                            (long long)(finish.tv_nsec - start.tv_nsec) /
                                1000000LL;
+    /* Still inside the contract's stop_grace_ms + 2000 ms worst case. */
     CHECK(elapsed_ms <= 2450);
     entry = jw_svc_supervisor_find(sup, ignorer);
     CHECK(entry && entry->pgid <= 0);

@@ -46,8 +46,14 @@ struct jw_svc_supervisor {
     char *logs_dir;
     char *state_dir;
     char *userdata_root;
+    /* Apps/ roots on the verified Primary storage source. Every one of these
+     * is Primary: `Apps/<platform>` and `Apps/shared` are two directories of
+     * one source. Secondary is a property of the SOURCE (PATH-2), which is
+     * why the two lists are separate rather than "index 0 wins". */
     char **apps_scan_roots;      /* NULL-terminated, owned */
     int apps_scan_root_count;
+    char **secondary_scan_roots; /* NULL-terminated, owned; may be empty */
+    int secondary_scan_root_count;
     jw_svc_control_store *store;
     jw_svc_supervised *entries;  /* dynamic array, scan order */
     int count;
@@ -171,6 +177,27 @@ static void jw__strcpy_bounded(char *dst, size_t dst_size, const char *src) {
     dst[n] = '\0';
 }
 
+const char *jw_svc_stop_reason_lifecycle_slug(jw_svc_stop_reason_kind kind) {
+    switch (kind) {
+    case JW_SVC_STOP_LIFECYCLE_GAME:    return "game";
+    case JW_SVC_STOP_LIFECYCLE_SUSPEND: return "suspend";
+    case JW_SVC_STOP_LIFECYCLE_STORAGE: return "storage";
+    case JW_SVC_STOP_NONE:
+    case JW_SVC_STOP_INTENTIONAL:
+    case JW_SVC_STOP_LEADER_EXITED:
+        break;
+    }
+    return NULL;
+}
+
+/* True when the stop was deliberate rather than a crash. SVC-1: "on-failure
+ * never applies after an intentional stop, a lifecycle-policy stop, a package
+ * operation, or shutdown" -- all three lifecycle kinds count. */
+static bool jw__stop_is_deliberate(jw_svc_stop_reason_kind kind) {
+    return kind == JW_SVC_STOP_INTENTIONAL ||
+           jw_svc_stop_reason_lifecycle_slug(kind) != NULL;
+}
+
 const char *jw_svc_effective_state_name(jw_svc_effective_state state) {
     switch (state) {
     case JW_SVC_STATE_UNAVAILABLE:      return "unavailable";
@@ -275,6 +302,10 @@ void jw_svc_supervisor_close(jw_svc_supervisor *sup) {
         free(sup->apps_scan_roots[i]);
     }
     free(sup->apps_scan_roots);
+    for (int i = 0; i < sup->secondary_scan_root_count; i++) {
+        free(sup->secondary_scan_roots[i]);
+    }
+    free(sup->secondary_scan_roots);
     free(sup->runtime_dir);
     free(sup->logs_dir);
     free(sup->state_dir);
@@ -285,12 +316,33 @@ void jw_svc_supervisor_close(jw_svc_supervisor *sup) {
     free(sup);
 }
 
-jw_svc_supervisor *jw_svc_supervisor_open(const char *runtime_dir,
-                                          const char *logs_dir,
-                                          const char *state_dir,
-                                          const char *const *apps_scan_roots,
-                                          const char *userdata_root,
-                                          char *reason, size_t reason_size) {
+/* Copies a NULL-terminated root list into an owned array. Returns false only
+ * on allocation failure; a NULL or empty input is a legitimate empty list. */
+static bool jw__copy_scan_roots(const char *const *src, char ***out,
+                                int *out_count) {
+    int n = 0;
+    while (src && src[n]) {
+        n++;
+    }
+    *out = calloc((size_t)n + 1u, sizeof(char *));
+    if (!*out) {
+        return false;
+    }
+    for (int i = 0; i < n; i++) {
+        (*out)[i] = jw__strdup(src[i]);
+        if (!(*out)[i]) {
+            return false;
+        }
+        (*out_count)++;
+    }
+    return true;
+}
+
+jw_svc_supervisor *jw_svc_supervisor_open(
+    const char *runtime_dir, const char *logs_dir, const char *state_dir,
+    const char *const *apps_scan_roots,
+    const char *const *secondary_apps_scan_roots,
+    const char *userdata_root, char *reason, size_t reason_size) {
     if (!runtime_dir || !runtime_dir[0] || !state_dir || !state_dir[0] ||
         !apps_scan_roots) {
         jw__set_reason(reason, reason_size, "invalid-arguments");
@@ -313,24 +365,14 @@ jw_svc_supervisor *jw_svc_supervisor_open(const char *runtime_dir,
         return NULL;
     }
 
-    int n = 0;
-    while (apps_scan_roots[n]) {
-        n++;
-    }
-    sup->apps_scan_roots = calloc((size_t)n + 1u, sizeof(char *));
-    if (!sup->apps_scan_roots) {
+    if (!jw__copy_scan_roots(apps_scan_roots, &sup->apps_scan_roots,
+                             &sup->apps_scan_root_count) ||
+        !jw__copy_scan_roots(secondary_apps_scan_roots,
+                             &sup->secondary_scan_roots,
+                             &sup->secondary_scan_root_count)) {
         jw__set_reason(reason, reason_size, "out-of-memory");
         jw_svc_supervisor_close(sup);
         return NULL;
-    }
-    for (int i = 0; i < n; i++) {
-        sup->apps_scan_roots[i] = jw__strdup(apps_scan_roots[i]);
-        if (!sup->apps_scan_roots[i]) {
-            jw__set_reason(reason, reason_size, "out-of-memory");
-            jw_svc_supervisor_close(sup);
-            return NULL;
-        }
-        sup->apps_scan_root_count++;
     }
 
     char db_path[PATH_MAX];
@@ -700,6 +742,51 @@ static void jw__scan_one_root(jw_svc_supervisor *sup, const char *root,
     (void)sup;
 }
 
+/* Is there anything left worth remembering about this entry? An entry whose
+ * package is gone, whose persistent and session intent are both false, and
+ * which owns no live or stale generation is a spent record: keeping it would
+ * pin the Settings -> Services screen visible forever after an uninstall and
+ * grow the control store without bound, since nothing else ever deletes a
+ * row. */
+static bool jw__entry_is_exhausted(const jw_svc_supervised *e) {
+    return !e->pak_present && !e->desired_enabled && !e->session_run &&
+           e->pgid <= 0 && e->lease_fd < 0 && !e->reap_pending &&
+           !e->stop_requested && !e->lifecycle_restart_pending &&
+           e->state != JW_SVC_STATE_STALE_GENERATION;
+}
+
+/* Drops spent records from both the control store and the in-memory set.
+ * Callers are already told that entry pointers do not survive a scan. */
+static void jw__shed_exhausted_entries(jw_svc_supervisor *sup) {
+    int kept = 0;
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        if (!jw__entry_is_exhausted(e)) {
+            if (kept != i) {
+                sup->entries[kept] = *e;
+            }
+            kept++;
+            continue;
+        }
+        char reason[JW_SVC_REASON_BUF];
+        /* A failed delete is not fatal: the row simply survives to the next
+         * scan. Never drop the in-memory entry in that case, or the record
+         * would be invisible while still occupying the store. */
+        if (!jw_svc_control_store_delete(sup->store, e->service_id, reason,
+                                         sizeof(reason))) {
+            if (kept != i) {
+                sup->entries[kept] = *e;
+            }
+            kept++;
+            continue;
+        }
+        if (e->manifest_loaded) {
+            jw_service_manifest_destroy(&e->manifest);
+        }
+    }
+    sup->count = kept;
+}
+
 int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
     if (!sup) {
         return -1;
@@ -707,11 +794,16 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
 
     jw__scan_candidate *cands = NULL;
     int cand_count = 0, cand_cap = 0;
+    /* Every configured Primary-source root is Primary. `Apps/<platform>` and
+     * `Apps/shared` are two directories of ONE storage source, so a service
+     * pak in either is startable; only a pak on a Secondary SOURCE is
+     * "reported and not startable" per SVC-1. */
     for (int i = 0; i < sup->apps_scan_root_count; i++) {
-        /* The first configured root is the Primary; any later root is a
-         * Secondary (SVC-1: a service on a Secondary root is reported but
-         * not startable on MLP1). */
-        jw__scan_one_root(sup, sup->apps_scan_roots[i], i > 0,
+        jw__scan_one_root(sup, sup->apps_scan_roots[i], false,
+                          &cands, &cand_count, &cand_cap);
+    }
+    for (int i = 0; i < sup->secondary_scan_root_count; i++) {
+        jw__scan_one_root(sup, sup->secondary_scan_roots[i], true,
                           &cands, &cand_count, &cand_cap);
     }
 
@@ -874,8 +966,29 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
                 jw__mono_ms() + JW_SVC_LEASE_RETRY_MS;
         }
     }
+    jw__shed_exhausted_entries(sup);
     free(cands);
     return sup->count;
+}
+
+bool jw_svc_supervisor_entry_is_listable(const jw_svc_supervised *e) {
+    if (!e) {
+        return false;
+    }
+    /* The wire id must satisfy the same reverse-DNS grammar every CTL-1 client
+     * validates against. An invalid manifest can leave an entry keyed by a
+     * best-effort fallback (a pak directory name), and emitting that would
+     * make a strict client reject the whole `list` response rather than one
+     * row. Keep such entries internal. */
+    if (!jw_service_id_is_reverse_dns(e->service_id)) {
+        return false;
+    }
+    /* contracts.md: the canonical list carries valid services, retained
+     * desired state, and anything with a live or stale generation. Invalid
+     * discovery alone is omitted, and so is a spent record whose package is
+     * gone and whose desired state is false. */
+    return e->manifest_valid || e->desired_enabled || e->session_run ||
+           e->pgid > 0 || e->state == JW_SVC_STATE_STALE_GENERATION;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1086,9 +1199,82 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
     return true;
 }
 
+/* Initiates the stop sequence WITHOUT waiting for it: SIGTERM to the reserved
+ * group, then tick owns the grace window, the SIGKILL escalation, verified
+ * absence, the reap, and any post-stop action.
+ *
+ * This is what CTL-1 Stop/Disable/Restart use. Blocking the daemon's
+ * single-threaded main loop for stop_grace_ms + 2000 ms (up to 17 s at the
+ * contract ceiling) would freeze input, power handling, and every other
+ * service's supervision -- the same reason SVC-1 forbids blocking the loop on
+ * the lease, and the reason the leader-exit stop was already asynchronous.
+ * "stopping" is a first-class CTL-1 effective state precisely so this
+ * operation can be reported as in-progress rather than waited on. */
+static void jw__begin_async_stop(jw_svc_supervisor *sup, jw_svc_supervised *e,
+                                 jw_svc_stop_reason_kind kind,
+                                 jw_svc_post_stop_action post) {
+    if (!e || e->pgid <= 0) {
+        return;
+    }
+    e->pending_stop_reason = kind;
+    e->post_stop = post;
+    e->autostart_pending = false;
+    e->stop_unverified_logged = false;
+    if (!e->stop_requested && !e->reap_pending) {
+        /* First TERM for this stop: start the grace window. An already
+         * in-flight stop keeps its original deadline so a second Stop press
+         * cannot extend the group's life past the contract bound. */
+        kill(-e->pgid, SIGTERM);
+        e->stopping_since_ms = jw__mono_ms();
+        e->stop_kill_sent = false;
+    }
+    e->stop_requested = true;
+    e->state = JW_SVC_STATE_STOPPING;
+    (void)sup;
+}
+
+/* Called once a group has been proven absent, reaped, and released. Runs the
+ * tail of whatever operation initiated the stop. */
+static void jw__on_group_released(jw_svc_supervisor *sup,
+                                  jw_svc_supervised *e) {
+    jw_svc_post_stop_action post = e->post_stop;
+    e->post_stop = JW_SVC_POST_STOP_NONE;
+    e->stop_requested = false;
+    if (post != JW_SVC_POST_STOP_RESTART) {
+        return;
+    }
+    /* CTL-1 Restart: exactly one replacement generation, and only now that
+     * the previous reserved group is verified gone. */
+    if (!jw__entry_available(e)) {
+        e->state = jw__entry_idle_state(e);
+        jw__persist(sup, e, "restart-unavailable");
+        return;
+    }
+    char reason[JW_SVC_REASON_BUF];
+    if (jw__start_generation(sup, e, reason, sizeof(reason))) {
+        e->control.restart_count++;
+        jw__persist(sup, e, "restart");
+        return;
+    }
+    if (strcmp(reason, "stale-generation") == 0) {
+        e->state = JW_SVC_STATE_STALE_GENERATION;
+        e->lease_retry_next_ms = jw__mono_ms() + JW_SVC_LEASE_RETRY_MS;
+        return;
+    }
+    e->session_run = false;
+    e->control.session_run = false;
+    e->state = jw__entry_idle_state(e);
+    jw__persist(sup, e, "restart-failed");
+}
+
 /* Runs the stop sequence against the entry's owned group, then reaps the
  * leader and releases the lease and reservation once absence is verified.
- * SVC-1's order is reservation -> verify -> reap, never reap -> verify. */
+ * SVC-1's order is reservation -> verify -> reap, never reap -> verify.
+ *
+ * SYNCHRONOUS: blocks up to stop_grace_ms + JW_SVC_STOP_KILL_WAIT_MS. Only
+ * for callers that genuinely cannot proceed without the guarantee (shutdown,
+ * game launch, suspend, safe unmount). CTL-1 session ops use
+ * jw__begin_async_stop() instead. */
 static bool jw__stop_and_reap(jw_svc_supervisor *sup, jw_svc_supervised *e,
                               char *reason, size_t reason_size) {
     if (e->pgid <= 0) {
@@ -1117,7 +1303,9 @@ static bool jw__stop_and_reap(jw_svc_supervisor *sup, jw_svc_supervised *e,
     e->reap_pending = false;
     jw__entry_release_runtime(e);
     e->state = jw__entry_idle_state(e);
-    (void)sup;
+    /* A synchronous stop supersedes any async stop that was already in
+     * flight; run its tail (if any) now that the group is verified gone. */
+    jw__on_group_released(sup, e);
     return true;
 }
 
@@ -1190,12 +1378,11 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
         return false;
     }
     if (e->pgid > 0) {
-        e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
-        char stop_reason[JW_SVC_REASON_BUF];
-        if (!jw__stop_and_reap(sup, e, stop_reason, sizeof(stop_reason))) {
-            jw__set_reason(reason, reason_size, "stop-failed");
-            return false;
-        }
+        /* Non-blocking: the disabled intent is already durable above, so the
+         * stop can complete under tick without holding the daemon loop. */
+        jw__begin_async_stop(sup, e, JW_SVC_STOP_INTENTIONAL,
+                             JW_SVC_POST_STOP_NONE);
+        return true;
     }
     if (e->state != JW_SVC_STATE_STOPPING) {
         e->state = jw__entry_idle_state(e);
@@ -1207,6 +1394,13 @@ bool jw_svc_supervisor_run(jw_svc_supervisor *sup, const char *service_id,
                            char *reason, size_t reason_size) {
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
     if (!jw__require_available(e, reason, reason_size)) {
+        return false;
+    }
+    if (e->stop_requested || e->reap_pending ||
+        e->state == JW_SVC_STATE_STOPPING) {
+        /* A stop is still in flight. Starting now would overlap the old
+         * reserved group, which SVC-1 forbids outright. */
+        jw__set_reason(reason, reason_size, "stopping");
         return false;
     }
     if (e->pgid > 0 || e->state == JW_SVC_STATE_STARTING) {
@@ -1254,20 +1448,17 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
         jw__set_reason(reason, reason_size, "not-running");
         return false;
     }
-    e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
-    e->autostart_pending = false;
     e->lifecycle_restart_pending = false;
-    if (!jw__stop_and_reap(sup, e, reason, reason_size)) {
-        return false;
-    }
+    /* Session intent is withdrawn immediately -- the user asked for the stop,
+     * and it must survive even if the group turns out to be unstoppable. The
+     * stop sequence itself then runs under tick. */
     e->session_run = false;
     e->control.session_run = false;
+    jw__begin_async_stop(sup, e, JW_SVC_STOP_INTENTIONAL,
+                         JW_SVC_POST_STOP_NONE);
     if (!jw__persist(sup, e, "stop")) {
         jw__set_reason(reason, reason_size, "store-failed");
         return false;
-    }
-    if (e->state != JW_SVC_STATE_STOPPING) {
-        e->state = jw__entry_idle_state(e);
     }
     return true;
 }
@@ -1281,10 +1472,19 @@ bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
     jw_svc_backoff_reset(&e->backoff);
     e->lifecycle_restart_pending = false;
     if (e->pgid > 0) {
-        e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
-        if (!jw__stop_and_reap(sup, e, reason, reason_size)) {
+        /* Stop now, start later: tick launches the one replacement generation
+         * once the previous reserved group is proven absent (SVC-1's "never
+         * start a replacement over the old group"). Reported as `stopping`
+         * until then rather than blocking the caller for the full sequence. */
+        e->session_run = true;
+        e->control.session_run = true;
+        jw__begin_async_stop(sup, e, JW_SVC_STOP_INTENTIONAL,
+                             JW_SVC_POST_STOP_RESTART);
+        if (!jw__persist(sup, e, "restart-requested")) {
+            jw__set_reason(reason, reason_size, "store-failed");
             return false;
         }
+        return true;
     }
     char start_reason[JW_SVC_REASON_BUF];
     if (!jw__start_generation(sup, e, start_reason, sizeof(start_reason))) {
@@ -1330,9 +1530,15 @@ static void jw__handle_leader_exit(jw_svc_supervisor *sup,
     /* Session Run is consumed by the exit: it is one-shot session control,
      * not a keep-alive. Only persistent "Start with Leaf"
      * (desired_enabled) or the on-failure restart policy may bring the
-     * service back without a fresh user action. */
-    e->session_run = false;
-    e->control.session_run = false;
+     * service back without a fresh user action.
+     *
+     * A CTL-1 Restart is the exception: this exit IS the stop half of that
+     * operation, so the user's session intent carries into the replacement
+     * generation rather than being consumed by the stop they asked for. */
+    if (e->post_stop != JW_SVC_POST_STOP_RESTART) {
+        e->session_run = false;
+        e->control.session_run = false;
+    }
 
     /* The leader is now a zombie holding the pgid reservation. If live
      * descendants remain the group is NOT absent and must be stopped and
@@ -1340,8 +1546,7 @@ static void jw__handle_leader_exit(jw_svc_supervisor *sup,
      * absence. */
     bool absent = jw_svc_group_absent(e->pgid);
 
-    bool intentional = (e->pending_stop_reason == JW_SVC_STOP_INTENTIONAL) ||
-                       (e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_GAME);
+    bool intentional = jw__stop_is_deliberate(e->pending_stop_reason);
     const char *transition_reason = "exited";
     if (!intentional && failed && e->active_restart_on_failure &&
         jw__entry_available(e)) {
@@ -1382,13 +1587,20 @@ static void jw__handle_leader_exit(jw_svc_supervisor *sup,
             e->state != JW_SVC_STATE_FAILED) {
             e->state = jw__entry_idle_state(e);
         }
+        jw__on_group_released(sup, e);
     } else {
         /* Live descendants remain: begin the asynchronous stop sequence.
          * SIGTERM now, SIGKILL after the grace window, verified absence
          * before any restart. */
         kill(-e->pgid, SIGTERM);
-        e->stopping_since_ms = jw__mono_ms();
-        e->stop_kill_sent = false;
+        /* An async CTL-1 stop already opened a grace window; the leader
+         * exiting inside it must not restart the clock, or a service could
+         * outlive the contract's stop_grace_ms + 2000 ms bound. */
+        if (!e->stop_requested) {
+            e->stopping_since_ms = jw__mono_ms();
+            e->stop_kill_sent = false;
+            e->stop_unverified_logged = false;
+        }
         e->reap_pending = true;
         if (!intentional) {
             e->pending_stop_reason = JW_SVC_STOP_LEADER_EXITED;
@@ -1454,10 +1666,12 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
             }
         }
 
-        /* 2. Asynchronous stop sequence for a group whose leader already
-         *    exited: escalate to SIGKILL once the grace window elapses,
-         *    then verify absence. */
-        if (e->pgid > 0 && e->reap_pending) {
+        /* 2. Asynchronous stop sequence, driving both shapes: a group whose
+         *    leader already exited leaving descendants (reap_pending), and a
+         *    CTL-1 Stop/Disable/Restart whose leader may still be alive
+         *    (stop_requested). Escalate to SIGKILL once the grace window
+         *    elapses, then verify absence. */
+        if (e->pgid > 0 && (e->reap_pending || e->stop_requested)) {
             long long grace = e->active_stop_grace_ms;
             if (!e->stop_kill_sent &&
                 now - e->stopping_since_ms >= grace) {
@@ -1466,7 +1680,9 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
                 e->stopping_since_ms = now;
             }
             /* Reap as soon as the group is verified absent -- whether that
-             * is inside the TERM grace window or after the KILL window. */
+             * is inside the TERM grace window or after the KILL window.
+             * Absence implies the leader is gone-or-zombie, so the blocking
+             * waitpid below cannot wait on a live child. */
             bool wait_window_done =
                 e->stop_kill_sent &&
                 now - e->stopping_since_ms >= JW_SVC_STOP_KILL_WAIT_MS;
@@ -1480,13 +1696,18 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
                     e->state != JW_SVC_STATE_FAILED) {
                     e->state = jw__entry_idle_state(e);
                 }
+                jw__on_group_released(sup, e);
                 changes++;
-            } else if (wait_window_done) {
-                /* TERM+KILL+2s and the group is STILL present: a known
-                 * live writer. Leave it in "stopping", keep the lease, and
-                 * do not reap -- SVC-1's unverified-stop table governs the
-                 * surrounding operation. Keep polling each tick so a later
-                 * disappearance is still observed. */
+            } else if (wait_window_done && !e->stop_unverified_logged) {
+                /* TERM+KILL+2s and the group is STILL present: a known live
+                 * writer. Leave it in "stopping", keep the lease, and do not
+                 * reap -- SVC-1's unverified-stop table governs the
+                 * surrounding operation. Record the transition once so CTL-1
+                 * `status` can explain why the service is wedged, then keep
+                 * polling so a later disappearance is still observed. */
+                e->stop_unverified_logged = true;
+                jw__persist(sup, e, "stop-unverified");
+                changes++;
             }
         }
 
@@ -1654,6 +1875,11 @@ int jw_svc_supervisor_stop_all(jw_svc_supervisor *sup) {
         }
         e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
         e->lifecycle_restart_pending = false;
+        /* Discard any in-flight CTL-1 Restart. Without this the post-stop
+         * action would fire from inside jw__stop_and_reap() and launch a
+         * fresh generation while the daemon is shutting down -- a service
+         * started with nothing left to supervise it. */
+        e->post_stop = JW_SVC_POST_STOP_NONE;
         char reason[JW_SVC_REASON_BUF];
         if (!jw__stop_and_reap(sup, e, reason, sizeof(reason))) {
             /* SVC-1: shutdown continues with a warning; the stuck service
@@ -1696,6 +1922,9 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
             continue; /* notify/ignore are LIFE-1/A3b, not this phase */
         }
         e->lifecycle_restart_pending = false;
+        /* A game-launch stop supersedes a pending CTL-1 Restart: the whole
+         * point is that nothing runs over the game. */
+        e->post_stop = JW_SVC_POST_STOP_NONE;
         e->pending_stop_reason = JW_SVC_STOP_LIFECYCLE_GAME;
         e->autostart_pending = false;
         char reason[JW_SVC_REASON_BUF];
@@ -1758,8 +1987,18 @@ static int jw__lifecycle_stop_begin(jw_svc_supervisor *sup,
         if (e->pending_stop_reason != JW_SVC_STOP_NONE) {
             continue;
         }
-        e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
+        /* Recorded as the specific lifecycle-policy stop, not as a generic
+         * intentional stop: CTL-1 `status` has to be able to tell a user that
+         * their service went down for suspend/storage rather than because
+         * somebody pressed Stop. Both are equally excluded from on-failure. */
+        e->pending_stop_reason = trigger == JW__SVC_LIFECYCLE_SUSPEND
+                                     ? JW_SVC_STOP_LIFECYCLE_SUSPEND
+                                     : JW_SVC_STOP_LIFECYCLE_STORAGE;
         e->autostart_pending = false;
+        /* lifecycle_restart_pending is the resume mechanism for this stop, so
+         * a pending CTL-1 Restart is folded into it rather than firing twice
+         * (which would race two generations at the same reservation). */
+        e->post_stop = JW_SVC_POST_STOP_NONE;
         e->lifecycle_restart_pending = true;
         char reason[JW_SVC_REASON_BUF];
         if (!jw__stop_and_reap(sup, e, reason, sizeof(reason))) {
@@ -1791,4 +2030,35 @@ int jw_svc_supervisor_storage_change_begin(jw_svc_supervisor *sup,
                                            size_t stuck_id_size) {
     return jw__lifecycle_stop_begin(
         sup, JW__SVC_LIFECYCLE_STORAGE_CHANGE, out_stuck_id, stuck_id_size);
+}
+
+bool jw_svc_supervisor_storage_change_blocked(const jw_svc_supervisor *sup,
+                                              char *out_stuck_id,
+                                              size_t stuck_id_size) {
+    if (out_stuck_id && stuck_id_size > 0) {
+        out_stuck_id[0] = '\0';
+    }
+    if (!sup) {
+        return false;
+    }
+    for (int i = 0; i < sup->count; i++) {
+        const jw_svc_supervised *e = &sup->entries[i];
+        if (!e->active_stop_on_storage_change) {
+            continue;
+        }
+        /* A locked stale generation is never signallable by this daemon, so
+         * its stop can never be verified -- known before any signal. */
+        bool stale = e->state == JW_SVC_STATE_STALE_GENERATION;
+        /* A group that already outlived TERM+KILL+2s is a known live writer;
+         * re-running the sequence would not change that. */
+        bool wedged = e->pgid > 0 && e->stop_unverified_logged;
+        if (!stale && !wedged) {
+            continue;
+        }
+        if (out_stuck_id && stuck_id_size > 0) {
+            snprintf(out_stuck_id, stuck_id_size, "%s", e->service_id);
+        }
+        return true;
+    }
+    return false;
 }

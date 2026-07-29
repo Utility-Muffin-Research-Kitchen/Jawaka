@@ -1,3 +1,12 @@
+/* mkdtemp() is hidden by glibc under a bare -std=c11. Without this it was
+ * implicitly declared, so gcc assumed it returned `int` and TRUNCATED the
+ * returned pointer to 32 bits -- an immediate SEGV inside the first
+ * snprintf("%s", dir) on Linux. The failure was invisible until manifest.c
+ * itself started compiling there. Must precede every #include. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "internal/services/manifest.h"
 
 #include "cJSON.h"

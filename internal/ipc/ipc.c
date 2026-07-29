@@ -1,3 +1,11 @@
+/* strdup() is hidden by glibc under a bare -std=c11. Without this it was
+ * implicitly declared, so gcc assumed `int` and truncated the returned
+ * pointer to 32 bits -- the socket path would be a corrupt pointer on Linux
+ * and MLP1. Must precede every #include, including the paired header. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "internal/ipc/ipc.h"
 
 #include <arpa/inet.h>

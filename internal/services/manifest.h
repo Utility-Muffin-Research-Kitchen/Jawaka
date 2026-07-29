@@ -31,6 +31,13 @@
 #define JW_SVC_RUN_PATH_BUF (JW_SVC_RUN_PATH_MAX + 1)
 #define JW_SVC_REASON_BUF 64
 
+/* SVC-1's `service.id` grammar: ^[a-z0-9]+(\.[a-z0-9]+)+$, at most
+ * JW_SVC_ID_MAX bytes. Exported because the CTL-1 wire, the supervisor's
+ * list filter, and manifest validation must all agree on it -- a server that
+ * emits an id the client's validator rejects makes the whole response
+ * unparseable. */
+bool jw_service_id_is_reverse_dns(const char *s);
+
 typedef enum {
     JW_SVC_LIFECYCLE_GAME_IGNORE = 0, /* default */
     JW_SVC_LIFECYCLE_GAME_STOP,

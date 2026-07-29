@@ -441,6 +441,35 @@ void jw_svc_control_store_free_ids(jw_svc_control_id *ids) {
     free(ids);
 }
 
+bool jw_svc_control_store_delete(jw_svc_control_store *store,
+                                 const char *service_id,
+                                 char *reason, size_t reason_size) {
+    if (!store || !jw__control_service_id_is_valid(service_id)) {
+        jw__control_set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+    static const char *const kSql =
+        "DELETE FROM service_control_state WHERE service_id = ?1;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(store->db, kSql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw__control_set_reason(reason, reason_size, "write-failed");
+        return false;
+    }
+    if (sqlite3_bind_text(stmt, 1, service_id, -1,
+                          SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        jw__control_set_reason(reason, reason_size, "write-failed");
+        return false;
+    }
+    int step = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (step != SQLITE_DONE) {
+        jw__control_set_reason(reason, reason_size, "write-failed");
+        return false;
+    }
+    return true;
+}
+
 bool jw_svc_control_store_put(jw_svc_control_store *store, const char *service_id,
                                const jw_svc_control_state *state,
                                char *reason, size_t reason_size) {

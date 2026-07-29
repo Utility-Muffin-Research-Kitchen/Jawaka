@@ -47,7 +47,10 @@ typedef struct {
     char state[PATH_MAX];
     char userdata[PATH_MAX];
     char apps_primary[PATH_MAX];
-    const char *scan_roots[2];
+    char apps_shared[PATH_MAX];     /* second dir of the SAME Primary source */
+    char apps_secondary[PATH_MAX];  /* a genuinely Secondary storage source */
+    const char *scan_roots[3];
+    const char *secondary_scan_roots[2];
 } fixture;
 
 static void jw__mkdir(const char *path) {
@@ -95,13 +98,23 @@ static void fixture_setup(fixture *f) {
     jw__join(f->state, sizeof(f->state), f->root, "state");
     jw__join(f->userdata, sizeof(f->userdata), f->root, "userdata");
     jw__join(f->apps_primary, sizeof(f->apps_primary), f->root, "apps");
+    jw__join(f->apps_shared, sizeof(f->apps_shared), f->root, "apps-shared");
+    jw__join(f->apps_secondary, sizeof(f->apps_secondary), f->root,
+             "apps-secondary");
     jw__mkdir(f->runtime);
     jw__mkdir(f->logs);
     jw__mkdir(f->state);
     jw__mkdir(f->userdata);
     jw__mkdir(f->apps_primary);
+    jw__mkdir(f->apps_shared);
+    jw__mkdir(f->apps_secondary);
+    /* Apps/<platform> and Apps/shared are two directories of ONE Primary
+     * source; only apps_secondary stands in for a Secondary source. */
     f->scan_roots[0] = f->apps_primary;
-    f->scan_roots[1] = NULL;
+    f->scan_roots[1] = f->apps_shared;
+    f->scan_roots[2] = NULL;
+    f->secondary_scan_roots[0] = NULL;
+    f->secondary_scan_roots[1] = NULL;
 }
 
 static void fixture_teardown(fixture *f) {
@@ -112,11 +125,13 @@ static void fixture_teardown(fixture *f) {
     }
 }
 
-static void fixture_write_pak(fixture *f, const char *pak_dir_name,
-                              const char *service_id, const char *script_body,
-                              const char *extra_manifest_fields) {
+static void fixture_write_pak_in(fixture *f, const char *root,
+                                 const char *pak_dir_name,
+                                 const char *service_id,
+                                 const char *script_body,
+                                 const char *extra_manifest_fields) {
     char pak[PATH_MAX];
-    jw__join(pak, sizeof(pak), f->apps_primary, pak_dir_name);
+    jw__join(pak, sizeof(pak), root, pak_dir_name);
     jw__mkdir(pak);
     char bin[PATH_MAX];
     jw__join(bin, sizeof(bin), pak, "bin");
@@ -156,10 +171,17 @@ static void fixture_write_pak(fixture *f, const char *pak_dir_name,
     fclose(fp);
 }
 
+static void fixture_write_pak(fixture *f, const char *pak_dir_name,
+                              const char *service_id, const char *script_body,
+                              const char *extra_manifest_fields) {
+    fixture_write_pak_in(f, f->apps_primary, pak_dir_name, service_id,
+                         script_body, extra_manifest_fields);
+}
+
 static jw_svc_supervisor *fixture_open(fixture *f, char *reason) {
     return jw_svc_supervisor_open(f->runtime, f->logs, f->state,
-                                  f->scan_roots, f->userdata, reason,
-                                  JW_SVC_REASON_BUF);
+                                  f->scan_roots, f->secondary_scan_roots,
+                                  f->userdata, reason, JW_SVC_REASON_BUF);
 }
 
 static bool wait_for_state(jw_svc_supervisor *sup, const char *id,
@@ -176,6 +198,29 @@ static bool wait_for_state(jw_svc_supervisor *sup, const char *id,
         waited += step;
     }
     return false;
+}
+
+/* Ticks until the entry owns no process group (leader reaped, lease released). */
+static bool wait_for_released(jw_svc_supervisor *sup, const char *id,
+                              int timeout_ms) {
+    int waited = 0;
+    const int step = 20;
+    while (waited <= timeout_ms) {
+        jw_svc_supervisor_tick(sup);
+        const jw_svc_supervised *e = jw_svc_supervisor_find(sup, id);
+        if (e && e->pgid <= 0 && !e->stop_requested && !e->reap_pending) {
+            return true;
+        }
+        usleep((useconds_t)step * 1000u);
+        waited += step;
+    }
+    return false;
+}
+
+static long long monotonic_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000LL + (long long)ts.tv_nsec / 1000000LL;
 }
 
 static void test_clean_exit(void) {
@@ -224,8 +269,15 @@ static void test_stop_sequence(void) {
     CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.sleeper", reason, sizeof(reason)));
     CHECK(wait_for_state(sup, "org.umrk.test.sleeper", JW_SVC_STATE_RUNNING, 3000));
 
+    /* Stop is non-blocking: it reports `stopping` immediately and tick drives
+     * the sequence to verified absence. */
     CHECK(jw_svc_supervisor_stop(sup, "org.umrk.test.sleeper", reason, sizeof(reason)));
     const jw_svc_supervised *e = jw_svc_supervisor_find(sup, "org.umrk.test.sleeper");
+    CHECK(e->state == JW_SVC_STATE_STOPPING);
+    CHECK(!e->session_run); /* session intent withdrawn at once */
+
+    CHECK(wait_for_released(sup, "org.umrk.test.sleeper", 4000));
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.sleeper");
     CHECK(e->pgid <= 0);
     CHECK(e->state == JW_SVC_STATE_STOPPED || e->state == JW_SVC_STATE_DISABLED);
 
@@ -246,16 +298,25 @@ static void test_ignore_term_escalates(void) {
     CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.ignorer", reason, sizeof(reason)));
     CHECK(wait_for_state(sup, "org.umrk.test.ignorer", JW_SVC_STATE_RUNNING, 3000));
 
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    /* The CTL-1 call itself must not block the daemon loop for the stop
+     * sequence: it returns in ~no time even against a service that ignores
+     * SIGTERM and can only be removed by the KILL escalation. */
+    long long t0 = monotonic_ms();
     CHECK(jw_svc_supervisor_stop(sup, "org.umrk.test.ignorer", reason, sizeof(reason)));
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    long long elapsed_ms = (long long)(t1.tv_sec - t0.tv_sec) * 1000LL +
-                           (long long)(t1.tv_nsec - t0.tv_nsec) / 1000000LL;
+    long long call_ms = monotonic_ms() - t0;
+    CHECK(call_ms < 250);
 
     const jw_svc_supervised *e = jw_svc_supervisor_find(sup, "org.umrk.test.ignorer");
+    CHECK(e->pgid > 0); /* still owned: TERM sent, group not yet gone */
+    CHECK(e->state == JW_SVC_STATE_STOPPING);
+
+    /* Tick still completes the sequence inside the contract's worst case of
+     * stop_grace_ms + 2000 ms. */
+    CHECK(wait_for_released(sup, "org.umrk.test.ignorer", 4000));
+    long long total_ms = monotonic_ms() - t0;
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.ignorer");
     CHECK(e->pgid <= 0);
-    CHECK(elapsed_ms <= 300 + 2000 + 250);
+    CHECK(total_ms <= 300 + 2000 + 400);
 
     jw_svc_supervisor_close(sup);
     fixture_teardown(&f);
@@ -518,6 +579,7 @@ static int run_descriptor_zero_worker(const char *root) {
     jw__join(f.apps_primary, sizeof(f.apps_primary), f.root, "apps");
     f.scan_roots[0] = f.apps_primary;
     f.scan_roots[1] = NULL;
+    f.secondary_scan_roots[0] = NULL;
 
     char reason[JW_SVC_REASON_BUF];
     jw_svc_supervisor *sup = fixture_open(&f, reason);
@@ -532,6 +594,10 @@ static int run_descriptor_zero_worker(const char *root) {
     CHECK(e != NULL && e->lease_fd == STDIN_FILENO);
     CHECK(jw_svc_supervisor_stop(sup, "org.umrk.test.fdzero",
                                  reason, sizeof(reason)));
+    /* Stop is asynchronous now; the lease is released only once tick has
+     * verified the group absent and reaped the leader. Drive it here so the
+     * parent's probe below tests descriptor-0 release, not stop timing. */
+    CHECK(wait_for_released(sup, "org.umrk.test.fdzero", 4000));
     char ready[PATH_MAX];
     jw__join(ready, sizeof(ready), f.root, "fdzero-ready");
     FILE *ready_fp = fopen(ready, "w");
@@ -784,6 +850,280 @@ static void test_suspend_and_storage_lifecycle_stops(void) {
     CHECK(ignore_entry && ignore_entry->pgid > 0);
 
     CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+/* SVC-1's "reported and not startable" rule is about a Secondary storage
+ * SOURCE (PATH-2: SDCARD_PATHS index 0 is Primary), not about which Apps/
+ * subdirectory a pak sits in. Apps/<platform> and Apps/shared are two
+ * directories of ONE source, so a service pak in either must be startable.
+ * A previous implementation flagged every root past index 0 as Secondary,
+ * which made every shared service pak permanently `unavailable`. */
+static void test_shared_root_is_primary_secondary_root_is_not(void) {
+    fixture f;
+    fixture_setup(&f);
+    fixture_write_pak_in(&f, f.apps_shared, "shared.pak",
+                         "org.umrk.test.shared",
+                         "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    fixture_write_pak_in(&f, f.apps_secondary, "secondary.pak",
+                         "org.umrk.test.secondary",
+                         "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    f.secondary_scan_roots[0] = f.apps_secondary;
+    f.secondary_scan_roots[1] = NULL;
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 2);
+
+    /* Apps/shared: Primary, therefore startable. */
+    const jw_svc_supervised *shared =
+        jw_svc_supervisor_find(sup, "org.umrk.test.shared");
+    CHECK(shared != NULL);
+    CHECK(shared && shared->manifest_valid);
+    CHECK(shared && !shared->on_secondary_root);
+    CHECK(shared && shared->state != JW_SVC_STATE_UNAVAILABLE);
+    CHECK(jw_svc_supervisor_enable(sup, "org.umrk.test.shared",
+                                   reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.shared",
+                                reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, "org.umrk.test.shared",
+                         JW_SVC_STATE_RUNNING, 3000));
+
+    /* A genuine Secondary source: reported, but never startable. */
+    const jw_svc_supervised *secondary =
+        jw_svc_supervisor_find(sup, "org.umrk.test.secondary");
+    CHECK(secondary != NULL);
+    CHECK(secondary && secondary->on_secondary_root);
+    CHECK(secondary && secondary->state == JW_SVC_STATE_UNAVAILABLE);
+    CHECK(!jw_svc_supervisor_run(sup, "org.umrk.test.secondary",
+                                 reason, sizeof(reason)));
+    CHECK(strcmp(reason, "unavailable") == 0);
+    CHECK(!jw_svc_supervisor_enable(sup, "org.umrk.test.secondary",
+                                    reason, sizeof(reason)));
+    CHECK(strcmp(reason, "unavailable") == 0);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+/* CTL-1 must distinguish a lifecycle-policy stop from an ordinary user Stop,
+ * and must name which policy fired: "whether a lifecycle policy stop is in
+ * force (reason: game, storage, suspend, package)". */
+static void test_lifecycle_stop_reasons_are_distinct(void) {
+    CHECK(strcmp(jw_svc_stop_reason_lifecycle_slug(
+                     JW_SVC_STOP_LIFECYCLE_GAME), "game") == 0);
+    CHECK(strcmp(jw_svc_stop_reason_lifecycle_slug(
+                     JW_SVC_STOP_LIFECYCLE_SUSPEND), "suspend") == 0);
+    CHECK(strcmp(jw_svc_stop_reason_lifecycle_slug(
+                     JW_SVC_STOP_LIFECYCLE_STORAGE), "storage") == 0);
+    CHECK(jw_svc_stop_reason_lifecycle_slug(JW_SVC_STOP_INTENTIONAL) == NULL);
+    CHECK(jw_svc_stop_reason_lifecycle_slug(JW_SVC_STOP_NONE) == NULL);
+    CHECK(jw_svc_stop_reason_lifecycle_slug(
+              JW_SVC_STOP_LEADER_EXITED) == NULL);
+
+    fixture f;
+    fixture_setup(&f);
+    fixture_write_pak(&f, "suspendy.pak", "org.umrk.test.suspendy",
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"on-failure\""
+                      ",\"lifecycle\":{\"stop_on_suspend\":true}");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.suspendy",
+                                reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, "org.umrk.test.suspendy",
+                         JW_SVC_STATE_RUNNING, 3000));
+
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    CHECK(jw_svc_supervisor_suspend_begin(sup, stuck, sizeof(stuck)) == 1);
+    CHECK(stuck[0] == '\0');
+    const jw_svc_supervised *e =
+        jw_svc_supervisor_find(sup, "org.umrk.test.suspendy");
+    /* Recorded as a suspend policy stop, NOT as a generic intentional stop --
+     * otherwise CTL-1 cannot tell the user why their service went down. */
+    CHECK(e && e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_SUSPEND);
+    CHECK(e && strcmp(jw_svc_stop_reason_lifecycle_slug(
+                          e->pending_stop_reason), "suspend") == 0);
+    /* Still excluded from the on-failure restart policy. */
+    CHECK(e && !e->backoff.breaker_open && e->backoff.count == 0);
+    CHECK(e && e->lifecycle_restart_pending);
+
+    /* Resume starts exactly one replacement generation. */
+    CHECK(wait_for_state(sup, "org.umrk.test.suspendy",
+                         JW_SVC_STATE_RUNNING, 3000));
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.suspendy");
+    CHECK(e && !e->lifecycle_restart_pending);
+    CHECK(e && e->pending_stop_reason == JW_SVC_STOP_NONE);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+/* CTL-1 Restart must not block the daemon loop either: it stops, returns, and
+ * tick starts exactly one replacement once the old group is proven absent. */
+static void test_restart_is_async_and_starts_one_generation(void) {
+    fixture f;
+    fixture_setup(&f);
+    fixture_write_pak(&f, "restarty.pak", "org.umrk.test.restarty",
+                      "trap '' TERM; while :; do sleep 1; done",
+                      ",\"restart\":\"no\"");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.restarty",
+                                reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, "org.umrk.test.restarty",
+                         JW_SVC_STATE_RUNNING, 3000));
+    const jw_svc_supervised *e =
+        jw_svc_supervisor_find(sup, "org.umrk.test.restarty");
+    pid_t first_pgid = e ? e->pgid : -1;
+    CHECK(first_pgid > 0);
+
+    long long t0 = monotonic_ms();
+    CHECK(jw_svc_supervisor_restart(sup, "org.umrk.test.restarty",
+                                    reason, sizeof(reason)));
+    CHECK(monotonic_ms() - t0 < 250);
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.restarty");
+    CHECK(e && e->state == JW_SVC_STATE_STOPPING);
+    CHECK(e && e->pgid == first_pgid); /* old group still reserved */
+
+    /* Run must be refused while the old group is still owned: starting now
+     * would overlap the reservation SVC-1 forbids overlapping. */
+    CHECK(!jw_svc_supervisor_run(sup, "org.umrk.test.restarty",
+                                 reason, sizeof(reason)));
+    CHECK(strcmp(reason, "stopping") == 0);
+
+    CHECK(wait_for_state(sup, "org.umrk.test.restarty",
+                         JW_SVC_STATE_RUNNING, 5000));
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.restarty");
+    CHECK(e && e->pgid > 0);
+    CHECK(e && e->pgid != first_pgid); /* exactly one NEW generation */
+    CHECK(e && e->session_run);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+/* Shutdown must discard an in-flight CTL-1 Restart. Otherwise the post-stop
+ * action fires from inside stop_all()'s synchronous stop and launches a fresh
+ * generation with no daemon left to supervise it. */
+static void test_shutdown_discards_pending_restart(void) {
+    fixture f;
+    fixture_setup(&f);
+    fixture_write_pak(&f, "shutdowny.pak", "org.umrk.test.shutdowny",
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.shutdowny",
+                                reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, "org.umrk.test.shutdowny",
+                         JW_SVC_STATE_RUNNING, 3000));
+
+    /* Restart requested, then shutdown before tick can complete it. */
+    CHECK(jw_svc_supervisor_restart(sup, "org.umrk.test.shutdowny",
+                                    reason, sizeof(reason)));
+    const jw_svc_supervised *e =
+        jw_svc_supervisor_find(sup, "org.umrk.test.shutdowny");
+    CHECK(e && e->post_stop == JW_SVC_POST_STOP_RESTART);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.shutdowny");
+    CHECK(e && e->pgid <= 0);   /* nothing relaunched */
+    CHECK(e && e->post_stop == JW_SVC_POST_STOP_NONE);
+    /* And no stray child survived the shutdown. */
+    errno = 0;
+    CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);
+
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+/* A record with nothing left to retain -- package gone, not enabled, no
+ * session intent, no live or stale generation -- must be shed from both the
+ * control store and the canonical list, or Settings -> Services can never
+ * return to "absent on a clean system" after an uninstall. */
+static void test_spent_record_is_shed(void) {
+    fixture f;
+    fixture_setup(&f);
+    fixture_write_pak(&f, "spent.pak", "org.umrk.test.spent",
+                      "exit 0", ",\"restart\":\"no\"");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    /* Give it real history: enabled, run, then disabled again. */
+    CHECK(jw_svc_supervisor_enable(sup, "org.umrk.test.spent",
+                                   reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_disable(sup, "org.umrk.test.spent",
+                                    reason, sizeof(reason)));
+    const jw_svc_supervised *e =
+        jw_svc_supervisor_find(sup, "org.umrk.test.spent");
+    CHECK(e && e->control_loaded);
+    CHECK(jw_svc_supervisor_entry_is_listable(e));
+
+    /* Uninstall the package. */
+    char pak[PATH_MAX];
+    jw__join(pak, sizeof(pak), f.apps_primary, "spent.pak");
+    char cmd[PATH_MAX + 32];
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", pak);
+    CHECK(system(cmd) == 0);
+
+    CHECK(jw_svc_supervisor_scan(sup) == 0);
+    CHECK(jw_svc_supervisor_find(sup, "org.umrk.test.spent") == NULL);
+    CHECK(jw_svc_supervisor_count(sup) == 0);
+
+    /* A fresh supervisor over the same store must not resurrect the row. */
+    jw_svc_supervisor_close(sup);
+    sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+/* An entry whose id cannot survive a client's reverse-DNS validation must
+ * never reach the wire: a strict CTL-1 client rejects the whole `list`
+ * response on one bad row, so a single invalid manifest would blank the
+ * entire Services screen. */
+static void test_noncanonical_ids_stay_off_the_wire(void) {
+    fixture f;
+    fixture_setup(&f);
+    /* Invalid manifest with no recoverable service.id: the entry falls back
+     * to the pak directory name, which is not reverse-DNS. */
+    fixture_write_pak(&f, "Weird_Name.pak", "NotReverseDNS", "exit 0",
+                      ",\"restart\":\"no\"");
+    fixture_write_pak(&f, "good.pak", "org.umrk.test.good", "exit 0",
+                      ",\"restart\":\"no\"");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    jw_svc_supervisor_scan(sup);
+
+    int listable = 0;
+    for (int i = 0; i < jw_svc_supervisor_count(sup); i++) {
+        const jw_svc_supervised *e = jw_svc_supervisor_at(sup, i);
+        if (jw_svc_supervisor_entry_is_listable(e)) {
+            CHECK(jw_service_id_is_reverse_dns(e->service_id));
+            listable++;
+        }
+    }
+    CHECK(listable == 1);
+
     jw_svc_supervisor_close(sup);
     fixture_teardown(&f);
 }
@@ -1089,6 +1429,12 @@ int main(int argc, char **argv) {
     test_running_policy_survives_rescan();
     test_suspend_and_storage_lifecycle_stops();
     test_reservation_write_failure_reaps_child();
+    test_shared_root_is_primary_secondary_root_is_not();
+    test_lifecycle_stop_reasons_are_distinct();
+    test_restart_is_async_and_starts_one_generation();
+    test_shutdown_discards_pending_restart();
+    test_spent_record_is_shed();
+    test_noncanonical_ids_stay_off_the_wire();
     test_hostile_id_tail_bound_and_status_shape();
     test_many_entries_do_not_use_uninitialized_runtime_fields();
     test_retained_control_row_survives_missing_package();

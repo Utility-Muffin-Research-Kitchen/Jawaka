@@ -161,6 +161,16 @@ void jw_svc_control_store_free_ids(jw_svc_control_id *ids);
  * (longer than JW_SVC_CONTROL_ID_MAX), a backoff_failure_count outside
  * [0, JW_SVC_CONTROL_BACKOFF_TRACKED], or a string field with no NUL
  * within its fixed buffer; "write-failed" for a SQL failure). */
+/* Removes a service's row entirely. Used by discovery reconciliation to shed
+ * a record with nothing left to retain -- package gone, not enabled, no
+ * session intent, no live or stale generation. Without this the store (and
+ * CTL-1's `list`) would grow monotonically and the Settings -> Services screen
+ * could never return to "absent on a clean system" after an uninstall.
+ * Deleting a row that does not exist succeeds. */
+bool jw_svc_control_store_delete(jw_svc_control_store *store,
+                                 const char *service_id,
+                                 char *reason, size_t reason_size);
+
 bool jw_svc_control_store_put(jw_svc_control_store *store, const char *service_id,
                                const jw_svc_control_state *state,
                                char *reason, size_t reason_size);

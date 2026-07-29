@@ -1,3 +1,13 @@
+/* PATH_MAX, realpath(), strtok_r() are hidden by glibc under a bare -std=c11
+ * without a broader feature-test macro, so this file did not compile on Linux
+ * at all -- `make service-manifest-test` (the target that checks all 37 A0
+ * manifest fixtures) failed there with PATH_MAX undeclared and an implicit
+ * strtok_r. Matches the convention every other module in this directory
+ * already uses. Must precede every #include, including the paired header. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "internal/services/manifest.h"
 
 #include "cJSON.h"
@@ -134,7 +144,7 @@ static bool jw__svc_json_has_escaped_nul(const char *json) {
  * each non-empty and restricted to lowercase ascii + digits. Hand-written
  * rather than <regex.h> so this has no platform-dependent regex engine
  * behavior to verify on the MLP1 cross-toolchain. */
-static bool jw__svc_is_reverse_dns(const char *s) {
+bool jw_service_id_is_reverse_dns(const char *s) {
     if (!s || !s[0]) {
         return false;
     }
@@ -564,7 +574,7 @@ bool jw_service_manifest_validate(const char *pak_json_text,
                               ? svc_id_item->valuestring
                               : "";
 
-    if (!jw__svc_is_reverse_dns(top_id) || !jw__svc_is_reverse_dns(svc_id)) {
+    if (!jw_service_id_is_reverse_dns(top_id) || !jw_service_id_is_reverse_dns(svc_id)) {
         jw__svc_set_reason(reason, reason_size, "malformed-id");
         goto done;
     }

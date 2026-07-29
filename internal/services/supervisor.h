@@ -77,12 +77,34 @@ typedef enum {
                                      a genuine crash, eligible for the
                                      on-failure restart policy */
     JW_SVC_STOP_INTENTIONAL,      /* CTL-1 Stop/Disable/Restart, shutdown,
-                                     suspend, package operation: never a
-                                     "failure" for backoff purposes */
+                                     package operation: never a "failure" for
+                                     backoff purposes */
     JW_SVC_STOP_LEADER_EXITED,    /* leader died but live descendants remain:
                                      the failure branch (backoff applies) */
-    JW_SVC_STOP_LIFECYCLE_GAME,   /* lifecycle.game == "stop" */
+    /* The three declarative lifecycle-policy stops. CTL-1's `status` reports
+     * these separately from an ordinary intentional stop -- contracts.md
+     * requires "whether a lifecycle policy stop is in force (reason: game,
+     * storage, suspend, package)" -- so they must stay distinguishable rather
+     * than collapsing into JW_SVC_STOP_INTENTIONAL. All three are equally
+     * excluded from the on-failure restart policy. */
+    JW_SVC_STOP_LIFECYCLE_GAME,     /* lifecycle.game == "stop" */
+    JW_SVC_STOP_LIFECYCLE_SUSPEND,  /* lifecycle.stop_on_suspend */
+    JW_SVC_STOP_LIFECYCLE_STORAGE,  /* lifecycle.stop_on_storage_change */
 } jw_svc_stop_reason_kind;
+
+/* CTL-1 `lifecycle_policy_stop.reason` slug for a stop kind, or NULL when the
+ * kind is not a lifecycle-policy stop. */
+const char *jw_svc_stop_reason_lifecycle_slug(jw_svc_stop_reason_kind kind);
+
+/* What tick must do once an asynchronously stopped group is finally proven
+ * absent. CTL-1 Stop/Disable/Restart no longer block the daemon loop for the
+ * full stop sequence (see jw_svc_supervisor_stop() below), so the tail of
+ * those operations runs here instead. */
+typedef enum {
+    JW_SVC_POST_STOP_NONE = 0,  /* nothing further: the entry goes idle */
+    JW_SVC_POST_STOP_RESTART,   /* CTL-1 Restart: start exactly one new
+                                   generation once absence is verified */
+} jw_svc_post_stop_action;
 
 /* Stable identifier for one supervised service (the service.id). */
 #define JW_SVC_SUPERVISOR_ID_BUF JW_SVC_ID_BUF
@@ -114,6 +136,15 @@ typedef struct {
     bool stop_kill_sent;        /* SIGKILL already delivered this stop */
     jw_svc_stop_reason_kind pending_stop_reason;
     bool reap_pending;          /* leader exited, group not yet verified */
+    /* An asynchronous stop is in flight: SIGTERM has been delivered but the
+     * leader may still be alive. Distinct from reap_pending (which means the
+     * leader has already exited) so tick keeps observing the real child exit
+     * and still records last_exit. Tick owns the escalation and the reap. */
+    bool stop_requested;
+    jw_svc_post_stop_action post_stop;
+    /* One-shot latch so the "survived TERM+KILL+2s" transition is recorded
+     * once per stop rather than on every subsequent tick. */
+    bool stop_unverified_logged;
 
     /* Immutable launch-time policy snapshot. A package rescan may replace
      * `manifest` while this generation is still alive; stop/restart/lifecycle
@@ -146,10 +177,16 @@ typedef struct jw_svc_supervisor jw_svc_supervisor;
  * runtime_dir  = $UMRK_RUNTIME_PATH (lease + reservation live in tmpfs)
  * logs_dir     = $LOGS_PATH
  * state_dir    = durable directory for the control-state db
- * apps_scan_roots = NULL-terminated array of Apps/ roots to scan for
- *                   service-bearing paks, in priority order; on MLP1 the
- *                   Primary root must come first and a service found under
- *                   any later root is reported but not startable.
+ * apps_scan_roots = NULL-terminated array of Apps/ roots on the verified
+ *                   PRIMARY storage source. Every entry here is Primary --
+ *                   `Apps/<platform>` and `Apps/shared` are two directories
+ *                   of one source, not two sources, so both are startable.
+ * secondary_apps_scan_roots = NULL-terminated array of Apps/ roots on
+ *                   Secondary storage sources, or NULL when none are known.
+ *                   SVC-1: a service discovered here is reported and NOT
+ *                   startable. Primary/Secondary is a property of the storage
+ *                   source (PATH-2 `SDCARD_PATHS` index 0 is Primary), never
+ *                   of which Apps/ subdirectory a pak happens to sit in.
  * userdata_root   = $USERDATA_PATH (state.root confinement checks)
  *
  * Returns NULL on failure, copying a slug into `reason` when non-NULL:
@@ -157,12 +194,11 @@ typedef struct jw_svc_supervisor jw_svc_supervisor;
  * A supervisor that cannot open its store fails closed (no service is
  * supervised without durable intent) rather than supervising with
  * forgettable state. */
-jw_svc_supervisor *jw_svc_supervisor_open(const char *runtime_dir,
-                                          const char *logs_dir,
-                                          const char *state_dir,
-                                          const char *const *apps_scan_roots,
-                                          const char *userdata_root,
-                                          char *reason, size_t reason_size);
+jw_svc_supervisor *jw_svc_supervisor_open(
+    const char *runtime_dir, const char *logs_dir, const char *state_dir,
+    const char *const *apps_scan_roots,
+    const char *const *secondary_apps_scan_roots,
+    const char *userdata_root, char *reason, size_t reason_size);
 
 void jw_svc_supervisor_close(jw_svc_supervisor *sup);
 
@@ -189,6 +225,14 @@ const jw_svc_supervised *jw_svc_supervisor_find(const jw_svc_supervisor *sup,
 /* Number of entries (for CTL-1 list). */
 int jw_svc_supervisor_count(const jw_svc_supervisor *sup);
 
+/* Should this entry appear in the canonical CTL-1 `list`? True for a valid
+ * service, a retained desired-state record, and any live or stale generation;
+ * false for invalid discovery alone, for a spent record, and for any entry
+ * whose id would not survive a client's reverse-DNS validation. This is the
+ * single predicate behind both the IPC response and Settings -> Services'
+ * "absent on a clean system" rule -- they must not drift apart. */
+bool jw_svc_supervisor_entry_is_listable(const jw_svc_supervised *e);
+
 /* The entry at `index` in scan order, or NULL. */
 const jw_svc_supervised *jw_svc_supervisor_at(const jw_svc_supervisor *sup,
                                               int index);
@@ -203,7 +247,17 @@ const jw_svc_supervised *jw_svc_supervisor_at(const jw_svc_supervisor *sup,
  * stops a running service (intentional stop). enable does NOT by itself
  * start the service this session (that is run()); it only records intent.
  * run/stop/restart are session control and never touch persistent intent.
- * run/restart clear the circuit breaker (SVC-1 restart policy). */
+ * run/restart clear the circuit breaker (SVC-1 restart policy).
+ *
+ * NON-BLOCKING: stop/disable/restart INITIATE the stop sequence (SIGTERM to
+ * the reserved group, desired intent persisted) and return immediately with
+ * the entry in JW_SVC_STATE_STOPPING. Tick owns the rest -- grace window,
+ * SIGKILL escalation, verified absence, reap, and (for restart) starting the
+ * one replacement generation. These calls must never block the daemon's
+ * single-threaded main loop for stop_grace_ms + 2000 ms: a caller that needs
+ * a *completed* stop before proceeding uses stop_all()/game_launch_begin()/
+ * suspend_begin()/storage_change_begin() instead, which are deliberately
+ * synchronous because their callers cannot continue without the guarantee. */
 bool jw_svc_supervisor_enable(jw_svc_supervisor *sup, const char *service_id,
                               char *reason, size_t reason_size);
 bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
@@ -253,6 +307,22 @@ int jw_svc_supervisor_suspend_begin(jw_svc_supervisor *sup,
 int jw_svc_supervisor_storage_change_begin(jw_svc_supervisor *sup,
                                            char *out_stuck_id,
                                            size_t stuck_id_size);
+
+/* Side-effect-free pre-check for the safe-unmount caller. Reports the first
+ * storage-sensitive service that is ALREADY known to be unstoppable -- a
+ * locked stale generation this daemon may not signal, or a survivor that
+ * outlived a previous TERM+KILL+2s -- without signalling anything.
+ *
+ * SVC-1 makes safe unmount the one caller that must "fail the unmount" when
+ * absence cannot be verified. Refusing after having already stopped every
+ * OTHER storage-sensitive service would bounce healthy services for an
+ * operation that never happened, so the caller checks first and only calls
+ * storage_change_begin() when this returns false.
+ *
+ * Returns true when a blocker exists, copying its id into out_stuck_id. */
+bool jw_svc_supervisor_storage_change_blocked(const jw_svc_supervisor *sup,
+                                              char *out_stuck_id,
+                                              size_t stuck_id_size);
 
 /* The effective-state slug used on CTL-1 ("unavailable", "disabled", ...). */
 const char *jw_svc_effective_state_name(jw_svc_effective_state state);

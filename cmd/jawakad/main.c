@@ -290,6 +290,9 @@ typedef struct {
     /* app-services-v1 (SVC-1) service supervisor; NULL when it could not be
        opened (a supervisor failure must never take down the launcher). */
     jw_svc_supervisor *services;
+    /* Set when a safe-unmount already applied the storage-change policy, so
+       the storage tick it provokes does not stop the same services again. */
+    bool services_storage_stop_done;
 } jw_daemon_state;
 
 static void jw__scan_title_list_free(jw_scan_title_list *list) {
@@ -1562,10 +1565,12 @@ static void jw__services_init(jw_daemon_state *state) {
         return;
     }
 
-    /* Scan the Primary Apps/<platform> root, then Apps/shared. SVC-1 on
-       MLP1 requires the Primary root; this dev/mock build treats the single
-       configured root as Primary and never discovers Secondary-root
-       services. */
+    /* Both Apps/<platform> and Apps/shared are directories of the SAME
+       (Primary) storage source, so a service pak in either is startable.
+       SVC-1's "reported but not startable" rule applies to a Secondary
+       storage SOURCE (PATH-2: SDCARD_PATHS index 0 is Primary), which this
+       build cannot enumerate until A1 lands source-paths-v2 -- so no
+       Secondary root is passed and nothing is wrongly marked unavailable. */
     const char *platform = getenv("PLATFORM");
     if (!platform || !platform[0]) {
         platform = jw_platform_compiled_id();
@@ -1595,7 +1600,8 @@ static void jw__services_init(jw_daemon_state *state) {
     char reason[JW_SVC_REASON_BUF];
     jw_svc_supervisor *sup = jw_svc_supervisor_open(
         state->runtime_dir, logs ? logs : "", state->state_dir,
-        roots, userdata ? userdata : "", reason, sizeof(reason));
+        roots, NULL /* no Secondary source roots until PATH-2 (A1) */,
+        userdata ? userdata : "", reason, sizeof(reason));
     if (!sup) {
         jw_log_warn("services: supervisor unavailable (%s); "
                     "no services supervised this run", reason);
@@ -3546,6 +3552,25 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
 
     jw_platform_result result;
     char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    /* Check BEFORE stopping anything. SVC-1 makes safe unmount the one caller
+       that must fail rather than proceed, so a refusal has to leave the system
+       as it found it -- stopping every other storage-sensitive service and
+       only then discovering the blocker would bounce healthy services for an
+       operation that never happened. */
+    if (state->services &&
+        jw_svc_supervisor_storage_change_blocked(state->services, stuck,
+                                                 sizeof(stuck))) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "Cannot unmount: service %s could not be verified stopped",
+                 stuck);
+        memset(&result, 0, sizeof(result));
+        result.code = JW_PLATFORM_RESULT_FAILED;
+        snprintf(result.message, sizeof(result.message), "%s", message);
+        jw_log_warn("safe-unmount: refused; service %s is still live", stuck);
+        return jw__reply_platform_result(client, action_json->valuestring,
+                                         &result);
+    }
     if (state->services) {
         int stopped = jw_svc_supervisor_storage_change_begin(
             state->services, stuck, sizeof(stuck));
@@ -3553,8 +3578,14 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
             jw_log_info("safe-unmount: stopped %d storage-sensitive service(s)",
                         stopped);
         }
+        /* This daemon performed the unmount, so the storage tick that follows
+           must not re-run the same policy stop against the services it just
+           handled. */
+        state->services_storage_stop_done = true;
     }
     if (stuck[0]) {
+        /* A group that survived its full stop sequence can only be discovered
+           by running it. Unavoidable side effect, and still a refusal. */
         char message[256];
         snprintf(message, sizeof(message),
                  "Cannot unmount: service %s could not be verified stopped",
@@ -7466,6 +7497,15 @@ static void jw__deep_suspend(jw_daemon_state *state) {
         return;
     }
     state->suspend_policy.pending = JW_SUSPEND_PENDING_NONE;
+    jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
+    jw__rumble_set_gated(true);
+    jw__rumble_quiesce();   /* never carry a live pulse into the freeze */
+    jw__screen_set(state, false);
+    /* After the screen is off: stopping suspend-sensitive services is a
+       synchronous, bounded wait (stop_grace_ms + 2000 ms per service), and
+       holding a lit screen through it makes a sleeping device look wedged.
+       The stop must still complete before the freeze, so it cannot move to
+       tick the way the CTL-1 session ops did. */
     if (state->services) {
         char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
         int stopped = jw_svc_supervisor_suspend_begin(
@@ -7481,10 +7521,6 @@ static void jw__deep_suspend(jw_daemon_state *state) {
                         "continuing suspend", stuck);
         }
     }
-    jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
-    jw__rumble_set_gated(true);
-    jw__rumble_quiesce();   /* never carry a live pulse into the freeze */
-    jw__screen_set(state, false);
     /* Same reason as the standby path: a direction still held here is never
        released to the launcher, because the resume flush discards the physical
        release rather than forwarding it. This is the path a power tap takes
@@ -8824,16 +8860,20 @@ static bool jw__service_status_json(const jw_svc_supervised *e, cJSON *obj) {
         return false;
     }
 
-    bool lifecycle_active =
-        e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_GAME;
+    /* contracts.md: report "whether a lifecycle policy stop is in force
+     * (reason: game, storage, suspend, package)". All three implemented
+     * triggers are reported distinctly; `package` arrives with PKG-1/TXN-1. */
+    const char *lifecycle_reason =
+        jw_svc_stop_reason_lifecycle_slug(e->pending_stop_reason);
     cJSON *lifecycle =
         cJSON_AddObjectToObject(obj, "lifecycle_policy_stop");
     if (!lifecycle ||
-        !cJSON_AddBoolToObject(lifecycle, "active", lifecycle_active)) {
+        !cJSON_AddBoolToObject(lifecycle, "active",
+                               lifecycle_reason != NULL)) {
         return false;
     }
-    return lifecycle_active
-        ? cJSON_AddStringToObject(lifecycle, "reason", "game") != NULL
+    return lifecycle_reason
+        ? cJSON_AddStringToObject(lifecycle, "reason", lifecycle_reason) != NULL
         : cJSON_AddNullToObject(lifecycle, "reason") != NULL;
 }
 
@@ -8972,12 +9012,11 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
         for (int i = 0; i < n; i++) {
             const jw_svc_supervised *e =
                 jw_svc_supervisor_at(state->services, i);
-            /* Invalid discovery alone is omitted. A locked old-generation
-             * lease is actionable service history even if the crash happened
-             * before the first durable control-state write, so it must remain
-             * discoverable as stale-generation. */
-            if (!e || (!e->manifest_valid && !e->control_loaded &&
-                       e->state != JW_SVC_STATE_STALE_GENERATION)) {
+            /* One shared predicate with the supervisor's own shedding rule:
+             * invalid discovery alone and spent records are omitted, while a
+             * locked old-generation lease stays discoverable even if the
+             * crash happened before the first durable control-state write. */
+            if (!jw_svc_supervisor_entry_is_listable(e)) {
                 continue;
             }
             cJSON *obj = cJSON_CreateObject();
@@ -10238,18 +10277,34 @@ int main(int argc, char *argv[]) {
         jw__tick_hdmi(&state);
         if (jw_platform_storage_tick(&state.platform)) {
             if (state.services) {
-                char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
-                int stopped = jw_svc_supervisor_storage_change_begin(
-                    state.services, stuck, sizeof(stuck));
-                if (stopped > 0) {
-                    jw_log_info("storage hotplug: stopped %d "
-                                "storage-sensitive service(s)", stopped);
-                }
-                if (stuck[0]) {
-                    /* The hotplug already happened, so unlike safe-unmount it
-                     * cannot be refused. Warn and keep the survivor visible. */
-                    jw_log_warn("storage hotplug: service %s could not be "
-                                "verified stopped", stuck);
+                /* Only a source going AWAY is a stop_on_storage_change event.
+                   jw_platform_storage_tick() fires on any transition, and
+                   stopping a running service because the user *inserted* a
+                   card has no contract behind it -- SVC-1's storage policy
+                   exists so a card is never pulled from under a live writer.
+                   The backend reports no direction, so re-read the status. */
+                jw_platform_storage_status storage_status;
+                jw_platform_get_storage_status(&state.platform, NULL,
+                                               &storage_status);
+                bool source_departed = !storage_status.mounted;
+                if (state.services_storage_stop_done) {
+                    /* This daemon just performed a safe unmount and already
+                       applied the policy; don't stop the same services twice. */
+                    state.services_storage_stop_done = false;
+                } else if (source_departed) {
+                    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+                    int stopped = jw_svc_supervisor_storage_change_begin(
+                        state.services, stuck, sizeof(stuck));
+                    if (stopped > 0) {
+                        jw_log_info("storage hotplug: stopped %d "
+                                    "storage-sensitive service(s)", stopped);
+                    }
+                    if (stuck[0]) {
+                        /* Already gone, so unlike safe-unmount this cannot be
+                           refused. Warn and keep the survivor visible. */
+                        jw_log_warn("storage hotplug: service %s could not be "
+                                    "verified stopped", stuck);
+                    }
                 }
                 if (jw_svc_supervisor_scan(state.services) < 0) {
                     jw_log_warn("storage hotplug: service rescan failed");
