@@ -54,6 +54,7 @@ static void jw__test_basic_acquire_and_contention(void) {
     char reason[JW_TEST_REASON_BUF] = {0};
     int fd1 = jw_svc_lease_acquire(runtime_dir, "org.umrk.test", reason, sizeof(reason));
     assert(fd1 >= 0);
+    assert((fcntl(fd1, F_GETFD) & FD_CLOEXEC) != 0);
 
     /* Same-process double open: flock() treats two independently open()'d
      * descriptors on the same file as unrelated, even within one process,

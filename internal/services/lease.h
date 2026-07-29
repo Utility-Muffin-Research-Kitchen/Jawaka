@@ -20,9 +20,9 @@
  * call -- that policy is daemon-scheduling logic, not part of the
  * primitive.
  *
- * Return value on success: an open, LOCKED file descriptor >= 0. The
- * caller must keep it open for the lifetime of the service generation it
- * represents (per SVC-1's inherited-holder/guardian shapes -- e.g.
+ * Return value on success: an open, LOCKED, close-on-exec file descriptor
+ * >= 0. The caller must keep it open for the lifetime of the service
+ * generation it represents (per SVC-1's inherited-holder/guardian shapes -- e.g.
  * duplicating it to descriptor 3 in a forked child before exec, with
  * UMRK_SERVICE_LEASE_FD=3 exported and FD_CLOEXEC cleared there) and must
  * never call flock(fd, LOCK_UN) or close it while that generation is

@@ -135,7 +135,13 @@ int jw_svc_lease_acquire(const char *runtime_dir, const char *service_id,
      * mechanism this function exists to implement. O_NOFOLLOW prevents a
      * same-named symlink from redirecting the stable lock to another
      * inode. */
-    int fd = open(lease_path, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
+    /* The daemon may supervise several services concurrently. Its own copy
+     * must never leak through an unrelated service's exec; launch.c makes a
+     * deliberate duplicate of only the selected lease onto descriptor 3 and
+     * clears CLOEXEC there. Without this flag, service B inherits service A's
+     * lock and can keep A falsely stale after A's group is gone. */
+    int fd = open(lease_path,
+                  O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) {
         jw__lease_set_reason(reason, reason_size, "open-failed");
         return -1;

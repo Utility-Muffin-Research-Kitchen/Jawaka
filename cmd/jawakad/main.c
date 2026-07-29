@@ -8843,9 +8843,9 @@ static void jw__service_logs_json(jw_daemon_state *state,
     for (char *line = strtok_r(buf, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save)) {
         char redacted[2048];
-        if (!jw_svc_log_redact_line(line, redacted, sizeof(redacted))) {
-            redacted[0] = '\0';
-        }
+        /* The boolean reports whether a secret was found; false still leaves
+         * an unchanged, bounded copy in `redacted`. */
+        (void)jw_svc_log_redact_line(line, redacted, sizeof(redacted));
         int slot = used < tail ? used : start;
         free(lines[slot]);
         lines[slot] = strdup(redacted);

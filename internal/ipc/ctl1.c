@@ -26,6 +26,42 @@ static bool jw__ctl1_copy_string(const cJSON *item, char *out,
     return true;
 }
 
+/* cJSON stores decoded strings as NUL-terminated C strings, so a JSON
+ * `\u0000` would hide every byte after it from strlen()/strcmp(). Reject the
+ * escape lexically before decoding. The small scanner distinguishes it from
+ * `\\u0000`, whose doubled backslash represents ordinary literal text. */
+static bool jw__ctl1_payload_has_escaped_nul(const char *payload,
+                                              size_t payload_len) {
+    bool in_string = false;
+    for (size_t i = 0; i < payload_len; i++) {
+        unsigned char ch = (unsigned char)payload[i];
+        if (!in_string) {
+            if (ch == (unsigned char)'"') {
+                in_string = true;
+            }
+            continue;
+        }
+        if (ch == (unsigned char)'"') {
+            in_string = false;
+            continue;
+        }
+        if (ch != (unsigned char)'\\') {
+            continue;
+        }
+        if (i + 5u < payload_len && payload[i + 1u] == 'u' &&
+            payload[i + 2u] == '0' && payload[i + 3u] == '0' &&
+            payload[i + 4u] == '0' && payload[i + 5u] == '0') {
+            return true;
+        }
+        /* Skip the escaped byte. A valid \u escape cannot accidentally match
+         * after this point because only the escape-introducing slash matters. */
+        if (i + 1u < payload_len) {
+            i++;
+        }
+    }
+    return false;
+}
+
 static int jw__ctl1_object_size(const cJSON *object) {
     int count = 0;
     const cJSON *item = NULL;
@@ -79,7 +115,8 @@ bool jw_ctl1_parse_request(const char *payload, size_t payload_len,
     jw__ctl1_error(error_code, error_code_size, "invalid-payload");
     if (!payload || !request || payload_len == 0 ||
         payload_len > JW_CTL1_MAX_PAYLOAD ||
-        memchr(payload, '\0', payload_len) != NULL) {
+        memchr(payload, '\0', payload_len) != NULL ||
+        jw__ctl1_payload_has_escaped_nul(payload, payload_len)) {
         return false;
     }
 

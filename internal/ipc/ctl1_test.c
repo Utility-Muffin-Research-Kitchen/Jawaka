@@ -57,6 +57,13 @@ int main(void) {
     parse_error("{\"v\":1,\"op\":\"logs\",\"id\":\"1\","
                 "\"service_id\":\"org.umrk.x\",\"tail\":1.5}",
                 "invalid-payload");
+    parse_error("{\"v\":1,\"op\":\"list\",\"id\":\"visible\\u0000hidden\"}",
+                "invalid-payload");
+    parse_error("{\"v\":1,\"op\":\"run\",\"id\":\"1\","
+                "\"service_id\":\"org.umrk.good\\u0000.bad\"}",
+                "invalid-payload");
+    parse_ok("{\"v\":1,\"op\":\"list\",\"id\":\"literal\\\\u0000\"}",
+             JW_CTL1_OP_LIST, "literal\\u0000", NULL);
 
     const char embedded[] = "{\"v\":1}\0garbage";
     assert(!jw_ctl1_parse_request(embedded, sizeof(embedded) - 1u,
