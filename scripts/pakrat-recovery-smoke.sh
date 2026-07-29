@@ -11,14 +11,21 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 JAWAKA_DIR="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD:-build/pakrat-recovery-smoke}"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jawaka-pakrat-recovery.XXXXXX")"
+SHORT_RUNTIME_ROOT="$(mktemp -d "/tmp/jwpr.XXXXXX")"
 SERVER_PID=""
+DAEMON_PID=""
 
 cleanup() {
+    if [ -n "$DAEMON_PID" ]; then
+        kill "$DAEMON_PID" >/dev/null 2>&1 || true
+        wait "$DAEMON_PID" >/dev/null 2>&1 || true
+    fi
     if [ -n "$SERVER_PID" ]; then
         kill "$SERVER_PID" >/dev/null 2>&1 || true
         wait "$SERVER_PID" >/dev/null 2>&1 || true
     fi
     rm -rf "$TMP_ROOT"
+    rm -rf "$SHORT_RUNTIME_ROOT"
 }
 trap cleanup EXIT
 
@@ -161,8 +168,9 @@ for _ in $(seq 1 30); do
 done
 curl -fsS "${BASE_URL}storefront.json" >/dev/null
 
-make -C "$JAWAKA_DIR" -s BUILD="$BUILD_DIR" jawaka-pakrat-smoke
+make -C "$JAWAKA_DIR" -s BUILD="$BUILD_DIR" jawaka-pakrat-smoke jawakad
 BIN="$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-pakrat-smoke"
+DAEMON_BIN="$JAWAKA_DIR/$BUILD_DIR/bin/jawakad"
 
 reset_sd() {
     rm -rf "$SD_ROOT"
@@ -176,6 +184,39 @@ JSON
 
 run_smoke() {
     "$BIN" --platform mlp1 --sdcard-root "$SD_ROOT" "$@"
+}
+
+run_daemon_recovery() {
+    local runtime="$SHORT_RUNTIME_ROOT/$SCENARIO"
+    local socket="$runtime/jawakad.sock"
+    local log="$TMP_ROOT/daemon-$SCENARIO.log"
+    mkdir -p "$runtime"
+    (
+        SDCARD_PATH="$SD_ROOT" \
+        SDCARD_PATHS="$SD_ROOT" \
+        JAWAKA_SDCARD_ROOT="$SD_ROOT" \
+        UMRK_RUNTIME_PATH="$runtime" \
+        UMRK_DAEMON_SOCKET="$socket" \
+        UMRK_INTERNAL_DATA_PATH="$STATE_DIR" \
+        UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+        "$DAEMON_BIN" --daemon-only >"$log" 2>&1
+    ) &
+    DAEMON_PID=$!
+    for _ in $(seq 1 500); do
+        [ -S "$socket" ] && break
+        kill -0 "$DAEMON_PID" 2>/dev/null || {
+            cat "$log" >&2
+            fail "daemon recovery: jawakad exited before opening its socket"
+        }
+        sleep 0.02
+    done
+    [ -S "$socket" ] || {
+        cat "$log" >&2
+        fail "daemon recovery: jawakad socket did not appear"
+    }
+    kill "$DAEMON_PID" >/dev/null 2>&1 || true
+    wait "$DAEMON_PID" >/dev/null 2>&1 || true
+    DAEMON_PID=""
 }
 
 fail() {
@@ -228,6 +269,27 @@ db_version() {
         "SELECT version FROM pakrat_installs WHERE store_id = '$STORE_ID';" 2>/dev/null
 }
 
+db_token() {
+    sqlite3 "$DB_PATH" \
+        "SELECT COALESCE(commit_token, '') FROM pakrat_installs WHERE store_id = '$STORE_ID';" \
+        2>/dev/null
+}
+
+db_app_version() {
+    sqlite3 "$DB_PATH" \
+        "SELECT pak_version FROM apps WHERE pak_dir = 'Apps/mlp1/Recovery.pak';" \
+        2>/dev/null
+}
+
+marker_token() {
+    python3 -c '
+import json, sys
+with open(sys.argv[1]) as fp:
+    marker = json.load(fp)
+print(marker["token"])
+' "$INSTALL_PATH/.pakrat-commit" 2>/dev/null
+}
+
 db_row_count() {
     sqlite3 "$DB_PATH" \
         "SELECT COUNT(*) FROM pakrat_installs WHERE store_id = '$STORE_ID';" 2>/dev/null || echo 0
@@ -241,6 +303,7 @@ sibling_count() {
 # says, and that no transition siblings remain.
 expect_state() {
     local want_target="$1" want_db="$2" label="$3"
+    local check_discovery="${4:-yes}"
     if [ "$want_target" = "absent" ]; then
         [ ! -e "$INSTALL_PATH" ] ||
             fail "$label: target present, expected absent"
@@ -259,6 +322,19 @@ expect_state() {
     else
         [ "$(db_version)" = "$want_db" ] ||
             fail "$label: record version=$(db_version), expected $want_db"
+        if [ "$want_target" != "absent" ]; then
+            local record_token tree_token
+            record_token="$(db_token)"
+            tree_token="$(marker_token)"
+            [[ "$record_token" =~ ^[0-9a-f]{32}$ ]] ||
+                fail "$label: install record has no valid commit token"
+            [ "$tree_token" = "$record_token" ] ||
+                fail "$label: tree token does not match install record"
+            if [ "$check_discovery" = "yes" ]; then
+                [ "$(db_app_version)" = "$want_target" ] ||
+                    fail "$label: discovery state version=$(db_app_version), expected $want_target"
+            fi
+        fi
     fi
     [ "$(sibling_count)" = "0" ] ||
         fail "$label: $(sibling_count) transition siblings left behind"
@@ -344,7 +420,45 @@ run_smoke install "$STORE_ID" >"$TMP_ROOT/retry.out" ||
     { cat "$TMP_ROOT/retry.out" >&2; fail "after-promote: retry install failed"; }
 expect_state "$NEW_VERSION" "$NEW_VERSION" "after-promote retry"
 
-# 6. The record update itself fails (in-process error path, no crash):
+# The production startup hook runs the same recovery synchronously before the
+# first discovery scan. Plant an uncommitted promote and let jawakad—not the
+# smoke helper—restore the old tree.
+begin_scenario "daemon startup recovers before first scan"
+install_old
+write_catalog new
+expect_crash "after-promote"
+run_daemon_recovery
+expect_state "$OLD_VERSION" "$OLD_VERSION" "daemon-startup" "no"
+[ "$(cat "$INSTALL_PATH/payload.txt")" = "old-payload" ] ||
+    fail "daemon-startup: startup hook left the uncommitted promoted tree live"
+
+# Every crash after promotion but before the durable record remains
+# uncommitted, including both sides of the filesystem flush barrier.
+for point in before-syncfs after-syncfs before-record; do
+    begin_scenario "crash $point (pre-record promote rolls back)"
+    install_old
+    old_token="$(db_token)"
+    write_catalog new
+    expect_crash "$point"
+    [ "$(target_version)" = "$NEW_VERSION" ] ||
+        fail "$point: new tree should be live before recovery"
+    [ "$(marker_token)" != "$old_token" ] ||
+        fail "$point: promoted tree unexpectedly reused the committed token"
+    run_smoke recover
+    expect_state "$OLD_VERSION" "$OLD_VERSION" "$point"
+done
+
+# A syncfs failure takes the normal in-process rollback path and cannot publish
+# either discovery state or the token-bearing install record.
+begin_scenario "during-syncfs (flush fails, in-process rollback)"
+install_old
+write_catalog new
+expect_install_failure "during-syncfs" "Pak Rat Apps filesystem sync failed"
+expect_state "$OLD_VERSION" "$OLD_VERSION" "during-syncfs"
+run_smoke recover
+expect_state "$OLD_VERSION" "$OLD_VERSION" "during-syncfs post-recover"
+
+# The record update itself fails (in-process error path, no crash):
 #    promote rolls back immediately and the row is left untouched.
 begin_scenario "during-record (record update fails, in-process rollback)"
 install_old
@@ -356,7 +470,7 @@ expect_log "install-rollback-restored store_id=$STORE_ID" "during-record"
 run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "during-record post-recover"
 
-# 7. Crash after the record update committed, before rollback cleanup:
+# Crash after the record update committed, before rollback cleanup:
 #    recovery keeps the new tree and deletes the rollback sibling.
 begin_scenario "crash after-record (committed, cleanup pending)"
 install_old
@@ -371,7 +485,7 @@ run_smoke rescan >"$TMP_ROOT/rescan-after-record.out"
 [ "$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM apps WHERE pak_dir = 'Apps/mlp1/Recovery.pak';")" = "1" ] ||
     fail "after-record: library scan lost the committed app"
 
-# 8. Crash during rollback cleanup (same committed state as 7).
+# Crash during rollback cleanup (same committed state as after-record).
 begin_scenario "crash before-cleanup (committed, cleanup pending)"
 install_old
 write_catalog new
@@ -380,7 +494,7 @@ run_smoke recover
 expect_state "$NEW_VERSION" "$NEW_VERSION" "before-cleanup"
 expect_log "install-recover cleaned rollback store_id=$STORE_ID" "before-cleanup"
 
-# 9. pak.json truncated after promote: the tree cannot be identified, so
+# pak.json truncated after promote: the tree cannot be identified, so
 #    recovery restores the tree that was already running.
 begin_scenario "truncated pak.json after promote (restores)"
 install_old
@@ -391,7 +505,43 @@ run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "truncated-manifest"
 expect_log "reason=manifest-unreadable" "truncated-manifest"
 
-# 10. Declared entry point deleted after promote (same-version repair, so the
+# Invalid or incomplete commit metadata is never enough to discard the known-
+# good rollback tree.
+begin_scenario "truncated commit marker after promote (restores)"
+install_old
+write_catalog new
+expect_crash "after-promote"
+printf '{"schema":1,"store_id":"%s"' "$STORE_ID" \
+    >"$INSTALL_PATH/.pakrat-commit"
+run_smoke recover
+expect_state "$OLD_VERSION" "$OLD_VERSION" "truncated-commit-marker"
+expect_log "reason=commit-marker-unreadable" "truncated-commit-marker"
+
+# A healthy same-version repair promoted before its new token-bearing record is
+# not committed. Version equality must never authorize the promoted tree.
+begin_scenario "same-version repair, crash after-promote (token rolls back)"
+install_old
+write_catalog new
+old_token="$(db_token)"
+set +e
+JW_PAKRAT_FAULT_AT="after-promote" run_smoke repair "$STORE_ID" "$OLD_VERSION" \
+    >"$TMP_ROOT/crash-same-version.out" 2>&1
+same_version_rc=$?
+set -e
+[ "$same_version_rc" -eq 42 ] || {
+    cat "$TMP_ROOT/crash-same-version.out" >&2
+    fail "same-version: repair did not crash at after-promote"
+}
+[ "$(marker_token)" != "$old_token" ] ||
+    fail "same-version: promoted repair reused the committed token"
+printf 'uncommitted-same-version-payload\n' >"$INSTALL_PATH/payload.txt"
+run_smoke recover
+expect_state "$OLD_VERSION" "$OLD_VERSION" "same-version-token"
+[ "$(cat "$INSTALL_PATH/payload.txt")" = "old-payload" ] ||
+    fail "same-version: uncommitted promoted tree survived recovery"
+expect_log "reason=token-mismatch" "same-version-token"
+
+# Declared entry point deleted after promote (same-version repair, so the
 #    manifest identity matches and only the entry point can decide): restore.
 begin_scenario "launch.sh deleted after promote (restores)"
 install_old
@@ -407,7 +557,7 @@ run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "missing-entry-point"
 expect_log "reason=entry-point-missing" "missing-entry-point"
 
-# 11. A same-version promoted tree that declares the wrong platform is not the
+# A same-version promoted tree that declares the wrong platform is not the
 #     recorded app identity, so recovery restores the prior tree.
 begin_scenario "wrong platform after promote (restores)"
 install_old
@@ -430,8 +580,8 @@ expect_state "$OLD_VERSION" "$OLD_VERSION" "platform-mismatch"
     fail "platform-mismatch: prior tree was not restored"
 expect_log "reason=platform-mismatch" "platform-mismatch"
 
-# 12. Same-version repair committed but cleanup pending: version identity
-#     matches the record, so recovery keeps the (repaired) tree and cleans up.
+# Same-version repair committed but cleanup pending: the exact marker token
+# matches the record, so recovery keeps the repaired tree and cleans up.
 begin_scenario "same-version repair, crash after-record (cleanup wins)"
 install_old
 write_catalog new
@@ -445,7 +595,7 @@ run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "repair-cleanup"
 expect_log "install-recover cleaned rollback store_id=$STORE_ID" "repair-cleanup"
 
-# 13. Interrupted first-time install: no install row exists, so only the Apps
+# Interrupted first-time install: no install row exists, so only the Apps
 #     dir sweep can see the staged tree. It must not remain.
 begin_scenario "interrupted first install (orphaned stage swept)"
 write_catalog new
@@ -456,7 +606,53 @@ run_smoke recover
 expect_state "absent" "absent" "first-install"
 expect_log "install-recover swept orphan store_id=$STORE_ID" "first-install"
 
-# 14. An adopted install that crashes after its write-ahead marker but before
+# A first install can also lose power after the package reached its final name
+# but before the record commit. Its marker identifies it as an uncommitted Pak
+# Rat target, so recovery removes it rather than adopting it by accident.
+begin_scenario "interrupted first install after promote (target removed)"
+write_catalog new
+expect_crash "after-promote"
+[ -d "$INSTALL_PATH" ] ||
+    fail "first-install-promoted: target should exist before recovery"
+[ -f "$INSTALL_PATH/.pakrat-commit" ] ||
+    fail "first-install-promoted: commit marker missing before recovery"
+run_smoke recover
+expect_state "absent" "absent" "first-install-promoted"
+expect_log "install-recover removed uncommitted first install store_id=$STORE_ID" \
+    "first-install-promoted"
+
+# Missing media must make recovery defer without recreating rootfs stubs or
+# interpreting an absent tree as deletion. Once the same source returns, the
+# pending rollback is recovered normally.
+begin_scenario "owning source absent (defer with zero mutation)"
+install_old
+write_catalog new
+expect_crash "before-promote"
+DETACHED_SD="$TMP_ROOT/detached-sd"
+mv "$SD_ROOT" "$DETACHED_SD"
+run_smoke recover >"$TMP_ROOT/recover-source-absent.out" 2>&1
+[ ! -e "$SD_ROOT" ] ||
+    fail "source-absent: recovery recreated the missing SD root"
+[ -d "$DETACHED_SD/Apps/mlp1/.pakrat-stage-$STORE_ID" ] ||
+    fail "source-absent: staged tree was mutated while source was absent"
+[ -d "$DETACHED_SD/Apps/mlp1/.pakrat-rollback-$STORE_ID" ] ||
+    fail "source-absent: rollback tree was mutated while source was absent"
+grep -F "recovery deferred: owning Apps source is not mounted" \
+    "$TMP_ROOT/recover-source-absent.out" >/dev/null ||
+    fail "source-absent: deferred recovery message missing"
+set +e
+run_smoke install "$STORE_ID" >"$TMP_ROOT/install-source-absent.out" 2>&1
+source_install_rc=$?
+set -e
+[ "$source_install_rc" -eq 1 ] ||
+    fail "source-absent: install did not reject the missing source"
+[ ! -e "$SD_ROOT" ] ||
+    fail "source-absent: install recreated the missing SD root"
+mv "$DETACHED_SD" "$SD_ROOT"
+run_smoke recover
+expect_state "$OLD_VERSION" "$OLD_VERSION" "source-returned"
+
+# An adopted install that crashes after its write-ahead marker but before
 #     the move-aside keeps the original target in place. Recovery must discard
 #     both the staged tree and the now-unneeded marker even though no install
 #     row exists.
@@ -480,7 +676,7 @@ set -e
 run_smoke recover
 expect_state "$OLD_VERSION" "absent" "adopted-origin"
 
-# 15. An adopted install that crashes between the move-aside and the promote
+# An adopted install that crashes between the move-aside and the promote
 #     has no install row yet, so it reaches the orphan sweep rather than
 #     reconcile. Its rollback sibling is the only surviving copy of the app the
 #     user already had: it must be restored from its origin marker, never
@@ -518,7 +714,7 @@ run_smoke recover
     fail "adopted: origin marker left behind"
 expect_log "install-recover restored unrecorded rollback store_id=$STORE_ID" "adopted"
 
-# 16. A rollback sibling with no origin marker cannot be mapped back to a
+# A rollback sibling with no origin marker cannot be mapped back to a
 #     target, so it is retained and surfaced rather than deleted.
 begin_scenario "unidentifiable rollback retained, stage orphan still swept"
 rm -rf "$APPS_DIR"; mkdir -p "$APPS_DIR"
@@ -534,7 +730,26 @@ expect_log "install-recover retained unidentifiable rollback store_id=$STORE_ID"
     "unidentifiable"
 rm -rf "$APPS_DIR/.pakrat-rollback-$STORE_ID"
 
-# 17. A normal, uninterrupted update leaves exactly one tree and a matching
+# An archive cannot supply the reserved commit marker. The installer owns this
+# file and must reject the artifact rather than overwrite attacker-controlled
+# commit metadata.
+begin_scenario "archive-supplied commit marker rejected"
+printf '{"schema":1}\n' >"$TMP_ROOT/stage-$NEW_VERSION/Recovery.pak/.pakrat-commit"
+(cd "$TMP_ROOT/stage-$NEW_VERSION" &&
+    zip -q "$NEW_ARCHIVE" Recovery.pak/.pakrat-commit)
+NEW_SHA="$(sha256_file "$NEW_ARCHIVE")"
+NEW_SIZE="$(wc -c <"$NEW_ARCHIVE" | tr -d ' ')"
+write_catalog new
+expect_install_failure "reserved-marker" \
+    "artifact contains or cannot write reserved commit marker"
+expect_state "absent" "absent" "reserved-marker"
+# Restore the normal fixture for the final happy-path regression.
+rm -f "$NEW_ARCHIVE"
+make_artifact "$NEW_VERSION" "0.7.0" "new-payload"
+NEW_SHA="$(sha256_file "$NEW_ARCHIVE")"
+NEW_SIZE="$(wc -c <"$NEW_ARCHIVE" | tr -d ' ')"
+
+# A normal, uninterrupted update leaves exactly one tree and a matching
 #     record (regression guard: recovery changes nothing on the happy path).
 begin_scenario "normal update (one tree, matching record)"
 install_old

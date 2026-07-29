@@ -7,11 +7,14 @@
 #include "internal/store/catalog_source.h"
 #include "internal/store/managed_apps.h"
 #include "internal/store/pakrat_recovery.h"
+#include "internal/storage/sources.h"
 #include "internal/update/sha256.h"
 #include "internal/store/pakrat_state.h"
 #include "miniz.h"
 
 #include <curl/curl.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -100,6 +103,22 @@ static int jw__validate_context(const jw_pakrat_context *ctx) {
         !ctx->db_path[0] || !ctx->platform_root[0]) {
         return -1;
     }
+    /* Never create state/Apps directories on an unmounted rootfs stub. The
+       storage model uses exact decoded mountinfo membership on MLP1. */
+    jw_storage_source_list sources;
+    const jw_storage_source *primary = NULL;
+    struct stat root_st;
+    char root_abs[PATH_MAX];
+    if (jw_storage_sources_resolve(ctx->sdcard_root, &sources) != 0 ||
+        !(primary = jw_storage_sources_primary(&sources)) ||
+        !primary->available ||
+        !realpath(ctx->sdcard_root, root_abs) ||
+        strcmp(root_abs, primary->root_abs) != 0 ||
+        stat(ctx->sdcard_root, &root_st) != 0 || !S_ISDIR(root_st.st_mode) ||
+        (unsigned long long)root_st.st_dev != primary->device_id) {
+        fprintf(stderr, "Pak Rat source is not mounted: %s\n", ctx->sdcard_root);
+        return -1;
+    }
     if (jw__pakrat_mkdir_p(ctx->state_dir, 0755) != 0) {
         fprintf(stderr, "could not create state dir: %s\n", ctx->state_dir);
         return -1;
@@ -108,6 +127,36 @@ static int jw__validate_context(const jw_pakrat_context *ctx) {
         fprintf(stderr, "platform root missing: %s\n", ctx->platform_root);
         return -1;
     }
+    return 0;
+}
+
+static int jw__random_commit_token(char out[JW_PAKRAT_COMMIT_TOKEN_BUF]) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned char bytes[16];
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t offset = 0;
+    while (offset < sizeof(bytes)) {
+        ssize_t got = read(fd, bytes + offset, sizeof(bytes) - offset);
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        if (got <= 0) {
+            close(fd);
+            return -1;
+        }
+        offset += (size_t)got;
+    }
+    if (close(fd) != 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < sizeof(bytes); i++) {
+        out[i * 2u] = hex[bytes[i] >> 4];
+        out[i * 2u + 1u] = hex[bytes[i] & 0x0fu];
+    }
+    out[JW_PAKRAT_COMMIT_TOKEN_HEX_LEN] = '\0';
     return 0;
 }
 
@@ -370,6 +419,41 @@ int jw_pakrat_rescan(const jw_pakrat_context *ctx) {
     return jw__pakrat_rescan_impl(ctx, 1);
 }
 
+static int jw__begin_install_commit(const jw_pakrat_context *ctx,
+                                    sqlite3 **out_db,
+                                    jw_scan_result *out_scan) {
+    if (!ctx || !out_db || !out_scan) {
+        return -1;
+    }
+    *out_db = NULL;
+    const char *cur_platform = getenv("PLATFORM");
+    if (!cur_platform || strcmp(cur_platform, ctx->platform) != 0) {
+        setenv("PLATFORM", ctx->platform, 1);
+    }
+    sqlite3 *db = NULL;
+    if (jw_db_open(ctx->db_path, &db) != 0 || !db ||
+        jw_db_apply_schema(db) != 0 ||
+        sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK ||
+        jw_scan_library(db, ctx->sdcard_root, out_scan) != 0) {
+        if (db) {
+            (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            jw_db_close(db);
+        }
+        return -1;
+    }
+    *out_db = db;
+    return 0;
+}
+
+static void jw__rollback_install_commit(sqlite3 **db) {
+    if (!db || !*db) {
+        return;
+    }
+    (void)sqlite3_exec(*db, "ROLLBACK", NULL, NULL, NULL);
+    jw_db_close(*db);
+    *db = NULL;
+}
+
 static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                                   const char *store_id,
                                   const char *expected_version,
@@ -392,8 +476,10 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     char catalog_base[1024] = "";
     int catalog_is_dev = 0;
     int moved_live = 0;
-    int install_record_written = 0;
     int promoted = 0;
+    int committed = 0;
+    sqlite3 *commit_db = NULL;
+    char commit_token[JW_PAKRAT_COMMIT_TOKEN_BUF] = "";
     if (jw_pakrat_catalog_base_url(ctx->state_dir, catalog_base,
                                    sizeof(catalog_base),
                                    &catalog_is_dev) == 0 &&
@@ -543,20 +629,62 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         fprintf(stderr, "artifact extraction/validation failed\n");
         goto cleanup;
     }
+    jw_pakrat_commit_marker commit_marker;
+    memset(&commit_marker, 0, sizeof(commit_marker));
+    snprintf(commit_marker.store_id, sizeof(commit_marker.store_id), "%s",
+             store_id);
+    snprintf(commit_marker.version, sizeof(commit_marker.version), "%s",
+             pkg.version);
+    snprintf(commit_marker.artifact_sha256,
+             sizeof(commit_marker.artifact_sha256), "%s", sha);
+    if (jw__random_commit_token(commit_token) != 0) {
+        fprintf(stderr, "could not generate Pak Rat commit token\n");
+        goto cleanup;
+    }
+    snprintf(commit_marker.token, sizeof(commit_marker.token), "%s",
+             commit_token);
+    /* O_EXCL in the writer is also the reserved-name check: an archive that
+       supplied .pakrat-commit is rejected rather than overwritten. */
+    if (jw__pakrat_write_commit_marker(extracted_pak, &commit_marker) != 0) {
+        fprintf(stderr, "artifact contains or cannot write reserved commit marker\n");
+        goto cleanup;
+    }
 
     jw_pakrat_recovery_context recovery;
     jw__recovery_context(ctx, &recovery);
     jw__fault_crash("before-stage");
-    if (jw__pakrat_reconcile_transition(
+    if (jw__pakrat_mkdir_parent(target) != 0 ||
+        jw__pakrat_reconcile_transition(
             &recovery, store_id, pkg.install_path,
             install_row == 0 ? &existing : NULL) != 0 ||
-        jw__pakrat_mkdir_parent(target) != 0 ||
         jw__pakrat_remove_tree(target_stage) != 0 ||
         rename(extracted_pak, target_stage) != 0) {
         fprintf(stderr, "install stage promotion failed\n");
         goto cleanup;
     }
     jw__fault_crash("after-stage");
+    {
+        char target_parent[PATH_MAX];
+        struct stat root_st;
+        struct stat stage_st;
+        struct stat parent_st;
+        if (jw__pakrat_copy(target_parent, sizeof(target_parent), target) != 0) {
+            goto cleanup;
+        }
+        char *leaf = strrchr(target_parent, '/');
+        if (!leaf || leaf == target_parent) {
+            goto cleanup;
+        }
+        *leaf = '\0';
+        if (stat(ctx->sdcard_root, &root_st) != 0 ||
+            stat(target_stage, &stage_st) != 0 ||
+            stat(target_parent, &parent_st) != 0 ||
+            stage_st.st_dev != root_st.st_dev ||
+            parent_st.st_dev != root_st.st_dev) {
+            fprintf(stderr, "install staging and target are not on one mounted source\n");
+            goto cleanup;
+        }
+    }
     if (jw__pakrat_path_exists(target)) {
         if (jw__pakrat_remove_tree(target_rollback) != 0) {
             fprintf(stderr, "install rollback move failed\n");
@@ -587,26 +715,59 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     promoted = 1;
     jw__fault_crash("after-promote");
 
+    /* Validate the promoted tree again at its live path, build discovery state
+       under one uncommitted SQLite transaction, then durably flush package
+       bytes before the token-bearing install row becomes the commit point. */
+    jw_pakrat_commit_marker promoted_marker;
+    jw_scan_result scan_result;
+    if (jw__validate_runtime_manifest(&pkg, target) != 0 ||
+        jw__pakrat_read_commit_marker(target, &promoted_marker) != 0 ||
+        strcmp(promoted_marker.store_id, store_id) != 0 ||
+        strcmp(promoted_marker.version, pkg.version) != 0 ||
+        strcmp(promoted_marker.artifact_sha256, sha) != 0 ||
+        strcmp(promoted_marker.token, commit_token) != 0 ||
+        jw__begin_install_commit(ctx, &commit_db, &scan_result) != 0) {
+        goto cleanup;
+    }
+    jw__fault_crash("before-syncfs");
+    if (jw__fault_requested("during-syncfs") ||
+        jw__pakrat_sync_filesystem(target) != 0) {
+        fprintf(stderr, "Pak Rat Apps filesystem sync failed\n");
+        goto cleanup;
+    }
+    jw__fault_crash("after-syncfs");
+    jw__fault_crash("before-record");
+    if (jw_db_pakrat_upsert_install_db(
+            commit_db, store_id, pkg.version, pkg.platform, pkg.install_path,
+            sha, NULL, commit_token) != 0) {
+        goto cleanup;
+    }
     if (jw__fault_requested("during-record")) {
         fprintf(stderr, "pakrat fault injection: failing record update\n");
         goto cleanup;
     }
-    if (jw_db_pakrat_upsert_install(ctx->db_path, store_id, pkg.version,
-                                    pkg.platform, pkg.install_path, sha, NULL) != 0) {
+    if (sqlite3_exec(commit_db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         goto cleanup;
     }
-    install_record_written = 1;
+    jw_db_close(commit_db);
+    commit_db = NULL;
+    committed = 1;
+    rc = 0;
+    printf("rescan: games=%d systems=%d apps=%d\n",
+           scan_result.game_count, scan_result.system_count,
+           scan_result.app_count);
     jw__fault_crash("after-record");
-    if (jw__pakrat_rescan_impl(ctx, 0) != 0) {
-        goto cleanup;
-    }
     jw__fault_crash("before-cleanup");
     if (moved_live) {
         if (jw__pakrat_remove_tree(target_rollback) != 0) {
-            fprintf(stderr, "install rollback cleanup failed\n");
-            goto cleanup;
+            /* Post-commit cleanup is retryable recovery work. Never roll back
+               a transaction whose token-bearing record already committed. */
+            fprintf(stderr, "install rollback cleanup deferred\n");
+            jw__pakrat_log(ctx->state_dir,
+                           "install-cleanup-deferred store_id=%s", store_id);
+        } else {
+            jw__pakrat_clear_origin_marker(target, store_id);
         }
-        jw__pakrat_clear_origin_marker(target, store_id);
     }
     (void)jw__notify_daemon_scan(ctx);
 
@@ -615,10 +776,12 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     jw__pakrat_log(ctx->state_dir,
                    "install-complete store_id=%s version=%s target=Apps/%s",
                    store_id, pkg.version, pkg.install_path);
-    rc = 0;
 
 cleanup:
-    if (rc != 0) {
+    if (commit_db) {
+        jw__rollback_install_commit(&commit_db);
+    }
+    if (rc != 0 && !committed) {
         int live_restored = 0;
         if (promoted) {
             if (moved_live) {
@@ -642,16 +805,6 @@ cleanup:
         }
         if (live_restored) {
             jw__pakrat_clear_origin_marker(target, store_id);
-        }
-        if (install_record_written) {
-            if (install_row == 0) {
-                (void)jw_db_pakrat_remove_install(ctx->db_path, store_id);
-            } else {
-                (void)jw_db_pakrat_upsert_install(
-                    ctx->db_path, existing.store_id, existing.version,
-                    existing.platform, existing.install_path,
-                    existing.artifact_sha256, existing.installed_at);
-            }
         }
         (void)jw__pakrat_remove_tree(target_stage);
     }
