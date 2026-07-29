@@ -178,6 +178,13 @@ static int fixture_supervisor_death(void) {
     }
     if (child == 0) {
         pid_t parent = getppid();
+        /* Signal dispositions are inherited across fork(), but establish the
+         * cooperative SIGTERM path explicitly in the descendant as well so
+         * PDEATHSIG cannot silently become an immediate default-action exit
+         * if the setup above is ever moved or narrowed. */
+        if (fixture_install_term_handler() != 0) {
+            _exit(70);
+        }
 #if defined(__linux__)
         if (prctl(PR_SET_PDEATHSIG, (unsigned long)SIGTERM, 0L, 0L, 0L) !=
             0 || getppid() != parent) {
