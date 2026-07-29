@@ -1454,6 +1454,58 @@ static void jw__seed_rom_folders(const jw_daemon_state *state) {
                 all_ok ? "" : " (some failed; will retry next boot)");
 }
 
+typedef enum {
+    JW_SOURCE_PATH_ROOT = 0,
+    JW_SOURCE_PATH_USERDATA,
+    JW_SOURCE_PATH_SHARED_USERDATA,
+    JW_SOURCE_PATH_ROMS,
+    JW_SOURCE_PATH_IMAGES,
+    JW_SOURCE_PATH_MUSIC,
+    JW_SOURCE_PATH_APPS,
+    JW_SOURCE_PATH_BIOS,
+    JW_SOURCE_PATH_SAVES,
+    JW_SOURCE_PATH_STATES,
+    JW_SOURCE_PATH_CHEATS,
+} jw_source_path_kind;
+
+static const char *jw__source_path_value(const jw_storage_source *source,
+                                         jw_source_path_kind kind) {
+    if (!source) return NULL;
+    switch (kind) {
+        case JW_SOURCE_PATH_ROOT: return source->root;
+        case JW_SOURCE_PATH_USERDATA: return source->userdata_path;
+        case JW_SOURCE_PATH_SHARED_USERDATA: return source->shared_userdata_path;
+        case JW_SOURCE_PATH_ROMS: return source->roms_path;
+        case JW_SOURCE_PATH_IMAGES: return source->images_path;
+        case JW_SOURCE_PATH_MUSIC: return source->music_path;
+        case JW_SOURCE_PATH_APPS: return source->apps_path;
+        case JW_SOURCE_PATH_BIOS: return source->bios_path;
+        case JW_SOURCE_PATH_SAVES: return source->saves_path;
+        case JW_SOURCE_PATH_STATES: return source->states_path;
+        case JW_SOURCE_PATH_CHEATS: return source->cheats_path;
+        default: return NULL;
+    }
+}
+
+static int jw__publish_source_path_list(const char *name,
+                                        const jw_storage_source_list *sources,
+                                        jw_source_path_kind kind) {
+    char value[JW_STORAGE_PATH_MAX * JW_STORAGE_MAX_SOURCES];
+    size_t used = 0;
+    if (!name || !sources || sources->count <= 0) return -1;
+    value[0] = '\0';
+    for (int i = 0; i < sources->count; i++) {
+        const char *path = jw__source_path_value(&sources->sources[i], kind);
+        if (!path || !path[0]) return -1;
+        int n = snprintf(value + used, sizeof(value) - used, "%s%s",
+                         i == 0 ? "" : ":", path);
+        if (n < 0 || (size_t)n >= sizeof(value) - used) return -1;
+        used += (size_t)n;
+    }
+    jw__setenv_default(name, value);
+    return 0;
+}
+
 static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     if (!state || !state->runtime_dir || !state->sdcard_root) {
         return;
@@ -1463,7 +1515,6 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
         ? state->platform.platform_id
         : "mac";
 
-    jw__setenv_default("UMRK_ENV_VERSION", "1");
     jw__setenv_default("PLATFORM", platform);
     jw__setenv_default("DEVICE", platform);
     jw__setenv_default("SDCARD_PATH", state->sdcard_root);
@@ -1519,6 +1570,49 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     jw__setenvf_default("SAVES_PATH", "%s/Saves", state->sdcard_root);
     jw__setenvf_default("STATES_PATH", "%s/States", state->sdcard_root);
     jw__setenvf_default("CHEATS_PATH", "%s/Cheats", state->sdcard_root);
+    if (strcmp(platform, "mlp1") == 0) {
+        jw__setenv_default("UMRK_SECONDARY_SDCARD_PATH", "/media/sdcard1");
+    }
+    if (!getenv("SDCARD_PATHS")) {
+        const char *secondary = getenv("UMRK_SECONDARY_SDCARD_PATH");
+        if (secondary && secondary[0] && strcmp(secondary, state->sdcard_root) != 0) {
+            jw__setenvf_default("SDCARD_PATHS", "%s:%s",
+                                state->sdcard_root, secondary);
+        } else {
+            jw__setenv_default("SDCARD_PATHS", state->sdcard_root);
+        }
+    }
+
+    jw_storage_source_list sources;
+    bool complete_source_env =
+        jw_storage_sources_resolve(state->sdcard_root, &sources) == 0 &&
+        jw__publish_source_path_list("SDCARD_PATHS", &sources,
+                                     JW_SOURCE_PATH_ROOT) == 0 &&
+        jw__publish_source_path_list("USERDATA_PATHS", &sources,
+                                     JW_SOURCE_PATH_USERDATA) == 0 &&
+        jw__publish_source_path_list("SHARED_USERDATA_PATHS", &sources,
+                                     JW_SOURCE_PATH_SHARED_USERDATA) == 0 &&
+        jw__publish_source_path_list("ROMS_PATHS", &sources,
+                                     JW_SOURCE_PATH_ROMS) == 0 &&
+        jw__publish_source_path_list("IMAGES_PATHS", &sources,
+                                     JW_SOURCE_PATH_IMAGES) == 0 &&
+        jw__publish_source_path_list("MUSIC_PATHS", &sources,
+                                     JW_SOURCE_PATH_MUSIC) == 0 &&
+        jw__publish_source_path_list("APPS_PATHS", &sources,
+                                     JW_SOURCE_PATH_APPS) == 0 &&
+        jw__publish_source_path_list("BIOS_PATHS", &sources,
+                                     JW_SOURCE_PATH_BIOS) == 0 &&
+        jw__publish_source_path_list("SAVES_PATHS", &sources,
+                                     JW_SOURCE_PATH_SAVES) == 0 &&
+        jw__publish_source_path_list("STATES_PATHS", &sources,
+                                     JW_SOURCE_PATH_STATES) == 0 &&
+        jw__publish_source_path_list("CHEATS_PATHS", &sources,
+                                     JW_SOURCE_PATH_CHEATS) == 0;
+    if (complete_source_env) {
+        jw__setenv_default("UMRK_ENV_VERSION", "2");
+    } else {
+        jw__setenv_default("UMRK_ENV_VERSION", "1");
+    }
     if (getenv("SYSTEM_PATH")) {
         jw__setenvf_default("CORES_PATH", "%s/cores", getenv("SYSTEM_PATH"));
         jw__setenvf_default("INFO_PATH", "%s/info", getenv("SYSTEM_PATH"));
@@ -1563,6 +1657,9 @@ static int jw__reply_hello_ok(jw_ipc_client *client) {
     cJSON_AddStringToObject(root, "version", "0.0.1");
     cJSON *features = cJSON_AddArrayToObject(root, "features");
     cJSON_AddItemToArray(features, cJSON_CreateString("relocate-games-v1"));
+    if (jw_storage_source_paths_v2_valid()) {
+        cJSON_AddItemToArray(features, cJSON_CreateString("source-paths-v2"));
+    }
     return jw__reply_json(client, root);
 }
 
@@ -1620,6 +1717,8 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "hdmi_output", cap && cap->hdmi_output);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
     cJSON_AddBoolToObject(root, "performance", cap && cap->performance);
+    cJSON_AddBoolToObject(root, "source-paths-v2",
+                          jw_storage_source_paths_v2_valid());
     return root;
 }
 

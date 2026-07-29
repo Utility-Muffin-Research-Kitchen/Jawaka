@@ -7,6 +7,63 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static void set_path2(const char *card1, const char *card2) {
+    char value[JW_STORAGE_PATH_MAX * 2];
+    setenv("UMRK_ENV_VERSION", "2", 1);
+    setenv("SDCARD_PATH", card1, 1);
+    snprintf(value, sizeof(value), "%s:%s", card1, card2);
+    setenv("SDCARD_PATHS", value, 1);
+    snprintf(value, sizeof(value), "%s/.userdata/mac:%s/.userdata/mac",
+             card1, card2);
+    char *separator = strchr(value, ':');
+    assert(separator);
+    *separator = '\0';
+    setenv("USERDATA_PATH", value, 1);
+    *separator = ':';
+    setenv("USERDATA_PATHS", value, 1);
+    snprintf(value, sizeof(value), "%s/.userdata/shared:%s/.userdata/shared",
+             card1, card2);
+    separator = strchr(value, ':');
+    assert(separator);
+    *separator = '\0';
+    setenv("SHARED_USERDATA_PATH", value, 1);
+    *separator = ':';
+    setenv("SHARED_USERDATA_PATHS", value, 1);
+    snprintf(value, sizeof(value), "%s/Saves:%s/Saves", card1, card2);
+    separator = strchr(value, ':');
+    assert(separator);
+    *separator = '\0';
+    setenv("SAVES_PATH", value, 1);
+    *separator = ':';
+    setenv("SAVES_PATHS", value, 1);
+    snprintf(value, sizeof(value), "%s/States:%s/States", card1, card2);
+    separator = strchr(value, ':');
+    assert(separator);
+    *separator = '\0';
+    setenv("STATES_PATH", value, 1);
+    *separator = ':';
+    setenv("STATES_PATHS", value, 1);
+}
+
+static void set_path2_one_card(const char *card) {
+    char value[JW_STORAGE_PATH_MAX];
+    setenv("UMRK_ENV_VERSION", "2", 1);
+    setenv("SDCARD_PATH", card, 1);
+    setenv("SDCARD_PATHS", card, 1);
+    snprintf(value, sizeof(value), "%s/.userdata/mac", card);
+    setenv("USERDATA_PATH", value, 1);
+    setenv("USERDATA_PATHS", value, 1);
+    snprintf(value, sizeof(value), "%s/.userdata/shared", card);
+    setenv("SHARED_USERDATA_PATH", value, 1);
+    setenv("SHARED_USERDATA_PATHS", value, 1);
+    snprintf(value, sizeof(value), "%s/Saves", card);
+    setenv("SAVES_PATH", value, 1);
+    setenv("SAVES_PATHS", value, 1);
+    snprintf(value, sizeof(value), "%s/States", card);
+    setenv("STATES_PATH", value, 1);
+    setenv("STATES_PATHS", value, 1);
+}
+
 int main(void) {
     char temp[] = "/tmp/jw-sources-XXXXXX";
     assert(mkdtemp(temp));
@@ -40,6 +97,50 @@ int main(void) {
     assert(strcmp(sources.sources[0].id, "primary") == 0);
     assert(sources.sources[0].available);
     assert(strcmp(sources.sources[1].id, "secondary_sd") == 0);
+    char expected_userdata[JW_STORAGE_PATH_MAX];
+    snprintf(expected_userdata, sizeof(expected_userdata),
+             "%s/.userdata/mac", card2);
+    assert(strcmp(sources.sources[1].userdata_path, expected_userdata) == 0);
+
+    setenv("PLATFORM", "mac", 1);
+    set_path2_one_card(card1);
+    assert(jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    assert(jw_storage_source_paths_v2_valid());
+
+    setenv("UMRK_ENV_VERSION", "1", 1);
+    assert(!jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    setenv("USERDATA_PATHS", "/tmp/primary:", 1);
+    assert(!jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    setenv("USERDATA_PATHS", card1, 1);
+    assert(!jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    setenv("SDCARD_PATHS", "/mnt/sdcard:/media/sd:card1", 1);
+    assert(!jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    char invalid[JW_STORAGE_PATH_MAX * 2];
+    snprintf(invalid, sizeof(invalid), "%s/.userdata/mac:%s/.userdata/mac",
+             card2, card1);
+    setenv("USERDATA_PATHS", invalid, 1);
+    assert(!jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    snprintf(invalid, sizeof(invalid), "%s/.userdata/mac:%s/wrong",
+             card1, card1);
+    setenv("USERDATA_PATHS", invalid, 1);
+    assert(!jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    snprintf(invalid, sizeof(invalid), "%s:%s", card1, card1);
+    setenv("SDCARD_PATHS", invalid, 1);
+    assert(!jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    snprintf(invalid, sizeof(invalid), "%s/", card1);
+    setenv("SDCARD_PATH", invalid, 1);
+    assert(!jw_storage_source_paths_v2_valid());
+    set_path2(card1, card2);
+    unsetenv("SHARED_USERDATA_PATHS");
+    assert(!jw_storage_source_paths_v2_valid());
     assert(sources.sources[1].available);
     char expected[JW_STORAGE_PATH_MAX];
     snprintf(expected, sizeof(expected), "%s/music2", temp);
