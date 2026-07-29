@@ -7,25 +7,39 @@ draft PR #34 remain.
 
 ## Qualified build and hardware
 
-- Jawaka branch: `agent/pakrat-commit-token`, based on PR #34 commit
-  `c9bae61cb08ddb59a4d2e996cc9618b1f2b69cf6`.
+- Jawaka branch: `agent/pakrat-commit-token`. The original physical-pull run
+  used the tracked working-tree content subsequently committed as `8155ac7`;
+  the full automated device matrix was rerun from exact review-fix commit
+  `c3f7644`.
 - MLP1 ADB serial: `b1622a9e81b735ad`; Buildroot, Linux 5.10.209.
 - Expendable 128 GB FAT card CID:
   `0353445344313238852b8a0b0c019b13` (`/dev/mmcblk1p1`).
 - Matrix mount: `/media/sdcard1`; the removal fixture was prepared while the
   same card was `/mnt/sdcard` and recovered after reboot at
   `/media/sdcard1`.
-- `jawakad` SHA-256:
+- `jawakad` SHA-256, used for the daemon-start recovery scenario (it does not
+  link `pakrat.c` or the injection hook):
   `f4c33b00ab9e75c5c1f7ac8af4f4f634661a57587ecc08efed6c8d10b8a00769`.
-- `jawaka-pakrat-smoke` SHA-256:
+- `jawaka-pakrat-smoke` SHA-256, the load-bearing injection-capable artifact:
   `db7ef56ebb28328e0919ac2f85d14be0a774dbdb20b69db90c5d03eace25024b`.
 - Both binaries are AArch64 ELF executables targeting GNU/Linux 5.10.
+- Production `jawaka-launcher` SHA-256:
+  `56a88bedef74cdb7901afde1b4edcc2718cb2b2657767158fe547a21cb1f6b96`.
+- Production `jawaka-menu` SHA-256:
+  `22ab63ae57a82db4a030139e1fbbfba811e7c5cde7c34fd58ce4541087fae4f1`.
 
 ## Automated coverage
 
 The native recovery smoke passes 28 scenarios. The added scenario stops the
 installer at the exact `after-promote` boundary and proves that the new tree is
 live while the durable record still identifies the old tree before recovery.
+
+Review follow-up commit `c3f7644` makes fault injection a build-time-only smoke
+feature. Exact native and MLP1 production builds contain neither
+`JW_PAKRAT_FAULT_AT` nor `JW_PAKRAT_PAUSE_AT` in `jawaka-launcher` or
+`jawaka-menu`; the dedicated smoke binary contains both and reruns all 28
+native and 24 real-vfat device scenarios. A stray production environment
+variable can therefore neither crash nor stop a shipped UI process.
 
 The MLP1 runner bind-mounts its dedicated fixture directory from the selected
 real vfat card and rejects any non-FAT or unsupported target. Its 24 scenarios
