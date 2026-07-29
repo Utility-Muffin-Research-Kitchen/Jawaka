@@ -828,6 +828,13 @@ static void jw__draw_settings_footer(const jw_launcher_state *state) {
             { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 4);
+    } else if (scr == JW_SETTINGS_SERVICES) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_X, "Start with Leaf", false, JW_HINT("X") },
+            { CAT_BTN_B, "Back",            true,  JW_HINT("B") },
+            { CAT_BTN_A, "Run / Stop",      true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 3);
     } else if (scr == JW_SETTINGS_UPDATE) {
         cat_footer_item footer[] = {
             { CAT_BTN_X, "Releases", false, JW_HINT("X") },
@@ -9148,6 +9155,11 @@ int main(void) {
         if (jw_settings_ui_wants_update_poll(&state.settings)) {
             jw_settings_ui_refresh_update(&state.settings);
             cat_request_frame_in(500);
+        }
+
+        if (jw_settings_ui_wants_services_poll(&state.settings)) {
+            jw_settings_ui_refresh_services(&state.settings);
+            cat_request_frame_in(1000);
         }
 
         /* The library-generation IPC and the status-bar volume/Wi-Fi/Bluetooth

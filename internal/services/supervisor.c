@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -396,6 +397,12 @@ static void jw__load_control(jw_svc_supervisor *sup, jw_svc_supervised *e) {
     }
     e->desired_enabled = e->control.start_with_leaf;
     e->session_run = e->control.session_run; /* already cleared at open */
+    /* A package-missing retained row has no current manifest scan to refill
+     * this presentation field. Preserve the last installed identity from the
+     * durable control record; a present package overwrites it during scan. */
+    jw__strcpy_bounded(e->installed_package_version,
+                       sizeof(e->installed_package_version),
+                       e->control.installed_package_version);
     /* Persistent enablement is consumed once at daemon startup. It is not a
      * perpetual keep-alive bit: CTL-1 Stop and lifecycle stops must win for
      * the rest of this session. */
@@ -407,6 +414,41 @@ static void jw__load_control(jw_svc_supervisor *sup, jw_svc_supervised *e) {
         e->backoff.failure_times_ms[i] =
             e->control.backoff_failure_times_us[i] / 1000LL;
     }
+}
+
+static jw_svc_supervised *jw__ensure_entry(jw_svc_supervisor *sup,
+                                           const char *service_id) {
+    jw_svc_supervised *existing = jw__find_mut(sup, service_id);
+    if (existing) {
+        return existing;
+    }
+    if (sup->count == INT_MAX) {
+        return NULL;
+    }
+    if (sup->count >= sup->cap) {
+        if (sup->cap > INT_MAX / 2) {
+            return NULL;
+        }
+        int new_cap = sup->cap > 0 ? sup->cap * 2 : 8;
+        if (new_cap <= sup->cap ||
+            (size_t)new_cap > SIZE_MAX / sizeof(*sup->entries)) {
+            return NULL;
+        }
+        jw_svc_supervised *grown =
+            realloc(sup->entries,
+                    (size_t)new_cap * sizeof(*sup->entries));
+        if (!grown) {
+            return NULL;
+        }
+        sup->entries = grown;
+        sup->cap = new_cap;
+    }
+    jw_svc_supervised *e = &sup->entries[sup->count++];
+    jw__entry_initialize(e);
+    jw__strcpy_bounded(e->service_id, sizeof(e->service_id), service_id);
+    e->state = JW_SVC_STATE_UNAVAILABLE;
+    jw__load_control(sup, e);
+    return e;
 }
 
 /* ------------------------------------------------------------------ */
@@ -440,6 +482,66 @@ static jw_svc_effective_state jw__entry_idle_state(
 
 static void jw__load_stale_policy(jw_svc_supervisor *sup,
                                   jw_svc_supervised *e);
+
+/* A generation lease is the authoritative cross-daemon survivor signal. A
+ * crash can occur after the child and reservation exist but before the first
+ * control-state write; if the pak is then absent, neither manifest discovery
+ * nor retained control ids can name that writer. Enumerate existing lease
+ * files so such a generation remains visible and non-overlappable. */
+static void jw__discover_runtime_stale_entries(jw_svc_supervisor *sup) {
+    char services_dir[PATH_MAX];
+    if (jw__format(services_dir, sizeof(services_dir), "%s/services",
+                   sup->runtime_dir) != 0) {
+        return;
+    }
+    DIR *dir = opendir(services_dir);
+    if (!dir) {
+        return;
+    }
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (!jw_svc_supervisor_service_id_is_safe(de->d_name)) {
+            continue;
+        }
+        jw_svc_supervised *known = jw__find_mut(sup, de->d_name);
+        if (known && (known->pgid > 0 || known->lease_fd >= 0)) {
+            continue;
+        }
+        char lease_path[PATH_MAX];
+        if (jw__format(lease_path, sizeof(lease_path), "%s/%s/generation.lease",
+                       services_dir, de->d_name) != 0) {
+            continue;
+        }
+        struct stat st;
+        if (lstat(lease_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+            continue;
+        }
+        char lease_reason[JW_SVC_REASON_BUF];
+        int lease_fd = jw_svc_lease_acquire(sup->runtime_dir, de->d_name,
+                                            lease_reason,
+                                            sizeof(lease_reason));
+        if (lease_fd >= 0) {
+            close(lease_fd);
+            continue;
+        }
+        if (strcmp(lease_reason, "stale-generation") != 0) {
+            continue;
+        }
+        jw_svc_supervised *e = jw__ensure_entry(sup, de->d_name);
+        if (!e) {
+            continue;
+        }
+        if (!e->pak_present) {
+            e->manifest_valid = false;
+            jw__strcpy_bounded(e->reject_reason, sizeof(e->reject_reason),
+                               "package-missing");
+        }
+        jw__load_stale_policy(sup, e);
+        e->state = JW_SVC_STATE_STALE_GENERATION;
+        e->lease_retry_next_ms = jw__mono_ms() + JW_SVC_LEASE_RETRY_MS;
+    }
+    closedir(dir);
+}
 
 static void jw__candidate_free(jw__scan_candidate *c) {
     if (c && c->manifest_loaded) {
@@ -657,23 +759,11 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
             continue;
         }
         if (!e) {
-            if (sup->count >= sup->cap) {
-                int new_cap = sup->cap > 0 ? sup->cap * 2 : 8;
-                jw_svc_supervised *grown =
-                    realloc(sup->entries,
-                            (size_t)new_cap * sizeof(*sup->entries));
-                if (!grown) {
-                    jw__candidate_free(c);
-                    continue;
-                }
-                sup->entries = grown;
-                sup->cap = new_cap;
+            e = jw__ensure_entry(sup, c->service_id);
+            if (!e) {
+                jw__candidate_free(c);
+                continue;
             }
-            e = &sup->entries[sup->count++];
-            jw__entry_initialize(e);
-            jw__strcpy_bounded(e->service_id, sizeof(e->service_id), c->service_id);
-            e->state = JW_SVC_STATE_DISABLED;
-            jw__load_control(sup, e);
         } else if (e->manifest_loaded) {
             jw_service_manifest_destroy(&e->manifest);
             e->manifest_loaded = false;
@@ -714,6 +804,42 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
         }
         jw__candidate_free(c);
     }
+
+    /* A retained control-state row remains visible even after its package is
+     * removed. This is the data source for CTL-1's package-missing
+     * `unavailable` record and Settings -> Services' hidden-when-truly-empty
+     * rule. */
+    jw_svc_control_id *retained_ids = NULL;
+    size_t retained_count = 0;
+    char list_reason[JW_SVC_REASON_BUF];
+    if (!jw_svc_control_store_list_ids(sup->store, &retained_ids,
+                                       &retained_count, list_reason,
+                                       sizeof(list_reason))) {
+        for (int i = 0; i < cand_count; i++) {
+            jw__candidate_free(&cands[i]);
+        }
+        free(cands);
+        return -1;
+    }
+    for (size_t i = 0; i < retained_count; i++) {
+        const char *id = retained_ids[i].service_id;
+        if (!jw_svc_supervisor_service_id_is_safe(id)) {
+            continue;
+        }
+        jw_svc_supervised *e = jw__ensure_entry(sup, id);
+        if (!e) {
+            continue;
+        }
+        if (!e->pak_present) {
+            e->manifest_valid = false;
+            jw__strcpy_bounded(e->reject_reason,
+                               sizeof(e->reject_reason),
+                               "package-missing");
+            e->state = JW_SVC_STATE_UNAVAILABLE;
+        }
+    }
+    jw_svc_control_store_free_ids(retained_ids);
+
     for (int i = 0; i < sup->count; i++) {
         if (!sup->entries[i].pak_present) {
             sup->entries[i].manifest_valid = false;
@@ -723,13 +849,15 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
             sup->entries[i].state = JW_SVC_STATE_UNAVAILABLE;
         }
     }
+    jw__discover_runtime_stale_entries(sup);
     /* Detect survivors even when they were launched only for the old daemon's
      * session and persistent enablement is false. Without this probe a daemon
      * restart would clear session_run and silently forget a still-live writer
      * until somebody explicitly tried to Run it again. */
     for (int i = 0; i < sup->count; i++) {
         jw_svc_supervised *e = &sup->entries[i];
-        if (e->pgid > 0 || !jw__entry_available(e)) {
+        if (e->pgid > 0 ||
+            !jw_svc_supervisor_service_id_is_safe(e->service_id)) {
             continue;
         }
         char lease_reason[JW_SVC_REASON_BUF];

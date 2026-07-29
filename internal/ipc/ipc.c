@@ -248,9 +248,9 @@ static int jw__ipc_client_connect_timeout(const char *socket_path,
         return -1;
     }
 
-    /* Bound every request so the daemon (and CLI tools) can never block
-       forever on a wedged peer. 30s leaves headroom for a synchronous
-       scan-library reply while still guaranteeing forward progress. */
+    /* Bound every request so a wedged peer cannot block the caller forever.
+       General callers use 30s; render-thread status reads choose a much
+       shorter deadline through jw_ipc_request_timeout(). */
     jw__set_io_timeout_ms(fd, timeout_ms);
 
     jw_ipc_client *client = (jw_ipc_client *)calloc(1, sizeof(*client));

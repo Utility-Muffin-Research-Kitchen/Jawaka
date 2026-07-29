@@ -322,6 +322,19 @@ static void jw__test_invalid_arguments(void) {
     assert(!jw_svc_control_store_get(store, "", &state, &(bool){false}, reason, sizeof(reason)));
     assert(strcmp(reason, "invalid-arguments") == 0);
 
+    jw_svc_control_id *ids = NULL;
+    size_t id_count = 0;
+    memset(reason, 0, sizeof(reason));
+    assert(!jw_svc_control_store_list_ids(NULL, &ids, &id_count,
+                                          reason, sizeof(reason)));
+    assert(strcmp(reason, "invalid-arguments") == 0);
+    assert(ids == NULL && id_count == 0);
+    assert(!jw_svc_control_store_list_ids(store, NULL, &id_count,
+                                          reason, sizeof(reason)));
+    assert(!jw_svc_control_store_list_ids(store, &ids, NULL,
+                                          reason, sizeof(reason)));
+    jw_svc_control_store_free_ids(NULL);
+
     memset(reason, 0, sizeof(reason));
     assert(!jw_svc_control_store_put(store, "org.umrk.a", NULL, reason, sizeof(reason)));
     assert(strcmp(reason, "invalid-arguments") == 0);
@@ -372,7 +385,7 @@ static void jw__test_invalid_arguments(void) {
     assert(strcmp(reason, "invalid-arguments") == 0);
 
     jw_svc_control_store_close(store);
-    puts("PASS control-state-test rejects invalid arguments across open/get/put");
+    puts("PASS control-state-test rejects invalid arguments across open/get/list/put");
 }
 
 static void jw__test_corrupt_rows_fail_closed(void) {
@@ -466,6 +479,37 @@ static void jw__test_future_schema_is_not_downgraded(void) {
     puts("PASS control-state-test a future schema version is rejected without downgrade");
 }
 
+static void jw__test_list_ids_is_sorted_and_retained(void) {
+    char db_path[256];
+    jw__test_mkdtemp_db_path(db_path, sizeof(db_path));
+    jw_svc_control_store *store = NULL;
+    char reason[32] = {0};
+    assert(jw_svc_control_store_open(db_path, &store, reason,
+                                     sizeof(reason)));
+
+    jw_svc_control_state state;
+    memset(&state, 0, sizeof(state));
+    state.start_with_leaf = true;
+    assert(jw_svc_control_store_put(store, "org.umrk.zeta", &state,
+                                    reason, sizeof(reason)));
+    state.start_with_leaf = false;
+    assert(jw_svc_control_store_put(store, "org.umrk.alpha", &state,
+                                    reason, sizeof(reason)));
+
+    jw_svc_control_id *ids = NULL;
+    size_t count = 99;
+    assert(jw_svc_control_store_list_ids(store, &ids, &count,
+                                         reason, sizeof(reason)));
+    assert(count == 2);
+    assert(ids != NULL);
+    assert(strcmp(ids[0].service_id, "org.umrk.alpha") == 0);
+    assert(strcmp(ids[1].service_id, "org.umrk.zeta") == 0);
+    jw_svc_control_store_free_ids(ids);
+
+    jw_svc_control_store_close(store);
+    puts("PASS control-state-test retained ids enumerate in stable order");
+}
+
 static void jw__test_close_null_is_a_no_op(void) {
     jw_svc_control_store_close(NULL);
     puts("PASS control-state-test closing a NULL store is a no-op");
@@ -482,6 +526,7 @@ int main(void) {
     jw__test_invalid_arguments();
     jw__test_corrupt_rows_fail_closed();
     jw__test_future_schema_is_not_downgraded();
+    jw__test_list_ids_is_sorted_and_retained();
     jw__test_close_null_is_a_no_op();
     puts("PASS control-state-test");
     return 0;

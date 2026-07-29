@@ -11,6 +11,7 @@
 
 #include "internal/services/supervisor.h"
 #include "internal/services/lease.h"
+#include "internal/services/reservation.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -143,6 +144,7 @@ static void fixture_write_pak(fixture *f, const char *pak_dir_name,
     }
     fprintf(fp,
             "{\"id\":\"%s\",\"name\":\"%s\",\"platform\":\"%s\","
+            "\"pak_version\":\"1.2.3\","
             "\"service\":{\"schema\":1,\"id\":\"%s\","
             "\"run\":{\"path\":\"bin/run.sh\",\"args\":[]},"
             "\"default_enabled\":false,"
@@ -764,6 +766,75 @@ static void test_many_entries_do_not_use_uninitialized_runtime_fields(void) {
     fixture_teardown(&f);
 }
 
+static void test_retained_control_row_survives_missing_package(void) {
+    fixture f;
+    fixture_setup(&f);
+    fixture_write_pak(&f, "retained.pak", "org.umrk.test.retained",
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\"");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    CHECK(jw_svc_supervisor_enable(sup, "org.umrk.test.retained",
+                                   reason, sizeof(reason)));
+    jw_svc_supervisor_close(sup);
+
+    char installed[PATH_MAX], removed[PATH_MAX];
+    jw__join(installed, sizeof(installed), f.apps_primary, "retained.pak");
+    jw__join(removed, sizeof(removed), f.root, "removed-retained.pak");
+    CHECK(rename(installed, removed) == 0);
+
+    sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    const jw_svc_supervised *e =
+        jw_svc_supervisor_find(sup, "org.umrk.test.retained");
+    CHECK(e != NULL);
+    CHECK(e && !e->pak_present);
+    CHECK(e && e->desired_enabled);
+    CHECK(e && e->state == JW_SVC_STATE_UNAVAILABLE);
+    CHECK(e && strcmp(e->reject_reason, "package-missing") == 0);
+    CHECK(e && strcmp(e->installed_package_version, "1.2.3") == 0);
+
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+static void test_locked_runtime_lease_survives_without_pak_or_control_row(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.runtime-only";
+    char reason[JW_SVC_REASON_BUF];
+    int old_lease = jw_svc_lease_acquire(f.runtime, id, reason,
+                                         sizeof(reason));
+    CHECK(old_lease >= 0);
+    jw_svc_reservation reservation = {
+        .pgid = getpid(),
+        .launch_instant_us = jw_svc_reservation_now_us(),
+        .game_policy = JW_SVC_RESERVATION_GAME_STOP,
+        .stop_on_storage_change = true,
+        .stop_on_suspend = true,
+    };
+    CHECK(jw_svc_reservation_write(f.runtime, id, &reservation,
+                                   reason, sizeof(reason)));
+
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    const jw_svc_supervised *e = jw_svc_supervisor_find(sup, id);
+    CHECK(e != NULL);
+    CHECK(e && !e->control_loaded);
+    CHECK(e && !e->pak_present);
+    CHECK(e && e->state == JW_SVC_STATE_STALE_GENERATION);
+    CHECK(e && strcmp(e->reject_reason, "package-missing") == 0);
+
+    jw_svc_supervisor_close(sup);
+    if (old_lease >= 0) close(old_lease);
+    fixture_teardown(&f);
+}
+
 static void test_circuit_breaker_opens(void) {
     fixture f;
     fixture_setup(&f);
@@ -821,6 +892,8 @@ int main(int argc, char **argv) {
     test_reservation_write_failure_reaps_child();
     test_hostile_id_tail_bound_and_status_shape();
     test_many_entries_do_not_use_uninitialized_runtime_fields();
+    test_retained_control_row_survives_missing_package();
+    test_locked_runtime_lease_survives_without_pak_or_control_row();
     test_circuit_breaker_opens();
 
     if (g_failures == 0) {

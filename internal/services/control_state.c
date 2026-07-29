@@ -1,6 +1,7 @@
 #include "internal/services/control_state.h"
 
 #include <limits.h>
+#include <stdint.h>
 #include <sqlite3.h>
 #include <stdlib.h>
 #include <string.h>
@@ -368,6 +369,76 @@ bool jw_svc_control_store_get(jw_svc_control_store *store, const char *service_i
     *out = result;
     *out_found = true;
     return true;
+}
+
+bool jw_svc_control_store_list_ids(jw_svc_control_store *store,
+                                   jw_svc_control_id **out_ids,
+                                   size_t *out_count,
+                                   char *reason, size_t reason_size) {
+    if (out_ids) *out_ids = NULL;
+    if (out_count) *out_count = 0;
+    if (!store || !out_ids || !out_count) {
+        jw__control_set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(store->db,
+                           "SELECT service_id FROM service_control_state "
+                           "ORDER BY service_id;",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        jw__control_set_reason(reason, reason_size, "read-failed");
+        return false;
+    }
+
+    jw_svc_control_id *ids = NULL;
+    size_t count = 0;
+    bool ok = true;
+    int step = SQLITE_DONE;
+    while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (sqlite3_column_type(stmt, 0) != SQLITE_TEXT) {
+            ok = false;
+            break;
+        }
+        const unsigned char *text = sqlite3_column_text(stmt, 0);
+        int bytes = sqlite3_column_bytes(stmt, 0);
+        if (!text || bytes <= 0 || bytes > JW_SVC_CONTROL_ID_MAX ||
+            memchr(text, '\0', (size_t)bytes) != NULL ||
+            count == SIZE_MAX / sizeof(*ids)) {
+            ok = false;
+            break;
+        }
+        jw_svc_control_id *grown =
+            realloc(ids, (count + 1u) * sizeof(*ids));
+        if (!grown) {
+            free(ids);
+            sqlite3_finalize(stmt);
+            jw__control_set_reason(reason, reason_size, "out-of-memory");
+            return false;
+        }
+        ids = grown;
+        memcpy(ids[count].service_id, text, (size_t)bytes);
+        ids[count].service_id[bytes] = '\0';
+        count++;
+    }
+    if (step != SQLITE_DONE) {
+        ok = false;
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK) {
+        ok = false;
+    }
+    if (!ok) {
+        free(ids);
+        jw__control_set_reason(reason, reason_size, "read-failed");
+        return false;
+    }
+    *out_ids = ids;
+    *out_count = count;
+    return true;
+}
+
+void jw_svc_control_store_free_ids(jw_svc_control_id *ids) {
+    free(ids);
 }
 
 bool jw_svc_control_store_put(jw_svc_control_store *store, const char *service_id,

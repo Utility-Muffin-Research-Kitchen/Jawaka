@@ -56,6 +56,7 @@ typedef enum {
     JW_SETTINGS_ABOUT,
     JW_SETTINGS_LIBRARY,    /* Info > Library: counts, art coverage, per-system */
     JW_SETTINGS_PLAYTIME,   /* Info > Playtime: totals, most-played, per-system */
+    JW_SETTINGS_SERVICES,   /* Services: supervised app-services-v1 daemons */
 } jw_settings_screen;
 
 /* ─── Row indices per sub-page ─────────────────────────────────────────── */
@@ -284,6 +285,15 @@ typedef struct {
     int                rumble_strength;   /* 0-100 % */
     bool               rumble_nav;        /* per-move navigation tick */
     bool               rumble_game;       /* in-game emulator rumble */
+    /* Services screen (app-services-v1). A snapshot of CTL-1 service-list,
+       fetched on entry and after each action; the screen is offered only
+       when at least one valid service, retained desired-state record, or
+       actionable stale-generation survivor exists. */
+    cat_list_state       services_list;
+    jw_ipc_service_info  services[JW_IPC_SVC_LIST_MAX];
+    int                  services_count;
+    char                 services_msg[128];  /* transient action feedback */
+    unsigned             services_next_poll_ms;
     int                game_perf_profile;   /* Settings > Behavior game profile */
     bool               performance_supported;
     int                brightness_percent;
@@ -381,6 +391,9 @@ bool jw_settings_ui_wants_bluetooth_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui);
 bool jw_settings_ui_wants_update_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_update(jw_settings_ui *ui);
+/* Services page: live CTL-1 status while open. */
+bool jw_settings_ui_wants_services_poll(const jw_settings_ui *ui);
+void jw_settings_ui_refresh_services(jw_settings_ui *ui);
 
 /* True if the status-bar wifi icon is enabled. The launcher uses this to decide
  * whether to keep the wifi strength polled on the home screen. */

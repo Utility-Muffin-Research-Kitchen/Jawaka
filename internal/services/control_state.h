@@ -60,6 +60,10 @@
 typedef struct jw_svc_control_store jw_svc_control_store;
 
 typedef struct {
+    char service_id[JW_SVC_CONTROL_ID_MAX + 1];
+} jw_svc_control_id;
+
+typedef struct {
     /* Persistent: survives daemon restart and device reboot. */
     bool start_with_leaf;
 
@@ -134,6 +138,19 @@ bool jw_svc_control_store_clear_all_sessions(jw_svc_control_store *store,
 bool jw_svc_control_store_get(jw_svc_control_store *store, const char *service_id,
                                jw_svc_control_state *out, bool *out_found,
                                char *reason, size_t reason_size);
+
+/* Lists every retained control-state row in stable service-id order. This is
+ * how the supervisor keeps a package-missing desired-state record visible to
+ * CTL-1 and Settings -> Services after daemon restart. The returned heap array
+ * belongs to the caller and must be released with
+ * jw_svc_control_store_free_ids(). An empty store succeeds with *out_ids NULL
+ * and *out_count 0. Returns false with "invalid-arguments",
+ * "out-of-memory", or "read-failed". */
+bool jw_svc_control_store_list_ids(jw_svc_control_store *store,
+                                   jw_svc_control_id **out_ids,
+                                   size_t *out_count,
+                                   char *reason, size_t reason_size);
+void jw_svc_control_store_free_ids(jw_svc_control_id *ids);
 
 /* Writes (inserting or replacing) the entire row for `service_id`.
  * There is no partial-field update: callers read the current state,
