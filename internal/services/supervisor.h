@@ -122,6 +122,12 @@ typedef struct {
     int active_stop_grace_ms;
     bool active_restart_on_failure;
     jw_svc_lifecycle_game active_lifecycle_game;
+    bool active_stop_on_storage_change;
+    bool active_stop_on_suspend;
+    /* A policy-triggered stop of a group that was running before suspend or
+     * storage change is restarted after the transition. This remains set
+     * across an unverified stop so tick can never overlap the old group. */
+    bool lifecycle_restart_pending;
 
     jw_svc_backoff_state backoff;
     jw_svc_control_state control;   /* persisted row snapshot (owned) */
@@ -228,6 +234,25 @@ int jw_svc_supervisor_stop_all(jw_svc_supervisor *sup);
 int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
                                         char *out_stuck_id,
                                         size_t stuck_id_size);
+
+/* Declarative lifecycle stops. Both stop every currently owned generation
+ * whose immutable launch-time policy enables the trigger and remember it for
+ * one restart after the transition. A locked stale generation is report-only:
+ * it is never signalled and is returned through out_stuck_id. Suspend callers
+ * continue with a warning; safe-unmount callers fail their operation when the
+ * id is non-empty. For an external hotplug that already happened, callers
+ * continue with a warning. Tick performs the remembered restart only after
+ * verified absence (and, for suspend, naturally only after the blocking sleep
+ * returns because the daemon loop is paused while suspended).
+ *
+ * Return value is the number of groups verified stopped. out_stuck_id receives
+ * the first unverified/stale service id, or an empty string. */
+int jw_svc_supervisor_suspend_begin(jw_svc_supervisor *sup,
+                                    char *out_stuck_id,
+                                    size_t stuck_id_size);
+int jw_svc_supervisor_storage_change_begin(jw_svc_supervisor *sup,
+                                           char *out_stuck_id,
+                                           size_t stuck_id_size);
 
 /* The effective-state slug used on CTL-1 ("unavailable", "disabled", ...). */
 const char *jw_svc_effective_state_name(jw_svc_effective_state state);

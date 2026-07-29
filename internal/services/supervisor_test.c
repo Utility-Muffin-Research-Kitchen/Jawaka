@@ -449,7 +449,9 @@ static void test_stale_generation_blocks_second_daemon(void) {
     fixture_write_pak(&f, "leaseholder.pak", "org.umrk.test.lease",
                       "while :; do sleep 1; done",
                       ",\"restart\":\"on-failure\","
-                      "\"lifecycle\":{\"game\":\"stop\"}");
+                      "\"lifecycle\":{\"game\":\"stop\","
+                      "\"stop_on_storage_change\":true,"
+                      "\"stop_on_suspend\":true}");
 
     char reason[JW_SVC_REASON_BUF];
     jw_svc_supervisor *first = fixture_open(&f, reason);
@@ -466,6 +468,12 @@ static void test_stale_generation_blocks_second_daemon(void) {
     CHECK(e2 != NULL && e2->state == JW_SVC_STATE_STALE_GENERATION);
     CHECK(e2 != NULL && !e2->desired_enabled && !e2->session_run);
     char stuck[JW_SVC_SUPERVISOR_ID_BUF];
+    CHECK(jw_svc_supervisor_suspend_begin(second, stuck,
+                                           sizeof(stuck)) == 0);
+    CHECK(strcmp(stuck, "org.umrk.test.lease") == 0);
+    CHECK(jw_svc_supervisor_storage_change_begin(second, stuck,
+                                                  sizeof(stuck)) == 0);
+    CHECK(strcmp(stuck, "org.umrk.test.lease") == 0);
     CHECK(jw_svc_supervisor_game_launch_begin(second, stuck,
                                                sizeof(stuck)) == 0);
     CHECK(strcmp(stuck, "org.umrk.test.lease") == 0);
@@ -658,6 +666,93 @@ static void test_running_policy_survives_rescan(void) {
     e = jw_svc_supervisor_find(sup, "org.umrk.test.policy");
     CHECK(e != NULL && e->pgid <= 0);
 
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+static void test_suspend_and_storage_lifecycle_stops(void) {
+    fixture f;
+    fixture_setup(&f);
+    fixture_write_pak(&f, "suspend.pak", "org.umrk.test.suspendpolicy",
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\","
+                      "\"lifecycle\":{\"stop_on_suspend\":true}");
+    fixture_write_pak(&f, "storage.pak", "org.umrk.test.storagepolicy",
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\","
+                      "\"lifecycle\":{\"stop_on_storage_change\":true}");
+    fixture_write_pak(&f, "ignore.pak", "org.umrk.test.lifecycleignore",
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\"");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 3);
+    const char *suspend_id = "org.umrk.test.suspendpolicy";
+    const char *storage_id = "org.umrk.test.storagepolicy";
+    const char *ignore_id = "org.umrk.test.lifecycleignore";
+    CHECK(jw_svc_supervisor_run(sup, suspend_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, storage_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, ignore_id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, suspend_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, storage_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, ignore_id, JW_SVC_STATE_RUNNING, 3000));
+
+    const jw_svc_supervised *suspend_entry =
+        jw_svc_supervisor_find(sup, suspend_id);
+    pid_t first_suspend_pgid = suspend_entry ? suspend_entry->pgid : -1;
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF];
+    CHECK(jw_svc_supervisor_suspend_begin(sup, stuck, sizeof(stuck)) == 1);
+    CHECK(stuck[0] == '\0');
+    suspend_entry = jw_svc_supervisor_find(sup, suspend_id);
+    const jw_svc_supervised *storage_entry =
+        jw_svc_supervisor_find(sup, storage_id);
+    const jw_svc_supervised *ignore_entry =
+        jw_svc_supervisor_find(sup, ignore_id);
+    CHECK(suspend_entry && suspend_entry->pgid <= 0);
+    CHECK(suspend_entry && suspend_entry->lifecycle_restart_pending);
+    CHECK(storage_entry && storage_entry->pgid > 0);
+    CHECK(ignore_entry && ignore_entry->pgid > 0);
+
+    /* The daemon loop does not tick while the platform sleep call blocks.
+     * Its first post-resume ticks consume the remembered restart once. */
+    bool suspend_restarted =
+        wait_for_state(sup, suspend_id, JW_SVC_STATE_RUNNING, 3000);
+    CHECK(suspend_restarted);
+    suspend_entry = jw_svc_supervisor_find(sup, suspend_id);
+    if (!suspend_restarted && suspend_entry) {
+        fprintf(stderr,
+                "suspend restart diagnostic: state=%s pgid=%ld pending=%d "
+                "reason=%s\n",
+                jw_svc_effective_state_name(suspend_entry->state),
+                (long)suspend_entry->pgid,
+                suspend_entry->lifecycle_restart_pending,
+                suspend_entry->control.last_transition_reason);
+    }
+    CHECK(suspend_entry && suspend_entry->pgid != first_suspend_pgid);
+    CHECK(suspend_entry && !suspend_entry->lifecycle_restart_pending);
+
+    CHECK(jw_svc_supervisor_storage_change_begin(
+              sup, stuck, sizeof(stuck)) == 1);
+    CHECK(stuck[0] == '\0');
+    storage_entry = jw_svc_supervisor_find(sup, storage_id);
+    CHECK(storage_entry && storage_entry->pgid <= 0);
+    CHECK(storage_entry && storage_entry->lifecycle_restart_pending);
+    /* An explicit Disable while a lifecycle restart is pending must win. */
+    CHECK(jw_svc_supervisor_disable(sup, storage_id, reason,
+                                    sizeof(reason)));
+    for (int i = 0; i < 100; i++) {
+        jw_svc_supervisor_tick(sup);
+        usleep(20000);
+    }
+    storage_entry = jw_svc_supervisor_find(sup, storage_id);
+    CHECK(storage_entry && storage_entry->pgid <= 0);
+    CHECK(storage_entry && !storage_entry->lifecycle_restart_pending);
+    ignore_entry = jw_svc_supervisor_find(sup, ignore_id);
+    CHECK(ignore_entry && ignore_entry->pgid > 0);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
     jw_svc_supervisor_close(sup);
     fixture_teardown(&f);
 }
@@ -867,6 +962,40 @@ static void test_locked_runtime_lease_survives_without_pak_or_control_row(void) 
     CHECK(e && !e->pak_present);
     CHECK(e && e->state == JW_SVC_STATE_STALE_GENERATION);
     CHECK(e && strcmp(e->reject_reason, "package-missing") == 0);
+    CHECK(e && e->active_stop_on_storage_change);
+    CHECK(e && e->active_stop_on_suspend);
+
+    jw_svc_supervisor_close(sup);
+    if (old_lease >= 0) close(old_lease);
+    fixture_teardown(&f);
+}
+
+static void test_stale_missing_policy_fails_safe_for_all_stop_triggers(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.stalefailsafe";
+    fixture_write_pak(&f, "stalefailsafe.pak", id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    char reason[JW_SVC_REASON_BUF];
+    int old_lease = jw_svc_lease_acquire(f.runtime, id, reason,
+                                         sizeof(reason));
+    CHECK(old_lease >= 0);
+    /* Deliberately no reservation file: a locked old generation with a
+     * missing policy snapshot must enable every stop trigger fail-safe. */
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    const jw_svc_supervised *e = jw_svc_supervisor_find(sup, id);
+    CHECK(e && e->state == JW_SVC_STATE_STALE_GENERATION);
+    CHECK(e && e->active_lifecycle_game == JW_SVC_LIFECYCLE_GAME_STOP);
+    CHECK(e && e->active_stop_on_storage_change);
+    CHECK(e && e->active_stop_on_suspend);
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF];
+    CHECK(jw_svc_supervisor_suspend_begin(sup, stuck, sizeof(stuck)) == 0);
+    CHECK(strcmp(stuck, id) == 0);
+    CHECK(jw_svc_supervisor_storage_change_begin(sup, stuck,
+                                                  sizeof(stuck)) == 0);
+    CHECK(strcmp(stuck, id) == 0);
 
     jw_svc_supervisor_close(sup);
     if (old_lease >= 0) close(old_lease);
@@ -927,12 +1056,14 @@ int main(int argc, char **argv) {
     test_descriptor_zero_lease_is_released();
     test_enabled_stop_is_not_immediately_undone();
     test_running_policy_survives_rescan();
+    test_suspend_and_storage_lifecycle_stops();
     test_reservation_write_failure_reaps_child();
     test_hostile_id_tail_bound_and_status_shape();
     test_many_entries_do_not_use_uninitialized_runtime_fields();
     test_retained_control_row_survives_missing_package();
     test_missing_package_scan_does_not_create_lease_tree();
     test_locked_runtime_lease_survives_without_pak_or_control_row();
+    test_stale_missing_policy_fails_safe_for_all_stop_triggers();
     test_circuit_breaker_opens();
 
     if (g_failures == 0) {

@@ -930,6 +930,8 @@ static bool jw__reap_verified_leader(pid_t leader, int *out_status) {
 static void jw__load_stale_policy(jw_svc_supervisor *sup,
                                   jw_svc_supervised *e) {
     e->active_lifecycle_game = JW_SVC_LIFECYCLE_GAME_STOP;
+    e->active_stop_on_storage_change = true;
+    e->active_stop_on_suspend = true;
     jw_svc_reservation res;
     char reason[JW_SVC_REASON_BUF];
     if (!jw_svc_reservation_read(sup->runtime_dir, e->service_id, &res,
@@ -941,6 +943,8 @@ static void jw__load_stale_policy(jw_svc_supervisor *sup,
     } else if (res.game_policy == JW_SVC_RESERVATION_GAME_NOTIFY) {
         e->active_lifecycle_game = JW_SVC_LIFECYCLE_GAME_NOTIFY;
     }
+    e->active_stop_on_storage_change = res.stop_on_storage_change;
+    e->active_stop_on_suspend = res.stop_on_suspend;
 }
 
 /* One supervised launch attempt: acquire the generation lease, open the
@@ -1050,6 +1054,9 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
             e->active_stop_grace_ms = e->manifest.stop_grace_ms;
             e->active_restart_on_failure = false;
             e->active_lifecycle_game = e->manifest.lifecycle_game;
+            e->active_stop_on_storage_change =
+                e->manifest.stop_on_storage_change;
+            e->active_stop_on_suspend = e->manifest.stop_on_suspend;
             e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
             e->state = JW_SVC_STATE_STOPPING;
             e->stop_kill_sent = stopped.escalated_to_kill;
@@ -1066,6 +1073,8 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
     e->active_stop_grace_ms = e->manifest.stop_grace_ms;
     e->active_restart_on_failure = e->manifest.restart_on_failure;
     e->active_lifecycle_game = e->manifest.lifecycle_game;
+    e->active_stop_on_storage_change = e->manifest.stop_on_storage_change;
+    e->active_stop_on_suspend = e->manifest.stop_on_suspend;
     e->autostart_pending = false;
     e->reap_pending = false;
     e->stop_kill_sent = false;
@@ -1160,11 +1169,13 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
     bool old_session_run = e->session_run;
     bool old_control_session_run = e->control.session_run;
     bool old_autostart_pending = e->autostart_pending;
+    bool old_lifecycle_restart_pending = e->lifecycle_restart_pending;
     e->desired_enabled = false;
     e->control.start_with_leaf = false;
     e->session_run = false;
     e->control.session_run = false;
     e->autostart_pending = false;
+    e->lifecycle_restart_pending = false;
     /* Persist the disabled intent before attempting a potentially unverified
      * stop. Otherwise a stuck service would come back as desired after the
      * next daemon restart and could be relaunched when its stale lease clears. */
@@ -1174,6 +1185,7 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
         e->session_run = old_session_run;
         e->control.session_run = old_control_session_run;
         e->autostart_pending = old_autostart_pending;
+        e->lifecycle_restart_pending = old_lifecycle_restart_pending;
         jw__set_reason(reason, reason_size, "store-failed");
         return false;
     }
@@ -1203,6 +1215,7 @@ bool jw_svc_supervisor_run(jw_svc_supervisor *sup, const char *service_id,
     }
     /* A user-initiated Run clears the breaker (SVC-1 restart policy) and
      * triggers an immediate lease attempt even past the 1 s retry. */
+    e->lifecycle_restart_pending = false;
     jw_svc_backoff_reset(&e->backoff);
     char start_reason[JW_SVC_REASON_BUF];
     if (!jw__start_generation(sup, e, start_reason, sizeof(start_reason))) {
@@ -1243,6 +1256,7 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
     }
     e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
     e->autostart_pending = false;
+    e->lifecycle_restart_pending = false;
     if (!jw__stop_and_reap(sup, e, reason, reason_size)) {
         return false;
     }
@@ -1265,6 +1279,7 @@ bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
         return false;
     }
     jw_svc_backoff_reset(&e->backoff);
+    e->lifecycle_restart_pending = false;
     if (e->pgid > 0) {
         e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
         if (!jw__stop_and_reap(sup, e, reason, reason_size)) {
@@ -1478,6 +1493,32 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
         /* 3. Backoff: retry a failed on-failure service once its delay
          *    elapses, only if the previous generation's group is gone. */
         bool started_this_tick = false;
+
+        /* A service stopped for suspend/storage resumes exactly once. The
+         * pending bit survives an unverified stop; pgid/state gates prevent a
+         * replacement until the old reservation is proven absent. */
+        if (e->lifecycle_restart_pending && e->pgid <= 0 &&
+            e->state != JW_SVC_STATE_STALE_GENERATION &&
+            e->state != JW_SVC_STATE_STOPPING &&
+            jw__entry_available(e)) {
+            char reason[JW_SVC_REASON_BUF];
+            if (jw__start_generation(sup, e, reason, sizeof(reason))) {
+                e->lifecycle_restart_pending = false;
+                jw__persist(sup, e, "lifecycle-resume");
+                started_this_tick = true;
+                changes++;
+            } else if (strcmp(reason, "stale-generation") == 0) {
+                e->state = JW_SVC_STATE_STALE_GENERATION;
+                e->lease_retry_next_ms = now + JW_SVC_LEASE_RETRY_MS;
+                changes++;
+            } else {
+                e->lifecycle_restart_pending = false;
+                e->state = jw__entry_idle_state(e);
+                jw__persist(sup, e, "lifecycle-resume-failed");
+                changes++;
+            }
+        }
+
         if (e->state == JW_SVC_STATE_BACKOFF && e->pgid <= 0 &&
             now >= e->backoff_retry_at_ms) {
             char reason[JW_SVC_REASON_BUF];
@@ -1510,10 +1551,12 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
          *    while desired enablement remains true. */
         if (!started_this_tick &&
             e->state == JW_SVC_STATE_STALE_GENERATION && e->pgid <= 0 &&
-            (e->desired_enabled || e->session_run) &&
+            (e->desired_enabled || e->session_run ||
+             e->lifecycle_restart_pending) &&
             now >= e->lease_retry_next_ms) {
             char reason[JW_SVC_REASON_BUF];
             if (jw__start_generation(sup, e, reason, sizeof(reason))) {
+                e->lifecycle_restart_pending = false;
                 jw__persist(sup, e, "lease-acquired");
                 started_this_tick = true;
                 changes++;
@@ -1537,6 +1580,7 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
         if (!started_this_tick &&
             e->state == JW_SVC_STATE_STALE_GENERATION && e->pgid <= 0 &&
             !e->desired_enabled && !e->session_run &&
+            !e->lifecycle_restart_pending &&
             now >= e->lease_retry_next_ms) {
             char lease_reason[JW_SVC_REASON_BUF];
             int lease_fd = jw_svc_lease_acquire(
@@ -1609,6 +1653,7 @@ int jw_svc_supervisor_stop_all(jw_svc_supervisor *sup) {
             continue;
         }
         e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
+        e->lifecycle_restart_pending = false;
         char reason[JW_SVC_REASON_BUF];
         if (!jw__stop_and_reap(sup, e, reason, sizeof(reason))) {
             /* SVC-1: shutdown continues with a warning; the stuck service
@@ -1637,6 +1682,7 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
         jw_svc_supervised *e = &sup->entries[i];
         if (e->state == JW_SVC_STATE_STALE_GENERATION &&
             e->active_lifecycle_game == JW_SVC_LIFECYCLE_GAME_STOP) {
+            e->lifecycle_restart_pending = false;
             if (out_stuck_id && stuck_id_size > 0 &&
                 out_stuck_id[0] == '\0') {
                 snprintf(out_stuck_id, stuck_id_size, "%s", e->service_id);
@@ -1649,6 +1695,7 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
         if (e->active_lifecycle_game != JW_SVC_LIFECYCLE_GAME_STOP) {
             continue; /* notify/ignore are LIFE-1/A3b, not this phase */
         }
+        e->lifecycle_restart_pending = false;
         e->pending_stop_reason = JW_SVC_STOP_LIFECYCLE_GAME;
         e->autostart_pending = false;
         char reason[JW_SVC_REASON_BUF];
@@ -1663,4 +1710,79 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
         stopped++;
     }
     return stopped;
+}
+
+typedef enum {
+    JW__SVC_LIFECYCLE_SUSPEND = 0,
+    JW__SVC_LIFECYCLE_STORAGE_CHANGE,
+} jw__svc_lifecycle_trigger;
+
+static int jw__lifecycle_stop_begin(jw_svc_supervisor *sup,
+                                    jw__svc_lifecycle_trigger trigger,
+                                    char *out_stuck_id,
+                                    size_t stuck_id_size) {
+    if (out_stuck_id && stuck_id_size > 0) {
+        out_stuck_id[0] = '\0';
+    }
+    if (!sup) {
+        return 0;
+    }
+    const char *transition =
+        trigger == JW__SVC_LIFECYCLE_SUSPEND ? "suspend" : "storage-change";
+    int stopped = 0;
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        bool enabled = trigger == JW__SVC_LIFECYCLE_SUSPEND
+                           ? e->active_stop_on_suspend
+                           : e->active_stop_on_storage_change;
+        if (!enabled) {
+            continue;
+        }
+        if (e->state == JW_SVC_STATE_STALE_GENERATION) {
+            if (out_stuck_id && stuck_id_size > 0 &&
+                out_stuck_id[0] == '\0') {
+                snprintf(out_stuck_id, stuck_id_size, "%s", e->service_id);
+            }
+            jw__persist(sup, e,
+                        trigger == JW__SVC_LIFECYCLE_SUSPEND
+                            ? "suspend-unverified-stale"
+                            : "storage-change-unverified-stale");
+            continue;
+        }
+        if (e->pgid <= 0) {
+            continue;
+        }
+        e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
+        e->autostart_pending = false;
+        e->lifecycle_restart_pending = true;
+        char reason[JW_SVC_REASON_BUF];
+        if (!jw__stop_and_reap(sup, e, reason, sizeof(reason))) {
+            if (out_stuck_id && stuck_id_size > 0 &&
+                out_stuck_id[0] == '\0') {
+                snprintf(out_stuck_id, stuck_id_size, "%s", e->service_id);
+            }
+            jw__persist(sup, e,
+                        trigger == JW__SVC_LIFECYCLE_SUSPEND
+                            ? "suspend-unverified"
+                            : "storage-change-unverified");
+            continue;
+        }
+        jw__persist(sup, e, transition);
+        stopped++;
+    }
+    return stopped;
+}
+
+int jw_svc_supervisor_suspend_begin(jw_svc_supervisor *sup,
+                                    char *out_stuck_id,
+                                    size_t stuck_id_size) {
+    return jw__lifecycle_stop_begin(sup, JW__SVC_LIFECYCLE_SUSPEND,
+                                    out_stuck_id, stuck_id_size);
+}
+
+int jw_svc_supervisor_storage_change_begin(jw_svc_supervisor *sup,
+                                           char *out_stuck_id,
+                                           size_t stuck_id_size) {
+    return jw__lifecycle_stop_begin(
+        sup, JW__SVC_LIFECYCLE_STORAGE_CHANGE, out_stuck_id, stuck_id_size);
 }

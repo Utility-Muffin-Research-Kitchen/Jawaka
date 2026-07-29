@@ -3545,8 +3545,32 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
     }
 
     jw_platform_result result;
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    if (state->services) {
+        int stopped = jw_svc_supervisor_storage_change_begin(
+            state->services, stuck, sizeof(stuck));
+        if (stopped > 0) {
+            jw_log_info("safe-unmount: stopped %d storage-sensitive service(s)",
+                        stopped);
+        }
+    }
+    if (stuck[0]) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "Cannot unmount: service %s could not be verified stopped",
+                 stuck);
+        memset(&result, 0, sizeof(result));
+        result.code = JW_PLATFORM_RESULT_FAILED;
+        snprintf(result.message, sizeof(result.message), "%s", message);
+        jw_log_warn("safe-unmount: refused; service %s is still live", stuck);
+        return jw__reply_platform_result(client, action_json->valuestring,
+                                         &result);
+    }
     jw_platform_safe_unmount_storage(&state->platform, source, &result);
     if (result.code == JW_PLATFORM_RESULT_OK) {
+        if (state->services && jw_svc_supervisor_scan(state->services) < 0) {
+            jw_log_warn("safe-unmount: service rescan failed");
+        }
         int scan_rc = jw__start_scan_job(state, "after safe-unmount");
         if (scan_rc < 0) {
             jw_log_warn("safe-unmount: library rescan could not start");
@@ -7442,6 +7466,21 @@ static void jw__deep_suspend(jw_daemon_state *state) {
         return;
     }
     state->suspend_policy.pending = JW_SUSPEND_PENDING_NONE;
+    if (state->services) {
+        char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+        int stopped = jw_svc_supervisor_suspend_begin(
+            state->services, stuck, sizeof(stuck));
+        if (stopped > 0) {
+            jw_log_info("sleep: stopped %d suspend-sensitive service(s)",
+                        stopped);
+        }
+        if (stuck[0]) {
+            /* Contract table: suspend continues, but the survivor remains
+             * visible and no replacement can start over its reservation. */
+            jw_log_warn("sleep: service %s could not be verified stopped; "
+                        "continuing suspend", stuck);
+        }
+    }
     jw__schedule_retroarch_audio_reinit_if_bluetooth(state, "wake-bluetooth");
     jw__rumble_set_gated(true);
     jw__rumble_quiesce();   /* never carry a live pulse into the freeze */
@@ -10198,6 +10237,24 @@ int main(int argc, char *argv[]) {
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
         if (jw_platform_storage_tick(&state.platform)) {
+            if (state.services) {
+                char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+                int stopped = jw_svc_supervisor_storage_change_begin(
+                    state.services, stuck, sizeof(stuck));
+                if (stopped > 0) {
+                    jw_log_info("storage hotplug: stopped %d "
+                                "storage-sensitive service(s)", stopped);
+                }
+                if (stuck[0]) {
+                    /* The hotplug already happened, so unlike safe-unmount it
+                     * cannot be refused. Warn and keep the survivor visible. */
+                    jw_log_warn("storage hotplug: service %s could not be "
+                                "verified stopped", stuck);
+                }
+                if (jw_svc_supervisor_scan(state.services) < 0) {
+                    jw_log_warn("storage hotplug: service rescan failed");
+                }
+            }
             if (jw__start_scan_job(&state, "after storage change") < 0) {
                 jw_log_warn("storage hotplug: library rescan could not start");
             }
