@@ -15,7 +15,9 @@
 #include <curl/curl.h>
 #include <errno.h>
 #include <fcntl.h>
+#ifdef JW_ENABLE_FAULT_INJECTION
 #include <signal.h>
+#endif
 #include <stdbool.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -365,12 +367,15 @@ static int jw__recover_pending_install_transitions(const jw_pakrat_context *ctx)
 }
 
 /* Test-only pause/crash/failure injection at promote-transaction boundaries.
+   This code is compiled only into dedicated smoke binaries; production UI
+   binaries contain inert stubs and cannot observe either environment variable.
    JW_PAKRAT_PAUSE_AT raises SIGSTOP before JW_PAKRAT_FAULT_AT is evaluated, so
    a device harness can prove the exact filesystem/record state and perform a
    physical card pull at a deterministic boundary. Crash points kill the
    process without cleanup, simulating power loss mid-transaction;
    "during-record" instead fails the install-record update to exercise the
-   in-process failure path. Never set either variable in production. */
+   in-process failure path. */
+#ifdef JW_ENABLE_FAULT_INJECTION
 static int jw__fault_requested(const char *point) {
     const char *at = getenv("JW_PAKRAT_FAULT_AT");
     return at && at[0] && strcmp(at, point) == 0;
@@ -389,6 +394,16 @@ static void jw__fault_crash(const char *point) {
         _exit(42);
     }
 }
+#else
+static int jw__fault_requested(const char *point) {
+    (void)point;
+    return 0;
+}
+
+static void jw__fault_crash(const char *point) {
+    (void)point;
+}
+#endif
 
 static int jw__pakrat_rescan_impl(const jw_pakrat_context *ctx,
                                   int recover_pending_installs) {
