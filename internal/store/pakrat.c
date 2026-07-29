@@ -15,6 +15,7 @@
 #include <curl/curl.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <sqlite3.h>
 #include <stdio.h>
@@ -363,17 +364,26 @@ static int jw__recover_pending_install_transitions(const jw_pakrat_context *ctx)
     return jw_pakrat_recover_installs(&recovery);
 }
 
-/* Test-only crash/failure injection at promote-transaction boundaries, for
-   fault-injection harnesses (JW_PAKRAT_FAULT_AT). Crash points kill the
+/* Test-only pause/crash/failure injection at promote-transaction boundaries.
+   JW_PAKRAT_PAUSE_AT raises SIGSTOP before JW_PAKRAT_FAULT_AT is evaluated, so
+   a device harness can prove the exact filesystem/record state and perform a
+   physical card pull at a deterministic boundary. Crash points kill the
    process without cleanup, simulating power loss mid-transaction;
    "during-record" instead fails the install-record update to exercise the
-   in-process failure path. Never set in production. */
+   in-process failure path. Never set either variable in production. */
 static int jw__fault_requested(const char *point) {
     const char *at = getenv("JW_PAKRAT_FAULT_AT");
     return at && at[0] && strcmp(at, point) == 0;
 }
 
 static void jw__fault_crash(const char *point) {
+    const char *pause_at = getenv("JW_PAKRAT_PAUSE_AT");
+    if (pause_at && pause_at[0] && strcmp(pause_at, point) == 0) {
+        fprintf(stderr, "pakrat fault injection: paused at %s pid=%ld\n",
+                point, (long)getpid());
+        fflush(stderr);
+        raise(SIGSTOP);
+    }
     if (jw__fault_requested(point)) {
         fprintf(stderr, "pakrat fault injection: crash at %s\n", point);
         _exit(42);

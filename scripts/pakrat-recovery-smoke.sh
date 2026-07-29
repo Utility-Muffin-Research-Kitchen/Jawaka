@@ -432,6 +432,51 @@ expect_state "$OLD_VERSION" "$OLD_VERSION" "daemon-startup" "no"
 [ "$(cat "$INSTALL_PATH/payload.txt")" = "old-payload" ] ||
     fail "daemon-startup: startup hook left the uncommitted promoted tree live"
 
+# The device-only removal test needs an observable boundary rather than a race.
+# Pause after promotion, prove the old record is still the commit authority,
+# then kill the stopped process and recover exactly as after a power loss.
+begin_scenario "pause after-promote exposes deterministic removal boundary"
+install_old
+write_catalog new
+old_token="$(db_token)"
+JW_PAKRAT_PAUSE_AT="after-promote" \
+    "$BIN" --platform mlp1 --sdcard-root "$SD_ROOT" install "$STORE_ID" \
+    >"$TMP_ROOT/pause-after-promote.out" 2>&1 &
+paused_pid=$!
+paused_state=""
+for _ in $(seq 1 500); do
+    if ! kill -0 "$paused_pid" 2>/dev/null; then
+        cat "$TMP_ROOT/pause-after-promote.out" >&2
+        fail "pause-after-promote: install exited before SIGSTOP"
+    fi
+    if [ -r "/proc/$paused_pid/status" ]; then
+        paused_state="$(awk '/^State:/ {print $2}' "/proc/$paused_pid/status")"
+    else
+        paused_state="$(ps -o state= -p "$paused_pid" 2>/dev/null | tr -d '[:space:]')"
+    fi
+    case "$paused_state" in T*) break ;; esac
+    sleep 0.01
+done
+case "$paused_state" in
+    T*) ;;
+    *)
+    fail "pause-after-promote: process did not enter stopped state"
+        ;;
+esac
+grep -F "pakrat fault injection: paused at after-promote" \
+    "$TMP_ROOT/pause-after-promote.out" >/dev/null ||
+    fail "pause-after-promote: pause marker missing"
+[ "$(target_version)" = "$NEW_VERSION" ] ||
+    fail "pause-after-promote: promoted tree is not live"
+[ "$(db_version)" = "$OLD_VERSION" ] ||
+    fail "pause-after-promote: install record committed before pause"
+[ "$(marker_token)" != "$old_token" ] ||
+    fail "pause-after-promote: promoted tree reused the old token"
+kill -9 "$paused_pid" 2>/dev/null || true
+wait "$paused_pid" 2>/dev/null || true
+run_smoke recover
+expect_state "$OLD_VERSION" "$OLD_VERSION" "pause-after-promote"
+
 # Every crash after promotion but before the durable record remains
 # uncommitted, including both sides of the filesystem flush barrier.
 for point in before-syncfs after-syncfs before-record; do
