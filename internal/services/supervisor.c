@@ -65,12 +65,19 @@ static long long jw__mono_ms(void) {
     return (long long)ts.tv_sec * 1000LL + (long long)(ts.tv_nsec / 1000000LL);
 }
 
-static long long jw__mono_us(void) {
+/* Persistent CTL-1 timestamps must remain meaningful across daemon and device
+ * restarts. CLOCK_MONOTONIC is reserved for in-process deadlines only. */
+static long long jw__wall_us(void) {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
         return -1;
     }
     return (long long)ts.tv_sec * 1000000LL + (long long)(ts.tv_nsec / 1000LL);
+}
+
+static long long jw__wall_ms(void) {
+    long long now_us = jw__wall_us();
+    return now_us < 0 ? now_us : now_us / 1000LL;
 }
 
 static void jw__set_reason(char *reason, size_t reason_size, const char *slug) {
@@ -107,6 +114,43 @@ static char *jw__strdup(const char *s) {
     return copy;
 }
 
+bool jw_svc_supervisor_service_id_is_safe(const char *service_id) {
+    return service_id && service_id[0] &&
+           strlen(service_id) <= JW_SVC_ID_MAX &&
+           strchr(service_id, '/') == NULL &&
+           strcmp(service_id, ".") != 0 && strcmp(service_id, "..") != 0;
+}
+
+int jw_svc_supervisor_bound_log_tail(int requested) {
+    if (requested <= 0) {
+        return JW_SVC_LOG_TAIL_DEFAULT;
+    }
+    return requested > JW_SVC_LOG_TAIL_MAX ? JW_SVC_LOG_TAIL_MAX : requested;
+}
+
+bool jw_svc_supervisor_join_scan_root(char *out, size_t out_size,
+                                      const char *apps_path,
+                                      const char *root_name) {
+    if (!out || out_size == 0 || !apps_path || !apps_path[0] ||
+        !root_name || !root_name[0]) {
+        return false;
+    }
+    int written = snprintf(out, out_size, "%s/%s", apps_path, root_name);
+    return written >= 0 && (size_t)written < out_size;
+}
+
+bool jw_svc_supervisor_ctl_op_requires_id(const char *operation) {
+    return operation &&
+           (strcmp(operation, "status") == 0 ||
+            strcmp(operation, "logs") == 0 ||
+            strcmp(operation, "export-logs") == 0 ||
+            strcmp(operation, "enable") == 0 ||
+            strcmp(operation, "disable") == 0 ||
+            strcmp(operation, "run") == 0 ||
+            strcmp(operation, "stop") == 0 ||
+            strcmp(operation, "restart") == 0);
+}
+
 /* Bounded string copy that never truncates without a NUL and never triggers
  * gcc's -Wformat-truncation (which rejects snprintf(dst, cap, "%s", src)
  * whenever src's provenance is an unbounded fixed array). */
@@ -141,6 +185,96 @@ const char *jw_svc_effective_state_name(jw_svc_effective_state state) {
     return "unavailable";
 }
 
+bool jw_svc_supervisor_status_json(const jw_svc_supervised *e,
+                                   struct cJSON *object) {
+    cJSON *obj = (cJSON *)object;
+    if (!e || !obj) {
+        return false;
+    }
+    bool ok =
+        cJSON_AddStringToObject(obj, "id", e->service_id) != NULL &&
+        cJSON_AddStringToObject(obj, "state",
+                                jw_svc_effective_state_name(e->state)) != NULL &&
+        cJSON_AddBoolToObject(obj, "desired_enabled", e->desired_enabled) != NULL &&
+        cJSON_AddBoolToObject(obj, "session_run", e->session_run) != NULL &&
+        cJSON_AddBoolToObject(obj, "manifest_valid", e->manifest_valid) != NULL &&
+        cJSON_AddBoolToObject(obj, "on_secondary_root",
+                              e->on_secondary_root) != NULL;
+    if (!ok) {
+        return false;
+    }
+    if (!e->manifest_valid && e->reject_reason[0] &&
+        !cJSON_AddStringToObject(obj, "reject_reason", e->reject_reason)) {
+        return false;
+    }
+
+    cJSON *ownership = cJSON_CreateObject();
+    if (!ownership) {
+        return false;
+    }
+    if (e->pgid > 0 &&
+        (!cJSON_AddNumberToObject(ownership, "pgid", (double)e->pgid) ||
+         !cJSON_AddNumberToObject(ownership, "launch_instant_us",
+                                  (double)e->launch_instant_us))) {
+        cJSON_Delete(ownership);
+        return false;
+    }
+    cJSON_AddItemToObject(obj, "ownership", ownership);
+
+    const char *lease_state = e->lease_fd >= 0 ? "held"
+                              : e->state == JW_SVC_STATE_STALE_GENERATION
+                                    ? "stale-generation"
+                                    : "unheld";
+    if (!cJSON_AddStringToObject(obj, "generation_lease_state", lease_state) ||
+        !cJSON_AddNumberToObject(obj, "last_transition_at_us",
+                                 (double)e->control.last_transition_at_us) ||
+        !cJSON_AddStringToObject(obj, "last_transition_reason",
+                                 e->control.last_transition_reason) ||
+        !cJSON_AddNumberToObject(obj, "restart_count",
+                                 (double)e->control.restart_count) ||
+        !cJSON_AddBoolToObject(obj, "breaker_open",
+                               e->backoff.breaker_open) ||
+        !cJSON_AddStringToObject(obj, "installed_package_id",
+                                 e->control.installed_package_id) ||
+        !cJSON_AddStringToObject(obj, "installed_package_version",
+                                 e->installed_package_version)) {
+        return false;
+    }
+    if (e->control.has_last_exit &&
+        (!cJSON_AddNumberToObject(obj, "last_exit_code",
+                                  (double)e->control.last_exit_code) ||
+         !cJSON_AddNumberToObject(obj, "last_exit_at_us",
+                                  (double)e->control.last_exit_at_us))) {
+        return false;
+    }
+    if (e->state == JW_SVC_STATE_BACKOFF &&
+        !cJSON_AddStringToObject(obj, "backoff_reason", "on-failure")) {
+        return false;
+    }
+    if (e->state == JW_SVC_STATE_FAILED &&
+        !cJSON_AddStringToObject(obj, "backoff_reason", "circuit-breaker")) {
+        return false;
+    }
+
+    bool lifecycle_stop =
+        e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_GAME;
+    if (!cJSON_AddBoolToObject(obj, "lifecycle_stop_in_force",
+                               lifecycle_stop)) {
+        return false;
+    }
+    if (lifecycle_stop &&
+        !cJSON_AddStringToObject(obj, "lifecycle_stop_reason", "game")) {
+        return false;
+    }
+    jw_svc_lifecycle_game game_policy =
+        e->pgid > 0 ? e->active_lifecycle_game
+                    : e->manifest.lifecycle_game;
+    const char *coordination =
+        game_policy == JW_SVC_LIFECYCLE_GAME_NOTIFY && e->pgid > 0
+            ? "unsubscribed" : "n/a";
+    return cJSON_AddStringToObject(obj, "coordination", coordination) != NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* entry lifecycle                                                     */
 /* ------------------------------------------------------------------ */
@@ -149,25 +283,23 @@ static void jw__entry_release_runtime(jw_svc_supervised *e) {
     if (!e) {
         return;
     }
-    /* lease_fd is a real descriptor only when it is strictly positive: 0 is
-     * stdin and a fresh (zeroed) entry holds no lease, so guard against
-     * closing a descriptor this module never opened. */
-    if (e->lease_fd > 0) {
+    /* A lease acquire may legitimately return descriptor 0 when the daemon
+     * was started with stdin closed. Fresh entries are explicitly initialized
+     * to -1, so every non-negative value is owned and must be closed. */
+    if (e->lease_fd >= 0) {
         close(e->lease_fd);
     }
     e->lease_fd = -1;
     e->pgid = -1;
+    e->launch_instant_us = 0;
 }
 
-static void jw__entry_reset(jw_svc_supervised *e) {
+static void jw__entry_initialize(jw_svc_supervised *e) {
     if (!e) {
         return;
     }
-    if (e->manifest_loaded) {
-        jw_service_manifest_destroy(&e->manifest);
-        e->manifest_loaded = false;
-    }
-    jw__entry_release_runtime(e);
+    /* `e` is newly obtained from realloc() and contains indeterminate bytes.
+     * Never inspect manifest_loaded or lease_fd before initialization. */
     memset(e, 0, sizeof(*e));
     e->pgid = -1;
     e->lease_fd = -1;
@@ -223,7 +355,7 @@ void jw_svc_supervisor_close(jw_svc_supervisor *sup) {
         if (sup->entries[i].manifest_loaded) {
             jw_service_manifest_destroy(&sup->entries[i].manifest);
         }
-        if (sup->entries[i].lease_fd > 0) {
+        if (sup->entries[i].lease_fd >= 0) {
             close(sup->entries[i].lease_fd);
         }
     }
@@ -322,7 +454,7 @@ jw_svc_supervisor *jw_svc_supervisor_open(const char *runtime_dir,
 
 static bool jw__persist(jw_svc_supervisor *sup, jw_svc_supervised *e,
                         const char *transition_reason) {
-    e->control.last_transition_at_us = jw__mono_us();
+    e->control.last_transition_at_us = jw__wall_us();
     if (transition_reason) {
         snprintf(e->control.last_transition_reason,
                  sizeof(e->control.last_transition_reason), "%s",
@@ -354,6 +486,10 @@ static void jw__load_control(jw_svc_supervisor *sup, jw_svc_supervised *e) {
     }
     e->desired_enabled = e->control.start_with_leaf;
     e->session_run = e->control.session_run; /* already cleared at open */
+    /* Persistent enablement is consumed once at daemon startup. It is not a
+     * perpetual keep-alive bit: CTL-1 Stop and lifecycle stops must win for
+     * the rest of this session. */
+    e->autostart_pending = e->desired_enabled;
     e->backoff.breaker_open = e->control.breaker_open;
     e->backoff.count = e->control.backoff_failure_count;
     for (int i = 0; i < e->control.backoff_failure_count &&
@@ -377,6 +513,23 @@ typedef struct {
     jw_service_manifest manifest;
     bool manifest_loaded;
 } jw__scan_candidate;
+
+static bool jw__entry_available(const jw_svc_supervised *e) {
+    return e && e->pak_present && e->manifest_valid &&
+           !e->on_secondary_root;
+}
+
+static jw_svc_effective_state jw__entry_idle_state(
+    const jw_svc_supervised *e) {
+    if (!jw__entry_available(e)) {
+        return JW_SVC_STATE_UNAVAILABLE;
+    }
+    return e->desired_enabled ? JW_SVC_STATE_STOPPED
+                              : JW_SVC_STATE_DISABLED;
+}
+
+static void jw__load_stale_policy(jw_svc_supervisor *sup,
+                                  jw_svc_supervised *e);
 
 static void jw__candidate_free(jw__scan_candidate *c) {
     if (c && c->manifest_loaded) {
@@ -502,7 +655,7 @@ static void jw__scan_one_root(jw_svc_supervisor *sup, const char *root,
                     id_src = sid->valuestring;
                 }
             }
-            if (id_src) {
+            if (id_src && jw_svc_supervisor_service_id_is_safe(id_src)) {
                 jw__strcpy_bounded(c->service_id, sizeof(c->service_id), id_src);
             } else {
                 jw__strcpy_bounded(c->service_id, sizeof(c->service_id), de->d_name);
@@ -586,6 +739,13 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
     for (int i = 0; i < cand_count; i++) {
         jw__scan_candidate *c = &cands[i];
         jw_svc_supervised *e = jw__find_mut(sup, c->service_id);
+        /* A malformed manifest may still contain the exact id of a valid
+         * service. It must not overwrite that valid entry merely because its
+         * directory happened to sort later in readdir() order. */
+        if (e && !c->valid && e->manifest_valid) {
+            jw__candidate_free(c);
+            continue;
+        }
         if (!e) {
             if (sup->count >= sup->cap) {
                 int new_cap = sup->cap > 0 ? sup->cap * 2 : 8;
@@ -600,7 +760,7 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
                 sup->cap = new_cap;
             }
             e = &sup->entries[sup->count++];
-            jw__entry_reset(e);
+            jw__entry_initialize(e);
             jw__strcpy_bounded(e->service_id, sizeof(e->service_id), c->service_id);
             e->state = JW_SVC_STATE_DISABLED;
             jw__load_control(sup, e);
@@ -631,6 +791,17 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
             e->manifest_loaded = true;
             c->manifest_loaded = false; /* ownership moved */
         }
+        if (!jw__entry_available(e)) {
+            e->state = JW_SVC_STATE_UNAVAILABLE;
+        } else if (e->state == JW_SVC_STATE_UNAVAILABLE) {
+            if (e->pgid > 0) {
+                e->state = (e->reap_pending || e->stop_kill_sent)
+                               ? JW_SVC_STATE_STOPPING
+                               : JW_SVC_STATE_RUNNING;
+            } else {
+                e->state = jw__entry_idle_state(e);
+            }
+        }
         jw__candidate_free(c);
     }
     for (int i = 0; i < sup->count; i++) {
@@ -639,6 +810,29 @@ int jw_svc_supervisor_scan(jw_svc_supervisor *sup) {
             jw__strcpy_bounded(sup->entries[i].reject_reason,
                           sizeof(sup->entries[i].reject_reason),
                           "package-missing");
+            sup->entries[i].state = JW_SVC_STATE_UNAVAILABLE;
+        }
+    }
+    /* Detect survivors even when they were launched only for the old daemon's
+     * session and persistent enablement is false. Without this probe a daemon
+     * restart would clear session_run and silently forget a still-live writer
+     * until somebody explicitly tried to Run it again. */
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        if (e->pgid > 0 || !jw__entry_available(e)) {
+            continue;
+        }
+        char lease_reason[JW_SVC_REASON_BUF];
+        int lease_fd = jw_svc_lease_acquire(sup->runtime_dir, e->service_id,
+                                            lease_reason,
+                                            sizeof(lease_reason));
+        if (lease_fd >= 0) {
+            close(lease_fd);
+        } else if (strcmp(lease_reason, "stale-generation") == 0) {
+            jw__load_stale_policy(sup, e);
+            e->state = JW_SVC_STATE_STALE_GENERATION;
+            e->lease_retry_next_ms =
+                jw__mono_ms() + JW_SVC_LEASE_RETRY_MS;
         }
     }
     free(cands);
@@ -661,13 +855,53 @@ static char *jw__build_env_json(jw_svc_supervisor *sup,
     }
     char svc_dir[PATH_MAX];
     if (jw__format(svc_dir, sizeof(svc_dir), "%s/services/%s",
-                   sup->runtime_dir, e->service_id) == 0) {
-        cJSON_AddStringToObject(env, "UMRK_SERVICE_RUNTIME_DIR", svc_dir);
+                   sup->runtime_dir, e->service_id) != 0 ||
+        !cJSON_AddStringToObject(env, "UMRK_SERVICE_RUNTIME_DIR", svc_dir) ||
+        !cJSON_AddStringToObject(env, "UMRK_SERVICE_ID", e->service_id)) {
+        cJSON_Delete(env);
+        return NULL;
     }
-    cJSON_AddStringToObject(env, "UMRK_SERVICE_ID", e->service_id);
     char *text = cJSON_PrintUnformatted(env);
     cJSON_Delete(env);
     return text;
+}
+
+/* Called only after jw_svc_group_absent() proved that no non-zombie group
+ * member remains. Blocking here cannot wait on a live leader: the only child
+ * left to collect is the deliberately held zombie reservation. */
+static bool jw__reap_verified_leader(pid_t leader, int *out_status) {
+    int status = 0;
+    pid_t reaped;
+    do {
+        reaped = waitpid(leader, &status, 0);
+    } while (reaped < 0 && errno == EINTR);
+    if (reaped != leader) {
+        return false;
+    }
+    if (out_status) {
+        *out_status = status;
+    }
+    return true;
+}
+
+/* A stale generation is report-only and must never be signalled by this
+ * daemon. Its last atomic policy snapshot still governs lifecycle decisions;
+ * if the snapshot is missing/corrupt, SVC-1 requires the fail-safe "stop"
+ * behavior. */
+static void jw__load_stale_policy(jw_svc_supervisor *sup,
+                                  jw_svc_supervised *e) {
+    e->active_lifecycle_game = JW_SVC_LIFECYCLE_GAME_STOP;
+    jw_svc_reservation res;
+    char reason[JW_SVC_REASON_BUF];
+    if (!jw_svc_reservation_read(sup->runtime_dir, e->service_id, &res,
+                                 reason, sizeof(reason))) {
+        return;
+    }
+    if (res.game_policy == JW_SVC_RESERVATION_GAME_IGNORE) {
+        e->active_lifecycle_game = JW_SVC_LIFECYCLE_GAME_IGNORE;
+    } else if (res.game_policy == JW_SVC_RESERVATION_GAME_NOTIFY) {
+        e->active_lifecycle_game = JW_SVC_LIFECYCLE_GAME_NOTIFY;
+    }
 }
 
 /* One supervised launch attempt: acquire the generation lease, open the
@@ -682,6 +916,9 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
     int lease_fd = jw_svc_lease_acquire(sup->runtime_dir, e->service_id,
                                         slug, sizeof(slug));
     if (lease_fd < 0) {
+        if (strcmp(slug, "stale-generation") == 0) {
+            jw__load_stale_policy(sup, e);
+        }
         jw__set_reason(reason, reason_size,
                        strcmp(slug, "stale-generation") == 0
                            ? "stale-generation" : "lease-failed");
@@ -711,6 +948,12 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
     }
 
     char *env_json = jw__build_env_json(sup, e);
+    if (!env_json) {
+        if (log_fd >= 0) close(log_fd);
+        close(lease_fd);
+        jw__set_reason(reason, reason_size, "launch-failed");
+        return false;
+    }
     jw_svc_launch_request req = {
         .run_path_abs = run_abs,
         .args = args,
@@ -735,9 +978,10 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
      * normalized lifecycle-policy snapshot. Written before the entry is
      * marked running so a crash between fork and here still leaves no
      * running group without a record. */
+    long long launch_instant_us = jw_svc_reservation_now_us();
     jw_svc_reservation res = {
         .pgid = pid,
-        .launch_instant_us = jw_svc_reservation_now_us(),
+        .launch_instant_us = launch_instant_us,
         .game_policy =
             e->manifest.lifecycle_game == JW_SVC_LIFECYCLE_GAME_STOP
                 ? JW_SVC_RESERVATION_GAME_STOP
@@ -751,15 +995,39 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
                                   slug, sizeof(slug))) {
         /* The group is live but unrecorded: stop it now rather than run
          * an untracked service, per SVC-1's "never an unreserved group". */
-        jw_svc_stop_group(pid, e->manifest.stop_grace_ms,
-                          jw_svc_group_absent);
-        close(lease_fd);
+        jw_svc_stop_result stopped =
+            jw_svc_stop_group(pid, e->manifest.stop_grace_ms,
+                              jw_svc_group_absent);
+        if (stopped.verified_absent &&
+            jw__reap_verified_leader(pid, NULL)) {
+            close(lease_fd);
+        } else {
+            /* Keep the exact child identity and lease in memory until later
+             * ticks prove absence. Closing either here would lose the only
+             * safe handle on a still-live writer after the disk write failed. */
+            e->lease_fd = lease_fd;
+            e->pgid = pid;
+            e->launch_instant_us = launch_instant_us;
+            e->active_stop_grace_ms = e->manifest.stop_grace_ms;
+            e->active_restart_on_failure = false;
+            e->active_lifecycle_game = e->manifest.lifecycle_game;
+            e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
+            e->state = JW_SVC_STATE_STOPPING;
+            e->stop_kill_sent = stopped.escalated_to_kill;
+            e->stopping_since_ms = jw__mono_ms();
+            e->reap_pending = stopped.verified_absent;
+        }
         jw__set_reason(reason, reason_size, "reservation-failed");
         return false;
     }
 
     e->lease_fd = lease_fd;
     e->pgid = pid;
+    e->launch_instant_us = launch_instant_us;
+    e->active_stop_grace_ms = e->manifest.stop_grace_ms;
+    e->active_restart_on_failure = e->manifest.restart_on_failure;
+    e->active_lifecycle_game = e->manifest.lifecycle_game;
+    e->autostart_pending = false;
     e->reap_pending = false;
     e->stop_kill_sent = false;
     /* No stop has been requested for the fresh generation: if its leader
@@ -780,7 +1048,7 @@ static bool jw__stop_and_reap(jw_svc_supervisor *sup, jw_svc_supervised *e,
         return false;
     }
     jw_svc_stop_result res =
-        jw_svc_stop_group(e->pgid, e->manifest.stop_grace_ms,
+        jw_svc_stop_group(e->pgid, e->active_stop_grace_ms,
                           jw_svc_group_absent);
     if (!res.verified_absent) {
         e->state = JW_SVC_STATE_STOPPING;
@@ -792,10 +1060,15 @@ static bool jw__stop_and_reap(jw_svc_supervisor *sup, jw_svc_supervised *e,
     /* Verified writer-free: now, and only now, reap the leader and release
      * the reservation. Reaping first would free the pgid for recycling. */
     int status = 0;
-    (void)waitpid(e->pgid, &status, WNOHANG);
+    if (!jw__reap_verified_leader(e->pgid, &status)) {
+        e->state = JW_SVC_STATE_STOPPING;
+        e->reap_pending = true;
+        jw__set_reason(reason, reason_size, "stop-failed");
+        return false;
+    }
     e->reap_pending = false;
     jw__entry_release_runtime(e);
-    e->state = JW_SVC_STATE_STOPPED;
+    e->state = jw__entry_idle_state(e);
     (void)sup;
     return true;
 }
@@ -823,9 +1096,13 @@ bool jw_svc_supervisor_enable(jw_svc_supervisor *sup, const char *service_id,
     if (!jw__require_available(e, reason, reason_size)) {
         return false;
     }
+    bool old_desired = e->desired_enabled;
+    bool old_control_desired = e->control.start_with_leaf;
     e->desired_enabled = true;
     e->control.start_with_leaf = true;
     if (!jw__persist(sup, e, "enable")) {
+        e->desired_enabled = old_desired;
+        e->control.start_with_leaf = old_control_desired;
         jw__set_reason(reason, reason_size, "store-failed");
         return false;
     }
@@ -839,8 +1116,28 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
         jw__set_reason(reason, reason_size, "unknown-service");
         return false;
     }
+    bool old_desired = e->desired_enabled;
+    bool old_control_desired = e->control.start_with_leaf;
+    bool old_session_run = e->session_run;
+    bool old_control_session_run = e->control.session_run;
+    bool old_autostart_pending = e->autostart_pending;
     e->desired_enabled = false;
     e->control.start_with_leaf = false;
+    e->session_run = false;
+    e->control.session_run = false;
+    e->autostart_pending = false;
+    /* Persist the disabled intent before attempting a potentially unverified
+     * stop. Otherwise a stuck service would come back as desired after the
+     * next daemon restart and could be relaunched when its stale lease clears. */
+    if (!jw__persist(sup, e, "disable")) {
+        e->desired_enabled = old_desired;
+        e->control.start_with_leaf = old_control_desired;
+        e->session_run = old_session_run;
+        e->control.session_run = old_control_session_run;
+        e->autostart_pending = old_autostart_pending;
+        jw__set_reason(reason, reason_size, "store-failed");
+        return false;
+    }
     if (e->pgid > 0) {
         e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
         char stop_reason[JW_SVC_REASON_BUF];
@@ -848,15 +1145,9 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
             jw__set_reason(reason, reason_size, "stop-failed");
             return false;
         }
-        e->session_run = false;
-        e->control.session_run = false;
-    }
-    if (!jw__persist(sup, e, "disable")) {
-        jw__set_reason(reason, reason_size, "store-failed");
-        return false;
     }
     if (e->state != JW_SVC_STATE_STOPPING) {
-        e->state = JW_SVC_STATE_DISABLED;
+        e->state = jw__entry_idle_state(e);
     }
     return true;
 }
@@ -874,7 +1165,21 @@ bool jw_svc_supervisor_run(jw_svc_supervisor *sup, const char *service_id,
     /* A user-initiated Run clears the breaker (SVC-1 restart policy) and
      * triggers an immediate lease attempt even past the 1 s retry. */
     jw_svc_backoff_reset(&e->backoff);
-    if (!jw__start_generation(sup, e, reason, reason_size)) {
+    char start_reason[JW_SVC_REASON_BUF];
+    if (!jw__start_generation(sup, e, start_reason, sizeof(start_reason))) {
+        if (strcmp(start_reason, "stale-generation") == 0) {
+            e->session_run = true;
+            e->control.session_run = true;
+            e->state = JW_SVC_STATE_STALE_GENERATION;
+            e->lease_retry_next_ms = jw__mono_ms() + JW_SVC_LEASE_RETRY_MS;
+            if (!jw__persist(sup, e, "run-stale-generation")) {
+                e->session_run = false;
+                e->control.session_run = false;
+                snprintf(start_reason, sizeof(start_reason), "%s",
+                         "store-failed");
+            }
+        }
+        jw__set_reason(reason, reason_size, start_reason);
         return false;
     }
     e->session_run = true;
@@ -898,6 +1203,7 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
         return false;
     }
     e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
+    e->autostart_pending = false;
     if (!jw__stop_and_reap(sup, e, reason, reason_size)) {
         return false;
     }
@@ -908,8 +1214,7 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
         return false;
     }
     if (e->state != JW_SVC_STATE_STOPPING) {
-        e->state = e->desired_enabled ? JW_SVC_STATE_STOPPED
-                                      : JW_SVC_STATE_DISABLED;
+        e->state = jw__entry_idle_state(e);
     }
     return true;
 }
@@ -927,7 +1232,21 @@ bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
             return false;
         }
     }
-    if (!jw__start_generation(sup, e, reason, reason_size)) {
+    char start_reason[JW_SVC_REASON_BUF];
+    if (!jw__start_generation(sup, e, start_reason, sizeof(start_reason))) {
+        if (strcmp(start_reason, "stale-generation") == 0) {
+            e->session_run = true;
+            e->control.session_run = true;
+            e->state = JW_SVC_STATE_STALE_GENERATION;
+            e->lease_retry_next_ms = jw__mono_ms() + JW_SVC_LEASE_RETRY_MS;
+            if (!jw__persist(sup, e, "restart-stale-generation")) {
+                e->session_run = false;
+                e->control.session_run = false;
+                snprintf(start_reason, sizeof(start_reason), "%s",
+                         "store-failed");
+            }
+        }
+        jw__set_reason(reason, reason_size, start_reason);
         return false;
     }
     e->session_run = true;
@@ -948,12 +1267,11 @@ bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
  * the stop sequence against the still-reserved group (live descendants) or
  * finalizes an already-absent group. */
 static void jw__handle_leader_exit(jw_svc_supervisor *sup,
-                                   jw_svc_supervised *e, int status) {
+                                   jw_svc_supervised *e, int exit_code,
+                                   bool failed) {
     e->control.has_last_exit = true;
-    e->control.last_exit_code = WIFEXITED(status) ? WEXITSTATUS(status)
-                                : WIFSIGNALED(status) ? 128 + WTERMSIG(status)
-                                                      : -1;
-    e->control.last_exit_at_us = jw__mono_us();
+    e->control.last_exit_code = exit_code;
+    e->control.last_exit_at_us = jw__wall_us();
 
     /* Session Run is consumed by the exit: it is one-shot session control,
      * not a keep-alive. Only persistent "Start with Leaf"
@@ -970,9 +1288,10 @@ static void jw__handle_leader_exit(jw_svc_supervisor *sup,
 
     bool intentional = (e->pending_stop_reason == JW_SVC_STOP_INTENTIONAL) ||
                        (e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_GAME);
-    if (!intentional && e->manifest.restart_on_failure) {
+    if (!intentional && failed && e->active_restart_on_failure &&
+        jw__entry_available(e)) {
         jw_svc_backoff_decision d =
-            jw_svc_backoff_record_failure(&e->backoff, jw__mono_ms());
+            jw_svc_backoff_record_failure(&e->backoff, jw__wall_ms());
         if (d.breaker_open) {
             e->state = JW_SVC_STATE_FAILED;
             jw__persist(sup, e, "circuit-breaker");
@@ -989,11 +1308,17 @@ static void jw__handle_leader_exit(jw_svc_supervisor *sup,
     if (absent) {
         /* Whole group is gone-or-zombie already: reap the leader and
          * release. The failure/backoff state decided above still stands. */
-        (void)waitpid(e->pgid, &status, WNOHANG);
+        if (!jw__reap_verified_leader(e->pgid, NULL)) {
+            /* Keep the lease and ownership identity rather than freeing a
+             * pgid whose leader was not successfully collected. */
+            e->state = JW_SVC_STATE_STOPPING;
+            e->reap_pending = true;
+            return;
+        }
         jw__entry_release_runtime(e);
-        if (e->state == JW_SVC_STATE_STOPPING) {
-            e->state = e->desired_enabled ? JW_SVC_STATE_STOPPED
-                                          : JW_SVC_STATE_DISABLED;
+        if (e->state != JW_SVC_STATE_BACKOFF &&
+            e->state != JW_SVC_STATE_FAILED) {
+            e->state = jw__entry_idle_state(e);
         }
     } else {
         /* Live descendants remain: begin the asynchronous stop sequence.
@@ -1003,11 +1328,40 @@ static void jw__handle_leader_exit(jw_svc_supervisor *sup,
         e->stopping_since_ms = jw__mono_ms();
         e->stop_kill_sent = false;
         e->reap_pending = true;
+        if (!intentional) {
+            e->pending_stop_reason = JW_SVC_STOP_LEADER_EXITED;
+        }
         if (e->state != JW_SVC_STATE_BACKOFF &&
             e->state != JW_SVC_STATE_FAILED) {
             e->state = JW_SVC_STATE_STOPPING;
         }
     }
+}
+
+/* Observe child termination without consuming the zombie reservation.
+ * waitpid(WNOHANG) is not a poll: once a child has exited it reaps it. WNOWAIT
+ * is therefore mandatory until jw_svc_group_absent() has proved the group
+ * writer-free. */
+static bool jw__observe_leader_exit(pid_t leader, int *out_exit_code,
+                                    bool *out_failed) {
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    int rc;
+    do {
+        rc = waitid(P_PID, (id_t)leader, &info,
+                    WEXITED | WNOHANG | WNOWAIT);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0 || info.si_pid != leader) {
+        return false;
+    }
+    if (info.si_code == CLD_EXITED) {
+        *out_exit_code = info.si_status;
+        *out_failed = info.si_status != 0;
+    } else {
+        *out_exit_code = 128 + info.si_status;
+        *out_failed = true;
+    }
+    return true;
 }
 
 int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
@@ -1021,11 +1375,11 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
         jw_svc_supervised *e = &sup->entries[i];
 
         /* 1. Poll the leader without reaping it early. */
-        if (e->pgid > 0) {
-            int status = 0;
-            pid_t w = waitpid(e->pgid, &status, WNOHANG);
-            if (w == e->pgid) {
-                jw__handle_leader_exit(sup, e, status);
+        if (e->pgid > 0 && !e->reap_pending) {
+            int exit_code = -1;
+            bool failed = true;
+            if (jw__observe_leader_exit(e->pgid, &exit_code, &failed)) {
+                jw__handle_leader_exit(sup, e, exit_code, failed);
                 changes++;
                 continue;
             }
@@ -1042,7 +1396,7 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
          *    exited: escalate to SIGKILL once the grace window elapses,
          *    then verify absence. */
         if (e->pgid > 0 && e->reap_pending) {
-            long long grace = e->manifest.stop_grace_ms;
+            long long grace = e->active_stop_grace_ms;
             if (!e->stop_kill_sent &&
                 now - e->stopping_since_ms >= grace) {
                 kill(-e->pgid, SIGKILL);
@@ -1055,14 +1409,14 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
                 e->stop_kill_sent &&
                 now - e->stopping_since_ms >= JW_SVC_STOP_KILL_WAIT_MS;
             if (jw_svc_group_absent(e->pgid)) {
-                int status = 0;
-                (void)waitpid(e->pgid, &status, WNOHANG);
+                if (!jw__reap_verified_leader(e->pgid, NULL)) {
+                    continue;
+                }
                 jw__entry_release_runtime(e);
                 e->reap_pending = false;
-                if (e->state == JW_SVC_STATE_STOPPING) {
-                    e->state = e->desired_enabled
-                                   ? JW_SVC_STATE_STOPPED
-                                   : JW_SVC_STATE_DISABLED;
+                if (e->state != JW_SVC_STATE_BACKOFF &&
+                    e->state != JW_SVC_STATE_FAILED) {
+                    e->state = jw__entry_idle_state(e);
                 }
                 changes++;
             } else if (wait_window_done) {
@@ -1092,7 +1446,8 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
             } else {
                 /* A failed retry is another failure for backoff purposes. */
                 jw_svc_backoff_decision d =
-                    jw_svc_backoff_record_failure(&e->backoff, now);
+                    jw_svc_backoff_record_failure(&e->backoff,
+                                                  jw__wall_ms());
                 if (d.breaker_open) {
                     e->state = JW_SVC_STATE_FAILED;
                 } else {
@@ -1115,6 +1470,36 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
                 jw__persist(sup, e, "lease-acquired");
                 started_this_tick = true;
                 changes++;
+            } else if (strcmp(reason, "stale-generation") == 0) {
+                e->lease_retry_next_ms = now + JW_SVC_LEASE_RETRY_MS;
+            } else {
+                e->session_run = false;
+                e->control.session_run = false;
+                e->autostart_pending = false;
+                if (e->pgid <= 0) {
+                    e->state = jw__entry_idle_state(e);
+                }
+                jw__persist(sup, e, "stale-retry-failed");
+                changes++;
+            }
+        }
+
+        /* A report-only stale generation with no current desired intent still
+         * needs passive liveness refresh. Acquire-and-close proves the old
+         * holder is gone without launching a replacement. */
+        if (!started_this_tick &&
+            e->state == JW_SVC_STATE_STALE_GENERATION && e->pgid <= 0 &&
+            !e->desired_enabled && !e->session_run &&
+            now >= e->lease_retry_next_ms) {
+            char lease_reason[JW_SVC_REASON_BUF];
+            int lease_fd = jw_svc_lease_acquire(
+                sup->runtime_dir, e->service_id, lease_reason,
+                sizeof(lease_reason));
+            if (lease_fd >= 0) {
+                close(lease_fd);
+                e->state = jw__entry_idle_state(e);
+                jw__persist(sup, e, "stale-generation-cleared");
+                changes++;
             } else {
                 e->lease_retry_next_ms = now + JW_SVC_LEASE_RETRY_MS;
             }
@@ -1128,8 +1513,7 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
                     e->state != JW_SVC_STATE_STOPPING &&
                     e->state != JW_SVC_STATE_STALE_GENERATION &&
                     e->state != JW_SVC_STATE_STARTING;
-        if (idle && !started_this_tick &&
-            (e->desired_enabled || e->session_run) &&
+        if (idle && !started_this_tick && e->autostart_pending &&
             e->manifest_valid && e->pak_present && !e->on_secondary_root) {
             char reason[JW_SVC_REASON_BUF];
             if (jw__start_generation(sup, e, reason, sizeof(reason))) {
@@ -1138,6 +1522,15 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
             } else if (strcmp(reason, "stale-generation") == 0) {
                 e->state = JW_SVC_STATE_STALE_GENERATION;
                 e->lease_retry_next_ms = now + JW_SVC_LEASE_RETRY_MS;
+                changes++;
+            } else if (e->pgid <= 0) {
+                /* Consume this startup attempt. Retrying a fork/exec or
+                 * reservation failure at the daemon's ~20 Hz tick rate is a
+                 * process-spawn loop, not an autostart policy. A user Run can
+                 * explicitly try again. */
+                e->autostart_pending = false;
+                e->state = jw__entry_idle_state(e);
+                jw__persist(sup, e, "autostart-failed");
                 changes++;
             }
         }
@@ -1156,6 +1549,15 @@ int jw_svc_supervisor_stop_all(jw_svc_supervisor *sup) {
     int unverified = 0;
     for (int i = 0; i < sup->count; i++) {
         jw_svc_supervised *e = &sup->entries[i];
+        if (e->state == JW_SVC_STATE_STALE_GENERATION) {
+            /* The old generation is deliberately not signallable, but its
+             * locked lease is positive evidence that shutdown cannot verify
+             * it stopped. Shutdown continues and reports the warning. */
+            e->pending_stop_reason = JW_SVC_STOP_INTENTIONAL;
+            jw__persist(sup, e, "shutdown-unverified-stale");
+            unverified++;
+            continue;
+        }
         if (e->pgid <= 0) {
             continue;
         }
@@ -1186,13 +1588,22 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
     int stopped = 0;
     for (int i = 0; i < sup->count; i++) {
         jw_svc_supervised *e = &sup->entries[i];
-        if (e->pgid <= 0 || !e->manifest_loaded) {
+        if (e->state == JW_SVC_STATE_STALE_GENERATION &&
+            e->active_lifecycle_game == JW_SVC_LIFECYCLE_GAME_STOP) {
+            if (out_stuck_id && stuck_id_size > 0 &&
+                out_stuck_id[0] == '\0') {
+                snprintf(out_stuck_id, stuck_id_size, "%s", e->service_id);
+            }
             continue;
         }
-        if (e->manifest.lifecycle_game != JW_SVC_LIFECYCLE_GAME_STOP) {
+        if (e->pgid <= 0) {
+            continue;
+        }
+        if (e->active_lifecycle_game != JW_SVC_LIFECYCLE_GAME_STOP) {
             continue; /* notify/ignore are LIFE-1/A3b, not this phase */
         }
         e->pending_stop_reason = JW_SVC_STOP_LIFECYCLE_GAME;
+        e->autostart_pending = false;
         char reason[JW_SVC_REASON_BUF];
         if (!jw__stop_and_reap(sup, e, reason, sizeof(reason))) {
             if (out_stuck_id && stuck_id_size > 0 &&

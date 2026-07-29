@@ -102,14 +102,26 @@ typedef struct {
     jw_svc_effective_state state;
     bool desired_enabled;       /* persistent "Start with Leaf" */
     bool session_run;           /* session Run (cleared at daemon start) */
+    bool autostart_pending;     /* startup-only consumption of persistent
+                                   enablement; explicit Stop must not be
+                                   undone by the next tick */
     pid_t pgid;                 /* >0 while a generation is owned */
     int lease_fd;               /* >=0 while the daemon holds the lease */
+    long long launch_instant_us;/* ownership-reservation identity */
     long long lease_retry_next_ms; /* stale-generation: next acquire try */
     long long backoff_retry_at_ms; /* backoff: earliest next restart */
     long long stopping_since_ms;   /* stop sequence started (KILL pending) */
     bool stop_kill_sent;        /* SIGKILL already delivered this stop */
     jw_svc_stop_reason_kind pending_stop_reason;
     bool reap_pending;          /* leader exited, group not yet verified */
+
+    /* Immutable launch-time policy snapshot. A package rescan may replace
+     * `manifest` while this generation is still alive; stop/restart/lifecycle
+     * decisions for the owned group must continue using the policy that was
+     * atomically reserved when that group launched. */
+    int active_stop_grace_ms;
+    bool active_restart_on_failure;
+    jw_svc_lifecycle_game active_lifecycle_game;
 
     jw_svc_backoff_state backoff;
     jw_svc_control_state control;   /* persisted row snapshot (owned) */
@@ -219,5 +231,25 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
 
 /* The effective-state slug used on CTL-1 ("unavailable", "disabled", ...). */
 const char *jw_svc_effective_state_name(jw_svc_effective_state state);
+
+/* CTL-1 helpers shared with jawakad's IPC layer. Service ids used as log-path
+ * components are independently checked even when they came from a retained
+ * invalid-manifest record, and hostile tail counts are bounded before any
+ * allocation. */
+#define JW_SVC_LOG_TAIL_DEFAULT 100
+#define JW_SVC_LOG_TAIL_MAX 1000
+bool jw_svc_supervisor_service_id_is_safe(const char *service_id);
+int jw_svc_supervisor_bound_log_tail(int requested);
+bool jw_svc_supervisor_join_scan_root(char *out, size_t out_size,
+                                      const char *apps_path,
+                                      const char *root_name);
+bool jw_svc_supervisor_ctl_op_requires_id(const char *operation);
+
+struct cJSON;
+/* Appends the normative CTL-1 status fields to an existing JSON object.
+ * This is additive to the existing supervisor API so the daemon and the
+ * integration suite share one schema implementation. */
+bool jw_svc_supervisor_status_json(const jw_svc_supervised *entry,
+                                   struct cJSON *object);
 
 #endif /* JW_SERVICES_SUPERVISOR_H */

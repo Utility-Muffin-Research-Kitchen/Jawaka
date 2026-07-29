@@ -19,6 +19,7 @@
 #include "internal/scrape/scrape_worker.h"
 #include "internal/scrape/ss_client.h"
 #include "internal/services/log_redact.h"
+#include "internal/services/launch.h"
 #include "internal/services/supervisor.h"
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
@@ -1568,6 +1569,10 @@ static void jw__services_init(jw_daemon_state *state) {
     if (!platform || !platform[0]) {
         platform = jw_platform_compiled_id();
     }
+    if (!platform || !platform[0]) {
+        jw_log_warn("services: no platform id; supervisor disabled");
+        return;
+    }
     const char *apps_path = getenv("APPS_PATH");
     const char *userdata = getenv("USERDATA_PATH");
     const char *logs = getenv("LOGS_PATH");
@@ -1576,14 +1581,12 @@ static void jw__services_init(jw_daemon_state *state) {
     char shared[PATH_MAX];
     const char *roots[3];
     int nroots = 0;
-    if (apps_path && apps_path[0] &&
-        snprintf(primary, sizeof(primary), "%s/%s", apps_path, platform) <
-            (int)sizeof(primary)) {
+    if (jw_svc_supervisor_join_scan_root(primary, sizeof(primary),
+                                         apps_path, platform)) {
         roots[nroots++] = primary;
     }
-    if (apps_path && apps_path[0] &&
-        snprintf(shared, sizeof(shared), "%s/shared", apps_path) <
-            (int)sizeof(shared)) {
+    if (jw_svc_supervisor_join_scan_root(shared, sizeof(shared),
+                                         apps_path, "shared")) {
         roots[nroots++] = shared;
     }
     roots[nroots] = NULL;
@@ -6955,6 +6958,12 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
         if (stuck[0]) {
             jw_log_warn("services: service %s did not stop before game launch; "
                         "requires user override", stuck);
+            /* No override token exists in this phase, so fail closed and let
+               the requesting client surface the error. Keeping pending_launch
+               set would silently retry from a later child-exit path. */
+            state->pending_launch = false;
+            state->pending_launch_resume_switcher = false;
+            return -1;
         }
     }
 
@@ -8684,47 +8693,25 @@ static int jw__handle_relocation(jw_daemon_state *state, jw_ipc_client *client,
 
 /* Serializes one supervised service's CTL-1 detail into `obj`. */
 static void jw__service_status_json(const jw_svc_supervised *e, cJSON *obj) {
-    if (!e || !obj) {
-        return;
-    }
-    cJSON_AddStringToObject(obj, "id", e->service_id);
-    cJSON_AddStringToObject(obj, "state", jw_svc_effective_state_name(e->state));
-    cJSON_AddBoolToObject(obj, "desired_enabled", e->desired_enabled);
-    cJSON_AddBoolToObject(obj, "session_run", e->session_run);
-    cJSON_AddBoolToObject(obj, "manifest_valid", e->manifest_valid);
-    cJSON_AddBoolToObject(obj, "on_secondary_root", e->on_secondary_root);
-    if (!e->manifest_valid && e->reject_reason[0]) {
-        cJSON_AddStringToObject(obj, "reject_reason", e->reject_reason);
-    }
-    if (e->pgid > 0) {
-        cJSON_AddNumberToObject(obj, "pgid", (double)e->pgid);
-    }
-    if (e->control.has_last_exit) {
-        cJSON_AddNumberToObject(obj, "last_exit_code",
-                                (double)e->control.last_exit_code);
-    }
-    cJSON_AddNumberToObject(obj, "restart_count",
-                            (double)e->control.restart_count);
-    cJSON_AddBoolToObject(obj, "breaker_open", e->backoff.breaker_open);
-    if (e->installed_package_version[0]) {
-        cJSON_AddStringToObject(obj, "package_version",
-                                e->installed_package_version);
-    }
+    (void)jw_svc_supervisor_status_json(e, obj);
 }
 
 /* Reads up to `tail` lines from the service's rotating log, redacting each
  * line per CTL-1's secret-redaction rule, and appends them as a JSON array
  * of strings to `arr`. Bounded: reads at most the newest current log file
  * and caps output so an IPC reply never carries an unbounded payload. */
-static void jw__service_logs_json(jw_daemon_state *state, const char *service_id,
+static void jw__service_logs_json(jw_daemon_state *state,
+                                  const jw_svc_supervised *entry,
                                   int tail, cJSON *arr) {
     const char *logs = getenv("LOGS_PATH");
-    if (!logs || !logs[0] || !arr) {
+    if (!logs || !logs[0] || !entry || !arr ||
+        !jw_svc_supervisor_service_id_is_safe(entry->service_id)) {
         return;
     }
     char path[PATH_MAX];
-    if (snprintf(path, sizeof(path), "%s/services/%s/%s.log",
-                 logs, service_id, service_id) >= (int)sizeof(path)) {
+    int written = snprintf(path, sizeof(path), "%s/services/%s/%s.log",
+                           logs, entry->service_id, entry->service_id);
+    if (written < 0 || (size_t)written >= sizeof(path)) {
         return;
     }
     FILE *fp = fopen(path, "rb");
@@ -8733,18 +8720,16 @@ static void jw__service_logs_json(jw_daemon_state *state, const char *service_id
     }
     /* Read the whole (bounded-by-rotation, <= 256 KiB) current file, then
      * keep only the last `tail` lines. */
-    char *buf = malloc(256 * 1024 + 1u);
+    char *buf = malloc((size_t)JW_SVC_LOG_MAX_BYTES + 1u);
     if (!buf) {
         fclose(fp);
         return;
     }
-    size_t n = fread(buf, 1, 256 * 1024, fp);
+    size_t n = fread(buf, 1, (size_t)JW_SVC_LOG_MAX_BYTES, fp);
     fclose(fp);
     buf[n] = '\0';
 
-    if (tail <= 0) {
-        tail = 100;
-    }
+    tail = jw_svc_supervisor_bound_log_tail(tail);
     /* Split into lines, redact each, collect into a ring of the last N. */
     char **lines = calloc((size_t)tail, sizeof(char *));
     if (!lines) {
@@ -8814,6 +8799,10 @@ static int jw__handle_service_ctl(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_json(client, reply);
     }
 
+    if (!jw_svc_supervisor_ctl_op_requires_id(svc_op)) {
+        return jw__reply_error(client, "unknown-service-op");
+    }
+
     /* All remaining ops target one service id. */
     cJSON *id_item = cJSON_GetObjectItemCaseSensitive(root, "id");
     if (!cJSON_IsString(id_item) || !id_item->valuestring ||
@@ -8842,17 +8831,19 @@ static int jw__handle_service_ctl(jw_daemon_state *state, jw_ipc_client *client,
         if (!e) {
             return jw__reply_error(client, "unknown-service");
         }
-        int tail = 100;
+        int tail = strcmp(svc_op, "export-logs") == 0
+                       ? JW_SVC_LOG_TAIL_MAX : JW_SVC_LOG_TAIL_DEFAULT;
         cJSON *tail_item = cJSON_GetObjectItemCaseSensitive(root, "tail");
         if (cJSON_IsNumber(tail_item) && tail_item->valueint > 0) {
             tail = tail_item->valueint;
         }
+        tail = jw_svc_supervisor_bound_log_tail(tail);
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddStringToObject(reply, "type", "ok");
         cJSON_AddStringToObject(reply, "action", op);
         cJSON_AddStringToObject(reply, "id", id);
         cJSON *lines = cJSON_AddArrayToObject(reply, "lines");
-        jw__service_logs_json(state, id, tail, lines);
+        jw__service_logs_json(state, e, tail, lines);
         return jw__reply_json(client, reply);
     }
 
@@ -8874,8 +8865,6 @@ static int jw__handle_service_ctl(jw_daemon_state *state, jw_ipc_client *client,
     } else if (strcmp(svc_op, "restart") == 0) {
         ok = jw_svc_supervisor_restart(state->services, id, reason, sizeof(reason));
         action = "restart";
-    } else {
-        return jw__reply_error(client, "unknown-service-op");
     }
 
     if (!ok) {
