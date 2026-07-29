@@ -34,14 +34,14 @@ static void jw__set_cloexec(int fd) {
     }
 }
 
-static void jw__set_io_timeout(int fd, int seconds) {
+static void jw__set_io_timeout_ms(int fd, int timeout_ms) {
     struct timeval tv;
     if (fd < 0) {
         return;
     }
 
-    tv.tv_sec = seconds;
-    tv.tv_usec = 0;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
@@ -195,7 +195,7 @@ int jw_ipc_server_accept(jw_ipc_server *server, jw_ipc_client **out_client, int 
         return -1;
     }
     jw__set_cloexec(client_fd);
-    jw__set_io_timeout(client_fd, 5);
+    jw__set_io_timeout_ms(client_fd, 5000);
 
     jw_ipc_client *client = (jw_ipc_client *)calloc(1, sizeof(*client));
     if (!client) {
@@ -223,7 +223,9 @@ void jw_ipc_server_close(jw_ipc_server *server) {
     free(server);
 }
 
-int jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out) {
+static int jw__ipc_client_connect_timeout(const char *socket_path,
+                                          jw_ipc_client **out,
+                                          int timeout_ms) {
     if (!socket_path || !out) {
         return -1;
     }
@@ -249,7 +251,7 @@ int jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out) {
     /* Bound every request so the daemon (and CLI tools) can never block
        forever on a wedged peer. 30s leaves headroom for a synchronous
        scan-library reply while still guaranteeing forward progress. */
-    jw__set_io_timeout(fd, 30);
+    jw__set_io_timeout_ms(fd, timeout_ms);
 
     jw_ipc_client *client = (jw_ipc_client *)calloc(1, sizeof(*client));
     if (!client) {
@@ -260,6 +262,10 @@ int jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out) {
     client->fd = fd;
     *out = client;
     return 0;
+}
+
+int jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out) {
+    return jw__ipc_client_connect_timeout(socket_path, out, 30000);
 }
 
 int jw_ipc_client_send(jw_ipc_client *client, const char *json, size_t len) {
@@ -343,9 +349,11 @@ void jw_ipc_client_close(jw_ipc_client *client) {
     free(client);
 }
 
-int jw_ipc_request(const char *socket_path, const char *json, size_t len, char **out_json, size_t *out_len) {
+int jw_ipc_request_timeout(const char *socket_path, const char *json, size_t len,
+                           char **out_json, size_t *out_len, int timeout_ms) {
     jw_ipc_client *client = NULL;
-    if (jw_ipc_client_connect(socket_path, &client) != 0) {
+    if (timeout_ms <= 0 ||
+        jw__ipc_client_connect_timeout(socket_path, &client, timeout_ms) != 0) {
         return -1;
     }
 
@@ -357,4 +365,10 @@ int jw_ipc_request(const char *socket_path, const char *json, size_t len, char *
     int rc = jw_ipc_client_recv(client, out_json, out_len);
     jw_ipc_client_close(client);
     return rc;
+}
+
+int jw_ipc_request(const char *socket_path, const char *json, size_t len,
+                   char **out_json, size_t *out_len) {
+    return jw_ipc_request_timeout(socket_path, json, len, out_json, out_len,
+                                  30000);
 }

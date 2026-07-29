@@ -1,32 +1,60 @@
 #include "internal/ipc/ipc_client.h"
+#include "internal/ipc/ctl1.h"
 #include "internal/ipc/ipc.h"
 
 #include "cJSON.h"
 
+#include <limits.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
 
 /* Send request (takes ownership of req), parse the JSON response.
  * Caller must cJSON_Delete(*out_response) on success. */
-static int ipc__request(const char *socket_path, cJSON *req, cJSON **out_resp) {
+static int ipc__request_max(const char *socket_path, cJSON *req,
+                            cJSON **out_resp, size_t max_response,
+                            bool require_exact_payload, int timeout_ms) {
     char *body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     if (!body) return -1;
 
     char *resp_json = NULL;
     size_t resp_len = 0;
-    int rc = jw_ipc_request(socket_path, body, strlen(body), &resp_json, &resp_len);
+    size_t body_len = strlen(body);
+    if (body_len > max_response) {
+        cJSON_free(body);
+        return -1;
+    }
+    int rc = jw_ipc_request_timeout(socket_path, body, body_len,
+                                    &resp_json, &resp_len, timeout_ms);
     cJSON_free(body);
     if (rc != 0) return -1;
 
+    if (resp_len > max_response ||
+        (require_exact_payload && memchr(resp_json, '\0', resp_len))) {
+        free(resp_json);
+        return -1;
+    }
     const char *parse_end = NULL;
-    cJSON *resp = cJSON_ParseWithOpts(resp_json, &parse_end, 1);
+    cJSON *resp = require_exact_payload
+        ? cJSON_ParseWithLengthOpts(resp_json, resp_len, &parse_end, false)
+        : cJSON_ParseWithOpts(resp_json, &parse_end, 1);
+    bool consumed_exactly = !require_exact_payload ||
+                            parse_end == resp_json + resp_len;
     free(resp_json);
-    if (!resp) return -1;
+    if (!resp || !consumed_exactly) {
+        cJSON_Delete(resp);
+        return -1;
+    }
 
     *out_resp = resp;
     return 0;
+}
+
+static int ipc__request(const char *socket_path, cJSON *req, cJSON **out_resp) {
+    return ipc__request_max(socket_path, req, out_resp, JW_IPC_MAX_FRAME,
+                            false, 30000);
 }
 
 static int ipc__type_is(const cJSON *resp, const char *expected) {
@@ -317,6 +345,204 @@ static int ipc__relocation_request(const char *socket_path, cJSON *req,
                                    out, error, error_len);
     cJSON_Delete(resp);
     return rc;
+}
+
+/* ---- CTL-1: service control (control-ipc-v1) ---- */
+
+static atomic_uint ipc__ctl1_sequence = 1u;
+
+static void ipc__ctl1_next_id(char out[JW_CTL1_ID_MAX + 1]) {
+    unsigned value = atomic_fetch_add_explicit(&ipc__ctl1_sequence, 1u,
+                                                memory_order_relaxed);
+    snprintf(out, JW_CTL1_ID_MAX + 1u, "jawaka-%u", value);
+}
+
+static int ipc__object_size(const cJSON *object) {
+    int count = 0;
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, object) {
+        if (count == INT_MAX) return -1;
+        count++;
+    }
+    return count;
+}
+
+static bool ipc__ctl1_version_and_id(const cJSON *response,
+                                     const char *expected_id) {
+    const cJSON *version =
+        cJSON_GetObjectItemCaseSensitive(response, "v");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(response, "id");
+    return cJSON_IsObject(response) && cJSON_IsNumber(version) &&
+           version->valuedouble == (double)JW_CTL1_VERSION &&
+           cJSON_IsString(id) && id->valuestring &&
+           strcmp(id->valuestring, expected_id) == 0;
+}
+
+static bool ipc__service_state_is_known(const char *state) {
+    static const char *const states[] = {
+        "unavailable", "disabled", "stopped", "stale-generation",
+        "starting", "running", "stopping", "backoff", "failed",
+    };
+    if (!state) return false;
+    for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+        if (strcmp(state, states[i]) == 0) return true;
+    }
+    return false;
+}
+
+static bool ipc__service_id_is_valid(const char *id) {
+    if (!id) return false;
+    size_t len = strlen(id);
+    if (len < 3u || len > JW_IPC_SVC_ID_MAX) return false;
+    bool saw_dot = false;
+    bool component_has_char = false;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)id[i];
+        if (ch == '.') {
+            if (!component_has_char) return false;
+            saw_dot = true;
+            component_has_char = false;
+        } else if ((ch >= (unsigned char)'a' && ch <= (unsigned char)'z') ||
+                   (ch >= (unsigned char)'0' && ch <= (unsigned char)'9')) {
+            component_has_char = true;
+        } else {
+            return false;
+        }
+    }
+    return saw_dot && component_has_char;
+}
+
+static bool ipc__ctl1_error_message(const cJSON *response,
+                                    char *status, int status_len) {
+    const cJSON *error =
+        cJSON_GetObjectItemCaseSensitive(response, "error");
+    const cJSON *code = cJSON_GetObjectItemCaseSensitive(error, "code");
+    const cJSON *message =
+        cJSON_GetObjectItemCaseSensitive(error, "message");
+    if (ipc__object_size(response) != 3 || !cJSON_IsObject(error) ||
+        (ipc__object_size(error) != 2 && ipc__object_size(error) != 3) ||
+        !cJSON_IsString(code) || !code->valuestring ||
+        !cJSON_IsString(message) || !message->valuestring) {
+        return false;
+    }
+    if (status && status_len > 0) {
+        snprintf(status, (size_t)status_len, "%s", message->valuestring);
+    }
+    return true;
+}
+
+int jw_ipc_service_list(const char *socket_path, jw_ipc_service_info *out,
+                        int max, int *out_count) {
+    if (out_count) *out_count = 0;
+    if (!socket_path || max < 0 || (max > 0 && !out)) return -1;
+
+    char request_id[JW_CTL1_ID_MAX + 1];
+    ipc__ctl1_next_id(request_id);
+    cJSON *request = cJSON_CreateObject();
+    if (!request ||
+        !cJSON_AddNumberToObject(request, "v", JW_CTL1_VERSION) ||
+        !cJSON_AddStringToObject(request, "op", "list") ||
+        !cJSON_AddStringToObject(request, "id", request_id)) {
+        cJSON_Delete(request);
+        return -1;
+    }
+
+    cJSON *response = NULL;
+    if (ipc__request_max(socket_path, request, &response,
+                         JW_CTL1_MAX_PAYLOAD, true, 250) != 0) {
+        return -1;
+    }
+    const cJSON *services =
+        cJSON_GetObjectItemCaseSensitive(response, "services");
+    if (!ipc__ctl1_version_and_id(response, request_id) ||
+        ipc__object_size(response) != 3 || !cJSON_IsArray(services)) {
+        cJSON_Delete(response);
+        return -1;
+    }
+
+    int copied = 0;
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, services) {
+        const cJSON *service_id =
+            cJSON_GetObjectItemCaseSensitive(item, "service_id");
+        const cJSON *desired =
+            cJSON_GetObjectItemCaseSensitive(item, "desired_enabled");
+        const cJSON *state =
+            cJSON_GetObjectItemCaseSensitive(item, "effective_state");
+        if (!cJSON_IsObject(item) || ipc__object_size(item) != 3 ||
+            !cJSON_IsString(service_id) ||
+            !ipc__service_id_is_valid(service_id->valuestring) ||
+            !cJSON_IsBool(desired) || !cJSON_IsString(state) ||
+            !ipc__service_state_is_known(state->valuestring)) {
+            cJSON_Delete(response);
+            return -1;
+        }
+        if (copied < max) {
+            jw_ipc_service_info *info = &out[copied++];
+            memset(info, 0, sizeof(*info));
+            ipc__copy_string(info->id, sizeof(info->id),
+                             service_id->valuestring);
+            ipc__copy_string(info->state, sizeof(info->state),
+                             state->valuestring);
+            info->desired_enabled = cJSON_IsTrue(desired);
+        }
+    }
+    cJSON_Delete(response);
+    if (out_count) *out_count = copied;
+    return 0;
+}
+
+int jw_ipc_service_ctl(const char *socket_path, const char *op,
+                       const char *service_id, char *status, int status_len) {
+    if (status && status_len > 0) status[0] = '\0';
+    bool known_op = op &&
+        (strcmp(op, "enable") == 0 || strcmp(op, "disable") == 0 ||
+         strcmp(op, "run") == 0 || strcmp(op, "stop") == 0 ||
+         strcmp(op, "restart") == 0);
+    if (!socket_path || !known_op || !ipc__service_id_is_valid(service_id)) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     known_op ? "invalid service id" : "unknown operation");
+        }
+        return -1;
+    }
+
+    char request_id[JW_CTL1_ID_MAX + 1];
+    ipc__ctl1_next_id(request_id);
+    cJSON *request = cJSON_CreateObject();
+    if (!request ||
+        !cJSON_AddNumberToObject(request, "v", JW_CTL1_VERSION) ||
+        !cJSON_AddStringToObject(request, "op", op) ||
+        !cJSON_AddStringToObject(request, "id", request_id) ||
+        !cJSON_AddStringToObject(request, "service_id", service_id)) {
+        cJSON_Delete(request);
+        return -1;
+    }
+
+    cJSON *response = NULL;
+    if (ipc__request_max(socket_path, request, &response,
+                         JW_CTL1_MAX_PAYLOAD, true, 30000) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "daemon unreachable");
+        }
+        return -1;
+    }
+    if (!ipc__ctl1_version_and_id(response, request_id)) {
+        cJSON_Delete(response);
+        return -1;
+    }
+
+    const cJSON *ok = cJSON_GetObjectItemCaseSensitive(response, "ok");
+    if (ipc__object_size(response) == 3 && cJSON_IsTrue(ok)) {
+        cJSON_Delete(response);
+        return 0;
+    }
+    (void)ipc__ctl1_error_message(response, status, status_len);
+    cJSON_Delete(response);
+    if (status && status_len > 0 && !status[0]) {
+        snprintf(status, (size_t)status_len, "%s", "malformed response");
+    }
+    return -1;
 }
 
 int jw_ipc_relocation_prepare(const char *socket_path, const char *operation_id,

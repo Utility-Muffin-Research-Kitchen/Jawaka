@@ -4,6 +4,7 @@
 #include "internal/db/relocation.h"
 #include "internal/discovery/discovery.h"
 #include "internal/focus/focus.h"
+#include "internal/ipc/ctl1.h"
 #include "internal/ipc/ipc.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/platform/bluetooth.h"
@@ -8691,9 +8692,110 @@ static int jw__handle_relocation(jw_daemon_state *state, jw_ipc_client *client,
 /* CTL-1: service control and status IPC (app-services-v1)             */
 /* ------------------------------------------------------------------ */
 
-/* Serializes one supervised service's CTL-1 detail into `obj`. */
-static void jw__service_status_json(const jw_svc_supervised *e, cJSON *obj) {
-    (void)jw_svc_supervisor_status_json(e, obj);
+/* Serializes one supervised service into the closed CTL-1 status-response
+ * shape frozen by control-ipc-v1.schema.json. Request correlation fields are
+ * added by the caller. */
+static bool jw__service_status_json(const jw_svc_supervised *e, cJSON *obj) {
+    if (!e || !obj) return false;
+    jw_svc_lifecycle_game game_policy =
+        e->pgid > 0 ? e->active_lifecycle_game : e->manifest.lifecycle_game;
+    if (!cJSON_AddStringToObject(obj, "service_id", e->service_id) ||
+        !cJSON_AddBoolToObject(obj, "desired_enabled", e->desired_enabled) ||
+        !cJSON_AddStringToObject(obj, "effective_state",
+                                 jw_svc_effective_state_name(e->state)) ||
+        !cJSON_AddStringToObject(obj, "coordination",
+             game_policy == JW_SVC_LIFECYCLE_GAME_NOTIFY && e->pgid > 0
+                 ? "unsubscribed" : "n/a")) {
+        return false;
+    }
+
+    cJSON *ownership = cJSON_AddObjectToObject(obj, "ownership_identity");
+    if (!ownership) return false;
+    if (e->pgid > 0) {
+        char instant[32];
+        snprintf(instant, sizeof(instant), "%lld", e->launch_instant_us);
+        if (!cJSON_AddNumberToObject(ownership, "pgid", (double)e->pgid) ||
+            !cJSON_AddStringToObject(ownership, "launch_instant", instant)) {
+            return false;
+        }
+    } else if (!cJSON_AddNullToObject(ownership, "pgid") ||
+               !cJSON_AddNullToObject(ownership, "launch_instant")) {
+        return false;
+    }
+
+    const char *lease = e->lease_fd >= 0 ? "held" :
+        e->state == JW_SVC_STATE_STALE_GENERATION ? "stale" : "none";
+    if (!cJSON_AddStringToObject(obj, "generation_lease_state", lease)) {
+        return false;
+    }
+
+    cJSON *transition = cJSON_AddObjectToObject(obj, "last_transition");
+    char transition_at[32];
+    snprintf(transition_at, sizeof(transition_at), "%lld",
+             e->control.last_transition_at_us);
+    const char *transition_reason =
+        e->state == JW_SVC_STATE_UNAVAILABLE && e->reject_reason[0]
+            ? e->reject_reason : e->control.last_transition_reason;
+    if (!transition ||
+        !cJSON_AddStringToObject(transition, "at", transition_at) ||
+        !cJSON_AddStringToObject(transition, "reason", transition_reason)) {
+        return false;
+    }
+
+    cJSON *last_exit = cJSON_AddObjectToObject(obj, "last_exit");
+    if (!last_exit) return false;
+    if (e->control.has_last_exit) {
+        char exit_at[32];
+        snprintf(exit_at, sizeof(exit_at), "%lld",
+                 e->control.last_exit_at_us);
+        if (!cJSON_AddNumberToObject(last_exit, "status",
+                                     (double)e->control.last_exit_code) ||
+            !cJSON_AddStringToObject(last_exit, "at", exit_at)) {
+            return false;
+        }
+    } else if (!cJSON_AddNullToObject(last_exit, "status") ||
+               !cJSON_AddNullToObject(last_exit, "at")) {
+        return false;
+    }
+
+    if (!cJSON_AddNumberToObject(obj, "restart_count",
+                                 (double)e->control.restart_count)) {
+        return false;
+    }
+    if (e->state == JW_SVC_STATE_BACKOFF) {
+        if (!cJSON_AddStringToObject(obj, "backoff_or_breaker_reason",
+                                     "on-failure")) return false;
+    } else if (e->state == JW_SVC_STATE_FAILED) {
+        if (!cJSON_AddStringToObject(obj, "backoff_or_breaker_reason",
+                                     "circuit-breaker")) return false;
+    } else if (!cJSON_AddNullToObject(obj, "backoff_or_breaker_reason")) {
+        return false;
+    }
+
+    cJSON *installed = cJSON_AddObjectToObject(obj, "installed_package");
+    const char *package_id = e->control.installed_package_id[0]
+                                 ? e->control.installed_package_id
+                                 : e->service_id;
+    const char *package_version = e->installed_package_version[0]
+                                      ? e->installed_package_version
+                                      : e->control.installed_package_version;
+    if (!installed ||
+        !cJSON_AddStringToObject(installed, "id", package_id) ||
+        !cJSON_AddStringToObject(installed, "version", package_version)) {
+        return false;
+    }
+
+    bool lifecycle_active =
+        e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_GAME;
+    cJSON *lifecycle =
+        cJSON_AddObjectToObject(obj, "lifecycle_policy_stop");
+    if (!lifecycle ||
+        !cJSON_AddBoolToObject(lifecycle, "active", lifecycle_active)) {
+        return false;
+    }
+    return lifecycle_active
+        ? cJSON_AddStringToObject(lifecycle, "reason", "game") != NULL
+        : cJSON_AddNullToObject(lifecycle, "reason") != NULL;
 }
 
 /* Reads up to `tail` lines from the service's rotating log, redacting each
@@ -8765,138 +8867,189 @@ static void jw__service_logs_json(jw_daemon_state *state,
     (void)state;
 }
 
-static int jw__handle_service_ctl(jw_daemon_state *state, jw_ipc_client *client,
-                                  cJSON *root, const char *op) {
-    if (!state->services) {
-        return jw__reply_error(client, "services-unavailable");
-    }
-    const char *svc_op = op + strlen("service-");
-
-    if (strcmp(svc_op, "capabilities") == 0) {
-        cJSON *reply = cJSON_CreateObject();
-        cJSON_AddStringToObject(reply, "type", "ok");
-        cJSON_AddStringToObject(reply, "action", "service-capabilities");
-        cJSON *caps = cJSON_AddArrayToObject(reply, "capabilities");
-        cJSON_AddItemToArray(caps, cJSON_CreateString("app-services-v1"));
-#if defined(__linux__)
-        cJSON_AddItemToArray(caps, cJSON_CreateString("pdeathsig"));
-#endif
-        return jw__reply_json(client, reply);
-    }
-
-    if (strcmp(svc_op, "list") == 0) {
-        cJSON *reply = cJSON_CreateObject();
-        cJSON_AddStringToObject(reply, "type", "ok");
-        cJSON_AddStringToObject(reply, "action", "service-list");
-        cJSON *arr = cJSON_AddArrayToObject(reply, "services");
-        int n = jw_svc_supervisor_count(state->services);
-        for (int i = 0; i < n; i++) {
-            const jw_svc_supervised *e = jw_svc_supervisor_at(state->services, i);
-            cJSON *obj = cJSON_CreateObject();
-            jw__service_status_json(e, obj);
-            cJSON_AddItemToArray(arr, obj);
-        }
-        return jw__reply_json(client, reply);
-    }
-
-    if (!jw_svc_supervisor_ctl_op_requires_id(svc_op)) {
-        return jw__reply_error(client, "unknown-service-op");
-    }
-
-    /* All remaining ops target one service id. */
-    cJSON *id_item = cJSON_GetObjectItemCaseSensitive(root, "id");
-    if (!cJSON_IsString(id_item) || !id_item->valuestring ||
-        !id_item->valuestring[0]) {
-        return jw__reply_error(client, "missing-id");
-    }
-    const char *id = id_item->valuestring;
-    char reason[JW_SVC_REASON_BUF];
-
-    if (strcmp(svc_op, "status") == 0) {
-        const jw_svc_supervised *e =
-            jw_svc_supervisor_find(state->services, id);
-        if (!e) {
-            return jw__reply_error(client, "unknown-service");
-        }
-        cJSON *reply = cJSON_CreateObject();
-        cJSON_AddStringToObject(reply, "type", "ok");
-        cJSON_AddStringToObject(reply, "action", "service-status");
-        jw__service_status_json(e, reply);
-        return jw__reply_json(client, reply);
-    }
-
-    if (strcmp(svc_op, "logs") == 0 || strcmp(svc_op, "export-logs") == 0) {
-        const jw_svc_supervised *e =
-            jw_svc_supervisor_find(state->services, id);
-        if (!e) {
-            return jw__reply_error(client, "unknown-service");
-        }
-        int tail = strcmp(svc_op, "export-logs") == 0
-                       ? JW_SVC_LOG_TAIL_MAX : JW_SVC_LOG_TAIL_DEFAULT;
-        cJSON *tail_item = cJSON_GetObjectItemCaseSensitive(root, "tail");
-        if (cJSON_IsNumber(tail_item) && tail_item->valueint > 0) {
-            tail = tail_item->valueint;
-        }
-        tail = jw_svc_supervisor_bound_log_tail(tail);
-        cJSON *reply = cJSON_CreateObject();
-        cJSON_AddStringToObject(reply, "type", "ok");
-        cJSON_AddStringToObject(reply, "action", op);
-        cJSON_AddStringToObject(reply, "id", id);
-        cJSON *lines = cJSON_AddArrayToObject(reply, "lines");
-        jw__service_logs_json(state, e, tail, lines);
-        return jw__reply_json(client, reply);
-    }
-
-    /* Mutating operations. */
-    bool ok = false;
-    const char *action = NULL;
-    if (strcmp(svc_op, "enable") == 0) {
-        ok = jw_svc_supervisor_enable(state->services, id, reason, sizeof(reason));
-        action = "enable";
-    } else if (strcmp(svc_op, "disable") == 0) {
-        ok = jw_svc_supervisor_disable(state->services, id, reason, sizeof(reason));
-        action = "disable";
-    } else if (strcmp(svc_op, "run") == 0) {
-        ok = jw_svc_supervisor_run(state->services, id, reason, sizeof(reason));
-        action = "run";
-    } else if (strcmp(svc_op, "stop") == 0) {
-        ok = jw_svc_supervisor_stop(state->services, id, reason, sizeof(reason));
-        action = "stop";
-    } else if (strcmp(svc_op, "restart") == 0) {
-        ok = jw_svc_supervisor_restart(state->services, id, reason, sizeof(reason));
-        action = "restart";
-    }
-
-    if (!ok) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "%s-failed: %s", action, reason);
-        return jw__reply_error(client, msg);
-    }
+static int jw__reply_ctl1_error(jw_ipc_client *client, const char *id,
+                                const char *code, const char *message) {
     cJSON *reply = cJSON_CreateObject();
-    cJSON_AddStringToObject(reply, "type", "ok");
-    cJSON_AddStringToObject(reply, "action", action);
-    cJSON_AddStringToObject(reply, "id", id);
+    cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+    cJSON_AddStringToObject(reply, "id", id ? id : "");
+    cJSON *error = cJSON_AddObjectToObject(reply, "error");
+    cJSON_AddStringToObject(error, "code", code ? code : "internal-error");
+    cJSON_AddStringToObject(error, "message", message ? message : code);
+    if (code && strcmp(code, "unsupported-version") == 0) {
+        cJSON *versions = cJSON_AddArrayToObject(error, "supported_versions");
+        cJSON_AddItemToArray(versions, cJSON_CreateNumber(JW_CTL1_VERSION));
+    }
     return jw__reply_json(client, reply);
 }
 
-static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, const char *body) {
-    cJSON *root = cJSON_Parse(body);
+static int jw__reply_ctl1_json(jw_ipc_client *client, const char *id,
+                               cJSON *reply) {
+    char *json = cJSON_PrintUnformatted(reply);
+    if (!json) {
+        cJSON_Delete(reply);
+        return -1;
+    }
+    size_t len = strlen(json);
+    if (len > JW_CTL1_MAX_PAYLOAD) {
+        cJSON_free(json);
+        cJSON_Delete(reply);
+        return jw__reply_ctl1_error(client, id, "response-too-large",
+                                    "CTL-1 response exceeds 64 KiB");
+    }
+    int rc = jw_ipc_client_send(client, json, len);
+    cJSON_free(json);
+    cJSON_Delete(reply);
+    return rc;
+}
+
+static int jw__handle_service_ctl(jw_daemon_state *state,
+                                  jw_ipc_client *client,
+                                  const jw_ctl1_request *request) {
+    if (!state->services) {
+        return jw__reply_ctl1_error(client, request->id,
+                                    "services-unavailable",
+                                    "service supervisor is unavailable");
+    }
+
+    if (request->operation == JW_CTL1_OP_CAPABILITIES) {
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+        cJSON_AddStringToObject(reply, "id", request->id);
+        cJSON *caps = cJSON_AddArrayToObject(reply, "capabilities");
+        cJSON_AddItemToArray(caps, cJSON_CreateString("app-services-v1"));
+        cJSON_AddItemToArray(caps, cJSON_CreateString("control-ipc-v1"));
+#if defined(__linux__)
+        cJSON_AddItemToArray(caps, cJSON_CreateString("pdeathsig"));
+#endif
+        return jw__reply_ctl1_json(client, request->id, reply);
+    }
+
+    if (request->operation == JW_CTL1_OP_LIST) {
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+        cJSON_AddStringToObject(reply, "id", request->id);
+        cJSON *arr = cJSON_AddArrayToObject(reply, "services");
+        int n = jw_svc_supervisor_count(state->services);
+        for (int i = 0; i < n; i++) {
+            const jw_svc_supervised *e =
+                jw_svc_supervisor_at(state->services, i);
+            if (!e || (!e->manifest_valid && !e->control_loaded)) continue;
+            cJSON *obj = cJSON_CreateObject();
+            cJSON_AddStringToObject(obj, "service_id", e->service_id);
+            cJSON_AddBoolToObject(obj, "desired_enabled", e->desired_enabled);
+            cJSON_AddStringToObject(obj, "effective_state",
+                                    jw_svc_effective_state_name(e->state));
+            cJSON_AddItemToArray(arr, obj);
+        }
+        return jw__reply_ctl1_json(client, request->id, reply);
+    }
+
+    const char *service_id = request->service_id;
+    char reason[JW_SVC_REASON_BUF] = {0};
+
+    if (request->operation == JW_CTL1_OP_STATUS) {
+        const jw_svc_supervised *e =
+            jw_svc_supervisor_find(state->services, service_id);
+        if (!e) {
+            return jw__reply_ctl1_error(client, request->id,
+                                        "unknown-service",
+                                        "unknown service id");
+        }
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+        cJSON_AddStringToObject(reply, "id", request->id);
+        if (!jw__service_status_json(e, reply)) {
+            cJSON_Delete(reply);
+            return jw__reply_ctl1_error(client, request->id,
+                                        "internal-error",
+                                        "could not serialize service status");
+        }
+        return jw__reply_ctl1_json(client, request->id, reply);
+    }
+
+    if (request->operation == JW_CTL1_OP_LOGS ||
+        request->operation == JW_CTL1_OP_EXPORT_LOGS) {
+        const jw_svc_supervised *e =
+            jw_svc_supervisor_find(state->services, service_id);
+        if (!e) {
+            return jw__reply_ctl1_error(client, request->id,
+                                        "unknown-service",
+                                        "unknown service id");
+        }
+        int tail = request->operation == JW_CTL1_OP_EXPORT_LOGS
+                       ? JW_SVC_LOG_TAIL_MAX
+                       : request->has_tail ? request->tail
+                                           : JW_SVC_LOG_TAIL_DEFAULT;
+        tail = jw_svc_supervisor_bound_log_tail(tail);
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+        cJSON_AddStringToObject(reply, "id", request->id);
+        cJSON *lines = cJSON_AddArrayToObject(reply, "lines");
+        jw__service_logs_json(state, e, tail, lines);
+        return jw__reply_ctl1_json(client, request->id, reply);
+    }
+
+    bool ok = false;
+    if (request->operation == JW_CTL1_OP_ENABLE) {
+        ok = jw_svc_supervisor_enable(state->services, service_id,
+                                      reason, sizeof(reason));
+    } else if (request->operation == JW_CTL1_OP_DISABLE) {
+        ok = jw_svc_supervisor_disable(state->services, service_id,
+                                       reason, sizeof(reason));
+    } else if (request->operation == JW_CTL1_OP_RUN) {
+        ok = jw_svc_supervisor_run(state->services, service_id,
+                                   reason, sizeof(reason));
+    } else if (request->operation == JW_CTL1_OP_STOP) {
+        ok = jw_svc_supervisor_stop(state->services, service_id,
+                                    reason, sizeof(reason));
+    } else if (request->operation == JW_CTL1_OP_RESTART) {
+        ok = jw_svc_supervisor_restart(state->services, service_id,
+                                       reason, sizeof(reason));
+    }
+
+    if (!ok) {
+        char message[128];
+        snprintf(message, sizeof(message), "%s failed: %s",
+                 jw_ctl1_operation_name(request->operation), reason);
+        return jw__reply_ctl1_error(client, request->id,
+                                    reason[0] ? reason : "operation-failed",
+                                    message);
+    }
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+    cJSON_AddStringToObject(reply, "id", request->id);
+    cJSON_AddBoolToObject(reply, "ok", true);
+    return jw__reply_ctl1_json(client, request->id, reply);
+}
+
+static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
+                              const char *body, size_t body_len) {
+    cJSON *root = cJSON_ParseWithLength(body, body_len);
     if (!root) {
         jw_log_error("invalid json message");
         return jw__reply_error(client, "invalid json");
     }
 
     cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    cJSON *ctl_op = cJSON_GetObjectItemCaseSensitive(root, "op");
+    cJSON *ctl_version = cJSON_GetObjectItemCaseSensitive(root, "v");
+    if (ctl_op || (ctl_version && !type)) {
+        jw_ctl1_request request;
+        char code[32];
+        bool valid = jw_ctl1_parse_request(body, body_len, &request,
+                                           code, sizeof(code));
+        cJSON_Delete(root);
+        if (!valid) {
+            return jw__reply_ctl1_error(client, request.id, code,
+                strcmp(code, "unsupported-version") == 0
+                    ? "server supports CTL-1 v1 only"
+                    : "invalid CTL-1 request");
+        }
+        return jw__handle_service_ctl(state, client, &request);
+    }
     if (!cJSON_IsString(type) || !type->valuestring) {
         cJSON_Delete(root);
         return jw__reply_error(client, "missing type");
-    }
-
-    /* ---- CTL-1 (app-services-v1) ---- */
-    if (strncmp(type->valuestring, "service-", 8) == 0) {
-        int rc = jw__handle_service_ctl(state, client, root, type->valuestring);
-        cJSON_Delete(root);
-        return rc;
     }
 
     if (strcmp(type->valuestring, "suspend-inhibit-acquire") == 0 ||
@@ -9404,7 +9557,7 @@ static int jw__accept_and_process(jw_daemon_state *state) {
     size_t len = 0;
     int result = jw_ipc_client_recv(client, &body, &len);
     if (result == 0) {
-        result = jw__handle_message(state, client, body);
+        result = jw__handle_message(state, client, body, len);
     }
 
     free(body);

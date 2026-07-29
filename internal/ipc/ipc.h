@@ -5,6 +5,7 @@
 #include <sys/types.h>
 
 #define JW_IPC_MAX_FRAME (16u * 1024u * 1024u)
+#define JW_IPC_SERVICE_MAX_FRAME (64u * 1024u)
 
 typedef struct jw_ipc_server jw_ipc_server;
 typedef struct jw_ipc_client jw_ipc_client;
@@ -24,5 +25,7 @@ int  jw_ipc_client_peer_pid(jw_ipc_client *client, pid_t *out_pid);
 void jw_ipc_client_close(jw_ipc_client *client);
 
 int  jw_ipc_request(const char *socket_path, const char *json, size_t len, char **out_json, size_t *out_len);
+int  jw_ipc_request_timeout(const char *socket_path, const char *json, size_t len,
+                            char **out_json, size_t *out_len, int timeout_ms);
 
 #endif
