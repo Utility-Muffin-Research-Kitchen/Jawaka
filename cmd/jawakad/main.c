@@ -8933,7 +8933,14 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
         for (int i = 0; i < n; i++) {
             const jw_svc_supervised *e =
                 jw_svc_supervisor_at(state->services, i);
-            if (!e || (!e->manifest_valid && !e->control_loaded)) continue;
+            /* Invalid discovery alone is omitted. A locked old-generation
+             * lease is actionable service history even if the crash happened
+             * before the first durable control-state write, so it must remain
+             * discoverable as stale-generation. */
+            if (!e || (!e->manifest_valid && !e->control_loaded &&
+                       e->state != JW_SVC_STATE_STALE_GENERATION)) {
+                continue;
+            }
             cJSON *obj = cJSON_CreateObject();
             cJSON_AddStringToObject(obj, "service_id", e->service_id);
             cJSON_AddBoolToObject(obj, "desired_enabled", e->desired_enabled);
