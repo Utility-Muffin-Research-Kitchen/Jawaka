@@ -6,6 +6,14 @@
 
 #define JW_IPC_MAX_FRAME (16u * 1024u * 1024u)
 
+/* jw_ipc_client_send outcome: the peer closed before the reply could be
+   delivered. NOT an error. Notification-style clients send and close without
+   waiting for an answer by design (see ipc__notify in ipc_client.c), so the
+   request was received and handled; only an answer nobody wanted went
+   undelivered. Distinguished from -1 so callers can stop reporting the normal
+   case as a failure. */
+#define JW_IPC_PEER_GONE 1
+
 typedef struct jw_ipc_server jw_ipc_server;
 typedef struct jw_ipc_client jw_ipc_client;
 

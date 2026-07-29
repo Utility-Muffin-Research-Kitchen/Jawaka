@@ -1554,7 +1554,11 @@ static int jw__reply_json(jw_ipc_client *client, cJSON *root) {
     int rc = jw_ipc_client_send(client, json, strlen(json));
     cJSON_free(json);
     cJSON_Delete(root);
-    return rc;
+    /* The request was handled. A peer that closed before reading is a
+       notification client behaving exactly as designed, and reporting it as a
+       failure is what buried the session log under 7724 warnings: every haptic
+       tick is one of these. */
+    return rc == JW_IPC_PEER_GONE ? 0 : rc;
 }
 
 static int jw__reply_hello_ok(jw_ipc_client *client) {
@@ -9120,14 +9124,20 @@ static int jw__accept_and_process(jw_daemon_state *state) {
 
     char *body = NULL;
     size_t len = 0;
-    int result = jw_ipc_client_recv(client, &body, &len);
-    if (result == 0) {
-        result = jw__handle_message(state, client, body);
+    int result;
+    if (jw_ipc_client_recv(client, &body, &len) != 0) {
+        jw_log_warn("ipc client disconnected before sending a complete request");
+        result = -1;
+    } else if (jw__handle_message(state, client, body) != 0) {
+        jw_log_warn("ipc handler failed to answer a request");
+        result = -1;
+    } else {
+        result = 0;
     }
 
     free(body);
     jw_ipc_client_close(client);
-    return result == 0 ? 0 : -1;
+    return result;
 }
 
 static void jw__clear_menu_tracking(jw_daemon_state *state) {
@@ -9780,10 +9790,7 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        int rc = jw__accept_and_process(&state);
-        if (rc < 0 && !state.shutdown_requested && !g_shutdown_requested) {
-            jw_log_warn("ipc loop iteration failed");
-        }
+        (void)jw__accept_and_process(&state);
     }
 
     /* Quiesce, not a bare off: the worker is detached, so if a pattern is in
