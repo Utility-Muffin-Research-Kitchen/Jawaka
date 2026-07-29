@@ -19,6 +19,7 @@
 #include <limits.h>
 #include <spawn.h>
 #include <signal.h>
+#include <sqlite3.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -182,6 +183,31 @@ static jw_svc_supervisor *fixture_open(fixture *f, char *reason) {
     return jw_svc_supervisor_open(f->runtime, f->logs, f->state,
                                   f->scan_roots, f->secondary_scan_roots,
                                   f->userdata, reason, JW_SVC_REASON_BUF);
+}
+
+/* Installs/removes a deterministic SQLite write fault without reaching into
+ * the supervisor's opaque store. jw__persist() uses INSERT ... ON CONFLICT,
+ * so a BEFORE INSERT trigger covers both new and existing control rows. */
+static bool fixture_reject_control_writes(fixture *f, bool reject) {
+    char db_path[PATH_MAX];
+    jw__join(db_path, sizeof(db_path), f->state, "services-control.db");
+    sqlite3 *db = NULL;
+    if (sqlite3_open(db_path, &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return false;
+    }
+    const char *sql = reject
+        ? "CREATE TRIGGER supervisor_test_reject_write "
+          "BEFORE INSERT ON service_control_state "
+          "BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;"
+        : "DROP TRIGGER IF EXISTS supervisor_test_reject_write;";
+    char *error = NULL;
+    bool ok = sqlite3_exec(db, sql, NULL, NULL, &error) == SQLITE_OK;
+    sqlite3_free(error);
+    if (sqlite3_close(db) != SQLITE_OK) {
+        ok = false;
+    }
+    return ok;
 }
 
 static bool wait_for_state(jw_svc_supervisor *sup, const char *id,
@@ -472,6 +498,9 @@ static void test_invalid_manifest_isolated(void) {
     CHECK(bad != NULL && !bad->manifest_valid);
     CHECK(bad != NULL && bad->state == JW_SVC_STATE_UNAVAILABLE);
     CHECK(strcmp(bad->reject_reason, "id-mismatch") == 0);
+    /* A canonical id keeps this malformed discovery representable on CTL-1,
+     * so clients can reach the specific rejection reason. */
+    CHECK(jw_svc_supervisor_entry_is_listable(bad));
 
     CHECK(!jw_svc_supervisor_run(sup, "org.umrk.other", reason, sizeof(reason)));
     CHECK(strcmp(reason, "unavailable") == 0);
@@ -854,6 +883,221 @@ static void test_suspend_and_storage_lifecycle_stops(void) {
     fixture_teardown(&f);
 }
 
+typedef enum {
+    TEST_ASYNC_STOP = 0,
+    TEST_ASYNC_DISABLE,
+    TEST_ASYNC_RESTART,
+} test_async_operation;
+
+/* Stop/Disable/Restart are now asynchronous. A storage/suspend edge during
+ * their grace window must report the still-live group without stealing its
+ * pending reason or post-stop action. */
+static void test_async_control_stop_blocks_lifecycle(void) {
+    for (int operation = TEST_ASYNC_STOP;
+         operation <= TEST_ASYNC_RESTART; operation++) {
+        fixture f;
+        fixture_setup(&f);
+        const char *id = "org.umrk.test.asyncpolicy";
+        fixture_write_pak(
+            &f, "asyncpolicy.pak", id,
+            "trap '' TERM; while :; do sleep 1; done",
+            ",\"restart\":\"no\","
+            "\"lifecycle\":{\"stop_on_storage_change\":true,"
+            "\"stop_on_suspend\":true}");
+
+        char reason[JW_SVC_REASON_BUF];
+        jw_svc_supervisor *sup = fixture_open(&f, reason);
+        CHECK(sup != NULL);
+        CHECK(jw_svc_supervisor_scan(sup) == 1);
+        CHECK(jw_svc_supervisor_enable(sup, id, reason, sizeof(reason)));
+        CHECK(jw_svc_supervisor_run(sup, id, reason, sizeof(reason)));
+        CHECK(wait_for_state(sup, id, JW_SVC_STATE_RUNNING, 3000));
+
+        bool accepted = operation == TEST_ASYNC_DISABLE
+            ? jw_svc_supervisor_disable(sup, id, reason, sizeof(reason))
+            : operation == TEST_ASYNC_RESTART
+                  ? jw_svc_supervisor_restart(sup, id, reason, sizeof(reason))
+                  : jw_svc_supervisor_stop(sup, id, reason, sizeof(reason));
+        CHECK(accepted);
+        const jw_svc_supervised *e = jw_svc_supervisor_find(sup, id);
+        CHECK(e && e->pgid > 0);
+        CHECK(e && e->state == JW_SVC_STATE_STOPPING);
+        CHECK(e && e->pending_stop_reason == JW_SVC_STOP_INTENTIONAL);
+        jw_svc_post_stop_action expected_post =
+            operation == TEST_ASYNC_RESTART ? JW_SVC_POST_STOP_RESTART
+                                            : JW_SVC_POST_STOP_NONE;
+        CHECK(e && e->post_stop == expected_post);
+        CHECK(e && !e->lifecycle_restart_pending);
+
+        char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+        CHECK(jw_svc_supervisor_storage_change_blocked(
+            sup, stuck, sizeof(stuck)));
+        CHECK(strcmp(stuck, id) == 0);
+        CHECK(jw_svc_supervisor_storage_change_begin(
+                  sup, stuck, sizeof(stuck)) == 0);
+        CHECK(strcmp(stuck, id) == 0);
+        e = jw_svc_supervisor_find(sup, id);
+        CHECK(e && e->pending_stop_reason == JW_SVC_STOP_INTENTIONAL);
+        CHECK(e && e->post_stop == expected_post);
+        CHECK(e && !e->lifecycle_restart_pending);
+
+        CHECK(jw_svc_supervisor_suspend_begin(
+                  sup, stuck, sizeof(stuck)) == 0);
+        CHECK(strcmp(stuck, id) == 0);
+        e = jw_svc_supervisor_find(sup, id);
+        CHECK(e && e->pending_stop_reason == JW_SVC_STOP_INTENTIONAL);
+        CHECK(e && e->post_stop == expected_post);
+        CHECK(e && !e->lifecycle_restart_pending);
+
+        /* Cancel a queued Restart for cleanup, then prove normal release. */
+        CHECK(jw_svc_supervisor_stop(sup, id, reason, sizeof(reason)));
+        CHECK(wait_for_released(sup, id, 5000));
+        jw_svc_supervisor_close(sup);
+        fixture_teardown(&f);
+    }
+}
+
+static void test_safe_unmount_followup_latch_matrix(void) {
+    CHECK(!jw_svc_storage_should_suppress_followup_tick(0, false));
+    CHECK(!jw_svc_storage_should_suppress_followup_tick(1, false));
+    CHECK(!jw_svc_storage_should_suppress_followup_tick(0, true));
+    CHECK(!jw_svc_storage_should_suppress_followup_tick(-1, true));
+    CHECK(jw_svc_storage_should_suppress_followup_tick(1, true));
+    CHECK(jw_svc_storage_should_suppress_followup_tick(3, true));
+}
+
+/* stop_unverified_logged belongs to one reserved generation. Once that group
+ * disappears, a replacement must not inherit a false safe-unmount blocker. */
+static void test_unverified_latch_resets_for_replacement(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.latchreset";
+    fixture_write_pak(
+        &f, "latchreset.pak", id,
+        "trap '' TERM; while :; do sleep 1; done",
+        ",\"restart\":\"no\","
+        "\"lifecycle\":{\"stop_on_storage_change\":true}");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    CHECK(jw_svc_supervisor_run(sup, id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, id, JW_SVC_STATE_RUNNING, 3000));
+    const jw_svc_supervised *e = jw_svc_supervisor_find(sup, id);
+    pid_t old_pgid = e ? e->pgid : -1;
+    CHECK(old_pgid > 0);
+    CHECK(jw_svc_supervisor_restart(sup, id, reason, sizeof(reason)));
+    jw_svc_supervised *mutable_entry =
+        (jw_svc_supervised *)jw_svc_supervisor_find(sup, id);
+    if (mutable_entry) {
+        mutable_entry->stop_unverified_logged = true;
+    }
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    CHECK(jw_svc_supervisor_storage_change_blocked(
+        sup, stuck, sizeof(stuck)));
+    CHECK(strcmp(stuck, id) == 0);
+
+    CHECK(wait_for_state(sup, id, JW_SVC_STATE_RUNNING, 5000));
+    e = jw_svc_supervisor_find(sup, id);
+    CHECK(e && e->pgid > 0 && e->pgid != old_pgid);
+    CHECK(e && !e->stop_unverified_logged);
+    CHECK(!jw_svc_supervisor_storage_change_blocked(
+        sup, stuck, sizeof(stuck)));
+    CHECK(stuck[0] == '\0');
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+/* A locked old generation remains a safety fact after persistent intent is
+ * disabled. The state may clear only after a successful lease probe. */
+static void test_disable_preserves_stale_generation(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.staledisable";
+    fixture_write_pak(
+        &f, "staledisable.pak", id,
+        "while :; do sleep 1; done",
+        ",\"restart\":\"no\","
+        "\"lifecycle\":{\"stop_on_storage_change\":true}");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *owner = fixture_open(&f, reason);
+    CHECK(owner != NULL);
+    CHECK(jw_svc_supervisor_scan(owner) == 1);
+    CHECK(jw_svc_supervisor_run(owner, id, reason, sizeof(reason)));
+    CHECK(wait_for_state(owner, id, JW_SVC_STATE_RUNNING, 3000));
+
+    jw_svc_supervisor *observer = fixture_open(&f, reason);
+    CHECK(observer != NULL);
+    CHECK(jw_svc_supervisor_scan(observer) == 1);
+    const jw_svc_supervised *e = jw_svc_supervisor_find(observer, id);
+    CHECK(e && e->state == JW_SVC_STATE_STALE_GENERATION);
+    CHECK(jw_svc_supervisor_disable(observer, id, reason, sizeof(reason)));
+    e = jw_svc_supervisor_find(observer, id);
+    CHECK(e && !e->desired_enabled && !e->session_run);
+    CHECK(e && e->state == JW_SVC_STATE_STALE_GENERATION);
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    CHECK(jw_svc_supervisor_storage_change_blocked(
+        observer, stuck, sizeof(stuck)));
+    CHECK(strcmp(stuck, id) == 0);
+
+    CHECK(jw_svc_supervisor_stop_all(owner) == 0);
+    jw_svc_supervisor_close(owner);
+    CHECK(wait_for_state(observer, id, JW_SVC_STATE_DISABLED, 5000));
+    e = jw_svc_supervisor_find(observer, id);
+    CHECK(e && e->pgid <= 0 && !e->session_run && !e->desired_enabled);
+    CHECK(!jw_svc_supervisor_storage_change_blocked(
+        observer, stuck, sizeof(stuck)));
+    jw_svc_supervisor_close(observer);
+    fixture_teardown(&f);
+}
+
+/* A control operation that reports store-failed must not have signalled the
+ * old group or queued a replacement behind the caller's back. */
+static void test_store_failure_precedes_stop_and_restart(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.storeordering";
+    fixture_write_pak(&f, "storeordering.pak", id,
+                      "trap '' TERM; while :; do sleep 1; done",
+                      ",\"restart\":\"no\"");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    CHECK(jw_svc_supervisor_run(sup, id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, id, JW_SVC_STATE_RUNNING, 3000));
+    const jw_svc_supervised *e = jw_svc_supervisor_find(sup, id);
+    pid_t pgid = e ? e->pgid : -1;
+    CHECK(pgid > 0);
+    CHECK(fixture_reject_control_writes(&f, true));
+
+    CHECK(!jw_svc_supervisor_stop(sup, id, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "store-failed") == 0);
+    e = jw_svc_supervisor_find(sup, id);
+    CHECK(e && e->pgid == pgid && e->state == JW_SVC_STATE_RUNNING);
+    CHECK(e && !e->stop_requested && e->post_stop == JW_SVC_POST_STOP_NONE);
+    CHECK(e && e->pending_stop_reason == JW_SVC_STOP_NONE);
+    CHECK(e && e->session_run);
+
+    CHECK(!jw_svc_supervisor_restart(sup, id, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "store-failed") == 0);
+    e = jw_svc_supervisor_find(sup, id);
+    CHECK(e && e->pgid == pgid && e->state == JW_SVC_STATE_RUNNING);
+    CHECK(e && !e->stop_requested && e->post_stop == JW_SVC_POST_STOP_NONE);
+    CHECK(e && e->pending_stop_reason == JW_SVC_STOP_NONE);
+
+    CHECK(fixture_reject_control_writes(&f, false));
+    CHECK(jw_svc_supervisor_stop(sup, id, reason, sizeof(reason)));
+    CHECK(wait_for_released(sup, id, 5000));
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
 /* SVC-1's "reported and not startable" rule is about a Secondary storage
  * SOURCE (PATH-2: SDCARD_PATHS index 0 is Primary), not about which Apps/
  * subdirectory a pak sits in. Apps/<platform> and Apps/shared are two
@@ -930,14 +1174,22 @@ static void test_lifecycle_stop_reasons_are_distinct(void) {
                       "while :; do sleep 1; done",
                       ",\"restart\":\"on-failure\""
                       ",\"lifecycle\":{\"stop_on_suspend\":true}");
+    fixture_write_pak(&f, "storagey.pak", "org.umrk.test.storagey",
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"on-failure\""
+                      ",\"lifecycle\":{\"stop_on_storage_change\":true}");
 
     char reason[JW_SVC_REASON_BUF];
     jw_svc_supervisor *sup = fixture_open(&f, reason);
     CHECK(sup != NULL);
-    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    CHECK(jw_svc_supervisor_scan(sup) == 2);
     CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.suspendy",
                                 reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, "org.umrk.test.storagey",
+                                reason, sizeof(reason)));
     CHECK(wait_for_state(sup, "org.umrk.test.suspendy",
+                         JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, "org.umrk.test.storagey",
                          JW_SVC_STATE_RUNNING, 3000));
 
     char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
@@ -958,6 +1210,21 @@ static void test_lifecycle_stop_reasons_are_distinct(void) {
     CHECK(wait_for_state(sup, "org.umrk.test.suspendy",
                          JW_SVC_STATE_RUNNING, 3000));
     e = jw_svc_supervisor_find(sup, "org.umrk.test.suspendy");
+    CHECK(e && !e->lifecycle_restart_pending);
+    CHECK(e && e->pending_stop_reason == JW_SVC_STOP_NONE);
+
+    CHECK(jw_svc_supervisor_storage_change_begin(
+              sup, stuck, sizeof(stuck)) == 1);
+    CHECK(stuck[0] == '\0');
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.storagey");
+    CHECK(e && e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_STORAGE);
+    CHECK(e && strcmp(jw_svc_stop_reason_lifecycle_slug(
+                          e->pending_stop_reason), "storage") == 0);
+    CHECK(e && !e->backoff.breaker_open && e->backoff.count == 0);
+    CHECK(e && e->lifecycle_restart_pending);
+    CHECK(wait_for_state(sup, "org.umrk.test.storagey",
+                         JW_SVC_STATE_RUNNING, 3000));
+    e = jw_svc_supervisor_find(sup, "org.umrk.test.storagey");
     CHECK(e && !e->lifecycle_restart_pending);
     CHECK(e && e->pending_stop_reason == JW_SVC_STOP_NONE);
 
@@ -1428,6 +1695,11 @@ int main(int argc, char **argv) {
     test_enabled_stop_is_not_immediately_undone();
     test_running_policy_survives_rescan();
     test_suspend_and_storage_lifecycle_stops();
+    test_async_control_stop_blocks_lifecycle();
+    test_safe_unmount_followup_latch_matrix();
+    test_unverified_latch_resets_for_replacement();
+    test_disable_preserves_stale_generation();
+    test_store_failure_precedes_stop_and_restart();
     test_reservation_write_failure_reaps_child();
     test_shared_root_is_primary_secondary_root_is_not();
     test_lifecycle_stop_reasons_are_distinct();

@@ -983,11 +983,13 @@ bool jw_svc_supervisor_entry_is_listable(const jw_svc_supervised *e) {
     if (!jw_service_id_is_reverse_dns(e->service_id)) {
         return false;
     }
-    /* contracts.md: the canonical list carries valid services, retained
-     * desired state, and anything with a live or stale generation. Invalid
-     * discovery alone is omitted, and so is a spent record whose package is
-     * gone and whose desired state is false. */
-    return e->manifest_valid || e->desired_enabled || e->session_run ||
+    /* CTL-1 lists discovered services, including a malformed service whose
+     * canonical declared/fallback id can safely survive the wire. That is how
+     * clients reach its `unavailable` status and specific rejection reason.
+     * A spent package-missing row is still omitted unless intent/generation
+     * state requires retaining it. */
+    return e->pak_present || e->manifest_valid ||
+           e->desired_enabled || e->session_run ||
            e->pgid > 0 || e->state == JW_SVC_STATE_STALE_GENERATION;
 }
 
@@ -1190,7 +1192,10 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
     e->active_stop_on_suspend = e->manifest.stop_on_suspend;
     e->autostart_pending = false;
     e->reap_pending = false;
+    e->stop_requested = false;
+    e->post_stop = JW_SVC_POST_STOP_NONE;
     e->stop_kill_sent = false;
+    e->stop_unverified_logged = false;
     /* No stop has been requested for the fresh generation: if its leader
      * exits now that is a genuine crash, eligible for on-failure restart. */
     e->pending_stop_reason = JW_SVC_STOP_NONE;
@@ -1240,6 +1245,9 @@ static void jw__on_group_released(jw_svc_supervisor *sup,
     jw_svc_post_stop_action post = e->post_stop;
     e->post_stop = JW_SVC_POST_STOP_NONE;
     e->stop_requested = false;
+    e->stop_kill_sent = false;
+    e->stop_unverified_logged = false;
+    e->stopping_since_ms = 0;
     if (post != JW_SVC_POST_STOP_RESTART) {
         return;
     }
@@ -1288,6 +1296,12 @@ static bool jw__stop_and_reap(jw_svc_supervisor *sup, jw_svc_supervised *e,
         e->state = JW_SVC_STATE_STOPPING;
         e->stopping_since_ms = jw__mono_ms();
         e->stop_kill_sent = true;
+        /* The synchronous TERM -> KILL -> 2 s sequence has already exhausted
+         * its contract window. Remember that fact immediately (so a retried
+         * safe-unmount cannot bypass it), and keep tick polling until the
+         * survivor eventually disappears. */
+        e->stop_requested = true;
+        e->stop_unverified_logged = true;
         jw__set_reason(reason, reason_size, "stop-failed");
         return false;
     }
@@ -1384,6 +1398,13 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
                              JW_SVC_POST_STOP_NONE);
         return true;
     }
+    /* A stale generation is report-only but still positively alive by its
+     * locked lease. Disabling withdraws every desired intent; it must not
+     * erase STALE_GENERATION, because passive lease probing and lifecycle
+     * safety checks both key off that state until acquisition proves absence. */
+    if (e->state == JW_SVC_STATE_STALE_GENERATION) {
+        return true;
+    }
     if (e->state != JW_SVC_STATE_STOPPING) {
         e->state = jw__entry_idle_state(e);
     }
@@ -1448,18 +1469,28 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
         jw__set_reason(reason, reason_size, "not-running");
         return false;
     }
+    bool old_session_run = e->session_run;
+    bool old_control_loaded = e->control_loaded;
+    bool old_lifecycle_restart_pending = e->lifecycle_restart_pending;
+    jw_svc_control_state old_control = e->control;
     e->lifecycle_restart_pending = false;
     /* Session intent is withdrawn immediately -- the user asked for the stop,
      * and it must survive even if the group turns out to be unstoppable. The
      * stop sequence itself then runs under tick. */
     e->session_run = false;
     e->control.session_run = false;
-    jw__begin_async_stop(sup, e, JW_SVC_STOP_INTENTIONAL,
-                         JW_SVC_POST_STOP_NONE);
     if (!jw__persist(sup, e, "stop")) {
+        e->session_run = old_session_run;
+        e->control = old_control;
+        e->control_loaded = old_control_loaded;
+        e->lifecycle_restart_pending = old_lifecycle_restart_pending;
         jw__set_reason(reason, reason_size, "store-failed");
         return false;
     }
+    /* Only signal after the control mutation was accepted. A caller receiving
+     * store-failed must be able to rely on the old group still being untouched. */
+    jw__begin_async_stop(sup, e, JW_SVC_STOP_INTENTIONAL,
+                         JW_SVC_POST_STOP_NONE);
     return true;
 }
 
@@ -1469,46 +1500,55 @@ bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
     if (!jw__require_available(e, reason, reason_size)) {
         return false;
     }
+    jw_svc_backoff_state old_backoff = e->backoff;
+    jw_svc_control_state old_control = e->control;
+    bool old_control_loaded = e->control_loaded;
+    bool old_session_run = e->session_run;
+    bool old_lifecycle_restart_pending = e->lifecycle_restart_pending;
     jw_svc_backoff_reset(&e->backoff);
     e->lifecycle_restart_pending = false;
+    e->session_run = true;
+    e->control.session_run = true;
+    /* Persist acceptance before touching the old process group or launching a
+     * replacement. This gives store-failed a transactional meaning. */
+    if (!jw__persist(sup, e, "restart-requested")) {
+        e->backoff = old_backoff;
+        e->control = old_control;
+        e->control_loaded = old_control_loaded;
+        e->session_run = old_session_run;
+        e->lifecycle_restart_pending = old_lifecycle_restart_pending;
+        jw__set_reason(reason, reason_size, "store-failed");
+        return false;
+    }
     if (e->pgid > 0) {
         /* Stop now, start later: tick launches the one replacement generation
          * once the previous reserved group is proven absent (SVC-1's "never
          * start a replacement over the old group"). Reported as `stopping`
          * until then rather than blocking the caller for the full sequence. */
-        e->session_run = true;
-        e->control.session_run = true;
         jw__begin_async_stop(sup, e, JW_SVC_STOP_INTENTIONAL,
                              JW_SVC_POST_STOP_RESTART);
-        if (!jw__persist(sup, e, "restart-requested")) {
-            jw__set_reason(reason, reason_size, "store-failed");
-            return false;
-        }
         return true;
     }
     char start_reason[JW_SVC_REASON_BUF];
     if (!jw__start_generation(sup, e, start_reason, sizeof(start_reason))) {
         if (strcmp(start_reason, "stale-generation") == 0) {
-            e->session_run = true;
-            e->control.session_run = true;
             e->state = JW_SVC_STATE_STALE_GENERATION;
             e->lease_retry_next_ms = jw__mono_ms() + JW_SVC_LEASE_RETRY_MS;
-            if (!jw__persist(sup, e, "restart-stale-generation")) {
-                e->session_run = false;
-                e->control.session_run = false;
-                snprintf(start_reason, sizeof(start_reason), "%s",
-                         "store-failed");
-            }
+            /* Acceptance is already durable. This write is diagnostic only;
+             * failure must not turn an accepted queued restart into a reported
+             * store failure after the fact. */
+            (void)jw__persist(sup, e, "restart-stale-generation");
+        } else {
+            e->session_run = old_session_run;
+            e->control.session_run = old_control.session_run;
+            (void)jw__persist(sup, e, "restart-failed");
         }
         jw__set_reason(reason, reason_size, start_reason);
         return false;
     }
-    e->session_run = true;
-    e->control.session_run = true;
-    if (!jw__persist(sup, e, "restart")) {
-        jw__set_reason(reason, reason_size, "store-failed");
-        return false;
-    }
+    /* The operation was accepted before launch. A later history-write failure
+     * cannot honestly be reported as though no restart occurred. */
+    (void)jw__persist(sup, e, "restart");
     return true;
 }
 
@@ -1985,6 +2025,13 @@ static int jw__lifecycle_stop_begin(jw_svc_supervisor *sup,
          * already owns this generation's stop. Do not replace its reason or
          * turn it into a lifecycle resume that could undo that intent. */
         if (e->pending_stop_reason != JW_SVC_STOP_NONE) {
+            /* Preserve the owner and reason of the existing stop, but never
+             * mistake "already stopping" for "verified absent". Suspend may
+             * continue with this warning; safe-unmount must refuse. */
+            if (out_stuck_id && stuck_id_size > 0 &&
+                out_stuck_id[0] == '\0') {
+                snprintf(out_stuck_id, stuck_id_size, "%s", e->service_id);
+            }
             continue;
         }
         /* Recorded as the specific lifecycle-policy stop, not as a generic
@@ -2049,10 +2096,16 @@ bool jw_svc_supervisor_storage_change_blocked(const jw_svc_supervisor *sup,
         /* A locked stale generation is never signallable by this daemon, so
          * its stop can never be verified -- known before any signal. */
         bool stale = e->state == JW_SVC_STATE_STALE_GENERATION;
-        /* A group that already outlived TERM+KILL+2s is a known live writer;
-         * re-running the sequence would not change that. */
-        bool wedged = e->pgid > 0 && e->stop_unverified_logged;
-        if (!stale && !wedged) {
+        /* Any owned group whose stop is already in flight remains a live
+         * writer until absence is positively verified. Starting another
+         * lifecycle stop would overwrite its owner/restart action; allowing
+         * the unmount would violate SVC-1. */
+        bool in_flight = e->pgid > 0 &&
+            (e->pending_stop_reason != JW_SVC_STOP_NONE ||
+             e->stop_requested || e->reap_pending ||
+             e->stop_unverified_logged ||
+             e->state == JW_SVC_STATE_STOPPING);
+        if (!stale && !in_flight) {
             continue;
         }
         if (out_stuck_id && stuck_id_size > 0) {
@@ -2061,4 +2114,9 @@ bool jw_svc_supervisor_storage_change_blocked(const jw_svc_supervisor *sup,
         return true;
     }
     return false;
+}
+
+bool jw_svc_storage_should_suppress_followup_tick(int verified_stopped,
+                                                  bool unmount_succeeded) {
+    return verified_stopped > 0 && unmount_succeeded;
 }

@@ -225,11 +225,12 @@ const jw_svc_supervised *jw_svc_supervisor_find(const jw_svc_supervisor *sup,
 /* Number of entries (for CTL-1 list). */
 int jw_svc_supervisor_count(const jw_svc_supervisor *sup);
 
-/* Should this entry appear in the canonical CTL-1 `list`? True for a valid
- * service, a retained desired-state record, and any live or stale generation;
- * false for invalid discovery alone, for a spent record, and for any entry
- * whose id would not survive a client's reverse-DNS validation. This is the
- * single predicate behind both the IPC response and Settings -> Services'
+/* Should this entry appear in the canonical CTL-1 `list`? True for every
+ * discovered service with a wire-safe id (including malformed/unavailable
+ * manifests), a retained desired-state record, and any live or stale
+ * generation; false for a spent package-missing record and for any entry whose
+ * id would not survive a client's reverse-DNS validation. This is the single
+ * predicate behind both the IPC response and Settings -> Services'
  * "absent on a clean system" rule -- they must not drift apart. */
 bool jw_svc_supervisor_entry_is_listable(const jw_svc_supervised *e);
 
@@ -309,9 +310,10 @@ int jw_svc_supervisor_storage_change_begin(jw_svc_supervisor *sup,
                                            size_t stuck_id_size);
 
 /* Side-effect-free pre-check for the safe-unmount caller. Reports the first
- * storage-sensitive service that is ALREADY known to be unstoppable -- a
- * locked stale generation this daemon may not signal, or a survivor that
- * outlived a previous TERM+KILL+2s -- without signalling anything.
+ * storage-sensitive service whose absence cannot presently be verified -- a
+ * locked stale generation this daemon may not signal, a survivor that
+ * outlived a previous TERM+KILL+2s, or an owned group already inside a stop
+ * sequence whose original intent/restart action must not be overwritten.
  *
  * SVC-1 makes safe unmount the one caller that must "fail the unmount" when
  * absence cannot be verified. Refusing after having already stopped every
@@ -323,6 +325,14 @@ int jw_svc_supervisor_storage_change_begin(jw_svc_supervisor *sup,
 bool jw_svc_supervisor_storage_change_blocked(const jw_svc_supervisor *sup,
                                               char *out_stuck_id,
                                               size_t stuck_id_size);
+
+/* Daemon-side safe-unmount bookkeeping: suppress the follow-up storage tick
+ * only when this request actually verified at least one policy stop AND the
+ * platform unmount succeeded. A refused/failed request must never consume a
+ * later real removal event. Kept here as a pure helper so the outcome matrix
+ * is covered without coupling tests to jawakad's large main translation unit. */
+bool jw_svc_storage_should_suppress_followup_tick(int verified_stopped,
+                                                  bool unmount_succeeded);
 
 /* The effective-state slug used on CTL-1 ("unavailable", "disabled", ...). */
 const char *jw_svc_effective_state_name(jw_svc_effective_state state);

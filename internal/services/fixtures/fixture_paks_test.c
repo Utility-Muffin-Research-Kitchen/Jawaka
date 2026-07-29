@@ -3,6 +3,7 @@
 #endif
 
 #include "internal/services/supervisor.h"
+#include "internal/services/lease.h"
 
 #include "third_party/cjson/cJSON.h"
 
@@ -376,6 +377,15 @@ static int run_death_worker(const char *root, const char *apps) {
     }
 }
 
+static void restore_death_hold_env(char *old_hold) {
+    if (old_hold) {
+        CHECK(setenv("UMRK_FIXTURE_DEATH_HOLD_MS", old_hold, 1) == 0);
+    } else {
+        CHECK(unsetenv("UMRK_FIXTURE_DEATH_HOLD_MS") == 0);
+    }
+    free(old_hold);
+}
+
 static void test_supervisor_death_no_overlap(void) {
     char apps[PATH_MAX];
     join_path(apps, sizeof(apps), JW_TEST_SERVICE_FIXTURES_ROOT,
@@ -383,9 +393,18 @@ static void test_supervisor_death_no_overlap(void) {
     test_env env;
     env_setup(&env, apps, NULL);
 
+    /* Give the test an observable window after the leader exits but while its
+     * descendant is still alive. A missing descendant lease would allow the
+     * replacement to overlap precisely inside this interval. */
+    const char *old_hold_env = getenv("UMRK_FIXTURE_DEATH_HOLD_MS");
+    char *old_hold = old_hold_env ? strdup(old_hold_env) : NULL;
+    CHECK(!old_hold_env || old_hold != NULL);
+    CHECK(setenv("UMRK_FIXTURE_DEATH_HOLD_MS", "1200", 1) == 0);
+
     pid_t worker = fork();
     CHECK(worker >= 0);
     if (worker < 0) {
+        restore_death_hold_env(old_hold);
         env_teardown(&env);
         return;
     }
@@ -397,10 +416,13 @@ static void test_supervisor_death_no_overlap(void) {
 
     char service_runtime[PATH_MAX];
     char ready[PATH_MAX];
+    char descendant_parent_death[PATH_MAX];
     char generations[PATH_MAX];
     join_path(service_runtime, sizeof(service_runtime), env.runtime,
               "services/org.umrk.fixture.supervisordeath");
     join_path(ready, sizeof(ready), service_runtime, "ready");
+    join_path(descendant_parent_death, sizeof(descendant_parent_death),
+              service_runtime, "descendant-parent-death");
     join_path(generations, sizeof(generations), service_runtime,
               "generations.log");
     bool first_ready = false;
@@ -414,6 +436,7 @@ static void test_supervisor_death_no_overlap(void) {
     if (!first_ready) {
         kill(worker, SIGKILL);
         waitpid(worker, NULL, 0);
+        restore_death_hold_env(old_hold);
         env_teardown(&env);
         return;
     }
@@ -425,6 +448,7 @@ static void test_supervisor_death_no_overlap(void) {
 
     jw_svc_supervisor *sup = open_supervisor(&env);
     if (!sup) {
+        restore_death_hold_env(old_hold);
         env_teardown(&env);
         return;
     }
@@ -434,6 +458,35 @@ static void test_supervisor_death_no_overlap(void) {
     CHECK(entry && entry->desired_enabled);
     CHECK(entry && entry->state == JW_SVC_STATE_STALE_GENERATION);
     CHECK(entry && entry->pgid <= 0);
+
+    bool descendant_in_hold = false;
+    for (int waited = 0; waited <= 5000 && !descendant_in_hold;
+         waited += 10) {
+        descendant_in_hold = access(descendant_parent_death, F_OK) == 0;
+        if (!descendant_in_hold) {
+            jw_svc_supervisor_tick(sup);
+            usleep(10000);
+        }
+    }
+    CHECK(descendant_in_hold);
+    /* The leader is gone now. Descriptor 3 in the delayed descendant must be
+     * the thing still excluding a replacement. Probe the real lease and keep
+     * ticking through part of the descendant-only hold window. */
+    char lease_reason[JW_SVC_REASON_BUF] = {0};
+    int lease_probe = jw_svc_lease_acquire(
+        env.runtime, "org.umrk.fixture.supervisordeath", lease_reason,
+        sizeof(lease_reason));
+    CHECK(lease_probe < 0);
+    CHECK(strcmp(lease_reason, "stale-generation") == 0);
+    if (lease_probe >= 0) close(lease_probe);
+    for (int elapsed = 0; elapsed < 400; elapsed += 20) {
+        jw_svc_supervisor_tick(sup);
+        entry = jw_svc_supervisor_find(
+            sup, "org.umrk.fixture.supervisordeath");
+        CHECK(entry && entry->state == JW_SVC_STATE_STALE_GENERATION);
+        CHECK(count_lines(generations) == 1);
+        usleep(20000);
+    }
 
     CHECK(wait_for_state(sup, "org.umrk.fixture.supervisordeath",
                          JW_SVC_STATE_RUNNING, 7000));
@@ -445,6 +498,7 @@ static void test_supervisor_death_no_overlap(void) {
     CHECK(count_lines(generations) == 2);
     CHECK(jw_svc_supervisor_stop_all(sup) == 0);
     jw_svc_supervisor_close(sup);
+    restore_death_hold_env(old_hold);
     env_teardown(&env);
 }
 

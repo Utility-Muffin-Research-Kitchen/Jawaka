@@ -247,6 +247,9 @@ static int fixture_supervisor_death(void) {
             _exit(70);
         }
         fixture_wait_for_parent_death(own_parent);
+        if (fixture_touch("descendant-parent-death") != 0) {
+            _exit(70);
+        }
         fixture_delay_ms(fixture_death_hold_ms());
         _exit(0);
     }
@@ -257,6 +260,10 @@ static int fixture_supervisor_death(void) {
         return 70;
     }
     fixture_wait_for_parent_death(parent);
+    if (fixture_touch("leader-parent-death") != 0) {
+        kill(child, SIGKILL);
+        return 70;
+    }
     fixture_delay_ms(fixture_death_hold_ms());
     return 0;
 }

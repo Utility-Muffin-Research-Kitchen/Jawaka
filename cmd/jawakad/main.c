@@ -3552,6 +3552,10 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
 
     jw_platform_result result;
     char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    int stopped = 0;
+    /* This request owns the latch outcome. A refusal or platform failure must
+       not consume a later real removal event. */
+    state->services_storage_stop_done = false;
     /* Check BEFORE stopping anything. SVC-1 makes safe unmount the one caller
        that must fail rather than proceed, so a refusal has to leave the system
        as it found it -- stopping every other storage-sensitive service and
@@ -3572,16 +3576,12 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
                                          &result);
     }
     if (state->services) {
-        int stopped = jw_svc_supervisor_storage_change_begin(
+        stopped = jw_svc_supervisor_storage_change_begin(
             state->services, stuck, sizeof(stuck));
         if (stopped > 0) {
             jw_log_info("safe-unmount: stopped %d storage-sensitive service(s)",
                         stopped);
         }
-        /* This daemon performed the unmount, so the storage tick that follows
-           must not re-run the same policy stop against the services it just
-           handled. */
-        state->services_storage_stop_done = true;
     }
     if (stuck[0]) {
         /* A group that survived its full stop sequence can only be discovered
@@ -3598,6 +3598,9 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
                                          &result);
     }
     jw_platform_safe_unmount_storage(&state->platform, source, &result);
+    state->services_storage_stop_done =
+        jw_svc_storage_should_suppress_followup_tick(
+            stopped, result.code == JW_PLATFORM_RESULT_OK);
     if (result.code == JW_PLATFORM_RESULT_OK) {
         if (state->services && jw_svc_supervisor_scan(state->services) < 0) {
             jw_log_warn("safe-unmount: service rescan failed");
@@ -9013,9 +9016,9 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
             const jw_svc_supervised *e =
                 jw_svc_supervisor_at(state->services, i);
             /* One shared predicate with the supervisor's own shedding rule:
-             * invalid discovery alone and spent records are omitted, while a
-             * locked old-generation lease stays discoverable even if the
-             * crash happened before the first durable control-state write. */
+             * canonical invalid discoveries remain visible as unavailable,
+             * spent records are omitted, and a locked old-generation lease
+             * stays discoverable even before a durable control-state write. */
             if (!jw_svc_supervisor_entry_is_listable(e)) {
                 continue;
             }
