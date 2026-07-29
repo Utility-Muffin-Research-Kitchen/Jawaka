@@ -1327,22 +1327,30 @@ static void jw__handle_leader_exit(jw_svc_supervisor *sup,
 
     bool intentional = (e->pending_stop_reason == JW_SVC_STOP_INTENTIONAL) ||
                        (e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_GAME);
+    const char *transition_reason = "exited";
     if (!intentional && failed && e->active_restart_on_failure &&
         jw__entry_available(e)) {
         jw_svc_backoff_decision d =
             jw_svc_backoff_record_failure(&e->backoff, jw__wall_ms());
         if (d.breaker_open) {
             e->state = JW_SVC_STATE_FAILED;
-            jw__persist(sup, e, "circuit-breaker");
+            transition_reason = "circuit-breaker";
         } else {
             e->state = JW_SVC_STATE_BACKOFF;
             e->backoff_retry_at_ms = jw__mono_ms() + d.delay_ms;
-            jw__persist(sup, e, "failure");
+            transition_reason = "failure";
         }
     } else {
         e->state = JW_SVC_STATE_STOPPING;
-        jw__persist(sup, e, "exited");
     }
+    /* A foreground service that leaves a live descendant after its leader
+     * exits has violated SVC-1 regardless of exit code or restart policy.
+     * Preserve that stable diagnosis while the ordinary stop sequence
+     * contains the still-reserved process group. */
+    if (!intentional && !absent) {
+        transition_reason = "foreground-contract-violation";
+    }
+    jw__persist(sup, e, transition_reason);
 
     if (absent) {
         /* Whole group is gone-or-zombie already: reap the leader and

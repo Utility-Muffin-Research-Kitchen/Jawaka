@@ -344,7 +344,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test log-redact-test launch-test supervisor-test ctl1-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -479,6 +479,32 @@ supervisor-test: | $(BUILD)/bin
 		internal/services/control_state.c \
 		third_party/cjson/cJSON.c -lsqlite3 -lpthread
 	$(BUILD)/bin/supervisor-test
+
+SERVICE_FIXTURE_ROOT := $(BUILD)/service-fixtures
+SERVICE_FIXTURE_INVALID := $(WORKSPACE_ROOT)/umrk-workspace/contracts/leaf-services/manifests/invalid
+
+$(BUILD)/bin/service-fixture: internal/services/fixtures/fixture_service.c | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $<
+
+service-fixtures: $(BUILD)/bin/service-fixture
+	python3 internal/services/fixtures/materialize.py \
+		--templates internal/services/fixtures/paks \
+		--binary $(BUILD)/bin/service-fixture \
+		--canonical-invalid $(SERVICE_FIXTURE_INVALID) \
+		--output $(SERVICE_FIXTURE_ROOT)
+
+service-fixture-test: service-fixtures | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) \
+		-DJW_TEST_SERVICE_FIXTURES_ROOT=\"$(abspath $(SERVICE_FIXTURE_ROOT))\" \
+		-o $(BUILD)/bin/service-fixture-test \
+		internal/services/fixtures/fixture_paks_test.c \
+		internal/services/supervisor.c internal/services/manifest.c \
+		internal/services/lease.c internal/services/launch.c \
+		internal/services/ownership.c internal/services/stop.c \
+		internal/services/reservation.c internal/services/backoff.c \
+		internal/services/dup_ids.c internal/services/control_state.c \
+		third_party/cjson/cJSON.c -lsqlite3 -lpthread
+	$(BUILD)/bin/service-fixture-test
 
 ctl1-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ctl1-test \
