@@ -31,4 +31,12 @@
  */
 bool jw_svc_group_absent(pid_t pgid);
 
+#if defined(__linux__) && defined(JW_SVC_OWNERSHIP_TESTING)
+/* Parser seam for synthetic proc(5) rows that ordinary PID namespaces do not
+ * expose, notably MLP1 kernel threads whose process-group field is zero. */
+bool jw_svc_proc_stat_group_state_for_test(const char *line, pid_t *out_pgid,
+                                           bool *out_zombie,
+                                           int *out_threads);
+#endif
+
 #endif

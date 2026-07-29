@@ -50,6 +50,20 @@ static bool jw__is_absent(pid_t pgid) {
 }
 
 #if defined(__linux__)
+static void jw__test_zero_pgid_kernel_thread_stat(void) {
+    const char stat[] =
+        "2 (kthreadd) S 0 0 0 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0";
+    pid_t pgid = -1;
+    bool zombie = true;
+    int threads = -1;
+    assert(jw_svc_proc_stat_group_state_for_test(
+        stat, &pgid, &zombie, &threads));
+    assert(pgid == 0);
+    assert(!zombie);
+    assert(threads == 1);
+    puts("PASS ownership-test accepts unrelated kernel-thread pgid 0");
+}
+
 static bool jw__linux_stat_state_threads(pid_t pid, char *out_state,
                                          int *out_threads) {
     char stat_path[64];
@@ -348,6 +362,7 @@ int main(void) {
     jw__test_zombie_alone_is_absent();
     jw__test_zombie_leader_live_descendant();
 #if defined(__linux__)
+    jw__test_zero_pgid_kernel_thread_stat();
     jw__test_zombie_leader_live_thread();
     jw__test_newline_in_comm();
 #endif

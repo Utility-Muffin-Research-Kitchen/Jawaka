@@ -43,7 +43,11 @@ static bool jw__proc_stat_group_state(const char *line, pid_t *out_pgid,
         }
         if (field == 5) {
             pid_t pgid = (pid_t)value;
-            if (value <= 0 || (long long)pgid != value) {
+            /* Kernel threads legitimately report pgrp 0. They cannot match
+             * the positive supervised pgid, but rejecting the stat row as
+             * malformed would make any such unrelated thread prevent every
+             * absence proof on MLP1. */
+            if (value < 0 || (long long)pgid != value) {
                 return false;
             }
             *out_pgid = pgid;
@@ -61,6 +65,14 @@ static bool jw__proc_stat_group_state(const char *line, pid_t *out_pgid,
     }
     return false;
 }
+
+#if defined(JW_SVC_OWNERSHIP_TESTING)
+bool jw_svc_proc_stat_group_state_for_test(const char *line, pid_t *out_pgid,
+                                           bool *out_zombie,
+                                           int *out_threads) {
+    return jw__proc_stat_group_state(line, out_pgid, out_zombie, out_threads);
+}
+#endif
 
 static bool jw__pid_dir_name(const char *s, pid_t *out_pid) {
     if (!s || !s[0]) {

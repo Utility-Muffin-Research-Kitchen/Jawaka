@@ -224,6 +224,9 @@ static void test_named_behavior_paks(void) {
     long long elapsed_ms = (long long)(finish.tv_sec - start.tv_sec) * 1000LL +
                            (long long)(finish.tv_nsec - start.tv_nsec) /
                                1000000LL;
+    printf("service-fixture timing ignore-term-request-ms=%lld "
+           "ignore-term-verified-absent-ms=%lld\n",
+           call_ms, elapsed_ms);
     /* Still inside the contract's stop_grace_ms + 2000 ms worst case. */
     CHECK(elapsed_ms <= 2450);
     entry = jw_svc_supervisor_find(sup, ignorer);

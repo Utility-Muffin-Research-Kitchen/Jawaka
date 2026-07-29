@@ -344,7 +344,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -416,9 +416,12 @@ service-manifest-test: | $(BUILD)/bin
 		third_party/cjson/cJSON.c
 	$(BUILD)/bin/service-manifest-test
 
-ownership-test: | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ownership-test \
+$(BUILD)/bin/ownership-test: internal/services/ownership_test.c \
+		internal/services/ownership.c internal/services/ownership.h | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -DJW_SVC_OWNERSHIP_TESTING -o $(BUILD)/bin/ownership-test \
 		internal/services/ownership_test.c internal/services/ownership.c -lpthread
+
+ownership-test: $(BUILD)/bin/ownership-test
 	$(BUILD)/bin/ownership-test
 
 lease-test: | $(BUILD)/bin
@@ -482,6 +485,7 @@ supervisor-test: | $(BUILD)/bin
 
 SERVICE_FIXTURE_ROOT := $(BUILD)/service-fixtures
 SERVICE_FIXTURE_INVALID := $(WORKSPACE_ROOT)/umrk-workspace/contracts/leaf-services/manifests/invalid
+SERVICE_FIXTURE_TEST_ROOT ?= $(abspath $(SERVICE_FIXTURE_ROOT))
 
 $(BUILD)/bin/service-fixture: internal/services/fixtures/fixture_service.c | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $<
@@ -493,9 +497,10 @@ service-fixtures: $(BUILD)/bin/service-fixture
 		--canonical-invalid $(SERVICE_FIXTURE_INVALID) \
 		--output $(SERVICE_FIXTURE_ROOT)
 
-service-fixture-test: service-fixtures | $(BUILD)/bin
+$(BUILD)/bin/service-fixture-test: service-fixtures \
+		internal/services/fixtures/fixture_paks_test.c | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) \
-		-DJW_TEST_SERVICE_FIXTURES_ROOT=\"$(abspath $(SERVICE_FIXTURE_ROOT))\" \
+		-DJW_TEST_SERVICE_FIXTURES_ROOT=\"$(SERVICE_FIXTURE_TEST_ROOT)\" \
 		-o $(BUILD)/bin/service-fixture-test \
 		internal/services/fixtures/fixture_paks_test.c \
 		internal/services/supervisor.c internal/services/manifest.c \
@@ -504,6 +509,8 @@ service-fixture-test: service-fixtures | $(BUILD)/bin
 		internal/services/reservation.c internal/services/backoff.c \
 		internal/services/dup_ids.c internal/services/control_state.c \
 		third_party/cjson/cJSON.c -lsqlite3 -lpthread
+
+service-fixture-test: $(BUILD)/bin/service-fixture-test
 	$(BUILD)/bin/service-fixture-test
 
 ctl1-test: | $(BUILD)/bin
@@ -767,6 +774,9 @@ mlp1-inhibit-smoke:
 mlp1-adb-smoke:
 	scripts/adb-mlp1-smoke.sh
 
+mlp1-adb-service-fixture-smoke:
+	scripts/adb-mlp1-service-fixture-smoke.sh
+
 mlp1-adb-inhibit-smoke:
 	scripts/adb-mlp1-suspend-inhibit-smoke.sh
 
@@ -808,6 +818,7 @@ help:
 	@echo "  make mlp1-pakrat-smoke  Cross-compile local Pak Rat smoke helper for MLP1"
 	@echo "  make mlp1-adb-inhibit-smoke  Run the RTC-woken MLP1 suspend/reap smoke"
 	@echo "  make mlp1-adb-smoke  Build, push to /tmp, and run an ADB UI smoke"
+	@echo "  make mlp1-adb-service-fixture-smoke  Run A2 service fixtures on an attached MLP1"
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"
 	@echo "  make mlp1-adb-ra-command-smoke  Run RetroArch command feature smoke over ADB"
 	@echo "  make phase3-fixture-scan-smoke  Run metadata-aware scan fixture checks"
