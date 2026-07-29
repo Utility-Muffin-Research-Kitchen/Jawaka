@@ -18,6 +18,8 @@
 #include "internal/retroarch/states.h"
 #include "internal/scrape/scrape_worker.h"
 #include "internal/scrape/ss_client.h"
+#include "internal/services/log_redact.h"
+#include "internal/services/supervisor.h"
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
 #include "internal/store/pakrat_recovery.h"
@@ -283,6 +285,9 @@ typedef struct {
        the launcher off this. See plans/five-game-mode.md. */
     jw_focus_boot_decision focus_boot;
     jw_focus_config        focus_cfg;
+    /* app-services-v1 (SVC-1) service supervisor; NULL when it could not be
+       opened (a supervisor failure must never take down the launcher). */
+    jw_svc_supervisor *services;
 } jw_daemon_state;
 
 static void jw__scan_title_list_free(jw_scan_title_list *list) {
@@ -1541,6 +1546,61 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     }
     if (getenv("CORES_PATH")) {
         setenv("JAWAKA_RETROARCH_CORES_DIR", getenv("CORES_PATH"), 1);
+    }
+}
+
+/* Bring up the SVC-1 service supervisor: open the control-state store
+   (clearing session Run per the contract), then scan the configured Apps/
+   roots for service-bearing paks. Runs after jw__publish_runtime_path_env
+   so $USERDATA_PATH / $LOGS_PATH / $APPS_PATH are already resolved. Any
+   failure here is non-fatal to the daemon: services are simply unsupervised
+   this run rather than taking down the launcher. */
+static void jw__services_init(jw_daemon_state *state) {
+    if (!state || state->services) {
+        return;
+    }
+
+    /* Scan the Primary Apps/<platform> root, then Apps/shared. SVC-1 on
+       MLP1 requires the Primary root; this dev/mock build treats the single
+       configured root as Primary and never discovers Secondary-root
+       services. */
+    const char *platform = getenv("PLATFORM");
+    if (!platform || !platform[0]) {
+        platform = jw_platform_compiled_id();
+    }
+    const char *apps_path = getenv("APPS_PATH");
+    const char *userdata = getenv("USERDATA_PATH");
+    const char *logs = getenv("LOGS_PATH");
+
+    char primary[PATH_MAX];
+    char shared[PATH_MAX];
+    const char *roots[3];
+    int nroots = 0;
+    if (apps_path && apps_path[0] &&
+        snprintf(primary, sizeof(primary), "%s/%s", apps_path, platform) <
+            (int)sizeof(primary)) {
+        roots[nroots++] = primary;
+    }
+    if (apps_path && apps_path[0] &&
+        snprintf(shared, sizeof(shared), "%s/shared", apps_path) <
+            (int)sizeof(shared)) {
+        roots[nroots++] = shared;
+    }
+    roots[nroots] = NULL;
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = jw_svc_supervisor_open(
+        state->runtime_dir, logs ? logs : "", state->state_dir,
+        roots, userdata ? userdata : "", reason, sizeof(reason));
+    if (!sup) {
+        jw_log_warn("services: supervisor unavailable (%s); "
+                    "no services supervised this run", reason);
+        return;
+    }
+    state->services = sup;
+    int found = jw_svc_supervisor_scan(sup);
+    if (found > 0) {
+        jw_log_info("services: supervising %d service(s)", found);
     }
 }
 
@@ -6884,6 +6944,20 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
         return -1;
     }
 
+    /* SVC-1: apply the lifecycle.game policy to supervised services before a
+       game launches. "stop" services are stopped here; a stop that cannot be
+       verified is surfaced and blocks the launch until the user overrides,
+       per the unverified-stop table. (notify/ignore services are LIFE-1's,
+       handled in A3b.) */
+    if (state->services) {
+        char stuck[JW_SVC_SUPERVISOR_ID_BUF];
+        jw_svc_supervisor_game_launch_begin(state->services, stuck, sizeof(stuck));
+        if (stuck[0]) {
+            jw_log_warn("services: service %s did not stop before game launch; "
+                        "requires user override", stuck);
+        }
+    }
+
     jw_launch_target target;
     if (jw__resolve_launch_target(state, state->pending_launch_system,
                                   state->pending_launch_rom_path,
@@ -8604,6 +8678,218 @@ static int jw__handle_relocation(jw_daemon_state *state, jw_ipc_client *client,
     return jw__reply_relocation_status(state, client, &status);
 }
 
+/* ------------------------------------------------------------------ */
+/* CTL-1: service control and status IPC (app-services-v1)             */
+/* ------------------------------------------------------------------ */
+
+/* Serializes one supervised service's CTL-1 detail into `obj`. */
+static void jw__service_status_json(const jw_svc_supervised *e, cJSON *obj) {
+    if (!e || !obj) {
+        return;
+    }
+    cJSON_AddStringToObject(obj, "id", e->service_id);
+    cJSON_AddStringToObject(obj, "state", jw_svc_effective_state_name(e->state));
+    cJSON_AddBoolToObject(obj, "desired_enabled", e->desired_enabled);
+    cJSON_AddBoolToObject(obj, "session_run", e->session_run);
+    cJSON_AddBoolToObject(obj, "manifest_valid", e->manifest_valid);
+    cJSON_AddBoolToObject(obj, "on_secondary_root", e->on_secondary_root);
+    if (!e->manifest_valid && e->reject_reason[0]) {
+        cJSON_AddStringToObject(obj, "reject_reason", e->reject_reason);
+    }
+    if (e->pgid > 0) {
+        cJSON_AddNumberToObject(obj, "pgid", (double)e->pgid);
+    }
+    if (e->control.has_last_exit) {
+        cJSON_AddNumberToObject(obj, "last_exit_code",
+                                (double)e->control.last_exit_code);
+    }
+    cJSON_AddNumberToObject(obj, "restart_count",
+                            (double)e->control.restart_count);
+    cJSON_AddBoolToObject(obj, "breaker_open", e->backoff.breaker_open);
+    if (e->installed_package_version[0]) {
+        cJSON_AddStringToObject(obj, "package_version",
+                                e->installed_package_version);
+    }
+}
+
+/* Reads up to `tail` lines from the service's rotating log, redacting each
+ * line per CTL-1's secret-redaction rule, and appends them as a JSON array
+ * of strings to `arr`. Bounded: reads at most the newest current log file
+ * and caps output so an IPC reply never carries an unbounded payload. */
+static void jw__service_logs_json(jw_daemon_state *state, const char *service_id,
+                                  int tail, cJSON *arr) {
+    const char *logs = getenv("LOGS_PATH");
+    if (!logs || !logs[0] || !arr) {
+        return;
+    }
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/services/%s/%s.log",
+                 logs, service_id, service_id) >= (int)sizeof(path)) {
+        return;
+    }
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return;
+    }
+    /* Read the whole (bounded-by-rotation, <= 256 KiB) current file, then
+     * keep only the last `tail` lines. */
+    char *buf = malloc(256 * 1024 + 1u);
+    if (!buf) {
+        fclose(fp);
+        return;
+    }
+    size_t n = fread(buf, 1, 256 * 1024, fp);
+    fclose(fp);
+    buf[n] = '\0';
+
+    if (tail <= 0) {
+        tail = 100;
+    }
+    /* Split into lines, redact each, collect into a ring of the last N. */
+    char **lines = calloc((size_t)tail, sizeof(char *));
+    if (!lines) {
+        free(buf);
+        return;
+    }
+    int used = 0, start = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(buf, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char redacted[2048];
+        if (!jw_svc_log_redact_line(line, redacted, sizeof(redacted))) {
+            redacted[0] = '\0';
+        }
+        int slot = used < tail ? used : start;
+        free(lines[slot]);
+        lines[slot] = strdup(redacted);
+        if (used < tail) {
+            used++;
+        } else {
+            start = (start + 1) % tail;
+        }
+    }
+    for (int i = 0; i < used; i++) {
+        int idx = (start + i) % tail;
+        if (lines[idx]) {
+            cJSON_AddItemToArray(arr, cJSON_CreateString(lines[idx]));
+        }
+        free(lines[idx]);
+    }
+    free(lines);
+    free(buf);
+    (void)state;
+}
+
+static int jw__handle_service_ctl(jw_daemon_state *state, jw_ipc_client *client,
+                                  cJSON *root, const char *op) {
+    if (!state->services) {
+        return jw__reply_error(client, "services-unavailable");
+    }
+    const char *svc_op = op + strlen("service-");
+
+    if (strcmp(svc_op, "capabilities") == 0) {
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "ok");
+        cJSON_AddStringToObject(reply, "action", "service-capabilities");
+        cJSON *caps = cJSON_AddArrayToObject(reply, "capabilities");
+        cJSON_AddItemToArray(caps, cJSON_CreateString("app-services-v1"));
+#if defined(__linux__)
+        cJSON_AddItemToArray(caps, cJSON_CreateString("pdeathsig"));
+#endif
+        return jw__reply_json(client, reply);
+    }
+
+    if (strcmp(svc_op, "list") == 0) {
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "ok");
+        cJSON_AddStringToObject(reply, "action", "service-list");
+        cJSON *arr = cJSON_AddArrayToObject(reply, "services");
+        int n = jw_svc_supervisor_count(state->services);
+        for (int i = 0; i < n; i++) {
+            const jw_svc_supervised *e = jw_svc_supervisor_at(state->services, i);
+            cJSON *obj = cJSON_CreateObject();
+            jw__service_status_json(e, obj);
+            cJSON_AddItemToArray(arr, obj);
+        }
+        return jw__reply_json(client, reply);
+    }
+
+    /* All remaining ops target one service id. */
+    cJSON *id_item = cJSON_GetObjectItemCaseSensitive(root, "id");
+    if (!cJSON_IsString(id_item) || !id_item->valuestring ||
+        !id_item->valuestring[0]) {
+        return jw__reply_error(client, "missing-id");
+    }
+    const char *id = id_item->valuestring;
+    char reason[JW_SVC_REASON_BUF];
+
+    if (strcmp(svc_op, "status") == 0) {
+        const jw_svc_supervised *e =
+            jw_svc_supervisor_find(state->services, id);
+        if (!e) {
+            return jw__reply_error(client, "unknown-service");
+        }
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "ok");
+        cJSON_AddStringToObject(reply, "action", "service-status");
+        jw__service_status_json(e, reply);
+        return jw__reply_json(client, reply);
+    }
+
+    if (strcmp(svc_op, "logs") == 0 || strcmp(svc_op, "export-logs") == 0) {
+        const jw_svc_supervised *e =
+            jw_svc_supervisor_find(state->services, id);
+        if (!e) {
+            return jw__reply_error(client, "unknown-service");
+        }
+        int tail = 100;
+        cJSON *tail_item = cJSON_GetObjectItemCaseSensitive(root, "tail");
+        if (cJSON_IsNumber(tail_item) && tail_item->valueint > 0) {
+            tail = tail_item->valueint;
+        }
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "ok");
+        cJSON_AddStringToObject(reply, "action", op);
+        cJSON_AddStringToObject(reply, "id", id);
+        cJSON *lines = cJSON_AddArrayToObject(reply, "lines");
+        jw__service_logs_json(state, id, tail, lines);
+        return jw__reply_json(client, reply);
+    }
+
+    /* Mutating operations. */
+    bool ok = false;
+    const char *action = NULL;
+    if (strcmp(svc_op, "enable") == 0) {
+        ok = jw_svc_supervisor_enable(state->services, id, reason, sizeof(reason));
+        action = "enable";
+    } else if (strcmp(svc_op, "disable") == 0) {
+        ok = jw_svc_supervisor_disable(state->services, id, reason, sizeof(reason));
+        action = "disable";
+    } else if (strcmp(svc_op, "run") == 0) {
+        ok = jw_svc_supervisor_run(state->services, id, reason, sizeof(reason));
+        action = "run";
+    } else if (strcmp(svc_op, "stop") == 0) {
+        ok = jw_svc_supervisor_stop(state->services, id, reason, sizeof(reason));
+        action = "stop";
+    } else if (strcmp(svc_op, "restart") == 0) {
+        ok = jw_svc_supervisor_restart(state->services, id, reason, sizeof(reason));
+        action = "restart";
+    } else {
+        return jw__reply_error(client, "unknown-service-op");
+    }
+
+    if (!ok) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "%s-failed: %s", action, reason);
+        return jw__reply_error(client, msg);
+    }
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "ok");
+    cJSON_AddStringToObject(reply, "action", action);
+    cJSON_AddStringToObject(reply, "id", id);
+    return jw__reply_json(client, reply);
+}
+
 static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, const char *body) {
     cJSON *root = cJSON_Parse(body);
     if (!root) {
@@ -8615,6 +8901,13 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
     if (!cJSON_IsString(type) || !type->valuestring) {
         cJSON_Delete(root);
         return jw__reply_error(client, "missing type");
+    }
+
+    /* ---- CTL-1 (app-services-v1) ---- */
+    if (strncmp(type->valuestring, "service-", 8) == 0) {
+        int rc = jw__handle_service_ctl(state, client, root, type->valuestring);
+        cJSON_Delete(root);
+        return rc;
     }
 
     if (strcmp(type->valuestring, "suspend-inhibit-acquire") == 0 ||
@@ -9423,6 +9716,10 @@ static void jw__cleanup(jw_daemon_state *state) {
     }
     jw_suspend_inhibitor_clear(&state->suspend_inhibitor);
     jw_suspend_policy_init(&state->suspend_policy);
+    if (state->services) {
+        jw_svc_supervisor_close(state->services);
+        state->services = NULL;
+    }
     jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
@@ -9566,6 +9863,10 @@ int main(int argc, char *argv[]) {
     /* Exported so child processes receive them via execv's inherited environment. */
     jw__publish_runtime_path_env(&state);
     jw__publish_audio_env(&state);
+
+    /* SVC-1 service supervision: open the control-state store and scan for
+       service-bearing paks. Non-fatal if it cannot come up. */
+    jw__services_init(&state);
 
     /* One-time: pre-create the per-system Roms/ folders so a fresh card is ready
        for drop-in ROMs without hunting the docs (needs ROMS_PATH above). */
@@ -9755,6 +10056,12 @@ int main(int argc, char *argv[]) {
         jw__tick_scan_job(&state);
         jw__tick_startup_maintenance(&state);
 
+        /* SVC-1 service supervision: poll child exit, run the stop sequence,
+           retry stale-generation leases, and fire backoff/autostart. */
+        if (state.services) {
+            jw_svc_supervisor_tick(state.services);
+        }
+
         if (state.shutdown_requested && state.child_pid <= 0 &&
             state.menu_pid <= 0) {
             break;
@@ -9790,6 +10097,17 @@ int main(int argc, char *argv[]) {
        flight when main returns the process dies mid-tick and the motor is
        stranded ON with nothing left to clear it. */
     jw__rumble_quiesce();
+
+    /* SVC-1: stop every running service and verify each group absent before
+       exiting. Per the contract's unverified-stop table, shutdown continues
+       past a stuck service (recorded, never allowed to wedge the device). */
+    if (state.services) {
+        int stuck = jw_svc_supervisor_stop_all(state.services);
+        if (stuck > 0) {
+            jw_log_warn("services: %d service(s) could not be verified stopped "
+                        "during shutdown", stuck);
+        }
+    }
 
     /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
        knows this was an intentional shutdown, not a crash. The marker lives in

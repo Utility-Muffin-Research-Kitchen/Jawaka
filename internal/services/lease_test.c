@@ -1,7 +1,9 @@
 /* mkdtemp(), kill(), and PATH_MAX need broader-than-bare-C11 visibility on
  * glibc; see the matching comment in lease.c. Must precede every
  * #include. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "internal/services/lease.h"
 

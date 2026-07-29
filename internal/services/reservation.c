@@ -1,7 +1,9 @@
 /* clock_gettime()/CLOCK_MONOTONIC, openat(), and O_NOFOLLOW need
  * broader-than-bare-C11 visibility on glibc. Must precede every
  * #include. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "internal/services/reservation.h"
 

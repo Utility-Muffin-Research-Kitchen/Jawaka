@@ -4,7 +4,9 @@
  * codebase (internal/platform/input_proxy_mlp1.c,
  * internal/retroarch/legacy_migration.c). Must precede every #include,
  * including the paired header. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "internal/services/lease.h"
 
