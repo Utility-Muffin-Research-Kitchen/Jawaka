@@ -162,7 +162,7 @@ Important variables:
 | `SDCARD_PATH` | mock or device SD-card root |
 | `SDCARD_PATHS` | colon-separated SD roots, primary first |
 | `USERDATA_PATHS`, `SHARED_USERDATA_PATHS` | PATH-2 per-source durable roots, aligned with `SDCARD_PATHS` |
-| `ROMS_PATHS`, `IMAGES_PATHS`, `MUSIC_PATHS`, `APPS_PATHS` | indexed plural content roots, aligned with `SDCARD_PATHS` |
+| `ROMS_PATHS`, `IMAGES_PATHS`, `MUSIC_PATHS`, `VIDEO_PATHS`, `APPS_PATHS` | indexed plural content roots, aligned with `SDCARD_PATHS` |
 | `UMRK_RUNTIME_PATH` | runtime socket and scratch directory |
 | `UMRK_PLATFORM_PATH` / `SYSTEM_PATH` | platform payload root |
 | `UMRK_INTERNAL_DATA_PATH` | launcher-owned state root |

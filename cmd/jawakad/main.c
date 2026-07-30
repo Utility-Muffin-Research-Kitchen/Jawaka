@@ -185,8 +185,11 @@ typedef struct {
     pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
     jw_child_kind child_kind;
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
+    uint64_t last_record_toggle_ms; /* debounce for the Menu+R1 record hotkey */
     bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
     uint64_t screenshots_checked_ms;     /* when the flag was last read from the DB */
+    bool     recording_enabled_cached;   /* cached opt-in flag for the Menu+R1 hotkey */
+    uint64_t recording_checked_ms;       /* when that flag was last read from the DB */
     /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
        input tick, so avoid a sqlite open per event). */
     bool     rumble_enabled_cached;
@@ -262,6 +265,8 @@ typedef struct {
     jw_standby_reason standby_reason;     /* screen-off standby state, or NONE when lit */
     long long standby_entered_ms;         /* monotonic ms for wake-input detection */
     bool      autosleep_charging_logged;  /* log the charging hold once per standby */
+    bool      autosleep_screen_inhibit_logged; /* log the screen-lease hold once per hold */
+    bool      autosleep_screen_inhibit_held;   /* a screen lease was held on the last tick */
     int       charging_cached;            /* -1 unknown, 0 unplugged, 1 charging */
     long long charging_next_poll_ms;       /* throttle platform status reads in standby */
     bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
@@ -1592,6 +1597,14 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     jw__setenvf_default("ROMS_PATH", "%s/Roms", state->sdcard_root);
     jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
     jw__setenvf_default("MUSIC_PATH", "%s/Music", state->sdcard_root);
+    jw__setenvf_default("VIDEO_PATH", "%s/Videos", state->sdcard_root);
+    char recordings_path[PATH_MAX];
+    if (jw_primary_recordings_path(recordings_path, sizeof(recordings_path),
+                                   state->sdcard_root)) {
+        /* This is primary-owned state, not a caller override: the RetroArch
+           config and conversion dispatcher below resolve the same helper. */
+        setenv("RECORDINGS_PATH", recordings_path, 1);
+    }
     jw__setenvf_default("APPS_PATH", "%s/Apps", state->sdcard_root);
     jw__setenvf_default("BIOS_PATH", "%s/BIOS", state->sdcard_root);
     jw__setenvf_default("SAVES_PATH", "%s/Saves", state->sdcard_root);
@@ -1763,7 +1776,11 @@ static int jw__reply_json(jw_ipc_client *client, cJSON *root) {
     int rc = jw_ipc_client_send(client, json, strlen(json));
     cJSON_free(json);
     cJSON_Delete(root);
-    return rc;
+    /* The request was handled. A peer that closed before reading is a
+       notification client behaving exactly as designed, and reporting it as a
+       failure is what buried the session log under 7724 warnings: every haptic
+       tick is one of these. */
+    return rc == JW_IPC_PEER_GONE ? 0 : rc;
 }
 
 static int jw__reply_hello_ok(jw_ipc_client *client) {
@@ -2487,7 +2504,7 @@ static void jw__tick_retroarch_audio_reinit(jw_daemon_state *state) {
 /* Publish the live panel refresh (read from the active DRM mode) so the
    RetroArch config writer can pin video_refresh_rate to it. RA's pacing and
    Black Frame Insertion break when it believes 60Hz while the panel runs
-   90/120. Re-read per launch so a runtime refresh-rate change is reflected. */
+   100/120. Re-read per launch so a runtime refresh-rate change is reflected. */
 static void jw__publish_display_env(jw_daemon_state *state) {
     if (!state) {
         return;
@@ -2503,9 +2520,11 @@ static void jw__publish_display_env(jw_daemon_state *state) {
     }
 
     /* Black Frame Insertion: publish only when the user enabled it AND the panel
-       is at 120Hz (one black frame per 60fps content frame). The RA config
-       writer turns JAWAKA_BFI=1 into video_black_frame_insertion. At 60/90Hz
-       BFI would flicker badly, so it stays off there regardless of the setting. */
+       runs at twice a content rate, so there is a spare refresh to blank (120Hz
+       for 60fps NTSC, 100Hz for 50fps PAL). The RA config writer turns
+       JAWAKA_BFI=1 into video_black_frame_insertion; RetroArch itself imposes no
+       rate restriction, since it simply targets refresh/(bfi+1). At 60Hz there is
+       no spare refresh, so BFI stays off regardless of the setting. */
     bool bfi_enabled = false;
     if (state->db_path) {
         char val[8] = "";
@@ -2514,7 +2533,7 @@ static void jw__publish_display_env(jw_daemon_state *state) {
             bfi_enabled = true;
         }
     }
-    if (bfi_enabled && status.refresh_rate_hz == 120) {
+    if (bfi_enabled && jw_bfi_content_fps(status.refresh_rate_hz) > 0) {
         setenv("JAWAKA_BFI", "1", 1);
     } else {
         unsetenv("JAWAKA_BFI");
@@ -4250,6 +4269,169 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
                 session->rom_path);
 }
 
+static int jw__platform_path(char *out, size_t out_size, const jw_daemon_state *state);
+
+/* Hand this session's captures to the post-process pass.
+
+   Recording captures FLAC in Matroska because that is what stays cheap enough to
+   run underneath a game -- real-time AAC breaks audio output on FCEUmm, and
+   Matroska survives a capture cut short where MP4 would leave nothing playable.
+   Neither travels, so the shareable MP4 is made here instead, once the game is
+   gone and nothing is competing for the CPU.
+
+   Detached on purpose, and never waited on. The launcher has to come back
+   immediately; conversion costs roughly 1.5s per 15s of capture on this hardware,
+   almost entirely in the AAC encoder.
+
+   Double-fork is deliberate: jawakad only ever reaps the specific pids it tracks
+   (child_pid, osd_pid, ledd), never waitpid(-1), so a child spawned here would sit
+   as a zombie for the life of the daemon. The grandchild is orphaned to init,
+   which reaps it. The intermediate child exits at once and is waited for here.
+
+   Silent when the feature is not installed: a device without the ffmpeg payload
+   should behave exactly as it did before, not log a warning after every game. */
+static void jw__record_convert_spawn(const jw_daemon_state *state) {
+    if (!state || jw__env_is_disabled("JAWAKA_RECORD_CONVERT")) {
+        return;
+    }
+
+    /* Never during shutdown. jw__cleanup() SIGTERMs a running RetroArch and calls
+       jw__retroarch_session_finish(), which lands here -- so this used to orphan an
+       ffmpeg to init that would spend seconds to minutes writing multi-megabyte
+       files to the SD card while the system was rebooting out from under it. A
+       dirty FAT32 at reboot can flip the whole card read-only. Nothing is lost by
+       declining: the pass is idempotent and sweeps everything on the next exit. */
+    if (state->shutdown_requested || g_shutdown_requested) {
+        return;
+    }
+
+    if (!state->db_path) {
+        return;
+    }
+
+    /* All three settings in ONE open. jw_db_get_setting() opens a fresh connection
+       and re-applies the schema per call, with a 2s busy timeout, and this runs on
+       the main loop -- the same loop that drains evdev. Three separate calls could
+       park the daemon for seconds at game exit while the kernel's input buffer
+       overflowed and dropped events, which is exactly what "the launcher has to come
+       back immediately" was supposed to avoid.
+       An absent key leaves out[] empty and found==0, so split/keep default ON by
+       testing against "0" rather than for "1" -- neither key exists yet on any
+       device that has not toggled them. */
+    char en[8] = "", sp[8] = "", ks[8] = "";
+    jw_db_setting_query q[3] = {
+        { "recording_enabled",     en, sizeof(en), 0 },
+        { "recording_split",       sp, sizeof(sp), 0 },
+        { "recording_keep_source", ks, sizeof(ks), 0 },
+    };
+    (void)jw_db_get_settings(state->db_path, q, 3);
+
+    /* Opt-in gate, matching the hotkey. Without it the daemon forked and exec'd a
+       shell after EVERY game exit for every user, including those who never enabled
+       recording -- the stat() guard below cannot catch that, because the config
+       generator creates Recordings/ on every launch, so it always exists. */
+    if (strcmp(en, "1") != 0) {
+        return;
+    }
+
+    char platform_path[PATH_MAX];
+    if (jw__platform_path(platform_path, sizeof(platform_path), state) != 0) {
+        return;
+    }
+
+    char script[PATH_MAX];
+    if (snprintf(script, sizeof(script), "%s/bin/leaf-record-convert.sh",
+                 platform_path) >= (int)sizeof(script)) {
+        return;
+    }
+    if (access(script, X_OK) != 0) {
+        return; /* payload not installed on this device */
+    }
+
+    char recordings[PATH_MAX];
+    if (!jw_primary_recordings_path(recordings, sizeof(recordings),
+                                    state->sdcard_root)) {
+        return;
+    }
+
+    struct stat st;
+    if (stat(recordings, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return; /* nothing was ever recorded */
+    }
+
+    bool split = (strcmp(sp, "0") != 0);
+    bool keep_source = (strcmp(ks, "0") != 0);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_log_warn("record convert fork failed: %s", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        pid_t inner = fork();
+        if (inner < 0) {
+            _exit(127);
+        }
+        if (inner > 0) {
+            _exit(0); /* parent of the grandchild; jawakad reaps this one */
+        }
+
+        setsid();
+        /* jawakad ignores SIGPIPE, and an IGNORED disposition survives execve
+           where a handler would be reset. The conversion pass is a shell script
+           built out of pipelines whose readers exit early (`du -k ... | awk
+           '{print $1; exit}'`, `... | sed -n ... | tail -1`), and with SIGPIPE
+           ignored such a writer is not killed -- it collects EPIPE on every write
+           and keeps going. Hand the script the default it expects.
+
+           This covers the conversion child only. Every other exec site in this
+           daemon still passes SIG_IGN down, which is worth fixing separately --
+           pak launch.sh scripts are third-party shell and the likeliest place for
+           it to matter. */
+        signal(SIGPIPE, SIG_DFL);
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) {
+                close(devnull);
+            }
+        }
+        char *argv[5];
+        int argc = 0;
+        argv[argc++] = script;
+        argv[argc++] = recordings;
+        if (split) {
+            argv[argc++] = (char *)"--split";
+        }
+        if (!keep_source) {
+            argv[argc++] = (char *)"--delete-source";
+        }
+        argv[argc] = NULL;
+        execv(script, argv);
+        _exit(127);
+    }
+
+    /* The intermediate child _exit(0)s straight after its own fork, so this returns
+       almost at once; the loop is only here because a handler installed without
+       SA_RESTART would otherwise leave it a zombie, and jawakad never waitpid(-1)s.
+       A non-zero status means that inner fork failed -- worth saying so, since the
+       success line below would otherwise claim a conversion that never started. */
+    int spawn_status = 0;
+    while (waitpid(pid, &spawn_status, 0) < 0 && errno == EINTR) {
+        /* retry */
+    }
+    if (WIFEXITED(spawn_status) && WEXITSTATUS(spawn_status) != 0) {
+        jw_log_warn("record convert failed to start (status=%d)",
+                    WEXITSTATUS(spawn_status));
+        return;
+    }
+    jw_log_info("record convert dispatched for %s split=%s keep_source=%s",
+                recordings, split ? "true" : "false",
+                keep_source ? "true" : "false");
+}
+
 static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int status) {
     if (!state) {
         return;
@@ -4319,6 +4501,13 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
         state->perf_custom_valid = false;
         jw__perf_request_init(&state->perf_custom_request);
         (void)jw__perf_apply_frontend(state, "retroarch-exit");
+
+        /* Only once we are actually going back to the launcher. A switcher
+           transition is launching the next game right now, and the conversion
+           would be competing with it for the CPU it needs to start cleanly.
+           Nothing is lost by waiting -- the pass is idempotent and picks up
+           every unconverted capture whenever it next runs. */
+        jw__record_convert_spawn(state);
     }
 }
 
@@ -4647,6 +4836,7 @@ static void jw__publish_source_content_env(const jw_storage_source *source) {
     setenv("ROMS_PATH", source->roms_path, 1);
     setenv("IMAGES_PATH", source->images_path, 1);
     setenv("MUSIC_PATH", source->music_path, 1);
+    setenv("VIDEO_PATH", source->video_path, 1);
     setenv("APPS_PATH", source->apps_path, 1);
     setenv("BIOS_PATH", source->bios_path, 1);
     setenv("SAVES_PATH", source->saves_path, 1);
@@ -6434,6 +6624,7 @@ static bool jw__input_game_switcher(void *userdata) {
 #define JW_SS_SCANOUT_W   720   /* panel native (portrait); UI runs landscape */
 #define JW_SS_SCANOUT_H   960
 #define JW_SS_THROTTLE_MS 1000
+#define JW_RECORD_THROTTLE_MS 250 /* a toggle needs bounce protection, not a full second */
 #define JW_SS_ENABLE_TTL_MS 2000  /* re-read the opt-in flag from the DB at most this often */
 #define JW_SS_PRE_MAX     64      /* max pre-existing PNGs tracked for the in-game diff */
 
@@ -6771,6 +6962,64 @@ static void *jw__screenshot_worker(void *arg) {
 
 /* Menu + L1 (input proxy): take a screenshot. Returns true when consumed. When
    the feature is disabled it returns false so the chord forwards normally. */
+/* Menu + R1: toggle a game recording. Only meaningful while RetroArch is the
+   running session -- it owns the recorder -- so decline otherwise and let R1
+   reach the app normally.
+
+   RECORDING_TOGGLE goes over RetroArch's network command interface rather than
+   through its own hotkey system: a RetroArch pad hotkey needs a modifier held,
+   and RetroArch stops blocking that modifier from the core after
+   input_hotkey_block_delay frames, so Select ends up pressing buttons in the
+   game. Menu is never a game input and the chord is consumed here. */
+static bool jw__on_record_hotkey(void *userdata) {
+    jw_daemon_state *state = (jw_daemon_state *)userdata;
+    if (!state || !jw__has_retroarch_session(state)) {
+        return false;
+    }
+
+    /* Opt-in gate, cached the same way screenshots are: reading the flag opens
+       and closes sqlite, and this runs on the input tick. Declining lets R1
+       forward to the game, which is what a user with recording off expects. */
+    uint64_t gate_now = jw__screenshot_now_ms();
+    if (state->recording_checked_ms == 0 ||
+        gate_now - state->recording_checked_ms >= JW_SS_ENABLE_TTL_MS) {
+        char en[8] = "";
+        state->recording_enabled_cached =
+            (state->db_path &&
+             jw_db_get_setting(state->db_path, "recording_enabled", en, sizeof(en)) == 0 &&
+             strcmp(en, "1") == 0);
+        state->recording_checked_ms = gate_now;
+    }
+    if (!state->recording_enabled_cached) {
+        return false;
+    }
+
+    /* Debounced, but on its own much shorter clock than screenshots. A screenshot
+       repeated inside a second is almost always a bounce and costs only a junk
+       file; a recording toggle inside a second can be a deliberate "stop, wrong
+       moment", and swallowing that is invisible -- the chord is consumed, nothing
+       on screen changes, and the recording the user believes they stopped keeps
+       running. A physical shoulder button bounces in tens of milliseconds, so
+       this only has to be long enough to stop a start/stop pair from producing a
+       file with no frames in it. */
+    uint64_t now = jw__screenshot_now_ms();
+    if (state->last_record_toggle_ms != 0 &&
+        now - state->last_record_toggle_ms < JW_RECORD_THROTTLE_MS) {
+        return true;
+    }
+    state->last_record_toggle_ms = now;
+
+    jw_ra_client client = jw_ra_client_default();
+    jw_ra_result rc = jw_ra_send_raw(&client, "RECORDING_TOGGLE");
+    if (rc != JW_RA_OK) {
+        jw_log_warn("record hotkey: RECORDING_TOGGLE failed result=%s",
+                    jw_ra_result_string(rc));
+        return true;   /* consumed either way; R1 must not reach the game */
+    }
+    jw_log_info("record hotkey: RECORDING_TOGGLE sent");
+    return true;
+}
+
 static bool jw__on_screenshot_hotkey(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
     if (!state || !state->db_path) {
@@ -6842,6 +7091,7 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
                             jw__input_volume_delta, jw__input_menu_tap,
                             jw__input_game_switcher, state) == 0) {
         state->input_proxy.screenshot = jw__on_screenshot_hotkey;
+        state->input_proxy.record = jw__on_record_hotkey;
         state->input_proxy.rumble = jw__rumble_ff;
         jw__publish_retroarch_input_env(state);
     }
@@ -7708,6 +7958,25 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
         return;
     }
 
+    /* A JW_SUSPEND_SCOPE_SCREEN lease defers the idle blank: a video player has
+       no input for the length of a film, so input-idle is the wrong signal for
+       it. Gated here rather than at each caller because jw__tick_auto_sleep
+       blanks from three places and a fourth would silently miss the check.
+       Only the idle path is deferred -- a power press or a charging standby is
+       a deliberate act and still blanks. */
+    if (reason == JW_STANDBY_AUTOSLEEP) {
+        int screen_leases = jw_suspend_inhibitor_count_scope(
+            &state->suspend_inhibitor, JW_SUSPEND_SCOPE_SCREEN);
+        if (screen_leases > 0) {
+            if (!state->autosleep_screen_inhibit_logged) {
+                jw_log_info("auto-sleep: screen blank deferred by %d screen lease(s)",
+                            screen_leases);
+                state->autosleep_screen_inhibit_logged = true;
+            }
+            return;
+        }
+    }
+
     if (reset_idle) {
         jw_input_proxy_mark_activity(&state->input_proxy);
     }
@@ -7882,6 +8151,19 @@ static void jw__tick_suspend_inhibitors(jw_daemon_state *state) {
     if (reaped > 0) {
         jw_log_info("suspend-inhibit: reaped %d dead holder lease(s); active=%d",
                     reaped, jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    }
+    bool screen_held = jw_suspend_inhibitor_count_scope(&state->suspend_inhibitor,
+                                                        JW_SUSPEND_SCOPE_SCREEN) > 0;
+    if (screen_held) {
+        state->autosleep_screen_inhibit_held = true;
+    } else if (state->autosleep_screen_inhibit_held) {
+        /* The last screen lease just went (released or reaped). Input-idle has
+           been accumulating for the whole film, so without this the screen
+           would blank the instant playback ends. Treat the release itself as
+           activity and give the user a fresh idle window. */
+        jw_input_proxy_mark_activity(&state->input_proxy);
+        state->autosleep_screen_inhibit_held = false;
+        state->autosleep_screen_inhibit_logged = false;
     }
     /* Let the auto-sleep tick below process and log wake activity before a
        last-release transition can perform a queued suspend. */
@@ -8717,8 +8999,8 @@ static int jw__handle_suspend_inhibit(jw_daemon_state *state,
         if (result != JW_SUSPEND_LEASE_OK)
             return jw__reply_error(client, jw_suspend_lease_result_name(result));
         int count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
-        jw_log_info("suspend-inhibit: acquired pid=%d reason=%s active=%d",
-                    (int)pid, reason->valuestring, count);
+        jw_log_info("suspend-inhibit: acquired pid=%d scope=%s reason=%s active=%d",
+                    (int)pid, scope->valuestring, reason->valuestring, count);
         return jw__reply_suspend_acquired(client, token, count);
     }
 
@@ -9983,14 +10265,20 @@ static int jw__accept_and_process(jw_daemon_state *state) {
 
     char *body = NULL;
     size_t len = 0;
-    int result = jw_ipc_client_recv(client, &body, &len);
-    if (result == 0) {
-        result = jw__handle_message(state, client, body, len);
+    int result;
+    if (jw_ipc_client_recv(client, &body, &len) != 0) {
+        jw_log_warn("ipc client disconnected before sending a complete request");
+        result = -1;
+    } else if (jw__handle_message(state, client, body, len) != 0) {
+        jw_log_warn("ipc handler failed to answer a request");
+        result = -1;
+    } else {
+        result = 0;
     }
 
     free(body);
     jw_ipc_client_close(client);
-    return result == 0 ? 0 : -1;
+    return result;
 }
 
 static void jw__clear_menu_tracking(jw_daemon_state *state) {
@@ -10707,10 +10995,7 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        int rc = jw__accept_and_process(&state);
-        if (rc < 0 && !state.shutdown_requested && !g_shutdown_requested) {
-            jw_log_warn("ipc loop iteration failed");
-        }
+        (void)jw__accept_and_process(&state);
     }
 
     /* Quiesce, not a bare off: the worker is detached, so if a pattern is in

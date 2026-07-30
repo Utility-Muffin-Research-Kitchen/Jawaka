@@ -8,6 +8,12 @@
 #define JW_SUSPEND_INHIBIT_MAX_LEASES 32
 #define JW_SUSPEND_INHIBIT_TOKEN_LEN 32
 
+/* Lease scopes. Both defer deep suspend (stage 2); only the screen scope also
+   defers the stage-1 backlight blank, for foreground work the user is watching
+   rather than waiting on. */
+#define JW_SUSPEND_SCOPE_SUSPEND "block-suspend"
+#define JW_SUSPEND_SCOPE_SCREEN  "block-screen"
+
 typedef struct {
     bool active;
     char token[JW_SUSPEND_INHIBIT_TOKEN_LEN + 1];
@@ -65,6 +71,10 @@ jw_suspend_lease_result jw_suspend_inhibitor_release(
     bool *released_active);
 int jw_suspend_inhibitor_reap(jw_suspend_inhibitor *inhibitor);
 int jw_suspend_inhibitor_count(const jw_suspend_inhibitor *inhibitor);
+/* Active leases holding exactly `scope`. Use JW_SUSPEND_SCOPE_SCREEN to decide
+   whether the stage-1 backlight blank must be deferred. */
+int jw_suspend_inhibitor_count_scope(const jw_suspend_inhibitor *inhibitor,
+                                     const char *scope);
 void jw_suspend_inhibitor_clear(jw_suspend_inhibitor *inhibitor);
 const char *jw_suspend_lease_result_name(jw_suspend_lease_result result);
 

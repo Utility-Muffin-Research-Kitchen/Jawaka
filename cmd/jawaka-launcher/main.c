@@ -1170,6 +1170,7 @@ static int jw__load_library_cache(const char *socket_path, const char *db_path,
 #define JW_STATUS_POLL_VOLUME (1 << 0)
 #define JW_STATUS_POLL_WIFI   (1 << 1)
 #define JW_STATUS_POLL_BT     (1 << 2)
+#define JW_STATUS_POLL_AV     (1 << 3)   /* brightness + full audio status */
 #define JW_STATUS_SAMPLE_NONE INT_MIN
 
 typedef struct {
@@ -1195,6 +1196,13 @@ typedef struct {
     pthread_mutex_t scrape_mu;
     jw_ipc_scrape_status_info scrape;
     atomic_int  scrape_seq;
+    /* Display & Sound snapshot, sampled only while that page is open. Same
+       mutex+seq shape as scrape above, because audio status is a struct and one
+       atomic cannot carry it. Brightness rides along as a plain mailbox. */
+    atomic_int  av_brightness;
+    pthread_mutex_t av_mu;
+    jw_ipc_audio_status av_audio;
+    atomic_int  av_seq;
 } jw_status_poller;
 
 static jw_status_poller jw__status_poller;
@@ -1209,6 +1217,21 @@ static void *jw__status_poll_worker(void *arg) {
             int percent = -1;
             if (jw_ipc_platform_volume(P->socket_path, &percent) == 0 && percent >= 0)
                 atomic_store(&P->volume, percent > 100 ? 100 : percent);
+        }
+        /* Display & Sound: brightness + audio status. Two blocking round trips
+           that used to run on the render thread and stall cursor movement on
+           that page; out here they cost nothing anyone can see. */
+        if (mask & JW_STATUS_POLL_AV) {
+            int percent = -1;
+            if (jw_ipc_platform_brightness(P->socket_path, &percent) == 0 && percent >= 0)
+                atomic_store(&P->av_brightness, percent);
+            jw_ipc_audio_status audio;
+            if (jw_ipc_platform_audio_status(P->socket_path, &audio) == 0) {
+                pthread_mutex_lock(&P->av_mu);
+                P->av_audio = audio;
+                pthread_mutex_unlock(&P->av_mu);
+                atomic_fetch_add(&P->av_seq, 1);
+            }
         }
         jw_ipc_library_status_info lib;
         if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
@@ -1245,8 +1268,12 @@ static void *jw__status_poll_worker(void *arg) {
             }
             last_slow = now;
         }
-        /* Sleep ~1s, waking promptly for shutdown. */
-        for (int i = 0; i < 10 && !atomic_load(&P->stop); i++) SDL_Delay(100);
+        /* Sleep ~1s, waking promptly for shutdown. While Display & Sound is open
+           tighten to ~300ms so its sliders keep up with the hardware keys as
+           closely as the old render-thread poll did — the cost is confined to
+           this thread, and only while that page is showing. */
+        int slices = (mask & JW_STATUS_POLL_AV) ? 3 : 10;
+        for (int i = 0; i < slices && !atomic_load(&P->stop); i++) SDL_Delay(100);
     }
     return NULL;
 }
@@ -1260,6 +1287,11 @@ static void jw__status_poller_fallback_poll(jw_settings_ui *s, int mask) {
     if (P->fb_last_fast == 0 || now - P->fb_last_fast >= 1000) {
         if (mask & JW_STATUS_POLL_VOLUME)
             jw_settings_ui_refresh_volume(s);
+        /* Only reached when the worker thread failed to start, so this is the
+           degraded path: the page stalls as it did before, but at the 1s
+           fallback cadence rather than 300ms, and it beats not updating. */
+        if (mask & JW_STATUS_POLL_AV)
+            jw_settings_ui_refresh_av(s);
         jw_ipc_library_status_info lib;
         if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
             atomic_store(&P->generation, lib.generation);
@@ -1289,7 +1321,10 @@ static void jw__status_poller_fallback_poll(jw_settings_ui *s, int mask) {
    Bluetooth) already polls it live on the render thread. */
 static int jw__status_poll_mask(const jw_settings_ui *s) {
     int mask = 0;
-    if (jw_settings_show_volume(s) && !jw_settings_ui_wants_av_poll(s))
+    /* The A/V sample carries volume too, so the two never both run. */
+    if (jw_settings_ui_wants_av_poll(s))
+        mask |= JW_STATUS_POLL_AV;
+    else if (jw_settings_show_volume(s))
         mask |= JW_STATUS_POLL_VOLUME;
     if (jw_settings_show_wifi(s) && !jw_settings_ui_wants_wifi_poll(s))
         mask |= JW_STATUS_POLL_WIFI;
@@ -1317,6 +1352,28 @@ static void jw__status_poller_sync(jw_settings_ui *s) {
     int v = atomic_exchange(&P->volume, JW_STATUS_SAMPLE_NONE);
     if (v != JW_STATUS_SAMPLE_NONE && (mask & JW_STATUS_POLL_VOLUME))
         s->volume_percent = v;
+    /* Display & Sound snapshot. The audio half needs the lock (it is a struct);
+       re-copy only when the worker bumped the seq, so a page sitting idle costs
+       one atomic load per frame. */
+    if (mask & JW_STATUS_POLL_AV) {
+        static int av_seen = 0;
+        int brightness = atomic_exchange(&P->av_brightness, JW_STATUS_SAMPLE_NONE);
+        int seq = atomic_load(&P->av_seq);
+        jw_ipc_audio_status audio;
+        bool have_audio = false;
+        if (seq != av_seen) {
+            av_seen = seq;
+            pthread_mutex_lock(&P->av_mu);
+            audio = P->av_audio;
+            pthread_mutex_unlock(&P->av_mu);
+            have_audio = true;
+        }
+        if (brightness != JW_STATUS_SAMPLE_NONE || have_audio) {
+            jw_settings_ui_apply_av(s,
+                                    brightness == JW_STATUS_SAMPLE_NONE ? -1 : brightness,
+                                    have_audio ? &audio : NULL);
+        }
+    }
     v = atomic_exchange(&P->wifi, JW_STATUS_SAMPLE_NONE);
     if (v != JW_STATUS_SAMPLE_NONE && (mask & JW_STATUS_POLL_WIFI)) {
         s->wifi_strength_cached = v > 0 ? v : 0;
@@ -1349,6 +1406,9 @@ static void jw__status_poller_start(const char *socket_path, jw_settings_ui *set
        round of samples while waiting for the first sync. */
     atomic_store(&P->poll_mask, jw__status_poll_mask(settings));
     pthread_mutex_init(&P->scrape_mu, NULL);
+    pthread_mutex_init(&P->av_mu, NULL);
+    atomic_store(&P->av_brightness, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->av_seq, 0);
     atomic_store(&P->scrape_seq, 0);
     atomic_store(&P->stop, false);
     P->started = true;
@@ -9142,18 +9202,13 @@ int main(void) {
             }
         }
 
-        /* While the Display & Sound page is open, poll live brightness/volume so
-           the sliders follow the hardware volume keys (jawakad's input proxy
-           consumes those events, so the UI can only observe the result). */
+        /* While the Display & Sound page is open, keep repainting so the samples
+           the background poller delivers (brightness + audio status, folded in by
+           jw__status_poller_sync) actually reach the screen. The sampling itself
+           is NOT done here on purpose: each round trip to jawakad costs ~110ms of
+           latency and this page needs two, which is what used to make its cursor
+           movement drag. Nothing on the render thread may block on IPC. */
         if (jw_settings_ui_wants_av_poll(&state.settings)) {
-            /* refresh_av forks amixer/pactl in jawakad (~60ms/frame); doing it on
-               a d-pad frame stalls navigation on this page. Its only job is to
-               follow the hardware volume/brightness keys, which are not launcher
-               input (jawakad's proxy consumes them), so skip it on input frames
-               and let the 300ms timer wake catch the hardware-key result. */
-            if (!had_input) {
-                jw_settings_ui_refresh_av(&state.settings);
-            }
             cat_request_frame_in(300);
         }
 

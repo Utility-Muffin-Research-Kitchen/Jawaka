@@ -386,7 +386,7 @@ int jw_storage_sources_resolve(const char *primary_root, jw_storage_source_list 
     }
     static const char *aligned_lists[] = {
         "USERDATA_PATHS", "SHARED_USERDATA_PATHS", "ROMS_PATHS",
-        "IMAGES_PATHS", "MUSIC_PATHS", "APPS_PATHS", "BIOS_PATHS",
+        "IMAGES_PATHS", "MUSIC_PATHS", "VIDEO_PATHS", "APPS_PATHS", "BIOS_PATHS",
         "SAVES_PATHS", "STATES_PATHS", "CHEATS_PATHS",
     };
     for (size_t i = 0; i < sizeof(aligned_lists) / sizeof(aligned_lists[0]); i++) {
@@ -457,6 +457,9 @@ int jw_storage_sources_resolve(const char *primary_root, jw_storage_source_list 
                 jw__source_child_path("MUSIC_PATHS", "MUSIC_PATH", source->root,
                                       "Music", index, source->music_path,
                                       sizeof(source->music_path)) != 0 ||
+                jw__source_child_path("VIDEO_PATHS", "VIDEO_PATH", source->root,
+                                      "Videos", index, source->video_path,
+                                      sizeof(source->video_path)) != 0 ||
                 jw__source_child_path("APPS_PATHS", "APPS_PATH", source->root,
                                       "Apps", index, source->apps_path,
                                       sizeof(source->apps_path)) != 0 ||

@@ -129,6 +129,9 @@ typedef enum {
     JW_SETTING_AUTO_SLEEP_SECONDS,
     JW_SETTING_BOOT_SPLASH_ENABLED,
     JW_SETTING_SCREENSHOTS_ENABLED,
+    JW_SETTING_RECORDING_ENABLED,
+    JW_SETTING_RECORDING_SPLIT,
+    JW_SETTING_RECORDING_KEEP_SRC,
     JW_SETTING_GAME_PERFORMANCE_PROFILE,
     JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT,
     JW_SETTING_PLATFORM_VOLUME_PERCENT,
@@ -174,6 +177,9 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_AUTO_SLEEP_SECONDS] = "auto_sleep_seconds",
     [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
     [JW_SETTING_SCREENSHOTS_ENABLED] = "screenshots_enabled",
+    [JW_SETTING_RECORDING_ENABLED]   = "recording_enabled",
+    [JW_SETTING_RECORDING_SPLIT]     = "recording_split",
+    [JW_SETTING_RECORDING_KEEP_SRC]  = "recording_keep_source",
     [JW_SETTING_GAME_PERFORMANCE_PROFILE] = "platform.performance.game_profile",
     [JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT] = "platform.brightness_percent",
     [JW_SETTING_PLATFORM_VOLUME_PERCENT] = "platform.volume_percent",
@@ -371,6 +377,44 @@ static const int   kAutoSleepSeconds[] = {     0,       15,       30,       45, 
                                      Deep-suspend wake is not yet reliable, so
                                      auto-sleep stays opt-in until that is solid. */
 
+/* Panel refresh rates offered in Settings > Display & Sound, low to high. The
+   modeline writer scales the dot clock to any rate (782842 * hz / 1e6), so this
+   table is the only place the choice is fixed; the daemon clamps to 60..120.
+
+   Each rate is the right answer for something, which is the whole selection
+   rule - a rate earns a slot by dividing evenly into some content rate:
+     60  - NTSC 60fps at a perfect 1:1, lowest power, the safe default
+     100 - PAL 50fps at a perfect 2:2 (the only rate that divides into 50)
+     120 - NTSC 60fps at 2:2 (so BFI has a black frame to insert), 24fps at 5:5
+   90 was dropped: it is 1.5x of 60fps, so it forced an alternating 1-then-2
+   refresh hold (3:2 pulldown) that juddered 60fps games WORSE than plain 60 Hz,
+   and it divided evenly into nothing anyone plays. It shipped first only
+   because it was the rate the feature was originally proven at. */
+static const int kPanelRefreshHz[] = { 60, 100, 120 };
+#define JW_PANEL_REFRESH_COUNT ((int)(sizeof(kPanelRefreshHz) / sizeof(kPanelRefreshHz[0])))
+
+static bool jw__is_panel_refresh_hz(int hz) {
+    for (int i = 0; i < JW_PANEL_REFRESH_COUNT; i++) {
+        if (kPanelRefreshHz[i] == hz) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Index of the offered rate closest to hz, so a rate that is no longer offered
+   (a device carried over from when 90 Hz was on the menu) still cycles somewhere
+   sensible: from 90, one step down lands on 60 and one step up on 100. */
+static int jw__nearest_refresh_index(const int *rates, int n, int hz) {
+    int best = 0;
+    for (int i = 1; i < n; i++) {
+        if (abs(rates[i] - hz) < abs(rates[best] - hz)) {
+            best = i;
+        }
+    }
+    return best;
+}
+
 static const jw_platform_perf_profile kGamePerfProfiles[] = {
     JW_PLATFORM_PERF_PROFILE_AUTO,
     JW_PLATFORM_PERF_PROFILE_BALANCED,
@@ -469,23 +513,47 @@ static void jw__refresh_volume(jw_settings_ui *ui) {
     }
 }
 
+/* Fold an audio-status reply into the UI. Split from the fetch so the same
+   handling serves both a direct query and a sample taken off the render thread
+   by the launcher's background poller. */
+static void jw__apply_audio_status(jw_settings_ui *ui,
+                                   const jw_ipc_audio_status *status) {
+    if (!ui || !status) return;
+    ui->audio_output = status->output;
+    ui->audio_available_outputs = status->available_outputs;
+    ui->test_sound_playing = (status->test_playing != 0);
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        ui->audio_volumes[i] = status->volume_percent[i];
+    }
+    if (ui->audio_output >= 0 &&
+        ui->audio_output < JW_PLATFORM_AUDIO_OUTPUT_COUNT &&
+        ui->audio_volumes[ui->audio_output] >= 0) {
+        ui->volume_percent = ui->audio_volumes[ui->audio_output];
+    }
+}
+
 static void jw__refresh_audio_status(jw_settings_ui *ui) {
     if (!ui || !ui->socket_path[0]) return;
     jw_ipc_audio_status status;
     if (jw_ipc_platform_audio_status(ui->socket_path, &status) != 0) {
         return;
     }
+    jw__apply_audio_status(ui, &status);
+}
 
-    ui->audio_output = status.output;
-    ui->audio_available_outputs = status.available_outputs;
-    ui->test_sound_playing = (status.test_playing != 0);
-    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
-        ui->audio_volumes[i] = status.volume_percent[i];
+/* Apply a snapshot the background poller took, so the Display & Sound page can
+   follow the hardware brightness/volume keys without the render thread ever
+   making a blocking IPC call. A round trip to jawakad costs ~110ms of latency
+   (almost none of it work), and this page used to make four of them in a row
+   every 300ms, which is what made its cursor movement drag. */
+void jw_settings_ui_apply_av(jw_settings_ui *ui, int brightness_percent,
+                             const jw_ipc_audio_status *audio) {
+    if (!ui) return;
+    if (brightness_percent >= 0) {
+        ui->brightness_percent = jw_platform_clamp_brightness_percent(brightness_percent);
     }
-    if (ui->audio_output >= 0 &&
-        ui->audio_output < JW_PLATFORM_AUDIO_OUTPUT_COUNT &&
-        ui->audio_volumes[ui->audio_output] >= 0) {
-        ui->volume_percent = ui->audio_volumes[ui->audio_output];
+    if (audio) {
+        jw__apply_audio_status(ui, audio);
     }
 }
 
@@ -603,8 +671,12 @@ static void jw__refresh_refresh_rate(jw_settings_ui *ui) {
     if (jw_ipc_get_refresh_rate(ui->socket_path, &hz, &supported) == 0) {
         ui->refresh_rate_supported = supported;
         /* Reflect the panel's actual current rate when the daemon reports it
-           (truth over the persisted mirror, e.g. after moving the card). */
-        if (hz == 60 || hz == 90 || hz == 120) {
+           (truth over the persisted mirror, e.g. after moving the card). Any
+           positive rate is taken as-is rather than filtered against the offered
+           list: the live mode IS the truth, so a panel left at a retired rate
+           (90 Hz, from before it left the menu) must read 90 rather than have
+           the row quietly claim 60. Cycling off it then retires it for good. */
+        if (hz > 0) {
             ui->refresh_rate_hz = hz;
         }
     }
@@ -1291,6 +1363,14 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
     ui->screenshots_enabled = false;   /* opt-in */
+    ui->recording_enabled   = false;   /* opt-in, same as screenshots */
+    /* On by default: it is inert for clips that already fit, and without it a
+       long recording hands you a file too big to post with no way back except
+       flipping this and re-converting. */
+    ui->recording_split     = true;
+    /* The .mkv holds lossless audio and is the only re-convertible source, so
+       discarding it should be a deliberate choice. */
+    ui->recording_keep_src  = true;
     ui->rumble_enabled = true;    /* haptics default on */
     ui->rumble_strength = 65;     /* ~Medium */
     ui->rumble_nav = false;       /* per-move tick opt-in */
@@ -1429,9 +1509,17 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SCREENSHOTS_ENABLED))
                 ui->screenshots_enabled = (strcmp(values[JW_SETTING_SCREENSHOTS_ENABLED], "1") == 0);
+            if (jw__setting_has(values, found, JW_SETTING_RECORDING_ENABLED))
+                ui->recording_enabled = (strcmp(values[JW_SETTING_RECORDING_ENABLED], "1") == 0);
+            /* These two default ON, so an absent key must not read as off -- test
+               against "0" rather than for "1" the way the opt-in flags do. */
+            if (jw__setting_has(values, found, JW_SETTING_RECORDING_SPLIT))
+                ui->recording_split = (strcmp(values[JW_SETTING_RECORDING_SPLIT], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_RECORDING_KEEP_SRC))
+                ui->recording_keep_src = (strcmp(values[JW_SETTING_RECORDING_KEEP_SRC], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_REFRESH_RATE_HZ)) {
                 int hz = atoi(values[JW_SETTING_REFRESH_RATE_HZ]);
-                if (hz == 60 || hz == 90 || hz == 120) ui->refresh_rate_hz = hz;
+                if (jw__is_panel_refresh_hz(hz)) ui->refresh_rate_hz = hz;
             }
             if (jw__setting_has(values, found, JW_SETTING_BFI_ENABLED))
                 ui->bfi_enabled = (strcmp(values[JW_SETTING_BFI_ENABLED], "0") != 0);
@@ -1804,9 +1892,25 @@ static void jw__render_list_row_vc(const cat_list_state *list, int x, int y,
 /* Row pitch for the Display & Sound page. The Brightness/Volume sliders need the
    taller slot for their track, so the Audio Output row (a plain list row between
    them) must share this same pitch — otherwise the three rows, each positioned by
-   row*own_height, overlap and gap. */
-static int jw__display_row_h(void) {
-    return TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(28);
+   row*own_height, overlap and gap.
+
+   avail_h is the height of the content area the rows are drawn into. The natural
+   pitch is used whenever the rows fit, which is every case at the default font
+   size; past that the padding is spent down so the last row still lands inside
+   the box. Without that, the page ran off the bottom at Extra Large and the
+   button-hint bar covered the Test Sound row (label and value both clipped).
+   The floor keeps a row taller than its own text, so compressing can never clip
+   the glyphs — the rows are padding-heavy (28 units against the 12 a plain nav
+   row uses), so there is a lot to give back before that floor is reached.
+   Pass avail_h <= 0 to ask for the natural pitch without any fitting. */
+static int jw__display_row_h_fit(int avail_h) {
+    int natural = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(28);
+    if (avail_h <= 0 || JW_DISPLAY_ROW_COUNT * natural <= avail_h) {
+        return natural;
+    }
+    int fitted = avail_h / JW_DISPLAY_ROW_COUNT;
+    int floor_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(10);
+    return fitted < floor_h ? floor_h : fitted;
 }
 
 static void jw__render_nav_row(const cat_list_state *list, int x, int y,
@@ -2046,12 +2150,13 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
                         "Volume", jw__vis_label(ui->show_volume), true);
 }
 
-/* One labelled slider row (Brightness / Volume) on the Display & Sound page. */
+/* One labelled slider row (Brightness / Volume) on the Display & Sound page.
+   item_h is the page's fitted row pitch; every row on the page must be passed the
+   same value or they overlap and gap, since each positions itself as row*item_h. */
 static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int w,
-                                int row, const char *label, int percent) {
+                                int row, const char *label, int percent, int item_h) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int item_h = jw__display_row_h();
     int iy = y_base + row * item_h;
     bool selected = (ui->display_list.cursor == row);
     int pill_h = item_h - cat_scale(6);
@@ -2079,7 +2184,8 @@ static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int
     cat_draw_rect(track_x, track_y, fill_w, cat_scale(4), value_c);
 }
 
-static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_base, int w) {
+static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_base, int w,
+                                      int item_h) {
     jw_platform_audio_output output = ui->audio_output;
     if (output < 0 || output >= JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
         output = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
@@ -2095,28 +2201,47 @@ static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_bas
     }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_OUTPUT,
                           "Audio Output", jw_platform_audio_output_label(output),
-                          navail > 1, jw__display_row_h());
+                          navail > 1, item_h);
 }
 
 static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Display & Sound", x, y, w);
-    int y_base = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    /* Fit the rows to the box rather than assuming the natural pitch clears it.
+       The box already excludes the button-hint bar (the launcher subtracts the
+       footer height before handing this height over), so rows that exceed it are
+       drawn straight past their own bottom edge and end up underneath the hints. */
+    SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
+    int y_base = content.y;
+    int item_h = jw__display_row_h_fit(content.h);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
-                        ui->brightness_percent);
-    /* Display refresh rate (60/90 Hz). Cycler when the platform supports it. */
+                        ui->brightness_percent, item_h);
+    /* Display refresh rate (kPanelRefreshHz). Cycler when the platform supports it. */
     char refresh_val[16];
     snprintf(refresh_val, sizeof(refresh_val), "%d Hz", ui->refresh_rate_hz);
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_REFRESH_RATE,
                           "Refresh Rate", refresh_val,
-                          ui->refresh_rate_supported, jw__display_row_h());
-    /* Black Frame Insertion (RetroArch strobing) — cuts motion blur, but only
-       works cleanly at 120Hz (one black frame per 60fps content frame). Greyed
-       with a "120 Hz only" hint at other refresh rates. */
-    bool bfi_avail = (ui->refresh_rate_hz == 120);
+                          ui->refresh_rate_supported, item_h);
+    /* Black Frame Insertion (RetroArch strobing) — cuts motion blur by blanking
+       one refresh per emulated frame, so it needs a rate that is twice a content
+       rate. Greyed with a "100/120 Hz only" hint elsewhere.
+       When it IS on, the value names the content rate it is currently set up for
+       (50 fps at 100Hz, 60 fps at 120Hz). That matters because BFI is a GLOBAL
+       setting with no per-game override: left on at 100Hz, a 60fps game is paced
+       to 50 and runs at 83% speed. Naming the rate makes the row say what it is
+       for instead of a bare "On" that hides the pairing. */
+    int bfi_fps = jw_bfi_content_fps(ui->refresh_rate_hz);
+    bool bfi_avail = (bfi_fps > 0);
+    char bfi_val[24];
+    if (!bfi_avail) {
+        snprintf(bfi_val, sizeof(bfi_val), "100/120 Hz only");
+    } else if (ui->bfi_enabled) {
+        snprintf(bfi_val, sizeof(bfi_val), "On (%d fps)", bfi_fps);
+    } else {
+        snprintf(bfi_val, sizeof(bfi_val), "Off");
+    }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_BFI,
-                          "Black Frame Insertion",
-                          bfi_avail ? (ui->bfi_enabled ? "On" : "Off") : "120 Hz only",
-                          bfi_avail, jw__display_row_h());
+                          "Black Frame Insertion", bfi_val,
+                          bfi_avail, item_h);
     /* HDMI external output (4:3 pillarbox / stretch). Cycler when a TV is
        plugged in; greyed "Not connected" otherwise. */
     static const char *const kHdmiVals[] = { "Off", "4:3", "Stretch" };
@@ -2138,15 +2263,15 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
         hdmi_text = ui->hdmi_supported ? "Not connected" : "Unavailable";
     }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_HDMI,
-                          "HDMI Output", hdmi_text, hdmi_avail, jw__display_row_h());
-    jw__draw_audio_output_row(ui, x, y_base, w);
+                          "HDMI Output", hdmi_text, hdmi_avail, item_h);
+    jw__draw_audio_output_row(ui, x, y_base, w, item_h);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
-                        ui->volume_percent);
+                        ui->volume_percent, item_h);
     /* Action row: toggles a short clip on the current output so the user can
        verify sound (and which device it lands on). Shows Stop while playing. */
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_TEST_SOUND,
                           "Test Sound", ui->test_sound_playing ? "Stop" : "Play",
-                          false, jw__display_row_h());
+                          false, item_h);
 }
 
 static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, int h) {
@@ -4030,6 +4155,19 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
 
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SCREENSHOTS,
                         "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
+
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RECORDING,
+                        "Recording", ui->recording_enabled ? "On" : "Off", true);
+
+    /* Both dependants read "-" while recording is off, matching how the rumble
+       rows above dim when the master is off. */
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_REC_SPLIT,
+                        "Split Over 10MB",
+                        ui->recording_enabled ? (ui->recording_split ? "On" : "Off") : "-", true);
+
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_REC_KEEP,
+                        "Keep Original",
+                        ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-", true);
 }
 
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
@@ -5824,33 +5962,39 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                           status_buf, status_size);
                 else if (ui->display_list.cursor == JW_DISPLAY_REFRESH_RATE) {
                     /* Cycle the refresh rate (left/right step, A advances). On a TV,
-                       HDMI has no 90Hz mode and 60/90 both render as 720p60, so the
-                       live-rate cycler would stick at 60 - offer just {60,120} there
-                       (the two distinct HDMI modes). The internal panel does all three. */
-                    static const int panel_rates[] = {60, 90, 120};
-                    static const int tv_rates[]    = {60, 120};
+                       HDMI has no 100Hz mode and both it and 60 render as 720p60, so
+                       the live-rate cycler would stick at 60 - offer just {60,120}
+                       there (the two distinct HDMI modes). The internal panel does
+                       every rate in kPanelRefreshHz. */
+                    static const int tv_rates[] = {60, 120};
                     bool on_tv = ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0;
-                    const int *rates = on_tv ? tv_rates : panel_rates;
-                    int n = on_tv ? 2 : 3;
-                    int cur = 0;
-                    for (int i = 0; i < n; i++) {
-                        if (rates[i] == ui->refresh_rate_hz) { cur = i; break; }
-                    }
+                    const int *rates = on_tv ? tv_rates : kPanelRefreshHz;
+                    int n = on_tv ? 2 : JW_PANEL_REFRESH_COUNT;
+                    int cur = jw__nearest_refresh_index(rates, n, ui->refresh_rate_hz);
                     int next = (cur + dir + n) % n;
                     jw__set_refresh_rate(ui, rates[next], status_buf, status_size);
                 }
                 else if (ui->display_list.cursor == JW_DISPLAY_BFI) {
-                    /* Black Frame Insertion: actionable only at 120Hz. Left/Right
-                       and A all just toggle on/off; the daemon writes
-                       video_black_frame_insertion into the per-launch RA config. */
-                    if (ui->refresh_rate_hz != 120) {
+                    /* Black Frame Insertion: actionable only where a refresh is
+                       spare to blank. Left/Right and A all just toggle on/off; the
+                       daemon writes video_black_frame_insertion into the per-launch
+                       RA config. The confirmation names the content rate, so
+                       turning it on at 100Hz reads as "for 50 fps" rather than an
+                       unqualified "on" the user has to pair up themselves. */
+                    int fps = jw_bfi_content_fps(ui->refresh_rate_hz);
+                    if (fps <= 0) {
                         snprintf(status_buf, status_size, "%s",
-                                 "Black Frame Insertion needs 120 Hz");
+                                 "Black Frame Insertion needs 100 or 120 Hz");
                     } else {
                         ui->bfi_enabled = !ui->bfi_enabled;
                         jw__persist_int(ui, "bfi_enabled", ui->bfi_enabled ? 1 : 0);
-                        snprintf(status_buf, status_size, "Black Frame Insertion %s",
-                                 ui->bfi_enabled ? "on" : "off");
+                        if (ui->bfi_enabled) {
+                            snprintf(status_buf, status_size,
+                                     "Black Frame Insertion on for %d fps", fps);
+                        } else {
+                            snprintf(status_buf, status_size, "%s",
+                                     "Black Frame Insertion off");
+                        }
                     }
                 }
                 else if (ui->display_list.cursor == JW_DISPLAY_HDMI) {
@@ -6976,6 +7120,24 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->screenshots_enabled = !ui->screenshots_enabled;
                     /* Persist only; the daemon reads the DB key on each hotkey. */
                     jw__persist_bool(ui, "screenshots_enabled", ui->screenshots_enabled);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_RECORDING) {
+                    (void)dir;
+                    ui->recording_enabled = !ui->recording_enabled;
+                    /* Persist only; the daemon reads the DB key on each hotkey. */
+                    jw__persist_bool(ui, "recording_enabled", ui->recording_enabled);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_REC_SPLIT) {
+                    if (!ui->recording_enabled) break;
+                    (void)dir;
+                    ui->recording_split = !ui->recording_split;
+                    /* Read by the daemon when it dispatches the convert pass, so
+                       it applies to the next game you exit -- nothing to change
+                       about a recording already on the card. */
+                    jw__persist_bool(ui, "recording_split", ui->recording_split);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_REC_KEEP) {
+                    if (!ui->recording_enabled) break;
+                    (void)dir;
+                    ui->recording_keep_src = !ui->recording_keep_src;
+                    jw__persist_bool(ui, "recording_keep_source", ui->recording_keep_src);
                 }
                 break;
             }

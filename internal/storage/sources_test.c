@@ -85,11 +85,14 @@ int main(void) {
 
     char roots[JW_STORAGE_PATH_MAX * 2];
     char music[JW_STORAGE_PATH_MAX * 2];
+    char videos[JW_STORAGE_PATH_MAX * 2];
     snprintf(roots, sizeof(roots), "%s:%s", card1, card2);
     snprintf(music, sizeof(music), "%s/music1:%s/music2", temp, temp);
+    snprintf(videos, sizeof(videos), "%s/videos1:%s/videos2", temp, temp);
     setenv("SDCARD_PATHS", roots, 1);
     setenv("SDCARD_PATH", card1, 1);
     setenv("MUSIC_PATHS", music, 1);
+    setenv("VIDEO_PATHS", videos, 1);
 
     jw_storage_source_list sources;
     assert(jw_storage_sources_resolve(card1, &sources) == 0);
@@ -145,6 +148,8 @@ int main(void) {
     char expected[JW_STORAGE_PATH_MAX];
     snprintf(expected, sizeof(expected), "%s/music2", temp);
     assert(strcmp(sources.sources[1].music_path, expected) == 0);
+    snprintf(expected, sizeof(expected), "%s/videos2", temp);
+    assert(strcmp(sources.sources[1].video_path, expected) == 0);
 
     char resolved[JW_STORAGE_PATH_MAX];
     assert(jw_storage_resolve_rom(&sources.sources[1], "game.zip", true,
@@ -158,15 +163,25 @@ int main(void) {
 
     unsetenv("MUSIC_PATHS");
     setenv("MUSIC_PATH", "/primary-music", 1);
+    unsetenv("VIDEO_PATHS");
+    setenv("VIDEO_PATH", "/primary-videos", 1);
     assert(jw_storage_sources_resolve(card1, &sources) == 0);
     assert(strcmp(sources.sources[0].music_path, "/primary-music") == 0);
+    assert(strcmp(sources.sources[0].video_path, "/primary-videos") == 0);
     snprintf(expected, sizeof(expected), "%s/Music", card2);
     assert(strcmp(sources.sources[1].music_path, expected) == 0);
+    snprintf(expected, sizeof(expected), "%s/Videos", card2);
+    assert(strcmp(sources.sources[1].video_path, expected) == 0);
 
     setenv("MUSIC_PATHS", "/only-one", 1);
     assert(jw_storage_sources_resolve(card1, &sources) != 0);
 
     setenv("MUSIC_PATHS", music, 1);
+    setenv("VIDEO_PATHS", "/only-one", 1);
+    assert(jw_storage_sources_resolve(card1, &sources) != 0);
+
+    setenv("MUSIC_PATHS", music, 1);
+    setenv("VIDEO_PATHS", videos, 1);
     setenv("SDCARD_PATH", card2, 1);
     assert(jw_storage_sources_resolve(card1, &sources) != 0);
 
@@ -177,6 +192,7 @@ int main(void) {
 
     unsetenv("SDCARD_PATHS");
     unsetenv("MUSIC_PATHS");
+    unsetenv("VIDEO_PATHS");
     setenv("SDCARD_PATH", card1, 1);
     setenv("UMRK_SECONDARY_SDCARD_PATH", card2, 1);
     assert(jw_storage_sources_resolve(card1, &sources) == 0);

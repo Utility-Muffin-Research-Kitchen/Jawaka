@@ -76,6 +76,7 @@ static bool jw_ra__exact_supported(const char *command) {
         "PAUSE_TOGGLE",
         "QUIT",
         "AUDIO_REINIT",
+        "RECORDING_TOGGLE",
         "RESET",
         "SAVE_STATE",
         "SCREENSHOT",

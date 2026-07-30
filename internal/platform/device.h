@@ -70,7 +70,7 @@ typedef struct {
     bool bluetooth;
     bool adb;
     bool boot_splash;
-    bool refresh_rate;   /* runtime display refresh-rate switching (e.g. 60/90 Hz) */
+    bool refresh_rate;   /* runtime display refresh-rate switching (e.g. 60/100/120 Hz) */
     bool hdmi_output;    /* HDMI external output: 4:3 pillarbox / stretch / off */
     bool led;
     bool performance;
@@ -106,6 +106,24 @@ typedef struct {
     int hdmi_connected;        /* HDMI cable: -1 unknown, 0 disconnected, 1 connected */
     int hdmi_output_mode;      /* applied output: -1 unknown, 0 off, 1 4:3, 2 stretch */
 } jw_platform_status;
+
+/* Black Frame Insertion needs a refresh that is exactly twice a content rate, so
+   every emulated frame gets one lit refresh and one black one. Returns that
+   content rate in fps, or 0 at rates where BFI cannot work.
+
+       100 Hz -> 50 fps (PAL)      120 Hz -> 60 fps (NTSC)
+
+   60 Hz has no spare refresh to insert into. Defined once, here, because the
+   daemon publishes JAWAKA_BFI to RetroArch while the settings UI offers the
+   toggle: if the two disagree the UI presents a switch the daemon ignores, which
+   looks exactly like a broken setting. */
+static inline int jw_bfi_content_fps(int refresh_hz) {
+    switch (refresh_hz) {
+    case 100: return 50;
+    case 120: return 60;
+    default:  return 0;
+    }
+}
 
 typedef struct {
     char source_id[32];
