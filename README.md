@@ -298,6 +298,31 @@ its `hold` command for the full lifetime of a journaled cross-card package
 move, so an automatic or explicit suspend cannot interrupt an active copy or
 publication phase.
 
+### Package replacement barrier
+
+The daemon advertises `package-quiesce-v1` for PKG-1 callers such as Leaf's
+`make stage-app` and direct update runner. A caller sends
+`package-quiesce-begin` with a bounded `operation_id`; Jawaka snapshots every
+service, blocks new service generations and foreground app launches, and does
+not reply `ok` until every owned process group is verified absent. Stale or
+unverified generations fail closed before the caller may change package bytes.
+
+After replacement, the caller sends `package-quiesce-end` with the same id.
+Jawaka rescans manifests while the start latch is still held, restores the
+snapshotted persistent enablement, and starts only desired-enabled services.
+Session-only Run state is intentionally not restored. Direct/generic Leaf
+updates use the same barrier internally; the stock MLP1 reboot handoff remains
+reboot-mediated.
+
+Raw diagnostic calls are available through `jawaka-platformctl`:
+
+```sh
+jawaka-platformctl request \
+  '{"type":"package-quiesce-begin","operation_id":"manual-check"}'
+jawaka-platformctl request \
+  '{"type":"package-quiesce-end","operation_id":"manual-check"}'
+```
+
 ## Repo Notes
 
 - `scripts/mockgen.sh` creates the local mock SD-card tree.

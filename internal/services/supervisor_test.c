@@ -1649,6 +1649,122 @@ static void test_stale_missing_policy_fails_safe_for_all_stop_triggers(void) {
     fixture_teardown(&f);
 }
 
+static void test_package_quiesce_restores_only_persistent_intent(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *enabled_id = "org.umrk.test.packageenabled";
+    const char *session_id = "org.umrk.test.packagesession";
+    fixture_write_pak(&f, "package-enabled.pak", enabled_id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    fixture_write_pak(&f, "package-session.pak", session_id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 2);
+    CHECK(jw_svc_supervisor_enable(sup, enabled_id, reason,
+                                   sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, enabled_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, session_id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, enabled_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, session_id, JW_SVC_STATE_RUNNING, 3000));
+
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    CHECK(jw_svc_supervisor_package_begin(
+        sup, "stage-app-17", stuck, sizeof(stuck), reason, sizeof(reason)));
+    CHECK(stuck[0] == '\0');
+    CHECK(jw_svc_supervisor_package_active(sup));
+    const jw_svc_supervised *enabled =
+        jw_svc_supervisor_find(sup, enabled_id);
+    const jw_svc_supervised *session =
+        jw_svc_supervisor_find(sup, session_id);
+    CHECK(enabled && enabled->pgid <= 0 && enabled->package_blocked);
+    CHECK(enabled && enabled->package_snapshot_valid &&
+          enabled->package_restore_desired && enabled->package_was_effective);
+    CHECK(enabled && enabled->pending_stop_reason ==
+                         JW_SVC_STOP_LIFECYCLE_PACKAGE);
+    CHECK(enabled && strcmp(jw_svc_stop_reason_lifecycle_slug(
+                                enabled->pending_stop_reason),
+                            "package") == 0);
+    CHECK(session && session->pgid <= 0 && session->package_blocked);
+    CHECK(session && session->package_snapshot_valid &&
+          !session->package_restore_desired && session->package_was_effective);
+
+    /* Persistent/session controls and service starts are frozen until the
+     * matching package operation performs its final scan. */
+    CHECK(!jw_svc_supervisor_run(sup, session_id, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "package-in-progress") == 0);
+    CHECK(!jw_svc_supervisor_disable(sup, enabled_id, reason,
+                                     sizeof(reason)));
+    CHECK(strcmp(reason, "package-in-progress") == 0);
+    CHECK(!jw_svc_supervisor_package_end(sup, "wrong-operation", reason,
+                                         sizeof(reason)));
+    CHECK(strcmp(reason, "operation-mismatch") == 0);
+    CHECK(jw_svc_supervisor_package_active(sup));
+
+    /* Stand in for replacement bytes: the final scan must consume this new
+     * manifest before releasing and starting the desired service. */
+    fixture_write_pak(&f, "package-enabled.pak", enabled_id,
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\","
+                      "\"lifecycle\":{\"stop_on_suspend\":true}");
+    CHECK(jw_svc_supervisor_package_end(sup, "stage-app-17", reason,
+                                       sizeof(reason)));
+    CHECK(!jw_svc_supervisor_package_active(sup));
+    CHECK(wait_for_state(sup, enabled_id, JW_SVC_STATE_RUNNING, 3000));
+    enabled = jw_svc_supervisor_find(sup, enabled_id);
+    session = jw_svc_supervisor_find(sup, session_id);
+    CHECK(enabled && enabled->desired_enabled && enabled->pgid > 0);
+    CHECK(enabled && enabled->manifest.stop_on_suspend);
+    CHECK(enabled && !enabled->package_blocked &&
+          !enabled->package_snapshot_valid);
+    CHECK(session && !session->desired_enabled && !session->session_run &&
+          session->pgid <= 0);
+    CHECK(session && session->state == JW_SVC_STATE_DISABLED);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+static void test_package_quiesce_stale_preflight_changes_nothing(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.packagestale";
+    fixture_write_pak(&f, "package-stale.pak", id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *owner = fixture_open(&f, reason);
+    CHECK(owner != NULL);
+    CHECK(jw_svc_supervisor_scan(owner) == 1);
+    CHECK(jw_svc_supervisor_run(owner, id, reason, sizeof(reason)));
+    CHECK(wait_for_state(owner, id, JW_SVC_STATE_RUNNING, 3000));
+    const jw_svc_supervised *owned = jw_svc_supervisor_find(owner, id);
+    pid_t owner_pgid = owned ? owned->pgid : -1;
+    CHECK(owner_pgid > 0);
+
+    jw_svc_supervisor *observer = fixture_open(&f, reason);
+    CHECK(observer != NULL);
+    CHECK(jw_svc_supervisor_scan(observer) == 1);
+    const jw_svc_supervised *stale =
+        jw_svc_supervisor_find(observer, id);
+    CHECK(stale && stale->state == JW_SVC_STATE_STALE_GENERATION);
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    CHECK(!jw_svc_supervisor_package_begin(
+        observer, "leaf-update", stuck, sizeof(stuck), reason,
+        sizeof(reason)));
+    CHECK(strcmp(reason, "stale-generation") == 0);
+    CHECK(strcmp(stuck, id) == 0);
+    CHECK(!jw_svc_supervisor_package_active(observer));
+    CHECK(kill(owner_pgid, 0) == 0);
+
+    jw_svc_supervisor_close(observer);
+    CHECK(jw_svc_supervisor_stop_all(owner) == 0);
+    jw_svc_supervisor_close(owner);
+    fixture_teardown(&f);
+}
+
 static void test_circuit_breaker_opens(void) {
     fixture f;
     fixture_setup(&f);
@@ -1722,6 +1838,8 @@ int main(int argc, char **argv) {
     test_missing_package_scan_does_not_create_lease_tree();
     test_locked_runtime_lease_survives_without_pak_or_control_row();
     test_stale_missing_policy_fails_safe_for_all_stop_triggers();
+    test_package_quiesce_restores_only_persistent_intent();
+    test_package_quiesce_stale_preflight_changes_nothing();
     test_circuit_breaker_opens();
 
     if (g_failures == 0) {

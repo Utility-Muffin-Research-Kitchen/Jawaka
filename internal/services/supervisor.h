@@ -82,15 +82,16 @@ typedef enum {
                                      backoff purposes */
     JW_SVC_STOP_LEADER_EXITED,    /* leader died but live descendants remain:
                                      the failure branch (backoff applies) */
-    /* The three declarative lifecycle-policy stops. CTL-1's `status` reports
+    /* The declarative lifecycle-policy stops. CTL-1's `status` reports
      * these separately from an ordinary intentional stop -- contracts.md
      * requires "whether a lifecycle policy stop is in force (reason: game,
      * storage, suspend, package)" -- so they must stay distinguishable rather
-     * than collapsing into JW_SVC_STOP_INTENTIONAL. All three are equally
+     * than collapsing into JW_SVC_STOP_INTENTIONAL. All are equally
      * excluded from the on-failure restart policy. */
     JW_SVC_STOP_LIFECYCLE_GAME,     /* lifecycle.game == "stop" */
     JW_SVC_STOP_LIFECYCLE_SUSPEND,  /* lifecycle.stop_on_suspend */
     JW_SVC_STOP_LIFECYCLE_STORAGE,  /* lifecycle.stop_on_storage_change */
+    JW_SVC_STOP_LIFECYCLE_PACKAGE,  /* PKG-1 package replacement barrier */
 } jw_svc_stop_reason_kind;
 
 /* CTL-1 `lifecycle_policy_stop.reason` slug for a stop kind, or NULL when the
@@ -160,6 +161,14 @@ typedef struct {
      * storage change is restarted after the transition. This remains set
      * across an unverified stop so tick can never overlap the old group. */
     bool lifecycle_restart_pending;
+
+    /* PKG-1 snapshot. A package operation blocks every service while its
+     * caller replaces bytes. Persistent desired state is restored after the
+     * post-replacement scan; a session-only Run is intentionally not. */
+    bool package_blocked;
+    bool package_snapshot_valid;
+    bool package_restore_desired;
+    bool package_was_effective;
 
     jw_svc_backoff_state backoff;
     jw_svc_control_state control;   /* persisted row snapshot (owned) */
@@ -278,6 +287,30 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
                             char *reason, size_t reason_size);
 bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
                                char *reason, size_t reason_size);
+
+/* PKG-1 core-app package barrier. begin() snapshots every service, blocks all
+ * new service generations, and synchronously proves every owned group absent.
+ * Only a successful begin permits the caller to replace package bytes.
+ *
+ * A stale generation, an in-flight stop owned by another operation, or a
+ * TERM+KILL survivor fails begin without authorizing mutation. The barrier
+ * remains active after a stop failure so no start can race the survivor;
+ * callers must retry end() after absence can be verified.
+ *
+ * end() rescans package manifests while starts remain blocked, restores the
+ * snapshotted persistent desired state, releases the barrier, and starts each
+ * available desired-enabled service. operation_id is an ASCII token of at
+ * most JW_SVC_PACKAGE_OPERATION_ID_MAX bytes and must match at end(). */
+#define JW_SVC_PACKAGE_OPERATION_ID_MAX 63
+bool jw_svc_supervisor_package_begin(jw_svc_supervisor *sup,
+                                     const char *operation_id,
+                                     char *out_stuck_id,
+                                     size_t stuck_id_size,
+                                     char *reason, size_t reason_size);
+bool jw_svc_supervisor_package_end(jw_svc_supervisor *sup,
+                                   const char *operation_id,
+                                   char *reason, size_t reason_size);
+bool jw_svc_supervisor_package_active(const jw_svc_supervisor *sup);
 
 /* Daemon shutdown: stops every running service with the intentional-stop
  * reason and verifies each group absent, blocking per service by at most

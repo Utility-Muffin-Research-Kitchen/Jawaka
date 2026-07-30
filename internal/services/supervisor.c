@@ -41,6 +41,15 @@
  * acquisition once per second." */
 #define JW_SVC_LEASE_RETRY_MS 1000LL
 
+/* A just-reaped executable on the MLP1's removable filesystem can briefly
+ * reject the immediate replacement exec. PKG-1 release is a synchronous
+ * maintenance boundary, so make a small bounded retry rather than leaving a
+ * desired service stopped. This is not a keep-alive loop: five attempts cap
+ * the added latency at 200 ms and every failed child is already reaped by
+ * launch.c before the next attempt. */
+#define JW_SVC_PACKAGE_START_ATTEMPTS 5
+#define JW_SVC_PACKAGE_START_RETRY_US 50000u
+
 struct jw_svc_supervisor {
     char *runtime_dir;
     char *logs_dir;
@@ -62,6 +71,11 @@ struct jw_svc_supervisor {
      * stop sequence completed. Safe-unmount deliberately leaves the source
      * absent; a later mounted-and-rescanned edge releases this gate. */
     bool storage_restart_blocked;
+    /* PKG-1 is a daemon-wide gate: Release A chooses the conservative scope
+     * of every service for core-app replacement, so a newly installed service
+     * discovered by the final scan is blocked too. */
+    bool package_quiesce_active;
+    char package_operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1];
 };
 
 /* ------------------------------------------------------------------ */
@@ -186,6 +200,7 @@ const char *jw_svc_stop_reason_lifecycle_slug(jw_svc_stop_reason_kind kind) {
     case JW_SVC_STOP_LIFECYCLE_GAME:    return "game";
     case JW_SVC_STOP_LIFECYCLE_SUSPEND: return "suspend";
     case JW_SVC_STOP_LIFECYCLE_STORAGE: return "storage";
+    case JW_SVC_STOP_LIFECYCLE_PACKAGE: return "package";
     case JW_SVC_STOP_NONE:
     case JW_SVC_STOP_INTENTIONAL:
     case JW_SVC_STOP_LEADER_EXITED:
@@ -196,7 +211,7 @@ const char *jw_svc_stop_reason_lifecycle_slug(jw_svc_stop_reason_kind kind) {
 
 /* True when the stop was deliberate rather than a crash. SVC-1: "on-failure
  * never applies after an intentional stop, a lifecycle-policy stop, a package
- * operation, or shutdown" -- all three lifecycle kinds count. */
+ * operation, or shutdown" -- every lifecycle kind counts. */
 static bool jw__stop_is_deliberate(jw_svc_stop_reason_kind kind) {
     return kind == JW_SVC_STOP_INTENTIONAL ||
            jw_svc_stop_reason_lifecycle_slug(kind) != NULL;
@@ -768,6 +783,7 @@ static bool jw__entry_is_exhausted(const jw_svc_supervised *e) {
     return !e->pak_present && !e->desired_enabled && !e->session_run &&
            e->pgid <= 0 && e->lease_fd < 0 && !e->reap_pending &&
            !e->stop_requested && !e->lifecycle_restart_pending &&
+           !e->package_blocked && !e->package_snapshot_valid &&
            e->state != JW_SVC_STATE_STALE_GENERATION;
 }
 
@@ -1086,6 +1102,14 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
                                  char *reason, size_t reason_size) {
     char slug[JW_SVC_REASON_BUF];
 
+    /* PKG-1: no generation may start between the verified stop barrier and
+     * the post-replacement manifest scan. Check both the global latch (which
+     * also covers newly discovered services) and the entry snapshot. */
+    if (sup->package_quiesce_active || e->package_blocked) {
+        jw__set_reason(reason, reason_size, "package-in-progress");
+        return false;
+    }
+
     /* The lease is the no-overlap gate. Never start without it. */
     int lease_fd = jw_svc_lease_acquire(sup->runtime_dir, e->service_id,
                                         slug, sizeof(slug));
@@ -1356,8 +1380,20 @@ static bool jw__require_available(const jw_svc_supervised *e,
     return true;
 }
 
+static bool jw__require_package_idle(const jw_svc_supervisor *sup,
+                                     char *reason, size_t reason_size) {
+    if (sup && sup->package_quiesce_active) {
+        jw__set_reason(reason, reason_size, "package-in-progress");
+        return false;
+    }
+    return true;
+}
+
 bool jw_svc_supervisor_enable(jw_svc_supervisor *sup, const char *service_id,
                               char *reason, size_t reason_size) {
+    if (!jw__require_package_idle(sup, reason, reason_size)) {
+        return false;
+    }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
     if (!jw__require_available(e, reason, reason_size)) {
         return false;
@@ -1377,6 +1413,9 @@ bool jw_svc_supervisor_enable(jw_svc_supervisor *sup, const char *service_id,
 
 bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
                                char *reason, size_t reason_size) {
+    if (!jw__require_package_idle(sup, reason, reason_size)) {
+        return false;
+    }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
     if (!e) {
         jw__set_reason(reason, reason_size, "unknown-service");
@@ -1429,6 +1468,9 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
 
 bool jw_svc_supervisor_run(jw_svc_supervisor *sup, const char *service_id,
                            char *reason, size_t reason_size) {
+    if (!jw__require_package_idle(sup, reason, reason_size)) {
+        return false;
+    }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
     if (!jw__require_available(e, reason, reason_size)) {
         return false;
@@ -1476,6 +1518,9 @@ bool jw_svc_supervisor_run(jw_svc_supervisor *sup, const char *service_id,
 
 bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
                             char *reason, size_t reason_size) {
+    if (!jw__require_package_idle(sup, reason, reason_size)) {
+        return false;
+    }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
     if (!e) {
         jw__set_reason(reason, reason_size, "unknown-service");
@@ -1512,6 +1557,9 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
 
 bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
                                char *reason, size_t reason_size) {
+    if (!jw__require_package_idle(sup, reason, reason_size)) {
+        return false;
+    }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
     if (!jw__require_available(e, reason, reason_size)) {
         return false;
@@ -1767,6 +1815,13 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
             }
         }
 
+        /* PKG-1 keeps polling/reaping an already requested stop, but no
+         * restart, stale-lease launch, or autostart may cross the package
+         * replacement window. */
+        if (sup->package_quiesce_active) {
+            continue;
+        }
+
         /* 3. Backoff: retry a failed on-failure service once its delay
          *    elapses, only if the previous generation's group is gone. */
         bool started_this_tick = false;
@@ -1907,6 +1962,248 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
         }
     }
     return changes;
+}
+
+/* ------------------------------------------------------------------ */
+/* package replacement                                                 */
+/* ------------------------------------------------------------------ */
+
+static bool jw__package_operation_id_valid(const char *operation_id) {
+    if (!operation_id || !operation_id[0]) {
+        return false;
+    }
+    size_t len = strlen(operation_id);
+    if (len > JW_SVC_PACKAGE_OPERATION_ID_MAX) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)operation_id[i];
+        bool alpha = (c >= (unsigned char)'A' && c <= (unsigned char)'Z') ||
+                     (c >= (unsigned char)'a' && c <= (unsigned char)'z');
+        bool digit = c >= (unsigned char)'0' && c <= (unsigned char)'9';
+        if (!alpha && !digit && c != (unsigned char)'.' &&
+            c != (unsigned char)'_' && c != (unsigned char)'-') {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool jw_svc_supervisor_package_active(const jw_svc_supervisor *sup) {
+    return sup && sup->package_quiesce_active;
+}
+
+bool jw_svc_supervisor_package_begin(jw_svc_supervisor *sup,
+                                     const char *operation_id,
+                                     char *out_stuck_id,
+                                     size_t stuck_id_size,
+                                     char *reason, size_t reason_size) {
+    if (out_stuck_id && stuck_id_size > 0) {
+        out_stuck_id[0] = '\0';
+    }
+    if (!sup || !jw__package_operation_id_valid(operation_id)) {
+        jw__set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+    if (sup->package_quiesce_active) {
+        jw__set_reason(reason, reason_size, "package-in-progress");
+        return false;
+    }
+    if (sup->storage_restart_blocked) {
+        jw__set_reason(reason, reason_size, "lifecycle-in-progress");
+        return false;
+    }
+
+    /* Complete the preflight before delivering a signal. A known stale
+     * generation or stop owned by another transition means no package byte
+     * may change and no otherwise healthy service should be bounced. */
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        bool stale = e->state == JW_SVC_STATE_STALE_GENERATION;
+        bool transition = e->lifecycle_restart_pending ||
+                          e->post_stop != JW_SVC_POST_STOP_NONE ||
+                          e->stop_requested || e->reap_pending ||
+                          e->stop_unverified_logged ||
+                          e->state == JW_SVC_STATE_STOPPING ||
+                          (e->pgid > 0 &&
+                           e->pending_stop_reason != JW_SVC_STOP_NONE);
+        if (!stale && !transition) {
+            continue;
+        }
+        if (out_stuck_id && stuck_id_size > 0) {
+            snprintf(out_stuck_id, stuck_id_size, "%s", e->service_id);
+        }
+        jw__set_reason(reason, reason_size,
+                       stale ? "stale-generation" :
+                               "lifecycle-in-progress");
+        return false;
+    }
+
+    sup->package_quiesce_active = true;
+    snprintf(sup->package_operation_id, sizeof(sup->package_operation_id),
+             "%s", operation_id);
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        e->package_blocked = true;
+        e->package_snapshot_valid = true;
+        e->package_restore_desired = e->desired_enabled;
+        e->package_was_effective =
+            e->pgid > 0 || e->state == JW_SVC_STATE_STARTING ||
+            e->state == JW_SVC_STATE_RUNNING;
+        e->autostart_pending = false;
+        e->lifecycle_restart_pending = false;
+        e->post_stop = JW_SVC_POST_STOP_NONE;
+        e->session_run = false;
+        e->control.session_run = false;
+    }
+
+    bool verified = true;
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        e->pending_stop_reason = JW_SVC_STOP_LIFECYCLE_PACKAGE;
+        if (e->pgid > 0) {
+            char stop_reason[JW_SVC_REASON_BUF];
+            if (!jw__stop_and_reap(sup, e, stop_reason,
+                                   sizeof(stop_reason))) {
+                if (verified && out_stuck_id && stuck_id_size > 0) {
+                    snprintf(out_stuck_id, stuck_id_size, "%s",
+                             e->service_id);
+                }
+                verified = false;
+                (void)jw__persist(sup, e, "package-unverified");
+                continue;
+            }
+        }
+        (void)jw__persist(sup, e, "package-quiesce");
+    }
+    if (!verified) {
+        /* Fail closed. The caller did not receive permission to mutate and
+         * the global latch prevents a replacement generation from racing the
+         * survivor. A later matching end() releases only after tick proves
+         * every group absent. */
+        jw__set_reason(reason, reason_size, "stop-failed");
+        return false;
+    }
+    return true;
+}
+
+bool jw_svc_supervisor_package_end(jw_svc_supervisor *sup,
+                                   const char *operation_id,
+                                   char *reason, size_t reason_size) {
+    if (!sup || !jw__package_operation_id_valid(operation_id)) {
+        jw__set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+    if (!sup->package_quiesce_active) {
+        jw__set_reason(reason, reason_size, "no-package-operation");
+        return false;
+    }
+    if (strcmp(operation_id, sup->package_operation_id) != 0) {
+        jw__set_reason(reason, reason_size, "operation-mismatch");
+        return false;
+    }
+    for (int i = 0; i < sup->count; i++) {
+        const jw_svc_supervised *e = &sup->entries[i];
+        if (!e->package_blocked) {
+            continue;
+        }
+        if (e->pgid > 0 || e->state == JW_SVC_STATE_STALE_GENERATION ||
+            e->stop_requested || e->reap_pending) {
+            jw__set_reason(reason, reason_size, "stop-failed");
+            return false;
+        }
+    }
+
+    /* Scan the replacement while the global start latch is still held. The
+     * scan reconciles manifest ownership in-place, so snapshot fields on
+     * pre-existing service ids survive. */
+    if (jw_svc_supervisor_scan(sup) < 0) {
+        jw__set_reason(reason, reason_size, "rescan-failed");
+        return false;
+    }
+
+    sup->package_quiesce_active = false;
+    sup->package_operation_id[0] = '\0';
+    bool restored = true;
+    char failure_reason[JW_SVC_REASON_BUF] = "restore-failed";
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        bool desired = e->package_snapshot_valid
+                           ? e->package_restore_desired
+                           : e->desired_enabled;
+        e->desired_enabled = desired;
+        e->control.start_with_leaf = desired;
+        e->session_run = false;
+        e->control.session_run = false;
+        e->autostart_pending = false;
+        e->lifecycle_restart_pending = false;
+        e->package_blocked = false;
+        e->package_snapshot_valid = false;
+        e->package_restore_desired = false;
+        e->package_was_effective = false;
+        if (e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_PACKAGE) {
+            e->pending_stop_reason = JW_SVC_STOP_NONE;
+        }
+        if (e->pgid <= 0 &&
+            e->state != JW_SVC_STATE_STALE_GENERATION) {
+            e->state = jw__entry_idle_state(e);
+        }
+        if (!jw__persist(sup, e, "package-rescan")) {
+            restored = false;
+            snprintf(failure_reason, sizeof(failure_reason), "%s",
+                     "store-failed");
+        }
+        if (!desired) {
+            continue;
+        }
+        if (!jw__entry_available(e)) {
+            restored = false;
+            snprintf(failure_reason, sizeof(failure_reason), "%s",
+                     "restore-unavailable");
+            (void)jw__persist(sup, e, "package-resume-unavailable");
+            continue;
+        }
+        jw_svc_backoff_reset(&e->backoff);
+        char start_reason[JW_SVC_REASON_BUF] = {0};
+        bool started = false;
+        for (int attempt = 0; attempt < JW_SVC_PACKAGE_START_ATTEMPTS;
+             attempt++) {
+            if (jw__start_generation(sup, e, start_reason,
+                                     sizeof(start_reason))) {
+                started = true;
+                break;
+            }
+            if (strcmp(start_reason, "launch-failed") != 0 ||
+                e->pgid > 0 ||
+                attempt + 1 >= JW_SVC_PACKAGE_START_ATTEMPTS) {
+                break;
+            }
+            usleep(JW_SVC_PACKAGE_START_RETRY_US);
+        }
+        if (!started) {
+            restored = false;
+            snprintf(failure_reason, sizeof(failure_reason), "%s",
+                     start_reason[0] ? start_reason : "restore-failed");
+            if (strcmp(start_reason, "stale-generation") == 0) {
+                e->state = JW_SVC_STATE_STALE_GENERATION;
+                e->lease_retry_next_ms =
+                    jw__mono_ms() + JW_SVC_LEASE_RETRY_MS;
+            }
+            char transition[JW_SVC_REASON_BUF];
+            if (jw__format(transition, sizeof(transition),
+                           "package-resume-%s",
+                           start_reason[0] ? start_reason : "failed") == 0) {
+                (void)jw__persist(sup, e, transition);
+            }
+            continue;
+        }
+        (void)jw__persist(sup, e, "package-resume");
+    }
+    if (!restored) {
+        jw__set_reason(reason, reason_size, failure_reason);
+        return false;
+    }
+    return true;
 }
 
 /* ------------------------------------------------------------------ */

@@ -282,6 +282,11 @@ typedef struct {
     jw_update_download_job update_download_job;
     jw_update_install_job update_install_job;
     jw_update_check_job update_check_job;
+    /* Direct/generic update runners replace live package trees. PKG-1 keeps
+       the service barrier held until the runner exits and the replacement
+       manifests have been rescanned. Stock reboot handoffs do not use it. */
+    bool update_package_quiesce_active;
+    bool update_package_quiesce_release_warned;
     /* 5-Game Mode (focus mode): resolved once at boot from the persisted config
        + the SD recovery lock file. Later phases render the focus screen and gate
        the launcher off this. See plans/five-game-mode.md. */
@@ -1661,6 +1666,7 @@ static int jw__reply_hello_ok(jw_ipc_client *client) {
     cJSON_AddStringToObject(root, "version", "0.0.1");
     cJSON *features = cJSON_AddArrayToObject(root, "features");
     cJSON_AddItemToArray(features, cJSON_CreateString("relocate-games-v1"));
+    cJSON_AddItemToArray(features, cJSON_CreateString("package-quiesce-v1"));
     return jw__reply_json(client, root);
 }
 
@@ -2443,9 +2449,43 @@ static int jw__reply_platform_audio_status(jw_daemon_state *state, jw_ipc_client
     return jw__reply_json(client, root);
 }
 
+static void jw__poll_update_install(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    if (!state->update_package_quiesce_active ||
+        state->update_install_job.active) {
+        return;
+    }
+
+    char reason[JW_SVC_REASON_BUF] = {0};
+    bool ended = state->services &&
+        jw_svc_supervisor_package_end(state->services, "leaf-update",
+                                      reason, sizeof(reason));
+    state->update_package_quiesce_active =
+        state->services &&
+        jw_svc_supervisor_package_active(state->services);
+    if (!ended) {
+        if (!state->update_package_quiesce_release_warned) {
+            jw_log_error("update install: package quiesce release failed (%s)",
+                         reason[0] ? reason : "unknown");
+            state->update_package_quiesce_release_warned = true;
+        }
+        state->update_status.status = JW_UPDATE_STATUS_ERROR;
+        snprintf(state->update_status.message,
+                 sizeof(state->update_status.message),
+                 "Update finished but service restore failed: %s",
+                 reason[0] ? reason : "unknown");
+    } else {
+        state->update_package_quiesce_release_warned = false;
+        jw_log_info("update install: package quiesce released after rescan");
+    }
+}
+
 static int jw__reply_update_status(jw_daemon_state *state, jw_ipc_client *client) {
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     jw_update_refresh_installed(&state->update_status, state->state_dir);
     if (!state->update_install_job.active) {
         jw_update_refresh_install_result(&state->update_status, state->state_dir,
@@ -2797,7 +2837,7 @@ static int jw__handle_update_check(jw_daemon_state *state,
                                    jw_ipc_client *client,
                                    cJSON *request) {
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     jw__update_check_busy(state);
     if (state->update_download_job.active) {
         return jw__reply_update_status(state, client);
@@ -2855,7 +2895,7 @@ static int jw__handle_update_download(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     if (!state->update_download_job.active &&
         !state->update_install_job.active &&
         state->update_status.status != JW_UPDATE_STATUS_DOWNLOADED) {
@@ -2873,7 +2913,7 @@ static int jw__handle_update_select(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     if (state->update_download_job.active || state->update_install_job.active) {
         return jw__reply_update_status(state, client);
     }
@@ -2890,7 +2930,7 @@ static int jw__handle_update_cancel(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     jw_update_download_cancel(&state->update_status, &state->update_download_job);
     return jw__reply_update_status(state, client);
 }
@@ -2918,6 +2958,16 @@ static bool jw__update_install_idle(const jw_daemon_state *state) {
            state->child_kind == JW_CHILD_MENU;
 }
 
+static bool jw__update_handoff_replaces_live_payload(
+    const jw_update_status *status) {
+    if (!status) {
+        return false;
+    }
+    return strcmp(status->handoff_type, "direct_runner") == 0 ||
+           strcmp(status->handoff_type, "generic_runner") == 0 ||
+           strcmp(status->handoff_type, "jawaka_c_runner") == 0;
+}
+
 static int jw__handle_update_install_preflight(jw_daemon_state *state,
                                                jw_ipc_client *client,
                                                cJSON *request) {
@@ -2925,7 +2975,7 @@ static int jw__handle_update_install_preflight(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
 
     bool confirm_unknown_battery =
         cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request,
@@ -2951,7 +3001,7 @@ static int jw__handle_update_install(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     if (state->update_install_job.active) {
         return jw__reply_update_status(state, client);
     }
@@ -2976,11 +3026,53 @@ static int jw__handle_update_install(jw_daemon_state *state,
         if (snprintf(runner_path, sizeof(runner_path),
                      "%s/jawaka-update-runner", state->bin_dir) <
             (int)sizeof(runner_path)) {
-            jw_update_install_start(&state->update_status,
-                                    &state->update_install_job,
-                                    state->state_dir,
-                                    state->sdcard_root,
-                                    runner_path);
+            bool needs_quiesce =
+                jw__update_handoff_replaces_live_payload(
+                    &state->update_status);
+            bool quiesced = false;
+            if (needs_quiesce) {
+                char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+                char reason[JW_SVC_REASON_BUF] = {0};
+                quiesced = state->services &&
+                    jw_svc_supervisor_package_begin(
+                        state->services, "leaf-update", stuck, sizeof(stuck),
+                        reason, sizeof(reason));
+                state->update_package_quiesce_release_warned = false;
+                state->update_package_quiesce_active =
+                    state->services &&
+                    jw_svc_supervisor_package_active(state->services);
+                if (!quiesced) {
+                    state->update_status.status = JW_UPDATE_STATUS_ERROR;
+                    if (!state->services) {
+                        snprintf(state->update_status.message,
+                                 sizeof(state->update_status.message), "%s",
+                                 "Service supervisor unavailable; update not started");
+                    } else if (stuck[0]) {
+                        snprintf(state->update_status.message,
+                                 sizeof(state->update_status.message),
+                                 "Service quiesce failed: %s (%s)",
+                                 stuck, reason[0] ? reason : "unknown");
+                    } else {
+                        snprintf(state->update_status.message,
+                                 sizeof(state->update_status.message),
+                                 "Service quiesce failed: %s",
+                                 reason[0] ? reason : "unknown");
+                    }
+                }
+            }
+            if (!needs_quiesce || quiesced) {
+                int start_rc = jw_update_install_start(
+                    &state->update_status, &state->update_install_job,
+                    state->state_dir, state->sdcard_root, runner_path);
+                if (start_rc != 0 && quiesced) {
+                    char release_reason[JW_SVC_REASON_BUF] = {0};
+                    (void)jw_svc_supervisor_package_end(
+                        state->services, "leaf-update", release_reason,
+                        sizeof(release_reason));
+                    state->update_package_quiesce_active =
+                        jw_svc_supervisor_package_active(state->services);
+                }
+            }
         } else {
             state->update_status.status = JW_UPDATE_STATUS_ERROR;
             snprintf(state->update_status.message,
@@ -2991,6 +3083,67 @@ static int jw__handle_update_install(jw_daemon_state *state,
 
     cJSON *root = jw_update_status_to_json(&state->update_status);
     return jw__reply_json(client, root);
+}
+
+static const char *jw__package_operation_id(cJSON *request) {
+    cJSON *value = request
+        ? cJSON_GetObjectItemCaseSensitive(request, "operation_id") : NULL;
+    return cJSON_IsString(value) && value->valuestring
+               ? value->valuestring : NULL;
+}
+
+static int jw__handle_package_quiesce_begin(jw_daemon_state *state,
+                                            jw_ipc_client *client,
+                                            cJSON *request) {
+    const char *operation_id = jw__package_operation_id(request);
+    if (!state->services) {
+        return jw__reply_error(client, "service supervisor unavailable");
+    }
+    if (state->shutdown_requested || state->pending_app ||
+        state->child_kind == JW_CHILD_APP ||
+        state->update_install_job.active) {
+        return jw__reply_error(client,
+                               "foreground or update operation in progress");
+    }
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (!jw_svc_supervisor_package_begin(
+            state->services, operation_id, stuck, sizeof(stuck), reason,
+            sizeof(reason))) {
+        char message[320];
+        if (stuck[0]) {
+            snprintf(message, sizeof(message),
+                     "package quiesce failed: %.127s (%.127s)", stuck,
+                     reason[0] ? reason : "unknown");
+        } else {
+            snprintf(message, sizeof(message),
+                     "package quiesce failed: %.127s",
+                     reason[0] ? reason : "unknown");
+        }
+        return jw__reply_error(client, message);
+    }
+    jw_log_info("package quiesce: begin operation=%s", operation_id);
+    return jw__reply_ok(client, "package-quiesce-begin", NULL);
+}
+
+static int jw__handle_package_quiesce_end(jw_daemon_state *state,
+                                          jw_ipc_client *client,
+                                          cJSON *request) {
+    const char *operation_id = jw__package_operation_id(request);
+    if (!state->services) {
+        return jw__reply_error(client, "service supervisor unavailable");
+    }
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (!jw_svc_supervisor_package_end(state->services, operation_id,
+                                       reason, sizeof(reason))) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "package quiesce release failed: %.127s",
+                 reason[0] ? reason : "unknown");
+        return jw__reply_error(client, message);
+    }
+    jw_log_info("package quiesce: end operation=%s", operation_id);
+    return jw__reply_ok(client, "package-quiesce-end", NULL);
 }
 
 static int jw__reply_platform_result(jw_ipc_client *client, const char *action,
@@ -5552,6 +5705,11 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
 
 static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
                                   const char **out_error) {
+    if (state->services &&
+        jw_svc_supervisor_package_active(state->services)) {
+        if (out_error) *out_error = "package operation in progress";
+        return -1;
+    }
     char pak_abs[PATH_MAX];
     char launch_abs[PATH_MAX];
     if (jw__resolve_app_launch_path(state, pak_dir, pak_abs, sizeof(pak_abs),
@@ -8897,8 +9055,8 @@ static bool jw__service_status_json(const jw_svc_supervised *e, cJSON *obj) {
     }
 
     /* contracts.md: report "whether a lifecycle policy stop is in force
-     * (reason: game, storage, suspend, package)". All three implemented
-     * triggers are reported distinctly; `package` arrives with PKG-1/TXN-1. */
+     * (reason: game, storage, suspend, package)". All four implemented
+     * triggers are reported distinctly. */
     const char *lifecycle_reason =
         jw_svc_stop_reason_lifecycle_slug(e->pending_stop_reason);
     cJSON *lifecycle =
@@ -9421,6 +9579,18 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         jw_log_info("launch-app requested pak=%s", pak_dir->valuestring);
         cJSON_Delete(root);
         return jw__reply_ok(client, "launch-app", NULL);
+    }
+
+    if (strcmp(type->valuestring, "package-quiesce-begin") == 0) {
+        int rc = jw__handle_package_quiesce_begin(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "package-quiesce-end") == 0) {
+        int rc = jw__handle_package_quiesce_end(state, client, root);
+        cJSON_Delete(root);
+        return rc;
     }
 
     if (strcmp(type->valuestring, "reset-retroarch-config") == 0) {
@@ -10286,7 +10456,7 @@ int main(int argc, char *argv[]) {
         }
 
         jw_update_download_poll(&state.update_status, &state.update_download_job);
-        jw_update_install_poll(&state.update_status, &state.update_install_job);
+        jw__poll_update_install(&state);
         jw_update_check_poll(&state.update_status, &state.update_check_job);
         jw__handle_child_exit(&state);
         jw__tick_post_launch_resume(&state);
