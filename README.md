@@ -161,6 +161,7 @@ Important variables:
 | `PLATFORM` / `DEVICE` | platform id, usually `mac` or `mlp1` |
 | `SDCARD_PATH` | mock or device SD-card root |
 | `SDCARD_PATHS` | colon-separated SD roots, primary first |
+| `USERDATA_PATHS`, `SHARED_USERDATA_PATHS` | PATH-2 per-source durable roots, aligned with `SDCARD_PATHS` |
 | `ROMS_PATHS`, `IMAGES_PATHS`, `MUSIC_PATHS`, `APPS_PATHS` | indexed plural content roots, aligned with `SDCARD_PATHS` |
 | `UMRK_RUNTIME_PATH` | runtime socket and scratch directory |
 | `UMRK_PLATFORM_PATH` / `SYSTEM_PATH` | platform payload root |
@@ -172,6 +173,10 @@ Important variables:
 | `JAWAKA_THEME` | local preview theme override |
 | `JAWAKA_AUTODEMO` | `1` enables the short automated run-daemon flow |
 | `JAWAKA_AUTODEMO_DELAY_MS` | auto-demo delay, default `1200` |
+
+When the complete PATH-2 lists validate, `hello-ok.features` includes
+`source-paths-v2`; malformed, incomplete, duplicate, or misaligned lists keep
+that capability absent even if `UMRK_ENV_VERSION=2` was inherited.
 
 `JAWAKA_SDCARD_ROOT`, `JAWAKA_RUNTIME_DIR`, `JAWAKA_RETROARCH_BIN`, and
 `JAWAKA_RETROARCH_CORES_DIR` remain compatibility aliases. New scripts and docs

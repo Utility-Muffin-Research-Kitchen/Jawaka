@@ -137,6 +137,68 @@ static int jw__source_child_path(const char *plural_env,
     return jw__format(out, out_size, "%s/%s", root, child) ? 0 : -1;
 }
 
+bool jw_storage_source_paths_v2_valid(void) {
+    static const struct {
+        const char *plural;
+        const char *singular;
+    } required[] = {
+        {"SDCARD_PATHS", "SDCARD_PATH"},
+        {"USERDATA_PATHS", "USERDATA_PATH"},
+        {"SHARED_USERDATA_PATHS", "SHARED_USERDATA_PATH"},
+        {"SAVES_PATHS", "SAVES_PATH"},
+        {"STATES_PATHS", "STATES_PATH"},
+    };
+    const char *version = jw__env_value("UMRK_ENV_VERSION");
+    const char *roots = jw__env_value("SDCARD_PATHS");
+    int count = jw__split_count(roots);
+    if (!version || strcmp(version, "2") != 0 || count <= 0 ||
+        count > JW_STORAGE_MAX_SOURCES) {
+        return false;
+    }
+
+    char values[sizeof(required) / sizeof(required[0])]
+               [JW_STORAGE_MAX_SOURCES][JW_STORAGE_PATH_MAX];
+    memset(values, 0, sizeof(values));
+    for (size_t list = 0; list < sizeof(required) / sizeof(required[0]); list++) {
+        const char *plural = jw__env_value(required[list].plural);
+        const char *singular = jw__env_value(required[list].singular);
+        if (!plural || !singular || jw__split_count(plural) != count) {
+            return false;
+        }
+        for (int index = 0; index < count; index++) {
+            char *value = values[list][index];
+            if (jw__split_nth(plural, index, value, JW_STORAGE_PATH_MAX) != 0 ||
+                value[0] != '/' || strstr(value, "//") || strstr(value, "/./") ||
+                strstr(value, "/../")) {
+                return false;
+            }
+            size_t len = strlen(value);
+            if ((len > 1 && value[len - 1] == '/') ||
+                (len >= 2 && strcmp(value + len - 2, "/.") == 0) ||
+                (len >= 3 && strcmp(value + len - 3, "/..") == 0)) {
+                return false;
+            }
+            for (int prior = 0; prior < index; prior++) {
+                if (strcmp(value, values[list][prior]) == 0) {
+                    return false;
+                }
+            }
+        }
+        if (strcmp(values[list][0], singular) != 0) {
+            return false;
+        }
+    }
+    for (int index = 0; index < count; index++) {
+        const char *root = values[0][index];
+        for (size_t list = 1; list < sizeof(required) / sizeof(required[0]); list++) {
+            if (!jw__path_is_within(values[list][index], root)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 #if defined(PLATFORM_MLP1) && defined(__linux__)
 static uint32_t jw__le32(const unsigned char *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -323,8 +385,9 @@ int jw_storage_sources_resolve(const char *primary_root, jw_storage_source_list 
         return -1;
     }
     static const char *aligned_lists[] = {
-        "ROMS_PATHS", "IMAGES_PATHS", "MUSIC_PATHS", "APPS_PATHS",
-        "BIOS_PATHS", "SAVES_PATHS", "STATES_PATHS", "CHEATS_PATHS",
+        "USERDATA_PATHS", "SHARED_USERDATA_PATHS", "ROMS_PATHS",
+        "IMAGES_PATHS", "MUSIC_PATHS", "APPS_PATHS", "BIOS_PATHS",
+        "SAVES_PATHS", "STATES_PATHS", "CHEATS_PATHS",
     };
     for (size_t i = 0; i < sizeof(aligned_lists) / sizeof(aligned_lists[0]); i++) {
         const char *value = jw__env_value(aligned_lists[i]);
@@ -367,7 +430,25 @@ int jw_storage_sources_resolve(const char *primary_root, jw_storage_source_list 
             }
 
             int index = out->count;
-            if (jw__source_child_path("ROMS_PATHS", "ROMS_PATH", source->root,
+            char userdata_child[128];
+            const char *platform = jw__env_value("PLATFORM");
+            if (!platform) {
+                platform = "mac";
+            }
+            if (!jw__format(userdata_child, sizeof(userdata_child),
+                            ".userdata/%s", platform)) {
+                return -1;
+            }
+            if (jw__source_child_path("USERDATA_PATHS", "USERDATA_PATH",
+                                      source->root, userdata_child, index,
+                                      source->userdata_path,
+                                      sizeof(source->userdata_path)) != 0 ||
+                jw__source_child_path("SHARED_USERDATA_PATHS",
+                                      "SHARED_USERDATA_PATH", source->root,
+                                      ".userdata/shared", index,
+                                      source->shared_userdata_path,
+                                      sizeof(source->shared_userdata_path)) != 0 ||
+                jw__source_child_path("ROMS_PATHS", "ROMS_PATH", source->root,
                                       "Roms", index, source->roms_path,
                                       sizeof(source->roms_path)) != 0 ||
                 jw__source_child_path("IMAGES_PATHS", "IMAGES_PATH", source->root,
