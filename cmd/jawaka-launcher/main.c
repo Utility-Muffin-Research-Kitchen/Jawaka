@@ -2163,9 +2163,26 @@ static void jw__render_settings(const jw_launcher_state *state,
        box's own top padding) - so the Settings list sits on the same row grid
        as the browse tabs instead of a slightly denser one. */
     int hints_h = jw__footer_height(state);
-    int sh_inner = content_h - margin - ((hints_h > 0) ? margin : 0);
+    TTF_Font *status_font = cat_get_font(CAT_FONT_SMALL);
+    int status_h = state->status[0]
+        ? TTF_FontHeight(status_font) + CAT_S(8)
+        : 0;
+    int sh_inner = content_h - margin - ((hints_h > 0) ? margin : 0) - status_h;
+    if (sh_inner < 0) sh_inner = 0;
 
     jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
+
+    /* Settings actions report success and failure through state->status. The
+       System-menu-hosted Settings path used to reserve no place to draw it, so
+       failures such as an unavailable scraper looked exactly like a dropped A
+       press. Keep one line below the page only while there is feedback to show. */
+    if (status_h > 0) {
+        ap_theme *theme = cat_get_theme();
+        int status_y = sy + sh_inner + CAT_S(4);
+        cat_draw_text_ellipsized(status_font, state->status,
+                                 sx + CAT_S(12), status_y, theme->hint,
+                                 sw_inner - CAT_S(24));
+    }
 }
 
 /* The current tab's content dispatch, factored out so it can draw to the screen

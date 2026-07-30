@@ -51,20 +51,41 @@ CURL_LDFLAGS := -lcurl
 endif
 endif
 
-# ScreenScraper dev credentials, injected from the git-ignored .env.local
-# (copy .env.example). Builds without credentials still compile; scraping
-# reports itself unavailable at runtime.
--include .env.local
-SCRAPE_DEFINES :=
-ifdef SCREENSCRAPER_DEV_ID
-SCRAPE_DEFINES += -DSCREENSCRAPER_DEV_ID=\"$(SCREENSCRAPER_DEV_ID)\"
+# ScreenScraper developer credentials. Prefer the current checkout's ignored
+# .env.local, then the primary checkout's copy when building from a linked Git
+# worktree. Release-candidate builds use temporary worktrees, and silently
+# dropping the credentials there produces a launcher whose artwork picker can
+# enumerate local games but can never enqueue a scrape.
+JAWAKA_GIT_COMMON_DIR := $(shell git -C "$(CURDIR)" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+SCREENSCRAPER_ENV_FILE ?= $(firstword $(wildcard \
+	$(CURDIR)/.env.local \
+	$(JAWAKA_GIT_COMMON_DIR)/../.env.local))
+ifneq ($(strip $(SCREENSCRAPER_ENV_FILE)),)
+-include $(SCREENSCRAPER_ENV_FILE)
 endif
-ifdef SCREENSCRAPER_DEV_PASSWORD
-SCRAPE_DEFINES += -DSCREENSCRAPER_DEV_PASSWORD=\"$(SCREENSCRAPER_DEV_PASSWORD)\"
+
+# Export names into the MLP1 Docker build with `docker -e NAME`; values never
+# appear in the echoed command line. Direct builds without credentials remain
+# supported unless their caller explicitly requires the feature.
+export SCREENSCRAPER_DEV_ID
+export SCREENSCRAPER_DEV_PASSWORD
+export SCREENSCRAPER_DEBUG_PASSWORD
+
+SCREENSCRAPER_AVAILABLE := 0
+ifneq ($(strip $(SCREENSCRAPER_DEV_ID)),)
+ifneq ($(strip $(SCREENSCRAPER_DEV_PASSWORD)),)
+SCREENSCRAPER_AVAILABLE := 1
 endif
-ifdef SCREENSCRAPER_DEBUG_PASSWORD
-SCRAPE_DEFINES += -DSCREENSCRAPER_DEBUG_PASSWORD=\"$(SCREENSCRAPER_DEBUG_PASSWORD)\"
 endif
+
+SCREENSCRAPER_REQUIRED ?= 0
+ifneq ($(filter 1 yes true,$(SCREENSCRAPER_REQUIRED)),)
+ifeq ($(SCREENSCRAPER_AVAILABLE),0)
+$(error ScreenScraper credentials are required; create .env.local or set SCREENSCRAPER_DEV_ID and SCREENSCRAPER_DEV_PASSWORD)
+endif
+endif
+
+SCRAPE_CREDENTIALS_HEADER := $(BUILD)/generated/screenscraper_credentials.h
 
 CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
@@ -121,7 +142,7 @@ SCRAPE_SRCS := \
 	third_party/miniz/miniz_tdef.c \
 	third_party/miniz/miniz_tinfl.c \
 	third_party/miniz/miniz_zip.c
-SCRAPE_CFLAGS := $(SCRAPE_DEFINES) $(CURL_CFLAGS) \
+SCRAPE_CFLAGS := -include $(SCRAPE_CREDENTIALS_HEADER) $(CURL_CFLAGS) \
 	-Ithird_party/stb -Ithird_party/miniz -Ithird_party/md5
 
 CFLAGS_DAEMON += $(SCRAPE_CFLAGS)
@@ -231,6 +252,8 @@ SCRAPE_SMOKE_SRCS := \
 	internal/core/log.c \
 	internal/db/db.c \
 	internal/db/relocation.c \
+	$(PLATFORM_ID_SRC) \
+	internal/retroarch/catalog.c \
 	internal/storage/sources.c \
 	third_party/cjson/cJSON.c
 
@@ -619,8 +642,9 @@ check-sdl:
 	@pkg-config --exists sdl2 SDL2_ttf SDL2_image 2>/dev/null || \
 		( echo "SDL2 libraries not found. Install with: brew install sdl2 sdl2_ttf sdl2_image" && exit 1 )
 
-$(BUILD)/bin/jawakad: $(DAEMON_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_DAEMON) -o $@ $(DAEMON_SRCS) $(LDLIBS_DAEMON)
+$(BUILD)/bin/jawakad: $(DAEMON_SRCS) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS_DAEMON) -o $@ $(DAEMON_SRCS) $(LDLIBS_DAEMON)
 
 $(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(UI_SRCS) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(UI_SRCS) $(LDLIBS_UI)
@@ -630,6 +654,22 @@ $(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(UI_SRCS) $(CATASTROPHE_HEADER
 
 $(BUILD)/generated:
 	@mkdir -p $(BUILD)/generated
+
+# Keep credential changes in make's dependency graph without exposing values in
+# compiler command lines. FORCE reruns this small recipe; preserving the header
+# mtime when its content is unchanged keeps incremental daemon builds fast.
+$(SCRAPE_CREDENTIALS_HEADER): FORCE | $(BUILD)/generated
+	@umask 077; tmp="$@.tmp"; \
+		{ \
+			printf '#define SCREENSCRAPER_DEV_ID "%s"\n' "$$SCREENSCRAPER_DEV_ID"; \
+			printf '#define SCREENSCRAPER_DEV_PASSWORD "%s"\n' "$$SCREENSCRAPER_DEV_PASSWORD"; \
+			printf '#define SCREENSCRAPER_DEBUG_PASSWORD "%s"\n' "$$SCREENSCRAPER_DEBUG_PASSWORD"; \
+		} > "$$tmp"; \
+		if test -f "$@" && cmp -s "$$tmp" "$@"; then \
+			rm -f "$$tmp"; \
+		else \
+			mv -f "$$tmp" "$@"; \
+		fi
 
 $(BUILD)/generated/xdg-shell-client-protocol.h: | $(BUILD)/generated
 	@test -n "$(WAYLAND_PROTOCOLS_DIR)" || { echo "wayland-protocols pkg-config data dir missing" >&2; exit 1; }
@@ -657,8 +697,9 @@ $(BUILD)/bin/jawaka-platformctl: $(PLATFORM_CTL_SRCS) | $(BUILD)/bin
 $(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(SCAN_SMOKE_SRCS) $(LDLIBS_COMMON)
 
-$(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(SCRAPE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
+$(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(SCRAPE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
 
 $(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -Ithird_party/miniz -o $@ $(PAKRAT_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lm
@@ -689,13 +730,15 @@ $(BUILD)/build-manifest.json: $(ALL_BINS) FORCE
 		printf '  "build_profile": "%s",\n' "$(MLP1_BUILD_PROFILE)"; \
 		printf '  "cflags": "%s",\n' "$(CDEBUG)"; \
 		printf '  "ldflags": "%s",\n' "$(LDFLAGS_PLATFORM)"; \
+		printf '  "features": {"screenscraper": %s},\n' "$(if $(filter 1,$(SCREENSCRAPER_AVAILABLE)),true,false)"; \
 		printf '  "binaries": ["jawakad", "jawaka-launcher", "jawaka-menu", "jawaka-osd", "jawaka-retroarchctl", "jawaka-retroarch-runner", "jawaka-update-runner", "jawaka-platformctl", "jawaka-inhibitctl", "jawaka-ledd"],\n'; \
 		printf '  "exceptions": []\n'; \
 		printf '}\n'; \
 	} > "$@"
 
-FORCE:
 endif
+
+FORCE:
 
 phase3-fixture-scan-smoke:
 	scripts/phase3-fixture-scan-smoke.sh
@@ -769,7 +812,13 @@ tg5040 tg5050 my355:
 mlp1:
 	docker run --rm \
 		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		-e SCREENSCRAPER_REQUIRED="$(SCREENSCRAPER_REQUIRED)" \
+		-e SCREENSCRAPER_DEV_ID \
+		-e SCREENSCRAPER_DEV_PASSWORD \
+		-e SCREENSCRAPER_DEBUG_PASSWORD \
 		-v "$(WORKSPACE_ROOT)":/workspace \
+		-v "$(CURDIR)":/workspace/Jawaka \
+		-v "$(abspath $(CATASTROPHE_DIR))":/workspace/Catastrophe \
 		-w /workspace/Jawaka \
 		"$(MLP1_TOOLCHAIN_IMAGE)" \
 		make -f ports/mlp1/Makefile all
