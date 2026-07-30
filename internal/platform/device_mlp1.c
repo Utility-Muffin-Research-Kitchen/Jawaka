@@ -280,6 +280,56 @@ static bool jw__mlp1_mount_lookup(const char *wanted_mount,
     return active;
 }
 
+static bool jw__mlp1_mount_has_option(const char *wanted_mount,
+                                      const char *wanted_option) {
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) {
+        return false;
+    }
+
+    char dev[256];
+    char mount[256];
+    char type[64];
+    char options[512];
+    bool found = false;
+    while (fscanf(fp, "%255s %255s %63s %511s %*d %*d\n",
+                  dev, mount, type, options) == 4) {
+        if (strcmp(mount, wanted_mount) != 0) {
+            continue;
+        }
+        char *save = NULL;
+        for (char *option = strtok_r(options, ",", &save);
+             option;
+             option = strtok_r(NULL, ",", &save)) {
+            if (strcmp(option, wanted_option) == 0) {
+                found = true;
+                break;
+            }
+        }
+        break;
+    }
+    fclose(fp);
+    return found;
+}
+
+static int jw__mlp1_remount_exec(const char *mount) {
+    if (!mount ||
+        (strcmp(mount, "/mnt/sdcard") != 0 &&
+         strcmp(mount, "/media/sdcard1") != 0) ||
+        !jw__mlp1_mount_lookup(mount, NULL, 0)) {
+        return -1;
+    }
+
+    char command[PATH_MAX + 128];
+    snprintf(command, sizeof(command),
+             "mount -o remount,rw,exec,nosuid,nodev,noatime,nodiratime "
+             "%s >/dev/null 2>&1", mount);
+    if (jw__exec_shell(command) != 0) {
+        return -1;
+    }
+    return jw__mlp1_mount_has_option(mount, "noexec") ? -1 : 0;
+}
+
 static bool jw__mlp1_secondary_device(const jw_platform_context *ctx,
                                       char *out, size_t out_size) {
     char secondary_mount[PATH_MAX];
@@ -357,10 +407,7 @@ static int jw__mlp1_mount_secondary_if_needed(jw_platform_context *ctx) {
     mkdir(mount, 0755);
 
     if (jw__mlp1_mount_lookup(mount, NULL, 0)) {
-        snprintf(command, sizeof(command),
-                 "mount -o remount,rw,exec,nosuid,nodev,noatime,nodiratime "
-                 "%s >/dev/null 2>&1", mount);
-        return jw__exec_shell(command);
+        return jw__mlp1_remount_exec(mount);
     }
 
     snprintf(command, sizeof(command),
@@ -2737,6 +2784,37 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         if (sfd >= 0) {
             rc = (write(sfd, "mem\n", 4) == 4) ? 0 : -1;   /* blocks until resume */
             close(sfd);
+        }
+        /* Firmware may restore either card with noexec after resume. This is
+           observable when the marked launcher card moved to /media/sdcard1:
+           the already-running daemon survives, but every service restart and
+           control helper then fails with EACCES. Repair both dynamic roles
+           before returning to the daemon loop, where suspend-sensitive
+           services are eligible to start again. */
+        if (rc == 0) {
+            bool active_was_noexec =
+                jw__mlp1_mount_has_option(ctx->sdcard_root, "noexec");
+            int active_rc = -1;
+            int secondary_rc = -1;
+            for (int attempt = 0; attempt < 20; attempt++) {
+                active_rc = jw__mlp1_remount_exec(ctx->sdcard_root);
+                secondary_rc = jw__mlp1_block_present(ctx)
+                                   ? jw__mlp1_mount_secondary_if_needed(ctx)
+                                   : 0;
+                if (active_rc == 0 && secondary_rc == 0) {
+                    break;
+                }
+                usleep(100000);
+            }
+            if (active_rc != 0 || secondary_rc != 0) {
+                jw_log_warn("platform: resume SD exec repair failed "
+                            "active=%s active_rc=%d secondary_rc=%d",
+                            ctx->sdcard_root, active_rc, secondary_rc);
+                rc = -1;
+            } else if (active_was_noexec) {
+                jw_log_info("platform: resume restored exec on active SD %s",
+                            ctx->sdcard_root);
+            }
         }
         /* Resumed: restore the two HP-amp registers (charge pump then output
            stage), falling back to the codec's power-up defaults if a snapshot read
