@@ -20,6 +20,15 @@ typedef bool (*jw_input_game_switcher_cb)(void *userdata);
    events normally (e.g. the feature is disabled). Optional; leave NULL to skip.
    Assign directly on the proxy struct after init; it is read on the next tick. */
 typedef bool (*jw_input_screenshot_cb)(void *userdata);
+
+/* Menu + R1 chord: start or stop a game recording. Same contract as the
+   screenshot hook -- return true to consume the chord, false to let R1 forward
+   to the game as normal (no RetroArch session, feature off). Deliberately a
+   Leaf-level chord rather than a RetroArch hotkey: RetroArch's own hotkeys need
+   a modifier held on the pad, and it only blocks that modifier from the core for
+   input_hotkey_block_delay frames, so Select leaks through to the game. Menu is
+   never a game input and jawakad consumes the whole chord. */
+typedef bool (*jw_input_record_cb)(void *userdata);
 /* Force feedback played on the virtual gamepad. The pad advertises FF_RUMBLE, so
    any emulator that rumbles through SDL (or evdev directly) reaches the motor
    here instead of needing its own sysfs sink. `magnitude` is the effect's two
@@ -41,6 +50,7 @@ typedef struct {
     jw_input_menu_tap_cb menu_tap;
     jw_input_game_switcher_cb game_switcher;
     jw_input_screenshot_cb screenshot;
+    jw_input_record_cb record;
     jw_input_rumble_cb rumble;
     void *userdata;
 } jw_input_proxy;

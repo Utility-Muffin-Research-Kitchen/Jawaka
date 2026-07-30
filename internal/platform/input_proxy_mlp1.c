@@ -52,6 +52,9 @@ typedef struct {
                                      swallow its matching release too */
     bool screenshot_chord_consumed; /* a Menu+L1 screenshot chord ate the L1 press;
                                        swallow its matching release too */
+    bool record_chord_consumed;   /* a Menu+R1 record chord ate the R1 press;
+                                     swallow its release too so R1 does not
+                                     stick down in the game */
     bool deferred_menu_release;
     uint64_t deferred_menu_release_at_ms;
     uint64_t last_brightness_ms;
@@ -523,6 +526,33 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                 return;                                 /* drop the L1 press */
             }
             /* Not handled: fall through so the deferred Menu flushes and L1
+               forwards as an ordinary Menu+key chord. */
+        }
+    }
+
+    /* Menu + R1: start or stop a recording. Same shape as Menu + L1 above --
+       jawakad consumes the chord so neither Menu nor R1 reaches the game. This
+       lives here rather than as a RetroArch hotkey because RetroArch's hotkeys
+       need a pad modifier held, and it stops blocking that modifier from the
+       core after input_hotkey_block_delay frames, so Select reaches the game and
+       presses buttons in it. */
+    if (ev->code == BTN_TR) {
+        if (ev->value == 0 && data->record_chord_consumed) {
+            data->record_chord_consumed = false;
+            return;
+        }
+        /* value==1 only: autorepeat (value==2) on a held R1 would consume the
+           repeat while the real press stayed forwarded-down, sticking R1 in the
+           game. Same trap as L1. */
+        if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
+            bool handled = proxy->record &&
+                           proxy->record(proxy->userdata);
+            if (handled) {
+                data->chord_active = true;          /* suppress the Menu tap */
+                data->record_chord_consumed = true; /* suppress R1 release */
+                return;                             /* drop the R1 press */
+            }
+            /* Not handled: fall through so the deferred Menu flushes and R1
                forwards as an ordinary Menu+key chord. */
         }
     }

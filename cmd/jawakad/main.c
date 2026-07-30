@@ -181,6 +181,7 @@ typedef struct {
     pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
     jw_child_kind child_kind;
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
+    uint64_t last_record_toggle_ms; /* debounce for the Menu+R1 record hotkey */
     bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
     uint64_t screenshots_checked_ms;     /* when the flag was last read from the DB */
     /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
@@ -6347,6 +6348,42 @@ static void *jw__screenshot_worker(void *arg) {
 
 /* Menu + L1 (input proxy): take a screenshot. Returns true when consumed. When
    the feature is disabled it returns false so the chord forwards normally. */
+/* Menu + R1: toggle a game recording. Only meaningful while RetroArch is the
+   running session -- it owns the recorder -- so decline otherwise and let R1
+   reach the app normally.
+
+   RECORDING_TOGGLE goes over RetroArch's network command interface rather than
+   through its own hotkey system: a RetroArch pad hotkey needs a modifier held,
+   and RetroArch stops blocking that modifier from the core after
+   input_hotkey_block_delay frames, so Select ends up pressing buttons in the
+   game. Menu is never a game input and the chord is consumed here. */
+static bool jw__on_record_hotkey(void *userdata) {
+    jw_daemon_state *state = (jw_daemon_state *)userdata;
+    if (!state || !jw__has_retroarch_session(state)) {
+        return false;
+    }
+
+    /* Debounced with the screenshot throttle: a recording toggle is cheap, but a
+       bounced chord would start and immediately stop a recording, leaving a file
+       with no frames in it. */
+    uint64_t now = jw__screenshot_now_ms();
+    if (state->last_record_toggle_ms != 0 &&
+        now - state->last_record_toggle_ms < JW_SS_THROTTLE_MS) {
+        return true;
+    }
+    state->last_record_toggle_ms = now;
+
+    jw_ra_client client = jw_ra_client_default();
+    jw_ra_result rc = jw_ra_send_raw(&client, "RECORDING_TOGGLE");
+    if (rc != JW_RA_OK) {
+        jw_log_warn("record hotkey: RECORDING_TOGGLE failed result=%s",
+                    jw_ra_result_string(rc));
+        return true;   /* consumed either way; R1 must not reach the game */
+    }
+    jw_log_info("record hotkey: RECORDING_TOGGLE sent");
+    return true;
+}
+
 static bool jw__on_screenshot_hotkey(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
     if (!state || !state->db_path) {
@@ -6418,6 +6455,7 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
                             jw__input_volume_delta, jw__input_menu_tap,
                             jw__input_game_switcher, state) == 0) {
         state->input_proxy.screenshot = jw__on_screenshot_hotkey;
+        state->input_proxy.record = jw__on_record_hotkey;
         state->input_proxy.rumble = jw__rumble_ff;
         jw__publish_retroarch_input_env(state);
     }
