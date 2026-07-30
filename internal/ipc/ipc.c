@@ -262,6 +262,14 @@ int jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out) {
     return 0;
 }
 
+/* A peer that closed before reading is routine rather than a failure: the
+   notification clients send and close without waiting (see ipc__notify).
+   errno is whatever the failing write left, since jw__write_all does nothing
+   between the failure and its return. */
+static int jw__send_failed(void) {
+    return (errno == EPIPE || errno == ECONNRESET) ? JW_IPC_PEER_GONE : -1;
+}
+
 int jw_ipc_client_send(jw_ipc_client *client, const char *json, size_t len) {
     if (!client || !json || len > JW_IPC_MAX_FRAME) {
         return -1;
@@ -269,10 +277,10 @@ int jw_ipc_client_send(jw_ipc_client *client, const char *json, size_t len) {
 
     uint32_t frame_len = htonl((uint32_t)len);
     if (jw__write_all(client->fd, &frame_len, sizeof(frame_len)) != 0) {
-        return -1;
+        return jw__send_failed();
     }
     if (jw__write_all(client->fd, json, len) != 0) {
-        return -1;
+        return jw__send_failed();
     }
     return 0;
 }
