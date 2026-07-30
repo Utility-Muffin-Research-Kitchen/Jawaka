@@ -253,6 +253,8 @@ typedef struct {
     char pending_app_pak_dir[PATH_MAX];
     bool daemon_only;
     bool shutdown_requested;
+    bool power_transition_requested;
+    jw_platform_action power_transition_action;
     /* Auto-sleep: idle → screen off (bl_power) → suspend (mem). */
     int       autosleep_timeout_s;        /* cached from DB; 0 = disabled */
     int       autosleep_platform_synced_s;/* last value mirrored to stock power policy */
@@ -453,6 +455,16 @@ static void jw__scan_title_list_move(jw_scan_title_list *dest,
 }
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
+
+static void jw__request_power_transition(jw_daemon_state *state,
+                                         jw_platform_action action) {
+    if (!state) {
+        return;
+    }
+    state->power_transition_requested = true;
+    state->power_transition_action = action;
+    state->shutdown_requested = true;
+}
 
 static bool jw__has_retroarch_session(const jw_daemon_state *state) {
     return state &&
@@ -8020,8 +8032,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
                 state->power_sleep_armed = false;
                 jw_suspend_policy_long_press(&state->suspend_policy);
                 jw_log_info("power: long-press (%lldms) -> clean power off", held_ms);
-                jw_platform_result poff;
-                jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
+                jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF);
                 return;
             }
             if (state->power_sleep_armed) {
@@ -8049,8 +8060,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             state->power_sleep_armed = false;
             jw_suspend_policy_long_press(&state->suspend_policy);
             jw_log_info("power: long-press -> clean power off");
-            jw_platform_result poff;
-            jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
+            jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF);
             return;
         }
     }
@@ -9834,6 +9844,17 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
             result.code = JW_PLATFORM_RESULT_OK;
             snprintf(result.message, sizeof(result.message), "%s",
                      inhibited ? "sleep pending: suspend inhibited" : "sleep resumed");
+        } else if (action == JW_PLATFORM_ACTION_POWEROFF ||
+                   action == JW_PLATFORM_ACTION_REBOOT) {
+            /* A power transition must not race the supervisor's shutdown stop.
+             * Record the action now so the reply reaches the caller, then let the
+             * main loop stop the frontend and every service. jw__cleanup schedules
+             * the kernel transition only after the DB/socket/runtime cleanup. */
+            jw__request_power_transition(state, action);
+            memset(&result, 0, sizeof(result));
+            result.code = JW_PLATFORM_RESULT_OK;
+            snprintf(result.message, sizeof(result.message), "%s",
+                     action == JW_PLATFORM_ACTION_REBOOT ? "rebooting" : "powering off");
         } else if (action == JW_PLATFORM_ACTION_BLUETOOTH_ON ||
                    action == JW_PLATFORM_ACTION_BLUETOOTH_OFF) {
             jw_platform_perform_action(&state->platform, action, value, &result);
@@ -10252,9 +10273,20 @@ static void jw__cleanup(jw_daemon_state *state) {
         jw_svc_supervisor_close(state->services);
         state->services = NULL;
     }
-    jw_platform_shutdown(&state->platform);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
+    if (state->power_transition_requested) {
+        jw_platform_result result;
+        jw_platform_perform_action(&state->platform,
+                                   state->power_transition_action, 0, &result);
+        if (result.code != JW_PLATFORM_RESULT_OK) {
+            jw_log_error("deferred %s failed: %s",
+                         jw_platform_action_name(state->power_transition_action),
+                         result.message[0] ? result.message
+                                           : jw_platform_result_code_name(result.code));
+        }
+    }
+    jw_platform_shutdown(&state->platform);
     free(state->runtime_dir);
     free(state->sdcard_root);
     free(state->socket_path);
