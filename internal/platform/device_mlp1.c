@@ -2811,9 +2811,26 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
                             "active=%s active_rc=%d secondary_rc=%d",
                             ctx->sdcard_root, active_rc, secondary_rc);
                 rc = -1;
-            } else if (active_was_noexec) {
-                jw_log_info("platform: resume restored exec on active SD %s",
-                            ctx->sdcard_root);
+            } else {
+                const char *launcher = getenv("UMRK_LAUNCHER_PATH");
+                if (!launcher || !launcher[0]) {
+                    launcher = strcmp(ctx->sdcard_root, "/media/sdcard1") == 0
+                                   ? "/media/sdcard1/.system/leaf/platforms/mlp1/launcher"
+                                   : "/mnt/sdcard/.system/leaf/platforms/mlp1/launcher";
+                }
+                /* The firmware may unmount and recreate the active mount while
+                   suspended. A cwd held on the detached old mount then makes
+                   every later shell child fail getcwd even though the path is
+                   visible again. Re-enter the live launcher directory before
+                   audio restoration or any service is restarted. */
+                if (chdir(launcher) != 0) {
+                    jw_log_warn("platform: resume could not refresh launcher "
+                                "cwd %s: %s", launcher, strerror(errno));
+                    rc = -1;
+                } else if (active_was_noexec) {
+                    jw_log_info("platform: resume restored exec and cwd on "
+                                "active SD %s", ctx->sdcard_root);
+                }
             }
         }
         /* Resumed: restore the two HP-amp registers (charge pump then output
