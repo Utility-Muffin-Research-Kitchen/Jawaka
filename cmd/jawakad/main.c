@@ -7835,6 +7835,23 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     jw_input_proxy_set_swallow(&state->input_proxy, true);
     jw_platform_result result;
     jw__platform_sleep_with_performance(state, &result);   /* blocks until resume */
+    /* MLP1 firmware can detach/recreate an SD mount while asleep. The platform
+       backend first repairs executable mount options and refreshes cwd; only
+       after that succeeds may the supervisor rediscover packages on the live
+       mount and make suspend-sensitive services eligible for restart. */
+    if (state->services && result.code == JW_PLATFORM_RESULT_OK) {
+        int service_count = jw_svc_supervisor_scan(state->services);
+        if (service_count < 0) {
+            jw_log_warn("sleep: post-resume service rescan failed; "
+                        "suspend-sensitive services remain stopped");
+        } else {
+            jw_log_info("sleep: post-resume service rescan found %d service(s)",
+                        service_count);
+        }
+    } else if (state->services) {
+        jw_log_warn("sleep: platform resume repair failed; "
+                    "post-resume service rescan skipped");
+    }
     jw_log_info("sleep: resumed");
     jw__rumble_off();   /* belt and braces if the quiesce above timed out */
     jw__screen_set(state, true);

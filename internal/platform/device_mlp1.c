@@ -312,6 +312,56 @@ static bool jw__mlp1_mount_has_option(const char *wanted_mount,
     return found;
 }
 
+/* Resume can leave this process' cwd on a detached instance of the launcher
+   card. Invoking `mount` through a shell from that cwd is unreliable (the MLP1
+   shell emits getcwd failures and, on the observed firmware path, the remount
+   never takes effect). Execute the rootfs mount binary directly from `/` and
+   keep the wait bounded so a damaged card cannot wedge the daemon on wake. */
+static int jw__mlp1_remount_exec_bounded(const char *mount) {
+    char *const argv[] = {
+        (char *)"mount",
+        (char *)"-o",
+        (char *)"remount,rw,exec,nosuid,nodev,noatime,nodiratime",
+        (char *)mount,
+        NULL,
+    };
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        if (chdir("/") != 0) {
+            _exit(126);
+        }
+        int null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (null_fd >= 0) {
+            (void)dup2(null_fd, STDOUT_FILENO);
+            (void)dup2(null_fd, STDERR_FILENO);
+            close(null_fd);
+        }
+        execv("/bin/mount", argv);
+        _exit(127);
+    }
+
+    int status = 0;
+    for (int attempt = 0; attempt < 10; attempt++) {
+        pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) {
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+        }
+        if (waited < 0 && errno != EINTR) {
+            return -1;
+        }
+        usleep(50000);
+    }
+
+    (void)kill(pid, SIGKILL);
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        /* retry */
+    }
+    return -1;
+}
+
 static int jw__mlp1_remount_exec(const char *mount) {
     if (!mount ||
         (strcmp(mount, "/mnt/sdcard") != 0 &&
@@ -320,11 +370,10 @@ static int jw__mlp1_remount_exec(const char *mount) {
         return -1;
     }
 
-    char command[PATH_MAX + 128];
-    snprintf(command, sizeof(command),
-             "mount -o remount,rw,exec,nosuid,nodev,noatime,nodiratime "
-             "%s >/dev/null 2>&1", mount);
-    if (jw__exec_shell(command) != 0) {
+    if (!jw__mlp1_mount_has_option(mount, "noexec")) {
+        return 0;
+    }
+    if (jw__mlp1_remount_exec_bounded(mount) != 0) {
         return -1;
     }
     return jw__mlp1_mount_has_option(mount, "noexec") ? -1 : 0;
@@ -2792,16 +2841,32 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
            before returning to the daemon loop, where suspend-sensitive
            services are eligible to start again. */
         if (rc == 0) {
-            bool active_was_noexec =
-                jw__mlp1_mount_has_option(ctx->sdcard_root, "noexec");
+            /* Leave any detached SD cwd immediately. The firmware's late
+               post-resume mount worker can recreate the card more than once,
+               so merely chdir'ing to the first visible instance is not enough. */
+            if (chdir("/") != 0) {
+                jw_log_warn("platform: resume could not leave stale SD cwd: %s",
+                            strerror(errno));
+                rc = -1;
+            }
+            bool active_needed_repair = false;
             int active_rc = -1;
             int secondary_rc = -1;
-            for (int attempt = 0; attempt < 20; attempt++) {
+            long long settle_started_ms = jw__monotonic_ms();
+            long long settle_deadline_ms = settle_started_ms + 5000;
+            while (rc == 0 && jw__monotonic_ms() < settle_deadline_ms) {
+                if (jw__mlp1_mount_has_option(ctx->sdcard_root, "noexec")) {
+                    active_needed_repair = true;
+                }
                 active_rc = jw__mlp1_remount_exec(ctx->sdcard_root);
                 secondary_rc = jw__mlp1_block_present(ctx)
                                    ? jw__mlp1_mount_secondary_if_needed(ctx)
                                    : 0;
-                if (active_rc == 0 && secondary_rc == 0) {
+                /* The MLP1 firmware performs a second mount pass roughly two
+                   seconds after wake. Observe a full three-second window so a
+                   transient exec mount cannot be mistaken for the final one. */
+                if (active_rc == 0 && secondary_rc == 0 &&
+                    jw__monotonic_ms() - settle_started_ms >= 3000) {
                     break;
                 }
                 usleep(100000);
@@ -2827,9 +2892,11 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
                     jw_log_warn("platform: resume could not refresh launcher "
                                 "cwd %s: %s", launcher, strerror(errno));
                     rc = -1;
-                } else if (active_was_noexec) {
-                    jw_log_info("platform: resume restored exec and cwd on "
-                                "active SD %s", ctx->sdcard_root);
+                } else {
+                    jw_log_info("platform: resume SD mounts settled and "
+                                "launcher cwd refreshed active=%s repaired=%d",
+                                ctx->sdcard_root,
+                                active_needed_repair ? 1 : 0);
                 }
             }
         }
