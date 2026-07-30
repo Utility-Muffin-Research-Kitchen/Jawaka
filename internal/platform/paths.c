@@ -470,6 +470,14 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "aspect_ratio_index",
         "video_force_aspect",
         "video_scale_integer",
+        /* Recording. RetroArch owns these once it has run, and save-on-exit will
+           persist whatever it had -- "wav" on any device predating this feature.
+           Stripping them from the merge keeps the daemon the single source of
+           truth, the same way the BFI and refresh-rate toggles work. */
+        "record_driver",
+        "video_record_config",
+        "video_record_quality",
+        "recording_output_directory",
 #endif
         "input_player1_joypad_index",
         "cheevos_enable",
@@ -1876,6 +1884,37 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "aspect_ratio_index", "22");
     jw__retroarch_cfg_string(fp, "video_force_aspect", "true");
     jw__retroarch_cfg_string(fp, "video_scale_integer", "false");
+    /* Game recording. Written here rather than left to the merged config because
+       RetroArch rewrites every setting it owns on exit, so an upgrading device
+       would keep whatever record_driver it already had -- "wav" on anything
+       predating this feature -- and go on producing useless files forever.
+       video_record_quality 0 is RECORD_CONFIG_TYPE_RECORDING_CUSTOM: "use the
+       preset I am pointing at".
+       The preset lives under .system because it is release content, not user
+       state -- tuning it is our job, so it should travel with an update rather
+       than sit in .umrk at whatever value some past release seeded.
+       Gated on the preset being present: without the FFmpeg payload there is no
+       h264_rkmpp to encode with, and a device that does not ship it must behave
+       exactly as before rather than half-enable recording. */
+    {
+        char record_preset[PATH_MAX];
+        if (sdroot_abs && sdroot_abs[0] &&
+            jw__format_default_system_child(record_preset, sizeof(record_preset),
+                                            sdroot_abs,
+                                            "defaults/retroarch-record.cfg") &&
+            jw__path_exists(record_preset)) {
+            char recordings_dir[PATH_MAX];
+            if (jw__format_string(recordings_dir, sizeof(recordings_dir),
+                                  "%s/Recordings", sdroot_abs)) {
+                (void)jw__mkdir_p(recordings_dir, 0755);
+                jw__retroarch_cfg_string(fp, "record_driver", "ffmpeg");
+                jw__retroarch_cfg_string(fp, "video_record_config", record_preset);
+                jw__retroarch_cfg_string(fp, "video_record_quality", "0");
+                jw__retroarch_cfg_string(fp, "recording_output_directory",
+                                         recordings_dir);
+            }
+        }
+    }
 #endif
     if (player1_joypad_index >= 0) {
         char joypad_index[16];
