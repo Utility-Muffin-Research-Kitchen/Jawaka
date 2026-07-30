@@ -3832,6 +3832,91 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
                 session->rom_path);
 }
 
+static int jw__platform_path(char *out, size_t out_size, const jw_daemon_state *state);
+
+/* Hand this session's captures to the post-process pass.
+
+   Recording captures FLAC in Matroska because that is what stays cheap enough to
+   run underneath a game -- real-time AAC breaks audio output on FCEUmm, and
+   Matroska survives a capture cut short where MP4 would leave nothing playable.
+   Neither travels, so the shareable MP4 is made here instead, once the game is
+   gone and nothing is competing for the CPU.
+
+   Detached on purpose, and never waited on. The launcher has to come back
+   immediately; conversion costs roughly 1.5s per 15s of capture on this hardware,
+   almost entirely in the AAC encoder.
+
+   Double-fork is deliberate: jawakad only ever reaps the specific pids it tracks
+   (child_pid, osd_pid, ledd), never waitpid(-1), so a child spawned here would sit
+   as a zombie for the life of the daemon. The grandchild is orphaned to init,
+   which reaps it. The intermediate child exits at once and is waited for here.
+
+   Silent when the feature is not installed: a device without the ffmpeg payload
+   should behave exactly as it did before, not log a warning after every game. */
+static void jw__record_convert_spawn(const jw_daemon_state *state) {
+    if (!state || jw__env_is_disabled("JAWAKA_RECORD_CONVERT")) {
+        return;
+    }
+
+    char platform_path[PATH_MAX];
+    if (jw__platform_path(platform_path, sizeof(platform_path), state) != 0) {
+        return;
+    }
+
+    char script[PATH_MAX];
+    if (snprintf(script, sizeof(script), "%s/bin/leaf-record-convert.sh",
+                 platform_path) >= (int)sizeof(script)) {
+        return;
+    }
+    if (access(script, X_OK) != 0) {
+        return; /* payload not installed on this device */
+    }
+
+    char recordings[PATH_MAX];
+    if (snprintf(recordings, sizeof(recordings), "%s/Recordings",
+                 state->sdcard_root) >= (int)sizeof(recordings)) {
+        return;
+    }
+
+    struct stat st;
+    if (stat(recordings, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return; /* nothing was ever recorded */
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_log_warn("record convert fork failed: %s", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        pid_t inner = fork();
+        if (inner < 0) {
+            _exit(127);
+        }
+        if (inner > 0) {
+            _exit(0); /* parent of the grandchild; jawakad reaps this one */
+        }
+
+        setsid();
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) {
+                close(devnull);
+            }
+        }
+        char *const argv[] = { script, recordings, NULL };
+        execv(script, argv);
+        _exit(127);
+    }
+
+    /* The intermediate child exits immediately; reap it so it cannot linger. */
+    (void)waitpid(pid, NULL, 0);
+    jw_log_info("record convert dispatched for %s", recordings);
+}
+
 static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int status) {
     if (!state) {
         return;
@@ -3901,6 +3986,13 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
         state->perf_custom_valid = false;
         jw__perf_request_init(&state->perf_custom_request);
         (void)jw__perf_apply_frontend(state, "retroarch-exit");
+
+        /* Only once we are actually going back to the launcher. A switcher
+           transition is launching the next game right now, and the conversion
+           would be competing with it for the CPU it needs to start cleanly.
+           Nothing is lost by waiting -- the pass is idempotent and picks up
+           every unconverted capture whenever it next runs. */
+        jw__record_convert_spawn(state);
     }
 }
 
