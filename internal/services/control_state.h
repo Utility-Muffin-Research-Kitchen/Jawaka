@@ -56,6 +56,7 @@
 #define JW_SVC_CONTROL_PACKAGE_ID_MAX 127
 #define JW_SVC_CONTROL_PACKAGE_VERSION_MAX 31
 #define JW_SVC_CONTROL_BACKOFF_TRACKED 5
+#define JW_SVC_CONTROL_MIGRATION_ID_MAX 127
 
 typedef struct jw_svc_control_store jw_svc_control_store;
 
@@ -174,5 +175,25 @@ bool jw_svc_control_store_delete(jw_svc_control_store *store,
 bool jw_svc_control_store_put(jw_svc_control_store *store, const char *service_id,
                                const jw_svc_control_state *state,
                                char *reason, size_t reason_size);
+
+/* Applies a one-time persistent enablement decision and records its migration
+ * marker in the same SQLite transaction. If migration_id is already recorded,
+ * no control row is changed and *out_applied is false. This is deliberately a
+ * partial update: it changes only start_with_leaf, preserving any status,
+ * package identity, backoff, and session fields already recorded for the
+ * service. The marker remains even if the service row is later deleted, so a
+ * restored legacy config cannot silently re-enable an uninstalled service.
+ * Returns false with "invalid-arguments" or "migration-failed". */
+bool jw_svc_control_store_apply_intent_migration(
+    jw_svc_control_store *store, const char *migration_id,
+    const char *service_id, bool start_with_leaf, bool *out_applied,
+    char *reason, size_t reason_size);
+
+/* Reads only the durable one-time marker. Used before consulting a legacy
+ * source so a completed migration never depends on that source remaining
+ * readable. Returns false with "invalid-arguments" or "read-failed". */
+bool jw_svc_control_store_has_migration(
+    jw_svc_control_store *store, const char *migration_id, bool *out_found,
+    char *reason, size_t reason_size);
 
 #endif

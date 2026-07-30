@@ -52,7 +52,13 @@ static const char *const JW__CONTROL_SCHEMA_SQL =
     "           length(CAST(installed_package_version AS BLOB)) <= "
     JW__CONTROL_STRINGIFY(JW_SVC_CONTROL_PACKAGE_VERSION_MAX) ")\n"
     ");\n"
-    "PRAGMA user_version = 1;\n";
+    "CREATE TABLE IF NOT EXISTS service_control_migrations (\n"
+    "  migration_id TEXT PRIMARY KEY NOT NULL\n"
+    "    CHECK (typeof(migration_id) = 'text' AND\n"
+    "           length(CAST(migration_id AS BLOB)) BETWEEN 1 AND "
+    JW__CONTROL_STRINGIFY(JW_SVC_CONTROL_MIGRATION_ID_MAX) ")\n"
+    ");\n"
+    "PRAGMA user_version = 2;\n";
 
 static const char *const JW__CONTROL_SCHEMA_PROBE_SQL =
     "SELECT start_with_leaf, session_run, last_transition_at_us,\n"
@@ -63,6 +69,9 @@ static const char *const JW__CONTROL_SCHEMA_PROBE_SQL =
     "       backoff_failure_time_4_us, backoff_failure_time_5_us,\n"
     "       installed_package_id, installed_package_version\n"
     "  FROM service_control_state LIMIT 0;";
+
+static const char *const JW__CONTROL_MIGRATION_PROBE_SQL =
+    "SELECT migration_id FROM service_control_migrations LIMIT 0;";
 
 static void jw__control_set_reason(char *reason, size_t reason_size, const char *value) {
     if (!reason || reason_size == 0) {
@@ -113,7 +122,7 @@ static bool jw__control_apply_and_validate_schema(sqlite3 *db) {
 
     int version = 0;
     bool ok = jw__control_read_user_version(db, &version) &&
-              version >= 0 && version <= 1;
+              version >= 0 && version <= 2;
     if (ok &&
         sqlite3_exec(db, JW__CONTROL_SCHEMA_SQL, NULL, NULL, &errmsg) != SQLITE_OK) {
         sqlite3_free(errmsg);
@@ -125,6 +134,15 @@ static bool jw__control_apply_and_validate_schema(sqlite3 *db) {
     if (ok &&
         sqlite3_prepare_v2(db, JW__CONTROL_SCHEMA_PROBE_SQL, -1, &probe, NULL) !=
             SQLITE_OK) {
+        ok = false;
+    }
+    if (probe && sqlite3_finalize(probe) != SQLITE_OK) {
+        ok = false;
+    }
+    probe = NULL;
+    if (ok &&
+        sqlite3_prepare_v2(db, JW__CONTROL_MIGRATION_PROBE_SQL, -1, &probe,
+                           NULL) != SQLITE_OK) {
         ok = false;
     }
     if (probe && sqlite3_finalize(probe) != SQLITE_OK) {
@@ -569,4 +587,146 @@ bool jw_svc_control_store_put(jw_svc_control_store *store, const char *service_i
         return false;
     }
     return true;
+}
+
+static bool jw__control_migration_id_is_valid(const char *migration_id) {
+    if (!migration_id) {
+        return false;
+    }
+    for (size_t i = 0; i <= (size_t)JW_SVC_CONTROL_MIGRATION_ID_MAX; i++) {
+        if (migration_id[i] == '\0') {
+            return i > 0;
+        }
+    }
+    return false;
+}
+
+bool jw_svc_control_store_has_migration(
+    jw_svc_control_store *store, const char *migration_id, bool *out_found,
+    char *reason, size_t reason_size) {
+    if (out_found) {
+        *out_found = false;
+    }
+    if (!store || !out_found ||
+        !jw__control_migration_id_is_valid(migration_id)) {
+        jw__control_set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(store->db,
+                           "SELECT 1 FROM service_control_migrations "
+                           "WHERE migration_id = ?1;",
+                           -1, &stmt, NULL) != SQLITE_OK ||
+        sqlite3_bind_text(stmt, 1, migration_id, -1,
+                          SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        jw__control_set_reason(reason, reason_size, "read-failed");
+        return false;
+    }
+    int step = sqlite3_step(stmt);
+    bool ok = step == SQLITE_ROW || step == SQLITE_DONE;
+    bool found = step == SQLITE_ROW;
+    if (sqlite3_finalize(stmt) != SQLITE_OK) {
+        ok = false;
+    }
+    if (!ok) {
+        jw__control_set_reason(reason, reason_size, "read-failed");
+        return false;
+    }
+    *out_found = found;
+    return true;
+}
+
+bool jw_svc_control_store_apply_intent_migration(
+    jw_svc_control_store *store, const char *migration_id,
+    const char *service_id, bool start_with_leaf, bool *out_applied,
+    char *reason, size_t reason_size) {
+    if (out_applied) {
+        *out_applied = false;
+    }
+    if (!store || !out_applied ||
+        !jw__control_migration_id_is_valid(migration_id) ||
+        !jw__control_service_id_is_valid(service_id)) {
+        jw__control_set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+
+    char *errmsg = NULL;
+    sqlite3_stmt *stmt = NULL;
+    bool ok = sqlite3_exec(store->db, "BEGIN IMMEDIATE;", NULL, NULL,
+                           &errmsg) == SQLITE_OK;
+    sqlite3_free(errmsg);
+    errmsg = NULL;
+
+    if (ok &&
+        sqlite3_prepare_v2(store->db,
+                           "SELECT 1 FROM service_control_migrations "
+                           "WHERE migration_id = ?1;",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        ok = false;
+    }
+    if (ok && sqlite3_bind_text(stmt, 1, migration_id, -1,
+                                SQLITE_TRANSIENT) != SQLITE_OK) {
+        ok = false;
+    }
+    int step = ok ? sqlite3_step(stmt) : SQLITE_ERROR;
+    bool already_applied = step == SQLITE_ROW;
+    if (ok && step != SQLITE_ROW && step != SQLITE_DONE) {
+        ok = false;
+    }
+    if (stmt && sqlite3_finalize(stmt) != SQLITE_OK) {
+        ok = false;
+    }
+    stmt = NULL;
+
+    if (ok && !already_applied &&
+        sqlite3_prepare_v2(
+            store->db,
+            "INSERT INTO service_control_state (service_id, start_with_leaf) "
+            "VALUES (?1, ?2) "
+            "ON CONFLICT(service_id) DO UPDATE SET "
+            "start_with_leaf = excluded.start_with_leaf;",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        ok = false;
+    }
+    if (ok && !already_applied &&
+        (sqlite3_bind_text(stmt, 1, service_id, -1, SQLITE_TRANSIENT) !=
+             SQLITE_OK ||
+         sqlite3_bind_int(stmt, 2, start_with_leaf ? 1 : 0) != SQLITE_OK ||
+         sqlite3_step(stmt) != SQLITE_DONE)) {
+        ok = false;
+    }
+    if (stmt && sqlite3_finalize(stmt) != SQLITE_OK) {
+        ok = false;
+    }
+    stmt = NULL;
+
+    if (ok && !already_applied &&
+        sqlite3_prepare_v2(
+            store->db,
+            "INSERT INTO service_control_migrations (migration_id) "
+            "VALUES (?1);",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        ok = false;
+    }
+    if (ok && !already_applied &&
+        (sqlite3_bind_text(stmt, 1, migration_id, -1, SQLITE_TRANSIENT) !=
+             SQLITE_OK ||
+         sqlite3_step(stmt) != SQLITE_DONE)) {
+        ok = false;
+    }
+    if (stmt && sqlite3_finalize(stmt) != SQLITE_OK) {
+        ok = false;
+    }
+
+    if (ok && sqlite3_exec(store->db, "COMMIT;", NULL, NULL, &errmsg) ==
+                  SQLITE_OK) {
+        sqlite3_free(errmsg);
+        *out_applied = !already_applied;
+        return true;
+    }
+    sqlite3_free(errmsg);
+    sqlite3_exec(store->db, "ROLLBACK;", NULL, NULL, NULL);
+    jw__control_set_reason(reason, reason_size, "migration-failed");
+    return false;
 }

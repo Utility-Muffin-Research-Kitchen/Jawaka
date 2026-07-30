@@ -405,6 +405,18 @@ jw_svc_supervisor *jw_svc_supervisor_open(
     return sup;
 }
 
+bool jw_svc_supervisor_migrate_legacy_ssh_intent(
+    jw_svc_supervisor *sup, const char *config_path,
+    jw_svc_legacy_ssh_migration_report *out,
+    char *reason, size_t reason_size) {
+    if (!sup) {
+        jw__set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+    return jw_svc_migrate_legacy_ssh_intent(sup->store, config_path, out,
+                                             reason, reason_size);
+}
+
 /* ------------------------------------------------------------------ */
 /* persistence                                                         */
 /* ------------------------------------------------------------------ */

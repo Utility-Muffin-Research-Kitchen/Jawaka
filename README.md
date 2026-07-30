@@ -22,6 +22,9 @@ local preview loop with a generated mock SD-card tree.
 - MLP1 platform integration for launch lifecycle, brightness, volume, audio
   output, Wi-Fi, Bluetooth, ADB pin control, boot splash, secondary SD unmount,
   LEDs, sleep, reboot, power off, and Exit to Stock.
+- SVC-1 foreground-service supervision, CTL-1 status/control IPC, declarative
+  storage/suspend policy stops, process-group cleanup, and a dynamic Settings
+  → Services screen.
 - RetroArch helpers: `jawaka-retroarch-runner`, `jawaka-retroarchctl`, metadata
   catalog support, shared config reset, command-menu integration, and in-game
   menu flow.
@@ -190,7 +193,14 @@ Saves/
 States/
 Cheats/
 .umrk/<platform>/library.db
+.umrk/<platform>/services-control.db
 ```
+
+`services-control.db` owns persistent `Start with Leaf` intent separately from
+session Run/Stop state. Its schema-v2 migration records Release A's one-time
+legacy SSH decision atomically with the enablement value: a valid existing SSH
+config enables once, while a clean or invalid install stays disabled. The
+marker survives later config restoration and never reads or changes host keys.
 
 `<SYSTEM_CODE>` is matched against the platform `systems.json` catalog, where
 each user system has one canonical public folder plus legacy aliases in its
@@ -223,6 +233,8 @@ Game Art         scrape artwork (all/per-system, missing or replace-all), live
 Accounts         ScreenScraper / RetroAchievements sign-in
 General          startup tab, auto-sleep, boot splash, game performance,
                  time zone, reset RetroArch config, unmount secondary SD
+Services         installed/retained service status, Run/Stop and persistent
+                 Start with Leaf controls (hidden when no service is present)
 ```
 
 System Update and About are not in the Settings tree; they live in the **System**

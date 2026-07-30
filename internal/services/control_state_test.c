@@ -459,7 +459,7 @@ static void jw__test_corrupt_rows_fail_closed(void) {
 static void jw__test_future_schema_is_not_downgraded(void) {
     char db_path[256];
     jw__test_mkdtemp_db_path(db_path, sizeof(db_path));
-    jw__test_sqlite_exec(db_path, "PRAGMA user_version = 2;");
+    jw__test_sqlite_exec(db_path, "PRAGMA user_version = 3;");
 
     jw_svc_control_store *store = NULL;
     char reason[32] = {0};
@@ -473,10 +473,141 @@ static void jw__test_future_schema_is_not_downgraded(void) {
     assert(sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, NULL) ==
            SQLITE_OK);
     assert(sqlite3_step(stmt) == SQLITE_ROW);
-    assert(sqlite3_column_int(stmt, 0) == 2);
+    assert(sqlite3_column_int(stmt, 0) == 3);
     assert(sqlite3_finalize(stmt) == SQLITE_OK);
     assert(sqlite3_close(db) == SQLITE_OK);
     puts("PASS control-state-test a future schema version is rejected without downgrade");
+}
+
+static void jw__test_v1_schema_upgrades_without_losing_state(void) {
+    char db_path[256];
+    jw__test_mkdtemp_db_path(db_path, sizeof(db_path));
+
+    jw_svc_control_store *store = NULL;
+    assert(jw_svc_control_store_open(db_path, &store, NULL, 0));
+    jw_svc_control_state state;
+    memset(&state, 0, sizeof(state));
+    state.start_with_leaf = true;
+    state.restart_count = 7;
+    assert(jw_svc_control_store_put(store, "org.umrk.keep", &state, NULL, 0));
+    jw_svc_control_store_close(store);
+
+    jw__test_sqlite_exec(db_path,
+                         "DROP TABLE service_control_migrations;"
+                         "PRAGMA user_version = 1;");
+    store = NULL;
+    assert(jw_svc_control_store_open(db_path, &store, NULL, 0));
+    bool found = false;
+    jw_svc_control_state out;
+    assert(jw_svc_control_store_get(store, "org.umrk.keep", &out, &found,
+                                    NULL, 0));
+    assert(found && out.start_with_leaf && out.restart_count == 7);
+    jw_svc_control_store_close(store);
+
+    sqlite3 *db = NULL;
+    assert(sqlite3_open(db_path, &db) == SQLITE_OK);
+    sqlite3_stmt *stmt = NULL;
+    assert(sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, NULL) ==
+           SQLITE_OK);
+    assert(sqlite3_step(stmt) == SQLITE_ROW);
+    assert(sqlite3_column_int(stmt, 0) == 2);
+    assert(sqlite3_finalize(stmt) == SQLITE_OK);
+    assert(sqlite3_close(db) == SQLITE_OK);
+    puts("PASS control-state-test v1 upgrades to v2 without losing service state");
+}
+
+static void jw__test_intent_migration_is_atomic_and_one_time(void) {
+    char db_path[256];
+    jw__test_mkdtemp_db_path(db_path, sizeof(db_path));
+    jw_svc_control_store *store = NULL;
+    assert(jw_svc_control_store_open(db_path, &store, NULL, 0));
+
+    jw_svc_control_state state;
+    memset(&state, 0, sizeof(state));
+    state.session_run = true;
+    state.restart_count = 9;
+    snprintf(state.last_transition_reason,
+             sizeof(state.last_transition_reason), "%s", "existing");
+    assert(jw_svc_control_store_put(store, "org.umrk.sshserver", &state,
+                                    NULL, 0));
+
+    bool applied = false;
+    assert(jw_svc_control_store_apply_intent_migration(
+        store, "release-a-ssh-intent-v1", "org.umrk.sshserver", true,
+        &applied, NULL, 0));
+    assert(applied);
+    bool marker_found = false;
+    assert(jw_svc_control_store_has_migration(
+        store, "release-a-ssh-intent-v1", &marker_found, NULL, 0));
+    assert(marker_found);
+
+    bool found = false;
+    jw_svc_control_state out;
+    assert(jw_svc_control_store_get(store, "org.umrk.sshserver", &out,
+                                    &found, NULL, 0));
+    assert(found && out.start_with_leaf && out.session_run);
+    assert(out.restart_count == 9);
+    assert(strcmp(out.last_transition_reason, "existing") == 0);
+
+    /* Restoring or changing the legacy config after the marker exists cannot
+     * reverse the first decision. */
+    applied = true;
+    assert(jw_svc_control_store_apply_intent_migration(
+        store, "release-a-ssh-intent-v1", "org.umrk.sshserver", false,
+        &applied, NULL, 0));
+    assert(!applied);
+    assert(jw_svc_control_store_get(store, "org.umrk.sshserver", &out,
+                                    &found, NULL, 0));
+    assert(found && out.start_with_leaf);
+
+    /* The marker outlives row deletion, so reinstall/config restore does not
+     * resurrect persistent enablement. */
+    assert(jw_svc_control_store_delete(store, "org.umrk.sshserver", NULL, 0));
+    applied = true;
+    assert(jw_svc_control_store_apply_intent_migration(
+        store, "release-a-ssh-intent-v1", "org.umrk.sshserver", true,
+        &applied, NULL, 0));
+    assert(!applied);
+    assert(jw_svc_control_store_get(store, "org.umrk.sshserver", &out,
+                                    &found, NULL, 0));
+    assert(!found);
+
+    jw_svc_control_store_close(store);
+    puts("PASS control-state-test intent decision and marker are one-time");
+}
+
+static void jw__test_intent_migration_rolls_back_both_writes(void) {
+    char db_path[256];
+    jw__test_mkdtemp_db_path(db_path, sizeof(db_path));
+    jw_svc_control_store *store = NULL;
+    assert(jw_svc_control_store_open(db_path, &store, NULL, 0));
+
+    jw__test_sqlite_exec(
+        db_path,
+        "CREATE TRIGGER fail_migration_marker "
+        "BEFORE INSERT ON service_control_migrations "
+        "BEGIN SELECT RAISE(ABORT, 'forced marker failure'); END;");
+    bool applied = true;
+    char reason[32] = {0};
+    assert(!jw_svc_control_store_apply_intent_migration(
+        store, "release-a-ssh-intent-v1", "org.umrk.sshserver", true,
+        &applied, reason, sizeof(reason)));
+    assert(!applied);
+    assert(strcmp(reason, "migration-failed") == 0);
+
+    bool found = true;
+    jw_svc_control_state out;
+    assert(jw_svc_control_store_get(store, "org.umrk.sshserver", &out,
+                                    &found, NULL, 0));
+    assert(!found);
+
+    jw__test_sqlite_exec(db_path, "DROP TRIGGER fail_migration_marker;");
+    assert(jw_svc_control_store_apply_intent_migration(
+        store, "release-a-ssh-intent-v1", "org.umrk.sshserver", true,
+        &applied, NULL, 0));
+    assert(applied);
+    jw_svc_control_store_close(store);
+    puts("PASS control-state-test failed marker rolls back enablement");
 }
 
 static void jw__test_list_ids_is_sorted_and_retained(void) {
@@ -525,7 +656,10 @@ int main(void) {
     jw__test_reopen_survives_close();
     jw__test_invalid_arguments();
     jw__test_corrupt_rows_fail_closed();
+    jw__test_v1_schema_upgrades_without_losing_state();
     jw__test_future_schema_is_not_downgraded();
+    jw__test_intent_migration_is_atomic_and_one_time();
+    jw__test_intent_migration_rolls_back_both_writes();
     jw__test_list_ids_is_sorted_and_retained();
     jw__test_close_null_is_a_no_op();
     puts("PASS control-state-test");

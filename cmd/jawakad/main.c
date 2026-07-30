@@ -1607,6 +1607,34 @@ static void jw__services_init(jw_daemon_state *state) {
                     "no services supervised this run", reason);
         return;
     }
+
+    if (userdata && userdata[0]) {
+        char legacy_ssh_config[PATH_MAX];
+        if (snprintf(legacy_ssh_config, sizeof(legacy_ssh_config),
+                     "%s/umrk-ssh-server/config.ini", userdata) >=
+            (int)sizeof(legacy_ssh_config)) {
+            jw_log_warn("services: legacy SSH intent migration path is too long; "
+                        "leaving persistent intent disabled for this boot");
+        } else {
+            jw_svc_legacy_ssh_migration_report migration;
+            if (!jw_svc_supervisor_migrate_legacy_ssh_intent(
+                    sup, legacy_ssh_config, &migration,
+                    reason, sizeof(reason))) {
+                jw_log_warn("services: legacy SSH intent migration failed (%s); "
+                            "will retry next boot", reason);
+            } else if (migration.applied && migration.enabled) {
+                jw_log_info("services: migrated configured SSH install to "
+                            "Start with Leaf");
+            } else if (migration.applied && migration.config_present &&
+                       !migration.config_valid) {
+                jw_log_warn("services: legacy SSH config is invalid; "
+                            "completed one-time migration disabled");
+            } else if (migration.applied) {
+                jw_log_info("services: no legacy SSH config; completed "
+                            "one-time migration disabled");
+            }
+        }
+    }
     state->services = sup;
     int found = jw_svc_supervisor_scan(sup);
     if (found > 0) {

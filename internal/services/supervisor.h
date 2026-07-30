@@ -7,6 +7,7 @@
 
 #include "internal/services/backoff.h"
 #include "internal/services/control_state.h"
+#include "internal/services/legacy_ssh_migration.h"
 #include "internal/services/manifest.h"
 #include "internal/services/stop.h"
 
@@ -199,6 +200,14 @@ jw_svc_supervisor *jw_svc_supervisor_open(
     const char *const *apps_scan_roots,
     const char *const *secondary_apps_scan_roots,
     const char *userdata_root, char *reason, size_t reason_size);
+
+/* Runs A5's one-time legacy SSH enablement migration against this
+ * supervisor's durable control store. Call before the first scan so a migrated
+ * enabled intent participates in normal autostart reconciliation. */
+bool jw_svc_supervisor_migrate_legacy_ssh_intent(
+    jw_svc_supervisor *sup, const char *config_path,
+    jw_svc_legacy_ssh_migration_report *out,
+    char *reason, size_t reason_size);
 
 void jw_svc_supervisor_close(jw_svc_supervisor *sup);
 
