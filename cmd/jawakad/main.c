@@ -184,6 +184,8 @@ typedef struct {
     uint64_t last_record_toggle_ms; /* debounce for the Menu+R1 record hotkey */
     bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
     uint64_t screenshots_checked_ms;     /* when the flag was last read from the DB */
+    bool     recording_enabled_cached;   /* cached opt-in flag for the Menu+R1 hotkey */
+    uint64_t recording_checked_ms;       /* when that flag was last read from the DB */
     /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
        input tick, so avoid a sqlite open per event). */
     bool     rumble_enabled_cached;
@@ -3883,6 +3885,22 @@ static void jw__record_convert_spawn(const jw_daemon_state *state) {
         return; /* nothing was ever recorded */
     }
 
+    /* Both default ON, so an absent key must read as enabled -- test against "0"
+       rather than for "1". Read here in the parent: opening sqlite between fork()
+       and execv() is not fork-safe. */
+    bool split = true;
+    bool keep_source = true;
+    if (state->db_path) {
+        char v[8] = "";
+        if (jw_db_get_setting(state->db_path, "recording_split", v, sizeof(v)) == 0) {
+            split = (strcmp(v, "0") != 0);
+        }
+        v[0] = '\0';
+        if (jw_db_get_setting(state->db_path, "recording_keep_source", v, sizeof(v)) == 0) {
+            keep_source = (strcmp(v, "0") != 0);
+        }
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_warn("record convert fork failed: %s", strerror(errno));
@@ -3907,14 +3925,26 @@ static void jw__record_convert_spawn(const jw_daemon_state *state) {
                 close(devnull);
             }
         }
-        char *const argv[] = { script, recordings, NULL };
+        char *argv[5];
+        int argc = 0;
+        argv[argc++] = script;
+        argv[argc++] = recordings;
+        if (split) {
+            argv[argc++] = (char *)"--split";
+        }
+        if (!keep_source) {
+            argv[argc++] = (char *)"--delete-source";
+        }
+        argv[argc] = NULL;
         execv(script, argv);
         _exit(127);
     }
 
     /* The intermediate child exits immediately; reap it so it cannot linger. */
     (void)waitpid(pid, NULL, 0);
-    jw_log_info("record convert dispatched for %s", recordings);
+    jw_log_info("record convert dispatched for %s split=%s keep_source=%s",
+                recordings, split ? "true" : "false",
+                keep_source ? "true" : "false");
 }
 
 static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int status) {
@@ -6452,6 +6482,23 @@ static void *jw__screenshot_worker(void *arg) {
 static bool jw__on_record_hotkey(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
     if (!state || !jw__has_retroarch_session(state)) {
+        return false;
+    }
+
+    /* Opt-in gate, cached the same way screenshots are: reading the flag opens
+       and closes sqlite, and this runs on the input tick. Declining lets R1
+       forward to the game, which is what a user with recording off expects. */
+    uint64_t gate_now = jw__screenshot_now_ms();
+    if (state->recording_checked_ms == 0 ||
+        gate_now - state->recording_checked_ms >= JW_SS_ENABLE_TTL_MS) {
+        char en[8] = "";
+        state->recording_enabled_cached =
+            (state->db_path &&
+             jw_db_get_setting(state->db_path, "recording_enabled", en, sizeof(en)) == 0 &&
+             strcmp(en, "1") == 0);
+        state->recording_checked_ms = gate_now;
+    }
+    if (!state->recording_enabled_cached) {
         return false;
     }
 
