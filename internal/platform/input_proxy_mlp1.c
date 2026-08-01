@@ -510,13 +510,21 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
        chord and neither Menu nor L1 reaches the running game. If the callback
        declines (feature disabled), fall through so L1 forwards normally. */
     if (ev->code == BTN_TL) {
-        if (ev->value == 0 && data->screenshot_chord_consumed) {
-            data->screenshot_chord_consumed = false;
+        /* Once the chord has eaten the press, eat EVERYTHING for this code until
+           the release. Only swallowing value==0 was not enough: holding L1 past the
+           autorepeat delay emits value==2, which matched neither guard, fell to the
+           bottom of this function and was forwarded -- and jw__forward_event sets
+           held_keys for any value > 0. The real release was then swallowed here, so
+           the game saw L1 held down forever. */
+        if (data->screenshot_chord_consumed) {
+            if (ev->value == 0) {
+                data->screenshot_chord_consumed = false;
+            }
             return;
         }
-        /* value==1 only: a held L1 emits autorepeat (value==2); consuming that
-           would leave the earlier real press forwarded-down (held_keys set) and
-           then swallow its release, sticking L1 down in the game. */
+        /* value==1 only: consuming an autorepeat would leave the earlier real press
+           forwarded-down and then swallow its release, the same stuck key by the
+           other route. */
         if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
             bool handled = proxy->screenshot &&
                            proxy->screenshot(proxy->userdata);
@@ -537,13 +545,16 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
        core after input_hotkey_block_delay frames, so Select reaches the game and
        presses buttons in it. */
     if (ev->code == BTN_TR) {
-        if (ev->value == 0 && data->record_chord_consumed) {
-            data->record_chord_consumed = false;
+        /* Swallow every event for this code until the release -- see the L1 block
+           above. R1 is run or aim in most cores, so a stuck one is worse there. */
+        if (data->record_chord_consumed) {
+            if (ev->value == 0) {
+                data->record_chord_consumed = false;
+            }
             return;
         }
-        /* value==1 only: autorepeat (value==2) on a held R1 would consume the
-           repeat while the real press stayed forwarded-down, sticking R1 in the
-           game. Same trap as L1. */
+        /* value==1 only: consuming an autorepeat would leave the earlier real press
+           forwarded-down, sticking R1 by the other route. */
         if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
             bool handled = proxy->record &&
                            proxy->record(proxy->userdata);
