@@ -1099,6 +1099,19 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
            driven by a loop that is about to stop delivering events. An unreleased
            BTN_MODE would read as Menu held down for as long as the screen is off. */
         jw__release_deferred_menu_tap(data, true);
+        /* The deferred tap is only ONE of the two ways BTN_MODE can be down. A
+           Menu+key chord that fell through to an ordinary press flushes it via
+           jw__flush_menu_press, which writes through jw__write_event -- and that,
+           unlike jw__forward_event, sets no held_keys bit. So the release_buttons
+           call both callers make immediately before this cannot release it, and
+           menu_forwarded is the only remaining record that it is down. Clearing
+           that flag without emitting the release stranded BTN_MODE latched at 1
+           with nothing left that knew: the kernel then swallowed the next tap's
+           press as a duplicate and the app saw a bare release. */
+        if (data->menu_forwarded) {
+            jw__write_event(data, EV_KEY, BTN_MODE, 0);
+            jw__emit_syn(data);
+        }
         data->menu_held                  = false;
         data->menu_forwarded             = false;
         data->chord_active               = false;

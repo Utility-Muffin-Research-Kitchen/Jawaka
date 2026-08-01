@@ -3944,9 +3944,15 @@ static void jw__record_convert_spawn(const jw_daemon_state *state) {
         setsid();
         /* jawakad ignores SIGPIPE, and an IGNORED disposition survives execve
            where a handler would be reset. The conversion pass is a shell script
-           full of pipelines -- `ffmpeg -i x 2>&1 | sed ... | head -1` -- and with
-           SIGPIPE ignored the writer is not killed when head exits; it gets EPIPE
-           on every write instead and keeps going. Hand the script the default. */
+           built out of pipelines whose readers exit early (`du -k ... | awk
+           '{print $1; exit}'`, `... | sed -n ... | tail -1`), and with SIGPIPE
+           ignored such a writer is not killed -- it collects EPIPE on every write
+           and keeps going. Hand the script the default it expects.
+
+           This covers the conversion child only. Every other exec site in this
+           daemon still passes SIG_IGN down, which is worth fixing separately --
+           pak launch.sh scripts are third-party shell and the likeliest place for
+           it to matter. */
         signal(SIGPIPE, SIG_DFL);
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) {
