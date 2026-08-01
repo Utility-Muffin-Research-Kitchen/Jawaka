@@ -1844,7 +1844,7 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     /* Pin RA's reported refresh to the live panel rate the daemon read from the
        active DRM mode. RA's frame pacing — and Black Frame Insertion's
        refresh-aware cadence — misfire if it believes 60Hz while the panel runs
-       90/120. Written in the protected section so it's correct from the first
+       100/120. Written in the protected section so it's correct from the first
        frame of every launch, independent of save-on-exit; absent env (unknown
        rate) leaves whatever the merged config had. */
     {
@@ -2302,7 +2302,7 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     /* Pin RA's reported refresh to the live panel rate the daemon read from the
        active DRM mode. RA's frame pacing — and Black Frame Insertion's
        refresh-aware cadence — misfire if it believes 60Hz while the panel runs
-       90/120. Written in the protected section so it's correct from the first
+       100/120. Written in the protected section so it's correct from the first
        frame of every launch, independent of save-on-exit; absent env (unknown
        rate) leaves whatever the merged config had. */
     {

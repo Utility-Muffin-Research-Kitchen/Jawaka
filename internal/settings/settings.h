@@ -298,7 +298,7 @@ typedef struct {
     unsigned           audio_available_outputs;
     int                audio_volumes[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
     bool               test_sound_playing;  /* Display&Sound: Test Sound clip active */
-    int                refresh_rate_hz;     /* display refresh: 60, 90, or 120 */
+    int                refresh_rate_hz;     /* display refresh: 60, 100, or 120 */
     bool               refresh_rate_supported; /* platform offers refresh-rate switching */
     bool               bfi_enabled;         /* Black Frame Insertion (RA): 120Hz only */
     int                hdmi_output_mode;    /* HDMI out: 0 off, 1 4:3 pillarbox, 2 stretch */
