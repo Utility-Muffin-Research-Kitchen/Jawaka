@@ -3860,6 +3860,45 @@ static void jw__record_convert_spawn(const jw_daemon_state *state) {
         return;
     }
 
+    /* Never during shutdown. jw__cleanup() SIGTERMs a running RetroArch and calls
+       jw__retroarch_session_finish(), which lands here -- so this used to orphan an
+       ffmpeg to init that would spend seconds to minutes writing multi-megabyte
+       files to the SD card while the system was rebooting out from under it. A
+       dirty FAT32 at reboot can flip the whole card read-only. Nothing is lost by
+       declining: the pass is idempotent and sweeps everything on the next exit. */
+    if (state->shutdown_requested || g_shutdown_requested) {
+        return;
+    }
+
+    if (!state->db_path) {
+        return;
+    }
+
+    /* All three settings in ONE open. jw_db_get_setting() opens a fresh connection
+       and re-applies the schema per call, with a 2s busy timeout, and this runs on
+       the main loop -- the same loop that drains evdev. Three separate calls could
+       park the daemon for seconds at game exit while the kernel's input buffer
+       overflowed and dropped events, which is exactly what "the launcher has to come
+       back immediately" was supposed to avoid.
+       An absent key leaves out[] empty and found==0, so split/keep default ON by
+       testing against "0" rather than for "1" -- neither key exists yet on any
+       device that has not toggled them. */
+    char en[8] = "", sp[8] = "", ks[8] = "";
+    jw_db_setting_query q[3] = {
+        { "recording_enabled",     en, sizeof(en), 0 },
+        { "recording_split",       sp, sizeof(sp), 0 },
+        { "recording_keep_source", ks, sizeof(ks), 0 },
+    };
+    (void)jw_db_get_settings(state->db_path, q, 3);
+
+    /* Opt-in gate, matching the hotkey. Without it the daemon forked and exec'd a
+       shell after EVERY game exit for every user, including those who never enabled
+       recording -- the stat() guard below cannot catch that, because the config
+       generator creates Recordings/ on every launch, so it always exists. */
+    if (strcmp(en, "1") != 0) {
+        return;
+    }
+
     char platform_path[PATH_MAX];
     if (jw__platform_path(platform_path, sizeof(platform_path), state) != 0) {
         return;
@@ -3885,21 +3924,8 @@ static void jw__record_convert_spawn(const jw_daemon_state *state) {
         return; /* nothing was ever recorded */
     }
 
-    /* Both default ON, so an absent key must read as enabled -- test against "0"
-       rather than for "1". Read here in the parent: opening sqlite between fork()
-       and execv() is not fork-safe. */
-    bool split = true;
-    bool keep_source = true;
-    if (state->db_path) {
-        char v[8] = "";
-        if (jw_db_get_setting(state->db_path, "recording_split", v, sizeof(v)) == 0) {
-            split = (strcmp(v, "0") != 0);
-        }
-        v[0] = '\0';
-        if (jw_db_get_setting(state->db_path, "recording_keep_source", v, sizeof(v)) == 0) {
-            keep_source = (strcmp(v, "0") != 0);
-        }
-    }
+    bool split = (strcmp(sp, "0") != 0);
+    bool keep_source = (strcmp(ks, "0") != 0);
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -3940,8 +3966,20 @@ static void jw__record_convert_spawn(const jw_daemon_state *state) {
         _exit(127);
     }
 
-    /* The intermediate child exits immediately; reap it so it cannot linger. */
-    (void)waitpid(pid, NULL, 0);
+    /* The intermediate child _exit(0)s straight after its own fork, so this returns
+       almost at once; the loop is only here because a handler installed without
+       SA_RESTART would otherwise leave it a zombie, and jawakad never waitpid(-1)s.
+       A non-zero status means that inner fork failed -- worth saying so, since the
+       success line below would otherwise claim a conversion that never started. */
+    int spawn_status = 0;
+    while (waitpid(pid, &spawn_status, 0) < 0 && errno == EINTR) {
+        /* retry */
+    }
+    if (WIFEXITED(spawn_status) && WEXITSTATUS(spawn_status) != 0) {
+        jw_log_warn("record convert failed to start (status=%d)",
+                    WEXITSTATUS(spawn_status));
+        return;
+    }
     jw_log_info("record convert dispatched for %s split=%s keep_source=%s",
                 recordings, split ? "true" : "false",
                 keep_source ? "true" : "false");
