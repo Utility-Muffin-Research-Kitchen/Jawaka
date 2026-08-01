@@ -470,6 +470,14 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "aspect_ratio_index",
         "video_force_aspect",
         "video_scale_integer",
+        /* Recording. RetroArch owns these once it has run, and save-on-exit will
+           persist whatever it had -- "wav" on any device predating this feature.
+           Stripping them from the merge keeps the daemon the single source of
+           truth, the same way the BFI and refresh-rate toggles work. */
+        "record_driver",
+        "video_record_config",
+        "video_record_quality",
+        "recording_output_directory",
 #endif
         "input_player1_joypad_index",
         "cheevos_enable",
@@ -1743,7 +1751,13 @@ static char *jw__retroarch_shared_config_path(const char *sdcard_root) {
     return path;
 }
 
+/* sdroot_abs is the CONTENT root -- the card the ROM came from, so saves and states
+   land beside the game. config_sdroot_abs is the primary card, where the release
+   payload and the launcher's own state live. They differ whenever a game is played
+   off the second SD slot, and conflating them is how recording ended up resolving
+   its preset on a card that never had one. */
 static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs,
+                                                const char *config_sdroot_abs,
                                                 const char *core_path,
                                                 const char *screenshot_dir,
                                                 int player1_joypad_index,
@@ -1876,6 +1890,56 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "aspect_ratio_index", "22");
     jw__retroarch_cfg_string(fp, "video_force_aspect", "true");
     jw__retroarch_cfg_string(fp, "video_scale_integer", "false");
+    /* Game recording. Written here rather than left to the merged config because
+       RetroArch rewrites every setting it owns on exit, so an upgrading device
+       would keep whatever record_driver it already had -- "wav" on anything
+       predating this feature -- and go on producing useless files forever.
+       video_record_quality 0 is RECORD_CONFIG_TYPE_RECORDING_CUSTOM: "use the
+       preset I am pointing at".
+       The preset lives under .system because it is release content, not user
+       state -- tuning it is our job, so it should travel with an update rather
+       than sit in .umrk at whatever value some past release seeded.
+       Gated on the preset being present: without the FFmpeg payload there is no
+       h264_rkmpp to encode with, and a device that does not ship it must behave
+       exactly as before rather than half-enable recording. */
+    {
+        /* Resolved against the PRIMARY card and through the same helper the other
+           release defaults use, so UMRK_PLATFORM_PATH / SYSTEM_PATH are honoured.
+           Using the content root here meant a game launched from the second SD slot
+           looked for the preset on that card, never found it, and fell through --
+           see below for why falling through was the dangerous part. */
+        char *record_preset = jw__platform_defaults_path(
+            config_sdroot_abs && config_sdroot_abs[0] ? config_sdroot_abs : sdroot_abs,
+            "retroarch-record.cfg");
+        char recordings_dir[PATH_MAX];
+        const char *rec_root =
+            (config_sdroot_abs && config_sdroot_abs[0]) ? config_sdroot_abs : sdroot_abs;
+
+        if (record_preset &&
+            jw__format_string(recordings_dir, sizeof(recordings_dir),
+                              "%s/Recordings", rec_root)) {
+            /* Recordings live on the primary card because that is the only place
+               the daemon's convert pass looks. */
+            (void)jw__mkdir_p(recordings_dir, 0755);
+            jw__retroarch_cfg_string(fp, "record_driver", "ffmpeg");
+            jw__retroarch_cfg_string(fp, "video_record_config", record_preset);
+            jw__retroarch_cfg_string(fp, "video_record_quality", "0");
+            jw__retroarch_cfg_string(fp, "recording_output_directory",
+                                     recordings_dir);
+        } else {
+            /* No payload, so recording must be OFF -- and saying so explicitly is
+               required, not tidiness. These keys are stripped from the merge
+               unconditionally, so simply not writing them leaves them absent, and
+               RetroArch's own defaults for absent are record_driver = "ffmpeg"
+               (this build has HAVE_FFMPEG) at MED_QUALITY, which ignores our preset
+               and hardcodes SOFTWARE libx264 plus real-time AAC. That is a CPU
+               encode underneath a running emulator on a Cortex-A55 -- far worse
+               than the "wav" fallback an earlier comment here claimed. "null" is
+               the record driver that genuinely does nothing. */
+            jw__retroarch_cfg_string(fp, "record_driver", "null");
+        }
+        free(record_preset);
+    }
 #endif
     if (player1_joypad_index >= 0) {
         char joypad_index[16];
@@ -2036,7 +2100,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
     }
 
     fputs("\n# Jawaka protected runtime settings\n", fp);
-    int protected_rc = jw__write_retroarch_protected_config(fp, content_sdroot_abs, core_path,
+    int protected_rc = jw__write_retroarch_protected_config(fp, content_sdroot_abs, config_sdroot_abs, core_path,
                                                            shots_dir,
                                                            player1_joypad_index,
                                                            persist_changes,

@@ -129,6 +129,9 @@ typedef enum {
     JW_SETTING_AUTO_SLEEP_SECONDS,
     JW_SETTING_BOOT_SPLASH_ENABLED,
     JW_SETTING_SCREENSHOTS_ENABLED,
+    JW_SETTING_RECORDING_ENABLED,
+    JW_SETTING_RECORDING_SPLIT,
+    JW_SETTING_RECORDING_KEEP_SRC,
     JW_SETTING_GAME_PERFORMANCE_PROFILE,
     JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT,
     JW_SETTING_PLATFORM_VOLUME_PERCENT,
@@ -174,6 +177,9 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_AUTO_SLEEP_SECONDS] = "auto_sleep_seconds",
     [JW_SETTING_BOOT_SPLASH_ENABLED] = "boot_splash_enabled",
     [JW_SETTING_SCREENSHOTS_ENABLED] = "screenshots_enabled",
+    [JW_SETTING_RECORDING_ENABLED]   = "recording_enabled",
+    [JW_SETTING_RECORDING_SPLIT]     = "recording_split",
+    [JW_SETTING_RECORDING_KEEP_SRC]  = "recording_keep_source",
     [JW_SETTING_GAME_PERFORMANCE_PROFILE] = "platform.performance.game_profile",
     [JW_SETTING_PLATFORM_BRIGHTNESS_PERCENT] = "platform.brightness_percent",
     [JW_SETTING_PLATFORM_VOLUME_PERCENT] = "platform.volume_percent",
@@ -1202,6 +1208,14 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->boot_splash_enabled = true;
     ui->boot_splash_supported = false;
     ui->screenshots_enabled = false;   /* opt-in */
+    ui->recording_enabled   = false;   /* opt-in, same as screenshots */
+    /* On by default: it is inert for clips that already fit, and without it a
+       long recording hands you a file too big to post with no way back except
+       flipping this and re-converting. */
+    ui->recording_split     = true;
+    /* The .mkv holds lossless audio and is the only re-convertible source, so
+       discarding it should be a deliberate choice. */
+    ui->recording_keep_src  = true;
     ui->rumble_enabled = true;    /* haptics default on */
     ui->rumble_strength = 65;     /* ~Medium */
     ui->rumble_nav = false;       /* per-move tick opt-in */
@@ -1340,6 +1354,14 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 ui->boot_splash_enabled = (strcmp(values[JW_SETTING_BOOT_SPLASH_ENABLED], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SCREENSHOTS_ENABLED))
                 ui->screenshots_enabled = (strcmp(values[JW_SETTING_SCREENSHOTS_ENABLED], "1") == 0);
+            if (jw__setting_has(values, found, JW_SETTING_RECORDING_ENABLED))
+                ui->recording_enabled = (strcmp(values[JW_SETTING_RECORDING_ENABLED], "1") == 0);
+            /* These two default ON, so an absent key must not read as off -- test
+               against "0" rather than for "1" the way the opt-in flags do. */
+            if (jw__setting_has(values, found, JW_SETTING_RECORDING_SPLIT))
+                ui->recording_split = (strcmp(values[JW_SETTING_RECORDING_SPLIT], "0") != 0);
+            if (jw__setting_has(values, found, JW_SETTING_RECORDING_KEEP_SRC))
+                ui->recording_keep_src = (strcmp(values[JW_SETTING_RECORDING_KEEP_SRC], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_REFRESH_RATE_HZ)) {
                 int hz = atoi(values[JW_SETTING_REFRESH_RATE_HZ]);
                 if (hz == 60 || hz == 90 || hz == 120) ui->refresh_rate_hz = hz;
@@ -3854,6 +3876,19 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
 
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SCREENSHOTS,
                         "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
+
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RECORDING,
+                        "Recording", ui->recording_enabled ? "On" : "Off", true);
+
+    /* Both dependants read "-" while recording is off, matching how the rumble
+       rows above dim when the master is off. */
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_REC_SPLIT,
+                        "Split Over 10MB",
+                        ui->recording_enabled ? (ui->recording_split ? "On" : "Off") : "-", true);
+
+    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_REC_KEEP,
+                        "Keep Original",
+                        ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-", true);
 }
 
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
@@ -6689,6 +6724,24 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->screenshots_enabled = !ui->screenshots_enabled;
                     /* Persist only; the daemon reads the DB key on each hotkey. */
                     jw__persist_bool(ui, "screenshots_enabled", ui->screenshots_enabled);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_RECORDING) {
+                    (void)dir;
+                    ui->recording_enabled = !ui->recording_enabled;
+                    /* Persist only; the daemon reads the DB key on each hotkey. */
+                    jw__persist_bool(ui, "recording_enabled", ui->recording_enabled);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_REC_SPLIT) {
+                    if (!ui->recording_enabled) break;
+                    (void)dir;
+                    ui->recording_split = !ui->recording_split;
+                    /* Read by the daemon when it dispatches the convert pass, so
+                       it applies to the next game you exit -- nothing to change
+                       about a recording already on the card. */
+                    jw__persist_bool(ui, "recording_split", ui->recording_split);
+                } else if (ui->controls_list.cursor == JW_CONTROLS_REC_KEEP) {
+                    if (!ui->recording_enabled) break;
+                    (void)dir;
+                    ui->recording_keep_src = !ui->recording_keep_src;
+                    jw__persist_bool(ui, "recording_keep_source", ui->recording_keep_src);
                 }
                 break;
             }

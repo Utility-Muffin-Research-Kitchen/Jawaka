@@ -149,7 +149,10 @@ typedef enum {
 #define JW_CONTROLS_NAV         2   /* per-move navigation tick (opt-in) */
 #define JW_CONTROLS_GAME        3   /* hand the motor to emulators in-game */
 #define JW_CONTROLS_SCREENSHOTS 4   /* Menu+L1 screenshot hotkey on/off */
-#define JW_CONTROLS_ROW_COUNT   5
+#define JW_CONTROLS_RECORDING   5   /* Menu+R1 game recording hotkey on/off */
+#define JW_CONTROLS_REC_SPLIT   6   /* split oversized clips into postable parts */
+#define JW_CONTROLS_REC_KEEP    7   /* keep the lossless .mkv after converting */
+#define JW_CONTROLS_ROW_COUNT   8
 
 /* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
    The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of
@@ -280,6 +283,9 @@ typedef struct {
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;
     bool               screenshots_enabled; /* Menu+L1 screenshot hotkey (daemon reads the DB key) */
+    bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
+    bool               recording_split;     /* cut clips over 10MB into postable parts */
+    bool               recording_keep_src;  /* keep the lossless .mkv once the MP4 exists */
     bool               rumble_enabled;    /* Controls & Feedback: haptics master (daemon reads DB) */
     int                rumble_strength;   /* 0-100 % */
     bool               rumble_nav;        /* per-move navigation tick */
