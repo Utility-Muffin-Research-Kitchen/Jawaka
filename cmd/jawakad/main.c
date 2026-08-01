@@ -3942,6 +3942,12 @@ static void jw__record_convert_spawn(const jw_daemon_state *state) {
         }
 
         setsid();
+        /* jawakad ignores SIGPIPE, and an IGNORED disposition survives execve
+           where a handler would be reset. The conversion pass is a shell script
+           full of pipelines -- `ffmpeg -i x 2>&1 | sed ... | head -1` -- and with
+           SIGPIPE ignored the writer is not killed when head exits; it gets EPIPE
+           on every write instead and keeps going. Hand the script the default. */
+        signal(SIGPIPE, SIG_DFL);
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) {
             dup2(devnull, STDIN_FILENO);
@@ -6171,6 +6177,7 @@ static bool jw__input_game_switcher(void *userdata) {
 #define JW_SS_SCANOUT_W   720   /* panel native (portrait); UI runs landscape */
 #define JW_SS_SCANOUT_H   960
 #define JW_SS_THROTTLE_MS 1000
+#define JW_RECORD_THROTTLE_MS 250 /* a toggle needs bounce protection, not a full second */
 #define JW_SS_ENABLE_TTL_MS 2000  /* re-read the opt-in flag from the DB at most this often */
 #define JW_SS_PRE_MAX     64      /* max pre-existing PNGs tracked for the in-game diff */
 
@@ -6540,12 +6547,17 @@ static bool jw__on_record_hotkey(void *userdata) {
         return false;
     }
 
-    /* Debounced with the screenshot throttle: a recording toggle is cheap, but a
-       bounced chord would start and immediately stop a recording, leaving a file
-       with no frames in it. */
+    /* Debounced, but on its own much shorter clock than screenshots. A screenshot
+       repeated inside a second is almost always a bounce and costs only a junk
+       file; a recording toggle inside a second can be a deliberate "stop, wrong
+       moment", and swallowing that is invisible -- the chord is consumed, nothing
+       on screen changes, and the recording the user believes they stopped keeps
+       running. A physical shoulder button bounces in tens of milliseconds, so
+       this only has to be long enough to stop a start/stop pair from producing a
+       file with no frames in it. */
     uint64_t now = jw__screenshot_now_ms();
     if (state->last_record_toggle_ms != 0 &&
-        now - state->last_record_toggle_ms < JW_SS_THROTTLE_MS) {
+        now - state->last_record_toggle_ms < JW_RECORD_THROTTLE_MS) {
         return true;
     }
     state->last_record_toggle_ms = now;

@@ -288,7 +288,11 @@ static int jw__mlp1_mount_secondary_if_needed(void) {
 }
 
 static int jw__mlp1_open_uevent_socket(void) {
-    int fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+    /* SOCK_CLOEXEC: this daemon forks and execs -- RetroArch, the conversion
+       pass, every helper script -- and without it each one inherits a live
+       netlink socket it has no idea about, still bound to the uevent group and
+       still queueing hotplug messages against the kernel's buffer. */
+    int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
     if (fd < 0) {
         return -1;
     }

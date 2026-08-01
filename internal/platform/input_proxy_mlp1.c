@@ -1087,6 +1087,25 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
         return;
     }
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    /* Entering the screen-off stage drops every event on the floor, including the
+       releases the chord state machine is waiting on. Left set, a *_chord_consumed
+       flag outlives the press it belongs to and eats the first real press of that
+       button after the screen comes back -- R1 is run or aim in most cores, so
+       that one is felt. Clear the in-flight chord state instead: with the screen
+       off nothing is mid-gesture, and everything here is "waiting for a release
+       that is no longer coming". */
+    if (swallow && !data->swallow) {
+        /* Forced: the un-forced form waits out the hold timer, and that timer is
+           driven by a loop that is about to stop delivering events. An unreleased
+           BTN_MODE would read as Menu held down for as long as the screen is off. */
+        jw__release_deferred_menu_tap(data, true);
+        data->menu_held                  = false;
+        data->menu_forwarded             = false;
+        data->chord_active               = false;
+        data->select_chord_consumed      = false;
+        data->screenshot_chord_consumed  = false;
+        data->record_chord_consumed      = false;
+    }
     data->swallow = swallow;
 }
 
