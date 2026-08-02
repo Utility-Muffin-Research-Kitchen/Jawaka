@@ -511,23 +511,47 @@ static void jw__refresh_volume(jw_settings_ui *ui) {
     }
 }
 
+/* Fold an audio-status reply into the UI. Split from the fetch so the same
+   handling serves both a direct query and a sample taken off the render thread
+   by the launcher's background poller. */
+static void jw__apply_audio_status(jw_settings_ui *ui,
+                                   const jw_ipc_audio_status *status) {
+    if (!ui || !status) return;
+    ui->audio_output = status->output;
+    ui->audio_available_outputs = status->available_outputs;
+    ui->test_sound_playing = (status->test_playing != 0);
+    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
+        ui->audio_volumes[i] = status->volume_percent[i];
+    }
+    if (ui->audio_output >= 0 &&
+        ui->audio_output < JW_PLATFORM_AUDIO_OUTPUT_COUNT &&
+        ui->audio_volumes[ui->audio_output] >= 0) {
+        ui->volume_percent = ui->audio_volumes[ui->audio_output];
+    }
+}
+
 static void jw__refresh_audio_status(jw_settings_ui *ui) {
     if (!ui || !ui->socket_path[0]) return;
     jw_ipc_audio_status status;
     if (jw_ipc_platform_audio_status(ui->socket_path, &status) != 0) {
         return;
     }
+    jw__apply_audio_status(ui, &status);
+}
 
-    ui->audio_output = status.output;
-    ui->audio_available_outputs = status.available_outputs;
-    ui->test_sound_playing = (status.test_playing != 0);
-    for (int i = 0; i < JW_PLATFORM_AUDIO_OUTPUT_COUNT; i++) {
-        ui->audio_volumes[i] = status.volume_percent[i];
+/* Apply a snapshot the background poller took, so the Display & Sound page can
+   follow the hardware brightness/volume keys without the render thread ever
+   making a blocking IPC call. A round trip to jawakad costs ~110ms of latency
+   (almost none of it work), and this page used to make four of them in a row
+   every 300ms, which is what made its cursor movement drag. */
+void jw_settings_ui_apply_av(jw_settings_ui *ui, int brightness_percent,
+                             const jw_ipc_audio_status *audio) {
+    if (!ui) return;
+    if (brightness_percent >= 0) {
+        ui->brightness_percent = jw_platform_clamp_brightness_percent(brightness_percent);
     }
-    if (ui->audio_output >= 0 &&
-        ui->audio_output < JW_PLATFORM_AUDIO_OUTPUT_COUNT &&
-        ui->audio_volumes[ui->audio_output] >= 0) {
-        ui->volume_percent = ui->audio_volumes[ui->audio_output];
+    if (audio) {
+        jw__apply_audio_status(ui, audio);
     }
 }
 

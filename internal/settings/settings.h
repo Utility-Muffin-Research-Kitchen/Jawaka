@@ -366,12 +366,19 @@ bool jw_settings_show_hints(const jw_settings_ui *ui);
 /* True when tab switches should slide (Glide); false for an instant cut (Snap). */
 bool jw_settings_tab_glide(const jw_settings_ui *ui);
 
-/* True while the Display & Sound page is showing. The launcher polls this and
-   calls jw_settings_ui_refresh_av() so the sliders track hardware volume/
-   brightness keys (which jawakad's input proxy consumes — the UI never sees
-   those events). */
+/* True while the Display & Sound page is showing, so its sliders can track the
+   hardware volume/brightness keys (jawakad's input proxy consumes those events —
+   the UI never sees them). The launcher hands this to its BACKGROUND poller and
+   applies the result with jw_settings_ui_apply_av(); it must not be sampled on
+   the render thread, because a round trip to jawakad costs ~110ms of latency and
+   this page needs several.
+
+   jw_settings_ui_refresh_av() is the blocking one-shot, still fine on page open
+   where a single stall is invisible, but never in a loop. */
 bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_av(jw_settings_ui *ui);
+void jw_settings_ui_apply_av(jw_settings_ui *ui, int brightness_percent,
+                             const jw_ipc_audio_status *audio);
 
 /* True while the Network page is open. The launcher calls
  * jw_settings_ui_refresh_wifi() each frame so the status follows live changes;
