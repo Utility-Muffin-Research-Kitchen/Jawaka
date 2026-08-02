@@ -7511,16 +7511,17 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
        blanks from three places and a fourth would silently miss the check.
        Only the idle path is deferred -- a power press or a charging standby is
        a deliberate act and still blanks. */
-    if (reason == JW_STANDBY_AUTOSLEEP &&
-        jw_suspend_inhibitor_count_scope(&state->suspend_inhibitor,
-                                         JW_SUSPEND_SCOPE_SCREEN) > 0) {
-        if (!state->autosleep_screen_inhibit_logged) {
-            jw_log_info("auto-sleep: screen blank deferred by %d screen lease(s)",
-                        jw_suspend_inhibitor_count_scope(&state->suspend_inhibitor,
-                                                         JW_SUSPEND_SCOPE_SCREEN));
-            state->autosleep_screen_inhibit_logged = true;
+    if (reason == JW_STANDBY_AUTOSLEEP) {
+        int screen_leases = jw_suspend_inhibitor_count_scope(
+            &state->suspend_inhibitor, JW_SUSPEND_SCOPE_SCREEN);
+        if (screen_leases > 0) {
+            if (!state->autosleep_screen_inhibit_logged) {
+                jw_log_info("auto-sleep: screen blank deferred by %d screen lease(s)",
+                            screen_leases);
+                state->autosleep_screen_inhibit_logged = true;
+            }
+            return;
         }
-        return;
     }
 
     if (reset_idle) {
