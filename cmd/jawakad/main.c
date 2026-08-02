@@ -2295,11 +2295,11 @@ static void jw__publish_display_env(jw_daemon_state *state) {
     }
 
     /* Black Frame Insertion: publish only when the user enabled it AND the panel
-       is at 120Hz (one black frame per 60fps content frame). The RA config
-       writer turns JAWAKA_BFI=1 into video_black_frame_insertion. At 60Hz there
-       is no spare refresh to insert one, so it stays off regardless of the
-       setting. (100Hz + 50fps PAL is the other clean pairing, still unevaluated
-       on hardware - it would flicker at 50Hz, so it needs eyes before shipping.) */
+       runs at twice a content rate, so there is a spare refresh to blank (120Hz
+       for 60fps NTSC, 100Hz for 50fps PAL). The RA config writer turns
+       JAWAKA_BFI=1 into video_black_frame_insertion; RetroArch itself imposes no
+       rate restriction, since it simply targets refresh/(bfi+1). At 60Hz there is
+       no spare refresh, so BFI stays off regardless of the setting. */
     bool bfi_enabled = false;
     if (state->db_path) {
         char val[8] = "";
@@ -2308,7 +2308,7 @@ static void jw__publish_display_env(jw_daemon_state *state) {
             bfi_enabled = true;
         }
     }
-    if (bfi_enabled && status.refresh_rate_hz == 120) {
+    if (bfi_enabled && jw_bfi_content_fps(status.refresh_rate_hz) > 0) {
         setenv("JAWAKA_BFI", "1", 1);
     } else {
         unsetenv("JAWAKA_BFI");

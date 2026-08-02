@@ -300,7 +300,7 @@ typedef struct {
     bool               test_sound_playing;  /* Display&Sound: Test Sound clip active */
     int                refresh_rate_hz;     /* display refresh: 60, 100, or 120 */
     bool               refresh_rate_supported; /* platform offers refresh-rate switching */
-    bool               bfi_enabled;         /* Black Frame Insertion (RA): 120Hz only */
+    bool               bfi_enabled;         /* Black Frame Insertion (RA): 100/120Hz only */
     int                hdmi_output_mode;    /* HDMI out: 0 off, 1 4:3 pillarbox, 2 stretch */
     int                hdmi_connected;      /* HDMI cable: -1 unknown, 0 no, 1 yes */
     bool               hdmi_supported;      /* platform offers HDMI output switching */

@@ -1859,8 +1859,9 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
         }
     }
     /* Black Frame Insertion. The daemon sets JAWAKA_BFI=1 only when the user
-       enabled it AND the panel is at 120Hz (one black frame per 60fps content
-       frame mimics a CRT's impulse, cutting motion blur). Written here and
+       enabled it AND the panel runs at twice a content rate (120Hz for 60fps,
+       100Hz for 50fps PAL) - one black frame per content frame mimics a CRT's
+       impulse, cutting motion blur. Written here and
        stripped from the merge so the Leaf toggle is the single source of truth,
        independent of RA's own menu / save-on-exit. */
     {
@@ -2317,8 +2318,9 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
         }
     }
     /* Black Frame Insertion. The daemon sets JAWAKA_BFI=1 only when the user
-       enabled it AND the panel is at 120Hz (one black frame per 60fps content
-       frame mimics a CRT's impulse, cutting motion blur). Written here and
+       enabled it AND the panel runs at twice a content rate (120Hz for 60fps,
+       100Hz for 50fps PAL) - one black frame per content frame mimics a CRT's
+       impulse, cutting motion blur. Written here and
        stripped from the merge so the Leaf toggle is the single source of truth,
        independent of RA's own menu / save-on-exit. */
     {
