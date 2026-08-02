@@ -97,6 +97,16 @@ static void jw__remember_release(jw_suspend_inhibitor *inhibitor,
     inhibitor->released[slot].pid = pid;
 }
 
+/* Both scopes block deep suspend; JW_SUSPEND_SCOPE_SCREEN additionally blocks
+   the stage-1 backlight blank, for foreground work the user is watching rather
+   than waiting on (video playback). Unknown scopes are rejected so a typo fails
+   loudly at acquire instead of silently inhibiting nothing. */
+static bool jw__known_scope(const char *scope) {
+    if (!scope) return false;
+    return strcmp(scope, JW_SUSPEND_SCOPE_SUSPEND) == 0 ||
+           strcmp(scope, JW_SUSPEND_SCOPE_SCREEN) == 0;
+}
+
 void jw_suspend_inhibitor_init(jw_suspend_inhibitor *inhibitor) {
     if (inhibitor) memset(inhibitor, 0, sizeof(*inhibitor));
 }
@@ -105,7 +115,7 @@ jw_suspend_lease_result jw_suspend_inhibitor_acquire(
     jw_suspend_inhibitor *inhibitor, pid_t pid, const char *scope,
     const char *reason, long long acquired_ms,
     char token[JW_SUSPEND_INHIBIT_TOKEN_LEN + 1]) {
-    if (!inhibitor || pid <= 0 || strcmp(scope ? scope : "", "block-suspend") != 0 ||
+    if (!inhibitor || pid <= 0 || !jw__known_scope(scope) ||
         !jw__safe_text(reason, sizeof(inhibitor->leases[0].reason)) || !token) {
         return JW_SUSPEND_LEASE_INVALID;
     }
@@ -172,6 +182,17 @@ int jw_suspend_inhibitor_count(const jw_suspend_inhibitor *inhibitor) {
     int count = 0;
     for (int i = 0; i < JW_SUSPEND_INHIBIT_MAX_LEASES; i++) {
         if (inhibitor->leases[i].active) count++;
+    }
+    return count;
+}
+
+int jw_suspend_inhibitor_count_scope(const jw_suspend_inhibitor *inhibitor,
+                                     const char *scope) {
+    if (!inhibitor || !scope) return 0;
+    int count = 0;
+    for (int i = 0; i < JW_SUSPEND_INHIBIT_MAX_LEASES; i++) {
+        if (inhibitor->leases[i].active &&
+            strcmp(inhibitor->leases[i].scope, scope) == 0) count++;
     }
     return count;
 }
