@@ -259,6 +259,8 @@ typedef struct {
     jw_standby_reason standby_reason;     /* screen-off standby state, or NONE when lit */
     long long standby_entered_ms;         /* monotonic ms for wake-input detection */
     bool      autosleep_charging_logged;  /* log the charging hold once per standby */
+    bool      autosleep_screen_inhibit_logged; /* log the screen-lease hold once per hold */
+    bool      autosleep_screen_inhibit_held;   /* a screen lease was held on the last tick */
     int       charging_cached;            /* -1 unknown, 0 unplugged, 1 charging */
     long long charging_next_poll_ms;       /* throttle platform status reads in standby */
     bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
@@ -7503,6 +7505,25 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
         return;
     }
 
+    /* A JW_SUSPEND_SCOPE_SCREEN lease defers the idle blank: a video player has
+       no input for the length of a film, so input-idle is the wrong signal for
+       it. Gated here rather than at each caller because jw__tick_auto_sleep
+       blanks from three places and a fourth would silently miss the check.
+       Only the idle path is deferred -- a power press or a charging standby is
+       a deliberate act and still blanks. */
+    if (reason == JW_STANDBY_AUTOSLEEP) {
+        int screen_leases = jw_suspend_inhibitor_count_scope(
+            &state->suspend_inhibitor, JW_SUSPEND_SCOPE_SCREEN);
+        if (screen_leases > 0) {
+            if (!state->autosleep_screen_inhibit_logged) {
+                jw_log_info("auto-sleep: screen blank deferred by %d screen lease(s)",
+                            screen_leases);
+                state->autosleep_screen_inhibit_logged = true;
+            }
+            return;
+        }
+    }
+
     if (reset_idle) {
         jw_input_proxy_mark_activity(&state->input_proxy);
     }
@@ -7640,6 +7661,19 @@ static void jw__tick_suspend_inhibitors(jw_daemon_state *state) {
     if (reaped > 0) {
         jw_log_info("suspend-inhibit: reaped %d dead holder lease(s); active=%d",
                     reaped, jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    }
+    bool screen_held = jw_suspend_inhibitor_count_scope(&state->suspend_inhibitor,
+                                                        JW_SUSPEND_SCOPE_SCREEN) > 0;
+    if (screen_held) {
+        state->autosleep_screen_inhibit_held = true;
+    } else if (state->autosleep_screen_inhibit_held) {
+        /* The last screen lease just went (released or reaped). Input-idle has
+           been accumulating for the whole film, so without this the screen
+           would blank the instant playback ends. Treat the release itself as
+           activity and give the user a fresh idle window. */
+        jw_input_proxy_mark_activity(&state->input_proxy);
+        state->autosleep_screen_inhibit_held = false;
+        state->autosleep_screen_inhibit_logged = false;
     }
     /* Let the auto-sleep tick below process and log wake activity before a
        last-release transition can perform a queued suspend. */
@@ -8477,8 +8511,8 @@ static int jw__handle_suspend_inhibit(jw_daemon_state *state,
         if (result != JW_SUSPEND_LEASE_OK)
             return jw__reply_error(client, jw_suspend_lease_result_name(result));
         int count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
-        jw_log_info("suspend-inhibit: acquired pid=%d reason=%s active=%d",
-                    (int)pid, reason->valuestring, count);
+        jw_log_info("suspend-inhibit: acquired pid=%d scope=%s reason=%s active=%d",
+                    (int)pid, scope->valuestring, reason->valuestring, count);
         return jw__reply_suspend_acquired(client, token, count);
     }
 

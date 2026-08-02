@@ -1,5 +1,6 @@
 #include "cJSON.h"
 #include "internal/ipc/ipc.h"
+#include "internal/power/suspend_inhibit.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -11,7 +12,10 @@
 static void usage(FILE *out) {
     fprintf(out,
         "usage: jawaka-inhibitctl --socket PATH status\n"
-        "       jawaka-inhibitctl --socket PATH hold --reason LABEL [--seconds N] [--heartbeat PATH]\n");
+        "       jawaka-inhibitctl --socket PATH hold --reason LABEL [--scope SCOPE]\n"
+        "                         [--seconds N] [--heartbeat PATH]\n"
+        "  --scope block-suspend  defer deep suspend only (default)\n"
+        "  --scope block-screen   also defer the idle backlight blank\n");
 }
 
 static int request(const char *socket, cJSON *root, cJSON **out) {
@@ -38,9 +42,11 @@ static int heartbeat(const char *path, int second) {
 
 int main(int argc, char **argv) {
     const char *socket = NULL, *reason = "smoke helper", *heartbeat_path = NULL;
+    const char *scope = JW_SUSPEND_SCOPE_SUSPEND;
     int seconds = 60, command_index = -1;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) socket = argv[++i];
+        else if (strcmp(argv[i], "--scope") == 0 && i + 1 < argc) scope = argv[++i];
         else if (strcmp(argv[i], "--reason") == 0 && i + 1 < argc) reason = argv[++i];
         else if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) seconds = atoi(argv[++i]);
         else if (strcmp(argv[i], "--heartbeat") == 0 && i + 1 < argc) heartbeat_path = argv[++i];
@@ -63,7 +69,7 @@ int main(int argc, char **argv) {
 
     cJSON *acquire = cJSON_CreateObject(), *reply = NULL;
     cJSON_AddStringToObject(acquire, "type", "suspend-inhibit-acquire");
-    cJSON_AddStringToObject(acquire, "scope", "block-suspend");
+    cJSON_AddStringToObject(acquire, "scope", scope);
     cJSON_AddStringToObject(acquire, "reason", reason);
     if (request(socket, acquire, &reply) != 0) return 1;
     cJSON *token_json = cJSON_GetObjectItemCaseSensitive(reply, "token");
