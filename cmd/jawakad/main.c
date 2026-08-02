@@ -1517,6 +1517,7 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     jw__setenvf_default("ROMS_PATH", "%s/Roms", state->sdcard_root);
     jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
     jw__setenvf_default("MUSIC_PATH", "%s/Music", state->sdcard_root);
+    jw__setenvf_default("VIDEO_PATH", "%s/Videos", state->sdcard_root);
     jw__setenvf_default("APPS_PATH", "%s/Apps", state->sdcard_root);
     jw__setenvf_default("BIOS_PATH", "%s/BIOS", state->sdcard_root);
     jw__setenvf_default("SAVES_PATH", "%s/Saves", state->sdcard_root);
@@ -4407,6 +4408,7 @@ static void jw__publish_source_content_env(const jw_storage_source *source) {
     setenv("ROMS_PATH", source->roms_path, 1);
     setenv("IMAGES_PATH", source->images_path, 1);
     setenv("MUSIC_PATH", source->music_path, 1);
+    setenv("VIDEO_PATH", source->video_path, 1);
     setenv("APPS_PATH", source->apps_path, 1);
     setenv("BIOS_PATH", source->bios_path, 1);
     setenv("SAVES_PATH", source->saves_path, 1);
