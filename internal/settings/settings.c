@@ -1761,9 +1761,25 @@ static void jw__render_list_row_vc(const cat_list_state *list, int x, int y,
 /* Row pitch for the Display & Sound page. The Brightness/Volume sliders need the
    taller slot for their track, so the Audio Output row (a plain list row between
    them) must share this same pitch — otherwise the three rows, each positioned by
-   row*own_height, overlap and gap. */
-static int jw__display_row_h(void) {
-    return TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(28);
+   row*own_height, overlap and gap.
+
+   avail_h is the height of the content area the rows are drawn into. The natural
+   pitch is used whenever the rows fit, which is every case at the default font
+   size; past that the padding is spent down so the last row still lands inside
+   the box. Without that, the page ran off the bottom at Extra Large and the
+   button-hint bar covered the Test Sound row (label and value both clipped).
+   The floor keeps a row taller than its own text, so compressing can never clip
+   the glyphs — the rows are padding-heavy (28 units against the 12 a plain nav
+   row uses), so there is a lot to give back before that floor is reached.
+   Pass avail_h <= 0 to ask for the natural pitch without any fitting. */
+static int jw__display_row_h_fit(int avail_h) {
+    int natural = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(28);
+    if (avail_h <= 0 || JW_DISPLAY_ROW_COUNT * natural <= avail_h) {
+        return natural;
+    }
+    int fitted = avail_h / JW_DISPLAY_ROW_COUNT;
+    int floor_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(10);
+    return fitted < floor_h ? floor_h : fitted;
 }
 
 static void jw__render_nav_row(const cat_list_state *list, int x, int y,
@@ -1934,12 +1950,13 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
                         "Volume", jw__vis_label(ui->show_volume), true);
 }
 
-/* One labelled slider row (Brightness / Volume) on the Display & Sound page. */
+/* One labelled slider row (Brightness / Volume) on the Display & Sound page.
+   item_h is the page's fitted row pitch; every row on the page must be passed the
+   same value or they overlap and gap, since each positions itself as row*item_h. */
 static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int w,
-                                int row, const char *label, int percent) {
+                                int row, const char *label, int percent, int item_h) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int item_h = jw__display_row_h();
     int iy = y_base + row * item_h;
     bool selected = (ui->display_list.cursor == row);
     int pill_h = item_h - cat_scale(6);
@@ -1967,7 +1984,8 @@ static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int
     cat_draw_rect(track_x, track_y, fill_w, cat_scale(4), value_c);
 }
 
-static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_base, int w) {
+static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_base, int w,
+                                      int item_h) {
     jw_platform_audio_output output = ui->audio_output;
     if (output < 0 || output >= JW_PLATFORM_AUDIO_OUTPUT_COUNT) {
         output = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
@@ -1983,20 +2001,26 @@ static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_bas
     }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_OUTPUT,
                           "Audio Output", jw_platform_audio_output_label(output),
-                          navail > 1, jw__display_row_h());
+                          navail > 1, item_h);
 }
 
 static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Display & Sound", x, y, w);
-    int y_base = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    /* Fit the rows to the box rather than assuming the natural pitch clears it.
+       The box already excludes the button-hint bar (the launcher subtracts the
+       footer height before handing this height over), so rows that exceed it are
+       drawn straight past their own bottom edge and end up underneath the hints. */
+    SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
+    int y_base = content.y;
+    int item_h = jw__display_row_h_fit(content.h);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
-                        ui->brightness_percent);
+                        ui->brightness_percent, item_h);
     /* Display refresh rate (kPanelRefreshHz). Cycler when the platform supports it. */
     char refresh_val[16];
     snprintf(refresh_val, sizeof(refresh_val), "%d Hz", ui->refresh_rate_hz);
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_REFRESH_RATE,
                           "Refresh Rate", refresh_val,
-                          ui->refresh_rate_supported, jw__display_row_h());
+                          ui->refresh_rate_supported, item_h);
     /* Black Frame Insertion (RetroArch strobing) — cuts motion blur by blanking
        one refresh per emulated frame, so it needs a rate that is twice a content
        rate. Greyed with a "100/120 Hz only" hint elsewhere.
@@ -2017,7 +2041,7 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_BFI,
                           "Black Frame Insertion", bfi_val,
-                          bfi_avail, jw__display_row_h());
+                          bfi_avail, item_h);
     /* HDMI external output (4:3 pillarbox / stretch). Cycler when a TV is
        plugged in; greyed "Not connected" otherwise. */
     static const char *const kHdmiVals[] = { "Off", "4:3", "Stretch" };
@@ -2039,15 +2063,15 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
         hdmi_text = ui->hdmi_supported ? "Not connected" : "Unavailable";
     }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_HDMI,
-                          "HDMI Output", hdmi_text, hdmi_avail, jw__display_row_h());
-    jw__draw_audio_output_row(ui, x, y_base, w);
+                          "HDMI Output", hdmi_text, hdmi_avail, item_h);
+    jw__draw_audio_output_row(ui, x, y_base, w, item_h);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_VOLUME, "Volume",
-                        ui->volume_percent);
+                        ui->volume_percent, item_h);
     /* Action row: toggles a short clip on the current output so the user can
        verify sound (and which device it lands on). Shows Stop while playing. */
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_TEST_SOUND,
                           "Test Sound", ui->test_sound_playing ? "Stop" : "Play",
-                          false, jw__display_row_h());
+                          false, item_h);
 }
 
 static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, int h) {
