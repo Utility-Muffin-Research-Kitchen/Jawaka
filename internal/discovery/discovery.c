@@ -165,6 +165,9 @@ static int jw__scan_insert_game(jw_scan_tx *tx,
     if (jw_db_insert_game_stable(tx->db, system, name, source->id,
                                  rom_relpath, rom_path, image_root_kind,
                                  image_relpath, image_path) != 0) {
+        fprintf(stderr,
+                "ROM discovery: database write failed for %s: %s\n",
+                rom_path, sqlite3_errmsg(tx->db));
         return -1;
     }
     return jw__scan_tx_note_write(tx);
@@ -184,6 +187,9 @@ static int jw__scan_insert_app(jw_scan_tx *tx,
     if (jw_db_insert_app(tx->db, pak_dir, name, icon, platform,
                          pak_version, min_jawaka_version,
                          min_leaf_version) != 0) {
+        fprintf(stderr,
+                "App discovery: database write failed for %s: %s\n",
+                pak_dir, sqlite3_errmsg(tx->db));
         return -1;
     }
     return jw__scan_tx_note_write(tx);
