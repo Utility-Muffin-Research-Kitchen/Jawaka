@@ -200,7 +200,7 @@ static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi);
 static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx);
 static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason);
 
-/* The user's Refresh Rate setting (60/90/120), cached when set so the HDMI apply
+/* The user's Refresh Rate setting (60/100/120), cached when set so the HDMI apply
    can choose 1080p120 vs the crisp 720p60. -1 until known; the HDMI apply then
    falls back to the live panel mode (which boots at the persisted rate). */
 static int s_mlp1_target_refresh_hz = -1;
@@ -1094,21 +1094,23 @@ static int jw__mlp1_set_boot_splash(jw_platform_context *ctx, bool enabled) {
     return fclose(fp) == 0 && ok ? 0 : -1;
 }
 
-/* ── Display refresh rate (60/90 Hz) ─────────────────────────────────────
+/* ── Display refresh rate (60/100/120 Hz) ────────────────────────────────
    The MLP1 DSI panel advertises a single fixed 720x960@60 mode, but the
-   rockchip DSI driver accepts a runtime modeline at ~90 Hz (verified). Weston
+   rockchip DSI driver accepts a runtime modeline above it (verified). Weston
    takes its output mode from weston.ini; its HOME is /userdata/root, so a
    ~/.config/weston.ini override (a copy of the stock /etc/xdg config plus a
-   `mode=` line in [output]) takes precedence with no stock-file edit. 90 Hz =
-   write the override; 60 Hz = remove it (Weston falls back to the stock 60 Hz
+   `mode=` line in [output]) takes precedence with no stock-file edit. Above 60
+   = write the override; 60 Hz = remove it (Weston falls back to the stock 60 Hz
    preferred mode). The override lives on rootfs and persists across reboots,
    so no boot hook is needed — Weston reads it at S49 every boot. */
 #define JW_MLP1_WESTON_STOCK_INI    "/etc/xdg/weston/weston.ini"
 #define JW_MLP1_WESTON_OVERRIDE_INI "/userdata/root/.config/weston.ini"
 /* Stock 720x960 panel timing held constant; only the pixel clock scales with
    the target rate. htotal*vtotal = 769*1018 = 782842 px/frame, so the dot clock
-   (MHz) = 782842 * hz / 1e6 (90->70.46, 120->93.94). -hsync -vsync matches the
-   panel's stock mode flags. Driver+panel verified clean to 120 Hz on the MLP1. */
+   (MHz) = 782842 * hz / 1e6 (100->78.28, 120->93.94). -hsync -vsync
+   matches the panel's stock mode flags. Driver+panel verified clean to 120 Hz on
+   the MLP1; 110 is the highest rate that logged zero VOP errors, so 100 sits
+   inside the clean range (120 logs one POST_BUF_EMPTY at the modeset only). */
 #define JW_MLP1_PANEL_PX_PER_FRAME 782842.0
 static void jw__mlp1_weston_mode_line(int hz, char *buf, size_t n) {
     double clk = (JW_MLP1_PANEL_PX_PER_FRAME * (double)hz) / 1.0e6;

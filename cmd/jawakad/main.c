@@ -2279,7 +2279,7 @@ static void jw__tick_retroarch_audio_reinit(jw_daemon_state *state) {
 /* Publish the live panel refresh (read from the active DRM mode) so the
    RetroArch config writer can pin video_refresh_rate to it. RA's pacing and
    Black Frame Insertion break when it believes 60Hz while the panel runs
-   90/120. Re-read per launch so a runtime refresh-rate change is reflected. */
+   100/120. Re-read per launch so a runtime refresh-rate change is reflected. */
 static void jw__publish_display_env(jw_daemon_state *state) {
     if (!state) {
         return;
@@ -2295,9 +2295,11 @@ static void jw__publish_display_env(jw_daemon_state *state) {
     }
 
     /* Black Frame Insertion: publish only when the user enabled it AND the panel
-       is at 120Hz (one black frame per 60fps content frame). The RA config
-       writer turns JAWAKA_BFI=1 into video_black_frame_insertion. At 60/90Hz
-       BFI would flicker badly, so it stays off there regardless of the setting. */
+       runs at twice a content rate, so there is a spare refresh to blank (120Hz
+       for 60fps NTSC, 100Hz for 50fps PAL). The RA config writer turns
+       JAWAKA_BFI=1 into video_black_frame_insertion; RetroArch itself imposes no
+       rate restriction, since it simply targets refresh/(bfi+1). At 60Hz there is
+       no spare refresh, so BFI stays off regardless of the setting. */
     bool bfi_enabled = false;
     if (state->db_path) {
         char val[8] = "";
@@ -2306,7 +2308,7 @@ static void jw__publish_display_env(jw_daemon_state *state) {
             bfi_enabled = true;
         }
     }
-    if (bfi_enabled && status.refresh_rate_hz == 120) {
+    if (bfi_enabled && jw_bfi_content_fps(status.refresh_rate_hz) > 0) {
         setenv("JAWAKA_BFI", "1", 1);
     } else {
         unsetenv("JAWAKA_BFI");

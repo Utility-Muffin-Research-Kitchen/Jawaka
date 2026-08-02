@@ -377,6 +377,44 @@ static const int   kAutoSleepSeconds[] = {     0,       15,       30,       45, 
                                      Deep-suspend wake is not yet reliable, so
                                      auto-sleep stays opt-in until that is solid. */
 
+/* Panel refresh rates offered in Settings > Display & Sound, low to high. The
+   modeline writer scales the dot clock to any rate (782842 * hz / 1e6), so this
+   table is the only place the choice is fixed; the daemon clamps to 60..120.
+
+   Each rate is the right answer for something, which is the whole selection
+   rule - a rate earns a slot by dividing evenly into some content rate:
+     60  - NTSC 60fps at a perfect 1:1, lowest power, the safe default
+     100 - PAL 50fps at a perfect 2:2 (the only rate that divides into 50)
+     120 - NTSC 60fps at 2:2 (so BFI has a black frame to insert), 24fps at 5:5
+   90 was dropped: it is 1.5x of 60fps, so it forced an alternating 1-then-2
+   refresh hold (3:2 pulldown) that juddered 60fps games WORSE than plain 60 Hz,
+   and it divided evenly into nothing anyone plays. It shipped first only
+   because it was the rate the feature was originally proven at. */
+static const int kPanelRefreshHz[] = { 60, 100, 120 };
+#define JW_PANEL_REFRESH_COUNT ((int)(sizeof(kPanelRefreshHz) / sizeof(kPanelRefreshHz[0])))
+
+static bool jw__is_panel_refresh_hz(int hz) {
+    for (int i = 0; i < JW_PANEL_REFRESH_COUNT; i++) {
+        if (kPanelRefreshHz[i] == hz) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Index of the offered rate closest to hz, so a rate that is no longer offered
+   (a device carried over from when 90 Hz was on the menu) still cycles somewhere
+   sensible: from 90, one step down lands on 60 and one step up on 100. */
+static int jw__nearest_refresh_index(const int *rates, int n, int hz) {
+    int best = 0;
+    for (int i = 1; i < n; i++) {
+        if (abs(rates[i] - hz) < abs(rates[best] - hz)) {
+            best = i;
+        }
+    }
+    return best;
+}
+
 static const jw_platform_perf_profile kGamePerfProfiles[] = {
     JW_PLATFORM_PERF_PROFILE_AUTO,
     JW_PLATFORM_PERF_PROFILE_BALANCED,
@@ -607,8 +645,12 @@ static void jw__refresh_refresh_rate(jw_settings_ui *ui) {
     if (jw_ipc_get_refresh_rate(ui->socket_path, &hz, &supported) == 0) {
         ui->refresh_rate_supported = supported;
         /* Reflect the panel's actual current rate when the daemon reports it
-           (truth over the persisted mirror, e.g. after moving the card). */
-        if (hz == 60 || hz == 90 || hz == 120) {
+           (truth over the persisted mirror, e.g. after moving the card). Any
+           positive rate is taken as-is rather than filtered against the offered
+           list: the live mode IS the truth, so a panel left at a retired rate
+           (90 Hz, from before it left the menu) must read 90 rather than have
+           the row quietly claim 60. Cycling off it then retires it for good. */
+        if (hz > 0) {
             ui->refresh_rate_hz = hz;
         }
     }
@@ -1364,7 +1406,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 ui->recording_keep_src = (strcmp(values[JW_SETTING_RECORDING_KEEP_SRC], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_REFRESH_RATE_HZ)) {
                 int hz = atoi(values[JW_SETTING_REFRESH_RATE_HZ]);
-                if (hz == 60 || hz == 90 || hz == 120) ui->refresh_rate_hz = hz;
+                if (jw__is_panel_refresh_hz(hz)) ui->refresh_rate_hz = hz;
             }
             if (jw__setting_has(values, found, JW_SETTING_BFI_ENABLED))
                 ui->bfi_enabled = (strcmp(values[JW_SETTING_BFI_ENABLED], "0") != 0);
@@ -1949,19 +1991,32 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     int y_base = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
                         ui->brightness_percent);
-    /* Display refresh rate (60/90 Hz). Cycler when the platform supports it. */
+    /* Display refresh rate (kPanelRefreshHz). Cycler when the platform supports it. */
     char refresh_val[16];
     snprintf(refresh_val, sizeof(refresh_val), "%d Hz", ui->refresh_rate_hz);
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_REFRESH_RATE,
                           "Refresh Rate", refresh_val,
                           ui->refresh_rate_supported, jw__display_row_h());
-    /* Black Frame Insertion (RetroArch strobing) — cuts motion blur, but only
-       works cleanly at 120Hz (one black frame per 60fps content frame). Greyed
-       with a "120 Hz only" hint at other refresh rates. */
-    bool bfi_avail = (ui->refresh_rate_hz == 120);
+    /* Black Frame Insertion (RetroArch strobing) — cuts motion blur by blanking
+       one refresh per emulated frame, so it needs a rate that is twice a content
+       rate. Greyed with a "100/120 Hz only" hint elsewhere.
+       When it IS on, the value names the content rate it is currently set up for
+       (50 fps at 100Hz, 60 fps at 120Hz). That matters because BFI is a GLOBAL
+       setting with no per-game override: left on at 100Hz, a 60fps game is paced
+       to 50 and runs at 83% speed. Naming the rate makes the row say what it is
+       for instead of a bare "On" that hides the pairing. */
+    int bfi_fps = jw_bfi_content_fps(ui->refresh_rate_hz);
+    bool bfi_avail = (bfi_fps > 0);
+    char bfi_val[24];
+    if (!bfi_avail) {
+        snprintf(bfi_val, sizeof(bfi_val), "100/120 Hz only");
+    } else if (ui->bfi_enabled) {
+        snprintf(bfi_val, sizeof(bfi_val), "On (%d fps)", bfi_fps);
+    } else {
+        snprintf(bfi_val, sizeof(bfi_val), "Off");
+    }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_BFI,
-                          "Black Frame Insertion",
-                          bfi_avail ? (ui->bfi_enabled ? "On" : "Off") : "120 Hz only",
+                          "Black Frame Insertion", bfi_val,
                           bfi_avail, jw__display_row_h());
     /* HDMI external output (4:3 pillarbox / stretch). Cycler when a TV is
        plugged in; greyed "Not connected" otherwise. */
@@ -5662,33 +5717,39 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                           status_buf, status_size);
                 else if (ui->display_list.cursor == JW_DISPLAY_REFRESH_RATE) {
                     /* Cycle the refresh rate (left/right step, A advances). On a TV,
-                       HDMI has no 90Hz mode and 60/90 both render as 720p60, so the
-                       live-rate cycler would stick at 60 - offer just {60,120} there
-                       (the two distinct HDMI modes). The internal panel does all three. */
-                    static const int panel_rates[] = {60, 90, 120};
-                    static const int tv_rates[]    = {60, 120};
+                       HDMI has no 100Hz mode and both it and 60 render as 720p60, so
+                       the live-rate cycler would stick at 60 - offer just {60,120}
+                       there (the two distinct HDMI modes). The internal panel does
+                       every rate in kPanelRefreshHz. */
+                    static const int tv_rates[] = {60, 120};
                     bool on_tv = ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0;
-                    const int *rates = on_tv ? tv_rates : panel_rates;
-                    int n = on_tv ? 2 : 3;
-                    int cur = 0;
-                    for (int i = 0; i < n; i++) {
-                        if (rates[i] == ui->refresh_rate_hz) { cur = i; break; }
-                    }
+                    const int *rates = on_tv ? tv_rates : kPanelRefreshHz;
+                    int n = on_tv ? 2 : JW_PANEL_REFRESH_COUNT;
+                    int cur = jw__nearest_refresh_index(rates, n, ui->refresh_rate_hz);
                     int next = (cur + dir + n) % n;
                     jw__set_refresh_rate(ui, rates[next], status_buf, status_size);
                 }
                 else if (ui->display_list.cursor == JW_DISPLAY_BFI) {
-                    /* Black Frame Insertion: actionable only at 120Hz. Left/Right
-                       and A all just toggle on/off; the daemon writes
-                       video_black_frame_insertion into the per-launch RA config. */
-                    if (ui->refresh_rate_hz != 120) {
+                    /* Black Frame Insertion: actionable only where a refresh is
+                       spare to blank. Left/Right and A all just toggle on/off; the
+                       daemon writes video_black_frame_insertion into the per-launch
+                       RA config. The confirmation names the content rate, so
+                       turning it on at 100Hz reads as "for 50 fps" rather than an
+                       unqualified "on" the user has to pair up themselves. */
+                    int fps = jw_bfi_content_fps(ui->refresh_rate_hz);
+                    if (fps <= 0) {
                         snprintf(status_buf, status_size, "%s",
-                                 "Black Frame Insertion needs 120 Hz");
+                                 "Black Frame Insertion needs 100 or 120 Hz");
                     } else {
                         ui->bfi_enabled = !ui->bfi_enabled;
                         jw__persist_int(ui, "bfi_enabled", ui->bfi_enabled ? 1 : 0);
-                        snprintf(status_buf, status_size, "Black Frame Insertion %s",
-                                 ui->bfi_enabled ? "on" : "off");
+                        if (ui->bfi_enabled) {
+                            snprintf(status_buf, status_size,
+                                     "Black Frame Insertion on for %d fps", fps);
+                        } else {
+                            snprintf(status_buf, status_size, "%s",
+                                     "Black Frame Insertion off");
+                        }
                     }
                 }
                 else if (ui->display_list.cursor == JW_DISPLAY_HDMI) {
