@@ -36,6 +36,11 @@ int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdca
 int jw_reset_retroarch_shared_config(const char *sdcard_root,
                                      char *status, size_t status_size);
 char *jw_retroarch_state_dir(const char *sdcard_root);
+/* The one primary-owned gameplay-capture directory. Callers must use this
+ * instead of composing their own Recordings path so RetroArch, post-processing,
+ * and child apps cannot diverge when the active content card is secondary. */
+bool jw_primary_recordings_path(char *out, size_t out_size,
+                                const char *primary_sdcard_root);
 /* Pin the emulated controller type for cores whose default pad lacks hardware the
  * user expects -- today only PS1, whose rumble needs a DualShock rather than the
  * digital pad RetroArch hands it. No-op for every other core. Best effort: a

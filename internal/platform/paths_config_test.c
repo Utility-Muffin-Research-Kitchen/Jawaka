@@ -76,6 +76,16 @@ static int verify_runtime(const char *path, const char *shader_dir) {
     return ok ? 0 : -1;
 }
 
+#ifdef PLATFORM_MLP1
+static int verify_recordings(const char *path, const char *recordings_dir) {
+    char *text = read_text(path);
+    if (!text) return -1;
+    int ok = key_count(text, "recording_output_directory", recordings_dir) == 1;
+    free(text);
+    return ok ? 0 : -1;
+}
+#endif
+
 int main(void) {
     char root[] = "/tmp/jw-retroarch-config-XXXXXX";
     int fd = mkstemp(root);
@@ -86,7 +96,7 @@ int main(void) {
     char platform[PATH_MAX], defaults[PATH_MAX], internal[PATH_MAX];
     char runtime[PATH_MAX], cores[PATH_MAX], shaders[PATH_MAX];
     char user_shaders[PATH_MAX], custom_shaders[PATH_MAX];
-    char default_cfg[PATH_MAX];
+    char default_cfg[PATH_MAX], record_cfg[PATH_MAX], recordings_dir[PATH_MAX];
     char retroarch_dir[PATH_MAX], shared_cfg[PATH_MAX];
     snprintf(platform, sizeof(platform), "%s/platform", root);
     snprintf(defaults, sizeof(defaults), "%s/defaults", platform);
@@ -105,12 +115,16 @@ int main(void) {
         return fail("fixture mkdir failed");
     }
     snprintf(default_cfg, sizeof(default_cfg), "%s/retroarch.cfg", defaults);
+    snprintf(record_cfg, sizeof(record_cfg), "%s/retroarch-record.cfg", defaults);
     if (write_text(default_cfg,
                    "video_vsync = \"true\"\n"
                    "sort_savefiles_enable = \"false\"\n"
                    "sort_savestates_enable = \"false\"\n"
                    "sort_savefiles_enable = \"false\"\n") != 0) {
         return fail("defaults write failed");
+    }
+    if (write_text(record_cfg, "# recording preset fixture\n") != 0) {
+        return fail("recording preset write failed");
     }
     if (write_text(shared_cfg,
                    "menu_driver = \"rgui\"\n"
@@ -125,6 +139,10 @@ int main(void) {
     setenv("UMRK_INTERNAL_DATA_PATH", internal, 1);
     setenv("UMRK_RETROARCH_SHADERS_DIR", shaders, 1);
     setenv("UMRK_RETROARCH_USER_SHADERS_DIR", user_shaders, 1);
+    if (!jw_primary_recordings_path(recordings_dir, sizeof(recordings_dir), root) ||
+        strcmp(recordings_dir, "") == 0) {
+        return fail("could not resolve primary recordings path");
+    }
 
     char core[PATH_MAX];
     snprintf(core, sizeof(core), "%s/mgba_libretro.so", cores);
@@ -141,6 +159,11 @@ int main(void) {
     if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail(error[0] ? error : "protected keys not normalized");
     }
+#ifdef PLATFORM_MLP1
+    if (verify_recordings(runtime_cfg, recordings_dir) != 0) {
+        return fail("RetroArch recording directory disagrees with the primary path");
+    }
+#endif
     struct stat user_shader_stat;
     if (stat(user_shaders, &user_shader_stat) != 0 ||
         !S_ISDIR(user_shader_stat.st_mode)) {
