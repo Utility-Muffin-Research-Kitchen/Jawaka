@@ -1520,6 +1520,13 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
     jw__setenvf_default("MUSIC_PATH", "%s/Music", state->sdcard_root);
     jw__setenvf_default("VIDEO_PATH", "%s/Videos", state->sdcard_root);
+    char recordings_path[PATH_MAX];
+    if (jw_primary_recordings_path(recordings_path, sizeof(recordings_path),
+                                   state->sdcard_root)) {
+        /* This is primary-owned state, not a caller override: the RetroArch
+           config and conversion dispatcher below resolve the same helper. */
+        setenv("RECORDINGS_PATH", recordings_path, 1);
+    }
     jw__setenvf_default("APPS_PATH", "%s/Apps", state->sdcard_root);
     jw__setenvf_default("BIOS_PATH", "%s/BIOS", state->sdcard_root);
     jw__setenvf_default("SAVES_PATH", "%s/Saves", state->sdcard_root);
@@ -3923,8 +3930,8 @@ static void jw__record_convert_spawn(const jw_daemon_state *state) {
     }
 
     char recordings[PATH_MAX];
-    if (snprintf(recordings, sizeof(recordings), "%s/Recordings",
-                 state->sdcard_root) >= (int)sizeof(recordings)) {
+    if (!jw_primary_recordings_path(recordings, sizeof(recordings),
+                                    state->sdcard_root)) {
         return;
     }
 

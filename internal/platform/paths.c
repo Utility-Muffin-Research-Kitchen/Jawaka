@@ -56,6 +56,14 @@ static bool jw__format_string(char *out, size_t out_size, const char *fmt, ...) 
     return needed >= 0 && (size_t)needed < out_size;
 }
 
+bool jw_primary_recordings_path(char *out, size_t out_size,
+                                const char *primary_sdcard_root) {
+    if (!primary_sdcard_root || !primary_sdcard_root[0]) {
+        return false;
+    }
+    return jw__format_string(out, out_size, "%s/Recordings", primary_sdcard_root);
+}
+
 static int jw__mkdir_if_needed(const char *path, mode_t mode) {
     if (mkdir(path, mode) == 0 || errno == EEXIST) {
         return 0;
@@ -1917,10 +1925,10 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
             (config_sdroot_abs && config_sdroot_abs[0]) ? config_sdroot_abs : sdroot_abs;
 
         if (record_preset &&
-            jw__format_string(recordings_dir, sizeof(recordings_dir),
-                              "%s/Recordings", rec_root)) {
-            /* Recordings live on the primary card because that is the only place
-               the daemon's convert pass looks. */
+            jw_primary_recordings_path(recordings_dir, sizeof(recordings_dir), rec_root)) {
+            /* The same primary helper feeds the daemon child environment and
+               conversion pass. A secondary-card game still records somewhere
+               VFH can discover after the conversion completes. */
             (void)jw__mkdir_p(recordings_dir, 0755);
             jw__retroarch_cfg_string(fp, "record_driver", "ffmpeg");
             jw__retroarch_cfg_string(fp, "video_record_config", record_preset);
