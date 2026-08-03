@@ -1,6 +1,7 @@
 #ifndef JW_STORAGE_SOURCES_H
 #define JW_STORAGE_SOURCES_H
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 

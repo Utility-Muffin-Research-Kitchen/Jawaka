@@ -331,7 +331,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -513,7 +513,7 @@ $(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(SCRAPE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
 
 $(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -Ithird_party/miniz -o $@ $(PAKRAT_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lm
+	$(CC) $(CFLAGS_COMMON) -DJW_ENABLE_FAULT_INJECTION=1 $(CURL_CFLAGS) -Ithird_party/miniz -o $@ $(PAKRAT_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lm
 
 $(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(CATALOG_SMOKE_SRCS)
@@ -645,6 +645,9 @@ mlp1-inhibit-smoke:
 mlp1-adb-smoke:
 	scripts/adb-mlp1-smoke.sh
 
+mlp1-adb-pakrat-recovery-smoke:
+	scripts/adb-mlp1-pakrat-recovery-smoke.sh
+
 mlp1-adb-inhibit-smoke:
 	scripts/adb-mlp1-suspend-inhibit-smoke.sh
 
@@ -686,6 +689,7 @@ help:
 	@echo "  make mlp1-pakrat-smoke  Cross-compile local Pak Rat smoke helper for MLP1"
 	@echo "  make mlp1-adb-inhibit-smoke  Run the RTC-woken MLP1 suspend/reap smoke"
 	@echo "  make mlp1-adb-smoke  Build, push to /tmp, and run an ADB UI smoke"
+	@echo "  make mlp1-adb-pakrat-recovery-smoke  Run P1 recovery matrix on a real FAT card"
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"
 	@echo "  make mlp1-adb-ra-command-smoke  Run RetroArch command feature smoke over ADB"
 	@echo "  make phase3-fixture-scan-smoke  Run metadata-aware scan fixture checks"
