@@ -139,8 +139,7 @@ int main(void) {
     setenv("UMRK_INTERNAL_DATA_PATH", internal, 1);
     setenv("UMRK_RETROARCH_SHADERS_DIR", shaders, 1);
     setenv("UMRK_RETROARCH_USER_SHADERS_DIR", user_shaders, 1);
-    if (!jw_primary_recordings_path(recordings_dir, sizeof(recordings_dir), root) ||
-        strcmp(recordings_dir, "") == 0) {
+    if (!jw_primary_recordings_path(recordings_dir, sizeof(recordings_dir), root)) {
         return fail("could not resolve primary recordings path");
     }
 
