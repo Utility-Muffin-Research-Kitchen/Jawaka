@@ -41,6 +41,9 @@ bool jw_platform_parse_audio_output(const char *name, jw_platform_audio_output *
     } else if (strcmp(name, "BLUETOOTH") == 0 || strcmp(name, "bluetooth") == 0 ||
                strcmp(name, "BT") == 0 || strcmp(name, "bt") == 0) {
         *out = JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
+    } else if (strcmp(name, "USB") == 0 || strcmp(name, "usb") == 0 ||
+               strcmp(name, "USB-C") == 0 || strcmp(name, "usb-c") == 0) {
+        *out = JW_PLATFORM_AUDIO_OUTPUT_USB;
     } else {
         return false;
     }
@@ -104,6 +107,7 @@ const char *jw_platform_audio_output_name(jw_platform_audio_output output) {
         case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return "HEADSET";
         case JW_PLATFORM_AUDIO_OUTPUT_HDMI: return "HDMI";
         case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH: return "BLUETOOTH";
+        case JW_PLATFORM_AUDIO_OUTPUT_USB: return "USB";
         default: return "UNKNOWN";
     }
 }
@@ -114,6 +118,7 @@ const char *jw_platform_audio_output_label(jw_platform_audio_output output) {
         case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return "Headset";
         case JW_PLATFORM_AUDIO_OUTPUT_HDMI: return "HDMI";
         case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH: return "Bluetooth";
+        case JW_PLATFORM_AUDIO_OUTPUT_USB: return "USB-C";
         default: return "Unknown";
     }
 }
