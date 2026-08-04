@@ -16,13 +16,17 @@
 #define JW_LED_BRIGHTNESS_MAX 10
 #define JW_LED_SPEED_MAX 10
 
-#define JW_PLATFORM_AUDIO_OUTPUT_COUNT 4
+#define JW_PLATFORM_AUDIO_OUTPUT_COUNT 5
 #define JW_PLATFORM_PERF_DOMAIN_COUNT 3
 #define JW_PLATFORM_PERF_VALUE_MAX 64
 #define JW_PLATFORM_PERF_LIST_MAX 512
 
 #define JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED    (1u << 0)
 #define JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_DISCONNECTED (1u << 1)
+/* The active output changed on its own (cable in/out, headset connect). Each
+   output restores its own stored level, so any cached volume is now stale and a
+   volume keypress computed from it would jump instead of stepping. */
+#define JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED         (1u << 2)
 
 typedef enum {
     /* Stock modes are driven by the active platform LED backend. */
@@ -45,7 +49,10 @@ typedef enum {
     JW_PLATFORM_AUDIO_OUTPUT_SPEAKER = 0,
     JW_PLATFORM_AUDIO_OUTPUT_HEADSET,
     JW_PLATFORM_AUDIO_OUTPUT_HDMI,
-    JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH
+    JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH,
+    /* Appended, never inserted: per-output volumes are stored indexed by this
+       enum, so renumbering an existing member silently remaps saved levels. */
+    JW_PLATFORM_AUDIO_OUTPUT_USB
 } jw_platform_audio_output;
 
 #define JW_PLATFORM_AUDIO_OUTPUT_BIT(o) (1u << (unsigned)(o))

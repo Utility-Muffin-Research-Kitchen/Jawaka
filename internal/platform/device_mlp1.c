@@ -66,6 +66,17 @@
 /* The HDMI sink jawakad loads on demand (device=hw:0,0 sink_name=hdmi_out); the
    vendor udev-detect name is never produced on this build, so we own the name. */
 #define JW_MLP1_PACTL_HDMI_SINK "hdmi_out"
+/* USB-C audio. The OTG port role-switches to host on its own when a device is
+   attached and snd_usb_audio binds it as a new ALSA card, but Leaf's trimmed
+   pulse-default.pa has no module-udev-detect, so pulse never learns about it.
+   Load an explicit sink the same way HDMI does, on a name we own, rather than
+   turning udev-detect on — that would duplicate both the rk817 sink (already
+   loaded statically as alsa_output.hw_1_0) and the HDMI sink we manage here. */
+#define JW_MLP1_PACTL_USB_SINK "usb_out"
+#define JW_MLP1_PACTL_SET_DEFAULT_USB \
+    "pactl set-default-sink usb_out 2>/dev/null"
+/* Card index of the first USB-Audio class device, or empty if none is attached. */
+#define JW_MLP1_USB_CARD_CMD "awk '/USB-Audio/{print $1; exit}' /proc/asound/cards"
 #define JW_MLP1_PLAYBACK_PATH_CMD "amixer -c 1 cget numid=13 2>/dev/null"
 #define JW_MLP1_PLAYBACK_PATH_SPK "amixer -c 1 cset numid=13 2 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_HP  "amixer -c 1 cset numid=13 3 >/dev/null 2>&1"
@@ -1701,6 +1712,10 @@ static const char *jw__mlp1_sound_output_key(jw_platform_audio_output output) {
         case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return "HEADSET";
         case JW_PLATFORM_AUDIO_OUTPUT_HDMI: return "HDMI";
         case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH: return "BLUETOOTH";
+        /* Without a key here the level is neither restored nor saved: the switch
+           silently keeps whatever the previous output was at, and the first volume
+           press jumps to an unrelated value. */
+        case JW_PLATFORM_AUDIO_OUTPUT_USB: return "USB";
         default: return NULL;
     }
 }
@@ -1891,8 +1906,11 @@ static bool jw__mlp1_headphone_jack_present(void) {
 /* The rk817 (analog) sink's PulseAudio name is not stable: udev-detect names it
    "alsa_output.platform-rk817-sound.stereo-fallback", a raw module-alsa-sink
    load names it "alsa_output.hw_1_0", and which one wins is a boot-time race.
-   Resolve it at runtime as the first sink that is not the HDMI sink, instead of
-   hardcoding a name that may not exist. Returns false if no analog sink found. */
+   Resolve it at runtime as the first sink that is neither the HDMI nor the USB-C
+   sink, instead of hardcoding a name that may not exist. Skipping usb_out matters
+   as much as hdmi_out: this is what speaker/headset routing falls back to, and
+   with a USB headset attached the first sink is no longer guaranteed to be the
+   analog one. Returns false if no analog sink found. */
 static bool jw__mlp1_default_audio_sink(char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return false;
@@ -1907,7 +1925,8 @@ static bool jw__mlp1_default_audio_sink(char *out, size_t out_size) {
         char name[256];
         /* fields: index <tab> name <tab> module ... */
         if (sscanf(line, "%*s %255s", name) == 1) {
-            if (strstr(name, "hdmi")) {
+            if (strstr(name, "hdmi") || strstr(name, JW_MLP1_PACTL_USB_SINK) ||
+                strstr(name, ".usb-")) {
                 continue;
             }
             snprintf(out, out_size, "%s", name);
@@ -1977,6 +1996,112 @@ static void jw__mlp1_hdmi_audio_off(void) {
         (void)jw__exec_shell(cmd);
         s_mlp1_hdmi_audio_module = -1;
     }
+}
+
+/* ── USB-C audio (follows a USB Audio Class device on the OTG port) ───────────
+   The kernel does all the hard work already: attaching a device role-switches
+   the dwc3 to host, brings up xhci, and snd_usb_audio registers a new ALSA card.
+   All that's missing is telling pulse, which has no udev-detect here. */
+static int s_mlp1_usb_audio_module = -1;
+
+/* ALSA card index of an attached USB audio device, or -1 when none. */
+static int jw__mlp1_usb_audio_card(void) {
+    char buf[32];
+    if (jw__read_command_line(JW_MLP1_USB_CARD_CMD, buf, sizeof(buf)) != 0) {
+        return -1;
+    }
+    if (!buf[0]) {
+        return -1;
+    }
+    char *end = NULL;
+    long idx = strtol(buf, &end, 10);
+    if (end == buf || idx < 0 || idx > 31) {
+        return -1;
+    }
+    return (int)idx;
+}
+
+static bool jw__mlp1_usb_audio_present(void) {
+    return jw__mlp1_usb_audio_card() >= 0;
+}
+
+/* Load a sink for the USB card if one isn't loaded yet. The card index is not
+   fixed (it depends on probe order), so it is resolved at load time rather than
+   hardcoded. Returns true when a usable sink exists afterwards. */
+static bool jw__mlp1_usb_audio_ensure_sink(void) {
+    if (s_mlp1_usb_audio_module >= 0) {
+        return true;
+    }
+    int card = jw__mlp1_usb_audio_card();
+    if (card < 0) {
+        return false;
+    }
+    char cmd[192];
+    snprintf(cmd, sizeof(cmd),
+             "pactl load-module module-alsa-sink device=hw:%d,0 "
+             "sink_name=%s 2>/dev/null",
+             card, JW_MLP1_PACTL_USB_SINK);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return false;
+    }
+    char buf[32];
+    bool ok = false;
+    if (fgets(buf, sizeof(buf), fp)) {
+        int idx = atoi(buf);
+        if (idx > 0) {
+            s_mlp1_usb_audio_module = idx;
+            ok = true;
+        }
+    }
+    pclose(fp);
+    return ok;
+}
+
+/* Tearing the USB sink down leaves the analog sink wedged: pulse still reports
+   it RUNNING, streams reattach to it, the codec path is SPK and the DAC is open
+   — and nothing is audible, because the underlying ALSA device is never reopened.
+   Suspending and resuming forces that reopen in place. Deliberately not a module
+   reload: that changes the sink index, and every stream pointed at the old one
+   has to be chased down and moved again. */
+static void jw__mlp1_analog_sink_reset(void) {
+    char sink[256];
+    if (!jw__mlp1_default_audio_sink(sink, sizeof(sink))) {
+        return;
+    }
+    char cmd[640];
+    /* The gap matters. Resuming immediately after the suspend — or straight off
+       the back of the USB sink's unload — reopens into the same wedged state;
+       pulse needs a beat to finish tearing the old device down first. */
+    snprintf(cmd, sizeof(cmd),
+             "pactl suspend-sink %s 1 2>/dev/null; sleep 1; "
+             "pactl suspend-sink %s 0 2>/dev/null",
+             sink, sink);
+    (void)jw__exec_shell(cmd);
+}
+
+/* Drop the USB sink and move any streams back to the analog codec. Unlike HDMI
+   we always unload once the device is gone: the ALSA card disappears with it, so
+   keeping the sink loaded would strand every stream on a dead device. */
+static void jw__mlp1_usb_audio_drop(void) {
+    if (s_mlp1_usb_audio_module < 0) {
+        return;
+    }
+    char sink[256];
+    if (jw__mlp1_default_audio_sink(sink, sizeof(sink))) {
+        char cmd[768];
+        snprintf(cmd, sizeof(cmd),
+                 "pactl set-default-sink %s 2>/dev/null; "
+                 "pactl list short sink-inputs | while read id _rest; do "
+                 "pactl move-sink-input \"$id\" %s 2>/dev/null; done",
+                 sink, sink);
+        (void)jw__exec_shell(cmd);
+    }
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "pactl unload-module %d 2>/dev/null",
+             s_mlp1_usb_audio_module);
+    (void)jw__exec_shell(cmd);
+    s_mlp1_usb_audio_module = -1;
 }
 
 /* Escape a string for safe inclusion inside single quotes in a shell command:
@@ -2077,6 +2202,11 @@ static unsigned jw__mlp1_get_audio_available_outputs(void) {
     if (jw__mlp1_bt_audio_present() || jw_bt_audio_connected() == 1) {
         mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH);
     }
+    /* Offer USB-C whenever the card is present, loading the sink on demand — the
+       card can appear well before anything asks to route to it. */
+    if (jw__mlp1_usb_audio_present() && jw__mlp1_usb_audio_ensure_sink()) {
+        mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_USB);
+    }
     return mask;
 }
 
@@ -2087,9 +2217,15 @@ static jw_platform_audio_output jw__mlp1_get_audio_output(void) {
     }
 
     char sink[256];
-    if (jw__read_command_line(JW_MLP1_PACTL_GET_DEFAULT_SINK, sink, sizeof(sink)) == 0 &&
-        strstr(sink, "hdmi")) {
-        return JW_PLATFORM_AUDIO_OUTPUT_HDMI;
+    if (jw__read_command_line(JW_MLP1_PACTL_GET_DEFAULT_SINK, sink, sizeof(sink)) == 0) {
+        if (strstr(sink, "hdmi")) {
+            return JW_PLATFORM_AUDIO_OUTPUT_HDMI;
+        }
+        /* USB-C is a sink swap, not a codec Playback Path change, so it has to be
+           read off the default sink — the rk817 path still says speaker/headset. */
+        if (strstr(sink, JW_MLP1_PACTL_USB_SINK)) {
+            return JW_PLATFORM_AUDIO_OUTPUT_USB;
+        }
     }
 
     if (path == 3 || path == 4) {
@@ -2157,6 +2293,17 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
         }
         case JW_PLATFORM_AUDIO_OUTPUT_HDMI:
             rc = jw__exec_shell(JW_MLP1_PACTL_SET_DEFAULT_HDMI);
+            break;
+        case JW_PLATFORM_AUDIO_OUTPUT_USB:
+            /* Mute the analog stage so a speaker that is still on the rk817 path
+               doesn't keep playing alongside the headset, then take the sink and
+               drag any live streams across (same move HDMI makes). */
+            (void)jw__exec_shell(JW_MLP1_PLAYBACK_PATH_OFF);
+            rc = jw__exec_shell(
+                JW_MLP1_PACTL_SET_DEFAULT_USB "; "
+                "pactl list short sink-inputs | while read id _rest; do "
+                "pactl move-sink-input \"$id\" " JW_MLP1_PACTL_USB_SINK
+                " 2>/dev/null; done");
             break;
         case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH:
             rc = jw__exec_shell(JW_MLP1_PLAYBACK_PATH_BT);
@@ -2252,6 +2399,11 @@ static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi) {
     if (jack > 0) {
         return JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
     }
+    /* Below the 3.5mm jack, above Bluetooth: plugging a cable in is a more
+       deliberate act than a headset that merely happens to be paired and awake. */
+    if (jw__mlp1_usb_audio_present() && jw__mlp1_usb_audio_ensure_sink()) {
+        return JW_PLATFORM_AUDIO_OUTPUT_USB;
+    }
     if (jw__mlp1_bt_audio_present()) {
         return JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
     }
@@ -2312,10 +2464,50 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
         jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
         jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
         jw__mlp1_set_audio_output(target, &res);
+        events |= JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
         jw_log_info("audio: headphone jack %s, routed to %s",
                     present ? "inserted" : "removed",
                     target == JW_PLATFORM_AUDIO_OUTPUT_HEADSET   ? "headset" :
                     target == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH ? "bluetooth" : "speaker");
+    }
+
+    /* ── USB-C audio attach/detach edge (throttled). ──
+       Reading /proc/asound/cards is a popen per check, so keep it off the fast
+       path. On detach the sink must be dropped before re-routing: its ALSA card
+       is already gone and anything still pointed at it plays into nothing. */
+    static long long usb_next_ms = 0;
+    static int last_usb = -1;
+    long long usb_now = jw__monotonic_ms();
+    if (usb_now >= usb_next_ms) {
+        usb_next_ms = usb_now + 1000;
+        int usb = jw__mlp1_usb_audio_present() ? 1 : 0;
+        if (usb != last_usb) {
+            int prev = last_usb;
+            last_usb = usb;
+            if (prev >= 0 && !jw__mlp1_hdmi_tv_active()) {
+                if (!usb) {
+                    jw__mlp1_usb_audio_drop();
+                }
+                jw_platform_result res;
+                jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
+                jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
+                jw__mlp1_set_audio_output(target, &res);
+                /* Last, once the codec path and default sink are already correct:
+                   the reset only sticks if there is nothing left to reconfigure
+                   the device afterwards. */
+                if (!usb) {
+                    jw__mlp1_analog_sink_reset();
+                }
+                events |= JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
+                jw_log_info("audio: usb-c audio %s, routed to %s",
+                            usb ? "attached" : "detached",
+                            jw_platform_audio_output_label(target));
+            } else if (prev < 0 && !usb) {
+                /* First sample with nothing attached: make sure a stale sink from
+                   a previous session can't linger. */
+                jw__mlp1_usb_audio_drop();
+            }
+        }
     }
 
     /* ── Bluetooth audio connect/disconnect edge (throttled). ──
@@ -2343,13 +2535,15 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
                         jw__mlp1_set_audio_output(target, &res);
                         jw_log_info("audio: bluetooth connected, routed to bluetooth");
                     }
-                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED;
+                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED |
+                              JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
                 } else if (cur == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
                     jw_platform_audio_output fb = jw__mlp1_desired_audio_output(true);
                     jw__mlp1_set_audio_output(fb, &res);
                     jw_log_info("audio: bluetooth disconnected, routed to %s",
                                 fb == JW_PLATFORM_AUDIO_OUTPUT_HEADSET ? "headset" : "speaker");
-                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_DISCONNECTED;
+                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_DISCONNECTED |
+                              JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
                 }
             }
         }

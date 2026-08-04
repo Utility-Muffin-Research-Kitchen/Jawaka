@@ -9987,6 +9987,13 @@ int main(int argc, char *argv[]) {
         if (audio_events & JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
         }
+        if (audio_events & JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED) {
+            /* Each output restores its own stored level, so the cached percent
+               now describes the output we just left. Drop it and let the next
+               volume keypress re-read, or that press steps from the old value
+               and jumps. */
+            state.cached_volume_percent = -1;
+        }
         jw__tick_retroarch_audio_reinit(&state);
         jw__tick_rumble_reclaim(&state);
         jw__tick_suspend_inhibitors(&state);
