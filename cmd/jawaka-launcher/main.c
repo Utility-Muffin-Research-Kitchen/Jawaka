@@ -828,6 +828,13 @@ static void jw__draw_settings_footer(const jw_launcher_state *state) {
             { CAT_BTN_A, "Select",  true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 4);
+    } else if (scr == JW_SETTINGS_SERVICES) {
+        cat_footer_item footer[] = {
+            { CAT_BTN_X, "Start with Leaf", false, JW_HINT("X") },
+            { CAT_BTN_B, "Back",            true,  JW_HINT("B") },
+            { CAT_BTN_A, "Run / Stop",      true,  JW_HINT("A") },
+        };
+        jw__draw_footer(state, footer, 3);
     } else if (scr == JW_SETTINGS_UPDATE) {
         cat_footer_item footer[] = {
             { CAT_BTN_X, "Releases", false, JW_HINT("X") },
@@ -2216,9 +2223,26 @@ static void jw__render_settings(const jw_launcher_state *state,
        box's own top padding) - so the Settings list sits on the same row grid
        as the browse tabs instead of a slightly denser one. */
     int hints_h = jw__footer_height(state);
-    int sh_inner = content_h - margin - ((hints_h > 0) ? margin : 0);
+    TTF_Font *status_font = cat_get_font(CAT_FONT_SMALL);
+    int status_h = state->status[0]
+        ? TTF_FontHeight(status_font) + CAT_S(8)
+        : 0;
+    int sh_inner = content_h - margin - ((hints_h > 0) ? margin : 0) - status_h;
+    if (sh_inner < 0) sh_inner = 0;
 
     jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
+
+    /* Settings actions report success and failure through state->status. The
+       System-menu-hosted Settings path used to reserve no place to draw it, so
+       failures such as an unavailable scraper looked exactly like a dropped A
+       press. Keep one line below the page only while there is feedback to show. */
+    if (status_h > 0) {
+        ap_theme *theme = cat_get_theme();
+        int status_y = sy + sh_inner + CAT_S(4);
+        cat_draw_text_ellipsized(status_font, state->status,
+                                 sx + CAT_S(12), status_y, theme->hint,
+                                 sw_inner - CAT_S(24));
+    }
 }
 
 /* The current tab's content dispatch, factored out so it can draw to the screen
@@ -9203,6 +9227,11 @@ int main(void) {
         if (jw_settings_ui_wants_update_poll(&state.settings)) {
             jw_settings_ui_refresh_update(&state.settings);
             cat_request_frame_in(500);
+        }
+
+        if (jw_settings_ui_wants_services_poll(&state.settings)) {
+            jw_settings_ui_refresh_services(&state.settings);
+            cat_request_frame_in(1000);
         }
 
         /* The library-generation IPC and the status-bar volume/Wi-Fi/Bluetooth

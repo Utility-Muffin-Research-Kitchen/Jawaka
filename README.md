@@ -22,6 +22,9 @@ local preview loop with a generated mock SD-card tree.
 - MLP1 platform integration for launch lifecycle, brightness, volume, audio
   output, Wi-Fi, Bluetooth, ADB pin control, boot splash, secondary SD unmount,
   LEDs, sleep, reboot, power off, and Exit to Stock.
+- SVC-1 foreground-service supervision, CTL-1 status/control IPC, declarative
+  storage/suspend policy stops, process-group cleanup, and a dynamic Settings
+  → Services screen.
 - RetroArch helpers: `jawaka-retroarch-runner`, `jawaka-retroarchctl`, metadata
   catalog support, shared config reset, command-menu integration, and in-game
   menu flow.
@@ -158,6 +161,7 @@ Important variables:
 | `PLATFORM` / `DEVICE` | platform id, usually `mac` or `mlp1` |
 | `SDCARD_PATH` | mock or device SD-card root |
 | `SDCARD_PATHS` | colon-separated SD roots, primary first |
+| `USERDATA_PATHS`, `SHARED_USERDATA_PATHS` | PATH-2 per-source durable roots, aligned with `SDCARD_PATHS` |
 | `ROMS_PATHS`, `IMAGES_PATHS`, `MUSIC_PATHS`, `VIDEO_PATHS`, `APPS_PATHS` | indexed plural content roots, aligned with `SDCARD_PATHS` |
 | `UMRK_RUNTIME_PATH` | runtime socket and scratch directory |
 | `UMRK_PLATFORM_PATH` / `SYSTEM_PATH` | platform payload root |
@@ -169,6 +173,10 @@ Important variables:
 | `JAWAKA_THEME` | local preview theme override |
 | `JAWAKA_AUTODEMO` | `1` enables the short automated run-daemon flow |
 | `JAWAKA_AUTODEMO_DELAY_MS` | auto-demo delay, default `1200` |
+
+When the complete PATH-2 lists validate, `hello-ok.features` includes
+`source-paths-v2`; malformed, incomplete, duplicate, or misaligned lists keep
+that capability absent even if `UMRK_ENV_VERSION=2` was inherited.
 
 `JAWAKA_SDCARD_ROOT`, `JAWAKA_RUNTIME_DIR`, `JAWAKA_RETROARCH_BIN`, and
 `JAWAKA_RETROARCH_CORES_DIR` remain compatibility aliases. New scripts and docs
@@ -190,7 +198,14 @@ Saves/
 States/
 Cheats/
 .umrk/<platform>/library.db
+.umrk/<platform>/services-control.db
 ```
+
+`services-control.db` owns persistent `Start with Leaf` intent separately from
+session Run/Stop state. Its schema-v2 migration records Release A's one-time
+legacy SSH decision atomically with the enablement value: a valid existing SSH
+config enables once, while a clean or invalid install stays disabled. The
+marker survives later config restoration and never reads or changes host keys.
 
 `<SYSTEM_CODE>` is matched against the platform `systems.json` catalog, where
 each user system has one canonical public folder plus legacy aliases in its
@@ -223,6 +238,8 @@ Game Art         scrape artwork (all/per-system, missing or replace-all), live
 Accounts         ScreenScraper / RetroAchievements sign-in
 General          startup tab, auto-sleep, boot splash, game performance,
                  time zone, reset RetroArch config, unmount secondary SD
+Services         installed/retained service status, Run/Stop and persistent
+                 Start with Leaf controls (hidden when no service is present)
 ```
 
 System Update and About are not in the Settings tree; they live in the **System**
@@ -285,6 +302,31 @@ The MLP1 launcher payload also installs `jawaka-inhibitctl`. PortMaster uses
 its `hold` command for the full lifetime of a journaled cross-card package
 move, so an automatic or explicit suspend cannot interrupt an active copy or
 publication phase.
+
+### Package replacement barrier
+
+The daemon advertises `package-quiesce-v1` for PKG-1 callers such as Leaf's
+`make stage-app` and direct update runner. A caller sends
+`package-quiesce-begin` with a bounded `operation_id`; Jawaka snapshots every
+service, blocks new service generations and foreground app launches, and does
+not reply `ok` until every owned process group is verified absent. Stale or
+unverified generations fail closed before the caller may change package bytes.
+
+After replacement, the caller sends `package-quiesce-end` with the same id.
+Jawaka rescans manifests while the start latch is still held, restores the
+snapshotted persistent enablement, and starts only desired-enabled services.
+Session-only Run state is intentionally not restored. Direct/generic Leaf
+updates use the same barrier internally; the stock MLP1 reboot handoff remains
+reboot-mediated.
+
+Raw diagnostic calls are available through `jawaka-platformctl`:
+
+```sh
+jawaka-platformctl request \
+  '{"type":"package-quiesce-begin","operation_id":"manual-check"}'
+jawaka-platformctl request \
+  '{"type":"package-quiesce-end","operation_id":"manual-check"}'
+```
 
 ## Repo Notes
 

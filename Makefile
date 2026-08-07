@@ -51,20 +51,41 @@ CURL_LDFLAGS := -lcurl
 endif
 endif
 
-# ScreenScraper dev credentials, injected from the git-ignored .env.local
-# (copy .env.example). Builds without credentials still compile; scraping
-# reports itself unavailable at runtime.
--include .env.local
-SCRAPE_DEFINES :=
-ifdef SCREENSCRAPER_DEV_ID
-SCRAPE_DEFINES += -DSCREENSCRAPER_DEV_ID=\"$(SCREENSCRAPER_DEV_ID)\"
+# ScreenScraper developer credentials. Prefer the current checkout's ignored
+# .env.local, then the primary checkout's copy when building from a linked Git
+# worktree. Release-candidate builds use temporary worktrees, and silently
+# dropping the credentials there produces a launcher whose artwork picker can
+# enumerate local games but can never enqueue a scrape.
+JAWAKA_GIT_COMMON_DIR := $(shell git -C "$(CURDIR)" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+SCREENSCRAPER_ENV_FILE ?= $(firstword $(wildcard \
+	$(CURDIR)/.env.local \
+	$(JAWAKA_GIT_COMMON_DIR)/../.env.local))
+ifneq ($(strip $(SCREENSCRAPER_ENV_FILE)),)
+-include $(SCREENSCRAPER_ENV_FILE)
 endif
-ifdef SCREENSCRAPER_DEV_PASSWORD
-SCRAPE_DEFINES += -DSCREENSCRAPER_DEV_PASSWORD=\"$(SCREENSCRAPER_DEV_PASSWORD)\"
+
+# Export names into the MLP1 Docker build with `docker -e NAME`; values never
+# appear in the echoed command line. Direct builds without credentials remain
+# supported unless their caller explicitly requires the feature.
+export SCREENSCRAPER_DEV_ID
+export SCREENSCRAPER_DEV_PASSWORD
+export SCREENSCRAPER_DEBUG_PASSWORD
+
+SCREENSCRAPER_AVAILABLE := 0
+ifneq ($(strip $(SCREENSCRAPER_DEV_ID)),)
+ifneq ($(strip $(SCREENSCRAPER_DEV_PASSWORD)),)
+SCREENSCRAPER_AVAILABLE := 1
 endif
-ifdef SCREENSCRAPER_DEBUG_PASSWORD
-SCRAPE_DEFINES += -DSCREENSCRAPER_DEBUG_PASSWORD=\"$(SCREENSCRAPER_DEBUG_PASSWORD)\"
 endif
+
+SCREENSCRAPER_REQUIRED ?= 0
+ifneq ($(filter 1 yes true,$(SCREENSCRAPER_REQUIRED)),)
+ifeq ($(SCREENSCRAPER_AVAILABLE),0)
+$(error ScreenScraper credentials are required; create .env.local or set SCREENSCRAPER_DEV_ID and SCREENSCRAPER_DEV_PASSWORD)
+endif
+endif
+
+SCRAPE_CREDENTIALS_HEADER := $(BUILD)/generated/screenscraper_credentials.h
 
 CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
@@ -121,7 +142,7 @@ SCRAPE_SRCS := \
 	third_party/miniz/miniz_tdef.c \
 	third_party/miniz/miniz_tinfl.c \
 	third_party/miniz/miniz_zip.c
-SCRAPE_CFLAGS := $(SCRAPE_DEFINES) $(CURL_CFLAGS) \
+SCRAPE_CFLAGS := -include $(SCRAPE_CREDENTIALS_HEADER) $(CURL_CFLAGS) \
 	-Ithird_party/stb -Ithird_party/miniz -Ithird_party/md5
 
 CFLAGS_DAEMON += $(SCRAPE_CFLAGS)
@@ -132,6 +153,7 @@ DAEMON_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
+	internal/ipc/ctl1.c \
 	internal/launcher/standalone_policy.c \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
@@ -159,8 +181,21 @@ DAEMON_SRCS := \
 	internal/db/relocation.c \
 	internal/settings/appearance.c \
 	internal/settings/theme_resolve.c \
-	internal/discovery/discovery.c \
+internal/discovery/discovery.c \
 	$(SCRAPE_SRCS) \
+	internal/services/manifest.c \
+	internal/services/ownership.c \
+	internal/services/lease.c \
+	internal/services/stop.c \
+	internal/services/reservation.c \
+	internal/services/backoff.c \
+	internal/services/dup_ids.c \
+	internal/services/unverified_stop.c \
+	internal/services/control_state.c \
+	internal/services/legacy_ssh_migration.c \
+	internal/services/log_redact.c \
+	internal/services/launch.c \
+	internal/services/supervisor.c \
 	third_party/cjson/cJSON.c
 
 RETROARCH_CTL_SRCS := \
@@ -217,6 +252,8 @@ SCRAPE_SMOKE_SRCS := \
 	internal/core/log.c \
 	internal/db/db.c \
 	internal/db/relocation.c \
+	$(PLATFORM_ID_SRC) \
+	internal/retroarch/catalog.c \
 	internal/storage/sources.c \
 	third_party/cjson/cJSON.c
 
@@ -331,7 +368,8 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test focus-test schema-v6-test relocation-test relocation-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -382,6 +420,9 @@ storage-sources-test: | $(BUILD)/bin
 		internal/storage/sources_test.c internal/storage/sources.c
 	$(BUILD)/bin/storage-sources-test
 
+source-paths-v2-smoke:
+	BUILD="$(BUILD)" scripts/source-paths-v2-smoke.sh
+
 schema-v6-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/schema-v6-test \
 		internal/db/schema_v6_test.c internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
@@ -396,6 +437,137 @@ relocation-test: | $(BUILD)/bin
 
 relocation-ipc-smoke:
 	scripts/relocation-ipc-smoke.sh
+
+package-quiesce-ipc-smoke:
+	scripts/package-quiesce-ipc-smoke.sh
+
+power-transition-ipc-smoke:
+	scripts/power-transition-ipc-smoke.sh
+
+service-manifest-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-manifest-test \
+		internal/services/manifest_test.c internal/services/manifest.c \
+		third_party/cjson/cJSON.c
+	$(BUILD)/bin/service-manifest-test
+
+$(BUILD)/bin/ownership-test: internal/services/ownership_test.c \
+		internal/services/ownership.c internal/services/ownership.h | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -DJW_SVC_OWNERSHIP_TESTING -o $(BUILD)/bin/ownership-test \
+		internal/services/ownership_test.c internal/services/ownership.c -lpthread
+
+ownership-test: $(BUILD)/bin/ownership-test
+	$(BUILD)/bin/ownership-test
+
+lease-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/lease-test \
+		internal/services/lease_test.c internal/services/lease.c
+	$(BUILD)/bin/lease-test
+
+stop-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/stop-test \
+		internal/services/stop_test.c internal/services/stop.c
+	$(BUILD)/bin/stop-test
+
+reservation-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/reservation-test \
+		internal/services/reservation_test.c internal/services/reservation.c \
+		third_party/cjson/cJSON.c
+	$(BUILD)/bin/reservation-test
+
+backoff-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/backoff-test \
+		internal/services/backoff_test.c internal/services/backoff.c
+	$(BUILD)/bin/backoff-test
+
+dup-ids-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/dup-ids-test \
+		internal/services/dup_ids_test.c internal/services/dup_ids.c
+	$(BUILD)/bin/dup-ids-test
+
+unverified-stop-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/unverified-stop-test \
+		internal/services/unverified_stop_test.c internal/services/unverified_stop.c
+	$(BUILD)/bin/unverified-stop-test
+
+control-state-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/control-state-test \
+		internal/services/control_state_test.c internal/services/control_state.c \
+		-lsqlite3
+	$(BUILD)/bin/control-state-test
+
+legacy-ssh-migration-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/legacy-ssh-migration-test \
+		internal/services/legacy_ssh_migration_test.c \
+		internal/services/legacy_ssh_migration.c \
+		internal/services/control_state.c -lsqlite3
+	$(BUILD)/bin/legacy-ssh-migration-test
+
+log-redact-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/log-redact-test \
+		internal/services/log_redact_test.c internal/services/log_redact.c
+	$(BUILD)/bin/log-redact-test
+
+launch-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/launch-test \
+		internal/services/launch_test.c internal/services/launch.c \
+		third_party/cjson/cJSON.c -lpthread
+	$(BUILD)/bin/launch-test
+
+supervisor-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/supervisor-test \
+		internal/services/supervisor_test.c internal/services/supervisor.c \
+		internal/services/manifest.c internal/services/lease.c \
+		internal/services/launch.c internal/services/ownership.c \
+		internal/services/stop.c internal/services/reservation.c \
+		internal/services/backoff.c internal/services/dup_ids.c \
+		internal/services/control_state.c \
+		internal/services/legacy_ssh_migration.c \
+		third_party/cjson/cJSON.c -lsqlite3 -lpthread
+	$(BUILD)/bin/supervisor-test
+
+SERVICE_FIXTURE_ROOT := $(BUILD)/service-fixtures
+SERVICE_FIXTURE_INVALID := $(WORKSPACE_ROOT)/umrk-workspace/contracts/leaf-services/manifests/invalid
+SERVICE_FIXTURE_TEST_ROOT ?= $(abspath $(SERVICE_FIXTURE_ROOT))
+
+$(BUILD)/bin/service-fixture: internal/services/fixtures/fixture_service.c | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $<
+
+service-fixtures: $(BUILD)/bin/service-fixture
+	python3 internal/services/fixtures/materialize.py \
+		--templates internal/services/fixtures/paks \
+		--binary $(BUILD)/bin/service-fixture \
+		--canonical-invalid $(SERVICE_FIXTURE_INVALID) \
+		--output $(SERVICE_FIXTURE_ROOT)
+
+$(BUILD)/bin/service-fixture-test: service-fixtures \
+		internal/services/fixtures/fixture_paks_test.c | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) \
+		-DJW_TEST_SERVICE_FIXTURES_ROOT=\"$(SERVICE_FIXTURE_TEST_ROOT)\" \
+		-o $(BUILD)/bin/service-fixture-test \
+		internal/services/fixtures/fixture_paks_test.c \
+		internal/services/supervisor.c internal/services/manifest.c \
+		internal/services/lease.c internal/services/launch.c \
+		internal/services/ownership.c internal/services/stop.c \
+		internal/services/reservation.c internal/services/backoff.c \
+		internal/services/dup_ids.c internal/services/control_state.c \
+		internal/services/legacy_ssh_migration.c \
+		third_party/cjson/cJSON.c -lsqlite3 -lpthread
+
+service-fixture-test: $(BUILD)/bin/service-fixture-test
+	$(BUILD)/bin/service-fixture-test
+
+ctl1-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ctl1-test \
+		internal/ipc/ctl1_test.c internal/ipc/ctl1.c \
+		third_party/cjson/cJSON.c -lm
+	$(BUILD)/bin/ctl1-test
+
+service-client-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-client-test \
+		internal/ipc/service_client_test.c internal/ipc/ipc.c \
+		internal/ipc/ipc_client.c internal/ipc/ctl1.c \
+		internal/platform/platform_common.c third_party/cjson/cJSON.c -lm
+	$(BUILD)/bin/service-client-test
 
 imported-title-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/imported-title-test \
@@ -478,8 +650,9 @@ check-sdl:
 	@pkg-config --exists sdl2 SDL2_ttf SDL2_image 2>/dev/null || \
 		( echo "SDL2 libraries not found. Install with: brew install sdl2 sdl2_ttf sdl2_image" && exit 1 )
 
-$(BUILD)/bin/jawakad: $(DAEMON_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_DAEMON) -o $@ $(DAEMON_SRCS) $(LDLIBS_DAEMON)
+$(BUILD)/bin/jawakad: $(DAEMON_SRCS) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS_DAEMON) -o $@ $(DAEMON_SRCS) $(LDLIBS_DAEMON)
 
 $(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(UI_SRCS) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(UI_SRCS) $(LDLIBS_UI)
@@ -489,6 +662,22 @@ $(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(UI_SRCS) $(CATASTROPHE_HEADER
 
 $(BUILD)/generated:
 	@mkdir -p $(BUILD)/generated
+
+# Keep credential changes in make's dependency graph without exposing values in
+# compiler command lines. FORCE reruns this small recipe; preserving the header
+# mtime when its content is unchanged keeps incremental daemon builds fast.
+$(SCRAPE_CREDENTIALS_HEADER): FORCE | $(BUILD)/generated
+	@umask 077; tmp="$@.tmp"; \
+		{ \
+			printf '#define SCREENSCRAPER_DEV_ID "%s"\n' "$$SCREENSCRAPER_DEV_ID"; \
+			printf '#define SCREENSCRAPER_DEV_PASSWORD "%s"\n' "$$SCREENSCRAPER_DEV_PASSWORD"; \
+			printf '#define SCREENSCRAPER_DEBUG_PASSWORD "%s"\n' "$$SCREENSCRAPER_DEBUG_PASSWORD"; \
+		} > "$$tmp"; \
+		if test -f "$@" && cmp -s "$$tmp" "$@"; then \
+			rm -f "$$tmp"; \
+		else \
+			mv -f "$$tmp" "$@"; \
+		fi
 
 $(BUILD)/generated/xdg-shell-client-protocol.h: | $(BUILD)/generated
 	@test -n "$(WAYLAND_PROTOCOLS_DIR)" || { echo "wayland-protocols pkg-config data dir missing" >&2; exit 1; }
@@ -516,8 +705,9 @@ $(BUILD)/bin/jawaka-platformctl: $(PLATFORM_CTL_SRCS) | $(BUILD)/bin
 $(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(SCAN_SMOKE_SRCS) $(LDLIBS_COMMON)
 
-$(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(SCRAPE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
+$(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(SCRAPE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
 
 $(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -Ithird_party/miniz -o $@ $(PAKRAT_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lm
@@ -548,13 +738,15 @@ $(BUILD)/build-manifest.json: $(ALL_BINS) FORCE
 		printf '  "build_profile": "%s",\n' "$(MLP1_BUILD_PROFILE)"; \
 		printf '  "cflags": "%s",\n' "$(CDEBUG)"; \
 		printf '  "ldflags": "%s",\n' "$(LDFLAGS_PLATFORM)"; \
+		printf '  "features": {"screenscraper": %s},\n' "$(if $(filter 1,$(SCREENSCRAPER_AVAILABLE)),true,false)"; \
 		printf '  "binaries": ["jawakad", "jawaka-launcher", "jawaka-menu", "jawaka-osd", "jawaka-retroarchctl", "jawaka-retroarch-runner", "jawaka-update-runner", "jawaka-platformctl", "jawaka-inhibitctl", "jawaka-ledd"],\n'; \
 		printf '  "exceptions": []\n'; \
 		printf '}\n'; \
 	} > "$@"
 
-FORCE:
 endif
+
+FORCE:
 
 phase3-fixture-scan-smoke:
 	scripts/phase3-fixture-scan-smoke.sh
@@ -628,7 +820,13 @@ tg5040 tg5050 my355:
 mlp1:
 	docker run --rm \
 		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		-e SCREENSCRAPER_REQUIRED="$(SCREENSCRAPER_REQUIRED)" \
+		-e SCREENSCRAPER_DEV_ID \
+		-e SCREENSCRAPER_DEV_PASSWORD \
+		-e SCREENSCRAPER_DEBUG_PASSWORD \
 		-v "$(WORKSPACE_ROOT)":/workspace \
+		-v "$(CURDIR)":/workspace/Jawaka \
+		-v "$(abspath $(CATASTROPHE_DIR))":/workspace/Catastrophe \
 		-w /workspace/Jawaka \
 		"$(MLP1_TOOLCHAIN_IMAGE)" \
 		make -f ports/mlp1/Makefile all
@@ -651,6 +849,9 @@ mlp1-inhibit-smoke:
 
 mlp1-adb-smoke:
 	scripts/adb-mlp1-smoke.sh
+
+mlp1-adb-service-fixture-smoke:
+	scripts/adb-mlp1-service-fixture-smoke.sh
 
 mlp1-adb-inhibit-smoke:
 	scripts/adb-mlp1-suspend-inhibit-smoke.sh
@@ -693,6 +894,7 @@ help:
 	@echo "  make mlp1-pakrat-smoke  Cross-compile local Pak Rat smoke helper for MLP1"
 	@echo "  make mlp1-adb-inhibit-smoke  Run the RTC-woken MLP1 suspend/reap smoke"
 	@echo "  make mlp1-adb-smoke  Build, push to /tmp, and run an ADB UI smoke"
+	@echo "  make mlp1-adb-service-fixture-smoke  Run A2 service fixtures on an attached MLP1"
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"
 	@echo "  make mlp1-adb-ra-command-smoke  Run RetroArch command feature smoke over ADB"
 	@echo "  make phase3-fixture-scan-smoke  Run metadata-aware scan fixture checks"

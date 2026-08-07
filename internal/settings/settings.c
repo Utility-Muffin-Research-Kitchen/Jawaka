@@ -448,10 +448,11 @@ static const char *kHomeCategoryLabels[] = {
     "Accounts",
     "General",
     "Controls & Feedback",
+    "Services",
 };
 /* System Update and About are not listed here — they live in the System menu
    (the Menu-button popup), hosted there via jw_settings_ui_open(). */
-#define JW_SETTINGS_CATEGORY_COUNT 9
+#define JW_SETTINGS_CATEGORY_COUNT 10
 
 /* Visible rows in the Network page's scanned-network list (scrolls beyond). */
 #define JW_WIFI_LIST_ROWS 6
@@ -463,6 +464,7 @@ static const char *kHomeCategoryLabels[] = {
 #define JW_BT_POLL_INTERVAL_MS 2000
 #define JW_BT_SCAN_INTERVAL_MS 12000
 #define JW_BT_ENTRY_DEFER_MS 250
+#define JW_SERVICES_POLL_INTERVAL_MS 1000
 #define JW_SETTINGS_DISPLAY_COUNT JW_DISPLAY_ROW_COUNT
 #define JW_UPDATE_PICKER_VISIBLE_ROWS 7
 
@@ -1214,6 +1216,92 @@ static void jw__persist_color(const jw_settings_ui *ui, const char *key, ap_colo
     jw__persist(ui, key, hex);
 }
 
+/* ─── Services (app-services-v1) ───────────────────────────────────────── */
+
+/* Refresh the CTL-1 service-list snapshot. Returns the number of services
+ * known to the daemon (0 = none, -1 = the query failed / daemon has no
+ * supervisor). The Services screen is offered only when this is > 0. */
+static int jw__refresh_services(jw_settings_ui *ui) {
+    if (!ui || !ui->socket_path[0]) {
+        return -1;
+    }
+    jw_ipc_service_info refreshed[JW_IPC_SVC_LIST_MAX];
+    int count = 0;
+    if (jw_ipc_service_list(ui->socket_path, refreshed,
+                            JW_IPC_SVC_LIST_MAX, &count) != 0) {
+        return -1;
+    }
+    int visible = count;
+    if (visible > 0) {
+        memcpy(ui->services, refreshed,
+               (size_t)visible * sizeof(ui->services[0]));
+    }
+    ui->services_count = visible;
+    if (visible <= 0) {
+        ui->services_list.cursor = 0;
+        ui->services_list.scroll_offset = 0;
+        if (ui->screen == JW_SETTINGS_SERVICES) {
+            ui->screen = JW_SETTINGS_HOME;
+            /* The disappearing Services row was the final Home category.
+             * Clamp both list coordinates before the next render/input pass
+             * sees the now-shorter list. */
+            int home_count = JW_SETTINGS_CATEGORY_COUNT - 1;
+            if (ui->home_list.cursor >= home_count) {
+                ui->home_list.cursor = home_count - 1;
+            }
+            if (ui->home_list.scroll_offset > ui->home_list.cursor) {
+                ui->home_list.scroll_offset = ui->home_list.cursor;
+            }
+        }
+    } else if (ui->services_list.cursor >= visible) {
+        ui->services_list.cursor = visible - 1;
+        if (ui->services_list.scroll_offset > ui->services_list.cursor) {
+            ui->services_list.scroll_offset = ui->services_list.cursor;
+        }
+    }
+    return visible;
+}
+
+/* SVC-1's hiding rule: CTL-1 omits invalid-discovery-only rows, but includes
+ * valid services, retained desired state, and actionable stale generations.
+ * A non-empty canonical list therefore means the screen is relevant. */
+static bool jw__services_available(jw_settings_ui *ui) {
+    if (ui) ui->services_count = 0;
+    return jw__refresh_services(ui) > 0;
+}
+
+static int jw__home_category_count(const jw_settings_ui *ui) {
+    /* Services is the final category and is genuinely absent on a clean
+       system, per SVC-1. The snapshot is refreshed whenever Settings is
+       entered and when leaving the Services screen. */
+    return JW_SETTINGS_CATEGORY_COUNT -
+           ((!ui || ui->services_count <= 0) ? 1 : 0);
+}
+
+bool jw_settings_ui_wants_services_poll(const jw_settings_ui *ui) {
+    return ui && ui->open && ui->screen == JW_SETTINGS_SERVICES;
+}
+
+void jw_settings_ui_refresh_services(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+    unsigned now = SDL_GetTicks();
+    if (ui->services_next_poll_ms != 0 &&
+        (int)(now - ui->services_next_poll_ms) < 0) {
+        return; /* not due yet */
+    }
+    int refresh_result = jw__refresh_services(ui);
+    if (refresh_result < 0 && ui->screen == JW_SETTINGS_SERVICES) {
+        snprintf(ui->services_msg, sizeof(ui->services_msg), "%s",
+                 "Service status unavailable");
+    } else if (refresh_result >= 0 &&
+               strcmp(ui->services_msg, "Service status unavailable") == 0) {
+        ui->services_msg[0] = '\0';
+    }
+    ui->services_next_poll_ms = now + JW_SERVICES_POLL_INTERVAL_MS;
+}
+
 /* ─── Lifecycle ────────────────────────────────────────────────────────── */
 
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
@@ -1251,6 +1339,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->update_picker_list, JW_UPDATE_PICKER_VISIBLE_ROWS);
     cat_list_state_init(&ui->timezone_picker_list, JW_TIMEZONE_VISIBLE_ROWS);
     cat_list_state_init(&ui->placeholder_list, 1);
+    cat_list_state_init(&ui->services_list,    JW_IPC_SVC_LIST_MAX);
     cat_scroll_state_init(&ui->about_scroll);
     ui->theme_index       = jw__find_theme_index(initial_theme_name);
     ui->color_scheme_index = -1;   /* custom until a scheme is loaded below */
@@ -1470,6 +1559,12 @@ void jw_settings_ui_enter(jw_settings_ui *ui) {
     if (!ui) return;
     ui->open = true;
     ui->screen = JW_SETTINGS_HOME;
+    ui->services_count = 0;
+    (void)jw__refresh_services(ui);
+    int home_count = jw__home_category_count(ui);
+    if (ui->home_list.cursor >= home_count) {
+        ui->home_list.cursor = home_count - 1;
+    }
 }
 
 void jw_settings_ui_close(jw_settings_ui *ui) {
@@ -1522,6 +1617,18 @@ void jw_settings_ui_open(jw_settings_ui *ui, jw_settings_screen screen) {
     } else if (screen == JW_SETTINGS_PLAYTIME) {
         cat_scroll_state_init(&ui->playtime_scroll);
         jw__stats_snapshot_invalidate();   /* re-read fresh on first frame */
+    } else if (screen == JW_SETTINGS_SERVICES) {
+        if (jw__refresh_services(ui) <= 0) {
+            /* Preserve the same hidden-on-clean-system rule for hosts that
+               open a settings page directly instead of using the home list. */
+            ui->screen = JW_SETTINGS_HOME;
+        } else {
+            ui->services_list.cursor = 0;
+            ui->services_list.scroll_offset = 0;
+            ui->services_msg[0] = '\0';
+            ui->services_next_poll_ms =
+                SDL_GetTicks() + JW_SERVICES_POLL_INTERVAL_MS;
+        }
     }
 }
 
@@ -1835,6 +1942,74 @@ static void jw__render_color_swatch(int x, int list_y, int w, int row, ap_color 
 
 /* ─── Page renderers ───────────────────────────────────────────────────── */
 
+/* One Services row: the service id plus a compact "state · Start with Leaf"
+ * summary. The list is a live CTL-1 snapshot refreshed on entry and after
+ * every action. */
+static void jw__draw_service_item(int idx, int ix, int iy, int iw, int ih,
+                                  bool selected, void *user) {
+    const jw_settings_ui *ui = (const jw_settings_ui *)user;
+    if (!ui || idx < 0 || idx >= ui->services_count) return;
+    const jw_ipc_service_info *svc = &ui->services[idx];
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected)
+        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
+    ap_color tc = selected ? theme->highlighted_text : theme->text;
+    int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+
+    /* Shorten the reverse-DNS id to its last component for the list. */
+    const char *short_id = strrchr(svc->id, '.');
+    short_id = short_id ? short_id + 1 : svc->id;
+    cat_draw_text_ellipsized(body, short_id, ix + cat_scale(12), ty,
+                             tc, iw / 2 - cat_scale(20));
+
+    char value[96];
+    snprintf(value, sizeof(value), "%s%s", svc->state,
+             svc->desired_enabled ? " · auto" : "");
+    int vw = cat_measure_text(body, value);
+    int vx = ix + iw - vw - cat_scale(16);
+    if (vx < ix + iw / 2) vx = ix + iw / 2;
+    ap_color vc = selected ? theme->highlighted_text : theme->hint;
+    cat_draw_text(body, value, vx, ty, vc);
+}
+
+static void jw__render_services(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    jw__draw_header("Services", x, y, w);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int line_h = jw__subheader_line_h(small);
+    SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
+    int dy = content.y;
+
+    if (ui->services_msg[0]) {
+        cat_draw_text_ellipsized(small, ui->services_msg, x + cat_scale(12), dy,
+                                 theme->emphasis, w - cat_scale(24));
+        dy += line_h + cat_scale(6);
+    } else {
+        dy += cat_scale(6);
+    }
+
+    if (ui->services_count <= 0) {
+        cat_draw_text(small, "No services installed", x + cat_scale(12), dy,
+                      theme->hint);
+        return;
+    }
+
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    cat_box lb = { content.x, dy, content.w, (content.y + content.h) - dy,
+                   0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, ui->services_count, &vis,
+                                   &item_h);
+    ((cat_list_state *)&ui->services_list)->visible_rows = vis;
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, ui->services_count,
+                       &ui->services_list, item_h, jw__draw_service_item,
+                       (void *)ui);
+}
+
 /* List-pane row for the Settings home categories — mirrors jw__render_nav_row but
    positioned by the scrolling list pane, so the list fills the page and scrolls
    instead of overflowing under the footer. */
@@ -1862,9 +2037,10 @@ static void jw__render_home(const jw_settings_ui *ui, int x, int y, int w, int h
     SDL_Rect content = jw__settings_boxes(x, y, w, h, false, 0, NULL, NULL);
     cat_box lb = { content.x, content.y, content.w, content.h, 0, 0, 0, 0 };
     int vis = 0;
-    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, JW_SETTINGS_CATEGORY_COUNT, &vis, &item_h);
+    int category_count = jw__home_category_count(ui);
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, category_count, &vis, &item_h);
     ((cat_list_state *)&ui->home_list)->visible_rows = vis;
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, JW_SETTINGS_CATEGORY_COUNT,
+    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, category_count,
                        &ui->home_list, item_h, jw__draw_home_item, NULL);
 }
 
@@ -4586,6 +4762,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_ABOUT:      jw__render_about(ui, x, y, w, h);                   break;
         case JW_SETTINGS_LIBRARY:    jw__render_library(ui, x, y, w, h);                 break;
         case JW_SETTINGS_PLAYTIME:   jw__render_playtime(ui, x, y, w, h);                break;
+        case JW_SETTINGS_SERVICES:   jw__render_services(ui, x, y, w, h);                break;
     }
 }
 
@@ -5475,14 +5652,16 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
 
     /* ── Home ────────────────────────────────────────────────────────── */
     case JW_SETTINGS_HOME:
+        {
+        int category_count = jw__home_category_count(ui);
         switch (button) {
-            case CAT_BTN_UP:   cat_list_state_move(&ui->home_list, -1, JW_SETTINGS_CATEGORY_COUNT); break;
-            case CAT_BTN_DOWN: cat_list_state_move(&ui->home_list, +1, JW_SETTINGS_CATEGORY_COUNT); break;
+            case CAT_BTN_UP:   cat_list_state_move(&ui->home_list, -1, category_count); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->home_list, +1, category_count); break;
             /* Left/Right jump to the top/bottom of the category list. Only safe on
                this pure-navigation list: the sub-pages use Left/Right to change
                values, so a jump there would be an easy mis-press. */
-            case CAT_BTN_LEFT:  cat_list_state_jump(&ui->home_list, 0, JW_SETTINGS_CATEGORY_COUNT); break;
-            case CAT_BTN_RIGHT: cat_list_state_jump(&ui->home_list, JW_SETTINGS_CATEGORY_COUNT - 1, JW_SETTINGS_CATEGORY_COUNT); break;
+            case CAT_BTN_LEFT:  cat_list_state_jump(&ui->home_list, 0, category_count); break;
+            case CAT_BTN_RIGHT: cat_list_state_jump(&ui->home_list, category_count - 1, category_count); break;
             case CAT_BTN_A: {
                 int idx = ui->home_list.cursor;
                 if (idx == 0) ui->screen = JW_SETTINGS_APPEARANCE;
@@ -5547,6 +5726,23 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->screen = JW_SETTINGS_CONTROLS;
                     jw__refresh_rumble(ui);
                 }
+                else if (idx == 9) {
+                    /* CTL-1 omits invalid-only discoveries, so a reported row
+                       is a valid service, retained history, or an actionable
+                       stale generation. A clean system has no row here. */
+                    if (jw__services_available(ui)) {
+                        ui->screen = JW_SETTINGS_SERVICES;
+                        ui->services_list.cursor = 0;
+                        ui->services_list.scroll_offset = 0;
+                        ui->services_msg[0] = '\0';
+                        ui->services_next_poll_ms =
+                            SDL_GetTicks() + JW_SERVICES_POLL_INTERVAL_MS;
+                    } else {
+                        if (status_buf && status_size > 0)
+                            snprintf(status_buf, status_size, "%s",
+                                     "No services installed");
+                    }
+                }
                 break;
             }
             case CAT_BTN_B:
@@ -5555,6 +5751,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             default: break;
         }
         break;
+        }
 
     /* ── Appearance sub-menu ─────────────────────────────────────────── */
     case JW_SETTINGS_APPEARANCE:
@@ -6789,6 +6986,96 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                                ui->playtime_scroll_max); break;
             case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
             default: break;
+        }
+        break;
+    }
+
+    /* ── Services (app-services-v1) ────────────────────────────────────── */
+    case JW_SETTINGS_SERVICES: {
+        int rows = ui->services_count > 0 ? ui->services_count : 1;
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->services_list, -1, rows);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->services_list, +1, rows);
+                break;
+            case CAT_BTN_A: {
+                int row = ui->services_list.cursor;
+                if (row < 0 || row >= ui->services_count) {
+                    break;
+                }
+                const jw_ipc_service_info *svc = &ui->services[row];
+                if (strcmp(svc->state, "unavailable") == 0) {
+                    snprintf(ui->services_msg, sizeof(ui->services_msg), "%s",
+                             "Service unavailable");
+                    break;
+                }
+                if (strcmp(svc->state, "stopping") == 0) {
+                    snprintf(ui->services_msg, sizeof(ui->services_msg), "%s",
+                             "Service is still stopping");
+                    break;
+                }
+                /* A toggles the session run state: run a stopped service,
+                   stop a running one. */
+                bool running = strcmp(svc->state, "running") == 0 ||
+                               strcmp(svc->state, "starting") == 0;
+                const char *op = running ? "stop" : "run";
+                char status[128] = { 0 };
+                if (jw_ipc_service_ctl(ui->socket_path, op, svc->id,
+                                       status, sizeof(status)) == 0) {
+                    /* The daemon acknowledges the request, it does not wait
+                       for the group to be gone -- the stop sequence runs on
+                       its tick. Report the transition, not a completion the
+                       poll below may well contradict a moment later. */
+                    snprintf(ui->services_msg, sizeof(ui->services_msg),
+                             "%s %s", running ? "Stopping" : "Starting",
+                             svc->id);
+                } else {
+                    snprintf(ui->services_msg, sizeof(ui->services_msg),
+                             "%s", status[0] ? status : "Request failed");
+                }
+                jw__refresh_services(ui);
+                if (status_buf && status_size > 0)
+                    snprintf(status_buf, status_size, "%s", ui->services_msg);
+                break;
+            }
+            case CAT_BTN_X: {
+                int row = ui->services_list.cursor;
+                if (row < 0 || row >= ui->services_count) {
+                    break;
+                }
+                const jw_ipc_service_info *svc = &ui->services[row];
+                if (strcmp(svc->state, "unavailable") == 0 &&
+                    !svc->desired_enabled) {
+                    snprintf(ui->services_msg, sizeof(ui->services_msg), "%s",
+                             "Unavailable services cannot be enabled");
+                    break;
+                }
+                /* X toggles persistent "Start with Leaf". */
+                const char *op = svc->desired_enabled ? "disable" : "enable";
+                char status[128] = { 0 };
+                if (jw_ipc_service_ctl(ui->socket_path, op, svc->id,
+                                       status, sizeof(status)) == 0) {
+                    snprintf(ui->services_msg, sizeof(ui->services_msg),
+                             "%s %s",
+                             svc->desired_enabled ? "Disabled" : "Enabled",
+                             svc->id);
+                } else {
+                    snprintf(ui->services_msg, sizeof(ui->services_msg),
+                             "%s", status[0] ? status : "Request failed");
+                }
+                jw__refresh_services(ui);
+                if (status_buf && status_size > 0)
+                    snprintf(status_buf, status_size, "%s", ui->services_msg);
+                break;
+            }
+            case CAT_BTN_B:
+                (void)jw__refresh_services(ui);
+                ui->screen = JW_SETTINGS_HOME;
+                break;
+            default:
+                break;
         }
         break;
     }

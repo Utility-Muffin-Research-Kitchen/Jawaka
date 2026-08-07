@@ -5,6 +5,8 @@
 #include <sys/types.h>
 
 #define JW_IPC_MAX_FRAME (16u * 1024u * 1024u)
+/* CTL-1/LIFE-1 semantic payload ceiling inside the shared transport frame. */
+#define JW_IPC_SERVICE_MAX_FRAME (64u * 1024u)
 
 /* jw_ipc_client_send outcome: the peer closed before the reply could be
    delivered. NOT an error. Notification-style clients send and close without
@@ -32,5 +34,9 @@ int  jw_ipc_client_peer_pid(jw_ipc_client *client, pid_t *out_pid);
 void jw_ipc_client_close(jw_ipc_client *client);
 
 int  jw_ipc_request(const char *socket_path, const char *json, size_t len, char **out_json, size_t *out_len);
+/* Same one-shot exchange with a caller-selected I/O timeout. Intended for
+ * render-thread status reads that must fail quickly on a wedged daemon. */
+int  jw_ipc_request_timeout(const char *socket_path, const char *json, size_t len,
+                            char **out_json, size_t *out_len, int timeout_ms);
 
 #endif
