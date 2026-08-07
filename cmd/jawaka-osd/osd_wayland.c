@@ -31,7 +31,7 @@ typedef struct {
     int width;
     int height;
     int percent;
-    int mode;  /* 0 = brightness, 1 = volume */
+    int mode;  /* 0 = brightness, 1 = volume, 2 = LIFE-1 waiting */
     uint64_t hide_at;
     bool visible;
     bool configured;
@@ -95,6 +95,44 @@ static void jw__fill_rect(uint32_t *pixels, int width, int height,
         uint32_t *dst = pixels + row * width + x;
         for (int col = 0; col < w; col++) {
             dst[col] = color;
+        }
+    }
+}
+
+static const char *jw__glyph(char c) {
+    switch (c) {
+        case 'A': return "01110100011000111111100011000110001";
+        case 'C': return "01111100001000010000100001000001111";
+        case 'E': return "11111100001000011110100001000011111";
+        case 'G': return "01110100011000110111100011000101110";
+        case 'I': return "11111001000010000100001000010011111";
+        case 'M': return "10001110111010110101100011000110001";
+        case 'N': return "10001110011010110011100011000110001";
+        case 'O': return "01110100011000110001100011000101110";
+        case 'R': return "11110100011000111110101001001010001";
+        case 'S': return "11111100001000011111000010000111111";
+        case 'T': return "11111001000010000100001000010000100";
+        case 'U': return "10001100011000110001100011000101110";
+        case 'W': return "10001100011000110001101011010101010";
+        case 'Y': return "10001100010101000100001000010000100";
+        default: return NULL;
+    }
+}
+
+static void jw__draw_text(uint32_t *pixels, int width, int height,
+                          const char *text, int x, int y, int scale,
+                          uint32_t color) {
+    for (const char *p = text; p && *p; p++, x += 6 * scale) {
+        const char *glyph = jw__glyph(*p);
+        if (!glyph) continue;
+        for (int row = 0; row < 7; row++) {
+            for (int col = 0; col < 5; col++) {
+                if (glyph[row * 5 + col] == '1') {
+                    jw__fill_rect(pixels, width, height,
+                                  x + col * scale, y + row * scale,
+                                  scale, scale, color);
+                }
+            }
         }
     }
 }
@@ -189,6 +227,15 @@ static void jw__draw_osd(void) {
     uint32_t knob = jw__argb(255, 255, 240, 150);
 
     jw__fill_rect(pixels, s_osd.width, s_osd.height, x, y, toast_w, toast_h, bg);
+    if (s_osd.mode == 2) {
+        int title_w = 7 * 6 * 4 - 4;
+        int action_w = 14 * 6 * 4 - 4;
+        jw__draw_text(pixels, s_osd.width, s_osd.height, "SYNCING",
+                      x + (toast_w - title_w) / 2, y + 14, 4, knob);
+        jw__draw_text(pixels, s_osd.width, s_osd.height, "MENU START NOW",
+                      x + (toast_w - action_w) / 2, y + 55, 4, fill);
+        return;
+    }
     if (s_osd.mode == 1) {
         jw__draw_speaker(pixels, s_osd.width, s_osd.height, x + 44, y + 48, fill);
     } else {
@@ -458,12 +505,27 @@ void jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
     jw__show_surface();
 }
 
+void jw_osd_backend_show_game_waiting(int pending_items, uint64_t now_ms) {
+    (void)pending_items;
+    (void)now_ms;
+    s_osd.mode = 2;
+    s_osd.hide_at = UINT64_MAX;
+    jw__show_surface();
+}
+
+void jw_osd_backend_hide_game_waiting(void) {
+    if (s_osd.visible && s_osd.mode == 2) {
+        jw__hide_surface();
+    }
+}
+
 void jw_osd_backend_tick(uint64_t now_ms) {
     if (s_osd.display) {
         wl_display_dispatch_pending(s_osd.display);
         wl_display_flush(s_osd.display);
     }
-    if (s_osd.visible && now_ms >= s_osd.hide_at) {
+    if (s_osd.visible && s_osd.hide_at != UINT64_MAX &&
+        now_ms >= s_osd.hide_at) {
         jw__hide_surface();
     }
 }

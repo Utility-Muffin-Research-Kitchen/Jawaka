@@ -6,6 +6,9 @@
 #include "internal/focus/focus.h"
 #include "internal/ipc/ctl1.h"
 #include "internal/ipc/ipc.h"
+#include "internal/ipc/ipc_stream.h"
+#include "internal/ipc/life1.h"
+#include "internal/launcher/active_game.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
@@ -21,6 +24,7 @@
 #include "internal/scrape/ss_client.h"
 #include "internal/services/log_redact.h"
 #include "internal/services/launch.h"
+#include "internal/services/ownership.h"
 #include "internal/services/supervisor.h"
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
@@ -36,6 +40,7 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -170,6 +175,35 @@ typedef struct {
     char            error[160];
 } jw_scan_job;
 
+#define JW_DAEMON_IPC_CONNECTION_MAX 32
+
+typedef enum {
+    JW_GAME_EXCHANGE_NONE = 0,
+    JW_GAME_EXCHANGE_AWAITING,
+    JW_GAME_EXCHANGE_WAITING,
+    JW_GAME_EXCHANGE_ACK,
+} jw_game_exchange_phase;
+
+typedef struct {
+    jw_ipc_stream *stream;
+    bool subscribed;
+    bool reconciled;
+    bool close_after_flush;
+    bool stop_after_flush;
+    char service_id[JW_SVC_SUPERVISOR_ID_BUF];
+    jw_life1_mode mode;
+    int ack_ms;
+    int wait_ms;
+    jw_svc_subscriber_binding binding;
+    jw_game_exchange_phase exchange_phase;
+    long long exchange_started_ms;
+    long long exchange_wait_deadline_ms;
+    long long exchange_ack_deadline_ms;
+    long long exchange_total_deadline_ms;
+    bool exchange_pending_seen;
+    int exchange_pending_items;
+} jw_daemon_ipc_connection;
+
 typedef struct {
     char *runtime_dir;
     char *sdcard_root;
@@ -180,9 +214,12 @@ typedef struct {
     char  bin_dir[PATH_MAX];
     sqlite3 *db;
     jw_ipc_server *server;
+    jw_daemon_ipc_connection ipc_connections[JW_DAEMON_IPC_CONNECTION_MAX];
     jw_platform_context platform;
     jw_input_proxy input_proxy;
     pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
+    pid_t child_pgid;         /* reserved writer group for RETROARCH/EMULATOR;
+                                 -1 for foreground paths outside LIFE-1 */
     jw_child_kind child_kind;
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
     uint64_t last_record_toggle_ms; /* debounce for the Menu+R1 record hotkey */
@@ -302,6 +339,21 @@ typedef struct {
     /* app-services-v1 (SVC-1) service supervisor; NULL when it could not be
        opened (a supervisor failure must never take down the launcher). */
     jw_svc_supervisor *services;
+    /* LIFE-1's authoritative runtime record. It is loaded before service
+       scan/autostart and remains active+uncertain on a corrupt recovery. */
+    jw_active_game active_game;
+    bool active_game_writer_started;
+    bool game_coordination_pending;
+    int game_coordination_exchanges;
+    /* A stop/stale reservation that cannot be proved absent is fail-closed,
+       but not silent. Preserve the requested game until the respawned
+       launcher explicitly cancels it or asks to launch despite the named
+       possible writer. */
+    bool game_launch_blocked;
+    bool game_launch_blocked_resume_switcher;
+    bool pending_launch_override_unverified;
+    char game_launch_blocked_service_id[JW_SVC_SUPERVISOR_ID_BUF];
+    char game_launch_blocked_reason[JW_SVC_REASON_BUF];
     /* Set when a safe-unmount already applied the storage-change policy, so
        the storage tick it provokes does not stop the same services again. */
     bool services_storage_stop_done;
@@ -1760,6 +1812,12 @@ static void jw__services_init(jw_daemon_state *state) {
         }
     }
     state->services = sup;
+    if (state->active_game.active) {
+        jw_svc_supervisor_game_set_active(sup, true);
+        jw_log_warn("services: game-sensitive starts suppressed by %s active-game record",
+                    state->active_game.uncertain ? "uncertain recovered" :
+                                                   "recovered");
+    }
     int found = jw_svc_supervisor_scan(sup);
     if (found > 0) {
         jw_log_info("services: supervising %d service(s)", found);
@@ -1822,6 +1880,39 @@ static int jw__reply_error(jw_ipc_client *client, const char *message) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "error");
     cJSON_AddStringToObject(root, "message", message);
+    return jw__reply_json(client, root);
+}
+
+static int jw__reply_game_launch_blocked(jw_daemon_state *state,
+                                         jw_ipc_client *client) {
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return -1;
+    }
+    /* Recovery records and a record whose durable removal failed both require
+       operator recovery, never the data-loss override. The latter can arise
+       in-process after a coordination failure, so checking `recovered` alone
+       would advertise an override that the action correctly refuses. */
+    bool conservative_active = state->active_game.active &&
+                               (state->active_game.recovered ||
+                                state->active_game.uncertain);
+    bool blocked = state->game_launch_blocked || conservative_active;
+    cJSON_AddStringToObject(root, "type", "game-launch-blocked-status");
+    cJSON_AddBoolToObject(root, "blocked", blocked);
+    cJSON_AddBoolToObject(root, "override_allowed",
+                          state->game_launch_blocked && !conservative_active);
+    if (blocked) {
+        cJSON_AddStringToObject(
+            root, "service_id",
+            state->game_launch_blocked_service_id);
+        cJSON_AddStringToObject(
+            root, "reason",
+            conservative_active
+                ? (state->active_game.uncertain
+                       ? "active-launch-recovery-uncertain"
+                       : "active-launch-recovered")
+                : state->game_launch_blocked_reason);
+    }
     return jw__reply_json(client, root);
 }
 
@@ -3948,6 +4039,43 @@ static const char *jw__child_name(jw_child_kind kind) {
     }
 }
 
+static bool jw__child_kind_has_writer_barrier(jw_child_kind kind) {
+    return kind == JW_CHILD_RETROARCH || kind == JW_CHILD_EMULATOR;
+}
+
+/* Both sides call setpgid to close the fork/exec race. The child call happens
+ * before it can execute a writer; the parent confirms the exact group before
+ * publishing the launch as active. */
+static bool jw__reserve_game_process_group(pid_t pid) {
+    if (pid <= 0) {
+        return false;
+    }
+    if (setpgid(pid, pid) == 0) {
+        return true;
+    }
+    if (errno == EACCES || errno == EPERM || errno == ESRCH) {
+        pid_t pgid = getpgid(pid);
+        if (pgid == pid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int jw__game_child_set_own_group(void) {
+    return setpgid(0, 0);
+}
+
+static int jw__signal_tracked_game_group(jw_daemon_state *state, int signal) {
+    if (!state || state->child_pid <= 0) {
+        errno = ESRCH;
+        return -1;
+    }
+    pid_t target = state->child_pgid > 0 ? -state->child_pgid
+                                         : state->child_pid;
+    return kill(target, signal);
+}
+
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
 static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now);
 static int jw__spawn_osd(jw_daemon_state *state);
@@ -3955,11 +4083,21 @@ static int jw__spawn_retroarch(jw_daemon_state *state);
 static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                                          const jw_launch_target *target);
 static int jw__spawn_pending_game(jw_daemon_state *state);
+static int jw__spawn_authorized_pending_game(jw_daemon_state *state);
+static int jw__usable_subscription(jw_daemon_state *state,
+                                   const char *service_id);
 static int jw__spawn_app(jw_daemon_state *state);
 static int jw__request_open_in_game_menu(jw_daemon_state *state);
 static int jw__request_open_in_game_switcher(jw_daemon_state *state);
 static int jw__request_close_in_game_menu(jw_daemon_state *state);
 static void jw__handle_child_exit(jw_daemon_state *state);
+static void jw__game_coordination_tick(jw_daemon_state *state);
+static void jw__game_coordination_connection_failed(jw_daemon_state *state,
+                                                     int index,
+                                                     const char *reason);
+static bool jw__game_coordination_start_now(jw_daemon_state *state,
+                                            const char *reason);
+static void jw__active_game_finish(jw_daemon_state *state);
 
 static void jw__schedule_in_game_menu_prewarm(jw_daemon_state *state,
                                               long long delay_ms) {
@@ -5615,6 +5753,13 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
                                     requested_core_id, out_error) != 0) {
         return -1;
     }
+    /* Choosing another title supersedes a previously cancelled blocked
+       request. An override is always one-shot and must be chosen again. */
+    state->game_launch_blocked = false;
+    state->game_launch_blocked_resume_switcher = false;
+    state->pending_launch_override_unverified = false;
+    state->game_launch_blocked_service_id[0] = '\0';
+    state->game_launch_blocked_reason[0] = '\0';
     jw_game_entry game;
     if (jw__lookup_launch_game(state, rom_path, &game) != 0) {
         if (out_error) *out_error = "game no longer exists";
@@ -5670,7 +5815,11 @@ static bool jw__force_retroarch_exit_if_needed(jw_daemon_state *state, pid_t pid
 
     jw_log_warn("%s: RetroArch did not exit after QUIT; forcing pid=%d",
                 reason ? reason : "retroarch", (int)pid);
-    if (kill(pid, SIGKILL) != 0 && errno != ESRCH) {
+    int kill_rc = state->child_pid == pid &&
+                          state->child_kind == JW_CHILD_RETROARCH
+                      ? jw__signal_tracked_game_group(state, SIGKILL)
+                      : kill(pid, SIGKILL);
+    if (kill_rc != 0 && errno != ESRCH) {
         jw_log_warn("%s: SIGKILL failed pid=%d: %s",
                     reason ? reason : "retroarch", (int)pid,
                     strerror(errno));
@@ -5886,6 +6035,15 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
             state->retroarch_session.source_root[0] &&
             strcmp(target_source_root, state->retroarch_session.source_root) == 0;
         }
+    }
+
+    /* LIFE-1 represents one authoritative writer launch at a time. Retargeting
+       RetroArch in-process would replace the content writer under the current
+       launch_id, without an old-group barrier/game.finish or a durable record
+       and game.start for the new title. Require the cold handoff below. */
+    if (resident_eligible) {
+        jw_log_info("resident switch disabled by LIFE-1 writer boundary; using cold handoff");
+        resident_eligible = false;
     }
 
     if (resident_eligible) {
@@ -6184,6 +6342,46 @@ static int jw__osd_show_brightness(jw_daemon_state *state, int percent) {
     }
     jw_log_warn("osd brightness request failed");
     return -1;
+}
+
+static int jw__osd_game_waiting(jw_daemon_state *state, int pending_items) {
+    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
+        return -1;
+    }
+    if (state->osd_pid <= 0) {
+        jw__spawn_osd(state);
+    }
+
+    char request[128];
+    snprintf(request, sizeof(request),
+             "{\"type\":\"show-game-waiting\",\"pending_items\":%d}",
+             pending_items < 0 ? 0 : pending_items);
+    char *response = NULL;
+    size_t response_len = 0;
+    /* A visual hint must never extend a service's LIFE-1 acknowledgement
+     * budget. The OSD is best-effort and already supervised separately. */
+    int rc = jw_ipc_request_timeout(state->osd_socket_path, request,
+                                    strlen(request), &response, &response_len,
+                                    100);
+    free(response);
+    if (rc != 0) {
+        jw_log_warn("life1: waiting OSD request failed");
+    }
+    return rc;
+}
+
+static void jw__osd_game_waiting_hide(jw_daemon_state *state) {
+    if (!state || !state->osd_socket_path || state->osd_pid <= 0 ||
+        jw__env_is_disabled("JAWAKA_OSD")) {
+        return;
+    }
+    const char *request = "{\"type\":\"hide-game-waiting\"}";
+    char *response = NULL;
+    size_t response_len = 0;
+    (void)jw_ipc_request_timeout(state->osd_socket_path, request,
+                                 strlen(request), &response, &response_len,
+                                 100);
+    free(response);
 }
 
 static void jw__persist_brightness(jw_daemon_state *state, int percent) {
@@ -6525,6 +6723,13 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
 static bool jw__input_menu_tap(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
 
+    /* During LIFE-1's opt-in waiting phase the launcher is already gone and
+       the daemon owns the pad. The waiting OSD labels this exact Menu action;
+       cancellation still leaves each subscriber its bounded ack window. */
+    if (jw__game_coordination_start_now(state, "start-now-menu")) {
+        return true;
+    }
+
     /* Standalone emulators own the display, so Jawaka's overlay menu cannot
        appear above them. PPSSPP has a patched SIGUSR2 pause-menu hook. DraStic
        and Flycast have native menu bindings, so let Menu reach the emulator.
@@ -6559,14 +6764,20 @@ static bool jw__input_menu_tap(void *userdata) {
         long long now = jw__monotonic_ms();
         if (state->standalone_quit_request_ms == 0) {
             jw_log_info("menu tap: quitting standalone emulator pid=%d", (int)pid);
-            if (kill(pid, SIGTERM) != 0 && errno != ESRCH) {
+            int rc = state->child_pid == pid
+                         ? jw__signal_tracked_game_group(state, SIGTERM)
+                         : kill(pid, SIGTERM);
+            if (rc != 0 && errno != ESRCH) {
                 jw_log_warn("standalone quit: SIGTERM failed pid=%d: %s",
                             (int)pid, strerror(errno));
             }
             state->standalone_quit_request_ms = now;
         } else if (now - state->standalone_quit_request_ms >= 2000) {
             jw_log_warn("standalone emulator ignored quit; forcing pid=%d", (int)pid);
-            if (kill(pid, SIGKILL) != 0 && errno != ESRCH) {
+            int rc = state->child_pid == pid
+                         ? jw__signal_tracked_game_group(state, SIGKILL)
+                         : kill(pid, SIGKILL);
+            if (rc != 0 && errno != ESRCH) {
                 jw_log_warn("standalone quit: SIGKILL failed pid=%d: %s",
                             (int)pid, strerror(errno));
             }
@@ -7364,6 +7575,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                      state->pending_launch_game_id);
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
         return -1;
     }
 
@@ -7403,6 +7615,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw_log_error("cannot launch standalone emulator from SD: %s", exec_error);
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
         return -1;
     }
 
@@ -7501,10 +7714,15 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw__start_input_proxy(state);
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
         return -1;
     }
 
     if (pid == 0) {
+        if (jw__game_child_set_own_group() != 0) {
+            perror("setpgid");
+            _exit(126);
+        }
         jw_appearance_apply_env(&appearance);
         jw__publish_source_content_env(rom_source);
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
@@ -7536,7 +7754,19 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         _exit(127);
     }
 
+    if (!jw__reserve_game_process_group(pid)) {
+        jw_log_error("could not reserve standalone writer process group pid=%d: %s",
+                     (int)pid, strerror(errno));
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        jw__rumble_publish_ff(NULL);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
+    }
     state->child_pid = pid;
+    state->child_pgid = pid;
     state->child_kind = JW_CHILD_EMULATOR;
     state->pending_launch = false;
     state->pending_launch_resume_switcher = false;
@@ -7553,29 +7783,9 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     return 0;
 }
 
-static int jw__spawn_pending_game(jw_daemon_state *state) {
+static int jw__spawn_authorized_pending_game(jw_daemon_state *state) {
     if (!state || !state->pending_launch) {
         return -1;
-    }
-
-    /* SVC-1: apply the lifecycle.game policy to supervised services before a
-       game launches. "stop" services are stopped here; a stop that cannot be
-       verified is surfaced and blocks the launch until the user overrides,
-       per the unverified-stop table. (notify/ignore services are LIFE-1's,
-       handled in A3b.) */
-    if (state->services) {
-        char stuck[JW_SVC_SUPERVISOR_ID_BUF];
-        jw_svc_supervisor_game_launch_begin(state->services, stuck, sizeof(stuck));
-        if (stuck[0]) {
-            jw_log_warn("services: service %s did not stop before game launch; "
-                        "requires user override", stuck);
-            /* No override token exists in this phase, so fail closed and let
-               the requesting client surface the error. Keeping pending_launch
-               set would silently retry from a later child-exit path. */
-            state->pending_launch = false;
-            state->pending_launch_resume_switcher = false;
-            return -1;
-        }
     }
 
     jw_launch_target target;
@@ -7588,6 +7798,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
                      state->pending_launch_rom_path);
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
         return -1;
     }
 
@@ -7818,6 +8029,10 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
+        if (jw__game_child_set_own_group() != 0) {
+            perror("setpgid");
+            _exit(126);
+        }
         if (ra_home && ra_home[0]) {
             setenv("HOME", ra_home, 1);
         }
@@ -7840,7 +8055,16 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
     long long fork_done_ms = jw__monotonic_ms();
 
+    if (!jw__reserve_game_process_group(pid)) {
+        jw_log_error("could not reserve RetroArch writer process group pid=%d: %s",
+                     (int)pid, strerror(errno));
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        jw__rumble_publish_ff(NULL);
+        goto fail;
+    }
     state->child_pid = pid;
+    state->child_pgid = pid;
     state->child_kind = JW_CHILD_RETROARCH;
     state->pending_launch = false;
     state->pending_launch_resume_switcher = false;
@@ -9599,6 +9823,7 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
         cJSON *caps = cJSON_AddArrayToObject(reply, "capabilities");
         cJSON_AddItemToArray(caps, cJSON_CreateString("app-services-v1"));
         cJSON_AddItemToArray(caps, cJSON_CreateString("control-ipc-v1"));
+        cJSON_AddItemToArray(caps, cJSON_CreateString("game-coordination-v1"));
 #if defined(__linux__)
         cJSON_AddItemToArray(caps, cJSON_CreateString("pdeathsig"));
 #endif
@@ -9651,6 +9876,14 @@ static int jw__handle_service_ctl(jw_daemon_state *state,
                                         "internal-error",
                                         "could not serialize service status");
         }
+        int subscriber = jw__usable_subscription(state, service_id);
+        jw_svc_lifecycle_game policy = e->pgid > 0
+            ? e->active_lifecycle_game : e->manifest.lifecycle_game;
+        const char *coordination = subscriber >= 0 ? "subscribed"
+            : e->pgid > 0 && policy != JW_SVC_LIFECYCLE_GAME_IGNORE
+                ? "unsubscribed" : "n/a";
+        cJSON_ReplaceItemInObjectCaseSensitive(
+            reply, "coordination", cJSON_CreateString(coordination));
         return jw__reply_ctl1_json(client, request->id, reply);
     }
 
@@ -9975,6 +10208,63 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_ok(client, "launch-game", NULL);
     }
 
+    /* Test/tool mirror of the device's Menu-button escape hatch. This is kept
+       on the legacy one-shot IPC surface; LIFE-1's service wire remains exactly
+       the frozen game.start/game.cancel/status protocol. */
+    if (strcmp(type->valuestring, "game-start-now") == 0) {
+        bool accepted = jw__game_coordination_start_now(
+            state, "start-now-request");
+        cJSON_Delete(root);
+        return accepted
+            ? jw__reply_ok(client, "game-start-now", NULL)
+            : jw__reply_error(client, "no waiting game launch");
+    }
+
+    if (strcmp(type->valuestring, "game-launch-blocked-status") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_game_launch_blocked(state, client);
+    }
+
+    if (strcmp(type->valuestring, "game-launch-blocked-dismiss") == 0) {
+        bool dismissed = state->game_launch_blocked;
+        state->game_launch_blocked = false;
+        state->game_launch_blocked_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        state->pending_launch = false;
+        state->game_launch_blocked_service_id[0] = '\0';
+        state->game_launch_blocked_reason[0] = '\0';
+        cJSON_Delete(root);
+        return dismissed
+            ? jw__reply_ok(client, "game-launch-blocked-dismiss", NULL)
+            : jw__reply_error(client, "no blocked game launch");
+    }
+
+    if (strcmp(type->valuestring, "game-launch-override") == 0) {
+        if (!state->game_launch_blocked || state->active_game.active ||
+            state->pending_launch_game_id <= 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client,
+                                   "blocked game launch is not overrideable");
+        }
+        state->pending_launch = true;
+        state->pending_launch_resume_switcher =
+            state->game_launch_blocked_resume_switcher;
+        state->pending_launch_override_unverified = true;
+        state->game_launch_blocked = false;
+        state->game_launch_blocked_resume_switcher = false;
+        state->game_launch_blocked_service_id[0] = '\0';
+        state->game_launch_blocked_reason[0] = '\0';
+        jw_log_warn("life1: user explicitly overrode an unverified service "
+                    "writer for the pending game");
+        bool launch_now = state->child_pid <= 0;
+        cJSON_Delete(root);
+        if (launch_now && jw__spawn_pending_game(state) != 0) {
+            return jw__reply_error(client,
+                                   "overridden game launch still failed");
+        }
+        return jw__reply_ok(client, "game-launch-override", NULL);
+    }
+
     if (strcmp(type->valuestring, "launch-app") == 0) {
         cJSON *pak_dir = cJSON_GetObjectItemCaseSensitive(root, "pak_dir");
         const char *error_message = NULL;
@@ -10256,29 +10546,988 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
     return jw__reply_error(client, "unknown type");
 }
 
-static int jw__accept_and_process(jw_daemon_state *state) {
-    jw_ipc_client *client = NULL;
-    int rc = jw_ipc_server_accept(state->server, &client, 50);
-    if (rc != 0) {
-        return rc;
+static void jw__ipc_connection_drop(jw_daemon_state *state, int index,
+                                    const char *reason) {
+    if (!state || index < 0 || index >= JW_DAEMON_IPC_CONNECTION_MAX) {
+        return;
+    }
+    jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
+    if (!connection->stream) {
+        return;
+    }
+    if (connection->exchange_phase != JW_GAME_EXCHANGE_NONE &&
+        state->game_coordination_pending) {
+        jw__game_coordination_connection_failed(state, index, reason);
+        connection = &state->ipc_connections[index];
+        if (!connection->stream) {
+            return;
+        }
+    }
+    if (connection->subscribed) {
+        jw_log_info("life1: unsubscribed service=%s reason=%s",
+                    connection->service_id,
+                    reason && reason[0] ? reason : "connection-closed");
+    }
+    jw_ipc_stream_destroy(connection->stream);
+    memset(connection, 0, sizeof(*connection));
+}
+
+static bool jw__ipc_connection_queue_json(jw_daemon_state *state, int index,
+                                          char *json) {
+    if (!json || !state || index < 0 ||
+        index >= JW_DAEMON_IPC_CONNECTION_MAX) {
+        cJSON_free(json);
+        return false;
+    }
+    jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
+    size_t len = strlen(json);
+    bool ok = connection->stream && len <= JW_LIFE1_MAX_PAYLOAD &&
+              jw_ipc_stream_queue(connection->stream, json, len) == 0;
+    cJSON_free(json);
+    if (!ok) {
+        /* LIFE-1 backpressure is fail-closed: a full 16-message queue makes
+         * the service unsubscribed until it reconnects and reconciles. */
+        jw__ipc_connection_drop(state, index, "outbound-queue-overflow");
+    }
+    return ok;
+}
+
+static void jw__connection_exchange_clear(jw_daemon_ipc_connection *connection) {
+    if (!connection) {
+        return;
+    }
+    connection->exchange_phase = JW_GAME_EXCHANGE_NONE;
+    connection->exchange_started_ms = 0;
+    connection->exchange_wait_deadline_ms = 0;
+    connection->exchange_ack_deadline_ms = 0;
+    connection->exchange_total_deadline_ms = 0;
+    connection->exchange_pending_seen = false;
+    connection->exchange_pending_items = 0;
+}
+
+static int jw__usable_subscription(jw_daemon_state *state,
+                                   const char *service_id) {
+    if (!state || !service_id || !service_id[0]) {
+        return -1;
+    }
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        jw_daemon_ipc_connection *connection = &state->ipc_connections[i];
+        if (!connection->stream || !connection->subscribed ||
+            !connection->reconciled ||
+            strcmp(connection->service_id, service_id) != 0) {
+            continue;
+        }
+        if (!jw_svc_supervisor_revalidate_subscriber(
+                state->services, connection->service_id,
+                &connection->binding)) {
+            jw__ipc_connection_drop(state, i,
+                                    "generation-revalidation-failed");
+            continue;
+        }
+        return i;
+    }
+    return -1;
+}
+
+static void jw__broadcast_game_event(jw_daemon_state *state,
+                                     const char *launch_id,
+                                     bool finish) {
+    if (!state || !launch_id || !launch_id[0]) {
+        return;
+    }
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        jw_daemon_ipc_connection *connection = &state->ipc_connections[i];
+        if (!connection->stream || !connection->subscribed ||
+            !connection->reconciled) {
+            continue;
+        }
+        if (!jw_svc_supervisor_revalidate_subscriber(
+                state->services, connection->service_id,
+                &connection->binding)) {
+            jw__ipc_connection_drop(state, i,
+                                    "generation-revalidation-failed");
+            continue;
+        }
+        (void)jw__ipc_connection_queue_json(
+            state, i, finish ? jw_life1_build_game_finish(launch_id)
+                             : jw_life1_build_game_cancel(launch_id));
+    }
+}
+
+static bool jw__active_game_clear_durable(jw_daemon_state *state,
+                                          const char *context) {
+    char reason[64];
+    if (jw_active_game_clear(state->runtime_dir, reason, sizeof(reason))) {
+        return true;
+    }
+    state->active_game.active = true;
+    state->active_game.uncertain = true;
+    if (state->services) {
+        jw_svc_supervisor_game_set_active(state->services, true);
+    }
+    jw_log_error("life1: could not durably clear active launch after %s (%s); retaining conservative gate",
+                 context ? context : "transition", reason);
+    return false;
+}
+
+static void jw__game_coordination_abort(jw_daemon_state *state,
+                                        const char *reason) {
+    if (!state) {
+        return;
+    }
+    char launch_id[JW_ACTIVE_GAME_LAUNCH_ID_MAX + 1];
+    snprintf(launch_id, sizeof(launch_id), "%s",
+             state->active_game.launch_id);
+    state->game_coordination_pending = false;
+    jw__osd_game_waiting_hide(state);
+    state->game_coordination_exchanges = 0;
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        jw__connection_exchange_clear(&state->ipc_connections[i]);
+    }
+    state->pending_launch = false;
+    state->pending_launch_resume_switcher = false;
+    state->pending_launch_override_unverified = false;
+    state->active_game_writer_started = false;
+    if (launch_id[0]) {
+        jw__broadcast_game_event(state, launch_id, false);
+    }
+    if (state->active_game.active &&
+        jw__active_game_clear_durable(state, "aborted launch")) {
+        if (launch_id[0]) {
+            jw__broadcast_game_event(state, launch_id, true);
+        }
+        memset(&state->active_game, 0, sizeof(state->active_game));
+        if (state->services) {
+            jw_svc_supervisor_game_finish(state->services);
+        }
+    }
+    jw_log_warn("life1: game launch aborted before writer start reason=%s",
+                reason && reason[0] ? reason : "coordination-failed");
+}
+
+static void jw__game_coordination_block(jw_daemon_state *state,
+                                        const char *service_id,
+                                        const char *reason) {
+    if (!state) {
+        return;
+    }
+    bool resume_switcher = state->pending_launch_resume_switcher;
+    char blocked_service[JW_SVC_SUPERVISOR_ID_BUF];
+    char blocked_reason[JW_SVC_REASON_BUF];
+    snprintf(blocked_service, sizeof(blocked_service), "%s",
+             service_id ? service_id : "");
+    snprintf(blocked_reason, sizeof(blocked_reason), "%s",
+             reason && reason[0] ? reason : "unverified-service-stop");
+    jw__game_coordination_abort(state, blocked_reason);
+    state->game_launch_blocked = true;
+    state->game_launch_blocked_resume_switcher = resume_switcher;
+    snprintf(state->game_launch_blocked_service_id,
+             sizeof(state->game_launch_blocked_service_id), "%s",
+             blocked_service);
+    snprintf(state->game_launch_blocked_reason,
+             sizeof(state->game_launch_blocked_reason), "%s",
+             blocked_reason);
+    jw_log_warn("life1: game launch requires explicit override service=%s "
+                "reason=%s",
+                blocked_service[0] ? blocked_service : "unknown",
+                blocked_reason);
+}
+
+static bool jw__pending_launch_source_matches_record(jw_daemon_state *state) {
+    jw_game_entry game;
+    jw_storage_source_list sources;
+    const jw_storage_source *source = NULL;
+    char rom_abs[PATH_MAX];
+    if (!state || !state->active_game.active ||
+        jw__resolve_library_game(state, state->pending_launch_game_id,
+                                 &game, &sources, &source,
+                                 rom_abs, sizeof(rom_abs)) != 0 || !source) {
+        return false;
+    }
+    return strcmp(source->id, state->active_game.source_id) == 0 &&
+           strcmp(source->saves_path, state->active_game.saves_path) == 0 &&
+           strcmp(source->states_path, state->active_game.states_path) == 0;
+}
+
+/* Returns 1 when the writer was spawned, 0 while exchanges remain, and -1
+ * after a fail-closed abort. */
+static int jw__game_coordination_launch_if_ready(jw_daemon_state *state) {
+    if (!state || !state->game_coordination_pending ||
+        state->game_coordination_exchanges > 0) {
+        return 0;
+    }
+    if (!jw__pending_launch_source_matches_record(state)) {
+        jw__game_coordination_abort(state, "source-binding-changed");
+        return -1;
+    }
+    jw__osd_game_waiting_hide(state);
+    state->game_coordination_pending = false;
+    if (jw__spawn_authorized_pending_game(state) != 0) {
+        jw__game_coordination_abort(state, "writer-spawn-failed");
+        return -1;
+    }
+    state->pending_launch_override_unverified = false;
+    state->active_game_writer_started = true;
+    jw_log_info("life1: writer started launch_id=%s pgid=%d",
+                state->active_game.launch_id, (int)state->child_pgid);
+    return 1;
+}
+
+static bool jw__game_stop_service(jw_daemon_state *state,
+                                  const char *service_id,
+                                  const char *why) {
+    char stop_reason[JW_SVC_REASON_BUF];
+    if (jw_svc_supervisor_game_stop_service(
+            state->services, service_id,
+            stop_reason, sizeof(stop_reason))) {
+        jw_log_info("life1: verified service stop service=%s reason=%s",
+                    service_id, why ? why : "game-policy");
+        return true;
+    }
+    jw_log_warn("life1: service=%s stop could not be verified reason=%s trigger=%s",
+                service_id, stop_reason, why ? why : "game-policy");
+    return false;
+}
+
+static int jw__begin_game_exchange(jw_daemon_state *state, int index) {
+    jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
+    long long now = jw__monotonic_ms();
+    connection->exchange_phase = JW_GAME_EXCHANGE_AWAITING;
+    connection->exchange_started_ms = now;
+    connection->exchange_wait_deadline_ms = now + connection->wait_ms;
+    connection->exchange_ack_deadline_ms = now + connection->ack_ms;
+    connection->exchange_total_deadline_ms =
+        now + connection->wait_ms + connection->ack_ms;
+    connection->exchange_pending_seen = false;
+    connection->exchange_pending_items = 0;
+    state->game_coordination_exchanges++;
+
+    if (!jw__ipc_connection_queue_json(
+            state, index, jw_life1_build_game_start(
+                state->active_game.launch_id,
+                state->active_game.source_id,
+                state->active_game.saves_path,
+                state->active_game.states_path,
+                connection->wait_ms))) {
+        return state->game_coordination_pending ? 0 : -1;
+    }
+    if (connection->wait_ms == 0) {
+        connection->exchange_phase = JW_GAME_EXCHANGE_ACK;
+        if (!jw__ipc_connection_queue_json(
+                state, index,
+                jw_life1_build_game_cancel(state->active_game.launch_id))) {
+            return state->game_coordination_pending ? 0 : -1;
+        }
+    }
+    jw_log_info("life1: game.start service=%s launch_id=%s wait_ms=%d ack_ms=%d",
+                connection->service_id, state->active_game.launch_id,
+                connection->wait_ms, connection->ack_ms);
+    return 0;
+}
+
+static int jw__spawn_pending_game(jw_daemon_state *state) {
+    if (!state || !state->pending_launch) {
+        return -1;
+    }
+    if (state->active_game.active) {
+        jw_log_warn("life1: refusing new game while launch state is %s",
+                    state->active_game.uncertain ? "uncertain" : "active");
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
     }
 
-    char *body = NULL;
-    size_t len = 0;
-    int result;
-    if (jw_ipc_client_recv(client, &body, &len) != 0) {
-        jw_log_warn("ipc client disconnected before sending a complete request");
-        result = -1;
-    } else if (jw__handle_message(state, client, body, len) != 0) {
-        jw_log_warn("ipc handler failed to answer a request");
-        result = -1;
+    jw_game_entry game;
+    jw_storage_source_list sources;
+    const jw_storage_source *source = NULL;
+    char rom_abs[PATH_MAX];
+    jw_launch_target target;
+    if (jw__resolve_library_game(state, state->pending_launch_game_id,
+                                 &game, &sources, &source,
+                                 rom_abs, sizeof(rom_abs)) != 0 || !source ||
+        jw__resolve_launch_target(state, state->pending_launch_system,
+                                  state->pending_launch_rom_path,
+                                  state->pending_launch_core_id,
+                                  &target) != 0) {
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
+    }
+
+    jw_active_game record;
+    memset(&record, 0, sizeof(record));
+    record.active = true;
+    if (!jw_active_game_generate_id(record.launch_id,
+                                    sizeof(record.launch_id)) ||
+        snprintf(record.source_id, sizeof(record.source_id), "%s",
+                 source->id) >= (int)sizeof(record.source_id) ||
+        snprintf(record.saves_path, sizeof(record.saves_path), "%s",
+                 source->saves_path) >= (int)sizeof(record.saves_path) ||
+        snprintf(record.states_path, sizeof(record.states_path), "%s",
+                 source->states_path) >= (int)sizeof(record.states_path)) {
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
+    }
+    char persist_reason[64];
+    if (!jw_active_game_persist(state->runtime_dir, &record,
+                                persist_reason, sizeof(persist_reason))) {
+        jw_log_error("life1: active launch commit failed (%s)", persist_reason);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
+    }
+    state->active_game = record;
+    state->active_game_writer_started = false;
+    state->game_coordination_pending = true;
+    state->game_coordination_exchanges = 0;
+    if (state->services) {
+        jw_svc_supervisor_game_set_active(state->services, true);
+    }
+    jw_log_info("life1: active launch committed launch_id=%s source=%s kind=%s",
+                record.launch_id, record.source_id,
+                target.kind == JW_LAUNCH_TARGET_STANDALONE
+                    ? "EMULATOR" : "RETROARCH");
+
+    /* Preflight every stale generation before signalling any healthy service.
+     * Only a trustworthy retained ignore policy is outside coordination. */
+    if (state->services) {
+        int service_count = jw_svc_supervisor_count(state->services);
+        for (int i = 0; i < service_count; i++) {
+            const jw_svc_supervised *entry =
+                jw_svc_supervisor_at(state->services, i);
+            if (entry && entry->state == JW_SVC_STATE_STALE_GENERATION &&
+                entry->active_lifecycle_game !=
+                    JW_SVC_LIFECYCLE_GAME_IGNORE) {
+                if (state->pending_launch_override_unverified) {
+                    jw_log_warn("life1: explicit override bypassing stale "
+                                "service generation service=%s",
+                                entry->service_id);
+                    continue;
+                }
+                jw__game_coordination_block(
+                    state, entry->service_id, "stale-service-generation");
+                return -1;
+            }
+        }
+
+        for (int i = 0; i < service_count; i++) {
+            const jw_svc_supervised *entry =
+                jw_svc_supervisor_at(state->services, i);
+            if (!entry || entry->state == JW_SVC_STATE_STALE_GENERATION ||
+                entry->pgid <= 0) {
+                continue;
+            }
+            char service_id[JW_SVC_SUPERVISOR_ID_BUF];
+            snprintf(service_id, sizeof(service_id), "%s", entry->service_id);
+            int subscriber = jw__usable_subscription(state, service_id);
+            jw_svc_lifecycle_game policy = entry->active_lifecycle_game;
+            if (subscriber >= 0) {
+                policy = state->ipc_connections[subscriber].mode ==
+                                 JW_LIFE1_MODE_STOP
+                             ? JW_SVC_LIFECYCLE_GAME_STOP
+                             : JW_SVC_LIFECYCLE_GAME_NOTIFY;
+            }
+            if (policy == JW_SVC_LIFECYCLE_GAME_IGNORE) {
+                continue;
+            }
+            if (policy == JW_SVC_LIFECYCLE_GAME_STOP || subscriber < 0) {
+                if (!jw__game_stop_service(
+                        state, service_id,
+                        policy == JW_SVC_LIFECYCLE_GAME_STOP
+                            ? "mode-stop" : "notify-unsubscribed")) {
+                    if (state->pending_launch_override_unverified) {
+                        jw_log_warn("life1: explicit override bypassing "
+                                    "unverified service stop service=%s",
+                                    service_id);
+                        continue;
+                    }
+                    jw__game_coordination_block(
+                        state, service_id, "unverified-service-stop");
+                    return -1;
+                }
+                continue;
+            }
+            if (jw__begin_game_exchange(state, subscriber) != 0) {
+                return -1;
+            }
+        }
+    }
+    int launched = jw__game_coordination_launch_if_ready(state);
+    return launched < 0 ? -1 : 0;
+}
+
+static void jw__game_coordination_connection_failed(jw_daemon_state *state,
+                                                     int index,
+                                                     const char *reason) {
+    if (!state || index < 0 || index >= JW_DAEMON_IPC_CONNECTION_MAX) {
+        return;
+    }
+    jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
+    if (connection->exchange_phase == JW_GAME_EXCHANGE_NONE) {
+        return;
+    }
+    char service_id[JW_SVC_SUPERVISOR_ID_BUF];
+    snprintf(service_id, sizeof(service_id), "%s", connection->service_id);
+    jw__connection_exchange_clear(connection);
+    if (state->game_coordination_exchanges > 0) {
+        state->game_coordination_exchanges--;
+    }
+    if (!state->services || !jw__game_stop_service(
+            state, service_id,
+            reason && reason[0] ? reason : "exchange-failure")) {
+        if (state->pending_launch_override_unverified) {
+            jw_log_warn("life1: explicit override bypassing unverified "
+                        "exchange fallback service=%s",
+                        service_id);
+        } else {
+            jw__game_coordination_block(
+                state, service_id, "exchange-fallback-unverified");
+        }
+    }
+}
+
+static bool jw__game_exchange_send_cancel(jw_daemon_state *state, int index,
+                                          long long now,
+                                          const char *reason) {
+    jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
+    if (!connection->stream ||
+        connection->exchange_phase == JW_GAME_EXCHANGE_NONE) {
+        return false;
+    }
+    connection->exchange_phase = JW_GAME_EXCHANGE_ACK;
+    long long ack_deadline = now + connection->ack_ms;
+    if (ack_deadline > connection->exchange_total_deadline_ms) {
+        ack_deadline = connection->exchange_total_deadline_ms;
+    }
+    connection->exchange_ack_deadline_ms = ack_deadline;
+    bool queued = jw__ipc_connection_queue_json(
+        state, index,
+        jw_life1_build_game_cancel(state->active_game.launch_id));
+    if (queued) {
+        jw_log_info("life1: game.cancel service=%s launch_id=%s reason=%s",
+                    connection->service_id, state->active_game.launch_id,
+                    reason ? reason : "wait-ended");
+    }
+    return queued;
+}
+
+static bool jw__game_coordination_start_now(jw_daemon_state *state,
+                                            const char *reason) {
+    if (!state || !state->game_coordination_pending) {
+        return false;
+    }
+    bool waiting = false;
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        const jw_daemon_ipc_connection *connection =
+            &state->ipc_connections[i];
+        if (connection->stream &&
+            connection->exchange_phase == JW_GAME_EXCHANGE_WAITING) {
+            waiting = true;
+            break;
+        }
+    }
+    if (!waiting) {
+        return false;
+    }
+
+    long long now = jw__monotonic_ms();
+    jw__osd_game_waiting_hide(state);
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX &&
+                    state->game_coordination_pending; i++) {
+        jw_daemon_ipc_connection *connection = &state->ipc_connections[i];
+        if (connection->stream &&
+            connection->exchange_phase == JW_GAME_EXCHANGE_WAITING) {
+            (void)jw__game_exchange_send_cancel(
+                state, i, now, reason ? reason : "start-now");
+        }
+    }
+    return true;
+}
+
+static void jw__game_coordination_status(jw_daemon_state *state, int index,
+                                         const jw_life1_status *status) {
+    jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
+    if (!connection->subscribed || !status || !status->launch_id) {
+        return;
+    }
+    if (!state->active_game.active || state->active_game.uncertain ||
+        strcmp(status->launch_id, state->active_game.launch_id) != 0) {
+        (void)jw__ipc_connection_queue_json(
+            state, index,
+            jw_life1_build_error("", "stale-launch-id",
+                                 "lifecycle reply does not name the authoritative launch"));
+        return;
+    }
+    if (!jw_svc_supervisor_revalidate_subscriber(
+            state->services, connection->service_id,
+            &connection->binding)) {
+        jw__ipc_connection_drop(state, index,
+                                "generation-revalidation-failed");
+        return;
+    }
+    if (connection->exchange_phase == JW_GAME_EXCHANGE_NONE) {
+        /* ready/error duplicates for the current launch are no-ops once its
+         * terminal reply was already consumed. */
+        return;
+    }
+    if (status->kind == JW_LIFE1_STATUS_ERROR) {
+        jw_log_warn("life1: service=%s returned error launch_id=%s reason=%s",
+                    connection->service_id, status->launch_id,
+                    status->reason ? status->reason : "unknown");
+        jw__ipc_connection_drop(state, index, "service-error");
+        return;
+    }
+    if (status->kind == JW_LIFE1_STATUS_READY) {
+        jw_log_info("life1: service ready service=%s launch_id=%s elapsed_ms=%lld",
+                    connection->service_id, status->launch_id,
+                    jw__monotonic_ms() - connection->exchange_started_ms);
+        jw__connection_exchange_clear(connection);
+        if (state->game_coordination_exchanges > 0) {
+            state->game_coordination_exchanges--;
+        }
+        return;
+    }
+    if (status->kind != JW_LIFE1_STATUS_WAITING) {
+        jw__ipc_connection_drop(state, index, "malformed-exchange-status");
+        return;
+    }
+
+    long long now = jw__monotonic_ms();
+    if (connection->wait_ms <= 0 ||
+        connection->exchange_phase == JW_GAME_EXCHANGE_ACK) {
+        if (connection->exchange_phase != JW_GAME_EXCHANGE_ACK) {
+            (void)jw__game_exchange_send_cancel(state, index, now,
+                                                "waiting-not-enabled");
+        }
+        return;
+    }
+    bool progress = !connection->exchange_pending_seen ||
+                    status->pending_items < connection->exchange_pending_items;
+    if (!progress) {
+        (void)jw__game_exchange_send_cancel(state, index, now,
+                                            "waiting-stalled");
+        return;
+    }
+    connection->exchange_pending_seen = true;
+    connection->exchange_pending_items = status->pending_items;
+    connection->exchange_phase = JW_GAME_EXCHANGE_WAITING;
+    (void)jw__osd_game_waiting(state, status->pending_items);
+    jw_log_info("life1: waiting service=%s launch_id=%s pending_items=%d",
+                connection->service_id, status->launch_id,
+                status->pending_items);
+}
+
+static void jw__game_coordination_tick(jw_daemon_state *state) {
+    if (!state || !state->game_coordination_pending) {
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX &&
+                    state->game_coordination_pending; i++) {
+        jw_daemon_ipc_connection *connection = &state->ipc_connections[i];
+        if (!connection->stream ||
+            connection->exchange_phase == JW_GAME_EXCHANGE_NONE) {
+            continue;
+        }
+        if (!jw_svc_supervisor_revalidate_subscriber(
+                state->services, connection->service_id,
+                &connection->binding)) {
+            jw__ipc_connection_drop(state, i,
+                                    "generation-revalidation-failed");
+            continue;
+        }
+        if (connection->exchange_phase == JW_GAME_EXCHANGE_AWAITING &&
+            now >= connection->exchange_ack_deadline_ms) {
+            jw__ipc_connection_drop(state, i, "initial-ack-timeout");
+            continue;
+        }
+        if (connection->exchange_phase == JW_GAME_EXCHANGE_WAITING &&
+            now >= connection->exchange_wait_deadline_ms) {
+            (void)jw__game_exchange_send_cancel(state, i, now,
+                                                "wait-budget-expired");
+            continue;
+        }
+        if (connection->exchange_phase == JW_GAME_EXCHANGE_ACK &&
+            now >= connection->exchange_ack_deadline_ms) {
+            jw__ipc_connection_drop(state, i, "ready-ack-timeout");
+        }
+    }
+    if (state->game_coordination_pending) {
+        (void)jw__game_coordination_launch_if_ready(state);
+    }
+}
+
+static void jw__active_game_finish(jw_daemon_state *state) {
+    if (!state || !state->active_game.active ||
+        !state->active_game_writer_started) {
+        return;
+    }
+    char launch_id[JW_ACTIVE_GAME_LAUNCH_ID_MAX + 1];
+    snprintf(launch_id, sizeof(launch_id), "%s",
+             state->active_game.launch_id);
+    state->active_game_writer_started = false;
+    if (!jw__active_game_clear_durable(state, "writer-exit barrier")) {
+        return;
+    }
+    memset(&state->active_game, 0, sizeof(state->active_game));
+    jw__broadcast_game_event(state, launch_id, true);
+    if (state->services) {
+        jw_svc_supervisor_game_finish(state->services);
+    }
+    jw_log_info("life1: game.finish launch_id=%s after writer barrier",
+                launch_id);
+}
+
+static const char *jw__life1_auth_code(
+    jw_svc_subscriber_auth_result result) {
+    switch (result) {
+    case JW_SVC_SUBSCRIBER_MISSING_CREDENTIAL:
+        return "missing-peer-credential";
+    case JW_SVC_SUBSCRIBER_UNKNOWN_SERVICE:
+        return "unknown-service";
+    case JW_SVC_SUBSCRIBER_STALE_GENERATION:
+        return "stale-generation-peer";
+    case JW_SVC_SUBSCRIBER_WRONG_GROUP:
+        return "wrong-group-peer";
+    case JW_SVC_SUBSCRIBER_FOREGROUND:
+        return "foreground-app-peer";
+    case JW_SVC_SUBSCRIBER_ACCEPTED:
+        break;
+    }
+    return "internal-error";
+}
+
+static const char *jw__life1_auth_message(
+    jw_svc_subscriber_auth_result result) {
+    switch (result) {
+    case JW_SVC_SUBSCRIBER_MISSING_CREDENTIAL:
+        return "unable to obtain peer credentials for this connection";
+    case JW_SVC_SUBSCRIBER_UNKNOWN_SERVICE:
+        return "declared service id is not known to the supervisor";
+    case JW_SVC_SUBSCRIBER_STALE_GENERATION:
+        return "subscriber pid is not a member of the current generation's reserved process group";
+    case JW_SVC_SUBSCRIBER_WRONG_GROUP:
+        return "subscriber pid belongs to a different service's process group";
+    case JW_SVC_SUBSCRIBER_FOREGROUND:
+        return "subscriber pid is a foreground app, not a supervised service process";
+    case JW_SVC_SUBSCRIBER_ACCEPTED:
+        break;
+    }
+    return "subscriber authentication failed";
+}
+
+static void jw__ipc_replace_registration(jw_daemon_state *state, int keep,
+                                         const char *service_id) {
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        if (i == keep) {
+            continue;
+        }
+        jw_daemon_ipc_connection *other = &state->ipc_connections[i];
+        if (other->stream && other->subscribed &&
+            strcmp(other->service_id, service_id) == 0) {
+            jw__ipc_connection_drop(state, i, "replaced-by-resubscribe");
+        }
+    }
+}
+
+static void jw__ipc_handle_life1(jw_daemon_state *state, int index,
+                                 jw_life1_request *request) {
+    jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
+    if (request->kind == JW_LIFE1_REQUEST_SUBSCRIBE) {
+        pid_t peer_pid = -1;
+        bool credential_ok =
+            jw_ipc_stream_peer_pid(connection->stream, &peer_pid) == 0;
+        jw_svc_subscriber_binding binding;
+        jw_svc_subscriber_auth_result auth = credential_ok
+            ? jw_svc_supervisor_authenticate_subscriber(
+                  state->services, request->service_id, peer_pid, &binding)
+            : JW_SVC_SUBSCRIBER_MISSING_CREDENTIAL;
+        if (auth != JW_SVC_SUBSCRIBER_ACCEPTED) {
+            if (jw__ipc_connection_queue_json(
+                    state, index,
+                    jw_life1_build_error(request->id,
+                                         jw__life1_auth_code(auth),
+                                         jw__life1_auth_message(auth)))) {
+                state->ipc_connections[index].close_after_flush = true;
+            }
+            return;
+        }
+
+        /* Queue the ack before replacing a healthy registration. If this
+         * connection is already backpressured, the old subscriber remains. */
+        if (!jw__ipc_connection_queue_json(
+                state, index, jw_life1_build_ok(request->id))) {
+            return;
+        }
+        jw__ipc_replace_registration(state, index, request->service_id);
+        connection = &state->ipc_connections[index];
+        connection->subscribed = true;
+        connection->reconciled = false;
+        snprintf(connection->service_id, sizeof(connection->service_id), "%s",
+                 request->service_id);
+        connection->mode = request->mode;
+        connection->ack_ms = request->ack_ms;
+        connection->wait_ms = request->wait_ms;
+        connection->binding = binding;
+        jw_log_info("life1: subscribed service=%s pid=%d pgid=%d mode=%s "
+                    "ack_ms=%d wait_ms=%d; awaiting game.state",
+                    connection->service_id, (int)binding.peer_pid,
+                    (int)binding.pgid,
+                    connection->mode == JW_LIFE1_MODE_STOP ? "stop" : "notify",
+                    connection->ack_ms, connection->wait_ms);
+        return;
+    }
+
+    if (!connection->subscribed) {
+        if (jw__ipc_connection_queue_json(
+                state, index,
+                jw_life1_build_error(request->id, "not-subscribed",
+                                     "game.state requires an accepted subscription"))) {
+            state->ipc_connections[index].close_after_flush = true;
+        }
+        return;
+    }
+    if (!jw_svc_supervisor_revalidate_subscriber(
+            state->services, connection->service_id, &connection->binding)) {
+        jw__ipc_connection_drop(state, index, "generation-revalidation-failed");
+        return;
+    }
+    char *reply = NULL;
+    if (state->active_game.active && state->active_game.uncertain) {
+        reply = jw_life1_build_error(
+            request->id, "active-state-uncertain",
+            "an active-game record exists but its launch identity is not trustworthy");
+    } else if (state->active_game.active) {
+        reply = jw_life1_build_game_state_active(
+            request->id, state->active_game.launch_id,
+            state->active_game.source_id, state->active_game.saves_path,
+            state->active_game.states_path);
     } else {
-        result = 0;
+        reply = jw_life1_build_game_state_inactive(request->id);
+    }
+    if (jw__ipc_connection_queue_json(state, index, reply)) {
+        state->ipc_connections[index].reconciled =
+            !state->active_game.uncertain;
+        state->ipc_connections[index].stop_after_flush =
+            state->active_game.active && !state->active_game.uncertain &&
+            state->ipc_connections[index].mode == JW_LIFE1_MODE_STOP;
+        jw_log_info("life1: reconciled service=%s active=%s%s",
+                    state->ipc_connections[index].service_id,
+                    state->active_game.active ? "true" : "false",
+                    state->active_game.uncertain ? " uncertain" : "");
+    }
+}
+
+static void jw__ipc_handle_frame(jw_daemon_state *state, int index,
+                                 const char *body, size_t len) {
+    jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
+    jw_life1_request request;
+    char error[32] = {0};
+    jw_life1_parse_result parsed =
+        jw_life1_parse_request(body, len, &request, error, sizeof(error));
+    if (parsed == JW_LIFE1_PARSE_OK) {
+        jw__ipc_handle_life1(state, index, &request);
+        jw_life1_request_destroy(&request);
+        return;
+    }
+    if (parsed == JW_LIFE1_PARSE_INVALID) {
+        if (jw__ipc_connection_queue_json(
+                state, index,
+                jw_life1_build_error(
+                    request.id, error[0] ? error : "invalid-payload",
+                    strcmp(error, "unsupported-version") == 0
+                        ? "server supports LIFE-1 v1 only"
+                        : "invalid LIFE-1 request"))) {
+            state->ipc_connections[index].close_after_flush = true;
+        }
+        jw_life1_request_destroy(&request);
+        return;
+    }
+    jw_life1_request_destroy(&request);
+
+    if (connection->subscribed) {
+        jw_life1_status status;
+        char status_error[32] = {0};
+        jw_life1_parse_result status_parsed = jw_life1_parse_status(
+            body, len, &status, status_error, sizeof(status_error));
+        if (status_parsed == JW_LIFE1_PARSE_OK) {
+            jw__game_coordination_status(state, index, &status);
+            jw_life1_status_destroy(&status);
+            return;
+        }
+        jw_life1_status_destroy(&status);
+        if (connection->exchange_phase != JW_GAME_EXCHANGE_NONE &&
+            state->game_coordination_pending) {
+            /* Malformed lifecycle data is an exchange failure, which takes
+             * the verified-stop fallback rather than merely rejecting JSON. */
+            jw__ipc_connection_drop(state, index, "malformed-exchange-message");
+            return;
+        }
+        if (jw__ipc_connection_queue_json(
+                state, index,
+                jw_life1_build_error("", "invalid-payload",
+                                     "unexpected subscriber message"))) {
+            state->ipc_connections[index].close_after_flush = true;
+        }
+        return;
     }
 
-    free(body);
+    /* Existing callers remain one-shot and use the unchanged blocking handler
+     * only after their complete frame was accumulated without blocking the
+     * daemon. */
+    jw_ipc_client *client =
+        jw_ipc_stream_detach_blocking(connection->stream);
+    if (!client) {
+        jw__ipc_connection_drop(state, index, "legacy-detach-failed");
+        return;
+    }
+    memset(connection, 0, sizeof(*connection));
+    if (jw__handle_message(state, client, body, len) != 0) {
+        jw_log_warn("ipc handler failed to answer a request");
+    }
     jw_ipc_client_close(client);
-    return result;
+}
+
+static int jw__ipc_find_free_connection(jw_daemon_state *state) {
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        if (!state->ipc_connections[i].stream) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void jw__ipc_accept_ready(jw_daemon_state *state) {
+    for (;;) {
+        jw_ipc_client *client = NULL;
+        int rc = jw_ipc_server_accept(state->server, &client, 0);
+        if (rc != 0) {
+            return;
+        }
+        int slot = jw__ipc_find_free_connection(state);
+        if (slot < 0) {
+            jw_log_warn("ipc: connection limit reached");
+            jw_ipc_client_close(client);
+            continue;
+        }
+        jw_ipc_stream *stream = NULL;
+        if (jw_ipc_stream_create(client, &stream) != 0) {
+            jw_log_warn("ipc: could not make accepted client non-blocking");
+            jw_ipc_client_close(client);
+            continue;
+        }
+        state->ipc_connections[slot].stream = stream;
+    }
+}
+
+static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
+    struct pollfd poll_fds[JW_DAEMON_IPC_CONNECTION_MAX + 1];
+    int slot_for_poll[JW_DAEMON_IPC_CONNECTION_MAX + 1];
+    nfds_t count = 1;
+    memset(poll_fds, 0, sizeof(poll_fds));
+    for (int i = 0; i <= JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        slot_for_poll[i] = -1;
+    }
+    poll_fds[0].fd = jw_ipc_server_fd(state->server);
+    poll_fds[0].events = POLLIN;
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        jw_daemon_ipc_connection *connection = &state->ipc_connections[i];
+        if (!connection->stream) {
+            continue;
+        }
+        poll_fds[count].fd = jw_ipc_stream_fd(connection->stream);
+        poll_fds[count].events = POLLIN;
+        if (jw_ipc_stream_wants_write(connection->stream)) {
+            poll_fds[count].events |= POLLOUT;
+        }
+        slot_for_poll[count] = i;
+        count++;
+    }
+
+    int ready = poll(poll_fds, count, timeout_ms);
+    if (ready < 0 && errno != EINTR) {
+        jw_log_warn("ipc poll failed: %s", strerror(errno));
+        return;
+    }
+    if (ready > 0 && (poll_fds[0].revents & POLLIN)) {
+        jw__ipc_accept_ready(state);
+    }
+
+    long long now = jw__monotonic_ms();
+    for (nfds_t p = 1; p < count; p++) {
+        int slot = slot_for_poll[p];
+        if (slot < 0 || !state->ipc_connections[slot].stream) {
+            continue;
+        }
+        short revents = poll_fds[p].revents;
+
+        /* Calling receive on every tick, even without POLLIN, enforces the
+         * fixed partial-frame deadline without giving idle subscribers a
+         * deadline of their own. Reads remain non-blocking. */
+        for (int frames = 0; frames < 8 &&
+             state->ipc_connections[slot].stream; frames++) {
+            char *body = NULL;
+            size_t len = 0;
+            int rc = jw_ipc_stream_receive(
+                state->ipc_connections[slot].stream, now, &body, &len);
+            if (rc == 1) {
+                jw__ipc_handle_frame(state, slot, body, len);
+                free(body);
+                continue;
+            }
+            free(body);
+            if (rc == 0) {
+                break;
+            }
+            jw__ipc_connection_drop(
+                state, slot,
+                rc == -3 ? "partial-frame-timeout" :
+                rc == -2 ? "invalid-frame" : "peer-closed");
+            break;
+        }
+        if (!state->ipc_connections[slot].stream) {
+            continue;
+        }
+        if (jw_ipc_stream_wants_write(
+                state->ipc_connections[slot].stream) &&
+            jw_ipc_stream_flush(state->ipc_connections[slot].stream) != 0) {
+            jw__ipc_connection_drop(state, slot, "write-failed");
+            continue;
+        }
+        if ((revents & (POLLERR | POLLNVAL)) != 0 ||
+            ((revents & POLLHUP) != 0 &&
+             !jw_ipc_stream_wants_write(
+                 state->ipc_connections[slot].stream))) {
+            jw__ipc_connection_drop(state, slot, "peer-hangup");
+            continue;
+        }
+        if (state->ipc_connections[slot].close_after_flush &&
+            !jw_ipc_stream_wants_write(
+                state->ipc_connections[slot].stream)) {
+            jw__ipc_connection_drop(state, slot, "protocol-rejected");
+            continue;
+        }
+        if (state->ipc_connections[slot].stop_after_flush &&
+            !jw_ipc_stream_wants_write(
+                state->ipc_connections[slot].stream)) {
+            char service_id[JW_SVC_SUPERVISOR_ID_BUF];
+            snprintf(service_id, sizeof(service_id), "%s",
+                     state->ipc_connections[slot].service_id);
+            state->ipc_connections[slot].stop_after_flush = false;
+            if (!jw__game_stop_service(state, service_id,
+                                       "active-mode-stop-reconcile")) {
+                jw_log_warn("life1: active mode-stop reconnect remains unverified service=%s",
+                            service_id);
+            }
+            jw__ipc_connection_drop(state, slot,
+                                    "active-mode-stop-reconcile");
+        }
+    }
 }
 
 static void jw__clear_menu_tracking(jw_daemon_state *state) {
@@ -10334,7 +11583,33 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     int status = 0;
-    pid_t waited = waitpid(state->child_pid, &status, WNOHANG);
+    pid_t waited = -1;
+    if (jw__child_kind_has_writer_barrier(state->child_kind)) {
+        /* Observe without reaping. The zombie leader pins the pgid while any
+         * descendant still exists, preventing group-id reuse from invalidating
+         * the absence proof. Only after the whole group is non-writer/zombie
+         * may we reap the leader and run source-specific finalizers. */
+        siginfo_t info;
+        memset(&info, 0, sizeof(info));
+        int rc;
+        do {
+            rc = waitid(P_PID, (id_t)state->child_pid, &info,
+                        WEXITED | WNOHANG | WNOWAIT);
+        } while (rc != 0 && errno == EINTR);
+        if (rc != 0 || info.si_pid != state->child_pid) {
+            return;
+        }
+        pid_t pgid = state->child_pgid > 0 ? state->child_pgid
+                                           : state->child_pid;
+        if (!jw_svc_group_absent(pgid)) {
+            return;
+        }
+        do {
+            waited = waitpid(state->child_pid, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+    } else {
+        waited = waitpid(state->child_pid, &status, WNOHANG);
+    }
     if (waited == 0 || waited < 0) {
         return;
     }
@@ -10342,6 +11617,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     jw_child_kind exited_kind = state->child_kind;
     pid_t exited_pid = waited;
     state->child_pid = -1;
+    state->child_pgid = -1;
     state->child_kind = JW_CHILD_NONE;
 
     /* Reclaim the motor: a game that died mid-buzz can't have cleared it. Close
@@ -10382,6 +11658,12 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
                 jw__spawn_osd(state);
             }
         }
+    }
+    if (jw__child_kind_has_writer_barrier(exited_kind)) {
+        /* Process-group absence was proved before this function reaped the
+         * leader; the per-source session finalizer above has now completed as
+         * well. This is the authoritative LIFE-1 writer-exit barrier. */
+        jw__active_game_finish(state);
     }
 
     if (state->shutdown_requested || g_shutdown_requested) {
@@ -10543,13 +11825,43 @@ static void jw__cleanup(jw_daemon_state *state) {
     if (state->child_pid > 0) {
         pid_t child_pid = state->child_pid;
         jw_child_kind child_kind = state->child_kind;
-        int status = 0;
-        kill(child_pid, SIGTERM);
-        if (waitpid(child_pid, &status, 0) > 0 && child_kind == JW_CHILD_RETROARCH) {
-            jw__retroarch_session_finish(state, child_pid, status);
+        if (jw__child_kind_has_writer_barrier(child_kind)) {
+            state->shutdown_requested = true;
+            (void)jw__signal_tracked_game_group(state, SIGTERM);
+            long long deadline = jw__monotonic_ms() + 2000;
+            while (state->child_pid == child_pid &&
+                   jw__monotonic_ms() < deadline) {
+                jw__handle_child_exit(state);
+                if (state->child_pid == child_pid) {
+                    usleep(20000);
+                }
+            }
+            if (state->child_pid == child_pid) {
+                (void)jw__signal_tracked_game_group(state, SIGKILL);
+                deadline = jw__monotonic_ms() + 2000;
+                while (state->child_pid == child_pid &&
+                       jw__monotonic_ms() < deadline) {
+                    jw__handle_child_exit(state);
+                    if (state->child_pid == child_pid) {
+                        usleep(20000);
+                    }
+                }
+            }
+            if (state->child_pid == child_pid) {
+                /* Do not reap the leader and fabricate absence. The runtime
+                 * active-game record intentionally survives this process so
+                 * the next daemon generation stays fail-safe. */
+                jw_log_error("cleanup: writer group pgid=%d did not become absent; preserving active launch record",
+                             (int)state->child_pgid);
+            }
+        } else {
+            int status = 0;
+            kill(child_pid, SIGTERM);
+            (void)waitpid(child_pid, &status, 0);
+            state->child_pid = -1;
+            state->child_pgid = -1;
+            state->child_kind = JW_CHILD_NONE;
         }
-        state->child_pid = -1;
-        state->child_kind = JW_CHILD_NONE;
     }
 
     if (state->osd_pid > 0) {
@@ -10574,6 +11886,9 @@ static void jw__cleanup(jw_daemon_state *state) {
     }
     jw_suspend_inhibitor_clear(&state->suspend_inhibitor);
     jw_suspend_policy_init(&state->suspend_policy);
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+        jw__ipc_connection_drop(state, i, "daemon-shutdown");
+    }
     if (state->services) {
         jw_svc_supervisor_close(state->services);
         state->services = NULL;
@@ -10608,6 +11923,7 @@ int main(int argc, char *argv[]) {
     jw_daemon_state state;
     memset(&state, 0, sizeof(state));
     state.child_pid = -1;
+    state.child_pgid = -1;
     state.menu_pid = -1;
     state.osd_pid = -1;
     state.cached_brightness_percent = -1;
@@ -10732,6 +12048,26 @@ int main(int argc, char *argv[]) {
     /* Exported so child processes receive them via execv's inherited environment. */
     jw__publish_runtime_path_env(&state);
     jw__publish_audio_env(&state);
+
+    /* LIFE-1 recovery precedes service scan/autostart. A process restart while
+       a writer may still exist must never be interpreted as an empty launch;
+       even a corrupt record leaves the conservative gate active. */
+    {
+        char active_reason[64];
+        jw_active_game_load_result loaded = jw_active_game_load(
+            state.runtime_dir, &state.active_game,
+            active_reason, sizeof(active_reason));
+        if (loaded == JW_ACTIVE_GAME_LOAD_VALID) {
+            jw_log_warn("life1: recovered active launch id=%s source=%s; new games remain blocked",
+                        state.active_game.launch_id,
+                        state.active_game.source_id);
+        } else if (loaded == JW_ACTIVE_GAME_LOAD_UNCERTAIN ||
+                   loaded == JW_ACTIVE_GAME_LOAD_ERROR) {
+            /* load() marks the state active/uncertain for both cases. */
+            jw_log_error("life1: active launch recovery is uncertain (%s); game-sensitive services and new games remain blocked",
+                         active_reason);
+        }
+    }
 
     /* SVC-1 service supervision: open the control-state store and scan for
        service-bearing paks. Non-fatal if it cannot come up. */
@@ -10983,10 +12319,18 @@ int main(int argc, char *argv[]) {
         }
 
         if (state.shutdown_requested && state.child_pid > 0) {
-            kill(state.child_pid, SIGTERM);
+            if (jw__child_kind_has_writer_barrier(state.child_kind)) {
+                (void)jw__signal_tracked_game_group(&state, SIGTERM);
+            } else {
+                kill(state.child_pid, SIGTERM);
+            }
             usleep(50000);
             if (kill(state.child_pid, 0) == 0) {
-                kill(state.child_pid, SIGKILL);
+                if (jw__child_kind_has_writer_barrier(state.child_kind)) {
+                    (void)jw__signal_tracked_game_group(&state, SIGKILL);
+                } else {
+                    kill(state.child_pid, SIGKILL);
+                }
             }
         }
         if (state.shutdown_requested && state.menu_pid > 0) {
@@ -11002,7 +12346,8 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        (void)jw__accept_and_process(&state);
+        jw__ipc_tick(&state, 50);
+        jw__game_coordination_tick(&state);
     }
 
     /* Quiesce, not a bare off: the worker is detached, so if a pattern is in

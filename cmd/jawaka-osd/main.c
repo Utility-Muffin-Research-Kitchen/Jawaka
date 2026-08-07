@@ -89,6 +89,23 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
         return jw__reply_ok(client, "show-volume");
     }
 
+    if (strcmp(type->valuestring, "show-game-waiting") == 0) {
+        cJSON *pending = cJSON_GetObjectItemCaseSensitive(root, "pending_items");
+        if (!cJSON_IsNumber(pending) || pending->valueint < 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, "missing pending item count");
+        }
+        jw_osd_backend_show_game_waiting(pending->valueint, jw__now_ms());
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "show-game-waiting");
+    }
+
+    if (strcmp(type->valuestring, "hide-game-waiting") == 0) {
+        jw_osd_backend_hide_game_waiting();
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "hide-game-waiting");
+    }
+
     if (strcmp(type->valuestring, "shutdown") == 0) {
         g_stop = 1;
         cJSON_Delete(root);

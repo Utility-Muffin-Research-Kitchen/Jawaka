@@ -1,6 +1,7 @@
 #ifndef JW_IPC_H
 #define JW_IPC_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <sys/types.h>
 
@@ -24,6 +25,10 @@ int  jw_ipc_server_listen(const char *socket_path, jw_ipc_server **out);
  *          1 = no client yet (timeout or EINTR — caller should retry)
  *         -1 = unrecoverable error */
 int  jw_ipc_server_accept(jw_ipc_server *server, jw_ipc_client **out_client, int timeout_ms);
+/* Event-driven daemon integrations may poll the listening fd directly, then
+ * call jw_ipc_server_accept(..., 0) when it is readable. The descriptor stays
+ * owned by the server. */
+int  jw_ipc_server_fd(const jw_ipc_server *server);
 void jw_ipc_server_close(jw_ipc_server *server);
 
 int  jw_ipc_client_connect(const char *socket_path, jw_ipc_client **out);
@@ -31,6 +36,12 @@ int  jw_ipc_client_send(jw_ipc_client *client, const char *json, size_t len);
 int  jw_ipc_client_recv(jw_ipc_client *client, char **out_json, size_t *out_len);
 /* Resolves the server-side Unix peer pid from kernel credentials. */
 int  jw_ipc_client_peer_pid(jw_ipc_client *client, pid_t *out_pid);
+/* Low-level access used by retained framed streams. The descriptor remains
+ * owned by `client`. Switching back to blocking mode restores the selected
+ * socket I/O timeout; zero clears it for an indefinitely idle subscriber. */
+int  jw_ipc_client_fd(const jw_ipc_client *client);
+int  jw_ipc_client_set_nonblocking(jw_ipc_client *client, bool nonblocking,
+                                   int blocking_timeout_ms);
 void jw_ipc_client_close(jw_ipc_client *client);
 
 int  jw_ipc_request(const char *socket_path, const char *json, size_t len, char **out_json, size_t *out_len);

@@ -152,8 +152,11 @@ DAEMON_SRCS := \
 	cmd/jawakad/main.c \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
+	internal/ipc/ipc_stream.c \
 	internal/ipc/ipc_client.c \
 	internal/ipc/ctl1.c \
+	internal/ipc/life1.c \
+	internal/launcher/active_game.c \
 	internal/launcher/standalone_policy.c \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
@@ -368,8 +371,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -561,6 +563,77 @@ ctl1-test: | $(BUILD)/bin
 		internal/ipc/ctl1_test.c internal/ipc/ctl1.c \
 		third_party/cjson/cJSON.c -lm
 	$(BUILD)/bin/ctl1-test
+
+life1-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/life1-test \
+		internal/ipc/life1_test.c internal/ipc/life1.c \
+		third_party/cjson/cJSON.c -lm
+	$(BUILD)/bin/life1-test
+
+wire-fixture-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) \
+		-DJW_TEST_WIRE_FIXTURES_ROOT=\"$(WORKSPACE_ROOT)/umrk-workspace/contracts/leaf-services/wire-fixtures\" \
+		-o $(BUILD)/bin/wire-fixture-test \
+		internal/ipc/wire_fixture_test.c third_party/cjson/cJSON.c -lm
+	$(BUILD)/bin/wire-fixture-test
+
+active-game-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/active-game-test \
+		internal/launcher/active_game_test.c \
+		internal/launcher/active_game.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/active-game-test
+
+writer-group-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/writer-group-test \
+		internal/launcher/writer_group_test.c internal/services/ownership.c
+	$(BUILD)/bin/writer-group-test
+
+ipc-stream-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ipc-stream-test \
+		internal/ipc/ipc_stream_test.c internal/ipc/ipc_stream.c \
+		internal/ipc/ipc.c
+	$(BUILD)/bin/ipc-stream-test
+
+$(BUILD)/bin/life1-fixture-service: internal/services/fixtures/life1_fixture_service.c \
+		internal/ipc/ipc.c | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $^
+
+$(BUILD)/bin/game-writer-fixture: internal/services/fixtures/game_writer_fixture.c | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $<
+
+life1-subscriber-ipc-smoke: $(BUILD)/bin/life1-fixture-service
+	scripts/life1-subscriber-ipc-smoke.sh
+
+life1-game-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
+	scripts/life1-game-ipc-smoke.sh
+
+life1-game-fallback-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
+	UMRK_LIFE1_SMOKE_SCENARIO=game-malformed scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-drop scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-timeout scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-stalled scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-never-subscribe scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-late-subscribe scripts/life1-game-ipc-smoke.sh
+
+life1-game-wait-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
+	UMRK_LIFE1_SMOKE_SCENARIO=game-waiting scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-wait-expiry scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-start-now scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-slow-ready scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-reconnect scripts/life1-game-ipc-smoke.sh
+
+life1-game-unmanaged-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
+	UMRK_LIFE1_SMOKE_SCENARIO=game-disabled scripts/life1-game-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-no-pak scripts/life1-game-ipc-smoke.sh
+
+life1-game-override-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
+	scripts/life1-game-override-ipc-smoke.sh
+
+life1-app-noevent-ipc-smoke: $(BUILD)/bin/life1-fixture-service
+	scripts/life1-app-noevent-ipc-smoke.sh
+
+active-game-recovery-ipc-smoke:
+	scripts/active-game-recovery-ipc-smoke.sh
 
 service-client-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-client-test \

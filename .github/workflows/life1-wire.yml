@@ -1,0 +1,28 @@
+name: LIFE-1 wire compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  c-wire-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Jawaka
+        uses: actions/checkout@v4
+        with:
+          path: Jawaka
+
+      - name: Check out the pinned service contracts
+        uses: actions/checkout@v4
+        with:
+          repository: Utility-Muffin-Research-Kitchen/umrk-workspace
+          ref: 4fd2e9896286a79d4b824fc0cf47452d405beee2
+          path: umrk-workspace
+
+      - name: Verify C framing against canonical fixtures
+        run: make -C Jawaka WORKSPACE_ROOT="$GITHUB_WORKSPACE" wire-fixture-test

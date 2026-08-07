@@ -76,6 +76,9 @@ struct jw_svc_supervisor {
      * discovered by the final scan is blocked too. */
     bool package_quiesce_active;
     char package_operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1];
+    /* LIFE-1 authoritative active-launch gate. This is initialized from the
+     * runtime active-game record before the first scan/autostart tick. */
+    bool game_active;
 };
 
 /* ------------------------------------------------------------------ */
@@ -276,7 +279,7 @@ static jw_svc_supervised *jw__find_mut(jw_svc_supervisor *sup,
 }
 
 const jw_svc_supervised *jw_svc_supervisor_find(const jw_svc_supervisor *sup,
-                                                const char *service_id) {
+                                                 const char *service_id) {
     if (!sup || !service_id) {
         return NULL;
     }
@@ -286,6 +289,63 @@ const jw_svc_supervised *jw_svc_supervisor_find(const jw_svc_supervisor *sup,
         }
     }
     return NULL;
+}
+
+jw_svc_subscriber_auth_result jw_svc_supervisor_authenticate_subscriber(
+    const jw_svc_supervisor *sup, const char *service_id, pid_t peer_pid,
+    jw_svc_subscriber_binding *out_binding) {
+    if (out_binding) {
+        memset(out_binding, 0, sizeof(*out_binding));
+    }
+    if (peer_pid <= 0) {
+        return JW_SVC_SUBSCRIBER_MISSING_CREDENTIAL;
+    }
+    const jw_svc_supervised *requested =
+        jw_svc_supervisor_find(sup, service_id);
+    if (!requested) {
+        return JW_SVC_SUBSCRIBER_UNKNOWN_SERVICE;
+    }
+    if (requested->state == JW_SVC_STATE_STALE_GENERATION) {
+        return JW_SVC_SUBSCRIBER_STALE_GENERATION;
+    }
+    if (requested->pgid > 0 && requested->lease_fd >= 0 &&
+        requested->launch_instant_us > 0 &&
+        jw_svc_process_is_live_group_member(peer_pid, requested->pgid)) {
+        if (out_binding) {
+            out_binding->peer_pid = peer_pid;
+            out_binding->pgid = requested->pgid;
+            out_binding->launch_instant_us = requested->launch_instant_us;
+        }
+        return JW_SVC_SUBSCRIBER_ACCEPTED;
+    }
+
+    int count = jw_svc_supervisor_count(sup);
+    for (int i = 0; i < count; i++) {
+        const jw_svc_supervised *other = jw_svc_supervisor_at(sup, i);
+        if (!other || other == requested || other->pgid <= 0 ||
+            other->lease_fd < 0 || other->launch_instant_us <= 0) {
+            continue;
+        }
+        if (jw_svc_process_is_live_group_member(peer_pid, other->pgid)) {
+            return JW_SVC_SUBSCRIBER_WRONG_GROUP;
+        }
+    }
+    return JW_SVC_SUBSCRIBER_FOREGROUND;
+}
+
+bool jw_svc_supervisor_revalidate_subscriber(
+    const jw_svc_supervisor *sup, const char *service_id,
+    const jw_svc_subscriber_binding *binding) {
+    if (!binding || binding->peer_pid <= 0 || binding->pgid <= 0 ||
+        binding->launch_instant_us <= 0) {
+        return false;
+    }
+    const jw_svc_supervised *entry =
+        jw_svc_supervisor_find(sup, service_id);
+    return entry && entry->pgid == binding->pgid && entry->lease_fd >= 0 &&
+           entry->launch_instant_us == binding->launch_instant_us &&
+           jw_svc_process_is_live_group_member(binding->peer_pid,
+                                               binding->pgid);
 }
 
 int jw_svc_supervisor_count(const jw_svc_supervisor *sup) {
@@ -783,6 +843,7 @@ static bool jw__entry_is_exhausted(const jw_svc_supervised *e) {
     return !e->pak_present && !e->desired_enabled && !e->session_run &&
            e->pgid <= 0 && e->lease_fd < 0 && !e->reap_pending &&
            !e->stop_requested && !e->lifecycle_restart_pending &&
+           !e->game_restart_pending &&
            !e->package_blocked && !e->package_snapshot_valid &&
            e->state != JW_SVC_STATE_STALE_GENERATION;
 }
@@ -1109,6 +1170,11 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
         jw__set_reason(reason, reason_size, "package-in-progress");
         return false;
     }
+    if (sup->game_active &&
+        e->manifest.lifecycle_game != JW_SVC_LIFECYCLE_GAME_IGNORE) {
+        jw__set_reason(reason, reason_size, "lifecycle-in-progress");
+        return false;
+    }
 
     /* The lease is the no-overlap gate. Never start without it. */
     int lease_fd = jw_svc_lease_acquire(sup->runtime_dir, e->service_id,
@@ -1427,12 +1493,14 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
     bool old_control_session_run = e->control.session_run;
     bool old_autostart_pending = e->autostart_pending;
     bool old_lifecycle_restart_pending = e->lifecycle_restart_pending;
+    bool old_game_restart_pending = e->game_restart_pending;
     e->desired_enabled = false;
     e->control.start_with_leaf = false;
     e->session_run = false;
     e->control.session_run = false;
     e->autostart_pending = false;
     e->lifecycle_restart_pending = false;
+    e->game_restart_pending = false;
     /* Persist the disabled intent before attempting a potentially unverified
      * stop. Otherwise a stuck service would come back as desired after the
      * next daemon restart and could be relaunched when its stale lease clears. */
@@ -1443,6 +1511,7 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
         e->control.session_run = old_control_session_run;
         e->autostart_pending = old_autostart_pending;
         e->lifecycle_restart_pending = old_lifecycle_restart_pending;
+        e->game_restart_pending = old_game_restart_pending;
         jw__set_reason(reason, reason_size, "store-failed");
         return false;
     }
@@ -1473,6 +1542,11 @@ bool jw_svc_supervisor_run(jw_svc_supervisor *sup, const char *service_id,
     }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
     if (!jw__require_available(e, reason, reason_size)) {
+        return false;
+    }
+    if (sup->game_active &&
+        e->manifest.lifecycle_game != JW_SVC_LIFECYCLE_GAME_IGNORE) {
+        jw__set_reason(reason, reason_size, "lifecycle-in-progress");
         return false;
     }
     if (e->stop_requested || e->reap_pending ||
@@ -1533,8 +1607,10 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
     bool old_session_run = e->session_run;
     bool old_control_loaded = e->control_loaded;
     bool old_lifecycle_restart_pending = e->lifecycle_restart_pending;
+    bool old_game_restart_pending = e->game_restart_pending;
     jw_svc_control_state old_control = e->control;
     e->lifecycle_restart_pending = false;
+    e->game_restart_pending = false;
     /* Session intent is withdrawn immediately -- the user asked for the stop,
      * and it must survive even if the group turns out to be unstoppable. The
      * stop sequence itself then runs under tick. */
@@ -1545,6 +1621,7 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
         e->control = old_control;
         e->control_loaded = old_control_loaded;
         e->lifecycle_restart_pending = old_lifecycle_restart_pending;
+        e->game_restart_pending = old_game_restart_pending;
         jw__set_reason(reason, reason_size, "store-failed");
         return false;
     }
@@ -1562,6 +1639,11 @@ bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
     }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
     if (!jw__require_available(e, reason, reason_size)) {
+        return false;
+    }
+    if (sup->game_active &&
+        e->manifest.lifecycle_game != JW_SVC_LIFECYCLE_GAME_IGNORE) {
+        jw__set_reason(reason, reason_size, "lifecycle-in-progress");
         return false;
     }
     jw_svc_backoff_state old_backoff = e->backoff;
@@ -1822,14 +1904,52 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
             continue;
         }
 
+        /* LIFE-1 keeps observing/reaping a group that is already stopping,
+         * but every path that could create a new game-sensitive generation is
+         * suppressed until the authoritative writer barrier clears. Ignore
+         * services remain completely outside game coordination. */
+        jw_svc_lifecycle_game game_policy = e->pgid > 0
+            ? e->active_lifecycle_game : e->manifest.lifecycle_game;
+        if (sup->game_active &&
+            (game_policy != JW_SVC_LIFECYCLE_GAME_IGNORE ||
+             e->game_restart_pending)) {
+            continue;
+        }
+
         /* 3. Backoff: retry a failed on-failure service once its delay
          *    elapses, only if the previous generation's group is gone. */
         bool started_this_tick = false;
 
+        /* A mode-stop or fallback stop is resumed exactly once after the
+         * active record was durably cleared. This is intentionally separate
+         * from desired/session intent: it records the fact that Jawaka, not
+         * the user, took down an effective service for this game. */
+        if (e->game_restart_pending && e->pgid <= 0 &&
+            e->state != JW_SVC_STATE_STALE_GENERATION &&
+            e->state != JW_SVC_STATE_STOPPING &&
+            jw__entry_available(e)) {
+            char reason[JW_SVC_REASON_BUF];
+            if (jw__start_generation(sup, e, reason, sizeof(reason))) {
+                e->game_restart_pending = false;
+                jw__persist(sup, e, "game-resume");
+                started_this_tick = true;
+                changes++;
+            } else if (strcmp(reason, "stale-generation") == 0) {
+                e->state = JW_SVC_STATE_STALE_GENERATION;
+                e->lease_retry_next_ms = now + JW_SVC_LEASE_RETRY_MS;
+                changes++;
+            } else {
+                e->game_restart_pending = false;
+                e->state = jw__entry_idle_state(e);
+                jw__persist(sup, e, "game-resume-failed");
+                changes++;
+            }
+        }
+
         /* A service stopped for suspend/storage resumes exactly once. The
          * pending bit survives an unverified stop; pgid/state gates prevent a
          * replacement until the old reservation is proven absent. */
-        if (e->lifecycle_restart_pending &&
+        if (!started_this_tick && e->lifecycle_restart_pending &&
             !(sup->storage_restart_blocked &&
               e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_STORAGE) &&
             e->pgid <= 0 &&
@@ -1887,7 +2007,7 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
         if (!started_this_tick &&
             e->state == JW_SVC_STATE_STALE_GENERATION && e->pgid <= 0 &&
             (e->desired_enabled || e->session_run ||
-             e->lifecycle_restart_pending) &&
+             e->lifecycle_restart_pending || e->game_restart_pending) &&
             now >= e->lease_retry_next_ms) {
             char reason[JW_SVC_REASON_BUF];
             if (jw__start_generation(sup, e, reason, sizeof(reason))) {
@@ -1915,7 +2035,7 @@ int jw_svc_supervisor_tick(jw_svc_supervisor *sup) {
         if (!started_this_tick &&
             e->state == JW_SVC_STATE_STALE_GENERATION && e->pgid <= 0 &&
             !e->desired_enabled && !e->session_run &&
-            !e->lifecycle_restart_pending &&
+            !e->lifecycle_restart_pending && !e->game_restart_pending &&
             now >= e->lease_retry_next_ms) {
             char lease_reason[JW_SVC_REASON_BUF];
             int lease_fd = jw_svc_lease_acquire(
@@ -2009,6 +2129,10 @@ bool jw_svc_supervisor_package_begin(jw_svc_supervisor *sup,
         jw__set_reason(reason, reason_size, "package-in-progress");
         return false;
     }
+    if (sup->game_active) {
+        jw__set_reason(reason, reason_size, "lifecycle-in-progress");
+        return false;
+    }
     if (sup->storage_restart_blocked) {
         jw__set_reason(reason, reason_size, "lifecycle-in-progress");
         return false;
@@ -2052,6 +2176,7 @@ bool jw_svc_supervisor_package_begin(jw_svc_supervisor *sup,
             e->state == JW_SVC_STATE_RUNNING;
         e->autostart_pending = false;
         e->lifecycle_restart_pending = false;
+        e->game_restart_pending = false;
         e->post_stop = JW_SVC_POST_STOP_NONE;
         e->session_run = false;
         e->control.session_run = false;
@@ -2259,11 +2384,12 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
     if (!sup) {
         return 0;
     }
+    sup->game_active = true;
     int stopped = 0;
     for (int i = 0; i < sup->count; i++) {
         jw_svc_supervised *e = &sup->entries[i];
         if (e->state == JW_SVC_STATE_STALE_GENERATION &&
-            e->active_lifecycle_game == JW_SVC_LIFECYCLE_GAME_STOP) {
+            e->active_lifecycle_game != JW_SVC_LIFECYCLE_GAME_IGNORE) {
             e->lifecycle_restart_pending = false;
             if (out_stuck_id && stuck_id_size > 0 &&
                 out_stuck_id[0] == '\0') {
@@ -2275,9 +2401,10 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
             continue;
         }
         if (e->active_lifecycle_game != JW_SVC_LIFECYCLE_GAME_STOP) {
-            continue; /* notify/ignore are LIFE-1/A3b, not this phase */
+            continue; /* live notify is handled by the daemon exchange */
         }
         e->lifecycle_restart_pending = false;
+        e->game_restart_pending = true;
         /* A game-launch stop supersedes a pending CTL-1 Restart: the whole
          * point is that nothing runs over the game. */
         e->post_stop = JW_SVC_POST_STOP_NONE;
@@ -2295,6 +2422,63 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
         stopped++;
     }
     return stopped;
+}
+
+void jw_svc_supervisor_game_set_active(jw_svc_supervisor *sup, bool active) {
+    if (sup) {
+        sup->game_active = active;
+    }
+}
+
+bool jw_svc_supervisor_game_active(const jw_svc_supervisor *sup) {
+    return sup && sup->game_active;
+}
+
+bool jw_svc_supervisor_game_stop_service(jw_svc_supervisor *sup,
+                                         const char *service_id,
+                                         char *reason, size_t reason_size) {
+    if (!sup || !service_id || !service_id[0]) {
+        jw__set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+    jw_svc_supervised *e = jw__find_mut(sup, service_id);
+    if (!e) {
+        jw__set_reason(reason, reason_size, "unknown-service");
+        return false;
+    }
+    sup->game_active = true;
+    if (e->state == JW_SVC_STATE_STALE_GENERATION) {
+        jw__set_reason(reason, reason_size, "stale-generation");
+        return false;
+    }
+    if (e->pgid <= 0) {
+        jw__set_reason(reason, reason_size, "ok");
+        return true;
+    }
+    if (e->stop_requested || e->reap_pending ||
+        e->state == JW_SVC_STATE_STOPPING ||
+        e->pending_stop_reason != JW_SVC_STOP_NONE) {
+        jw__set_reason(reason, reason_size, "lifecycle-in-progress");
+        return false;
+    }
+    e->lifecycle_restart_pending = false;
+    e->game_restart_pending = true;
+    e->post_stop = JW_SVC_POST_STOP_NONE;
+    e->pending_stop_reason = JW_SVC_STOP_LIFECYCLE_GAME;
+    e->autostart_pending = false;
+    if (!jw__stop_and_reap(sup, e, reason, reason_size)) {
+        (void)jw__persist(sup, e, "game-unverified");
+        return false;
+    }
+    (void)jw__persist(sup, e, "game-launch");
+    jw__set_reason(reason, reason_size, "ok");
+    return true;
+}
+
+void jw_svc_supervisor_game_finish(jw_svc_supervisor *sup) {
+    if (sup) {
+        sup->game_active = false;
+    }
 }
 
 typedef enum {
