@@ -4942,8 +4942,10 @@ static void jw__set_audio_output(jw_settings_ui *ui, jw_platform_audio_output ou
 
 /* After a Bluetooth headset is disconnected or unpaired the codec is still
    pointed at the (now gone) Bluetooth output, so audio would play to nothing.
-   When that is the case, fall back to the wired jack if it is plugged in, else
-   the speaker — so sound returns on its own instead of staying silent. */
+   When that is the case, fall back to the wired jack if it is plugged in, then
+   USB-C, else the speaker — so sound returns on its own instead of staying
+   silent, and lands on headphones rather than blaring out of the speaker if any
+   are still connected. */
 static void jw__bt_route_back_if_orphaned(jw_settings_ui *ui) {
     if (!ui) {
         return;
@@ -4953,10 +4955,12 @@ static void jw__bt_route_back_if_orphaned(jw_settings_ui *ui) {
         jw__audio_output_available(ui, JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH)) {
         return;
     }
-    jw_platform_audio_output back =
-        jw__audio_output_available(ui, JW_PLATFORM_AUDIO_OUTPUT_HEADSET)
-            ? JW_PLATFORM_AUDIO_OUTPUT_HEADSET
-            : JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    jw_platform_audio_output back = JW_PLATFORM_AUDIO_OUTPUT_SPEAKER;
+    if (jw__audio_output_available(ui, JW_PLATFORM_AUDIO_OUTPUT_HEADSET)) {
+        back = JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
+    } else if (jw__audio_output_available(ui, JW_PLATFORM_AUDIO_OUTPUT_USB)) {
+        back = JW_PLATFORM_AUDIO_OUTPUT_USB;
+    }
     char status[128];
     jw__set_audio_output(ui, back, status, sizeof(status));
 }
