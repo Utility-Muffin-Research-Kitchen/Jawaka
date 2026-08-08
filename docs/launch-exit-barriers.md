@@ -43,6 +43,28 @@ inherited group; PPSSPP, DraStic, and Flycast use `exec`; none calls `setsid`,
 their routine writers. PortMaster is explicitly different and is kept outside
 the automatic Saves/States eligibility promise.
 
+## MLP1 fixture qualification — 2026-08-08
+
+`make mlp1-adb-life1-smoke` runs an isolated aarch64 fixture on the attached
+MLP1. It pauses the live launcher daemon, bind-mounts a temporary executable
+mock card under `/tmp`, starts a second `jawakad --daemon-only` with a complete
+single-source PATH-2 environment, and removes the mount and every fixture
+process before resuming the live daemon.
+
+Both focused cases pass on device:
+
+- `game-exchange`: the service subscribes with kernel peer identity, receives
+  `game.start`/`game.cancel`, and replies ready; `active-game.json` remains
+  present while the direct fixture child has exited but its writer descendant
+  is live; `game.finish` arrives only after group absence and the finalizer.
+- `game-malformed`: a malformed subscriber reply takes the verified service
+  stop fallback and the writer launches only after that stop completes.
+
+The run leaves no fixture process, temporary bind mount, or test tree. Its
+ADB-inclusive launch-to-writer observations are diagnostic only; B0b owns the
+in-process pause/launch timing gate and must not substitute host/ADB latency for
+that measurement.
+
 ## Content switching
 
 The game switcher no longer retargets RetroArch in-process. A switch first
