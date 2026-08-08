@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Utility-Muffin-Research-Kitchen/umrk-workspace
-          ref: 4fd2e9896286a79d4b824fc0cf47452d405beee2
+          ref: 5ab17d82c122b481f15c835e6ff9a21829d45aa9
           path: umrk-workspace
 
       - name: Verify C framing against canonical fixtures
