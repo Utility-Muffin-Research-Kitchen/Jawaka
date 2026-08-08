@@ -135,6 +135,24 @@ static jw__proc_stat_result jw__read_proc_stat(const char *path,
         ? JW__PROC_STAT_OK : JW__PROC_STAT_UNKNOWN;
 }
 
+bool jw_svc_process_is_live_group_member(pid_t pid, pid_t pgid) {
+    if (pid <= 0 || pgid <= 0) {
+        return false;
+    }
+    char stat_path[64];
+    int n = snprintf(stat_path, sizeof(stat_path),
+                     "/proc/%ld/stat", (long)pid);
+    if (n < 0 || (size_t)n >= sizeof(stat_path)) {
+        return false;
+    }
+    pid_t actual_pgid = 0;
+    bool zombie = false;
+    int threads = 0;
+    return jw__read_proc_stat(stat_path, &actual_pgid, &zombie, &threads) ==
+               JW__PROC_STAT_OK &&
+           actual_pgid == pgid && !zombie && threads > 0;
+}
+
 bool jw_svc_group_absent(pid_t pgid) {
     if (pgid <= 0) {
         return false;
@@ -204,6 +222,17 @@ bool jw_svc_group_absent(pid_t pgid) {
 #include <sys/proc.h>
 #include <sys/proc_info.h>
 
+bool jw_svc_process_is_live_group_member(pid_t pid, pid_t pgid) {
+    if (pid <= 0 || pgid <= 0) {
+        return false;
+    }
+    struct proc_bsdinfo info;
+    errno = 0;
+    int r = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info));
+    return r == (int)sizeof(info) && (pid_t)info.pbi_pgid == pgid &&
+           info.pbi_status != SZOMB;
+}
+
 /* macOS has no /proc; libproc's process table enumeration is the closest
  * real equivalent (used for real dev-time testing here, not just as a
  * stub -- this function is exercised by fork()/setpgid() fixtures in
@@ -271,6 +300,12 @@ bool jw_svc_group_absent(pid_t pgid) {
 }
 
 #else
+
+bool jw_svc_process_is_live_group_member(pid_t pid, pid_t pgid) {
+    (void)pid;
+    (void)pgid;
+    return false;
+}
 
 bool jw_svc_group_absent(pid_t pgid) {
     (void)pgid;

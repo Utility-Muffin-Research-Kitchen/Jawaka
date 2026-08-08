@@ -569,6 +569,10 @@ static void test_stale_generation_blocks_second_daemon(void) {
     CHECK(strcmp(stuck, "org.umrk.test.lease") == 0);
     CHECK(jw_svc_supervisor_stop_all(second) == 1);
 
+    /* This test used game_launch_begin only to exercise the stale-generation
+     * decision row. Release the synthetic active launch before exercising the
+     * ordinary stale Run/lease-retry behavior below. */
+    jw_svc_supervisor_game_finish(second);
     CHECK(!jw_svc_supervisor_run(second, "org.umrk.test.lease",
                                  reason, sizeof(reason)));
     CHECK(strcmp(reason, "stale-generation") == 0);
@@ -1803,6 +1807,175 @@ static void test_circuit_breaker_opens(void) {
     fixture_teardown(&f);
 }
 
+static void test_life1_subscriber_authentication(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *one = "org.umrk.test.subscriber";
+    const char *two = "org.umrk.test.other";
+    fixture_write_pak(&f, "subscriber.pak", one,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    fixture_write_pak(&f, "other.pak", two,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 2);
+    CHECK(jw_svc_supervisor_run(sup, one, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, two, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, one, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, two, JW_SVC_STATE_RUNNING, 3000));
+    const jw_svc_supervised *entry_one = jw_svc_supervisor_find(sup, one);
+    const jw_svc_supervised *entry_two = jw_svc_supervisor_find(sup, two);
+    CHECK(entry_one && entry_one->pgid > 0);
+    CHECK(entry_two && entry_two->pgid > 0);
+
+    jw_svc_subscriber_binding binding;
+    CHECK(jw_svc_supervisor_authenticate_subscriber(
+              sup, one, entry_one->pgid, &binding) ==
+          JW_SVC_SUBSCRIBER_ACCEPTED);
+    CHECK(binding.peer_pid == entry_one->pgid);
+    CHECK(binding.pgid == entry_one->pgid);
+    CHECK(binding.launch_instant_us == entry_one->launch_instant_us);
+    CHECK(jw_svc_supervisor_revalidate_subscriber(sup, one, &binding));
+    CHECK(jw_svc_supervisor_authenticate_subscriber(
+              sup, one, entry_two->pgid, NULL) ==
+          JW_SVC_SUBSCRIBER_WRONG_GROUP);
+    CHECK(jw_svc_supervisor_authenticate_subscriber(
+              sup, one, getpid(), NULL) == JW_SVC_SUBSCRIBER_FOREGROUND);
+    CHECK(jw_svc_supervisor_authenticate_subscriber(
+              sup, "org.umrk.test.missing", getpid(), NULL) ==
+          JW_SVC_SUBSCRIBER_UNKNOWN_SERVICE);
+    CHECK(jw_svc_supervisor_authenticate_subscriber(
+              sup, one, -1, NULL) ==
+          JW_SVC_SUBSCRIBER_MISSING_CREDENTIAL);
+
+    /* A second daemon sees the still-held lease as a stale generation and
+     * cannot authenticate the old pid as a current subscriber. */
+    jw_svc_supervisor *observer = fixture_open(&f, reason);
+    CHECK(observer != NULL);
+    CHECK(jw_svc_supervisor_scan(observer) == 2);
+    CHECK(jw_svc_supervisor_authenticate_subscriber(
+              observer, one, entry_one->pgid, NULL) ==
+          JW_SVC_SUBSCRIBER_STALE_GENERATION);
+    jw_svc_supervisor_close(observer);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    CHECK(!jw_svc_supervisor_revalidate_subscriber(sup, one, &binding));
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+static void test_game_gate_stop_and_resume(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *stop_id = "org.umrk.test.gamestop";
+    const char *notify_id = "org.umrk.test.gamenotify";
+    const char *ignore_id = "org.umrk.test.gameignore";
+    fixture_write_pak(&f, "gamestop.pak", stop_id,
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\",\"lifecycle\":{\"game\":\"stop\"}");
+    fixture_write_pak(&f, "gamenotify.pak", notify_id,
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\",\"lifecycle\":{\"game\":\"notify\"}");
+    fixture_write_pak(&f, "gameignore.pak", ignore_id,
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\",\"lifecycle\":{\"game\":\"ignore\"}");
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 3);
+    CHECK(jw_svc_supervisor_run(sup, stop_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, notify_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, ignore_id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, stop_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, notify_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, ignore_id, JW_SVC_STATE_RUNNING, 3000));
+
+    CHECK(jw_svc_supervisor_game_stop_service(
+        sup, stop_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_game_active(sup));
+    const jw_svc_supervised *stop = jw_svc_supervisor_find(sup, stop_id);
+    CHECK(stop && stop->pgid <= 0 && stop->game_restart_pending);
+    CHECK(!jw_svc_supervisor_run(sup, stop_id, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "lifecycle-in-progress") == 0);
+    CHECK(!jw_svc_supervisor_restart(sup, notify_id,
+                                     reason, sizeof(reason)));
+    CHECK(strcmp(reason, "lifecycle-in-progress") == 0);
+
+    /* Runtime mode notify fallback selects the otherwise-notify service for
+     * a verified stop. Ignore remains live and startable outside the gate. */
+    CHECK(jw_svc_supervisor_game_stop_service(
+        sup, notify_id, reason, sizeof(reason)));
+    const jw_svc_supervised *notify =
+        jw_svc_supervisor_find(sup, notify_id);
+    const jw_svc_supervised *ignore =
+        jw_svc_supervisor_find(sup, ignore_id);
+    CHECK(notify && notify->pgid <= 0 && notify->game_restart_pending);
+    CHECK(ignore && ignore->pgid > 0);
+    for (int i = 0; i < 20; i++) {
+        jw_svc_supervisor_tick(sup);
+        usleep(20000);
+    }
+    stop = jw_svc_supervisor_find(sup, stop_id);
+    notify = jw_svc_supervisor_find(sup, notify_id);
+    CHECK(stop && stop->pgid <= 0 && stop->game_restart_pending);
+    CHECK(notify && notify->pgid <= 0 && notify->game_restart_pending);
+
+    jw_svc_supervisor_game_finish(sup);
+    CHECK(!jw_svc_supervisor_game_active(sup));
+    CHECK(wait_for_state(sup, stop_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, notify_id, JW_SVC_STATE_RUNNING, 3000));
+    stop = jw_svc_supervisor_find(sup, stop_id);
+    notify = jw_svc_supervisor_find(sup, notify_id);
+    CHECK(stop && !stop->game_restart_pending);
+    CHECK(notify && !notify->game_restart_pending);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+static void test_recovered_game_gate_suppresses_autostart(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *notify_id = "org.umrk.test.recoverednotify";
+    const char *ignore_id = "org.umrk.test.recoveredignore";
+    fixture_write_pak(&f, "recoverednotify.pak", notify_id,
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\",\"lifecycle\":{\"game\":\"notify\"}");
+    fixture_write_pak(&f, "recoveredignore.pak", ignore_id,
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\",\"lifecycle\":{\"game\":\"ignore\"}");
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *first = fixture_open(&f, reason);
+    CHECK(first != NULL);
+    CHECK(jw_svc_supervisor_scan(first) == 2);
+    CHECK(jw_svc_supervisor_enable(first, notify_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_enable(first, ignore_id, reason, sizeof(reason)));
+    jw_svc_supervisor_close(first);
+
+    jw_svc_supervisor *recovered = fixture_open(&f, reason);
+    CHECK(recovered != NULL);
+    jw_svc_supervisor_game_set_active(recovered, true);
+    CHECK(jw_svc_supervisor_scan(recovered) == 2);
+    for (int i = 0; i < 100; i++) {
+        jw_svc_supervisor_tick(recovered);
+        usleep(20000);
+    }
+    const jw_svc_supervised *notify =
+        jw_svc_supervisor_find(recovered, notify_id);
+    const jw_svc_supervised *ignore =
+        jw_svc_supervisor_find(recovered, ignore_id);
+    CHECK(notify && notify->pgid <= 0 && notify->autostart_pending);
+    CHECK(ignore && ignore->pgid > 0);
+
+    jw_svc_supervisor_game_finish(recovered);
+    CHECK(wait_for_state(recovered, notify_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(jw_svc_supervisor_stop_all(recovered) == 0);
+    jw_svc_supervisor_close(recovered);
+    fixture_teardown(&f);
+}
+
 int main(int argc, char **argv) {
     g_program_path = argv[0];
     if (argc == 3 && strcmp(argv[1], "--fd-zero-worker") == 0) {
@@ -1840,6 +2013,9 @@ int main(int argc, char **argv) {
     test_stale_missing_policy_fails_safe_for_all_stop_triggers();
     test_package_quiesce_restores_only_persistent_intent();
     test_package_quiesce_stale_preflight_changes_nothing();
+    test_life1_subscriber_authentication();
+    test_game_gate_stop_and_resume();
+    test_recovered_game_gate_suppresses_autostart();
     test_circuit_breaker_opens();
 
     if (g_failures == 0) {

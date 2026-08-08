@@ -159,12 +159,16 @@ static void jw__test_simple_child(void) {
     assert(child_pgid == child);
 
     assert(jw_svc_group_absent(child) == false);
+    assert(jw_svc_process_is_live_group_member(child, child));
+    assert(!jw_svc_process_is_live_group_member(child, getpgrp()));
+    assert(!jw_svc_process_is_live_group_member(getpid(), child));
 
     assert(kill(child, SIGKILL) == 0);
     int status = 0;
     assert(waitpid(child, &status, 0) == child);
 
     assert(jw__wait_until(jw__is_absent, child, 2000));
+    assert(!jw_svc_process_is_live_group_member(child, child));
     puts("PASS ownership-test simple child: alive=not-absent, reaped=absent");
 }
 
