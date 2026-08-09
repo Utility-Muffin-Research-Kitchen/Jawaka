@@ -97,6 +97,47 @@ This is the plan's power-loss/card-removal analogue: the exact pre-commit state
 survived an unsafe physical removal and recovery chose the already-running tree
 using the durable record token rather than package version or filesystem shape.
 
+## Final main-integration qualification — 2026-08-09
+
+P1 was merged with current Jawaka `main` in code merge commit
+`c966f94276b6c412b817b8545ed10f9d91bbc3d9`. The merge retained the current
+Release A service-supervisor targets and P1's smoke-only fault-injection target,
+and removed the duplicate `.PHONY` declaration that existed on `main`.
+
+Two final review findings were addressed before qualification:
+
+- MLP1/Linux still requires a successful `syncfs` barrier. On non-Linux native
+  hosts only, an unsupported directory `fsync` returning `EINVAL` is treated as
+  best effort so a host install does not fail solely because that platform
+  rejects directory syncing.
+- `removal-recover` now chains its retained-underlay precondition with `&&`.
+  A negative device run with no retained fixture returned nonzero before setup
+  and left no bind mount, runner directory, evidence directory, or card fixture.
+
+The exact merged tree passed:
+
+- all 28 native recovery scenarios, both normally and under Clang
+  ASan/UBSan (`detect_leaks=0`, because macOS AddressSanitizer does not support
+  leak detection);
+- `schema-v6-test`, `pakrat-state-logic-test`, and `storage-sources-test`;
+- shell syntax and ShellCheck for all three P1 runners;
+- the full native build and full MLP1 release cross-build;
+- production-binary inspection proving `jawaka-launcher` and `jawaka-menu`
+  contain neither `JW_PAKRAT_FAULT_AT` nor `JW_PAKRAT_PAUSE_AT`, while the
+  dedicated smoke binary contains both; and
+- all 24 real-vfat scenarios on MLP1 `f40098e329c73533`, using the expendable
+  64 GB card at `/mnt/sdcard`, CID
+  `0034323030303030000000008a0186c5`. Cleanup left no P1 fixture or `/tmp`
+  residue on the device.
+
+The corresponding MLP1 binary SHA-256 values are:
+
+- `jawakad`: `1a4b0676a2aed2156e999d621d32170a54f3563d10f3a181737a11eeb5d2110b`;
+- `jawaka-launcher`: `a3729713715ae23690362c344efca3e52c42ecdbf481e22ca84ed89b332ab81c`;
+- `jawaka-menu`: `8a158e6401f54359aef287957b5cb2e3b4e6d9fa57b1b08b72c160549d1b589d`;
+  and
+- `jawaka-pakrat-smoke`: `568fb01de599fb9c8c37c1ad7ca5b10c56cd3bdf254f9bcd7ec3b2b7f10e7eba`.
+
 ## Reproduction
 
 The automated matrix is destructive only inside `.p1-pakrat-fixture` on the
