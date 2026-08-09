@@ -49,6 +49,29 @@ int  jw__pakrat_read_origin_marker(const char *apps_dir, const char *store_id,
                                    char *out, size_t out_size);
 void jw__pakrat_clear_origin_marker(const char *target, const char *store_id);
 
+#define JW_PAKRAT_COMMIT_TOKEN_HEX_LEN 32
+#define JW_PAKRAT_COMMIT_TOKEN_BUF (JW_PAKRAT_COMMIT_TOKEN_HEX_LEN + 1)
+
+typedef struct {
+    char store_id[128];
+    char version[64];
+    char artifact_sha256[80];
+    char token[JW_PAKRAT_COMMIT_TOKEN_BUF];
+} jw_pakrat_commit_marker;
+
+/* Reserved per-tree commit identity. Archives are forbidden from supplying
+   this file; the installer writes and fsyncs it before the first promotion
+   rename. Recovery accepts a promoted tree as committed only when every field
+   and the install-record token match exactly. */
+int jw__pakrat_write_commit_marker(const char *pak_dir,
+                                   const jw_pakrat_commit_marker *marker);
+int jw__pakrat_read_commit_marker(const char *pak_dir,
+                                  jw_pakrat_commit_marker *out);
+
+/* Filesystem-wide durability barrier for the Apps filesystem containing path.
+   Linux/MLP1 uses syncfs(2); desktop fallback uses fsync on the opened path. */
+int jw__pakrat_sync_filesystem(const char *path);
+
 typedef struct {
     char platform[64];
     char pak_version[64];
@@ -75,10 +98,11 @@ typedef struct {
    ownership record, or NULL when the store id has none. Stale staging trees
    are always discarded. target absent + rollback present restores the
    rollback. target + rollback present is decided by the record: the promoted
-   tree counts as committed only when its pak.json parses, its pak_version
-   and platform match the record, and its launch.sh entry point exists;
-   anything else is an uncommitted promote and rolls back to the sibling that
-   was already running. */
+   tree counts as committed only when its pak.json, reserved commit marker,
+   entry point, and install-record token all match; anything else is an
+   uncommitted promote and rolls back to the sibling that was already running.
+   Returns 1 (without mutation) when the owning Apps source is not positively
+   mounted, 0 on reconciliation, and -1 on an actual recovery error. */
 int  jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
                                      const char *store_id,
                                      const char *install_path,

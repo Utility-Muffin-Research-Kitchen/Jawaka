@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS pakrat_installs (
     platform        TEXT NOT NULL,
     install_path    TEXT NOT NULL,
     artifact_sha256 TEXT NOT NULL,
-    installed_at    TEXT NOT NULL
+    installed_at    TEXT NOT NULL,
+    commit_token    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx

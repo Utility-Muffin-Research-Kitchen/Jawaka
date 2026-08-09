@@ -130,7 +130,8 @@ static const char *kSchemaSql =
     "    platform        TEXT NOT NULL,\n"
     "    install_path    TEXT NOT NULL,\n"
     "    artifact_sha256 TEXT NOT NULL,\n"
-    "    installed_at    TEXT NOT NULL\n"
+    "    installed_at    TEXT NOT NULL,\n"
+    "    commit_token    TEXT\n"
     ");\n"
     "\n"
     "CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx\n"
@@ -255,6 +256,46 @@ static int jw__ensure_apps_min_leaf_version(sqlite3 *db) {
         return 0;
     }
     fprintf(stderr, "sqlite apps min_leaf_version migration failed: %s\n",
+            error ? error : sqlite3_errmsg(db));
+    sqlite3_free(error);
+    return -1;
+}
+
+static int jw__ensure_pakrat_commit_token(sqlite3 *db) {
+    if (jw__exec(
+            db,
+            "CREATE TABLE IF NOT EXISTS pakrat_installs ("
+            "store_id TEXT PRIMARY KEY,version TEXT NOT NULL,"
+            "platform TEXT NOT NULL,install_path TEXT NOT NULL,"
+            "artifact_sha256 TEXT NOT NULL,installed_at TEXT NOT NULL,"
+            "commit_token TEXT);"
+            "CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx "
+            "ON pakrat_installs(install_path);") != 0) {
+        return -1;
+    }
+    int present = 0;
+    if (jw__table_has_column(db, "pakrat_installs", "commit_token",
+                             &present) != 0) {
+        return -1;
+    }
+    if (present) {
+        return 0;
+    }
+    char *error = NULL;
+    int rc = sqlite3_exec(
+        db, "ALTER TABLE pakrat_installs ADD COLUMN commit_token TEXT;",
+        NULL, NULL, &error);
+    if (rc == SQLITE_OK) {
+        sqlite3_free(error);
+        return 0;
+    }
+    int now_present = 0;
+    if (jw__table_has_column(db, "pakrat_installs", "commit_token",
+                             &now_present) == 0 && now_present) {
+        sqlite3_free(error);
+        return 0;
+    }
+    fprintf(stderr, "sqlite pakrat commit_token migration failed: %s\n",
             error ? error : sqlite3_errmsg(db));
     sqlite3_free(error);
     return -1;
@@ -619,7 +660,8 @@ int jw_db_apply_schema(sqlite3 *db) {
     if (version == JW_DB_SCHEMA_VERSION) {
         /* Schema-v6 receives additive protocol tables without changing the
            stable games schema or forcing a migration/backup cycle. */
-        return jw__ensure_apps_min_leaf_version(db) == 0
+        return jw__ensure_apps_min_leaf_version(db) == 0 &&
+                       jw__ensure_pakrat_commit_token(db) == 0
                    ? jw__exec(db, kRelocationSchemaSql)
                    : -1;
     }
@@ -628,7 +670,8 @@ int jw_db_apply_schema(sqlite3 *db) {
     }
     if (version > 0) {
         return jw__exec(db, kSchemaSql) == 0 &&
-                       jw__ensure_apps_min_leaf_version(db) == 0
+                       jw__ensure_apps_min_leaf_version(db) == 0 &&
+                       jw__ensure_pakrat_commit_token(db) == 0
                    ? jw__exec(db, kRelocationSchemaSql)
                    : -1;
     }
@@ -636,7 +679,8 @@ int jw_db_apply_schema(sqlite3 *db) {
         return -1;
     }
     return jw__exec(db, kSchemaSql) == 0 &&
-                   jw__ensure_apps_min_leaf_version(db) == 0
+                   jw__ensure_apps_min_leaf_version(db) == 0 &&
+                   jw__ensure_pakrat_commit_token(db) == 0
                ? jw__exec(db, kRelocationSchemaSql)
                : -1;
 }
@@ -1621,39 +1665,48 @@ int jw_db_get_theme_name(const char *db_path, char *out, size_t out_size) {
     return jw_db_get_setting(db_path, "theme_name", out, out_size);
 }
 
-int jw_db_pakrat_upsert_install(const char *db_path, const char *store_id,
-                                const char *version, const char *platform,
-                                const char *install_path,
-                                const char *artifact_sha256,
-                                const char *installed_at) {
-    if (!db_path || !store_id || !store_id[0] || !version || !version[0] ||
+static int jw__pakrat_commit_token_valid(const char *token) {
+    if (!token || !token[0]) {
+        return 1;
+    }
+    if (strlen(token) != 32u) {
+        return 0;
+    }
+    for (size_t i = 0; i < 32u; i++) {
+        if (!((token[i] >= '0' && token[i] <= '9') ||
+              (token[i] >= 'a' && token[i] <= 'f'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int jw_db_pakrat_upsert_install_db(sqlite3 *db, const char *store_id,
+                                   const char *version,
+                                   const char *platform,
+                                   const char *install_path,
+                                   const char *artifact_sha256,
+                                   const char *installed_at,
+                                   const char *commit_token) {
+    if (!db || !store_id || !store_id[0] || !version || !version[0] ||
         !platform || !platform[0] || !install_path || !install_path[0] ||
-        !artifact_sha256 || !artifact_sha256[0]) {
+        !artifact_sha256 || !artifact_sha256[0] ||
+        !jw__pakrat_commit_token_valid(commit_token)) {
         return -1;
     }
-
-    sqlite3 *db = NULL;
-    if (jw_db_open(db_path, &db) != 0) {
-        return -1;
-    }
-    if (jw_db_apply_schema(db) != 0) {
-        jw_db_close(db);
-        return -1;
-    }
-
     static const char *sql =
         "INSERT INTO pakrat_installs "
-        "(store_id, version, platform, install_path, artifact_sha256, installed_at) "
-        "VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now'))) "
+        "(store_id, version, platform, install_path, artifact_sha256, installed_at, commit_token) "
+        "VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now')), ?) "
         "ON CONFLICT(store_id) DO UPDATE SET "
         "version = excluded.version, "
         "platform = excluded.platform, "
         "install_path = excluded.install_path, "
         "artifact_sha256 = excluded.artifact_sha256, "
-        "installed_at = excluded.installed_at;";
+        "installed_at = excluded.installed_at, "
+        "commit_token = excluded.commit_token;";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        jw_db_close(db);
         return -1;
     }
 
@@ -1663,9 +1716,34 @@ int jw_db_pakrat_upsert_install(const char *db_path, const char *store_id,
     sqlite3_bind_text(stmt, 4, install_path, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, artifact_sha256, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 6, installed_at ? installed_at : "", -1, SQLITE_TRANSIENT);
+    if (commit_token && commit_token[0]) {
+        sqlite3_bind_text(stmt, 7, commit_token, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 7);
+    }
 
     int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
     sqlite3_finalize(stmt);
+    return rc;
+}
+
+int jw_db_pakrat_upsert_install(const char *db_path, const char *store_id,
+                                const char *version, const char *platform,
+                                const char *install_path,
+                                const char *artifact_sha256,
+                                const char *installed_at,
+                                const char *commit_token) {
+    if (!db_path) {
+        return -1;
+    }
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+    int rc = jw_db_pakrat_upsert_install_db(
+        db, store_id, version, platform, install_path, artifact_sha256,
+        installed_at, commit_token);
     jw_db_close(db);
     return rc;
 }
@@ -1717,14 +1795,15 @@ static void jw__pakrat_fill_install(sqlite3_stmt *stmt, jw_pakrat_install *out) 
     jw__pakrat_copy_column(stmt, 3, out->install_path, sizeof(out->install_path));
     jw__pakrat_copy_column(stmt, 4, out->artifact_sha256, sizeof(out->artifact_sha256));
     jw__pakrat_copy_column(stmt, 5, out->installed_at, sizeof(out->installed_at));
-    out->app_present = sqlite3_column_int(stmt, 6);
-    jw__pakrat_copy_column(stmt, 7, out->app_name, sizeof(out->app_name));
-    jw__pakrat_copy_column(stmt, 8, out->app_pak_dir, sizeof(out->app_pak_dir));
+    jw__pakrat_copy_column(stmt, 6, out->commit_token, sizeof(out->commit_token));
+    out->app_present = sqlite3_column_int(stmt, 7);
+    jw__pakrat_copy_column(stmt, 8, out->app_name, sizeof(out->app_name));
+    jw__pakrat_copy_column(stmt, 9, out->app_pak_dir, sizeof(out->app_pak_dir));
 }
 
 static const char *kPakratInstallJoinSql =
     "SELECT p.store_id, p.version, p.platform, p.install_path, "
-    "p.artifact_sha256, p.installed_at, "
+    "p.artifact_sha256, p.installed_at, p.commit_token, "
     "CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS app_present, "
     "COALESCE(a.name, ''), COALESCE(a.pak_dir, '') "
     "FROM pakrat_installs p "
