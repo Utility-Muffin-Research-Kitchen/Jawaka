@@ -216,6 +216,10 @@ int jw_ipc_server_accept(jw_ipc_server *server, jw_ipc_client **out_client, int 
     return 0;
 }
 
+int jw_ipc_server_fd(const jw_ipc_server *server) {
+    return server ? server->fd : -1;
+}
+
 void jw_ipc_server_close(jw_ipc_server *server) {
     if (!server) {
         return;
@@ -353,6 +357,32 @@ int jw_ipc_client_peer_pid(jw_ipc_client *client, pid_t *out_pid) {
     }
 #endif
     return -1;
+}
+
+int jw_ipc_client_fd(const jw_ipc_client *client) {
+    return client ? client->fd : -1;
+}
+
+int jw_ipc_client_set_nonblocking(jw_ipc_client *client, bool nonblocking,
+                                  int blocking_timeout_ms) {
+    if (!client || client->fd < 0) {
+        return -1;
+    }
+    int flags = fcntl(client->fd, F_GETFL);
+    if (flags < 0) {
+        return -1;
+    }
+    int wanted = nonblocking ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+    if (wanted != flags && fcntl(client->fd, F_SETFL, wanted) != 0) {
+        return -1;
+    }
+    if (!nonblocking) {
+        if (blocking_timeout_ms < 0) {
+            return -1;
+        }
+        jw__set_io_timeout_ms(client->fd, blocking_timeout_ms);
+    }
+    return 0;
 }
 
 void jw_ipc_client_close(jw_ipc_client *client) {

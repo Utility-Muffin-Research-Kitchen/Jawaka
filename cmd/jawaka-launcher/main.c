@@ -8909,6 +8909,128 @@ static void jw__screenshot_flash_handler(int sig) {
     g_screenshot_flash = 1;
 }
 
+typedef struct {
+    bool blocked;
+    bool override_allowed;
+    char service_id[129];
+    char reason[64];
+} jw_blocked_game_launch;
+
+static bool jw__blocked_game_launch_query(const char *socket_path,
+                                          jw_blocked_game_launch *out) {
+    if (!socket_path || !out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    const char *request = "{\"type\":\"game-launch-blocked-status\"}";
+    char *reply = NULL;
+    size_t reply_len = 0;
+    if (jw_ipc_request_timeout(socket_path, request, strlen(request),
+                               &reply, &reply_len, 250) != 0) {
+        free(reply);
+        return false;
+    }
+    cJSON *root = cJSON_ParseWithLength(reply, reply_len);
+    free(reply);
+    if (!root) {
+        return false;
+    }
+    cJSON *blocked = cJSON_GetObjectItemCaseSensitive(root, "blocked");
+    cJSON *allowed =
+        cJSON_GetObjectItemCaseSensitive(root, "override_allowed");
+    cJSON *service = cJSON_GetObjectItemCaseSensitive(root, "service_id");
+    cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
+    out->blocked = cJSON_IsTrue(blocked);
+    out->override_allowed = cJSON_IsTrue(allowed);
+    if (cJSON_IsString(service) && service->valuestring) {
+        snprintf(out->service_id, sizeof(out->service_id), "%s",
+                 service->valuestring);
+    }
+    if (cJSON_IsString(reason) && reason->valuestring) {
+        snprintf(out->reason, sizeof(out->reason), "%s", reason->valuestring);
+    }
+    cJSON_Delete(root);
+    return true;
+}
+
+static bool jw__blocked_game_launch_action(const char *socket_path,
+                                           const char *type) {
+    char request[128];
+    if (!socket_path || !type) {
+        return false;
+    }
+    int n = snprintf(request, sizeof(request), "{\"type\":\"%s\"}", type);
+    if (n < 0 || (size_t)n >= sizeof(request)) {
+        return false;
+    }
+    char *reply = NULL;
+    size_t reply_len = 0;
+    if (jw_ipc_request_timeout(socket_path, request, (size_t)n,
+                               &reply, &reply_len, 500) != 0) {
+        free(reply);
+        return false;
+    }
+    cJSON *root = cJSON_ParseWithLength(reply, reply_len);
+    free(reply);
+    cJSON *type_json = root
+        ? cJSON_GetObjectItemCaseSensitive(root, "type") : NULL;
+    bool ok = cJSON_IsString(type_json) && type_json->valuestring &&
+              strcmp(type_json->valuestring, "ok") == 0;
+    cJSON_Delete(root);
+    return ok;
+}
+
+static bool jw__surface_blocked_game_launch(
+        const char *socket_path, const jw_blocked_game_launch *blocked) {
+    if (!blocked || !blocked->blocked) {
+        return false;
+    }
+    char message[640];
+    if (blocked->override_allowed) {
+        snprintf(message, sizeof(message),
+                 "Game launch blocked.\n\n%.128s may still be writing Saves or "
+                 "States. Launch anyway only if you accept possible data "
+                 "corruption.",
+                 blocked->service_id[0] ? blocked->service_id
+                                        : "A background service");
+        cat_footer_item footer[] = {
+            { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+            { .button = CAT_BTN_A, .label = "Launch Anyway", .is_confirm = true },
+        };
+        cat_message_opts opts = {
+            .message = message,
+            .footer = footer,
+            .footer_count = 2,
+        };
+        cat_confirm_result result;
+        bool confirmed = cat_confirmation(&opts, &result) == CAT_OK &&
+                         result.confirmed;
+        if (confirmed) {
+            return jw__blocked_game_launch_action(
+                socket_path, "game-launch-override");
+        }
+        (void)jw__blocked_game_launch_action(
+            socket_path, "game-launch-blocked-dismiss");
+        return false;
+    }
+
+    snprintf(message, sizeof(message),
+             "Game launch blocked.\n\nA previous game may still be writing "
+             "Saves or States. Restart the device before launching another "
+             "game.");
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_A, .label = "OK", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 1,
+    };
+    cat_confirm_result result;
+    (void)cat_confirmation(&opts, &result);
+    return false;
+}
+
 int main(void) {
     /* Install before anything can signal us — SIGUSR1's default disposition is to
        terminate the process. */
@@ -9114,6 +9236,17 @@ int main(void) {
                 input_done_ms - input_start_ms,
                 ready_done_ms - ready_start_ms,
                 ready_done_ms - process_start_ms);
+
+    /* A fail-closed LIFE-1 stop happens after the launcher that requested the
+       game has exited. The replacement launcher is therefore the first place
+       that can visibly name the possible writer and collect the contract's
+       explicit override. */
+    jw_blocked_game_launch blocked_launch;
+    if (jw__blocked_game_launch_query(socket_path, &blocked_launch) &&
+        blocked_launch.blocked &&
+        jw__surface_blocked_game_launch(socket_path, &blocked_launch)) {
+        running = false;
+    }
 
     /* Move the status-bar/library polls off the render thread (see jw__status_poller). */
     jw__status_poller_start(socket_path, &state.settings);

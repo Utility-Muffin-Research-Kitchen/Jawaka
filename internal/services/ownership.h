@@ -31,6 +31,11 @@
  */
 bool jw_svc_group_absent(pid_t pgid);
 
+/* LIFE-1 subscription authentication: true only when `pid` currently names a
+ * non-zombie member of the exact reserved process group `pgid`. A vanished,
+ * unreadable, recycled-to-another-group, or zombie pid fails closed. */
+bool jw_svc_process_is_live_group_member(pid_t pid, pid_t pgid);
+
 #if defined(__linux__) && defined(JW_SVC_OWNERSHIP_TESTING)
 /* Parser seam for synthetic proc(5) rows that ordinary PID namespaces do not
  * expose, notably MLP1 kernel threads whose process-group field is zero. */

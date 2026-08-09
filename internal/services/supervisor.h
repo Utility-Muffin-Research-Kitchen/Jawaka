@@ -31,10 +31,9 @@
  *     (internal/services/backoff.c) and the persistent/session control
  *     state (internal/services/control_state.c).
  *
- * It deliberately does NOT do IPC framing, UI, or game/storage/suspend
- * lifecycle-event handling (those are the caller's; see
- * jw_svc_supervisor_game_launch_begin() for the one lifecycle hook SVC-1
- * requires this layer to enforce).
+ * It deliberately does NOT do IPC framing or UI. The caller owns LIFE-1's
+ * cooperative exchange; this layer owns the process-group stops, restart
+ * latches, and daemon-wide start gate that make lifecycle decisions safe.
  *
  * REENTRANCY / THREADING: a jw_svc_supervisor is NOT thread-safe and every
  * public function must be called from the daemon's single main thread. The
@@ -161,6 +160,11 @@ typedef struct {
      * storage change is restarted after the transition. This remains set
      * across an unverified stop so tick can never overlap the old group. */
     bool lifecycle_restart_pending;
+    /* LIFE-1 mode-stop/fallback restart latch. Set only when Jawaka stopped
+     * an effective service for the current game. It is session-scoped: the
+     * active-game record is durable in runtime tmpfs, this was-running fact is
+     * deliberately lost across a daemon restart. */
+    bool game_restart_pending;
 
     /* PKG-1 snapshot. A package operation blocks every service while its
      * caller replaces bytes. Persistent desired state is restored after the
@@ -178,6 +182,21 @@ typedef struct {
 } jw_svc_supervised;
 
 typedef struct jw_svc_supervisor jw_svc_supervisor;
+
+typedef enum {
+    JW_SVC_SUBSCRIBER_ACCEPTED = 0,
+    JW_SVC_SUBSCRIBER_MISSING_CREDENTIAL,
+    JW_SVC_SUBSCRIBER_UNKNOWN_SERVICE,
+    JW_SVC_SUBSCRIBER_STALE_GENERATION,
+    JW_SVC_SUBSCRIBER_WRONG_GROUP,
+    JW_SVC_SUBSCRIBER_FOREGROUND,
+} jw_svc_subscriber_auth_result;
+
+typedef struct {
+    pid_t peer_pid;
+    pid_t pgid;
+    long long launch_instant_us;
+} jw_svc_subscriber_binding;
 
 /* Opens the supervisor: resolves the control-state SQLite store at
  * <state_dir>/services-control.db, clears every row's session Run flag
@@ -256,6 +275,17 @@ bool jw_svc_supervisor_entry_is_listable(const jw_svc_supervised *e);
 const jw_svc_supervised *jw_svc_supervisor_at(const jw_svc_supervisor *sup,
                                               int index);
 
+/* LIFE-1 peer authentication. The declared service id is only a lookup key;
+ * the kernel-derived pid must be a live member of that service's exact
+ * currently reserved generation. The returned binding is revalidated before
+ * lifecycle replies are trusted. */
+jw_svc_subscriber_auth_result jw_svc_supervisor_authenticate_subscriber(
+    const jw_svc_supervisor *sup, const char *service_id, pid_t peer_pid,
+    jw_svc_subscriber_binding *out_binding);
+bool jw_svc_supervisor_revalidate_subscriber(
+    const jw_svc_supervisor *sup, const char *service_id,
+    const jw_svc_subscriber_binding *binding);
+
 /* CTL-1 mutating operations. Each returns true on success; on failure
  * returns false with a stable slug in `reason` (may be NULL):
  *   "unknown-service" / "unavailable" / "stale-generation" /
@@ -320,17 +350,31 @@ bool jw_svc_supervisor_package_active(const jw_svc_supervisor *sup);
  * services whose absence could NOT be verified (0 = clean shutdown). */
 int jw_svc_supervisor_stop_all(jw_svc_supervisor *sup);
 
-/* Game-launch hook (SVC-1/LIFE-1 boundary): applies the lifecycle.game
- * policy to every running service. "stop" services are stopped here;
- * "notify" and "ignore" services are left alone (LIFE-1's full decision
- * table, subscription, and fallback are A3b's, not this phase's). Returns
- * the number of services stopped; a service whose stop could not be
- * verified is reported via `out_stuck_id` (first one only, may be NULL)
- * and does not silently pass -- the caller must surface it and require an
- * explicit override per the unverified-stop table. */
+/* Compatibility bulk hook at the SVC-1/LIFE-1 boundary. Stops every live
+ * mode-stop generation and marks every stale non-ignore generation stuck.
+ * Live notify exchanges and their fallbacks are selected by the daemon.
+ * Returns the number stopped; the first unverified/stale service is reported
+ * through `out_stuck_id` and must never be treated as safe to launch past. */
 int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
                                         char *out_stuck_id,
                                         size_t stuck_id_size);
+
+/* LIFE-1's daemon-wide start gate. Set active immediately after the durable
+ * active-game record commit and before any service decision or game writer.
+ * While set, no new generation whose manifest policy is stop/notify can
+ * start (Run, Restart, autostart, backoff, or stale-lease recovery).
+ *
+ * game_stop_service synchronously stops one selected live generation and
+ * remembers that it was running so game_finish can restart it after the
+ * writer-exit barrier. A proven-absent service succeeds without a restart
+ * latch; stale/non-owned generations and overlapping transitions fail.
+ * game_finish only releases the gate; tick performs remembered starts. */
+void jw_svc_supervisor_game_set_active(jw_svc_supervisor *sup, bool active);
+bool jw_svc_supervisor_game_active(const jw_svc_supervisor *sup);
+bool jw_svc_supervisor_game_stop_service(jw_svc_supervisor *sup,
+                                         const char *service_id,
+                                         char *reason, size_t reason_size);
+void jw_svc_supervisor_game_finish(jw_svc_supervisor *sup);
 
 /* Declarative lifecycle stops. Both stop every currently owned generation
  * whose immutable launch-time policy enables the trigger and remember it for
