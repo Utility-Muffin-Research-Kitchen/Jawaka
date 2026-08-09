@@ -44,6 +44,8 @@ printf '%s\n' \
 printf '%s\n' \
   '{"name":"Foreground App Fixture","platform":"mac","pak_version":"1.0.0"}' \
   >"$APP_PAK/pak.json"
+# The generated launcher expands this at runtime, not while the fixture is made.
+# shellcheck disable=SC2016
 printf '%s\n' '#!/bin/sh' 'sleep 0.15' \
   'printf "1\n" >"$UMRK_RUNTIME_PATH/app-fixture-done"' \
   >"$APP_PAK/launch.sh"

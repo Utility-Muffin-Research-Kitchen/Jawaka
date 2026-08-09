@@ -48,6 +48,10 @@ int main(void) {
                    "WHERE name='min_leaf_version'") != 1) {
         fail(db, "fresh v6 schema");
     }
+    if (scalar(db, "SELECT COUNT(*) FROM pragma_table_info('pakrat_installs') "
+                   "WHERE name='commit_token' AND \"notnull\"=0") != 1) {
+        fail(db, "fresh pakrat commit token column");
+    }
     sqlite3_close(db);
     unlink(fresh);
 
@@ -62,15 +66,27 @@ int main(void) {
         "id INTEGER PRIMARY KEY,pak_dir TEXT NOT NULL UNIQUE,"
         "name TEXT NOT NULL,icon TEXT,platform TEXT,pak_version TEXT,"
         "min_jawaka_version TEXT);"
+        "CREATE TABLE pakrat_installs("
+        "store_id TEXT PRIMARY KEY,version TEXT NOT NULL,"
+        "platform TEXT NOT NULL,install_path TEXT NOT NULL,"
+        "artifact_sha256 TEXT NOT NULL,installed_at TEXT NOT NULL);"
+        "INSERT INTO pakrat_installs VALUES("
+        "'org.umrk.legacy','1.0.0','mlp1','mlp1/Legacy.pak',"
+        "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+        "'2026-07-29T00:00:00Z');"
         "INSERT INTO apps(pak_dir,name,pak_version,min_jawaka_version)"
         "VALUES('Apps/mlp1/Existing.pak','Existing','1.0.0','0.0.1');");
     if (jw_db_apply_schema(db) != 0 ||
         jw_db_apply_schema(db) != 0 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('apps') "
                    "WHERE name='min_leaf_version'") != 1 ||
+        scalar(db, "SELECT COUNT(*) FROM pragma_table_info('pakrat_installs') "
+                   "WHERE name='commit_token' AND \"notnull\"=0") != 1 ||
         scalar(db, "SELECT COUNT(*) FROM apps "
                    "WHERE pak_dir='Apps/mlp1/Existing.pak' "
                    "AND pak_version='1.0.0'") != 1 ||
+        scalar(db, "SELECT COUNT(*) FROM pakrat_installs "
+                   "WHERE store_id='org.umrk.legacy' AND commit_token IS NULL") != 1 ||
         jw_db_scan_begin(db) != 0 ||
         jw_db_insert_app(db, "Apps/mlp1/Existing.pak", "Existing", "",
                          "mlp1", "1.0.1", "0.0.1", "0.7.0") != 0 ||

@@ -1,9 +1,15 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "internal/store/pakrat_recovery.h"
 
+#include "internal/storage/sources.h"
 #include "cJSON.h"
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +22,9 @@
 #define JW_PAKRAT_ROLLBACK_PREFIX ".pakrat-rollback-"
 #define JW_PAKRAT_ORIGIN_PREFIX ".pakrat-origin-"
 #define JW_PAKRAT_ENTRY_POINT "launch.sh"
+#define JW_PAKRAT_COMMIT_MARKER ".pakrat-commit"
 #define JW_PAKRAT_MANIFEST_MAX_BYTES (1024L * 1024L)
+#define JW_PAKRAT_COMMIT_MAX_BYTES 4096L
 
 int jw__pakrat_copy(char *out, size_t out_size, const char *value) {
     if (!out || out_size == 0 || !value) {
@@ -305,6 +313,221 @@ void jw__pakrat_clear_origin_marker(const char *target, const char *store_id) {
     }
 }
 
+static bool jw__pakrat_hex_exact(const char *value, size_t length) {
+    if (!value || strlen(value) != length) {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        char c = value[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool jw__pakrat_commit_marker_valid(
+    const jw_pakrat_commit_marker *marker) {
+    return marker && jw__pakrat_safe_name(marker->store_id) &&
+           marker->version[0] &&
+           jw__pakrat_hex_exact(marker->artifact_sha256, 64u) &&
+           jw__pakrat_hex_exact(marker->token,
+                                JW_PAKRAT_COMMIT_TOKEN_HEX_LEN);
+}
+
+int jw__pakrat_write_commit_marker(const char *pak_dir,
+                                   const jw_pakrat_commit_marker *marker) {
+    if (!pak_dir || !jw__pakrat_commit_marker_valid(marker)) {
+        return -1;
+    }
+    char path[PATH_MAX];
+    if (jw__pakrat_join2(path, sizeof(path), pak_dir,
+                         JW_PAKRAT_COMMIT_MARKER) != 0) {
+        return -1;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                  0600);
+    if (fd < 0) {
+        return -1;
+    }
+    cJSON *root = cJSON_CreateObject();
+    char *json = NULL;
+    if (!root || !cJSON_AddNumberToObject(root, "schema", 1) ||
+        !cJSON_AddStringToObject(root, "store_id", marker->store_id) ||
+        !cJSON_AddStringToObject(root, "version", marker->version) ||
+        !cJSON_AddStringToObject(root, "artifact_sha256",
+                                marker->artifact_sha256) ||
+        !cJSON_AddStringToObject(root, "token", marker->token) ||
+        !(json = cJSON_PrintUnformatted(root))) {
+        cJSON_Delete(root);
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+    cJSON_Delete(root);
+    size_t length = strlen(json);
+    size_t offset = 0;
+    int ok = 1;
+    while (offset < length) {
+        ssize_t written = write(fd, json + offset, length - offset);
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        if (written <= 0) {
+            ok = 0;
+            break;
+        }
+        offset += (size_t)written;
+    }
+    free(json);
+    if (ok && fsync(fd) != 0) {
+        ok = 0;
+    }
+    if (close(fd) != 0) {
+        ok = 0;
+    }
+    if (!ok) {
+        unlink(path);
+        return -1;
+    }
+    return 0;
+}
+
+static bool jw__pakrat_closed_object(const cJSON *root,
+                                     const char *const *allowed,
+                                     size_t allowed_count) {
+    bool seen[16] = {false};
+    if (!cJSON_IsObject(root) || !allowed || allowed_count == 0 ||
+        allowed_count > sizeof(seen) / sizeof(seen[0])) {
+        return false;
+    }
+    for (const cJSON *item = root->child; item; item = item->next) {
+        size_t matched = allowed_count;
+        for (size_t i = 0; i < allowed_count; i++) {
+            if (item->string && strcmp(item->string, allowed[i]) == 0) {
+                matched = i;
+                break;
+            }
+        }
+        if (matched == allowed_count || seen[matched]) {
+            return false;
+        }
+        seen[matched] = true;
+    }
+    for (size_t i = 0; i < allowed_count; i++) {
+        if (!seen[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int jw__pakrat_read_commit_marker(const char *pak_dir,
+                                  jw_pakrat_commit_marker *out) {
+    static const char *const keys[] = {
+        "schema", "store_id", "version", "artifact_sha256", "token",
+    };
+    if (!pak_dir || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    char path[PATH_MAX];
+    if (jw__pakrat_join2(path, sizeof(path), pak_dir,
+                         JW_PAKRAT_COMMIT_MARKER) != 0) {
+        return -1;
+    }
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_size <= 0 || st.st_size > JW_PAKRAT_COMMIT_MAX_BYTES) {
+        return -1;
+    }
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t size = (size_t)st.st_size;
+    char *json = malloc(size + 1u);
+    if (!json) {
+        close(fd);
+        return -1;
+    }
+    size_t offset = 0;
+    while (offset < size) {
+        ssize_t got = read(fd, json + offset, size - offset);
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        if (got <= 0) {
+            free(json);
+            close(fd);
+            return -1;
+        }
+        offset += (size_t)got;
+    }
+    int close_failed = close(fd) != 0;
+    json[size] = '\0';
+    cJSON *root = close_failed ? NULL : cJSON_ParseWithOpts(json, NULL, true);
+    free(json);
+    if (!root || !jw__pakrat_closed_object(
+                     root, keys, sizeof(keys) / sizeof(keys[0]))) {
+        cJSON_Delete(root);
+        return -1;
+    }
+    const cJSON *schema = cJSON_GetObjectItemCaseSensitive(root, "schema");
+    const cJSON *store = cJSON_GetObjectItemCaseSensitive(root, "store_id");
+    const cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "version");
+    const cJSON *sha =
+        cJSON_GetObjectItemCaseSensitive(root, "artifact_sha256");
+    const cJSON *token = cJSON_GetObjectItemCaseSensitive(root, "token");
+    bool valid = cJSON_IsNumber(schema) && schema->valuedouble == 1.0 &&
+                 cJSON_IsString(store) && store->valuestring &&
+                 cJSON_IsString(version) && version->valuestring &&
+                 cJSON_IsString(sha) && sha->valuestring &&
+                 cJSON_IsString(token) && token->valuestring &&
+                 jw__pakrat_copy(out->store_id, sizeof(out->store_id),
+                                 store->valuestring) == 0 &&
+                 jw__pakrat_copy(out->version, sizeof(out->version),
+                                 version->valuestring) == 0 &&
+                 jw__pakrat_copy(out->artifact_sha256,
+                                 sizeof(out->artifact_sha256),
+                                 sha->valuestring) == 0 &&
+                 jw__pakrat_copy(out->token, sizeof(out->token),
+                                 token->valuestring) == 0 &&
+                 jw__pakrat_commit_marker_valid(out);
+    cJSON_Delete(root);
+    if (!valid) {
+        memset(out, 0, sizeof(*out));
+        return -1;
+    }
+    return 0;
+}
+
+int jw__pakrat_sync_filesystem(const char *path) {
+    if (!path || !path[0]) {
+        return -1;
+    }
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+#if defined(__linux__)
+    int rc = syncfs(fd);
+#else
+    int rc = fsync(fd);
+    /* MLP1 uses syncfs above. Directory fsync is best-effort on hosts that
+     * reject it, such as macOS, so native installs do not fail on EINVAL. */
+    if (rc != 0 && errno == EINVAL) {
+        rc = 0;
+    }
+#endif
+    int saved = errno;
+    if (close(fd) != 0 && rc == 0) {
+        return -1;
+    }
+    errno = saved;
+    return rc == 0 ? 0 : -1;
+}
+
 static int jw__pakrat_manifest_string(const cJSON *obj, const char *key,
                                       char *out, size_t out_size) {
     if (!out || out_size == 0) {
@@ -379,10 +602,9 @@ int jw__pakrat_read_manifest(const char *pak_dir, const char *manifest_rel,
     return fields_ok ? 0 : -1;
 }
 
-/* The promoted tree at |target| counts as committed only when its identity is
-   verifiable and matches the install record: pak.json parses, pak_version
-   equals the recorded version, and the declared launch.sh entry point exists.
-   Returns a static reason string for the rollback log when it does not. */
+/* The promoted tree at |target| counts as committed only when its identity and
+   commit marker match the durable install record exactly. Returns a static
+   reason string for the rollback log when they do not. */
 static const char *jw__uncommitted_promote_reason(const char *target,
                                                   const jw_pakrat_install *install) {
     jw__pakrat_manifest manifest;
@@ -390,13 +612,26 @@ static const char *jw__uncommitted_promote_reason(const char *target,
         !manifest.pak_version[0]) {
         return "manifest-unreadable";
     }
-    const char *record_version = install ? install->version : "";
-    if (!record_version[0] || strcmp(manifest.pak_version, record_version) != 0) {
-        return install ? "version-mismatch" : "no-record";
+    jw_pakrat_commit_marker marker;
+    if (jw__pakrat_read_commit_marker(target, &marker) != 0) {
+        return "commit-marker-unreadable";
+    }
+    if (!install) {
+        return "no-record";
+    }
+    if (strcmp(marker.store_id, install->store_id) != 0) {
+        return "store-id-mismatch";
+    }
+    if (strcmp(marker.version, manifest.pak_version) != 0 ||
+        strcmp(marker.version, install->version) != 0) {
+        return "version-mismatch";
     }
     if (!manifest.platform[0] || !install->platform[0] ||
         strcmp(manifest.platform, install->platform) != 0) {
         return "platform-mismatch";
+    }
+    if (strcmp(marker.artifact_sha256, install->artifact_sha256) != 0) {
+        return "artifact-mismatch";
     }
     char entry_point[PATH_MAX];
     if (jw__pakrat_join2(entry_point, sizeof(entry_point), target,
@@ -404,41 +639,78 @@ static const char *jw__uncommitted_promote_reason(const char *target,
         !jw__pakrat_is_regular_file(entry_point)) {
         return "entry-point-missing";
     }
+    if (!install->commit_token[0]) {
+        return "record-token-missing";
+    }
+    if (strcmp(marker.token, install->commit_token) != 0) {
+        return "token-mismatch";
+    }
     return NULL;
 }
 
-/* After a rollback sibling is restored to |target|, make sure the install
-   record describes the tree that is actually on disk. In the designed crash
-   windows the row was never updated, so it already matches; this only rewrites
-   when the restored tree is identifiable and disagrees. */
-static int jw__reconcile_record_to_tree(const jw_pakrat_recovery_context *ctx,
-                                        const jw_pakrat_install *install,
-                                        const char *target) {
+/* A restored rollback must already match the pre-transaction record. Never
+   manufacture a new commit decision from package bytes: the record is the
+   commit point. Legacy rows (NULL token) may identify a marker-free tree only
+   when no transaction sibling remains. */
+static int jw__validate_restored_tree(const jw_pakrat_recovery_context *ctx,
+                                      const jw_pakrat_install *install,
+                                      const char *target) {
     if (!install) {
         return 0;
     }
     jw__pakrat_manifest manifest;
     if (jw__pakrat_read_manifest(target, "pak.json", &manifest) != 0 ||
-        !manifest.pak_version[0] ||
-        strcmp(manifest.pak_version, install->version) == 0) {
-        return 0;
-    }
-    if (!manifest.platform[0] ||
+        !manifest.pak_version[0] || !manifest.platform[0] ||
+        strcmp(manifest.pak_version, install->version) != 0 ||
         strcmp(manifest.platform, install->platform) != 0) {
-        return -1;
-    }
-    if (jw_db_pakrat_upsert_install(ctx->db_path, install->store_id,
-                                    manifest.pak_version, install->platform,
-                                    install->install_path,
-                                    install->artifact_sha256,
-                                    install->installed_at) != 0) {
-        fprintf(stderr, "could not reconcile Pak Rat install record: %s\n",
+        fprintf(stderr, "restored Pak Rat tree does not match install record: %s\n",
                 install->store_id);
         return -1;
     }
-    jw__pakrat_log(ctx->state_dir,
-                   "install-recover reconciled record store_id=%s version=%s->%s",
-                   install->store_id, install->version, manifest.pak_version);
+    if (install->commit_token[0]) {
+        jw_pakrat_commit_marker marker;
+        if (jw__pakrat_read_commit_marker(target, &marker) != 0 ||
+            strcmp(marker.store_id, install->store_id) != 0 ||
+            strcmp(marker.version, install->version) != 0 ||
+            strcmp(marker.artifact_sha256, install->artifact_sha256) != 0 ||
+            strcmp(marker.token, install->commit_token) != 0) {
+            fprintf(stderr,
+                    "restored Pak Rat commit marker does not match record: %s\n",
+                    install->store_id);
+            return -1;
+        }
+    }
+    (void)ctx;
+    return 0;
+}
+
+/* Returns 0 when the selected source and Apps parent are positively mounted,
+   1 when recovery must defer without mutation, and -1 for invalid arguments.
+   jw_storage_sources_resolve supplies the same decoded mountinfo membership
+   used by normal storage discovery; on MLP1 `available` requires an exact
+   mountpoint rather than a rootfs stub. */
+static int jw__pakrat_recovery_source_ready(
+    const jw_pakrat_recovery_context *ctx, const char *apps_path) {
+    if (!ctx || !apps_path || !apps_path[0]) {
+        return -1;
+    }
+    jw_storage_source_list sources;
+    if (jw_storage_sources_resolve(ctx->sdcard_root, &sources) != 0) {
+        return 1;
+    }
+    const jw_storage_source *primary = jw_storage_sources_primary(&sources);
+    struct stat root_st;
+    struct stat apps_st;
+    char root_abs[PATH_MAX];
+    if (!primary || !primary->available ||
+        !realpath(ctx->sdcard_root, root_abs) ||
+        strcmp(root_abs, primary->root_abs) != 0 ||
+        stat(ctx->sdcard_root, &root_st) != 0 || !S_ISDIR(root_st.st_mode) ||
+        stat(apps_path, &apps_st) != 0 || !S_ISDIR(apps_st.st_mode) ||
+        (unsigned long long)root_st.st_dev != primary->device_id ||
+        apps_st.st_dev != root_st.st_dev) {
+        return 1;
+    }
     return 0;
 }
 
@@ -467,6 +739,25 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
         return -1;
     }
 
+    char apps_parent[PATH_MAX];
+    if (jw__pakrat_copy(apps_parent, sizeof(apps_parent), target) != 0) {
+        return -1;
+    }
+    char *target_leaf = strrchr(apps_parent, '/');
+    if (!target_leaf || target_leaf == apps_parent) {
+        return -1;
+    }
+    *target_leaf = '\0';
+    int source_ready = jw__pakrat_recovery_source_ready(ctx, apps_parent);
+    if (source_ready != 0) {
+        if (source_ready > 0) {
+            fprintf(stderr,
+                    "Pak Rat recovery deferred: Apps source is not mounted for %s\n",
+                    install_path);
+        }
+        return source_ready;
+    }
+
     if (jw__pakrat_path_exists(target_stage) &&
         jw__pakrat_remove_tree(target_stage) != 0) {
         fprintf(stderr, "could not remove stale Pak Rat stage path: %s\n", target_stage);
@@ -490,7 +781,7 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
         jw__pakrat_log(ctx->state_dir,
                        "install-recover restored store_id=%s target=Apps/%s",
                        store_id, install_path);
-        if (jw__reconcile_record_to_tree(ctx, install, target) != 0) {
+        if (jw__validate_restored_tree(ctx, install, target) != 0) {
             return -1;
         }
     } else if (target_exists && rollback_exists) {
@@ -520,10 +811,34 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
             jw__pakrat_log(ctx->state_dir,
                            "install-recover rolled back uncommitted promote store_id=%s target=Apps/%s reason=%s",
                            store_id, install_path, rollback_reason);
-            if (jw__reconcile_record_to_tree(ctx, install, target) != 0) {
+            if (jw__validate_restored_tree(ctx, install, target) != 0) {
                 return -1;
             }
         }
+    } else if (target_exists && !rollback_exists && install) {
+        if (install->commit_token[0]) {
+            const char *reason = jw__uncommitted_promote_reason(target, install);
+            if (reason) {
+                jw__pakrat_log(
+                    ctx->state_dir,
+                    "install-recover inconsistent committed tree store_id=%s target=Apps/%s reason=%s",
+                    store_id, install_path, reason);
+                return -1;
+            }
+        } else {
+            char entry_point[PATH_MAX];
+            if (jw__validate_restored_tree(ctx, install, target) != 0 ||
+                jw__pakrat_join2(entry_point, sizeof(entry_point), target,
+                                 JW_PAKRAT_ENTRY_POINT) != 0 ||
+                !jw__pakrat_is_regular_file(entry_point)) {
+                jw__pakrat_log(
+                    ctx->state_dir,
+                    "install-recover inconsistent legacy tree store_id=%s target=Apps/%s",
+                    store_id, install_path);
+                return -1;
+            }
+        }
+        jw__pakrat_clear_origin_marker(target, store_id);
     } else if (!rollback_exists) {
         /* A write-ahead origin marker can survive a crash just before the
            move-aside rename. With no rollback tree it has no recovery role. */
@@ -545,6 +860,10 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                          platform_dir) != 0) {
         return -1;
     }
+    int source_ready = jw__pakrat_recovery_source_ready(ctx, apps_dir);
+    if (source_ready != 0) {
+        return source_ready > 0 ? 0 : -1;
+    }
     DIR *dir = opendir(apps_dir);
     if (!dir) {
         return errno == ENOENT ? 0 : -1;
@@ -559,6 +878,60 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                 rc = -1;
             }
             break;
+        }
+        if (entry->d_name[0] != '.') {
+            size_t name_len = strlen(entry->d_name);
+            if (name_len >= 4u &&
+                strcmp(entry->d_name + name_len - 4u, ".pak") == 0) {
+                char package[PATH_MAX];
+                jw_pakrat_commit_marker marker;
+                if (jw__pakrat_join2(package, sizeof(package), apps_dir,
+                                     entry->d_name) != 0) {
+                    rc = -1;
+                    break;
+                }
+                if (jw__pakrat_read_commit_marker(package, &marker) == 0) {
+                    jw_pakrat_install record;
+                    int record_rc = jw_db_pakrat_get_install(
+                        ctx->db_path, marker.store_id, &record);
+                    if (record_rc < 0) {
+                        rc = -1;
+                        break;
+                    }
+                    if (record_rc > 0) {
+                        /* An adoption transaction writes this mapping before
+                           moving the pre-existing target aside. If power is
+                           lost at that boundary, the target may itself carry
+                           an old Pak Rat marker but is still the user's live
+                           tree. Honor the write-ahead mapping before treating
+                           a marker-without-record as an interrupted first
+                           install. */
+                        char origin_install_path[PATH_MAX];
+                        char origin_target[PATH_MAX];
+                        bool origin_keeps_target =
+                            jw__pakrat_read_origin_marker(
+                                apps_dir, marker.store_id,
+                                origin_install_path,
+                                sizeof(origin_install_path)) == 0 &&
+                            jw__pakrat_target_path(
+                                ctx->sdcard_root, origin_install_path,
+                                origin_target, sizeof(origin_target)) == 0 &&
+                            strcmp(origin_target, package) == 0;
+                        if (origin_keeps_target) {
+                            continue;
+                        }
+                        if (jw__pakrat_remove_tree(package) != 0) {
+                            rc = -1;
+                            break;
+                        }
+                        jw__pakrat_log(
+                            ctx->state_dir,
+                            "install-recover removed uncommitted first install store_id=%s target=Apps/%s/%s",
+                            marker.store_id, platform_dir, entry->d_name);
+                    }
+                }
+            }
+            continue;
         }
         const char *store_id = NULL;
         bool is_rollback = false;
@@ -693,8 +1066,21 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
 int jw_pakrat_recover_installs(const jw_pakrat_recovery_context *ctx) {
     enum { JW_PAKRAT_MAX_RECOVERY_INSTALLS = 1024 };
     int install_count = 0;
-    if (!ctx || !ctx->sdcard_root[0] || !ctx->db_path[0] ||
-        jw__pakrat_mkdir_parent(ctx->db_path) != 0) {
+    if (!ctx || !ctx->sdcard_root[0] || !ctx->db_path[0]) {
+        return -1;
+    }
+    char apps_root[PATH_MAX];
+    if (jw__pakrat_join2(apps_root, sizeof(apps_root), ctx->sdcard_root,
+                         "Apps") != 0) {
+        return -1;
+    }
+    int root_ready = jw__pakrat_recovery_source_ready(ctx, apps_root);
+    if (root_ready > 0) {
+        fprintf(stderr,
+                "Pak Rat recovery deferred: owning Apps source is not mounted\n");
+        return 0;
+    }
+    if (root_ready < 0 || jw__pakrat_mkdir_parent(ctx->db_path) != 0) {
         return -1;
     }
     jw_pakrat_install *installs =
@@ -710,9 +1096,9 @@ int jw_pakrat_recover_installs(const jw_pakrat_recovery_context *ctx) {
         goto done;
     }
     for (int i = 0; i < install_count; i++) {
-        if (jw__pakrat_reconcile_transition(ctx, installs[i].store_id,
-                                            installs[i].install_path,
-                                            &installs[i]) != 0) {
+        int reconcile_rc = jw__pakrat_reconcile_transition(
+            ctx, installs[i].store_id, installs[i].install_path, &installs[i]);
+        if (reconcile_rc < 0) {
             goto done;
         }
     }

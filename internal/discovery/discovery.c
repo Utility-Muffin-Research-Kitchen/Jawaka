@@ -38,6 +38,7 @@ typedef struct {
     sqlite3 *db;
     int      writes;
     bool     active;
+    bool     savepoint;
 } jw_scan_tx;
 
 static int jw__scan_tx_begin(jw_scan_tx *tx) {
@@ -47,7 +48,14 @@ static int jw__scan_tx_begin(jw_scan_tx *tx) {
     if (tx->active) {
         return 0;
     }
-    if (jw__exec(tx->db, "BEGIN DEFERRED;") != 0) {
+    /* Pak Rat P1 performs a complete discovery scan inside its outer
+       install-record transaction. SQLite has no nested BEGIN, so use a
+       savepoint when the caller already owns a transaction. Ordinary scans
+       retain the existing batched BEGIN/COMMIT behavior. */
+    tx->savepoint = sqlite3_get_autocommit(tx->db) == 0;
+    if (jw__exec(tx->db, tx->savepoint
+                             ? "SAVEPOINT jawaka_scan;"
+                             : "BEGIN DEFERRED;") != 0) {
         return -1;
     }
     tx->active = true;
@@ -59,8 +67,14 @@ static void jw__scan_tx_rollback(jw_scan_tx *tx) {
     if (!tx || !tx->active) {
         return;
     }
-    jw__exec(tx->db, "ROLLBACK;");
+    if (tx->savepoint) {
+        (void)jw__exec(tx->db,
+                       "ROLLBACK TO jawaka_scan; RELEASE jawaka_scan;");
+    } else {
+        (void)jw__exec(tx->db, "ROLLBACK;");
+    }
     tx->active = false;
+    tx->savepoint = false;
     tx->writes = 0;
 }
 
@@ -68,11 +82,14 @@ static int jw__scan_tx_commit(jw_scan_tx *tx) {
     if (!tx || !tx->active) {
         return 0;
     }
-    if (jw__exec(tx->db, "COMMIT;") != 0) {
+    if (jw__exec(tx->db, tx->savepoint
+                             ? "RELEASE jawaka_scan;"
+                             : "COMMIT;") != 0) {
         jw__scan_tx_rollback(tx);
         return -1;
     }
     tx->active = false;
+    tx->savepoint = false;
     tx->writes = 0;
     return 0;
 }

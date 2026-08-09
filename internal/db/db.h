@@ -69,6 +69,7 @@ typedef struct {
     char install_path[512];
     char artifact_sha256[80];
     char installed_at[64];
+    char commit_token[33]; /* 128-bit lowercase hex; empty for legacy rows */
     int  app_present;
     char app_name[256];
     char app_pak_dir[512];
@@ -253,7 +254,18 @@ int  jw_db_pakrat_upsert_install(const char *db_path, const char *store_id,
                                  const char *version, const char *platform,
                                  const char *install_path,
                                  const char *artifact_sha256,
-                                 const char *installed_at);
+                                 const char *installed_at,
+                                 const char *commit_token);
+/* Same write on an already-open connection. The caller owns transaction and
+   commit ordering; P1 uses this to publish rebuilt discovery state and the
+   token-bearing install record in one SQLite commit after syncfs. */
+int  jw_db_pakrat_upsert_install_db(sqlite3 *db, const char *store_id,
+                                    const char *version,
+                                    const char *platform,
+                                    const char *install_path,
+                                    const char *artifact_sha256,
+                                    const char *installed_at,
+                                    const char *commit_token);
 int  jw_db_pakrat_remove_install(const char *db_path, const char *store_id);
 /* Returns 0 when found, 1 when no matching store_id exists, -1 on error. */
 int  jw_db_pakrat_get_install(const char *db_path, const char *store_id,

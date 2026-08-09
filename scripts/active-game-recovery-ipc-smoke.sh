@@ -32,6 +32,8 @@ trap cleanup EXIT
 make -C "$ROOT_DIR" jawakad jawaka-platformctl >/dev/null
 mkdir -p "$PAK/bin" "$STATE" "$RUNTIME" "$USERDATA" "$LOGS" \
          "$PRIMARY/Saves" "$PRIMARY/States"
+# The generated service script expands this when Jawaka launches it.
+# shellcheck disable=SC2016
 printf '%s\n' '#!/bin/sh' \
     'printf "1\n" >"$UMRK_RUNTIME_PATH/recovery-service-started"' \
     'while :; do sleep 1; done' >"$PAK/bin/run.sh"
