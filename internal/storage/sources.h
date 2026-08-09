@@ -18,9 +18,12 @@ typedef struct {
     char id[JW_STORAGE_SOURCE_ID_MAX];
     char root[JW_STORAGE_PATH_MAX];
     char root_abs[JW_STORAGE_PATH_MAX];
+    char userdata_path[JW_STORAGE_PATH_MAX];
+    char shared_userdata_path[JW_STORAGE_PATH_MAX];
     char roms_path[JW_STORAGE_PATH_MAX];
     char images_path[JW_STORAGE_PATH_MAX];
     char music_path[JW_STORAGE_PATH_MAX];
+    char video_path[JW_STORAGE_PATH_MAX];
     char apps_path[JW_STORAGE_PATH_MAX];
     char bios_path[JW_STORAGE_PATH_MAX];
     char saves_path[JW_STORAGE_PATH_MAX];
@@ -46,6 +49,11 @@ typedef struct {
 } jw_storage_source_list;
 
 int jw_storage_sources_resolve(const char *primary_root, jw_storage_source_list *out);
+
+/* True only for a complete PATH-2 environment: version 2, all five required
+   aligned plural lists, byte-identical Primary singular aliases, unique
+   absolute roots, and every per-source path contained by its indexed root. */
+bool jw_storage_source_paths_v2_valid(void);
 
 const jw_storage_source *jw_storage_sources_primary(const jw_storage_source_list *list);
 const jw_storage_source *jw_storage_sources_find_for_path(const jw_storage_source_list *list,

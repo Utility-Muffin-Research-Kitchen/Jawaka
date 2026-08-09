@@ -52,6 +52,9 @@ typedef struct {
                                      swallow its matching release too */
     bool screenshot_chord_consumed; /* a Menu+L1 screenshot chord ate the L1 press;
                                        swallow its matching release too */
+    bool record_chord_consumed;   /* a Menu+R1 record chord ate the R1 press;
+                                     swallow its release too so R1 does not
+                                     stick down in the game */
     bool deferred_menu_release;
     uint64_t deferred_menu_release_at_ms;
     uint64_t last_brightness_ms;
@@ -507,13 +510,21 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
        chord and neither Menu nor L1 reaches the running game. If the callback
        declines (feature disabled), fall through so L1 forwards normally. */
     if (ev->code == BTN_TL) {
-        if (ev->value == 0 && data->screenshot_chord_consumed) {
-            data->screenshot_chord_consumed = false;
+        /* Once the chord has eaten the press, eat EVERYTHING for this code until
+           the release. Only swallowing value==0 was not enough: holding L1 past the
+           autorepeat delay emits value==2, which matched neither guard, fell to the
+           bottom of this function and was forwarded -- and jw__forward_event sets
+           held_keys for any value > 0. The real release was then swallowed here, so
+           the game saw L1 held down forever. */
+        if (data->screenshot_chord_consumed) {
+            if (ev->value == 0) {
+                data->screenshot_chord_consumed = false;
+            }
             return;
         }
-        /* value==1 only: a held L1 emits autorepeat (value==2); consuming that
-           would leave the earlier real press forwarded-down (held_keys set) and
-           then swallow its release, sticking L1 down in the game. */
+        /* value==1 only: consuming an autorepeat would leave the earlier real press
+           forwarded-down and then swallow its release, the same stuck key by the
+           other route. */
         if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
             bool handled = proxy->screenshot &&
                            proxy->screenshot(proxy->userdata);
@@ -523,6 +534,36 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                 return;                                 /* drop the L1 press */
             }
             /* Not handled: fall through so the deferred Menu flushes and L1
+               forwards as an ordinary Menu+key chord. */
+        }
+    }
+
+    /* Menu + R1: start or stop a recording. Same shape as Menu + L1 above --
+       jawakad consumes the chord so neither Menu nor R1 reaches the game. This
+       lives here rather than as a RetroArch hotkey because RetroArch's hotkeys
+       need a pad modifier held, and it stops blocking that modifier from the
+       core after input_hotkey_block_delay frames, so Select reaches the game and
+       presses buttons in it. */
+    if (ev->code == BTN_TR) {
+        /* Swallow every event for this code until the release -- see the L1 block
+           above. R1 is run or aim in most cores, so a stuck one is worse there. */
+        if (data->record_chord_consumed) {
+            if (ev->value == 0) {
+                data->record_chord_consumed = false;
+            }
+            return;
+        }
+        /* value==1 only: consuming an autorepeat would leave the earlier real press
+           forwarded-down, sticking R1 by the other route. */
+        if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
+            bool handled = proxy->record &&
+                           proxy->record(proxy->userdata);
+            if (handled) {
+                data->chord_active = true;          /* suppress the Menu tap */
+                data->record_chord_consumed = true; /* suppress R1 release */
+                return;                             /* drop the R1 press */
+            }
+            /* Not handled: fall through so the deferred Menu flushes and R1
                forwards as an ordinary Menu+key chord. */
         }
     }
@@ -1046,6 +1087,38 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
         return;
     }
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    /* Entering the screen-off stage drops every event on the floor, including the
+       releases the chord state machine is waiting on. Left set, a *_chord_consumed
+       flag outlives the press it belongs to and eats the first real press of that
+       button after the screen comes back -- R1 is run or aim in most cores, so
+       that one is felt. Clear the in-flight chord state instead: with the screen
+       off nothing is mid-gesture, and everything here is "waiting for a release
+       that is no longer coming". */
+    if (swallow && !data->swallow) {
+        /* Forced: the un-forced form waits out the hold timer, and that timer is
+           driven by a loop that is about to stop delivering events. An unreleased
+           BTN_MODE would read as Menu held down for as long as the screen is off. */
+        jw__release_deferred_menu_tap(data, true);
+        /* The deferred tap is only ONE of the two ways BTN_MODE can be down. A
+           Menu+key chord that fell through to an ordinary press flushes it via
+           jw__flush_menu_press, which writes through jw__write_event -- and that,
+           unlike jw__forward_event, sets no held_keys bit. So the release_buttons
+           call both callers make immediately before this cannot release it, and
+           menu_forwarded is the only remaining record that it is down. Clearing
+           that flag without emitting the release stranded BTN_MODE latched at 1
+           with nothing left that knew: the kernel then swallowed the next tap's
+           press as a duplicate and the app saw a bare release. */
+        if (data->menu_forwarded) {
+            jw__write_event(data, EV_KEY, BTN_MODE, 0);
+            jw__emit_syn(data);
+        }
+        data->menu_held                  = false;
+        data->menu_forwarded             = false;
+        data->chord_active               = false;
+        data->select_chord_consumed      = false;
+        data->screenshot_chord_consumed  = false;
+        data->record_chord_consumed      = false;
+    }
     data->swallow = swallow;
 }
 

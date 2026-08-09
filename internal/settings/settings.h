@@ -56,6 +56,7 @@ typedef enum {
     JW_SETTINGS_ABOUT,
     JW_SETTINGS_LIBRARY,    /* Info > Library: counts, art coverage, per-system */
     JW_SETTINGS_PLAYTIME,   /* Info > Playtime: totals, most-played, per-system */
+    JW_SETTINGS_SERVICES,   /* Services: supervised app-services-v1 daemons */
 } jw_settings_screen;
 
 /* ─── Row indices per sub-page ─────────────────────────────────────────── */
@@ -149,7 +150,10 @@ typedef enum {
 #define JW_CONTROLS_NAV         2   /* per-move navigation tick (opt-in) */
 #define JW_CONTROLS_GAME        3   /* hand the motor to emulators in-game */
 #define JW_CONTROLS_SCREENSHOTS 4   /* Menu+L1 screenshot hotkey on/off */
-#define JW_CONTROLS_ROW_COUNT   5
+#define JW_CONTROLS_RECORDING   5   /* Menu+R1 game recording hotkey on/off */
+#define JW_CONTROLS_REC_SPLIT   6   /* split oversized clips into postable parts */
+#define JW_CONTROLS_REC_KEEP    7   /* keep the lossless .mkv after converting */
+#define JW_CONTROLS_ROW_COUNT   8
 
 /* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
    The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of
@@ -280,10 +284,22 @@ typedef struct {
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;
     bool               screenshots_enabled; /* Menu+L1 screenshot hotkey (daemon reads the DB key) */
+    bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
+    bool               recording_split;     /* cut clips over 10MB into postable parts */
+    bool               recording_keep_src;  /* keep the lossless .mkv once the MP4 exists */
     bool               rumble_enabled;    /* Controls & Feedback: haptics master (daemon reads DB) */
     int                rumble_strength;   /* 0-100 % */
     bool               rumble_nav;        /* per-move navigation tick */
     bool               rumble_game;       /* in-game emulator rumble */
+    /* Services screen (app-services-v1). A snapshot of CTL-1 service-list,
+       fetched on entry and after each action; the screen is offered only
+       when at least one valid service, retained desired-state record, or
+       actionable stale-generation survivor exists. */
+    cat_list_state       services_list;
+    jw_ipc_service_info  services[JW_IPC_SVC_LIST_MAX];
+    int                  services_count;
+    char                 services_msg[128];  /* transient action feedback */
+    unsigned             services_next_poll_ms;
     int                game_perf_profile;   /* Settings > Behavior game profile */
     bool               performance_supported;
     int                brightness_percent;
@@ -292,9 +308,9 @@ typedef struct {
     unsigned           audio_available_outputs;
     int                audio_volumes[JW_PLATFORM_AUDIO_OUTPUT_COUNT];
     bool               test_sound_playing;  /* Display&Sound: Test Sound clip active */
-    int                refresh_rate_hz;     /* display refresh: 60, 90, or 120 */
+    int                refresh_rate_hz;     /* display refresh: 60, 100, or 120 */
     bool               refresh_rate_supported; /* platform offers refresh-rate switching */
-    bool               bfi_enabled;         /* Black Frame Insertion (RA): 120Hz only */
+    bool               bfi_enabled;         /* Black Frame Insertion (RA): 100/120Hz only */
     int                hdmi_output_mode;    /* HDMI out: 0 off, 1 4:3 pillarbox, 2 stretch */
     int                hdmi_connected;      /* HDMI cable: -1 unknown, 0 no, 1 yes */
     bool               hdmi_supported;      /* platform offers HDMI output switching */
@@ -360,12 +376,19 @@ bool jw_settings_show_hints(const jw_settings_ui *ui);
 /* True when tab switches should slide (Glide); false for an instant cut (Snap). */
 bool jw_settings_tab_glide(const jw_settings_ui *ui);
 
-/* True while the Display & Sound page is showing. The launcher polls this and
-   calls jw_settings_ui_refresh_av() so the sliders track hardware volume/
-   brightness keys (which jawakad's input proxy consumes — the UI never sees
-   those events). */
+/* True while the Display & Sound page is showing, so its sliders can track the
+   hardware volume/brightness keys (jawakad's input proxy consumes those events —
+   the UI never sees them). The launcher hands this to its BACKGROUND poller and
+   applies the result with jw_settings_ui_apply_av(); it must not be sampled on
+   the render thread, because a round trip to jawakad costs ~110ms of latency and
+   this page needs several.
+
+   jw_settings_ui_refresh_av() is the blocking one-shot, still fine on page open
+   where a single stall is invisible, but never in a loop. */
 bool jw_settings_ui_wants_av_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_av(jw_settings_ui *ui);
+void jw_settings_ui_apply_av(jw_settings_ui *ui, int brightness_percent,
+                             const jw_ipc_audio_status *audio);
 
 /* True while the Network page is open. The launcher calls
  * jw_settings_ui_refresh_wifi() each frame so the status follows live changes;
@@ -381,6 +404,9 @@ bool jw_settings_ui_wants_bluetooth_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_bluetooth(jw_settings_ui *ui);
 bool jw_settings_ui_wants_update_poll(const jw_settings_ui *ui);
 void jw_settings_ui_refresh_update(jw_settings_ui *ui);
+/* Services page: live CTL-1 status while open. */
+bool jw_settings_ui_wants_services_poll(const jw_settings_ui *ui);
+void jw_settings_ui_refresh_services(jw_settings_ui *ui);
 
 /* True if the status-bar wifi icon is enabled. The launcher uses this to decide
  * whether to keep the wifi strength polled on the home screen. */

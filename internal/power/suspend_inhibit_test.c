@@ -37,6 +37,49 @@ int main(void) {
     waitpid(child, NULL, 0);
     assert(jw_suspend_inhibitor_reap(&inhibitor) == 1);
 
+    /* Scope handling. A screen lease must be countable on its own, because the
+       stage-1 backlight blank keys off it while stage 2 keys off the total. */
+    jw_suspend_inhibitor_clear(&inhibitor);
+    char suspend_lease[JW_SUSPEND_INHIBIT_TOKEN_LEN + 1];
+    char screen_lease[JW_SUSPEND_INHIBIT_TOKEN_LEN + 1];
+    assert(jw_suspend_inhibitor_acquire(&inhibitor, getpid(), JW_SUSPEND_SCOPE_SUSPEND,
+                                        "download", 40, suspend_lease) == JW_SUSPEND_LEASE_OK);
+    /* A plain block-suspend lease must NOT keep the backlight on. */
+    assert(jw_suspend_inhibitor_count(&inhibitor) == 1);
+    assert(jw_suspend_inhibitor_count_scope(&inhibitor, JW_SUSPEND_SCOPE_SCREEN) == 0);
+
+    assert(jw_suspend_inhibitor_acquire(&inhibitor, getpid(), JW_SUSPEND_SCOPE_SCREEN,
+                                        "playback", 50, screen_lease) == JW_SUSPEND_LEASE_OK);
+    assert(jw_suspend_inhibitor_count_scope(&inhibitor, JW_SUSPEND_SCOPE_SCREEN) == 1);
+    /* A screen lease also defers deep suspend: it is in the total count. */
+    assert(jw_suspend_inhibitor_count(&inhibitor) == 2);
+
+    /* Releasing the screen lease re-arms blanking but keeps the suspend hold. */
+    assert(jw_suspend_inhibitor_release(&inhibitor, getpid(), screen_lease, &released) ==
+           JW_SUSPEND_LEASE_OK && released);
+    assert(jw_suspend_inhibitor_count_scope(&inhibitor, JW_SUSPEND_SCOPE_SCREEN) == 0);
+    assert(jw_suspend_inhibitor_count(&inhibitor) == 1);
+
+    /* A crashed player must not pin the backlight on forever. */
+    pid_t viewer = fork();
+    assert(viewer >= 0);
+    if (viewer == 0) pause();
+    char viewer_lease[JW_SUSPEND_INHIBIT_TOKEN_LEN + 1];
+    assert(jw_suspend_inhibitor_acquire(&inhibitor, viewer, JW_SUSPEND_SCOPE_SCREEN,
+                                        "playback", 60, viewer_lease) == JW_SUSPEND_LEASE_OK);
+    assert(jw_suspend_inhibitor_count_scope(&inhibitor, JW_SUSPEND_SCOPE_SCREEN) == 1);
+    kill(viewer, SIGKILL);
+    waitpid(viewer, NULL, 0);
+    assert(jw_suspend_inhibitor_reap(&inhibitor) == 1);
+    assert(jw_suspend_inhibitor_count_scope(&inhibitor, JW_SUSPEND_SCOPE_SCREEN) == 0);
+
+    /* Unknown scopes still fail loudly rather than inhibiting nothing. */
+    char bogus[JW_SUSPEND_INHIBIT_TOKEN_LEN + 1];
+    assert(jw_suspend_inhibitor_acquire(&inhibitor, getpid(), "block-everything",
+                                        "typo", 70, bogus) == JW_SUSPEND_LEASE_INVALID);
+    assert(jw_suspend_inhibitor_count_scope(&inhibitor, NULL) == 0);
+    jw_suspend_inhibitor_clear(&inhibitor);
+
     jw_suspend_policy policy;
     jw_suspend_policy_init(&policy);
     assert(jw_suspend_policy_auto_stage2(&policy, 1) == JW_SUSPEND_DECISION_SCREEN_OFF);

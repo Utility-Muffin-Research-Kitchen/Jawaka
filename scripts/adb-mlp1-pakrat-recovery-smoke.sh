@@ -170,7 +170,7 @@ done
 "${ADB[@]}" shell "wget -q -O /dev/null '${BASE_URL}old/storefront.json'"
 
 if [ "$MODE" = removal-recover ]; then
-    "${ADB[@]}" shell "test -d '$UNDERLAY'; rm -rf '$DEVICE_ROOT' '$BIND_ROOT'; mkdir -p '$DEVICE_ROOT/bin' '$BIND_ROOT'"
+    "${ADB[@]}" shell "test -d '$UNDERLAY' && rm -rf '$DEVICE_ROOT' '$BIND_ROOT' && mkdir -p '$DEVICE_ROOT/bin' '$BIND_ROOT'"
 else
     "${ADB[@]}" shell "rm -rf '$DEVICE_ROOT' '$BIND_ROOT' '$UNDERLAY'; mkdir -p '$DEVICE_ROOT/bin' '$BIND_ROOT' '$UNDERLAY'"
 fi

@@ -491,4 +491,21 @@ int jw_ipc_set_led(const char *socket_path, int enabled, const char *mode,
 int jw_ipc_get_led(const char *socket_path, int *enabled, char *mode, int mode_len,
                    int *r, int *g, int *b, int *brightness, int *speed);
 
+/* ---- CTL-1: service control (control-ipc-v1) ---- */
+
+#define JW_IPC_SVC_ID_MAX 128
+#define JW_IPC_SVC_STATE_MAX 32
+#define JW_IPC_SVC_LIST_MAX 32
+
+typedef struct {
+    char id[JW_IPC_SVC_ID_MAX + 1];
+    char state[JW_IPC_SVC_STATE_MAX + 1];
+    bool desired_enabled;
+} jw_ipc_service_info;
+
+int jw_ipc_service_list(const char *socket_path, jw_ipc_service_info *out,
+                        int max, int *out_count);
+int jw_ipc_service_ctl(const char *socket_path, const char *op,
+                       const char *service_id, char *status, int status_len);
+
 #endif /* JW_IPC_CLIENT_H */

@@ -66,6 +66,17 @@
 /* The HDMI sink jawakad loads on demand (device=hw:0,0 sink_name=hdmi_out); the
    vendor udev-detect name is never produced on this build, so we own the name. */
 #define JW_MLP1_PACTL_HDMI_SINK "hdmi_out"
+/* USB-C audio. The OTG port role-switches to host on its own when a device is
+   attached and snd_usb_audio binds it as a new ALSA card, but Leaf's trimmed
+   pulse-default.pa has no module-udev-detect, so pulse never learns about it.
+   Load an explicit sink the same way HDMI does, on a name we own, rather than
+   turning udev-detect on — that would duplicate both the rk817 sink (already
+   loaded statically as alsa_output.hw_1_0) and the HDMI sink we manage here. */
+#define JW_MLP1_PACTL_USB_SINK "usb_out"
+#define JW_MLP1_PACTL_SET_DEFAULT_USB \
+    "pactl set-default-sink usb_out 2>/dev/null"
+/* Card index of the first USB-Audio class device, or empty if none is attached. */
+#define JW_MLP1_USB_CARD_CMD "awk '/USB-Audio/{print $1; exit}' /proc/asound/cards"
 #define JW_MLP1_PLAYBACK_PATH_CMD "amixer -c 1 cget numid=13 2>/dev/null"
 #define JW_MLP1_PLAYBACK_PATH_SPK "amixer -c 1 cset numid=13 2 >/dev/null 2>&1"
 #define JW_MLP1_PLAYBACK_PATH_HP  "amixer -c 1 cset numid=13 3 >/dev/null 2>&1"
@@ -114,8 +125,6 @@
 #define JW_MLP1_WIFI_PROC "/proc/net/wireless"
 #define JW_MLP1_SECONDARY_SOURCE_ID "secondary_sd"
 #define JW_MLP1_SECONDARY_LABEL "Secondary SD"
-#define JW_MLP1_SECONDARY_DEVICE "/dev/mmcblk3p1"
-#define JW_MLP1_SECONDARY_MOUNT "/media/sdcard1"
 #define JW_MLP1_STORAGE_DEBOUNCE_MS 750
 
 /* The stock loong_light daemon owns the AW20036 LED ring. It reads this JSON
@@ -200,7 +209,7 @@ static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi);
 static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx);
 static void jw__mlp1_audio_reconcile(jw_platform_context *ctx, const char *reason);
 
-/* The user's Refresh Rate setting (60/90/120), cached when set so the HDMI apply
+/* The user's Refresh Rate setting (60/100/120), cached when set so the HDMI apply
    can choose 1080p120 vs the crisp 720p60. -1 until known; the HDMI apply then
    falls back to the live panel mode (which boots at the persisted rate). */
 static int s_mlp1_target_refresh_hz = -1;
@@ -222,11 +231,43 @@ static bool jw__mlp1_source_is_secondary(const char *source_id) {
            strcmp(source_id, JW_MLP1_SECONDARY_SOURCE_ID) == 0;
 }
 
-static bool jw__mlp1_block_present(void) {
-    return access(JW_MLP1_SECONDARY_DEVICE, F_OK) == 0;
+static void jw__mlp1_secondary_mount(const jw_platform_context *ctx,
+                                     char *out, size_t out_size) {
+    const char *primary = ctx && ctx->sdcard_root[0]
+                              ? ctx->sdcard_root : "/mnt/sdcard";
+    const char *paths = getenv("SDCARD_PATHS");
+    if (paths && paths[0]) {
+        const char *cursor = paths;
+        while (*cursor) {
+            const char *separator = strchr(cursor, ':');
+            size_t length = separator ? (size_t)(separator - cursor)
+                                      : strlen(cursor);
+            bool known_mount =
+                (length == strlen("/mnt/sdcard") &&
+                 strncmp(cursor, "/mnt/sdcard", length) == 0) ||
+                (length == strlen("/media/sdcard1") &&
+                 strncmp(cursor, "/media/sdcard1", length) == 0);
+            if (known_mount &&
+                !(strlen(primary) == length &&
+                  strncmp(cursor, primary, length) == 0) &&
+                length + 1u <= out_size) {
+                memcpy(out, cursor, length);
+                out[length] = '\0';
+                return;
+            }
+            if (!separator) {
+                break;
+            }
+            cursor = separator + 1;
+        }
+    }
+    snprintf(out, out_size, "%s",
+             strcmp(primary, "/media/sdcard1") == 0
+                 ? "/mnt/sdcard" : "/media/sdcard1");
 }
 
-static bool jw__mlp1_mount_is_active(void) {
+static bool jw__mlp1_mount_lookup(const char *wanted_mount,
+                                  char *device, size_t device_size) {
     FILE *fp = fopen("/proc/mounts", "r");
     if (!fp) {
         return false;
@@ -238,7 +279,10 @@ static bool jw__mlp1_mount_is_active(void) {
     bool active = false;
     while (fscanf(fp, "%255s %255s %63s %*s %*d %*d\n",
                   dev, mount, type) == 3) {
-        if (strcmp(mount, JW_MLP1_SECONDARY_MOUNT) == 0) {
+        if (strcmp(mount, wanted_mount) == 0) {
+            if (device && device_size > 0) {
+                snprintf(device, device_size, "%s", dev);
+            }
             active = true;
             break;
         }
@@ -247,48 +291,198 @@ static bool jw__mlp1_mount_is_active(void) {
     return active;
 }
 
-static bool jw__mlp1_storage_busy(void) {
-    if (!jw__mlp1_mount_is_active()) {
+static bool jw__mlp1_mount_has_option(const char *wanted_mount,
+                                      const char *wanted_option) {
+    FILE *fp = fopen("/proc/mounts", "r");
+    if (!fp) {
+        return false;
+    }
+
+    char dev[256];
+    char mount[256];
+    char type[64];
+    char options[512];
+    bool found = false;
+    while (fscanf(fp, "%255s %255s %63s %511s %*d %*d\n",
+                  dev, mount, type, options) == 4) {
+        if (strcmp(mount, wanted_mount) != 0) {
+            continue;
+        }
+        char *save = NULL;
+        for (char *option = strtok_r(options, ",", &save);
+             option;
+             option = strtok_r(NULL, ",", &save)) {
+            if (strcmp(option, wanted_option) == 0) {
+                found = true;
+                break;
+            }
+        }
+        break;
+    }
+    fclose(fp);
+    return found;
+}
+
+/* Resume can leave this process' cwd on a detached instance of the launcher
+   card. Invoking `mount` through a shell from that cwd is unreliable (the MLP1
+   shell emits getcwd failures and, on the observed firmware path, the remount
+   never takes effect). Execute the rootfs mount binary directly from `/` and
+   keep the wait bounded so a damaged card cannot wedge the daemon on wake. */
+static int jw__mlp1_remount_exec_bounded(const char *mount) {
+    char *const argv[] = {
+        (char *)"mount",
+        (char *)"-o",
+        (char *)"remount,rw,exec,nosuid,nodev,noatime,nodiratime",
+        (char *)mount,
+        NULL,
+    };
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        if (chdir("/") != 0) {
+            _exit(126);
+        }
+        int null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (null_fd >= 0) {
+            (void)dup2(null_fd, STDOUT_FILENO);
+            (void)dup2(null_fd, STDERR_FILENO);
+            close(null_fd);
+        }
+        execv("/bin/mount", argv);
+        _exit(127);
+    }
+
+    int status = 0;
+    for (int attempt = 0; attempt < 10; attempt++) {
+        pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) {
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+        }
+        if (waited < 0 && errno != EINTR) {
+            return -1;
+        }
+        usleep(50000);
+    }
+
+    (void)kill(pid, SIGKILL);
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        /* retry */
+    }
+    return -1;
+}
+
+static int jw__mlp1_remount_exec(const char *mount) {
+    if (!mount ||
+        (strcmp(mount, "/mnt/sdcard") != 0 &&
+         strcmp(mount, "/media/sdcard1") != 0) ||
+        !jw__mlp1_mount_lookup(mount, NULL, 0)) {
+        return -1;
+    }
+
+    if (!jw__mlp1_mount_has_option(mount, "noexec")) {
+        return 0;
+    }
+    if (jw__mlp1_remount_exec_bounded(mount) != 0) {
+        return -1;
+    }
+    return jw__mlp1_mount_has_option(mount, "noexec") ? -1 : 0;
+}
+
+static bool jw__mlp1_secondary_device(const jw_platform_context *ctx,
+                                      char *out, size_t out_size) {
+    char secondary_mount[PATH_MAX];
+    char primary_device[PATH_MAX] = {0};
+    jw__mlp1_secondary_mount(ctx, secondary_mount, sizeof(secondary_mount));
+    if (jw__mlp1_mount_lookup(secondary_mount, out, out_size)) {
+        return true;
+    }
+    if (ctx && ctx->sdcard_root[0]) {
+        (void)jw__mlp1_mount_lookup(ctx->sdcard_root, primary_device,
+                                    sizeof(primary_device));
+    }
+    const char *candidates[] = {"/dev/mmcblk1p1", "/dev/mmcblk3p1"};
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (access(candidates[i], F_OK) == 0 &&
+            strcmp(candidates[i], primary_device) != 0) {
+            snprintf(out, out_size, "%s", candidates[i]);
+            return true;
+        }
+    }
+    if (out && out_size > 0) {
+        out[0] = '\0';
+    }
+    return false;
+}
+
+static bool jw__mlp1_block_present(const jw_platform_context *ctx) {
+    char device[PATH_MAX];
+    return jw__mlp1_secondary_device(ctx, device, sizeof(device));
+}
+
+static bool jw__mlp1_mount_is_active(const jw_platform_context *ctx) {
+    char mount[PATH_MAX];
+    jw__mlp1_secondary_mount(ctx, mount, sizeof(mount));
+    return jw__mlp1_mount_lookup(mount, NULL, 0);
+}
+
+static bool jw__mlp1_storage_busy(const jw_platform_context *ctx) {
+    char mount[PATH_MAX];
+    char command[PATH_MAX + 128];
+    jw__mlp1_secondary_mount(ctx, mount, sizeof(mount));
+    if (!jw__mlp1_mount_lookup(mount, NULL, 0)) {
         return false;
     }
 
     if (access("/usr/bin/fuser", X_OK) == 0 ||
         access("/bin/fuser", X_OK) == 0 ||
         access("/sbin/fuser", X_OK) == 0) {
-        return jw__exec_shell("fuser -m " JW_MLP1_SECONDARY_MOUNT " >/dev/null 2>&1") == 0;
+        snprintf(command, sizeof(command), "fuser -m %s >/dev/null 2>&1", mount);
+        return jw__exec_shell(command) == 0;
     }
 
     if (access("/usr/bin/lsof", X_OK) == 0 ||
         access("/bin/lsof", X_OK) == 0 ||
         access("/sbin/lsof", X_OK) == 0) {
-        return jw__exec_shell("lsof +f -- " JW_MLP1_SECONDARY_MOUNT
-                              " 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }'") == 0;
+        snprintf(command, sizeof(command),
+                 "lsof +f -- %s 2>/dev/null | "
+                 "awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }'",
+                 mount);
+        return jw__exec_shell(command) == 0;
     }
 
     return false;
 }
 
-static int jw__mlp1_mount_secondary_if_needed(void) {
-    if (!jw__mlp1_block_present()) {
+static int jw__mlp1_mount_secondary_if_needed(jw_platform_context *ctx) {
+    char mount[PATH_MAX];
+    char device[PATH_MAX];
+    char command[PATH_MAX * 2 + 256];
+    jw__mlp1_secondary_mount(ctx, mount, sizeof(mount));
+    if (!jw__mlp1_secondary_device(ctx, device, sizeof(device))) {
         return -1;
     }
 
-    mkdir(JW_MLP1_SECONDARY_MOUNT, 0755);
+    mkdir(mount, 0755);
 
-    if (jw__mlp1_mount_is_active()) {
-        return jw__exec_shell("mount -o remount,rw,exec,nosuid,nodev,noatime,nodiratime "
-                              JW_MLP1_SECONDARY_MOUNT " >/dev/null 2>&1");
+    if (jw__mlp1_mount_lookup(mount, NULL, 0)) {
+        return jw__mlp1_remount_exec(mount);
     }
 
-    return jw__exec_shell("mount -t vfat -o rw,exec,nosuid,nodev,noatime,nodiratime,"
-                          "fmask=0022,dmask=0022,iocharset=utf8,shortname=mixed,"
-                          "errors=remount-ro "
-                          JW_MLP1_SECONDARY_DEVICE " " JW_MLP1_SECONDARY_MOUNT
-                          " >/dev/null 2>&1");
+    snprintf(command, sizeof(command),
+             "mount -t vfat -o rw,exec,nosuid,nodev,noatime,nodiratime,"
+             "fmask=0022,dmask=0022,iocharset=utf8,shortname=mixed,"
+             "errors=remount-ro %s %s >/dev/null 2>&1", device, mount);
+    return jw__exec_shell(command);
 }
 
 static int jw__mlp1_open_uevent_socket(void) {
-    int fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+    /* SOCK_CLOEXEC: this daemon forks and execs -- RetroArch, the conversion
+       pass, every helper script -- and without it each one inherits a live
+       netlink socket it has no idea about, still bound to the uevent group and
+       still queueing hotplug messages against the kernel's buffer. */
+    int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
     if (fd < 0) {
         return -1;
     }
@@ -321,16 +515,16 @@ static int jw__mlp1_init(jw_platform_context *ctx) {
         jw_log_warn("storage hotplug: uevent socket unavailable: %s", strerror(errno));
     }
 
-    if (jw__mlp1_block_present()) {
-        if (jw__mlp1_mount_secondary_if_needed() == 0) {
+    if (jw__mlp1_block_present(ctx)) {
+        if (jw__mlp1_mount_secondary_if_needed(ctx) == 0) {
             jw_log_info("storage hotplug: secondary SD mounted/remounted");
         } else {
             jw_log_warn("storage hotplug: secondary SD mount/remount failed");
         }
     }
 
-    data->last_present = jw__mlp1_block_present() ? 1 : 0;
-    data->last_mounted = jw__mlp1_mount_is_active() ? 1 : 0;
+    data->last_present = jw__mlp1_block_present(ctx) ? 1 : 0;
+    data->last_mounted = jw__mlp1_mount_is_active(ctx) ? 1 : 0;
     ctx->backend_data = data;
     return 0;
 }
@@ -1090,21 +1284,23 @@ static int jw__mlp1_set_boot_splash(jw_platform_context *ctx, bool enabled) {
     return fclose(fp) == 0 && ok ? 0 : -1;
 }
 
-/* ── Display refresh rate (60/90 Hz) ─────────────────────────────────────
+/* ── Display refresh rate (60/100/120 Hz) ────────────────────────────────
    The MLP1 DSI panel advertises a single fixed 720x960@60 mode, but the
-   rockchip DSI driver accepts a runtime modeline at ~90 Hz (verified). Weston
+   rockchip DSI driver accepts a runtime modeline above it (verified). Weston
    takes its output mode from weston.ini; its HOME is /userdata/root, so a
    ~/.config/weston.ini override (a copy of the stock /etc/xdg config plus a
-   `mode=` line in [output]) takes precedence with no stock-file edit. 90 Hz =
-   write the override; 60 Hz = remove it (Weston falls back to the stock 60 Hz
+   `mode=` line in [output]) takes precedence with no stock-file edit. Above 60
+   = write the override; 60 Hz = remove it (Weston falls back to the stock 60 Hz
    preferred mode). The override lives on rootfs and persists across reboots,
    so no boot hook is needed — Weston reads it at S49 every boot. */
 #define JW_MLP1_WESTON_STOCK_INI    "/etc/xdg/weston/weston.ini"
 #define JW_MLP1_WESTON_OVERRIDE_INI "/userdata/root/.config/weston.ini"
 /* Stock 720x960 panel timing held constant; only the pixel clock scales with
    the target rate. htotal*vtotal = 769*1018 = 782842 px/frame, so the dot clock
-   (MHz) = 782842 * hz / 1e6 (90->70.46, 120->93.94). -hsync -vsync matches the
-   panel's stock mode flags. Driver+panel verified clean to 120 Hz on the MLP1. */
+   (MHz) = 782842 * hz / 1e6 (100->78.28, 120->93.94). -hsync -vsync
+   matches the panel's stock mode flags. Driver+panel verified clean to 120 Hz on
+   the MLP1; 110 is the highest rate that logged zero VOP errors, so 100 sits
+   inside the clean range (120 logs one POST_BUF_EMPTY at the modeset only). */
 #define JW_MLP1_PANEL_PX_PER_FRAME 782842.0
 static void jw__mlp1_weston_mode_line(int hz, char *buf, size_t n) {
     double clk = (JW_MLP1_PANEL_PX_PER_FRAME * (double)hz) / 1.0e6;
@@ -1695,6 +1891,10 @@ static const char *jw__mlp1_sound_output_key(jw_platform_audio_output output) {
         case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return "HEADSET";
         case JW_PLATFORM_AUDIO_OUTPUT_HDMI: return "HDMI";
         case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH: return "BLUETOOTH";
+        /* Without a key here the level is neither restored nor saved: the switch
+           silently keeps whatever the previous output was at, and the first volume
+           press jumps to an unrelated value. */
+        case JW_PLATFORM_AUDIO_OUTPUT_USB: return "USB";
         default: return NULL;
     }
 }
@@ -1885,8 +2085,11 @@ static bool jw__mlp1_headphone_jack_present(void) {
 /* The rk817 (analog) sink's PulseAudio name is not stable: udev-detect names it
    "alsa_output.platform-rk817-sound.stereo-fallback", a raw module-alsa-sink
    load names it "alsa_output.hw_1_0", and which one wins is a boot-time race.
-   Resolve it at runtime as the first sink that is not the HDMI sink, instead of
-   hardcoding a name that may not exist. Returns false if no analog sink found. */
+   Resolve it at runtime as the first sink that is neither the HDMI nor the USB-C
+   sink, instead of hardcoding a name that may not exist. Skipping usb_out matters
+   as much as hdmi_out: this is what speaker/headset routing falls back to, and
+   with a USB headset attached the first sink is no longer guaranteed to be the
+   analog one. Returns false if no analog sink found. */
 static bool jw__mlp1_default_audio_sink(char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return false;
@@ -1901,7 +2104,8 @@ static bool jw__mlp1_default_audio_sink(char *out, size_t out_size) {
         char name[256];
         /* fields: index <tab> name <tab> module ... */
         if (sscanf(line, "%*s %255s", name) == 1) {
-            if (strstr(name, "hdmi")) {
+            if (strstr(name, "hdmi") || strstr(name, JW_MLP1_PACTL_USB_SINK) ||
+                strstr(name, ".usb-")) {
                 continue;
             }
             snprintf(out, out_size, "%s", name);
@@ -1971,6 +2175,112 @@ static void jw__mlp1_hdmi_audio_off(void) {
         (void)jw__exec_shell(cmd);
         s_mlp1_hdmi_audio_module = -1;
     }
+}
+
+/* ── USB-C audio (follows a USB Audio Class device on the OTG port) ───────────
+   The kernel does all the hard work already: attaching a device role-switches
+   the dwc3 to host, brings up xhci, and snd_usb_audio registers a new ALSA card.
+   All that's missing is telling pulse, which has no udev-detect here. */
+static int s_mlp1_usb_audio_module = -1;
+
+/* ALSA card index of an attached USB audio device, or -1 when none. */
+static int jw__mlp1_usb_audio_card(void) {
+    char buf[32];
+    if (jw__read_command_line(JW_MLP1_USB_CARD_CMD, buf, sizeof(buf)) != 0) {
+        return -1;
+    }
+    if (!buf[0]) {
+        return -1;
+    }
+    char *end = NULL;
+    long idx = strtol(buf, &end, 10);
+    if (end == buf || idx < 0 || idx > 31) {
+        return -1;
+    }
+    return (int)idx;
+}
+
+static bool jw__mlp1_usb_audio_present(void) {
+    return jw__mlp1_usb_audio_card() >= 0;
+}
+
+/* Load a sink for the USB card if one isn't loaded yet. The card index is not
+   fixed (it depends on probe order), so it is resolved at load time rather than
+   hardcoded. Returns true when a usable sink exists afterwards. */
+static bool jw__mlp1_usb_audio_ensure_sink(void) {
+    if (s_mlp1_usb_audio_module >= 0) {
+        return true;
+    }
+    int card = jw__mlp1_usb_audio_card();
+    if (card < 0) {
+        return false;
+    }
+    char cmd[192];
+    snprintf(cmd, sizeof(cmd),
+             "pactl load-module module-alsa-sink device=hw:%d,0 "
+             "sink_name=%s 2>/dev/null",
+             card, JW_MLP1_PACTL_USB_SINK);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return false;
+    }
+    char buf[32];
+    bool ok = false;
+    if (fgets(buf, sizeof(buf), fp)) {
+        int idx = atoi(buf);
+        if (idx > 0) {
+            s_mlp1_usb_audio_module = idx;
+            ok = true;
+        }
+    }
+    pclose(fp);
+    return ok;
+}
+
+/* Tearing the USB sink down leaves the analog sink wedged: pulse still reports
+   it RUNNING, streams reattach to it, the codec path is SPK and the DAC is open
+   — and nothing is audible, because the underlying ALSA device is never reopened.
+   Suspending and resuming forces that reopen in place. Deliberately not a module
+   reload: that changes the sink index, and every stream pointed at the old one
+   has to be chased down and moved again. */
+static void jw__mlp1_analog_sink_reset(void) {
+    char sink[256];
+    if (!jw__mlp1_default_audio_sink(sink, sizeof(sink))) {
+        return;
+    }
+    char cmd[640];
+    /* The gap matters. Resuming immediately after the suspend — or straight off
+       the back of the USB sink's unload — reopens into the same wedged state;
+       pulse needs a beat to finish tearing the old device down first. */
+    snprintf(cmd, sizeof(cmd),
+             "pactl suspend-sink %s 1 2>/dev/null; sleep 1; "
+             "pactl suspend-sink %s 0 2>/dev/null",
+             sink, sink);
+    (void)jw__exec_shell(cmd);
+}
+
+/* Drop the USB sink and move any streams back to the analog codec. Unlike HDMI
+   we always unload once the device is gone: the ALSA card disappears with it, so
+   keeping the sink loaded would strand every stream on a dead device. */
+static void jw__mlp1_usb_audio_drop(void) {
+    if (s_mlp1_usb_audio_module < 0) {
+        return;
+    }
+    char sink[256];
+    if (jw__mlp1_default_audio_sink(sink, sizeof(sink))) {
+        char cmd[768];
+        snprintf(cmd, sizeof(cmd),
+                 "pactl set-default-sink %s 2>/dev/null; "
+                 "pactl list short sink-inputs | while read id _rest; do "
+                 "pactl move-sink-input \"$id\" %s 2>/dev/null; done",
+                 sink, sink);
+        (void)jw__exec_shell(cmd);
+    }
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "pactl unload-module %d 2>/dev/null",
+             s_mlp1_usb_audio_module);
+    (void)jw__exec_shell(cmd);
+    s_mlp1_usb_audio_module = -1;
 }
 
 /* Escape a string for safe inclusion inside single quotes in a shell command:
@@ -2071,6 +2381,11 @@ static unsigned jw__mlp1_get_audio_available_outputs(void) {
     if (jw__mlp1_bt_audio_present() || jw_bt_audio_connected() == 1) {
         mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH);
     }
+    /* Offer USB-C whenever the card is present, loading the sink on demand — the
+       card can appear well before anything asks to route to it. */
+    if (jw__mlp1_usb_audio_present() && jw__mlp1_usb_audio_ensure_sink()) {
+        mask |= JW_PLATFORM_AUDIO_OUTPUT_BIT(JW_PLATFORM_AUDIO_OUTPUT_USB);
+    }
     return mask;
 }
 
@@ -2081,9 +2396,15 @@ static jw_platform_audio_output jw__mlp1_get_audio_output(void) {
     }
 
     char sink[256];
-    if (jw__read_command_line(JW_MLP1_PACTL_GET_DEFAULT_SINK, sink, sizeof(sink)) == 0 &&
-        strstr(sink, "hdmi")) {
-        return JW_PLATFORM_AUDIO_OUTPUT_HDMI;
+    if (jw__read_command_line(JW_MLP1_PACTL_GET_DEFAULT_SINK, sink, sizeof(sink)) == 0) {
+        if (strstr(sink, "hdmi")) {
+            return JW_PLATFORM_AUDIO_OUTPUT_HDMI;
+        }
+        /* USB-C is a sink swap, not a codec Playback Path change, so it has to be
+           read off the default sink — the rk817 path still says speaker/headset. */
+        if (strstr(sink, JW_MLP1_PACTL_USB_SINK)) {
+            return JW_PLATFORM_AUDIO_OUTPUT_USB;
+        }
     }
 
     if (path == 3 || path == 4) {
@@ -2151,6 +2472,17 @@ static int jw__mlp1_set_audio_output(jw_platform_audio_output output,
         }
         case JW_PLATFORM_AUDIO_OUTPUT_HDMI:
             rc = jw__exec_shell(JW_MLP1_PACTL_SET_DEFAULT_HDMI);
+            break;
+        case JW_PLATFORM_AUDIO_OUTPUT_USB:
+            /* Mute the analog stage so a speaker that is still on the rk817 path
+               doesn't keep playing alongside the headset, then take the sink and
+               drag any live streams across (same move HDMI makes). */
+            (void)jw__exec_shell(JW_MLP1_PLAYBACK_PATH_OFF);
+            rc = jw__exec_shell(
+                JW_MLP1_PACTL_SET_DEFAULT_USB "; "
+                "pactl list short sink-inputs | while read id _rest; do "
+                "pactl move-sink-input \"$id\" " JW_MLP1_PACTL_USB_SINK
+                " 2>/dev/null; done");
             break;
         case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH:
             rc = jw__exec_shell(JW_MLP1_PLAYBACK_PATH_BT);
@@ -2246,6 +2578,11 @@ static jw_platform_audio_output jw__mlp1_desired_audio_output(bool allow_hdmi) {
     if (jack > 0) {
         return JW_PLATFORM_AUDIO_OUTPUT_HEADSET;
     }
+    /* Below the 3.5mm jack, above Bluetooth: plugging a cable in is a more
+       deliberate act than a headset that merely happens to be paired and awake. */
+    if (jw__mlp1_usb_audio_present() && jw__mlp1_usb_audio_ensure_sink()) {
+        return JW_PLATFORM_AUDIO_OUTPUT_USB;
+    }
     if (jw__mlp1_bt_audio_present()) {
         return JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH;
     }
@@ -2306,10 +2643,50 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
         jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
         jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
         jw__mlp1_set_audio_output(target, &res);
+        events |= JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
         jw_log_info("audio: headphone jack %s, routed to %s",
                     present ? "inserted" : "removed",
                     target == JW_PLATFORM_AUDIO_OUTPUT_HEADSET   ? "headset" :
                     target == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH ? "bluetooth" : "speaker");
+    }
+
+    /* ── USB-C audio attach/detach edge (throttled). ──
+       Reading /proc/asound/cards is a popen per check, so keep it off the fast
+       path. On detach the sink must be dropped before re-routing: its ALSA card
+       is already gone and anything still pointed at it plays into nothing. */
+    static long long usb_next_ms = 0;
+    static int last_usb = -1;
+    long long usb_now = jw__monotonic_ms();
+    if (usb_now >= usb_next_ms) {
+        usb_next_ms = usb_now + 1000;
+        int usb = jw__mlp1_usb_audio_present() ? 1 : 0;
+        if (usb != last_usb) {
+            int prev = last_usb;
+            last_usb = usb;
+            if (prev >= 0 && !jw__mlp1_hdmi_tv_active()) {
+                if (!usb) {
+                    jw__mlp1_usb_audio_drop();
+                }
+                jw_platform_result res;
+                jw_platform_result_set(&res, JW_PLATFORM_RESULT_OK, "");
+                jw_platform_audio_output target = jw__mlp1_desired_audio_output(true);
+                jw__mlp1_set_audio_output(target, &res);
+                /* Last, once the codec path and default sink are already correct:
+                   the reset only sticks if there is nothing left to reconfigure
+                   the device afterwards. */
+                if (!usb) {
+                    jw__mlp1_analog_sink_reset();
+                }
+                events |= JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
+                jw_log_info("audio: usb-c audio %s, routed to %s",
+                            usb ? "attached" : "detached",
+                            jw_platform_audio_output_label(target));
+            } else if (prev < 0 && !usb) {
+                /* First sample with nothing attached: make sure a stale sink from
+                   a previous session can't linger. */
+                jw__mlp1_usb_audio_drop();
+            }
+        }
     }
 
     /* ── Bluetooth audio connect/disconnect edge (throttled). ──
@@ -2337,13 +2714,15 @@ static unsigned jw__mlp1_audio_tick(jw_platform_context *ctx) {
                         jw__mlp1_set_audio_output(target, &res);
                         jw_log_info("audio: bluetooth connected, routed to bluetooth");
                     }
-                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED;
+                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED |
+                              JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
                 } else if (cur == JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH) {
                     jw_platform_audio_output fb = jw__mlp1_desired_audio_output(true);
                     jw__mlp1_set_audio_output(fb, &res);
                     jw_log_info("audio: bluetooth disconnected, routed to %s",
                                 fb == JW_PLATFORM_AUDIO_OUTPUT_HEADSET ? "headset" : "speaker");
-                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_DISCONNECTED;
+                    events |= JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_DISCONNECTED |
+                              JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED;
                 }
             }
         }
@@ -2655,6 +3034,72 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
             rc = (write(sfd, "mem\n", 4) == 4) ? 0 : -1;   /* blocks until resume */
             close(sfd);
         }
+        /* Firmware may restore either card with noexec after resume. This is
+           observable when the marked launcher card moved to /media/sdcard1:
+           the already-running daemon survives, but every service restart and
+           control helper then fails with EACCES. Repair both dynamic roles
+           before returning to the daemon loop, where suspend-sensitive
+           services are eligible to start again. */
+        if (rc == 0) {
+            /* Leave any detached SD cwd immediately. The firmware's late
+               post-resume mount worker can recreate the card more than once,
+               so merely chdir'ing to the first visible instance is not enough. */
+            if (chdir("/") != 0) {
+                jw_log_warn("platform: resume could not leave stale SD cwd: %s",
+                            strerror(errno));
+                rc = -1;
+            }
+            bool active_needed_repair = false;
+            int active_rc = -1;
+            int secondary_rc = -1;
+            long long settle_started_ms = jw__monotonic_ms();
+            long long settle_deadline_ms = settle_started_ms + 5000;
+            while (rc == 0 && jw__monotonic_ms() < settle_deadline_ms) {
+                if (jw__mlp1_mount_has_option(ctx->sdcard_root, "noexec")) {
+                    active_needed_repair = true;
+                }
+                active_rc = jw__mlp1_remount_exec(ctx->sdcard_root);
+                secondary_rc = jw__mlp1_block_present(ctx)
+                                   ? jw__mlp1_mount_secondary_if_needed(ctx)
+                                   : 0;
+                /* The MLP1 firmware performs a second mount pass roughly two
+                   seconds after wake. Observe a full three-second window so a
+                   transient exec mount cannot be mistaken for the final one. */
+                if (active_rc == 0 && secondary_rc == 0 &&
+                    jw__monotonic_ms() - settle_started_ms >= 3000) {
+                    break;
+                }
+                usleep(100000);
+            }
+            if (active_rc != 0 || secondary_rc != 0) {
+                jw_log_warn("platform: resume SD exec repair failed "
+                            "active=%s active_rc=%d secondary_rc=%d",
+                            ctx->sdcard_root, active_rc, secondary_rc);
+                rc = -1;
+            } else {
+                const char *launcher = getenv("UMRK_LAUNCHER_PATH");
+                if (!launcher || !launcher[0]) {
+                    launcher = strcmp(ctx->sdcard_root, "/media/sdcard1") == 0
+                                   ? "/media/sdcard1/.system/leaf/platforms/mlp1/launcher"
+                                   : "/mnt/sdcard/.system/leaf/platforms/mlp1/launcher";
+                }
+                /* The firmware may unmount and recreate the active mount while
+                   suspended. A cwd held on the detached old mount then makes
+                   every later shell child fail getcwd even though the path is
+                   visible again. Re-enter the live launcher directory before
+                   audio restoration or any service is restarted. */
+                if (chdir(launcher) != 0) {
+                    jw_log_warn("platform: resume could not refresh launcher "
+                                "cwd %s: %s", launcher, strerror(errno));
+                    rc = -1;
+                } else {
+                    jw_log_info("platform: resume SD mounts settled and "
+                                "launcher cwd refreshed active=%s repaired=%d",
+                                ctx->sdcard_root,
+                                active_needed_repair ? 1 : 0);
+                }
+            }
+        }
         /* Resumed: restore the two HP-amp registers (charge pump then output
            stage), falling back to the codec's power-up defaults if a snapshot read
            failed. Re-assert the DAC floor (PulseAudio can drift it low) and
@@ -2841,7 +3286,7 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
                 break;
             }
             buf[n] = '\0';
-            if (strstr(buf, "mmcblk3") || strstr(buf, JW_MLP1_SECONDARY_DEVICE)) {
+            if (strstr(buf, "mmcblk1") || strstr(buf, "mmcblk3")) {
                 data->pending_storage_event = true;
                 data->debounce_until_ms = jw__monotonic_ms() + JW_MLP1_STORAGE_DEBOUNCE_MS;
             }
@@ -2849,21 +3294,21 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
     }
 
     bool changed = false;
-    int present = jw__mlp1_block_present() ? 1 : 0;
-    int mounted = jw__mlp1_mount_is_active() ? 1 : 0;
+    int present = jw__mlp1_block_present(ctx) ? 1 : 0;
+    int mounted = jw__mlp1_mount_is_active(ctx) ? 1 : 0;
 
     if (data->pending_storage_event &&
         jw__monotonic_ms() >= data->debounce_until_ms) {
         data->pending_storage_event = false;
         if (present) {
-            if (jw__mlp1_mount_secondary_if_needed() == 0) {
+            if (jw__mlp1_mount_secondary_if_needed(ctx) == 0) {
                 jw_log_info("storage hotplug: secondary SD mounted/remounted");
             } else {
                 jw_log_warn("storage hotplug: secondary SD mount/remount failed");
             }
         }
-        present = jw__mlp1_block_present() ? 1 : 0;
-        mounted = jw__mlp1_mount_is_active() ? 1 : 0;
+        present = jw__mlp1_block_present(ctx) ? 1 : 0;
+        mounted = jw__mlp1_mount_is_active(ctx) ? 1 : 0;
         changed = true;
     }
 
@@ -2883,7 +3328,6 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
 static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
                                         const char *source_id,
                                         jw_platform_storage_status *out) {
-    (void)ctx;
     if (!out) {
         return;
     }
@@ -2892,17 +3336,18 @@ static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
     snprintf(out->source_id, sizeof(out->source_id), "%s",
              source_id && source_id[0] ? source_id : JW_MLP1_SECONDARY_SOURCE_ID);
     snprintf(out->label, sizeof(out->label), "%s", JW_MLP1_SECONDARY_LABEL);
-    snprintf(out->mount_path, sizeof(out->mount_path), "%s", JW_MLP1_SECONDARY_MOUNT);
-    snprintf(out->device_path, sizeof(out->device_path), "%s", JW_MLP1_SECONDARY_DEVICE);
+    jw__mlp1_secondary_mount(ctx, out->mount_path, sizeof(out->mount_path));
+    (void)jw__mlp1_secondary_device(ctx, out->device_path,
+                                    sizeof(out->device_path));
 
     if (!jw__mlp1_source_is_secondary(source_id)) {
         snprintf(out->message, sizeof(out->message), "%s", "storage source unavailable");
         return;
     }
 
-    out->present = jw__mlp1_block_present();
-    out->mounted = jw__mlp1_mount_is_active();
-    out->busy = out->mounted ? jw__mlp1_storage_busy() : false;
+    out->present = jw__mlp1_block_present(ctx);
+    out->mounted = jw__mlp1_mount_is_active(ctx);
+    out->busy = out->mounted ? jw__mlp1_storage_busy(ctx) : false;
     out->can_unmount = out->mounted && !out->busy;
     snprintf(out->message, sizeof(out->message), "%s",
              out->busy ? "Busy" : (out->mounted ? "Mounted" : "Not mounted"));
@@ -2918,27 +3363,32 @@ static void jw__mlp1_safe_unmount_storage(jw_platform_context *ctx,
         return;
     }
 
-    if (!jw__mlp1_mount_is_active()) {
+    char mount[PATH_MAX];
+    char command[PATH_MAX + 64];
+    jw__mlp1_secondary_mount(ctx, mount, sizeof(mount));
+
+    if (!jw__mlp1_mount_is_active(ctx)) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
                                "Secondary SD is not mounted");
         return;
     }
 
-    if (jw__mlp1_storage_busy()) {
+    if (jw__mlp1_storage_busy(ctx)) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
                                "Secondary SD is busy");
         return;
     }
 
     sync();
-    if (jw__exec_shell("umount " JW_MLP1_SECONDARY_MOUNT " >/dev/null 2>&1") != 0) {
+    snprintf(command, sizeof(command), "umount %s >/dev/null 2>&1", mount);
+    if (jw__exec_shell(command) != 0) {
         jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
                                "Secondary SD unmount failed");
         return;
     }
 
     if (data) {
-        data->last_present = jw__mlp1_block_present() ? 1 : 0;
+        data->last_present = jw__mlp1_block_present(ctx) ? 1 : 0;
         data->last_mounted = 0;
     }
     jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "Secondary SD unmounted");

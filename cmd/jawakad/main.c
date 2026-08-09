@@ -4,6 +4,7 @@
 #include "internal/db/relocation.h"
 #include "internal/discovery/discovery.h"
 #include "internal/focus/focus.h"
+#include "internal/ipc/ctl1.h"
 #include "internal/ipc/ipc.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/platform/bluetooth.h"
@@ -18,6 +19,9 @@
 #include "internal/retroarch/states.h"
 #include "internal/scrape/scrape_worker.h"
 #include "internal/scrape/ss_client.h"
+#include "internal/services/log_redact.h"
+#include "internal/services/launch.h"
+#include "internal/services/supervisor.h"
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
 #include "internal/store/pakrat_recovery.h"
@@ -181,8 +185,11 @@ typedef struct {
     pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
     jw_child_kind child_kind;
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
+    uint64_t last_record_toggle_ms; /* debounce for the Menu+R1 record hotkey */
     bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
     uint64_t screenshots_checked_ms;     /* when the flag was last read from the DB */
+    bool     recording_enabled_cached;   /* cached opt-in flag for the Menu+R1 hotkey */
+    uint64_t recording_checked_ms;       /* when that flag was last read from the DB */
     /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
        input tick, so avoid a sqlite open per event). */
     bool     rumble_enabled_cached;
@@ -249,6 +256,8 @@ typedef struct {
     char pending_app_pak_dir[PATH_MAX];
     bool daemon_only;
     bool shutdown_requested;
+    bool power_transition_requested;
+    jw_platform_action power_transition_action;
     /* Auto-sleep: idle → screen off (bl_power) → suspend (mem). */
     int       autosleep_timeout_s;        /* cached from DB; 0 = disabled */
     int       autosleep_platform_synced_s;/* last value mirrored to stock power policy */
@@ -256,6 +265,8 @@ typedef struct {
     jw_standby_reason standby_reason;     /* screen-off standby state, or NONE when lit */
     long long standby_entered_ms;         /* monotonic ms for wake-input detection */
     bool      autosleep_charging_logged;  /* log the charging hold once per standby */
+    bool      autosleep_screen_inhibit_logged; /* log the screen-lease hold once per hold */
+    bool      autosleep_screen_inhibit_held;   /* a screen lease was held on the last tick */
     int       charging_cached;            /* -1 unknown, 0 unplugged, 1 charging */
     long long charging_next_poll_ms;       /* throttle platform status reads in standby */
     bool      power_sleep_armed;          /* power pressed while screen on → sleep on release */
@@ -278,11 +289,22 @@ typedef struct {
     jw_update_download_job update_download_job;
     jw_update_install_job update_install_job;
     jw_update_check_job update_check_job;
+    /* Direct/generic update runners replace live package trees. PKG-1 keeps
+       the service barrier held until the runner exits and the replacement
+       manifests have been rescanned. Stock reboot handoffs do not use it. */
+    bool update_package_quiesce_active;
+    bool update_package_quiesce_release_warned;
     /* 5-Game Mode (focus mode): resolved once at boot from the persisted config
        + the SD recovery lock file. Later phases render the focus screen and gate
        the launcher off this. See plans/five-game-mode.md. */
     jw_focus_boot_decision focus_boot;
     jw_focus_config        focus_cfg;
+    /* app-services-v1 (SVC-1) service supervisor; NULL when it could not be
+       opened (a supervisor failure must never take down the launcher). */
+    jw_svc_supervisor *services;
+    /* Set when a safe-unmount already applied the storage-change policy, so
+       the storage tick it provokes does not stop the same services again. */
+    bool services_storage_stop_done;
 } jw_daemon_state;
 
 static void jw__scan_title_list_free(jw_scan_title_list *list) {
@@ -438,6 +460,16 @@ static void jw__scan_title_list_move(jw_scan_title_list *dest,
 }
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
+
+static void jw__request_power_transition(jw_daemon_state *state,
+                                         jw_platform_action action) {
+    if (!state) {
+        return;
+    }
+    state->power_transition_requested = true;
+    state->power_transition_action = action;
+    state->shutdown_requested = true;
+}
 
 static bool jw__has_retroarch_session(const jw_daemon_state *state) {
     return state &&
@@ -1454,6 +1486,58 @@ static void jw__seed_rom_folders(const jw_daemon_state *state) {
                 all_ok ? "" : " (some failed; will retry next boot)");
 }
 
+typedef enum {
+    JW_SOURCE_PATH_ROOT = 0,
+    JW_SOURCE_PATH_USERDATA,
+    JW_SOURCE_PATH_SHARED_USERDATA,
+    JW_SOURCE_PATH_ROMS,
+    JW_SOURCE_PATH_IMAGES,
+    JW_SOURCE_PATH_MUSIC,
+    JW_SOURCE_PATH_APPS,
+    JW_SOURCE_PATH_BIOS,
+    JW_SOURCE_PATH_SAVES,
+    JW_SOURCE_PATH_STATES,
+    JW_SOURCE_PATH_CHEATS,
+} jw_source_path_kind;
+
+static const char *jw__source_path_value(const jw_storage_source *source,
+                                         jw_source_path_kind kind) {
+    if (!source) return NULL;
+    switch (kind) {
+        case JW_SOURCE_PATH_ROOT: return source->root;
+        case JW_SOURCE_PATH_USERDATA: return source->userdata_path;
+        case JW_SOURCE_PATH_SHARED_USERDATA: return source->shared_userdata_path;
+        case JW_SOURCE_PATH_ROMS: return source->roms_path;
+        case JW_SOURCE_PATH_IMAGES: return source->images_path;
+        case JW_SOURCE_PATH_MUSIC: return source->music_path;
+        case JW_SOURCE_PATH_APPS: return source->apps_path;
+        case JW_SOURCE_PATH_BIOS: return source->bios_path;
+        case JW_SOURCE_PATH_SAVES: return source->saves_path;
+        case JW_SOURCE_PATH_STATES: return source->states_path;
+        case JW_SOURCE_PATH_CHEATS: return source->cheats_path;
+        default: return NULL;
+    }
+}
+
+static int jw__publish_source_path_list(const char *name,
+                                        const jw_storage_source_list *sources,
+                                        jw_source_path_kind kind) {
+    char value[JW_STORAGE_PATH_MAX * JW_STORAGE_MAX_SOURCES];
+    size_t used = 0;
+    if (!name || !sources || sources->count <= 0) return -1;
+    value[0] = '\0';
+    for (int i = 0; i < sources->count; i++) {
+        const char *path = jw__source_path_value(&sources->sources[i], kind);
+        if (!path || !path[0]) return -1;
+        int n = snprintf(value + used, sizeof(value) - used, "%s%s",
+                         i == 0 ? "" : ":", path);
+        if (n < 0 || (size_t)n >= sizeof(value) - used) return -1;
+        used += (size_t)n;
+    }
+    jw__setenv_default(name, value);
+    return 0;
+}
+
 static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     if (!state || !state->runtime_dir || !state->sdcard_root) {
         return;
@@ -1463,7 +1547,6 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
         ? state->platform.platform_id
         : "mac";
 
-    jw__setenv_default("UMRK_ENV_VERSION", "1");
     jw__setenv_default("PLATFORM", platform);
     jw__setenv_default("DEVICE", platform);
     jw__setenv_default("SDCARD_PATH", state->sdcard_root);
@@ -1514,11 +1597,62 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     jw__setenvf_default("ROMS_PATH", "%s/Roms", state->sdcard_root);
     jw__setenvf_default("IMAGES_PATH", "%s/Images", state->sdcard_root);
     jw__setenvf_default("MUSIC_PATH", "%s/Music", state->sdcard_root);
+    jw__setenvf_default("VIDEO_PATH", "%s/Videos", state->sdcard_root);
+    char recordings_path[PATH_MAX];
+    if (jw_primary_recordings_path(recordings_path, sizeof(recordings_path),
+                                   state->sdcard_root)) {
+        /* This is primary-owned state, not a caller override: the RetroArch
+           config and conversion dispatcher below resolve the same helper. */
+        setenv("RECORDINGS_PATH", recordings_path, 1);
+    }
     jw__setenvf_default("APPS_PATH", "%s/Apps", state->sdcard_root);
     jw__setenvf_default("BIOS_PATH", "%s/BIOS", state->sdcard_root);
     jw__setenvf_default("SAVES_PATH", "%s/Saves", state->sdcard_root);
     jw__setenvf_default("STATES_PATH", "%s/States", state->sdcard_root);
     jw__setenvf_default("CHEATS_PATH", "%s/Cheats", state->sdcard_root);
+    if (strcmp(platform, "mlp1") == 0) {
+        jw__setenv_default("UMRK_SECONDARY_SDCARD_PATH", "/media/sdcard1");
+    }
+    if (!getenv("SDCARD_PATHS")) {
+        const char *secondary = getenv("UMRK_SECONDARY_SDCARD_PATH");
+        if (secondary && secondary[0] && strcmp(secondary, state->sdcard_root) != 0) {
+            jw__setenvf_default("SDCARD_PATHS", "%s:%s",
+                                state->sdcard_root, secondary);
+        } else {
+            jw__setenv_default("SDCARD_PATHS", state->sdcard_root);
+        }
+    }
+
+    jw_storage_source_list sources;
+    bool complete_source_env =
+        jw_storage_sources_resolve(state->sdcard_root, &sources) == 0 &&
+        jw__publish_source_path_list("SDCARD_PATHS", &sources,
+                                     JW_SOURCE_PATH_ROOT) == 0 &&
+        jw__publish_source_path_list("USERDATA_PATHS", &sources,
+                                     JW_SOURCE_PATH_USERDATA) == 0 &&
+        jw__publish_source_path_list("SHARED_USERDATA_PATHS", &sources,
+                                     JW_SOURCE_PATH_SHARED_USERDATA) == 0 &&
+        jw__publish_source_path_list("ROMS_PATHS", &sources,
+                                     JW_SOURCE_PATH_ROMS) == 0 &&
+        jw__publish_source_path_list("IMAGES_PATHS", &sources,
+                                     JW_SOURCE_PATH_IMAGES) == 0 &&
+        jw__publish_source_path_list("MUSIC_PATHS", &sources,
+                                     JW_SOURCE_PATH_MUSIC) == 0 &&
+        jw__publish_source_path_list("APPS_PATHS", &sources,
+                                     JW_SOURCE_PATH_APPS) == 0 &&
+        jw__publish_source_path_list("BIOS_PATHS", &sources,
+                                     JW_SOURCE_PATH_BIOS) == 0 &&
+        jw__publish_source_path_list("SAVES_PATHS", &sources,
+                                     JW_SOURCE_PATH_SAVES) == 0 &&
+        jw__publish_source_path_list("STATES_PATHS", &sources,
+                                     JW_SOURCE_PATH_STATES) == 0 &&
+        jw__publish_source_path_list("CHEATS_PATHS", &sources,
+                                     JW_SOURCE_PATH_CHEATS) == 0;
+    if (complete_source_env) {
+        jw__setenv_default("UMRK_ENV_VERSION", "2");
+    } else {
+        jw__setenv_default("UMRK_ENV_VERSION", "1");
+    }
     if (getenv("SYSTEM_PATH")) {
         jw__setenvf_default("CORES_PATH", "%s/cores", getenv("SYSTEM_PATH"));
         jw__setenvf_default("INFO_PATH", "%s/info", getenv("SYSTEM_PATH"));
@@ -1544,6 +1678,94 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     }
 }
 
+/* Bring up the SVC-1 service supervisor: open the control-state store
+   (clearing session Run per the contract), then scan the configured Apps/
+   roots for service-bearing paks. Runs after jw__publish_runtime_path_env
+   so $USERDATA_PATH / $LOGS_PATH / $APPS_PATH are already resolved. Any
+   failure here is non-fatal to the daemon: services are simply unsupervised
+   this run rather than taking down the launcher. */
+static void jw__services_init(jw_daemon_state *state) {
+    if (!state || state->services) {
+        return;
+    }
+
+    /* Both Apps/<platform> and Apps/shared are directories of the SAME
+       (Primary) storage source, so a service pak in either is startable.
+       SVC-1's "reported but not startable" rule applies to a Secondary
+       storage SOURCE (PATH-2: SDCARD_PATHS index 0 is Primary), which this
+       build cannot enumerate until A1 lands source-paths-v2 -- so no
+       Secondary root is passed and nothing is wrongly marked unavailable. */
+    const char *platform = getenv("PLATFORM");
+    if (!platform || !platform[0]) {
+        platform = jw_platform_compiled_id();
+    }
+    if (!platform || !platform[0]) {
+        jw_log_warn("services: no platform id; supervisor disabled");
+        return;
+    }
+    const char *apps_path = getenv("APPS_PATH");
+    const char *userdata = getenv("USERDATA_PATH");
+    const char *logs = getenv("LOGS_PATH");
+
+    char primary[PATH_MAX];
+    char shared[PATH_MAX];
+    const char *roots[3];
+    int nroots = 0;
+    if (jw_svc_supervisor_join_scan_root(primary, sizeof(primary),
+                                         apps_path, platform)) {
+        roots[nroots++] = primary;
+    }
+    if (jw_svc_supervisor_join_scan_root(shared, sizeof(shared),
+                                         apps_path, "shared")) {
+        roots[nroots++] = shared;
+    }
+    roots[nroots] = NULL;
+
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = jw_svc_supervisor_open(
+        state->runtime_dir, logs ? logs : "", state->state_dir,
+        roots, NULL /* no Secondary source roots until PATH-2 (A1) */,
+        userdata ? userdata : "", reason, sizeof(reason));
+    if (!sup) {
+        jw_log_warn("services: supervisor unavailable (%s); "
+                    "no services supervised this run", reason);
+        return;
+    }
+
+    if (userdata && userdata[0]) {
+        char legacy_ssh_config[PATH_MAX];
+        if (snprintf(legacy_ssh_config, sizeof(legacy_ssh_config),
+                     "%s/umrk-ssh-server/config.ini", userdata) >=
+            (int)sizeof(legacy_ssh_config)) {
+            jw_log_warn("services: legacy SSH intent migration path is too long; "
+                        "leaving persistent intent disabled for this boot");
+        } else {
+            jw_svc_legacy_ssh_migration_report migration;
+            if (!jw_svc_supervisor_migrate_legacy_ssh_intent(
+                    sup, legacy_ssh_config, &migration,
+                    reason, sizeof(reason))) {
+                jw_log_warn("services: legacy SSH intent migration failed (%s); "
+                            "will retry next boot", reason);
+            } else if (migration.applied && migration.enabled) {
+                jw_log_info("services: migrated configured SSH install to "
+                            "Start with Leaf");
+            } else if (migration.applied && migration.config_present &&
+                       !migration.config_valid) {
+                jw_log_warn("services: legacy SSH config is invalid; "
+                            "completed one-time migration disabled");
+            } else if (migration.applied) {
+                jw_log_info("services: no legacy SSH config; completed "
+                            "one-time migration disabled");
+            }
+        }
+    }
+    state->services = sup;
+    int found = jw_svc_supervisor_scan(sup);
+    if (found > 0) {
+        jw_log_info("services: supervising %d service(s)", found);
+    }
+}
+
 static int jw__reply_json(jw_ipc_client *client, cJSON *root) {
     char *json = cJSON_PrintUnformatted(root);
     if (!json) {
@@ -1554,7 +1776,11 @@ static int jw__reply_json(jw_ipc_client *client, cJSON *root) {
     int rc = jw_ipc_client_send(client, json, strlen(json));
     cJSON_free(json);
     cJSON_Delete(root);
-    return rc;
+    /* The request was handled. A peer that closed before reading is a
+       notification client behaving exactly as designed, and reporting it as a
+       failure is what buried the session log under 7724 warnings: every haptic
+       tick is one of these. */
+    return rc == JW_IPC_PEER_GONE ? 0 : rc;
 }
 
 static int jw__reply_hello_ok(jw_ipc_client *client) {
@@ -1563,6 +1789,10 @@ static int jw__reply_hello_ok(jw_ipc_client *client) {
     cJSON_AddStringToObject(root, "version", "0.0.1");
     cJSON *features = cJSON_AddArrayToObject(root, "features");
     cJSON_AddItemToArray(features, cJSON_CreateString("relocate-games-v1"));
+    cJSON_AddItemToArray(features, cJSON_CreateString("package-quiesce-v1"));
+    if (jw_storage_source_paths_v2_valid()) {
+        cJSON_AddItemToArray(features, cJSON_CreateString("source-paths-v2"));
+    }
     return jw__reply_json(client, root);
 }
 
@@ -1620,6 +1850,8 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "hdmi_output", cap && cap->hdmi_output);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
     cJSON_AddBoolToObject(root, "performance", cap && cap->performance);
+    cJSON_AddBoolToObject(root, "source-paths-v2",
+                          jw_storage_source_paths_v2_valid());
     return root;
 }
 
@@ -2272,7 +2504,7 @@ static void jw__tick_retroarch_audio_reinit(jw_daemon_state *state) {
 /* Publish the live panel refresh (read from the active DRM mode) so the
    RetroArch config writer can pin video_refresh_rate to it. RA's pacing and
    Black Frame Insertion break when it believes 60Hz while the panel runs
-   90/120. Re-read per launch so a runtime refresh-rate change is reflected. */
+   100/120. Re-read per launch so a runtime refresh-rate change is reflected. */
 static void jw__publish_display_env(jw_daemon_state *state) {
     if (!state) {
         return;
@@ -2288,9 +2520,11 @@ static void jw__publish_display_env(jw_daemon_state *state) {
     }
 
     /* Black Frame Insertion: publish only when the user enabled it AND the panel
-       is at 120Hz (one black frame per 60fps content frame). The RA config
-       writer turns JAWAKA_BFI=1 into video_black_frame_insertion. At 60/90Hz
-       BFI would flicker badly, so it stays off there regardless of the setting. */
+       runs at twice a content rate, so there is a spare refresh to blank (120Hz
+       for 60fps NTSC, 100Hz for 50fps PAL). The RA config writer turns
+       JAWAKA_BFI=1 into video_black_frame_insertion; RetroArch itself imposes no
+       rate restriction, since it simply targets refresh/(bfi+1). At 60Hz there is
+       no spare refresh, so BFI stays off regardless of the setting. */
     bool bfi_enabled = false;
     if (state->db_path) {
         char val[8] = "";
@@ -2299,7 +2533,7 @@ static void jw__publish_display_env(jw_daemon_state *state) {
             bfi_enabled = true;
         }
     }
-    if (bfi_enabled && status.refresh_rate_hz == 120) {
+    if (bfi_enabled && jw_bfi_content_fps(status.refresh_rate_hz) > 0) {
         setenv("JAWAKA_BFI", "1", 1);
     } else {
         unsetenv("JAWAKA_BFI");
@@ -2345,9 +2579,43 @@ static int jw__reply_platform_audio_status(jw_daemon_state *state, jw_ipc_client
     return jw__reply_json(client, root);
 }
 
+static void jw__poll_update_install(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    if (!state->update_package_quiesce_active ||
+        state->update_install_job.active) {
+        return;
+    }
+
+    char reason[JW_SVC_REASON_BUF] = {0};
+    bool ended = state->services &&
+        jw_svc_supervisor_package_end(state->services, "leaf-update",
+                                      reason, sizeof(reason));
+    state->update_package_quiesce_active =
+        state->services &&
+        jw_svc_supervisor_package_active(state->services);
+    if (!ended) {
+        if (!state->update_package_quiesce_release_warned) {
+            jw_log_error("update install: package quiesce release failed (%s)",
+                         reason[0] ? reason : "unknown");
+            state->update_package_quiesce_release_warned = true;
+        }
+        state->update_status.status = JW_UPDATE_STATUS_ERROR;
+        snprintf(state->update_status.message,
+                 sizeof(state->update_status.message),
+                 "Update finished but service restore failed: %s",
+                 reason[0] ? reason : "unknown");
+    } else {
+        state->update_package_quiesce_release_warned = false;
+        jw_log_info("update install: package quiesce released after rescan");
+    }
+}
+
 static int jw__reply_update_status(jw_daemon_state *state, jw_ipc_client *client) {
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     jw_update_refresh_installed(&state->update_status, state->state_dir);
     if (!state->update_install_job.active) {
         jw_update_refresh_install_result(&state->update_status, state->state_dir,
@@ -2699,7 +2967,7 @@ static int jw__handle_update_check(jw_daemon_state *state,
                                    jw_ipc_client *client,
                                    cJSON *request) {
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     jw__update_check_busy(state);
     if (state->update_download_job.active) {
         return jw__reply_update_status(state, client);
@@ -2757,7 +3025,7 @@ static int jw__handle_update_download(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     if (!state->update_download_job.active &&
         !state->update_install_job.active &&
         state->update_status.status != JW_UPDATE_STATUS_DOWNLOADED) {
@@ -2775,7 +3043,7 @@ static int jw__handle_update_select(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     if (state->update_download_job.active || state->update_install_job.active) {
         return jw__reply_update_status(state, client);
     }
@@ -2792,7 +3060,7 @@ static int jw__handle_update_cancel(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     jw_update_download_cancel(&state->update_status, &state->update_download_job);
     return jw__reply_update_status(state, client);
 }
@@ -2820,6 +3088,16 @@ static bool jw__update_install_idle(const jw_daemon_state *state) {
            state->child_kind == JW_CHILD_MENU;
 }
 
+static bool jw__update_handoff_replaces_live_payload(
+    const jw_update_status *status) {
+    if (!status) {
+        return false;
+    }
+    return strcmp(status->handoff_type, "direct_runner") == 0 ||
+           strcmp(status->handoff_type, "generic_runner") == 0 ||
+           strcmp(status->handoff_type, "jawaka_c_runner") == 0;
+}
+
 static int jw__handle_update_install_preflight(jw_daemon_state *state,
                                                jw_ipc_client *client,
                                                cJSON *request) {
@@ -2827,7 +3105,7 @@ static int jw__handle_update_install_preflight(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
 
     bool confirm_unknown_battery =
         cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request,
@@ -2853,7 +3131,7 @@ static int jw__handle_update_install(jw_daemon_state *state,
         return jw__reply_update_status_raw(state, client);
     }
     jw_update_download_poll(&state->update_status, &state->update_download_job);
-    jw_update_install_poll(&state->update_status, &state->update_install_job);
+    jw__poll_update_install(state);
     if (state->update_install_job.active) {
         return jw__reply_update_status(state, client);
     }
@@ -2878,11 +3156,53 @@ static int jw__handle_update_install(jw_daemon_state *state,
         if (snprintf(runner_path, sizeof(runner_path),
                      "%s/jawaka-update-runner", state->bin_dir) <
             (int)sizeof(runner_path)) {
-            jw_update_install_start(&state->update_status,
-                                    &state->update_install_job,
-                                    state->state_dir,
-                                    state->sdcard_root,
-                                    runner_path);
+            bool needs_quiesce =
+                jw__update_handoff_replaces_live_payload(
+                    &state->update_status);
+            bool quiesced = false;
+            if (needs_quiesce) {
+                char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+                char reason[JW_SVC_REASON_BUF] = {0};
+                quiesced = state->services &&
+                    jw_svc_supervisor_package_begin(
+                        state->services, "leaf-update", stuck, sizeof(stuck),
+                        reason, sizeof(reason));
+                state->update_package_quiesce_release_warned = false;
+                state->update_package_quiesce_active =
+                    state->services &&
+                    jw_svc_supervisor_package_active(state->services);
+                if (!quiesced) {
+                    state->update_status.status = JW_UPDATE_STATUS_ERROR;
+                    if (!state->services) {
+                        snprintf(state->update_status.message,
+                                 sizeof(state->update_status.message), "%s",
+                                 "Service supervisor unavailable; update not started");
+                    } else if (stuck[0]) {
+                        snprintf(state->update_status.message,
+                                 sizeof(state->update_status.message),
+                                 "Service quiesce failed: %s (%s)",
+                                 stuck, reason[0] ? reason : "unknown");
+                    } else {
+                        snprintf(state->update_status.message,
+                                 sizeof(state->update_status.message),
+                                 "Service quiesce failed: %s",
+                                 reason[0] ? reason : "unknown");
+                    }
+                }
+            }
+            if (!needs_quiesce || quiesced) {
+                int start_rc = jw_update_install_start(
+                    &state->update_status, &state->update_install_job,
+                    state->state_dir, state->sdcard_root, runner_path);
+                if (start_rc != 0 && quiesced) {
+                    char release_reason[JW_SVC_REASON_BUF] = {0};
+                    (void)jw_svc_supervisor_package_end(
+                        state->services, "leaf-update", release_reason,
+                        sizeof(release_reason));
+                    state->update_package_quiesce_active =
+                        jw_svc_supervisor_package_active(state->services);
+                }
+            }
         } else {
             state->update_status.status = JW_UPDATE_STATUS_ERROR;
             snprintf(state->update_status.message,
@@ -2893,6 +3213,67 @@ static int jw__handle_update_install(jw_daemon_state *state,
 
     cJSON *root = jw_update_status_to_json(&state->update_status);
     return jw__reply_json(client, root);
+}
+
+static const char *jw__package_operation_id(cJSON *request) {
+    cJSON *value = request
+        ? cJSON_GetObjectItemCaseSensitive(request, "operation_id") : NULL;
+    return cJSON_IsString(value) && value->valuestring
+               ? value->valuestring : NULL;
+}
+
+static int jw__handle_package_quiesce_begin(jw_daemon_state *state,
+                                            jw_ipc_client *client,
+                                            cJSON *request) {
+    const char *operation_id = jw__package_operation_id(request);
+    if (!state->services) {
+        return jw__reply_error(client, "service supervisor unavailable");
+    }
+    if (state->shutdown_requested || state->pending_app ||
+        state->child_kind == JW_CHILD_APP ||
+        state->update_install_job.active) {
+        return jw__reply_error(client,
+                               "foreground or update operation in progress");
+    }
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (!jw_svc_supervisor_package_begin(
+            state->services, operation_id, stuck, sizeof(stuck), reason,
+            sizeof(reason))) {
+        char message[320];
+        if (stuck[0]) {
+            snprintf(message, sizeof(message),
+                     "package quiesce failed: %.127s (%.127s)", stuck,
+                     reason[0] ? reason : "unknown");
+        } else {
+            snprintf(message, sizeof(message),
+                     "package quiesce failed: %.127s",
+                     reason[0] ? reason : "unknown");
+        }
+        return jw__reply_error(client, message);
+    }
+    jw_log_info("package quiesce: begin operation=%s", operation_id);
+    return jw__reply_ok(client, "package-quiesce-begin", NULL);
+}
+
+static int jw__handle_package_quiesce_end(jw_daemon_state *state,
+                                          jw_ipc_client *client,
+                                          cJSON *request) {
+    const char *operation_id = jw__package_operation_id(request);
+    if (!state->services) {
+        return jw__reply_error(client, "service supervisor unavailable");
+    }
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (!jw_svc_supervisor_package_end(state->services, operation_id,
+                                       reason, sizeof(reason))) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "package quiesce release failed: %.127s",
+                 reason[0] ? reason : "unknown");
+        return jw__reply_error(client, message);
+    }
+    jw_log_info("package quiesce: end operation=%s", operation_id);
+    return jw__reply_ok(client, "package-quiesce-end", NULL);
 }
 
 static int jw__reply_platform_result(jw_ipc_client *client, const char *action,
@@ -3481,8 +3862,65 @@ static int jw__handle_storage_action(jw_daemon_state *state, jw_ipc_client *clie
     }
 
     jw_platform_result result;
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    int stopped = 0;
+    /* This request owns the latch outcome. A refusal or platform failure must
+       not consume a later real removal event. */
+    state->services_storage_stop_done = false;
+    /* Check BEFORE stopping anything. SVC-1 makes safe unmount the one caller
+       that must fail rather than proceed, so a refusal has to leave the system
+       as it found it -- stopping every other storage-sensitive service and
+       only then discovering the blocker would bounce healthy services for an
+       operation that never happened. */
+    if (state->services &&
+        jw_svc_supervisor_storage_change_blocked(state->services, stuck,
+                                                 sizeof(stuck))) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "Cannot unmount: service %s could not be verified stopped",
+                 stuck);
+        memset(&result, 0, sizeof(result));
+        result.code = JW_PLATFORM_RESULT_FAILED;
+        snprintf(result.message, sizeof(result.message), "%s", message);
+        jw_log_warn("safe-unmount: refused; service %s is still live", stuck);
+        return jw__reply_platform_result(client, action_json->valuestring,
+                                         &result);
+    }
+    if (state->services) {
+        stopped = jw_svc_supervisor_storage_change_begin(
+            state->services, stuck, sizeof(stuck));
+        if (stopped > 0) {
+            jw_log_info("safe-unmount: stopped %d storage-sensitive service(s)",
+                        stopped);
+        }
+    }
+    if (stuck[0]) {
+        /* A group that survived its full stop sequence can only be discovered
+           by running it. Unavoidable side effect, and still a refusal. */
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "Cannot unmount: service %s could not be verified stopped",
+                 stuck);
+        memset(&result, 0, sizeof(result));
+        result.code = JW_PLATFORM_RESULT_FAILED;
+        snprintf(result.message, sizeof(result.message), "%s", message);
+        jw_log_warn("safe-unmount: refused; service %s is still live", stuck);
+        return jw__reply_platform_result(client, action_json->valuestring,
+                                         &result);
+    }
     jw_platform_safe_unmount_storage(&state->platform, source, &result);
+    state->services_storage_stop_done =
+        jw_svc_storage_should_suppress_followup_tick(
+            stopped, result.code == JW_PLATFORM_RESULT_OK);
+    if (state->services && result.code != JW_PLATFORM_RESULT_OK) {
+        /* The topology did not change, so undo the restart hold. A successful
+         * unmount stays held until a later mounted + rescanned storage tick. */
+        jw_svc_supervisor_storage_change_resume(state->services);
+    }
     if (result.code == JW_PLATFORM_RESULT_OK) {
+        if (state->services && jw_svc_supervisor_scan(state->services) < 0) {
+            jw_log_warn("safe-unmount: service rescan failed");
+        }
         int scan_rc = jw__start_scan_job(state, "after safe-unmount");
         if (scan_rc < 0) {
             jw_log_warn("safe-unmount: library rescan could not start");
@@ -3831,6 +4269,169 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
                 session->rom_path);
 }
 
+static int jw__platform_path(char *out, size_t out_size, const jw_daemon_state *state);
+
+/* Hand this session's captures to the post-process pass.
+
+   Recording captures FLAC in Matroska because that is what stays cheap enough to
+   run underneath a game -- real-time AAC breaks audio output on FCEUmm, and
+   Matroska survives a capture cut short where MP4 would leave nothing playable.
+   Neither travels, so the shareable MP4 is made here instead, once the game is
+   gone and nothing is competing for the CPU.
+
+   Detached on purpose, and never waited on. The launcher has to come back
+   immediately; conversion costs roughly 1.5s per 15s of capture on this hardware,
+   almost entirely in the AAC encoder.
+
+   Double-fork is deliberate: jawakad only ever reaps the specific pids it tracks
+   (child_pid, osd_pid, ledd), never waitpid(-1), so a child spawned here would sit
+   as a zombie for the life of the daemon. The grandchild is orphaned to init,
+   which reaps it. The intermediate child exits at once and is waited for here.
+
+   Silent when the feature is not installed: a device without the ffmpeg payload
+   should behave exactly as it did before, not log a warning after every game. */
+static void jw__record_convert_spawn(const jw_daemon_state *state) {
+    if (!state || jw__env_is_disabled("JAWAKA_RECORD_CONVERT")) {
+        return;
+    }
+
+    /* Never during shutdown. jw__cleanup() SIGTERMs a running RetroArch and calls
+       jw__retroarch_session_finish(), which lands here -- so this used to orphan an
+       ffmpeg to init that would spend seconds to minutes writing multi-megabyte
+       files to the SD card while the system was rebooting out from under it. A
+       dirty FAT32 at reboot can flip the whole card read-only. Nothing is lost by
+       declining: the pass is idempotent and sweeps everything on the next exit. */
+    if (state->shutdown_requested || g_shutdown_requested) {
+        return;
+    }
+
+    if (!state->db_path) {
+        return;
+    }
+
+    /* All three settings in ONE open. jw_db_get_setting() opens a fresh connection
+       and re-applies the schema per call, with a 2s busy timeout, and this runs on
+       the main loop -- the same loop that drains evdev. Three separate calls could
+       park the daemon for seconds at game exit while the kernel's input buffer
+       overflowed and dropped events, which is exactly what "the launcher has to come
+       back immediately" was supposed to avoid.
+       An absent key leaves out[] empty and found==0, so split/keep default ON by
+       testing against "0" rather than for "1" -- neither key exists yet on any
+       device that has not toggled them. */
+    char en[8] = "", sp[8] = "", ks[8] = "";
+    jw_db_setting_query q[3] = {
+        { "recording_enabled",     en, sizeof(en), 0 },
+        { "recording_split",       sp, sizeof(sp), 0 },
+        { "recording_keep_source", ks, sizeof(ks), 0 },
+    };
+    (void)jw_db_get_settings(state->db_path, q, 3);
+
+    /* Opt-in gate, matching the hotkey. Without it the daemon forked and exec'd a
+       shell after EVERY game exit for every user, including those who never enabled
+       recording -- the stat() guard below cannot catch that, because the config
+       generator creates Recordings/ on every launch, so it always exists. */
+    if (strcmp(en, "1") != 0) {
+        return;
+    }
+
+    char platform_path[PATH_MAX];
+    if (jw__platform_path(platform_path, sizeof(platform_path), state) != 0) {
+        return;
+    }
+
+    char script[PATH_MAX];
+    if (snprintf(script, sizeof(script), "%s/bin/leaf-record-convert.sh",
+                 platform_path) >= (int)sizeof(script)) {
+        return;
+    }
+    if (access(script, X_OK) != 0) {
+        return; /* payload not installed on this device */
+    }
+
+    char recordings[PATH_MAX];
+    if (!jw_primary_recordings_path(recordings, sizeof(recordings),
+                                    state->sdcard_root)) {
+        return;
+    }
+
+    struct stat st;
+    if (stat(recordings, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return; /* nothing was ever recorded */
+    }
+
+    bool split = (strcmp(sp, "0") != 0);
+    bool keep_source = (strcmp(ks, "0") != 0);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        jw_log_warn("record convert fork failed: %s", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        pid_t inner = fork();
+        if (inner < 0) {
+            _exit(127);
+        }
+        if (inner > 0) {
+            _exit(0); /* parent of the grandchild; jawakad reaps this one */
+        }
+
+        setsid();
+        /* jawakad ignores SIGPIPE, and an IGNORED disposition survives execve
+           where a handler would be reset. The conversion pass is a shell script
+           built out of pipelines whose readers exit early (`du -k ... | awk
+           '{print $1; exit}'`, `... | sed -n ... | tail -1`), and with SIGPIPE
+           ignored such a writer is not killed -- it collects EPIPE on every write
+           and keeps going. Hand the script the default it expects.
+
+           This covers the conversion child only. Every other exec site in this
+           daemon still passes SIG_IGN down, which is worth fixing separately --
+           pak launch.sh scripts are third-party shell and the likeliest place for
+           it to matter. */
+        signal(SIGPIPE, SIG_DFL);
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) {
+                close(devnull);
+            }
+        }
+        char *argv[5];
+        int argc = 0;
+        argv[argc++] = script;
+        argv[argc++] = recordings;
+        if (split) {
+            argv[argc++] = (char *)"--split";
+        }
+        if (!keep_source) {
+            argv[argc++] = (char *)"--delete-source";
+        }
+        argv[argc] = NULL;
+        execv(script, argv);
+        _exit(127);
+    }
+
+    /* The intermediate child _exit(0)s straight after its own fork, so this returns
+       almost at once; the loop is only here because a handler installed without
+       SA_RESTART would otherwise leave it a zombie, and jawakad never waitpid(-1)s.
+       A non-zero status means that inner fork failed -- worth saying so, since the
+       success line below would otherwise claim a conversion that never started. */
+    int spawn_status = 0;
+    while (waitpid(pid, &spawn_status, 0) < 0 && errno == EINTR) {
+        /* retry */
+    }
+    if (WIFEXITED(spawn_status) && WEXITSTATUS(spawn_status) != 0) {
+        jw_log_warn("record convert failed to start (status=%d)",
+                    WEXITSTATUS(spawn_status));
+        return;
+    }
+    jw_log_info("record convert dispatched for %s split=%s keep_source=%s",
+                recordings, split ? "true" : "false",
+                keep_source ? "true" : "false");
+}
+
 static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int status) {
     if (!state) {
         return;
@@ -3900,6 +4501,13 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
         state->perf_custom_valid = false;
         jw__perf_request_init(&state->perf_custom_request);
         (void)jw__perf_apply_frontend(state, "retroarch-exit");
+
+        /* Only once we are actually going back to the launcher. A switcher
+           transition is launching the next game right now, and the conversion
+           would be competing with it for the CPU it needs to start cleanly.
+           Nothing is lost by waiting -- the pass is idempotent and picks up
+           every unconverted capture whenever it next runs. */
+        jw__record_convert_spawn(state);
     }
 }
 
@@ -4228,6 +4836,7 @@ static void jw__publish_source_content_env(const jw_storage_source *source) {
     setenv("ROMS_PATH", source->roms_path, 1);
     setenv("IMAGES_PATH", source->images_path, 1);
     setenv("MUSIC_PATH", source->music_path, 1);
+    setenv("VIDEO_PATH", source->video_path, 1);
     setenv("APPS_PATH", source->apps_path, 1);
     setenv("BIOS_PATH", source->bios_path, 1);
     setenv("SAVES_PATH", source->saves_path, 1);
@@ -5397,6 +6006,11 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
 
 static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
                                   const char **out_error) {
+    if (state->services &&
+        jw_svc_supervisor_package_active(state->services)) {
+        if (out_error) *out_error = "package operation in progress";
+        return -1;
+    }
     char pak_abs[PATH_MAX];
     char launch_abs[PATH_MAX];
     if (jw__resolve_app_launch_path(state, pak_dir, pak_abs, sizeof(pak_abs),
@@ -6010,6 +6624,7 @@ static bool jw__input_game_switcher(void *userdata) {
 #define JW_SS_SCANOUT_W   720   /* panel native (portrait); UI runs landscape */
 #define JW_SS_SCANOUT_H   960
 #define JW_SS_THROTTLE_MS 1000
+#define JW_RECORD_THROTTLE_MS 250 /* a toggle needs bounce protection, not a full second */
 #define JW_SS_ENABLE_TTL_MS 2000  /* re-read the opt-in flag from the DB at most this often */
 #define JW_SS_PRE_MAX     64      /* max pre-existing PNGs tracked for the in-game diff */
 
@@ -6347,6 +6962,64 @@ static void *jw__screenshot_worker(void *arg) {
 
 /* Menu + L1 (input proxy): take a screenshot. Returns true when consumed. When
    the feature is disabled it returns false so the chord forwards normally. */
+/* Menu + R1: toggle a game recording. Only meaningful while RetroArch is the
+   running session -- it owns the recorder -- so decline otherwise and let R1
+   reach the app normally.
+
+   RECORDING_TOGGLE goes over RetroArch's network command interface rather than
+   through its own hotkey system: a RetroArch pad hotkey needs a modifier held,
+   and RetroArch stops blocking that modifier from the core after
+   input_hotkey_block_delay frames, so Select ends up pressing buttons in the
+   game. Menu is never a game input and the chord is consumed here. */
+static bool jw__on_record_hotkey(void *userdata) {
+    jw_daemon_state *state = (jw_daemon_state *)userdata;
+    if (!state || !jw__has_retroarch_session(state)) {
+        return false;
+    }
+
+    /* Opt-in gate, cached the same way screenshots are: reading the flag opens
+       and closes sqlite, and this runs on the input tick. Declining lets R1
+       forward to the game, which is what a user with recording off expects. */
+    uint64_t gate_now = jw__screenshot_now_ms();
+    if (state->recording_checked_ms == 0 ||
+        gate_now - state->recording_checked_ms >= JW_SS_ENABLE_TTL_MS) {
+        char en[8] = "";
+        state->recording_enabled_cached =
+            (state->db_path &&
+             jw_db_get_setting(state->db_path, "recording_enabled", en, sizeof(en)) == 0 &&
+             strcmp(en, "1") == 0);
+        state->recording_checked_ms = gate_now;
+    }
+    if (!state->recording_enabled_cached) {
+        return false;
+    }
+
+    /* Debounced, but on its own much shorter clock than screenshots. A screenshot
+       repeated inside a second is almost always a bounce and costs only a junk
+       file; a recording toggle inside a second can be a deliberate "stop, wrong
+       moment", and swallowing that is invisible -- the chord is consumed, nothing
+       on screen changes, and the recording the user believes they stopped keeps
+       running. A physical shoulder button bounces in tens of milliseconds, so
+       this only has to be long enough to stop a start/stop pair from producing a
+       file with no frames in it. */
+    uint64_t now = jw__screenshot_now_ms();
+    if (state->last_record_toggle_ms != 0 &&
+        now - state->last_record_toggle_ms < JW_RECORD_THROTTLE_MS) {
+        return true;
+    }
+    state->last_record_toggle_ms = now;
+
+    jw_ra_client client = jw_ra_client_default();
+    jw_ra_result rc = jw_ra_send_raw(&client, "RECORDING_TOGGLE");
+    if (rc != JW_RA_OK) {
+        jw_log_warn("record hotkey: RECORDING_TOGGLE failed result=%s",
+                    jw_ra_result_string(rc));
+        return true;   /* consumed either way; R1 must not reach the game */
+    }
+    jw_log_info("record hotkey: RECORDING_TOGGLE sent");
+    return true;
+}
+
 static bool jw__on_screenshot_hotkey(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
     if (!state || !state->db_path) {
@@ -6418,6 +7091,7 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
                             jw__input_volume_delta, jw__input_menu_tap,
                             jw__input_game_switcher, state) == 0) {
         state->input_proxy.screenshot = jw__on_screenshot_hotkey;
+        state->input_proxy.record = jw__on_record_hotkey;
         state->input_proxy.rumble = jw__rumble_ff;
         jw__publish_retroarch_input_env(state);
     }
@@ -6884,6 +7558,26 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
         return -1;
     }
 
+    /* SVC-1: apply the lifecycle.game policy to supervised services before a
+       game launches. "stop" services are stopped here; a stop that cannot be
+       verified is surfaced and blocks the launch until the user overrides,
+       per the unverified-stop table. (notify/ignore services are LIFE-1's,
+       handled in A3b.) */
+    if (state->services) {
+        char stuck[JW_SVC_SUPERVISOR_ID_BUF];
+        jw_svc_supervisor_game_launch_begin(state->services, stuck, sizeof(stuck));
+        if (stuck[0]) {
+            jw_log_warn("services: service %s did not stop before game launch; "
+                        "requires user override", stuck);
+            /* No override token exists in this phase, so fail closed and let
+               the requesting client surface the error. Keeping pending_launch
+               set would silently retry from a later child-exit path. */
+            state->pending_launch = false;
+            state->pending_launch_resume_switcher = false;
+            return -1;
+        }
+    }
+
     jw_launch_target target;
     if (jw__resolve_launch_target(state, state->pending_launch_system,
                                   state->pending_launch_rom_path,
@@ -7264,6 +7958,25 @@ static void jw__enter_standby_screen_off(jw_daemon_state *state,
         return;
     }
 
+    /* A JW_SUSPEND_SCOPE_SCREEN lease defers the idle blank: a video player has
+       no input for the length of a film, so input-idle is the wrong signal for
+       it. Gated here rather than at each caller because jw__tick_auto_sleep
+       blanks from three places and a fourth would silently miss the check.
+       Only the idle path is deferred -- a power press or a charging standby is
+       a deliberate act and still blanks. */
+    if (reason == JW_STANDBY_AUTOSLEEP) {
+        int screen_leases = jw_suspend_inhibitor_count_scope(
+            &state->suspend_inhibitor, JW_SUSPEND_SCOPE_SCREEN);
+        if (screen_leases > 0) {
+            if (!state->autosleep_screen_inhibit_logged) {
+                jw_log_info("auto-sleep: screen blank deferred by %d screen lease(s)",
+                            screen_leases);
+                state->autosleep_screen_inhibit_logged = true;
+            }
+            return;
+        }
+    }
+
     if (reset_idle) {
         jw_input_proxy_mark_activity(&state->input_proxy);
     }
@@ -7362,6 +8075,26 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     jw__rumble_set_gated(true);
     jw__rumble_quiesce();   /* never carry a live pulse into the freeze */
     jw__screen_set(state, false);
+    /* After the screen is off: stopping suspend-sensitive services is a
+       synchronous, bounded wait (stop_grace_ms + 2000 ms per service), and
+       holding a lit screen through it makes a sleeping device look wedged.
+       The stop must still complete before the freeze, so it cannot move to
+       tick the way the CTL-1 session ops did. */
+    if (state->services) {
+        char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+        int stopped = jw_svc_supervisor_suspend_begin(
+            state->services, stuck, sizeof(stuck));
+        if (stopped > 0) {
+            jw_log_info("sleep: stopped %d suspend-sensitive service(s)",
+                        stopped);
+        }
+        if (stuck[0]) {
+            /* Contract table: suspend continues, but the survivor remains
+             * visible and no replacement can start over its reservation. */
+            jw_log_warn("sleep: service %s could not be verified stopped; "
+                        "continuing suspend", stuck);
+        }
+    }
     /* Same reason as the standby path: a direction still held here is never
        released to the launcher, because the resume flush discards the physical
        release rather than forwarding it. This is the path a power tap takes
@@ -7371,6 +8104,23 @@ static void jw__deep_suspend(jw_daemon_state *state) {
     jw_input_proxy_set_swallow(&state->input_proxy, true);
     jw_platform_result result;
     jw__platform_sleep_with_performance(state, &result);   /* blocks until resume */
+    /* MLP1 firmware can detach/recreate an SD mount while asleep. The platform
+       backend first repairs executable mount options and refreshes cwd; only
+       after that succeeds may the supervisor rediscover packages on the live
+       mount and make suspend-sensitive services eligible for restart. */
+    if (state->services && result.code == JW_PLATFORM_RESULT_OK) {
+        int service_count = jw_svc_supervisor_scan(state->services);
+        if (service_count < 0) {
+            jw_log_warn("sleep: post-resume service rescan failed; "
+                        "suspend-sensitive services remain stopped");
+        } else {
+            jw_log_info("sleep: post-resume service rescan found %d service(s)",
+                        service_count);
+        }
+    } else if (state->services) {
+        jw_log_warn("sleep: platform resume repair failed; "
+                    "post-resume service rescan skipped");
+    }
     jw_log_info("sleep: resumed");
     jw__rumble_off();   /* belt and braces if the quiesce above timed out */
     jw__screen_set(state, true);
@@ -7401,6 +8151,19 @@ static void jw__tick_suspend_inhibitors(jw_daemon_state *state) {
     if (reaped > 0) {
         jw_log_info("suspend-inhibit: reaped %d dead holder lease(s); active=%d",
                     reaped, jw_suspend_inhibitor_count(&state->suspend_inhibitor));
+    }
+    bool screen_held = jw_suspend_inhibitor_count_scope(&state->suspend_inhibitor,
+                                                        JW_SUSPEND_SCOPE_SCREEN) > 0;
+    if (screen_held) {
+        state->autosleep_screen_inhibit_held = true;
+    } else if (state->autosleep_screen_inhibit_held) {
+        /* The last screen lease just went (released or reaped). Input-idle has
+           been accumulating for the whole film, so without this the screen
+           would blank the instant playback ends. Treat the release itself as
+           activity and give the user a fresh idle window. */
+        jw_input_proxy_mark_activity(&state->input_proxy);
+        state->autosleep_screen_inhibit_held = false;
+        state->autosleep_screen_inhibit_logged = false;
     }
     /* Let the auto-sleep tick below process and log wake activity before a
        last-release transition can perform a queued suspend. */
@@ -7568,8 +8331,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
                 state->power_sleep_armed = false;
                 jw_suspend_policy_long_press(&state->suspend_policy);
                 jw_log_info("power: long-press (%lldms) -> clean power off", held_ms);
-                jw_platform_result poff;
-                jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
+                jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF);
                 return;
             }
             if (state->power_sleep_armed) {
@@ -7597,8 +8359,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             state->power_sleep_armed = false;
             jw_suspend_policy_long_press(&state->suspend_policy);
             jw_log_info("power: long-press -> clean power off");
-            jw_platform_result poff;
-            jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_POWEROFF, 0, &poff);
+            jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF);
             return;
         }
     }
@@ -8238,8 +8999,8 @@ static int jw__handle_suspend_inhibit(jw_daemon_state *state,
         if (result != JW_SUSPEND_LEASE_OK)
             return jw__reply_error(client, jw_suspend_lease_result_name(result));
         int count = jw_suspend_inhibitor_count(&state->suspend_inhibitor);
-        jw_log_info("suspend-inhibit: acquired pid=%d reason=%s active=%d",
-                    (int)pid, reason->valuestring, count);
+        jw_log_info("suspend-inhibit: acquired pid=%d scope=%s reason=%s active=%d",
+                    (int)pid, scope->valuestring, reason->valuestring, count);
         return jw__reply_suspend_acquired(client, token, count);
     }
 
@@ -8604,14 +9365,375 @@ static int jw__handle_relocation(jw_daemon_state *state, jw_ipc_client *client,
     return jw__reply_relocation_status(state, client, &status);
 }
 
-static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, const char *body) {
-    cJSON *root = cJSON_Parse(body);
+/* ------------------------------------------------------------------ */
+/* CTL-1: service control and status IPC (app-services-v1)             */
+/* ------------------------------------------------------------------ */
+
+/* Serializes one supervised service into the closed CTL-1 status-response
+ * shape frozen by control-ipc-v1.schema.json. Request correlation fields are
+ * added by the caller. */
+static bool jw__service_status_json(const jw_svc_supervised *e, cJSON *obj) {
+    if (!e || !obj) return false;
+    jw_svc_lifecycle_game game_policy =
+        e->pgid > 0 ? e->active_lifecycle_game : e->manifest.lifecycle_game;
+    if (!cJSON_AddStringToObject(obj, "service_id", e->service_id) ||
+        !cJSON_AddBoolToObject(obj, "desired_enabled", e->desired_enabled) ||
+        !cJSON_AddStringToObject(obj, "effective_state",
+                                 jw_svc_effective_state_name(e->state)) ||
+        !cJSON_AddStringToObject(obj, "coordination",
+             game_policy == JW_SVC_LIFECYCLE_GAME_NOTIFY && e->pgid > 0
+                 ? "unsubscribed" : "n/a")) {
+        return false;
+    }
+
+    cJSON *ownership = cJSON_AddObjectToObject(obj, "ownership_identity");
+    if (!ownership) return false;
+    if (e->pgid > 0) {
+        char instant[32];
+        snprintf(instant, sizeof(instant), "%lld", e->launch_instant_us);
+        if (!cJSON_AddNumberToObject(ownership, "pgid", (double)e->pgid) ||
+            !cJSON_AddStringToObject(ownership, "launch_instant", instant)) {
+            return false;
+        }
+    } else if (!cJSON_AddNullToObject(ownership, "pgid") ||
+               !cJSON_AddNullToObject(ownership, "launch_instant")) {
+        return false;
+    }
+
+    const char *lease = e->lease_fd >= 0 ? "held" :
+        e->state == JW_SVC_STATE_STALE_GENERATION ? "stale" : "none";
+    if (!cJSON_AddStringToObject(obj, "generation_lease_state", lease)) {
+        return false;
+    }
+
+    cJSON *transition = cJSON_AddObjectToObject(obj, "last_transition");
+    char transition_at[32];
+    snprintf(transition_at, sizeof(transition_at), "%lld",
+             e->control.last_transition_at_us);
+    const char *transition_reason =
+        e->state == JW_SVC_STATE_UNAVAILABLE && e->reject_reason[0]
+            ? e->reject_reason : e->control.last_transition_reason;
+    if (!transition ||
+        !cJSON_AddStringToObject(transition, "at", transition_at) ||
+        !cJSON_AddStringToObject(transition, "reason", transition_reason)) {
+        return false;
+    }
+
+    cJSON *last_exit = cJSON_AddObjectToObject(obj, "last_exit");
+    if (!last_exit) return false;
+    if (e->control.has_last_exit) {
+        char exit_at[32];
+        snprintf(exit_at, sizeof(exit_at), "%lld",
+                 e->control.last_exit_at_us);
+        if (!cJSON_AddNumberToObject(last_exit, "status",
+                                     (double)e->control.last_exit_code) ||
+            !cJSON_AddStringToObject(last_exit, "at", exit_at)) {
+            return false;
+        }
+    } else if (!cJSON_AddNullToObject(last_exit, "status") ||
+               !cJSON_AddNullToObject(last_exit, "at")) {
+        return false;
+    }
+
+    if (!cJSON_AddNumberToObject(obj, "restart_count",
+                                 (double)e->control.restart_count)) {
+        return false;
+    }
+    if (e->state == JW_SVC_STATE_BACKOFF) {
+        if (!cJSON_AddStringToObject(obj, "backoff_or_breaker_reason",
+                                     "on-failure")) return false;
+    } else if (e->state == JW_SVC_STATE_FAILED) {
+        if (!cJSON_AddStringToObject(obj, "backoff_or_breaker_reason",
+                                     "circuit-breaker")) return false;
+    } else if (!cJSON_AddNullToObject(obj, "backoff_or_breaker_reason")) {
+        return false;
+    }
+
+    cJSON *installed = cJSON_AddObjectToObject(obj, "installed_package");
+    const char *package_id = e->control.installed_package_id[0]
+                                 ? e->control.installed_package_id
+                                 : e->service_id;
+    const char *package_version = e->installed_package_version[0]
+                                      ? e->installed_package_version
+                                      : e->control.installed_package_version;
+    if (!installed ||
+        !cJSON_AddStringToObject(installed, "id", package_id) ||
+        !cJSON_AddStringToObject(installed, "version", package_version)) {
+        return false;
+    }
+
+    /* contracts.md: report "whether a lifecycle policy stop is in force
+     * (reason: game, storage, suspend, package)". All four implemented
+     * triggers are reported distinctly. */
+    const char *lifecycle_reason =
+        jw_svc_stop_reason_lifecycle_slug(e->pending_stop_reason);
+    cJSON *lifecycle =
+        cJSON_AddObjectToObject(obj, "lifecycle_policy_stop");
+    if (!lifecycle ||
+        !cJSON_AddBoolToObject(lifecycle, "active",
+                               lifecycle_reason != NULL)) {
+        return false;
+    }
+    return lifecycle_reason
+        ? cJSON_AddStringToObject(lifecycle, "reason", lifecycle_reason) != NULL
+        : cJSON_AddNullToObject(lifecycle, "reason") != NULL;
+}
+
+/* Reads up to `tail` lines from the service's rotating log, redacting each
+ * line per CTL-1's secret-redaction rule, and appends them as a JSON array
+ * of strings to `arr`. Bounded: reads at most the newest current log file
+ * and caps output so an IPC reply never carries an unbounded payload. */
+static void jw__service_logs_json(jw_daemon_state *state,
+                                  const jw_svc_supervised *entry,
+                                  int tail, cJSON *arr) {
+    const char *logs = getenv("LOGS_PATH");
+    if (!logs || !logs[0] || !entry || !arr ||
+        !jw_svc_supervisor_service_id_is_safe(entry->service_id)) {
+        return;
+    }
+    char path[PATH_MAX];
+    int written = snprintf(path, sizeof(path), "%s/services/%s/%s.log",
+                           logs, entry->service_id, entry->service_id);
+    if (written < 0 || (size_t)written >= sizeof(path)) {
+        return;
+    }
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return;
+    }
+    /* Read the whole (bounded-by-rotation, <= 256 KiB) current file, then
+     * keep only the last `tail` lines. */
+    char *buf = malloc((size_t)JW_SVC_LOG_MAX_BYTES + 1u);
+    if (!buf) {
+        fclose(fp);
+        return;
+    }
+    size_t n = fread(buf, 1, (size_t)JW_SVC_LOG_MAX_BYTES, fp);
+    fclose(fp);
+    buf[n] = '\0';
+
+    tail = jw_svc_supervisor_bound_log_tail(tail);
+    /* Split into lines, redact each, collect into a ring of the last N. */
+    char **lines = calloc((size_t)tail, sizeof(char *));
+    if (!lines) {
+        free(buf);
+        return;
+    }
+    int used = 0, start = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(buf, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char redacted[2048];
+        /* The boolean reports whether a secret was found; false still leaves
+         * an unchanged, bounded copy in `redacted`. */
+        (void)jw_svc_log_redact_line(line, redacted, sizeof(redacted));
+        int slot = used < tail ? used : start;
+        free(lines[slot]);
+        lines[slot] = strdup(redacted);
+        if (used < tail) {
+            used++;
+        } else {
+            start = (start + 1) % tail;
+        }
+    }
+    for (int i = 0; i < used; i++) {
+        int idx = (start + i) % tail;
+        if (lines[idx]) {
+            cJSON_AddItemToArray(arr, cJSON_CreateString(lines[idx]));
+        }
+        free(lines[idx]);
+    }
+    free(lines);
+    free(buf);
+    (void)state;
+}
+
+static int jw__reply_ctl1_error(jw_ipc_client *client, const char *id,
+                                const char *code, const char *message) {
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+    cJSON_AddStringToObject(reply, "id", id ? id : "");
+    cJSON *error = cJSON_AddObjectToObject(reply, "error");
+    cJSON_AddStringToObject(error, "code", code ? code : "internal-error");
+    cJSON_AddStringToObject(error, "message", message ? message : code);
+    if (code && strcmp(code, "unsupported-version") == 0) {
+        cJSON *versions = cJSON_AddArrayToObject(error, "supported_versions");
+        cJSON_AddItemToArray(versions, cJSON_CreateNumber(JW_CTL1_VERSION));
+    }
+    return jw__reply_json(client, reply);
+}
+
+static int jw__reply_ctl1_json(jw_ipc_client *client, const char *id,
+                               cJSON *reply) {
+    char *json = cJSON_PrintUnformatted(reply);
+    if (!json) {
+        cJSON_Delete(reply);
+        return -1;
+    }
+    size_t len = strlen(json);
+    if (len > JW_CTL1_MAX_PAYLOAD) {
+        cJSON_free(json);
+        cJSON_Delete(reply);
+        return jw__reply_ctl1_error(client, id, "response-too-large",
+                                    "CTL-1 response exceeds 64 KiB");
+    }
+    int rc = jw_ipc_client_send(client, json, len);
+    cJSON_free(json);
+    cJSON_Delete(reply);
+    return rc;
+}
+
+static int jw__handle_service_ctl(jw_daemon_state *state,
+                                  jw_ipc_client *client,
+                                  const jw_ctl1_request *request) {
+    if (!state->services) {
+        return jw__reply_ctl1_error(client, request->id,
+                                    "services-unavailable",
+                                    "service supervisor is unavailable");
+    }
+
+    if (request->operation == JW_CTL1_OP_CAPABILITIES) {
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+        cJSON_AddStringToObject(reply, "id", request->id);
+        cJSON *caps = cJSON_AddArrayToObject(reply, "capabilities");
+        cJSON_AddItemToArray(caps, cJSON_CreateString("app-services-v1"));
+        cJSON_AddItemToArray(caps, cJSON_CreateString("control-ipc-v1"));
+#if defined(__linux__)
+        cJSON_AddItemToArray(caps, cJSON_CreateString("pdeathsig"));
+#endif
+        return jw__reply_ctl1_json(client, request->id, reply);
+    }
+
+    if (request->operation == JW_CTL1_OP_LIST) {
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+        cJSON_AddStringToObject(reply, "id", request->id);
+        cJSON *arr = cJSON_AddArrayToObject(reply, "services");
+        int n = jw_svc_supervisor_count(state->services);
+        for (int i = 0; i < n; i++) {
+            const jw_svc_supervised *e =
+                jw_svc_supervisor_at(state->services, i);
+            /* One shared predicate with the supervisor's own shedding rule:
+             * canonical invalid discoveries remain visible as unavailable,
+             * spent records are omitted, and a locked old-generation lease
+             * stays discoverable even before a durable control-state write. */
+            if (!jw_svc_supervisor_entry_is_listable(e)) {
+                continue;
+            }
+            cJSON *obj = cJSON_CreateObject();
+            cJSON_AddStringToObject(obj, "service_id", e->service_id);
+            cJSON_AddBoolToObject(obj, "desired_enabled", e->desired_enabled);
+            cJSON_AddStringToObject(obj, "effective_state",
+                                    jw_svc_effective_state_name(e->state));
+            cJSON_AddItemToArray(arr, obj);
+        }
+        return jw__reply_ctl1_json(client, request->id, reply);
+    }
+
+    const char *service_id = request->service_id;
+    char reason[JW_SVC_REASON_BUF] = {0};
+
+    if (request->operation == JW_CTL1_OP_STATUS) {
+        const jw_svc_supervised *e =
+            jw_svc_supervisor_find(state->services, service_id);
+        if (!e) {
+            return jw__reply_ctl1_error(client, request->id,
+                                        "unknown-service",
+                                        "unknown service id");
+        }
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+        cJSON_AddStringToObject(reply, "id", request->id);
+        if (!jw__service_status_json(e, reply)) {
+            cJSON_Delete(reply);
+            return jw__reply_ctl1_error(client, request->id,
+                                        "internal-error",
+                                        "could not serialize service status");
+        }
+        return jw__reply_ctl1_json(client, request->id, reply);
+    }
+
+    if (request->operation == JW_CTL1_OP_LOGS ||
+        request->operation == JW_CTL1_OP_EXPORT_LOGS) {
+        const jw_svc_supervised *e =
+            jw_svc_supervisor_find(state->services, service_id);
+        if (!e) {
+            return jw__reply_ctl1_error(client, request->id,
+                                        "unknown-service",
+                                        "unknown service id");
+        }
+        int tail = request->operation == JW_CTL1_OP_EXPORT_LOGS
+                       ? JW_SVC_LOG_TAIL_MAX
+                       : request->has_tail ? request->tail
+                                           : JW_SVC_LOG_TAIL_DEFAULT;
+        tail = jw_svc_supervisor_bound_log_tail(tail);
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+        cJSON_AddStringToObject(reply, "id", request->id);
+        cJSON *lines = cJSON_AddArrayToObject(reply, "lines");
+        jw__service_logs_json(state, e, tail, lines);
+        return jw__reply_ctl1_json(client, request->id, reply);
+    }
+
+    bool ok = false;
+    if (request->operation == JW_CTL1_OP_ENABLE) {
+        ok = jw_svc_supervisor_enable(state->services, service_id,
+                                      reason, sizeof(reason));
+    } else if (request->operation == JW_CTL1_OP_DISABLE) {
+        ok = jw_svc_supervisor_disable(state->services, service_id,
+                                       reason, sizeof(reason));
+    } else if (request->operation == JW_CTL1_OP_RUN) {
+        ok = jw_svc_supervisor_run(state->services, service_id,
+                                   reason, sizeof(reason));
+    } else if (request->operation == JW_CTL1_OP_STOP) {
+        ok = jw_svc_supervisor_stop(state->services, service_id,
+                                    reason, sizeof(reason));
+    } else if (request->operation == JW_CTL1_OP_RESTART) {
+        ok = jw_svc_supervisor_restart(state->services, service_id,
+                                       reason, sizeof(reason));
+    }
+
+    if (!ok) {
+        char message[128];
+        snprintf(message, sizeof(message), "%s failed: %s",
+                 jw_ctl1_operation_name(request->operation), reason);
+        return jw__reply_ctl1_error(client, request->id,
+                                    reason[0] ? reason : "operation-failed",
+                                    message);
+    }
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddNumberToObject(reply, "v", JW_CTL1_VERSION);
+    cJSON_AddStringToObject(reply, "id", request->id);
+    cJSON_AddBoolToObject(reply, "ok", true);
+    return jw__reply_ctl1_json(client, request->id, reply);
+}
+
+static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
+                              const char *body, size_t body_len) {
+    cJSON *root = cJSON_ParseWithLength(body, body_len);
     if (!root) {
         jw_log_error("invalid json message");
         return jw__reply_error(client, "invalid json");
     }
 
     cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    cJSON *ctl_op = cJSON_GetObjectItemCaseSensitive(root, "op");
+    cJSON *ctl_version = cJSON_GetObjectItemCaseSensitive(root, "v");
+    if (ctl_op || (ctl_version && !type)) {
+        jw_ctl1_request request;
+        char code[32];
+        bool valid = jw_ctl1_parse_request(body, body_len, &request,
+                                           code, sizeof(code));
+        cJSON_Delete(root);
+        if (!valid) {
+            return jw__reply_ctl1_error(client, request.id, code,
+                strcmp(code, "unsupported-version") == 0
+                    ? "server supports CTL-1 v1 only"
+                    : "invalid CTL-1 request");
+        }
+        return jw__handle_service_ctl(state, client, &request);
+    }
     if (!cJSON_IsString(type) || !type->valuestring) {
         cJSON_Delete(root);
         return jw__reply_error(client, "missing type");
@@ -8867,6 +9989,18 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
         return jw__reply_ok(client, "launch-app", NULL);
     }
 
+    if (strcmp(type->valuestring, "package-quiesce-begin") == 0) {
+        int rc = jw__handle_package_quiesce_begin(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "package-quiesce-end") == 0) {
+        int rc = jw__handle_package_quiesce_end(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
     if (strcmp(type->valuestring, "reset-retroarch-config") == 0) {
         char status[256];
         if (jw_reset_retroarch_shared_config(state->sdcard_root,
@@ -9009,6 +10143,17 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client, con
             result.code = JW_PLATFORM_RESULT_OK;
             snprintf(result.message, sizeof(result.message), "%s",
                      inhibited ? "sleep pending: suspend inhibited" : "sleep resumed");
+        } else if (action == JW_PLATFORM_ACTION_POWEROFF ||
+                   action == JW_PLATFORM_ACTION_REBOOT) {
+            /* A power transition must not race the supervisor's shutdown stop.
+             * Record the action now so the reply reaches the caller, then let the
+             * main loop stop the frontend and every service. jw__cleanup schedules
+             * the kernel transition only after the DB/socket/runtime cleanup. */
+            jw__request_power_transition(state, action);
+            memset(&result, 0, sizeof(result));
+            result.code = JW_PLATFORM_RESULT_OK;
+            snprintf(result.message, sizeof(result.message), "%s",
+                     action == JW_PLATFORM_ACTION_REBOOT ? "rebooting" : "powering off");
         } else if (action == JW_PLATFORM_ACTION_BLUETOOTH_ON ||
                    action == JW_PLATFORM_ACTION_BLUETOOTH_OFF) {
             jw_platform_perform_action(&state->platform, action, value, &result);
@@ -9120,14 +10265,20 @@ static int jw__accept_and_process(jw_daemon_state *state) {
 
     char *body = NULL;
     size_t len = 0;
-    int result = jw_ipc_client_recv(client, &body, &len);
-    if (result == 0) {
-        result = jw__handle_message(state, client, body);
+    int result;
+    if (jw_ipc_client_recv(client, &body, &len) != 0) {
+        jw_log_warn("ipc client disconnected before sending a complete request");
+        result = -1;
+    } else if (jw__handle_message(state, client, body, len) != 0) {
+        jw_log_warn("ipc handler failed to answer a request");
+        result = -1;
+    } else {
+        result = 0;
     }
 
     free(body);
     jw_ipc_client_close(client);
-    return result == 0 ? 0 : -1;
+    return result;
 }
 
 static void jw__clear_menu_tracking(jw_daemon_state *state) {
@@ -9423,9 +10574,24 @@ static void jw__cleanup(jw_daemon_state *state) {
     }
     jw_suspend_inhibitor_clear(&state->suspend_inhibitor);
     jw_suspend_policy_init(&state->suspend_policy);
-    jw_platform_shutdown(&state->platform);
+    if (state->services) {
+        jw_svc_supervisor_close(state->services);
+        state->services = NULL;
+    }
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
+    if (state->power_transition_requested) {
+        jw_platform_result result;
+        jw_platform_perform_action(&state->platform,
+                                   state->power_transition_action, 0, &result);
+        if (result.code != JW_PLATFORM_RESULT_OK) {
+            jw_log_error("deferred %s failed: %s",
+                         jw_platform_action_name(state->power_transition_action),
+                         result.message[0] ? result.message
+                                           : jw_platform_result_code_name(result.code));
+        }
+    }
+    jw_platform_shutdown(&state->platform);
     free(state->runtime_dir);
     free(state->sdcard_root);
     free(state->socket_path);
@@ -9566,6 +10732,10 @@ int main(int argc, char *argv[]) {
     /* Exported so child processes receive them via execv's inherited environment. */
     jw__publish_runtime_path_env(&state);
     jw__publish_audio_env(&state);
+
+    /* SVC-1 service supervision: open the control-state store and scan for
+       service-bearing paks. Non-fatal if it cannot come up. */
+    jw__services_init(&state);
 
     /* One-time: pre-create the per-system Roms/ folders so a fresh card is ready
        for drop-in ROMs without hunting the docs (needs ROMS_PATH above). */
@@ -9722,7 +10892,7 @@ int main(int argc, char *argv[]) {
         }
 
         jw_update_download_poll(&state.update_status, &state.update_download_job);
-        jw_update_install_poll(&state.update_status, &state.update_install_job);
+        jw__poll_update_install(&state);
         jw_update_check_poll(&state.update_status, &state.update_check_job);
         jw__handle_child_exit(&state);
         jw__tick_post_launch_resume(&state);
@@ -9742,18 +10912,70 @@ int main(int argc, char *argv[]) {
         if (audio_events & JW_PLATFORM_AUDIO_EVENT_BLUETOOTH_CONNECTED) {
             jw__schedule_retroarch_audio_reinit(&state, "bluetooth-connected");
         }
+        if (audio_events & JW_PLATFORM_AUDIO_EVENT_OUTPUT_CHANGED) {
+            /* Each output restores its own stored level, so the cached percent
+               now describes the output we just left. Drop it and let the next
+               volume keypress re-read, or that press steps from the old value
+               and jumps. */
+            state.cached_volume_percent = -1;
+        }
         jw__tick_retroarch_audio_reinit(&state);
         jw__tick_rumble_reclaim(&state);
         jw__tick_suspend_inhibitors(&state);
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
         if (jw_platform_storage_tick(&state.platform)) {
+            if (state.services) {
+                /* Only a source going AWAY is a stop_on_storage_change event.
+                   jw_platform_storage_tick() fires on any transition, and
+                   stopping a running service because the user *inserted* a
+                   card has no contract behind it -- SVC-1's storage policy
+                   exists so a card is never pulled from under a live writer.
+                   The backend reports no direction, so re-read the status. */
+                jw_platform_storage_status storage_status;
+                jw_platform_get_storage_status(&state.platform, NULL,
+                                               &storage_status);
+                bool source_departed = !storage_status.mounted;
+                if (state.services_storage_stop_done) {
+                    /* This daemon just performed a safe unmount and already
+                       applied the policy; don't stop the same services twice. */
+                    state.services_storage_stop_done = false;
+                } else if (source_departed) {
+                    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+                    int stopped = jw_svc_supervisor_storage_change_begin(
+                        state.services, stuck, sizeof(stuck));
+                    if (stopped > 0) {
+                        jw_log_info("storage hotplug: stopped %d "
+                                    "storage-sensitive service(s)", stopped);
+                    }
+                    if (stuck[0]) {
+                        /* Already gone, so unlike safe-unmount this cannot be
+                           refused. Warn and keep the survivor visible. */
+                        jw_log_warn("storage hotplug: service %s could not be "
+                                    "verified stopped", stuck);
+                    }
+                }
+                if (jw_svc_supervisor_scan(state.services) < 0) {
+                    jw_log_warn("storage hotplug: service rescan failed");
+                }
+                if (!source_departed) {
+                    /* The mounted topology is now visible to the supervisor.
+                     * Only now may services stopped for the departure resume. */
+                    jw_svc_supervisor_storage_change_resume(state.services);
+                }
+            }
             if (jw__start_scan_job(&state, "after storage change") < 0) {
                 jw_log_warn("storage hotplug: library rescan could not start");
             }
         }
         jw__tick_scan_job(&state);
         jw__tick_startup_maintenance(&state);
+
+        /* SVC-1 service supervision: poll child exit, run the stop sequence,
+           retry stale-generation leases, and fire backoff/autostart. */
+        if (state.services) {
+            jw_svc_supervisor_tick(state.services);
+        }
 
         if (state.shutdown_requested && state.child_pid <= 0 &&
             state.menu_pid <= 0) {
@@ -9780,16 +11002,24 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        int rc = jw__accept_and_process(&state);
-        if (rc < 0 && !state.shutdown_requested && !g_shutdown_requested) {
-            jw_log_warn("ipc loop iteration failed");
-        }
+        (void)jw__accept_and_process(&state);
     }
 
     /* Quiesce, not a bare off: the worker is detached, so if a pattern is in
        flight when main returns the process dies mid-tick and the motor is
        stranded ON with nothing left to clear it. */
     jw__rumble_quiesce();
+
+    /* SVC-1: stop every running service and verify each group absent before
+       exiting. Per the contract's unverified-stop table, shutdown continues
+       past a stuck service (recorded, never allowed to wedge the device). */
+    if (state.services) {
+        int stuck = jw_svc_supervisor_stop_all(state.services);
+        if (stuck > 0) {
+            jw_log_warn("services: %d service(s) could not be verified stopped "
+                        "during shutdown", stuck);
+        }
+    }
 
     /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
        knows this was an intentional shutdown, not a crash. The marker lives in

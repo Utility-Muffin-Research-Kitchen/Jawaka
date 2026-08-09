@@ -514,6 +514,11 @@ int jw__pakrat_sync_filesystem(const char *path) {
     int rc = syncfs(fd);
 #else
     int rc = fsync(fd);
+    /* MLP1 uses syncfs above. Directory fsync is best-effort on hosts that
+     * reject it, such as macOS, so native installs do not fail on EINVAL. */
+    if (rc != 0 && errno == EINVAL) {
+        rc = 0;
+    }
 #endif
     int saved = errno;
     if (close(fd) != 0 && rc == 0) {
