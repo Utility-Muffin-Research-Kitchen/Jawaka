@@ -35,6 +35,7 @@ static void jw__usage(const char *argv0) {
         "  --state-dir <path>     UMRK internal data dir (default: <root>/.umrk/<platform>)\n"
         "  --db <path>            library DB (default: <state-dir>/library.db)\n"
         "  --platform-root <path> active platform manifest root (default: <root>/.system/leaf/platforms/<platform>)\n"
+        "  --runtime-dir <path>   runtime lock root (default: JAWAKA_RUNTIME_DIR or socket parent)\n"
         "  --socket <path>        optional jawakad socket to notify after install/uninstall\n",
         argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0);
 }
@@ -99,6 +100,12 @@ static int jw__parse_args(int argc, char **argv, pakrat_smoke_opts *opts) {
             i += 2;
         } else if (strcmp(argv[i], "--platform-root") == 0 && i + 1 < argc) {
             if (jw__copy(opts->ctx.platform_root, sizeof(opts->ctx.platform_root), argv[i + 1]) != 0) {
+                return -1;
+            }
+            i += 2;
+        } else if (strcmp(argv[i], "--runtime-dir") == 0 && i + 1 < argc) {
+            if (jw__copy(opts->ctx.runtime_dir,
+                         sizeof(opts->ctx.runtime_dir), argv[i + 1]) != 0) {
                 return -1;
             }
             i += 2;
@@ -178,6 +185,27 @@ static int jw__parse_args(int argc, char **argv, pakrat_smoke_opts *opts) {
         const char *socket = jw__env_or_null("JAWAKA_SOCKET_PATH");
         jw__copy(opts->ctx.socket_path, sizeof(opts->ctx.socket_path),
                  socket ? socket : "/tmp/jawaka-runtime/jawakad.sock");
+    }
+    if (!opts->ctx.runtime_dir[0]) {
+        const char *runtime = jw__env_or_null("JAWAKA_RUNTIME_DIR");
+        if (runtime) {
+            jw__copy(opts->ctx.runtime_dir, sizeof(opts->ctx.runtime_dir),
+                     runtime);
+        } else if (jw__copy(opts->ctx.runtime_dir,
+                            sizeof(opts->ctx.runtime_dir),
+                            opts->ctx.socket_path) == 0) {
+            char *slash = strrchr(opts->ctx.runtime_dir, '/');
+            if (!slash) {
+                return -1;
+            }
+            if (slash == opts->ctx.runtime_dir) {
+                slash[1] = '\0';
+            } else {
+                *slash = '\0';
+            }
+        } else {
+            return -1;
+        }
     }
 
     return opts->ctx.platform[0] && opts->ctx.sdcard_root[0] &&

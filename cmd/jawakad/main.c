@@ -29,6 +29,7 @@
 #include "internal/settings/appearance.h"
 #include "internal/storage/sources.h"
 #include "internal/store/pakrat_recovery.h"
+#include "internal/store/pakrat_txn.h"
 #include "internal/update/update.h"
 
 #include "miniz.h"   /* tdefl_write_image_to_png_file_in_memory (screenshot encode) */
@@ -339,6 +340,13 @@ typedef struct {
     /* app-services-v1 (SVC-1) service supervisor; NULL when it could not be
        opened (a supervisor failure must never take down the launcher). */
     jw_svc_supervisor *services;
+    /* When the Pak Rat client dies inside TXN-1, the daemon adopts the now-
+       available flock and either completes a confirmed uninstall forward or
+       runs P1 recovery before releasing the supervisor's target gate. */
+    jw_pakrat_mutation_lock mutation_recovery_lock;
+    unsigned mutation_recovery_sequence;
+    long long mutation_recovery_next_ms;
+    bool pakrat_startup_recovery_needed;
     /* LIFE-1's authoritative runtime record. It is loaded before service
        scan/autostart and remains active+uncertain on a corrupt recovery. */
     jw_active_game active_game;
@@ -1741,12 +1749,6 @@ static void jw__services_init(jw_daemon_state *state) {
         return;
     }
 
-    /* Both Apps/<platform> and Apps/shared are directories of the SAME
-       (Primary) storage source, so a service pak in either is startable.
-       SVC-1's "reported but not startable" rule applies to a Secondary
-       storage SOURCE (PATH-2: SDCARD_PATHS index 0 is Primary), which this
-       build cannot enumerate until A1 lands source-paths-v2 -- so no
-       Secondary root is passed and nothing is wrongly marked unavailable. */
     const char *platform = getenv("PLATFORM");
     if (!platform || !platform[0]) {
         platform = jw_platform_compiled_id();
@@ -1755,39 +1757,62 @@ static void jw__services_init(jw_daemon_state *state) {
         jw_log_warn("services: no platform id; supervisor disabled");
         return;
     }
-    const char *apps_path = getenv("APPS_PATH");
-    const char *userdata = getenv("USERDATA_PATH");
     const char *logs = getenv("LOGS_PATH");
+    jw_storage_source_list sources;
+    if (jw_storage_sources_resolve(state->sdcard_root, &sources) != 0 ||
+        sources.count <= 0) {
+        jw_log_warn("services: storage sources unavailable; supervisor disabled");
+        return;
+    }
 
-    char primary[PATH_MAX];
-    char shared[PATH_MAX];
-    const char *roots[3];
-    int nroots = 0;
-    if (jw_svc_supervisor_join_scan_root(primary, sizeof(primary),
-                                         apps_path, platform)) {
-        roots[nroots++] = primary;
+    char scan_paths[JW_STORAGE_MAX_SOURCES * 2][PATH_MAX];
+    const char *primary_roots[JW_STORAGE_MAX_SOURCES * 2 + 1];
+    const char *secondary_roots[JW_STORAGE_MAX_SOURCES * 2 + 1];
+    int path_count = 0;
+    int primary_count = 0;
+    int secondary_count = 0;
+    for (int i = 0; i < sources.count; i++) {
+        const jw_storage_source *source = &sources.sources[i];
+        const char *names[] = {platform, "shared"};
+        for (size_t n = 0; n < sizeof(names) / sizeof(names[0]); n++) {
+            if (path_count >= JW_STORAGE_MAX_SOURCES * 2 ||
+                !jw_svc_supervisor_join_scan_root(
+                    scan_paths[path_count], sizeof(scan_paths[path_count]),
+                    source->apps_path, names[n])) {
+                jw_log_warn("services: Apps scan root is invalid; supervisor disabled");
+                return;
+            }
+            if (source->primary) {
+                primary_roots[primary_count++] = scan_paths[path_count];
+            } else {
+                secondary_roots[secondary_count++] = scan_paths[path_count];
+            }
+            path_count++;
+        }
     }
-    if (jw_svc_supervisor_join_scan_root(shared, sizeof(shared),
-                                         apps_path, "shared")) {
-        roots[nroots++] = shared;
+    primary_roots[primary_count] = NULL;
+    secondary_roots[secondary_count] = NULL;
+    const jw_storage_source *primary = jw_storage_sources_primary(&sources);
+    if (!primary || primary_count == 0) {
+        jw_log_warn("services: Primary Apps root unavailable; supervisor disabled");
+        return;
     }
-    roots[nroots] = NULL;
 
     char reason[JW_SVC_REASON_BUF];
     jw_svc_supervisor *sup = jw_svc_supervisor_open(
         state->runtime_dir, logs ? logs : "", state->state_dir,
-        roots, NULL /* no Secondary source roots until PATH-2 (A1) */,
-        userdata ? userdata : "", reason, sizeof(reason));
+        primary_roots, secondary_count > 0 ? secondary_roots : NULL,
+        primary->userdata_path, reason, sizeof(reason));
     if (!sup) {
         jw_log_warn("services: supervisor unavailable (%s); "
                     "no services supervised this run", reason);
         return;
     }
 
-    if (userdata && userdata[0]) {
+    if (primary->userdata_path[0]) {
         char legacy_ssh_config[PATH_MAX];
         if (snprintf(legacy_ssh_config, sizeof(legacy_ssh_config),
-                     "%s/umrk-ssh-server/config.ini", userdata) >=
+                     "%s/umrk-ssh-server/config.ini", primary->userdata_path) >=
             (int)sizeof(legacy_ssh_config)) {
             jw_log_warn("services: legacy SSH intent migration path is too long; "
                         "leaving persistent intent disabled for this boot");
@@ -1848,6 +1873,7 @@ static int jw__reply_hello_ok(jw_ipc_client *client) {
     cJSON *features = cJSON_AddArrayToObject(root, "features");
     cJSON_AddItemToArray(features, cJSON_CreateString("relocate-games-v1"));
     cJSON_AddItemToArray(features, cJSON_CreateString("package-quiesce-v1"));
+    cJSON_AddItemToArray(features, cJSON_CreateString("package-mutation-v1"));
     if (jw_storage_source_paths_v2_valid()) {
         cJSON_AddItemToArray(features, cJSON_CreateString("source-paths-v2"));
     }
@@ -3365,6 +3391,323 @@ static int jw__handle_package_quiesce_end(jw_daemon_state *state,
     }
     jw_log_info("package quiesce: end operation=%s", operation_id);
     return jw__reply_ok(client, "package-quiesce-end", NULL);
+}
+
+static const char *jw__package_request_string(cJSON *request,
+                                              const char *key) {
+    cJSON *value = request
+        ? cJSON_GetObjectItemCaseSensitive(request, key) : NULL;
+    return cJSON_IsString(value) && value->valuestring
+               ? value->valuestring : NULL;
+}
+
+static int jw__installed_service_state(jw_daemon_state *state,
+                                       const char *target_path,
+                                       const char *package_id,
+                                       bool *out_has_service) {
+    if (!state || !target_path || !package_id || !out_has_service) {
+        return -1;
+    }
+    *out_has_service = false;
+    jw_pakrat_install install;
+    int install_rc = jw_db_pakrat_get_install(state->db_path, package_id,
+                                               &install);
+    if (install_rc == 1) {
+        return 0;
+    }
+    if (install_rc != 0 || strcmp(install.install_path, target_path) != 0) {
+        return -1;
+    }
+    jw_pakrat_txn_metadata metadata;
+    int metadata_rc = jw_pakrat_txn_metadata_get(
+        state->db_path, package_id, &metadata);
+    if (metadata_rc != 0) {
+        return -1;
+    }
+    int valid = strcmp(metadata.store_id, package_id) == 0 &&
+                strcmp(metadata.package_id, package_id) == 0 &&
+                strcmp(metadata.install_path, target_path) == 0;
+    if (valid) {
+        *out_has_service = metadata.has_service;
+    }
+    jw_pakrat_txn_metadata_destroy(&metadata);
+    return valid ? 0 : -1;
+}
+
+static int jw__handle_package_mutation_begin(jw_daemon_state *state,
+                                             jw_ipc_client *client,
+                                             cJSON *request) {
+    const char *operation_id = jw__package_operation_id(request);
+    const char *target_path = jw__package_request_string(request, "target_path");
+    const char *package_id = jw__package_request_string(request, "package_id");
+    if (!state->services) {
+        return jw__reply_error(client, "service supervisor unavailable");
+    }
+    if (state->shutdown_requested || state->pending_app ||
+        state->child_kind == JW_CHILD_APP ||
+        state->update_install_job.active) {
+        return jw__reply_error(client,
+                               "foreground or update operation in progress");
+    }
+    if (!jw_pakrat_mutation_lock_is_held(
+            state->runtime_dir, operation_id, package_id, target_path)) {
+        return jw__reply_error(client, "mutation lock is not held");
+    }
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (!jw_svc_supervisor_mutation_begin(
+            state->services, operation_id, target_path, package_id,
+            stuck, sizeof(stuck), reason, sizeof(reason))) {
+        char message[320];
+        if (stuck[0]) {
+            snprintf(message, sizeof(message),
+                     "package mutation failed: %.127s (%.127s)", stuck,
+                     reason[0] ? reason : "unknown");
+        } else {
+            snprintf(message, sizeof(message),
+                     "package mutation failed: %.127s",
+                     reason[0] ? reason : "unknown");
+        }
+        return jw__reply_error(client, message);
+    }
+    jw_log_info("package mutation: begin operation=%s target=%s package=%s",
+                operation_id, target_path, package_id);
+    return jw__reply_ok(client, "package-mutation-begin", NULL);
+}
+
+static int jw__handle_package_mutation_end(jw_daemon_state *state,
+                                           jw_ipc_client *client,
+                                           cJSON *request) {
+    const char *requested_operation = jw__package_operation_id(request);
+    char operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1] = {0};
+    char target_path[JW_PAKRAT_TXN_TARGET_MAX + 1] = {0};
+    char package_id[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    if (!state->services) {
+        return jw__reply_error(client, "service supervisor unavailable");
+    }
+    if (!jw_svc_supervisor_mutation_info(
+            state->services, operation_id, sizeof(operation_id),
+            target_path, sizeof(target_path), package_id,
+            sizeof(package_id))) {
+        return jw__reply_error(client, "no package mutation in progress");
+    }
+    if (!requested_operation ||
+        strcmp(requested_operation, operation_id) != 0) {
+        return jw__reply_error(client, "package mutation operation mismatch");
+    }
+    if (!jw_pakrat_mutation_lock_is_held(
+            state->runtime_dir, operation_id, package_id, target_path)) {
+        return jw__reply_error(client, "mutation lock is not held");
+    }
+    bool installed_has_service = false;
+    if (jw__installed_service_state(state, target_path, package_id,
+                                    &installed_has_service) != 0) {
+        return jw__reply_error(client,
+                               "installed package metadata is unavailable");
+    }
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (!jw_svc_supervisor_mutation_end(
+            state->services, operation_id, installed_has_service,
+            reason, sizeof(reason))) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "package mutation release failed: %.127s",
+                 reason[0] ? reason : "unknown");
+        return jw__reply_error(client, message);
+    }
+    jw_log_info("package mutation: end operation=%s target=%s package=%s",
+                operation_id, target_path, package_id);
+    return jw__reply_ok(client, "package-mutation-end", NULL);
+}
+
+static void jw__daemon_pakrat_context(const jw_daemon_state *state,
+                                      jw_pakrat_context *ctx) {
+    memset(ctx, 0, sizeof(*ctx));
+    snprintf(ctx->platform, sizeof(ctx->platform), "%s",
+             jw_platform_compiled_id());
+    snprintf(ctx->sdcard_root, sizeof(ctx->sdcard_root), "%s",
+             state->sdcard_root);
+    snprintf(ctx->state_dir, sizeof(ctx->state_dir), "%s", state->state_dir);
+    snprintf(ctx->db_path, sizeof(ctx->db_path), "%s", state->db_path);
+    snprintf(ctx->runtime_dir, sizeof(ctx->runtime_dir), "%s",
+             state->runtime_dir);
+    snprintf(ctx->socket_path, sizeof(ctx->socket_path), "%s",
+             state->socket_path);
+    const char *platform_root = getenv("UMRK_PLATFORM_PATH");
+    if (platform_root) {
+        snprintf(ctx->platform_root, sizeof(ctx->platform_root), "%s",
+                 platform_root);
+    }
+}
+
+static int jw__run_pakrat_p1_recovery(const jw_daemon_state *state) {
+    jw_pakrat_recovery_context recovery;
+    memset(&recovery, 0, sizeof(recovery));
+    snprintf(recovery.platform, sizeof(recovery.platform), "%s",
+             jw_platform_compiled_id());
+    snprintf(recovery.sdcard_root, sizeof(recovery.sdcard_root), "%s",
+             state->sdcard_root);
+    snprintf(recovery.state_dir, sizeof(recovery.state_dir), "%s",
+             state->state_dir);
+    snprintf(recovery.db_path, sizeof(recovery.db_path), "%s",
+             state->db_path);
+    return jw_pakrat_recover_installs(&recovery);
+}
+
+static void jw__free_pending_uninstalls(jw_pakrat_pending_uninstall *items,
+                                        int count) {
+    for (int i = 0; i < count; i++) {
+        jw_pakrat_pending_uninstall_destroy(&items[i]);
+    }
+    free(items);
+}
+
+/* Returns 0 when no TXN-1 work remains, 1 when a live owner or an absent
+   source requires a later retry, and -1 on a recoverable local error. A daemon-
+   owned lock is deliberately retained across nonzero returns so no service or
+   foreground launch can race incomplete recovery. */
+static int jw__recover_package_mutations(jw_daemon_state *state) {
+    if (!state || !state->services) {
+        return -1;
+    }
+    jw_pakrat_context ctx;
+    jw__daemon_pakrat_context(state, &ctx);
+
+    for (int pass = 0; pass < 1024; pass++) {
+        if (jw_svc_supervisor_mutation_active(state->services)) {
+            char operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1] = {0};
+            char target_path[JW_PAKRAT_TXN_TARGET_MAX + 1] = {0};
+            char package_id[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+            if (!jw_svc_supervisor_mutation_info(
+                    state->services, operation_id, sizeof(operation_id),
+                    target_path, sizeof(target_path), package_id,
+                    sizeof(package_id))) {
+                return -1;
+            }
+            if (state->mutation_recovery_lock.fd < 0) {
+                if (jw_pakrat_mutation_lock_is_held(
+                        state->runtime_dir, operation_id, package_id,
+                        target_path)) {
+                    return 1;
+                }
+                char reason[JW_SVC_REASON_BUF] = {0};
+                if (jw_pakrat_mutation_lock_acquire(
+                        state->runtime_dir, operation_id, package_id,
+                        target_path, &state->mutation_recovery_lock,
+                        reason, sizeof(reason)) != 0) {
+                    return 1;
+                }
+                jw_log_warn("package mutation: adopting abandoned operation=%s",
+                            operation_id);
+            }
+
+            jw_pakrat_pending_uninstall pending;
+            int pending_rc = jw_pakrat_txn_pending_get(
+                state->db_path, package_id, &pending);
+            bool installed_has_service = false;
+            if (pending_rc == 0) {
+                int complete_rc = jw_pakrat_txn_complete_uninstall(&ctx,
+                                                                    &pending);
+                jw_pakrat_pending_uninstall_destroy(&pending);
+                if (complete_rc != 0) {
+                    return complete_rc > 0 ? 1 : -1;
+                }
+            } else if (pending_rc == 1) {
+                if (jw__run_pakrat_p1_recovery(state) != 0 ||
+                    jw__installed_service_state(
+                        state, target_path, package_id,
+                        &installed_has_service) != 0) {
+                    return -1;
+                }
+            } else {
+                return -1;
+            }
+
+            char reason[JW_SVC_REASON_BUF] = {0};
+            if (!jw_svc_supervisor_mutation_end(
+                    state->services, operation_id, installed_has_service,
+                    reason, sizeof(reason))) {
+                jw_log_warn("package mutation: recovery release failed (%s)",
+                            reason[0] ? reason : "unknown");
+                return -1;
+            }
+            jw_pakrat_mutation_lock_release(
+                &state->mutation_recovery_lock);
+            jw_log_info("package mutation: recovery complete operation=%s",
+                        operation_id);
+            continue;
+        }
+
+        jw_pakrat_pending_uninstall *pending = NULL;
+        int pending_count = 0;
+        if (jw_pakrat_txn_pending_list(state->db_path, &pending,
+                                       &pending_count) != 0) {
+            return -1;
+        }
+        if (pending_count == 0) {
+            free(pending);
+            return 0;
+        }
+
+        char operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1];
+        int operation_size = snprintf(
+            operation_id, sizeof(operation_id), "recover-%ld-%u",
+            (long)getpid(), ++state->mutation_recovery_sequence);
+        char lock_reason[JW_SVC_REASON_BUF] = {0};
+        char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+        char supervisor_reason[JW_SVC_REASON_BUF] = {0};
+        bool started = operation_size > 0 &&
+                       operation_size < (int)sizeof(operation_id) &&
+                       jw_pakrat_mutation_lock_acquire(
+                           state->runtime_dir, operation_id,
+                           pending[0].metadata.package_id,
+                           pending[0].metadata.install_path,
+                           &state->mutation_recovery_lock, lock_reason,
+                           sizeof(lock_reason)) == 0;
+        if (started && !jw_svc_supervisor_mutation_begin(
+                           state->services, operation_id,
+                           pending[0].metadata.install_path,
+                           pending[0].metadata.package_id, stuck,
+                           sizeof(stuck), supervisor_reason,
+                           sizeof(supervisor_reason))) {
+            jw_pakrat_mutation_lock_release(
+                &state->mutation_recovery_lock);
+            started = false;
+        }
+        jw__free_pending_uninstalls(pending, pending_count);
+        if (!started) {
+            jw_log_warn("package mutation: pending uninstall recovery deferred (%s)",
+                        supervisor_reason[0]
+                            ? supervisor_reason
+                            : (lock_reason[0] ? lock_reason : "unknown"));
+            return 1;
+        }
+        /* The next loop pass completes the active operation while retaining
+           the daemon-owned flock. */
+    }
+    return -1;
+}
+
+static void jw__tick_package_mutation_recovery(jw_daemon_state *state) {
+    if (!state || !state->services) {
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    if (now < state->mutation_recovery_next_ms) {
+        return;
+    }
+    state->mutation_recovery_next_ms = now + 500;
+    int rc = jw__recover_package_mutations(state);
+    if (rc == 0 && state->pakrat_startup_recovery_needed) {
+        if (jw__run_pakrat_p1_recovery(state) == 0) {
+            state->pakrat_startup_recovery_needed = false;
+            if (jw_svc_supervisor_scan(state->services) < 0) {
+                jw_log_warn("pakrat: post-recovery service rescan failed");
+            }
+        } else {
+            jw_log_warn("pakrat: install-transition recovery will retry");
+        }
+    }
 }
 
 static int jw__reply_platform_result(jw_ipc_client *client, const char *action,
@@ -6167,6 +6510,11 @@ static int jw__request_launch_app(jw_daemon_state *state, const char *pak_dir,
     if (state->services &&
         jw_svc_supervisor_package_active(state->services)) {
         if (out_error) *out_error = "package operation in progress";
+        return -1;
+    }
+    if (state->services &&
+        jw_svc_supervisor_mutation_target_blocked(state->services, pak_dir)) {
+        if (out_error) *out_error = "package mutation in progress";
         return -1;
     }
     char pak_abs[PATH_MAX];
@@ -10291,6 +10639,18 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return rc;
     }
 
+    if (strcmp(type->valuestring, "package-mutation-begin") == 0) {
+        int rc = jw__handle_package_mutation_begin(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "package-mutation-end") == 0) {
+        int rc = jw__handle_package_mutation_end(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
     if (strcmp(type->valuestring, "reset-retroarch-config") == 0) {
         char status[256];
         if (jw_reset_retroarch_shared_config(state->sdcard_root,
@@ -11893,6 +12253,7 @@ static void jw__cleanup(jw_daemon_state *state) {
         jw_svc_supervisor_close(state->services);
         state->services = NULL;
     }
+    jw_pakrat_mutation_lock_release(&state->mutation_recovery_lock);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
     if (state->power_transition_requested) {
@@ -11922,6 +12283,7 @@ int main(int argc, char *argv[]) {
 
     jw_daemon_state state;
     memset(&state, 0, sizeof(state));
+    state.mutation_recovery_lock.fd = -1;
     state.child_pid = -1;
     state.child_pgid = -1;
     state.menu_pid = -1;
@@ -12073,6 +12435,18 @@ int main(int argc, char *argv[]) {
        service-bearing paks. Non-fatal if it cannot come up. */
     jw__services_init(&state);
 
+    /* TXN-1 pending uninstall is irreversible and therefore precedes P1's
+       ordinary install reconciliation. With no supervisor, P1 still runs for
+       unrelated targets but skips every durable pending-uninstall target. */
+    state.pakrat_startup_recovery_needed = true;
+    if (state.services) {
+        jw__tick_package_mutation_recovery(&state);
+    } else if (jw__run_pakrat_p1_recovery(&state) == 0) {
+        state.pakrat_startup_recovery_needed = false;
+    } else {
+        jw_log_warn("pakrat: install-transition recovery failed; continuing startup");
+    }
+
     /* One-time: pre-create the per-system Roms/ folders so a fresh card is ready
        for drop-in ROMs without hunting the docs (needs ROMS_PATH above). */
     jw__seed_rom_folders(&state);
@@ -12128,28 +12502,6 @@ int main(int argc, char *argv[]) {
     jw_log_info("platform script dir: %s", state.platform.script_dir);
     if (state.daemon_only) {
         jw_log_info("daemon-only mode enabled");
-    }
-
-    /* Pak Rat: recover interrupted install transitions before the first
-       package discovery pass. A crash mid-update must never leave the app
-       missing from the scan or a half-promoted tree adopted as live; the
-       install-record update is the commit point and recovery enforces it on
-       observable filesystem state. Runs synchronously on the main thread
-       before any scan job can start. */
-    {
-        jw_pakrat_recovery_context recovery;
-        memset(&recovery, 0, sizeof(recovery));
-        snprintf(recovery.platform, sizeof(recovery.platform), "%s",
-                 jw_platform_compiled_id());
-        snprintf(recovery.sdcard_root, sizeof(recovery.sdcard_root), "%s",
-                 state.sdcard_root);
-        snprintf(recovery.state_dir, sizeof(recovery.state_dir), "%s",
-                 state.state_dir);
-        snprintf(recovery.db_path, sizeof(recovery.db_path), "%s",
-                 state.db_path);
-        if (jw_pakrat_recover_installs(&recovery) != 0) {
-            jw_log_warn("pakrat: install-transition recovery failed; continuing startup");
-        }
     }
 
     /* Use the cached DB for the first frame whenever possible. If the cache is
@@ -12310,6 +12662,7 @@ int main(int argc, char *argv[]) {
         /* SVC-1 service supervision: poll child exit, run the stop sequence,
            retry stale-generation leases, and fire backoff/autostart. */
         if (state.services) {
+            jw__tick_package_mutation_recovery(&state);
             jw_svc_supervisor_tick(state.services);
         }
 

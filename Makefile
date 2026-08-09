@@ -177,6 +177,7 @@ DAEMON_SRCS := \
 	internal/store/catalog_source.c \
 	internal/store/managed_apps.c \
 	internal/store/pakrat_recovery.c \
+	internal/store/pakrat_txn.c \
 	internal/update/update.c \
 	internal/update/sha256.c \
 	internal/db/db.c \
@@ -268,6 +269,7 @@ PAKRAT_SMOKE_SRCS := \
 	internal/store/pakrat.c \
 	internal/store/pakrat_recovery.c \
 	internal/store/pakrat_state.c \
+	internal/store/pakrat_txn.c \
 	internal/ipc/ipc.c \
 	$(PLATFORM_ID_SRC) \
 	internal/db/db.c \
@@ -277,6 +279,7 @@ PAKRAT_SMOKE_SRCS := \
 	internal/storage/sources.c \
 	internal/store/catalog_source.c \
 	internal/store/managed_apps.c \
+	internal/services/manifest.c \
 	internal/update/sha256.c \
 	third_party/cjson/cJSON.c \
 	third_party/miniz/miniz.c \
@@ -331,6 +334,7 @@ UI_SRCS := \
 	internal/store/pakrat.c \
 	internal/store/pakrat_recovery.c \
 	internal/store/pakrat_state.c \
+	internal/store/pakrat_txn.c \
 	internal/update/sha256.c \
 	internal/discovery/discovery.c \
 	internal/db/db.c \
@@ -345,6 +349,7 @@ UI_SRCS := \
 	internal/settings/appearance.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
+	internal/services/manifest.c \
 	third_party/cjson/cJSON.c \
 	third_party/miniz/miniz.c \
 	third_party/miniz/miniz_tdef.c \
@@ -371,7 +376,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -416,6 +421,15 @@ pakrat-state-logic-test: | $(BUILD)/bin
 		$(PAKRAT_STATE_LOGIC_SRC) $(LEAF_VERSION_SRC) \
 		third_party/cjson/cJSON.c
 	$(BUILD)/bin/pakrat-state-logic-test
+
+pakrat-txn-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -DJW_ENABLE_FAULT_INJECTION=1 \
+		-o $(BUILD)/bin/pakrat-txn-test \
+		internal/store/pakrat_txn_test.c internal/store/pakrat_txn.c \
+		internal/store/pakrat_recovery.c internal/services/manifest.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
+		third_party/cjson/cJSON.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/pakrat-txn-test
 
 storage-sources-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/storage-sources-test \
@@ -836,6 +850,9 @@ pakrat-history-smoke:
 pakrat-recovery-smoke:
 	scripts/pakrat-recovery-smoke.sh
 
+pakrat-service-mutation-smoke:
+	BUILD="$(BUILD)" bash scripts/pakrat-service-mutation-smoke.sh
+
 mockgen:
 	bash scripts/mockgen.sh
 
@@ -926,6 +943,9 @@ mlp1-adb-smoke:
 mlp1-adb-pakrat-recovery-smoke:
 	scripts/adb-mlp1-pakrat-recovery-smoke.sh
 
+mlp1-adb-service-mutation-smoke:
+	scripts/adb-mlp1-service-mutation-smoke.sh
+
 mlp1-adb-service-fixture-smoke:
 	scripts/adb-mlp1-service-fixture-smoke.sh
 
@@ -964,7 +984,9 @@ help:
 	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
 	@echo "  make update-local-manifest-smoke  Validate developer artifact.url handling"
 	@echo "  make pakrat-state-smoke      Exercise Pak Rat stale + managed-state safeguards"
+	@echo "  make pakrat-txn-test         Exercise service-pak mutation metadata and uninstall"
 	@echo "  make pakrat-recovery-smoke   Exercise Pak Rat promote-transaction crash recovery"
+	@echo "  make pakrat-service-mutation-smoke  Exercise TXN-1 through jawakad and Pak Rat"
 	@echo "  make clean         Remove build artifacts"
 	@echo "  make tg5040        Placeholder cross-compile target"
 	@echo "  make tg5050        Placeholder cross-compile target"
@@ -974,6 +996,7 @@ help:
 	@echo "  make mlp1-adb-inhibit-smoke  Run the RTC-woken MLP1 suspend/reap smoke"
 	@echo "  make mlp1-adb-smoke  Build, push to /tmp, and run an ADB UI smoke"
 	@echo "  make mlp1-adb-pakrat-recovery-smoke  Run P1 recovery matrix on a real FAT card"
+	@echo "  make mlp1-adb-service-mutation-smoke Run B4a service mutation matrix on both FAT cards"
 	@echo "  make mlp1-adb-service-fixture-smoke  Run A2 service fixtures on an attached MLP1"
 	@echo "  make mlp1-adb-life1-smoke  Run A3b LIFE-1 coordination on an attached MLP1"
 	@echo "  make mlp1-adb-input-capture  Record Loong Gamepad evtest labels over ADB"

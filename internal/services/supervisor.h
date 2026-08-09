@@ -342,6 +342,28 @@ bool jw_svc_supervisor_package_end(jw_svc_supervisor *sup,
                                    char *reason, size_t reason_size);
 bool jw_svc_supervisor_package_active(const jw_svc_supervisor *sup);
 
+/* TXN-1 Pak Rat mutation bracket. Unlike PKG-1 this is keyed to one canonical
+ * Apps-relative target plus its stable package id and quiesces only the
+ * service owned by that package. The caller owns the process-lifetime flock;
+ * Jawaka owns the start/launch gate and the SVC-1 absence proof. */
+bool jw_svc_supervisor_mutation_begin(
+    jw_svc_supervisor *sup, const char *operation_id,
+    const char *target_path, const char *package_id,
+    char *out_stuck_id, size_t stuck_id_size,
+    char *reason, size_t reason_size);
+bool jw_svc_supervisor_mutation_end(jw_svc_supervisor *sup,
+                                    const char *operation_id,
+                                    bool installed_has_service,
+                                    char *reason, size_t reason_size);
+bool jw_svc_supervisor_mutation_active(const jw_svc_supervisor *sup);
+bool jw_svc_supervisor_mutation_target_blocked(
+    const jw_svc_supervisor *sup, const char *apps_relative_path);
+bool jw_svc_supervisor_mutation_info(
+    const jw_svc_supervisor *sup,
+    char *operation_id, size_t operation_id_size,
+    char *target_path, size_t target_path_size,
+    char *package_id, size_t package_id_size);
+
 /* Daemon shutdown: stops every running service with the intentional-stop
  * reason and verifies each group absent, blocking per service by at most
  * its stop_grace_ms + JW_SVC_STOP_KILL_WAIT_MS. Per SVC-1's "when a stop

@@ -26,6 +26,36 @@
 #define JW_PAKRAT_MANIFEST_MAX_BYTES (1024L * 1024L)
 #define JW_PAKRAT_COMMIT_MAX_BYTES 4096L
 
+/* TXN-1 pending uninstall is an irreversible, confirmed forward operation.
+   P1 recovery must never restore or adopt that target while the uninstall
+   record exists. Keep this query local so the generic P1 module does not
+   depend on the higher-level transaction implementation. */
+static int jw__pakrat_pending_uninstall_exists(const char *db_path,
+                                               const char *store_id) {
+    if (!db_path || !store_id || !store_id[0]) {
+        return -1;
+    }
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+    sqlite3_stmt *stmt = NULL;
+    int rc = -1;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT 1 FROM pakrat_pending_uninstalls WHERE store_id=?1;",
+            -1, &stmt, NULL) == SQLITE_OK &&
+        sqlite3_bind_text(stmt, 1, store_id, -1, SQLITE_TRANSIENT) ==
+            SQLITE_OK) {
+        int step = sqlite3_step(stmt);
+        rc = step == SQLITE_ROW ? 1 : (step == SQLITE_DONE ? 0 : -1);
+    }
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return rc;
+}
+
 int jw__pakrat_copy(char *out, size_t out_size, const char *value) {
     if (!out || out_size == 0 || !value) {
         return -1;
@@ -853,6 +883,7 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
 static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ctx,
                                             const jw_pakrat_install *installs,
                                             int install_count,
+                                            const char *source_id,
                                             const char *platform_dir) {
     char apps_dir[PATH_MAX];
     if (!jw__pakrat_safe_name(platform_dir) ||
@@ -891,10 +922,30 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                     break;
                 }
                 if (jw__pakrat_read_commit_marker(package, &marker) == 0) {
+                    int pending = jw__pakrat_pending_uninstall_exists(
+                        ctx->db_path, marker.store_id);
+                    if (pending < 0) {
+                        rc = -1;
+                        break;
+                    }
+                    if (pending > 0) {
+                        continue;
+                    }
                     jw_pakrat_install record;
                     int record_rc = jw_db_pakrat_get_install(
                         ctx->db_path, marker.store_id, &record);
                     if (record_rc < 0) {
+                        rc = -1;
+                        break;
+                    }
+                    if (record_rc == 0 && source_id && source_id[0] &&
+                        strcmp(record.source_id[0] ? record.source_id : "primary",
+                               source_id) != 0) {
+                        jw__pakrat_log(
+                            ctx->state_dir,
+                            "install-recover duplicate target store_id=%s source=%s recorded_source=%s",
+                            marker.store_id, source_id,
+                            record.source_id[0] ? record.source_id : "primary");
                         rc = -1;
                         break;
                     }
@@ -951,6 +1002,15 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
         if (!store_id || !jw__pakrat_safe_name(store_id)) {
             continue;
         }
+        int pending = jw__pakrat_pending_uninstall_exists(ctx->db_path,
+                                                          store_id);
+        if (pending < 0) {
+            rc = -1;
+            break;
+        }
+        if (pending > 0) {
+            continue;
+        }
         char orphan[PATH_MAX];
         if (jw__pakrat_join2(orphan, sizeof(orphan), apps_dir, entry->d_name) != 0) {
             rc = -1;
@@ -960,6 +1020,12 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
         bool owned = false;
         for (int i = 0; i < install_count; i++) {
             if (strcmp(installs[i].store_id, store_id) != 0) {
+                continue;
+            }
+            if (source_id && source_id[0] &&
+                strcmp(installs[i].source_id[0]
+                           ? installs[i].source_id : "primary",
+                       source_id) != 0) {
                 continue;
             }
             const char *kind =
@@ -1090,27 +1156,67 @@ int jw_pakrat_recover_installs(const jw_pakrat_recovery_context *ctx) {
         return -1;
     }
     int rc = -1;
+    jw_storage_source_list sources;
+    if (jw_storage_sources_resolve(ctx->sdcard_root, &sources) != 0) {
+        goto done;
+    }
     if (jw_db_pakrat_list_installs(ctx->db_path, installs,
                                    JW_PAKRAT_MAX_RECOVERY_INSTALLS,
                                    &install_count) != 0) {
         goto done;
     }
     for (int i = 0; i < install_count; i++) {
+        int pending = jw__pakrat_pending_uninstall_exists(
+            ctx->db_path, installs[i].store_id);
+        if (pending < 0) {
+            goto done;
+        }
+        if (pending > 0) {
+            continue;
+        }
+        const jw_storage_source *source = jw_storage_sources_find_by_id(
+            &sources,
+            installs[i].source_id[0] ? installs[i].source_id : "primary");
+        if (!source || !source->available) {
+            jw__pakrat_log(
+                ctx->state_dir,
+                "install-recover deferred absent source store_id=%s source=%s",
+                installs[i].store_id,
+                installs[i].source_id[0] ? installs[i].source_id : "primary");
+            continue;
+        }
+        jw_pakrat_recovery_context source_ctx = *ctx;
+        if (jw__pakrat_copy(source_ctx.sdcard_root,
+                            sizeof(source_ctx.sdcard_root),
+                            source->root) != 0) {
+            goto done;
+        }
         int reconcile_rc = jw__pakrat_reconcile_transition(
-            ctx, installs[i].store_id, installs[i].install_path, &installs[i]);
+            &source_ctx, installs[i].store_id, installs[i].install_path,
+            &installs[i]);
         if (reconcile_rc < 0) {
             goto done;
         }
     }
-    if (ctx->platform[0] &&
-        jw__sweep_orphan_transition_dirs(ctx, installs, install_count,
-                                         ctx->platform) != 0) {
-        goto done;
-    }
-    if (ctx->platform[0] && strcmp(ctx->platform, "shared") != 0 &&
-        jw__sweep_orphan_transition_dirs(ctx, installs, install_count,
-                                         "shared") != 0) {
-        goto done;
+    for (int s = 0; s < sources.count; s++) {
+        const jw_storage_source *source = &sources.sources[s];
+        if (!source->available) {
+            continue;
+        }
+        jw_pakrat_recovery_context source_ctx = *ctx;
+        if (jw__pakrat_copy(source_ctx.sdcard_root,
+                            sizeof(source_ctx.sdcard_root),
+                            source->root) != 0 ||
+            (ctx->platform[0] &&
+             jw__sweep_orphan_transition_dirs(
+                 &source_ctx, installs, install_count, source->id,
+                 ctx->platform) != 0) ||
+            (ctx->platform[0] && strcmp(ctx->platform, "shared") != 0 &&
+             jw__sweep_orphan_transition_dirs(
+                 &source_ctx, installs, install_count, source->id,
+                 "shared") != 0)) {
+            goto done;
+        }
     }
     rc = 0;
 done:

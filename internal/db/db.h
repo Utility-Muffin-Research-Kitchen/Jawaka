@@ -66,6 +66,7 @@ typedef struct {
     char store_id[128];
     char version[64];
     char platform[64];
+    char source_id[32];
     char install_path[512];
     char artifact_sha256[80];
     char installed_at[64];
@@ -262,6 +263,7 @@ int  jw_db_pakrat_upsert_install(const char *db_path, const char *store_id,
 int  jw_db_pakrat_upsert_install_db(sqlite3 *db, const char *store_id,
                                     const char *version,
                                     const char *platform,
+                                    const char *source_id,
                                     const char *install_path,
                                     const char *artifact_sha256,
                                     const char *installed_at,
