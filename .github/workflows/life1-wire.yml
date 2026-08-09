@@ -22,6 +22,7 @@ jobs:
         with:
           repository: Utility-Muffin-Research-Kitchen/umrk-workspace
           ref: 5ab17d82c122b481f15c835e6ff9a21829d45aa9
+          ssh-key: ${{ secrets.UMRK_WORKSPACE_DEPLOY_KEY }}
           path: umrk-workspace
 
       - name: Verify C framing against canonical fixtures
