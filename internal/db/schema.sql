@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS pakrat_installs (
     store_id        TEXT PRIMARY KEY,
     version         TEXT NOT NULL,
     platform        TEXT NOT NULL,
+    source_id       TEXT NOT NULL DEFAULT 'primary',
     install_path    TEXT NOT NULL,
     artifact_sha256 TEXT NOT NULL,
     installed_at    TEXT NOT NULL,
@@ -125,6 +126,33 @@ CREATE TABLE IF NOT EXISTS pakrat_installs (
 
 CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx
     ON pakrat_installs(install_path);
+
+CREATE TABLE IF NOT EXISTS pakrat_service_metadata (
+    store_id        TEXT PRIMARY KEY,
+    install_path    TEXT NOT NULL,
+    package_id      TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    has_service     INTEGER NOT NULL CHECK (has_service IN (0,1)),
+    service_id      TEXT NOT NULL,
+    state_root      TEXT NOT NULL,
+    revoke_json     TEXT NOT NULL,
+    retained_json   TEXT NOT NULL,
+    validated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pakrat_pending_uninstalls (
+    store_id        TEXT PRIMARY KEY,
+    source_id       TEXT NOT NULL,
+    install_path    TEXT NOT NULL,
+    package_id      TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    has_service     INTEGER NOT NULL CHECK (has_service IN (0,1)),
+    service_id      TEXT NOT NULL,
+    state_root      TEXT NOT NULL,
+    revoke_json     TEXT NOT NULL,
+    retained_json   TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS library_relocation_ops (
     operation_id          TEXT PRIMARY KEY,

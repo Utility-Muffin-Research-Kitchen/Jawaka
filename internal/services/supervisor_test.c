@@ -179,6 +179,38 @@ static void fixture_write_pak(fixture *f, const char *pak_dir_name,
                          script_body, extra_manifest_fields);
 }
 
+static void fixture_write_floor(fixture *f, const char *pak_dir_name,
+                                const char *package_id) {
+    char pak[PATH_MAX];
+    jw__join(pak, sizeof(pak), f->apps_primary, pak_dir_name);
+    jw__mkdir(pak);
+    char manifest[PATH_MAX];
+    jw__join(manifest, sizeof(manifest), pak, "pak.json");
+    FILE *fp = fopen(manifest, "w");
+    if (!fp) {
+        fprintf(stderr, "fopen %s: %s\n", manifest, strerror(errno));
+        exit(2);
+    }
+    fprintf(fp,
+            "{\"id\":\"%s\",\"name\":\"Floor\","
+            "\"platform\":\"mac\",\"pak_version\":\"0.0.1\"}\n",
+            package_id);
+    fclose(fp);
+    char launch[PATH_MAX];
+    jw__join(launch, sizeof(launch), pak, "launch.sh");
+    fp = fopen(launch, "w");
+    if (!fp) {
+        fprintf(stderr, "fopen %s: %s\n", launch, strerror(errno));
+        exit(2);
+    }
+    fputs("#!/bin/sh\nexit 0\n", fp);
+    fclose(fp);
+    if (chmod(launch, 0700) != 0) {
+        fprintf(stderr, "chmod %s: %s\n", launch, strerror(errno));
+        exit(2);
+    }
+}
+
 static jw_svc_supervisor *fixture_open(fixture *f, char *reason) {
     return jw_svc_supervisor_open(f->runtime, f->logs, f->state,
                                   f->scan_roots, f->secondary_scan_roots,
@@ -1769,6 +1801,141 @@ static void test_package_quiesce_stale_preflight_changes_nothing(void) {
     fixture_teardown(&f);
 }
 
+static void test_target_mutation_quiesces_only_matching_service(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *target_id = "org.umrk.test.mutationtarget";
+    const char *other_id = "org.umrk.test.mutationother";
+    fixture_write_pak(&f, "target.pak", target_id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    fixture_write_pak(&f, "other.pak", other_id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 2);
+    CHECK(jw_svc_supervisor_run(sup, target_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, other_id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, target_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, other_id, JW_SVC_STATE_RUNNING, 3000));
+    const jw_svc_supervised *other = jw_svc_supervisor_find(sup, other_id);
+    pid_t other_pgid = other ? other->pgid : -1;
+
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    CHECK(jw_svc_supervisor_mutation_begin(
+        sup, "pakrat-test-1", "apps/target.pak", target_id,
+        stuck, sizeof(stuck), reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_mutation_active(sup));
+    CHECK(jw_svc_supervisor_mutation_target_blocked(
+        sup, "Apps/apps/target.pak"));
+    CHECK(!jw_svc_supervisor_mutation_target_blocked(
+        sup, "apps/other.pak"));
+    const jw_svc_supervised *target =
+        jw_svc_supervisor_find(sup, target_id);
+    other = jw_svc_supervisor_find(sup, other_id);
+    CHECK(target && target->pgid <= 0 && target->package_blocked);
+    CHECK(other && other->pgid == other_pgid && other->pgid > 0);
+    CHECK(!jw_svc_supervisor_run(sup, target_id, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "package-in-progress") == 0);
+    CHECK(!jw_svc_supervisor_package_begin(
+        sup, "leaf-update", stuck, sizeof(stuck), reason, sizeof(reason)));
+    CHECK(strcmp(reason, "package-in-progress") == 0);
+
+    CHECK(jw_svc_supervisor_mutation_end(
+        sup, "pakrat-test-1", true, reason, sizeof(reason)));
+    CHECK(!jw_svc_supervisor_mutation_active(sup));
+    CHECK(wait_for_state(sup, target_id, JW_SVC_STATE_RUNNING, 3000));
+    target = jw_svc_supervisor_find(sup, target_id);
+    other = jw_svc_supervisor_find(sup, other_id);
+    CHECK(target && target->pgid > 0 && !target->desired_enabled &&
+          target->session_run && !target->package_blocked);
+    CHECK(other && other->pgid == other_pgid && other->pgid > 0);
+
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+static void test_target_mutation_floor_transitions_start_disabled(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.mutationfloor";
+    fixture_write_floor(&f, "floor.pak", id);
+    char reason[JW_SVC_REASON_BUF];
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 0);
+
+    CHECK(jw_svc_supervisor_mutation_begin(
+        sup, "pakrat-floor-real", "apps/floor.pak", id,
+        stuck, sizeof(stuck), reason, sizeof(reason)));
+    fixture_write_pak(&f, "floor.pak", id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    CHECK(jw_svc_supervisor_mutation_end(
+        sup, "pakrat-floor-real", true, reason, sizeof(reason)));
+    const jw_svc_supervised *entry = jw_svc_supervisor_find(sup, id);
+    CHECK(entry && entry->pak_present && entry->manifest_valid);
+    CHECK(entry && !entry->desired_enabled && !entry->session_run &&
+          entry->pgid <= 0 && entry->state == JW_SVC_STATE_DISABLED);
+
+    CHECK(jw_svc_supervisor_enable(sup, id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(jw_svc_supervisor_mutation_begin(
+        sup, "pakrat-real-floor", "apps/floor.pak", id,
+        stuck, sizeof(stuck), reason, sizeof(reason)));
+    fixture_write_floor(&f, "floor.pak", id);
+    CHECK(jw_svc_supervisor_mutation_end(
+        sup, "pakrat-real-floor", false, reason, sizeof(reason)));
+    CHECK(!jw_svc_supervisor_mutation_active(sup));
+
+    /* Reinstalling the real pak after a committed removal/rollback must not
+       resurrect either persistent enablement or the old session run bit. */
+    fixture_write_pak(&f, "floor.pak", id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    CHECK(jw_svc_supervisor_scan(sup) == 1);
+    entry = jw_svc_supervisor_find(sup, id);
+    CHECK(entry && !entry->desired_enabled && !entry->session_run &&
+          entry->pgid <= 0 && entry->state == JW_SVC_STATE_DISABLED);
+
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
+static void test_target_mutation_stale_preflight_changes_nothing(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *id = "org.umrk.test.mutationstale";
+    fixture_write_pak(&f, "stale.pak", id,
+                      "while :; do sleep 1; done", ",\"restart\":\"no\"");
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *owner = fixture_open(&f, reason);
+    CHECK(owner != NULL);
+    CHECK(jw_svc_supervisor_scan(owner) == 1);
+    CHECK(jw_svc_supervisor_run(owner, id, reason, sizeof(reason)));
+    CHECK(wait_for_state(owner, id, JW_SVC_STATE_RUNNING, 3000));
+    const jw_svc_supervised *owned = jw_svc_supervisor_find(owner, id);
+    pid_t owner_pgid = owned ? owned->pgid : -1;
+
+    jw_svc_supervisor *observer = fixture_open(&f, reason);
+    CHECK(observer != NULL);
+    CHECK(jw_svc_supervisor_scan(observer) == 1);
+    char stuck[JW_SVC_SUPERVISOR_ID_BUF] = {0};
+    CHECK(!jw_svc_supervisor_mutation_begin(
+        observer, "pakrat-stale", "apps/stale.pak", id,
+        stuck, sizeof(stuck), reason, sizeof(reason)));
+    CHECK(strcmp(reason, "stale-generation") == 0);
+    CHECK(strcmp(stuck, id) == 0);
+    CHECK(!jw_svc_supervisor_mutation_active(observer));
+    CHECK(kill(owner_pgid, 0) == 0);
+
+    jw_svc_supervisor_close(observer);
+    CHECK(jw_svc_supervisor_stop_all(owner) == 0);
+    jw_svc_supervisor_close(owner);
+    fixture_teardown(&f);
+}
+
 static void test_circuit_breaker_opens(void) {
     fixture f;
     fixture_setup(&f);
@@ -2013,6 +2180,9 @@ int main(int argc, char **argv) {
     test_stale_missing_policy_fails_safe_for_all_stop_triggers();
     test_package_quiesce_restores_only_persistent_intent();
     test_package_quiesce_stale_preflight_changes_nothing();
+    test_target_mutation_quiesces_only_matching_service();
+    test_target_mutation_floor_transitions_start_disabled();
+    test_target_mutation_stale_preflight_changes_nothing();
     test_life1_subscriber_authentication();
     test_game_gate_stop_and_resume();
     test_recovered_game_gate_suppresses_autostart();

@@ -76,6 +76,10 @@ struct jw_svc_supervisor {
      * discovered by the final scan is blocked too. */
     bool package_quiesce_active;
     char package_operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1];
+    bool mutation_active;
+    char mutation_operation_id[JW_SVC_PACKAGE_OPERATION_ID_MAX + 1];
+    char mutation_target[512];
+    char mutation_package_id[JW_SVC_SUPERVISOR_ID_BUF];
     /* LIFE-1 authoritative active-launch gate. This is initialized from the
      * runtime active-game record before the first scan/autostart tick. */
     bool game_active;
@@ -1455,12 +1459,25 @@ static bool jw__require_package_idle(const jw_svc_supervisor *sup,
     return true;
 }
 
+static bool jw__require_entry_package_idle(const jw_svc_supervised *e,
+                                           char *reason,
+                                           size_t reason_size) {
+    if (e && e->package_blocked) {
+        jw__set_reason(reason, reason_size, "package-in-progress");
+        return false;
+    }
+    return true;
+}
+
 bool jw_svc_supervisor_enable(jw_svc_supervisor *sup, const char *service_id,
                               char *reason, size_t reason_size) {
     if (!jw__require_package_idle(sup, reason, reason_size)) {
         return false;
     }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
+    if (!jw__require_entry_package_idle(e, reason, reason_size)) {
+        return false;
+    }
     if (!jw__require_available(e, reason, reason_size)) {
         return false;
     }
@@ -1483,6 +1500,9 @@ bool jw_svc_supervisor_disable(jw_svc_supervisor *sup, const char *service_id,
         return false;
     }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
+    if (!jw__require_entry_package_idle(e, reason, reason_size)) {
+        return false;
+    }
     if (!e) {
         jw__set_reason(reason, reason_size, "unknown-service");
         return false;
@@ -1541,6 +1561,9 @@ bool jw_svc_supervisor_run(jw_svc_supervisor *sup, const char *service_id,
         return false;
     }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
+    if (!jw__require_entry_package_idle(e, reason, reason_size)) {
+        return false;
+    }
     if (!jw__require_available(e, reason, reason_size)) {
         return false;
     }
@@ -1596,6 +1619,9 @@ bool jw_svc_supervisor_stop(jw_svc_supervisor *sup, const char *service_id,
         return false;
     }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
+    if (!jw__require_entry_package_idle(e, reason, reason_size)) {
+        return false;
+    }
     if (!e) {
         jw__set_reason(reason, reason_size, "unknown-service");
         return false;
@@ -1638,6 +1664,9 @@ bool jw_svc_supervisor_restart(jw_svc_supervisor *sup, const char *service_id,
         return false;
     }
     jw_svc_supervised *e = jw__find_mut(sup, service_id);
+    if (!jw__require_entry_package_idle(e, reason, reason_size)) {
+        return false;
+    }
     if (!jw__require_available(e, reason, reason_size)) {
         return false;
     }
@@ -2125,7 +2154,7 @@ bool jw_svc_supervisor_package_begin(jw_svc_supervisor *sup,
         jw__set_reason(reason, reason_size, "invalid-arguments");
         return false;
     }
-    if (sup->package_quiesce_active) {
+    if (sup->package_quiesce_active || sup->mutation_active) {
         jw__set_reason(reason, reason_size, "package-in-progress");
         return false;
     }
@@ -2328,6 +2357,321 @@ bool jw_svc_supervisor_package_end(jw_svc_supervisor *sup,
         jw__set_reason(reason, reason_size, failure_reason);
         return false;
     }
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Pak Rat target mutation                                             */
+/* ------------------------------------------------------------------ */
+
+static bool jw__mutation_target_valid(const char *target) {
+    if (!target || !target[0] || strlen(target) >= 512u ||
+        strncmp(target, "Apps/", 5) == 0 || target[0] == '/' ||
+        strchr(target, '\\')) {
+        return false;
+    }
+    const char *slash = strchr(target, '/');
+    if (!slash || slash == target || !slash[1] || strchr(slash + 1, '/')) {
+        return false;
+    }
+    return strcmp(slash + 1, ".") != 0 && strcmp(slash + 1, "..") != 0;
+}
+
+static bool jw__entry_target_matches(const jw_svc_supervisor *sup,
+                                     const jw_svc_supervised *e,
+                                     const char *target,
+                                     const char *package_id) {
+    if (!sup || !e || !target || !package_id ||
+        strcmp(e->service_id, package_id) != 0) {
+        return false;
+    }
+    if (!e->pak_root[0]) {
+        /* A retained stale-generation row can outlive package discovery. The
+         * stable package/service id is sufficient because SVC-1 makes it
+         * globally unique and TXN-1 must not bypass its locked lease. */
+        return e->state == JW_SVC_STATE_STALE_GENERATION || !e->pak_present;
+    }
+    const char *slash = strchr(target, '/');
+    if (!slash) {
+        return false;
+    }
+    size_t namespace_len = (size_t)(slash - target);
+    const char *leaf = slash + 1;
+    for (int group = 0; group < 2; group++) {
+        char *const *roots = group == 0 ? sup->apps_scan_roots
+                                        : sup->secondary_scan_roots;
+        int count = group == 0 ? sup->apps_scan_root_count
+                               : sup->secondary_scan_root_count;
+        for (int i = 0; i < count; i++) {
+            const char *root = roots[i];
+            const char *base = strrchr(root, '/');
+            base = base ? base + 1 : root;
+            if (strlen(base) != namespace_len ||
+                strncmp(base, target, namespace_len) != 0) {
+                continue;
+            }
+            char expected[PATH_MAX];
+            if (jw__format(expected, sizeof(expected), "%s/%s", root,
+                           leaf) == 0 && strcmp(expected, e->pak_root) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool jw_svc_supervisor_mutation_active(const jw_svc_supervisor *sup) {
+    return sup && sup->mutation_active;
+}
+
+bool jw_svc_supervisor_mutation_target_blocked(
+    const jw_svc_supervisor *sup, const char *apps_relative_path) {
+    if (!sup || !sup->mutation_active || !apps_relative_path) {
+        return false;
+    }
+    const char *path = strncmp(apps_relative_path, "Apps/", 5) == 0
+                           ? apps_relative_path + 5
+                           : apps_relative_path;
+    return strcmp(path, sup->mutation_target) == 0;
+}
+
+bool jw_svc_supervisor_mutation_info(
+    const jw_svc_supervisor *sup,
+    char *operation_id, size_t operation_id_size,
+    char *target_path, size_t target_path_size,
+    char *package_id, size_t package_id_size) {
+    if (!sup || !sup->mutation_active) {
+        return false;
+    }
+    if (operation_id && operation_id_size > 0) {
+        snprintf(operation_id, operation_id_size, "%s",
+                 sup->mutation_operation_id);
+    }
+    if (target_path && target_path_size > 0) {
+        snprintf(target_path, target_path_size, "%s", sup->mutation_target);
+    }
+    if (package_id && package_id_size > 0) {
+        snprintf(package_id, package_id_size, "%s",
+                 sup->mutation_package_id);
+    }
+    return true;
+}
+
+bool jw_svc_supervisor_mutation_begin(
+    jw_svc_supervisor *sup, const char *operation_id,
+    const char *target_path, const char *package_id,
+    char *out_stuck_id, size_t stuck_id_size,
+    char *reason, size_t reason_size) {
+    if (out_stuck_id && stuck_id_size > 0) {
+        out_stuck_id[0] = '\0';
+    }
+    if (!sup || !jw__package_operation_id_valid(operation_id) ||
+        !jw__mutation_target_valid(target_path) ||
+        !jw_service_id_is_reverse_dns(package_id)) {
+        jw__set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+    if (sup->package_quiesce_active || sup->mutation_active) {
+        jw__set_reason(reason, reason_size, "package-in-progress");
+        return false;
+    }
+    if (sup->game_active || sup->storage_restart_blocked) {
+        jw__set_reason(reason, reason_size, "lifecycle-in-progress");
+        return false;
+    }
+
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        if (!jw__entry_target_matches(sup, e, target_path, package_id)) {
+            continue;
+        }
+        bool stale = e->state == JW_SVC_STATE_STALE_GENERATION;
+        bool transition = e->lifecycle_restart_pending ||
+                          e->post_stop != JW_SVC_POST_STOP_NONE ||
+                          e->stop_requested || e->reap_pending ||
+                          e->stop_unverified_logged ||
+                          e->state == JW_SVC_STATE_STOPPING ||
+                          (e->pgid > 0 &&
+                           e->pending_stop_reason != JW_SVC_STOP_NONE);
+        if (!stale && !transition) {
+            continue;
+        }
+        if (out_stuck_id && stuck_id_size > 0) {
+            snprintf(out_stuck_id, stuck_id_size, "%s", e->service_id);
+        }
+        jw__set_reason(reason, reason_size,
+                       stale ? "stale-generation" : "lifecycle-in-progress");
+        return false;
+    }
+
+    sup->mutation_active = true;
+    snprintf(sup->mutation_operation_id,
+             sizeof(sup->mutation_operation_id), "%s", operation_id);
+    snprintf(sup->mutation_target, sizeof(sup->mutation_target), "%s",
+             target_path);
+    snprintf(sup->mutation_package_id,
+             sizeof(sup->mutation_package_id), "%s", package_id);
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        if (!jw__entry_target_matches(sup, e, target_path, package_id)) {
+            continue;
+        }
+        e->package_blocked = true;
+        e->package_snapshot_valid = true;
+        e->package_restore_desired = e->desired_enabled;
+        e->package_was_effective =
+            e->pgid > 0 || e->state == JW_SVC_STATE_STARTING ||
+            e->state == JW_SVC_STATE_RUNNING;
+        e->autostart_pending = false;
+        e->lifecycle_restart_pending = false;
+        e->game_restart_pending = false;
+        e->post_stop = JW_SVC_POST_STOP_NONE;
+        e->session_run = false;
+        e->control.session_run = false;
+        e->pending_stop_reason = JW_SVC_STOP_LIFECYCLE_PACKAGE;
+        if (e->pgid > 0) {
+            char stop_reason[JW_SVC_REASON_BUF];
+            if (!jw__stop_and_reap(sup, e, stop_reason,
+                                   sizeof(stop_reason))) {
+                if (out_stuck_id && stuck_id_size > 0) {
+                    snprintf(out_stuck_id, stuck_id_size, "%s",
+                             e->service_id);
+                }
+                (void)jw__persist(sup, e, "mutation-unverified");
+                jw__set_reason(reason, reason_size, "stop-failed");
+                return false;
+            }
+        }
+        if (!jw__persist(sup, e, "mutation-quiesce")) {
+            jw__set_reason(reason, reason_size, "store-failed");
+            return false;
+        }
+    }
+    return true;
+}
+
+bool jw_svc_supervisor_mutation_end(jw_svc_supervisor *sup,
+                                    const char *operation_id,
+                                    bool installed_has_service,
+                                    char *reason, size_t reason_size) {
+    if (!sup || !jw__package_operation_id_valid(operation_id)) {
+        jw__set_reason(reason, reason_size, "invalid-arguments");
+        return false;
+    }
+    if (!sup->mutation_active) {
+        jw__set_reason(reason, reason_size, "no-package-operation");
+        return false;
+    }
+    if (strcmp(operation_id, sup->mutation_operation_id) != 0) {
+        jw__set_reason(reason, reason_size, "operation-mismatch");
+        return false;
+    }
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        if (e->package_blocked &&
+            (e->pgid > 0 || e->state == JW_SVC_STATE_STALE_GENERATION ||
+             e->stop_requested || e->reap_pending)) {
+            jw__set_reason(reason, reason_size, "stop-failed");
+            return false;
+        }
+    }
+    if (jw_svc_supervisor_scan(sup) < 0) {
+        jw__set_reason(reason, reason_size, "rescan-failed");
+        return false;
+    }
+
+    bool ok = true;
+    bool found_installed_target = false;
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        bool target_entry = jw__entry_target_matches(
+            sup, e, sup->mutation_target, sup->mutation_package_id);
+        if (target_entry) {
+            found_installed_target = true;
+        }
+        if (!e->package_blocked && !e->package_snapshot_valid &&
+            !target_entry) {
+            continue;
+        }
+        e->package_blocked = true;
+        bool desired = installed_has_service &&
+                       e->package_snapshot_valid &&
+                       e->package_restore_desired;
+        bool restart = installed_has_service &&
+                       e->package_snapshot_valid &&
+                       e->package_was_effective;
+        e->desired_enabled = desired;
+        e->session_run = restart && !desired;
+        e->control.start_with_leaf = desired;
+        e->control.session_run = e->session_run;
+        e->autostart_pending = false;
+        e->lifecycle_restart_pending = false;
+        e->game_restart_pending = false;
+        if (e->pending_stop_reason == JW_SVC_STOP_LIFECYCLE_PACKAGE) {
+            e->pending_stop_reason = JW_SVC_STOP_NONE;
+        }
+        e->state = jw__entry_idle_state(e);
+        if (!installed_has_service) {
+            memset(&e->control, 0, sizeof(e->control));
+            char store_reason[JW_SVC_REASON_BUF];
+            if (!jw_svc_control_store_delete(sup->store, e->service_id,
+                                             store_reason,
+                                             sizeof(store_reason))) {
+                ok = false;
+            } else {
+                e->control_loaded = false;
+            }
+            continue;
+        }
+        if (!target_entry || !jw__entry_available(e)) {
+            ok = false;
+            continue;
+        }
+        if (!jw__persist(sup, e, "mutation-rescan")) {
+            ok = false;
+            continue;
+        }
+        if (restart) {
+            e->package_blocked = false;
+            char start_reason[JW_SVC_REASON_BUF];
+            if (!jw__start_generation(sup, e, start_reason,
+                                      sizeof(start_reason)) ||
+                !jw__persist(sup, e, "mutation-resume")) {
+                if (e->pgid > 0) {
+                    e->pending_stop_reason = JW_SVC_STOP_LIFECYCLE_PACKAGE;
+                    char stop_reason[JW_SVC_REASON_BUF];
+                    (void)jw__stop_and_reap(sup, e, stop_reason,
+                                            sizeof(stop_reason));
+                }
+                e->package_blocked = true;
+                ok = false;
+            }
+        }
+    }
+    if (installed_has_service && !found_installed_target) {
+        ok = false;
+    }
+    if (!ok) {
+        jw__set_reason(reason, reason_size, "restore-failed");
+        return false;
+    }
+    for (int i = 0; i < sup->count; i++) {
+        jw_svc_supervised *e = &sup->entries[i];
+        bool target_entry = jw__entry_target_matches(
+            sup, e, sup->mutation_target, sup->mutation_package_id);
+        if (!e->package_blocked && !e->package_snapshot_valid &&
+            !target_entry) {
+            continue;
+        }
+        e->package_blocked = false;
+        e->package_snapshot_valid = false;
+        e->package_restore_desired = false;
+        e->package_was_effective = false;
+    }
+    sup->mutation_active = false;
+    sup->mutation_operation_id[0] = '\0';
+    sup->mutation_target[0] = '\0';
+    sup->mutation_package_id[0] = '\0';
     return true;
 }
 

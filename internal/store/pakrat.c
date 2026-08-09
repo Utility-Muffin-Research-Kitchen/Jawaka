@@ -7,9 +7,11 @@
 #include "internal/store/catalog_source.h"
 #include "internal/store/managed_apps.h"
 #include "internal/store/pakrat_recovery.h"
+#include "internal/store/pakrat_txn.h"
 #include "internal/storage/sources.h"
 #include "internal/update/sha256.h"
 #include "internal/store/pakrat_state.h"
+#include "cJSON.h"
 #include "miniz.h"
 
 #include <curl/curl.h>
@@ -20,6 +22,7 @@
 #endif
 #include <stdbool.h>
 #include <sqlite3.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +41,7 @@ static int jw__curl_ready = 0;
 #define JW_PAKRAT_DOWNLOAD_ABS_MAX_BYTES (384LL * 1024LL * 1024LL)
 /* Slack added over the catalog's advertised size before aborting the transfer. */
 #define JW_PAKRAT_DOWNLOAD_SLACK_BYTES (64LL * 1024LL)
+#define JW_PAKRAT_MUTATION_IPC_TIMEOUT_MS 30000
 
 typedef struct {
     FILE *fp;
@@ -99,6 +103,116 @@ static bool jw__has_suffix(const char *value, const char *suffix) {
     size_t suffix_len = strlen(suffix);
     return value_len >= suffix_len &&
            strcmp(value + value_len - suffix_len, suffix) == 0;
+}
+
+static void jw__pakrat_error(const jw_pakrat_context *ctx,
+                             const char *fmt, ...) {
+    char message[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+    fprintf(stderr, "%s\n", message);
+    if (ctx && ctx->error_message && ctx->error_message_size > 0) {
+        snprintf(ctx->error_message, ctx->error_message_size, "%s", message);
+    }
+}
+
+static int jw__mutation_request(const jw_pakrat_context *ctx,
+                                const char *type,
+                                const char *operation_id,
+                                const char *target_path,
+                                const char *package_id) {
+    if (!ctx || !type || !operation_id || !operation_id[0] ||
+        !ctx->socket_path[0] || !jw__pakrat_path_exists(ctx->socket_path)) {
+        jw__pakrat_error(ctx, "Jawaka service supervisor is unavailable");
+        return -1;
+    }
+    cJSON *request = cJSON_CreateObject();
+    if (!request || !cJSON_AddStringToObject(request, "type", type) ||
+        !cJSON_AddStringToObject(request, "operation_id", operation_id) ||
+        (target_path &&
+         !cJSON_AddStringToObject(request, "target_path", target_path)) ||
+        (package_id &&
+         !cJSON_AddStringToObject(request, "package_id", package_id))) {
+        cJSON_Delete(request);
+        jw__pakrat_error(ctx, "Could not build package mutation request");
+        return -1;
+    }
+    char *json = cJSON_PrintUnformatted(request);
+    cJSON_Delete(request);
+    if (!json) {
+        jw__pakrat_error(ctx, "Could not build package mutation request");
+        return -1;
+    }
+    char *response = NULL;
+    size_t response_len = 0;
+    int ipc_rc = jw_ipc_request_timeout(
+        ctx->socket_path, json, strlen(json), &response, &response_len,
+        JW_PAKRAT_MUTATION_IPC_TIMEOUT_MS);
+    cJSON_free(json);
+    if (ipc_rc != 0 || !response) {
+        free(response);
+        jw__pakrat_error(ctx, "Jawaka did not complete package quiescence");
+        return -1;
+    }
+    cJSON *reply = cJSON_ParseWithLength(response, response_len);
+    free(response);
+    cJSON *reply_type = reply
+        ? cJSON_GetObjectItemCaseSensitive(reply, "type") : NULL;
+    bool ok = cJSON_IsString(reply_type) && reply_type->valuestring &&
+              strcmp(reply_type->valuestring, "ok") == 0;
+    if (!ok) {
+        cJSON *message = reply
+            ? cJSON_GetObjectItemCaseSensitive(reply, "message") : NULL;
+        jw__pakrat_error(
+            ctx, "%s",
+            cJSON_IsString(message) && message->valuestring
+                ? message->valuestring
+                : "Jawaka refused package mutation");
+    }
+    cJSON_Delete(reply);
+    return ok ? 0 : -1;
+}
+
+static int jw__mutation_begin(const jw_pakrat_context *ctx,
+                              const char *operation_id,
+                              const char *target_path,
+                              const char *package_id,
+                              jw_pakrat_mutation_lock *lock) {
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (!ctx->runtime_dir[0] ||
+        jw_pakrat_mutation_lock_acquire(
+            ctx->runtime_dir, operation_id, package_id, target_path, lock,
+            reason, sizeof(reason)) != 0) {
+        jw__pakrat_error(ctx, "Could not lock package mutation: %s",
+                         reason[0] ? reason : "runtime unavailable");
+        return -1;
+    }
+    if (jw__mutation_request(ctx, "package-mutation-begin", operation_id,
+                             target_path, package_id) != 0) {
+        jw_pakrat_mutation_lock_release(lock);
+        return -1;
+    }
+    return 0;
+}
+
+static int jw__mutation_end(const jw_pakrat_context *ctx,
+                            const char *operation_id) {
+    return jw__mutation_request(ctx, "package-mutation-end", operation_id,
+                                NULL, NULL);
+}
+
+static int jw__cache_metadata(const char *db_path,
+                              const jw_pakrat_txn_metadata *metadata) {
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0 || jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+    int rc = jw_pakrat_txn_metadata_upsert_db(db, metadata);
+    jw_db_close(db);
+    return rc;
 }
 
 static int jw__validate_context(const jw_pakrat_context *ctx) {
@@ -445,6 +559,7 @@ int jw_pakrat_rescan(const jw_pakrat_context *ctx) {
 }
 
 static int jw__begin_install_commit(const jw_pakrat_context *ctx,
+                                    const char *clear_service_id,
                                     sqlite3 **out_db,
                                     jw_scan_result *out_scan) {
     if (!ctx || !out_db || !out_scan) {
@@ -458,6 +573,8 @@ static int jw__begin_install_commit(const jw_pakrat_context *ctx,
     sqlite3 *db = NULL;
     if (jw_db_open(ctx->db_path, &db) != 0 || !db ||
         jw_db_apply_schema(db) != 0 ||
+        (clear_service_id && clear_service_id[0] &&
+         jw_pakrat_txn_attach_control_db(db, ctx->state_dir) != 0) ||
         sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK ||
         jw_scan_library(db, ctx->sdcard_root, out_scan) != 0) {
         if (db) {
@@ -484,6 +601,9 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                                   const char *expected_version,
                                   int repair_exact,
                                   int allow_adopt) {
+    if (ctx && ctx->error_message && ctx->error_message_size > 0) {
+        ctx->error_message[0] = '\0';
+    }
     int expected_parsed[3];
     if (jw__validate_context(ctx) != 0 || !store_id || !store_id[0] ||
         (expected_version && expected_version[0] &&
@@ -503,8 +623,25 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     int moved_live = 0;
     int promoted = 0;
     int committed = 0;
+    int mutation_started = 0;
+    int mutation_ended = 0;
+    int installed_metadata_loaded = 0;
+    int candidate_metadata_loaded = 0;
+    int selected_downgrade = 0;
     sqlite3 *commit_db = NULL;
     char commit_token[JW_PAKRAT_COMMIT_TOKEN_BUF] = "";
+    char mutation_operation[JW_PAKRAT_TXN_OPERATION_MAX + 1] = "";
+    jw_pakrat_mutation_lock mutation_lock;
+    memset(&mutation_lock, 0, sizeof(mutation_lock));
+    mutation_lock.fd = -1;
+    jw_pakrat_txn_metadata installed_metadata;
+    jw_pakrat_txn_metadata candidate_metadata;
+    memset(&installed_metadata, 0, sizeof(installed_metadata));
+    memset(&candidate_metadata, 0, sizeof(candidate_metadata));
+    jw_storage_source_list sources;
+    memset(&sources, 0, sizeof(sources));
+    const jw_storage_source *primary_source = NULL;
+    const jw_storage_source *target_source = NULL;
     if (jw_pakrat_catalog_base_url(ctx->state_dir, catalog_base,
                                    sizeof(catalog_base),
                                    &catalog_is_dev) == 0 &&
@@ -582,16 +719,30 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         int selected_version[3];
         int installed_version[3];
         if (jw_pak_version_parse(pkg.version, selected_version) != 0 ||
-            jw_pak_version_parse(existing.version, installed_version) != 0 ||
-            jw_version_cmp(selected_version, installed_version) < 0) {
-            fprintf(stderr,
-                    "catalog selection would downgrade the installed package\n");
+            jw_pak_version_parse(existing.version, installed_version) != 0) {
             goto cleanup;
         }
+        selected_downgrade =
+            jw_version_cmp(selected_version, installed_version) < 0;
+    }
+
+    if (jw_storage_sources_resolve(ctx->sdcard_root, &sources) != 0 ||
+        !(primary_source = jw_storage_sources_primary(&sources)) ||
+        !primary_source->available) {
+        jw__pakrat_error(ctx, "Pak Rat Primary source is unavailable");
+        goto cleanup;
+    }
+    target_source = install_row == 0
+        ? jw_storage_sources_find_by_id(
+              &sources, existing.source_id[0] ? existing.source_id : "primary")
+        : primary_source;
+    if (!target_source || !target_source->available) {
+        jw__pakrat_error(ctx, "Installed package source is unavailable");
+        goto cleanup;
     }
 
     char target[PATH_MAX];
-    if (jw__pakrat_target_path(ctx->sdcard_root, pkg.install_path,
+    if (jw__pakrat_target_path(target_source->root, pkg.install_path,
                                target, sizeof(target)) != 0 ||
         jw__pakrat_target_sibling_path(target, store_id, "stage",
                                        target_stage, sizeof(target_stage)) != 0 ||
@@ -654,6 +805,70 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         fprintf(stderr, "artifact extraction/validation failed\n");
         goto cleanup;
     }
+    char metadata_reason[JW_SVC_REASON_BUF] = {0};
+    if (jw_pakrat_txn_inspect_manifest(
+            extracted_pak, pkg.runtime_manifest_path,
+            primary_source->userdata_path, store_id, pkg.install_path,
+            &candidate_metadata, metadata_reason,
+            sizeof(metadata_reason)) != 0) {
+        jw__pakrat_error(ctx, "Package manifest is not transaction-safe: %s",
+                         metadata_reason[0] ? metadata_reason : "invalid");
+        goto cleanup;
+    }
+    candidate_metadata_loaded = 1;
+
+    if (install_row == 0) {
+        int metadata_rc = jw_pakrat_txn_metadata_get(
+            ctx->db_path, store_id, &installed_metadata);
+        if (metadata_rc == 1) {
+            metadata_reason[0] = '\0';
+            if (jw_pakrat_txn_inspect_manifest(
+                    target, pkg.runtime_manifest_path,
+                    primary_source->userdata_path, store_id,
+                    existing.install_path, &installed_metadata,
+                    metadata_reason, sizeof(metadata_reason)) != 0 ||
+                jw__cache_metadata(ctx->db_path, &installed_metadata) != 0) {
+                jw__pakrat_error(
+                    ctx, "Installed package metadata cannot be validated: %s",
+                    metadata_reason[0] ? metadata_reason : "cache failed");
+                goto cleanup;
+            }
+        } else if (metadata_rc != 0) {
+            jw__pakrat_error(ctx,
+                             "Installed package metadata is corrupt or unavailable");
+            goto cleanup;
+        }
+        installed_metadata_loaded = 1;
+        if (strcmp(installed_metadata.store_id, store_id) != 0 ||
+            strcmp(installed_metadata.package_id, store_id) != 0 ||
+            strcmp(installed_metadata.install_path,
+                   existing.install_path) != 0) {
+            jw__pakrat_error(ctx, "Installed package metadata does not match ownership");
+            goto cleanup;
+        }
+    }
+
+    /* Preserve the ordinary no-downgrade rule, but allow the one transition
+       required by CAT-F: when a rolled-back Leaf can no longer select the real
+       service version, it may replace that owned service with the validated
+       inert floor selected by the catalog. Manifest inspection has already
+       proved the stable package id and the absence of a service declaration. */
+    if (selected_downgrade &&
+        !(installed_metadata_loaded && installed_metadata.has_service &&
+          !candidate_metadata.has_service)) {
+        fprintf(stderr,
+                "catalog selection would downgrade the installed package\n");
+        goto cleanup;
+    }
+
+    if (candidate_metadata.has_service && !target_source->primary) {
+        jw__pakrat_error(
+            ctx,
+            "%s is installed on Secondary. Uninstall it there first, then install the service pak on Primary.",
+            candidate_metadata.display_name[0]
+                ? candidate_metadata.display_name : store_id);
+        goto cleanup;
+    }
     jw_pakrat_commit_marker commit_marker;
     memset(&commit_marker, 0, sizeof(commit_marker));
     snprintf(commit_marker.store_id, sizeof(commit_marker.store_id), "%s",
@@ -675,8 +890,26 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         goto cleanup;
     }
 
+    bool mutation_required = candidate_metadata.has_service ||
+                             (installed_metadata_loaded &&
+                              installed_metadata.has_service);
+    if (mutation_required) {
+        int operation_size = snprintf(
+            mutation_operation, sizeof(mutation_operation), "pakrat-%s",
+            commit_token);
+        if (operation_size <= 0 ||
+            operation_size >= (int)sizeof(mutation_operation) ||
+            jw__mutation_begin(ctx, mutation_operation, pkg.install_path,
+                               store_id, &mutation_lock) != 0) {
+            goto cleanup;
+        }
+        mutation_started = 1;
+    }
+
     jw_pakrat_recovery_context recovery;
     jw__recovery_context(ctx, &recovery);
+    snprintf(recovery.sdcard_root, sizeof(recovery.sdcard_root), "%s",
+             target_source->root);
     jw__fault_crash("before-stage");
     if (jw__pakrat_mkdir_parent(target) != 0 ||
         jw__pakrat_reconcile_transition(
@@ -701,7 +934,7 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
             goto cleanup;
         }
         *leaf = '\0';
-        if (stat(ctx->sdcard_root, &root_st) != 0 ||
+        if (stat(target_source->root, &root_st) != 0 ||
             stat(target_stage, &stage_st) != 0 ||
             stat(target_parent, &parent_st) != 0 ||
             stage_st.st_dev != root_st.st_dev ||
@@ -745,13 +978,19 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
        bytes before the token-bearing install row becomes the commit point. */
     jw_pakrat_commit_marker promoted_marker;
     jw_scan_result scan_result;
+    const char *clear_service_id =
+        installed_metadata_loaded && installed_metadata.has_service &&
+                !candidate_metadata.has_service
+            ? installed_metadata.service_id
+            : NULL;
     if (jw__validate_runtime_manifest(&pkg, target) != 0 ||
         jw__pakrat_read_commit_marker(target, &promoted_marker) != 0 ||
         strcmp(promoted_marker.store_id, store_id) != 0 ||
         strcmp(promoted_marker.version, pkg.version) != 0 ||
         strcmp(promoted_marker.artifact_sha256, sha) != 0 ||
         strcmp(promoted_marker.token, commit_token) != 0 ||
-        jw__begin_install_commit(ctx, &commit_db, &scan_result) != 0) {
+        jw__begin_install_commit(ctx, clear_service_id, &commit_db,
+                                 &scan_result) != 0) {
         goto cleanup;
     }
     jw__fault_crash("before-syncfs");
@@ -763,8 +1002,14 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     jw__fault_crash("after-syncfs");
     jw__fault_crash("before-record");
     if (jw_db_pakrat_upsert_install_db(
-            commit_db, store_id, pkg.version, pkg.platform, pkg.install_path,
-            sha, NULL, commit_token) != 0) {
+            commit_db, store_id, pkg.version, pkg.platform, target_source->id,
+            pkg.install_path,
+            sha, NULL, commit_token) != 0 ||
+        jw_pakrat_txn_metadata_upsert_db(
+            commit_db, &candidate_metadata) != 0 ||
+        (clear_service_id &&
+         jw_pakrat_txn_clear_service_control_db(
+             commit_db, clear_service_id) != 0)) {
         goto cleanup;
     }
     if (jw__fault_requested("during-record")) {
@@ -793,6 +1038,17 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         } else {
             jw__pakrat_clear_origin_marker(target, store_id);
         }
+    }
+    if (mutation_started) {
+        if (jw__mutation_end(ctx, mutation_operation) != 0) {
+            /* The committed package remains authoritative. Releasing the
+               process lock below lets jawakad adopt the still-active gate and
+               finish recovery from its own database state. */
+            rc = -1;
+            goto cleanup;
+        }
+        mutation_ended = 1;
+        jw_pakrat_mutation_lock_release(&mutation_lock);
     }
     (void)jw__notify_daemon_scan(ctx);
 
@@ -832,6 +1088,15 @@ cleanup:
             jw__pakrat_clear_origin_marker(target, store_id);
         }
         (void)jw__pakrat_remove_tree(target_stage);
+        if (mutation_started && !mutation_ended) {
+            /* Reconcile any failed in-process rollback before asking the
+               supervisor to rescan and restore the previously installed
+               service state. */
+            if (jw_pakrat_recover_installs(&recovery) == 0 &&
+                jw__mutation_end(ctx, mutation_operation) == 0) {
+                mutation_ended = 1;
+            }
+        }
     }
     if (rc != 0) {
         jw__pakrat_log(ctx->state_dir, "install-failed store_id=%s", store_id);
@@ -841,6 +1106,13 @@ cleanup:
     }
     if (app_stage_dir[0]) {
         (void)jw__pakrat_remove_tree(app_stage_dir);
+    }
+    jw_pakrat_mutation_lock_release(&mutation_lock);
+    if (installed_metadata_loaded) {
+        jw_pakrat_txn_metadata_destroy(&installed_metadata);
+    }
+    if (candidate_metadata_loaded) {
+        jw_pakrat_txn_metadata_destroy(&candidate_metadata);
     }
     return rc;
 }
@@ -864,7 +1136,54 @@ int jw_pakrat_repair_app_version(const jw_pakrat_context *ctx,
     return jw__pakrat_install_app(ctx, store_id, version, 1, 0);
 }
 
+static int jw__load_owned_metadata(const jw_pakrat_context *ctx,
+                                   const jw_pakrat_install *install,
+                                   jw_pakrat_txn_metadata *out) {
+    if (!ctx || !install || !out) {
+        return -1;
+    }
+    int rc = jw_pakrat_txn_metadata_get(ctx->db_path, install->store_id, out);
+    if (rc == 0) {
+        return strcmp(out->store_id, install->store_id) == 0 &&
+                       strcmp(out->package_id, install->store_id) == 0 &&
+                       strcmp(out->install_path, install->install_path) == 0
+                   ? 0 : -1;
+    }
+    if (rc < 0) {
+        return -1;
+    }
+
+    /* One-time adoption of a pre-B4a install into Jawaka's validated cache.
+       After this succeeds, uninstall no longer depends on the package being
+       runnable, compatible, or able to answer a socket. */
+    jw_storage_source_list sources;
+    if (jw_storage_sources_resolve(ctx->sdcard_root, &sources) != 0) {
+        return -1;
+    }
+    const jw_storage_source *primary = jw_storage_sources_primary(&sources);
+    const jw_storage_source *source = jw_storage_sources_find_by_id(
+        &sources, install->source_id[0] ? install->source_id : "primary");
+    char target[PATH_MAX];
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (!primary || !primary->available || !source || !source->available ||
+        jw__pakrat_target_path(source->root, install->install_path,
+                               target, sizeof(target)) != 0 ||
+        jw_pakrat_txn_inspect_manifest(
+            target, "pak.json", primary->userdata_path, install->store_id,
+            install->install_path, out, reason, sizeof(reason)) != 0 ||
+        jw__cache_metadata(ctx->db_path, out) != 0) {
+        jw__pakrat_error(ctx, "Installed package metadata cannot be cached: %s",
+                         reason[0] ? reason : "validation failed");
+        jw_pakrat_txn_metadata_destroy(out);
+        return -1;
+    }
+    return 0;
+}
+
 int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) {
+    if (ctx && ctx->error_message && ctx->error_message_size > 0) {
+        ctx->error_message[0] = '\0';
+    }
     if (jw__validate_context(ctx) != 0 || !store_id || !store_id[0]) {
         return -1;
     }
@@ -887,18 +1206,127 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
         return -1;
     }
 
-    char target[PATH_MAX];
-    if (jw__pakrat_target_path(ctx->sdcard_root, row.install_path,
-                               target, sizeof(target)) != 0) {
+    jw_pakrat_txn_metadata metadata;
+    memset(&metadata, 0, sizeof(metadata));
+    if (jw__load_owned_metadata(ctx, &row, &metadata) != 0) {
         return -1;
     }
-    if (jw__pakrat_remove_tree(target) != 0 ||
-        jw_db_pakrat_remove_install(ctx->db_path, store_id) != 0 ||
-        jw_pakrat_rescan(ctx) != 0) {
-        return -1;
+
+    int result = -1;
+    bool mutation_started = false;
+    bool pending_written = false;
+    char operation_id[JW_PAKRAT_TXN_OPERATION_MAX + 1] = {0};
+    jw_pakrat_mutation_lock lock;
+    memset(&lock, 0, sizeof(lock));
+    lock.fd = -1;
+    if (metadata.has_service) {
+        char token[JW_PAKRAT_COMMIT_TOKEN_BUF];
+        int operation_size =
+            jw__random_commit_token(token) == 0
+                ? snprintf(operation_id, sizeof(operation_id),
+                           "uninstall-%s", token)
+                : -1;
+        if (operation_size <= 0 ||
+            operation_size >= (int)sizeof(operation_id) ||
+            jw__mutation_begin(ctx, operation_id, metadata.install_path,
+                               metadata.package_id, &lock) != 0) {
+            goto uninstall_done;
+        }
+        mutation_started = true;
+    }
+
+    if (jw_pakrat_txn_pending_persist(ctx->db_path, row.source_id,
+                                      &metadata) != 0) {
+        jw__pakrat_error(ctx, "Could not record confirmed uninstall intent");
+        goto uninstall_done;
+    }
+    pending_written = true;
+    jw_pakrat_pending_uninstall pending;
+    int pending_rc = jw_pakrat_txn_pending_get(ctx->db_path, store_id,
+                                               &pending);
+    if (pending_rc != 0) {
+        jw__pakrat_error(ctx, "Could not reload confirmed uninstall intent");
+        goto uninstall_done;
+    }
+    int complete_rc = jw_pakrat_txn_complete_uninstall(ctx, &pending);
+    jw_pakrat_pending_uninstall_destroy(&pending);
+    if (complete_rc != 0) {
+        jw__pakrat_error(
+            ctx, "%s",
+            complete_rc > 0 ? "Installed package source is absent; uninstall will resume when it returns"
+                            : "Confirmed uninstall could not be completed");
+        goto uninstall_done;
+    }
+    pending_written = false;
+    if (mutation_started && jw__mutation_end(ctx, operation_id) != 0) {
+        goto uninstall_done;
+    }
+    if (mutation_started) {
+        jw_pakrat_mutation_lock_release(&lock);
+        mutation_started = false;
+    }
+    if (jw_pakrat_rescan(ctx) != 0) {
+        jw__pakrat_error(ctx, "Package was removed, but library refresh failed");
+        goto uninstall_done;
     }
     (void)jw__notify_daemon_scan(ctx);
 
     printf("uninstalled: %s (userdata preserved)\n", store_id);
-    return 0;
+    result = 0;
+
+uninstall_done:
+    if (mutation_started && !pending_written) {
+        /* Intent was not made durable (or removal already committed), so an
+           immediate release is safe to attempt. On an ambiguous IPC failure,
+           dropping the flock delegates the still-active gate to jawakad. */
+        (void)jw__mutation_end(ctx, operation_id);
+    }
+    jw_pakrat_mutation_lock_release(&lock);
+    jw_pakrat_txn_metadata_destroy(&metadata);
+    return result;
+}
+
+int jw_pakrat_get_uninstall_info(const jw_pakrat_context *ctx,
+                                 const char *store_id,
+                                 jw_pakrat_uninstall_info *out) {
+    if (!ctx || !store_id || !store_id[0] || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    jw_pakrat_txn_metadata metadata;
+    int rc = jw_pakrat_txn_metadata_get(ctx->db_path, store_id, &metadata);
+    if (rc == 1) {
+        jw_pakrat_install install;
+        int install_rc = jw_db_pakrat_get_install(ctx->db_path, store_id,
+                                                  &install);
+        if (install_rc != 0) {
+            return install_rc;
+        }
+        rc = jw__load_owned_metadata(ctx, &install, &metadata);
+    }
+    if (rc != 0) {
+        return rc;
+    }
+    rc = jw_pakrat_txn_inventory_retained(ctx, &metadata, out);
+    jw_pakrat_txn_metadata_destroy(&metadata);
+    return rc;
+}
+
+void jw_pakrat_free_uninstall_info(jw_pakrat_uninstall_info *info) {
+    jw_pakrat_uninstall_info_destroy(info);
+}
+
+int jw_pakrat_remove_retained_data(const jw_pakrat_context *ctx,
+                                   const char *store_id) {
+    if (!ctx || !store_id || !store_id[0]) {
+        return -1;
+    }
+    jw_pakrat_txn_metadata metadata;
+    int rc = jw_pakrat_txn_metadata_get(ctx->db_path, store_id, &metadata);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = jw_pakrat_txn_remove_retained(ctx, &metadata);
+    jw_pakrat_txn_metadata_destroy(&metadata);
+    return rc;
 }

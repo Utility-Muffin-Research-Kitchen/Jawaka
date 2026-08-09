@@ -25,6 +25,7 @@
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 #include "internal/store/pakrat_state.h"
+#include "internal/store/pakrat_txn.h"
 
 #include <SDL2/SDL.h>
 #include <stdatomic.h>
@@ -1583,6 +1584,14 @@ static int jw__pakrat_context_from_state(const jw_launcher_state *state,
     snprintf(ctx->db_path, sizeof(ctx->db_path), "%s", state->db_path);
     snprintf(ctx->platform_root, sizeof(ctx->platform_root), "%s", state->platform_root);
     snprintf(ctx->socket_path, sizeof(ctx->socket_path), "%s", state->socket_path);
+    char *runtime_dir = jw_runtime_dir();
+    if (!runtime_dir ||
+        snprintf(ctx->runtime_dir, sizeof(ctx->runtime_dir), "%s",
+                 runtime_dir) >= (int)sizeof(ctx->runtime_dir)) {
+        free(runtime_dir);
+        return -1;
+    }
+    free(runtime_dir);
     return 0;
 }
 
@@ -6034,6 +6043,7 @@ static int jw__open_recents(const char *db_path, jw_launcher_state *state) {
 typedef enum {
     JW_PAKRAT_UI_INSTALL = 0,
     JW_PAKRAT_UI_UNINSTALL,
+    JW_PAKRAT_UI_REMOVE_RETAINED,
 } jw_pakrat_ui_action;
 
 typedef struct {
@@ -6043,6 +6053,7 @@ typedef struct {
     jw_pakrat_ui_action action;
     int allow_adopt;   /* install may replace a manually-installed pak */
     int repair_exact;
+    char error_message[256];
 } jw_pakrat_ui_job;
 
 static int jw__pakrat_ui_worker(void *userdata) {
@@ -6053,6 +6064,9 @@ static int jw__pakrat_ui_worker(void *userdata) {
     if (job->action == JW_PAKRAT_UI_UNINSTALL) {
         return jw_pakrat_uninstall_app(&job->ctx, job->store_id);
     }
+    if (job->action == JW_PAKRAT_UI_REMOVE_RETAINED) {
+        return jw_pakrat_remove_retained_data(&job->ctx, job->store_id);
+    }
     if (job->repair_exact) {
         return jw_pakrat_repair_app_version(
             &job->ctx, job->store_id, job->target_version);
@@ -6061,17 +6075,113 @@ static int jw__pakrat_ui_worker(void *userdata) {
         &job->ctx, job->store_id, job->target_version, job->allow_adopt);
 }
 
-static bool jw__confirm_pakrat_uninstall(const jw_pakrat_app_state *app) {
-    if (!app) {
+static void jw__pakrat_format_size(unsigned long long bytes,
+                                   char *out, size_t out_size) {
+    if (bytes >= 1024ULL * 1024ULL * 1024ULL) {
+        snprintf(out, out_size, "%.1f GiB",
+                 (double)bytes / (1024.0 * 1024.0 * 1024.0));
+    } else if (bytes >= 1024ULL * 1024ULL) {
+        snprintf(out, out_size, "%.1f MiB",
+                 (double)bytes / (1024.0 * 1024.0));
+    } else if (bytes >= 1024ULL) {
+        snprintf(out, out_size, "%.1f KiB", (double)bytes / 1024.0);
+    } else {
+        snprintf(out, out_size, "%llu B", bytes);
+    }
+}
+
+static bool jw__pakrat_append(char *message, size_t capacity,
+                              size_t *used, const char *fmt, ...) {
+    if (!message || !used || *used >= capacity) {
         return false;
     }
-    char message[512];
-    snprintf(message, sizeof(message),
-             "Uninstall %.180s?\n\nUser data is preserved.",
-             app->package.name[0] ? app->package.name : app->package.id);
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(message + *used, capacity - *used, fmt, args);
+    va_end(args);
+    if (n < 0 || (size_t)n >= capacity - *used) {
+        return false;
+    }
+    *used += (size_t)n;
+    return true;
+}
+
+static bool jw__confirm_pakrat_uninstall(
+    const jw_pakrat_app_state *app,
+    const jw_pakrat_uninstall_info *info) {
+    if (!app || !info || info->item_count < 0) {
+        return false;
+    }
+    size_t capacity = 768u +
+        (size_t)info->item_count * (size_t)(PATH_MAX + 128);
+    char *message = calloc(capacity, 1u);
+    if (!message) {
+        return false;
+    }
+    size_t used = 0;
+    bool complete = jw__pakrat_append(
+        message, capacity, &used, "Uninstall %.180s?\n\n",
+        app->package.name[0] ? app->package.name : app->package.id);
+    if (complete && info->metadata.revoke_count > 0) {
+        complete = jw__pakrat_append(
+            message, capacity, &used,
+            "Declared browser trust and credentials will be revoked.\n");
+    }
+    if (complete && info->item_count == 0) {
+        complete = jw__pakrat_append(
+            message, capacity, &used,
+            "No retained data directories are declared.");
+    } else if (complete) {
+        complete = jw__pakrat_append(
+            message, capacity, &used,
+            "These retained data directories will be preserved:\n");
+    }
+    for (int i = 0; complete && i < info->item_count; i++) {
+        const jw_pakrat_retained_item *item = &info->items[i];
+        char size[64] = "unknown size";
+        if (item->size_known) {
+            jw__pakrat_format_size(item->size_bytes, size, sizeof(size));
+        }
+        complete = jw__pakrat_append(
+            message, capacity, &used, "\n%s: %s (%s)", item->source_id,
+            item->root,
+            item->source_present
+                ? size : "card absent; not inventoried");
+    }
+    if (!complete) {
+        free(message);
+        return false;
+    }
     cat_footer_item footer[] = {
         { .button = CAT_BTN_B, .label = "Cancel",    .is_confirm = false },
         { .button = CAT_BTN_A, .label = "Uninstall", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    bool confirmed = cat_confirmation(&opts, &result) == CAT_OK &&
+                     result.confirmed;
+    free(message);
+    return confirmed;
+}
+
+static bool jw__confirm_pakrat_remove_retained(
+    const jw_pakrat_app_state *app,
+    const jw_pakrat_uninstall_info *info) {
+    if (!app || !info || info->item_count <= 0) {
+        return false;
+    }
+    char message[768];
+    snprintf(
+        message, sizeof(message),
+        "Also remove retained data for %.180s?\n\nThis separately deletes every declared retained directory on cards that are present now. Absent cards remain unchanged. This cannot be undone.",
+        app->package.name[0] ? app->package.name : app->package.id);
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Keep data", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Remove", .is_confirm = true },
     };
     cat_message_opts opts = {
         .message = message,
@@ -6203,13 +6313,31 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
         }
         return;
     }
+
+    jw_pakrat_context ctx;
+    if (jw__pakrat_context_from_state(state, &ctx) != 0) {
+        jw__set_pakrat_message(state, "%s", "Pak Rat runtime paths unavailable");
+        return;
+    }
+
+    jw_pakrat_uninstall_info uninstall_info;
+    memset(&uninstall_info, 0, sizeof(uninstall_info));
+    bool uninstall_info_loaded = false;
     bool allow_adopt = false;
     if (action == JW_PAKRAT_UI_UNINSTALL) {
         if (!jw__pakrat_can_uninstall(&app)) {
             jw__set_pakrat_message(state, "%.120s is not installed by Pak Rat", name);
             return;
         }
-        if (!jw__confirm_pakrat_uninstall(&app)) {
+        if (jw_pakrat_get_uninstall_info(
+                &ctx, app.package.id, &uninstall_info) != 0) {
+            jw__set_pakrat_message(
+                state, "Could not inspect retained data for %.100s", name);
+            return;
+        }
+        uninstall_info_loaded = true;
+        if (!jw__confirm_pakrat_uninstall(&app, &uninstall_info)) {
+            jw_pakrat_free_uninstall_info(&uninstall_info);
             jw__set_pakrat_message(state, "Uninstall cancelled: %.120s", name);
             return;
         }
@@ -6225,18 +6353,14 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
         return;
     }
 
-    jw_pakrat_context ctx;
-    if (jw__pakrat_context_from_state(state, &ctx) != 0) {
-        jw__set_pakrat_message(state, "%s", "Pak Rat runtime paths unavailable");
-        return;
-    }
-
     jw_pakrat_ui_job job;
     memset(&job, 0, sizeof(job));
     job.ctx = ctx;
     job.action = action;
     job.allow_adopt = allow_adopt ? 1 : 0;
     job.repair_exact = app.action_uses_history;
+    job.ctx.error_message = job.error_message;
+    job.ctx.error_message_size = sizeof(job.error_message);
     snprintf(job.store_id, sizeof(job.store_id), "%s", app.package.id);
     snprintf(job.target_version, sizeof(job.target_version), "%s",
              app.action_version);
@@ -6255,17 +6379,49 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     };
     int old_cursor = state->pakrat_list.cursor;
     int rc = cat_process_message(&opts, jw__pakrat_ui_worker, &job);
+    int retained_rc = -2;
+    if (rc == 0 && action == JW_PAKRAT_UI_UNINSTALL &&
+        uninstall_info.item_count > 0 &&
+        jw__confirm_pakrat_remove_retained(&app, &uninstall_info)) {
+        job.action = JW_PAKRAT_UI_REMOVE_RETAINED;
+        job.error_message[0] = '\0';
+        char *remove_detail = detail;
+        cat_process_opts remove_opts = {
+            .message = "Removing retained Pak Rat data",
+            .show_progress = false,
+            .progress = NULL,
+            .interrupt_signal = NULL,
+            .interrupt_button = CAT_BTN_NONE,
+            .dynamic_message = &remove_detail,
+            .message_lines = 1,
+        };
+        retained_rc = cat_process_message(
+            &remove_opts, jw__pakrat_ui_worker, &job);
+    }
+    if (uninstall_info_loaded) {
+        jw_pakrat_free_uninstall_info(&uninstall_info);
+    }
     int reload_rc = jw__reload_library_from_db(db_path, state);
     if (reload_rc != 0) {
         jw__load_pakrat_store(state);
     }
     cat_list_state_jump(&state->pakrat_list, old_cursor, state->pakrat_app_count);
 
-    if (rc == 0) {
+    if (rc == 0 && retained_rc == 0) {
+        jw__set_pakrat_message(state,
+                               "Uninstalled %.100s and removed retained data",
+                               name);
+    } else if (rc == 0 && retained_rc != -2 && retained_rc != 0) {
+        jw__set_pakrat_message(
+            state, "Uninstalled %.100s; retained-data removal failed", name);
+    } else if (rc == 0) {
         jw__set_pakrat_message(state, "%.80s %.120s",
                                jw__pakrat_done_label(&app, action), name);
     } else {
-        jw__set_pakrat_message(state, "Pak Rat action failed: %.120s", name);
+        jw__set_pakrat_message(
+            state, "%s",
+            job.error_message[0] ? job.error_message
+                                 : "Pak Rat action failed");
     }
     if (rc == 0 && reload_rc != 0) {
         jw__set_pakrat_message(state, "%.120s changed; refresh failed", name);

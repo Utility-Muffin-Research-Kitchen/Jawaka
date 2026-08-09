@@ -52,6 +52,13 @@ int main(void) {
                    "WHERE name='commit_token' AND \"notnull\"=0") != 1) {
         fail(db, "fresh pakrat commit token column");
     }
+    if (scalar(db, "SELECT COUNT(*) FROM pragma_table_info('pakrat_installs') "
+                   "WHERE name='source_id' AND \"notnull\"=1") != 1 ||
+        scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                   "AND name IN ('pakrat_service_metadata',"
+                   "'pakrat_pending_uninstalls')") != 2) {
+        fail(db, "fresh pakrat transaction schema");
+    }
     sqlite3_close(db);
     unlink(fresh);
 
@@ -82,11 +89,17 @@ int main(void) {
                    "WHERE name='min_leaf_version'") != 1 ||
         scalar(db, "SELECT COUNT(*) FROM pragma_table_info('pakrat_installs') "
                    "WHERE name='commit_token' AND \"notnull\"=0") != 1 ||
+        scalar(db, "SELECT COUNT(*) FROM pragma_table_info('pakrat_installs') "
+                   "WHERE name='source_id' AND \"notnull\"=1") != 1 ||
+        scalar(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                   "AND name IN ('pakrat_service_metadata',"
+                   "'pakrat_pending_uninstalls')") != 2 ||
         scalar(db, "SELECT COUNT(*) FROM apps "
                    "WHERE pak_dir='Apps/mlp1/Existing.pak' "
                    "AND pak_version='1.0.0'") != 1 ||
         scalar(db, "SELECT COUNT(*) FROM pakrat_installs "
-                   "WHERE store_id='org.umrk.legacy' AND commit_token IS NULL") != 1 ||
+                   "WHERE store_id='org.umrk.legacy' AND commit_token IS NULL "
+                   "AND source_id='primary'") != 1 ||
         jw_db_scan_begin(db) != 0 ||
         jw_db_insert_app(db, "Apps/mlp1/Existing.pak", "Existing", "",
                          "mlp1", "1.0.1", "0.0.1", "0.7.0") != 0 ||

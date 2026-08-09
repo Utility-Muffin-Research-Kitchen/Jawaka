@@ -2,6 +2,9 @@
 #define JW_STORE_PAKRAT_H
 
 #include <limits.h>
+#include <stddef.h>
+
+typedef struct jw_pakrat_uninstall_info jw_pakrat_uninstall_info;
 
 typedef struct {
     char platform[64];
@@ -9,7 +12,10 @@ typedef struct {
     char state_dir[PATH_MAX];
     char db_path[PATH_MAX];
     char platform_root[PATH_MAX];
+    char runtime_dir[PATH_MAX];
     char socket_path[PATH_MAX];
+    char *error_message;
+    size_t error_message_size;
 } jw_pakrat_context;
 
 int jw_pakrat_rescan(const jw_pakrat_context *ctx);
@@ -31,5 +37,14 @@ int jw_pakrat_repair_app_version(const jw_pakrat_context *ctx,
                                  const char *store_id,
                                  const char *version);
 int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id);
+/* Read-only retained-data disclosure from Jawaka's cached, last-validated
+   manifest metadata. Present and absent cards are both represented. */
+int jw_pakrat_get_uninstall_info(const jw_pakrat_context *ctx,
+                                 const char *store_id,
+                                 jw_pakrat_uninstall_info *out);
+void jw_pakrat_free_uninstall_info(jw_pakrat_uninstall_info *info);
+/* Separate destructive action; never runs as an implicit part of uninstall. */
+int jw_pakrat_remove_retained_data(const jw_pakrat_context *ctx,
+                                   const char *store_id);
 
 #endif
