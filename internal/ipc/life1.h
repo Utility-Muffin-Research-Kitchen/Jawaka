@@ -1,6 +1,8 @@
 #ifndef JW_IPC_LIFE1_H
 #define JW_IPC_LIFE1_H
 
+#include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
 
 #define JW_LIFE1_VERSION 1
@@ -26,6 +28,7 @@ typedef struct {
     jw_life1_mode mode;
     int ack_ms;
     int wait_ms;
+    bool check_before_stop;
 } jw_life1_request;
 
 typedef enum {
@@ -38,6 +41,7 @@ typedef enum {
     JW_LIFE1_STATUS_NONE = 0,
     JW_LIFE1_STATUS_WAITING,
     JW_LIFE1_STATUS_READY,
+    JW_LIFE1_STATUS_STOP,
     JW_LIFE1_STATUS_ERROR,
 } jw_life1_status_kind;
 
@@ -45,6 +49,8 @@ typedef struct {
     jw_life1_status_kind kind;
     char *launch_id;
     int pending_items;
+    int64_t pending_bytes;
+    bool has_pending_bytes;
     char *reason;
 } jw_life1_status;
 
@@ -61,7 +67,9 @@ jw_life1_parse_result jw_life1_parse_request(const char *payload,
 void jw_life1_request_destroy(jw_life1_request *request);
 
 /* Strict parser for service replies on an authenticated subscriber stream.
- * waiting/ready/error objects are closed; unknown or malformed fields fail. */
+ * waiting/ready/stop/error objects are closed; unknown or malformed fields
+ * fail. The exchange owner validates whether waiting carries pending_bytes and
+ * whether ready or stop is the valid terminal status for that exchange. */
 jw_life1_parse_result jw_life1_parse_status(const char *payload,
                                             size_t payload_len,
                                             jw_life1_status *status,
@@ -85,7 +93,13 @@ char *jw_life1_build_game_start(const char *launch_id,
                                 const char *saves_path,
                                 const char *states_path,
                                 int wait_budget_ms);
+char *jw_life1_build_game_check(const char *launch_id,
+                                const char *source_id,
+                                const char *saves_path,
+                                const char *states_path,
+                                int wait_budget_ms);
 char *jw_life1_build_game_cancel(const char *launch_id);
+char *jw_life1_build_game_abort(const char *launch_id);
 char *jw_life1_build_game_finish(const char *launch_id);
 
 #endif

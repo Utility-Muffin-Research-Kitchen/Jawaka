@@ -9068,6 +9068,10 @@ static void jw__screenshot_flash_handler(int sig) {
 typedef struct {
     bool blocked;
     bool override_allowed;
+    bool requires_verified_stop;
+    bool sync_pending;
+    int pending_items;
+    long long pending_bytes;
     char service_id[129];
     char reason[64];
 } jw_blocked_game_launch;
@@ -9094,10 +9098,28 @@ static bool jw__blocked_game_launch_query(const char *socket_path,
     cJSON *blocked = cJSON_GetObjectItemCaseSensitive(root, "blocked");
     cJSON *allowed =
         cJSON_GetObjectItemCaseSensitive(root, "override_allowed");
+    cJSON *sync_pending =
+        cJSON_GetObjectItemCaseSensitive(root, "sync_pending");
+    cJSON *requires_verified_stop =
+        cJSON_GetObjectItemCaseSensitive(root, "requires_verified_stop");
+    cJSON *pending_items =
+        cJSON_GetObjectItemCaseSensitive(root, "pending_items");
+    cJSON *pending_bytes =
+        cJSON_GetObjectItemCaseSensitive(root, "pending_bytes");
     cJSON *service = cJSON_GetObjectItemCaseSensitive(root, "service_id");
     cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
     out->blocked = cJSON_IsTrue(blocked);
     out->override_allowed = cJSON_IsTrue(allowed);
+    out->requires_verified_stop = cJSON_IsTrue(requires_verified_stop);
+    out->sync_pending = cJSON_IsTrue(sync_pending);
+    if (cJSON_IsNumber(pending_items) && pending_items->valuedouble >= 0.0 &&
+        pending_items->valuedouble <= (double)INT_MAX) {
+        out->pending_items = pending_items->valueint;
+    }
+    if (cJSON_IsNumber(pending_bytes) && pending_bytes->valuedouble >= 0.0 &&
+        pending_bytes->valuedouble <= (double)LLONG_MAX) {
+        out->pending_bytes = (long long)pending_bytes->valuedouble;
+    }
     if (cJSON_IsString(service) && service->valuestring) {
         snprintf(out->service_id, sizeof(out->service_id), "%s",
                  service->valuestring);
@@ -9141,17 +9163,70 @@ static bool jw__surface_blocked_game_launch(
     if (!blocked || !blocked->blocked) {
         return false;
     }
-    char message[640];
-    if (blocked->override_allowed) {
-        snprintf(message, sizeof(message),
-                 "Game launch blocked.\n\n%.128s may still be writing Saves or "
-                 "States. Launch anyway only if you accept possible data "
-                 "corruption.",
-                 blocked->service_id[0] ? blocked->service_id
-                                        : "A background service");
+    if (blocked->sync_pending) {
+        char size[64];
+        char title[192];
+        jw__pakrat_format_size((unsigned long long)blocked->pending_bytes,
+                               size, sizeof(size));
+        snprintf(title, sizeof(title), "Sync before play — %d item%s, %s",
+                 blocked->pending_items,
+                 blocked->pending_items == 1 ? "" : "s", size);
+        cat_list_item items[] = {
+            CAT_LIST_ITEM("Wait for sync", "wait"),
+            CAT_LIST_ITEM("Play anyway", "play"),
+            CAT_LIST_ITEM("Cancel", "cancel"),
+        };
         cat_footer_item footer[] = {
             { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
-            { .button = CAT_BTN_A, .label = "Launch Anyway", .is_confirm = true },
+            { .button = CAT_BTN_A, .label = "Choose", .is_confirm = true },
+        };
+        cat_list_opts opts = cat_list_default_opts(title, items, 3);
+        opts.footer = footer;
+        opts.footer_count = 2;
+        opts.help_text = "Syncthing still has Saves or States to transfer. Wait keeps syncing for up to 15 seconds. Play anyway stops Syncthing first. Cancel leaves syncing active.";
+        cat_list_result result;
+        int rc = cat_list(&opts, &result);
+        const char *action = "game-check-cancel";
+        bool leaves_launcher = false;
+        if (rc == CAT_OK && result.selected_index == 0) {
+            action = "game-check-wait";
+            leaves_launcher = true;
+        } else if (rc == CAT_OK && result.selected_index == 1) {
+            action = "game-check-play-anyway";
+            leaves_launcher = true;
+        }
+        bool accepted = jw__blocked_game_launch_action(socket_path, action);
+        return accepted && leaves_launcher;
+    }
+    char message[640];
+    if (blocked->override_allowed) {
+        if (blocked->pending_items > 0 || blocked->pending_bytes > 0) {
+            char size[64];
+            jw__pakrat_format_size(
+                (unsigned long long)blocked->pending_bytes,
+                size, sizeof(size));
+            snprintf(message, sizeof(message),
+                     "Sync needs attention.\n\n%d item%s (%s) remained when "
+                     "waiting ended. Play anyway will stop Syncthing first; "
+                     "Cancel leaves syncing active.",
+                     blocked->pending_items,
+                     blocked->pending_items == 1 ? "" : "s", size);
+        } else if (blocked->requires_verified_stop) {
+            snprintf(message, sizeof(message),
+                     "Sync needs attention.\n\nSyncthing could not be verified "
+                     "stopped. Play anyway will retry the safe stop; Leaf "
+                     "will not launch until Syncthing is stopped.");
+        } else {
+            snprintf(message, sizeof(message),
+                     "Game launch blocked.\n\n%.128s may still be writing Saves "
+                     "or States. Play anyway only if you accept possible data "
+                     "corruption.",
+                     blocked->service_id[0] ? blocked->service_id
+                                            : "A background service");
+        }
+        cat_footer_item footer[] = {
+            { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+            { .button = CAT_BTN_A, .label = "Play Anyway", .is_confirm = true },
         };
         cat_message_opts opts = {
             .message = message,
