@@ -12354,11 +12354,18 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     if (exited_kind == JW_CHILD_LAUNCHER && state->pending_launch) {
         if (state->game_coordination_ready) {
             state->game_coordination_ready = false;
-            if (jw__spawn_authorized_pending_game(state) != 0 &&
-                !state->daemon_only) {
+            if (jw__spawn_authorized_pending_game(state) != 0) {
                 jw__game_coordination_abort(state,
                                             "deferred-writer-spawn-failed");
-                jw__spawn_child(state, JW_CHILD_LAUNCHER);
+                if (!state->daemon_only) {
+                    jw__spawn_child(state, JW_CHILD_LAUNCHER);
+                }
+            } else {
+                state->pending_launch_override_unverified = false;
+                state->active_game_writer_started = true;
+                jw_log_info("life1: writer started launch_id=%s pgid=%d",
+                            state->active_game.launch_id,
+                            (int)state->child_pgid);
             }
             return;
         }
