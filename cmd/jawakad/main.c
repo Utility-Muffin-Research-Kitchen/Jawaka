@@ -11176,6 +11176,7 @@ static void jw__game_coordination_block(jw_daemon_state *state,
              reason && reason[0] ? reason : "unverified-service-stop");
     bool requires_verified_stop =
         strcmp(blocked_reason, "check-before-stop-failed") == 0 ||
+        strcmp(blocked_reason, "unsafe-card-binding") == 0 ||
         strcmp(blocked_reason, "sync-wait-expired") == 0 ||
         strcmp(blocked_reason, "check-stop-unverified") == 0;
     jw__game_coordination_abort(state, blocked_reason);
@@ -11474,13 +11475,16 @@ static void jw__game_coordination_connection_failed(jw_daemon_state *state,
         state->game_coordination_exchanges--;
     }
     if (check && !state->pending_launch_override_unverified) {
+        const char *blocked_reason =
+            reason && strcmp(reason, "unsafe-card-binding") == 0
+                ? "unsafe-card-binding"
+                : "check-before-stop-failed";
         state->game_check_decision = true;
         snprintf(state->game_check_service_id,
                  sizeof(state->game_check_service_id), "%s", service_id);
         jw_log_warn("life1: check-before-stop failed service=%s trigger=%s",
                     service_id, reason && reason[0] ? reason : "exchange-failure");
-        jw__game_coordination_block(state, service_id,
-                                    "check-before-stop-failed");
+        jw__game_coordination_block(state, service_id, blocked_reason);
         return;
     }
     if (!state->services || !jw__game_stop_service(
@@ -11668,7 +11672,11 @@ static void jw__game_coordination_status(jw_daemon_state *state, int index,
         jw_log_warn("life1: service=%s returned error launch_id=%s reason=%s",
                     connection->service_id, status->launch_id,
                     status->reason ? status->reason : "unknown");
-        jw__ipc_connection_drop(state, index, "service-error");
+        jw__ipc_connection_drop(
+            state, index,
+            status->reason && strcmp(status->reason, "unsafe-card-binding") == 0
+                ? "unsafe-card-binding"
+                : "service-error");
         return;
     }
     if (connection->exchange_kind == JW_GAME_EXCHANGE_KIND_CHECK) {

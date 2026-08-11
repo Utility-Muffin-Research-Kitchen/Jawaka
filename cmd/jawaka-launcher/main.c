@@ -9200,7 +9200,14 @@ static bool jw__surface_blocked_game_launch(
     }
     char message[640];
     if (blocked->override_allowed) {
-        if (blocked->pending_items > 0 || blocked->pending_bytes > 0) {
+        bool unsafe_card_binding =
+            strcmp(blocked->reason, "unsafe-card-binding") == 0;
+        if (unsafe_card_binding) {
+            snprintf(message, sizeof(message),
+                     "Syncthing card setup needs attention.\n\nLeaf could not "
+                     "match this game's card to its Saves and States folders. "
+                     "Review Cards and Folders in Syncthing.");
+        } else if (blocked->pending_items > 0 || blocked->pending_bytes > 0) {
             char size[64];
             jw__pakrat_format_size(
                 (unsigned long long)blocked->pending_bytes,
@@ -9226,7 +9233,9 @@ static bool jw__surface_blocked_game_launch(
         }
         cat_footer_item footer[] = {
             { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
-            { .button = CAT_BTN_A, .label = "Play Anyway", .is_confirm = true },
+            { .button = CAT_BTN_A,
+              .label = unsafe_card_binding ? "Stop & Play" : "Play Anyway",
+              .is_confirm = true },
         };
         cat_message_opts opts = {
             .message = message,

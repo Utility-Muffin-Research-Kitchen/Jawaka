@@ -142,7 +142,7 @@ case "$SCENARIO" in
 esac
 
 case "$SCENARIO" in
-    game-check-expiry|game-check-timeout|game-check-malformed)
+    game-check-expiry|game-check-timeout|game-check-malformed|game-check-unsafe-card)
         for _ in $(seq 1 300); do
             blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"}' 2>/dev/null || true)"
             printf '%s' "$blocked" | grep -q '"override_allowed":true' && break
@@ -154,12 +154,17 @@ case "$SCENARIO" in
         if [ "$SCENARIO" = game-check-expiry ]; then
             printf '%s' "$blocked" | grep -q '"reason":"sync-wait-expired"'
             printf '%s' "$blocked" | grep -q '"pending_items":3'
+        elif [ "$SCENARIO" = game-check-unsafe-card ]; then
+            printf '%s' "$blocked" | grep -q '"reason":"unsafe-card-binding"'
         else
             printf '%s' "$blocked" | grep -q '"reason":"check-before-stop-failed"'
         fi
         "$CTL" --socket "$SOCKET" request '{"type":"game-launch-override"}' |
             grep -F '"type":"ok"' >/dev/null
         grep -F 'skip_check=true allow_unverified_stop=false' "$LOG" >/dev/null
+        if [ "$SCENARIO" = game-check-unsafe-card ]; then
+            grep -Fx 'unsafe_card=1' "$RUNTIME/services/$SERVICE_ID/life1-fixture-result" >/dev/null
+        fi
         ;;
 esac
 

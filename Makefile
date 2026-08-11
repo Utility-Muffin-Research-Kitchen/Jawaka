@@ -644,6 +644,7 @@ life1-game-check-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game
 	UMRK_LIFE1_SMOKE_SCENARIO=game-check-expiry scripts/life1-game-check-ipc-smoke.sh
 	UMRK_LIFE1_SMOKE_SCENARIO=game-check-timeout scripts/life1-game-check-ipc-smoke.sh
 	UMRK_LIFE1_SMOKE_SCENARIO=game-check-malformed scripts/life1-game-check-ipc-smoke.sh
+	UMRK_LIFE1_SMOKE_SCENARIO=game-check-unsafe-card scripts/life1-game-check-ipc-smoke.sh
 
 life1-game-unmanaged-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
 	UMRK_LIFE1_SMOKE_SCENARIO=game-disabled scripts/life1-game-ipc-smoke.sh

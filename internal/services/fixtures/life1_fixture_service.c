@@ -225,6 +225,17 @@ static int run_game_check_fixture(const char *socket_path,
         }
     } else if (strcmp(scenario, "game-check-timeout") == 0) {
         /* No initial status: Jawaka must abort, never infer current. */
+    } else if (strcmp(scenario, "game-check-unsafe-card") == 0) {
+        char error[320];
+        int n = snprintf(error, sizeof(error),
+                         "{\"v\":1,\"status\":\"error\",\"launch_id\":\"%s\","
+                         "\"reason\":\"unsafe-card-binding\"}", launch_id);
+        if (n <= 0 || (size_t)n >= sizeof(error) ||
+            jw_ipc_client_send(client, error, (size_t)n) != 0 ||
+            write_result(runtime, "ready=1\ncheck=1\nunsafe_card=1\n") != 0) {
+            jw_ipc_client_close(client);
+            return 121;
+        }
     } else if (strcmp(scenario, "game-check-malformed") == 0) {
         if (send_status(client, "ready", launch_id, 0) != 0) {
             jw_ipc_client_close(client);
