@@ -86,6 +86,31 @@ static int connect_and_subscribe_wait(const char *socket_path,
     return 0;
 }
 
+static int connect_and_subscribe_check(const char *socket_path,
+                                       const char *service_id,
+                                       int ack_ms, int wait_ms,
+                                       jw_ipc_client **out) {
+    jw_ipc_client *client = NULL;
+    if (jw_ipc_client_connect(socket_path, &client) != 0) {
+        return -1;
+    }
+    char request[512];
+    int n = snprintf(request, sizeof(request),
+        "{\"v\":1,\"op\":\"subscribe\",\"id\":\"1\","
+        "\"events\":[\"game\"],\"service_id\":\"%s\",\"mode\":\"stop\","
+        "\"ack_ms\":%d,\"wait_ms\":%d,\"check_before_stop\":true}",
+        service_id, ack_ms, wait_ms);
+    const char *expected = "{\"v\":1,\"id\":\"1\",\"ok\":true}";
+    if (n < 0 || (size_t)n >= sizeof(request) ||
+        exchange(client, request, expected) != 0 ||
+        jw_ipc_client_set_nonblocking(client, false, 0) != 0) {
+        jw_ipc_client_close(client);
+        return -1;
+    }
+    *out = client;
+    return 0;
+}
+
 static int reconcile(jw_ipc_client *client, const char *id) {
     char request[128];
     char expected[128];
@@ -153,6 +178,128 @@ static int json_launch_id(const char *json, char *out, size_t out_size) {
 
 static int send_status(jw_ipc_client *client, const char *status,
                        const char *launch_id, int pending_items);
+
+static int send_check_waiting(jw_ipc_client *client, const char *launch_id,
+                              int pending_items, long long pending_bytes) {
+    char json[320];
+    int n = snprintf(json, sizeof(json),
+                     "{\"v\":1,\"status\":\"waiting\",\"launch_id\":\"%s\","
+                     "\"pending_items\":%d,\"pending_bytes\":%lld}",
+                     launch_id, pending_items, pending_bytes);
+    return n > 0 && (size_t)n < sizeof(json)
+        ? jw_ipc_client_send(client, json, (size_t)n) : -1;
+}
+
+static int run_game_check_fixture(const char *socket_path,
+                                  const char *service_id,
+                                  const char *runtime,
+                                  const char *scenario) {
+    int ack_ms = strcmp(scenario, "game-check-expiry") == 0 ? 1000 : 250;
+    int wait_ms = strcmp(scenario, "game-check-expiry") == 0 ? 200 : 600;
+    jw_ipc_client *client = NULL;
+    if (connect_and_subscribe_check(socket_path, service_id, ack_ms, wait_ms,
+                                    &client) != 0 ||
+        reconcile(client, "7") != 0 ||
+        write_result(runtime, "ready=1\n") != 0) {
+        jw_ipc_client_close(client);
+        return 110;
+    }
+
+    char *check = NULL;
+    char launch_id[128];
+    if (recv_json(client, &check) != 0 ||
+        !strstr(check, "\"event\":\"game.check\"") ||
+        !strstr(check, "\"wait_budget_ms\":") ||
+        json_launch_id(check, launch_id, sizeof(launch_id)) != 0) {
+        free(check);
+        jw_ipc_client_close(client);
+        return 111;
+    }
+    free(check);
+
+    if (strcmp(scenario, "game-check-current") == 0) {
+        if (send_status(client, "stop", launch_id, 0) != 0 ||
+            write_result(runtime, "ready=1\ncheck=1\nstop=1\n") != 0) {
+            jw_ipc_client_close(client);
+            return 112;
+        }
+    } else if (strcmp(scenario, "game-check-timeout") == 0) {
+        /* No initial status: Jawaka must abort, never infer current. */
+    } else if (strcmp(scenario, "game-check-unsafe-card") == 0) {
+        char error[320];
+        int n = snprintf(error, sizeof(error),
+                         "{\"v\":1,\"status\":\"error\",\"launch_id\":\"%s\","
+                         "\"reason\":\"unsafe-card-binding\"}", launch_id);
+        if (n <= 0 || (size_t)n >= sizeof(error) ||
+            jw_ipc_client_send(client, error, (size_t)n) != 0 ||
+            write_result(runtime, "ready=1\ncheck=1\nunsafe_card=1\n") != 0) {
+            jw_ipc_client_close(client);
+            return 121;
+        }
+    } else if (strcmp(scenario, "game-check-malformed") == 0) {
+        if (send_status(client, "ready", launch_id, 0) != 0) {
+            jw_ipc_client_close(client);
+            return 113;
+        }
+    } else {
+        if (send_check_waiting(client, launch_id, 3, 49152) != 0 ||
+            write_result(runtime, "ready=1\ncheck=1\nwaiting=1\n") != 0) {
+            jw_ipc_client_close(client);
+            return 114;
+        }
+        if (strcmp(scenario, "game-check-wait") == 0) {
+            char selected_path[4096];
+            int selected_n = snprintf(selected_path, sizeof(selected_path),
+                                      "%s/check-wait-selected", runtime);
+            if (selected_n < 0 || (size_t)selected_n >= sizeof(selected_path)) {
+                jw_ipc_client_close(client);
+                return 115;
+            }
+            while (!g_stop && access(selected_path, F_OK) != 0) {
+                usleep(10000);
+            }
+            /* Deliberately exceed ack_ms. An explicit check wait is bounded by
+               wait_ms and must not require artificial progress heartbeats. */
+            usleep(350000);
+            if (send_check_waiting(client, launch_id, 2, 32768) != 0) {
+                jw_ipc_client_close(client);
+                return 120;
+            }
+            usleep(100000);
+            if (send_status(client, "stop", launch_id, 0) != 0) {
+                jw_ipc_client_close(client);
+                return 116;
+            }
+        } else {
+            char *event = NULL;
+            if (recv_json(client, &event) != 0) {
+                free(event);
+                jw_ipc_client_close(client);
+                return 117;
+            }
+            bool cancel = strstr(event, "\"event\":\"game.cancel\"") != NULL;
+            bool abort = strstr(event, "\"event\":\"game.abort\"") != NULL;
+            free(event);
+            if ((strcmp(scenario, "game-check-play") == 0 && !cancel) ||
+                ((strcmp(scenario, "game-check-cancel") == 0 ||
+                  strcmp(scenario, "game-check-expiry") == 0) && !abort)) {
+                jw_ipc_client_close(client);
+                return 118;
+            }
+            if (write_result(runtime,
+                    cancel ? "ready=1\ncheck=1\nwaiting=1\ncancel=1\n"
+                           : "ready=1\ncheck=1\nwaiting=1\nabort=1\n") != 0) {
+                jw_ipc_client_close(client);
+                return 119;
+            }
+        }
+    }
+    while (!g_stop) {
+        pause();
+    }
+    jw_ipc_client_close(client);
+    return 0;
+}
 
 static int run_game_exchange_fixture(const char *socket_path,
                                      const char *service_id,
@@ -473,6 +620,10 @@ int main(void) {
     signal(SIGPIPE, SIG_IGN);
 
     const char *scenario = getenv("UMRK_LIFE1_FIXTURE_SCENARIO");
+    if (scenario && strncmp(scenario, "game-check-", 11) == 0) {
+        return run_game_check_fixture(socket_path, service_id, runtime,
+                                      scenario);
+    }
     if (scenario &&
         (strcmp(scenario, "game-exchange") == 0 ||
          strcmp(scenario, "game-slow-ready") == 0)) {
