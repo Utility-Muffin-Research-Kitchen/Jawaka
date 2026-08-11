@@ -1096,15 +1096,18 @@ static void jw__rumble_init(void) {
     if (!jw__rumble_write_long(JW_RUMBLE_PWM "/period", JW_RUMBLE_PERIOD)) goto fail;
     if (!jw__rumble_write_long(JW_RUMBLE_PWM "/duty_cycle", jw__rumble_off_duty())) goto fail;
 
-    /* Now that the channel is legal, try to normalize the polarity. Both of
-       these are best-effort: this driver refuses "normal" and stays inversed,
-       which is fine because we re-read below and adapt to what actually stuck. */
+    /* Now that the channel is legal, normalize the polarity. "normal" DOES take,
+       as long as period was written first -- the old belief that this driver
+       refused it came from writing polarity before period, which fails with
+       EINVAL and reads back as inversed. Both writes stay best-effort because we
+       re-read below and adapt to whatever actually stuck. */
     (void)jw__rumble_write(JW_RUMBLE_PWM "/enable", "0");
     (void)jw__rumble_write(JW_RUMBLE_PWM "/polarity", "normal");
 
-    /* Re-read rather than trusting the write: this driver rejects "normal" and
-       stays inversed, and acting on the value we asked for instead of the one
-       in effect is exactly how the motor got stranded during bring-up. */
+    /* Re-read rather than trusting the write: a channel another process left
+       inversed still has to be handled, and acting on the value we asked for
+       instead of the one in effect is exactly how the motor got stranded during
+       bring-up. Under inversed, duty 0 is FULL ON. */
     g_rumble_polarity = jw__rumble_read_polarity();
     if (g_rumble_polarity == JW_RUMBLE_POLARITY_UNKNOWN) {
         jw_log_warn("rumble: polarity unreadable after configure; haptics disabled");
