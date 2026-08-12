@@ -26,6 +26,24 @@ msgstr ""
 msgid "1 min"
 msgstr "1 分钟"
 
+msgid "1.06 GHz"
+msgstr ""
+
+msgid "1.10 GHz"
+msgstr ""
+
+msgid "1.42 GHz"
+msgstr ""
+
+msgid "1.61 GHz"
+msgstr ""
+
+msgid "1.80 GHz"
+msgstr ""
+
+msgid "1.99 GHz"
+msgstr ""
+
 #, fuzzy
 msgid "10 min"
 msgstr "10 分钟"
@@ -38,9 +56,21 @@ msgstr "15 秒"
 msgid "2 min"
 msgstr "2 分钟"
 
+msgid "200 MHz"
+msgstr ""
+
 #, fuzzy
 msgid "30 sec"
 msgstr "30 秒"
+
+msgid "300 MHz"
+msgstr ""
+
+msgid "324 MHz"
+msgstr ""
+
+msgid "400 MHz"
+msgstr ""
 
 #, fuzzy
 msgid "45 sec"
@@ -49,6 +79,24 @@ msgstr "45 秒"
 #, fuzzy
 msgid "5 min"
 msgstr "5 分钟"
+
+msgid "528 MHz"
+msgstr ""
+
+msgid "600 MHz"
+msgstr ""
+
+msgid "700 MHz"
+msgstr ""
+
+msgid "780 MHz"
+msgstr ""
+
+msgid "800 MHz"
+msgstr ""
+
+msgid "816 MHz"
+msgstr ""
 
 #, fuzzy
 msgid "A: On/Off   X: Grab to reorder"
@@ -80,6 +128,14 @@ msgstr "操作"
 #, fuzzy
 msgid "Active"
 msgstr "生效中"
+
+#, fuzzy
+msgid "Active: %s"
+msgstr "生效：%s"
+
+#, fuzzy
+msgid "Active: %s  Temp: %d C"
+msgstr "生效：%s  温度：%d°C"
 
 #, fuzzy
 msgid "Adjust"
@@ -132,6 +188,10 @@ msgid "Audio Output"
 msgstr "音频输出"
 
 #, fuzzy
+msgid "Auto"
+msgstr "自动"
+
+#, fuzzy
 msgid "Auto Sleep"
 msgstr "自动休眠"
 
@@ -144,8 +204,16 @@ msgid "Back"
 msgstr "返回"
 
 #, fuzzy
+msgid "Balanced"
+msgstr "均衡"
+
+#, fuzzy
 msgid "Battery"
 msgstr "电池"
+
+#, fuzzy
+msgid "Battery Saver"
+msgstr "省电"
 
 #, fuzzy
 msgid "Beta builds are tester previews and may be unstable or lose data. Switch to the Beta update channel?"
@@ -276,6 +344,10 @@ msgstr "当前"
 msgid "Cursor Movement"
 msgstr "光标移动"
 
+#, fuzzy
+msgid "Custom"
+msgstr "自定义"
+
 msgid "DMC"
 msgstr ""
 
@@ -361,8 +433,16 @@ msgstr "字体大小"
 msgid "Forget"
 msgstr "忘记"
 
+#, fuzzy
+msgid "Frontend"
+msgstr "前端"
+
 msgid "GPU"
 msgstr ""
+
+#, fuzzy
+msgid "Game"
+msgstr "游戏"
 
 #, fuzzy
 msgid "Game Art"
@@ -476,6 +556,10 @@ msgstr "上次更新：%s"
 #, fuzzy
 msgid "Later"
 msgstr "稍后"
+
+#, fuzzy
+msgid "Latest"
+msgstr "最新"
 
 #, fuzzy
 msgid "Launch"
@@ -860,6 +944,18 @@ msgstr "设置您所在的时区"
 msgid "Settings"
 msgstr "设置"
 
+#, fuzzy
+msgid "Sleep"
+msgstr "睡眠"
+
+#, fuzzy
+msgid "Slot %d"
+msgstr "存档位 %d"
+
+#, fuzzy
+msgid "Slot Auto"
+msgstr "自动存档位"
+
 msgid "SoC"
 msgstr ""
 
@@ -918,6 +1014,10 @@ msgstr ""
 #, fuzzy
 msgid "Switch"
 msgstr "切换"
+
+#, fuzzy
+msgid "Switcher"
+msgstr "游戏切换"
 
 #, fuzzy
 msgid "Sydney"

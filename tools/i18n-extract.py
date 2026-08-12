@@ -77,6 +77,9 @@ ARRAYS = [
     ("internal/settings/settings.c", "kAutoSleepLabels", "all"),
     ("internal/launcher/system_names.c", "kSystemDisplayNames", "second"),
     ("internal/settings/settings.c", "kTimeZones", "first"),
+    ("cmd/jawaka-menu/main.c", "kCpuPerfOptions", "first"),
+    ("cmd/jawaka-menu/main.c", "kGpuPerfOptions", "first"),
+    ("cmd/jawaka-menu/main.c", "kDmcPerfOptions", "first"),
 ]
 
 STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')

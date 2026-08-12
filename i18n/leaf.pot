@@ -28,6 +28,30 @@ msgstr ""
 msgid "1 min"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "1.06 GHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "1.10 GHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "1.42 GHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "1.61 GHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "1.80 GHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "1.99 GHz"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "10 min"
 msgstr ""
@@ -40,8 +64,24 @@ msgstr ""
 msgid "2 min"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "200 MHz"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "30 sec"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "300 MHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "324 MHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "400 MHz"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -50,6 +90,30 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "5 min"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "528 MHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "600 MHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "700 MHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "780 MHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "800 MHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "816 MHz"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -82,6 +146,14 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Active"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Active: %s"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Active: %s  Temp: %d C"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -140,6 +212,10 @@ msgstr ""
 msgid "Audio Output"
 msgstr ""
 
+#: internal/platform/platform_common.c
+msgid "Auto"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Auto Sleep"
 msgstr ""
@@ -152,8 +228,16 @@ msgstr ""
 msgid "Back"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Balanced"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Battery"
+msgstr ""
+
+#: internal/platform/platform_common.c
+msgid "Battery Saver"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -288,6 +372,10 @@ msgstr ""
 msgid "Cursor Movement"
 msgstr ""
 
+#: internal/platform/platform_common.c
+msgid "Custom"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "DMC"
 msgstr ""
@@ -376,8 +464,16 @@ msgstr ""
 msgid "Forget"
 msgstr ""
 
+#: internal/platform/platform_common.c
+msgid "Frontend"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "GPU"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Game"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -498,6 +594,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Later"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Latest"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -900,6 +1000,18 @@ msgstr ""
 msgid "Settings"
 msgstr ""
 
+#: internal/platform/platform_common.c
+msgid "Sleep"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Slot %d"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Slot Auto"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "SoC"
 msgstr ""
@@ -964,11 +1076,15 @@ msgstr ""
 msgid "Switch"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Switcher"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Sydney"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-menu/main.c
 msgid "System"
 msgstr ""
 

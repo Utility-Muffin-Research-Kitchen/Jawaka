@@ -5297,7 +5297,7 @@ static void jw__render_switcher(jw_launcher_state *state) {
 
     cat_status_bar_opts sb = {0};
     jw_settings_status_bar_opts(&state->settings, &sb);
-    cat_draw_screen_title("Switcher", &sb);
+    cat_draw_screen_title(T("Switcher"), &sb);
 
     bool hints = jw_settings_show_hints(&state->settings);
     SDL_Rect content = cat_get_content_rect(true, hints, false);

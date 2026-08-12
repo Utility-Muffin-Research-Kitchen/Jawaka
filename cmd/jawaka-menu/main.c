@@ -303,7 +303,7 @@ static void jw__render_menu(const jw_menu_state *state) {
     cat_status_bar_opts sb = state->status_bar;
 
     cat_clear_screen();
-    cat_draw_screen_title("System", &sb);
+    cat_draw_screen_title(T("System"), &sb);
 
     /* Box-model composition (same shape as the Settings / browse pages): carve a
        0-height tab bar and a 0-height sub-header off the content box, leaving a
@@ -685,9 +685,9 @@ static void jw__rel_time(long mtime, char *out, size_t out_size) {
 
 static void jw__slot_name(int slot, char *out, size_t out_size) {
     if (slot < 0) {
-        snprintf(out, out_size, "Slot Auto");
+        snprintf(out, out_size, "%s", T("Slot Auto"));
     } else {
-        snprintf(out, out_size, "Slot %d", slot);
+        snprintf(out, out_size, T("Slot %d"), slot);
     }
 }
 
@@ -738,7 +738,7 @@ static void jw__load_caption(const jw_ingame_state *state,
     const char *order = (idx == 0) ? "newest"
                       : (idx == state->load_count - 1 ? "oldest" : "");
     if (state->load_entries[idx].is_latest) {
-        snprintf(main, main_size, "Latest");
+        snprintf(main, main_size, "%s", T("Latest"));
         if (rel[0]) {
             snprintf(sub, sub_size, "unsaved \xc2\xb7 %s \xc2\xb7 %d of %d",
                      rel, idx + 1, state->load_count);
@@ -971,7 +971,7 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
             if (idx < 0) idx = 0;
             if (idx >= state->load_count) idx = state->load_count - 1;
             if (state->load_entries[idx].is_latest) {
-                snprintf(out, out_size, "%s", "Latest");
+                snprintf(out, out_size, "%s", T("Latest"));
             } else {
                 jw__slot_name(state->load_entries[idx].slot, out, out_size);
             }
@@ -1201,7 +1201,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
     }
     SDL_Rect content = cat_get_content_rect(true, true, false);
     jw__draw_ingame_underlay(content, CAT_S(4), content.y - CAT_S(4));   /* behind the title */
-    cat_draw_screen_title(state->game_title[0] ? state->game_title : "Game", &sb);
+    cat_draw_screen_title(state->game_title[0] ? state->game_title : T("Game"), &sb);
 
     int pad       = CAT_S(24);
     int x         = content.x + pad;
@@ -1499,7 +1499,7 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
     }
     SDL_Rect content = cat_get_content_rect(true, true, false);
     jw__draw_ingame_underlay(content, CAT_S(4), content.y - CAT_S(4));   /* behind the title */
-    cat_draw_screen_title("Performance", &sb);
+    cat_draw_screen_title(T("Performance"), &sb);
 
     int pad = CAT_S(24);
     int x = content.x + pad;
@@ -1522,20 +1522,20 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
     };
     const char *values[JW_INGAME_PERF_ROWS] = {
         jw__ingame_perf_profile_label_for_index(state->perf_profile_index),
-        kCpuPerfOptions[state->perf_cpu_index].label,
-        kGpuPerfOptions[state->perf_gpu_index].label,
-        kDmcPerfOptions[state->perf_dmc_index].label,
+        T(kCpuPerfOptions[state->perf_cpu_index].label),
+        T(kGpuPerfOptions[state->perf_gpu_index].label),
+        T(kDmcPerfOptions[state->perf_dmc_index].label),
         state->perf.session_override ? T("Active") : T("None"),
     };
 
     if (state->perf_ready && state->perf.supported) {
         char line[128];
         if (state->perf.soc_temp_c >= 0) {
-            snprintf(line, sizeof(line), "Active: %s  Temp: %d C",
+            snprintf(line, sizeof(line), T("Active: %s  Temp: %d C"),
                      jw__ingame_perf_active_label(state),
                      state->perf.soc_temp_c);
         } else {
-            snprintf(line, sizeof(line), "Active: %s",
+            snprintf(line, sizeof(line), T("Active: %s"),
                      jw__ingame_perf_active_label(state));
         }
         cat_draw_text_ellipsized(small, line, x, top_y,
@@ -1954,7 +1954,7 @@ static void jw__render_ingame_switcher(const jw_ingame_state *state,
         ap_color scrim = { 0, 0, 0, 150 };
         cat_draw_rect(0, 0, sw, sh, scrim);
     }
-    cat_draw_screen_title("Switcher", &sb);
+    cat_draw_screen_title(T("Switcher"), &sb);
 
     SDL_Rect content = cat_get_content_rect(true, state->show_hints, false);
     int margin = cat_scale(12);

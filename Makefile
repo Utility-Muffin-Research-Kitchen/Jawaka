@@ -226,6 +226,7 @@ PLATFORM_CTL_SRCS := \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
 	internal/platform/platform_common.c \
+	internal/i18n/i18n.c \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
@@ -685,7 +686,8 @@ service-client-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-client-test \
 		internal/ipc/service_client_test.c internal/ipc/ipc.c \
 		internal/ipc/ipc_client.c internal/ipc/ctl1.c \
-		internal/platform/platform_common.c third_party/cjson/cJSON.c -lm
+		internal/platform/platform_common.c internal/i18n/i18n.c \
+		internal/core/log.c third_party/cjson/cJSON.c -lm
 	$(BUILD)/bin/service-client-test
 
 imported-title-test: | $(BUILD)/bin
