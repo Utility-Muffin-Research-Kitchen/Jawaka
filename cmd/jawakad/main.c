@@ -7841,6 +7841,13 @@ static void jw__input_isolation_child_enter(const jw_input_roster *roster,
 
     setenv("SDL_JOYSTICK_DEVICE", sdl_devices, 1);
     setenv("SDL_JOYSTICK_DISABLE_UDEV", "1", 1);
+    /* SDL's HIDAPI drivers reach Xbox and similar pads through /dev/hidraw*,
+       which the mount namespace does not cover: such a pad would enter SDL's
+       device list outside the roster order, and one excluded by the
+       three-external limit would still be visible to the emulator. Force the
+       evdev path so the private /dev/input view is the single source of truth
+       for which controllers exist and in which order. */
+    setenv("SDL_JOYSTICK_HIDAPI", "0", 1);
     char text[8];
     snprintf(text, sizeof(text), "%d", roster->count);
     setenv("JAWAKA_INPUT_ROSTER_COUNT", text, 1);
@@ -13116,6 +13123,7 @@ int main(int argc, char *argv[]) {
     jw_input_namespace_startup_sweep();
     unsetenv("SDL_JOYSTICK_DEVICE");
     unsetenv("SDL_JOYSTICK_DISABLE_UDEV");
+    unsetenv("SDL_JOYSTICK_HIDAPI");
     unsetenv("JAWAKA_INPUT_ROSTER_COUNT");
 
     if (jw_platform_init(&state.platform, state.runtime_dir, state.sdcard_root) != 0) {
