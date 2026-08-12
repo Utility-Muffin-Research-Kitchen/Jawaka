@@ -53,6 +53,14 @@ msgid "5 min"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "A: On/Off   X: Grab to reorder"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "ADB"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "ADB disable canceled"
 msgstr ""
 
@@ -74,6 +82,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Adjust"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "All Systems"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -141,6 +153,10 @@ msgid "Battery"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Beta builds are tester previews and may be unstable or lose data. Switch to the Beta update channel?"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Black Frame Insertion"
 msgstr ""
 
@@ -161,7 +177,19 @@ msgid "Bluetooth Name"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Board"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Boot Splash"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Box art"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Brazil (East)"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -176,8 +204,16 @@ msgstr ""
 msgid "Button Hints"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "By system"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "CPU"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "CPU temp"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -185,7 +221,19 @@ msgid "Cancel"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Central Europe"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Check Releases"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "China"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Choose"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -249,6 +297,18 @@ msgid "Details"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Device"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Disable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Disable USB ADB and remove Leaf's boot restore marker?"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Display & Sound"
 msgstr ""
 
@@ -265,7 +325,19 @@ msgid "Dreamcast"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Eastern Europe"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Empty"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Enable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Enable USB ADB and restore it at boot?"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -337,6 +409,10 @@ msgid "Games"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Games played"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "General"
 msgstr ""
 
@@ -361,11 +437,27 @@ msgid "Home Tabs"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "IPv4"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "IPv6"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "India"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Install"
 msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Intellivision"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Japan / Korea"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -376,12 +468,28 @@ msgstr ""
 msgid "Keep Original"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Keep data"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Kernel"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Language"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Last played"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Last update: %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Later"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -390,6 +498,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Layout"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Library"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -416,12 +528,20 @@ msgstr ""
 msgid "MSX"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Memory free"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Menu"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Mode"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Most played"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -472,6 +592,10 @@ msgstr ""
 msgid "No games found"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "No playtime recorded yet."
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "No save in this slot"
 msgstr ""
@@ -484,8 +608,12 @@ msgstr ""
 msgid "None"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "OK"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "OS"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -498,6 +626,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Open"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Open-source components"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -536,8 +668,16 @@ msgstr ""
 msgid "PlayStation Portable"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Playtime"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Ports"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Power"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -546,6 +686,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Quit"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "RAM"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -569,6 +713,14 @@ msgid "Region Priority"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Reinstall"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Release"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Releases"
 msgstr ""
 
@@ -576,8 +728,16 @@ msgstr ""
 msgid "Remove"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Removing retained Pak Rat data"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Repair"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Replace"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -596,6 +756,18 @@ msgstr ""
 msgid "Reset RetroArch Config"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Reset shared RetroArch config to packaged defaults?"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Restart"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Restart now to finish installing?"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Resume"
 msgstr ""
@@ -612,6 +784,10 @@ msgstr ""
 msgid "RetroArch reset canceled"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Revert"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Rumble"
 msgstr ""
@@ -622,6 +798,10 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "SG-1000"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Safely unmount the secondary SD card?"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -642,6 +822,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scanning library..."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Scanning…"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -701,6 +885,14 @@ msgid "Services"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Set your local time zone"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "SoC"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Source Han Sans"
 msgstr ""
 
@@ -717,6 +909,10 @@ msgid "Stable"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Start"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Start with Leaf"
 msgstr ""
 
@@ -730,6 +926,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Stop"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Storage free"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -750,6 +950,14 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Switch"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Sydney"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "System"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -780,6 +988,10 @@ msgstr ""
 msgid "Time Zone"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Total"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "TurboGrafx-16"
 msgstr ""
@@ -797,11 +1009,51 @@ msgid "Turn On"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "UK / Ireland"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "US Alaska"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "US Arizona"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "US Central"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "US Eastern"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "US Hawaii"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "US Mountain"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "US Pacific"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "UTC"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Unavailable"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Uninstall"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Unmount"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -830,6 +1082,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Update status unavailable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Uptime"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -894,4 +1150,8 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "volume failed"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "—"
 msgstr ""

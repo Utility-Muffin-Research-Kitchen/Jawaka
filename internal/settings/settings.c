@@ -2026,7 +2026,7 @@ static void jw__render_services(const jw_settings_ui *ui, int x, int y, int w, i
     }
 
     if (ui->services_count <= 0) {
-        cat_draw_text(small, "No services installed", x + cat_scale(12), dy,
+        cat_draw_text(small, T("No services installed"), x + cat_scale(12), dy,
                       theme->hint);
         return;
     }
@@ -2544,7 +2544,7 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
             value = T("Enable");
         }
 
-        cat_draw_text(body, "ADB", ix + cat_scale(12), ty, label_c);
+        cat_draw_text(body, T("ADB"), ix + cat_scale(12), ty, label_c);
         int vw = cat_measure_text(body, value);
         cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
         return;
@@ -2658,7 +2658,7 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count, &ui->network_list, item_h,
                        jw__draw_wifi_item, &ctx);
     if (wifi_available && ui->wifi_radio_on && ui->wifi_network_count == 0) {
-        cat_draw_text(small, "Scanning…", x + cat_scale(12),
+        cat_draw_text(small, T("Scanning…"), x + cat_scale(12),
                       dy + item_h * JW_NETWORK_FIXED_ROWS, theme->hint);
     }
 }
@@ -2968,7 +2968,7 @@ static void jw__draw_scrape_edit_item(int idx, int ix, int iy, int iw, int ih,
     cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
                              iw * 2 / 3);
 
-    const char *value = grabbed_row ? "Moving" : (is_included ? "On" : "Off");
+    const char *value = grabbed_row ? T("Moving") : (is_included ? T("On") : T("Off"));
     int vw = cat_measure_text(body, value);
     cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
 }
@@ -2984,7 +2984,7 @@ static void jw__render_scrape_priority(const jw_settings_ui *ui,
     int sub_h = jw__subheader_line_h(small) + cat_scale(6);
     SDL_Rect sub;
     SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
-    cat_draw_text_ellipsized(small, "A: On/Off   X: Grab to reorder",
+    cat_draw_text_ellipsized(small, T("A: On/Off   X: Grab to reorder"),
                              sub.x + cat_scale(12), sub.y, theme->hint,
                              sub.w - cat_scale(24));
 
@@ -3155,7 +3155,7 @@ static void jw__draw_scrape_download_item(int idx, int ix, int iy, int iw, int i
     ap_color value_c = selected ? theme->highlighted_text : theme->hint;
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
-    const char *label = "All Systems";
+    const char *label = T("All Systems");
     char value[32];
     int n;
     if (idx == 0) {
@@ -3190,10 +3190,10 @@ static void jw__render_scrape_download(const jw_settings_ui *ui,
     SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
 
     if (!ui->scrape_missing_have_cache) {
-        cat_draw_text_ellipsized(small, "Scanning library...",
+        cat_draw_text_ellipsized(small, T("Scanning library..."),
                                  sub.x + cat_scale(12), sub.y, theme->hint,
                                  sub.w - cat_scale(24));
-        cat_draw_text(body, "Scanning library...",
+        cat_draw_text(body, T("Scanning library..."),
                       c.x + cat_scale(4), c.y + cat_scale(4), theme->hint);
         return;
     }
@@ -3604,7 +3604,7 @@ static void jw__render_scrape_queue(const jw_settings_ui *ui,
     uint32_t summ_dt  = summ_last_ms ? summ_now - summ_last_ms : 0u;
     summ_last_ms = summ_now;
     summ_mq.mode = CAT_MARQUEE_LOOP;
-    if (cat_draw_text_marquee(small, summary[0] ? summary : "Empty",
+    if (cat_draw_text_marquee(small, summary[0] ? summary : T("Empty"),
                               sub.x + cat_scale(12), sub.y, theme->hint,
                               sub.w - cat_scale(24), &summ_mq, summ_dt))
         cat_request_frame();
@@ -3908,7 +3908,7 @@ static void jw__about_push(jw__about_row *rows, int *n, jw__about_kind kind,
                            const char *label, const char *value) {
     if (*n >= JW_ABOUT_MAX_ROWS) return;
     rows[*n].kind = kind;
-    snprintf(rows[*n].label, sizeof(rows[*n].label), "%s", label ? label : "");
+    snprintf(rows[*n].label, sizeof(rows[*n].label), "%s", label ? T(label) : "");
     snprintf(rows[*n].value, sizeof(rows[*n].value), "%s", value ? value : "");
     (*n)++;
 }
@@ -3919,6 +3919,7 @@ static void jw__about_push(jw__about_row *rows, int *n, jw__about_kind kind,
    and the remaining height below the title. */
 static void jw__draw_info_title(const char *title, int x, int y, int w, int h,
                                 int *out_top, int *out_h) {
+    title = T(title);
     TTF_Font *tf = cat_get_font(CAT_FONT_EXTRA_LARGE);
     cat_draw_text_ellipsized(tf, title, x + cat_scale(4), y,
                              cat_get_theme()->text, w - cat_scale(8));
@@ -4772,7 +4773,7 @@ static void jw__draw_timezone_item(int idx, int ix, int iy, int iw, int ih,
     bool is_current = (cur[0] && strcmp(cur, kTimeZones[idx].tz) == 0);
     char label[48];
     snprintf(label, sizeof(label), "%s%s", is_current ? "* " : "",
-             kTimeZones[idx].label);
+             T(kTimeZones[idx].label));
     cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c, iw / 2);
 
     int vw = cat_measure_text(body, kTimeZones[idx].off);
@@ -4788,7 +4789,7 @@ static void jw__render_timezone_picker(const jw_settings_ui *ui,
     int sub_h = jw__subheader_line_h(small) + cat_scale(6);
     SDL_Rect sub;
     SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
-    cat_draw_text_ellipsized(small, "Set your local time zone", sub.x + cat_scale(12),
+    cat_draw_text_ellipsized(small, T("Set your local time zone"), sub.x + cat_scale(12),
                              sub.y, theme->hint, sub.w - cat_scale(24));
 
     int item_h = TTF_FontHeight(body) + cat_scale(12);
@@ -5063,6 +5064,18 @@ static bool jw__pick_color(jw_settings_ui *ui, ap_color *target,
     return false;
 }
 
+/* Jawaka-side shim over cat_confirmation: Catastrophe cannot know about the
+   string table, so the message and footer labels are translated here. Every
+   opts struct below is a stack local, so rewriting the pointers is safe. */
+static int jw__confirmation(cat_message_opts *opts, cat_confirm_result *result) {
+    if (opts->message) opts->message = T(opts->message);
+    for (int i = 0; i < opts->footer_count; i++) {
+        if (opts->footer[i].label)
+            opts->footer[i].label = T(opts->footer[i].label);
+    }
+    return cat_confirmation(opts, result);
+}
+
 static bool jw__confirm_retroarch_reset(void) {
     cat_footer_item footer[] = {
         { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
@@ -5074,7 +5087,7 @@ static bool jw__confirm_retroarch_reset(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static void jw__reset_retroarch_config(jw_settings_ui *ui,
@@ -5102,7 +5115,7 @@ static bool jw__confirm_secondary_unmount(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_adb_enable(void) {
@@ -5116,7 +5129,7 @@ static bool jw__confirm_adb_enable(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_adb_disable(void) {
@@ -5130,7 +5143,7 @@ static bool jw__confirm_adb_disable(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_update_install(const char *release_id) {
@@ -5147,7 +5160,7 @@ static bool jw__confirm_update_install(const char *release_id) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_update_unknown_preflight(const char *message) {
@@ -5163,7 +5176,7 @@ static bool jw__confirm_update_unknown_preflight(const char *message) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_update_reboot(void) {
@@ -5177,7 +5190,7 @@ static bool jw__confirm_update_reboot(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_bt_unpair(const char *name) {
@@ -5193,7 +5206,7 @@ static bool jw__confirm_bt_unpair(const char *name) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static void jw__copy_status(char *status_buf, size_t status_size,
@@ -5285,7 +5298,7 @@ static bool jw__confirm_update_picker_choice(const jw_settings_ui *ui,
     };
     cat_confirm_result result;
     (void)ui;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static void jw__open_update_picker(jw_settings_ui *ui,
@@ -5675,7 +5688,7 @@ static bool jw__confirm_beta_channel(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 /* Toggle the update channel (Stable <-> Beta) from the System Update page.

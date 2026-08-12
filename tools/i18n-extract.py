@@ -46,10 +46,26 @@ FUNNELS = [
     "jw__draw_header",
     "jw__draw_slider_row",
     "jw__render_account_row",
+    "jw__draw_info_title",
+    "jw__about_push",
 ]
 
-# Struct-initializer shape: { CAT_BTN_X, "Label", ... } in footer arrays.
-FOOTER_RE = re.compile(r'\{\s*CAT_BTN_[A-Z0-9_]+\s*,\s*"((?:[^"\\]|\\.)+)"')
+# A run of adjacent string literals -- C concatenates "a" "b" into one string,
+# and several dialog messages span lines that way. Every extraction site below
+# must treat the run as ONE key or the runtime key never matches.
+STR = r'"(?:[^"\\]|\\.)*"'
+RUN = re.compile(STR + r"(?:\s*" + STR + r")*")
+
+
+def run_to_text(run: str) -> str:
+    return "".join(m.group(1) for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', run))
+
+
+# Struct-initializer shapes. Positional footers ({ CAT_BTN_X, "Label" }) and the
+# designated-init dialogs (.message = "...", .label = "...") are both UI text --
+# verified by hand against every occurrence in the tree.
+FOOTER_RE = re.compile(r"\{\s*CAT_BTN_[A-Z0-9_]+\s*,\s*(" + RUN.pattern + r")")
+DESIG_RE  = re.compile(r"\.(?:message|label)\s*=\s*(" + RUN.pattern + r")")
 
 # Label arrays translated where they are indexed (T(kTabs[i]) and the like).
 # kSystemDisplayNames rows are {"ID", "Display Name"}; only the name is UI.
@@ -59,6 +75,7 @@ ARRAYS = [
     ("internal/settings/settings.c", "kStartupTabLabels", "all"),
     ("internal/settings/settings.c", "kAutoSleepLabels", "all"),
     ("internal/launcher/system_names.c", "kSystemDisplayNames", "second"),
+    ("internal/settings/settings.c", "kTimeZones", "first"),
 ]
 
 STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
@@ -126,11 +143,12 @@ def array_literals(src: str, name: str, mode: str):
     if mode == "all":
         for lit in STRING_RE.findall(body):
             yield lit
-    else:  # "second": {"ID", "Name"} rows
+    else:  # struct rows: "second" takes {"ID","Name"}, "first" takes {"Label",...}
+        idx = 1 if mode == "second" else 0
         for row in re.finditer(r"\{([^{}]*)\}", body):
             lits = STRING_RE.findall(row.group(1))
-            if len(lits) >= 2:
-                yield lits[1]
+            if len(lits) > idx:
+                yield lits[idx]
 
 
 def extract():
@@ -152,10 +170,12 @@ def extract():
         src = strip_comments(f.read_text(encoding="utf-8", errors="replace"))
         for fn in FUNNELS:
             for span in call_spans(src, fn):
-                for lit in STRING_RE.findall(span):
-                    add(lit, rel)
-        for lit in FOOTER_RE.findall(src):
-            add(lit, rel)
+                for m in RUN.finditer(span):
+                    add(run_to_text(m.group(0)), rel)
+        for m in FOOTER_RE.finditer(src):
+            add(run_to_text(m.group(1)), rel)
+        for m in DESIG_RE.finditer(src):
+            add(run_to_text(m.group(1)), rel)
         for arr_file, arr_name, mode in ARRAYS:
             if rel == arr_file:
                 for lit in array_literals(src, arr_name, mode):
