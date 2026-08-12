@@ -1,0 +1,1115 @@
+# Simplified Chinese -- MACHINE SEED, every entry fuzzy.
+# seeded from the AlexL-confirmed glossary of 2026-08-12; unreviewed strings must never ship.
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+#, fuzzy
+msgid "%d %s games"
+msgstr "%d 个 %s 游戏"
+
+#, fuzzy
+msgid "%d apps"
+msgstr "%d 个应用"
+
+#, fuzzy
+msgid "%d games"
+msgstr "%d 个游戏"
+
+#, fuzzy
+msgid "%d games, %d systems, %d apps"
+msgstr "%d 个游戏，%d 个系统，%d 个应用"
+
+msgid "-"
+msgstr ""
+
+#, fuzzy
+msgid "1 min"
+msgstr "1 分钟"
+
+#, fuzzy
+msgid "10 min"
+msgstr "10 分钟"
+
+#, fuzzy
+msgid "15 sec"
+msgstr "15 秒"
+
+#, fuzzy
+msgid "2 min"
+msgstr "2 分钟"
+
+#, fuzzy
+msgid "30 sec"
+msgstr "30 秒"
+
+#, fuzzy
+msgid "45 sec"
+msgstr "45 秒"
+
+#, fuzzy
+msgid "5 min"
+msgstr "5 分钟"
+
+#, fuzzy
+msgid "A: On/Off   X: Grab to reorder"
+msgstr "A：开/关   X：按住调整顺序"
+
+msgid "ADB"
+msgstr ""
+
+#, fuzzy
+msgid "ADB disable canceled"
+msgstr "已取消禁用 ADB"
+
+#, fuzzy
+msgid "ADB enable canceled"
+msgstr "已取消启用 ADB"
+
+#, fuzzy
+msgid "ADB unavailable on this platform"
+msgstr "此平台不支持 ADB"
+
+#, fuzzy
+msgid "Accounts"
+msgstr "账户"
+
+#, fuzzy
+msgid "Actions"
+msgstr "操作"
+
+#, fuzzy
+msgid "Active"
+msgstr "生效中"
+
+#, fuzzy
+msgid "Adjust"
+msgstr "调整"
+
+#, fuzzy
+msgid "All Systems"
+msgstr "所有系统"
+
+msgid "Amiga"
+msgstr ""
+
+#, fuzzy
+msgid "Appearance"
+msgstr "外观"
+
+#, fuzzy
+msgid "Apply"
+msgstr "应用"
+
+#, fuzzy
+msgid "Apps"
+msgstr "应用"
+
+#, fuzzy
+msgid "Arcade"
+msgstr "街机"
+
+#, fuzzy
+msgid "Artwork Priority"
+msgstr "封面优先级"
+
+msgid "Atari 2600"
+msgstr ""
+
+msgid "Atari 5200"
+msgstr ""
+
+msgid "Atari 7800"
+msgstr ""
+
+msgid "Atari Jaguar"
+msgstr ""
+
+msgid "Atari Lynx"
+msgstr ""
+
+#, fuzzy
+msgid "Audio Output"
+msgstr "音频输出"
+
+#, fuzzy
+msgid "Auto Sleep"
+msgstr "自动休眠"
+
+#, fuzzy
+msgid "Available"
+msgstr "可用"
+
+#, fuzzy
+msgid "Back"
+msgstr "返回"
+
+#, fuzzy
+msgid "Battery"
+msgstr "电池"
+
+#, fuzzy
+msgid "Beta builds are tester previews and may be unstable or lose data. Switch to the Beta update channel?"
+msgstr "测试版为测试者预览版本，可能不稳定或丢失数据。切换到测试版更新通道？"
+
+#, fuzzy
+msgid "Black Frame Insertion"
+msgstr "黑帧插入"
+
+#, fuzzy
+msgid "Black Frame Insertion needs 100 or 120 Hz"
+msgstr "黑帧插入需要 100 或 120 Hz"
+
+#, fuzzy
+msgid "Black Frame Insertion off"
+msgstr "黑帧插入已关闭"
+
+#, fuzzy
+msgid "Bluetooth"
+msgstr "蓝牙"
+
+#, fuzzy
+msgid "Bluetooth Name"
+msgstr "蓝牙名称"
+
+#, fuzzy
+msgid "Board"
+msgstr "主板"
+
+#, fuzzy
+msgid "Boot Splash"
+msgstr "开机动画"
+
+#, fuzzy
+msgid "Box art"
+msgstr "游戏封面"
+
+#, fuzzy
+msgid "Brazil (East)"
+msgstr "巴西（东部）"
+
+#, fuzzy
+msgid "Brightness"
+msgstr "亮度"
+
+#, fuzzy
+msgid "Browse"
+msgstr "浏览"
+
+#, fuzzy
+msgid "Button Hints"
+msgstr "按键提示"
+
+#, fuzzy
+msgid "By system"
+msgstr "按系统"
+
+msgid "CPU"
+msgstr ""
+
+#, fuzzy
+msgid "CPU temp"
+msgstr "CPU 温度"
+
+#, fuzzy
+msgid "Cancel"
+msgstr "取消"
+
+#, fuzzy
+msgid "Central Europe"
+msgstr "中欧"
+
+#, fuzzy
+msgid "Check Releases"
+msgstr "检查更新"
+
+#, fuzzy
+msgid "China"
+msgstr "中国"
+
+#, fuzzy
+msgid "Choose"
+msgstr "选择"
+
+#, fuzzy
+msgid "Clear"
+msgstr "清除"
+
+#, fuzzy
+msgid "Clock"
+msgstr "时钟"
+
+msgid "ColecoVision"
+msgstr ""
+
+#, fuzzy
+msgid "Color"
+msgstr "颜色"
+
+#, fuzzy
+msgid "Color Scheme"
+msgstr "配色方案"
+
+#, fuzzy
+msgid "Colors"
+msgstr "颜色"
+
+msgid "Commodore 64"
+msgstr ""
+
+#, fuzzy
+msgid "Continue"
+msgstr "继续"
+
+#, fuzzy
+msgid "Controls & Feedback"
+msgstr "控制与反馈"
+
+#, fuzzy
+msgid "Coverflow"
+msgstr "封面流"
+
+#, fuzzy
+msgid "Current"
+msgstr "当前"
+
+#, fuzzy
+msgid "Cursor Movement"
+msgstr "光标移动"
+
+msgid "DMC"
+msgstr ""
+
+#, fuzzy
+msgid "Defaults"
+msgstr "默认"
+
+#, fuzzy
+msgid "Details"
+msgstr "详情"
+
+#, fuzzy
+msgid "Device"
+msgstr "设备"
+
+#, fuzzy
+msgid "Disable"
+msgstr "禁用"
+
+#, fuzzy
+msgid "Disable USB ADB and remove Leaf's boot restore marker?"
+msgstr "禁用 USB ADB 并移除 Leaf 的开机恢复标记？"
+
+#, fuzzy
+msgid "Display & Sound"
+msgstr "显示与声音"
+
+#, fuzzy
+msgid "Done"
+msgstr "完成"
+
+#, fuzzy
+msgid "Download"
+msgstr "下载"
+
+msgid "Dreamcast"
+msgstr ""
+
+#, fuzzy
+msgid "Eastern Europe"
+msgstr "东欧"
+
+#, fuzzy
+msgid "Empty"
+msgstr "空"
+
+#, fuzzy
+msgid "Enable"
+msgstr "启用"
+
+#, fuzzy
+msgid "Enable USB ADB and restore it at boot?"
+msgstr "启用 USB ADB 并在开机时恢复？"
+
+#, fuzzy
+msgid "Enabled"
+msgstr "已启用"
+
+msgid "Famicom Disk System"
+msgstr ""
+
+#, fuzzy
+msgid "Favorite"
+msgstr "收藏"
+
+#, fuzzy
+msgid "Favorites"
+msgstr "收藏"
+
+#, fuzzy
+msgid "Filter"
+msgstr "筛选"
+
+#, fuzzy
+msgid "Font"
+msgstr "字体"
+
+#, fuzzy
+msgid "Font Size"
+msgstr "字体大小"
+
+#, fuzzy
+msgid "Forget"
+msgstr "忘记"
+
+msgid "GPU"
+msgstr ""
+
+#, fuzzy
+msgid "Game Art"
+msgstr "游戏封面"
+
+msgid "Game Boy"
+msgstr ""
+
+msgid "Game Boy Advance"
+msgstr ""
+
+msgid "Game Boy Color"
+msgstr ""
+
+msgid "Game Gear"
+msgstr ""
+
+#, fuzzy
+msgid "Game Performance"
+msgstr "游戏性能"
+
+#, fuzzy
+msgid "Game Rumble"
+msgstr "游戏震动"
+
+#, fuzzy
+msgid "Games"
+msgstr "游戏"
+
+#, fuzzy
+msgid "Games played"
+msgstr "已玩游戏"
+
+#, fuzzy
+msgid "General"
+msgstr "通用"
+
+#, fuzzy
+msgid "HDMI Output"
+msgstr "HDMI 输出"
+
+#, fuzzy
+msgid "HDMI output change failed"
+msgstr "HDMI 输出切换失败"
+
+#, fuzzy
+msgid "HDMI output unavailable on this platform"
+msgstr "此平台不支持 HDMI 输出"
+
+#, fuzzy
+msgid "Home Layout"
+msgstr "主页布局"
+
+#, fuzzy
+msgid "Home Tabs"
+msgstr "主页标签"
+
+msgid "IPv4"
+msgstr ""
+
+msgid "IPv6"
+msgstr ""
+
+#, fuzzy
+msgid "India"
+msgstr "印度"
+
+#, fuzzy
+msgid "Info"
+msgstr "信息"
+
+#, fuzzy
+msgid "Install"
+msgstr "安装"
+
+msgid "Intellivision"
+msgstr ""
+
+#, fuzzy
+msgid "Japan / Korea"
+msgstr "日本 / 韩国"
+
+#, fuzzy
+msgid "Keep"
+msgstr "保留"
+
+#, fuzzy
+msgid "Keep Original"
+msgstr "保留原始文件"
+
+#, fuzzy
+msgid "Keep data"
+msgstr "保留数据"
+
+#, fuzzy
+msgid "Kernel"
+msgstr "内核"
+
+#, fuzzy
+msgid "Language"
+msgstr "语言"
+
+#, fuzzy
+msgid "Last played"
+msgstr "最近游玩的"
+
+#, fuzzy
+msgid "Last update: %s"
+msgstr "上次更新：%s"
+
+#, fuzzy
+msgid "Later"
+msgstr "稍后"
+
+#, fuzzy
+msgid "Launch"
+msgstr "启动"
+
+#, fuzzy
+msgid "Layout"
+msgstr "布局"
+
+#, fuzzy
+msgid "Library"
+msgstr "游戏库"
+
+#, fuzzy
+msgid "Lighting"
+msgstr "灯光"
+
+#, fuzzy
+msgid "List Style"
+msgstr "列表样式"
+
+#, fuzzy
+msgid "Load"
+msgstr "读取"
+
+#, fuzzy
+msgid "Load State"
+msgstr "即时读档"
+
+msgid "MS-DOS"
+msgstr ""
+
+msgid "MSX"
+msgstr ""
+
+#, fuzzy
+msgid "Memory free"
+msgstr "剩余内存"
+
+#, fuzzy
+msgid "Menu"
+msgstr "菜单"
+
+#, fuzzy
+msgid "Mode"
+msgstr "模式"
+
+#, fuzzy
+msgid "Most played"
+msgstr "最常玩的"
+
+#, fuzzy
+msgid "Move"
+msgstr "移动"
+
+#, fuzzy
+msgid "Moving"
+msgstr "移动中"
+
+#, fuzzy
+msgid "Nearby"
+msgstr "附近设备"
+
+msgid "Neo Geo"
+msgstr ""
+
+msgid "Neo Geo Pocket"
+msgstr ""
+
+msgid "Neo Geo Pocket Color"
+msgstr ""
+
+#, fuzzy
+msgid "Network"
+msgstr "网络"
+
+msgid "Nintendo 64"
+msgstr ""
+
+msgid "Nintendo DS"
+msgstr ""
+
+msgid "Nintendo Entertainment System"
+msgstr ""
+
+#, fuzzy
+msgid "No apps found"
+msgstr "未找到应用"
+
+#, fuzzy
+msgid "No games found"
+msgstr "未找到游戏"
+
+#, fuzzy
+msgid "No playtime recorded yet."
+msgstr "暂无游玩记录。"
+
+#, fuzzy
+msgid "No save in this slot"
+msgstr "此存档位为空"
+
+#, fuzzy
+msgid "No services installed"
+msgstr "未安装服务"
+
+#, fuzzy
+msgid "None"
+msgstr "无"
+
+#, fuzzy
+msgid "OK"
+msgstr "确定"
+
+#, fuzzy
+msgid "OS"
+msgstr "操作系统"
+
+#, fuzzy
+msgid "Off"
+msgstr "关闭"
+
+#, fuzzy
+msgid "On"
+msgstr "开启"
+
+#, fuzzy
+msgid "Open"
+msgstr "打开"
+
+#, fuzzy
+msgid "Open-source components"
+msgstr "开源组件"
+
+#, fuzzy
+msgid "Options"
+msgstr "选项"
+
+#, fuzzy
+msgid "Paired"
+msgstr "已配对"
+
+#, fuzzy
+msgid "Performance"
+msgstr "性能"
+
+#, fuzzy
+msgid "Performance unavailable"
+msgstr "性能信息不可用"
+
+#, fuzzy
+msgid "Pick"
+msgstr "选取"
+
+#, fuzzy
+msgid "Pick Update"
+msgstr "选择更新"
+
+#, fuzzy
+msgid "Play"
+msgstr "开始游戏"
+
+msgid "PlayStation"
+msgstr ""
+
+msgid "PlayStation Portable"
+msgstr ""
+
+#, fuzzy
+msgid "Playtime"
+msgstr "游玩时长"
+
+#, fuzzy
+msgid "Ports"
+msgstr "移植游戏"
+
+#, fuzzy
+msgid "Power"
+msgstr "电源"
+
+#, fuzzy
+msgid "Profile"
+msgstr "方案"
+
+#, fuzzy
+msgid "Quit"
+msgstr "退出"
+
+#, fuzzy
+msgid "RAM"
+msgstr "内存"
+
+#, fuzzy
+msgid "Recents"
+msgstr "最近游玩"
+
+#, fuzzy
+msgid "Recording"
+msgstr "录制"
+
+#, fuzzy
+msgid "Refresh"
+msgstr "刷新"
+
+#, fuzzy
+msgid "Refresh Rate"
+msgstr "刷新率"
+
+#, fuzzy
+msgid "Region Priority"
+msgstr "区域优先级"
+
+#, fuzzy
+msgid "Reinstall"
+msgstr "重新安装"
+
+#, fuzzy
+msgid "Release"
+msgstr "版本"
+
+#, fuzzy
+msgid "Releases"
+msgstr "版本"
+
+#, fuzzy
+msgid "Remove"
+msgstr "移除"
+
+#, fuzzy
+msgid "Removing retained Pak Rat data"
+msgstr "正在移除保留的 Pak Rat 数据"
+
+#, fuzzy
+msgid "Repair"
+msgstr "修复"
+
+#, fuzzy
+msgid "Replace"
+msgstr "替换"
+
+#, fuzzy
+msgid "Rescan"
+msgstr "重新扫描"
+
+#, fuzzy
+msgid "Reset"
+msgstr "重置"
+
+#, fuzzy
+msgid "Reset Override"
+msgstr "重置超频"
+
+#, fuzzy
+msgid "Reset RetroArch Config"
+msgstr "重置 RetroArch 配置"
+
+#, fuzzy
+msgid "Reset shared RetroArch config to packaged defaults?"
+msgstr "将共享的 RetroArch 配置重置为打包默认值？"
+
+#, fuzzy
+msgid "Restart"
+msgstr "重启"
+
+#, fuzzy
+msgid "Restart now to finish installing?"
+msgstr "立即重启以完成安装？"
+
+#, fuzzy
+msgid "Resume"
+msgstr "继续游戏"
+
+#, fuzzy
+msgid "RetroAchievements"
+msgstr "RetroAchievements"
+
+#, fuzzy
+msgid "RetroArch Settings"
+msgstr "RetroArch 设置"
+
+#, fuzzy
+msgid "RetroArch reset canceled"
+msgstr "已取消重置 RetroArch"
+
+#, fuzzy
+msgid "Revert"
+msgstr "还原"
+
+#, fuzzy
+msgid "Rumble"
+msgstr "震动"
+
+#, fuzzy
+msgid "Run / Stop"
+msgstr "运行 / 停止"
+
+msgid "SG-1000"
+msgstr ""
+
+#, fuzzy
+msgid "Safely unmount the secondary SD card?"
+msgstr "安全卸载副 SD 卡？"
+
+#, fuzzy
+msgid "Save & Quit"
+msgstr "保存并退出"
+
+#, fuzzy
+msgid "Save State"
+msgstr "即时存档"
+
+#, fuzzy
+msgid "Scan"
+msgstr "扫描"
+
+#, fuzzy
+msgid "Scanning"
+msgstr "扫描中"
+
+#, fuzzy
+msgid "Scanning library..."
+msgstr "正在扫描游戏库…"
+
+#, fuzzy
+msgid "Scanning…"
+msgstr "扫描中…"
+
+#, fuzzy
+msgid "Scrape"
+msgstr "刮削"
+
+#, fuzzy
+msgid "Scrape Artwork"
+msgstr "刮削封面"
+
+#, fuzzy
+msgid "Scrape Queue"
+msgstr "刮削队列"
+
+#, fuzzy
+msgid "Scrape Result"
+msgstr "刮削结果"
+
+msgid "ScreenScraper.fr"
+msgstr ""
+
+#, fuzzy
+msgid "Screenshots"
+msgstr "截图"
+
+#, fuzzy
+msgid "Search"
+msgstr "搜索"
+
+msgid "Sega 32X"
+msgstr ""
+
+msgid "Sega CD"
+msgstr ""
+
+msgid "Sega Genesis"
+msgstr ""
+
+msgid "Sega Master System"
+msgstr ""
+
+msgid "Sega Saturn"
+msgstr ""
+
+#, fuzzy
+msgid "Select"
+msgstr "选择"
+
+#, fuzzy
+msgid "Services"
+msgstr "服务"
+
+#, fuzzy
+msgid "Set your local time zone"
+msgstr "设置您所在的时区"
+
+#, fuzzy
+msgid "Settings"
+msgstr "设置"
+
+msgid "SoC"
+msgstr ""
+
+msgid "Source Han Sans"
+msgstr ""
+
+#, fuzzy
+msgid "Speed"
+msgstr "速度"
+
+#, fuzzy
+msgid "Split Over 10MB"
+msgstr "超过 10MB 时分割"
+
+#, fuzzy
+msgid "Stable"
+msgstr "稳定版"
+
+#, fuzzy
+msgid "Start"
+msgstr "开始"
+
+#, fuzzy
+msgid "Start with Leaf"
+msgstr "随 Leaf 启动"
+
+#, fuzzy
+msgid "Startup Tab"
+msgstr "启动标签"
+
+#, fuzzy
+msgid "Status Bar"
+msgstr "状态栏"
+
+#, fuzzy
+msgid "Stop"
+msgstr "停止"
+
+#, fuzzy
+msgid "Storage free"
+msgstr "剩余存储"
+
+#, fuzzy
+msgid "Strength"
+msgstr "震动强度"
+
+msgid "Super Famicom"
+msgstr ""
+
+msgid "Super Game Boy"
+msgstr ""
+
+msgid "Super Nintendo"
+msgstr ""
+
+#, fuzzy
+msgid "Switch"
+msgstr "切换"
+
+#, fuzzy
+msgid "Sydney"
+msgstr "悉尼"
+
+#, fuzzy
+msgid "System"
+msgstr "系统"
+
+#, fuzzy
+msgid "System Update"
+msgstr "系统更新"
+
+#, fuzzy
+msgid "Systems"
+msgstr "系统数"
+
+#, fuzzy
+msgid "Tab"
+msgstr "标签"
+
+#, fuzzy
+msgid "Tab Switching"
+msgstr "标签切换"
+
+#, fuzzy
+msgid "Tabs"
+msgstr "标签页"
+
+#, fuzzy
+msgid "Test Sound"
+msgstr "测试声音"
+
+#, fuzzy
+msgid "Time Zone"
+msgstr "时区"
+
+#, fuzzy
+msgid "Total"
+msgstr "总计"
+
+msgid "TurboGrafx-16"
+msgstr ""
+
+msgid "TurboGrafx-CD"
+msgstr ""
+
+#, fuzzy
+msgid "Turn Off"
+msgstr "关闭"
+
+#, fuzzy
+msgid "Turn On"
+msgstr "开启"
+
+#, fuzzy
+msgid "UK / Ireland"
+msgstr "英国 / 爱尔兰"
+
+#, fuzzy
+msgid "US Alaska"
+msgstr "美国阿拉斯加"
+
+#, fuzzy
+msgid "US Arizona"
+msgstr "美国亚利桑那"
+
+#, fuzzy
+msgid "US Central"
+msgstr "美国中部"
+
+#, fuzzy
+msgid "US Eastern"
+msgstr "美国东部"
+
+#, fuzzy
+msgid "US Hawaii"
+msgstr "美国夏威夷"
+
+#, fuzzy
+msgid "US Mountain"
+msgstr "美国山地"
+
+#, fuzzy
+msgid "US Pacific"
+msgstr "美国太平洋"
+
+#, fuzzy
+msgid "UTC"
+msgstr "UTC"
+
+#, fuzzy
+msgid "Unavailable"
+msgstr "不可用"
+
+#, fuzzy
+msgid "Uninstall"
+msgstr "卸载"
+
+#, fuzzy
+msgid "Unmount"
+msgstr "卸载"
+
+#, fuzzy
+msgid "Unmount Secondary SD"
+msgstr "卸载副 SD 卡"
+
+#, fuzzy
+msgid "Unmount canceled"
+msgstr "已取消卸载"
+
+#, fuzzy
+msgid "Unmount failed"
+msgstr "卸载失败"
+
+#, fuzzy
+msgid "Unpair"
+msgstr "取消配对"
+
+#, fuzzy
+msgid "Unsupported"
+msgstr "不支持"
+
+#, fuzzy
+msgid "Update Channel"
+msgstr "更新通道"
+
+#, fuzzy
+msgid "Update status unavailable"
+msgstr "更新状态不可用"
+
+#, fuzzy
+msgid "Uptime"
+msgstr "运行时间"
+
+msgid "Vectrex"
+msgstr ""
+
+msgid "Virtual Boy"
+msgstr ""
+
+#, fuzzy
+msgid "Volume"
+msgstr "音量"
+
+msgid "Wi-Fi"
+msgstr ""
+
+msgid "Wifi"
+msgstr ""
+
+msgid "WonderSwan"
+msgstr ""
+
+msgid "WonderSwan Color"
+msgstr ""
+
+#, fuzzy
+msgid "audio output failed"
+msgstr "音频输出失败"
+
+#, fuzzy
+msgid "boot splash unavailable on this platform"
+msgstr "此平台不支持开机动画"
+
+#, fuzzy
+msgid "brightness failed"
+msgstr "亮度调整失败"
+
+#, fuzzy
+msgid "font is fixed while a CJK language is selected"
+msgstr "选择中日韩语言时字体已固定"
+
+#, fuzzy
+msgid "font load failed"
+msgstr "字体加载失败"
+
+#, fuzzy
+msgid "performance unavailable"
+msgstr "性能设置不可用"
+
+#, fuzzy
+msgid "refresh rate change failed"
+msgstr "刷新率切换失败"
+
+#, fuzzy
+msgid "refresh rate unavailable on this platform"
+msgstr "此平台不支持刷新率切换"
+
+#, fuzzy
+msgid "volume failed"
+msgstr "音量调整失败"
+
+msgid "—"
+msgstr ""

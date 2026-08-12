@@ -76,6 +76,10 @@ msgstr ""
 msgid "Accounts"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Actions"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Active"
 msgstr ""
@@ -446,6 +450,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "India"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Info"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -886,6 +894,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Set your local time zone"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Settings"
 msgstr ""
 
 #: internal/settings/settings.c

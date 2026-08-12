@@ -71,6 +71,7 @@ DESIG_RE  = re.compile(r"\.(?:message|label)\s*=\s*(" + RUN.pattern + r")")
 # kSystemDisplayNames rows are {"ID", "Display Name"}; only the name is UI.
 ARRAYS = [
     ("cmd/jawaka-launcher/main.c", "kTabs", "all"),
+    ("cmd/jawaka-launcher/main.c", "kSysMenuTabs", "all"),
     ("cmd/jawaka-menu/main.c", "kInGameItems", "all"),
     ("internal/settings/settings.c", "kStartupTabLabels", "all"),
     ("internal/settings/settings.c", "kAutoSleepLabels", "all"),
@@ -210,19 +211,30 @@ def pot_keys(path: Path):
     return out
 
 
-def po_keys(path: Path):
+def po_entries(path: Path):
+    """(all keys, translated keys). A key with an empty msgstr is present but
+    untranslated -- it must count for the orphan check and NOT for coverage,
+    or a fully-seeded file reads as 100% before anyone has reviewed a word."""
     text = path.read_text(encoding="utf-8")
-    out = set()
+    all_keys, translated = set(), set()
     ctx = None
-    for m in re.finditer(r'^(msgctxt|msgid) "((?:[^"\\]|\\.)*)"', text, re.M):
-        if m.group(1) == "msgctxt":
-            ctx = c_unescape(m.group(2))
-        else:
-            key = c_unescape(m.group(2))
-            if key:
-                out.add(f"{ctx}|{key}" if ctx else key)
+    entry_re = re.compile(
+        r'^(msgctxt|msgid|msgstr) "((?:[^"\\]|\\.)*)"', re.M)
+    last_key = None
+    for m in entry_re.finditer(text):
+        kind, val = m.group(1), c_unescape(m.group(2))
+        if kind == "msgctxt":
+            ctx = val
+        elif kind == "msgid":
+            last_key = (f"{ctx}|{val}" if ctx else val) if val else None
+            if last_key:
+                all_keys.add(last_key)
             ctx = None
-    return out
+        elif kind == "msgstr" and last_key:
+            if val:
+                translated.add(last_key)
+            last_key = None
+    return all_keys, translated
 
 
 def main() -> int:
@@ -268,7 +280,7 @@ def main() -> int:
         p = Path(po)
         if not p.exists():
             continue
-        pk = po_keys(p)
+        pk, translated = po_entries(p)
         orphans = sorted(pk - universe)
         if orphans:
             for k in orphans[:20]:
@@ -278,8 +290,8 @@ def main() -> int:
                   file=sys.stderr)
             rc = 1
         else:
-            covered = len(pk & universe)
-            print(f"{p.name}: {covered}/{len(universe)} keys covered "
+            covered = len(translated & universe)
+            print(f"{p.name}: {covered}/{len(universe)} translated "
                   f"({covered * 100 // max(1, len(universe))}%)")
     return rc
 
