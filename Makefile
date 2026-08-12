@@ -538,6 +538,7 @@ supervisor-test: | $(BUILD)/bin
 		internal/services/backoff.c internal/services/dup_ids.c \
 		internal/services/control_state.c \
 		internal/services/legacy_ssh_migration.c \
+		internal/core/log.c \
 		third_party/cjson/cJSON.c -lsqlite3 -lpthread
 	$(BUILD)/bin/supervisor-test
 
@@ -567,6 +568,7 @@ $(BUILD)/bin/service-fixture-test: service-fixtures \
 		internal/services/reservation.c internal/services/backoff.c \
 		internal/services/dup_ids.c internal/services/control_state.c \
 		internal/services/legacy_ssh_migration.c \
+		internal/core/log.c \
 		third_party/cjson/cJSON.c -lsqlite3 -lpthread
 
 service-fixture-test: $(BUILD)/bin/service-fixture-test

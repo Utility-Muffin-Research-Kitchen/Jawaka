@@ -373,6 +373,53 @@ static void jw__test_log_path_safety(void) {
     puts("PASS launch-test: unsafe log path entries refused");
 }
 
+static void jw__test_log_modes(void) {
+    puts("RUN launch-test: read-only group/world log bits are accepted");
+
+    char service_dir[PATH_MAX];
+    int n = snprintf(service_dir, sizeof(service_dir),
+                     "%s/services/svc.modes", JW__LOGS);
+    assert(n > 0 && (size_t)n < sizeof(service_dir));
+    assert(mkdir(service_dir, 0700) == 0);
+    assert(chmod(service_dir, 0755) == 0);
+
+    char reason[JW_SVC_LAUNCH_REASON_BUF];
+    int log_fd = jw_svc_launch_open_log(JW__LOGS, "svc.modes", reason,
+                                        sizeof(reason));
+    assert(log_fd >= 0);
+    close(log_fd);
+
+    char logpath[PATH_MAX];
+    n = snprintf(logpath, sizeof(logpath), "%s/svc.modes.log", service_dir);
+    assert(n > 0 && (size_t)n < sizeof(logpath));
+    assert(chmod(logpath, 0644) == 0);
+    log_fd = jw_svc_launch_open_log(JW__LOGS, "svc.modes", reason,
+                                    sizeof(reason));
+    assert(log_fd >= 0);
+    close(log_fd);
+
+    assert(chmod(service_dir, 0775) == 0);
+    assert(jw_svc_launch_open_log(JW__LOGS, "svc.modes", reason,
+                                  sizeof(reason)) < 0);
+    assert(strcmp(reason, "mkdir-failed") == 0);
+    assert(chmod(service_dir, 0777) == 0);
+    assert(jw_svc_launch_open_log(JW__LOGS, "svc.modes", reason,
+                                  sizeof(reason)) < 0);
+    assert(strcmp(reason, "mkdir-failed") == 0);
+
+    assert(chmod(service_dir, 0755) == 0);
+    assert(chmod(logpath, 0660) == 0);
+    assert(jw_svc_launch_open_log(JW__LOGS, "svc.modes", reason,
+                                  sizeof(reason)) < 0);
+    assert(strcmp(reason, "open-failed") == 0);
+    assert(chmod(logpath, 0666) == 0);
+    assert(jw_svc_launch_open_log(JW__LOGS, "svc.modes", reason,
+                                  sizeof(reason)) < 0);
+    assert(strcmp(reason, "open-failed") == 0);
+
+    puts("PASS launch-test: writable group/world log paths refused");
+}
+
 /* Regression for a real bug: the child used to dup2() the caller's raw
  * lease_fd and log_fd straight onto their reserved slots (3, stdout,
  * stderr) without relocating them first. When a caller-supplied log_fd
@@ -722,6 +769,7 @@ int main(void) {
     jw__test_group_and_exec();
     jw__test_lease_fd_and_env();
     jw__test_log_capture_and_rotation();
+    jw__test_log_modes();
     jw__test_log_path_safety();
     jw__test_reserved_fd_collision();
     jw__test_error_pipe_reserved_fd_collision();
