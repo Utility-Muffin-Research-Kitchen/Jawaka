@@ -1,0 +1,169 @@
+/* Exercises the i18n table loader against files it will actually meet: a
+ * compiled table, a hand-edited TSV override, and several kinds of damaged
+ * input. The damaged cases matter most -- these files live on a FAT32 SD card
+ * that gets yanked mid-write, and a translation table must never be able to
+ * take the launcher down with it. */
+
+#include "internal/i18n/i18n.h"
+
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static int failures = 0;
+
+static void expect_str(const char *label, const char *got, const char *want) {
+    if (!got || strcmp(got, want) != 0) {
+        fprintf(stderr, "i18n-test: %s got=%s want=%s\n",
+                label, got ? got : "(null)", want);
+        failures++;
+    }
+}
+
+static void expect_true(const char *label, bool cond) {
+    if (!cond) {
+        fprintf(stderr, "i18n-test: %s was false\n", label);
+        failures++;
+    }
+}
+
+static void write_file(const char *path, const void *data, size_t len) {
+    FILE *fp = fopen(path, "wb");
+    if (!fp) { fprintf(stderr, "i18n-test: cannot write %s\n", path); exit(1); }
+    fwrite(data, 1, len, fp);
+    fclose(fp);
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: jawaka-i18n-test <fixture-dir>\n");
+        return 2;
+    }
+    const char *dir = argv[1];
+    char platform[PATH_MAX], userdata[PATH_MAX], path[PATH_MAX];
+    snprintf(platform, sizeof(platform), "%s/platform", dir);
+    snprintf(userdata, sizeof(userdata), "%s/userdata", dir);
+    setenv("UMRK_PLATFORM_PATH", platform, 1);
+    setenv("UMRK_INTERNAL_DATA_PATH", userdata, 1);
+
+    /* ── English is the no-op default ─────────────────────────────────── */
+    expect_true("en loads nothing", !jw_i18n_load("en"));
+    expect_str("en passthrough", T("Settings"), "Settings");
+    expect_str("en language", jw_i18n_language(), "en");
+    expect_true("en count", jw_i18n_count() == 0);
+
+    /* NULL and empty behave like English rather than crashing. */
+    expect_true("null lang", !jw_i18n_load(NULL));
+    expect_true("empty lang", !jw_i18n_load(""));
+
+    /* ── Compiled table ───────────────────────────────────────────────── */
+    expect_true("compiled loads", jw_i18n_load("zh_CN"));
+    expect_str("translated", T("Settings"), "设置");
+    expect_str("translated with ampersand", T("Display & Sound"), "显示与声音");
+    expect_str("context key translated", T("verb|Open"), "打开");
+    expect_str("language reported", jw_i18n_language(), "zh_CN");
+
+    /* The two cases that make a partial translation shippable. */
+    expect_str("fuzzy falls back", T("Refresh Rate"), "Refresh Rate");
+    expect_str("empty msgstr falls back", T("Untranslated Thing"), "Untranslated Thing");
+    expect_str("unknown key falls back", T("Never Seen Before"), "Never Seen Before");
+
+    /* An untranslated context key must not leak its disambiguator to the UI. */
+    expect_str("context stripped on miss", T("noun|Close"), "Close");
+    /* ...but a pipe inside real text is not a context prefix. */
+    expect_str("pipe in text kept", T("A | B"), "A | B");
+
+    expect_str("null in", jw_i18n(NULL) == NULL ? "ok" : "bad", "ok");
+
+    /* ── Live TSV override wins over the compiled table ───────────────── */
+    snprintf(path, sizeof(path), "%s/i18n", userdata);
+    mkdir(userdata, 0755);
+    mkdir(path, 0755);
+    snprintf(path, sizeof(path), "%s/i18n/zh_CN.tsv", userdata);
+    const char *tsv =
+        "# translator's export\n"
+        "Settings\t设置OVERRIDE\n"
+        "\n"
+        "Refresh Rate\t刷新率\n"
+        "Malformed line with no tab\n"
+        "Empty value\t\n";
+    write_file(path, tsv, strlen(tsv));
+
+    expect_true("tsv loads", jw_i18n_load("zh_CN"));
+    expect_str("override wins", T("Settings"), "设置OVERRIDE");
+    expect_str("override adds", T("Refresh Rate"), "刷新率");
+    /* The override replaces the table rather than merging, so a key only the
+       compiled table had is English again. Worth asserting: a translator
+       testing a partial export should see exactly their file. */
+    expect_str("override replaces", T("Display & Sound"), "Display & Sound");
+    expect_str("malformed line skipped", T("Malformed line with no tab"),
+               "Malformed line with no tab");
+    expect_str("empty value skipped", T("Empty value"), "Empty value");
+    expect_true("tsv count", jw_i18n_count() == 2);
+
+    unlink(path);
+
+    /* ── Damaged input must degrade, never crash ─────────────────────── */
+    snprintf(path, sizeof(path), "%s/i18n/zh_CN.jwi", platform);
+
+    char good[65536];
+    FILE *fp = fopen(path, "rb");
+    size_t good_len = fp ? fread(good, 1, sizeof(good), fp) : 0;
+    if (fp) fclose(fp);
+    expect_true("fixture readable", good_len > 24);
+
+    char tmp[PATH_MAX];
+    snprintf(tmp, sizeof(tmp), "%s/i18n/zh_CN.jwi.bak", platform);
+    write_file(tmp, good, good_len);
+
+    write_file(path, "not a table at all", 18);
+    expect_true("bad magic rejected", !jw_i18n_load("zh_CN"));
+    expect_str("bad magic falls back", T("Settings"), "Settings");
+
+    write_file(path, good, good_len / 2);          /* truncated mid-pool */
+    expect_true("truncated rejected", !jw_i18n_load("zh_CN"));
+    expect_str("truncated falls back", T("Settings"), "Settings");
+
+    write_file(path, good, 8);                     /* header only, cut short */
+    expect_true("stub rejected", !jw_i18n_load("zh_CN"));
+
+    write_file(path, "", 0);
+    expect_true("empty rejected", !jw_i18n_load("zh_CN"));
+
+    /* A corrupt offset must be caught at load, not by reading out of bounds on
+       some later lookup. Point the first entry's key at the far end of nowhere. */
+    memcpy(tmp, good, good_len);
+    tmp[24 + 4] = (char)0xFF; tmp[24 + 5] = (char)0xFF;
+    tmp[24 + 6] = (char)0xFF; tmp[24 + 7] = (char)0x7F;
+    write_file(path, tmp, good_len);
+    expect_true("out-of-range offset rejected", !jw_i18n_load("zh_CN"));
+
+    /* Restore, confirm we are back to a working table, and shut down clean. */
+    snprintf(tmp, sizeof(tmp), "%s/i18n/zh_CN.jwi.bak", platform);
+    fp = fopen(tmp, "rb");
+    good_len = fp ? fread(good, 1, sizeof(good), fp) : 0;
+    if (fp) fclose(fp);
+    write_file(path, good, good_len);
+    unlink(tmp);
+    expect_true("restored table loads", jw_i18n_load("zh_CN"));
+    expect_str("restored lookup", T("Settings"), "设置");
+
+    jw_i18n_shutdown();
+    expect_str("after shutdown", T("Settings"), "Settings");
+    expect_str("language after shutdown", jw_i18n_language(), "en");
+
+    /* Reload after shutdown must not double-free or leak the previous table. */
+    expect_true("reload after shutdown", jw_i18n_load("zh_CN"));
+    jw_i18n_shutdown();
+    jw_i18n_shutdown();                            /* idempotent */
+
+    if (failures) {
+        fprintf(stderr, "i18n-test: %d failure(s)\n", failures);
+        return 1;
+    }
+    printf("i18n-test\tok\n");
+    return 0;
+}
