@@ -1158,7 +1158,7 @@ static int jw__load_library_cache(const char *socket_path, const char *db_path,
     } else {
         state->library_generation = -1;
     }
-    snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
+    snprintf(state->status, sizeof(state->status), T("%d games, %d systems, %d apps"),
         state->summary.game_count, state->system_count, state->summary.app_count);
     return 0;
 }
@@ -1483,7 +1483,7 @@ static void jw__poll_library_generation(const char *socket_path,
            covers rebuild from fresh sources; untouched covers re-decode their
            small thumbnails (~15ms each) at worst. */
         cat_cache_clear();
-        snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
+        snprintf(state->status, sizeof(state->status), T("%d games, %d systems, %d apps"),
                  state->summary.game_count, state->system_count, state->summary.app_count);
         cat_request_frame();
     }
@@ -2680,7 +2680,7 @@ static void jw__draw_carousel_tile(const jw_launcher_state *state, int tile_idx,
     /* Game count below for system tiles */
     if (it->kind == JW_FLAT_SYSTEM) {
         char cnt[24];
-        snprintf(cnt, sizeof(cnt), "%d games",
+        snprintf(cnt, sizeof(cnt), T("%d games"),
                  state->systems[it->system_idx].game_count);
         int cw = cat_measure_text(small, cnt);
         ap_color hint_c = theme->hint;
@@ -3797,7 +3797,7 @@ static void jw__draw_system_preview(int px, int py, int pw, int ph,
 
     if (game_count >= 0) {
         char sub[32];
-        snprintf(sub, sizeof(sub), "%d games", game_count);
+        snprintf(sub, sizeof(sub), T("%d games"), game_count);
         int subw = cat_measure_text(small, sub);
         cat_draw_text(small, sub, px + (pw - subw) / 2, count_y, theme->hint);
     }
@@ -5421,7 +5421,7 @@ static void jw__render_menu(const jw_launcher_state *state) {
                                   theme->hint, CAT_ALIGN_CENTER);
         } else {
             char counts[96];
-            snprintf(counts, sizeof(counts), "%d games, %d systems, %d apps",
+            snprintf(counts, sizeof(counts), T("%d games, %d systems, %d apps"),
                      state->summary.game_count, state->system_count,
                      state->summary.app_count);
             cat_draw_text_wrapped(body, counts, tx, ty, tw, theme->text,
@@ -5998,7 +5998,7 @@ static int jw__open_system_games(const char *db_path, const char *system,
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
     cat_list_state_jump(&state->game_list, 0, state->game_count);
-    snprintf(state->status, sizeof(state->status), "%d %s games",
+    snprintf(state->status, sizeof(state->status), T("%d %s games"),
              state->game_count, state->game_system_display);
     return 0;
 }
@@ -6442,7 +6442,7 @@ static void jw__open_apps(jw_launcher_state *state) {
     cat_list_state_init(&state->app_list, jw__app_browser_visible_rows(state));
     cat_list_state_jump(&state->app_list, 0, state->app_count);
     if (state->app_count > 0) {
-        snprintf(state->status, sizeof(state->status), "%d apps", state->app_count);
+        snprintf(state->status, sizeof(state->status), T("%d apps"), state->app_count);
     } else {
         snprintf(state->status, sizeof(state->status), "%s",
                  state->scan_ready ? T("No apps found") : T("Scanning library..."));

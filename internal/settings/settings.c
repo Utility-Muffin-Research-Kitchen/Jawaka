@@ -4539,7 +4539,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     bool checking = ui->update_have_status && strcmp(u->state, "checking") == 0;
     char message[320];
     if (ui->update_have_status && u->install_active && u->install_message[0]) {
-        snprintf(message, sizeof(message), "%s", u->install_message);
+        snprintf(message, sizeof(message), "%s", T(u->install_message));
     } else if (ui->update_msg[0]) {
         snprintf(message, sizeof(message), "%s", ui->update_msg);
     } else if (ui->update_have_status) {
@@ -4547,17 +4547,17 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
             (u->install_active || u->install_armed ||
              u->install_blocked || u->install_needs_confirmation ||
              u->install_ready)) {
-            snprintf(message, sizeof(message), "%s", u->install_message);
+            snprintf(message, sizeof(message), "%s", T(u->install_message));
         } else if (u->message[0]) {
             snprintf(message, sizeof(message), "%s", u->message);
         } else if (u->install_result_message[0]) {
-            snprintf(message, sizeof(message), "Last update: %s",
-                     u->install_result_message);
+            snprintf(message, sizeof(message), T("Last update: %s"),
+                     T(u->install_result_message));
         } else {
             snprintf(message, sizeof(message), "%s", jw__update_state_label(u));
         }
     } else {
-        snprintf(message, sizeof(message), "%s", "Update status unavailable");
+        snprintf(message, sizeof(message), "%s", T("Update status unavailable"));
     }
 
     cat_draw_text_ellipsized(small, message, x + cat_scale(12), dy,

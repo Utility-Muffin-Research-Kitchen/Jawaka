@@ -160,6 +160,26 @@ int main(int argc, char **argv) {
     jw_i18n_shutdown();
     jw_i18n_shutdown();                            /* idempotent */
 
+    /* ── Format-string safety ─────────────────────────────────────────── */
+    /* A translation whose printf conversions differ from its key's must lose
+       the lookup, not crash snprintf later. The TSV is hand-edited on an SD
+       card, so this is a when, not an if. */
+    snprintf(path, sizeof(path), "%s/i18n/zh_CN.tsv", userdata);
+    {
+        const char *fmt_tsv =
+            "%d games\t%d 个游戏\n"                /* compatible: kept    */
+            "%d apps\t%s 个应用\n"                 /* %d vs %s: refused   */
+            "Found %d in %d ms\t在 %d 毫秒内找到 %d\n" /* same, reordered ok */
+            "Save %% done\t完成 %%\n";             /* %% is not a conversion */
+        write_file(path, fmt_tsv, strlen(fmt_tsv));
+    }
+    expect_true("fmt tsv loads", jw_i18n_load("zh_CN"));
+    expect_str("compatible fmt kept", T("%d games"), "%d 个游戏");
+    expect_str("mismatched fmt refused", T("%d apps"), "%d apps");
+    expect_str("same-order multi ok", T("Found %d in %d ms"), "在 %d 毫秒内找到 %d");
+    expect_str("percent-escape ok", T("Save %% done"), "完成 %%");
+    unlink(path);
+
     /* ── Language classification and discovery ───────────────────────── */
     expect_true("zh is cjk", jw_i18n_language_is_cjk("zh_CN"));
     expect_true("ja is cjk", jw_i18n_language_is_cjk("ja"));

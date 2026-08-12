@@ -133,11 +133,22 @@ def parse_tsv(text: str):
     return out
 
 
+_SPEC = re.compile(r"%(?:%|[-+ #0'*.\d]*([hlLqjzt]*[diouxXeEfFgGaAcspn]))")
+
+
+def fmt_sig(s: str):
+    return [m for m in _SPEC.findall(s) if m]
+
+
 def build(pairs, strict_collisions=True) -> bytes:
     seen = {}
     for key, val in pairs:
         if key in seen and seen[key] != val:
             raise SystemExit(f"duplicate key with conflicting values: {key!r}")
+        if fmt_sig(key) != fmt_sig(val):
+            raise SystemExit(
+                f"format specifiers differ between key and translation: {key!r} -> {val!r}"
+            )
         seen[key] = val
 
     pool = bytearray()

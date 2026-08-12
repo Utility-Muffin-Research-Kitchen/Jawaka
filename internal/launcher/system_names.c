@@ -1,4 +1,5 @@
 #include "internal/launcher/system_names.h"
+#include "internal/i18n/i18n.h"
 
 #include "internal/db/db.h"
 
@@ -90,9 +91,15 @@ void jw_system_display_name(const char *db_path,
         return;
     }
 
+    /* Only the built-in names go through the translation table, and the .po
+       decides per entry: 街机 for "Arcade" makes sense, translating "Vectrex"
+       does not, and an untranslated entry renders as its English literal. The
+       two other tiers stay raw on purpose -- the DB override above is the
+       user's own rename, and the fallthrough below is their folder name; a
+       folder called "Settings" must not come back as 设置. */
     for (size_t i = 0; i < sizeof(kSystemDisplayNames) / sizeof(kSystemDisplayNames[0]); i++) {
         if (strcasecmp(system_id, kSystemDisplayNames[i].id) == 0) {
-            snprintf(out, out_size, "%s", kSystemDisplayNames[i].name);
+            snprintf(out, out_size, "%s", T(kSystemDisplayNames[i].name));
             return;
         }
     }

@@ -99,6 +99,40 @@ static bool jw__i18n_path(char *out, size_t out_size, const char *env,
     return snprintf(out, out_size, "%s/i18n/%s.%s", root, lang, ext) < (int)out_size;
 }
 
+/* printf-specifier fingerprint of a string, for validating translations of
+ * format strings. A translation that turns %d into %s would send snprintf
+ * reading an integer as a pointer, so a value whose conversions do not match
+ * its key's -- same count, same order, same letters -- is refused and the
+ * English format used instead. Length modifiers are kept ("%zu" != "%d");
+ * "%%" is skipped. Returns the number of conversions, -1 on overflow. */
+static int jw__i18n_fmt_sig(const char *s, char *out, size_t out_size) {
+    int n = 0;
+    size_t o = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p != '%') continue;
+        p++;
+        if (*p == '%' ) continue;
+        while (*p && strchr("-+ #0123456789.*'", *p)) p++;   /* flags/width/prec */
+        while (*p && strchr("hlLqjzt", *p)) {                /* length modifiers */
+            if (o + 1 >= out_size) return -1;
+            out[o++] = *p++;
+        }
+        if (!*p) break;
+        if (o + 1 >= out_size) return -1;
+        out[o++] = *p;
+        n++;
+    }
+    out[o] = '\0';
+    return n;
+}
+
+static bool jw__i18n_fmt_compatible(const char *key, const char *val) {
+    char a[32], b[32];
+    if (jw__i18n_fmt_sig(key, a, sizeof(a)) < 0) return false;
+    if (jw__i18n_fmt_sig(val, b, sizeof(b)) < 0) return false;
+    return strcmp(a, b) == 0;
+}
+
 /* ── Compiled table ──────────────────────────────────────────────────────── */
 
 static bool jw__i18n_load_compiled(const char *path) {
@@ -310,8 +344,15 @@ const char *jw_i18n(const char *english) {
     }
     for (uint32_t i = lo; i < g_i18n.count && g_i18n.entries[i].hash == h; i++) {
         const char *key = g_i18n.pool + g_i18n.entries[i].key_off;
-        if (strcmp(key, english) == 0)
-            return g_i18n.pool + g_i18n.entries[i].val_off;
+        if (strcmp(key, english) == 0) {
+            const char *val = g_i18n.pool + g_i18n.entries[i].val_off;
+            /* Format strings are looked up and then handed to snprintf, so a
+               translation with mismatched conversions must lose here, not
+               crash there. Cheap for plain strings: no '%' exits instantly. */
+            if (strchr(english, '%') && !jw__i18n_fmt_compatible(english, val))
+                return jw__i18n_strip_context(english);
+            return val;
+        }
     }
     return jw__i18n_strip_context(english);
 }
