@@ -31,7 +31,9 @@ typedef struct {
     int width;
     int height;
     int percent;
-    int mode;  /* 0 = brightness, 1 = volume, 2 = LIFE-1 waiting */
+    int mode;  /* 0 = brightness, 1 = volume, 2 = game launch */
+    jw_osd_game_stage game_stage;
+    int pending_items;
     uint64_t hide_at;
     bool visible;
     bool configured;
@@ -101,18 +103,36 @@ static void jw__fill_rect(uint32_t *pixels, int width, int height,
 
 static const char *jw__glyph(char c) {
     switch (c) {
+        case ':': return "00000001000010000000001000010000000";
+        case '0': return "01110100011001110101110011000101110";
+        case '1': return "00100011000010000100001000010001110";
+        case '2': return "01110100010000100110010001000011111";
+        case '3': return "11110000010000101110000010000111110";
+        case '4': return "00010001100101010010111110001000010";
+        case '5': return "11111100001111000001000011000101110";
+        case '6': return "00110010001000011110100011000101110";
+        case '7': return "11111000010001000100010000100001000";
+        case '8': return "01110100011000101110100011000101110";
+        case '9': return "01110100011000101111000010001001100";
         case 'A': return "01110100011000111111100011000110001";
         case 'C': return "01111100001000010000100001000001111";
+        case 'D': return "11110100011000110001100011000111110";
         case 'E': return "11111100001000011110100001000011111";
+        case 'F': return "11111100001000011110100001000010000";
         case 'G': return "01110100011000110111100011000101110";
+        case 'H': return "10001100011000111111100011000110001";
         case 'I': return "11111001000010000100001000010011111";
+        case 'K': return "10001100101010011000101001001010001";
+        case 'L': return "10000100001000010000100001000011111";
         case 'M': return "10001110111010110101100011000110001";
         case 'N': return "10001110011010110011100011000110001";
         case 'O': return "01110100011000110001100011000101110";
+        case 'P': return "11110100011000111110100001000010000";
         case 'R': return "11110100011000111110101001001010001";
         case 'S': return "11111100001000011111000010000111111";
         case 'T': return "11111001000010000100001000010000100";
         case 'U': return "10001100011000110001100011000101110";
+        case 'V': return "10001100011000110001100010101000100";
         case 'W': return "10001100011000110001101011010101010";
         case 'Y': return "10001100010101000100001000010000100";
         default: return NULL;
@@ -135,6 +155,11 @@ static void jw__draw_text(uint32_t *pixels, int width, int height,
             }
         }
     }
+}
+
+static int jw__text_width(const char *text, int scale) {
+    size_t length = text ? strlen(text) : 0;
+    return length == 0 ? 0 : (int)length * 6 * scale - scale;
 }
 
 static void jw__draw_segment(uint32_t *pixels, int width, int height,
@@ -228,12 +253,20 @@ static void jw__draw_osd(void) {
 
     jw__fill_rect(pixels, s_osd.width, s_osd.height, x, y, toast_w, toast_h, bg);
     if (s_osd.mode == 2) {
-        int title_w = 7 * 6 * 4 - 4;
-        int action_w = 14 * 6 * 4 - 4;
-        jw__draw_text(pixels, s_osd.width, s_osd.height, "SYNCING",
-                      x + (toast_w - title_w) / 2, y + 14, 4, knob);
-        jw__draw_text(pixels, s_osd.width, s_osd.height, "MENU START NOW",
-                      x + (toast_w - action_w) / 2, y + 55, 4, fill);
+        char title[64];
+        char action[32];
+        jw_osd_game_launch_text(s_osd.game_stage, s_osd.pending_items,
+                                title, sizeof(title), action, sizeof(action));
+        int title_scale = jw__text_width(title, 4) <= toast_w - 24 ? 4 : 3;
+        int title_y = action[0] ? y + 14 : y + 34;
+        jw__draw_text(pixels, s_osd.width, s_osd.height, title,
+                      x + (toast_w - jw__text_width(title, title_scale)) / 2,
+                      title_y, title_scale, knob);
+        if (action[0]) {
+            jw__draw_text(pixels, s_osd.width, s_osd.height, action,
+                          x + (toast_w - jw__text_width(action, 4)) / 2,
+                          y + 55, 4, fill);
+        }
         return;
     }
     if (s_osd.mode == 1) {
@@ -505,15 +538,17 @@ void jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
     jw__show_surface();
 }
 
-void jw_osd_backend_show_game_waiting(int pending_items, uint64_t now_ms) {
-    (void)pending_items;
+void jw_osd_backend_show_game_launch(jw_osd_game_stage stage,
+                                     int pending_items, uint64_t now_ms) {
     (void)now_ms;
     s_osd.mode = 2;
+    s_osd.game_stage = stage;
+    s_osd.pending_items = pending_items < 0 ? 0 : pending_items;
     s_osd.hide_at = UINT64_MAX;
     jw__show_surface();
 }
 
-void jw_osd_backend_hide_game_waiting(void) {
+void jw_osd_backend_hide_game_launch(void) {
     if (s_osd.visible && s_osd.mode == 2) {
         jw__hide_surface();
     }

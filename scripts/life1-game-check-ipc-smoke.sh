@@ -132,6 +132,9 @@ case "$SCENARIO" in
         done
         printf '%s' "$status" | grep -q '"effective_state":"running"'
         grep -F 'life1: user cancelled check-before-stop' "$LOG" >/dev/null
+        grep -F 'life1: launch status stage=checking' "$LOG" >/dev/null
+        grep -F 'life1: launch status stage=syncing pending_items=3' "$LOG" >/dev/null
+        ! grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
         echo "PASS life1-game-check-ipc-smoke ($SCENARIO)"
         exit 0
         ;;
@@ -176,9 +179,32 @@ done
 [ -e "$RUNTIME/game-writer-live" ]
 grep -F 'life1: verified service stop service=' "$LOG" >/dev/null
 grep -F 'life1: writer started' "$LOG" >/dev/null
+grep -F 'life1: launch status stage=checking' "$LOG" >/dev/null
+grep -F 'life1: launch status stage=stopping' "$LOG" >/dev/null
+grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
 stop_line="$(grep -n -F 'life1: verified service stop service=' "$LOG" | tail -1 | cut -d: -f1)"
 writer_line="$(grep -n -F 'life1: writer started' "$LOG" | tail -1 | cut -d: -f1)"
-[ "$stop_line" -lt "$writer_line" ]
+checking_line="$(grep -n -F 'life1: launch status stage=checking' "$LOG" | head -1 | cut -d: -f1)"
+stopping_line="$(grep -n -F 'life1: launch status stage=stopping' "$LOG" | tail -1 | cut -d: -f1)"
+starting_line="$(grep -n -F 'life1: launch status stage=starting' "$LOG" | tail -1 | cut -d: -f1)"
+[ "$checking_line" -lt "$stopping_line" ]
+[ "$stopping_line" -le "$stop_line" ]
+[ "$stop_line" -lt "$starting_line" ]
+[ "$starting_line" -le "$writer_line" ]
+
+case "$SCENARIO" in
+    game-check-wait|game-check-play|game-check-expiry)
+        grep -F 'life1: launch status stage=syncing pending_items=3' "$LOG" >/dev/null
+        syncing_line="$(grep -n -F 'life1: launch status stage=syncing pending_items=3' "$LOG" | head -1 | cut -d: -f1)"
+        [ "$checking_line" -lt "$syncing_line" ]
+        [ "$syncing_line" -lt "$stopping_line" ]
+        ;;
+esac
+case "$SCENARIO" in
+    game-check-current|game-check-wait|game-check-play)
+        grep -E 'life1: verified service stop .*coordinator_first=true .*group_fallback=false' "$LOG" >/dev/null
+        ;;
+esac
 
 for _ in $(seq 1 600); do
     status="$($CTL --socket "$SOCKET" request \
