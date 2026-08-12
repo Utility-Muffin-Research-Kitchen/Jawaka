@@ -804,6 +804,16 @@ static int jw__browse_visible_rows(const jw_launcher_state *state, int header_h)
     return v > 0 ? v : 1;
 }
 
+/* For footers drawn unconditionally (dialogs, the system overlay) -- unlike
+   jw__draw_footer this does not consult the Button Hints setting, matching the
+   direct call sites it replaces. Labels are translated; button pills are not. */
+static void jw__footer_direct(cat_footer_item *items, int count) {
+    for (int i = 0; i < count; i++) {
+        if (items[i].label) items[i].label = T(items[i].label);
+    }
+    cat_draw_footer(items, count);
+}
+
 static void jw__draw_footer(const jw_launcher_state *state,
                             cat_footer_item *items, int count) {
     if (!jw_settings_show_hints(&state->settings)) return;
@@ -4519,7 +4529,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
         { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
-    cat_draw_footer(footer, 3);
+    jw__footer_direct(footer, 3);
     jw__present();
 }
 
@@ -5367,7 +5377,13 @@ static int jw__draw_menu_tab_bar(const jw_launcher_state *state) {
     sb.use_y      = true;
     sb.y_position = (bar_h - pill_h) / 2;
     cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
-    cat_draw_tab_bar(kSysMenuTabs, JW_SMTAB_COUNT, state->menu_tab);
+    {
+        /* Translated per frame into a local: the array itself must stay English
+           because it is also the extraction source and T() keys. */
+        const char *tabs[JW_SMTAB_COUNT];
+        for (int i = 0; i < JW_SMTAB_COUNT; i++) tabs[i] = T(kSysMenuTabs[i]);
+        cat_draw_tab_bar(tabs, JW_SMTAB_COUNT, state->menu_tab);
+    }
     cat_draw_status_bar(&sb);
     return bar_h;
 }
@@ -7518,14 +7534,14 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
             if (scr == JW_SETTINGS_ABOUT || scr == JW_SETTINGS_LIBRARY ||
                 scr == JW_SETTINGS_PLAYTIME) {
                 cat_footer_item f[] = { { CAT_BTN_B, "Back", true, JW_HINT("B") } };
-                cat_draw_footer(f, 1);
+                jw__footer_direct(f, 1);
             } else {
                 cat_footer_item f[] = {
                     { CAT_BTN_X, "Releases", false, JW_HINT("X") },
                     { CAT_BTN_B, "Back",     true,  JW_HINT("B") },
                     { CAT_BTN_A, "Select",   true,  JW_HINT("A") },
                 };
-                cat_draw_footer(f, 3);
+                jw__footer_direct(f, 3);
             }
         }
         jw__present();
@@ -9053,7 +9069,7 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         int kw = cat_measure_text(font, keep_hint);
         cat_draw_text(font, keep_hint, (sw - kw) / 2,
                       by + bar_h + CAT_S(12) + line_h + CAT_S(10), theme->highlight);
-        cat_draw_footer(footer, 1);
+        jw__footer_direct(footer, 1);
         /* Request a frame so cat_present takes the active 60fps-paced path instead
            of its idle sleep — otherwise the countdown bar freezes on frame one. */
         cat_request_frame();

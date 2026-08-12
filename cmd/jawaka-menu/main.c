@@ -2319,6 +2319,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Load the UI language before anything draws -- this binary renders the
+       in-game menu and hosts settings pages, and without its own load every
+       T() in it silently returns English. (Found on device: the About page
+       translated but this menu's footers did not.) */
+    {
+        char lang[16];
+        if (!db_path ||
+            jw_db_get_setting(db_path, "language", lang, sizeof(lang)) != 0 ||
+            !lang[0])
+            snprintf(lang, sizeof(lang), "%s", "en");
+        jw_i18n_load(lang);
+    }
+
     /* From here on every list and keyboard reports its own movement. */
     cat_ui_feedback_set(jw__ui_feedback, socket_path);
 
