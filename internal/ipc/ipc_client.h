@@ -346,6 +346,11 @@ int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
                             bool *out_supported);
 int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
                             char *status, int status_len);
+/* UI language. The daemon persists it and restarts the launcher, which comes
+   back with the matching font and string table -- there is no live switch, and
+   no getter, because the launcher reads the setting itself at startup. */
+int jw_ipc_set_language(const char *socket_path, const char *lang,
+                        char *status, int status_len);
 /* HDMI output: status (connected/current mode/supported) + set (0 off/1 4:3/2 stretch). */
 int jw_ipc_get_hdmi_status(const char *socket_path, int *out_connected,
                            int *out_mode, bool *out_supported);

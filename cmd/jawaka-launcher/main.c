@@ -8,6 +8,7 @@
 #include "internal/core/env.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
+#include "internal/i18n/i18n.h"
 #include "internal/focus/focus.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
@@ -9297,6 +9298,20 @@ int main(void) {
         return 1;
     }
     long long hello_done_ms = jw__monotonic_ms();
+
+    /* Load the UI language before anything draws. The daemon already resolved
+       the matching font into this process's environment when it spawned us, so
+       there is nothing to reconcile here -- read the setting, load the table,
+       and every T() from this point on is translated.
+
+       A missing or damaged table simply leaves lookups returning their English
+       keys, so a failure here is not worth aborting startup over. */
+    {
+        char lang[16];
+        if (jw_db_get_setting(db_path, "language", lang, sizeof(lang)) != 0 || !lang[0])
+            snprintf(lang, sizeof(lang), "%s", "en");
+        jw_i18n_load(lang);
+    }
 
     cat_config cfg;
     memset(&cfg, 0, sizeof(cfg));

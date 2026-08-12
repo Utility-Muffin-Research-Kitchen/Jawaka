@@ -8,6 +8,7 @@
 #include "internal/platform/platform_id.h"
 #include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
+#include "internal/i18n/i18n.h"
 #include "cJSON.h"
 
 #include <ctype.h>
@@ -1270,6 +1271,10 @@ static bool jw__services_available(jw_settings_ui *ui) {
     return jw__refresh_services(ui) > 0;
 }
 
+/* Defined with the General page renderer. The count is dynamic because the
+   Language row exists only when a translation is installed. */
+static int jw__behavior_rows(const jw_settings_ui *ui);
+
 static int jw__home_category_count(const jw_settings_ui *ui) {
     /* Services is the final category and is genuinely absent on a clean
        system, per SVC-1. The snapshot is refreshed whenever Settings is
@@ -1332,7 +1337,22 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->scraping_list,    JW_SCRAPING_ROW_COUNT);
     cat_list_state_init(&ui->scrape_edit_list, 8);
     cat_list_state_init(&ui->scrape_download_list, 8);
-    cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
+    /* en is always offered; the rest are whatever tables are installed. Resolved
+       once at init rather than per frame -- this stats the filesystem. */
+    snprintf(ui->languages[0], sizeof(ui->languages[0]), "%s", "en");
+    ui->language_count = 1;
+    {
+        const char *found[8];
+        size_t n = jw_i18n_available(found, 8);
+        for (size_t i = 0; i < n && ui->language_count < 8; i++) {
+            snprintf(ui->languages[ui->language_count],
+                     sizeof(ui->languages[0]), "%s", found[i]);
+            ui->language_count++;
+        }
+    }
+    snprintf(ui->language, sizeof(ui->language), "%s", jw_i18n_language());
+
+    cat_list_state_init(&ui->behavior_list,    jw__behavior_rows(ui));
     cat_list_state_init(&ui->controls_list,     JW_CONTROLS_ROW_COUNT);
     cat_list_state_init(&ui->home_tabs_list,   JW_HOME_TABS_COUNT);
     cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
@@ -4170,6 +4190,28 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
                         ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-", true);
 }
 
+/* Endonyms, so a speaker can find their own language without reading English.
+   These render correctly even while the UI is still English: Catastrophe
+   substitutes any string carrying CJK codepoints onto the CJK face, so 中文 is
+   legible in a Latin-themed UI. Unknown codes fall back to the raw code, which
+   is ugly but always true. */
+static const char *jw__language_label(const char *code) {
+    if (!code || !code[0] || strcmp(code, "en") == 0) return "English";
+    if (strcmp(code, "zh_CN") == 0) return "中文";
+    if (strcmp(code, "zh_TW") == 0) return "繁體中文";
+    if (strcmp(code, "ja") == 0)    return "日本語";
+    if (strcmp(code, "ko") == 0)    return "한국어";
+    return code;
+}
+
+/* The Language row exists only when there is something to switch to. A picker
+   offering one option reads as broken, and hiding it means a translator makes
+   the row appear simply by dropping a .tsv on the card. */
+static int jw__behavior_rows(const jw_settings_ui *ui) {
+    return ui->language_count > 1 ? JW_BEHAVIOR_ROW_COUNT
+                                  : JW_BEHAVIOR_ROW_COUNT - 1;
+}
+
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("General", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
@@ -4204,6 +4246,11 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                         "Unmount Secondary SD",
                         ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
                         true);
+
+    if (ui->language_count > 1) {
+        jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_LANGUAGE,
+                            "Language", jw__language_label(ui->language), true);
+    }
 }
 
 /* Home Tabs editor — hide/reorder the launcher's home tabs. Modeled on the
@@ -7153,13 +7200,36 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
     /* ── Behavior ────────────────────────────────────────────────────── */
     case JW_SETTINGS_BEHAVIOR:
         switch (button) {
-            case CAT_BTN_UP:   cat_list_state_move(&ui->behavior_list, -1, JW_BEHAVIOR_ROW_COUNT); break;
-            case CAT_BTN_DOWN: cat_list_state_move(&ui->behavior_list, +1, JW_BEHAVIOR_ROW_COUNT); break;
+            case CAT_BTN_UP:   cat_list_state_move(&ui->behavior_list, -1, jw__behavior_rows(ui)); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->behavior_list, +1, jw__behavior_rows(ui)); break;
             case CAT_BTN_LEFT:
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
-                if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
+                if (ui->behavior_list.cursor == JW_BEHAVIOR_LANGUAGE) {
+                    if (ui->language_count <= 1) break;
+                    int cur = 0;
+                    for (int i = 0; i < ui->language_count; i++) {
+                        if (strcmp(ui->languages[i], ui->language) == 0) { cur = i; break; }
+                    }
+                    int next = (cur + dir + ui->language_count) % ui->language_count;
+                    if (next == cur) break;
+
+                    /* The daemon persists this and restarts us; it does not come
+                       back here. Do not persist locally as well -- a second write
+                       would race the respawn, and jw__persist is the only writer
+                       by contract anyway. */
+                    char status[128] = "";
+                    if (jw_ipc_set_language(ui->socket_path, ui->languages[next],
+                                            status, sizeof(status)) == 0) {
+                        snprintf(ui->language, sizeof(ui->language), "%s",
+                                 ui->languages[next]);
+                    }
+                    if (status_buf && status_size > 0) {
+                        snprintf(status_buf, (size_t)status_size, "%s",
+                                 status[0] ? status : "language change failed");
+                    }
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
                     int next = (ui->auto_sleep_index + dir + JW_AUTO_SLEEP_COUNT)
                                % JW_AUTO_SLEEP_COUNT;
                     ui->auto_sleep_index = next;
