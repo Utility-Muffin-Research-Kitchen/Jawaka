@@ -9272,6 +9272,18 @@ static bool jw__surface_blocked_game_launch(
     return false;
 }
 
+/* SDL installs its own SIGTERM handler that pushes SDL_QUIT, which Catastrophe
+   maps to CAT_BTN_B -- so a plain SIGTERM reads as a "back" press and the
+   launcher stays up. The daemon uses SIGTERM to ask us to exit (a language
+   change, a game launch), so we need a real one. Installed AFTER cat_init, or
+   SDL's would win. */
+static volatile sig_atomic_t g_term_requested = 0;
+
+static void jw__term_handler(int sig) {
+    (void)sig;
+    g_term_requested = 1;
+}
+
 int main(void) {
     /* Install before anything can signal us — SIGUSR1's default disposition is to
        terminate the process. */
@@ -9329,6 +9341,9 @@ int main(void) {
         free(sdcard_root);
         return 1;
     }
+    /* After cat_init: SDL_Init installs a SIGTERM handler of its own, and the
+       last one registered wins. */
+    signal(SIGTERM, jw__term_handler);
     jw_cat_services_install(socket_path);
     /* Register the failsafe unlock chord (acted on only while focus mode is
        active — see the main loop). */
@@ -9518,6 +9533,10 @@ int main(void) {
     }
 
     while (running) {
+        if (g_term_requested) {
+            jw_log_info("SIGTERM received; exiting for respawn");
+            break;
+        }
         cat_input_event ev;
         bool had_input = false;
         bool was_menu_open = state.menu_open;
