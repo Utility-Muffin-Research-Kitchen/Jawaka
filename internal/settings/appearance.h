@@ -65,6 +65,9 @@ typedef struct jw_appearance_env {
     char status_clock[16];        /* CAT_STATUS_CLOCK: hide / 12 / 24 / no-ampm */
     char status_bt_state[8];      /* CAT_STATUS_BT_STATE: 0 off, 1 on, 2 connected */
     char timezone[64];            /* TZ override for launched apps; empty = inherit */
+    /* Persisted language code, "en" when unset. Drives the font choice above and
+       is handed to the child so it loads the matching string table. */
+    char language[16];
 } jw_appearance_env;
 
 /* Parent-side: read the DB (and env) and resolve every appearance value into
