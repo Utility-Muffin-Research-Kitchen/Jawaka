@@ -94,6 +94,7 @@ typedef enum {
 
 /* The home strip is games-only now; Settings lives in the MENU page's Settings
    tab (see jw__render_menu / jw__handle_menu_input). */
+/* English keys; translated at each use via T(). */
 static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Favorites", "Games", "Apps" };
 
 /* Forward declarations: shared preview helper used by Tabs games-tab and the
@@ -723,7 +724,7 @@ static int jw__draw_tab_header(const jw_launcher_state *state) {
        highlight tracking current_tab's position within that set. */
     const char *labels[JW_TAB_COUNT];
     for (int i = 0; i < state->visible_tab_count; i++)
-        labels[i] = kTabs[state->visible_tabs[i]];
+        labels[i] = T(kTabs[state->visible_tabs[i]]);
     cat_draw_tab_bar(labels, state->visible_tab_count,
                      jw__visible_tab_pos(state, state->current_tab));
     cat_draw_status_bar(&sb);
@@ -805,8 +806,14 @@ static int jw__browse_visible_rows(const jw_launcher_state *state, int header_h)
 
 static void jw__draw_footer(const jw_launcher_state *state,
                             cat_footer_item *items, int count) {
-    if (jw_settings_show_hints(&state->settings))
-        cat_draw_footer(items, count);
+    if (!jw_settings_show_hints(&state->settings)) return;
+    /* Translated here rather than in all 36 footer arrays. The arrays are stack
+       locals in their callers, so rewriting the label pointer is safe, and the
+       button_text pills ("A", "L1/R1") are glyph labels that stay as they are. */
+    for (int i = 0; i < count; i++) {
+        if (items[i].label) items[i].label = T(items[i].label);
+    }
+    cat_draw_footer(items, count);
 }
 
 /* Per-screen footer for the settings UI (shared by the menu's Settings tab). The
@@ -1925,7 +1932,7 @@ static void jw__render_games(const jw_launcher_state *state,
 
     if (state->system_count == 0) {
         cat_draw_text_wrapped(body,
-            state->scan_ready ? "No games found" : "Scanning library...",
+            state->scan_ready ? T("No games found") : T("Scanning library..."),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -1957,7 +1964,7 @@ static void jw__render_apps(const jw_launcher_state *state,
 
     if (state->app_count == 0) {
         cat_draw_text_wrapped(body,
-            state->scan_ready ? "No apps found" : "Scanning library...",
+            state->scan_ready ? T("No apps found") : T("Scanning library..."),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -4048,7 +4055,7 @@ static void jw__cf_draw_channel(jw_launcher_state *state) {
 
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     cat_draw_color white = { 236, 238, 240, 255 };
-    const char *chan = kTabs[state->current_tab];
+    const char *chan = T(kTabs[state->current_tab]);
     int chw = cat_measure_text(small, chan);
     int cy0 = CAT_S(6);
     cat_draw_text(small, chan, (sw - chw) / 2, cy0, white);   /* channel name, always */
@@ -4319,7 +4326,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
                      &state->game_list, &list, &image, &item_h);
 
     if (state->game_count == 0) {
-        cat_draw_text_wrapped(body, "No games found",
+        cat_draw_text_wrapped(body, T("No games found"),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -4485,7 +4492,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
 
     if (state->app_count == 0) {
         cat_draw_text_wrapped(body,
-            state->scan_ready ? "No apps found" : "Scanning library...",
+            state->scan_ready ? T("No apps found") : T("Scanning library..."),
             list_x + CAT_S(8), content_y + CAT_S(8),
             list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -6438,7 +6445,7 @@ static void jw__open_apps(jw_launcher_state *state) {
         snprintf(state->status, sizeof(state->status), "%d apps", state->app_count);
     } else {
         snprintf(state->status, sizeof(state->status), "%s",
-                 state->scan_ready ? "No apps found" : "Scanning library...");
+                 state->scan_ready ? T("No apps found") : T("Scanning library..."));
     }
 }
 

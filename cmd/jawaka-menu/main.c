@@ -4,6 +4,7 @@
 #include "catastrophe_widgets.h"
 
 #include "internal/core/autodemo.h"
+#include "internal/i18n/i18n.h"
 #include "internal/core/log.h"
 #include "internal/core/title.h"
 #include "internal/db/db.h"
@@ -285,6 +286,16 @@ typedef struct {
     }                               load_entries[32];
 } jw_ingame_state;
 
+/* Footer labels are UI text; the button_text pills ("A", "L1/R1") are glyphs and
+   stay as they are. Funnelled here so the eight footer arrays below stay
+   untouched -- they are stack locals, so rewriting the pointer is safe. */
+static void jw__menu_footer(cat_footer_item *items, int count) {
+    for (int i = 0; i < count; i++) {
+        if (items[i].label) items[i].label = T(items[i].label);
+    }
+    cat_draw_footer(items, count);
+}
+
 static void jw__render_menu(const jw_menu_state *state) {
     ap_theme *theme     = cat_get_theme();
     TTF_Font *body_font = cat_get_font(CAT_FONT_MEDIUM);
@@ -359,7 +370,7 @@ static void jw__render_menu(const jw_menu_state *state) {
             { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
             { CAT_BTN_A,  "Select",   true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 2);
+        jw__menu_footer(footer, 2);
     }
     cat_present();
 }
@@ -1268,8 +1279,8 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
         /* The Quit row label tracks the armed mode (Save & Quit by default;
            Left/Right toggles to a plain discard Quit). */
         const char *label = (i == JW_INGAME_QUIT)
-                          ? (state->quit_save ? "Save & Quit" : "Quit")
-                          : kInGameItems[i];
+                          ? (state->quit_save ? T("Save & Quit") : T("Quit"))
+                          : T(kInGameItems[i]);
         cat_draw_text_ellipsized(body_font, label, x, text_y,
                                  col, label_w);
         if (show_detail) {
@@ -1300,7 +1311,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
             if (state->thumb_tex) {
                 cat_draw_image(state->thumb_tex, pv_x, pv_y, pv_w, pv_h);
             } else {
-                cat_draw_text_ellipsized(small, "No save in this slot",
+                cat_draw_text_ellipsized(small, T("No save in this slot"),
                                          pv_x + CAT_S(8),
                                          pv_y + pv_h / 2 - small_h / 2,
                                          theme->hint, pv_w - CAT_S(16));
@@ -1350,7 +1361,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
                 { CAT_BTN_B,  "Resume", true,  JW_HINT("B") },
                 { CAT_BTN_A,  "Load",   true,  JW_HINT("A") },
             };
-            cat_draw_footer(footer, 4);
+            jw__menu_footer(footer, 4);
         } else {
             cat_footer_item footer[] = {
                 { CAT_BTN_UP, "Move", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
@@ -1358,7 +1369,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
                 { CAT_BTN_B,  "Resume", true,  JW_HINT("B") },
                 { CAT_BTN_A,  "OK",     true,  JW_HINT("A") },
             };
-            cat_draw_footer(footer, 4);
+            jw__menu_footer(footer, 4);
         }
     }
     cat_present();
@@ -1507,14 +1518,14 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
                                  + JW_INGAME_PERF_ROWS * item_h + CAT_S(8));
 
     const char *labels[JW_INGAME_PERF_ROWS] = {
-        "Profile", "CPU", "GPU", "DMC", "Reset Override",
+        T("Profile"), T("CPU"), T("GPU"), T("DMC"), T("Reset Override"),
     };
     const char *values[JW_INGAME_PERF_ROWS] = {
         jw__ingame_perf_profile_label_for_index(state->perf_profile_index),
         kCpuPerfOptions[state->perf_cpu_index].label,
         kGpuPerfOptions[state->perf_gpu_index].label,
         kDmcPerfOptions[state->perf_dmc_index].label,
-        state->perf.session_override ? "Active" : "None",
+        state->perf.session_override ? T("Active") : T("None"),
     };
 
     if (state->perf_ready && state->perf.supported) {
@@ -1531,7 +1542,7 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
                                  theme->hint, list_w);
         top_y += small_h + CAT_S(12);
     } else {
-        cat_draw_text_ellipsized(small, "Performance unavailable", x, top_y,
+        cat_draw_text_ellipsized(small, T("Performance unavailable"), x, top_y,
                                  theme->hint, list_w);
         top_y += small_h + CAT_S(12);
     }
@@ -1564,7 +1575,7 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
             { CAT_BTN_B,  "Back", true, JW_HINT("B") },
             { CAT_BTN_A,  "Apply", true, JW_HINT("A") },
         };
-        cat_draw_footer(footer, 3);
+        jw__menu_footer(footer, 3);
     }
     cat_present();
 }
@@ -1956,7 +1967,7 @@ static void jw__render_ingame_switcher(const jw_ingame_state *state,
             { CAT_BTN_B, "Resume", true,  JW_HINT("B") },
             { CAT_BTN_A, "Switch", true,  JW_HINT("A") },
         };
-        cat_draw_footer(footer, 3);
+        jw__menu_footer(footer, 3);
     }
     cat_present();
 }
