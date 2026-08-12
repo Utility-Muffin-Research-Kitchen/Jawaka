@@ -488,6 +488,9 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "recording_output_directory",
 #endif
         "input_player1_joypad_index",
+        "input_player2_joypad_index",
+        "input_player3_joypad_index",
+        "input_player4_joypad_index",
         "cheevos_enable",
         "cheevos_username",
         "cheevos_password",
@@ -1765,12 +1768,12 @@ static char *jw__retroarch_shared_config_path(const char *sdcard_root) {
    off the second SD slot, and conflating them is how recording ended up resolving
    its preset on a card that never had one. */
 static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs,
-                                                const char *config_sdroot_abs,
-                                                const char *core_path,
-                                                const char *screenshot_dir,
-                                                int player1_joypad_index,
-                                                bool persist_changes,
-                                                char *error, size_t error_size) {
+                                                 const char *config_sdroot_abs,
+                                                 const char *core_path,
+                                                 const char *screenshot_dir,
+                                                 const int player_joypad_indices[4],
+                                                 bool persist_changes,
+                                                 char *error, size_t error_size) {
     if (!fp || !sdroot_abs || !sdroot_abs[0]) {
         jw__set_error(error, error_size, "missing RetroArch config inputs");
         return -1;
@@ -1892,7 +1895,8 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "notification_show_autoconfig", "false");
     jw__retroarch_cfg_string(fp, "notification_show_autoconfig_fails", "false");
     jw__retroarch_cfg_string(fp, "notification_show_config_override_load", "false");
-    jw__retroarch_cfg_string(fp, "input_max_users", "1");
+    jw__retroarch_cfg_string(fp, "input_max_users",
+                             player_joypad_indices ? "4" : "1");
     jw__retroarch_cfg_string(fp, "savestate_file_compression", "false");
     jw__retroarch_cfg_string(fp, "video_driver", "gl");
     jw__retroarch_cfg_string(fp, "video_context_driver", "sdl_gl");
@@ -1950,10 +1954,15 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
         free(record_preset);
     }
 #endif
-    if (player1_joypad_index >= 0) {
-        char joypad_index[16];
-        snprintf(joypad_index, sizeof(joypad_index), "%d", player1_joypad_index);
-        jw__retroarch_cfg_string(fp, "input_player1_joypad_index", joypad_index);
+    if (player_joypad_indices) {
+        for (int user = 0; user < 4; user++) {
+            char key[32];
+            char joypad_index[16];
+            snprintf(key, sizeof(key), "input_player%d_joypad_index", user + 1);
+            snprintf(joypad_index, sizeof(joypad_index), "%d",
+                     player_joypad_indices[user]);
+            jw__retroarch_cfg_string(fp, key, joypad_index);
+        }
     }
 
     /* RetroAchievements: jawakad exports the credentials stored under
@@ -1979,7 +1988,8 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
 }
 
 char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_root,
-                                  const char *core_path, int player1_joypad_index,
+                                  const char *core_path,
+                                  const int player_joypad_indices[4],
                                   bool persist_changes,
                                   char *error, size_t error_size) {
     jw__set_error(error, error_size, "");
@@ -2110,9 +2120,9 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
 
     fputs("\n# Jawaka protected runtime settings\n", fp);
     int protected_rc = jw__write_retroarch_protected_config(fp, content_sdroot_abs, config_sdroot_abs, core_path,
-                                                           shots_dir,
-                                                           player1_joypad_index,
-                                                           persist_changes,
+                                                            shots_dir,
+                                                            player_joypad_indices,
+                                                            persist_changes,
                                                            error, error_size);
 
     int failed = protected_rc != 0 || ferror(fp);
@@ -2219,7 +2229,8 @@ int jw_reset_retroarch_shared_config(const char *sdcard_root,
 }
 
 char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdcard_root,
-                                       const char *core_path, int player1_joypad_index) {
+                                       const char *core_path,
+                                   const int player_joypad_indices[4]) {
     if (!runtime_dir || !sdcard_root || !core_path) {
         return NULL;
     }
@@ -2351,7 +2362,8 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     jw__retroarch_cfg_string(fp, "notification_show_autoconfig", "false");
     jw__retroarch_cfg_string(fp, "notification_show_autoconfig_fails", "false");
     jw__retroarch_cfg_string(fp, "notification_show_config_override_load", "false");
-    jw__retroarch_cfg_string(fp, "input_max_users", "1");
+    jw__retroarch_cfg_string(fp, "input_max_users",
+                             player_joypad_indices ? "4" : "1");
     jw__retroarch_cfg_string(fp, "savestate_file_compression", "false");
     jw__retroarch_cfg_string(fp, "video_driver", "gl");
     jw__retroarch_cfg_string(fp, "video_context_driver", "sdl_gl");
@@ -2359,10 +2371,15 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     jw__retroarch_cfg_string(fp, "video_force_aspect", "true");
     jw__retroarch_cfg_string(fp, "video_scale_integer", "false");
 #endif
-    if (player1_joypad_index >= 0) {
-        char joypad_index[16];
-        snprintf(joypad_index, sizeof(joypad_index), "%d", player1_joypad_index);
-        jw__retroarch_cfg_string(fp, "input_player1_joypad_index", joypad_index);
+    if (player_joypad_indices) {
+        for (int user = 0; user < 4; user++) {
+            char key[32];
+            char joypad_index[16];
+            snprintf(key, sizeof(key), "input_player%d_joypad_index", user + 1);
+            snprintf(joypad_index, sizeof(joypad_index), "%d",
+                     player_joypad_indices[user]);
+            jw__retroarch_cfg_string(fp, key, joypad_index);
+        }
     }
 
     int failed = ferror(fp);

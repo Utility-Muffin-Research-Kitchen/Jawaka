@@ -1,11 +1,6 @@
 #include "internal/platform/paths.h"
 
 #include <errno.h>
-#ifdef __linux__
-#include <fcntl.h>
-#include <linux/input.h>
-#include <sys/ioctl.h>
-#endif
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,90 +23,33 @@ static int jw__path_executable(const char *path) {
     return path && stat(path, &st) == 0 && S_ISREG(st.st_mode) && access(path, X_OK) == 0;
 }
 
-static int jw__parse_joypad_index(void) {
-    const char *env = getenv("JAWAKA_RETROARCH_JOYPAD_INDEX");
-    char *end = NULL;
-    long value;
-    if (!env || !env[0]) {
-        return -1;
-    }
-    errno = 0;
-    value = strtol(env, &end, 10);
-    if (errno != 0 || !end || *end != '\0' || value < 0 || value > 99) {
-        return -1;
-    }
-    return (int)value;
-}
-
-#ifdef __linux__
-static int jw__event_name_matches(int fd, const char *expected) {
-    if (!expected || !expected[0]) {
+/* Fill the four RetroArch user joypad indices from the launch roster jawakad
+   publishes in the environment: SDL_JOYSTICK_DEVICE lists exactly the roster
+   event paths in player order (externals first, calibrated virtual Loong
+   last). Unused players get -1. Never derive indices by scanning devices:
+   the physical and virtual Loong pads share the name "Loong Gamepad", so
+   name-based counting cannot distinguish them.
+   Returns true when a roster was published; false = no roster (legacy
+   single-player config). */
+static int jw__roster_player_indices(int out[4]) {
+    const char *sdl = getenv("SDL_JOYSTICK_DEVICE");
+    if (!out || !sdl || !sdl[0]) {
         return 0;
     }
 
-    char name[128];
-    memset(name, 0, sizeof(name));
-    return ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
-           strcmp(name, expected) == 0;
-}
-
-static int jw__same_rdev(const char *a, const char *b) {
-    struct stat sa;
-    struct stat sb;
-    return a && b && stat(a, &sa) == 0 && stat(b, &sb) == 0 &&
-           sa.st_rdev == sb.st_rdev;
-}
-
-static int jw__same_event_path(const char *a, const char *b) {
-    return a && b && a[0] && b[0] &&
-           (strcmp(a, b) == 0 || jw__same_rdev(a, b));
-}
-
-static int jw__joypad_index_from_virtual_event(void) {
-    const char *virtual_event = getenv("JAWAKA_RETROARCH_VIRTUAL_EVENT");
-    const char *device_name = getenv("JAWAKA_RETROARCH_INPUT_DEVICE");
-    int joypad_index = 0;
-
-    if (!virtual_event || !virtual_event[0]) {
-        return -1;
-    }
-    if (!device_name || !device_name[0]) {
-        return -1;
-    }
-
-    for (int i = 0; i < 64; i++) {
-        char path[64];
-        snprintf(path, sizeof(path), "/dev/input/event%d", i);
-
-        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0) {
-            continue;
+    int count = 1;
+    for (const char *p = sdl; *p; p++) {
+        if (*p == ':') {
+            count++;
         }
-
-        int match = jw__event_name_matches(fd, device_name);
-        close(fd);
-        if (!match) {
-            continue;
-        }
-
-        if (jw__same_event_path(path, virtual_event)) {
-            return joypad_index;
-        }
-        joypad_index++;
     }
-
-    return -1;
-}
-#endif
-
-static int jw__resolve_joypad_index(void) {
-#ifdef __linux__
-    int index = jw__joypad_index_from_virtual_event();
-    if (index >= 0) {
-        return index;
+    if (count > 4) {
+        count = 4;
     }
-#endif
-    return jw__parse_joypad_index();
+    for (int i = 0; i < 4; i++) {
+        out[i] = i < count ? i : -1;
+    }
+    return 1;
 }
 
 static int jw__reset_config(void) {
@@ -152,10 +90,13 @@ static int jw__launch_menu(void) {
         goto done;
     }
 
+    int player_indices[4];
+    const int *player_indices_arg =
+        jw__roster_player_indices(player_indices) ? player_indices : NULL;
     runtime_config = jw_prepare_retroarch_config(runtime_dir, sdcard_root, NULL,
-                                                 jw__resolve_joypad_index(),
-                                                 true,
-                                                 error, sizeof(error));
+                                                  player_indices_arg,
+                                                  true,
+                                                  error, sizeof(error));
     if (!runtime_config) {
         fprintf(stderr, "could not prepare RetroArch config: %s\n",
                 error[0] ? error : "unknown error");

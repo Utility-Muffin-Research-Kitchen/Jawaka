@@ -65,10 +65,18 @@ int main(void) {
                "ports", "/sd/emulators/ports/launch.sh", false),
            false);
 
-    expect("unrelated path core direct DRM",
+    expect("DraStic no implicit direct DRM",
            jw_standalone_policy_requires_direct_drm(
                "drastic", "/sd/emulators/drastic/launch.sh", false),
            false);
+    expect("DraStic calibrated input (paired wireless controllers)",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "drastic", "/sd/emulators/drastic/launch.sh"),
+           true);
+    expect("DraStic calibrated input by path only",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "unrelated_core", "/sd/emulators/DraStic/launch.sh"),
+           true);
     expect("missing identity calibrated input",
            jw_standalone_policy_uses_calibrated_virtual_input(NULL, NULL),
            false);
