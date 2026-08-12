@@ -89,21 +89,26 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
         return jw__reply_ok(client, "show-volume");
     }
 
-    if (strcmp(type->valuestring, "show-game-waiting") == 0) {
-        cJSON *pending = cJSON_GetObjectItemCaseSensitive(root, "pending_items");
-        if (!cJSON_IsNumber(pending) || pending->valueint < 0) {
+    if (strcmp(type->valuestring, "show-game-launch") == 0) {
+        jw_osd_game_stage stage;
+        int pending_items = 0;
+        if (!jw_osd_game_launch_parse(root, &stage, &pending_items)) {
             cJSON_Delete(root);
-            return jw__reply_error(client, "missing pending item count");
+            return jw__reply_error(client, "invalid game launch status");
         }
-        jw_osd_backend_show_game_waiting(pending->valueint, jw__now_ms());
+        jw_osd_backend_show_game_launch(stage, pending_items, jw__now_ms());
         cJSON_Delete(root);
-        return jw__reply_ok(client, "show-game-waiting");
+        return jw__reply_ok(client, "show-game-launch");
     }
 
-    if (strcmp(type->valuestring, "hide-game-waiting") == 0) {
-        jw_osd_backend_hide_game_waiting();
+    if (strcmp(type->valuestring, "hide-game-launch") == 0) {
+        if (cJSON_GetArraySize(root) != 1) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, "invalid hide game launch request");
+        }
+        jw_osd_backend_hide_game_launch();
         cJSON_Delete(root);
-        return jw__reply_ok(client, "hide-game-waiting");
+        return jw__reply_ok(client, "hide-game-launch");
     }
 
     if (strcmp(type->valuestring, "shutdown") == 0) {

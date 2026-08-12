@@ -364,6 +364,7 @@ typedef struct {
     bool game_coordination_pending;
     bool game_coordination_ready;
     int game_coordination_exchanges;
+    long long game_launch_started_ms;
     /* A stop/stale reservation that cannot be proved absent is fail-closed,
        but not silent. Preserve the requested game until the respawned
        launcher explicitly cancels it or asks to launch despite the named
@@ -6742,7 +6743,8 @@ static int jw__osd_show_brightness(jw_daemon_state *state, int percent) {
     return -1;
 }
 
-static int jw__osd_game_waiting(jw_daemon_state *state, int pending_items) {
+static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
+                               int pending_items) {
     if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
         return -1;
     }
@@ -6751,9 +6753,17 @@ static int jw__osd_game_waiting(jw_daemon_state *state, int pending_items) {
     }
 
     char request[128];
-    snprintf(request, sizeof(request),
-             "{\"type\":\"show-game-waiting\",\"pending_items\":%d}",
-             pending_items < 0 ? 0 : pending_items);
+    if (stage && strcmp(stage, "syncing") == 0) {
+        snprintf(request, sizeof(request),
+                 "{\"type\":\"show-game-launch\",\"stage\":\"syncing\","
+                 "\"pending_items\":%d}", pending_items < 0 ? 0 : pending_items);
+    } else {
+        snprintf(request, sizeof(request),
+                 "{\"type\":\"show-game-launch\",\"stage\":\"%s\"}",
+                 stage ? stage : "starting");
+    }
+    jw_log_info("life1: launch status stage=%s pending_items=%d",
+                stage ? stage : "starting", pending_items < 0 ? 0 : pending_items);
     char *response = NULL;
     size_t response_len = 0;
     /* A visual hint must never extend a service's LIFE-1 acknowledgement
@@ -6763,17 +6773,18 @@ static int jw__osd_game_waiting(jw_daemon_state *state, int pending_items) {
                                     100);
     free(response);
     if (rc != 0) {
-        jw_log_warn("life1: waiting OSD request failed");
+        jw_log_warn("life1: launch OSD request failed stage=%s",
+                    stage ? stage : "starting");
     }
     return rc;
 }
 
-static void jw__osd_game_waiting_hide(jw_daemon_state *state) {
+static void jw__osd_game_launch_hide(jw_daemon_state *state) {
     if (!state || !state->osd_socket_path || state->osd_pid <= 0 ||
         jw__env_is_disabled("JAWAKA_OSD")) {
         return;
     }
-    const char *request = "{\"type\":\"hide-game-waiting\"}";
+    const char *request = "{\"type\":\"hide-game-launch\"}";
     char *response = NULL;
     size_t response_len = 0;
     (void)jw_ipc_request_timeout(state->osd_socket_path, request,
@@ -11137,7 +11148,10 @@ static void jw__game_coordination_abort(jw_daemon_state *state,
     }
     state->game_coordination_pending = false;
     state->game_coordination_ready = false;
-    jw__osd_game_waiting_hide(state);
+    jw__osd_game_launch_hide(state);
+    long long launch_elapsed_ms = state->game_launch_started_ms > 0
+        ? jw__monotonic_ms() - state->game_launch_started_ms : 0;
+    state->game_launch_started_ms = 0;
     state->game_check_decision = false;
     state->game_check_service_id[0] = '\0';
     state->game_coordination_exchanges = 0;
@@ -11160,8 +11174,10 @@ static void jw__game_coordination_abort(jw_daemon_state *state,
             jw_svc_supervisor_game_finish(state->services);
         }
     }
-    jw_log_warn("life1: game launch aborted before writer start reason=%s",
-                reason && reason[0] ? reason : "coordination-failed");
+    jw_log_warn("life1: game launch aborted before writer start reason=%s "
+                "elapsed_ms=%lld",
+                reason && reason[0] ? reason : "coordination-failed",
+                launch_elapsed_ms);
 }
 
 static void jw__game_coordination_block(jw_daemon_state *state,
@@ -11226,7 +11242,7 @@ static int jw__game_coordination_launch_if_ready(jw_daemon_state *state) {
         jw__game_coordination_abort(state, "source-binding-changed");
         return -1;
     }
-    jw__osd_game_waiting_hide(state);
+    (void)jw__osd_game_launch(state, "starting", 0);
     state->game_coordination_pending = false;
     if (state->child_pid > 0 && state->child_kind == JW_CHILD_LAUNCHER) {
         state->game_coordination_ready = true;
@@ -11239,20 +11255,38 @@ static int jw__game_coordination_launch_if_ready(jw_daemon_state *state) {
     }
     state->pending_launch_override_unverified = false;
     state->active_game_writer_started = true;
-    jw_log_info("life1: writer started launch_id=%s pgid=%d",
-                state->active_game.launch_id, (int)state->child_pgid);
+    jw__osd_game_launch_hide(state);
+    jw_log_info("life1: writer started launch_id=%s pgid=%d total_ms=%lld",
+                state->active_game.launch_id, (int)state->child_pgid,
+                state->game_launch_started_ms > 0
+                    ? jw__monotonic_ms() - state->game_launch_started_ms : 0);
+    state->game_launch_started_ms = 0;
     return 1;
 }
 
 static bool jw__game_stop_service(jw_daemon_state *state,
                                   const char *service_id,
+                                  const jw_svc_subscriber_binding *coordinator,
                                   const char *why) {
     char stop_reason[JW_SVC_REASON_BUF];
+    jw_svc_stop_result result = {0};
+    (void)jw__osd_game_launch(state, "stopping", 0);
     if (jw_svc_supervisor_game_stop_service(
-            state->services, service_id,
+            state->services, service_id, coordinator, &result,
             stop_reason, sizeof(stop_reason))) {
-        jw_log_info("life1: verified service stop service=%s reason=%s",
-                    service_id, why ? why : "game-policy");
+        jw_log_info("life1: verified service stop service=%s reason=%s "
+                    "stop_ms=%d coordinator_first=%s coordinator_ms=%d "
+                    "group_fallback=%s group_ms=%d kill=%s kill_ms=%d "
+                    "verified_absence_ms=%d",
+                    service_id, why ? why : "game-policy",
+                    result.total_wait_ms,
+                    result.coordinator_first ? "true" : "false",
+                    result.coordinator_wait_ms,
+                    result.coordinator_first && result.group_term_sent
+                        ? "true" : "false",
+                    result.group_wait_ms,
+                    result.escalated_to_kill ? "true" : "false",
+                    result.kill_wait_ms, result.total_wait_ms);
         return true;
     }
     jw_log_warn("life1: service=%s stop could not be verified reason=%s trigger=%s",
@@ -11264,6 +11298,9 @@ static int jw__begin_game_exchange(jw_daemon_state *state, int index) {
     jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
     bool check = connection->mode == JW_LIFE1_MODE_STOP &&
                  connection->check_before_stop;
+    if (check) {
+        (void)jw__osd_game_launch(state, "checking", 0);
+    }
     long long now = jw__monotonic_ms();
     connection->exchange_kind = check ? JW_GAME_EXCHANGE_KIND_CHECK
                                       : JW_GAME_EXCHANGE_KIND_NOTIFY;
@@ -11370,6 +11407,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
     state->game_coordination_pending = true;
     state->game_coordination_ready = false;
     state->game_coordination_exchanges = 0;
+    state->game_launch_started_ms = jw__monotonic_ms();
     if (state->services) {
         jw_svc_supervisor_game_set_active(state->services, true);
     }
@@ -11433,7 +11471,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
             }
             if (policy == JW_SVC_LIFECYCLE_GAME_STOP || subscriber < 0) {
                 if (!jw__game_stop_service(
-                        state, service_id,
+                        state, service_id, NULL,
                         policy == JW_SVC_LIFECYCLE_GAME_STOP
                             ? "mode-stop" : "notify-unsubscribed")) {
                     if (state->pending_launch_override_unverified) {
@@ -11491,7 +11529,7 @@ static void jw__game_coordination_connection_failed(jw_daemon_state *state,
         return;
     }
     if (!state->services || !jw__game_stop_service(
-            state, service_id,
+            state, service_id, NULL,
             reason && reason[0] ? reason : "exchange-failure")) {
         if (state->pending_launch_override_unverified) {
             jw_log_warn("life1: explicit override bypassing unverified "
@@ -11588,9 +11626,9 @@ static bool jw__game_check_play_anyway(jw_daemon_state *state) {
     state->game_check_pending_items = 0;
     state->game_check_pending_bytes = 0;
     state->game_check_service_id[0] = '\0';
-    jw__osd_game_waiting_hide(state);
     if (!state->services ||
-        !jw__game_stop_service(state, service_id, "play-anyway")) {
+        !jw__game_stop_service(state, service_id, &connection->binding,
+                               "play-anyway")) {
         jw__game_coordination_block(state, service_id,
                                     "check-stop-unverified");
         return false;
@@ -11632,7 +11670,6 @@ static bool jw__game_coordination_start_now(jw_daemon_state *state,
     }
 
     long long now = jw__monotonic_ms();
-    jw__osd_game_waiting_hide(state);
     for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX &&
                     state->game_coordination_pending; i++) {
         jw_daemon_ipc_connection *connection = &state->ipc_connections[i];
@@ -11703,9 +11740,9 @@ static void jw__game_coordination_status(jw_daemon_state *state, int index,
             state->game_check_pending_items = 0;
             state->game_check_pending_bytes = 0;
             state->game_check_service_id[0] = '\0';
-            jw__osd_game_waiting_hide(state);
             if (!state->services || !jw__game_stop_service(
-                    state, service_id, "check-before-stop-current")) {
+                    state, service_id, &connection->binding,
+                    "check-before-stop-current")) {
                 jw__game_coordination_block(
                     state, service_id, "check-stop-unverified");
                 return;
@@ -11735,7 +11772,7 @@ static void jw__game_coordination_status(jw_daemon_state *state, int index,
         snprintf(state->game_check_service_id,
                  sizeof(state->game_check_service_id), "%s",
                  connection->service_id);
-        (void)jw__osd_game_waiting(state, status->pending_items);
+        (void)jw__osd_game_launch(state, "syncing", status->pending_items);
         jw_log_info("life1: check pending service=%s launch_id=%s pending_items=%d pending_bytes=%lld",
                     connection->service_id, status->launch_id,
                     status->pending_items, (long long)status->pending_bytes);
@@ -11776,7 +11813,7 @@ static void jw__game_coordination_status(jw_daemon_state *state, int index,
     connection->exchange_pending_seen = true;
     connection->exchange_pending_items = status->pending_items;
     connection->exchange_phase = JW_GAME_EXCHANGE_WAITING;
-    (void)jw__osd_game_waiting(state, status->pending_items);
+    (void)jw__osd_game_launch(state, "syncing", status->pending_items);
     jw_log_info("life1: waiting service=%s launch_id=%s pending_items=%d",
                 connection->service_id, status->launch_id,
                 status->pending_items);
@@ -12189,7 +12226,7 @@ static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
             snprintf(service_id, sizeof(service_id), "%s",
                      state->ipc_connections[slot].service_id);
             state->ipc_connections[slot].stop_after_flush = false;
-            if (!jw__game_stop_service(state, service_id,
+            if (!jw__game_stop_service(state, service_id, NULL,
                                        "active-mode-stop-reconcile")) {
                 jw_log_warn("life1: active mode-stop reconnect remains unverified service=%s",
                             service_id);
@@ -12374,9 +12411,16 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             } else {
                 state->pending_launch_override_unverified = false;
                 state->active_game_writer_started = true;
-                jw_log_info("life1: writer started launch_id=%s pgid=%d",
+                jw__osd_game_launch_hide(state);
+                jw_log_info("life1: writer started launch_id=%s pgid=%d "
+                            "total_ms=%lld",
                             state->active_game.launch_id,
-                            (int)state->child_pgid);
+                            (int)state->child_pgid,
+                            state->game_launch_started_ms > 0
+                                ? jw__monotonic_ms() -
+                                      state->game_launch_started_ms
+                                : 0);
+                state->game_launch_started_ms = 0;
             }
             return;
         }

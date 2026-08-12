@@ -55,9 +55,15 @@ static bool jw__stop_poll_absent(pid_t pgid, int timeout_ms,
     }
 }
 
-jw_svc_stop_result jw_svc_stop_group(pid_t pgid, int stop_grace_ms,
-                                     jw_svc_absence_check_fn absence_check) {
-    jw_svc_stop_result result = {false, false};
+static int jw__stop_elapsed_ms(long started_us) {
+    long elapsed_us = jw__stop_now_us() - started_us;
+    return elapsed_us <= 0 ? 0 : (int)(elapsed_us / 1000L);
+}
+
+jw_svc_stop_result jw_svc_stop_group_coordinated(
+    pid_t pgid, pid_t coordinator_pid, int stop_grace_ms,
+    jw_svc_absence_check_fn absence_check) {
+    jw_svc_stop_result result = {0};
     /* pgid == 1 is rejected alongside <= 0: POSIX defines kill(-1, sig) as
      * "every process the caller is permitted to signal", not "process
      * group 1". Treating 1 as an ordinary pgid would turn both signals
@@ -66,19 +72,58 @@ jw_svc_stop_result jw_svc_stop_group(pid_t pgid, int stop_grace_ms,
         return result;
     }
 
+    if (stop_grace_ms < 0) {
+        stop_grace_ms = 0;
+    }
+    long started_us = jw__stop_now_us();
+    int remaining_grace_ms = stop_grace_ms;
+
+    if (coordinator_pid == pgid) {
+        int lead_ms = remaining_grace_ms < JW_SVC_COORDINATOR_STOP_LEAD_MS
+                          ? remaining_grace_ms
+                          : JW_SVC_COORDINATOR_STOP_LEAD_MS;
+        result.coordinator_first = true;
+        kill(coordinator_pid, SIGTERM);
+        long coordinator_started_us = jw__stop_now_us();
+        if (jw__stop_poll_absent(pgid, lead_ms, absence_check)) {
+            result.coordinator_wait_ms =
+                jw__stop_elapsed_ms(coordinator_started_us);
+            result.total_wait_ms = jw__stop_elapsed_ms(started_us);
+            result.verified_absent = true;
+            return result;
+        }
+        result.coordinator_wait_ms = jw__stop_elapsed_ms(coordinator_started_us);
+        remaining_grace_ms -= lead_ms;
+        if (remaining_grace_ms < 0) remaining_grace_ms = 0;
+    }
+
     /* kill()'s return value is deliberately not checked: ESRCH (group
      * already gone) is not a failure here -- the poll below simply
      * confirms absence immediately. Any other errno still leaves
      * absence_check as the sole source of truth. */
+    result.group_term_sent = true;
     kill(-pgid, SIGTERM);
-    if (jw__stop_poll_absent(pgid, stop_grace_ms, absence_check)) {
+    long group_started_us = jw__stop_now_us();
+    if (jw__stop_poll_absent(pgid, remaining_grace_ms, absence_check)) {
+        result.group_wait_ms = jw__stop_elapsed_ms(group_started_us);
+        result.total_wait_ms = jw__stop_elapsed_ms(started_us);
         result.verified_absent = true;
         return result;
     }
+    result.group_wait_ms = jw__stop_elapsed_ms(group_started_us);
 
     result.escalated_to_kill = true;
     kill(-pgid, SIGKILL);
+    long kill_started_us = jw__stop_now_us();
     result.verified_absent =
         jw__stop_poll_absent(pgid, JW_SVC_STOP_KILL_WAIT_MS, absence_check);
+    result.kill_wait_ms = jw__stop_elapsed_ms(kill_started_us);
+    result.total_wait_ms = jw__stop_elapsed_ms(started_us);
     return result;
+}
+
+jw_svc_stop_result jw_svc_stop_group(pid_t pgid, int stop_grace_ms,
+                                     jw_svc_absence_check_fn absence_check) {
+    return jw_svc_stop_group_coordinated(
+        pgid, 0, stop_grace_ms, absence_check);
 }
