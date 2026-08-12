@@ -20,6 +20,30 @@ msgstr ""
 msgid "%d games, %d systems, %d apps"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "%d of %d"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "%ldd ago"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "%ldh ago"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "%ldm ago"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "%s · %d of %d"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "%s · %s · %d of %d"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "-"
 msgstr ""
@@ -348,6 +372,10 @@ msgstr ""
 msgid "Colors"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Command: %s"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Commodore 64"
 msgstr ""
@@ -398,6 +426,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Disable USB ADB and remove Leaf's boot restore marker?"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Disk %d/%d"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -708,8 +740,24 @@ msgstr ""
 msgid "No save in this slot"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "No saves"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "No saves to load"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "No saves yet"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "No services installed"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "No states"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -798,6 +846,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "RAM"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Reboot failed"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -924,6 +976,10 @@ msgstr ""
 msgid "Scan"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Scan failed"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Scanning"
 msgstr ""
@@ -932,7 +988,7 @@ msgstr ""
 msgid "Scanning library..."
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-menu/main.c
 msgid "Scanning…"
 msgstr ""
 
@@ -1002,6 +1058,14 @@ msgstr ""
 
 #: internal/platform/platform_common.c
 msgid "Sleep"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Sleep failed"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Sleeping…"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1256,12 +1320,32 @@ msgstr ""
 msgid "brightness failed"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "empty"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "font is fixed while a CJK language is selected"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "font load failed"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "just now"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "newest"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "oldest"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "overwrites"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1274,6 +1358,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "refresh rate unavailable on this platform"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "unsaved · %d of %d"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "unsaved · %s · %d of %d"
 msgstr ""
 
 #: internal/settings/settings.c

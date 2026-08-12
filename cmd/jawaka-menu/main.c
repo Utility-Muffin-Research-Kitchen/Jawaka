@@ -423,15 +423,15 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             state->pending_settings = JW_SETTINGS_ABOUT;
             return 0;
         case JW_MENU_RESCAN: {
-            snprintf(state->status, sizeof(state->status), "%s", "Scanning\xe2\x80\xa6");
+            snprintf(state->status, sizeof(state->status), "%s", T("Scanning…"));
             cat_request_frame();
             jw__render_menu(state);
             int rc = jw_ipc_scan_library(socket_path, state->status,
                                          sizeof(state->status));
             if (rc == 0 && strcmp(state->status, "scan started") == 0) {
-                snprintf(state->status, sizeof(state->status), "%s", "Scanning\xe2\x80\xa6");
+                snprintf(state->status, sizeof(state->status), "%s", T("Scanning…"));
             } else if (rc != 0 && !state->status[0]) {
-                snprintf(state->status, sizeof(state->status), "%s", "Scan failed");
+                snprintf(state->status, sizeof(state->status), "%s", T("Scan failed"));
             }
             /* Refresh cached counts opportunistically; the daemon now runs the
                scan asynchronously, so these may remain the pre-scan counts. */
@@ -446,14 +446,14 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             /* The platform "sleep" write to /sys/power/state blocks until the
                system resumes, so this call returns after wake. Keep the menu
                open so the user lands back where they were. */
-            snprintf(state->status, sizeof(state->status), "%s", "Sleeping…");
+            snprintf(state->status, sizeof(state->status), "%s", T("Sleeping…"));
             cat_request_frame();
             jw__render_menu(state);
             if (jw_ipc_platform_action(socket_path, "sleep", 0) != 0) {
                 /* Daemon unreachable: keep the feedback up instead of flashing.
                    Return the failure too, or the caller's haptic contradicts
                    the status line the user is looking at. */
-                snprintf(state->status, sizeof(state->status), "%s", "Sleep failed");
+                snprintf(state->status, sizeof(state->status), "%s", T("Sleep failed"));
                 return -1;
             }
             state->status[0] = '\0';
@@ -473,7 +473,7 @@ static int jw__activate(const char *socket_path, jw_menu_state *state, bool *run
             return 0;
         case JW_MENU_REBOOT:
             if (jw_ipc_platform_action(socket_path, "reboot", 0) != 0) {
-                snprintf(state->status, sizeof(state->status), "%s", "Reboot failed");
+                snprintf(state->status, sizeof(state->status), "%s", T("Reboot failed"));
                 return -1;
             }
             *running = false;
@@ -673,13 +673,13 @@ static void jw__rel_time(long mtime, char *out, size_t out_size) {
     long d = (long)time(NULL) - mtime;
     if (d < 0) d = 0;
     if (d < 60) {
-        snprintf(out, out_size, "just now");
+        snprintf(out, out_size, "%s", T("just now"));
     } else if (d < 3600) {
-        snprintf(out, out_size, "%ldm ago", d / 60);
+        snprintf(out, out_size, T("%ldm ago"), d / 60);
     } else if (d < 86400) {
-        snprintf(out, out_size, "%ldh ago", d / 3600);
+        snprintf(out, out_size, T("%ldh ago"), d / 3600);
     } else {
-        snprintf(out, out_size, "%ldd ago", d / 86400);
+        snprintf(out, out_size, T("%ldd ago"), d / 86400);
     }
 }
 
@@ -716,7 +716,7 @@ static void jw__save_caption(const jw_ingame_state *state, char *out, size_t out
     }
     char name[16];
     jw__slot_name(state->save_slot, name, sizeof(name));
-    snprintf(out, out_size, "%s \xc2\xb7 %s", name, exists ? "overwrites" : "empty");
+    snprintf(out, out_size, "%s · %s", name, exists ? T("overwrites") : T("empty"));
 }
 
 /* Load row caption: a main label plus a recency sub-line (newest/oldest marker,
@@ -727,7 +727,7 @@ static void jw__load_caption(const jw_ingame_state *state,
     main[0] = '\0';
     sub[0] = '\0';
     if (state->load_count <= 0) {
-        snprintf(main, main_size, "No saves yet");
+        snprintf(main, main_size, "%s", T("No saves yet"));
         return;
     }
     int idx = state->load_index;
@@ -735,27 +735,27 @@ static void jw__load_caption(const jw_ingame_state *state,
     if (idx >= state->load_count) idx = state->load_count - 1;
     char rel[24];
     jw__rel_time(state->load_entries[idx].mtime, rel, sizeof(rel));
-    const char *order = (idx == 0) ? "newest"
-                      : (idx == state->load_count - 1 ? "oldest" : "");
+    const char *order = (idx == 0) ? T("newest")
+                      : (idx == state->load_count - 1 ? T("oldest") : "");
     if (state->load_entries[idx].is_latest) {
         snprintf(main, main_size, "%s", T("Latest"));
         if (rel[0]) {
-            snprintf(sub, sub_size, "unsaved \xc2\xb7 %s \xc2\xb7 %d of %d",
+            snprintf(sub, sub_size, T("unsaved · %s · %d of %d"),
                      rel, idx + 1, state->load_count);
         } else {
-            snprintf(sub, sub_size, "unsaved \xc2\xb7 %d of %d",
+            snprintf(sub, sub_size, T("unsaved · %d of %d"),
                      idx + 1, state->load_count);
         }
         return;
     }
     jw__slot_name(state->load_entries[idx].slot, main, main_size);
     if (order[0] && rel[0]) {
-        snprintf(sub, sub_size, "%s \xc2\xb7 %s \xc2\xb7 %d of %d",
+        snprintf(sub, sub_size, T("%s · %s · %d of %d"),
                  order, rel, idx + 1, state->load_count);
     } else if (rel[0]) {
-        snprintf(sub, sub_size, "%s \xc2\xb7 %d of %d", rel, idx + 1, state->load_count);
+        snprintf(sub, sub_size, T("%s · %d of %d"), rel, idx + 1, state->load_count);
     } else {
-        snprintf(sub, sub_size, "%d of %d", idx + 1, state->load_count);
+        snprintf(sub, sub_size, T("%d of %d"), idx + 1, state->load_count);
     }
 }
 
@@ -950,22 +950,22 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
 
     if (item == JW_INGAME_CONTINUE && state->session.disk_count > 1) {
         int slot = state->session.disk_slot >= 0 ? state->session.disk_slot : 0;
-        snprintf(out, out_size, "Disk %d/%d", slot + 1,
+        snprintf(out, out_size, T("Disk %d/%d"), slot + 1,
                  state->session.disk_count);
         return;
     }
 
     if (item == JW_INGAME_SAVE) {
         if (!state->session.savestate_supported) {
-            snprintf(out, out_size, "%s", "No states");
+            snprintf(out, out_size, "%s", T("No states"));
         } else {
             jw__slot_name(state->save_slot, out, out_size);
         }
     } else if (item == JW_INGAME_LOAD) {
         if (!state->session.savestate_supported) {
-            snprintf(out, out_size, "%s", "No states");
+            snprintf(out, out_size, "%s", T("No states"));
         } else if (state->load_count <= 0) {
-            snprintf(out, out_size, "%s", "No saves");
+            snprintf(out, out_size, "%s", T("No saves"));
         } else {
             int idx = state->load_index;
             if (idx < 0) idx = 0;
@@ -1253,7 +1253,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
 
     if (show_command) {
         char command_line[128];
-        snprintf(command_line, sizeof(command_line), "Command: %s",
+        snprintf(command_line, sizeof(command_line), T("Command: %s"),
                  state->session.command_result);
         cat_draw_text_ellipsized(small, command_line, x,
                                  meta_y + small_h + line_gap,
@@ -1746,7 +1746,7 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
             }
             if (state->load_count <= 0) {
                 snprintf(state->status, sizeof(state->status), "%s",
-                         "No saves to load");
+                         T("No saves to load"));
                 return -1;
             }
             action = "load-state";

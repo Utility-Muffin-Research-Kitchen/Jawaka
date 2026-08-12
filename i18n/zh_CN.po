@@ -19,6 +19,30 @@ msgstr "%d 个游戏"
 msgid "%d games, %d systems, %d apps"
 msgstr "%d 个游戏，%d 个系统，%d 个应用"
 
+#, fuzzy
+msgid "%d of %d"
+msgstr "%d / %d"
+
+#, fuzzy
+msgid "%ldd ago"
+msgstr "%ld 天前"
+
+#, fuzzy
+msgid "%ldh ago"
+msgstr "%ld 小时前"
+
+#, fuzzy
+msgid "%ldm ago"
+msgstr "%ld 分钟前"
+
+#, fuzzy
+msgid "%s · %d of %d"
+msgstr "%s · %d / %d"
+
+#, fuzzy
+msgid "%s · %s · %d of %d"
+msgstr "%s · %s · %d / %d"
+
 msgid "-"
 msgstr ""
 
@@ -321,6 +345,10 @@ msgstr "配色方案"
 msgid "Colors"
 msgstr "颜色"
 
+#, fuzzy
+msgid "Command: %s"
+msgstr "命令：%s"
+
 msgid "Commodore 64"
 msgstr ""
 
@@ -370,6 +398,10 @@ msgstr "禁用"
 #, fuzzy
 msgid "Disable USB ADB and remove Leaf's boot restore marker?"
 msgstr "禁用 USB ADB 并移除 Leaf 的开机恢复标记？"
+
+#, fuzzy
+msgid "Disk %d/%d"
+msgstr "光盘 %d/%d"
 
 #, fuzzy
 msgid "Display & Sound"
@@ -662,8 +694,24 @@ msgid "No save in this slot"
 msgstr "此存档位为空"
 
 #, fuzzy
+msgid "No saves"
+msgstr "无存档"
+
+#, fuzzy
+msgid "No saves to load"
+msgstr "没有可读取的存档"
+
+#, fuzzy
+msgid "No saves yet"
+msgstr "暂无存档"
+
+#, fuzzy
 msgid "No services installed"
 msgstr "未安装服务"
+
+#, fuzzy
+msgid "No states"
+msgstr "暂无即时存档"
 
 #, fuzzy
 msgid "None"
@@ -750,6 +798,10 @@ msgstr "退出"
 #, fuzzy
 msgid "RAM"
 msgstr "内存"
+
+#, fuzzy
+msgid "Reboot failed"
+msgstr "重启失败"
 
 #, fuzzy
 msgid "Recents"
@@ -875,6 +927,10 @@ msgid "Scan"
 msgstr "扫描"
 
 #, fuzzy
+msgid "Scan failed"
+msgstr "扫描失败"
+
+#, fuzzy
 msgid "Scanning"
 msgstr "扫描中"
 
@@ -947,6 +1003,14 @@ msgstr "设置"
 #, fuzzy
 msgid "Sleep"
 msgstr "睡眠"
+
+#, fuzzy
+msgid "Sleep failed"
+msgstr "休眠失败"
+
+#, fuzzy
+msgid "Sleeping…"
+msgstr "正在休眠…"
 
 #, fuzzy
 msgid "Slot %d"
@@ -1188,12 +1252,32 @@ msgid "brightness failed"
 msgstr "亮度调整失败"
 
 #, fuzzy
+msgid "empty"
+msgstr "空"
+
+#, fuzzy
 msgid "font is fixed while a CJK language is selected"
 msgstr "选择中日韩语言时字体已固定"
 
 #, fuzzy
 msgid "font load failed"
 msgstr "字体加载失败"
+
+#, fuzzy
+msgid "just now"
+msgstr "刚刚"
+
+#, fuzzy
+msgid "newest"
+msgstr "最新"
+
+#, fuzzy
+msgid "oldest"
+msgstr "最早"
+
+#, fuzzy
+msgid "overwrites"
+msgstr "将覆盖"
 
 #, fuzzy
 msgid "performance unavailable"
@@ -1206,6 +1290,14 @@ msgstr "刷新率切换失败"
 #, fuzzy
 msgid "refresh rate unavailable on this platform"
 msgstr "此平台不支持刷新率切换"
+
+#, fuzzy
+msgid "unsaved · %d of %d"
+msgstr "未保存 · %d / %d"
+
+#, fuzzy
+msgid "unsaved · %s · %d of %d"
+msgstr "未保存 · %s · %d / %d"
 
 #, fuzzy
 msgid "volume failed"
