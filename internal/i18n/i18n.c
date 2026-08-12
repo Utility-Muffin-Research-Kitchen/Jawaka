@@ -1,5 +1,6 @@
 #include "internal/i18n/i18n.h"
 
+#include <dirent.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -313,6 +314,63 @@ const char *jw_i18n(const char *english) {
             return g_i18n.pool + g_i18n.entries[i].val_off;
     }
     return jw__i18n_strip_context(english);
+}
+
+/* Every language Leaf can plausibly ship needs the CJK face, so this is a
+ * prefix test rather than a table: zh (Chinese), ja (Japanese) and ko (Korean)
+ * all draw from the same Source Han family. Kept as a function so adding a
+ * Latin language later is a one-line change here rather than a hunt through
+ * call sites. */
+bool jw_i18n_language_is_cjk(const char *lang) {
+    if (!lang || !lang[0]) return false;
+    return strncmp(lang, "zh", 2) == 0 ||
+           strncmp(lang, "ja", 2) == 0 ||
+           strncmp(lang, "ko", 2) == 0;
+}
+
+/* Scans both roots for <code>.jwi and <code>.tsv. A language offered by either
+ * is offered to the user, so a translator's dropped .tsv makes the Settings row
+ * appear without a build. */
+static void jw__i18n_scan_dir(const char *env, const char *ext,
+                              char store[][16], size_t *count, size_t max) {
+    char dir[PATH_MAX];
+    const char *root = getenv(env);
+    if (!root || !root[0]) return;
+    if (snprintf(dir, sizeof(dir), "%s/i18n", root) >= (int)sizeof(dir)) return;
+
+    DIR *dp = opendir(dir);
+    if (!dp) return;
+    size_t ext_len = strlen(ext);
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL && *count < max) {
+        size_t n = strlen(de->d_name);
+        if (n <= ext_len + 1 || strcmp(de->d_name + n - ext_len, ext) != 0) continue;
+        size_t base = n - ext_len - 1;                 /* drop ".<ext>" */
+        if (base == 0 || base >= 16) continue;
+        char code[16];
+        memcpy(code, de->d_name, base);
+        code[base] = '\0';
+        if (strcmp(code, "en") == 0) continue;         /* en is the built-in default */
+        bool seen = false;
+        for (size_t i = 0; i < *count; i++)
+            if (strcmp(store[i], code) == 0) { seen = true; break; }
+        if (!seen) {
+            snprintf(store[*count], 16, "%s", code);
+            (*count)++;
+        }
+    }
+    closedir(dp);
+}
+
+size_t jw_i18n_available(const char **out, size_t max) {
+    static char store[8][16];
+    size_t count = 0;
+    if (!out || max == 0) return 0;
+    size_t cap = max < 8 ? max : 8;
+    jw__i18n_scan_dir("UMRK_INTERNAL_DATA_PATH", "tsv", store, &count, cap);
+    jw__i18n_scan_dir("UMRK_PLATFORM_PATH", "jwi", store, &count, cap);
+    for (size_t i = 0; i < count; i++) out[i] = store[i];
+    return count;
 }
 
 const char *jw_i18n_language(void) {

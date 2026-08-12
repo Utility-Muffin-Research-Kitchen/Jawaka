@@ -52,6 +52,21 @@ const char *jw_i18n(const char *english);
 /* The language actually loaded, "en" when none. Never NULL. */
 const char *jw_i18n_language(void);
 
+/* True when `lang` needs the CJK face rather than a themed Latin family. Takes
+ * a language code rather than reading global state so callers that resolve a
+ * language before loading a table (the fork() path that builds a child's
+ * environment) can ask too. NULL, "" and "en" are all false. */
+bool jw_i18n_language_is_cjk(const char *lang);
+
+/* Language codes with a table present, newest-first is not meaningful so the
+ * order is whatever the directory yields. `out` receives up to `max` pointers
+ * into static storage, valid until the next call. Returns the count.
+ *
+ * The Settings row is hidden when this returns 0: shipping a language picker
+ * with nothing to pick reads as broken, and it means a translator can make the
+ * row appear simply by dropping their .tsv on the card. */
+size_t jw_i18n_available(const char **out, size_t max);
+
 /* Entry count in the loaded table, 0 when none. For diagnostics and the
  * coverage gate; not needed for normal use. */
 size_t jw_i18n_count(void);

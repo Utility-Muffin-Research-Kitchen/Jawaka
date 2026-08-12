@@ -1,4 +1,5 @@
 #include "internal/settings/appearance.h"
+#include "internal/i18n/i18n.h"
 
 #include "internal/db/db.h"
 #include "internal/platform/bluetooth.h"
@@ -116,6 +117,21 @@ const char *jw_appearance_font_path_for_index(int index) {
     if (index < 0 || index >= JW_APPEARANCE_FONT_FAMILY_COUNT)
         index = JW_APPEARANCE_FONT_FAMILY_DEFAULT;
     return kJawakaFontFamilyPaths[index];
+}
+
+/* None of the nine themed families carry a single CJK glyph, so a translated UI
+   has to move off the user's chosen font entirely. This is a whole-UI swap
+   rather than a per-string fallback: with a partial translation a per-string
+   choice would stack two typefaces in one list, which reads as a rendering bug
+   rather than a missing string. Source Han Sans covers Latin well, so English
+   that has not been translated yet still looks deliberate.
+
+   The font picker must reflect this while a CJK language is active -- silently
+   ignoring the user's choice is worse than showing them why it does not apply. */
+const char *jw_appearance_font_path_for_language(int index, const char *lang) {
+    if (jw_i18n_language_is_cjk(lang))
+        return JW_APPEARANCE_CJK_FONT_PATH;
+    return jw_appearance_font_path_for_index(index);
 }
 
 void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {

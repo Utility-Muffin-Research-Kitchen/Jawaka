@@ -160,6 +160,34 @@ int main(int argc, char **argv) {
     jw_i18n_shutdown();
     jw_i18n_shutdown();                            /* idempotent */
 
+    /* ── Language classification and discovery ───────────────────────── */
+    expect_true("zh is cjk", jw_i18n_language_is_cjk("zh_CN"));
+    expect_true("ja is cjk", jw_i18n_language_is_cjk("ja"));
+    expect_true("ko is cjk", jw_i18n_language_is_cjk("ko_KR"));
+    expect_true("en is not cjk", !jw_i18n_language_is_cjk("en"));
+    expect_true("null is not cjk", !jw_i18n_language_is_cjk(NULL));
+    expect_true("empty is not cjk", !jw_i18n_language_is_cjk(""));
+
+    const char *langs[8];
+    size_t n = jw_i18n_available(langs, 8);
+    expect_true("finds the compiled table", n == 1 && strcmp(langs[0], "zh_CN") == 0);
+
+    /* A dropped .tsv must not double-count a language the compiled table
+       already offers -- the Settings row would show zh_CN twice. */
+    snprintf(path, sizeof(path), "%s/i18n/zh_CN.tsv", userdata);
+    write_file(path, "Settings\tX\n", 11);
+    n = jw_i18n_available(langs, 8);
+    expect_true("tsv does not duplicate", n == 1);
+    unlink(path);
+
+    /* A language present only as a .tsv still gets offered, which is how a
+       translator makes the row appear without a build. */
+    snprintf(path, sizeof(path), "%s/i18n/ja.tsv", userdata);
+    write_file(path, "Settings\t\xe8\xa8\xad\xe5\xae\x9a\n", 16);
+    n = jw_i18n_available(langs, 8);
+    expect_true("tsv-only language offered", n == 2);
+    unlink(path);
+
     if (failures) {
         fprintf(stderr, "i18n-test: %d failure(s)\n", failures);
         return 1;

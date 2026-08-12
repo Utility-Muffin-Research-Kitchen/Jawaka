@@ -184,6 +184,7 @@ DAEMON_SRCS := \
 	internal/focus/focus.c \
 	internal/db/relocation.c \
 	internal/settings/appearance.c \
+	internal/i18n/i18n.c \
 	internal/settings/theme_resolve.c \
 internal/discovery/discovery.c \
 	$(SCRAPE_SRCS) \
@@ -352,6 +353,7 @@ UI_SRCS := \
 	internal/launcher/system_names.c \
 	internal/scrape/scrape_catalog.c \
 	internal/settings/appearance.c \
+	internal/i18n/i18n.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
 	internal/services/manifest.c \

@@ -25,7 +25,17 @@ extern const int   kJawakaPillCornerMasks[JW_APPEARANCE_PILL_SHAPE_COUNT];
 extern const int   kJawakaFontSizeValues[JW_APPEARANCE_FONT_SIZE_COUNT];
 
 int jw_appearance_font_family_index_from_db(const char *db_path);
+/* The CJK face, shared by every theme. Kept here rather than read from the
+   stylesheet because this path is also baked into the child environment at
+   fork() time, where reading a stylesheet is not available. */
+#define JW_APPEARANCE_CJK_FONT_PATH "fonts/SourceHanSansCN/SourceHanSansCN-Regular.otf"
+
 const char *jw_appearance_font_path_for_index(int index);
+
+/* Resolves to the CJK face for any language that needs it, ignoring `index`.
+   Use this anywhere the UI font is chosen; the plain _for_index form is for
+   the font picker itself, which must keep showing the themed families. */
+const char *jw_appearance_font_path_for_language(int index, const char *lang);
 
 /* Pre-resolved appearance environment, holding the final CAT_* env values as
  * ready-to-export strings. Filled by jw_appearance_resolve() (which touches the
