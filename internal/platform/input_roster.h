@@ -9,8 +9,9 @@
    Loong controller (always last, never displaced). Identity is by exact event
    path plus st_rdev so the two identically-named "Loong Gamepad" devices are
    never confused. Children get a mount-namespace snapshot of /dev/input
-   containing exactly the roster, so the grabbed physical pad and late-connect
-   devices cannot be opened by the emulator at all.
+   holding the roster plus the non-gamepad nodes, so the grabbed physical pad,
+   excess controllers, and late-connect devices cannot be opened by the
+   emulator at all.
 
    Everything here is fail-closed for real launches: when the roster backend is
    supported, a failed build or namespace setup must abort the launch before
@@ -27,6 +28,7 @@
 #define JW_INPUT_ROSTER_MAX_CONTROLLERS 4
 #define JW_INPUT_ROSTER_MAX_EXTERNALS 3
 #define JW_INPUT_ROSTER_MAX_IGNORED 4
+#define JW_INPUT_ROSTER_MAX_PASSTHROUGH 16
 #define JW_INPUT_ROSTER_PATH_MAX 256
 #define JW_INPUT_ROSTER_NAME_MAX 128
 
@@ -64,6 +66,14 @@ typedef struct {
     /* Externals dropped by the three-external limit, for the launch log. */
     char ignored[JW_INPUT_ROSTER_MAX_IGNORED][JW_INPUT_ROSTER_PATH_MAX];
     int ignored_count;
+
+    /* Non-gamepad /dev/input nodes (power keys, CEC, headphone jack) carried
+       into the child view unchanged. Hiding them buys nothing — a device with
+       no gamepad bits cannot become a phantom player — while their absence
+       breaks emulators that expect a normal /dev/input. Frozen with the
+       roster, so late-connected devices still cannot appear. */
+    char passthrough[JW_INPUT_ROSTER_MAX_PASSTHROUGH][JW_INPUT_ROSTER_PATH_MAX];
+    int passthrough_count;
 } jw_input_roster;
 
 /* True on platforms where roster + namespace isolation is implemented and
@@ -97,8 +107,11 @@ size_t jw_input_roster_sdl_devices(const jw_input_roster *roster,
 void jw_input_roster_log(const jw_input_roster *roster, const char *tag);
 
 /* Parent side, immediately after fork: create
-   /run/jawaka/input-<child-pid> with one empty placeholder per roster member
-   (named event<basename>) for the child to bind the real nodes onto.
+   /run/jawaka/input-<child-pid> with one empty placeholder per exposed node
+   (roster members and passthrough nodes, under their original eventN
+   basename) for the child to bind the real nodes onto, plus a by-path
+   directory holding only the links that resolve to an exposed node — the
+   stock by-path carries a link straight to the physical Loong.
    Fills dir_out; on failure returns -1 after removing what it created. */
 int jw_input_namespace_prepare(const jw_input_roster *roster, pid_t child_pid,
                                char *dir_out, size_t dir_out_size);

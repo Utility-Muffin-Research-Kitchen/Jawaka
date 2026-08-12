@@ -175,6 +175,8 @@ int jw_input_roster_build(const jw_input_proxy *proxy, jw_input_roster *roster,
         if (access(path, F_OK) != 0) {
             continue;
         }
+        /* The physical Loong is never exposed; the virtual one is appended as
+           the last roster entry below. */
         if (jw__same_rdev(path, proxy->physical_event_path) ||
             jw__same_rdev(path, proxy->virtual_event_path)) {
             continue;
@@ -187,6 +189,14 @@ int jw_input_roster_build(const jw_input_proxy *proxy, jw_input_roster *roster,
         bool gamepad = jw__is_gamepad_capable(fd);
         close(fd);
         if (!gamepad) {
+            /* Power keys, CEC, headphone jack: not player candidates, but the
+               child still needs a normal-looking /dev/input. */
+            if (roster->passthrough_count < JW_INPUT_ROSTER_MAX_PASSTHROUGH) {
+                snprintf(roster->passthrough[roster->passthrough_count],
+                         sizeof(roster->passthrough[roster->passthrough_count]),
+                         "%s", path);
+                roster->passthrough_count++;
+            }
             continue;
         }
 
@@ -253,7 +263,7 @@ void jw_input_roster_log(const jw_input_roster *roster, const char *tag) {
                 (unsigned)minor(roster->physical_rdev));
     for (int i = 0; i < roster->count; i++) {
         const jw_input_roster_entry *e = &roster->controllers[i];
-        jw_log_info("input roster %s: P%d=%s rdev=%u:%u name=\"%s\" vid=%04x pid=%04x %s%s",
+        jw_log_info("input roster %s: P%d=%s rdev=%u:%u name=\"%s\" vid=%04x pid=%04x %s",
                     tag ? tag : "launch", i + 1, e->path,
                     (unsigned)major(e->rdev), (unsigned)minor(e->rdev),
                     e->name, e->vendor, e->product,
@@ -264,6 +274,88 @@ void jw_input_roster_log(const jw_input_roster *roster, const char *tag) {
         jw_log_info("input roster %s: ignored external %s (3-external limit)",
                     tag ? tag : "launch", roster->ignored[i]);
     }
+    jw_log_info("input roster %s: %d passthrough non-gamepad node(s)",
+                tag ? tag : "launch", roster->passthrough_count);
+}
+
+/* The child's whole /dev/input: roster members first (their index is the
+   player slot), then the non-gamepad passthrough nodes. Anything absent here
+   — the physical Loong above all — cannot be opened by the child at all. */
+static int jw__exposed_count(const jw_input_roster *roster) {
+    return roster->count + roster->passthrough_count;
+}
+
+static const char *jw__exposed_path(const jw_input_roster *roster, int index) {
+    if (index < roster->count) {
+        return roster->controllers[index].path;
+    }
+    index -= roster->count;
+    if (index < roster->passthrough_count) {
+        return roster->passthrough[index];
+    }
+    return NULL;
+}
+
+static const char *jw__basename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+static bool jw__is_exposed_basename(const jw_input_roster *roster,
+                                    const char *base) {
+    for (int i = 0; i < jw__exposed_count(roster); i++) {
+        const char *path = jw__exposed_path(roster, i);
+        if (path && strcmp(jw__basename(path), base) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Mirror /dev/input/by-path, dropping links that resolve to a hidden node.
+   The stock directory links platform-loong1_joypad-event-joystick straight at
+   the physical Loong, so an unfiltered copy would hand the child the exact
+   device the roster exists to hide. Best effort: by-path is a convenience, and
+   a child that cannot see it still has the event nodes. */
+static void jw__stage_by_path(const char *dir, const jw_input_roster *roster) {
+    DIR *dp = opendir("/dev/input/by-path");
+    if (!dp) {
+        return;
+    }
+    char by_path_dir[PATH_MAX];
+    if (snprintf(by_path_dir, sizeof(by_path_dir), "%s/by-path", dir) >=
+            (int)sizeof(by_path_dir) ||
+        mkdir(by_path_dir, 0755) != 0) {
+        closedir(dp);
+        return;
+    }
+
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        if (de->d_name[0] == '.') {
+            continue;
+        }
+        char source[PATH_MAX];
+        char target[PATH_MAX];
+        if (snprintf(source, sizeof(source), "/dev/input/by-path/%s",
+                     de->d_name) >= (int)sizeof(source)) {
+            continue;
+        }
+        ssize_t len = readlink(source, target, sizeof(target) - 1);
+        if (len <= 0) {
+            continue;
+        }
+        target[len] = '\0';
+        if (!jw__is_exposed_basename(roster, jw__basename(target))) {
+            continue;
+        }
+        char link[PATH_MAX];
+        if (snprintf(link, sizeof(link), "%s/%s", by_path_dir, de->d_name) <
+            (int)sizeof(link)) {
+            (void)symlink(target, link);
+        }
+    }
+    closedir(dp);
 }
 
 int jw_input_namespace_prepare(const jw_input_roster *roster, pid_t child_pid,
@@ -287,9 +379,8 @@ int jw_input_namespace_prepare(const jw_input_roster *roster, pid_t child_pid,
         return -1;
     }
 
-    for (int i = 0; i < roster->count; i++) {
-        const char *base = strrchr(roster->controllers[i].path, '/');
-        base = base ? base + 1 : roster->controllers[i].path;
+    for (int i = 0; i < jw__exposed_count(roster); i++) {
+        const char *base = jw__basename(jw__exposed_path(roster, i));
         char placeholder[PATH_MAX];
         if (snprintf(placeholder, sizeof(placeholder), "%s/%s", dir, base) >=
             (int)sizeof(placeholder)) {
@@ -305,6 +396,8 @@ int jw_input_namespace_prepare(const jw_input_roster *roster, pid_t child_pid,
         }
         close(fd);
     }
+
+    jw__stage_by_path(dir, roster);
 
     if (dir_out && dir_out_size > 0) {
         snprintf(dir_out, dir_out_size, "%s", dir);
@@ -329,27 +422,29 @@ int jw_input_namespace_enter(const char *dir, const jw_input_roster *roster,
                              strerror(errno));
         return -1;
     }
-    for (int i = 0; i < roster->count; i++) {
-        const char *base = strrchr(roster->controllers[i].path, '/');
-        base = base ? base + 1 : roster->controllers[i].path;
+    for (int i = 0; i < jw__exposed_count(roster); i++) {
+        const char *source = jw__exposed_path(roster, i);
         char placeholder[PATH_MAX];
-        if (snprintf(placeholder, sizeof(placeholder), "%s/%s", dir, base) >=
-            (int)sizeof(placeholder)) {
+        if (snprintf(placeholder, sizeof(placeholder), "%s/%s", dir,
+                     jw__basename(source)) >= (int)sizeof(placeholder)) {
             jw__roster_set_error(error, error_size, JW_INPUT_ROSTER_ERR_NAMESPACE,
                                  "placeholder path too long");
             return -1;
         }
-        if (mount(roster->controllers[i].path, placeholder, NULL, MS_BIND,
-                  NULL) != 0) {
+        if (mount(source, placeholder, NULL, MS_BIND, NULL) != 0) {
             char detail[320];
-            snprintf(detail, sizeof(detail), "bind %s: %s",
-                     roster->controllers[i].path, strerror(errno));
+            snprintf(detail, sizeof(detail), "bind %s: %s", source,
+                     strerror(errno));
             jw__roster_set_error(error, error_size, JW_INPUT_ROSTER_ERR_NAMESPACE,
                                  detail);
             return -1;
         }
     }
-    if (mount(dir, "/dev/input", NULL, MS_BIND, NULL) != 0) {
+    /* MS_REC is load-bearing: a plain bind of the directory carries none of
+       the per-node binds staged above, so the child would get the empty
+       placeholder files instead of the real event devices — and SDL would
+       find no joystick at all. */
+    if (mount(dir, "/dev/input", NULL, MS_BIND | MS_REC, NULL) != 0) {
         jw__roster_set_error(error, error_size, JW_INPUT_ROSTER_ERR_NAMESPACE,
                              strerror(errno));
         return -1;
@@ -357,27 +452,40 @@ int jw_input_namespace_enter(const char *dir, const jw_input_roster *roster,
     return 0;
 }
 
-void jw_input_namespace_cleanup_dir(const char *dir) {
-    if (!dir || !dir[0]) {
-        return;
-    }
+/* Unlink every entry and drop the directory. One level of recursion covers the
+   staged by-path/; the parent's bind mounts live in the child's namespace and
+   are gone with it, so the placeholders here are plain empty files. */
+static void jw__remove_dir_tree(const char *dir, int depth) {
     DIR *dp = opendir(dir);
     if (!dp) {
         return;
     }
     struct dirent *de;
     while ((de = readdir(dp)) != NULL) {
-        if (de->d_name[0] == '.') {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
             continue;
         }
         char path[PATH_MAX];
-        if (snprintf(path, sizeof(path), "%s/%s", dir, de->d_name) <
+        if (snprintf(path, sizeof(path), "%s/%s", dir, de->d_name) >=
             (int)sizeof(path)) {
+            continue;
+        }
+        struct stat st;
+        if (depth > 0 && lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            jw__remove_dir_tree(path, depth - 1);
+        } else {
             (void)unlink(path);
         }
     }
     closedir(dp);
     (void)rmdir(dir);
+}
+
+void jw_input_namespace_cleanup_dir(const char *dir) {
+    if (!dir || !dir[0]) {
+        return;
+    }
+    jw__remove_dir_tree(dir, 1);
 }
 
 void jw_input_namespace_startup_sweep(void) {

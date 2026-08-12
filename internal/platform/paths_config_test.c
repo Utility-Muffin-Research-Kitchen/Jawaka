@@ -246,8 +246,9 @@ int main(void) {
     unlink(runtime_cfg);
     free(runtime_cfg);
 
-    /* Four-player launch roster: every generated index lands in the protected
-       block, unused players get -1, and a persisted override cannot win. */
+    /* Launch roster: every generated index lands in the protected block,
+       unused players are omitted entirely, and a persisted override cannot
+       win. */
     {
         int indices[4] = {0, 1, 3, -1};
         if (write_text(shared_cfg,
@@ -265,7 +266,8 @@ int main(void) {
         char *roster_runtime = read_text(runtime_cfg);
         int ok = roster_runtime &&
 #ifdef PLATFORM_MLP1
-                 key_count(roster_runtime, "input_max_users", "= \"4\"") == 1 &&
+                 /* three roster members -> three users, not a fixed 4 */
+                 key_count(roster_runtime, "input_max_users", "= \"3\"") == 1 &&
 #endif
                  key_count(roster_runtime, "input_player1_joypad_index",
                            "= \"0\"") == 1 &&
@@ -273,8 +275,11 @@ int main(void) {
                            "= \"1\"") == 1 &&
                  key_count(roster_runtime, "input_player3_joypad_index",
                            "= \"3\"") == 1 &&
+                 /* An unused player gets no key at all. A "-1" sentinel would
+                    be read back into RetroArch's unsigned joypad-index array
+                    and fault on the first poll. */
                  key_count(roster_runtime, "input_player4_joypad_index",
-                           "= \"-1\"") == 1 &&
+                           NULL) == 0 &&
                  key_count(roster_runtime, "input_player1_joypad_index",
                            NULL) == 1 &&
                  key_count(roster_runtime, "input_player2_joypad_index",
