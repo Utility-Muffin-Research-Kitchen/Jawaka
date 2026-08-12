@@ -120,8 +120,8 @@ typedef struct {
  * under `logs_dir` ($LOGS_PATH), applying the cap above: when the
  * current file has reached JW_SVC_LOG_MAX_BYTES it is first bounded and
  * rotated to <id>.log.1 (shifting .1->.2 ... .4 dropped), and a fresh
- * current file is opened. Creates logs_dir/services/<service_id>/
- * (owner-only) like the lease tree. Returns an O_APPEND|O_CLOEXEC
+ * current file is opened. Creates logs_dir/services/<service_id>/ as
+ * owner-owned and not group/world-writable. Returns an O_APPEND|O_CLOEXEC
  * descriptor for the child to inherit explicitly, or -1 with a slug in
  * `reason` (may be NULL):
  *   "invalid-service-id" / "logs-dir-unavailable" / "path-too-long"

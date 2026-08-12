@@ -9,6 +9,7 @@
 #include "internal/services/supervisor.h"
 
 #include "cJSON.h"
+#include "internal/core/log.h"
 #include "internal/services/dup_ids.h"
 #include "internal/services/launch.h"
 #include "internal/services/lease.h"
@@ -1199,6 +1200,11 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
                                         slug, sizeof(slug));
         /* A failed log open is not fatal: launch.c logs to /dev/null
          * instead rather than leaving the service on Jawaka's stdout. */
+        if (log_fd < 0) {
+            jw_log_warn("service logs unavailable service=%s reason=%s; "
+                        "output goes to /dev/null",
+                        e->service_id, slug);
+        }
     }
 
     char run_abs[PATH_MAX];
