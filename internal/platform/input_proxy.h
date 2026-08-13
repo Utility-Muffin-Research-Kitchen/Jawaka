@@ -97,6 +97,14 @@ void     jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow);
  * a still-held physical button will not re-fire until released and pressed again.
  * Safe to call when disabled. */
 void     jw_input_proxy_release_buttons(jw_input_proxy *proxy);
+/* Synthesise a Menu tap on the virtual pad, exactly as the handheld Menu button
+ * produces when nothing inside the daemon claims it (no game running, so the
+ * press belongs to the launcher UI). External controllers are watched without
+ * being grabbed, so their Guide press cannot be forwarded the way the built-in
+ * pad's is -- without this the UI never sees Guide at all. The matching release
+ * is emitted by the proxy tick, so this is safe to call from an event callback.
+ * No-op when the proxy is watch-only or a tap is already in flight. */
+void     jw_input_proxy_emit_menu_tap(jw_input_proxy *proxy);
 /* One power-key press or release edge, stamped with when the key actually moved
  * (kernel event time, CLOCK_MONOTONIC ms) — not when the daemon got around to
  * consuming it. The distinction matters for long-press detection: if a tick

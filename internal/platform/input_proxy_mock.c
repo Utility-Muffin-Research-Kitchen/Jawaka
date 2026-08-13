@@ -61,6 +61,10 @@ void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
     (void)proxy;   /* mock: no virtual pad to release; safe no-op */
 }
 
+void jw_input_proxy_emit_menu_tap(jw_input_proxy *proxy) {
+    (void)proxy;   /* mock: no virtual pad to emit onto; safe no-op */
+}
+
 bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) {
     (void)proxy;
     (void)edge;
