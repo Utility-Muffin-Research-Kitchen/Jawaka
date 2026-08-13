@@ -108,6 +108,8 @@ LDLIBS_DAEMON += -ldl
 PLATFORM_BACKEND_SRC := internal/platform/device_mlp1.c
 PLATFORM_ID_SRC := internal/platform/platform_id_mlp1.c
 INPUT_PROXY_SRC := internal/platform/input_proxy_mlp1.c
+INPUT_ROSTER_SRC := internal/platform/input_roster_mlp1.c
+EXTERNAL_INPUT_SRC := internal/platform/external_input_monitor_mlp1.c
 BLUETOOTH_SRC := internal/platform/bluetooth_mlp1.c
 WIFI_SRC := internal/platform/wifi_mlp1.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_wayland.c $(BUILD)/generated/xdg-shell-protocol.c
@@ -118,6 +120,8 @@ else
 PLATFORM_BACKEND_SRC := internal/platform/device_mock.c
 PLATFORM_ID_SRC := internal/platform/platform_id_mock.c
 INPUT_PROXY_SRC := internal/platform/input_proxy_mock.c
+INPUT_ROSTER_SRC := internal/platform/input_roster_mock.c
+EXTERNAL_INPUT_SRC := internal/platform/external_input_monitor_mock.c
 BLUETOOTH_SRC := internal/platform/bluetooth_unsupported.c
 WIFI_SRC := internal/platform/wifi_unsupported.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_sdl.c
@@ -165,6 +169,8 @@ DAEMON_SRCS := \
 	$(PLATFORM_BACKEND_SRC) \
 	$(PLATFORM_ID_SRC) \
 	$(INPUT_PROXY_SRC) \
+	$(INPUT_ROSTER_SRC) \
+	$(EXTERNAL_INPUT_SRC) \
 	internal/platform/calibration.c \
 	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
