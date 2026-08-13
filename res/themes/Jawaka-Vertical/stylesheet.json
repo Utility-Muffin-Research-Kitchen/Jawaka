@@ -23,7 +23,7 @@
     "text_color": "#993B41"
   },
   "menu": { "background_color": "#D3D0CC" },
-  "cjk_font": { "path": "fonts/SourceHanSansCN/SourceHanSansCN-Heavy.otf", "size": 36 },
+  "cjk_font": { "path": "fonts/SourceHanSansCN/SourceHanSansCN-Regular.otf", "size": 36 },
   "launcher": {
     "layout": "vertical",
     "list_split": 0.38
