@@ -2058,7 +2058,7 @@ static void jw__draw_home_item(int idx, int ix, int iy, int iw, int ih,
         cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
     ap_color tc = selected ? theme->highlighted_text : theme->text;
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, kHomeCategoryLabels[idx], ix + cat_scale(12), ty,
+    cat_draw_text_ellipsized(body, T(kHomeCategoryLabels[idx]), ix + cat_scale(12), ty,
                              tc, iw - cat_scale(24));
 }
 

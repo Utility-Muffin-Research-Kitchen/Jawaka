@@ -72,7 +72,10 @@ DESIG_RE  = re.compile(r"\.(?:message|label)\s*=\s*(" + RUN.pattern + r")")
 ARRAYS = [
     ("cmd/jawaka-launcher/main.c", "kTabs", "all"),
     ("cmd/jawaka-launcher/main.c", "kSysMenuTabs", "all"),
+    ("cmd/jawaka-launcher/main.c", "kSysActions", "all"),
+    ("cmd/jawaka-launcher/main.c", "kSysInfo", "all"),
     ("cmd/jawaka-menu/main.c", "kInGameItems", "all"),
+    ("internal/settings/settings.c", "kHomeCategoryLabels", "all"),
     ("internal/settings/settings.c", "kStartupTabLabels", "all"),
     ("internal/settings/settings.c", "kAutoSleepLabels", "all"),
     ("internal/launcher/system_names.c", "kSystemDisplayNames", "second"),

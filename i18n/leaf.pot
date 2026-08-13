@@ -416,7 +416,7 @@ msgstr ""
 msgid "Details"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Device"
 msgstr ""
 
@@ -466,6 +466,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Enabled"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Exit to Stock"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -640,7 +644,7 @@ msgstr ""
 msgid "Layout"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Library"
 msgstr ""
 
@@ -796,6 +800,10 @@ msgstr ""
 msgid "Paired"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Performance"
 msgstr ""
@@ -824,7 +832,7 @@ msgstr ""
 msgid "PlayStation Portable"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Playtime"
 msgstr ""
 
@@ -834,6 +842,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Power"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Power Off"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -846,6 +858,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "RAM"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reboot"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -902,6 +918,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Rescan"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Rescan Library"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1056,7 +1076,7 @@ msgstr ""
 msgid "Settings"
 msgstr ""
 
-#: internal/platform/platform_common.c
+#: cmd/jawaka-launcher/main.c
 msgid "Sleep"
 msgstr ""
 
@@ -1098,6 +1118,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Start"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Start 5-Game Mode"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1152,7 +1176,7 @@ msgstr ""
 msgid "System"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "System Update"
 msgstr ""
 

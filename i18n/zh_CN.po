@@ -1002,7 +1002,7 @@ msgstr "设置"
 
 #, fuzzy
 msgid "Sleep"
-msgstr "睡眠"
+msgstr "休眠"
 
 #, fuzzy
 msgid "Sleep failed"
@@ -1305,3 +1305,26 @@ msgstr "音量调整失败"
 
 msgid "—"
 msgstr ""
+
+#, fuzzy
+msgid "Exit to Stock"
+msgstr "退出到原厂系统"
+
+msgid "Pak Rat"
+msgstr ""
+
+#, fuzzy
+msgid "Power Off"
+msgstr "关机"
+
+#, fuzzy
+msgid "Reboot"
+msgstr "重启"
+
+#, fuzzy
+msgid "Rescan Library"
+msgstr "重新扫描游戏库"
+
+#, fuzzy
+msgid "Start 5-Game Mode"
+msgstr "开启精选游戏模式"

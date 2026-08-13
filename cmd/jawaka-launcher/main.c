@@ -5359,7 +5359,7 @@ static void jw__draw_menu_item(int idx, int ix, int iy, int iw, int ih,
         cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
     ap_color c = selected ? theme->highlighted_text : theme->text;
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, items[idx], ix + CAT_S(10), text_y,
+    cat_draw_text_ellipsized(body, T(items[idx]), ix + CAT_S(10), text_y,
                              c, iw - CAT_S(20));
 }
 
