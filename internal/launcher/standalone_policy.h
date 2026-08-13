@@ -9,6 +9,11 @@ bool jw_standalone_policy_is_flycast(const char *core_id,
                                      const char *launcher_path);
 bool jw_standalone_policy_is_ppsspp(const char *core_id,
                                     const char *launcher_path);
+/* DraStic is one of the supported roster standalones: it runs under the full
+   calibrated proxy (paired wireless controllers plan) even though its bundled
+   SDL backend reads a raw event path instead of standard joystick enums. */
+bool jw_standalone_policy_is_drastic(const char *core_id,
+                                     const char *launcher_path);
 bool jw_standalone_policy_is_ports(const char *core_id,
                                    const char *launcher_path);
 

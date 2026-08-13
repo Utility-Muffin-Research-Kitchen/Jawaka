@@ -34,6 +34,13 @@ bool jw_standalone_policy_is_ppsspp(const char *core_id,
            jw__path_contains(launcher_path, "/PPSSPP");
 }
 
+bool jw_standalone_policy_is_drastic(const char *core_id,
+                                     const char *launcher_path) {
+    return jw__string_equals(core_id, "drastic") ||
+           jw__path_contains(launcher_path, "/drastic/") ||
+           jw__path_contains(launcher_path, "/DraStic");
+}
+
 bool jw_standalone_policy_is_ports(const char *core_id,
                                    const char *launcher_path) {
     return jw__string_equals(core_id, "ports") ||
@@ -55,5 +62,6 @@ bool jw_standalone_policy_uses_calibrated_virtual_input(
     return jw_standalone_policy_is_mupen64plus(core_id, launcher_path) ||
            jw_standalone_policy_is_flycast(core_id, launcher_path) ||
            jw_standalone_policy_is_ppsspp(core_id, launcher_path) ||
+           jw_standalone_policy_is_drastic(core_id, launcher_path) ||
            jw_standalone_policy_is_ports(core_id, launcher_path);
 }

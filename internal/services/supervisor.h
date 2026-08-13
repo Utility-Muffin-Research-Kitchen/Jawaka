@@ -395,6 +395,8 @@ void jw_svc_supervisor_game_set_active(jw_svc_supervisor *sup, bool active);
 bool jw_svc_supervisor_game_active(const jw_svc_supervisor *sup);
 bool jw_svc_supervisor_game_stop_service(jw_svc_supervisor *sup,
                                          const char *service_id,
+                                         const jw_svc_subscriber_binding *coordinator,
+                                         jw_svc_stop_result *stop_result,
                                          char *reason, size_t reason_size);
 void jw_svc_supervisor_game_finish(jw_svc_supervisor *sup);
 

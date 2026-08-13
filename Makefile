@@ -108,6 +108,8 @@ LDLIBS_DAEMON += -ldl
 PLATFORM_BACKEND_SRC := internal/platform/device_mlp1.c
 PLATFORM_ID_SRC := internal/platform/platform_id_mlp1.c
 INPUT_PROXY_SRC := internal/platform/input_proxy_mlp1.c
+INPUT_ROSTER_SRC := internal/platform/input_roster_mlp1.c
+EXTERNAL_INPUT_SRC := internal/platform/external_input_monitor_mlp1.c
 BLUETOOTH_SRC := internal/platform/bluetooth_mlp1.c
 WIFI_SRC := internal/platform/wifi_mlp1.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_wayland.c $(BUILD)/generated/xdg-shell-protocol.c
@@ -118,6 +120,8 @@ else
 PLATFORM_BACKEND_SRC := internal/platform/device_mock.c
 PLATFORM_ID_SRC := internal/platform/platform_id_mock.c
 INPUT_PROXY_SRC := internal/platform/input_proxy_mock.c
+INPUT_ROSTER_SRC := internal/platform/input_roster_mock.c
+EXTERNAL_INPUT_SRC := internal/platform/external_input_monitor_mock.c
 BLUETOOTH_SRC := internal/platform/bluetooth_unsupported.c
 WIFI_SRC := internal/platform/wifi_unsupported.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_sdl.c
@@ -165,6 +169,8 @@ DAEMON_SRCS := \
 	$(PLATFORM_BACKEND_SRC) \
 	$(PLATFORM_ID_SRC) \
 	$(INPUT_PROXY_SRC) \
+	$(INPUT_ROSTER_SRC) \
+	$(EXTERNAL_INPUT_SRC) \
 	internal/platform/calibration.c \
 	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
@@ -234,6 +240,7 @@ PLATFORM_CTL_SRCS := \
 
 OSD_SRCS := \
 	cmd/jawaka-osd/main.c \
+	cmd/jawaka-osd/game_launch.c \
 	$(OSD_BACKEND_SRC) \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
@@ -384,7 +391,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -507,6 +514,12 @@ stop-test: | $(BUILD)/bin
 		internal/services/stop_test.c internal/services/stop.c
 	$(BUILD)/bin/stop-test
 
+osd-game-launch-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/osd-game-launch-test \
+		cmd/jawaka-osd/game_launch_test.c cmd/jawaka-osd/game_launch.c \
+		third_party/cjson/cJSON.c
+	$(BUILD)/bin/osd-game-launch-test
+
 reservation-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/reservation-test \
 		internal/services/reservation_test.c internal/services/reservation.c \
@@ -561,6 +574,7 @@ supervisor-test: | $(BUILD)/bin
 		internal/services/backoff.c internal/services/dup_ids.c \
 		internal/services/control_state.c \
 		internal/services/legacy_ssh_migration.c \
+		internal/core/log.c \
 		third_party/cjson/cJSON.c -lsqlite3 -lpthread
 	$(BUILD)/bin/supervisor-test
 
@@ -590,6 +604,7 @@ $(BUILD)/bin/service-fixture-test: service-fixtures \
 		internal/services/reservation.c internal/services/backoff.c \
 		internal/services/dup_ids.c internal/services/control_state.c \
 		internal/services/legacy_ssh_migration.c \
+		internal/core/log.c \
 		third_party/cjson/cJSON.c -lsqlite3 -lpthread
 
 service-fixture-test: $(BUILD)/bin/service-fixture-test

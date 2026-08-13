@@ -9308,6 +9308,9 @@ static void jw__term_handler(int sig) {
 }
 
 int main(void) {
+    /* jawakad uses SIGTERM to replace this frontend with a ready game. SDL's
+       handler turns it into a Back press instead of terminating the child. */
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     /* Install before anything can signal us — SIGUSR1's default disposition is to
        terminate the process. */
     signal(SIGUSR1, jw__screenshot_flash_handler);

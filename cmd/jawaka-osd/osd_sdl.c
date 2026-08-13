@@ -3,6 +3,7 @@
 #include <SDL.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #define JW_OSD_HIDE_AFTER_MS 1200u
 
@@ -12,6 +13,8 @@ static int s_percent = 50;
 static uint64_t s_hide_at;
 static bool s_visible;
 static int s_mode;
+static jw_osd_game_stage s_game_stage;
+static int s_pending_items;
 
 static void jw__draw_rect(int x, int y, int w, int h, Uint8 r, Uint8 g, Uint8 b, Uint8 a) {
     SDL_Rect rect = { x, y, w, h };
@@ -21,18 +24,36 @@ static void jw__draw_rect(int x, int y, int w, int h, Uint8 r, Uint8 g, Uint8 b,
 
 static const char *jw__glyph(char c) {
     switch (c) {
+        case ':': return "00000001000010000000001000010000000";
+        case '0': return "01110100011001110101110011000101110";
+        case '1': return "00100011000010000100001000010001110";
+        case '2': return "01110100010000100110010001000011111";
+        case '3': return "11110000010000101110000010000111110";
+        case '4': return "00010001100101010010111110001000010";
+        case '5': return "11111100001111000001000011000101110";
+        case '6': return "00110010001000011110100011000101110";
+        case '7': return "11111000010001000100010000100001000";
+        case '8': return "01110100011000101110100011000101110";
+        case '9': return "01110100011000101111000010001001100";
         case 'A': return "01110100011000111111100011000110001";
         case 'C': return "01111100001000010000100001000001111";
+        case 'D': return "11110100011000110001100011000111110";
         case 'E': return "11111100001000011110100001000011111";
+        case 'F': return "11111100001000011110100001000010000";
         case 'G': return "01110100011000010111100011000101110";
+        case 'H': return "10001100011000111111100011000110001";
         case 'I': return "11111001000010000100001000010011111";
+        case 'K': return "10001100101010011000101001001010001";
+        case 'L': return "10000100001000010000100001000011111";
         case 'M': return "10001110111010110101100011000110001";
         case 'N': return "10001110011010110011100011000110001";
         case 'O': return "01110100011000110001100011000101110";
+        case 'P': return "11110100011000111110100001000010000";
         case 'R': return "11110100011000111110101001001010001";
         case 'S': return "11111100001000011111000010000111111";
         case 'T': return "11111001000010000100001000010000100";
         case 'U': return "10001100011000110001100011000101110";
+        case 'V': return "10001100011000110001100010101000100";
         case 'W': return "10001100011000110001101011010101010";
         case 'Y': return "10001100010101000100001000010000100";
         default: return NULL;
@@ -55,6 +76,11 @@ static void jw__draw_text(const char *text, int x, int y, int scale,
     }
 }
 
+static int jw__text_width(const char *text, int scale) {
+    size_t length = text ? strlen(text) : 0;
+    return length == 0 ? 0 : (int)length * 6 * scale - scale;
+}
+
 static void jw__draw(void) {
     SDL_SetRenderDrawBlendMode(s_renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 0);
@@ -62,8 +88,18 @@ static void jw__draw(void) {
 
     jw__draw_rect(0, 0, 480, 96, 18, 20, 24, 230);
     if (s_mode == 2) {
-        jw__draw_text("SYNCING", 154, 16, 4, 255, 240, 150, 255);
-        jw__draw_text("MENU START NOW", 84, 56, 4, 250, 210, 92, 255);
+        char title[64];
+        char action[32];
+        jw_osd_game_launch_text(s_game_stage, s_pending_items,
+                                title, sizeof(title), action, sizeof(action));
+        int title_scale = jw__text_width(title, 4) <= 456 ? 4 : 3;
+        int title_y = action[0] ? 16 : 34;
+        jw__draw_text(title, (480 - jw__text_width(title, title_scale)) / 2,
+                      title_y, title_scale, 255, 240, 150, 255);
+        if (action[0]) {
+            jw__draw_text(action, (480 - jw__text_width(action, 4)) / 2,
+                          56, 4, 250, 210, 92, 255);
+        }
         SDL_RenderPresent(s_renderer);
         return;
     }
@@ -123,10 +159,12 @@ void jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
     s_mode = 1;
 }
 
-void jw_osd_backend_show_game_waiting(int pending_items, uint64_t now_ms) {
-    (void)pending_items;
+void jw_osd_backend_show_game_launch(jw_osd_game_stage stage,
+                                     int pending_items, uint64_t now_ms) {
     (void)now_ms;
     s_mode = 2;
+    s_game_stage = stage;
+    s_pending_items = pending_items < 0 ? 0 : pending_items;
     s_hide_at = UINT64_MAX;
     s_visible = true;
     SDL_ShowWindow(s_window);
@@ -134,7 +172,7 @@ void jw_osd_backend_show_game_waiting(int pending_items, uint64_t now_ms) {
     jw__draw();
 }
 
-void jw_osd_backend_hide_game_waiting(void) {
+void jw_osd_backend_hide_game_launch(void) {
     if (s_visible && s_mode == 2) {
         SDL_HideWindow(s_window);
         s_visible = false;

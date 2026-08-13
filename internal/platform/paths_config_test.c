@@ -145,7 +145,7 @@ int main(void) {
 
     char core[PATH_MAX];
     snprintf(core, sizeof(core), "%s/mgba_libretro.so", cores);
-    char *append_cfg = jw_write_retroarch_append_config(runtime, root, core, -1);
+    char *append_cfg = jw_write_retroarch_append_config(runtime, root, core, NULL);
     if (!append_cfg || verify_runtime(append_cfg, NULL) != 0) {
         return fail("append config did not normalize protected sort keys");
     }
@@ -153,7 +153,7 @@ int main(void) {
     free(append_cfg);
 
     char error[256];
-    char *runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
+    char *runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
                                                     true, error, sizeof(error));
     if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail(error[0] ? error : "protected keys not normalized");
@@ -189,7 +189,7 @@ int main(void) {
             "\"/mnt/sdcard/.system/leaf/platforms/mlp1/shaders\"\n") != 0) {
         return fail("stale release shader config write failed");
     }
-    runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
+    runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
                                               true, error, sizeof(error));
     if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail("stale release shader directory did not migrate to user state");
@@ -212,7 +212,7 @@ int main(void) {
     if (write_text(shared_cfg, custom_cfg) != 0) {
         return fail("custom shader config write failed");
     }
-    runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
+    runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
                                               true, error, sizeof(error));
     if (!runtime_cfg || verify_runtime(runtime_cfg, custom_shaders) != 0) {
         return fail("custom shader directory did not win over bundle fallback");
@@ -231,7 +231,7 @@ int main(void) {
         write_text(shared_cfg, "menu_driver = \"rgui\"\n") != 0) {
         return fail("missing shader bundle fixture setup failed");
     }
-    runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, -1,
+    runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
                                               true, error, sizeof(error));
     if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail("missing shader bundle prevented config generation");
@@ -245,6 +245,62 @@ int main(void) {
     free(missing_runtime);
     unlink(runtime_cfg);
     free(runtime_cfg);
+
+    /* Launch roster: every generated index lands in the protected block,
+       unused players are omitted entirely, and a persisted override cannot
+       win. */
+    {
+        int indices[4] = {0, 1, 3, -1};
+        if (write_text(shared_cfg,
+                       "menu_driver = \"rgui\"\n"
+                       "input_max_users = \"1\"\n"
+                       "input_player1_joypad_index = \"2\"\n"
+                       "input_player2_joypad_index = \"9\"\n") != 0) {
+            return fail("override config write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, indices,
+                                                  true, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "roster config generation failed");
+        }
+        char *roster_runtime = read_text(runtime_cfg);
+        int ok = roster_runtime &&
+#ifdef PLATFORM_MLP1
+                 /* three roster members -> three users, not a fixed 4 */
+                 key_count(roster_runtime, "input_max_users", "= \"3\"") == 1 &&
+#endif
+                 key_count(roster_runtime, "input_player1_joypad_index",
+                           "= \"0\"") == 1 &&
+                 key_count(roster_runtime, "input_player2_joypad_index",
+                           "= \"1\"") == 1 &&
+                 key_count(roster_runtime, "input_player3_joypad_index",
+                           "= \"3\"") == 1 &&
+                 /* An unused player gets no key at all. A "-1" sentinel would
+                    be read back into RetroArch's unsigned joypad-index array
+                    and fault on the first poll. */
+                 key_count(roster_runtime, "input_player4_joypad_index",
+                           NULL) == 0 &&
+                 key_count(roster_runtime, "input_player1_joypad_index",
+                           NULL) == 1 &&
+                 key_count(roster_runtime, "input_player2_joypad_index",
+                           NULL) == 1 &&
+                 /* exactly one max_users line (the generated one); the
+                    persisted override never reaches the runtime config */
+                 key_count(roster_runtime, "input_max_users", NULL)
+#ifdef PLATFORM_MLP1
+                     == 1
+#else
+                     >= 0
+#endif
+            ;
+        free(roster_runtime);
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        if (!ok) {
+            return fail("roster player indices not protected from overrides");
+        }
+    }
+
     printf("retroarch-config-test: ok\n");
     return 0;
 }

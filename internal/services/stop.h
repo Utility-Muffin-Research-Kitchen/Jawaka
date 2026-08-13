@@ -21,6 +21,7 @@
  * Worst case is stop_grace_ms + 2000 ms, matching the contract exactly.
  */
 #define JW_SVC_STOP_KILL_WAIT_MS 2000
+#define JW_SVC_COORDINATOR_STOP_LEAD_MS 1000
 
 /* Injected rather than calling jw_svc_group_absent() (internal/services/
  * ownership.h) directly, so the "stop cannot be verified" path -- which
@@ -42,6 +43,14 @@ typedef struct {
      * decide anything SVC-1 requires, but it is useful for logging why a
      * stop took the full worst-case bound. */
     bool escalated_to_kill;
+    /* A validated service-group leader received SIGTERM first, allowing its
+     * controller to stop descendants cleanly before the group fallback. */
+    bool coordinator_first;
+    bool group_term_sent;
+    int coordinator_wait_ms;
+    int group_wait_ms;
+    int kill_wait_ms;
+    int total_wait_ms;
 } jw_svc_stop_result;
 
 /* Runs the sequence above against process group `pgid`. `stop_grace_ms`
@@ -62,5 +71,13 @@ typedef struct {
  */
 jw_svc_stop_result jw_svc_stop_group(pid_t pgid, int stop_grace_ms,
                                      jw_svc_absence_check_fn absence_check);
+
+/* Same verified-absence sequence, but lets an authenticated group leader
+ * coordinate a clean child shutdown for up to one second. The lead is part of
+ * stop_grace_ms; it never extends the existing worst-case bound. Passing a
+ * coordinator other than the group leader falls back to jw_svc_stop_group(). */
+jw_svc_stop_result jw_svc_stop_group_coordinated(
+    pid_t pgid, pid_t coordinator_pid, int stop_grace_ms,
+    jw_svc_absence_check_fn absence_check);
 
 #endif

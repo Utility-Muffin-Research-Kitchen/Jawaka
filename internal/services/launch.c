@@ -65,7 +65,7 @@ static int jw__open_log_subdir(int parent_fd, const char *name,
     struct stat st;
     if (fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode) ||
         st.st_uid != geteuid() ||
-        (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
         close(fd);
         jw__set_slug(reason, reason_size, "mkdir-failed");
         return -1;
@@ -73,9 +73,9 @@ static int jw__open_log_subdir(int parent_fd, const char *name,
     return fd;
 }
 
-/* Builds and opens logs_dir/services/<service_id>/ like the lease tree:
- * each created level is a real directory (not a symlink), owner-owned,
- * with no group/other permission bits. */
+/* Builds and opens logs_dir/services/<service_id>/: each created level is a
+ * real directory (not a symlink), owner-owned, and not group/world-writable.
+ * Read/execute bits may be synthesized by filesystems such as vfat. */
 static int jw__open_service_log_dir(const char *logs_dir,
                                     const char *service_id,
                                     char *reason, size_t reason_size) {
@@ -190,7 +190,7 @@ int jw_svc_launch_open_log(const char *logs_dir, const char *service_id,
     if (fd >= 0) {
         if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
             st.st_uid != geteuid() ||
-            (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+            (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
             close(fd);
             close(dir_fd);
             jw__set_slug(reason, reason_size, "open-failed");

@@ -9,6 +9,7 @@
 #include "internal/services/supervisor.h"
 
 #include "cJSON.h"
+#include "internal/core/log.h"
 #include "internal/services/dup_ids.h"
 #include "internal/services/launch.h"
 #include "internal/services/lease.h"
@@ -1199,6 +1200,11 @@ static bool jw__start_generation(jw_svc_supervisor *sup,
                                         slug, sizeof(slug));
         /* A failed log open is not fatal: launch.c logs to /dev/null
          * instead rather than leaving the service on Jawaka's stdout. */
+        if (log_fd < 0) {
+            jw_log_warn("service logs unavailable service=%s reason=%s; "
+                        "output goes to /dev/null",
+                        e->service_id, slug);
+        }
     }
 
     char run_abs[PATH_MAX];
@@ -1393,15 +1399,22 @@ static void jw__on_group_released(jw_svc_supervisor *sup,
  * for callers that genuinely cannot proceed without the guarantee (shutdown,
  * game launch, suspend, safe unmount). CTL-1 session ops use
  * jw__begin_async_stop() instead. */
-static bool jw__stop_and_reap(jw_svc_supervisor *sup, jw_svc_supervised *e,
-                              char *reason, size_t reason_size) {
+static bool jw__stop_and_reap_coordinated(
+    jw_svc_supervisor *sup, jw_svc_supervised *e, pid_t coordinator_pid,
+    jw_svc_stop_result *stop_result, char *reason, size_t reason_size) {
     if (e->pgid <= 0) {
         jw__set_reason(reason, reason_size, "not-running");
         return false;
     }
-    jw_svc_stop_result res =
-        jw_svc_stop_group(e->pgid, e->active_stop_grace_ms,
-                          jw_svc_group_absent);
+    jw_svc_stop_result res = coordinator_pid > 0
+        ? jw_svc_stop_group_coordinated(
+              e->pgid, coordinator_pid, e->active_stop_grace_ms,
+              jw_svc_group_absent)
+        : jw_svc_stop_group(e->pgid, e->active_stop_grace_ms,
+                            jw_svc_group_absent);
+    if (stop_result) {
+        *stop_result = res;
+    }
     if (!res.verified_absent) {
         e->state = JW_SVC_STATE_STOPPING;
         e->stopping_since_ms = jw__mono_ms();
@@ -1431,6 +1444,12 @@ static bool jw__stop_and_reap(jw_svc_supervisor *sup, jw_svc_supervised *e,
      * flight; run its tail (if any) now that the group is verified gone. */
     jw__on_group_released(sup, e);
     return true;
+}
+
+static bool jw__stop_and_reap(jw_svc_supervisor *sup, jw_svc_supervised *e,
+                              char *reason, size_t reason_size) {
+    return jw__stop_and_reap_coordinated(
+        sup, e, 0, NULL, reason, reason_size);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2780,7 +2799,12 @@ bool jw_svc_supervisor_game_active(const jw_svc_supervisor *sup) {
 
 bool jw_svc_supervisor_game_stop_service(jw_svc_supervisor *sup,
                                          const char *service_id,
+                                         const jw_svc_subscriber_binding *coordinator,
+                                         jw_svc_stop_result *stop_result,
                                          char *reason, size_t reason_size) {
+    if (stop_result) {
+        *stop_result = (jw_svc_stop_result){0};
+    }
     if (!sup || !service_id || !service_id[0]) {
         jw__set_reason(reason, reason_size, "invalid-arguments");
         return false;
@@ -2810,7 +2834,14 @@ bool jw_svc_supervisor_game_stop_service(jw_svc_supervisor *sup,
     e->post_stop = JW_SVC_POST_STOP_NONE;
     e->pending_stop_reason = JW_SVC_STOP_LIFECYCLE_GAME;
     e->autostart_pending = false;
-    if (!jw__stop_and_reap(sup, e, reason, reason_size)) {
+    pid_t coordinator_pid = 0;
+    if (coordinator && coordinator->peer_pid == e->pgid &&
+        jw_svc_supervisor_revalidate_subscriber(
+            sup, service_id, coordinator)) {
+        coordinator_pid = coordinator->peer_pid;
+    }
+    if (!jw__stop_and_reap_coordinated(
+            sup, e, coordinator_pid, stop_result, reason, reason_size)) {
         (void)jw__persist(sup, e, "game-unverified");
         return false;
     }

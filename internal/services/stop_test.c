@@ -140,6 +140,52 @@ static void jw__test_cooperative_exit_on_term(void) {
     puts("PASS stop-test cooperative exit: SIGTERM alone verified absent, no escalation");
 }
 
+static void jw__test_coordinator_first_exit(void) {
+    pid_t child = jw__test_fork_group_leader(jw__test_child_default_term);
+
+    jw_svc_stop_result r = jw_svc_stop_group_coordinated(
+        child, child, 3000, jw__test_real_absent);
+    assert(r.verified_absent);
+    assert(r.coordinator_first);
+    assert(!r.group_term_sent);
+    assert(!r.escalated_to_kill);
+    assert(r.coordinator_wait_ms < JW_SVC_COORDINATOR_STOP_LEAD_MS);
+    assert(r.group_wait_ms == 0);
+    assert(r.kill_wait_ms == 0);
+    assert(r.total_wait_ms < JW_SVC_COORDINATOR_STOP_LEAD_MS);
+
+    puts("PASS stop-test coordinator-first exit: leader stopped before group fallback");
+}
+
+static void jw__test_coordinator_falls_back_to_group_kill(void) {
+    pid_t child = jw__test_fork_group_leader(jw__test_child_ignores_term);
+
+    jw_svc_stop_result r = jw_svc_stop_group_coordinated(
+        child, child, 100, jw__test_real_absent);
+    assert(r.verified_absent);
+    assert(r.coordinator_first);
+    assert(r.group_term_sent);
+    assert(r.escalated_to_kill);
+    assert(r.group_wait_ms <= 100);
+    assert(r.kill_wait_ms < JW_SVC_STOP_KILL_WAIT_MS);
+    assert(r.total_wait_ms < 100 + JW_SVC_STOP_KILL_WAIT_MS);
+
+    puts("PASS stop-test coordinator fallback: unchanged group kill verifies absence");
+}
+
+static void jw__test_invalid_coordinator_uses_group_stop(void) {
+    pid_t child = jw__test_fork_group_leader(jw__test_child_default_term);
+
+    jw_svc_stop_result r = jw_svc_stop_group_coordinated(
+        child, child + 1, 3000, jw__test_real_absent);
+    assert(r.verified_absent);
+    assert(!r.coordinator_first);
+    assert(r.group_term_sent);
+    assert(r.group_wait_ms < 3000);
+
+    puts("PASS stop-test invalid coordinator: ordinary group stop retained");
+}
+
 static void jw__test_ignore_term_needs_kill(void) {
     pid_t child = jw__test_fork_group_leader(jw__test_child_ignores_term);
 
@@ -175,6 +221,9 @@ static void jw__test_unverifiable_stop_via_fault_injection(void) {
 int main(void) {
     jw__test_rejects_invalid_args();
     jw__test_cooperative_exit_on_term();
+    jw__test_coordinator_first_exit();
+    jw__test_coordinator_falls_back_to_group_kill();
+    jw__test_invalid_coordinator_uses_group_stop();
     jw__test_ignore_term_needs_kill();
     jw__test_unverifiable_stop_via_fault_injection();
     puts("PASS stop-test");

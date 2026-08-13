@@ -10,9 +10,11 @@
 #include "internal/ipc/life1.h"
 #include "internal/launcher/active_game.h"
 #include "internal/launcher/standalone_policy.h"
+#include "internal/platform/external_input_monitor.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
+#include "internal/platform/input_roster.h"
 #include "internal/platform/paths.h"
 #include "internal/platform/wifi.h"
 #include "internal/power/suspend_inhibit.h"
@@ -228,10 +230,17 @@ typedef struct {
     jw_daemon_ipc_connection ipc_connections[JW_DAEMON_IPC_CONNECTION_MAX];
     jw_platform_context platform;
     jw_input_proxy input_proxy;
+    /* Non-grabbing observers for paired wireless controllers: activity feeds
+       the same idle clock the proxy drives; Guide equals the Menu button. */
+    jw_external_input_monitor external_input;
     pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
     pid_t child_pgid;         /* reserved writer group for RETROARCH/EMULATOR;
                                  -1 for foreground paths outside LIFE-1 */
     jw_child_kind child_kind;
+    /* Per-launch private /dev/input view (plans/paired-wireless-controllers-mlp1):
+       /run/jawaka/input-<child-pid>, removed when the child exits. Empty when
+       the child launched without input isolation (desktop, generic apps). */
+    char    child_input_ns_dir[PATH_MAX];
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
     uint64_t last_record_toggle_ms; /* debounce for the Menu+R1 record hotkey */
     bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
@@ -364,6 +373,7 @@ typedef struct {
     bool game_coordination_pending;
     bool game_coordination_ready;
     int game_coordination_exchanges;
+    long long game_launch_started_ms;
     /* A stop/stale reservation that cannot be proved absent is fail-closed,
        but not silent. Preserve the requested game until the respawned
        launcher explicitly cancels it or asks to launch despite the named
@@ -576,9 +586,8 @@ static bool jw__standalone_session_is_drastic(const jw_daemon_state *state) {
     }
 
     const jw_retroarch_session *session = &state->retroarch_session;
-    return strcmp(session->core_id, "drastic") == 0 ||
-           strstr(session->core_path, "/drastic/") != NULL ||
-           strstr(session->core_path, "/DraStic") != NULL;
+    return jw_standalone_policy_is_drastic(session->core_id,
+                                           session->core_path);
 }
 
 static bool jw__standalone_session_is_mupen64plus(const jw_daemon_state *state) {
@@ -6742,7 +6751,8 @@ static int jw__osd_show_brightness(jw_daemon_state *state, int percent) {
     return -1;
 }
 
-static int jw__osd_game_waiting(jw_daemon_state *state, int pending_items) {
+static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
+                               int pending_items) {
     if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
         return -1;
     }
@@ -6751,9 +6761,17 @@ static int jw__osd_game_waiting(jw_daemon_state *state, int pending_items) {
     }
 
     char request[128];
-    snprintf(request, sizeof(request),
-             "{\"type\":\"show-game-waiting\",\"pending_items\":%d}",
-             pending_items < 0 ? 0 : pending_items);
+    if (stage && strcmp(stage, "syncing") == 0) {
+        snprintf(request, sizeof(request),
+                 "{\"type\":\"show-game-launch\",\"stage\":\"syncing\","
+                 "\"pending_items\":%d}", pending_items < 0 ? 0 : pending_items);
+    } else {
+        snprintf(request, sizeof(request),
+                 "{\"type\":\"show-game-launch\",\"stage\":\"%s\"}",
+                 stage ? stage : "starting");
+    }
+    jw_log_info("life1: launch status stage=%s pending_items=%d",
+                stage ? stage : "starting", pending_items < 0 ? 0 : pending_items);
     char *response = NULL;
     size_t response_len = 0;
     /* A visual hint must never extend a service's LIFE-1 acknowledgement
@@ -6763,17 +6781,18 @@ static int jw__osd_game_waiting(jw_daemon_state *state, int pending_items) {
                                     100);
     free(response);
     if (rc != 0) {
-        jw_log_warn("life1: waiting OSD request failed");
+        jw_log_warn("life1: launch OSD request failed stage=%s",
+                    stage ? stage : "starting");
     }
     return rc;
 }
 
-static void jw__osd_game_waiting_hide(jw_daemon_state *state) {
+static void jw__osd_game_launch_hide(jw_daemon_state *state) {
     if (!state || !state->osd_socket_path || state->osd_pid <= 0 ||
         jw__env_is_disabled("JAWAKA_OSD")) {
         return;
     }
-    const char *request = "{\"type\":\"hide-game-waiting\"}";
+    const char *request = "{\"type\":\"hide-game-launch\"}";
     char *response = NULL;
     size_t response_len = 0;
     (void)jw_ipc_request_timeout(state->osd_socket_path, request,
@@ -7145,8 +7164,8 @@ static bool jw__input_menu_tap(void *userdata) {
         }
         if (jw__standalone_session_is_drastic(state)) {
             state->standalone_quit_request_ms = 0;
-            jw_log_info("menu tap: letting DraStic handle native menu pid=%d", (int)pid);
-            return true;
+            jw_log_info("menu tap: forwarding to DraStic native menu pid=%d", (int)pid);
+            return false;
         }
         if (jw__standalone_session_is_mupen64plus(state)) {
             state->standalone_quit_request_ms = 0;
@@ -7718,6 +7737,183 @@ static void jw__suspend_input_proxy_for_app(jw_daemon_state *state) {
     jw__publish_direct_input_env();
 }
 
+/* ── Input roster isolation (paired wireless controllers) ─────────────────
+   Game/emulator children launch inside a frozen roster plus a private
+   /dev/input mount snapshot, per plans/paired-wireless-controllers-mlp1.
+   All failures block the launch with a stable error code; there is never a
+   fallback to direct physical Loong input on roster-capable platforms. */
+
+#define JW_INPUT_ISOLATION_SDL_MAX \
+    (JW_INPUT_ROSTER_MAX_CONTROLLERS * (JW_INPUT_ROSTER_PATH_MAX + 1))
+
+static int jw__pipe_cloexec(int fds[2]) {
+    fds[0] = -1;
+    fds[1] = -1;
+    if (pipe(fds) != 0) {
+        return -1;
+    }
+    (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+}
+
+/* Build the frozen launch roster. Returns 1 when a roster is active, 0 when
+   isolation is unsupported on this platform (desktop: legacy direct input),
+   and -1 with a stable error code when the roster is required but could not
+   be built -- the caller must abort the launch. */
+static int jw__launch_prepare_input_roster(jw_daemon_state *state,
+                                           jw_input_roster *roster,
+                                           char *sdl_devices,
+                                           size_t sdl_devices_size,
+                                           int player_joypad_indices[4],
+                                           const char *tag,
+                                           char *error, size_t error_size) {
+    if (!jw_input_roster_supported()) {
+        return 0;
+    }
+    if (jw_input_roster_build(&state->input_proxy, roster,
+                              error, error_size) != 0) {
+        return -1;
+    }
+    jw_input_roster_log(roster, tag);
+    jw_input_roster_sdl_devices(roster, sdl_devices, sdl_devices_size);
+    for (int i = 0; i < 4; i++) {
+        player_joypad_indices[i] = i < roster->count ? i : -1;
+    }
+    return 1;
+}
+
+/* Parent side, right after fork: stage the per-child /dev/input view and hand
+   its dir to the child over the sync pipe. A failure is signaled as an empty
+   string so the child exits rather than execing unisolated. */
+static int jw__input_isolation_parent_prepare(const jw_input_roster *roster,
+                                              pid_t child_pid,
+                                              int sync_write_fd,
+                                              char *dir_out,
+                                              size_t dir_out_size) {
+    char dir[PATH_MAX];
+    dir[0] = '\0';
+    if (jw_input_namespace_prepare(roster, child_pid, dir, sizeof(dir)) != 0) {
+        (void)write(sync_write_fd, "", 1);
+        return -1;
+    }
+    size_t len = strlen(dir) + 1;
+    if (write(sync_write_fd, dir, len) != (ssize_t)len) {
+        jw_input_namespace_cleanup_dir(dir);
+        return -1;
+    }
+    if (dir_out && dir_out_size > 0) {
+        snprintf(dir_out, dir_out_size, "%s", dir);
+    }
+    return 0;
+}
+
+/* Child side, between fork and exec. Blocks for the staged dir, enters the
+   private namespace, publishes the frozen SDL roster, and returns only when
+   the child may exec. Any failure is written to err_write_fd and the child
+   exits 126 WITHOUT exec -- fail closed, no unisolated emulator, ever. */
+static void jw__input_isolation_child_enter(const jw_input_roster *roster,
+                                            const char *sdl_devices,
+                                            int sync_read_fd,
+                                            int err_write_fd) {
+    char dir[PATH_MAX];
+    ssize_t got;
+    do {
+        got = read(sync_read_fd, dir, sizeof(dir));
+    } while (got < 0 && errno == EINTR);
+    close(sync_read_fd);
+
+    if (got <= 1 || got >= (ssize_t)sizeof(dir) || dir[0] == '\0' ||
+        !memchr(dir, '\0', (size_t)got)) {
+        static const char msg[] = JW_INPUT_ROSTER_ERR_PREPARE
+            ": parent did not stage an input namespace";
+        (void)write(err_write_fd, msg, sizeof(msg));
+        _exit(126);
+    }
+
+    char err[256];
+    if (jw_input_namespace_enter(dir, roster, err, sizeof(err)) != 0) {
+        char msg[288];
+        snprintf(msg, sizeof(msg), "%s", err);
+        (void)write(err_write_fd, msg, strlen(msg) + 1);
+        _exit(126);
+    }
+
+    setenv("SDL_JOYSTICK_DEVICE", sdl_devices, 1);
+    setenv("SDL_JOYSTICK_DISABLE_UDEV", "1", 1);
+    /* SDL's HIDAPI drivers reach Xbox and similar pads through /dev/hidraw*,
+       which the mount namespace does not cover: such a pad would enter SDL's
+       device list outside the roster order, and one excluded by the
+       three-external limit would still be visible to the emulator. Force the
+       evdev path so the private /dev/input view is the single source of truth
+       for which controllers exist and in which order. */
+    setenv("SDL_JOYSTICK_HIDAPI", "0", 1);
+    char text[8];
+    snprintf(text, sizeof(text), "%d", roster->count);
+    setenv("JAWAKA_INPUT_ROSTER_COUNT", text, 1);
+    snprintf(text, sizeof(text), "%d", jw_input_roster_virtual_index(roster));
+    setenv("JAWAKA_RETROARCH_JOYPAD_INDEX", text, 1);
+    close(err_write_fd); /* CLOEXEC closes it at exec too; explicit is fine */
+}
+
+/* Parent side: block until the child has exec'd (CLOEXEC closes the err fd)
+   or reported a pre-exec isolation failure. Returns 0 once exec happened. */
+static int jw__input_isolation_parent_wait_exec(int err_read_fd,
+                                                char *error,
+                                                size_t error_size) {
+    ssize_t got;
+    do {
+        got = read(err_read_fd, error,
+                   error_size > 0 ? error_size - 1 : 0);
+    } while (got < 0 && errno == EINTR);
+    if (got > 0) {
+        error[got] = '\0';
+        return -1;
+    }
+    if (error_size > 0) {
+        error[0] = '\0';
+    }
+    return 0;
+}
+
+/* Parent side: run both halves of the isolation handshake for a roster
+   launch. Returns 0 when the child has exec'd isolated; -1 with a stable
+   error otherwise, after the child has been stopped and reaped. */
+static int jw__input_isolation_parent_finish(jw_daemon_state *state,
+                                             const jw_input_roster *roster,
+                                             pid_t child_pid,
+                                             int sync_write_fd,
+                                             int err_read_fd,
+                                             char *error, size_t error_size) {
+    int rc = jw__input_isolation_parent_prepare(roster, child_pid,
+                                                sync_write_fd,
+                                                state->child_input_ns_dir,
+                                                sizeof(state->child_input_ns_dir));
+    if (rc != 0) {
+        snprintf(error, error_size, "%s: parent staging failed",
+                 JW_INPUT_ROSTER_ERR_PREPARE);
+    }
+    if (rc == 0) {
+        rc = jw__input_isolation_parent_wait_exec(err_read_fd,
+                                                  error, error_size);
+    }
+    if (rc != 0) {
+        (void)kill(child_pid, SIGKILL);
+        while (waitpid(child_pid, NULL, 0) < 0 && errno == EINTR) {
+        }
+        if (state->child_input_ns_dir[0]) {
+            jw_input_namespace_cleanup_dir(state->child_input_ns_dir);
+            state->child_input_ns_dir[0] = '\0';
+        }
+        jw_log_info("input namespace: setup failed; child pid=%d stopped",
+                    (int)child_pid);
+        return -1;
+    }
+    jw_log_info("input namespace: active %s",
+                state->child_input_ns_dir);
+    return 0;
+}
+
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     const char *name = jw__child_name(kind);
     if (!state || !name || kind == JW_CHILD_RETROARCH ||
@@ -7889,17 +8085,44 @@ static int jw__spawn_app(jw_daemon_state *state) {
         app_source = jw_storage_sources_find_for_path(&sources, pak_abs);
     }
 
-    jw__suspend_input_proxy_for_app(state);
-    /* Watch the pad in watch-only mode so the hardware volume / brightness keys
-       keep working while a generic app is foreground — the same as standalone
-       emulators. The app reads the pad directly for its own input; jawakad only
-       watches for the system hotkeys (volume/brightness; Menu and the switcher
-       no-op without a game session). The app-exit handler tears this watch proxy
-       down and restores the full grab. */
-    if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
-                                  jw__input_volume_delta, jw__input_menu_tap,
-                                  jw__input_game_switcher, state) != 0) {
-        jw_log_warn("input watch: init failed; volume/brightness keys unavailable this app session");
+    bool app_is_retroarch = jw__pak_dir_is_retroarch(state->pending_app_pak_dir);
+
+    jw_input_roster roster;
+    char sdl_devices[JW_INPUT_ISOLATION_SDL_MAX];
+    sdl_devices[0] = '\0';
+    bool use_roster = false;
+    if (app_is_retroarch && jw_input_roster_supported()) {
+        /* RetroArch.pak menu launches consume the same protected roster as
+           core launches (plans/paired-wireless-controllers-mlp1): the proxy
+           stays in full grab-and-forward mode so calibrated built-in input and
+           paired wireless controllers reach the RetroArch menu, and the child
+           gets the private /dev/input view. The runner receives the roster
+           positions from the environment; it must not count "Loong Gamepad"
+           devices. */
+        jw__start_input_proxy(state);
+        int dummy_indices[4];
+        char roster_error[256];
+        if (jw__launch_prepare_input_roster(
+                state, &roster, sdl_devices, sizeof(sdl_devices), dummy_indices,
+                "retroarch-menu", roster_error, sizeof(roster_error)) < 0) {
+            jw_log_error("RetroArch app launch blocked: %s", roster_error);
+            state->pending_app = false;
+            return -1;
+        }
+        use_roster = true;
+    } else {
+        jw__suspend_input_proxy_for_app(state);
+        /* Watch the pad in watch-only mode so the hardware volume / brightness keys
+           keep working while a generic app is foreground — the same as standalone
+           emulators. The app reads the pad directly for its own input; jawakad only
+           watches for the system hotkeys (volume/brightness; Menu and the switcher
+           no-op without a game session). The app-exit handler tears this watch proxy
+           down and restores the full grab. */
+        if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
+                                      jw__input_volume_delta, jw__input_menu_tap,
+                                      jw__input_game_switcher, state) != 0) {
+            jw_log_warn("input watch: init failed; volume/brightness keys unavailable this app session");
+        }
     }
     jw__reconcile_audio(state, "app-launch", false);
     jw__publish_audio_env(state);
@@ -7916,11 +8139,25 @@ static int jw__spawn_app(jw_daemon_state *state) {
        apply child-side only for the RetroArch app. */
     jw_cheevos_creds cheevos;
     jw__cheevos_resolve(state, &cheevos);
-    bool app_is_retroarch = jw__pak_dir_is_retroarch(state->pending_app_pak_dir);
+
+    /* Isolation handshake pipes (see the RetroArch game path). */
+    int sync_pipe[2] = { -1, -1 };
+    int err_pipe[2] = { -1, -1 };
+    if (use_roster &&
+        (jw__pipe_cloexec(sync_pipe) != 0 || jw__pipe_cloexec(err_pipe) != 0)) {
+        jw_log_error("RetroArch app launch blocked: %s: control pipe creation failed",
+                     JW_INPUT_ROSTER_ERR_NAMESPACE);
+        state->pending_app = false;
+        return -1;
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
+        if (sync_pipe[0] >= 0) close(sync_pipe[0]);
+        if (sync_pipe[1] >= 0) close(sync_pipe[1]);
+        if (err_pipe[0] >= 0) close(err_pipe[0]);
+        if (err_pipe[1] >= 0) close(err_pipe[1]);
         jw_input_proxy_shutdown(&state->input_proxy);   /* drop the watch-only proxy */
         jw__start_input_proxy(state);
         state->pending_app = false;
@@ -7928,6 +8165,13 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
+        if (use_roster) {
+            close(sync_pipe[1]);
+            close(err_pipe[0]);
+            /* Any failure here exits 126 without exec: fail closed. */
+            jw__input_isolation_child_enter(&roster, sdl_devices,
+                                            sync_pipe[0], err_pipe[1]);
+        }
         jw_appearance_apply_env(&appearance);
         jw__publish_source_content_env(app_source);
         /* Only the RetroArch runner gets cheevos creds (it writes its own RA
@@ -7946,6 +8190,22 @@ static int jw__spawn_app(jw_daemon_state *state) {
         execv(launch_abs, argv);
         perror("execv");
         _exit(127);
+    }
+
+    if (use_roster) {
+        close(sync_pipe[0]);
+        close(err_pipe[1]);
+        char isolation_error[256];
+        int isolation_rc = jw__input_isolation_parent_finish(
+            state, &roster, pid, sync_pipe[1], err_pipe[0],
+            isolation_error, sizeof(isolation_error));
+        close(sync_pipe[1]);
+        close(err_pipe[0]);
+        if (isolation_rc != 0) {
+            jw_log_error("RetroArch app launch blocked: %s", isolation_error);
+            state->pending_app = false;
+            return -1;
+        }
     }
 
     state->child_pid = pid;
@@ -8022,13 +8282,34 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_log_info("standalone emulator launch transition readiness code=%s",
                 jw_platform_result_code_name(ready_result.code));
 
+    jw_input_roster roster;
+    char sdl_devices[JW_INPUT_ISOLATION_SDL_MAX];
+    sdl_devices[0] = '\0';
+    bool use_roster = false;
     if (jw__standalone_target_uses_calibrated_virtual_input(target)) {
-        /* Mupen64Plus, Flycast, PPSSPP, and PortMaster ports need the same
-           calibrated virtual gamepad path as RetroArch. Keep the full
-           grab-and-forward proxy active so Joe's calibration is applied
-           before SDL sees the axes. */
+        /* Mupen64Plus, Flycast, PPSSPP, DraStic, and PortMaster ports need
+           the same calibrated virtual gamepad path as RetroArch. Keep the
+           full grab-and-forward proxy active so Joe's calibration is applied
+           before SDL sees the axes, and launch inside the frozen controller
+           roster. Device builds fail closed when the roster cannot be built
+           -- never a fallback to direct physical Loong input. */
         jw__start_input_proxy(state);
-        if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
+        if (jw_input_roster_supported()) {
+            int dummy_indices[4];
+            char roster_error[256];
+            if (jw__launch_prepare_input_roster(
+                    state, &roster, sdl_devices, sizeof(sdl_devices),
+                    dummy_indices,
+                    target->core_id[0] ? target->core_id : "standalone",
+                    roster_error, sizeof(roster_error)) < 0) {
+                jw_log_error("standalone launch blocked: %s", roster_error);
+                state->pending_launch = false;
+                state->pending_launch_resume_switcher = false;
+                state->pending_launch_override_unverified = false;
+                return -1;
+            }
+            use_roster = true;
+        } else if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
             int joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);
             jw_log_info("standalone input proxy: physical=%s virtual=%s joypad_index=%d",
                         state->input_proxy.physical_event_path[0]
@@ -8096,10 +8377,28 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                     "feedback; no game rumble this session", target->core_id);
     }
 
+    /* Isolation handshake pipes (see the RetroArch path). */
+    int sync_pipe[2] = { -1, -1 };
+    int err_pipe[2] = { -1, -1 };
+    if (use_roster &&
+        (jw__pipe_cloexec(sync_pipe) != 0 || jw__pipe_cloexec(err_pipe) != 0)) {
+        jw_log_error("standalone launch blocked: %s: control pipe creation failed",
+                     JW_INPUT_ROSTER_ERR_NAMESPACE);
+        jw__rumble_publish_ff(NULL);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
         jw__rumble_publish_ff(NULL);
+        if (sync_pipe[0] >= 0) close(sync_pipe[0]);
+        if (sync_pipe[1] >= 0) close(sync_pipe[1]);
+        if (err_pipe[0] >= 0) close(err_pipe[0]);
+        if (err_pipe[1] >= 0) close(err_pipe[1]);
         if (direct_drm) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
@@ -8117,6 +8416,13 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     }
 
     if (pid == 0) {
+        if (use_roster) {
+            close(sync_pipe[1]);
+            close(err_pipe[0]);
+            /* Any failure here exits 126 without exec: fail closed. */
+            jw__input_isolation_child_enter(&roster, sdl_devices,
+                                            sync_pipe[0], err_pipe[1]);
+        }
         if (jw__game_child_set_own_group() != 0) {
             perror("setpgid");
             _exit(126);
@@ -8150,6 +8456,35 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         execv(target->path, argv);
         perror("execv");
         _exit(127);
+    }
+
+    if (use_roster) {
+        close(sync_pipe[0]);
+        close(err_pipe[1]);
+        char isolation_error[256];
+        int isolation_rc = jw__input_isolation_parent_finish(
+            state, &roster, pid, sync_pipe[1], err_pipe[0],
+            isolation_error, sizeof(isolation_error));
+        close(sync_pipe[1]);
+        close(err_pipe[0]);
+        if (isolation_rc != 0) {
+            jw_log_error("standalone launch blocked: %s", isolation_error);
+            jw__rumble_publish_ff(NULL);
+            /* The direct-DRM handoff already stopped Weston pre-fork; undo it
+               so the user gets a desktop back on this blocked launch. */
+            if (direct_drm) {
+                state->direct_drm_active = false;
+                if (state->direct_drm_weston_stopped) {
+                    (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                    state->direct_drm_weston_stopped = false;
+                    jw__spawn_osd(state);
+                }
+            }
+            state->pending_launch = false;
+            state->pending_launch_resume_switcher = false;
+            state->pending_launch_override_unverified = false;
+            return -1;
+        }
     }
 
     if (!jw__reserve_game_process_group(pid)) {
@@ -8292,18 +8627,48 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     jw_log_info("RetroArch launch transition readiness code=%s",
                 jw_platform_result_code_name(ready_result.code));
 
-    int player1_joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);
-    if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
+    /* Frozen controller roster for this launch (paired wireless controllers).
+       Device builds fail closed when the roster cannot be built; desktop
+       launches keep the legacy single-player direct-input path. */
+    jw_input_roster roster;
+    char sdl_devices[JW_INPUT_ISOLATION_SDL_MAX];
+    sdl_devices[0] = '\0';
+    int player_indices[4] = { -1, -1, -1, -1 };
+    const int *player_indices_arg = NULL;
+    bool use_roster = false;
+    {
+        char roster_error[256];
+        int roster_rc = jw__launch_prepare_input_roster(
+            state, &roster, sdl_devices, sizeof(sdl_devices), player_indices,
+            "retroarch", roster_error, sizeof(roster_error));
+        if (roster_rc < 0) {
+            jw_log_error("RetroArch launch blocked: %s", roster_error);
+            goto fail;
+        }
+        if (roster_rc == 1) {
+            use_roster = true;
+            player_indices_arg = player_indices;
+        }
+    }
+    if (!use_roster) {
+        /* Legacy single-controller path (desktop builds without a roster). */
+        int player1_joypad_index = jw_input_proxy_retroarch_joypad_index(&state->input_proxy);
+        if (state->input_proxy.enabled && state->input_proxy.virtual_event_path[0]) {
+            if (player1_joypad_index >= 0) {
+                jw_log_info("RetroArch input proxy: physical=%s virtual=%s joypad_index=%d",
+                            state->input_proxy.physical_event_path[0]
+                                ? state->input_proxy.physical_event_path
+                                : "(unknown)",
+                            state->input_proxy.virtual_event_path,
+                            player1_joypad_index);
+            } else {
+                jw_log_warn("RetroArch input proxy: could not resolve virtual joypad index for %s",
+                            state->input_proxy.virtual_event_path);
+            }
+        }
         if (player1_joypad_index >= 0) {
-            jw_log_info("RetroArch input proxy: physical=%s virtual=%s joypad_index=%d",
-                        state->input_proxy.physical_event_path[0]
-                            ? state->input_proxy.physical_event_path
-                            : "(unknown)",
-                        state->input_proxy.virtual_event_path,
-                        player1_joypad_index);
-        } else {
-            jw_log_warn("RetroArch input proxy: could not resolve virtual joypad index for %s",
-                        state->input_proxy.virtual_event_path);
+            player_indices[0] = player1_joypad_index;
+            player_indices_arg = player_indices;
         }
     }
 
@@ -8335,7 +8700,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     runtime_config = jw_prepare_retroarch_config(state->runtime_dir,
                                                 source_root,
                                                 core,
-                                                player1_joypad_index,
+                                                player_indices_arg,
                                                 persist_config,
                                                 config_error,
                                                 sizeof(config_error));
@@ -8418,15 +8783,38 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
        it. This is the only route now, so without it RetroArch is silent. */
     jw__rumble_publish_ff(&rumble_env);
 
+    /* Isolation handshake pipes: parent -> child carries the staged namespace
+       dir; child -> parent (CLOEXEC) reports pre-exec isolation failures and
+       closes silently at exec. */
+    int sync_pipe[2] = { -1, -1 };
+    int err_pipe[2] = { -1, -1 };
+    if (use_roster &&
+        (jw__pipe_cloexec(sync_pipe) != 0 || jw__pipe_cloexec(err_pipe) != 0)) {
+        jw_log_error("RetroArch launch blocked: %s: control pipe creation failed",
+                     JW_INPUT_ROSTER_ERR_NAMESPACE);
+        goto fail;
+    }
+
     long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
         jw__rumble_publish_ff(NULL);
+        if (sync_pipe[0] >= 0) close(sync_pipe[0]);
+        if (sync_pipe[1] >= 0) close(sync_pipe[1]);
+        if (err_pipe[0] >= 0) close(err_pipe[0]);
+        if (err_pipe[1] >= 0) close(err_pipe[1]);
         goto fail;
     }
 
     if (pid == 0) {
+        if (use_roster) {
+            close(sync_pipe[1]);
+            close(err_pipe[0]);
+            /* Any failure here exits 126 without exec: fail closed. */
+            jw__input_isolation_child_enter(&roster, sdl_devices,
+                                            sync_pipe[0], err_pipe[1]);
+        }
         if (jw__game_child_set_own_group() != 0) {
             perror("setpgid");
             _exit(126);
@@ -8452,6 +8840,22 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         _exit(127);
     }
     long long fork_done_ms = jw__monotonic_ms();
+
+    if (use_roster) {
+        close(sync_pipe[0]);
+        close(err_pipe[1]);
+        char isolation_error[256];
+        int isolation_rc = jw__input_isolation_parent_finish(
+            state, &roster, pid, sync_pipe[1], err_pipe[0],
+            isolation_error, sizeof(isolation_error));
+        close(sync_pipe[1]);
+        close(err_pipe[0]);
+        if (isolation_rc != 0) {
+            jw_log_error("RetroArch launch blocked: %s", isolation_error);
+            jw__rumble_publish_ff(NULL);
+            goto fail;
+        }
+    }
 
     if (!jw__reserve_game_process_group(pid)) {
         jw_log_error("could not reserve RetroArch writer process group pid=%d: %s",
@@ -11189,7 +11593,10 @@ static void jw__game_coordination_abort(jw_daemon_state *state,
     }
     state->game_coordination_pending = false;
     state->game_coordination_ready = false;
-    jw__osd_game_waiting_hide(state);
+    jw__osd_game_launch_hide(state);
+    long long launch_elapsed_ms = state->game_launch_started_ms > 0
+        ? jw__monotonic_ms() - state->game_launch_started_ms : 0;
+    state->game_launch_started_ms = 0;
     state->game_check_decision = false;
     state->game_check_service_id[0] = '\0';
     state->game_coordination_exchanges = 0;
@@ -11212,8 +11619,10 @@ static void jw__game_coordination_abort(jw_daemon_state *state,
             jw_svc_supervisor_game_finish(state->services);
         }
     }
-    jw_log_warn("life1: game launch aborted before writer start reason=%s",
-                reason && reason[0] ? reason : "coordination-failed");
+    jw_log_warn("life1: game launch aborted before writer start reason=%s "
+                "elapsed_ms=%lld",
+                reason && reason[0] ? reason : "coordination-failed",
+                launch_elapsed_ms);
 }
 
 static void jw__game_coordination_block(jw_daemon_state *state,
@@ -11278,7 +11687,7 @@ static int jw__game_coordination_launch_if_ready(jw_daemon_state *state) {
         jw__game_coordination_abort(state, "source-binding-changed");
         return -1;
     }
-    jw__osd_game_waiting_hide(state);
+    (void)jw__osd_game_launch(state, "starting", 0);
     state->game_coordination_pending = false;
     if (state->child_pid > 0 && state->child_kind == JW_CHILD_LAUNCHER) {
         state->game_coordination_ready = true;
@@ -11291,20 +11700,38 @@ static int jw__game_coordination_launch_if_ready(jw_daemon_state *state) {
     }
     state->pending_launch_override_unverified = false;
     state->active_game_writer_started = true;
-    jw_log_info("life1: writer started launch_id=%s pgid=%d",
-                state->active_game.launch_id, (int)state->child_pgid);
+    jw__osd_game_launch_hide(state);
+    jw_log_info("life1: writer started launch_id=%s pgid=%d total_ms=%lld",
+                state->active_game.launch_id, (int)state->child_pgid,
+                state->game_launch_started_ms > 0
+                    ? jw__monotonic_ms() - state->game_launch_started_ms : 0);
+    state->game_launch_started_ms = 0;
     return 1;
 }
 
 static bool jw__game_stop_service(jw_daemon_state *state,
                                   const char *service_id,
+                                  const jw_svc_subscriber_binding *coordinator,
                                   const char *why) {
     char stop_reason[JW_SVC_REASON_BUF];
+    jw_svc_stop_result result = {0};
+    (void)jw__osd_game_launch(state, "stopping", 0);
     if (jw_svc_supervisor_game_stop_service(
-            state->services, service_id,
+            state->services, service_id, coordinator, &result,
             stop_reason, sizeof(stop_reason))) {
-        jw_log_info("life1: verified service stop service=%s reason=%s",
-                    service_id, why ? why : "game-policy");
+        jw_log_info("life1: verified service stop service=%s reason=%s "
+                    "stop_ms=%d coordinator_first=%s coordinator_ms=%d "
+                    "group_fallback=%s group_ms=%d kill=%s kill_ms=%d "
+                    "verified_absence_ms=%d",
+                    service_id, why ? why : "game-policy",
+                    result.total_wait_ms,
+                    result.coordinator_first ? "true" : "false",
+                    result.coordinator_wait_ms,
+                    result.coordinator_first && result.group_term_sent
+                        ? "true" : "false",
+                    result.group_wait_ms,
+                    result.escalated_to_kill ? "true" : "false",
+                    result.kill_wait_ms, result.total_wait_ms);
         return true;
     }
     jw_log_warn("life1: service=%s stop could not be verified reason=%s trigger=%s",
@@ -11316,6 +11743,9 @@ static int jw__begin_game_exchange(jw_daemon_state *state, int index) {
     jw_daemon_ipc_connection *connection = &state->ipc_connections[index];
     bool check = connection->mode == JW_LIFE1_MODE_STOP &&
                  connection->check_before_stop;
+    if (check) {
+        (void)jw__osd_game_launch(state, "checking", 0);
+    }
     long long now = jw__monotonic_ms();
     connection->exchange_kind = check ? JW_GAME_EXCHANGE_KIND_CHECK
                                       : JW_GAME_EXCHANGE_KIND_NOTIFY;
@@ -11422,6 +11852,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
     state->game_coordination_pending = true;
     state->game_coordination_ready = false;
     state->game_coordination_exchanges = 0;
+    state->game_launch_started_ms = jw__monotonic_ms();
     if (state->services) {
         jw_svc_supervisor_game_set_active(state->services, true);
     }
@@ -11485,7 +11916,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
             }
             if (policy == JW_SVC_LIFECYCLE_GAME_STOP || subscriber < 0) {
                 if (!jw__game_stop_service(
-                        state, service_id,
+                        state, service_id, NULL,
                         policy == JW_SVC_LIFECYCLE_GAME_STOP
                             ? "mode-stop" : "notify-unsubscribed")) {
                     if (state->pending_launch_override_unverified) {
@@ -11543,7 +11974,7 @@ static void jw__game_coordination_connection_failed(jw_daemon_state *state,
         return;
     }
     if (!state->services || !jw__game_stop_service(
-            state, service_id,
+            state, service_id, NULL,
             reason && reason[0] ? reason : "exchange-failure")) {
         if (state->pending_launch_override_unverified) {
             jw_log_warn("life1: explicit override bypassing unverified "
@@ -11640,9 +12071,9 @@ static bool jw__game_check_play_anyway(jw_daemon_state *state) {
     state->game_check_pending_items = 0;
     state->game_check_pending_bytes = 0;
     state->game_check_service_id[0] = '\0';
-    jw__osd_game_waiting_hide(state);
     if (!state->services ||
-        !jw__game_stop_service(state, service_id, "play-anyway")) {
+        !jw__game_stop_service(state, service_id, &connection->binding,
+                               "play-anyway")) {
         jw__game_coordination_block(state, service_id,
                                     "check-stop-unverified");
         return false;
@@ -11684,7 +12115,6 @@ static bool jw__game_coordination_start_now(jw_daemon_state *state,
     }
 
     long long now = jw__monotonic_ms();
-    jw__osd_game_waiting_hide(state);
     for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX &&
                     state->game_coordination_pending; i++) {
         jw_daemon_ipc_connection *connection = &state->ipc_connections[i];
@@ -11755,9 +12185,9 @@ static void jw__game_coordination_status(jw_daemon_state *state, int index,
             state->game_check_pending_items = 0;
             state->game_check_pending_bytes = 0;
             state->game_check_service_id[0] = '\0';
-            jw__osd_game_waiting_hide(state);
             if (!state->services || !jw__game_stop_service(
-                    state, service_id, "check-before-stop-current")) {
+                    state, service_id, &connection->binding,
+                    "check-before-stop-current")) {
                 jw__game_coordination_block(
                     state, service_id, "check-stop-unverified");
                 return;
@@ -11787,7 +12217,7 @@ static void jw__game_coordination_status(jw_daemon_state *state, int index,
         snprintf(state->game_check_service_id,
                  sizeof(state->game_check_service_id), "%s",
                  connection->service_id);
-        (void)jw__osd_game_waiting(state, status->pending_items);
+        (void)jw__osd_game_launch(state, "syncing", status->pending_items);
         jw_log_info("life1: check pending service=%s launch_id=%s pending_items=%d pending_bytes=%lld",
                     connection->service_id, status->launch_id,
                     status->pending_items, (long long)status->pending_bytes);
@@ -11828,7 +12258,7 @@ static void jw__game_coordination_status(jw_daemon_state *state, int index,
     connection->exchange_pending_seen = true;
     connection->exchange_pending_items = status->pending_items;
     connection->exchange_phase = JW_GAME_EXCHANGE_WAITING;
-    (void)jw__osd_game_waiting(state, status->pending_items);
+    (void)jw__osd_game_launch(state, "syncing", status->pending_items);
     jw_log_info("life1: waiting service=%s launch_id=%s pending_items=%d",
                 connection->service_id, status->launch_id,
                 status->pending_items);
@@ -12241,7 +12671,7 @@ static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
             snprintf(service_id, sizeof(service_id), "%s",
                      state->ipc_connections[slot].service_id);
             state->ipc_connections[slot].stop_after_flush = false;
-            if (!jw__game_stop_service(state, service_id,
+            if (!jw__game_stop_service(state, service_id, NULL,
                                        "active-mode-stop-reconcile")) {
                 jw_log_warn("life1: active mode-stop reconnect remains unverified service=%s",
                             service_id);
@@ -12342,6 +12772,13 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     state->child_pgid = -1;
     state->child_kind = JW_CHILD_NONE;
 
+    /* Remove the per-launch private input view once the child is reaped. */
+    if (state->child_input_ns_dir[0]) {
+        jw_input_namespace_cleanup_dir(state->child_input_ns_dir);
+        jw_log_info("input namespace: removed %s", state->child_input_ns_dir);
+        state->child_input_ns_dir[0] = '\0';
+    }
+
     /* Reclaim the motor: a game that died mid-buzz can't have cleared it. Close
        the force-feedback route with it, so a stale effect id left behind by the
        dead session can't drive the motor for the next one. */
@@ -12426,9 +12863,16 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             } else {
                 state->pending_launch_override_unverified = false;
                 state->active_game_writer_started = true;
-                jw_log_info("life1: writer started launch_id=%s pgid=%d",
+                jw__osd_game_launch_hide(state);
+                jw_log_info("life1: writer started launch_id=%s pgid=%d "
+                            "total_ms=%lld",
                             state->active_game.launch_id,
-                            (int)state->child_pgid);
+                            (int)state->child_pgid,
+                            state->game_launch_started_ms > 0
+                                ? jw__monotonic_ms() -
+                                      state->game_launch_started_ms
+                                : 0);
+                state->game_launch_started_ms = 0;
             }
             return;
         }
@@ -12614,7 +13058,12 @@ static void jw__cleanup(jw_daemon_state *state) {
 
     jw__stop_ledd(state);
 
+    jw_external_input_monitor_shutdown(&state->external_input);
     jw_input_proxy_shutdown(&state->input_proxy);
+    if (state->child_input_ns_dir[0]) {
+        jw_input_namespace_cleanup_dir(state->child_input_ns_dir);
+        state->child_input_ns_dir[0] = '\0';
+    }
     if (state->update_download_job.active) {
         jw_update_download_cancel(&state->update_status, &state->update_download_job);
     }
@@ -12719,6 +13168,15 @@ int main(int argc, char *argv[]) {
         jw__cleanup(&state);
         return 1;
     }
+
+    /* Paired-wireless-controllers contract: sweep stale per-launch input
+       views left by an unclean shutdown, and never inherit an SDL device list
+       from a wrapper -- the roster is rebuilt fresh for every launch. */
+    jw_input_namespace_startup_sweep();
+    unsetenv("SDL_JOYSTICK_DEVICE");
+    unsetenv("SDL_JOYSTICK_DISABLE_UDEV");
+    unsetenv("SDL_JOYSTICK_HIDAPI");
+    unsetenv("JAWAKA_INPUT_ROSTER_COUNT");
 
     if (jw_platform_init(&state.platform, state.runtime_dir, state.sdcard_root) != 0) {
         jw_log_error("could not initialize platform service");
@@ -12873,6 +13331,10 @@ int main(int argc, char *argv[]) {
     }
 
     jw__start_input_proxy(&state);
+    if (jw_external_input_monitor_init(&state.external_input,
+                                       jw__input_menu_tap, &state) != 0) {
+        jw_log_warn("external input monitor: init failed; wireless controllers will be UI-only");
+    }
 
     jw_log_info("jawakad starting");
     jw_log_info("runtime dir: %s", state.runtime_dir);
@@ -12972,6 +13434,9 @@ int main(int argc, char *argv[]) {
         jw__handle_osd_exit(&state);
         jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
+        jw_external_input_monitor_tick(&state.external_input,
+                                       &state.input_proxy,
+                                       (uint64_t)jw__monotonic_ms());
         /* A UI screenshot finished: flash the launcher, but only if it is still the
            foreground child (revalidated with the live pid, never a stale snapshot). */
         if (atomic_exchange(&g_ss_flash_request, 0) &&

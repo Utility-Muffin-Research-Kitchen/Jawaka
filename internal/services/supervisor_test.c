@@ -2032,6 +2032,76 @@ static void test_life1_subscriber_authentication(void) {
     fixture_teardown(&f);
 }
 
+static void test_game_stop_uses_validated_coordinator_first(void) {
+    fixture f;
+    fixture_setup(&f);
+    const char *clean_id = "org.umrk.test.coordinated";
+    const char *stuck_id = "org.umrk.test.coordinatorstuck";
+    const char *ordinary_id = "org.umrk.test.coordinatorinvalid";
+    fixture_write_pak(&f, "coordinated.pak", clean_id,
+                      "trap 'kill \"$child\"; wait \"$child\"; exit 0' TERM; "
+                      "sleep 30 & child=$!; wait \"$child\"",
+                      ",\"restart\":\"no\"");
+    fixture_write_pak(&f, "coordinatorstuck.pak", stuck_id,
+                      "trap '' TERM; while :; do sleep 1; done",
+                      ",\"restart\":\"no\"");
+    fixture_write_pak(&f, "coordinatorinvalid.pak", ordinary_id,
+                      "while :; do sleep 1; done",
+                      ",\"restart\":\"no\"");
+    char reason[JW_SVC_REASON_BUF];
+    jw_svc_supervisor *sup = fixture_open(&f, reason);
+    CHECK(sup != NULL);
+    CHECK(jw_svc_supervisor_scan(sup) == 3);
+
+    CHECK(jw_svc_supervisor_run(sup, clean_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, stuck_id, reason, sizeof(reason)));
+    CHECK(jw_svc_supervisor_run(sup, ordinary_id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, clean_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, stuck_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(wait_for_state(sup, ordinary_id, JW_SVC_STATE_RUNNING, 3000));
+    const jw_svc_supervised *entry =
+        jw_svc_supervisor_find(sup, clean_id);
+    jw_svc_subscriber_binding binding;
+    CHECK(entry && jw_svc_supervisor_authenticate_subscriber(
+        sup, clean_id, entry->pgid, &binding) ==
+        JW_SVC_SUBSCRIBER_ACCEPTED);
+    jw_svc_stop_result result;
+    CHECK(jw_svc_supervisor_game_stop_service(
+        sup, clean_id, &binding, &result, reason, sizeof(reason)));
+    CHECK(result.coordinator_first);
+    CHECK(!result.group_term_sent);
+    CHECK(result.verified_absent);
+
+    entry = jw_svc_supervisor_find(sup, stuck_id);
+    CHECK(entry && jw_svc_supervisor_authenticate_subscriber(
+        sup, stuck_id, entry->pgid, &binding) ==
+        JW_SVC_SUBSCRIBER_ACCEPTED);
+    CHECK(jw_svc_supervisor_game_stop_service(
+        sup, stuck_id, &binding, &result, reason, sizeof(reason)));
+    CHECK(result.coordinator_first);
+    CHECK(result.group_term_sent);
+    CHECK(result.escalated_to_kill);
+    CHECK(result.verified_absent);
+
+    entry = jw_svc_supervisor_find(sup, ordinary_id);
+    CHECK(entry != NULL);
+    binding = (jw_svc_subscriber_binding){
+        .peer_pid = entry->pgid + 1,
+        .pgid = entry->pgid,
+        .launch_instant_us = entry->launch_instant_us,
+    };
+    CHECK(jw_svc_supervisor_game_stop_service(
+        sup, ordinary_id, &binding, &result, reason, sizeof(reason)));
+    CHECK(!result.coordinator_first);
+    CHECK(result.group_term_sent);
+    CHECK(result.verified_absent);
+
+    jw_svc_supervisor_game_finish(sup);
+    CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    jw_svc_supervisor_close(sup);
+    fixture_teardown(&f);
+}
+
 static void test_game_gate_stop_and_resume(void) {
     fixture f;
     fixture_setup(&f);
@@ -2059,7 +2129,7 @@ static void test_game_gate_stop_and_resume(void) {
     CHECK(wait_for_state(sup, ignore_id, JW_SVC_STATE_RUNNING, 3000));
 
     CHECK(jw_svc_supervisor_game_stop_service(
-        sup, stop_id, reason, sizeof(reason)));
+        sup, stop_id, NULL, NULL, reason, sizeof(reason)));
     CHECK(jw_svc_supervisor_game_active(sup));
     const jw_svc_supervised *stop = jw_svc_supervisor_find(sup, stop_id);
     CHECK(stop && stop->pgid <= 0 && stop->game_restart_pending);
@@ -2072,7 +2142,7 @@ static void test_game_gate_stop_and_resume(void) {
     /* Runtime mode notify fallback selects the otherwise-notify service for
      * a verified stop. Ignore remains live and startable outside the gate. */
     CHECK(jw_svc_supervisor_game_stop_service(
-        sup, notify_id, reason, sizeof(reason)));
+        sup, notify_id, NULL, NULL, reason, sizeof(reason)));
     const jw_svc_supervised *notify =
         jw_svc_supervisor_find(sup, notify_id);
     const jw_svc_supervised *ignore =
@@ -2184,6 +2254,7 @@ int main(int argc, char **argv) {
     test_target_mutation_floor_transitions_start_disabled();
     test_target_mutation_stale_preflight_changes_nothing();
     test_life1_subscriber_authentication();
+    test_game_stop_uses_validated_coordinator_first();
     test_game_gate_stop_and_resume();
     test_recovered_game_gate_suppresses_autostart();
     test_circuit_breaker_opens();
