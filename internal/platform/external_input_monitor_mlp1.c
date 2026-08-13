@@ -181,10 +181,16 @@ static void jw__ext_drain_events(jw_external_input_monitor *monitor,
             if (ev.type == EV_KEY && ev.value == 1) {
                 jw_input_proxy_mark_activity(proxy);
                 if (ev.code == BTN_MODE && monitor->menu_tap) {
-                    /* Same Menu action as the handheld Menu button; the
-                       callback's "swallow" result is meaningless here
-                       because jawakad never forwards external events. */
-                    (void)monitor->menu_tap(monitor->menu_userdata);
+                    /* Same Menu action as the handheld Menu button, including
+                       what happens when nothing in the daemon claims it. The
+                       built-in pad is grabbed, so an unclaimed press is
+                       forwarded to the virtual pad and the launcher UI acts on
+                       it. An external pad is only watched, never grabbed, so
+                       there is nothing to forward -- synthesise the same tap on
+                       the virtual pad or Guide does nothing outside a game. */
+                    if (!monitor->menu_tap(monitor->menu_userdata)) {
+                        jw_input_proxy_emit_menu_tap(proxy);
+                    }
                 }
             } else if (ev.type == EV_ABS) {
                 if (jw__ext_axis_code_is_hat(ev.code) && ev.value != 0) {

@@ -1122,6 +1122,20 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
     data->swallow = swallow;
 }
 
+void jw_input_proxy_emit_menu_tap(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data) {
+        return;
+    }
+    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    if (data->uinput_fd < 0) {
+        return; /* watch-only mode: there is no virtual pad to emit onto */
+    }
+    if (data->deferred_menu_release) {
+        return; /* one already in flight; stacking presses would double-toggle */
+    }
+    jw__emit_deferred_menu_tap(data);
+}
+
 void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
     if (!proxy || !proxy->backend_data) {
         return;
