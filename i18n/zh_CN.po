@@ -1053,3 +1053,23 @@ msgstr "重新扫描游戏库"
 #, fuzzy
 msgid "Start 5-Game Mode"
 msgstr "开启精选游戏模式"
+
+#, fuzzy
+msgid "No results"
+msgstr "无结果"
+
+#, fuzzy
+msgid "Type to search"
+msgstr "输入以搜索"
+
+#, fuzzy
+msgid "space"
+msgstr "空格"
+
+#, fuzzy
+msgid "Path: Apps/%s"
+msgstr "路径：Apps/%s"
+
+#, fuzzy
+msgid "Release-managed path"
+msgstr "由系统更新管理的路径"

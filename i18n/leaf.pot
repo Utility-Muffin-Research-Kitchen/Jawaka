@@ -740,6 +740,10 @@ msgstr ""
 msgid "No playtime recorded yet."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "No results"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "No save in this slot"
 msgstr ""
@@ -802,6 +806,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Path: Apps/%s"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -894,6 +902,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Release"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Release-managed path"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1008,7 +1020,7 @@ msgstr ""
 msgid "Scanning library..."
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "Scanning…"
 msgstr ""
 
@@ -1224,6 +1236,10 @@ msgstr ""
 msgid "Turn On"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Type to search"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "UK / Ireland"
 msgstr ""
@@ -1382,6 +1398,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "refresh rate unavailable on this platform"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "space"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c

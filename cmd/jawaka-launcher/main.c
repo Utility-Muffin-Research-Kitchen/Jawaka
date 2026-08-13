@@ -2137,11 +2137,11 @@ static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
              app->installed_version[0] ? app->installed_version : "-");
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
-    snprintf(line, sizeof(line), "Path: Apps/%s", app->package.install_path);
+    snprintf(line, sizeof(line), T("Path: Apps/%s"), app->package.install_path);
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
     if (app->managed) {
-        cat_draw_text_ellipsized(c->small, "Release-managed path", x, cy, theme->hint, w);
+        cat_draw_text_ellipsized(c->small, T("Release-managed path"), x, cy, theme->hint, w);
     }
 }
 
@@ -4491,7 +4491,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
     int content_y = header_h + margin;
     int content_h = sh - content_y - fh - margin;
 
-    cat_draw_text_ellipsized(large, "Apps", margin, CAT_S(6),
+    cat_draw_text_ellipsized(large, T("Apps"), margin, CAT_S(6),
                              theme->text, sw - margin * 2);
 
     int list_x = margin;
@@ -4575,7 +4575,7 @@ static void jw__render_search(const jw_launcher_state *state) {
                      &state->search_list, &list, &image, &item_h);
 
     if (state->search_count == 0) {
-        cat_draw_text_wrapped(body, "No results",
+        cat_draw_text_wrapped(body, T("No results"),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -4773,8 +4773,8 @@ static void jw__cf_draw_keyboard(const jw_launcher_state *state) {
             int kx = (sw - w) / 2;
             bool k = !s_cf_focus_results && (rw == s_cf_kb_row && s_cf_kb_col == 0);
             cat_draw_rounded_rect(kx, ky, w, key_h, CAT_S(6), k ? sel : keybg);
-            int cw = cat_measure_text(font, "space");
-            cat_draw_text(font, "space", kx + (w - cw) / 2, ky + (key_h - fh) / 2,
+            int cw = cat_measure_text(font, T("space"));   /* must match the draw */
+            cat_draw_text(font, T("space"), kx + (w - cw) / 2, ky + (key_h - fh) / 2,
                           k ? seltext : white);
         }
     }
@@ -4942,7 +4942,7 @@ static void jw__render_search_cf(jw_launcher_state *state) {
     cat_draw_text_ellipsized(small, hdr, hx, CAT_S(6), white, maxhw);
 
     if (state->search_count <= 0) {
-        const char *msg = state->search_query[0] ? "No results" : "Type to search";
+        const char *msg = state->search_query[0] ? T("No results") : T("Type to search");
         int mw = cat_measure_text(large, msg);
         cat_draw_text(large, msg, (sw - mw) / 2, (int)(sh * 0.28f), dim);
     } else {
@@ -5433,7 +5433,7 @@ static void jw__render_menu(const jw_launcher_state *state) {
         int tx = image.x + CAT_S(10);
         int tw = image.w - CAT_S(20);
         if (state->menu_scanning || state->scan_running) {
-            cat_draw_text_wrapped(body, "Scanning\xe2\x80\xa6", tx, ty, tw,
+            cat_draw_text_wrapped(body, T("Scanning…"), tx, ty, tw,
                                   theme->hint, CAT_ALIGN_CENTER);
         } else {
             char counts[96];
