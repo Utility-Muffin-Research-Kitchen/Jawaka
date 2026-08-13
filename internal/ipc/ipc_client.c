@@ -2281,6 +2281,45 @@ int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
     return ok ? 0 : -1;
 }
 
+int jw_ipc_set_language(const char *socket_path, const char *lang,
+                        char *status, int status_len) {
+    if (!lang || !lang[0]) {
+        if (status && status_len > 0)
+            snprintf(status, (size_t)status_len, "%s", "no language given");
+        return -1;
+    }
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "set-language");
+    cJSON_AddStringToObject(req, "language", lang);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s",
+                     "language change failed: daemon unavailable");
+        }
+        return -1;
+    }
+
+    bool ok = ipc__type_is(resp, "ok");
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+    if (status && status_len > 0) {
+        if (cJSON_IsString(message) && message->valuestring) {
+            snprintf(status, (size_t)status_len, "%s", message->valuestring);
+        } else {
+            /* On success the launcher is already being torn down, so this string
+               rarely survives long enough to be read. Set it anyway: if the
+               restart does not happen, this is the only thing the user sees. */
+            snprintf(status, (size_t)status_len, "%s",
+                     ok ? "restarting" : "language change failed");
+        }
+    }
+
+    cJSON_Delete(resp);
+    return ok ? 0 : -1;
+}
+
 int jw_ipc_get_hdmi_status(const char *socket_path, int *out_connected,
                            int *out_mode, bool *out_supported) {
     if (out_connected) *out_connected = -1;

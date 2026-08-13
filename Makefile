@@ -190,6 +190,7 @@ DAEMON_SRCS := \
 	internal/focus/focus.c \
 	internal/db/relocation.c \
 	internal/settings/appearance.c \
+	internal/i18n/i18n.c \
 	internal/settings/theme_resolve.c \
 internal/discovery/discovery.c \
 	$(SCRAPE_SRCS) \
@@ -231,6 +232,7 @@ PLATFORM_CTL_SRCS := \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
 	internal/platform/platform_common.c \
+	internal/i18n/i18n.c \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
@@ -300,6 +302,11 @@ CATALOG_SMOKE_SRCS := \
 	internal/retroarch/catalog.c \
 	third_party/cjson/cJSON.c
 
+I18N_TEST_SRCS := \
+	cmd/jawaka-i18n-test/main.c \
+	internal/i18n/i18n.c \
+	internal/core/log.c
+
 CORE_OVERRIDE_SMOKE_SRCS := \
 	cmd/jawaka-core-override-smoke/main.c \
 	$(PLATFORM_ID_SRC) \
@@ -354,6 +361,7 @@ UI_SRCS := \
 	internal/launcher/system_names.c \
 	internal/scrape/scrape_catalog.c \
 	internal/settings/appearance.c \
+	internal/i18n/i18n.c \
 	internal/settings/settings.c \
 	internal/settings/theme_resolve.c \
 	internal/services/manifest.c \
@@ -383,7 +391,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test imported-title-ipc-smoke states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -407,6 +415,21 @@ jawaka-scrape-smoke: $(BUILD)/bin/jawaka-scrape-smoke
 jawaka-pakrat-smoke: $(BUILD)/bin/jawaka-pakrat-smoke
 jawaka-catalog-smoke: $(BUILD)/bin/jawaka-catalog-smoke
 jawaka-core-override-smoke: $(BUILD)/bin/jawaka-core-override-smoke
+jawaka-i18n-test: $(BUILD)/bin/jawaka-i18n-test
+
+# Regenerate the canonical key list from the sources. Commit the result --
+# CI diffs it, so a UI-string change without a regenerated .pot fails there.
+i18n-pot:
+	python3 tools/i18n-extract.py
+
+# What CI runs: the committed .pot must match the code, and any committed
+# translation must parse, carry no orphan keys, and keep its printf
+# conversions compatible (i18n-compile.py enforces that last one).
+i18n-check:
+	python3 tools/i18n-extract.py --check --po $(wildcard i18n/*.po)
+	@for po in $(wildcard i18n/*.po); do \
+		python3 tools/i18n-compile.py $$po -o /tmp/i18n-check.jwi || exit 1; \
+	done
 jawaka-update-smoke: $(BUILD)/bin/jawaka-update-smoke
 jawaka-inhibitctl: $(BUILD)/bin/jawaka-inhibitctl
 
@@ -678,7 +701,8 @@ service-client-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-client-test \
 		internal/ipc/service_client_test.c internal/ipc/ipc.c \
 		internal/ipc/ipc_client.c internal/ipc/ctl1.c \
-		internal/platform/platform_common.c third_party/cjson/cJSON.c -lm
+		internal/platform/platform_common.c internal/i18n/i18n.c \
+		internal/core/log.c third_party/cjson/cJSON.c -lm
 	$(BUILD)/bin/service-client-test
 
 imported-title-test: | $(BUILD)/bin
@@ -826,6 +850,9 @@ $(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
 
 $(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(CATALOG_SMOKE_SRCS)
+
+$(BUILD)/bin/jawaka-i18n-test: $(I18N_TEST_SRCS) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(I18N_TEST_SRCS) $(LDLIBS_COMMON)
 
 $(BUILD)/bin/jawaka-core-override-smoke: $(CORE_OVERRIDE_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(CORE_OVERRIDE_SMOKE_SRCS) $(LDLIBS_COMMON)

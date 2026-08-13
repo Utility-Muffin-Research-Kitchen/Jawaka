@@ -142,7 +142,10 @@ typedef enum {
 #define JW_BEHAVIOR_BOOT_SPLASH 3
 #define JW_BEHAVIOR_RESET_RETROARCH   4   /* maintenance, moved from Library */
 #define JW_BEHAVIOR_UNMOUNT_SECONDARY 5
-#define JW_BEHAVIOR_ROW_COUNT   6
+/* Appended, never inserted: this row is hidden when no translation is installed,
+   and appending means the other rows keep their indices in both states. */
+#define JW_BEHAVIOR_LANGUAGE    6
+#define JW_BEHAVIOR_ROW_COUNT   7
 
 /* Controls & Feedback page */
 #define JW_CONTROLS_RUMBLE      0   /* master on/off */
@@ -254,6 +257,12 @@ typedef struct {
                                                shown in the Accounts row since the hint-line status
                                                is hidden when hints are off */
     int                ss_max_threads;      /* account thread allowance from validation; 0 unknown */
+    /* UI language. `languages` is en plus whatever tables are installed, so the
+       row cycles through real choices only; `language_count` of 1 means English
+       alone, and the row is hidden. */
+    char               language[16];
+    char               languages[8][16];
+    int                language_count;
     int                ss_requests_today;   /* quota snapshot from validation */
     int                ss_max_requests;     /* quota snapshot from validation; 0 unknown */
     /* Scrape priority editors: permutations of the scrape catalogs as catalog

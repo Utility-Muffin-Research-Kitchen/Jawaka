@@ -1,4 +1,5 @@
 #include "internal/settings/appearance.h"
+#include "internal/i18n/i18n.h"
 
 #include "internal/db/db.h"
 #include "internal/platform/bluetooth.h"
@@ -118,6 +119,21 @@ const char *jw_appearance_font_path_for_index(int index) {
     return kJawakaFontFamilyPaths[index];
 }
 
+/* None of the nine themed families carry a single CJK glyph, so a translated UI
+   has to move off the user's chosen font entirely. This is a whole-UI swap
+   rather than a per-string fallback: with a partial translation a per-string
+   choice would stack two typefaces in one list, which reads as a rendering bug
+   rather than a missing string. Source Han Sans covers Latin well, so English
+   that has not been translated yet still looks deliberate.
+
+   The font picker must reflect this while a CJK language is active -- silently
+   ignoring the user's choice is worse than showing them why it does not apply. */
+const char *jw_appearance_font_path_for_language(int index, const char *lang) {
+    if (jw_i18n_language_is_cjk(lang))
+        return JW_APPEARANCE_CJK_FONT_PATH;
+    return jw_appearance_font_path_for_index(index);
+}
+
 void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
     if (!out) return;
 
@@ -129,9 +145,16 @@ void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
     if (jw_resolve_theme_name(db_path, out->theme_name, sizeof(out->theme_name)) != 0)
         snprintf(out->theme_name, sizeof(out->theme_name), "%s", "Jawaka-Tabs");
 
-    /* The font path table is static const, so the pointer stays valid across a
-       later fork()/execv() in the child. */
-    out->font_path = jw_appearance_font_path_for_index(font_idx);
+    /* Resolved here, in the parent, because jw__spawn_child re-runs this on every
+       launcher spawn -- so a language change applies by simply respawning the
+       launcher, with no separate plumbing to push a font down to the child. */
+    jw__read_setting_or_default(db_path, "language", "en",
+                                out->language, sizeof(out->language));
+
+    /* The font path tables are static const, so the pointer stays valid across a
+       later fork()/execv() in the child. A CJK language ignores the chosen
+       family entirely: none of the themed ones have the glyphs. */
+    out->font_path = jw_appearance_font_path_for_language(font_idx, out->language);
 
     /* Pre-format the numeric values here in the parent so the child only has to
        call setenv (no vsnprintf) after fork(). */

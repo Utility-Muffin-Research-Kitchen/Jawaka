@@ -8,6 +8,7 @@
 #include "internal/platform/platform_id.h"
 #include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
+#include "internal/i18n/i18n.h"
 #include "cJSON.h"
 
 #include <ctype.h>
@@ -1130,8 +1131,11 @@ static void jw__apply_persisted_overrides_from_values(
             if (idx >= 0 && idx < JW_APPEARANCE_FONT_FAMILY_COUNT)
                 fidx = idx;
         }
+        /* Language-aware: this path re-applies appearance from the DB and would
+           otherwise clobber the CJK face the daemon resolved into our
+           environment at spawn, putting the themed Latin family back. */
         snprintf(t->font_path, sizeof(t->font_path), "%s",
-                 jw_appearance_font_path_for_index(fidx));
+                 jw_appearance_font_path_for_language(fidx, jw_i18n_language()));
         if (bump != cat_get_font_bump())
             cat_set_font_bump(bump);
         else
@@ -1270,6 +1274,10 @@ static bool jw__services_available(jw_settings_ui *ui) {
     return jw__refresh_services(ui) > 0;
 }
 
+/* Defined with the General page renderer. The count is dynamic because the
+   Language row exists only when a translation is installed. */
+static int jw__behavior_rows(const jw_settings_ui *ui);
+
 static int jw__home_category_count(const jw_settings_ui *ui) {
     /* Services is the final category and is genuinely absent on a clean
        system, per SVC-1. The snapshot is refreshed whenever Settings is
@@ -1332,7 +1340,22 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->scraping_list,    JW_SCRAPING_ROW_COUNT);
     cat_list_state_init(&ui->scrape_edit_list, 8);
     cat_list_state_init(&ui->scrape_download_list, 8);
-    cat_list_state_init(&ui->behavior_list,    JW_BEHAVIOR_ROW_COUNT);
+    /* en is always offered; the rest are whatever tables are installed. Resolved
+       once at init rather than per frame -- this stats the filesystem. */
+    snprintf(ui->languages[0], sizeof(ui->languages[0]), "%s", "en");
+    ui->language_count = 1;
+    {
+        const char *found[8];
+        size_t n = jw_i18n_available(found, 8);
+        for (size_t i = 0; i < n && ui->language_count < 8; i++) {
+            snprintf(ui->languages[ui->language_count],
+                     sizeof(ui->languages[0]), "%s", found[i]);
+            ui->language_count++;
+        }
+    }
+    snprintf(ui->language, sizeof(ui->language), "%s", jw_i18n_language());
+
+    cat_list_state_init(&ui->behavior_list,    jw__behavior_rows(ui));
     cat_list_state_init(&ui->controls_list,     JW_CONTROLS_ROW_COUNT);
     cat_list_state_init(&ui->home_tabs_list,   JW_HOME_TABS_COUNT);
     cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
@@ -1782,6 +1805,9 @@ void jw_settings_load_status_prefs(const char *db_path,
 /* ─── Render helpers ───────────────────────────────────────────────────── */
 
 static void jw__draw_header(const char *title, int x, int y, int w) {
+    /* Translated here rather than at the 22 call sites. Safe for any string:
+       T() returns its argument on a miss, so a dynamic title passes through. */
+    title = T(title);
     ap_theme *theme = cat_get_theme();
     TTF_Font *large = cat_get_font(CAT_FONT_LARGE);
     int large_h = TTF_FontHeight(large);
@@ -1821,6 +1847,13 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
                                      int w, int row, const char *label,
                                      const char *value, bool cycler, int item_h,
                                      const ap_color *value_override) {
+    /* Both strings are translated here, not at the 45 call sites. T() falls back
+       to its argument, so values that are data rather than UI text -- a game
+       count, a timezone, a Bluetooth device name -- miss the table and pass
+       through unchanged. That is what makes wrapping the helper safe rather than
+       having to classify every call site. */
+    label = T(label);
+    if (value) value = T(value);
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int iy = y + row * item_h;
@@ -1993,7 +2026,7 @@ static void jw__render_services(const jw_settings_ui *ui, int x, int y, int w, i
     }
 
     if (ui->services_count <= 0) {
-        cat_draw_text(small, "No services installed", x + cat_scale(12), dy,
+        cat_draw_text(small, T("No services installed"), x + cat_scale(12), dy,
                       theme->hint);
         return;
     }
@@ -2025,7 +2058,7 @@ static void jw__draw_home_item(int idx, int ix, int iy, int iw, int ih,
         cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
     ap_color tc = selected ? theme->highlighted_text : theme->text;
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, kHomeCategoryLabels[idx], ix + cat_scale(12), ty,
+    cat_draw_text_ellipsized(body, T(kHomeCategoryLabels[idx]), ix + cat_scale(12), ty,
                              tc, iw - cat_scale(24));
 }
 
@@ -2087,8 +2120,14 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
                         "Home Layout", ui->layout_mode == 1 ? "Coverflow" : "Tabs", true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
                         "List Style", kPillShapeLabels[ui->pill_shape_index], true);
+    /* The themed families have no CJK glyphs, so a CJK language pins the face.
+       Showing that in the row beats an option that looks available and is not. */
+    bool font_locked = jw_i18n_language_is_cjk(jw_i18n_language());
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_FAMILY,
-                        "Font", kJawakaFontFamilyLabels[ui->font_family_index], true);
+                        "Font",
+                        font_locked ? "Source Han Sans"
+                                    : kJawakaFontFamilyLabels[ui->font_family_index],
+                        !font_locked);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_SIZE,
                         "Font Size", kFontSizeLabels[ui->font_size_index], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_TAB_SWITCH,
@@ -2155,6 +2194,7 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
    same value or they overlap and gap, since each positions itself as row*item_h. */
 static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int w,
                                 int row, const char *label, int percent, int item_h) {
+    label = T(label);   /* value_str is "%d%%" -- a number needs no lookup */
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int iy = y_base + row * item_h;
@@ -2483,28 +2523,28 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
 
     if (idx == JW_NETWORK_ROW_WIFI) {
         /* The on/off toggle row. */
-        cat_draw_text(body, "Wi-Fi", ix + cat_scale(12), ty, label_c);
+        cat_draw_text(body, T("Wi-Fi"), ix + cat_scale(12), ty, label_c);
         /* Action verb (what A will do), not a bare state word — "Turn On" when
            the radio is off, "Turn Off" when it's on, so the button is unambiguous. */
         const char *action = ctx->wifi_available
-            ? (ctx->radio_on ? "Turn Off" : "Turn On")
-            : "Unavailable";
+            ? (ctx->radio_on ? T("Turn Off") : T("Turn On"))
+            : T("Unavailable");
         int vw = cat_measure_text(body, action);
         cat_draw_text(body, action, ix + iw - vw - cat_scale(16), ty, value_c);
         return;
     }
 
     if (idx == JW_NETWORK_ROW_ADB) {
-        const char *value = ctx->adb_supported ? "Unavailable" : "Unsupported";
+        const char *value = ctx->adb_supported ? T("Unavailable") : T("Unsupported");
         if (ctx->adb_supported && ctx->adb_enabled == 1) {
-            value = "Enabled";
+            value = T("Enabled");
         } else if (ctx->adb_supported && ctx->adb_intent_enabled == 1) {
-            value = "Repair";
+            value = T("Repair");
         } else if (ctx->adb_supported && ctx->adb_enabled == 0) {
-            value = "Enable";
+            value = T("Enable");
         }
 
-        cat_draw_text(body, "ADB", ix + cat_scale(12), ty, label_c);
+        cat_draw_text(body, T("ADB"), ix + cat_scale(12), ty, label_c);
         int vw = cat_measure_text(body, value);
         cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
         return;
@@ -2618,7 +2658,7 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count, &ui->network_list, item_h,
                        jw__draw_wifi_item, &ctx);
     if (wifi_available && ui->wifi_radio_on && ui->wifi_network_count == 0) {
-        cat_draw_text(small, "Scanning…", x + cat_scale(12),
+        cat_draw_text(small, T("Scanning…"), x + cat_scale(12),
                       dy + item_h * JW_NETWORK_FIXED_ROWS, theme->hint);
     }
 }
@@ -2679,12 +2719,12 @@ static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
     if (ui && ui->bt_radio_on &&
         (idx == JW_BLUETOOTH_FIXED_ROWS ||
          idx == JW_BLUETOOTH_FIXED_ROWS + 1 + ui->bt_paired_count)) {
-        const char *label = (idx == JW_BLUETOOTH_FIXED_ROWS) ? "Paired" : "Nearby";
+        const char *label = (idx == JW_BLUETOOTH_FIXED_ROWS) ? T("Paired") : T("Nearby");
         const char *value = NULL;
         if (idx == JW_BLUETOOTH_FIXED_ROWS && ui->bt_paired_count == 0) {
-            value = "None";
+            value = T("None");
         } else if (idx != JW_BLUETOOTH_FIXED_ROWS && ui->bt_nearby_count == 0) {
-            value = (ui->bt_op == JW_BT_OP_SCAN) ? "Scanning" : "None";
+            value = (ui->bt_op == JW_BT_OP_SCAN) ? T("Scanning") : T("None");
         }
         cat_draw_text(body, label, ix + cat_scale(12), ty, theme->emphasis);
         if (value) {
@@ -2701,11 +2741,11 @@ static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
     ap_color value_c = selected ? theme->highlighted_text : theme->hint;
 
     if (idx == JW_BLUETOOTH_ROW_POWER) {
-        const char *value = "Unavailable";
+        const char *value = T("Unavailable");
         if (ui && ui->bt_status.available) {
-            value = ui->bt_radio_on ? "Turn Off" : "Turn On";
+            value = ui->bt_radio_on ? T("Turn Off") : T("Turn On");
         }
-        cat_draw_text(body, "Bluetooth", ix + cat_scale(12), ty, label_c);
+        cat_draw_text(body, T("Bluetooth"), ix + cat_scale(12), ty, label_c);
         int vw = cat_measure_text(body, value);
         cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
         return;
@@ -2714,7 +2754,7 @@ static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
     if (idx == JW_BLUETOOTH_ROW_NAME) {
         const char *name = (ui && ui->bt_status.local_name[0])
                          ? ui->bt_status.local_name : "-";
-        cat_draw_text(body, "Bluetooth Name", ix + cat_scale(12), ty, label_c);
+        cat_draw_text(body, T("Bluetooth Name"), ix + cat_scale(12), ty, label_c);
         int vw = cat_measure_text(body, name);
         int vx = ix + iw - vw - cat_scale(16);
         if (vx < ix + iw / 2) {
@@ -2928,7 +2968,7 @@ static void jw__draw_scrape_edit_item(int idx, int ix, int iy, int iw, int ih,
     cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
                              iw * 2 / 3);
 
-    const char *value = grabbed_row ? "Moving" : (is_included ? "On" : "Off");
+    const char *value = grabbed_row ? T("Moving") : (is_included ? T("On") : T("Off"));
     int vw = cat_measure_text(body, value);
     cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
 }
@@ -2944,7 +2984,7 @@ static void jw__render_scrape_priority(const jw_settings_ui *ui,
     int sub_h = jw__subheader_line_h(small) + cat_scale(6);
     SDL_Rect sub;
     SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
-    cat_draw_text_ellipsized(small, "A: On/Off   X: Grab to reorder",
+    cat_draw_text_ellipsized(small, T("A: On/Off   X: Grab to reorder"),
                              sub.x + cat_scale(12), sub.y, theme->hint,
                              sub.w - cat_scale(24));
 
@@ -3115,7 +3155,7 @@ static void jw__draw_scrape_download_item(int idx, int ix, int iy, int iw, int i
     ap_color value_c = selected ? theme->highlighted_text : theme->hint;
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
-    const char *label = "All Systems";
+    const char *label = T("All Systems");
     char value[32];
     int n;
     if (idx == 0) {
@@ -3150,10 +3190,10 @@ static void jw__render_scrape_download(const jw_settings_ui *ui,
     SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
 
     if (!ui->scrape_missing_have_cache) {
-        cat_draw_text_ellipsized(small, "Scanning library...",
+        cat_draw_text_ellipsized(small, T("Scanning library..."),
                                  sub.x + cat_scale(12), sub.y, theme->hint,
                                  sub.w - cat_scale(24));
-        cat_draw_text(body, "Scanning library...",
+        cat_draw_text(body, T("Scanning library..."),
                       c.x + cat_scale(4), c.y + cat_scale(4), theme->hint);
         return;
     }
@@ -3564,7 +3604,7 @@ static void jw__render_scrape_queue(const jw_settings_ui *ui,
     uint32_t summ_dt  = summ_last_ms ? summ_now - summ_last_ms : 0u;
     summ_last_ms = summ_now;
     summ_mq.mode = CAT_MARQUEE_LOOP;
-    if (cat_draw_text_marquee(small, summary[0] ? summary : "Empty",
+    if (cat_draw_text_marquee(small, summary[0] ? summary : T("Empty"),
                               sub.x + cat_scale(12), sub.y, theme->hint,
                               sub.w - cat_scale(24), &summ_mq, summ_dt))
         cat_request_frame();
@@ -3642,10 +3682,13 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
    row is selected so a long "Signed in as … threads … quota …" line scrolls into
    view instead of running off the right edge. Unselected rows ellipsize it. The
    value stays right-aligned when it already fits. Returns true while animating. */
+/* label only: `value` here can be an account name the user typed, and a name
+   that happened to match a UI key would otherwise be "translated". */
 static bool jw__render_account_row(const cat_list_state *list, int x, int y,
                                    int w, int row, const char *label,
                                    const char *value, cat_marquee *mq,
                                    uint32_t dt) {
+    label = T(label);   /* value stays raw: it can be a user-supplied account name */
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
@@ -3865,7 +3908,7 @@ static void jw__about_push(jw__about_row *rows, int *n, jw__about_kind kind,
                            const char *label, const char *value) {
     if (*n >= JW_ABOUT_MAX_ROWS) return;
     rows[*n].kind = kind;
-    snprintf(rows[*n].label, sizeof(rows[*n].label), "%s", label ? label : "");
+    snprintf(rows[*n].label, sizeof(rows[*n].label), "%s", label ? T(label) : "");
     snprintf(rows[*n].value, sizeof(rows[*n].value), "%s", value ? value : "");
     (*n)++;
 }
@@ -3876,6 +3919,7 @@ static void jw__about_push(jw__about_row *rows, int *n, jw__about_kind kind,
    and the remaining height below the title. */
 static void jw__draw_info_title(const char *title, int x, int y, int w, int h,
                                 int *out_top, int *out_h) {
+    title = T(title);
     TTF_Font *tf = cat_get_font(CAT_FONT_EXTRA_LARGE);
     cat_draw_text_ellipsized(tf, title, x + cat_scale(4), y,
                              cat_get_theme()->text, w - cat_scale(8));
@@ -4170,6 +4214,28 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
                         ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-", true);
 }
 
+/* Endonyms, so a speaker can find their own language without reading English.
+   These render correctly even while the UI is still English: Catastrophe
+   substitutes any string carrying CJK codepoints onto the CJK face, so 中文 is
+   legible in a Latin-themed UI. Unknown codes fall back to the raw code, which
+   is ugly but always true. */
+static const char *jw__language_label(const char *code) {
+    if (!code || !code[0] || strcmp(code, "en") == 0) return "English";
+    if (strcmp(code, "zh_CN") == 0) return "中文";
+    if (strcmp(code, "zh_TW") == 0) return "繁體中文";
+    if (strcmp(code, "ja") == 0)    return "日本語";
+    if (strcmp(code, "ko") == 0)    return "한국어";
+    return code;
+}
+
+/* The Language row exists only when there is something to switch to. A picker
+   offering one option reads as broken, and hiding it means a translator makes
+   the row appear simply by dropping a .tsv on the card. */
+static int jw__behavior_rows(const jw_settings_ui *ui) {
+    return ui->language_count > 1 ? JW_BEHAVIOR_ROW_COUNT
+                                  : JW_BEHAVIOR_ROW_COUNT - 1;
+}
+
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("General", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
@@ -4204,6 +4270,11 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
                         "Unmount Secondary SD",
                         ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
                         true);
+
+    if (ui->language_count > 1) {
+        jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_LANGUAGE,
+                            "Language", jw__language_label(ui->language), true);
+    }
 }
 
 /* Home Tabs editor — hide/reorder the launcher's home tabs. Modeled on the
@@ -4238,10 +4309,10 @@ static void jw__draw_home_tab_item(int idx, int ix, int iy, int iw, int ih,
     ap_color value_c = selected ? theme->highlighted_text : theme->hint;
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
-    cat_draw_text_ellipsized(body, kStartupTabLabels[tab], ix + cat_scale(12), ty,
+    cat_draw_text_ellipsized(body, T(kStartupTabLabels[tab]), ix + cat_scale(12), ty,
                              label_c, iw * 2 / 3);
 
-    const char *value = grabbed_row ? "Moving" : (is_visible ? "On" : "Off");
+    const char *value = grabbed_row ? T("Moving") : (is_visible ? T("On") : T("Off"));
     int vw = cat_measure_text(body, value);
     cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
 }
@@ -4469,7 +4540,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     bool checking = ui->update_have_status && strcmp(u->state, "checking") == 0;
     char message[320];
     if (ui->update_have_status && u->install_active && u->install_message[0]) {
-        snprintf(message, sizeof(message), "%s", u->install_message);
+        snprintf(message, sizeof(message), "%s", T(u->install_message));
     } else if (ui->update_msg[0]) {
         snprintf(message, sizeof(message), "%s", ui->update_msg);
     } else if (ui->update_have_status) {
@@ -4477,17 +4548,17 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
             (u->install_active || u->install_armed ||
              u->install_blocked || u->install_needs_confirmation ||
              u->install_ready)) {
-            snprintf(message, sizeof(message), "%s", u->install_message);
+            snprintf(message, sizeof(message), "%s", T(u->install_message));
         } else if (u->message[0]) {
             snprintf(message, sizeof(message), "%s", u->message);
         } else if (u->install_result_message[0]) {
-            snprintf(message, sizeof(message), "Last update: %s",
-                     u->install_result_message);
+            snprintf(message, sizeof(message), T("Last update: %s"),
+                     T(u->install_result_message));
         } else {
             snprintf(message, sizeof(message), "%s", jw__update_state_label(u));
         }
     } else {
-        snprintf(message, sizeof(message), "%s", "Update status unavailable");
+        snprintf(message, sizeof(message), "%s", T("Update status unavailable"));
     }
 
     cat_draw_text_ellipsized(small, message, x + cat_scale(12), dy,
@@ -4702,7 +4773,7 @@ static void jw__draw_timezone_item(int idx, int ix, int iy, int iw, int ih,
     bool is_current = (cur[0] && strcmp(cur, kTimeZones[idx].tz) == 0);
     char label[48];
     snprintf(label, sizeof(label), "%s%s", is_current ? "* " : "",
-             kTimeZones[idx].label);
+             T(kTimeZones[idx].label));
     cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c, iw / 2);
 
     int vw = cat_measure_text(body, kTimeZones[idx].off);
@@ -4718,7 +4789,7 @@ static void jw__render_timezone_picker(const jw_settings_ui *ui,
     int sub_h = jw__subheader_line_h(small) + cat_scale(6);
     SDL_Rect sub;
     SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
-    cat_draw_text_ellipsized(small, "Set your local time zone", sub.x + cat_scale(12),
+    cat_draw_text_ellipsized(small, T("Set your local time zone"), sub.x + cat_scale(12),
                              sub.y, theme->hint, sub.w - cat_scale(24));
 
     int item_h = TTF_FontHeight(body) + cat_scale(12);
@@ -4865,7 +4936,7 @@ static void jw__change_brightness(jw_settings_ui *ui, int delta,
         return;
     }
     if (status_buf && status_size > 0)
-        snprintf(status_buf, status_size, "%s", "brightness failed");
+        snprintf(status_buf, status_size, "%s", T("brightness failed"));
 }
 
 static void jw__change_volume(jw_settings_ui *ui, int delta,
@@ -4887,7 +4958,7 @@ static void jw__change_volume(jw_settings_ui *ui, int delta,
         return;
     }
     if (status_buf && status_size > 0)
-        snprintf(status_buf, status_size, "%s", "volume failed");
+        snprintf(status_buf, status_size, "%s", T("volume failed"));
 }
 
 static bool jw__audio_output_available(const jw_settings_ui *ui,
@@ -4928,7 +4999,7 @@ static void jw__set_audio_output(jw_settings_ui *ui, jw_platform_audio_output ou
                                  char *status_buf, size_t status_size) {
     if (!ui || !ui->socket_path[0]) {
         if (status_buf && status_size > 0)
-            snprintf(status_buf, status_size, "%s", "audio output failed");
+            snprintf(status_buf, status_size, "%s", T("audio output failed"));
         return;
     }
     if (jw_ipc_set_audio_output(ui->socket_path, output, status_buf,
@@ -4993,6 +5064,18 @@ static bool jw__pick_color(jw_settings_ui *ui, ap_color *target,
     return false;
 }
 
+/* Jawaka-side shim over cat_confirmation: Catastrophe cannot know about the
+   string table, so the message and footer labels are translated here. Every
+   opts struct below is a stack local, so rewriting the pointers is safe. */
+static int jw__confirmation(cat_message_opts *opts, cat_confirm_result *result) {
+    if (opts->message) opts->message = T(opts->message);
+    for (int i = 0; i < opts->footer_count; i++) {
+        if (opts->footer[i].label)
+            opts->footer[i].label = T(opts->footer[i].label);
+    }
+    return cat_confirmation(opts, result);
+}
+
 static bool jw__confirm_retroarch_reset(void) {
     cat_footer_item footer[] = {
         { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
@@ -5004,7 +5087,7 @@ static bool jw__confirm_retroarch_reset(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static void jw__reset_retroarch_config(jw_settings_ui *ui,
@@ -5014,7 +5097,7 @@ static void jw__reset_retroarch_config(jw_settings_ui *ui,
     }
 
     if (!jw__confirm_retroarch_reset()) {
-        snprintf(status_buf, status_size, "%s", "RetroArch reset canceled");
+        snprintf(status_buf, status_size, "%s", T("RetroArch reset canceled"));
         return;
     }
 
@@ -5032,7 +5115,7 @@ static bool jw__confirm_secondary_unmount(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_adb_enable(void) {
@@ -5046,7 +5129,7 @@ static bool jw__confirm_adb_enable(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_adb_disable(void) {
@@ -5060,7 +5143,7 @@ static bool jw__confirm_adb_disable(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_update_install(const char *release_id) {
@@ -5077,7 +5160,7 @@ static bool jw__confirm_update_install(const char *release_id) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_update_unknown_preflight(const char *message) {
@@ -5093,7 +5176,7 @@ static bool jw__confirm_update_unknown_preflight(const char *message) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_update_reboot(void) {
@@ -5107,7 +5190,7 @@ static bool jw__confirm_update_reboot(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static bool jw__confirm_bt_unpair(const char *name) {
@@ -5123,7 +5206,7 @@ static bool jw__confirm_bt_unpair(const char *name) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static void jw__copy_status(char *status_buf, size_t status_size,
@@ -5215,7 +5298,7 @@ static bool jw__confirm_update_picker_choice(const jw_settings_ui *ui,
     };
     cat_confirm_result result;
     (void)ui;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 static void jw__open_update_picker(jw_settings_ui *ui,
@@ -5478,17 +5561,17 @@ static void jw__set_adb(jw_settings_ui *ui, bool enabled,
     }
 
     if (!ui->adb_supported || ui->adb_enabled < 0) {
-        snprintf(status_buf, status_size, "%s", "ADB unavailable on this platform");
+        snprintf(status_buf, status_size, "%s", T("ADB unavailable on this platform"));
         return;
     }
 
     if (enabled) {
         if (!jw__confirm_adb_enable()) {
-            snprintf(status_buf, status_size, "%s", "ADB enable canceled");
+            snprintf(status_buf, status_size, "%s", T("ADB enable canceled"));
             return;
         }
     } else if (!jw__confirm_adb_disable()) {
-        snprintf(status_buf, status_size, "%s", "ADB disable canceled");
+        snprintf(status_buf, status_size, "%s", T("ADB disable canceled"));
         return;
     }
 
@@ -5509,7 +5592,7 @@ static void jw__set_boot_splash(jw_settings_ui *ui, bool enabled,
     }
 
     if (!ui->boot_splash_supported) {
-        snprintf(status_buf, status_size, "%s", "boot splash unavailable on this platform");
+        snprintf(status_buf, status_size, "%s", T("boot splash unavailable on this platform"));
         return;
     }
 
@@ -5531,14 +5614,14 @@ static void jw__set_refresh_rate(jw_settings_ui *ui, int hz,
     }
 
     if (!ui->refresh_rate_supported) {
-        snprintf(status_buf, status_size, "%s", "refresh rate unavailable on this platform");
+        snprintf(status_buf, status_size, "%s", T("refresh rate unavailable on this platform"));
         return;
     }
 
     status_buf[0] = '\0';
     if (jw_ipc_set_refresh_rate(ui->socket_path, hz, status_buf, (int)status_size) != 0 &&
         !status_buf[0]) {
-        snprintf(status_buf, status_size, "%s", "refresh rate change failed");
+        snprintf(status_buf, status_size, "%s", T("refresh rate change failed"));
         return;
     }
     /* The daemon restarts Weston and respawns this launcher, so re-querying now
@@ -5554,7 +5637,7 @@ static void jw__set_hdmi_output(jw_settings_ui *ui, int mode,
         return;
     }
     if (!ui->hdmi_supported) {
-        snprintf(status_buf, status_size, "%s", "HDMI output unavailable on this platform");
+        snprintf(status_buf, status_size, "%s", T("HDMI output unavailable on this platform"));
         return;
     }
     if (mode < 0 || mode > 2) {
@@ -5563,7 +5646,7 @@ static void jw__set_hdmi_output(jw_settings_ui *ui, int mode,
     status_buf[0] = '\0';
     if (jw_ipc_set_hdmi_output(ui->socket_path, mode, status_buf, (int)status_size) != 0 &&
         !status_buf[0]) {
-        snprintf(status_buf, status_size, "%s", "HDMI output change failed");
+        snprintf(status_buf, status_size, "%s", T("HDMI output change failed"));
         return;
     }
     /* Switching to a TV output restarts Weston + respawns this launcher, so
@@ -5579,7 +5662,7 @@ static void jw__safe_unmount_secondary_sd(jw_settings_ui *ui,
     }
 
     if (!jw__confirm_secondary_unmount()) {
-        snprintf(status_buf, status_size, "%s", "Unmount canceled");
+        snprintf(status_buf, status_size, "%s", T("Unmount canceled"));
         jw__refresh_secondary_sd_status(ui);
         return;
     }
@@ -5588,7 +5671,7 @@ static void jw__safe_unmount_secondary_sd(jw_settings_ui *ui,
     if (jw_ipc_safe_unmount_storage(ui->socket_path, "secondary_sd",
                                     status_buf, (int)status_size) != 0 &&
         !status_buf[0]) {
-        snprintf(status_buf, status_size, "%s", "Unmount failed");
+        snprintf(status_buf, status_size, "%s", T("Unmount failed"));
     }
     jw__refresh_secondary_sd_status(ui);
 }
@@ -5605,7 +5688,7 @@ static bool jw__confirm_beta_channel(void) {
         .footer_count = 2,
     };
     cat_confirm_result result;
-    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 /* Toggle the update channel (Stable <-> Beta) from the System Update page.
@@ -5740,7 +5823,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     } else {
                         if (status_buf && status_size > 0)
                             snprintf(status_buf, status_size, "%s",
-                                     "No services installed");
+                                     T("No services installed"));
                     }
                 }
                 break;
@@ -5842,6 +5925,17 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     cat_get_theme()->pill_corner_mask  = kJawakaPillCornerMasks[next];
                     jw__persist_int(ui, "pill_shape_index", next);
                 } else if (row == JW_LAYOUT_FONT_FAMILY) {
+                    /* None of the themed families carry CJK, so applying one here
+                       would turn the whole UI into tofu. Say so rather than
+                       silently doing nothing -- an unresponsive row reads as a
+                       bug, and the user cannot see why it is inert. */
+                    if (jw_i18n_language_is_cjk(jw_i18n_language())) {
+                        if (status_buf && status_size > 0) {
+                            snprintf(status_buf, status_size, "%s",
+                                     T("font is fixed while a CJK language is selected"));
+                        }
+                        break;
+                    }
                     int next = (ui->font_family_index + dir + JW_APPEARANCE_FONT_FAMILY_COUNT) %
                                JW_APPEARANCE_FONT_FAMILY_COUNT;
                     const char *path = jw_appearance_font_path_for_index(next);
@@ -5858,7 +5952,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                            get more serious. */
                         if (theme_changed) *theme_changed = true;
                     } else if (status_buf && status_size > 0) {
-                        snprintf(status_buf, status_size, "%s", "font load failed");
+                        snprintf(status_buf, status_size, "%s", T("font load failed"));
                     }
                 } else if (row == JW_LAYOUT_FONT_SIZE) {
                     int next = (ui->font_size_index + dir + JW_SETTINGS_FONT_SIZE_COUNT) % JW_SETTINGS_FONT_SIZE_COUNT;
@@ -5868,7 +5962,8 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                        and falls back to res/font.ttf (clobbering the chosen font). */
                     ap_theme *ft = cat_get_theme();
                     snprintf(ft->font_path, sizeof(ft->font_path), "%s",
-                             jw_appearance_font_path_for_index(ui->font_family_index));
+                             jw_appearance_font_path_for_language(ui->font_family_index,
+                                                                 jw_i18n_language()));
                     cat_set_font_bump(kJawakaFontSizeValues[next]);
                     jw__persist_int(ui, "font_size_index", next);
                     /* Recompute cached list row height (see the font-family note
@@ -5988,7 +6083,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     int fps = jw_bfi_content_fps(ui->refresh_rate_hz);
                     if (fps <= 0) {
                         snprintf(status_buf, status_size, "%s",
-                                 "Black Frame Insertion needs 100 or 120 Hz");
+                                 T("Black Frame Insertion needs 100 or 120 Hz"));
                     } else {
                         ui->bfi_enabled = !ui->bfi_enabled;
                         jw__persist_int(ui, "bfi_enabled", ui->bfi_enabled ? 1 : 0);
@@ -5997,7 +6092,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                      "Black Frame Insertion on for %d fps", fps);
                         } else {
                             snprintf(status_buf, status_size, "%s",
-                                     "Black Frame Insertion off");
+                                     T("Black Frame Insertion off"));
                         }
                     }
                 }
@@ -7153,13 +7248,36 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
     /* ── Behavior ────────────────────────────────────────────────────── */
     case JW_SETTINGS_BEHAVIOR:
         switch (button) {
-            case CAT_BTN_UP:   cat_list_state_move(&ui->behavior_list, -1, JW_BEHAVIOR_ROW_COUNT); break;
-            case CAT_BTN_DOWN: cat_list_state_move(&ui->behavior_list, +1, JW_BEHAVIOR_ROW_COUNT); break;
+            case CAT_BTN_UP:   cat_list_state_move(&ui->behavior_list, -1, jw__behavior_rows(ui)); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->behavior_list, +1, jw__behavior_rows(ui)); break;
             case CAT_BTN_LEFT:
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
-                if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
+                if (ui->behavior_list.cursor == JW_BEHAVIOR_LANGUAGE) {
+                    if (ui->language_count <= 1) break;
+                    int cur = 0;
+                    for (int i = 0; i < ui->language_count; i++) {
+                        if (strcmp(ui->languages[i], ui->language) == 0) { cur = i; break; }
+                    }
+                    int next = (cur + dir + ui->language_count) % ui->language_count;
+                    if (next == cur) break;
+
+                    /* The daemon persists this and restarts us; it does not come
+                       back here. Do not persist locally as well -- a second write
+                       would race the respawn, and jw__persist is the only writer
+                       by contract anyway. */
+                    char status[128] = "";
+                    if (jw_ipc_set_language(ui->socket_path, ui->languages[next],
+                                            status, sizeof(status)) == 0) {
+                        snprintf(ui->language, sizeof(ui->language), "%s",
+                                 ui->languages[next]);
+                    }
+                    if (status_buf && status_size > 0) {
+                        snprintf(status_buf, (size_t)status_size, "%s",
+                                 status[0] ? status : "language change failed");
+                    }
+                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
                     int next = (ui->auto_sleep_index + dir + JW_AUTO_SLEEP_COUNT)
                                % JW_AUTO_SLEEP_COUNT;
                     ui->auto_sleep_index = next;
@@ -7173,7 +7291,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     if (!ui->performance_supported) {
                         if (status_buf && status_size > 0) {
                             snprintf(status_buf, (size_t)status_size, "%s",
-                                     "performance unavailable");
+                                     T("performance unavailable"));
                         }
                         break;
                     }

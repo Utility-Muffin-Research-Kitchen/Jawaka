@@ -1,4 +1,5 @@
 #include "internal/platform/device.h"
+#include "internal/i18n/i18n.h"
 
 #include <string.h>
 
@@ -88,15 +89,19 @@ const char *jw_platform_perf_profile_name(jw_platform_perf_profile profile) {
     }
 }
 
+/* Display labels go through T(); a process with no table loaded (the daemon)
+   gets the English literal back, which is also what the logs should carry.
+   jw_platform_perf_profile_name() is the wire/config identity and must never
+   be translated. */
 const char *jw_platform_perf_profile_label(jw_platform_perf_profile profile) {
     switch (profile) {
-        case JW_PLATFORM_PERF_PROFILE_AUTO: return "Auto";
-        case JW_PLATFORM_PERF_PROFILE_FRONTEND: return "Frontend";
-        case JW_PLATFORM_PERF_PROFILE_BALANCED: return "Balanced";
-        case JW_PLATFORM_PERF_PROFILE_PERFORMANCE: return "Performance";
-        case JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER: return "Battery Saver";
-        case JW_PLATFORM_PERF_PROFILE_SLEEP: return "Sleep";
-        case JW_PLATFORM_PERF_PROFILE_CUSTOM: return "Custom";
+        case JW_PLATFORM_PERF_PROFILE_AUTO: return T("Auto");
+        case JW_PLATFORM_PERF_PROFILE_FRONTEND: return T("Frontend");
+        case JW_PLATFORM_PERF_PROFILE_BALANCED: return T("Balanced");
+        case JW_PLATFORM_PERF_PROFILE_PERFORMANCE: return T("Performance");
+        case JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER: return T("Battery Saver");
+        case JW_PLATFORM_PERF_PROFILE_SLEEP: return T("Sleep");
+        case JW_PLATFORM_PERF_PROFILE_CUSTOM: return T("Custom");
         default: return "Unknown";
     }
 }

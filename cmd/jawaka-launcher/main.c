@@ -8,6 +8,7 @@
 #include "internal/core/env.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
+#include "internal/i18n/i18n.h"
 #include "internal/focus/focus.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
@@ -93,6 +94,7 @@ typedef enum {
 
 /* The home strip is games-only now; Settings lives in the MENU page's Settings
    tab (see jw__render_menu / jw__handle_menu_input). */
+/* English keys; translated at each use via T(). */
 static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Favorites", "Games", "Apps" };
 
 /* Forward declarations: shared preview helper used by Tabs games-tab and the
@@ -722,7 +724,7 @@ static int jw__draw_tab_header(const jw_launcher_state *state) {
        highlight tracking current_tab's position within that set. */
     const char *labels[JW_TAB_COUNT];
     for (int i = 0; i < state->visible_tab_count; i++)
-        labels[i] = kTabs[state->visible_tabs[i]];
+        labels[i] = T(kTabs[state->visible_tabs[i]]);
     cat_draw_tab_bar(labels, state->visible_tab_count,
                      jw__visible_tab_pos(state, state->current_tab));
     cat_draw_status_bar(&sb);
@@ -802,10 +804,26 @@ static int jw__browse_visible_rows(const jw_launcher_state *state, int header_h)
     return v > 0 ? v : 1;
 }
 
+/* For footers drawn unconditionally (dialogs, the system overlay) -- unlike
+   jw__draw_footer this does not consult the Button Hints setting, matching the
+   direct call sites it replaces. Labels are translated; button pills are not. */
+static void jw__footer_direct(cat_footer_item *items, int count) {
+    for (int i = 0; i < count; i++) {
+        if (items[i].label) items[i].label = T(items[i].label);
+    }
+    cat_draw_footer(items, count);
+}
+
 static void jw__draw_footer(const jw_launcher_state *state,
                             cat_footer_item *items, int count) {
-    if (jw_settings_show_hints(&state->settings))
-        cat_draw_footer(items, count);
+    if (!jw_settings_show_hints(&state->settings)) return;
+    /* Translated here rather than in all 36 footer arrays. The arrays are stack
+       locals in their callers, so rewriting the label pointer is safe, and the
+       button_text pills ("A", "L1/R1") are glyph labels that stay as they are. */
+    for (int i = 0; i < count; i++) {
+        if (items[i].label) items[i].label = T(items[i].label);
+    }
+    cat_draw_footer(items, count);
 }
 
 /* Per-screen footer for the settings UI (shared by the menu's Settings tab). The
@@ -1150,7 +1168,7 @@ static int jw__load_library_cache(const char *socket_path, const char *db_path,
     } else {
         state->library_generation = -1;
     }
-    snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
+    snprintf(state->status, sizeof(state->status), T("%d games, %d systems, %d apps"),
         state->summary.game_count, state->system_count, state->summary.app_count);
     return 0;
 }
@@ -1475,7 +1493,7 @@ static void jw__poll_library_generation(const char *socket_path,
            covers rebuild from fresh sources; untouched covers re-decode their
            small thumbnails (~15ms each) at worst. */
         cat_cache_clear();
-        snprintf(state->status, sizeof(state->status), "%d games, %d systems, %d apps",
+        snprintf(state->status, sizeof(state->status), T("%d games, %d systems, %d apps"),
                  state->summary.game_count, state->system_count, state->summary.app_count);
         cat_request_frame();
     }
@@ -1924,7 +1942,7 @@ static void jw__render_games(const jw_launcher_state *state,
 
     if (state->system_count == 0) {
         cat_draw_text_wrapped(body,
-            state->scan_ready ? "No games found" : "Scanning library...",
+            state->scan_ready ? T("No games found") : T("Scanning library..."),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -1956,7 +1974,7 @@ static void jw__render_apps(const jw_launcher_state *state,
 
     if (state->app_count == 0) {
         cat_draw_text_wrapped(body,
-            state->scan_ready ? "No apps found" : "Scanning library...",
+            state->scan_ready ? T("No apps found") : T("Scanning library..."),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -2119,11 +2137,11 @@ static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
              app->installed_version[0] ? app->installed_version : "-");
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
-    snprintf(line, sizeof(line), "Path: Apps/%s", app->package.install_path);
+    snprintf(line, sizeof(line), T("Path: Apps/%s"), app->package.install_path);
     cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
     cy += row_h;
     if (app->managed) {
-        cat_draw_text_ellipsized(c->small, "Release-managed path", x, cy, theme->hint, w);
+        cat_draw_text_ellipsized(c->small, T("Release-managed path"), x, cy, theme->hint, w);
     }
 }
 
@@ -2672,7 +2690,7 @@ static void jw__draw_carousel_tile(const jw_launcher_state *state, int tile_idx,
     /* Game count below for system tiles */
     if (it->kind == JW_FLAT_SYSTEM) {
         char cnt[24];
-        snprintf(cnt, sizeof(cnt), "%d games",
+        snprintf(cnt, sizeof(cnt), T("%d games"),
                  state->systems[it->system_idx].game_count);
         int cw = cat_measure_text(small, cnt);
         ap_color hint_c = theme->hint;
@@ -3789,7 +3807,7 @@ static void jw__draw_system_preview(int px, int py, int pw, int ph,
 
     if (game_count >= 0) {
         char sub[32];
-        snprintf(sub, sizeof(sub), "%d games", game_count);
+        snprintf(sub, sizeof(sub), T("%d games"), game_count);
         int subw = cat_measure_text(small, sub);
         cat_draw_text(small, sub, px + (pw - subw) / 2, count_y, theme->hint);
     }
@@ -4047,7 +4065,7 @@ static void jw__cf_draw_channel(jw_launcher_state *state) {
 
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     cat_draw_color white = { 236, 238, 240, 255 };
-    const char *chan = kTabs[state->current_tab];
+    const char *chan = T(kTabs[state->current_tab]);
     int chw = cat_measure_text(small, chan);
     int cy0 = CAT_S(6);
     cat_draw_text(small, chan, (sw - chw) / 2, cy0, white);   /* channel name, always */
@@ -4318,7 +4336,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
                      &state->game_list, &list, &image, &item_h);
 
     if (state->game_count == 0) {
-        cat_draw_text_wrapped(body, "No games found",
+        cat_draw_text_wrapped(body, T("No games found"),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -4473,7 +4491,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
     int content_y = header_h + margin;
     int content_h = sh - content_y - fh - margin;
 
-    cat_draw_text_ellipsized(large, "Apps", margin, CAT_S(6),
+    cat_draw_text_ellipsized(large, T("Apps"), margin, CAT_S(6),
                              theme->text, sw - margin * 2);
 
     int list_x = margin;
@@ -4484,7 +4502,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
 
     if (state->app_count == 0) {
         cat_draw_text_wrapped(body,
-            state->scan_ready ? "No apps found" : "Scanning library...",
+            state->scan_ready ? T("No apps found") : T("Scanning library..."),
             list_x + CAT_S(8), content_y + CAT_S(8),
             list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -4511,7 +4529,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
         { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
-    cat_draw_footer(footer, 3);
+    jw__footer_direct(footer, 3);
     jw__present();
 }
 
@@ -4557,7 +4575,7 @@ static void jw__render_search(const jw_launcher_state *state) {
                      &state->search_list, &list, &image, &item_h);
 
     if (state->search_count == 0) {
-        cat_draw_text_wrapped(body, "No results",
+        cat_draw_text_wrapped(body, T("No results"),
             list.x + CAT_S(8), list.y + CAT_S(8),
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
@@ -4755,8 +4773,8 @@ static void jw__cf_draw_keyboard(const jw_launcher_state *state) {
             int kx = (sw - w) / 2;
             bool k = !s_cf_focus_results && (rw == s_cf_kb_row && s_cf_kb_col == 0);
             cat_draw_rounded_rect(kx, ky, w, key_h, CAT_S(6), k ? sel : keybg);
-            int cw = cat_measure_text(font, "space");
-            cat_draw_text(font, "space", kx + (w - cw) / 2, ky + (key_h - fh) / 2,
+            int cw = cat_measure_text(font, T("space"));   /* must match the draw */
+            cat_draw_text(font, T("space"), kx + (w - cw) / 2, ky + (key_h - fh) / 2,
                           k ? seltext : white);
         }
     }
@@ -4924,7 +4942,7 @@ static void jw__render_search_cf(jw_launcher_state *state) {
     cat_draw_text_ellipsized(small, hdr, hx, CAT_S(6), white, maxhw);
 
     if (state->search_count <= 0) {
-        const char *msg = state->search_query[0] ? "No results" : "Type to search";
+        const char *msg = state->search_query[0] ? T("No results") : T("Type to search");
         int mw = cat_measure_text(large, msg);
         cat_draw_text(large, msg, (sw - mw) / 2, (int)(sh * 0.28f), dim);
     } else {
@@ -5279,7 +5297,7 @@ static void jw__render_switcher(jw_launcher_state *state) {
 
     cat_status_bar_opts sb = {0};
     jw_settings_status_bar_opts(&state->settings, &sb);
-    cat_draw_screen_title("Switcher", &sb);
+    cat_draw_screen_title(T("Switcher"), &sb);
 
     bool hints = jw_settings_show_hints(&state->settings);
     SDL_Rect content = cat_get_content_rect(true, hints, false);
@@ -5341,7 +5359,7 @@ static void jw__draw_menu_item(int idx, int ix, int iy, int iw, int ih,
         cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
     ap_color c = selected ? theme->highlighted_text : theme->text;
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, items[idx], ix + CAT_S(10), text_y,
+    cat_draw_text_ellipsized(body, T(items[idx]), ix + CAT_S(10), text_y,
                              c, iw - CAT_S(20));
 }
 
@@ -5359,7 +5377,13 @@ static int jw__draw_menu_tab_bar(const jw_launcher_state *state) {
     sb.use_y      = true;
     sb.y_position = (bar_h - pill_h) / 2;
     cat_set_tab_bar_reserved_right(cat_get_status_bar_width(&sb) + CAT_S(12));
-    cat_draw_tab_bar(kSysMenuTabs, JW_SMTAB_COUNT, state->menu_tab);
+    {
+        /* Translated per frame into a local: the array itself must stay English
+           because it is also the extraction source and T() keys. */
+        const char *tabs[JW_SMTAB_COUNT];
+        for (int i = 0; i < JW_SMTAB_COUNT; i++) tabs[i] = T(kSysMenuTabs[i]);
+        cat_draw_tab_bar(tabs, JW_SMTAB_COUNT, state->menu_tab);
+    }
     cat_draw_status_bar(&sb);
     return bar_h;
 }
@@ -5409,11 +5433,11 @@ static void jw__render_menu(const jw_launcher_state *state) {
         int tx = image.x + CAT_S(10);
         int tw = image.w - CAT_S(20);
         if (state->menu_scanning || state->scan_running) {
-            cat_draw_text_wrapped(body, "Scanning\xe2\x80\xa6", tx, ty, tw,
+            cat_draw_text_wrapped(body, T("Scanning…"), tx, ty, tw,
                                   theme->hint, CAT_ALIGN_CENTER);
         } else {
             char counts[96];
-            snprintf(counts, sizeof(counts), "%d games, %d systems, %d apps",
+            snprintf(counts, sizeof(counts), T("%d games, %d systems, %d apps"),
                      state->summary.game_count, state->system_count,
                      state->summary.app_count);
             cat_draw_text_wrapped(body, counts, tx, ty, tw, theme->text,
@@ -5990,7 +6014,7 @@ static int jw__open_system_games(const char *db_path, const char *system,
     state->games_open = true;
     cat_list_state_init(&state->game_list, jw__game_browser_visible_rows(state));
     cat_list_state_jump(&state->game_list, 0, state->game_count);
-    snprintf(state->status, sizeof(state->status), "%d %s games",
+    snprintf(state->status, sizeof(state->status), T("%d %s games"),
              state->game_count, state->game_system_display);
     return 0;
 }
@@ -6434,10 +6458,10 @@ static void jw__open_apps(jw_launcher_state *state) {
     cat_list_state_init(&state->app_list, jw__app_browser_visible_rows(state));
     cat_list_state_jump(&state->app_list, 0, state->app_count);
     if (state->app_count > 0) {
-        snprintf(state->status, sizeof(state->status), "%d apps", state->app_count);
+        snprintf(state->status, sizeof(state->status), T("%d apps"), state->app_count);
     } else {
         snprintf(state->status, sizeof(state->status), "%s",
-                 state->scan_ready ? "No apps found" : "Scanning library...");
+                 state->scan_ready ? T("No apps found") : T("Scanning library..."));
     }
 }
 
@@ -7510,14 +7534,14 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
             if (scr == JW_SETTINGS_ABOUT || scr == JW_SETTINGS_LIBRARY ||
                 scr == JW_SETTINGS_PLAYTIME) {
                 cat_footer_item f[] = { { CAT_BTN_B, "Back", true, JW_HINT("B") } };
-                cat_draw_footer(f, 1);
+                jw__footer_direct(f, 1);
             } else {
                 cat_footer_item f[] = {
                     { CAT_BTN_X, "Releases", false, JW_HINT("X") },
                     { CAT_BTN_B, "Back",     true,  JW_HINT("B") },
                     { CAT_BTN_A, "Select",   true,  JW_HINT("A") },
                 };
-                cat_draw_footer(f, 3);
+                jw__footer_direct(f, 3);
             }
         }
         jw__present();
@@ -9045,7 +9069,7 @@ static void jw__hdmi_keep_prompt(const char *socket_path) {
         int kw = cat_measure_text(font, keep_hint);
         cat_draw_text(font, keep_hint, (sw - kw) / 2,
                       by + bar_h + CAT_S(12) + line_h + CAT_S(10), theme->highlight);
-        cat_draw_footer(footer, 1);
+        jw__footer_direct(footer, 1);
         /* Request a frame so cat_present takes the active 60fps-paced path instead
            of its idle sleep — otherwise the countdown bar freezes on frame one. */
         cat_request_frame();
@@ -9271,6 +9295,18 @@ static bool jw__surface_blocked_game_launch(
     return false;
 }
 
+/* SDL installs its own SIGTERM handler that pushes SDL_QUIT, which Catastrophe
+   maps to CAT_BTN_B -- so a plain SIGTERM reads as a "back" press and the
+   launcher stays up. The daemon uses SIGTERM to ask us to exit (a language
+   change, a game launch), so we need a real one. Installed AFTER cat_init, or
+   SDL's would win. */
+static volatile sig_atomic_t g_term_requested = 0;
+
+static void jw__term_handler(int sig) {
+    (void)sig;
+    g_term_requested = 1;
+}
+
 int main(void) {
     /* jawakad uses SIGTERM to replace this frontend with a ready game. SDL's
        handler turns it into a Back press instead of terminating the child. */
@@ -9301,6 +9337,20 @@ int main(void) {
     }
     long long hello_done_ms = jw__monotonic_ms();
 
+    /* Load the UI language before anything draws. The daemon already resolved
+       the matching font into this process's environment when it spawned us, so
+       there is nothing to reconcile here -- read the setting, load the table,
+       and every T() from this point on is translated.
+
+       A missing or damaged table simply leaves lookups returning their English
+       keys, so a failure here is not worth aborting startup over. */
+    {
+        char lang[16];
+        if (jw_db_get_setting(db_path, "language", lang, sizeof(lang)) != 0 || !lang[0])
+            snprintf(lang, sizeof(lang), "%s", "en");
+        jw_i18n_load(lang);
+    }
+
     cat_config cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.window_title       = "Jawaka Launcher";
@@ -9317,6 +9367,9 @@ int main(void) {
         free(sdcard_root);
         return 1;
     }
+    /* After cat_init: SDL_Init installs a SIGTERM handler of its own, and the
+       last one registered wins. */
+    signal(SIGTERM, jw__term_handler);
     jw_cat_services_install(socket_path);
     /* Register the failsafe unlock chord (acted on only while focus mode is
        active — see the main loop). */
@@ -9506,6 +9559,10 @@ int main(void) {
     }
 
     while (running) {
+        if (g_term_requested) {
+            jw_log_info("SIGTERM received; exiting for respawn");
+            break;
+        }
         cat_input_event ev;
         bool had_input = false;
         bool was_menu_open = state.menu_open;

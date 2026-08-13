@@ -10840,6 +10840,58 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_ok(client, "rumble", NULL);
     }
 
+    if (strcmp(type->valuestring, "set-language") == 0) {
+        cJSON *lang_json = cJSON_GetObjectItemCaseSensitive(root, "language");
+        if (!cJSON_IsString(lang_json) || !lang_json->valuestring ||
+            !lang_json->valuestring[0]) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, "missing language");
+        }
+
+        /* The code becomes a filename component (i18n/<lang>.jwi), so restrict it
+           to what a language tag can legitimately contain. Without this, a "code"
+           of ../../something would read an arbitrary file as a string table. */
+        const char *lang = lang_json->valuestring;
+        size_t lang_len = strlen(lang);
+        if (lang_len >= 16) {
+            cJSON_Delete(root);
+            return jw__reply_error(client, "language code too long");
+        }
+        for (size_t i = 0; i < lang_len; i++) {
+            char c = lang[i];
+            bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '_' || c == '-';
+            if (!ok) {
+                cJSON_Delete(root);
+                return jw__reply_error(client, "invalid language code");
+            }
+        }
+
+        char lang_buf[16];
+        snprintf(lang_buf, sizeof(lang_buf), "%s", lang);
+
+        if (jw_db_set_setting(state->db_path, "language", lang_buf) != 0) {
+            jw_log_warn("set-language: could not persist %s", lang_buf);
+            cJSON_Delete(root);
+            return jw__reply_error(client, "could not save language");
+        }
+        jw_log_info("set-language %s; restarting launcher", lang_buf);
+
+        /* Everything the new language needs is resolved in the parent at spawn
+           time -- jw__spawn_child re-runs jw_appearance_resolve on every spawn,
+           so the replacement launcher comes up with the right font path and
+           loads the matching string table itself. Nothing to push down here.
+
+           SIGTERM rather than SIGKILL so the launcher can save its breadcrumb;
+           the ordinary child-exit path respawns it. */
+        if (state->child_pid > 0 && state->child_kind == JW_CHILD_LAUNCHER) {
+            kill(state->child_pid, SIGTERM);
+        }
+
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "set-language", NULL);
+    }
+
     if (strcmp(type->valuestring, "scan-library") == 0) {
         int rc = jw__handle_scan(state, client, root);
         cJSON_Delete(root);
