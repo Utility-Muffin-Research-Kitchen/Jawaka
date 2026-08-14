@@ -93,9 +93,12 @@ static int jw__launch_menu(void) {
     int player_indices[4];
     const int *player_indices_arg =
         jw__roster_player_indices(player_indices) ? player_indices : NULL;
+    /* proxied_cheevos=false: this --menu runner launches no content, so there
+       is nothing to proxy and neither cheevos key is ever injected here. */
     runtime_config = jw_prepare_retroarch_config(runtime_dir, sdcard_root, NULL,
                                                   player_indices_arg,
                                                   true,
+                                                  false,
                                                   error, sizeof(error));
     if (!runtime_config) {
         fprintf(stderr, "could not prepare RetroArch config: %s\n",
@@ -132,7 +135,12 @@ static int jw__launch_menu(void) {
         goto done;
     }
 
-    if (jw_backup_retroarch_config(runtime_config, sdcard_root, error, sizeof(error)) != 0) {
+    /* No launch snapshot: this --menu runner never injects the RAOfflineProxy
+       transient overrides, so there is nothing to restore. A NULL snapshot is
+       ordinary backup behavior -- anything a game session already restored
+       stays as it was. */
+    if (jw_backup_retroarch_config(runtime_config, sdcard_root, NULL,
+                                   error, sizeof(error)) != 0) {
         fprintf(stderr, "could not save RetroArch config: %s\n",
                 error[0] ? error : "unknown error");
         goto done;
