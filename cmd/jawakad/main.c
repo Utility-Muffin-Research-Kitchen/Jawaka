@@ -2704,6 +2704,24 @@ static void jw__publish_display_env(jw_daemon_state *state) {
     } else {
         unsetenv("JAWAKA_BFI");
     }
+
+    /* Publish Leaf's UI language so the RetroArch config writer can follow it.
+       RetroArch already carries the translations -- HAVE_LANGEXTRA is its
+       default and was never disabled -- so this is the only thing standing
+       between a Chinese Leaf and a Chinese RetroArch. Re-read per launch, like
+       the refresh rate, so switching language takes effect on the next game
+       without a reboot. */
+    if (state->db_path) {
+        char lang[32] = "";
+        if (jw_db_get_setting(state->db_path, "language", lang, sizeof(lang)) == 0 &&
+            lang[0]) {
+            setenv("JAWAKA_LANGUAGE", lang, 1);
+        } else {
+            unsetenv("JAWAKA_LANGUAGE");
+        }
+    } else {
+        unsetenv("JAWAKA_LANGUAGE");
+    }
 }
 
 static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {

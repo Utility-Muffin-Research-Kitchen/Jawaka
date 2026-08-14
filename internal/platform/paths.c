@@ -466,6 +466,7 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "menu_driver",
         "menu_scale_factor",
         "ozone_menu_color_theme",
+        "user_language",
         "menu_show_load_content_animation",
         "menu_swap_ok_cancel_buttons",
         "notification_show_autoconfig",
@@ -1923,6 +1924,20 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
        grown across RetroArch releases, so 13 was read back off the device after
        picking the theme by name rather than guessed from the string table. */
     jw__retroarch_cfg_string(fp, "ozone_menu_color_theme", "13");
+    /* Follow Leaf's UI language. RetroArch ships the translations already, so
+       this one integer is what makes its menus Chinese; the CJK font it needs to
+       draw them arrives in the same asset bundle Ozone reads. Values are
+       RETRO_LANGUAGE_* from libretro.h, not a guess: English 0, Simplified
+       Chinese 12. Anything else falls back to English rather than shipping a
+       half-translated menu in a language nobody selected. */
+    {
+        const char *ui_lang = jw__env_value("JAWAKA_LANGUAGE");
+        const char *retro_lang = "0";
+        if (ui_lang && strcmp(ui_lang, "zh_CN") == 0) {
+            retro_lang = "12";
+        }
+        jw__retroarch_cfg_string(fp, "user_language", retro_lang);
+    }
     /* Pin RA's reported refresh to the live panel rate the daemon read from the
        active DRM mode. RA's frame pacing — and Black Frame Insertion's
        refresh-aware cadence — misfire if it believes 60Hz while the panel runs
@@ -2396,6 +2411,20 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
        grown across RetroArch releases, so 13 was read back off the device after
        picking the theme by name rather than guessed from the string table. */
     jw__retroarch_cfg_string(fp, "ozone_menu_color_theme", "13");
+    /* Follow Leaf's UI language. RetroArch ships the translations already, so
+       this one integer is what makes its menus Chinese; the CJK font it needs to
+       draw them arrives in the same asset bundle Ozone reads. Values are
+       RETRO_LANGUAGE_* from libretro.h, not a guess: English 0, Simplified
+       Chinese 12. Anything else falls back to English rather than shipping a
+       half-translated menu in a language nobody selected. */
+    {
+        const char *ui_lang = jw__env_value("JAWAKA_LANGUAGE");
+        const char *retro_lang = "0";
+        if (ui_lang && strcmp(ui_lang, "zh_CN") == 0) {
+            retro_lang = "12";
+        }
+        jw__retroarch_cfg_string(fp, "user_language", retro_lang);
+    }
     /* Pin RA's reported refresh to the live panel rate the daemon read from the
        active DRM mode. RA's frame pacing — and Black Frame Insertion's
        refresh-aware cadence — misfire if it believes 60Hz while the panel runs
