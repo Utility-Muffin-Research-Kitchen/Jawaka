@@ -67,12 +67,16 @@ that measurement.
 
 ## Content switching
 
-The game switcher no longer retargets RetroArch in-process. A switch first
-settles the old savestate write, asks the old RetroArch process to quit, and
-waits for its full group barrier and finalizer. Only then can the daemon commit
-a fresh active record and run LIFE-1 for the next title. This preserves the
-one-launch/one-`launch_id` invariant even when the old and new games use the
-same core and card.
+When a game-sensitive service participated in the current launch, a switch
+settles the old savestate write, quits RetroArch, waits for its full group
+barrier and finalizer, then commits a fresh active record for the next title.
+This preserves the one-launch/one-`launch_id` invariant while that service is
+running or waiting to restart.
+
+Without a participating service, same-core and same-card switches retain the
+existing in-process RetroArch path. The writer process group and source binding
+do not change, so the durable active-game record remains authoritative without
+adding a synthetic finish/start boundary.
 
 ## Product boundary
 

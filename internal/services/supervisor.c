@@ -2797,6 +2797,21 @@ bool jw_svc_supervisor_game_active(const jw_svc_supervisor *sup) {
     return sup && sup->game_active;
 }
 
+bool jw_svc_supervisor_game_has_participant(const jw_svc_supervisor *sup) {
+    if (!sup) {
+        return false;
+    }
+    for (int i = 0; i < sup->count; i++) {
+        const jw_svc_supervised *e = &sup->entries[i];
+        if (e->game_restart_pending ||
+            (e->pgid > 0 && e->active_lifecycle_game !=
+                                JW_SVC_LIFECYCLE_GAME_IGNORE)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool jw_svc_supervisor_game_stop_service(jw_svc_supervisor *sup,
                                          const char *service_id,
                                          const jw_svc_subscriber_binding *coordinator,

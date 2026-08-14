@@ -10,7 +10,6 @@ typedef enum {
     JW_OSD_GAME_CHECKING = 0,
     JW_OSD_GAME_SYNCING,
     JW_OSD_GAME_STOPPING,
-    JW_OSD_GAME_STARTING,
 } jw_osd_game_stage;
 
 bool jw_osd_game_launch_parse(const cJSON *root,

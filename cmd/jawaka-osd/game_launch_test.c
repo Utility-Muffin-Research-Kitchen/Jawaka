@@ -43,22 +43,21 @@ static void expect_invalid(const char *json) {
 
 int main(void) {
     expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"checking\"}",
-                 JW_OSD_GAME_CHECKING, 0, "CHECKING SAVES", "");
+                 JW_OSD_GAME_CHECKING, 0, "SYNCTHING: CHECKING SAVES", "");
     expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"syncing\",\"pending_items\":1}",
-                 JW_OSD_GAME_SYNCING, 1, "SYNCING 1 ITEM", "MENU: START NOW");
+                 JW_OSD_GAME_SYNCING, 1, "SYNCTHING: SYNCING 1 ITEM", "MENU: START NOW");
     expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"syncing\",\"pending_items\":12}",
-                 JW_OSD_GAME_SYNCING, 12, "SYNCING 12 ITEMS", "MENU: START NOW");
+                 JW_OSD_GAME_SYNCING, 12, "SYNCTHING: SYNCING 12 ITEMS", "MENU: START NOW");
     expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"stopping\"}",
-                 JW_OSD_GAME_STOPPING, 0, "MAKING SAVES SAFE", "");
-    expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"starting\"}",
-                 JW_OSD_GAME_STARTING, 0, "STARTING GAME", "");
+                 JW_OSD_GAME_STOPPING, 0, "SYNCTHING: STOPPING", "");
 
     expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"unknown\"}");
+    expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"starting\"}");
     expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"syncing\"}");
     expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"syncing\",\"pending_items\":-1}");
     expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"syncing\",\"pending_items\":1.5}");
     expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"checking\",\"pending_items\":0}");
-    expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"starting\",\"extra\":true}");
+    expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"checking\",\"extra\":true}");
     expect_invalid("{\"type\":\"show-game-waiting\",\"stage\":\"syncing\",\"pending_items\":1}");
     puts("PASS osd-game-launch-test");
     return 0;

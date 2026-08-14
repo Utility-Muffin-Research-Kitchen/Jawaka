@@ -216,4 +216,8 @@ else
 fi
 grep -F 'life1: writer started' "$LOG" >/dev/null
 grep -F 'life1: game.finish' "$LOG" >/dev/null
+! grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
+if [ "$UNMANAGED_SCENARIO" -eq 1 ]; then
+    ! grep -F 'life1: launch status stage=' "$LOG" >/dev/null
+fi
 echo "PASS life1-game-ipc-smoke ($SCENARIO launch_to_writer_ms=$LAUNCH_TO_WRITER_MS)"
