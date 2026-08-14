@@ -326,4 +326,40 @@ wait_backup_fresh 6
 grep -q "cheevos_custom_host = \"127.0.0.1:8080\"" "$CAPTURED_CFG"
 echo "case7 bypass-consumed ok"
 
+# -- Case 8: Run pressed WITHOUT Start with Leaf -> still routes --
+# The device found this one. desired_enabled ("Start with Leaf") and
+# session_run ("Run") are independent, and every case above happened to set
+# both, so a gate that required both looked correct here while ignoring a
+# healthy hand-started service on real hardware.
+# Disable (which also stops), then Run: a session-only run with autostart off.
+# That is what a user gets by pressing Run without enabling Start with Leaf,
+# and it is the state the old gate silently refused to route to.
+"$CTL" --socket "$SOCKET" request \
+    "{\"v\":1,\"op\":\"disable\",\"id\":\"d8\",\"service_id\":\"$SERVICE_ID\"}" |
+    grep -F '"ok":true' >/dev/null
+"$CTL" --socket "$SOCKET" request \
+    "{\"v\":1,\"op\":\"run\",\"id\":\"r8\",\"service_id\":\"$SERVICE_ID\"}" |
+    grep -F '"ok":true' >/dev/null
+for _ in $(seq 1 750); do
+    status="$($CTL --socket "$SOCKET" request \
+        "{\"v\":1,\"op\":\"status\",\"id\":\"st8\",\"service_id\":\"$SERVICE_ID\"}" 2>/dev/null || true)"
+    printf '%s' "$status" | grep -q '"effective_state":"running"' && break
+    sleep 0.02
+done
+# Both halves matter: without the first this proves nothing, without the
+# second it is just case 2 again.
+printf '%s' "$status" | grep -q '"effective_state":"running"'
+printf '%s' "$status" | grep -q '"desired_enabled":false'
+printf '%s' \
+  "menu_driver = \"rgui\"
+cheevos_hardcore_mode_enable = \"false\"
+" >"$SHARED_CFG"
+rm -f "$CAPTURED_CFG"
+launch | grep -F '"type":"ok"' >/dev/null
+wait_backup_fresh 7
+grep -q "cheevos_custom_host = \"127.0.0.1:8080\"" "$CAPTURED_CFG"
+grep -q "cheevos_hardcore_mode_enable = \"false\"" "$CAPTURED_CFG"
+! grep -q "cheevos_custom_host" "$SHARED_CFG"
+echo "case8 run-without-start-with-leaf ok"
+
 echo "PASS raofflineproxy-bridge-ipc-smoke"

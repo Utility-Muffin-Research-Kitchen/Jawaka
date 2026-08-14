@@ -8602,17 +8602,26 @@ static jw__rop_gate_result jw__raofflineproxy_route(
         state->services
             ? jw_svc_supervisor_find(state->services, JW_ROP_SERVICE_ID)
             : NULL;
-    /* Absent, invalid, disabled, or session-stopped: zero proxy wait. A
-       durable Start with Leaf preference alone is not an intent to route in
-       this daemon session; the supervisor marks session_run when it has
-       actually started the service (or the user presses Run). */
+    /* Absent, invalid, or session-stopped: zero proxy wait.
+       session_run is the whole test, and desired_enabled is deliberately NOT
+       part of it. They are independent (supervisor.h): desired_enabled is the
+       persistent "Start with Leaf" autostart preference, while session_run is
+       set whenever the service is actually running this session -- by
+       autostart OR by the user pressing Run -- and cleared when they stop it.
+       Requiring both meant a service the user had started by hand, healthy and
+       serving, was ignored by every launch because Start with Leaf happened to
+       be off. Using session_run alone gives all four cases the behavior the
+       plan specifies: autostarted routes, hand-started routes, session-stopped
+       goes direct with zero wait, and never-started goes direct. */
     if (!entry || !entry->pak_present || !entry->manifest_valid ||
-        !entry->desired_enabled || !entry->session_run) {
+        !entry->session_run) {
         jw_log_info("RAOfflineProxy: direct launch (service %s)",
                     !entry ? "absent"
                     : !entry->pak_present || !entry->manifest_valid
                         ? "invalid"
-                        : "not enabled");
+                    : entry->desired_enabled
+                        ? "stopped this session"
+                        : "not running");
         return JW__ROP_GATE_DIRECT;
     }
     /* A durable Hardcore setting selects direct play and never routes
