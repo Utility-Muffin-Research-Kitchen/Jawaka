@@ -2172,8 +2172,11 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
         jw__write_retroarch_cfg_filtered(fp, defaults_text, shared_text, false);
     }
     if (shared_text) {
+        /* Preserve RetroArch's order and last-value-wins semantics. Deduplicating
+           here rescans the remaining text for every line; a normal 3,300-line
+           persisted config added about 500 ms to each MLP1 game launch. */
         jw__write_retroarch_cfg_filtered_skipping(
-            fp, shared_text, NULL, true,
+            fp, shared_text, NULL, false,
             migrate_release_shader_dir ? "video_shader_dir" : NULL);
     }
     /* Make the release-managed bundle browsable on first launch, but keep this
