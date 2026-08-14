@@ -298,6 +298,42 @@ int main(void) {
         return fail("durable Hardcore not detected");
     }
 
+    /* Duplicate-order regression. RetroArch keeps the FIRST occurrence of a
+     * key, so a shared config carrying Hardcore "true" before a later "false"
+     * IS hardcore as far as RetroArch is concerned. A last-wins read reports
+     * it off and routes a hardcore session through the casual-only proxy,
+     * silently breaking the durable-Hardcore/direct-play guarantee. Duplicates
+     * are reachable: the shared text is passed through undeduplicated, so
+     * save-on-exit churn can leave two lines for one key. */
+    if (write_text(shared_cfg,
+                   "menu_driver = \"rgui\"\n"
+                   "cheevos_hardcore_mode_enable = \"true\"\n"
+                   "cheevos_hardcore_mode_enable = \"false\"\n") != 0) {
+        return fail("duplicate hardcore fixture write failed");
+    }
+    if (!jw_retroarch_shared_hardcore_enabled(root)) {
+        return fail("Hardcore gate honored the last duplicate, not the first");
+    }
+    /* And the mirror case: "false" first means Hardcore really is off, even
+     * with a later "true" that RetroArch will ignore. */
+    if (write_text(shared_cfg,
+                   "menu_driver = \"rgui\"\n"
+                   "cheevos_hardcore_mode_enable = \"false\"\n"
+                   "cheevos_hardcore_mode_enable = \"true\"\n") != 0) {
+        return fail("mirror duplicate hardcore fixture write failed");
+    }
+    if (jw_retroarch_shared_hardcore_enabled(root)) {
+        return fail("Hardcore gate honored a later duplicate over the first");
+    }
+
+    /* Restore the single-value hardcore fixture for the cycle below. */
+    if (write_text(shared_cfg,
+                   "menu_driver = \"rgui\"\n"
+                   "cheevos_custom_host = \"foreign.example:9999\"\n"
+                   "cheevos_hardcore_mode_enable = \"true\"\n") != 0) {
+        return fail("hardcore fixture restore failed");
+    }
+
     /* Proxied launch cycle with foreign values: everything comes back
      * byte-identical, and neither the injected host, the RA-changed host, nor
      * the derived token ever persist. */

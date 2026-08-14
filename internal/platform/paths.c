@@ -536,8 +536,14 @@ static bool jw__retroarch_cfg_text_has_key(const char *text, const char *key) {
     return false;
 }
 
-static char *jw__retroarch_cfg_text_string_value(const char *text,
-                                                 const char *wanted_key) {
+/* first_match selects which duplicate wins when the text carries a key more
+ * than once. RetroArch keeps the FIRST occurrence and discards the rest
+ * (libretro-common/file/config_file.c), so any decision that must agree with
+ * what RetroArch will actually do has to pass true. Passing false keeps the
+ * historical last-wins behaviour for callers that predate this distinction. */
+static char *jw__retroarch_cfg_text_string_value_ex(const char *text,
+                                                    const char *wanted_key,
+                                                    bool first_match) {
     if (!text || !wanted_key || !wanted_key[0]) {
         return NULL;
     }
@@ -578,6 +584,9 @@ static char *jw__retroarch_cfg_text_string_value(const char *text,
                 value[value_len] = '\0';
                 free(result);
                 result = value;
+                if (first_match) {
+                    return result;
+                }
             }
         }
         if (!next) {
@@ -586,6 +595,11 @@ static char *jw__retroarch_cfg_text_string_value(const char *text,
         line = next + 1;
     }
     return result;
+}
+
+static char *jw__retroarch_cfg_text_string_value(const char *text,
+                                                 const char *wanted_key) {
+    return jw__retroarch_cfg_text_string_value_ex(text, wanted_key, false);
 }
 
 static bool jw__release_managed_shader_dir(const char *path) {
@@ -2341,8 +2355,14 @@ bool jw_retroarch_shared_hardcore_enabled(const char *sdcard_root) {
     if (!shared_text) {
         return false;
     }
-    char *value = jw__retroarch_cfg_text_string_value(
-        shared_text, "cheevos_hardcore_mode_enable");
+    /* First match, not last: this decision must agree with what RetroArch will
+       actually do, and RetroArch keeps the first occurrence of a key. With
+       "true" first and "false" later, a last-wins read would report Hardcore
+       off and route a hardcore session through the casual-only proxy. Reading
+       the shared config for duplicates is not hypothetical -- the shared text
+       is passed through undeduplicated, so save-on-exit churn can leave two. */
+    char *value = jw__retroarch_cfg_text_string_value_ex(
+        shared_text, "cheevos_hardcore_mode_enable", true);
     free(shared_text);
     bool enabled = value && strcmp(value, "true") == 0;
     free(value);
