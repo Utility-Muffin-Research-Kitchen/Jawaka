@@ -463,6 +463,10 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "builtin_mediaplayer_enable",
         "check_firmware_before_loading",
         "load_dummy_on_core_shutdown",
+        "menu_driver",
+        "menu_scale_factor",
+        "ozone_menu_color_theme",
+        "user_language",
         "menu_show_load_content_animation",
         "menu_swap_ok_cancel_buttons",
         "notification_show_autoconfig",
@@ -1904,6 +1908,36 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "audio_latency", "128");
     jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
     jw__retroarch_cfg_string(fp, "video_threaded", "false");
+    /* Ozone draws its icons and text from assets_directory, which Leaf ships and
+       syncs into the durable user tree. Without this RetroArch falls back to
+       RGUI, which renders from a built-in bitmap font, reads no assets at all,
+       and cannot draw CJK -- leaving the shipped bundle, Chinese fallback font
+       included, inert. Written here so save-on-exit cannot revert it. */
+    jw__retroarch_cfg_string(fp, "menu_driver", "ozone");
+    /* Ozone's own default targets a 1080p desktop and is small on a 960x720
+       panel. Pinned rather than seeded because a seed only reaches a fresh
+       install, and most devices arrive here by update with "1.000000" already
+       persisted. RetroArch clamps this against the panel, so the stored value
+       is an upper bound rather than a literal multiplier. */
+    jw__retroarch_cfg_string(fp, "menu_scale_factor", "5.000000");
+    /* Selenium. Ozone stores its theme as an enum index, and that enum has
+       grown across RetroArch releases, so 13 was read back off the device after
+       picking the theme by name rather than guessed from the string table. */
+    jw__retroarch_cfg_string(fp, "ozone_menu_color_theme", "13");
+    /* Follow Leaf's UI language. RetroArch ships the translations already, so
+       this one integer is what makes its menus Chinese; the CJK font it needs to
+       draw them arrives in the same asset bundle Ozone reads. Values are
+       RETRO_LANGUAGE_* from libretro.h, not a guess: English 0, Simplified
+       Chinese 12. Anything else falls back to English rather than shipping a
+       half-translated menu in a language nobody selected. */
+    {
+        const char *ui_lang = jw__env_value("JAWAKA_LANGUAGE");
+        const char *retro_lang = "0";
+        if (ui_lang && strcmp(ui_lang, "zh_CN") == 0) {
+            retro_lang = "12";
+        }
+        jw__retroarch_cfg_string(fp, "user_language", retro_lang);
+    }
     /* Pin RA's reported refresh to the live panel rate the daemon read from the
        active DRM mode. RA's frame pacing — and Black Frame Insertion's
        refresh-aware cadence — misfire if it believes 60Hz while the panel runs
@@ -2361,6 +2395,36 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
     jw__retroarch_cfg_string(fp, "audio_latency", "128");
     jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
     jw__retroarch_cfg_string(fp, "video_threaded", "false");
+    /* Ozone draws its icons and text from assets_directory, which Leaf ships and
+       syncs into the durable user tree. Without this RetroArch falls back to
+       RGUI, which renders from a built-in bitmap font, reads no assets at all,
+       and cannot draw CJK -- leaving the shipped bundle, Chinese fallback font
+       included, inert. Written here so save-on-exit cannot revert it. */
+    jw__retroarch_cfg_string(fp, "menu_driver", "ozone");
+    /* Ozone's own default targets a 1080p desktop and is small on a 960x720
+       panel. Pinned rather than seeded because a seed only reaches a fresh
+       install, and most devices arrive here by update with "1.000000" already
+       persisted. RetroArch clamps this against the panel, so the stored value
+       is an upper bound rather than a literal multiplier. */
+    jw__retroarch_cfg_string(fp, "menu_scale_factor", "5.000000");
+    /* Selenium. Ozone stores its theme as an enum index, and that enum has
+       grown across RetroArch releases, so 13 was read back off the device after
+       picking the theme by name rather than guessed from the string table. */
+    jw__retroarch_cfg_string(fp, "ozone_menu_color_theme", "13");
+    /* Follow Leaf's UI language. RetroArch ships the translations already, so
+       this one integer is what makes its menus Chinese; the CJK font it needs to
+       draw them arrives in the same asset bundle Ozone reads. Values are
+       RETRO_LANGUAGE_* from libretro.h, not a guess: English 0, Simplified
+       Chinese 12. Anything else falls back to English rather than shipping a
+       half-translated menu in a language nobody selected. */
+    {
+        const char *ui_lang = jw__env_value("JAWAKA_LANGUAGE");
+        const char *retro_lang = "0";
+        if (ui_lang && strcmp(ui_lang, "zh_CN") == 0) {
+            retro_lang = "12";
+        }
+        jw__retroarch_cfg_string(fp, "user_language", retro_lang);
+    }
     /* Pin RA's reported refresh to the live panel rate the daemon read from the
        active DRM mode. RA's frame pacing — and Black Frame Insertion's
        refresh-aware cadence — misfire if it believes 60Hz while the panel runs
