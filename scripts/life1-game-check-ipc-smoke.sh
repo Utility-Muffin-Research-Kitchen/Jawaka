@@ -181,16 +181,14 @@ grep -F 'life1: verified service stop service=' "$LOG" >/dev/null
 grep -F 'life1: writer started' "$LOG" >/dev/null
 grep -F 'life1: launch status stage=checking' "$LOG" >/dev/null
 grep -F 'life1: launch status stage=stopping' "$LOG" >/dev/null
-grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
+! grep -F 'life1: launch status stage=starting' "$LOG" >/dev/null
 stop_line="$(grep -n -F 'life1: verified service stop service=' "$LOG" | tail -1 | cut -d: -f1)"
 writer_line="$(grep -n -F 'life1: writer started' "$LOG" | tail -1 | cut -d: -f1)"
 checking_line="$(grep -n -F 'life1: launch status stage=checking' "$LOG" | head -1 | cut -d: -f1)"
 stopping_line="$(grep -n -F 'life1: launch status stage=stopping' "$LOG" | tail -1 | cut -d: -f1)"
-starting_line="$(grep -n -F 'life1: launch status stage=starting' "$LOG" | tail -1 | cut -d: -f1)"
 [ "$checking_line" -lt "$stopping_line" ]
 [ "$stopping_line" -le "$stop_line" ]
-[ "$stop_line" -lt "$starting_line" ]
-[ "$starting_line" -le "$writer_line" ]
+[ "$stop_line" -le "$writer_line" ]
 
 case "$SCENARIO" in
     game-check-wait|game-check-play|game-check-expiry)

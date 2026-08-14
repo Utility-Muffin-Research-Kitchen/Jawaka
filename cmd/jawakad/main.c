@@ -6457,12 +6457,12 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         }
     }
 
-    /* LIFE-1 represents one authoritative writer launch at a time. Retargeting
-       RetroArch in-process would replace the content writer under the current
-       launch_id, without an old-group barrier/game.finish or a durable record
-       and game.start for the new title. Require the cold handoff below. */
-    if (resident_eligible) {
-        jw_log_info("resident switch disabled by LIFE-1 writer boundary; using cold handoff");
+    /* A participating lifecycle service needs the old writer barrier and a
+       fresh launch exchange. Without one, keep the original resident path: the
+       process group and source binding are unchanged. */
+    if (resident_eligible &&
+        jw_svc_supervisor_game_has_participant(state->services)) {
+        jw_log_info("resident switch disabled by active LIFE-1 participant; using cold handoff");
         resident_eligible = false;
     }
 
@@ -6771,7 +6771,8 @@ static int jw__osd_show_brightness(jw_daemon_state *state, int percent) {
 
 static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
                                int pending_items) {
-    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
+    if (!state || !stage || !state->osd_socket_path ||
+        jw__env_is_disabled("JAWAKA_OSD")) {
         return -1;
     }
     if (state->osd_pid <= 0) {
@@ -6786,10 +6787,10 @@ static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
     } else {
         snprintf(request, sizeof(request),
                  "{\"type\":\"show-game-launch\",\"stage\":\"%s\"}",
-                 stage ? stage : "starting");
+                 stage);
     }
     jw_log_info("life1: launch status stage=%s pending_items=%d",
-                stage ? stage : "starting", pending_items < 0 ? 0 : pending_items);
+                stage, pending_items < 0 ? 0 : pending_items);
     char *response = NULL;
     size_t response_len = 0;
     /* A visual hint must never extend a service's LIFE-1 acknowledgement
@@ -6800,7 +6801,7 @@ static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
     free(response);
     if (rc != 0) {
         jw_log_warn("life1: launch OSD request failed stage=%s",
-                    stage ? stage : "starting");
+                    stage);
     }
     return rc;
 }
@@ -11705,7 +11706,6 @@ static int jw__game_coordination_launch_if_ready(jw_daemon_state *state) {
         jw__game_coordination_abort(state, "source-binding-changed");
         return -1;
     }
-    (void)jw__osd_game_launch(state, "starting", 0);
     state->game_coordination_pending = false;
     if (state->child_pid > 0 && state->child_kind == JW_CHILD_LAUNCHER) {
         state->game_coordination_ready = true;

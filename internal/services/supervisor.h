@@ -393,6 +393,9 @@ int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
  * game_finish only releases the gate; tick performs remembered starts. */
 void jw_svc_supervisor_game_set_active(jw_svc_supervisor *sup, bool active);
 bool jw_svc_supervisor_game_active(const jw_svc_supervisor *sup);
+/* True while a non-ignore service is either still running for the current
+ * game or waiting to restart after Jawaka stopped it for that game. */
+bool jw_svc_supervisor_game_has_participant(const jw_svc_supervisor *sup);
 bool jw_svc_supervisor_game_stop_service(jw_svc_supervisor *sup,
                                          const char *service_id,
                                          const jw_svc_subscriber_binding *coordinator,

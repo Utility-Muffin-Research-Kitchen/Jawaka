@@ -2121,18 +2121,22 @@ static void test_game_gate_stop_and_resume(void) {
     jw_svc_supervisor *sup = fixture_open(&f, reason);
     CHECK(sup != NULL);
     CHECK(jw_svc_supervisor_scan(sup) == 3);
+    CHECK(!jw_svc_supervisor_game_has_participant(sup));
+    CHECK(jw_svc_supervisor_run(sup, ignore_id, reason, sizeof(reason)));
+    CHECK(wait_for_state(sup, ignore_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(!jw_svc_supervisor_game_has_participant(sup));
     CHECK(jw_svc_supervisor_run(sup, stop_id, reason, sizeof(reason)));
     CHECK(jw_svc_supervisor_run(sup, notify_id, reason, sizeof(reason)));
-    CHECK(jw_svc_supervisor_run(sup, ignore_id, reason, sizeof(reason)));
     CHECK(wait_for_state(sup, stop_id, JW_SVC_STATE_RUNNING, 3000));
     CHECK(wait_for_state(sup, notify_id, JW_SVC_STATE_RUNNING, 3000));
-    CHECK(wait_for_state(sup, ignore_id, JW_SVC_STATE_RUNNING, 3000));
+    CHECK(jw_svc_supervisor_game_has_participant(sup));
 
     CHECK(jw_svc_supervisor_game_stop_service(
         sup, stop_id, NULL, NULL, reason, sizeof(reason)));
     CHECK(jw_svc_supervisor_game_active(sup));
     const jw_svc_supervised *stop = jw_svc_supervisor_find(sup, stop_id);
     CHECK(stop && stop->pgid <= 0 && stop->game_restart_pending);
+    CHECK(jw_svc_supervisor_game_has_participant(sup));
     CHECK(!jw_svc_supervisor_run(sup, stop_id, reason, sizeof(reason)));
     CHECK(strcmp(reason, "lifecycle-in-progress") == 0);
     CHECK(!jw_svc_supervisor_restart(sup, notify_id,
@@ -2149,6 +2153,7 @@ static void test_game_gate_stop_and_resume(void) {
         jw_svc_supervisor_find(sup, ignore_id);
     CHECK(notify && notify->pgid <= 0 && notify->game_restart_pending);
     CHECK(ignore && ignore->pgid > 0);
+    CHECK(jw_svc_supervisor_game_has_participant(sup));
     for (int i = 0; i < 20; i++) {
         jw_svc_supervisor_tick(sup);
         usleep(20000);
@@ -2168,6 +2173,7 @@ static void test_game_gate_stop_and_resume(void) {
     CHECK(notify && !notify->game_restart_pending);
 
     CHECK(jw_svc_supervisor_stop_all(sup) == 0);
+    CHECK(!jw_svc_supervisor_game_has_participant(sup));
     jw_svc_supervisor_close(sup);
     fixture_teardown(&f);
 }

@@ -9,7 +9,6 @@ const char *jw_osd_game_stage_name(jw_osd_game_stage stage) {
         case JW_OSD_GAME_CHECKING: return "checking";
         case JW_OSD_GAME_SYNCING:  return "syncing";
         case JW_OSD_GAME_STOPPING: return "stopping";
-        case JW_OSD_GAME_STARTING: return "starting";
     }
     return "unknown";
 }
@@ -35,8 +34,6 @@ bool jw_osd_game_launch_parse(const cJSON *root,
         *stage = JW_OSD_GAME_SYNCING;
     } else if (strcmp(stage_item->valuestring, "stopping") == 0) {
         *stage = JW_OSD_GAME_STOPPING;
-    } else if (strcmp(stage_item->valuestring, "starting") == 0) {
-        *stage = JW_OSD_GAME_STARTING;
     } else {
         return false;
     }
@@ -68,20 +65,18 @@ void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
     }
     switch (stage) {
         case JW_OSD_GAME_CHECKING:
-            snprintf(title, title_size, "CHECKING SAVES");
+            snprintf(title, title_size, "SYNCTHING: CHECKING SAVES");
             break;
         case JW_OSD_GAME_SYNCING:
             if (pending_items < 0) pending_items = 0;
             snprintf(title, title_size, pending_items == 1
-                         ? "SYNCING %d ITEM" : "SYNCING %d ITEMS",
+                         ? "SYNCTHING: SYNCING %d ITEM"
+                         : "SYNCTHING: SYNCING %d ITEMS",
                      pending_items);
             snprintf(action, action_size, "MENU: START NOW");
             break;
         case JW_OSD_GAME_STOPPING:
-            snprintf(title, title_size, "MAKING SAVES SAFE");
-            break;
-        case JW_OSD_GAME_STARTING:
-            snprintf(title, title_size, "STARTING GAME");
+            snprintf(title, title_size, "SYNCTHING: STOPPING");
             break;
     }
 }
