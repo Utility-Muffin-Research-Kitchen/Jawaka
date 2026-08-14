@@ -8602,26 +8602,35 @@ static jw__rop_gate_result jw__raofflineproxy_route(
         state->services
             ? jw_svc_supervisor_find(state->services, JW_ROP_SERVICE_ID)
             : NULL;
-    /* Absent, invalid, or session-stopped: zero proxy wait.
-       session_run is the whole test, and desired_enabled is deliberately NOT
-       part of it. They are independent (supervisor.h): desired_enabled is the
-       persistent "Start with Leaf" autostart preference, while session_run is
-       set whenever the service is actually running this session -- by
-       autostart OR by the user pressing Run -- and cleared when they stop it.
-       Requiring both meant a service the user had started by hand, healthy and
-       serving, was ignored by every launch because Start with Leaf happened to
-       be off. Using session_run alone gives all four cases the behavior the
-       plan specifies: autostarted routes, hand-started routes, session-stopped
-       goes direct with zero wait, and never-started goes direct. */
+    /* Route on what the service IS DOING, not on either intent flag.
+       desired_enabled ("Start with Leaf") and session_run ("Run") are
+       independent, and neither alone identifies a usable proxy:
+
+         - session_run is set by the Run op and by restart, but NOT by
+           autostart (supervisor.c's autostart tick calls jw__start_generation
+           and persists "autostart" without touching it), so gating on it
+           ignores a service the user enabled and the daemon started at boot --
+           the common case.
+         - desired_enabled is a durable preference that says nothing about
+           whether a process exists right now, so gating on it would wait on a
+           service the user has explicitly stopped.
+
+       A live pgid in RUNNING or STARTING is the only thing that means "there
+       may be a proxy to talk to", and it is true however the service got
+       there. Everything else is direct with zero wait, which is exactly what
+       the plan asks for: absent, invalid, disabled, or session-stopped. */
+    bool service_live = entry && entry->pgid > 0 &&
+                        (entry->state == JW_SVC_STATE_RUNNING ||
+                         entry->state == JW_SVC_STATE_STARTING);
     if (!entry || !entry->pak_present || !entry->manifest_valid ||
-        !entry->session_run) {
+        !service_live) {
         jw_log_info("RAOfflineProxy: direct launch (service %s)",
                     !entry ? "absent"
                     : !entry->pak_present || !entry->manifest_valid
                         ? "invalid"
-                    : entry->desired_enabled
-                        ? "stopped this session"
-                        : "not running");
+                    : entry->desired_enabled || entry->session_run
+                        ? "not running"
+                        : "not enabled");
         return JW__ROP_GATE_DIRECT;
     }
     /* A durable Hardcore setting selects direct play and never routes
