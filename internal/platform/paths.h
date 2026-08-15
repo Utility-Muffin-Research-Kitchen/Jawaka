@@ -74,10 +74,33 @@ void jw_retroarch_launch_snapshot_init(jw_retroarch_launch_snapshot *snapshot);
  * proxy. */
 void jw_retroarch_launch_snapshot_capture(jw_retroarch_launch_snapshot *snapshot,
                                            const char *shared_text);
-/* Durable shared Hardcore flag: true only when the shared config carries
- * cheevos_hardcore_mode_enable = "true". Such launches always go direct. */
+/* Durable shared Hardcore flag. Such launches always go direct.
+ *
+ * Fails CLOSED: true when the shared config says "true", and also true when
+ * the config exists but cannot be read. A read failure must not be reported as
+ * "Hardcore off", because that routes a hardcore session through the
+ * casual-only proxy and quietly earns its achievements as casual. Going direct
+ * when we cannot tell costs a casual user offline achievements for that
+ * launch; guessing the other way costs a hardcore user their run. */
 bool jw_retroarch_shared_hardcore_enabled(const char *sdcard_root);
-/* Heap copy of the shared RetroArch config text, or NULL if absent/unreadable. */
+
+typedef enum {
+    JW_SHARED_CFG_OK = 0,       /* text loaded; caller frees */
+    JW_SHARED_CFG_ABSENT,       /* no shared config on the card */
+    JW_SHARED_CFG_UNREADABLE,   /* it exists, but could not be read */
+} jw_shared_config_status;
+
+/* Heap copy of the shared RetroArch config text.
+ *
+ * Absent and unreadable are reported separately because they demand opposite
+ * responses: a device with no shared config yet has no durable settings to
+ * honor, while one whose config cannot be read has settings we must not
+ * assume anything about. Callers that conflate them make the safe case and
+ * the dangerous case look identical. */
+char *jw_retroarch_shared_config_read_status(const char *sdcard_root,
+                                             jw_shared_config_status *status);
+/* Convenience wrapper for callers that genuinely do not care why: NULL for
+ * both absent and unreadable. */
 char *jw_retroarch_shared_config_read(const char *sdcard_root);
 
 int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdcard_root,

@@ -117,6 +117,15 @@ bool jw_raofflineproxy_health_ready(const char *host, uint16_t port,
         if (fdflags >= 0) {
             (void)fcntl(fd, F_SETFD, fdflags | FD_CLOEXEC);
         }
+#if defined(SO_NOSIGPIPE)
+        /* BSD/macOS: suppress SIGPIPE for every write on this socket, not just
+         * the ones that remember a flag. A probe that kills jawakad because
+         * the proxy closed early would be a spectacular way to fail a
+         * readiness check. */
+        int nosigpipe = 1;
+        (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe,
+                         sizeof(nosigpipe));
+#endif
     }
 
     bool ready = false;
@@ -149,8 +158,17 @@ bool jw_raofflineproxy_health_ready(const char *host, uint16_t port,
             if (jw__rop_wait_fd(fd, POLLOUT, deadline_ms) != 1) {
                 goto out;
             }
+            /* Guarded the way internal/ipc/ipc_stream.c already guards it.
+             * Both platforms we build for do define MSG_NOSIGNAL -- this is
+             * not fixing a broken build -- but one TU assuming it while its
+             * neighbour does not is the kind of difference that only shows up
+             * on the toolchain nobody tested. */
+#if defined(MSG_NOSIGNAL)
             ssize_t n = send(fd, request + sent, (size_t)request_len - sent,
                              MSG_NOSIGNAL);
+#else
+            ssize_t n = send(fd, request + sent, (size_t)request_len - sent, 0);
+#endif
             if (n < 0) {
                 if (errno == EINTR) {
                     continue;

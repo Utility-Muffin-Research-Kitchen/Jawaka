@@ -300,6 +300,13 @@ static int jw__retroarch_storage_dirs(const char *sdroot_abs,
     return 0;
 }
 
+/* The shared RetroArch config is the one file here that RetroArch itself
+ * grows: save-on-exit rewrites it with every option it knows, and the
+ * qualification device already sits at 112 KB. A ceiling it can cross turns
+ * into "config missing" at every reader at once, so it is generous and named
+ * rather than a literal repeated at each call site. */
+#define JW_RETROARCH_CONFIG_READ_MAX (4u * 1024u * 1024u)
+
 static char *jw__read_text_file(const char *path, size_t max_size) {
     if (!path || max_size == 0) {
         return NULL;
@@ -2149,7 +2156,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
         defaults_text = jw__read_text_file(defaults_path, 256u * 1024u);
     }
     if (jw__path_exists(shared_path)) {
-        shared_text = jw__read_text_file(shared_path, 256u * 1024u);
+        shared_text = jw__read_text_file(shared_path, JW_RETROARCH_CONFIG_READ_MAX);
     }
 
     FILE *fp = fopen(runtime_path, "wb");
@@ -2337,7 +2344,12 @@ void jw_retroarch_launch_snapshot_capture(jw_retroarch_launch_snapshot *snapshot
         snapshot->hardcore_line, sizeof(snapshot->hardcore_line));
 }
 
-char *jw_retroarch_shared_config_read(const char *sdcard_root) {
+char *jw_retroarch_shared_config_read_status(const char *sdcard_root,
+                                            jw_shared_config_status *status) {
+    jw_shared_config_status local = JW_SHARED_CFG_UNREADABLE;
+    if (status) {
+        *status = local;
+    }
     if (!sdcard_root || !sdcard_root[0]) {
         return NULL;
     }
@@ -2345,14 +2357,46 @@ char *jw_retroarch_shared_config_read(const char *sdcard_root) {
     if (!shared_path) {
         return NULL;
     }
-    char *text = jw__read_text_file(shared_path, 256u * 1024u);
+
+    /* stat first, so "no file" is distinguishable from "file we could not
+     * read" -- the same distinction the controller-pin path already makes a
+     * few hundred lines up, and for the same reason. */
+    struct stat st;
+    bool present = stat(shared_path, &st) == 0;
+    char *text = jw__read_text_file(shared_path, JW_RETROARCH_CONFIG_READ_MAX);
+    if (text) {
+        local = JW_SHARED_CFG_OK;
+    } else if (!present) {
+        local = JW_SHARED_CFG_ABSENT;
+    } else {
+        local = JW_SHARED_CFG_UNREADABLE;
+        jw_log_warn("shared RetroArch config exists but could not be read: %s",
+                    shared_path);
+    }
     free(shared_path);
+    if (status) {
+        *status = local;
+    }
     return text;
 }
 
+char *jw_retroarch_shared_config_read(const char *sdcard_root) {
+    return jw_retroarch_shared_config_read_status(sdcard_root, NULL);
+}
+
 bool jw_retroarch_shared_hardcore_enabled(const char *sdcard_root) {
-    char *shared_text = jw_retroarch_shared_config_read(sdcard_root);
+    jw_shared_config_status status = JW_SHARED_CFG_UNREADABLE;
+    char *shared_text = jw_retroarch_shared_config_read_status(sdcard_root, &status);
     if (!shared_text) {
+        /* Fail closed. An unreadable config is not evidence of casual play,
+         * and treating it as such routes a possibly-hardcore session through
+         * the casual-only proxy. Only a genuinely absent config means "no
+         * durable Hardcore setting exists". */
+        if (status == JW_SHARED_CFG_UNREADABLE) {
+            jw_log_warn("RAOfflineProxy: shared config unreadable; "
+                        "treating Hardcore as enabled and launching direct");
+            return true;
+        }
         return false;
     }
     /* First match, not last: this decision must agree with what RetroArch will

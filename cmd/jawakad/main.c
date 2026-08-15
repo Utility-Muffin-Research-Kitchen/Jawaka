@@ -8652,11 +8652,21 @@ static jw__rop_gate_result jw__raofflineproxy_route(
             if (jw_raofflineproxy_health_ready(JW_ROP_HEALTH_HOST,
                                                JW_ROP_HEALTH_PORT,
                                                remaining_ms)) {
-                char *shared_text =
-                    jw_retroarch_shared_config_read(state->sdcard_root);
+                /* The snapshot is what restores the user's durable cheevos
+                 * lines on exit. If the shared config exists but cannot be
+                 * read there is nothing to restore from, so proxying would
+                 * mean overriding settings we could never put back. Absent is
+                 * different and fine: there are no durable lines to lose. */
+                jw_shared_config_status shared_status = JW_SHARED_CFG_UNREADABLE;
+                char *shared_text = jw_retroarch_shared_config_read_status(
+                    state->sdcard_root, &shared_status);
                 if (shared_text) {
                     jw_retroarch_launch_snapshot_capture(snapshot, shared_text);
                     free(shared_text);
+                } else if (shared_status == JW_SHARED_CFG_UNREADABLE) {
+                    jw_log_warn("RAOfflineProxy: shared config unreadable; "
+                                "direct launch (cannot restore on exit)");
+                    return JW__ROP_GATE_DIRECT;
                 }
                 snapshot->proxied = true;
                 jw_log_info("RAOfflineProxy: service healthy; proxied launch");

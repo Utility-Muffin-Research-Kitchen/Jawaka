@@ -92,10 +92,24 @@ static void *fake_health_server_run(void *arg) {
     if (client < 0) {
         return NULL;
     }
-    char drain[512];
+    /* recv() does not NUL-terminate, so the buffer must be terminated before
+     * any string walk -- and the header terminator can straddle two reads, so
+     * scanning only the latest chunk can miss it. Accumulate, terminate, then
+     * search. */
+    char drain[1024];
+    size_t drained = 0;
     struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    while (recv(client, drain, sizeof(drain), 0) > 0) {
+    for (;;) {
+        if (drained + 1 >= sizeof(drain)) {
+            break;
+        }
+        ssize_t n = recv(client, drain + drained, sizeof(drain) - drained - 1, 0);
+        if (n <= 0) {
+            break;
+        }
+        drained += (size_t)n;
+        drain[drained] = '\0';
         if (strstr(drain, "\r\n\r\n") != NULL) {
             break;
         }
@@ -324,6 +338,62 @@ int main(void) {
     }
     if (jw_retroarch_shared_hardcore_enabled(root)) {
         return fail("Hardcore gate honored a later duplicate over the first");
+    }
+
+    /* Read failure must fail CLOSED. jw__read_text_file returns NULL for
+     * "absent" and for "there but unreadable" alike, and the gate used to
+     * report both as Hardcore off -- which routes a possibly-hardcore session
+     * through the casual-only proxy and earns its achievements as casual.
+     *
+     * Oversize is the reachable form of unreadable and the one worth pinning:
+     * RetroArch rewrites this file on every exit with every option it knows,
+     * and the qualification device already sits at 112 KB. chmod would not do
+     * as a fixture -- these tests can run as root, where it proves nothing. */
+    {
+        FILE *fp = fopen(shared_cfg, "wb");
+        if (!fp) {
+            return fail("oversize hardcore fixture open failed");
+        }
+        /* One byte past the reader's ceiling. */
+        size_t target = (4u * 1024u * 1024u) + 1u;
+        char chunk[4096];
+        memset(chunk, 'x', sizeof(chunk));
+        for (size_t written = 0; written < target; written += sizeof(chunk)) {
+            if (fwrite(chunk, 1, sizeof(chunk), fp) != sizeof(chunk)) {
+                fclose(fp);
+                return fail("oversize hardcore fixture write failed");
+            }
+        }
+        fclose(fp);
+    }
+    if (!jw_retroarch_shared_hardcore_enabled(root)) {
+        return fail("unreadable shared config reported Hardcore off; "
+                    "a hardcore session would route through the casual proxy");
+    }
+    {
+        jw_shared_config_status status = JW_SHARED_CFG_OK;
+        char *text = jw_retroarch_shared_config_read_status(root, &status);
+        if (text || status != JW_SHARED_CFG_UNREADABLE) {
+            free(text);
+            return fail("oversize shared config not reported as unreadable");
+        }
+    }
+
+    /* Absent is the opposite case and must stay open: a device with no shared
+     * config has no durable Hardcore setting, so casual play may proxy. */
+    if (remove(shared_cfg) != 0) {
+        return fail("could not remove shared config fixture");
+    }
+    if (jw_retroarch_shared_hardcore_enabled(root)) {
+        return fail("absent shared config reported Hardcore on");
+    }
+    {
+        jw_shared_config_status status = JW_SHARED_CFG_OK;
+        char *text = jw_retroarch_shared_config_read_status(root, &status);
+        if (text || status != JW_SHARED_CFG_ABSENT) {
+            free(text);
+            return fail("absent shared config not reported as absent");
+        }
     }
 
     /* Restore the single-value hardcore fixture for the cycle below. */
