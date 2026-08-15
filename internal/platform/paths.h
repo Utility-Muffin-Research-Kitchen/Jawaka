@@ -34,12 +34,77 @@ bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t err
 char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdcard_root,
                                         const char *core_path,
                                         const int player_joypad_indices[4]);
+/* proxied_cheevos: when true this launch was routed through RAOfflineProxy, so
+ * cheevos_custom_host and cheevos_hardcore_mode_enable are stripped from the
+ * merged defaults/shared text and emitted exactly once with the proxy values.
+ * Emitting them once is required, not cosmetic: RetroArch's config parser
+ * keeps the FIRST occurrence of a key and drops every later duplicate
+ * (libretro-common/file/config_file.c -- "Only add entry to the map if an
+ * entry with the specified value does not already exist"), so an override
+ * appended after a value merged in from the shared config would be silently
+ * ignored and the launch would talk straight to retroachievements.org. */
 char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_root,
                                    const char *core_path,
                                    const int player_joypad_indices[4],
                                    bool persist_changes,
+                                   bool proxied_cheevos,
                                    char *error, size_t error_size);
+
+/* RAOfflineProxy transient launch bridge (umrk-workspace/plans/RAOfflineProxy).
+ * When a game launch is routed through the offline-achievements proxy, the
+ * daemon injects cheevos_custom_host/cheevos_hardcore_mode_enable only into
+ * the owner-only per-launch config and snapshots the exact prior shared lines
+ * (including absence) here. The snapshot rides into the post-exit backup,
+ * which restores the prior lines byte-identically instead of persisting the
+ * injected runtime values. proxied=false marks an ordinary direct launch and
+ * makes the snapshot a strict no-op everywhere. */
+#define JW_RETROARCH_SNAPSHOT_LINE_MAX 512
+typedef struct {
+    bool proxied;
+    bool custom_host_present;
+    char custom_host_line[JW_RETROARCH_SNAPSHOT_LINE_MAX];
+    bool hardcore_present;
+    char hardcore_line[JW_RETROARCH_SNAPSHOT_LINE_MAX];
+} jw_retroarch_launch_snapshot;
+
+void jw_retroarch_launch_snapshot_init(jw_retroarch_launch_snapshot *snapshot);
+/* Capture the exact shared-config lines for cheevos_custom_host and
+ * cheevos_hardcore_mode_enable (presence included). Does not mark the launch
+ * proxied; the caller sets proxied only once routing actually chose the
+ * proxy. */
+void jw_retroarch_launch_snapshot_capture(jw_retroarch_launch_snapshot *snapshot,
+                                           const char *shared_text);
+/* Durable shared Hardcore flag. Such launches always go direct.
+ *
+ * Fails CLOSED: true when the shared config says "true", and also true when
+ * the config exists but cannot be read. A read failure must not be reported as
+ * "Hardcore off", because that routes a hardcore session through the
+ * casual-only proxy and quietly earns its achievements as casual. Going direct
+ * when we cannot tell costs a casual user offline achievements for that
+ * launch; guessing the other way costs a hardcore user their run. */
+bool jw_retroarch_shared_hardcore_enabled(const char *sdcard_root);
+
+typedef enum {
+    JW_SHARED_CFG_OK = 0,       /* text loaded; caller frees */
+    JW_SHARED_CFG_ABSENT,       /* no shared config on the card */
+    JW_SHARED_CFG_UNREADABLE,   /* it exists, but could not be read */
+} jw_shared_config_status;
+
+/* Heap copy of the shared RetroArch config text.
+ *
+ * Absent and unreadable are reported separately because they demand opposite
+ * responses: a device with no shared config yet has no durable settings to
+ * honor, while one whose config cannot be read has settings we must not
+ * assume anything about. Callers that conflate them make the safe case and
+ * the dangerous case look identical. */
+char *jw_retroarch_shared_config_read_status(const char *sdcard_root,
+                                             jw_shared_config_status *status);
+/* Convenience wrapper for callers that genuinely do not care why: NULL for
+ * both absent and unreadable. */
+char *jw_retroarch_shared_config_read(const char *sdcard_root);
+
 int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdcard_root,
+                               const jw_retroarch_launch_snapshot *snapshot,
                                char *error, size_t error_size);
 int jw_reset_retroarch_shared_config(const char *sdcard_root,
                                      char *status, size_t status_size);

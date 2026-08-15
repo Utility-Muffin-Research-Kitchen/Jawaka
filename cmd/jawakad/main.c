@@ -16,6 +16,7 @@
 #include "internal/platform/input_proxy.h"
 #include "internal/platform/input_roster.h"
 #include "internal/platform/paths.h"
+#include "internal/platform/raofflineproxy.h"
 #include "internal/platform/wifi.h"
 #include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
@@ -122,6 +123,11 @@ typedef struct {
     char core_id[64];
     char core_config_folder[256];
     char config_path[PATH_MAX];
+    /* RAOfflineProxy transient launch bridge: proxied sessions carry the
+       exact pre-launch shared lines so the exit-time backup restores them
+       instead of persisting the injected proxy overrides. Zeroed by
+       session clear; proxied=false means ordinary direct launch. */
+    jw_retroarch_launch_snapshot config_snapshot;
     int resident_switches;
     bool persist_config;
     bool audio_bluetooth;
@@ -382,6 +388,9 @@ typedef struct {
     bool game_launch_blocked_resume_switcher;
     bool pending_launch_override_unverified;
     bool pending_launch_skip_check;
+    /* RAOfflineProxy routing outcome for the current pending RetroArch
+       launch (proxied=false for direct/standalone/non-gated launches). */
+    jw_retroarch_launch_snapshot pending_rop_snapshot;
     bool game_launch_blocked_requires_verified_stop;
     bool game_check_decision;
     int game_check_pending_items;
@@ -5019,6 +5028,7 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
     if (session->config_path[0] && session->persist_config && !switcher_transition) {
         char error[256];
         if (jw_backup_retroarch_config(session->config_path, state->sdcard_root,
+                                       &session->config_snapshot,
                                        error, sizeof(error)) != 0) {
             jw_log_warn("RetroArch shared config backup failed: %s",
                         error[0] ? error : session->config_path);
@@ -8560,6 +8570,121 @@ static int jw__spawn_authorized_pending_game(jw_daemon_state *state) {
     return jw__spawn_retroarch(state);
 }
 
+/* Defined below with the rest of the LIFE-1 coordination machinery; the
+   RAOfflineProxy gate arms the same fail-closed dialog channel. */
+static void jw__game_coordination_block(jw_daemon_state *state,
+                                        const char *service_id,
+                                        const char *reason);
+
+/* -- RAOfflineProxy transient launch bridge ---------------------------------
+   The library game-launch path is the only site that waits on, injects for,
+   or prompts about the offline-achievements proxy (the RetroArch pak runner
+   launches --menu with no content and never touches this). One bounded
+   routing decision per launch; no new generic service contract. */
+typedef enum {
+    JW__ROP_GATE_DIRECT = 0,
+    JW__ROP_GATE_PROXIED,
+    JW__ROP_GATE_BLOCKED,
+} jw__rop_gate_result;
+
+static jw__rop_gate_result jw__raofflineproxy_route(
+    jw_daemon_state *state, jw_retroarch_launch_snapshot *snapshot) {
+    jw_retroarch_launch_snapshot_init(snapshot);
+    if (!state) {
+        return JW__ROP_GATE_DIRECT;
+    }
+    /* The launcher's Play Anyway answer is honored exactly once: direct
+       play, no further wait or prompt for this pending launch. */
+    if (state->pending_launch_override_unverified) {
+        return JW__ROP_GATE_DIRECT;
+    }
+    const jw_svc_supervised *entry =
+        state->services
+            ? jw_svc_supervisor_find(state->services, JW_ROP_SERVICE_ID)
+            : NULL;
+    /* Route on what the service IS DOING, not on either intent flag.
+       desired_enabled ("Start with Leaf") and session_run ("Run") are
+       independent, and neither alone identifies a usable proxy:
+
+         - session_run is set by the Run op and by restart, but NOT by
+           autostart (supervisor.c's autostart tick calls jw__start_generation
+           and persists "autostart" without touching it), so gating on it
+           ignores a service the user enabled and the daemon started at boot --
+           the common case.
+         - desired_enabled is a durable preference that says nothing about
+           whether a process exists right now, so gating on it would wait on a
+           service the user has explicitly stopped.
+
+       A live pgid in RUNNING or STARTING is the only thing that means "there
+       may be a proxy to talk to", and it is true however the service got
+       there. Everything else is direct with zero wait, which is exactly what
+       the plan asks for: absent, invalid, disabled, or session-stopped. */
+    bool service_live = entry && entry->pgid > 0 &&
+                        (entry->state == JW_SVC_STATE_RUNNING ||
+                         entry->state == JW_SVC_STATE_STARTING);
+    if (!entry || !entry->pak_present || !entry->manifest_valid ||
+        !service_live) {
+        jw_log_info("RAOfflineProxy: direct launch (service %s)",
+                    !entry ? "absent"
+                    : !entry->pak_present || !entry->manifest_valid
+                        ? "invalid"
+                    : entry->desired_enabled || entry->session_run
+                        ? "not running"
+                        : "not enabled");
+        return JW__ROP_GATE_DIRECT;
+    }
+    /* A durable Hardcore setting selects direct play and never routes
+       through the proxy (upstream cannot award offline Hardcore). */
+    if (jw_retroarch_shared_hardcore_enabled(state->sdcard_root)) {
+        jw_log_info("RAOfflineProxy: direct launch (durable Hardcore)");
+        return JW__ROP_GATE_DIRECT;
+    }
+    /* The user intends the service to run. Decide within one bounded window
+       (500 ms total): a running, healthy service routes through the proxy;
+       anything else earns the explicit bypass prompt. */
+    long long deadline_ms = jw__monotonic_ms() + JW_ROP_ROUTING_BUDGET_MS;
+    for (;;) {
+        if (entry->state == JW_SVC_STATE_RUNNING && entry->pgid > 0) {
+            int remaining_ms = (int)(deadline_ms - jw__monotonic_ms());
+            if (remaining_ms <= 0) {
+                break;
+            }
+            if (jw_raofflineproxy_health_ready(JW_ROP_HEALTH_HOST,
+                                               JW_ROP_HEALTH_PORT,
+                                               remaining_ms)) {
+                /* The snapshot is what restores the user's durable cheevos
+                 * lines on exit. If the shared config exists but cannot be
+                 * read there is nothing to restore from, so proxying would
+                 * mean overriding settings we could never put back. Absent is
+                 * different and fine: there are no durable lines to lose. */
+                jw_shared_config_status shared_status = JW_SHARED_CFG_UNREADABLE;
+                char *shared_text = jw_retroarch_shared_config_read_status(
+                    state->sdcard_root, &shared_status);
+                if (shared_text) {
+                    jw_retroarch_launch_snapshot_capture(snapshot, shared_text);
+                    free(shared_text);
+                } else if (shared_status == JW_SHARED_CFG_UNREADABLE) {
+                    jw_log_warn("RAOfflineProxy: shared config unreadable; "
+                                "direct launch (cannot restore on exit)");
+                    return JW__ROP_GATE_DIRECT;
+                }
+                snapshot->proxied = true;
+                jw_log_info("RAOfflineProxy: service healthy; proxied launch");
+                return JW__ROP_GATE_PROXIED;
+            }
+        }
+        if (jw__monotonic_ms() >= deadline_ms) {
+            break;
+        }
+        usleep(100 * 1000);
+    }
+    jw_log_info("RAOfflineProxy: service not ready after %dms; blocking launch",
+                JW_ROP_ROUTING_BUDGET_MS);
+    jw__game_coordination_block(state, JW_ROP_SERVICE_ID,
+                                "raofflineproxy-not-ready");
+    return JW__ROP_GATE_BLOCKED;
+}
+
 static int jw__spawn_retroarch(jw_daemon_state *state) {
     if (!state || !state->pending_launch) {
         return -1;
@@ -8636,6 +8761,11 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         jw_log_error("cannot launch RetroArch core from SD: %s", exec_error);
         goto fail;
     }
+
+    /* RAOfflineProxy routing ran earlier (jw__spawn_pending_game, where the
+       other fail-closed blocks live); this launch carries its outcome. A
+       BLOCKED result never reaches this function. */
+    jw_retroarch_launch_snapshot rop_snapshot = state->pending_rop_snapshot;
 
     jw__recover_legacy_flat(state, state->pending_launch_system, rom_abs,
                             source_root, core_id, core_config_folder,
@@ -8721,6 +8851,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                                                 core,
                                                 player_indices_arg,
                                                 persist_config,
+                                                rop_snapshot.proxied,
                                                 config_error,
                                                 sizeof(config_error));
     jw__cheevos_clear_env();
@@ -8729,6 +8860,14 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         jw_log_error("could not prepare RetroArch config: %s",
                      config_error[0] ? config_error : "unknown error");
         goto fail;
+    }
+    /* The two transient keys are written by jw_prepare_retroarch_config
+       itself, which also strips any merged-in copies so RetroArch's
+       first-occurrence-wins parser cannot silently prefer a shared value.
+       A failed write already aborted the launch above. */
+    if (rop_snapshot.proxied) {
+        jw_log_info("RAOfflineProxy: proxied launch (transient cheevos "
+                    "host + forced casual override)");
     }
     long long config_done_ms = jw__monotonic_ms();
 
@@ -8896,6 +9035,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                                 core, core_id, core_config_folder,
                                 runtime_config, persist_config,
                                 audio_bluetooth, launch_warning);
+    state->retroarch_session.config_snapshot = rop_snapshot;
     bool post_launch_resume = switcher_resume && !entryslot_resume &&
                               core_config_folder[0];
     if (post_launch_resume) {
@@ -11957,6 +12097,18 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
             }
         }
     }
+
+    /* RAOfflineProxy routing decision: bounded wait and fail-closed prompt
+       happen here, alongside the other blocks, never inside the writer spawn
+       (whose failure would re-abort with "writer-spawn-failed" and scramble
+       the blocked record the override flow depends on). RetroArch targets
+       only; standalone launches and the pak runner never route. */
+    if (target.kind == JW_LAUNCH_TARGET_RETROARCH &&
+        jw__raofflineproxy_route(state, &state->pending_rop_snapshot) ==
+            JW__ROP_GATE_BLOCKED) {
+        return -1;
+    }
+
     int launched = jw__game_coordination_launch_if_ready(state);
     return launched < 0 ? -1 : 0;
 }

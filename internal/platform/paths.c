@@ -300,6 +300,13 @@ static int jw__retroarch_storage_dirs(const char *sdroot_abs,
     return 0;
 }
 
+/* The shared RetroArch config is the one file here that RetroArch itself
+ * grows: save-on-exit rewrites it with every option it knows, and the
+ * qualification device already sits at 112 KB. A ceiling it can cross turns
+ * into "config missing" at every reader at once, so it is generous and named
+ * rather than a literal repeated at each call site. */
+#define JW_RETROARCH_CONFIG_READ_MAX (4u * 1024u * 1024u)
+
 static char *jw__read_text_file(const char *path, size_t max_size) {
     if (!path || max_size == 0) {
         return NULL;
@@ -498,6 +505,11 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "cheevos_enable",
         "cheevos_username",
         "cheevos_password",
+        /* RetroArch derives this from the baked-in account password; it is
+           not a user-owned setting and must never merge into the shared
+           FAT-card config as plaintext. The proxy's own cached token lives in
+           its retained userdata instead. */
+        "cheevos_token",
     };
 
     if (!key || !key[0]) {
@@ -531,8 +543,14 @@ static bool jw__retroarch_cfg_text_has_key(const char *text, const char *key) {
     return false;
 }
 
-static char *jw__retroarch_cfg_text_string_value(const char *text,
-                                                 const char *wanted_key) {
+/* first_match selects which duplicate wins when the text carries a key more
+ * than once. RetroArch keeps the FIRST occurrence and discards the rest
+ * (libretro-common/file/config_file.c), so any decision that must agree with
+ * what RetroArch will actually do has to pass true. Passing false keeps the
+ * historical last-wins behaviour for callers that predate this distinction. */
+static char *jw__retroarch_cfg_text_string_value_ex(const char *text,
+                                                    const char *wanted_key,
+                                                    bool first_match) {
     if (!text || !wanted_key || !wanted_key[0]) {
         return NULL;
     }
@@ -573,6 +591,9 @@ static char *jw__retroarch_cfg_text_string_value(const char *text,
                 value[value_len] = '\0';
                 free(result);
                 result = value;
+                if (first_match) {
+                    return result;
+                }
             }
         }
         if (!next) {
@@ -581,6 +602,11 @@ static char *jw__retroarch_cfg_text_string_value(const char *text,
         line = next + 1;
     }
     return result;
+}
+
+static char *jw__retroarch_cfg_text_string_value(const char *text,
+                                                 const char *wanted_key) {
+    return jw__retroarch_cfg_text_string_value_ex(text, wanted_key, false);
 }
 
 static bool jw__release_managed_shader_dir(const char *path) {
@@ -599,7 +625,7 @@ static bool jw__release_managed_shader_dir(const char *path) {
 
 static int jw__write_retroarch_cfg_filtered_skipping(
     FILE *fp, const char *text, const char *override_text, bool dedupe,
-    const char *skip_key) {
+    const char *const *skip_keys, size_t skip_key_count) {
     if (!fp || !text) {
         return -1;
     }
@@ -613,7 +639,10 @@ static int jw__write_retroarch_cfg_filtered_skipping(
         bool skip = false;
 
         if (has_key) {
-            skip = (skip_key && strcmp(key, skip_key) == 0) ||
+            for (size_t i = 0; i < skip_key_count && !skip; i++) {
+                skip = skip_keys[i] && strcmp(key, skip_keys[i]) == 0;
+            }
+            skip = skip ||
                    jw__retroarch_cfg_key_is_protected(key) ||
                    (override_text && jw__retroarch_cfg_text_has_key(override_text, key)) ||
                    (dedupe && next && jw__retroarch_cfg_text_has_key(next + 1, key));
@@ -639,7 +668,7 @@ static int jw__write_retroarch_cfg_filtered(FILE *fp, const char *text,
                                             const char *override_text,
                                             bool dedupe) {
     return jw__write_retroarch_cfg_filtered_skipping(
-        fp, text, override_text, dedupe, NULL);
+        fp, text, override_text, dedupe, NULL, 0);
 }
 
 static int jw__mkdir_child(const char *root, const char *name) {
@@ -2067,6 +2096,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
                                   const char *core_path,
                                   const int player_joypad_indices[4],
                                   bool persist_changes,
+                                  bool proxied_cheevos,
                                   char *error, size_t error_size) {
     jw__set_error(error, error_size, "");
     if (!runtime_dir || !runtime_dir[0] || !sdcard_root || !sdcard_root[0]) {
@@ -2126,7 +2156,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
         defaults_text = jw__read_text_file(defaults_path, 256u * 1024u);
     }
     if (jw__path_exists(shared_path)) {
-        shared_text = jw__read_text_file(shared_path, 256u * 1024u);
+        shared_text = jw__read_text_file(shared_path, JW_RETROARCH_CONFIG_READ_MAX);
     }
 
     FILE *fp = fopen(runtime_path, "wb");
@@ -2168,16 +2198,42 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
         }
     }
 
+    /* A proxied launch owns both cheevos keys for this session only, so they
+       must not also arrive from defaults or shared: RetroArch keeps the FIRST
+       occurrence of a key, so a merged-in value would win over the override
+       written below and the launch would bypass the proxy without saying so. */
+    const char *skip_keys[3];
+    size_t skip_key_count = 0;
+    if (migrate_release_shader_dir) {
+        skip_keys[skip_key_count++] = "video_shader_dir";
+    }
+    if (proxied_cheevos) {
+        skip_keys[skip_key_count++] = "cheevos_custom_host";
+        skip_keys[skip_key_count++] = "cheevos_hardcore_mode_enable";
+    }
+    /* The shader skip is scoped to the shared text only (a packaged default
+       is never a stale release-managed path), the cheevos skips to both. */
+    size_t defaults_skip_first = migrate_release_shader_dir ? 1u : 0u;
+
     if (defaults_text) {
-        jw__write_retroarch_cfg_filtered(fp, defaults_text, shared_text, false);
+        jw__write_retroarch_cfg_filtered_skipping(
+            fp, defaults_text, shared_text, false,
+            skip_keys + defaults_skip_first,
+            skip_key_count - defaults_skip_first);
     }
     if (shared_text) {
-        /* Preserve RetroArch's order and last-value-wins semantics. Deduplicating
-           here rescans the remaining text for every line; a normal 3,300-line
-           persisted config added about 500 ms to each MLP1 game launch. */
+        /* Preserve RetroArch's order and duplicate-resolution semantics.
+           Deduplicating here rescans the remaining text for every line; a
+           normal 3,300-line persisted config added about 500 ms to each MLP1
+           game launch. Note that RetroArch resolves duplicates by keeping the
+           FIRST occurrence and discarding the rest (libretro-common/file/
+           config_file.c: "Only add entry to the map if an entry with the
+           specified value does not already exist") -- passing the text through
+           unchanged is what preserves that, and it is also why a key Jawaka
+           needs to own for one launch has to be skipped here rather than
+           appended later. */
         jw__write_retroarch_cfg_filtered_skipping(
-            fp, shared_text, NULL, false,
-            migrate_release_shader_dir ? "video_shader_dir" : NULL);
+            fp, shared_text, NULL, false, skip_keys, skip_key_count);
     }
     /* Make the release-managed bundle browsable on first launch, but keep this
        key outside the protected section. A packaged default or a value already
@@ -2203,6 +2259,15 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
                                                             player_joypad_indices,
                                                             persist_changes,
                                                            error, error_size);
+    /* The only occurrence of either key in this file, because both were
+       skipped above. No scheme on the host: rcheevos prefixes "http://"
+       itself and the value must fit its 64-byte field. Hardcore is forced
+       off rather than derived -- proxied launches are casual-only and never
+       touch the durable user setting, which the exit-time backup restores. */
+    if (proxied_cheevos) {
+        jw__retroarch_cfg_string(fp, "cheevos_custom_host", "127.0.0.1:8080");
+        jw__retroarch_cfg_string(fp, "cheevos_hardcore_mode_enable", "false");
+    }
 
     int failed = protected_rc != 0 || ferror(fp);
     if (fclose(fp) != 0) {
@@ -2226,7 +2291,130 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
     return runtime_path;
 }
 
+/* Exact line (without the trailing newline or CR) carrying key, for the
+ * launch snapshot. Returns false when absent or when the line won't fit. */
+static bool jw__retroarch_cfg_text_line_for_key(const char *text,
+                                                const char *wanted_key,
+                                                char *out, size_t out_size) {
+    if (!text || !wanted_key || !wanted_key[0] || !out || out_size == 0) {
+        return false;
+    }
+    const char *line = text;
+    while (*line) {
+        const char *next = strchr(line, '\n');
+        size_t len = next ? (size_t)(next - line) : strlen(line);
+        while (len > 0 && line[len - 1] == '\r') {
+            len--;
+        }
+        char key[128];
+        if (jw__retroarch_cfg_line_key(line, len, key, sizeof(key)) &&
+            strcmp(key, wanted_key) == 0) {
+            if (len >= out_size) {
+                return false;
+            }
+            memcpy(out, line, len);
+            out[len] = '\0';
+            return true;
+        }
+        if (!next) {
+            break;
+        }
+        line = next + 1;
+    }
+    return false;
+}
+
+void jw_retroarch_launch_snapshot_init(jw_retroarch_launch_snapshot *snapshot) {
+    if (!snapshot) {
+        return;
+    }
+    memset(snapshot, 0, sizeof(*snapshot));
+}
+
+void jw_retroarch_launch_snapshot_capture(jw_retroarch_launch_snapshot *snapshot,
+                                           const char *shared_text) {
+    if (!snapshot || !shared_text) {
+        return;
+    }
+    snapshot->custom_host_present = jw__retroarch_cfg_text_line_for_key(
+        shared_text, "cheevos_custom_host",
+        snapshot->custom_host_line, sizeof(snapshot->custom_host_line));
+    snapshot->hardcore_present = jw__retroarch_cfg_text_line_for_key(
+        shared_text, "cheevos_hardcore_mode_enable",
+        snapshot->hardcore_line, sizeof(snapshot->hardcore_line));
+}
+
+char *jw_retroarch_shared_config_read_status(const char *sdcard_root,
+                                            jw_shared_config_status *status) {
+    jw_shared_config_status local = JW_SHARED_CFG_UNREADABLE;
+    if (status) {
+        *status = local;
+    }
+    if (!sdcard_root || !sdcard_root[0]) {
+        return NULL;
+    }
+    char *shared_path = jw__retroarch_shared_config_path(sdcard_root);
+    if (!shared_path) {
+        return NULL;
+    }
+
+    /* stat first, so "no file" is distinguishable from "file we could not
+     * read" -- the same distinction the controller-pin path already makes a
+     * few hundred lines up, and for the same reason. */
+    struct stat st;
+    bool present = stat(shared_path, &st) == 0;
+    char *text = jw__read_text_file(shared_path, JW_RETROARCH_CONFIG_READ_MAX);
+    if (text) {
+        local = JW_SHARED_CFG_OK;
+    } else if (!present) {
+        local = JW_SHARED_CFG_ABSENT;
+    } else {
+        local = JW_SHARED_CFG_UNREADABLE;
+        jw_log_warn("shared RetroArch config exists but could not be read: %s",
+                    shared_path);
+    }
+    free(shared_path);
+    if (status) {
+        *status = local;
+    }
+    return text;
+}
+
+char *jw_retroarch_shared_config_read(const char *sdcard_root) {
+    return jw_retroarch_shared_config_read_status(sdcard_root, NULL);
+}
+
+bool jw_retroarch_shared_hardcore_enabled(const char *sdcard_root) {
+    jw_shared_config_status status = JW_SHARED_CFG_UNREADABLE;
+    char *shared_text = jw_retroarch_shared_config_read_status(sdcard_root, &status);
+    if (!shared_text) {
+        /* Fail closed. An unreadable config is not evidence of casual play,
+         * and treating it as such routes a possibly-hardcore session through
+         * the casual-only proxy. Only a genuinely absent config means "no
+         * durable Hardcore setting exists". */
+        if (status == JW_SHARED_CFG_UNREADABLE) {
+            jw_log_warn("RAOfflineProxy: shared config unreadable; "
+                        "treating Hardcore as enabled and launching direct");
+            return true;
+        }
+        return false;
+    }
+    /* First match, not last: this decision must agree with what RetroArch will
+       actually do, and RetroArch keeps the first occurrence of a key. With
+       "true" first and "false" later, a last-wins read would report Hardcore
+       off and route a hardcore session through the casual-only proxy. Reading
+       the shared config for duplicates is not hypothetical -- the shared text
+       is passed through undeduplicated, so save-on-exit churn can leave two. */
+    char *value = jw__retroarch_cfg_text_string_value_ex(
+        shared_text, "cheevos_hardcore_mode_enable", true);
+    free(shared_text);
+    bool enabled = value && strcmp(value, "true") == 0;
+    free(value);
+    return enabled;
+}
+
 int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdcard_root,
+                               const jw_retroarch_launch_snapshot *snapshot,
                                char *error, size_t error_size) {
     jw__set_error(error, error_size, "");
     if (!runtime_config_path || !runtime_config_path[0] ||
@@ -2256,7 +2444,28 @@ int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdca
         return -1;
     }
 
-    int rc = jw__write_retroarch_cfg_filtered(fp, runtime_text, NULL, true);
+    /* Proxied launches: the injected runtime values are discarded and the
+       exact prior shared lines (including absence) restored. This is scoped
+       to the proxied launch only, so direct sessions keep persisting these
+       settings as ordinary user changes. */
+    bool restore_transient = snapshot && snapshot->proxied;
+    static const char *transient_keys[] = {
+        "cheevos_custom_host",
+        "cheevos_hardcore_mode_enable",
+    };
+    int rc;
+    if (restore_transient) {
+        rc = jw__write_retroarch_cfg_filtered_skipping(
+            fp, runtime_text, NULL, true, transient_keys, 2u);
+        if (rc == 0 && snapshot->custom_host_present) {
+            rc = fprintf(fp, "%s\n", snapshot->custom_host_line) < 0 ? -1 : 0;
+        }
+        if (rc == 0 && snapshot->hardcore_present) {
+            rc = fprintf(fp, "%s\n", snapshot->hardcore_line) < 0 ? -1 : 0;
+        }
+    } else {
+        rc = jw__write_retroarch_cfg_filtered(fp, runtime_text, NULL, true);
+    }
     if (fclose(fp) != 0) {
         rc = -1;
     }

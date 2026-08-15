@@ -9242,6 +9242,12 @@ static bool jw__surface_blocked_game_launch(
                      "Cancel leaves syncing active.",
                      blocked->pending_items,
                      blocked->pending_items == 1 ? "" : "s", size);
+        } else if (strcmp(blocked->reason, "raofflineproxy-not-ready") == 0) {
+            snprintf(message, sizeof(message),
+                     "Offline achievements unavailable.\n\nRAOfflineProxy is "
+                     "enabled but not responding. You can play now without "
+                     "offline achievements, or cancel and check the service "
+                     "in Settings > Services.");
         } else if (blocked->requires_verified_stop) {
             snprintf(message, sizeof(message),
                      "Sync needs attention.\n\nSyncthing could not be verified "
@@ -9255,10 +9261,14 @@ static bool jw__surface_blocked_game_launch(
                      blocked->service_id[0] ? blocked->service_id
                                             : "A background service");
         }
+        bool rop_not_ready =
+            strcmp(blocked->reason, "raofflineproxy-not-ready") == 0;
         cat_footer_item footer[] = {
             { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
             { .button = CAT_BTN_A,
-              .label = unsafe_card_binding ? "Stop & Play" : "Play Anyway",
+              .label = unsafe_card_binding ? "Stop & Play"
+                      : rop_not_ready  ? "Play without achievements"
+                                       : "Play Anyway",
               .is_confirm = true },
         };
         cat_message_opts opts = {

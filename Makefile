@@ -174,6 +174,7 @@ DAEMON_SRCS := \
 	internal/platform/calibration.c \
 	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
+	internal/platform/raofflineproxy.c \
 	internal/power/suspend_inhibit.c \
 	internal/retroarch/catalog.c \
 	internal/retroarch/command.c \
@@ -691,6 +692,11 @@ life1-game-unmanaged-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/
 life1-game-override-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
 	scripts/life1-game-override-ipc-smoke.sh
 
+raofflineproxy-bridge-ipc-smoke: jawakad jawaka-platformctl
+	scripts/raofflineproxy-bridge-ipc-smoke.sh
+
+.PHONY: raofflineproxy-bridge-ipc-smoke raofflineproxy-bridge-test
+
 life1-app-noevent-ipc-smoke: $(BUILD)/bin/life1-fixture-service
 	scripts/life1-app-noevent-ipc-smoke.sh
 
@@ -744,6 +750,14 @@ retroarch-config-test: | $(BUILD)/bin
 		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
 		internal/core/log.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/retroarch-config-test
+
+raofflineproxy-bridge-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/raofflineproxy-bridge-test \
+		internal/platform/raofflineproxy_bridge_test.c internal/platform/paths.c \
+		internal/platform/raofflineproxy.c \
+		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
+		internal/core/log.c third_party/cjson/cJSON.c -lpthread
+	$(BUILD)/bin/raofflineproxy-bridge-test
 
 retroarch-recording-path-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -DPLATFORM_MLP1 -o $(BUILD)/bin/retroarch-recording-path-test \

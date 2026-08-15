@@ -154,7 +154,7 @@ int main(void) {
 
     char error[256];
     char *runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
-                                                    true, error, sizeof(error));
+                                                    true, false, error, sizeof(error));
     if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail(error[0] ? error : "protected keys not normalized");
     }
@@ -168,7 +168,8 @@ int main(void) {
         !S_ISDIR(user_shader_stat.st_mode)) {
         return fail("durable user shader directory was not created");
     }
-    if (jw_backup_retroarch_config(runtime_cfg, root, error, sizeof(error)) != 0) {
+    if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                   error, sizeof(error)) != 0) {
         return fail(error[0] ? error : "backup failed");
     }
 
@@ -190,7 +191,7 @@ int main(void) {
         return fail("stale release shader config write failed");
     }
     runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
-                                              true, error, sizeof(error));
+                                              true, false, error, sizeof(error));
     if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail("stale release shader directory did not migrate to user state");
     }
@@ -213,7 +214,7 @@ int main(void) {
         return fail("custom shader config write failed");
     }
     runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
-                                              true, error, sizeof(error));
+                                              true, false, error, sizeof(error));
     if (!runtime_cfg || verify_runtime(runtime_cfg, custom_shaders) != 0) {
         return fail("custom shader directory did not win over bundle fallback");
     }
@@ -232,7 +233,7 @@ int main(void) {
         return fail("missing shader bundle fixture setup failed");
     }
     runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
-                                              true, error, sizeof(error));
+                                              true, false, error, sizeof(error));
     if (!runtime_cfg || verify_runtime(runtime_cfg, user_shaders) != 0) {
         return fail("missing shader bundle prevented config generation");
     }
@@ -259,7 +260,7 @@ int main(void) {
             return fail("override config write failed");
         }
         runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, indices,
-                                                  true, error, sizeof(error));
+                                                  true, false, error, sizeof(error));
         if (!runtime_cfg) {
             return fail(error[0] ? error : "roster config generation failed");
         }
@@ -298,6 +299,144 @@ int main(void) {
         free(runtime_cfg);
         if (!ok) {
             return fail("roster player indices not protected from overrides");
+        }
+    }
+
+    /* RAOfflineProxy transient launch bridge. The shared config deliberately
+       already carries both cheevos keys with foreign values, which is the
+       normal state once RetroArch has saved once. */
+    {
+        static const char shared_with_cheevos[] =
+            "menu_driver = \"rgui\"\n"
+            "cheevos_custom_host = \"example.invalid:9999\"\n"
+            "cheevos_hardcore_mode_enable = \"true\"\n";
+        if (write_text(shared_cfg, shared_with_cheevos) != 0) {
+            return fail("cheevos shared config write failed");
+        }
+
+        /* Direct launch: neither key is touched, both persist unchanged. */
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false,
+                                                  error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "direct cheevos config failed");
+        }
+        char *direct_runtime = read_text(runtime_cfg);
+        int direct_ok =
+            direct_runtime &&
+            key_count(direct_runtime, "cheevos_custom_host",
+                      "example.invalid:9999") == 1 &&
+            key_count(direct_runtime, "cheevos_hardcore_mode_enable",
+                      "= \"true\"") == 1;
+        free(direct_runtime);
+        if (!direct_ok) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail("direct launch did not pass through shared cheevos values");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+
+        /* Proxied launch: each key appears EXACTLY ONCE and carries the proxy
+           value. RetroArch keeps the first occurrence of a key and drops later
+           duplicates, so a surviving merged-in copy would silently win and the
+           session would bypass the proxy. */
+        jw_retroarch_launch_snapshot snapshot;
+        jw_retroarch_launch_snapshot_init(&snapshot);
+        char *shared_text = jw_retroarch_shared_config_read(root);
+        if (!shared_text) {
+            return fail("shared config read for snapshot failed");
+        }
+        jw_retroarch_launch_snapshot_capture(&snapshot, shared_text);
+        free(shared_text);
+        snapshot.proxied = true;
+        if (!snapshot.custom_host_present || !snapshot.hardcore_present) {
+            return fail("snapshot did not capture both shared cheevos lines");
+        }
+
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, true,
+                                                  error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "proxied cheevos config failed");
+        }
+        char *proxied_runtime = read_text(runtime_cfg);
+        int proxied_ok =
+            proxied_runtime &&
+            key_count(proxied_runtime, "cheevos_custom_host", NULL) == 1 &&
+            key_count(proxied_runtime, "cheevos_custom_host",
+                      "127.0.0.1:8080") == 1 &&
+            key_count(proxied_runtime, "cheevos_hardcore_mode_enable",
+                      NULL) == 1 &&
+            key_count(proxied_runtime, "cheevos_hardcore_mode_enable",
+                      "= \"false\"") == 1;
+        free(proxied_runtime);
+        if (!proxied_ok) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail("proxied launch did not emit each cheevos key exactly once");
+        }
+
+        /* Backup restores the prior shared lines byte-identically. */
+        if (jw_backup_retroarch_config(runtime_cfg, root, &snapshot,
+                                       error, sizeof(error)) != 0) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail(error[0] ? error : "proxied backup failed");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+
+        char *restored = read_text(shared_cfg);
+        int restored_ok =
+            restored &&
+            key_count(restored, "cheevos_custom_host",
+                      "example.invalid:9999") == 1 &&
+            key_count(restored, "cheevos_custom_host", "127.0.0.1:8080") == 0 &&
+            key_count(restored, "cheevos_hardcore_mode_enable",
+                      "= \"true\"") == 1 &&
+            key_count(restored, "cheevos_hardcore_mode_enable",
+                      "= \"false\"") == 0 &&
+            /* Generated by RetroArch from the injected password; never a
+               user-owned setting, so it must not reach the shared card. */
+            key_count(restored, "cheevos_token", NULL) == 0;
+        free(restored);
+        if (!restored_ok) {
+            return fail("proxied backup did not restore the shared cheevos lines");
+        }
+
+        /* Absence is a value too: a shared config with neither key must come
+           back with neither key after a proxied session. */
+        if (write_text(shared_cfg, "menu_driver = \"rgui\"\n") != 0) {
+            return fail("empty cheevos shared config write failed");
+        }
+        jw_retroarch_launch_snapshot_init(&snapshot);
+        shared_text = jw_retroarch_shared_config_read(root);
+        if (!shared_text) {
+            return fail("shared config re-read for snapshot failed");
+        }
+        jw_retroarch_launch_snapshot_capture(&snapshot, shared_text);
+        free(shared_text);
+        snapshot.proxied = true;
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, true,
+                                                  error, sizeof(error));
+        if (!runtime_cfg ||
+            jw_backup_retroarch_config(runtime_cfg, root, &snapshot,
+                                       error, sizeof(error)) != 0) {
+            free(runtime_cfg);
+            return fail("absent-key proxied session failed");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        char *absent = read_text(shared_cfg);
+        int absent_ok = absent &&
+                        key_count(absent, "cheevos_custom_host", NULL) == 0 &&
+                        key_count(absent, "cheevos_hardcore_mode_enable",
+                                  NULL) == 0;
+        free(absent);
+        if (!absent_ok) {
+            return fail("proxied backup invented cheevos keys that were absent");
         }
     }
 
