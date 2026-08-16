@@ -37,6 +37,22 @@
 #define JW_MLP1_BACKLIGHT_RAW_MIN 56
 #define JW_MLP1_BACKLIGHT_RAW_MAX 135
 
+/* Stock's userspace daemon (/loong/loong_power) watches the charger and refuses
+   any backlight below raw 70: on a plug OR unplug transition it slams anything
+   lower straight to raw 130 (~94% on our scale) and leaves it there. Bracketed
+   on device: 70 held across three transitions in both directions, 69/68/64/59
+   all jumped. Almost certainly deliberate -- the low end browns out when the
+   charger moves the rail, which is why the floor sits well above the raw-59
+   visible limit.
+
+   We cannot outvote it and should not try; it is protecting the panel. Instead
+   clamp UP to its floor while charging and restore the user's value on unplug.
+   Writing exactly 70 is the point: it satisfies stock, so the two daemons never
+   fight over the node. */
+#define JW_MLP1_BACKLIGHT_CHARGE_MIN_RAW 70
+#define JW_MLP1_CHARGE_SETTLE_MS 600
+#define JW_MLP1_CHARGE_POLL_MS 400
+
 #define JW_MLP1_BACKLIGHT_DIR "/sys/class/backlight/backlight"
 #define JW_MLP1_BACKLIGHT_BRIGHTNESS JW_MLP1_BACKLIGHT_DIR "/brightness"
 /* FB_BLANK control: 0 = unblank (on), 4 = powerdown (off). Independent of the
@@ -179,6 +195,14 @@ typedef struct {
     int last_mounted;
     bool pending_storage_event;
     long long debounce_until_ms;
+    /* Brightness Leaf last applied, so a charger transition can restore it.
+       The platform layer never sees the settings DB -- it is handed a percent
+       over IPC -- so what it wrote itself is the only record of user intent. */
+    int last_applied_raw;
+    bool pending_charge_event;
+    long long charge_settle_until_ms;
+    long long charge_poll_next_ms;
+    int last_ac_online;
 } jw_mlp1_platform_data;
 
 static int (*s_event_opend)(const char *id);
@@ -477,6 +501,12 @@ static int jw__mlp1_mount_secondary_if_needed(jw_platform_context *ctx) {
     return jw__exec_shell(command);
 }
 
+/* Defined further down; needed here so init can seed the brightness/charger
+   state. Seeding must happen at init, not lazily on the first charger event --
+   by then stock may already have overwritten the value we want to remember. */
+static int jw__read_int_file(const char *path);
+static int jw__mlp1_charger_online(void);
+
 static int jw__mlp1_open_uevent_socket(void) {
     /* SOCK_CLOEXEC: this daemon forks and execs -- RetroArch, the conversion
        pass, every helper script -- and without it each one inherits a live
@@ -510,6 +540,8 @@ static int jw__mlp1_init(jw_platform_context *ctx) {
         return -1;
     }
 
+    data->last_applied_raw = jw__read_int_file(JW_MLP1_BACKLIGHT_ACTUAL);
+    data->last_ac_online = jw__mlp1_charger_online();
     data->uevent_fd = jw__mlp1_open_uevent_socket();
     if (data->uevent_fd < 0) {
         jw_log_warn("storage hotplug: uevent socket unavailable: %s", strerror(errno));
@@ -3260,10 +3292,51 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
                                "backlight brightness write failed");
         return;
     }
+    {
+        jw_mlp1_platform_data *data =
+            ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
+        if (data) {
+            data->last_applied_raw = raw;
+        }
+    }
 
     char message[JW_PLATFORM_MAX_MESSAGE];
     snprintf(message, sizeof(message), "brightness set to %d%%", percent);
     jw_platform_result_set_value(out, JW_PLATFORM_RESULT_OK, message, percent);
+}
+
+/* Is a charger attached? Either rail counts -- the device reports AC and USB
+   separately and a plain USB-C charger only lights the second. */
+static int jw__mlp1_charger_online(void) {
+    int ac = jw__read_int_file("/sys/class/power_supply/ac/online");
+    int usb = jw__read_int_file("/sys/class/power_supply/usb/online");
+    if (ac < 0 && usb < 0) return -1;
+    return ((ac > 0) || (usb > 0)) ? 1 : 0;
+}
+
+/* Re-assert the right brightness after stock has had its say. Deliberately runs
+   AFTER a settle delay rather than racing loong_power: it writes raw 130 on the
+   transition, and whoever writes last wins. Losing that race would leave the
+   panel at 130 with Leaf believing otherwise, so we let stock go first and
+   correct it. Costs a brief flash to full brightness; the alternative is a
+   flicker loop between two daemons. */
+static void jw__mlp1_apply_charge_brightness(jw_mlp1_platform_data *data, int online) {
+    if (!data || data->last_applied_raw <= 0) {
+        return;
+    }
+    int want = data->last_applied_raw;
+    if (online > 0 && want < JW_MLP1_BACKLIGHT_CHARGE_MIN_RAW) {
+        want = JW_MLP1_BACKLIGHT_CHARGE_MIN_RAW;
+    }
+    int now_raw = jw__read_int_file(JW_MLP1_BACKLIGHT_ACTUAL);
+    if (now_raw == want) {
+        return;
+    }
+    if (jw__write_int_file(JW_MLP1_BACKLIGHT_BRIGHTNESS, want) == 0) {
+        jw_log_info("backlight: charger %s, raw %d -> %d (user %d)",
+                    online > 0 ? "attached" : "removed", now_raw, want,
+                    data->last_applied_raw);
+    }
 }
 
 static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
@@ -3291,6 +3364,29 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
                 data->debounce_until_ms = jw__monotonic_ms() + JW_MLP1_STORAGE_DEBOUNCE_MS;
             }
         }
+    }
+
+    /* Poll rather than watch uevents. The netlink match on "power_supply" was
+       tried first and never fired on this device -- either the charger driver
+       does not broadcast or it does not carry that string -- and the failure is
+       silent, which is the worst kind. Two small sysfs reads on a throttle
+       cannot miss a transition. */
+    long long now_ms = jw__monotonic_ms();
+    if (now_ms >= data->charge_poll_next_ms) {
+        data->charge_poll_next_ms = now_ms + JW_MLP1_CHARGE_POLL_MS;
+        int online_now = jw__mlp1_charger_online();
+        if (online_now >= 0 && online_now != data->last_ac_online) {
+            data->last_ac_online = online_now;
+            data->pending_charge_event = true;
+            /* Let stock write its 130 first; whoever writes last wins. */
+            data->charge_settle_until_ms = now_ms + JW_MLP1_CHARGE_SETTLE_MS;
+        }
+    }
+
+    if (data->pending_charge_event &&
+        jw__monotonic_ms() >= data->charge_settle_until_ms) {
+        data->pending_charge_event = false;
+        jw__mlp1_apply_charge_brightness(data, data->last_ac_online);
     }
 
     bool changed = false;
