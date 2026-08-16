@@ -1897,12 +1897,22 @@ static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
     }
 
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    int name_x = ix + CAT_S(10);
     char name[256];
     if (result->kind == JW_SEARCH_APP)
         snprintf(name, sizeof(name), "%s", result->name);
     else
         jw__clean_rom_name(result->name, name, sizeof(name));
-    jw__draw_row_name(body, name, ix + CAT_S(10), text_y, name_c, name_max, selected);
+    if (result->favorite) {
+        ap_color star_c = selected ? theme->highlighted_text : theme->highlight;
+        int body_h = TTF_FontHeight(body);
+        int star_r = body_h * 32 / 100;
+        cat_draw_star(name_x + star_r, text_y + body_h / 2, star_r, star_c);
+        int advance = star_r * 2 + CAT_S(6);
+        name_x += advance;
+        name_max -= advance;
+    }
+    jw__draw_row_name(body, name, name_x, text_y, name_c, name_max, selected);
 
     int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
     if (meta_w > 0 && meta && meta[0]) {
@@ -4638,10 +4648,11 @@ static void jw__render_search(const jw_launcher_state *state) {
 
     cat_footer_item footer[] = {
         { CAT_BTN_X,  "Search",   false, JW_HINT("X") },
+        { CAT_BTN_Y,  "Favorite", false, JW_HINT("Y") },
         { CAT_BTN_B,  "Back",     true,  JW_HINT("B") },
         { CAT_BTN_A,  "Launch",   true,  JW_HINT("A") },
     };
-    jw__draw_footer(state, footer, 3);
+    jw__draw_footer(state, footer, 4);
     jw__present();
 }
 
@@ -4702,6 +4713,8 @@ static bool jw__cf_focus_step(void) {
 static int jw__perform_search(const char *db_path, jw_launcher_state *state, const char *query);
 static int jw__launch_selected_search_result(const char *socket_path,
                                              jw_launcher_state *state, bool *running);
+static void jw__favorite_selected_search_result(const char *db_path,
+                                                 jw_launcher_state *state);
 
 static int jw__cf_kb_row_len(int row) {
     if (row >= 0 && row < JW_CF_KB_LETTER_ROWS) return (int)strlen(kCfKbRows[row]);
@@ -4826,6 +4839,9 @@ static void jw__cf_kbd_input(const char *socket_path, const char *db_path,
                 break;
             case CAT_BTN_A:
                 jw__launch_selected_search_result(socket_path, state, running);
+                break;
+            case CAT_BTN_Y:
+                jw__favorite_selected_search_result(db_path, state);
                 break;
             default: break;
         }
@@ -7235,6 +7251,9 @@ static void jw__handle_search_input(const char *socket_path, const char *db_path
         case CAT_BTN_A:
             jw__launch_selected_search_result(socket_path, state, running);
             break;
+        case CAT_BTN_Y:
+            jw__favorite_selected_search_result(db_path, state);
+            break;
         case CAT_BTN_B:
             state->search_open = false;
             state->status[0] = '\0';
@@ -7291,6 +7310,30 @@ static void jw__toggle_favorite_selected(const char *db_path, jw_launcher_state 
        line is ellipsized on screen anyway. */
     snprintf(state->status, sizeof(state->status), "%s %.200s",
              want_on ? "Favorited" : "Unfavorited", game->name);
+}
+
+/* Toggle the highlighted search game's favorite state. Empty results, apps,
+   and an invalid cursor are inert. */
+static void jw__favorite_selected_search_result(const char *db_path,
+                                                 jw_launcher_state *state) {
+    if (!state || state->search_count <= 0 ||
+        state->search_list.cursor < 0 ||
+        state->search_list.cursor >= state->search_count) {
+        return;
+    }
+    jw_search_result *result =
+        &state->search_results[state->search_list.cursor];
+    if (result->kind != JW_SEARCH_GAME) return;
+
+    int want_on = !result->favorite;
+    if (jw_db_set_favorite(db_path, "game", result->id, want_on) != 0) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 "Favorite update failed");
+        return;
+    }
+    result->favorite = want_on;
+    snprintf(state->status, sizeof(state->status), "%s %.200s",
+             want_on ? "Favorited" : "Unfavorited", result->name);
 }
 
 /* Drop the selected game from the Recents tab's play-history and reload the list,
