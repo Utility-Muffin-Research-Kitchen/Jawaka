@@ -2680,6 +2680,30 @@ static void jw__tick_retroarch_audio_reinit(jw_daemon_state *state) {
    RetroArch config writer can pin video_refresh_rate to it. RA's pacing and
    Black Frame Insertion break when it believes 60Hz while the panel runs
    100/120. Re-read per launch so a runtime refresh-rate change is reflected. */
+/* Publish Leaf's UI language for the emulator that is about to launch.
+   RetroArch already carries the translations -- HAVE_LANGEXTRA is its default
+   and was never disabled -- so for it this is the only thing standing between a
+   Chinese Leaf and a Chinese RetroArch; PPSSPP reads the same variable from its
+   launch.sh. Re-read per launch, like the refresh rate, so switching language
+   takes effect on the next game without a reboot.
+
+   Deliberately its own function rather than part of the display env: standalone
+   emulators need the language but must not inherit refresh/BFI publishing,
+   which is RetroArch's config writer alone. */
+static void jw__publish_language_env(jw_daemon_state *state) {
+    if (!state || !state->db_path) {
+        unsetenv("JAWAKA_LANGUAGE");
+        return;
+    }
+    char lang[32] = "";
+    if (jw_db_get_setting(state->db_path, "language", lang, sizeof(lang)) == 0 &&
+        lang[0]) {
+        setenv("JAWAKA_LANGUAGE", lang, 1);
+    } else {
+        unsetenv("JAWAKA_LANGUAGE");
+    }
+}
+
 static void jw__publish_display_env(jw_daemon_state *state) {
     if (!state) {
         return;
@@ -2714,23 +2738,7 @@ static void jw__publish_display_env(jw_daemon_state *state) {
         unsetenv("JAWAKA_BFI");
     }
 
-    /* Publish Leaf's UI language so the RetroArch config writer can follow it.
-       RetroArch already carries the translations -- HAVE_LANGEXTRA is its
-       default and was never disabled -- so this is the only thing standing
-       between a Chinese Leaf and a Chinese RetroArch. Re-read per launch, like
-       the refresh rate, so switching language takes effect on the next game
-       without a reboot. */
-    if (state->db_path) {
-        char lang[32] = "";
-        if (jw_db_get_setting(state->db_path, "language", lang, sizeof(lang)) == 0 &&
-            lang[0]) {
-            setenv("JAWAKA_LANGUAGE", lang, 1);
-        } else {
-            unsetenv("JAWAKA_LANGUAGE");
-        }
-    } else {
-        unsetenv("JAWAKA_LANGUAGE");
-    }
+    jw__publish_language_env(state);
 }
 
 static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *client) {
@@ -8364,6 +8372,12 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     }
     jw__reconcile_audio(state, "standalone-launch", false);
     jw__publish_audio_env(state);
+    /* Standalone emulators follow the UI language too. Publishing it here and
+       not only on the RetroArch path is the difference between "works" and
+       "works as long as you launched a RetroArch game first this boot" -- the
+       daemon env persists, so a stale value from an earlier launch used to make
+       this look correct by accident. */
+    jw__publish_language_env(state);
     (void)jw__perf_apply_launch_game(state, state->pending_launch_system,
                                      state->pending_launch_rom_path,
                                      "standalone-emulator-launch");
