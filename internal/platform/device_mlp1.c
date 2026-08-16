@@ -3074,7 +3074,16 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
            control helper then fails with EACCES. Repair both dynamic roles
            before returning to the daemon loop, where suspend-sensitive
            services are eligible to start again. */
+        jw_mlp1_platform_data *resume_data = NULL;
         if (rc == 0) {
+            resume_data =
+                ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
+            if (resume_data) {
+                /* Arm before the immediate attempt so a transient failure still
+                   gets the firmware-settle pass. Its deadline starts after all
+                   synchronous resume work below has finished. */
+                resume_data->resume_mount_repair_pending = true;
+            }
             /* Leave any detached SD cwd immediately. The firmware's late
                post-resume mount worker can recreate the card more than once,
                so merely chdir'ing to the first visible instance is not enough. */
@@ -3122,12 +3131,6 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
                                 "launcher cwd refreshed active=%s repaired=%d",
                                 ctx->sdcard_root,
                                 active_needed_repair ? 1 : 0);
-                    jw_mlp1_platform_data *data =
-                        ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
-                    if (data) {
-                        data->resume_mount_repair_pending = true;
-                        data->resume_mount_repair_at_ms = jw__monotonic_ms() + 2500;
-                    }
                 }
             }
         }
@@ -3144,6 +3147,9 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         (void)jw__exec_shell(JW_MLP1_ENSURE_DAC_FLOOR);
         if (audio_playing) {
             (void)jw__exec_shell(JW_MLP1_PA_RESUME_SINK);
+        }
+        if (resume_data) {
+            resume_data->resume_mount_repair_at_ms = jw__monotonic_ms() + 2500;
         }
         jw_platform_result_set(out,
                                rc == 0 ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED,
@@ -3359,7 +3365,6 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
         } else {
             jw_log_info("platform: delayed resume SD exec repair complete");
         }
-        changed = true;
     }
 
     if (data->uevent_fd >= 0) {
