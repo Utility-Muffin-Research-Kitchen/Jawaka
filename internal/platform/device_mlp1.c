@@ -203,6 +203,8 @@ typedef struct {
     long long charge_settle_until_ms;
     long long charge_poll_next_ms;
     int last_ac_online;
+    bool resume_mount_repair_pending;
+    long long resume_mount_repair_at_ms;
 } jw_mlp1_platform_data;
 
 static int (*s_event_opend)(const char *id);
@@ -3084,25 +3086,16 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
             bool active_needed_repair = false;
             int active_rc = -1;
             int secondary_rc = -1;
-            long long settle_started_ms = jw__monotonic_ms();
-            long long settle_deadline_ms = settle_started_ms + 5000;
-            while (rc == 0 && jw__monotonic_ms() < settle_deadline_ms) {
-                if (jw__mlp1_mount_has_option(ctx->sdcard_root, "noexec")) {
-                    active_needed_repair = true;
-                }
-                active_rc = jw__mlp1_remount_exec(ctx->sdcard_root);
-                secondary_rc = jw__mlp1_block_present(ctx)
-                                   ? jw__mlp1_mount_secondary_if_needed(ctx)
-                                   : 0;
-                /* The MLP1 firmware performs a second mount pass roughly two
-                   seconds after wake. Observe a full three-second window so a
-                   transient exec mount cannot be mistaken for the final one. */
-                if (active_rc == 0 && secondary_rc == 0 &&
-                    jw__monotonic_ms() - settle_started_ms >= 3000) {
-                    break;
-                }
-                usleep(100000);
+            /* Repair once before services resume, then return immediately. The
+               firmware's later mount pass is checked from the platform tick so
+               a lit screen is never paired with a fixed multi-second input stall. */
+            if (jw__mlp1_mount_has_option(ctx->sdcard_root, "noexec")) {
+                active_needed_repair = true;
             }
+            active_rc = jw__mlp1_remount_exec(ctx->sdcard_root);
+            secondary_rc = jw__mlp1_block_present(ctx)
+                               ? jw__mlp1_mount_secondary_if_needed(ctx)
+                               : 0;
             if (active_rc != 0 || secondary_rc != 0) {
                 jw_log_warn("platform: resume SD exec repair failed "
                             "active=%s active_rc=%d secondary_rc=%d",
@@ -3129,6 +3122,12 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
                                 "launcher cwd refreshed active=%s repaired=%d",
                                 ctx->sdcard_root,
                                 active_needed_repair ? 1 : 0);
+                    jw_mlp1_platform_data *data =
+                        ctx ? (jw_mlp1_platform_data *)ctx->backend_data : NULL;
+                    if (data) {
+                        data->resume_mount_repair_pending = true;
+                        data->resume_mount_repair_at_ms = jw__monotonic_ms() + 2500;
+                    }
                 }
             }
         }
@@ -3345,6 +3344,24 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
         return false;
     }
 
+    bool changed = false;
+    if (data->resume_mount_repair_pending &&
+        jw__monotonic_ms() >= data->resume_mount_repair_at_ms) {
+        data->resume_mount_repair_pending = false;
+        int active_rc = jw__mlp1_remount_exec(ctx->sdcard_root);
+        int secondary_rc = jw__mlp1_block_present(ctx)
+                               ? jw__mlp1_mount_secondary_if_needed(ctx)
+                               : 0;
+        if (active_rc != 0 || secondary_rc != 0) {
+            jw_log_warn("platform: delayed resume SD exec repair failed "
+                        "active_rc=%d secondary_rc=%d",
+                        active_rc, secondary_rc);
+        } else {
+            jw_log_info("platform: delayed resume SD exec repair complete");
+        }
+        changed = true;
+    }
+
     if (data->uevent_fd >= 0) {
         char buf[4096];
         while (1) {
@@ -3389,7 +3406,6 @@ static bool jw__mlp1_storage_tick(jw_platform_context *ctx) {
         jw__mlp1_apply_charge_brightness(data, data->last_ac_online);
     }
 
-    bool changed = false;
     int present = jw__mlp1_block_present(ctx) ? 1 : 0;
     int mounted = jw__mlp1_mount_is_active(ctx) ? 1 : 0;
 
