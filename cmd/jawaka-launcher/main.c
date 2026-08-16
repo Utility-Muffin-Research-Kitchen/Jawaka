@@ -8585,10 +8585,17 @@ static void jw__focus_handle_input(const char *socket_path, jw_launcher_state *s
         }
         case CAT_BTN_A:
             if (state->focus_count > 0) {
-                /* Launch reports only failure by touch -- see the helper. */
-                jw__launch_game_entry(socket_path, state,
-                                      &state->focus_games[state->focus_cursor],
-                                      running);
+                /* Launch reports only failure by touch -- see the helper.
+                   Focus mode resumes, exactly as Recents does: the daemon loads
+                   the newest state (preferring the game-switcher slot) when one
+                   exists and cold-launches otherwise, so no per-tile state probe
+                   is needed here. Picking up where you left off matters more in
+                   focus mode than anywhere else, since these five games are the
+                   whole device and whoever is using it is least equipped to
+                   navigate a title screen and a load menu. */
+                jw__launch_game_entry_with_mode(socket_path, state,
+                                                &state->focus_games[state->focus_cursor],
+                                                true, running);
             } else {
                 jw__haptic(state, "blocked");
             }
