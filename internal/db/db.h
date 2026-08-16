@@ -107,6 +107,7 @@ typedef struct {
     char image_path[512];
     char pak_dir[512];
     char icon[256];
+    int  favorite;   /* 1 if present in favorites, else 0 */
 } jw_search_result;
 
 int  jw_db_open(const char *path, sqlite3 **out);

@@ -2660,13 +2660,13 @@ int jw_db_search_library(const char *db_path, const char *query,
 
     static const char *sql =
         "SELECT kind,id,name,system,source_id,rom_relpath,image_root_kind,"
-        "image_relpath,rom_path,image_path,pak_dir,icon FROM ("
+        "image_relpath,rom_path,image_path,pak_dir,icon,favorite FROM ("
         "  SELECT 0 AS kind,games.id AS id,COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) AS name, games.system AS system,"
         "         games.source_id,games.rom_relpath,"
         "         COALESCE(games.image_root_kind,'') AS image_root_kind,"
         "         COALESCE(games.image_relpath,'') AS image_relpath,"
         "         games.rom_path AS rom_path, COALESCE(games.image_path, '') AS image_path,"
-        "         '' AS pak_dir, '' AS icon, bm25(games_fts) AS score"
+        "         '' AS pak_dir, '' AS icon, EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = games.id) AS favorite, bm25(games_fts) AS score"
         "    FROM games_fts JOIN games ON games_fts.rowid = games.id"
         "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
         "    LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name'"
@@ -2676,7 +2676,7 @@ int jw_db_search_library(const char *db_path, const char *query,
         "         games.source_id,games.rom_relpath,COALESCE(games.image_root_kind,''),"
         "         COALESCE(games.image_relpath,''),"
         "         games.rom_path AS rom_path, COALESCE(games.image_path, '') AS image_path,"
-        "         '' AS pak_dir, '' AS icon, 1000000.0 AS score"
+        "         '' AS pak_dir, '' AS icon, EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = games.id) AS favorite, 1000000.0 AS score"
         "    FROM games"
         "    LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name'"
         "    LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name'"
@@ -2687,7 +2687,7 @@ int jw_db_search_library(const char *db_path, const char *query,
         "         '' AS source_id,'' AS rom_relpath,'' AS image_root_kind,"
         "         '' AS image_relpath,"
         "         '' AS rom_path, '' AS image_path,"
-        "         apps.pak_dir AS pak_dir, COALESCE(apps.icon, '') AS icon,"
+        "         apps.pak_dir AS pak_dir, COALESCE(apps.icon, '') AS icon, 0 AS favorite,"
         "         bm25(apps_fts) AS score"
         "    FROM apps_fts JOIN apps ON apps_fts.rowid = apps.id"
         "   WHERE apps_fts MATCH ?"
@@ -2721,6 +2721,7 @@ int jw_db_search_library(const char *db_path, const char *query,
         const unsigned char *image_path = sqlite3_column_text(stmt, 9);
         const unsigned char *pak_dir = sqlite3_column_text(stmt, 10);
         const unsigned char *icon = sqlite3_column_text(stmt, 11);
+        out[i].favorite = sqlite3_column_int(stmt, 12) != 0;
 
         if (name) snprintf(out[i].name, sizeof(out[i].name), "%s", name);
         if (system) snprintf(out[i].system, sizeof(out[i].system), "%s", system);

@@ -100,8 +100,9 @@ int main(void) {
     jw_search_result search[8];
     int search_count = 0;
     if (jw_db_search_library(db_path, "Black Jewel", search, 8, &search_count) != 0 ||
-        search_count < 1 || strcmp(search[0].name, "Black Jewel Reborn") != 0) {
-        fail("search ignored imported title");
+        search_count < 1 || strcmp(search[0].name, "Black Jewel Reborn") != 0 ||
+        !search[0].favorite) {
+        fail("search ignored imported title or favorite state");
     }
 
     /* A normal scan upsert keeps the stable game id and imported settings. */
