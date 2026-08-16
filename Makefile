@@ -717,6 +717,12 @@ imported-title-test: | $(BUILD)/bin
 		$(LDLIBS_COMMON)
 	$(BUILD)/bin/imported-title-test
 
+pinyin-search-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/pinyin-search-test \
+		internal/db/pinyin_search_test.c internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
+		$(LDLIBS_COMMON)
+	$(BUILD)/bin/pinyin-search-test
+
 imported-title-ipc-smoke:
 	scripts/imported-title-ipc-smoke.sh
 
