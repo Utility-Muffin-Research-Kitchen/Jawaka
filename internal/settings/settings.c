@@ -5731,14 +5731,6 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
     if (!ui || !ui->open) return false;
     if (theme_changed) *theme_changed = false;
 
-    /* The caller's status buffer is shared across settings pages. A completed
-       action message must not remain visible after backing out to a parent
-       page. */
-    if (button == CAT_BTN_B && ui->screen != JW_SETTINGS_HOME &&
-        status_buf && status_size > 0) {
-        status_buf[0] = '\0';
-    }
-
     switch (ui->screen) {
 
     /* ── Home ────────────────────────────────────────────────────────── */
@@ -7407,7 +7399,11 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
     bool still_open = jw__settings_handle_button_inner(ui, button, status_buf,
                                                        status_size, theme_changed);
 
-    if (ui->socket_path[0] && (int)ui->screen != scr0)
-        jw_ipc_rumble(ui->socket_path, "select");              /* page enter / back */
+    if ((int)ui->screen != scr0) {
+        if (button == CAT_BTN_B && status_buf && status_size > 0)
+            status_buf[0] = '\0';
+        if (ui->socket_path[0])
+            jw_ipc_rumble(ui->socket_path, "select");          /* page enter / back */
+    }
     return still_open;
 }
