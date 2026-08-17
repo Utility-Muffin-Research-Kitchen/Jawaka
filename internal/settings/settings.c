@@ -5731,6 +5731,14 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
     if (!ui || !ui->open) return false;
     if (theme_changed) *theme_changed = false;
 
+    /* The caller's status buffer is shared across settings pages. A completed
+       action message must not remain visible after backing out to a parent
+       page. */
+    if (button == CAT_BTN_B && ui->screen != JW_SETTINGS_HOME &&
+        status_buf && status_size > 0) {
+        status_buf[0] = '\0';
+    }
+
     switch (ui->screen) {
 
     /* ── Home ────────────────────────────────────────────────────────── */
