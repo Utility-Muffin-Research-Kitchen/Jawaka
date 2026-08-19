@@ -1689,6 +1689,27 @@ typedef struct { const jw_pakrat_app_state *apps; } jw__pakrat_ctx;
 typedef struct { const jw_game_entry  *games; const jw_launcher_state *st; } jw__roms_ctx;
 typedef struct { const jw_search_result *results; } jw__search_ctx;
 
+/* Browse rows keep their labels fixed while Catastrophe moves a focus layer
+   underneath them. Their content callback receives the focus coverage so text
+   color can follow that motion instead of snapping at either endpoint. */
+
+static void jw__draw_browse_focus(int x, int y, int w, int h, void *user) {
+    (void)user;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int pill_h = TTF_FontHeight(body) + CAT_S(6);
+    int pill_y = y + (h - pill_h) / 2;
+    cat_draw_pill(x, pill_y, w - CAT_S(4), pill_h, theme->highlight);
+}
+
+static void jw__draw_browse_list(int x, int y, int w, int h, int item_count,
+                                 const cat_list_state *state, int item_height,
+                                 cat_list_layered_item_draw_fn draw_item,
+                                 void *user) {
+    cat_draw_list_pane_layered(x, y, w, h, item_count, state, item_height,
+                               jw__draw_browse_focus, draw_item, user);
+}
+
 /* Is a games.id currently in the 5-Game Mode pick set? (defined with the wizard) */
 static bool jw__fsetup_is_picked(const jw_launcher_state *st, int id);
 
@@ -1718,38 +1739,36 @@ static void jw__draw_check(int cx, int cy, int r, SDL_Color c) {
 }
 
 static void jw__draw_game_item(int idx, int ix, int iy, int iw, int ih,
-                                bool selected, void *user) {
+                                float focus, void *user) {
     jw__games_ctx *ctx = (jw__games_ctx *)user;
     ap_theme *theme    = cat_get_theme();
     TTF_Font *body     = cat_get_font(CAT_FONT_MEDIUM);
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
-
-    ap_color name_c  = selected ? theme->highlighted_text : theme->text;
+    bool settled = focus >= 0.999f;
+    ap_color name_c = cat_draw_color_lerp(theme->text,
+                                           theme->highlighted_text, focus);
     int name_max = iw - CAT_S(20);
     int text_y   = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     jw__draw_row_name(body, ctx->systems[idx].display_name,
-        ix + CAT_S(10), text_y, name_c, name_max, selected);
+        ix + CAT_S(10), text_y, name_c, name_max, settled);
 }
 
 static void jw__draw_app_item(int idx, int ix, int iy, int iw, int ih,
-                               bool selected, void *user) {
+                               float focus, void *user) {
     jw__apps_ctx *ctx = (jw__apps_ctx *)user;
     ap_theme *theme   = cat_get_theme();
     TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
-
-    ap_color name_c = selected ? theme->highlighted_text : theme->text;
+    bool settled = focus >= 0.999f;
+    ap_color name_c = cat_draw_color_lerp(theme->text,
+                                           theme->highlighted_text, focus);
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     jw__draw_row_name(body, ctx->apps[idx].name,
-        ix + CAT_S(10), text_y, name_c, iw - CAT_S(20), selected);
+        ix + CAT_S(10), text_y, name_c, iw - CAT_S(20), settled);
 }
 
 static const char *jw__pakrat_status_label(jw_pakrat_app_status status) {
@@ -1788,7 +1807,7 @@ static bool jw__pakrat_can_uninstall(const jw_pakrat_app_state *app) {
 }
 
 static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
-                                 bool selected, void *user) {
+                                 float focus, void *user) {
     jw__pakrat_ctx *ctx = (jw__pakrat_ctx *)user;
     ap_theme *theme     = cat_get_theme();
     TTF_Font *body      = cat_get_font(CAT_FONT_MEDIUM);
@@ -1799,11 +1818,11 @@ static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
-
-    ap_color name_c = selected ? theme->highlighted_text : theme->text;
-    ap_color meta_c = selected ? theme->highlighted_text : theme->hint;
+    bool settled = focus >= 0.999f;
+    ap_color name_c = cat_draw_color_lerp(theme->text,
+                                           theme->highlighted_text, focus);
+    ap_color meta_c = cat_draw_color_lerp(theme->hint,
+                                           theme->highlighted_text, focus);
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
     int status_w = cat_measure_text(small, status);
@@ -1814,7 +1833,7 @@ static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
     }
 
     jw__draw_row_name(body, app->package.name,
-        ix + CAT_S(10), text_y, name_c, name_max, selected);
+        ix + CAT_S(10), text_y, name_c, name_max, settled);
     if (status_w > 0) {
         cat_draw_text(small, status, ix + iw - status_w - CAT_S(14),
                       small_y, meta_c);
@@ -1822,17 +1841,16 @@ static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
 }
 
 static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
-                               bool selected, void *user) {
+                               float focus, void *user) {
     jw__roms_ctx *ctx = (jw__roms_ctx *)user;
     ap_theme *theme   = cat_get_theme();
     TTF_Font *body    = cat_get_font(CAT_FONT_MEDIUM);
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
-
-    ap_color name_c = selected ? theme->highlighted_text : theme->text;
+    bool settled = focus >= 0.999f;
+    ap_color name_c = cat_draw_color_lerp(theme->text,
+                                           theme->highlighted_text, focus);
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     char name[256];
@@ -1844,7 +1862,8 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
         /* 5-Game Mode Pick: a clear checkmark on chosen games (favorites are
            irrelevant here). */
         if (jw__fsetup_is_picked(ctx->st, ctx->games[idx].id)) {
-            ap_color chk_c = selected ? theme->highlighted_text : theme->highlight;
+            ap_color chk_c = cat_draw_color_lerp(theme->highlight,
+                                                  theme->highlighted_text, focus);
             int body_h = TTF_FontHeight(body);
             int r = body_h * 36 / 100;
             jw__draw_check(name_x + r, text_y + body_h / 2, r, chk_c);
@@ -1857,7 +1876,8 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
            bright selection-pill color on a normal row (the accent/chrome tone is
            too dark to read on the row bg), and highlighted_text on a selected
            row so it stays legible against the pill. */
-        ap_color star_c = selected ? theme->highlighted_text : theme->highlight;
+        ap_color star_c = cat_draw_color_lerp(theme->highlight,
+                                               theme->highlighted_text, focus);
         int body_h = TTF_FontHeight(body);
         int star_r = body_h * 32 / 100;
         cat_draw_star(name_x + star_r, text_y + body_h / 2, star_r, star_c);
@@ -1866,11 +1886,11 @@ static void jw__draw_rom_item(int idx, int ix, int iy, int iw, int ih,
         name_max -= advance;
     }
 
-    jw__draw_row_name(body, name, name_x, text_y, name_c, name_max, selected);
+    jw__draw_row_name(body, name, name_x, text_y, name_c, name_max, settled);
 }
 
 static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
-                                  bool selected, void *user) {
+                                  float focus, void *user) {
     jw__search_ctx *ctx = (jw__search_ctx *)user;
     ap_theme *theme     = cat_get_theme();
     TTF_Font *body      = cat_get_font(CAT_FONT_MEDIUM);
@@ -1882,11 +1902,11 @@ static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
-
-    ap_color name_c = selected ? theme->highlighted_text : theme->text;
-    ap_color meta_c = selected ? theme->highlighted_text : theme->hint;
+    bool settled = focus >= 0.999f;
+    ap_color name_c = cat_draw_color_lerp(theme->text,
+                                           theme->highlighted_text, focus);
+    ap_color meta_c = cat_draw_color_lerp(theme->hint,
+                                           theme->highlighted_text, focus);
 
     int kind_w = cat_measure_text(small, kind);
     int meta_w = iw / 4;
@@ -1904,7 +1924,8 @@ static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
     else
         jw__clean_rom_name(result->name, name, sizeof(name));
     if (result->favorite) {
-        ap_color star_c = selected ? theme->highlighted_text : theme->highlight;
+        ap_color star_c = cat_draw_color_lerp(theme->highlight,
+                                               theme->highlighted_text, focus);
         int body_h = TTF_FontHeight(body);
         int star_r = body_h * 32 / 100;
         cat_draw_star(name_x + star_r, text_y + body_h / 2, star_r, star_c);
@@ -1912,7 +1933,7 @@ static void jw__draw_search_item(int idx, int ix, int iy, int iw, int ih,
         name_x += advance;
         name_max -= advance;
     }
-    jw__draw_row_name(body, name, name_x, text_y, name_c, name_max, selected);
+    jw__draw_row_name(body, name, name_x, text_y, name_c, name_max, settled);
 
     int small_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
     if (meta_w > 0 && meta && meta[0]) {
@@ -1957,7 +1978,7 @@ static void jw__render_games(const jw_launcher_state *state,
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__games_ctx ctx = { state->systems };
-        cat_draw_list_pane(list.x, list.y, list.w, list.h,
+        jw__draw_browse_list(list.x, list.y, list.w, list.h,
             state->system_count, &state->list, item_h,
             jw__draw_game_item, &ctx);
     }
@@ -1989,7 +2010,7 @@ static void jw__render_apps(const jw_launcher_state *state,
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__apps_ctx ctx = { state->apps };
-        cat_draw_list_pane(list.x, list.y, list.w, list.h,
+        jw__draw_browse_list(list.x, list.y, list.w, list.h,
             state->app_count, &state->list, item_h,
             jw__draw_app_item, &ctx);
     }
@@ -2221,7 +2242,7 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
                 list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
         } else {
             jw__pakrat_ctx ctx = { state->pakrat_apps };
-            cat_draw_list_pane(list.x, list.y, list.w, list.h,
+            jw__draw_browse_list(list.x, list.y, list.w, list.h,
                 state->pakrat_app_count, &state->pakrat_list, item_h,
                 jw__draw_pakrat_item, &ctx);
         }
@@ -2459,7 +2480,7 @@ typedef struct {
 } jw__vert_ctx;
 
 static void jw__draw_vert_item(int idx, int ix, int iy, int iw, int ih,
-                                bool selected, void *user) {
+                                float focus, void *user) {
     jw__vert_ctx *ctx = (jw__vert_ctx *)user;
     const jw_launcher_state *state = ctx->state;
     ap_theme *theme = cat_get_theme();
@@ -2473,22 +2494,17 @@ static void jw__draw_vert_item(int idx, int ix, int iy, int iw, int ih,
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
-
-    ap_color label_c = selected ? theme->highlighted_text
-                                : (is_section ? theme->text : theme->text);
+    bool settled = focus >= 0.999f;
+    ap_color label_c = cat_draw_color_lerp(is_section ? theme->hint : theme->text,
+                                            theme->highlighted_text, focus);
 
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     const char *label = jw__flat_label(state, idx);
 
     if (it->kind == JW_FLAT_SYSTEM) {
         jw__draw_row_name(body, label, ix + CAT_S(10), text_y, label_c,
-                          iw - CAT_S(20), selected);
+                          iw - CAT_S(20), settled);
     } else {
-        /* section header: slightly muted when not selected */
-        if (!selected)
-            label_c = theme->hint;
         cat_draw_text_ellipsized(body, label, ix + CAT_S(10), text_y, label_c,
                                  iw - CAT_S(20));
     }
@@ -2555,7 +2571,7 @@ static void jw__render_vertical(const jw_launcher_state *state) {
     int body_h = TTF_FontHeight(body);
     int item_h = body_h + CAT_S(12);
     jw__vert_ctx ctx = { state };
-    cat_draw_list_pane(list_x, content_y, list_w, content_h,
+    jw__draw_browse_list(list_x, content_y, list_w, content_h,
         state->flat_count, &state->list, item_h,
         jw__draw_vert_item, &ctx);
 
@@ -4351,7 +4367,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__roms_ctx ctx = { state->games, state };
-        cat_draw_list_pane(list.x, list.y, list.w, list.h,
+        jw__draw_browse_list(list.x, list.y, list.w, list.h,
             state->game_count, &state->game_list, item_h,
             jw__draw_rom_item, &ctx);
     }
@@ -4442,7 +4458,7 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
     }
 
     jw__roms_ctx ctx = { entries, state };
-    cat_draw_list_pane(list.x, list.y, list.w, list.h,
+    jw__draw_browse_list(list.x, list.y, list.w, list.h,
         count, &state->list, item_h, jw__draw_rom_item, &ctx);
 
     cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
@@ -4517,7 +4533,7 @@ static void jw__render_app_browser(const jw_launcher_state *state) {
             list_w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__apps_ctx ctx = { state->apps };
-        cat_draw_list_pane(list_x, content_y, list_w, content_h,
+        jw__draw_browse_list(list_x, content_y, list_w, content_h,
             state->app_count, &state->app_list, item_h,
             jw__draw_app_item, &ctx);
     }
@@ -4590,7 +4606,7 @@ static void jw__render_search(const jw_launcher_state *state) {
             list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
     } else {
         jw__search_ctx ctx = { state->search_results };
-        cat_draw_list_pane(list.x, list.y, list.w, list.h,
+        jw__draw_browse_list(list.x, list.y, list.w, list.h,
             state->search_count, &state->search_list, item_h,
             jw__draw_search_item, &ctx);
     }
@@ -5364,16 +5380,15 @@ static const char *const *jw__menu_tab_items(int tab, int *count) {
 }
 
 static void jw__draw_menu_item(int idx, int ix, int iy, int iw, int ih,
-                               bool selected, void *user) {
+                               float focus, void *user) {
     const char *const *items = (const char *const *)user;
     if (!items || idx < 0) return;
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
-    ap_color c = selected ? theme->highlighted_text : theme->text;
+    ap_color c = cat_draw_color_lerp(theme->text,
+                                      theme->highlighted_text, focus);
     int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     cat_draw_text_ellipsized(body, T(items[idx]), ix + CAT_S(10), text_y,
                              c, iw - CAT_S(20));
@@ -5461,8 +5476,9 @@ static void jw__render_menu(const jw_launcher_state *state) {
         }
     }
 
-    cat_draw_list_pane(list.x, list.y, list.w, list.h, tab_count,
-                       &state->menu_list, item_h, jw__draw_menu_item, (void *)items);
+    jw__draw_browse_list(list.x, list.y, list.w, list.h, tab_count,
+                         &state->menu_list, item_h, jw__draw_menu_item,
+                         (void *)items);
 
     cat_footer_item footer[] = {
         { CAT_BTN_L1, "Tab",    false, JW_HINT_DEVICE(";/t", "L1/R1") },

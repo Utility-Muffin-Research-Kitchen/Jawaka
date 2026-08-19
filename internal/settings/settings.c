@@ -1843,6 +1843,25 @@ static SDL_Rect jw__settings_boxes(int x, int y, int w, int h,
     return cat_box_content(&page);
 }
 
+/* Fixed-row settings pages pre-render the same moving focus layer used by the
+   scrollable lists, caching each row's coverage for continuous text colors. */
+#define JW__SETTINGS_FOCUS_CACHE_MAX 64
+static const cat_list_state *jw__settings_focus_list;
+static float jw__settings_focus_cache[JW__SETTINGS_FOCUS_CACHE_MAX];
+static int jw__settings_focus_count;
+
+static float jw__settings_row_focus(const cat_list_state *list, int row) {
+    if (list == jw__settings_focus_list && row >= 0 &&
+        row < jw__settings_focus_count) {
+        return jw__settings_focus_cache[row];
+    }
+    return list && list->cursor == row ? 1.0f : 0.0f;
+}
+
+static void jw__begin_settings_rows(const cat_list_state *list,
+                                    int x, int y, int w,
+                                    int item_count, int item_h);
+
 static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
                                      int w, int row, const char *label,
                                      const char *value, bool cycler, int item_h,
@@ -1857,17 +1876,16 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int iy = y + row * item_h;
-    bool selected = (list->cursor == row);
+    float focus = jw__settings_row_focus(list, row);
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (item_h - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
-
-    ap_color label_c = selected ? theme->highlighted_text : theme->text;
+    ap_color label_c = cat_draw_color_lerp(theme->text,
+                                            theme->highlighted_text, focus);
     /* Unselected rows may override the value color (e.g. a warning tint on the
        Beta update channel); the selected pill always uses highlighted_text. */
-    ap_color value_c = selected ? theme->highlighted_text
-                                : (value_override ? *value_override : theme->hint);
+    ap_color value_c = cat_draw_color_lerp(
+        value_override ? *value_override : theme->hint,
+        theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
@@ -1952,13 +1970,11 @@ static void jw__render_nav_row(const cat_list_state *list, int x, int y,
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
     int iy = y + row * item_h;
-    bool selected = (list->cursor == row);
+    float focus = jw__settings_row_focus(list, row);
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (item_h - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
-
-    ap_color tc = selected ? theme->highlighted_text : theme->text;
+    ap_color tc = cat_draw_color_lerp(theme->text,
+                                       theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, tc, w - cat_scale(24));
 }
@@ -1975,11 +1991,61 @@ static void jw__render_color_swatch(int x, int list_y, int w, int row, ap_color 
 
 /* ─── Page renderers ───────────────────────────────────────────────────── */
 
+/* Settings home uses the same split focus/content rendering as launcher browse
+   lists: the pill moves independently while category labels stay fixed. */
+static void jw__draw_settings_focus(int x, int y, int w, int h, void *user) {
+    (void)user;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = y + (h - pill_h) / 2;
+    cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
+}
+
+static void jw__draw_settings_list(int x, int y, int w, int h, int item_count,
+                                   const cat_list_state *state, int item_height,
+                                   cat_list_layered_item_draw_fn draw_item,
+                                   void *user) {
+    cat_draw_list_pane_layered(x, y, w, h, item_count, state, item_height,
+                               jw__draw_settings_focus, draw_item, user);
+}
+
+static void jw__cache_settings_focus(int idx, int x, int y, int w, int h,
+                                     float focus, void *user) {
+    (void)x; (void)y; (void)w; (void)h; (void)user;
+    if (idx >= 0 && idx < jw__settings_focus_count)
+        jw__settings_focus_cache[idx] = focus;
+}
+
+static void jw__begin_settings_rows_with_focus(
+                                    const cat_list_state *list,
+                                    int x, int y, int w,
+                                    int item_count, int item_h,
+                                    cat_list_focus_draw_fn draw_focus) {
+    if (!list || item_count <= 0 || item_h <= 0) return;
+    if (item_count > JW__SETTINGS_FOCUS_CACHE_MAX)
+        item_count = JW__SETTINGS_FOCUS_CACHE_MAX;
+    memset(jw__settings_focus_cache, 0, sizeof(jw__settings_focus_cache));
+    jw__settings_focus_list = list;
+    jw__settings_focus_count = item_count;
+    cat_draw_list_pane_layered(x, y, w, item_count * item_h,
+                               item_count, list, item_h,
+                               draw_focus,
+                               jw__cache_settings_focus, NULL);
+}
+
+static void jw__begin_settings_rows(const cat_list_state *list,
+                                    int x, int y, int w,
+                                    int item_count, int item_h) {
+    jw__begin_settings_rows_with_focus(list, x, y, w, item_count, item_h,
+                                       jw__draw_settings_focus);
+}
+
 /* One Services row: the service id plus a compact "state · Start with Leaf"
  * summary. The list is a live CTL-1 snapshot refreshed on entry and after
  * every action. */
 static void jw__draw_service_item(int idx, int ix, int iy, int iw, int ih,
-                                  bool selected, void *user) {
+                                  float focus, void *user) {
     const jw_settings_ui *ui = (const jw_settings_ui *)user;
     if (!ui || idx < 0 || idx >= ui->services_count) return;
     const jw_ipc_service_info *svc = &ui->services[idx];
@@ -1987,9 +2053,8 @@ static void jw__draw_service_item(int idx, int ix, int iy, int iw, int ih,
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
-    ap_color tc = selected ? theme->highlighted_text : theme->text;
+    ap_color tc = cat_draw_color_lerp(theme->text,
+                                       theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     /* Shorten the reverse-DNS id to its last component for the list. */
@@ -2004,7 +2069,8 @@ static void jw__draw_service_item(int idx, int ix, int iy, int iw, int ih,
     int vw = cat_measure_text(body, value);
     int vx = ix + iw - vw - cat_scale(16);
     if (vx < ix + iw / 2) vx = ix + iw / 2;
-    ap_color vc = selected ? theme->highlighted_text : theme->hint;
+    ap_color vc = cat_draw_color_lerp(theme->hint,
+                                       theme->highlighted_text, focus);
     cat_draw_text(body, value, vx, ty, vc);
 }
 
@@ -2038,25 +2104,24 @@ static void jw__render_services(const jw_settings_ui *ui, int x, int y, int w, i
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, ui->services_count, &vis,
                                    &item_h);
     ((cat_list_state *)&ui->services_list)->visible_rows = vis;
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, ui->services_count,
-                       &ui->services_list, item_h, jw__draw_service_item,
-                       (void *)ui);
+    jw__draw_settings_list(lr.x, lr.y, lr.w, lr.h, ui->services_count,
+                           &ui->services_list, item_h, jw__draw_service_item,
+                           (void *)ui);
 }
 
 /* List-pane row for the Settings home categories — mirrors jw__render_nav_row but
    positioned by the scrolling list pane, so the list fills the page and scrolls
    instead of overflowing under the footer. */
 static void jw__draw_home_item(int idx, int ix, int iy, int iw, int ih,
-                               bool selected, void *user) {
+                               float focus, void *user) {
     (void)user;
     if (idx < 0 || idx >= JW_SETTINGS_CATEGORY_COUNT) return;
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
-    ap_color tc = selected ? theme->highlighted_text : theme->text;
+    ap_color tc = cat_draw_color_lerp(theme->text,
+                                       theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     cat_draw_text_ellipsized(body, T(kHomeCategoryLabels[idx]), ix + cat_scale(12), ty,
                              tc, iw - cat_scale(24));
@@ -2073,13 +2138,16 @@ static void jw__render_home(const jw_settings_ui *ui, int x, int y, int w, int h
     int category_count = jw__home_category_count(ui);
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, category_count, &vis, &item_h);
     ((cat_list_state *)&ui->home_list)->visible_rows = vis;
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, category_count,
-                       &ui->home_list, item_h, jw__draw_home_item, NULL);
+    jw__draw_settings_list(lr.x, lr.y, lr.w, lr.h, category_count,
+                           &ui->home_list, item_h, jw__draw_home_item, NULL);
 }
 
 static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Appearance", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->appearance_list, x, ly, w,
+                            JW_APPEAR_ROW_COUNT, item_h);
     /* Layout switching is gated to Tabs, so this row instead cycles the curated
        color schemes (Aurora/Ember/…); "Custom" once colors are hand-edited. */
     const char *scheme_name =
@@ -2096,6 +2164,9 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
     ap_theme *t = cat_get_theme();
     jw__draw_header("Colors", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->colors_list, x, ly, w,
+                            JW_COLOR_ROW_COUNT, item_h);
 
     struct { const char *label; ap_color color; } rows[] = {
         { "Accent",            t->accent },
@@ -2116,6 +2187,9 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
 static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Layout", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->layout_list, x, ly, w,
+                            JW_LAYOUT_ROW_COUNT, item_h);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_HOME_STYLE,
                         "Home Layout", ui->layout_mode == 1 ? "Coverflow" : "Tabs", true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
@@ -2173,6 +2247,9 @@ static inline const char *jw__vis_label(bool visible) {
 static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Status Bar", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->statusbar_list, x, ly, w,
+                            JW_STATUSBAR_ROW_COUNT, item_h);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_HINTS,
                         "Button Hints", jw__vis_label(ui->show_hints), true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_CLOCK,
@@ -2198,14 +2275,13 @@ static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int iy = y_base + row * item_h;
-    bool selected = (ui->display_list.cursor == row);
+    float focus = jw__settings_row_focus(&ui->display_list, row);
     int pill_h = item_h - cat_scale(6);
     int pill_y = iy + cat_scale(3);
-    if (selected)
-        cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
-
-    ap_color label_c = selected ? theme->highlighted_text : theme->text;
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(theme->text,
+                                            theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                            theme->highlighted_text, focus);
     int ty = pill_y + cat_scale(8);
 
     cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
@@ -2244,6 +2320,13 @@ static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_bas
                           navail > 1, item_h);
 }
 
+static void jw__draw_display_focus(int x, int y, int w, int h, void *user) {
+    (void)user;
+    ap_theme *theme = cat_get_theme();
+    cat_draw_pill(x, y + cat_scale(3), w - cat_scale(4),
+                  h - cat_scale(6), theme->highlight);
+}
+
 static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Display & Sound", x, y, w);
     /* Fit the rows to the box rather than assuming the natural pitch clears it.
@@ -2253,6 +2336,9 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
     int y_base = content.y;
     int item_h = jw__display_row_h_fit(content.h);
+    jw__begin_settings_rows_with_focus(&ui->display_list, x, y_base, w,
+                                       JW_DISPLAY_ROW_COUNT, item_h,
+                                       jw__draw_display_focus);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
                         ui->brightness_percent, item_h);
     /* Display refresh rate (kPanelRefreshHz). Cycler when the platform supports it. */
@@ -2317,6 +2403,9 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
 static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Lighting", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->lighting_list, x, ly, w,
+                            JW_LIGHTING_ROW_COUNT, item_h);
     int mode = (ui->led_mode >= 0 && ui->led_mode < JW_LED_MODE_COUNT) ? ui->led_mode : 0;
     char bright[8], speed[8];
     snprintf(bright, sizeof(bright), "%d", ui->led_brightness);
@@ -2507,18 +2596,17 @@ typedef struct {
 } jw__wifi_list_ctx;
 
 static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
-                               bool selected, void *user) {
+                               float focus, void *user) {
     const jw__wifi_list_ctx *ctx = (const jw__wifi_list_ctx *)user;
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
 
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
-
-    ap_color label_c = selected ? theme->highlighted_text : theme->text;
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(theme->text,
+                                            theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                            theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     if (idx == JW_NETWORK_ROW_WIFI) {
@@ -2655,8 +2743,9 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     int vis = 0;
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
     ((cat_list_state *)&ui->network_list)->visible_rows = vis;
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count, &ui->network_list, item_h,
-                       jw__draw_wifi_item, &ctx);
+    jw__draw_settings_list(lr.x, lr.y, lr.w, lr.h, count,
+                           &ui->network_list, item_h,
+                           jw__draw_wifi_item, &ctx);
     if (wifi_available && ui->wifi_radio_on && ui->wifi_network_count == 0) {
         cat_draw_text(small, T("Scanning…"), x + cat_scale(12),
                       dy + item_h * JW_NETWORK_FIXED_ROWS, theme->hint);
@@ -2703,7 +2792,7 @@ static const jw_bt_device_t *jw__bt_row_device(const jw_settings_ui *ui, int row
 }
 
 static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
-                             bool selected, void *user) {
+                             float focus, void *user) {
     const jw__bt_list_ctx *ctx = (const jw__bt_list_ctx *)user;
     const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
     ap_theme *theme = cat_get_theme();
@@ -2726,19 +2815,22 @@ static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
         } else if (idx != JW_BLUETOOTH_FIXED_ROWS && ui->bt_nearby_count == 0) {
             value = (ui->bt_op == JW_BT_OP_SCAN) ? T("Scanning") : T("None");
         }
-        cat_draw_text(body, label, ix + cat_scale(12), ty, theme->emphasis);
+        ap_color header_c = cat_draw_color_lerp(theme->emphasis,
+                                                 theme->highlighted_text, focus);
+        cat_draw_text(body, label, ix + cat_scale(12), ty, header_c);
         if (value) {
             int vw = cat_measure_text(body, value);
-            cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, theme->hint);
+            ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                                    theme->highlighted_text, focus);
+            cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
         }
         return;
     }
 
-    if (selected) {
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
-    }
-    ap_color label_c = selected ? theme->highlighted_text : theme->text;
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(theme->text,
+                                            theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                            theme->highlighted_text, focus);
 
     if (idx == JW_BLUETOOTH_ROW_POWER) {
         const char *value = T("Unavailable");
@@ -2839,9 +2931,9 @@ static void jw__render_bluetooth(const jw_settings_ui *ui, int x, int y, int w, 
     int vis = 0;
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, rows, &vis, &item_h);
     ((cat_list_state *)&ui->bluetooth_list)->visible_rows = vis;
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h,
-                       rows, &ui->bluetooth_list, item_h,
-                       jw__draw_bt_item, &ctx);
+    jw__draw_settings_list(lr.x, lr.y, lr.w, lr.h,
+                           rows, &ui->bluetooth_list, item_h,
+                           jw__draw_bt_item, &ctx);
 }
 
 /* ─── Scraping priorities ──────────────────────────────────────────────── */
@@ -2928,8 +3020,19 @@ typedef struct {
     const jw_settings_ui *ui;
 } jw__scrape_edit_ctx;
 
+static void jw__draw_scrape_edit_focus(int x, int y, int w, int h, void *user) {
+    jw__scrape_edit_ctx *ctx = (jw__scrape_edit_ctx *)user;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = y + (h - pill_h) / 2;
+    ap_color color = (ctx && ctx->ui && ctx->ui->scrape_edit_grabbed)
+                   ? theme->accent : theme->highlight;
+    cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, color);
+}
+
 static void jw__draw_scrape_edit_item(int idx, int ix, int iy, int iw, int ih,
-                                      bool selected, void *user) {
+                                      float focus, void *user) {
     jw__scrape_edit_ctx *ctx = (jw__scrape_edit_ctx *)user;
     const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
     if (!ui) return;
@@ -2946,16 +3049,15 @@ static void jw__draw_scrape_edit_item(int idx, int ix, int iy, int iw, int ih,
 
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    bool grabbed_row = selected && ui->scrape_edit_grabbed;
-    if (selected) {
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h,
-                      grabbed_row ? theme->accent : theme->highlight);
-    }
+    bool grabbed_row = idx == ui->scrape_edit_list.cursor &&
+                       ui->scrape_edit_grabbed;
 
     bool is_included = idx < included;
-    ap_color label_c = selected ? theme->highlighted_text
-                                : (is_included ? theme->text : theme->hint);
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(
+        is_included ? theme->text : theme->hint,
+        theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                            theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     char label[64];
@@ -2995,9 +3097,10 @@ static void jw__render_scrape_priority(const jw_settings_ui *ui,
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
     ((cat_list_state *)&ui->scrape_edit_list)->visible_rows = vis;
     jw__scrape_edit_ctx ctx = { ui };
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count,
-                       &ui->scrape_edit_list, item_h,
-                       jw__draw_scrape_edit_item, &ctx);
+    cat_draw_list_pane_layered(lr.x, lr.y, lr.w, lr.h, count,
+                               &ui->scrape_edit_list, item_h,
+                               jw__draw_scrape_edit_focus,
+                               jw__draw_scrape_edit_item, &ctx);
 }
 
 static void jw__scrape_download_clear_rows(jw_settings_ui *ui) {
@@ -3142,17 +3245,17 @@ typedef struct {
 } jw__scrape_download_ctx;
 
 static void jw__draw_scrape_download_item(int idx, int ix, int iy, int iw, int ih,
-                                          bool selected, void *user) {
+                                          float focus, void *user) {
     jw__scrape_download_ctx *c = (jw__scrape_download_ctx *)user;
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
 
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
-    ap_color label_c = selected ? theme->highlighted_text : theme->text;
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(theme->text,
+                                            theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                            theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     const char *label = T("All Systems");
@@ -3218,9 +3321,9 @@ static void jw__render_scrape_download(const jw_settings_ui *ui,
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
     ((cat_list_state *)&ui->scrape_download_list)->visible_rows = vis;
     jw__scrape_download_ctx ctx = { ui, replace, all_count };
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count,
-                       (cat_list_state *)&ui->scrape_download_list, item_h,
-                       jw__draw_scrape_download_item, &ctx);
+    jw__draw_settings_list(lr.x, lr.y, lr.w, lr.h, count,
+                           (cat_list_state *)&ui->scrape_download_list, item_h,
+                           jw__draw_scrape_download_item, &ctx);
 }
 
 static const char *jw__scrape_queue_state_label(jw_ipc_scrape_row_state state) {
@@ -3437,9 +3540,20 @@ typedef struct {
     int count;
 } jw__scrape_queue_draw_ctx;
 
+static void jw__draw_scrape_queue_focus(int x, int y, int w, int h, void *user) {
+    (void)user;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int block_h = TTF_FontHeight(body) + cat_scale(2) + TTF_FontHeight(small);
+    int pill_h = block_h + cat_scale(10);
+    int pill_y = y + (h - pill_h) / 2;
+    cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
+}
+
 /* One queue row: title + system subtitle + a status-colored state badge. */
 static void jw__draw_scrape_queue_item(int i, int ix, int iy, int iw, int ih,
-                                       bool selected, void *user) {
+                                       float focus, void *user) {
     jw__scrape_queue_draw_ctx *c = (jw__scrape_queue_draw_ctx *)user;
     if (!c || !c->ui || !c->ui->scrape_queue_cache || i < 0 || i >= c->count) return;
     const jw_ipc_scrape_queue_row *row = &c->ui->scrape_queue_cache->rows[c->idx[i]];
@@ -3454,28 +3568,22 @@ static void jw__draw_scrape_queue_item(int i, int ix, int iy, int iw, int ih,
     int line_gap = cat_scale(2);
     int block_h  = TTF_FontHeight(body) + line_gap + TTF_FontHeight(small);
     int block_y  = iy + (ih - block_h) / 2;
-    int pill_h   = block_h + cat_scale(10);
-    int pill_y   = iy + (ih - pill_h) / 2;
     int tx       = ix + cat_scale(24);
     int text_w   = iw - cat_scale(24) - cat_scale(12);
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
-
     /* Title in normal text; the "system - state" subtitle carries the status
        color (green done / red failed / accent running / hint queued) so a row's
        state reads at a glance without a cramped right-hand badge. */
-    ap_color main_c = selected ? theme->highlighted_text : theme->text;
-    ap_color sub_c;
-    if (selected) {
-        sub_c = theme->highlighted_text;
-    } else {
-        switch (jw__scrape_queue_cat_status(row->state)) {
-            case CAT_QUEUE_DONE:    sub_c = cat_hex_to_color("#64c864"); break;
-            case CAT_QUEUE_FAILED:  sub_c = cat_hex_to_color("#ff6464"); break;
-            case CAT_QUEUE_RUNNING: sub_c = theme->accent;               break;
-            default:                sub_c = theme->hint;                 break;
-        }
+    ap_color main_c = cat_draw_color_lerp(theme->text,
+                                           theme->highlighted_text, focus);
+    ap_color sub_base;
+    switch (jw__scrape_queue_cat_status(row->state)) {
+        case CAT_QUEUE_DONE:    sub_base = cat_hex_to_color("#64c864"); break;
+        case CAT_QUEUE_FAILED:  sub_base = cat_hex_to_color("#ff6464"); break;
+        case CAT_QUEUE_RUNNING: sub_base = theme->accent;               break;
+        default:                sub_base = theme->hint;                 break;
     }
+    ap_color sub_c = cat_draw_color_lerp(sub_base,
+                                          theme->highlighted_text, focus);
 
     const char *label = row->display_name[0] ? row->display_name : row->rom_path;
     char subtitle[160];
@@ -3630,8 +3738,9 @@ static void jw__render_scrape_queue(const jw_settings_ui *ui,
         SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
         list->visible_rows = vis;
         jw__scrape_queue_draw_ctx dctx = { ui, idx, count };
-        cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count, list, item_h,
-                           jw__draw_scrape_queue_item, &dctx);
+        cat_draw_list_pane_layered(lr.x, lr.y, lr.w, lr.h, count, list, item_h,
+                                   jw__draw_scrape_queue_focus,
+                                   jw__draw_scrape_queue_item, &dctx);
     }
 
     if (jw__scrape_queue_active(q)) cat_request_frame();
@@ -3640,6 +3749,9 @@ static void jw__render_scrape_queue(const jw_settings_ui *ui,
 static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Game Art", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->scraping_list, x, ly, w,
+                            JW_SCRAPING_ROW_COUNT, item_h);
 
     char download_value[64];
     if (ui->scrape_missing_have_cache) {
@@ -3693,14 +3805,14 @@ static bool jw__render_account_row(const cat_list_state *list, int x, int y,
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
     int iy = y + row * item_h;
-    bool selected = (list->cursor == row);
+    float focus = jw__settings_row_focus(list, row);
+    bool settled = focus >= 0.999f;
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (item_h - pill_h) / 2;
-    if (selected)
-        cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
-
-    ap_color label_c = selected ? theme->highlighted_text : theme->text;
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(theme->text,
+                                            theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                            theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
     cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
                              w / 2 - cat_scale(20));
@@ -3714,7 +3826,7 @@ static bool jw__render_account_row(const cat_list_state *list, int x, int y,
             /* no room */
         } else if (vw <= value_w) {
             cat_draw_text(body, value, x + w - vw - cat_scale(16), ty, value_c);
-        } else if (selected) {
+        } else if (settled) {
             if (mq) mq->mode = CAT_MARQUEE_LOOP;
             anim = cat_draw_text_marquee(body, value, value_x, ty, value_c,
                                          value_w, mq, dt);
@@ -3729,6 +3841,9 @@ static bool jw__render_account_row(const cat_list_state *list, int x, int y,
 static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Accounts", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->accounts_list, x, ly, w,
+                            JW_ACCOUNTS_ROW_COUNT, item_h);
 
     /* Per-row marquee state (one Accounts screen is live at a time). */
     static cat_marquee mq[JW_ACCOUNTS_ROW_COUNT];
@@ -4180,6 +4295,9 @@ static void jw__render_playtime(const jw_settings_ui *ui, int x, int y, int w, i
 static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Controls & Feedback", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->controls_list, x, ly, w,
+                            JW_CONTROLS_ROW_COUNT, item_h);
 
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RUMBLE,
                         "Rumble", ui->rumble_enabled ? "On" : "Off", true);
@@ -4239,6 +4357,9 @@ static int jw__behavior_rows(const jw_settings_ui *ui) {
 static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("General", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->behavior_list, x, ly, w,
+                            jw__behavior_rows(ui), item_h);
 
     int sleep_idx = (ui->auto_sleep_index >= 0 && ui->auto_sleep_index < JW_AUTO_SLEEP_COUNT)
                     ? ui->auto_sleep_index : JW_AUTO_SLEEP_DEFAULT;
@@ -4284,8 +4405,19 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
    with Up/Down. */
 typedef struct { const jw_settings_ui *ui; } jw__home_tabs_ctx;
 
+static void jw__draw_home_tab_focus(int x, int y, int w, int h, void *user) {
+    jw__home_tabs_ctx *ctx = (jw__home_tabs_ctx *)user;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = y + (h - pill_h) / 2;
+    ap_color color = (ctx && ctx->ui && ctx->ui->home_tabs_grabbed)
+                   ? theme->accent : theme->highlight;
+    cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, color);
+}
+
 static void jw__draw_home_tab_item(int idx, int ix, int iy, int iw, int ih,
-                                   bool selected, void *user) {
+                                   float focus, void *user) {
     jw__home_tabs_ctx *ctx = (jw__home_tabs_ctx *)user;
     const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
     if (!ui || idx < 0 || idx >= JW_HOME_TABS_COUNT) return;
@@ -4298,15 +4430,14 @@ static void jw__draw_home_tab_item(int idx, int ix, int iy, int iw, int ih,
 
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    bool grabbed_row = selected && ui->home_tabs_grabbed;
-    if (selected)
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h,
-                      grabbed_row ? theme->accent : theme->highlight);
+    bool grabbed_row = idx == ui->home_tabs_list.cursor && ui->home_tabs_grabbed;
 
     bool is_visible = idx < ui->home_tab_visible;
-    ap_color label_c = selected ? theme->highlighted_text
-                                : (is_visible ? theme->text : theme->hint);
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(
+        is_visible ? theme->text : theme->hint,
+        theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                            theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     cat_draw_text_ellipsized(body, T(kStartupTabLabels[tab]), ix + cat_scale(12), ty,
@@ -4332,9 +4463,10 @@ static void jw__render_home_tabs(const jw_settings_ui *ui, int x, int y, int w, 
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
     ((cat_list_state *)&ui->home_tabs_list)->visible_rows = vis;
     jw__home_tabs_ctx ctx = { ui };
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count,
-                       &ui->home_tabs_list, item_h,
-                       jw__draw_home_tab_item, &ctx);
+    cat_draw_list_pane_layered(lr.x, lr.y, lr.w, lr.h, count,
+                               &ui->home_tabs_list, item_h,
+                               jw__draw_home_tab_focus,
+                               jw__draw_home_tab_item, &ctx);
 }
 
 static void jw__format_update_size(long long bytes, char *out, size_t out_size) {
@@ -4576,6 +4708,9 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
     }
 
     int ly = dy + cat_scale(2);
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->update_list, x, ly, w,
+                            JW_UPDATE_ROW_COUNT, item_h);
     char download_value[48];
     char install_value[64];
     char current_value[128];
@@ -4656,6 +4791,14 @@ typedef struct {
     const jw_settings_ui *ui;
 } jw__update_picker_ctx;
 
+static void jw__draw_update_option_focus(int x, int y, int w, int h, void *user) {
+    (void)user;
+    ap_theme *theme = cat_get_theme();
+    int pill_h = h - cat_scale(4);
+    cat_draw_pill(x, y + cat_scale(2), w - cat_scale(4), pill_h,
+                  theme->highlight);
+}
+
 static const char *jw__update_option_badge(const jw_ipc_update_option_info *option,
                                            int idx) {
     if (!option) {
@@ -4671,7 +4814,7 @@ static const char *jw__update_option_badge(const jw_ipc_update_option_info *opti
 }
 
 static void jw__draw_update_option_item(int idx, int ix, int iy, int iw, int ih,
-                                        bool selected, void *user) {
+                                        float focus, void *user) {
     jw__update_picker_ctx *ctx = (jw__update_picker_ctx *)user;
     const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
     if (!ui || idx < 0 || idx >= ui->update.option_count ||
@@ -4684,14 +4827,10 @@ static void jw__draw_update_option_item(int idx, int ix, int iy, int iw, int ih,
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
     int pad = cat_scale(10);
-    int pill_h = ih - cat_scale(4);
-    int pill_y = iy + cat_scale(2);
-    if (selected) {
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
-    }
-
-    ap_color main_color = selected ? theme->highlighted_text : theme->text;
-    ap_color hint_color = selected ? theme->highlighted_text : theme->hint;
+    ap_color main_color = cat_draw_color_lerp(theme->text,
+                                               theme->highlighted_text, focus);
+    ap_color hint_color = cat_draw_color_lerp(theme->hint,
+                                               theme->highlighted_text, focus);
     const char *label = option->release_id[0] ? option->release_id : "Leaf update";
     char detail[320];
     char size[64];
@@ -4738,9 +4877,10 @@ static void jw__render_update_picker(const jw_settings_ui *ui,
         SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
         ((cat_list_state *)&ui->update_picker_list)->visible_rows = vis;
         jw__update_picker_ctx ctx = { ui };
-        cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, count,
-                           &ui->update_picker_list, item_h,
-                           jw__draw_update_option_item, &ctx);
+        cat_draw_list_pane_layered(lr.x, lr.y, lr.w, lr.h, count,
+                                   &ui->update_picker_list, item_h,
+                                   jw__draw_update_option_focus,
+                                   jw__draw_update_option_item, &ctx);
     }
 }
 
@@ -4751,7 +4891,7 @@ typedef struct {
 /* Single-line row: friendly label on the left ("* " marks the current zone),
    IANA id on the right in hint color — mirrors the Network/Bluetooth list rows. */
 static void jw__draw_timezone_item(int idx, int ix, int iy, int iw, int ih,
-                                   bool selected, void *user) {
+                                   float focus, void *user) {
     jw__timezone_picker_ctx *ctx = (jw__timezone_picker_ctx *)user;
     const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
     if (idx < 0 || idx >= JW_TIMEZONE_COUNT) {
@@ -4762,11 +4902,10 @@ static void jw__draw_timezone_item(int idx, int ix, int iy, int iw, int ih,
 
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (ih - pill_h) / 2;
-    if (selected) {
-        cat_draw_pill(ix, pill_y, iw - cat_scale(4), pill_h, theme->highlight);
-    }
-    ap_color label_c = selected ? theme->highlighted_text : theme->text;
-    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(theme->text,
+                                            theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                            theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     const char *cur = ui ? ui->timezone : "";
@@ -4798,9 +4937,9 @@ static void jw__render_timezone_picker(const jw_settings_ui *ui,
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, JW_TIMEZONE_COUNT, &vis, &item_h);
     ((cat_list_state *)&ui->timezone_picker_list)->visible_rows = vis;
     jw__timezone_picker_ctx ctx = { ui };
-    cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, JW_TIMEZONE_COUNT,
-                       &ui->timezone_picker_list, item_h,
-                       jw__draw_timezone_item, &ctx);
+    jw__draw_settings_list(lr.x, lr.y, lr.w, lr.h, JW_TIMEZONE_COUNT,
+                           &ui->timezone_picker_list, item_h,
+                           jw__draw_timezone_item, &ctx);
 }
 
 /* ─── Main render dispatch ─────────────────────────────────────────────── */
