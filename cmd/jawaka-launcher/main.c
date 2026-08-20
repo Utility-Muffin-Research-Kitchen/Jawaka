@@ -895,9 +895,9 @@ static void jw__draw_settings_footer(const jw_launcher_state *state) {
     } else if (scr == JW_SETTINGS_HOME_TABS) {
         bool grab = state->settings.home_tabs_grabbed;
         cat_footer_item footer[] = {
-            { CAT_BTN_X, grab ? "Drop" : "Reorder",   false, JW_HINT("X") },
+            { CAT_BTN_X, grab ? T("Drop") : T("Reorder"),   false, JW_HINT("X") },
             { CAT_BTN_B, "Back",                       true,  JW_HINT("B") },
-            { CAT_BTN_A, grab ? "Drop" : "Show/Hide",  true,  JW_HINT("A") },
+            { CAT_BTN_A, grab ? T("Drop") : T("Show/Hide"),  true,  JW_HINT("A") },
         };
         jw__draw_footer(state, footer, 3);
     } else {
@@ -1948,7 +1948,7 @@ static void jw__render_recents(const jw_launcher_state *state,
                                 int content_y, int content_h, int margin) {
     jw__render_game_list_pane(state, state->recents, state->recents_count,
                               content_y, content_h, margin,
-                              "No recent games yet — play something and it'll show up here");
+                              T("No recent games yet — play something and it'll show up here"));
 }
 
 static void jw__render_games(const jw_launcher_state *state,
@@ -4497,7 +4497,7 @@ static void jw__render_favorites(const jw_launcher_state *state,
                                  int content_y, int content_h, int margin) {
     jw__render_game_list_pane(state, state->favorites, state->favorites_count,
                               content_y, content_h, margin,
-                              "No favorites yet — open a game and press Y to add one");
+                              T("No favorites yet — open a game and press Y to add one"));
 }
 
 static void jw__render_app_browser(const jw_launcher_state *state) {
@@ -5026,11 +5026,11 @@ static void jw__action_row_strings(const jw_launcher_state *state,
     if (value && value_size > 0) value[0] = '\0';
     switch (row) {
         case JW_ACTION_ROW_SEARCH:
-            snprintf(title, title_size, "%s", "Search This System");
+            snprintf(title, title_size, "%s", T("Search This System"));
             snprintf(value, value_size, "%s", "Open");
             break;
         case JW_ACTION_ROW_DISPLAY_NAME: {
-            snprintf(title, title_size, "%s", "Display Name");
+            snprintf(title, title_size, "%s", T("Display Name"));
             if (state->action_scope == JW_ACTION_SYSTEM) {
                 const char *label = state->action_system_display[0]
                     ? state->action_system_display
@@ -5048,7 +5048,7 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             break;
         }
         case JW_ACTION_ROW_CORE:
-            snprintf(title, title_size, "%s", "Core");
+            snprintf(title, title_size, "%s", T("Core"));
             if (state->action_scope == JW_ACTION_GAME &&
                 state->action_core_game_override[0]) {
                 snprintf(value, value_size, "%s (game)",
@@ -5087,7 +5087,7 @@ static void jw__action_row_strings(const jw_launcher_state *state,
         case JW_ACTION_ROW_RESET:
             snprintf(title, title_size, "%s",
                      state->action_scope == JW_ACTION_GAME
-                         ? "Reset Game Overrides"
+                         ? T("Reset Game Overrides")
                          : "Reset System Overrides");
             snprintf(value, value_size, "%s", "Clear");
             break;
@@ -6067,9 +6067,9 @@ static int jw__open_favorites(const char *db_path, jw_launcher_state *state) {
     cat_list_state_jump(&state->game_list, 0, state->game_count);
     if (state->game_count == 0) {
         snprintf(state->status, sizeof(state->status), "%s",
-                 "No favorites yet — press Y on a game to add one");
+                 T("No favorites yet — press Y on a game to add one"));
     } else {
-        snprintf(state->status, sizeof(state->status), "%d favorites", state->game_count);
+        snprintf(state->status, sizeof(state->status), T("%d favorites"), state->game_count);
     }
     return 0;
 }

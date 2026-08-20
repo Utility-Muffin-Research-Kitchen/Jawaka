@@ -16,6 +16,18 @@ msgstr ""
 msgid "%d apps"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "%d done"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%d done, %d failed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d favorites"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "%d games"
 msgstr ""
@@ -28,6 +40,10 @@ msgstr ""
 msgid "%d of %d"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "%d/%d done"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "%ldd ago"
 msgstr ""
@@ -38,6 +54,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "%ldm ago"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%s first"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -217,6 +237,10 @@ msgid "Adjust"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "All"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "All Systems"
 msgstr ""
 
@@ -389,6 +413,10 @@ msgid "Cancel"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Cancelled"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Central Europe"
 msgstr ""
 
@@ -456,6 +484,10 @@ msgstr ""
 msgid "Controls & Feedback"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Core"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Coverflow"
 msgstr ""
@@ -513,6 +545,10 @@ msgid "Display & Sound"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Display Name"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Done"
 msgstr ""
 
@@ -520,8 +556,16 @@ msgstr ""
 msgid "Download"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Downloading"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Dreamcast"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Drop"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -544,12 +588,20 @@ msgstr ""
 msgid "Enabled"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Error"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Exit to Stock"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Extra Large"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Failed"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -654,6 +706,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "HDMI output unavailable on this platform"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hashing"
 msgstr ""
 
 #: internal/platform/platform_common.c
@@ -869,11 +925,23 @@ msgid "No apps found"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "No favorites yet — open a game and press Y to add one"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "No favorites yet — press Y on a game to add one"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "No games found"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "No playtime recorded yet."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "No recent games yet — play something and it'll show up here"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -906,6 +974,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "None"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Not Found"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -950,6 +1022,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Options"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Output"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1020,6 +1096,10 @@ msgstr ""
 msgid "Profile"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Queued"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Quit"
 msgstr ""
@@ -1084,6 +1164,10 @@ msgstr ""
 msgid "Removing retained Pak Rat data"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Reorder"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Repair"
 msgstr ""
@@ -1106,6 +1190,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Reset"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reset Game Overrides"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1176,6 +1264,10 @@ msgstr ""
 msgid "Save State"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Saving"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Scan"
 msgstr ""
@@ -1209,6 +1301,10 @@ msgid "Scrape Queue"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Scrape Queue - %s"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Scrape Result"
 msgstr ""
 
@@ -1226,6 +1322,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Search"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Search This System"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Searching"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1270,6 +1374,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Settings"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Show/Hide"
 msgstr ""
 
 #: internal/settings/settings.c
