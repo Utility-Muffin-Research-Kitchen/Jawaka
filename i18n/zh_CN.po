@@ -864,7 +864,7 @@ msgid "Release"
 msgstr "版本"
 
 msgid "Release-managed path"
-msgstr "由系统版本管理的路径"
+msgstr "由版本管理的路径"
 
 msgid "Releases"
 msgstr "版本"
