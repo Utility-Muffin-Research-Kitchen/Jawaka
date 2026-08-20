@@ -1,6 +1,8 @@
 #ifndef JW_SEARCH_PINYIN_H
 #define JW_SEARCH_PINYIN_H
 
+/* Private single-translation-unit implementation; db.c is the only include. */
+
 #include <ctype.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -63,14 +65,21 @@ static int jw__utf8_next(const unsigned char **cursor, uint32_t *out_code) {
 typedef struct {
     char   wanted[128];
     size_t wanted_count;
+    int    has_search_chars;
 } jw_pinyin_query;
 
 static void jw_pinyin_prepare_query(const char *query, jw_pinyin_query *out) {
     memset(out, 0, sizeof(*out));
     if (!query || !*query) return;
     for (const unsigned char *p = (const unsigned char *)query; *p; ++p) {
-        if (*p >= 0x80 || !isalnum(*p) ||
-            out->wanted_count + 1u >= sizeof(out->wanted)) {
+        if (*p >= 0x80) {
+            out->has_search_chars = 1;
+            out->wanted_count = 0;
+            return;
+        }
+        if (!isalnum(*p)) continue;
+        out->has_search_chars = 1;
+        if (out->wanted_count + 1u >= sizeof(out->wanted)) {
             out->wanted_count = 0;
             return;
         }

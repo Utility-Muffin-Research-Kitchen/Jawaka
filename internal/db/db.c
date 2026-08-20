@@ -2660,6 +2660,12 @@ int jw_db_search_library(const char *db_path, const char *query,
     *out_count = 0;
     memset(out, 0, sizeof(out[0]) * (size_t)max_count);
 
+    jw_pinyin_query pinyin_query;
+    jw_pinyin_prepare_query(query, &pinyin_query);
+    if (!pinyin_query.has_search_chars) {
+        return 0;
+    }
+
     char fts_query[256];
     int query_rc = jw__build_fts_query(query, fts_query, sizeof(fts_query));
     char like_query[256];
@@ -2686,9 +2692,6 @@ int jw_db_search_library(const char *db_path, const char *query,
         jw_db_close(db);
         return 0;
     }
-    jw_pinyin_query pinyin_query;
-    jw_pinyin_prepare_query(query, &pinyin_query);
-
     static const char *sql =
         "SELECT kind,id,name,system,source_id,rom_relpath,image_root_kind,"
         "image_relpath,rom_path,image_path,pak_dir,icon,favorite FROM ("
@@ -2776,10 +2779,11 @@ int jw_db_search_library(const char *db_path, const char *query,
     if (rc == 0 && pinyin_enabled && *out_count < max_count) {
         static const char *fallback_sql =
             "SELECT games.id, "
-            "COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) "
+            "COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) AS effective_name "
             "FROM games "
             "LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name' "
-            "LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name';";
+            "LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name' "
+            "ORDER BY effective_name COLLATE BINARY ASC, games.id ASC;";
         sqlite3_stmt *fallback = NULL;
         if (sqlite3_prepare_v2(db, fallback_sql, -1, &fallback, NULL) != SQLITE_OK) {
             jw_db_close(db);
