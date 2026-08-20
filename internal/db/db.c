@@ -2686,6 +2686,8 @@ int jw_db_search_library(const char *db_path, const char *query,
         jw_db_close(db);
         return 0;
     }
+    jw_pinyin_query pinyin_query;
+    jw_pinyin_prepare_query(query, &pinyin_query);
 
     static const char *sql =
         "SELECT kind,id,name,system,source_id,rom_relpath,image_root_kind,"
@@ -2773,11 +2775,8 @@ int jw_db_search_library(const char *db_path, const char *query,
        effective display names and append only new games for the fallback. */
     if (rc == 0 && pinyin_enabled && *out_count < max_count) {
         static const char *fallback_sql =
-            "SELECT games.id, games.system, "
-            "COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name), "
-            "games.source_id, games.rom_relpath, COALESCE(games.image_root_kind,''), "
-            "COALESCE(games.image_relpath,''), games.rom_path, COALESCE(games.image_path,''), "
-            "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = games.id) "
+            "SELECT games.id, "
+            "COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) "
             "FROM games "
             "LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name' "
             "LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name';";
@@ -2786,11 +2785,29 @@ int jw_db_search_library(const char *db_path, const char *query,
             jw_db_close(db);
             return -1;
         }
+        static const char *detail_sql =
+            "SELECT 0 AS kind, games.id, "
+            "COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name), "
+            "games.system, games.source_id, games.rom_relpath, "
+            "COALESCE(games.image_root_kind,''), COALESCE(games.image_relpath,''), "
+            "games.rom_path, COALESCE(games.image_path,''), '' AS pak_dir, '' AS icon, "
+            "EXISTS(SELECT 1 FROM favorites f "
+            "WHERE f.kind = 'game' AND f.target_id = games.id) "
+            "FROM games "
+            "LEFT JOIN game_settings gs ON gs.game_id = games.id AND gs.key = 'display_name' "
+            "LEFT JOIN game_settings ig ON ig.game_id = games.id AND ig.key = 'imported_display_name' "
+            "WHERE games.id = ?;";
+        sqlite3_stmt *detail = NULL;
+        if (sqlite3_prepare_v2(db, detail_sql, -1, &detail, NULL) != SQLITE_OK) {
+            sqlite3_finalize(fallback);
+            jw_db_close(db);
+            return -1;
+        }
         int fallback_step_rc = SQLITE_ROW;
         while ((fallback_step_rc = sqlite3_step(fallback)) == SQLITE_ROW &&
                *out_count < max_count) {
-            const char *name = (const char *)sqlite3_column_text(fallback, 2);
-            if (!jw_pinyin_match(name ? name : "", query)) continue;
+            const char *name = (const char *)sqlite3_column_text(fallback, 1);
+            if (!jw_pinyin_match_prepared(name ? name : "", query, &pinyin_query)) continue;
             int id = sqlite3_column_int(fallback, 0);
             int duplicate = 0;
             for (int i = 0; i < *out_count; ++i) {
@@ -2801,29 +2818,44 @@ int jw_db_search_library(const char *db_path, const char *query,
             }
             if (duplicate) continue;
             int i = *out_count;
+            sqlite3_reset(detail);
+            sqlite3_clear_bindings(detail);
+            if (sqlite3_bind_int(detail, 1, id) != SQLITE_OK ||
+                sqlite3_step(detail) != SQLITE_ROW) {
+                sqlite3_finalize(detail);
+                sqlite3_finalize(fallback);
+                jw_db_close(db);
+                return -1;
+            }
             out[i].kind = JW_SEARCH_GAME;
-            out[i].id = id;
-            const unsigned char *system = sqlite3_column_text(fallback, 1);
-            const unsigned char *source_id = sqlite3_column_text(fallback, 3);
-            const unsigned char *rom_relpath = sqlite3_column_text(fallback, 4);
-            const unsigned char *image_root_kind = sqlite3_column_text(fallback, 5);
-            const unsigned char *image_relpath = sqlite3_column_text(fallback, 6);
-            const unsigned char *rom_path = sqlite3_column_text(fallback, 7);
-            const unsigned char *image_path = sqlite3_column_text(fallback, 8);
-            out[i].favorite = sqlite3_column_int(fallback, 9) != 0;
+            out[i].id = sqlite3_column_int(detail, 1);
+            const unsigned char *detail_name = sqlite3_column_text(detail, 2);
+            const unsigned char *system = sqlite3_column_text(detail, 3);
+            const unsigned char *source_id = sqlite3_column_text(detail, 4);
+            const unsigned char *rom_relpath = sqlite3_column_text(detail, 5);
+            const unsigned char *image_root_kind = sqlite3_column_text(detail, 6);
+            const unsigned char *image_relpath = sqlite3_column_text(detail, 7);
+            const unsigned char *rom_path = sqlite3_column_text(detail, 8);
+            const unsigned char *image_path = sqlite3_column_text(detail, 9);
+            const unsigned char *pak_dir = sqlite3_column_text(detail, 10);
+            const unsigned char *icon = sqlite3_column_text(detail, 11);
+            out[i].favorite = sqlite3_column_int(detail, 12) != 0;
+            if (detail_name) snprintf(out[i].name, sizeof(out[i].name), "%s", detail_name);
             if (system) snprintf(out[i].system, sizeof(out[i].system), "%s", system);
-            snprintf(out[i].name, sizeof(out[i].name), "%s", name ? name : "");
             if (source_id) snprintf(out[i].source_id, sizeof(out[i].source_id), "%s", source_id);
             if (rom_relpath) snprintf(out[i].rom_relpath, sizeof(out[i].rom_relpath), "%s", rom_relpath);
             if (image_root_kind) snprintf(out[i].image_root_kind, sizeof(out[i].image_root_kind), "%s", image_root_kind);
             if (image_relpath) snprintf(out[i].image_relpath, sizeof(out[i].image_relpath), "%s", image_relpath);
             if (rom_path) snprintf(out[i].rom_path, sizeof(out[i].rom_path), "%s", rom_path);
             if (image_path) snprintf(out[i].image_path, sizeof(out[i].image_path), "%s", image_path);
+            if (pak_dir) snprintf(out[i].pak_dir, sizeof(out[i].pak_dir), "%s", pak_dir);
+            if (icon) snprintf(out[i].icon, sizeof(out[i].icon), "%s", icon);
             (*out_count)++;
         }
         if (fallback_step_rc != SQLITE_DONE && *out_count < max_count) {
             rc = -1;
         }
+        sqlite3_finalize(detail);
         sqlite3_finalize(fallback);
     }
     jw_db_close(db);

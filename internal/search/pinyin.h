@@ -60,18 +60,29 @@ static int jw__utf8_next(const unsigned char **cursor, uint32_t *out_code) {
 /* Matches a UTF-8 name against either its literal UTF-8 substring or the
  * contiguous pinyin-initial sequence. The caller keeps existing FTS/LIKE
  * results ahead of this fallback, so this function only decides membership. */
-static int jw_pinyin_match(const char *name, const char *query) {
-    if (!name || !query || !*query) return 0;
-    if (strstr(name, query) != NULL) return 1;
+typedef struct {
+    char   wanted[128];
+    size_t wanted_count;
+} jw_pinyin_query;
 
-    char wanted[128];
-    size_t wanted_count = 0;
+static void jw_pinyin_prepare_query(const char *query, jw_pinyin_query *out) {
+    memset(out, 0, sizeof(*out));
+    if (!query || !*query) return;
     for (const unsigned char *p = (const unsigned char *)query; *p; ++p) {
-        if (*p >= 0x80 || !isalnum(*p)) return 0;
-        if (wanted_count + 1u >= sizeof(wanted)) return 0;
-        wanted[wanted_count++] = (char)tolower(*p);
+        if (*p >= 0x80 || !isalnum(*p) ||
+            out->wanted_count + 1u >= sizeof(out->wanted)) {
+            out->wanted_count = 0;
+            return;
+        }
+        out->wanted[out->wanted_count++] = (char)tolower(*p);
     }
-    if (wanted_count == 0) return 0;
+}
+
+static int jw_pinyin_match_prepared(const char *name, const char *query,
+                                    const jw_pinyin_query *prepared) {
+    if (!name || !query || !*query || !prepared) return 0;
+    if (strstr(name, query) != NULL) return 1;
+    if (prepared->wanted_count == 0) return 0;
 
     const char *candidates[512];
     char ascii_candidates[512][2];
@@ -99,12 +110,12 @@ static int jw_pinyin_match(const char *name, const char *query) {
 
     for (size_t start = 0; start < candidate_count; ++start) {
         int matched = 1;
-        for (size_t i = 0; i < wanted_count; ++i) {
+        for (size_t i = 0; i < prepared->wanted_count; ++i) {
             size_t at = start + i;
             if (at >= candidate_count) { matched = 0; break; }
             int one = 0;
             for (const char *p = candidates[at]; *p; ++p) {
-                if (tolower((unsigned char)*p) == wanted[i]) { one = 1; break; }
+                if (tolower((unsigned char)*p) == prepared->wanted[i]) { one = 1; break; }
             }
             if (!one) { matched = 0; break; }
         }
