@@ -264,6 +264,10 @@ msgstr ""
 msgid "Arcade"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Arrange"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Artwork Priority"
 msgstr ""
@@ -305,6 +309,14 @@ msgid "Available"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "B: Back      A: Start"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "B: Back   A: Next"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Back"
 msgstr ""
 
@@ -326,6 +338,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Beta builds are tester previews and may be unstable or lose data. Switch to the Beta update channel?"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Black & white"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -472,6 +488,10 @@ msgstr ""
 msgid "Commodore 64"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Confirm"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Connected"
 msgstr ""
@@ -504,6 +524,10 @@ msgstr ""
 msgid "Custom"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "D-pad: Value/Position   B: Back   A: Next"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "DMC"
 msgstr ""
@@ -522,6 +546,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Device"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Digit"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -588,8 +616,16 @@ msgstr ""
 msgid "Enabled"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Enter PIN to exit"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Error"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Exit 5-Game Mode?"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -821,6 +857,10 @@ msgid "Leaf"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Left/Right"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Library"
 msgstr ""
 
@@ -838,6 +878,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Load State"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Lock"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -933,7 +977,15 @@ msgid "No favorites yet — press Y on a game to add one"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "No games available"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "No games found"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "No lock"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1028,6 +1080,14 @@ msgstr ""
 msgid "Output"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "PIN"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "PINs did not match - try again"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Paired"
 msgstr ""
@@ -1092,6 +1152,10 @@ msgstr ""
 msgid "Power Off"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Press MENU to exit"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Profile"
 msgstr ""
@@ -1113,6 +1177,10 @@ msgid "Rainbow"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Re-enter PIN"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Reboot"
 msgstr ""
 
@@ -1121,7 +1189,19 @@ msgid "Reboot failed"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Reboot?"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Recently Played"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Recents"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reconnect Bluetooth"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1368,6 +1448,10 @@ msgstr ""
 msgid "Services"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Set a PIN"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Set your local time zone"
 msgstr ""
@@ -1378,6 +1462,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Shut Down"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Shut Down?"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1394,6 +1486,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Sleeping…"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Slot"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1453,6 +1549,10 @@ msgid "Start 5-Game Mode"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Start 5-Game Mode?"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Start with Leaf"
 msgstr ""
 
@@ -1498,6 +1598,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Strong"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Style"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1558,6 +1662,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Text"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Theme colors"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1660,6 +1768,10 @@ msgstr ""
 msgid "Unsupported"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Up/Down"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Update Channel"
 msgstr ""
@@ -1702,6 +1814,14 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "WonderSwan Color"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "X: Drop   D-pad: Move"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr ""
 
 #: internal/settings/settings.c

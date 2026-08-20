@@ -47,6 +47,8 @@ FUNNELS = [
     "jw__render_account_row",
     "jw__draw_info_title",
     "jw__about_push",
+    "jw__fsetup_header",
+    "jw__fsetup_footer",
 ]
 
 # A run of adjacent string literals -- C concatenates "a" "b" into one string,

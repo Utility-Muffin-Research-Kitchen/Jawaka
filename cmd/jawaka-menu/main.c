@@ -337,7 +337,7 @@ static void jw__render_menu(const jw_menu_state *state) {
 
         ap_color col = sel ? theme->highlighted_text : theme->text;
         int text_y   = pill_y + (pill_h - body_h) / 2;
-        cat_draw_text(body_font, kMenuItems[i], x, text_y, col);
+        cat_draw_text(body_font, T(kMenuItems[i]), x, text_y, col);
     }
 
     /* Right pane: the Rescan Library notification, sized to fill the pane (not a

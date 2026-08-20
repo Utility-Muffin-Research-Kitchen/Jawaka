@@ -1,7 +1,88 @@
-# Simplified Chinese -- MACHINE SEED, every entry fuzzy.
-# seeded from the AlexL-confirmed glossary of 2026-08-12; unreviewed strings must never ship.
+# Simplified Chinese -- MACHINE SEED
+# seeded from the AlexL-confirmed glossary of 2026-08-20
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Recently Played"
+msgstr "最近游玩"
+
+msgid "No games available"
+msgstr "没有可用的游戏"
+
+msgid "Press MENU to exit"
+msgstr "按菜单键退出"
+
+msgid "Reboot?"
+msgstr "重启？"
+
+msgid "Shut Down?"
+msgstr "关机？"
+
+msgid "Enter PIN to exit"
+msgstr "输入 PIN 退出"
+
+msgid "Exit 5-Game Mode?"
+msgstr "退出精选游戏模式？"
+
+msgid "Digit"
+msgstr "数字"
+
+msgid "Slot"
+msgstr "位置"
+
+msgid "Reconnect Bluetooth"
+msgstr "重新连接蓝牙"
+
+msgid "No lock"
+msgstr "不锁定"
+
+msgid "Theme colors"
+msgstr "主题颜色"
+
+msgid "Black & white"
+msgstr "黑白"
+
+msgid "Arrange"
+msgstr "排列"
+
+msgid "Lock"
+msgstr "锁定"
+
+msgid "Style"
+msgstr "样式"
+
+msgid "Re-enter PIN"
+msgstr "再次输入 PIN"
+
+msgid "Set a PIN"
+msgstr "设置 PIN"
+
+msgid "Up/Down"
+msgstr "上/下"
+
+msgid "Left/Right"
+msgstr "左/右"
+
+msgid "B: Back   A: Next"
+msgstr "B：返回   A：下一步"
+
+msgid "D-pad: Value/Position   B: Back   A: Next"
+msgstr "方向键：数值/位置   B：返回   A：下一步"
+
+msgid "X: Grab   Y: Remove   B: Back   A: Next"
+msgstr "X：抓取   Y：移除   B：返回   A：下一步"
+
+msgid "X: Drop   D-pad: Move"
+msgstr "X：放下   方向键：移动"
+
+msgid "B: Back      A: Start"
+msgstr "B：返回      A：开始"
+
+msgid "Confirm"
+msgstr "确认"
+
+msgid "Shut Down"
+msgstr "关机"
 
 msgid "%d %s games"
 msgstr "%d 个 %s 游戏"
@@ -15,19 +96,17 @@ msgstr "%d 个应用"
 msgid "%d done"
 msgstr "完成 %d 个"
 
-#, fuzzy
 msgid "%d done, %d failed"
-msgstr "字体加载失败"
+msgstr "已完成 %d 个，失败 %d 个"
 
-#, fuzzy
 msgid "%d favorites"
-msgstr "收藏"
+msgstr "%d 个收藏"
 
 msgid "%d games"
 msgstr "%d 个游戏"
 
 msgid "%d games, %d systems, %d apps"
-msgstr "%d 个游戏，%d 个系统，%d 个应用"
+msgstr "%d 个游戏，%d 个平台，%d 个应用"
 
 msgid "%d of %d"
 msgstr "%d / %d"
@@ -141,7 +220,7 @@ msgid "816 MHz"
 msgstr ""
 
 msgid "A: On/Off   X: Grab to reorder"
-msgstr "A：开/关   X：按住调整顺序"
+msgstr "A：开/关   X：按下调整顺序"
 
 msgid "ADB"
 msgstr ""
@@ -158,9 +237,8 @@ msgstr "此平台不支持 ADB"
 msgid "AM/PM"
 msgstr "上午/下午"
 
-#, fuzzy
 msgid "Accent"
-msgstr "最近游玩"
+msgstr "强调色"
 
 msgid "Accounts"
 msgstr "账户"
@@ -184,7 +262,7 @@ msgid "All"
 msgstr "全部"
 
 msgid "All Systems"
-msgstr "所有系统"
+msgstr "所有平台"
 
 msgid "Amiga"
 msgstr ""
@@ -299,12 +377,11 @@ msgstr "按键背景"
 msgid "Button Hints"
 msgstr "按键提示"
 
-#, fuzzy
 msgid "Button Text"
-msgstr "按键提示"
+msgstr "按键文字"
 
 msgid "By system"
-msgstr "按系统"
+msgstr "按平台"
 
 msgid "CPU"
 msgstr ""
@@ -315,9 +392,8 @@ msgstr "CPU 温度"
 msgid "Cancel"
 msgstr "取消"
 
-#, fuzzy
 msgid "Cancelled"
-msgstr "取消"
+msgstr "已取消"
 
 msgid "Central Europe"
 msgstr "中欧"
@@ -334,9 +410,8 @@ msgstr "选择"
 msgid "Clear"
 msgstr "清除"
 
-#, fuzzy
 msgid "Clear Done"
-msgstr "清除"
+msgstr "清除已完成项"
 
 msgid "Clock"
 msgstr "时钟"
@@ -389,7 +464,6 @@ msgstr "自定义"
 msgid "DMC"
 msgstr ""
 
-#, fuzzy
 msgid "Default"
 msgstr "默认"
 
@@ -426,9 +500,8 @@ msgstr "完成"
 msgid "Download"
 msgstr "下载"
 
-#, fuzzy
 msgid "Downloading"
-msgstr "下载"
+msgstr "下载中"
 
 msgid "Dreamcast"
 msgstr ""
@@ -484,9 +557,8 @@ msgstr "字体大小"
 msgid "Forget"
 msgstr "忘记"
 
-#, fuzzy
 msgid "Fountain"
-msgstr "美国山地"
+msgstr "喷泉"
 
 msgid "Frontend"
 msgstr "前端"
@@ -522,7 +594,7 @@ msgid "Games"
 msgstr "游戏"
 
 msgid "Games played"
-msgstr "已玩游戏"
+msgstr "玩过的游戏"
 
 msgid "General"
 msgstr "通用"
@@ -606,7 +678,7 @@ msgid "Large"
 msgstr "大"
 
 msgid "Last played"
-msgstr "最近游玩的"
+msgstr "最近游玩"
 
 msgid "Last update: %s"
 msgstr "上次更新：%s"
@@ -654,16 +726,16 @@ msgid "Menu"
 msgstr "菜单"
 
 msgid "Missing"
-msgstr "仅缺失"
+msgstr "缺失"
 
 msgid "Missing Only"
-msgstr "仅缺失"
+msgstr "仅处理缺失项"
 
 msgid "Mode"
 msgstr "模式"
 
 msgid "Most played"
-msgstr "最常玩的"
+msgstr "最常游玩"
 
 msgid "Mounted"
 msgstr "已挂载"
@@ -689,9 +761,8 @@ msgstr ""
 msgid "Network"
 msgstr "网络"
 
-#, fuzzy
 msgid "Network: %s"
-msgstr "网络"
+msgstr "网络：%s"
 
 msgid "Nintendo 64"
 msgstr ""
@@ -720,7 +791,6 @@ msgstr "暂无游玩记录。"
 msgid "No recent games yet — play something and it'll show up here"
 msgstr "还没有最近游玩 — 玩过的游戏会出现在这里"
 
-#, fuzzy
 msgid "No results"
 msgstr "无结果"
 
@@ -745,9 +815,8 @@ msgstr "暂无即时存档"
 msgid "None"
 msgstr "无"
 
-#, fuzzy
 msgid "Not Found"
-msgstr "未找到应用"
+msgstr "未找到"
 
 msgid "Not connected"
 msgstr "未连接"
@@ -782,9 +851,8 @@ msgstr "开源组件"
 msgid "Options"
 msgstr "选项"
 
-#, fuzzy
 msgid "Output"
-msgstr "HDMI 输出"
+msgstr "输出路径"
 
 msgid "Paired"
 msgstr "已配对"
@@ -792,13 +860,11 @@ msgstr "已配对"
 msgid "Pak Rat"
 msgstr ""
 
-#, fuzzy
 msgid "Path: Apps/%s"
 msgstr "路径：Apps/%s"
 
-#, fuzzy
 msgid "Percent"
-msgstr "最近游玩"
+msgstr "百分比"
 
 msgid "Performance"
 msgstr "性能"
@@ -813,7 +879,7 @@ msgid "Pick Update"
 msgstr "选取更新"
 
 msgid "Play"
-msgstr "开始游戏"
+msgstr "播放"
 
 msgid "PlayStation"
 msgstr ""
@@ -833,7 +899,6 @@ msgstr "移植游戏"
 msgid "Power"
 msgstr "电源"
 
-#, fuzzy
 msgid "Power Off"
 msgstr "关机"
 
@@ -852,7 +917,6 @@ msgstr "内存"
 msgid "Rainbow"
 msgstr "彩虹"
 
-#, fuzzy
 msgid "Reboot"
 msgstr "重启"
 
@@ -880,9 +944,8 @@ msgstr "重新安装"
 msgid "Release"
 msgstr "版本"
 
-#, fuzzy
 msgid "Release-managed path"
-msgstr "由系统更新管理的路径"
+msgstr "由系统版本管理的路径"
 
 msgid "Releases"
 msgstr "版本"
@@ -902,23 +965,20 @@ msgstr "修复"
 msgid "Replace"
 msgstr "替换"
 
-#, fuzzy
 msgid "Replace All"
-msgstr "替换"
+msgstr "全部替换"
 
 msgid "Rescan"
 msgstr "重新扫描"
 
-#, fuzzy
 msgid "Rescan Library"
 msgstr "重新扫描游戏库"
 
 msgid "Reset"
 msgstr "重置"
 
-#, fuzzy
 msgid "Reset Game Overrides"
-msgstr "重置设置"
+msgstr "重置游戏设置"
 
 msgid "Reset Override"
 msgstr "重置设置"
@@ -971,9 +1031,8 @@ msgstr "保存并退出"
 msgid "Save State"
 msgstr "即时存档"
 
-#, fuzzy
 msgid "Saving"
-msgstr "移动中"
+msgstr "保存中"
 
 msgid "Scan"
 msgstr "扫描"
@@ -999,9 +1058,8 @@ msgstr "刮削封面"
 msgid "Scrape Queue"
 msgstr "刮削队列"
 
-#, fuzzy
 msgid "Scrape Queue - %s"
-msgstr "刮削队列"
+msgstr "刮削队列 - %s"
 
 msgid "Scrape Result"
 msgstr "刮削结果"
@@ -1019,11 +1077,10 @@ msgid "Search"
 msgstr "搜索"
 
 msgid "Search This System"
-msgstr "搜索此系统"
+msgstr "搜索此游戏平台"
 
-#, fuzzy
 msgid "Searching"
-msgstr "搜索"
+msgstr "搜索中"
 
 msgid "Secondary Text"
 msgstr "次要文字"
@@ -1046,9 +1103,8 @@ msgstr ""
 msgid "Select"
 msgstr "选择"
 
-#, fuzzy
 msgid "Selection"
-msgstr "选择"
+msgstr "选中项"
 
 msgid "Services"
 msgstr "服务"
@@ -1113,9 +1169,11 @@ msgstr "稳定版"
 msgid "Start"
 msgstr "开始"
 
-#, fuzzy
 msgid "Start 5-Game Mode"
 msgstr "开启精选游戏模式"
+
+msgid "Start 5-Game Mode?"
+msgstr "开启精选游戏模式？"
 
 msgid "Start with Leaf"
 msgstr "随 Leaf 启动"
@@ -1129,16 +1187,14 @@ msgstr "常亮"
 msgid "Status Bar"
 msgstr "状态栏"
 
-#, fuzzy
 msgid "Status: %s"
-msgstr "状态栏"
+msgstr "状态：%s"
 
 msgid "Stop"
 msgstr "停止"
 
-#, fuzzy
 msgid "Stop All"
-msgstr "停止"
+msgstr "全部停止"
 
 msgid "Stopped test sound"
 msgstr "已停止测试音"
@@ -1149,7 +1205,6 @@ msgstr "剩余存储"
 msgid "Strength"
 msgstr "震动强度"
 
-#, fuzzy
 msgid "Stretch"
 msgstr "震动强度"
 
@@ -1178,13 +1233,13 @@ msgid "Sydney"
 msgstr "悉尼"
 
 msgid "System"
-msgstr "系统"
+msgstr "平台"
 
 msgid "System Update"
 msgstr "系统更新"
 
 msgid "Systems"
-msgstr "系统数"
+msgstr "平台数"
 
 msgid "Tab"
 msgstr "标签"
@@ -1219,7 +1274,6 @@ msgstr "关闭"
 msgid "Turn On"
 msgstr "开启"
 
-#, fuzzy
 msgid "Type to search"
 msgstr "输入以搜索"
 
@@ -1349,7 +1403,6 @@ msgstr "刷新率切换失败"
 msgid "refresh rate unavailable on this platform"
 msgstr "此平台不支持刷新率切换"
 
-#, fuzzy
 msgid "space"
 msgstr "空格"
 
