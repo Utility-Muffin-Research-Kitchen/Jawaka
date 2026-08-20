@@ -7,6 +7,7 @@ JAWAKA_DIR ?= /workspace/Jawaka
 BUILD ?= build/mlp1
 CATASTROPHE_DIR ?= /workspace/Catastrophe
 MLP1_BUILD_PROFILE ?= release
+I18N_COVERAGE ?= 0
 
 .PHONY: all pakrat-smoke inhibit-smoke clean
 
@@ -16,6 +17,7 @@ all:
 		CSTD="-std=gnu11" \
 		PLATFORM=mlp1 \
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
 		all
 
@@ -25,6 +27,7 @@ pakrat-smoke:
 		CSTD="-std=gnu11" \
 		PLATFORM=mlp1 \
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
 		jawaka-pakrat-smoke
 
@@ -34,6 +37,7 @@ inhibit-smoke:
 		CSTD="-std=gnu11" \
 		PLATFORM=mlp1 \
 		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
 		jawaka-inhibitctl jawaka-platformctl
 

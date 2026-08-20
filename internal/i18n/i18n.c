@@ -374,6 +374,8 @@ bool jw_i18n_load(const char *lang) {
  * own output at startup.
  */
 
+#ifdef JW_I18N_COVERAGE
+
 #define JW_I18N_MISS_CAP 4096u          /* distinct keys; ~200KB worst case */
 
 typedef struct {
@@ -559,6 +561,18 @@ size_t jw_i18n_coverage_count(void) {
 }
 
 bool jw_i18n_coverage_enabled(void) { return g_misses.enabled; }
+
+#else  /* !JW_I18N_COVERAGE -- compiled out for stable releases */
+
+static void jw__i18n_miss_init(const char *lang) { (void)lang; }
+static void jw__i18n_miss_free(void) { }
+static void jw__i18n_miss_record(const char *english, uint32_t hash) {
+    (void)english; (void)hash;
+}
+size_t jw_i18n_coverage_count(void) { return 0; }
+bool jw_i18n_coverage_enabled(void) { return false; }
+
+#endif /* JW_I18N_COVERAGE */
 
 void jw_i18n_shutdown(void) {
     if (g_i18n_entries_owned) free((void *)g_i18n.entries);
