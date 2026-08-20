@@ -715,7 +715,7 @@ static int jw__draw_tab_header(const jw_launcher_state *state) {
        single "Pick 5 Games" title (same chrome, so the header height + status bar
        stay put) instead of the confusing full four-tab bar. */
     if (state->focus_pick_active) {
-        const char *pick_label = "Pick 5 Games";
+        const char *pick_label = T("Pick 5 Games");
         cat_draw_tab_bar(&pick_label, 1, 0);
         cat_draw_status_bar(&sb);
         return bar_h;
@@ -3624,6 +3624,8 @@ static void jw__render_focus(jw_launcher_state *state) {
         uv.pin = state->focus_pin;
         uv.pin_slot = state->focus_pin_slot;
         uv.error = state->focus_pin_error;
+        uv.error_text = T("Wrong PIN, try again");
+        uv.confirm_hint = T("B: Back      A: Confirm");
         if (state->focus_unlock_confirm == 1) {
             uv.confirm = T("Reboot?");
         } else if (state->focus_unlock_confirm == 2) {

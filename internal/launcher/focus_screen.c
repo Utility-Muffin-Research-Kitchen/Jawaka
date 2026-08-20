@@ -426,7 +426,10 @@ void jw_focus_screen_render_unlock(bool bw, const jw_focus_unlock_view *v) {
     if (err_block) {
         SDL_Color err = bw ? (SDL_Color){ 255, 255, 255, 255 }
                            : (SDL_Color){ 0xFF, 0x3B, 0x30, 0xFF };
-        jw__focus_text_centered(hint_font, "Wrong PIN, try again", cx, y, err);
+        jw__focus_text_centered(hint_font,
+                                v->error_text ? v->error_text
+                                              : "Wrong PIN, try again",
+                                cx, y, err);
     }
 
     /* Two-column button legend, bottom-anchored. */

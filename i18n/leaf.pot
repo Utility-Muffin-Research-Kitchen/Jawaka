@@ -208,6 +208,10 @@ msgstr ""
 msgid "AM/PM"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "About"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Accent"
 msgstr ""
@@ -306,6 +310,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Available"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "B: Back      A: Confirm"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1116,6 +1124,10 @@ msgstr ""
 msgid "Pick"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Pick 5 Games"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Pick Update"
 msgstr ""
@@ -1310,6 +1322,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "RetroArch reset canceled"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Return to Launcher"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1814,6 +1830,10 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "WonderSwan Color"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Wrong PIN, try again"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

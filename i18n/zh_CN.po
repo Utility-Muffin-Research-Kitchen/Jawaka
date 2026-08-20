@@ -6,6 +6,15 @@ msgstr "Content-Type: text/plain; charset=UTF-8\n"
 msgid "Recently Played"
 msgstr "最近游玩"
 
+msgid "Pick 5 Games"
+msgstr "选择 5 个游戏"
+
+msgid "About"
+msgstr "关于"
+
+msgid "Return to Launcher"
+msgstr "返回启动器"
+
 msgid "No games available"
 msgstr "没有可用的游戏"
 
@@ -57,6 +66,15 @@ msgstr "再次输入 PIN"
 msgid "Set a PIN"
 msgstr "设置 PIN"
 
+msgid "PIN"
+msgstr "PIN 码"
+
+msgid "PINs did not match - try again"
+msgstr "两次输入的 PIN 码不一致，请重试"
+
+msgid "Wrong PIN, try again"
+msgstr "PIN 码错误，请重试"
+
 msgid "Up/Down"
 msgstr "上/下"
 
@@ -64,19 +82,22 @@ msgid "Left/Right"
 msgstr "左/右"
 
 msgid "B: Back   A: Next"
-msgstr "B：返回   A：下一步"
+msgstr "B: 返回   A: 下一步"
 
 msgid "D-pad: Value/Position   B: Back   A: Next"
-msgstr "方向键：数值/位置   B：返回   A：下一步"
+msgstr "方向键: 数值/位置   B: 返回   A: 下一步"
 
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
-msgstr "X：抓取   Y：移除   B：返回   A：下一步"
+msgstr "X: 抓取   Y: 移除   B: 返回   A: 下一步"
 
 msgid "X: Drop   D-pad: Move"
-msgstr "X：放下   方向键：移动"
+msgstr "X: 放下   方向键: 移动"
 
 msgid "B: Back      A: Start"
-msgstr "B：返回      A：开始"
+msgstr "B: 返回      A: 开始"
+
+msgid "B: Back      A: Confirm"
+msgstr "B: 返回      A: 确认"
 
 msgid "Confirm"
 msgstr "确认"
@@ -220,7 +241,7 @@ msgid "816 MHz"
 msgstr ""
 
 msgid "A: On/Off   X: Grab to reorder"
-msgstr "A：开/关   X：按下调整顺序"
+msgstr "A: 开/关   X: 抓取以调整顺序"
 
 msgid "ADB"
 msgstr ""
@@ -1233,13 +1254,13 @@ msgid "Sydney"
 msgstr "悉尼"
 
 msgid "System"
-msgstr "平台"
+msgstr "系统"
 
 msgid "System Update"
 msgstr "系统更新"
 
 msgid "Systems"
-msgstr "平台数"
+msgstr "平台"
 
 msgid "Tab"
 msgstr "标签"
