@@ -12,6 +12,17 @@ msgstr ""
 msgid "%d apps"
 msgstr "%d 个应用"
 
+msgid "%d done"
+msgstr ""
+
+#, fuzzy
+msgid "%d done, %d failed"
+msgstr "字体加载失败"
+
+#, fuzzy
+msgid "%d favorites"
+msgstr "收藏"
+
 msgid "%d games"
 msgstr "%d 个游戏"
 
@@ -21,6 +32,9 @@ msgstr "%d 个游戏，%d 个系统，%d 个应用"
 msgid "%d of %d"
 msgstr "%d / %d"
 
+msgid "%d/%d done"
+msgstr ""
+
 msgid "%ldd ago"
 msgstr "%ld 天前"
 
@@ -29,6 +43,9 @@ msgstr "%ld 小时前"
 
 msgid "%ldm ago"
 msgstr "%ld 分钟前"
+
+msgid "%s first"
+msgstr ""
 
 msgid "%s · %d of %d"
 msgstr "%s · %d / %d"
@@ -163,6 +180,9 @@ msgstr "生效：%s  温度：%d°C"
 msgid "Adjust"
 msgstr "调整"
 
+msgid "All"
+msgstr ""
+
 msgid "All Systems"
 msgstr "所有系统"
 
@@ -295,6 +315,10 @@ msgstr "CPU 温度"
 msgid "Cancel"
 msgstr "取消"
 
+#, fuzzy
+msgid "Cancelled"
+msgstr "取消"
+
 msgid "Central Europe"
 msgstr "中欧"
 
@@ -347,6 +371,9 @@ msgstr "继续"
 msgid "Controls & Feedback"
 msgstr "控制与反馈"
 
+msgid "Core"
+msgstr ""
+
 msgid "Coverflow"
 msgstr "封面流"
 
@@ -390,13 +417,23 @@ msgstr "光盘 %d/%d"
 msgid "Display & Sound"
 msgstr "显示与声音"
 
+msgid "Display Name"
+msgstr ""
+
 msgid "Done"
 msgstr "完成"
 
 msgid "Download"
 msgstr "下载"
 
+#, fuzzy
+msgid "Downloading"
+msgstr "下载"
+
 msgid "Dreamcast"
+msgstr ""
+
+msgid "Drop"
 msgstr ""
 
 msgid "Eastern Europe"
@@ -414,10 +451,16 @@ msgstr "要启用 USB ADB 并设为开机自启吗？"
 msgid "Enabled"
 msgstr "已启用"
 
+msgid "Error"
+msgstr ""
+
 msgid "Exit to Stock"
 msgstr "退出到原厂系统"
 
 msgid "Extra Large"
+msgstr ""
+
+msgid "Failed"
 msgstr ""
 
 msgid "Famicom Disk System"
@@ -498,6 +541,9 @@ msgstr "HDMI 输出切换失败"
 
 msgid "HDMI output unavailable on this platform"
 msgstr "此平台不支持 HDMI 输出"
+
+msgid "Hashing"
+msgstr ""
 
 msgid "Headset"
 msgstr ""
@@ -659,11 +705,20 @@ msgstr ""
 msgid "No apps found"
 msgstr "未找到应用"
 
+msgid "No favorites yet — open a game and press Y to add one"
+msgstr ""
+
+msgid "No favorites yet — press Y on a game to add one"
+msgstr ""
+
 msgid "No games found"
 msgstr "未找到游戏"
 
 msgid "No playtime recorded yet."
 msgstr "暂无游玩记录。"
+
+msgid "No recent games yet — play something and it'll show up here"
+msgstr ""
 
 #, fuzzy
 msgid "No results"
@@ -689,6 +744,10 @@ msgstr "暂无即时存档"
 
 msgid "None"
 msgstr "无"
+
+#, fuzzy
+msgid "Not Found"
+msgstr "未找到应用"
 
 msgid "Not connected"
 msgstr ""
@@ -722,6 +781,10 @@ msgstr "开源组件"
 
 msgid "Options"
 msgstr "选项"
+
+#, fuzzy
+msgid "Output"
+msgstr "HDMI 输出"
 
 msgid "Paired"
 msgstr "已配对"
@@ -777,6 +840,9 @@ msgstr "关机"
 msgid "Profile"
 msgstr "配置"
 
+msgid "Queued"
+msgstr ""
+
 msgid "Quit"
 msgstr "退出"
 
@@ -827,6 +893,9 @@ msgstr "移除"
 msgid "Removing retained Pak Rat data"
 msgstr "正在清除 Pak Rat 残留数据"
 
+msgid "Reorder"
+msgstr ""
+
 msgid "Repair"
 msgstr "修复"
 
@@ -846,6 +915,10 @@ msgstr "重新扫描游戏库"
 
 msgid "Reset"
 msgstr "重置"
+
+#, fuzzy
+msgid "Reset Game Overrides"
+msgstr "重置设置"
 
 msgid "Reset Override"
 msgstr "重置设置"
@@ -898,6 +971,10 @@ msgstr "保存并退出"
 msgid "Save State"
 msgstr "即时存档"
 
+#, fuzzy
+msgid "Saving"
+msgstr "移动中"
+
 msgid "Scan"
 msgstr "扫描"
 
@@ -922,6 +999,10 @@ msgstr "刮削封面"
 msgid "Scrape Queue"
 msgstr "刮削队列"
 
+#, fuzzy
+msgid "Scrape Queue - %s"
+msgstr "刮削队列"
+
 msgid "Scrape Result"
 msgstr "刮削结果"
 
@@ -935,6 +1016,13 @@ msgid "Screenshots"
 msgstr "截图"
 
 msgid "Search"
+msgstr "搜索"
+
+msgid "Search This System"
+msgstr ""
+
+#, fuzzy
+msgid "Searching"
 msgstr "搜索"
 
 msgid "Secondary Text"
@@ -970,6 +1058,9 @@ msgstr "设置您所在的时区"
 
 msgid "Settings"
 msgstr "设置"
+
+msgid "Show/Hide"
+msgstr ""
 
 msgid "Signal: %s"
 msgstr ""

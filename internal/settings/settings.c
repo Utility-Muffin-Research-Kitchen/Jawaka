@@ -3341,16 +3341,16 @@ static void jw__render_scrape_download(const jw_settings_ui *ui,
 
 static const char *jw__scrape_queue_state_label(jw_ipc_scrape_row_state state) {
     switch (state) {
-        case JW_IPC_SCRAPE_ROW_QUEUED:    return "Queued";
-        case JW_IPC_SCRAPE_ROW_HASH:      return "Hashing";
-        case JW_IPC_SCRAPE_ROW_SEARCH:    return "Searching";
-        case JW_IPC_SCRAPE_ROW_DOWNLOAD:  return "Downloading";
-        case JW_IPC_SCRAPE_ROW_SAVE:      return "Saving";
-        case JW_IPC_SCRAPE_ROW_DONE:      return "Done";
-        case JW_IPC_SCRAPE_ROW_NOT_FOUND: return "Not Found";
-        case JW_IPC_SCRAPE_ROW_ERROR:     return "Error";
-        case JW_IPC_SCRAPE_ROW_CANCELLED: return "Cancelled";
-        default:                          return "Queued";
+        case JW_IPC_SCRAPE_ROW_QUEUED:    return JW_UI("Queued");
+        case JW_IPC_SCRAPE_ROW_HASH:      return JW_UI("Hashing");
+        case JW_IPC_SCRAPE_ROW_SEARCH:    return JW_UI("Searching");
+        case JW_IPC_SCRAPE_ROW_DOWNLOAD:  return JW_UI("Downloading");
+        case JW_IPC_SCRAPE_ROW_SAVE:      return JW_UI("Saving");
+        case JW_IPC_SCRAPE_ROW_DONE:      return JW_UI("Done");
+        case JW_IPC_SCRAPE_ROW_NOT_FOUND: return JW_UI("Not Found");
+        case JW_IPC_SCRAPE_ROW_ERROR:     return JW_UI("Error");
+        case JW_IPC_SCRAPE_ROW_CANCELLED: return JW_UI("Cancelled");
+        default:                          return JW_UI("Queued");
     }
 }
 
@@ -3418,13 +3418,13 @@ static void jw__scrape_queue_settings_value(jw_settings_ui *ui,
     if (strcmp(q->state, "paused-quota") == 0) {
         snprintf(buf, buf_size, "%s", "Quota paused");
     } else if (q->active > 0 || q->queued > 0) {
-        snprintf(buf, buf_size, "%d/%d done", q->done, q->total);
+        snprintf(buf, buf_size, T("%d/%d done"), q->done, q->total);
     } else if (q->total <= 0) {
         snprintf(buf, buf_size, "%s", "Empty");
     } else if (failed > 0) {
-        snprintf(buf, buf_size, "%d done, %d failed", q->done, failed);
+        snprintf(buf, buf_size, T("%d done, %d failed"), q->done, failed);
     } else {
-        snprintf(buf, buf_size, "%d done", q->done);
+        snprintf(buf, buf_size, T("%d done"), q->done);
     }
 }
 
@@ -3477,10 +3477,10 @@ static int jw__scrape_queue_filter_rows(const jw_ipc_scrape_queue_info *q,
 
 static const char *jw__scrape_queue_filter_label(int filter) {
     switch (filter) {
-        case 1:  return "Busy";
-        case 2:  return "Done";
-        case 3:  return "Failed";
-        default: return "All";
+        case 1:  return JW_UI("Busy");
+        case 2:  return JW_UI("Done");
+        case 3:  return JW_UI("Failed");
+        default: return JW_UI("All");
     }
 }
 
@@ -3630,7 +3630,7 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
         { "Status", jw__scrape_queue_state_label(row->state) },
         { "System", row->system },
         { "ROM",    row->rom_path },
-        { "Output", row->output_path[0] ? row->output_path : "Not written" },
+        { JW_UI("Output"), row->output_path[0] ? row->output_path : "Not written" },
     };
     int key_w = 0;
     for (int i = 0; i < 4; i++) {
@@ -3700,8 +3700,8 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
 static void jw__render_scrape_queue(const jw_settings_ui *ui,
                                     int x, int y, int w, int h) {
     char header[64];
-    snprintf(header, sizeof(header), "Scrape Queue - %s",
-             jw__scrape_queue_filter_label(ui->scrape_queue_filter));
+    snprintf(header, sizeof(header), T("Scrape Queue - %s"),
+             T(jw__scrape_queue_filter_label(ui->scrape_queue_filter)));
     jw__draw_header(header, x, y, w);
     jw__scrape_queue_poll((jw_settings_ui *)ui);   /* throttled live poll */
 
@@ -3784,7 +3784,7 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
 
     char artwork_value[64];
     if (ui->scrape_artwork_included > 0) {
-        snprintf(artwork_value, sizeof(artwork_value), "%s first",
+        snprintf(artwork_value, sizeof(artwork_value), T("%s first"),
                  jw_ss_media_types[ui->scrape_artwork_order[0]].display);
     } else {
         snprintf(artwork_value, sizeof(artwork_value), "None selected");
@@ -3794,7 +3794,7 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
 
     char region_value[64];
     if (ui->scrape_region_included > 0) {
-        snprintf(region_value, sizeof(region_value), "%s first",
+        snprintf(region_value, sizeof(region_value), T("%s first"),
                  jw_ss_regions[ui->scrape_region_order[0]].display);
     } else {
         snprintf(region_value, sizeof(region_value), "None selected");
