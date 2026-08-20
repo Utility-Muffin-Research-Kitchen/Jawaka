@@ -87,7 +87,20 @@ endif
 
 SCRAPE_CREDENTIALS_HEADER := $(BUILD)/generated/screenscraper_credentials.h
 
+# Translation-coverage recorder: a DEV-BUILD TOOL, compiled out of every
+# release, beta included. Build with I18N_COVERAGE=1 to run a coverage pass.
+#
+# It is off by default rather than gated at runtime because the only people who
+# ever run a pass are the developers, on a device they can already deploy to --
+# nobody was going to enable it on a shipped build, so shipping it only bought
+# risk. On a release it would sit dormant behind a marker file that a restored
+# backup or a copied card could create, and then append to a log on the user's
+# SD card. This device already treats a dirty FAT as a hazard.
+
 CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
+ifeq ($(I18N_COVERAGE),1)
+CFLAGS_COMMON += -DJW_I18N_COVERAGE
+endif
 CFLAGS_DAEMON := $(CFLAGS_COMMON)
 CFLAGS_UI := $(CFLAGS_COMMON) -I$(CATASTROPHE_INCLUDE) -Ithird_party/miniz $(SDL_CFLAGS) $(CURL_CFLAGS)
 LDLIBS_COMMON := $(LDFLAGS_PLATFORM) -lsqlite3
@@ -870,8 +883,10 @@ $(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
 $(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(CATALOG_SMOKE_SRCS)
 
+# Always built WITH the coverage recorder: this binary exists to test it, and a
+# test that silently compiles out what it asserts is worse than no test.
 $(BUILD)/bin/jawaka-i18n-test: $(I18N_TEST_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ $(I18N_TEST_SRCS) $(LDLIBS_COMMON)
+	$(CC) $(CFLAGS_COMMON) -DJW_I18N_COVERAGE -o $@ $(I18N_TEST_SRCS) $(LDLIBS_COMMON)
 
 $(BUILD)/bin/jawaka-core-override-smoke: $(CORE_OVERRIDE_SMOKE_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(CORE_OVERRIDE_SMOKE_SRCS) $(LDLIBS_COMMON)
@@ -896,7 +911,7 @@ $(BUILD)/build-manifest.json: $(ALL_BINS) FORCE
 		printf '  "build_profile": "%s",\n' "$(MLP1_BUILD_PROFILE)"; \
 		printf '  "cflags": "%s",\n' "$(CDEBUG)"; \
 		printf '  "ldflags": "%s",\n' "$(LDFLAGS_PLATFORM)"; \
-		printf '  "features": {"screenscraper": %s},\n' "$(if $(filter 1,$(SCREENSCRAPER_AVAILABLE)),true,false)"; \
+		printf '  "features": {"screenscraper": %s, "i18n_coverage": %s},\n' "$(if $(filter 1,$(SCREENSCRAPER_AVAILABLE)),true,false)" "$(if $(filter 1,$(I18N_COVERAGE)),true,false)"; \
 		printf '  "binaries": ["jawakad", "jawaka-launcher", "jawaka-menu", "jawaka-osd", "jawaka-retroarchctl", "jawaka-retroarch-runner", "jawaka-update-runner", "jawaka-platformctl", "jawaka-inhibitctl", "jawaka-ledd"],\n'; \
 		printf '  "exceptions": []\n'; \
 		printf '}\n'; \
@@ -982,6 +997,7 @@ mlp1:
 	docker run --rm \
 		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		-e SCREENSCRAPER_REQUIRED="$(SCREENSCRAPER_REQUIRED)" \
+		-e I18N_COVERAGE="$(I18N_COVERAGE)" \
 		-e SCREENSCRAPER_DEV_ID \
 		-e SCREENSCRAPER_DEV_PASSWORD \
 		-e SCREENSCRAPER_DEBUG_PASSWORD \
