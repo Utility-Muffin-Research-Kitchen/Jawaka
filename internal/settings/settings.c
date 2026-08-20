@@ -41,17 +41,17 @@ const bool kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT] = {
 };
 
 const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT] = {
-    "Rounded",
-    "Soft",
-    "Square",
-    "Leaf",
+    JW_UI("Rounded"),
+    JW_UI("Soft"),
+    JW_UI("Square"),
+    JW_UI("Leaf"),
 };
 
 const char *const kFontSizeLabels[JW_SETTINGS_FONT_SIZE_COUNT] = {
-    "Small",
-    "Default",
-    "Large",
-    "Extra Large",
+    JW_UI("Small"),
+    JW_UI("Default"),
+    JW_UI("Large"),
+    JW_UI("Extra Large"),
 };
 
 /* The value tables backing these labels (pill radius, corner mask, font bump)
@@ -63,10 +63,10 @@ _Static_assert(JW_SETTINGS_FONT_SIZE_COUNT == JW_APPEARANCE_FONT_SIZE_COUNT,
                "font size label/value table counts out of sync");
 
 const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT] = {
-    "Hidden",
-    "24 Hour",
-    "AM/PM",
-    "12 Hour",
+    JW_UI("Hidden"),
+    JW_UI("24 Hour"),
+    JW_UI("AM/PM"),
+    JW_UI("12 Hour"),
 };
 
 /* Curated color schemes selectable from the Appearance > Color Scheme row. Each
@@ -209,7 +209,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_HOME_TAB_ORDER] = "home_tab_order",
 };
 
-static const char *const kTabSwitchLabels[] = { "Snap", "Glide" };
+static const char *const kTabSwitchLabels[] = { JW_UI("Snap"), JW_UI("Glide") };
 #define JW_TAB_SWITCH_COUNT 2
 
 /* Curated time-zone list for Settings > Behavior > Time Zone. Each entry maps a
@@ -470,13 +470,13 @@ static const char *kHomeCategoryLabels[] = {
 #define JW_UPDATE_PICKER_VISIBLE_ROWS 7
 
 static const char *kLedModeLabels[JW_LED_MODE_COUNT] = {
-    "Static",
-    "Breath",
-    "Rainbow",
-    "Comet",
-    "Sweep",
-    "Fountain",
-    "Hiccup",
+    JW_UI("Static"),
+    JW_UI("Breath"),
+    JW_UI("Rainbow"),
+    JW_UI("Comet"),
+    JW_UI("Sweep"),
+    JW_UI("Fountain"),
+    JW_UI("Hiccup"),
 };
 
 
@@ -596,7 +596,7 @@ static void jw__refresh_secondary_sd_status(jw_settings_ui *ui) {
         return;
     }
     snprintf(ui->secondary_sd_status, sizeof(ui->secondary_sd_status), "%s",
-             storage.busy ? "Busy" : (storage.mounted ? "Mounted" : "Not mounted"));
+             storage.busy ? T("Busy") : (storage.mounted ? T("Mounted") : T("Not mounted")));
 }
 
 static void jw__refresh_adb(jw_settings_ui *ui) {
@@ -2102,14 +2102,18 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
     jw__draw_header("Colors", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
 
+    /* A function-local table, so T() is legal here and no JW_UI marker is
+       needed -- the strings reach the extractor through the T funnel like any
+       ordinary call site. The row renderer translates too, which is harmless:
+       T() of an already-translated string simply misses and returns it. */
     struct { const char *label; ap_color color; } rows[] = {
-        { "Accent",            t->accent },
-        { "Background",        t->background },
-        { "Text",              t->text },
-        { "Selection",         t->highlight },
-        { "Secondary Text",    t->hint },
-        { "Button Text",       t->button_label },
-        { "Button Background", t->button_glyph_bg },
+        { T("Accent"),            t->accent },
+        { T("Background"),        t->background },
+        { T("Text"),              t->text },
+        { T("Selection"),         t->highlight },
+        { T("Secondary Text"),    t->hint },
+        { T("Button Text"),       t->button_label },
+        { T("Button Background"), t->button_glyph_bg },
     };
 
     for (int i = 0; i < JW_COLOR_ROW_COUNT; i++) {
@@ -2157,7 +2161,7 @@ enum {
     JW_BATTERY_MODE_COUNT
 };
 static const char *const kBatteryModeLabels[JW_BATTERY_MODE_COUNT] = {
-    "Hidden", "Icon", "Percent", "Both"
+    JW_UI("Hidden"), JW_UI("Icon"), JW_UI("Percent"), JW_UI("Both")
 };
 static int jw__battery_mode(bool icon, bool number) {
     if (icon && number) return JW_BATTERY_BOTH;
@@ -2266,7 +2270,7 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
                         ui->brightness_percent, item_h);
     /* Display refresh rate (kPanelRefreshHz). Cycler when the platform supports it. */
     char refresh_val[16];
-    snprintf(refresh_val, sizeof(refresh_val), "%d Hz", ui->refresh_rate_hz);
+    snprintf(refresh_val, sizeof(refresh_val), T("%d Hz"), ui->refresh_rate_hz);
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_REFRESH_RATE,
                           "Refresh Rate", refresh_val,
                           ui->refresh_rate_supported, item_h);
@@ -2282,18 +2286,18 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     bool bfi_avail = (bfi_fps > 0);
     char bfi_val[24];
     if (!bfi_avail) {
-        snprintf(bfi_val, sizeof(bfi_val), "100/120 Hz only");
+        snprintf(bfi_val, sizeof(bfi_val), "%s", T("100/120 Hz only"));
     } else if (ui->bfi_enabled) {
-        snprintf(bfi_val, sizeof(bfi_val), "On (%d fps)", bfi_fps);
+        snprintf(bfi_val, sizeof(bfi_val), T("On (%d fps)"), bfi_fps);
     } else {
-        snprintf(bfi_val, sizeof(bfi_val), "Off");
+        snprintf(bfi_val, sizeof(bfi_val), "%s", T("Off"));
     }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_BFI,
                           "Black Frame Insertion", bfi_val,
                           bfi_avail, item_h);
     /* HDMI external output (4:3 pillarbox / stretch). Cycler when a TV is
        plugged in; greyed "Not connected" otherwise. */
-    static const char *const kHdmiVals[] = { "Off", "4:3", "Stretch" };
+    static const char *const kHdmiVals[] = { JW_UI("Off"), JW_UI("4:3"), JW_UI("Stretch") };
     bool hdmi_avail = ui->hdmi_supported && ui->hdmi_connected == 1;
     int hdmi_idx = (ui->hdmi_output_mode >= 0 && ui->hdmi_output_mode <= 2)
                        ? ui->hdmi_output_mode : 0;
@@ -2309,7 +2313,7 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     } else if (hdmi_avail) {
         hdmi_text = kHdmiVals[hdmi_idx];
     } else {
-        hdmi_text = ui->hdmi_supported ? "Not connected" : "Unavailable";
+        hdmi_text = ui->hdmi_supported ? T("Not connected") : T("Unavailable");
     }
     jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_HDMI,
                           "HDMI Output", hdmi_text, hdmi_avail, item_h);
@@ -2591,28 +2595,28 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     char signal_val[32];
     bool wifi_available = jw_wifi_available();
     if (!wifi_available) {
-        snprintf(status_val, sizeof(status_val), "%s", "Unavailable");
+        snprintf(status_val, sizeof(status_val), "%s", T("Unavailable"));
         snprintf(signal_val, sizeof(signal_val), "%s", "—");
     } else if (!ui->wifi_radio_on) {
-        snprintf(status_val, sizeof(status_val), "%s", "Off");
+        snprintf(status_val, sizeof(status_val), "%s", T("Off"));
         snprintf(signal_val, sizeof(signal_val), "%s", "—");
     } else if (!wifi->valid) {
-        snprintf(status_val, sizeof(status_val), "%s", "Unavailable");
+        snprintf(status_val, sizeof(status_val), "%s", T("Unavailable"));
         snprintf(signal_val, sizeof(signal_val), "%s", "—");
     } else if (wifi->connected) {
-        snprintf(status_val, sizeof(status_val), "%s", "Connected");
+        snprintf(status_val, sizeof(status_val), "%s", T("Connected"));
         /* Word + dBm, derived from RSSI with the same thresholds as the status
            icon, so the two always agree. */
-        const char *level = (wifi->strength >= 3) ? "Strong" :
-                            (wifi->strength == 2) ? "Good"   :
-                            (wifi->strength == 1) ? "Weak"   : "—";
+        const char *level = (wifi->strength >= 3) ? T("Strong") :
+                            (wifi->strength == 2) ? T("Good")   :
+                            (wifi->strength == 1) ? T("Weak")   : "—";
         if (wifi->rssi != 0)
             snprintf(signal_val, sizeof(signal_val), "%s (%d dBm)", level, wifi->rssi);
         else
             snprintf(signal_val, sizeof(signal_val), "%s", level);
     } else {
         snprintf(status_val, sizeof(status_val), "%s",
-                 wifi->state[0] ? wifi->state : "Disconnected");
+                 wifi->state[0] ? wifi->state : T("Disconnected"));
         snprintf(signal_val, sizeof(signal_val), "%s", "—");
     }
 
@@ -2624,20 +2628,20 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     int dy = content.y;
     char line[160];
 
-    snprintf(line, sizeof(line), "Status: %s", status_val);
+    snprintf(line, sizeof(line), T("Status: %s"), status_val);
     cat_draw_text(small, line, x + cat_scale(12), dy, theme->text);
     dy += line_h;
 
-    snprintf(line, sizeof(line), "Network: %s",
+    snprintf(line, sizeof(line), T("Network: %s"),
              (wifi->valid && wifi->ssid[0]) ? wifi->ssid : "—");
     cat_draw_text_ellipsized(small, line, x + cat_scale(12), dy, theme->text, w - cat_scale(24));
     dy += line_h;
 
-    snprintf(line, sizeof(line), "Signal: %s", signal_val);
+    snprintf(line, sizeof(line), T("Signal: %s"), signal_val);
     cat_draw_text(small, line, x + cat_scale(12), dy, theme->hint);
     dy += line_h;
 
-    snprintf(line, sizeof(line), "IP: %s",
+    snprintf(line, sizeof(line), T("IP: %s"),
              (wifi->valid && wifi->ip[0]) ? wifi->ip : "—");
     cat_draw_text(small, line, x + cat_scale(12), dy, theme->hint);
     dy += line_h + cat_scale(6);
@@ -3188,7 +3192,7 @@ static void jw__render_scrape_download(const jw_settings_ui *ui,
     bool replace = ui->scrape_download_replace;
     char header[48];
     snprintf(header, sizeof(header), "Scrape Artwork - %s",
-             replace ? "Replace All" : "Missing");
+             replace ? T("Replace All") : T("Missing"));
     jw__draw_header(header, x, y, w);
 
     ap_theme *theme = cat_get_theme();
@@ -3551,7 +3555,7 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
     /* Error/cancel note below the info. */
     const char *desc = NULL;
     if (row->state == JW_IPC_SCRAPE_ROW_NOT_FOUND)
-        desc = "Not found in the ScreenScraper.fr database.";
+        desc = T("Not found in the ScreenScraper.fr database.");
     else if (row->state == JW_IPC_SCRAPE_ROW_ERROR)
         desc = row->message[0] ? row->message : "Artwork scrape failed.";
     else if (row->state == JW_IPC_SCRAPE_ROW_CANCELLED)
@@ -6133,7 +6137,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     jw_ipc_platform_action(ui->socket_path, "play-test-sound", 0);
                     ui->test_sound_playing = !was_playing;
                     snprintf(status_buf, status_size, "%s",
-                             was_playing ? "Stopped test sound" : "Playing test sound…");
+                             was_playing ? T("Stopped test sound") : T("Playing test sound…"));
                 }
                 break;
             }

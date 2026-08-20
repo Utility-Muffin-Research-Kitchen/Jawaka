@@ -874,7 +874,7 @@ static void jw__draw_settings_footer(const jw_launcher_state *state) {
         bool busy = q && (q->active > 0 || q->queued > 0);
         cat_footer_item footer[] = {
             { CAT_BTN_Y, "Filter",                          false, JW_HINT("Y") },
-            { CAT_BTN_X, busy ? "Stop All" : "Clear Done",  false, JW_HINT("X") },
+            { CAT_BTN_X, busy ? T("Stop All") : T("Clear Done"),  false, JW_HINT("X") },
             { CAT_BTN_B, "Back",                            true,  JW_HINT("B") },
             { CAT_BTN_A, "Details",                         true,  JW_HINT("A") },
         };
@@ -887,7 +887,7 @@ static void jw__draw_settings_footer(const jw_launcher_state *state) {
     } else if (scr == JW_SETTINGS_SCRAPE_DOWNLOAD) {
         cat_footer_item footer[] = {
             { CAT_BTN_Y, state->settings.scrape_download_replace
-                             ? "Missing Only" : "Replace All", false, JW_HINT("Y") },
+                             ? T("Missing Only") : T("Replace All"), false, JW_HINT("Y") },
             { CAT_BTN_B, "Back",   true, JW_HINT("B") },
             { CAT_BTN_A, "Scrape", true, JW_HINT("A") },
         };
@@ -1551,10 +1551,10 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
         if (s.total > 0) {
             size_t cap = sizeof(state->status);
             int n = snprintf(state->status, cap,
-                             "Scrape finished: %d found", s.found);
+                             T("Scrape finished: %d found"), s.found);
             if (s.not_found > 0 && n > 0 && (size_t)n < cap) {
                 n += snprintf(state->status + n, cap - (size_t)n,
-                              ", %d not found", s.not_found);
+                              T(", %d not found"), s.not_found);
             }
             if (s.failed > 0 && n > 0 && (size_t)n < cap) {
                 n += snprintf(state->status + n, cap - (size_t)n,
@@ -9826,19 +9826,6 @@ int main(void) {
        costs ~1s of dead time before the next screen appears, with no benefit. Skip
        it: hide the surface and _Exit. Logs are line-flushed; the resume + clean-exit
        markers are already on disk; the worker threads above were joined cleanly. */
-    /* Coverage dump, when a tester asked for one. It goes here rather than in an
-       atexit handler because this path _Exit()s deliberately, and it is safe to
-       put a file write in front of a fast exit only because it is gated: with
-       JAWAKA_I18N_COVERAGE unset this is a single branch on a cold global. */
-    if (jw_i18n_coverage_enabled()) {
-        const char *logs = getenv("LOGS_PATH");
-        char cov[PATH_MAX];
-        if (logs && logs[0] &&
-            snprintf(cov, sizeof(cov), "%s/i18n-coverage-launcher.txt", logs) <
-                (int)sizeof(cov)) {
-            jw_i18n_coverage_dump(cov);
-        }
-    }
-    cat_hide_window();
+        cat_hide_window();
     _Exit(0);
 }
