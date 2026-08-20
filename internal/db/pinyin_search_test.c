@@ -76,12 +76,13 @@ int main(void) {
     }
 
     count = 0;
-    if (jw_db_search_library(db_path, "三国志", results, 8, &count) != 0 ||
+    if (jw_db_search_library(db_path, " \t三国志 \r\n", results, 8, &count) != 0 ||
         count != 2 || strcmp(results[0].name, "三国志 Alpha") != 0 ||
         strcmp(results[1].name, "三国志 Beta") != 0) {
-        fail("literal Han search regressed");
+        fail("whitespace-padded literal Han search regressed");
     }
 
+    expect_one(db_path, "三国志 Alpha", "三国志 Alpha", 1);
     expect_one(db_path, "Black Jewel", "Black Jewel Reborn", 0);
 
     unlink(db_path);

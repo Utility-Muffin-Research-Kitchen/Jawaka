@@ -2775,8 +2775,9 @@ int jw_db_search_library(const char *db_path, const char *query,
     if (stmt) sqlite3_finalize(stmt);
 
     /* Chinese names are not tokenized by the byte-oriented FTS builder. Scan
-       effective display names and append only new games for the fallback. */
-    if (rc == 0 && pinyin_enabled && *out_count < max_count) {
+       when SQL had no tokens or usable pinyin initials can add results. */
+    if (rc == 0 && pinyin_enabled && *out_count < max_count &&
+        (query_rc > 0 || pinyin_query.wanted_count > 0)) {
         static const char *fallback_sql =
             "SELECT games.id, "
             "COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), games.name) AS effective_name "
@@ -2811,7 +2812,7 @@ int jw_db_search_library(const char *db_path, const char *query,
         while ((fallback_step_rc = sqlite3_step(fallback)) == SQLITE_ROW &&
                *out_count < max_count) {
             const char *name = (const char *)sqlite3_column_text(fallback, 1);
-            if (!jw_pinyin_match_prepared(name ? name : "", query, &pinyin_query)) continue;
+            if (!jw_pinyin_match_prepared(name ? name : "", &pinyin_query)) continue;
             int id = sqlite3_column_int(fallback, 0);
             int duplicate = 0;
             for (int i = 0; i < *out_count; ++i) {

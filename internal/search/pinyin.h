@@ -65,13 +65,26 @@ static int jw__utf8_next(const unsigned char **cursor, uint32_t *out_code) {
 typedef struct {
     char   wanted[128];
     size_t wanted_count;
+    const char *literal;
+    size_t literal_count;
     int    has_search_chars;
 } jw_pinyin_query;
 
 static void jw_pinyin_prepare_query(const char *query, jw_pinyin_query *out) {
     memset(out, 0, sizeof(*out));
     if (!query || !*query) return;
-    for (const unsigned char *p = (const unsigned char *)query; *p; ++p) {
+
+    const unsigned char *literal = (const unsigned char *)query;
+    while (*literal && *literal < 0x80 && isspace(*literal)) literal++;
+    const unsigned char *literal_end = literal + strlen((const char *)literal);
+    while (literal_end > literal && literal_end[-1] < 0x80 &&
+           isspace(literal_end[-1])) {
+        literal_end--;
+    }
+    out->literal = (const char *)literal;
+    out->literal_count = (size_t)(literal_end - literal);
+
+    for (const unsigned char *p = literal; p < literal_end; ++p) {
         if (*p >= 0x80) {
             out->has_search_chars = 1;
             out->wanted_count = 0;
@@ -87,10 +100,18 @@ static void jw_pinyin_prepare_query(const char *query, jw_pinyin_query *out) {
     }
 }
 
-static int jw_pinyin_match_prepared(const char *name, const char *query,
+static int jw_pinyin_match_prepared(const char *name,
                                     const jw_pinyin_query *prepared) {
-    if (!name || !query || !*query || !prepared) return 0;
-    if (strstr(name, query) != NULL) return 1;
+    if (!name || !prepared) return 0;
+    size_t name_count = strlen(name);
+    if (prepared->literal_count > 0 && prepared->literal_count <= name_count) {
+        for (size_t i = 0; i <= name_count - prepared->literal_count; ++i) {
+            if (memcmp(name + i, prepared->literal,
+                       prepared->literal_count) == 0) {
+                return 1;
+            }
+        }
+    }
     if (prepared->wanted_count == 0) return 0;
 
     const char *candidates[512];
