@@ -145,7 +145,7 @@ Seed the section with:
   independently by the Phase-2 toggle below.
 - **Strength** — a **percent slider** reusing the existing brightness/volume track+fill
   widget (`settings.c` ~1866–1871, L/R to adjust), default ~65%, with a **live preview
-  buzz** as you drag so you feel the level while setting it. (Slider only — no named
+  buzz** as you drag **when UI/menu haptics are enabled**, so you feel the level while setting it. (Slider only — no named
   presets; the slider supersedes Light/Med/Strong.)
 - **Navigation tick** — on/off, **default OFF** (per-move buzz is the most polarizing; opt-in).
   Greyed unless Rumble is on.
