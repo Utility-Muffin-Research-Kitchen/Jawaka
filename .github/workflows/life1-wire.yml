@@ -17,7 +17,11 @@ jobs:
         with:
           path: Jawaka
 
+      - name: Verify fork-safe C protocol behavior
+        run: make -C Jawaka ctl1-test life1-test ipc-stream-test
+
       - name: Check out the pinned service contracts
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/checkout@v4
         with:
           repository: Utility-Muffin-Research-Kitchen/umrk-workspace
@@ -26,4 +30,5 @@ jobs:
           path: umrk-workspace
 
       - name: Verify C framing against canonical fixtures
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: make -C Jawaka WORKSPACE_ROOT="$GITHUB_WORKSPACE" wire-fixture-test
