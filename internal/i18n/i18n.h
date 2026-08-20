@@ -28,6 +28,31 @@
 
 #define T(s) jw_i18n(s)
 
+/* Marks a UI string that cannot be wrapped in T() where it is written, because
+ * it lives in a `static const` initializer and T() is a function call. Expands
+ * to the string itself, so codegen is unchanged; it exists purely so the
+ * extractor can see the string, and so a reader can tell UI text from a config
+ * key or a file path sitting in the same kind of table.
+ *
+ * The value is still translated at the point it is drawn -- the row renderers
+ * call T() on whatever they are handed -- so this marks the string for
+ * EXTRACTION, not for lookup. Both halves are needed: an unmarked string never
+ * reaches the .po, and a marked string in a renderer that forgets T() renders
+ * English no matter how good the translation is.
+ *
+ *   static const char *const kFontSizeLabels[] = { JW_UI("Small"), ... };
+ *
+ * This replaces a hand-maintained list of table names in the extractor. That
+ * list failed silently: forget to register a table and everything builds,
+ * ships, and looks right until a native speaker reads the screen. A missing
+ * JW_UI is at least visible in review, next to its marked neighbours.
+ *
+ * Do NOT mark proper nouns. Font families, theme ids and product names stay
+ * English on purpose, and marking them only invites a translator to change
+ * something that should not change.
+ */
+#define JW_UI(s) (s)
+
 /* Load the table for `lang` ("en" or a code like "zh_CN"). "en" (or NULL/empty)
  * loads nothing and every lookup returns its key, which is the no-op default.
  *
@@ -77,20 +102,28 @@ size_t jw_i18n_count(void);
  * measurable instead, in any language, and catches keys assembled at runtime
  * that no source-scanning extractor can see.
  *
- * Enabled by JAWAKA_I18N_COVERAGE=1 in the environment, read once when a table
- * loads. Off, the cost is one predictable branch on a cold global. It records
- * distinct keys in memory only and never touches the filesystem during a
- * lookup: T() sits on the render path, and misses are the COMMON case there
- * because values (game names, scraper status) flow through it too.
+ * Enabled by JAWAKA_I18N_COVERAGE=1, or by creating
+ * $UMRK_INTERNAL_DATA_PATH/i18n/coverage.on -- the marker exists because the UI
+ * binaries are spawned by a daemon that init starts, so there is nowhere to
+ * export a variable. Read once when a table loads; off, the cost is one
+ * predictable branch on a cold global.
+ *
+ * A key is written once, when first seen. Repeats cost a hash probe and no I/O,
+ * which matters because T() sits on the render path and a MISS is the common
+ * case there -- values flow through it too, and a game name legitimately falls
+ * back.
  *
  * Meaningful only with a table loaded; running in English records nothing.
  */
 bool jw_i18n_coverage_enabled(void);
 
-/* Write the recorded keys, one per line, and return how many. Call from a
- * deliberate teardown or a signal handler's follow-up, never per frame.
- * Returns 0 when recording is off. A dumped key that already has a translation
- * in the .po is a format-conversion mismatch rather than a coverage gap. */
-size_t jw_i18n_coverage_dump(const char *path);
+/* Keys are appended to $LOGS_PATH/i18n-coverage-<binary>.txt the moment each is
+ * first seen, so the file survives a SIGKILL, a language change and a process
+ * that never exits -- all three of which lost a full walkthrough when this
+ * wrote once at exit. Nothing needs to be called to save it.
+ *
+ * Returns how many distinct keys THIS process has recorded. The file may hold
+ * more, appended by earlier runs; the consumer sorts and dedups. */
+size_t jw_i18n_coverage_count(void);
 
 #endif /* JW_I18N_H */

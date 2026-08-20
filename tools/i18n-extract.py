@@ -64,6 +64,8 @@ def run_to_text(run: str) -> str:
 # designated-init dialogs (.message = "...", .label = "...") are both UI text --
 # verified by hand against every occurrence in the tree.
 FOOTER_RE = re.compile(r"\{\s*CAT_BTN_[A-Z0-9_]+\s*,\s*(" + RUN.pattern + r")")
+# JW_UI("...") -- the marker for UI text in a static initializer. See i18n.h.
+JW_UI_RE  = re.compile(r"\bJW_UI\s*\(\s*(" + RUN.pattern + r")\s*\)")
 DESIG_RE  = re.compile(r"\.(?:message|label)\s*=\s*(" + RUN.pattern + r")")
 
 # Label arrays translated where they are indexed (T(kTabs[i]) and the like).
@@ -186,6 +188,13 @@ def extract():
             if rel == arr_file:
                 for lit in array_literals(src, arr_name, mode):
                     add(lit, rel)
+        # JW_UI("...") marks a UI string that cannot be wrapped in T() where it
+        # is written, because it sits in a `static const` initializer. Preferred
+        # over adding a table to ARRAYS: the mark lives next to the string, so a
+        # missing one shows up in review rather than as a silent gap in a list
+        # nobody reads. ARRAYS stays only for the tables that predate this.
+        for m in JW_UI_RE.finditer(src):
+            add(run_to_text(m.group(1)), rel)
     return keys
 
 

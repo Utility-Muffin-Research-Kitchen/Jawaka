@@ -291,7 +291,8 @@ static bool g_i18n_entries_owned = false;
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
-static void jw__i18n_miss_init(void);
+static void jw__i18n_miss_init(const char *lang);
+static void jw__i18n_miss_free(void);
 
 bool jw_i18n_load(const char *lang) {
     jw_i18n_shutdown();
@@ -300,7 +301,7 @@ bool jw_i18n_load(const char *lang) {
 
     /* Only with a table loaded. English has nothing to miss against, so
        recording there would report every string in the product as untranslated. */
-    jw__i18n_miss_init();
+    jw__i18n_miss_init(lang);
 
     char path[PATH_MAX];
 
@@ -342,9 +343,35 @@ bool jw_i18n_load(const char *lang) {
  * ⛔ A miss is the HOT path, not an exception. Values flow through T() as well
  * as labels, so every game name, system name and scraper status misses on every
  * redraw. This is why the whole thing hangs off a flag that is off in normal
- * use, why nothing here touches the filesystem, and why the set never grows
- * without bound. jawakad logging one line per haptic tick once accounted for
- * 16% of the log; the same mistake here would sit on the render path.
+ * use, and why the set never grows without bound. jawakad logging one line per
+ * haptic tick once accounted for 16% of the log; the same mistake here would sit
+ * on the render path.
+ *
+ * ── Why this appends as it goes rather than dumping at exit ──
+ *
+ * The first version wrote the set once, on the way out. A walkthrough could be
+ * lost three different ways and each one cost real testing time:
+ *
+ *   1. A hot-reload deploy kills the launcher with SIGKILL, which cannot be
+ *      caught, so nothing was ever written.
+ *   2. Changing language calls jw_i18n_load, which shuts the table down and
+ *      freed the set -- and switching TO English stopped recording entirely,
+ *      silently, because "en" returns before this is initialised.
+ *   3. jawaka-menu does not exit at all in the in-game case. It hides and stays
+ *      resident, so its exit hook never ran.
+ *
+ * Appending each newly-seen key the moment it is first seen fixes all three:
+ * the file on disk is always current, and losing the process loses nothing.
+ *
+ * The write cost is bounded by DISTINCT keys, not by lookups -- a key is written
+ * once, ever, and the in-memory set makes every repeat free. The worst case is
+ * scrolling a large game library for the first time, which appends one short
+ * line per title and then never again.
+ *
+ * Duplicates across runs are possible and deliberate: the set is per-process, so
+ * a relaunch re-appends what it re-sees rather than reading the file back. The
+ * consumer sorts and dedups, which is cheaper and less fragile than parsing our
+ * own output at startup.
  */
 
 #define JW_I18N_MISS_CAP 4096u          /* distinct keys; ~200KB worst case */
@@ -356,6 +383,7 @@ typedef struct {
     uint32_t  count;
     bool      enabled;
     bool      overflowed;
+    FILE     *sink;                      /* append-mode, flushed per new key */
 } jw__i18n_misses;
 
 static jw__i18n_misses g_misses;
@@ -370,7 +398,7 @@ static jw__i18n_misses g_misses;
  * across reboots until removed, and matches how everything else here is gated
  * (loong_upgrade, the .umrk-migrations stamps). The env var stays for desktop
  * runs and the test binary. */
-static void jw__i18n_miss_init(void) {
+static void jw__i18n_miss_init(const char *lang) {
     const char *env = getenv("JAWAKA_I18N_COVERAGE");
     g_misses.enabled = env && env[0] && strcmp(env, "0") != 0;
 
@@ -400,11 +428,50 @@ static void jw__i18n_miss_init(void) {
     }
     g_misses.count = 0;
     g_misses.overflowed = false;
-    jw_log_info("i18n coverage: recording untranslated keys (cap %u)",
-                JW_I18N_MISS_CAP);
+
+    /* One file per binary, because each UI binary loads its own table and has
+       its own gaps -- jawaka-menu once rendered English purely because only the
+       launcher had loaded one. The name comes from /proc/self/comm so no call
+       site has to pass it and no signature changes; the env var covers desktop
+       runs and the test binary, where /proc does not exist. */
+    char tag[32] = "";
+    const char *tag_env = getenv("JAWAKA_I18N_COVERAGE_TAG");
+    if (tag_env && tag_env[0]) {
+        snprintf(tag, sizeof(tag), "%s", tag_env);
+    } else {
+        FILE *cf = fopen("/proc/self/comm", "r");
+        if (cf) {
+            if (fgets(tag, sizeof(tag), cf)) tag[strcspn(tag, "\n")] = '\0';
+            fclose(cf);
+        }
+    }
+    if (!tag[0]) snprintf(tag, sizeof(tag), "%s", "unknown");
+    for (char *p = tag; *p; p++) {
+        if (*p == '/' || *p == '\\' || *p == ' ') *p = '-';   /* never a path */
+    }
+
+    const char *logs = getenv("LOGS_PATH");
+    char path[PATH_MAX];
+    if (logs && logs[0] &&
+        snprintf(path, sizeof(path), "%s/i18n-coverage-%s.txt", logs, tag) <
+            (int)sizeof(path)) {
+        g_misses.sink = fopen(path, "a");
+    }
+    if (!g_misses.sink) {
+        /* Recording with nowhere to put it would silently waste a walkthrough,
+           which is the exact failure this rewrite exists to remove. */
+        jw_log_warn("i18n coverage: no writable log; recording disabled");
+        jw__i18n_miss_free();
+        return;
+    }
+    fprintf(g_misses.sink, "# session start lang=%s binary=%s\n",
+            lang ? lang : "?", tag);
+    fflush(g_misses.sink);
+    jw_log_info("i18n coverage: appending untranslated keys to %s", path);
 }
 
 static void jw__i18n_miss_free(void) {
+    if (g_misses.sink) fclose(g_misses.sink);        /* content is already on disk */
     for (uint32_t i = 0; i < g_misses.cap; i++) {
         if (g_misses.keys && g_misses.keys[i]) free(g_misses.keys[i]);
     }
@@ -437,6 +504,21 @@ static void jw__i18n_miss_record(const char *english, uint32_t hash) {
     g_misses.keys[i] = copy;
     g_misses.hashes[i] = hash;
     g_misses.count++;
+
+    /* Written the moment it is first seen, so nothing depends on this process
+       living long enough to be asked. Bounded by distinct keys: every repeat
+       returned above without reaching here. Newlines would corrupt the
+       one-key-per-line format, so they are escaped rather than dropped -- a key
+       containing one is rare but real (multi-line dialog text). */
+    if (g_misses.sink) {
+        for (const char *p = copy; *p; p++) {
+            if (*p == '\n')      fputs("\\n", g_misses.sink);
+            else if (*p == '\r') fputs("\\r", g_misses.sink);
+            else                 fputc(*p, g_misses.sink);
+        }
+        fputc('\n', g_misses.sink);
+        fflush(g_misses.sink);
+    }
 }
 
 static bool jw__i18n_miss_grow(void) {
@@ -469,30 +551,11 @@ static bool jw__i18n_miss_grow(void) {
     return true;
 }
 
-size_t jw_i18n_coverage_dump(const char *path) {
-    if (!g_misses.enabled || !path || !path[0]) return 0;
-    FILE *fp = fopen(path, "w");
-    if (!fp) {
-        jw_log_warn("i18n coverage: cannot write %s", path);
-        return 0;
-    }
-    /* One key per line, unsorted -- the consumer sorts. Context prefixes are
-       kept as written so a "verb|Open" miss is distinguishable from "noun|Open". */
-    fprintf(fp, "# untranslated keys seen while running, language=%s\n",
-            g_i18n.lang[0] ? g_i18n.lang : "en");
-    if (g_misses.overflowed) {
-        fprintf(fp, "# WARNING: hit the %u key cap; this list is incomplete\n",
-                JW_I18N_MISS_CAP);
-    }
-    size_t written = 0;
-    for (uint32_t i = 0; i < g_misses.cap; i++) {
-        if (!g_misses.keys[i]) continue;
-        fprintf(fp, "%s\n", g_misses.keys[i]);
-        written++;
-    }
-    fclose(fp);
-    jw_log_info("i18n coverage: wrote %zu untranslated keys to %s", written, path);
-    return written;
+/* The file is written as keys are discovered, so there is nothing to flush and
+   no "dump" step to forget. This reports what THIS process has seen, which is
+   what a test can assert on; the file may hold more, from earlier runs. */
+size_t jw_i18n_coverage_count(void) {
+    return g_misses.enabled ? g_misses.count : 0;
 }
 
 bool jw_i18n_coverage_enabled(void) { return g_misses.enabled; }
