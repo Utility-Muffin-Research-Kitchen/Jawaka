@@ -6,6 +6,9 @@ msgstr "Content-Type: text/plain; charset=UTF-8\n"
 msgid "%d %s games"
 msgstr "%d 个 %s 游戏"
 
+msgid "%d Hz"
+msgstr ""
+
 msgid "%d apps"
 msgstr "%d 个应用"
 
@@ -32,6 +35,9 @@ msgstr "%s · %d / %d"
 
 msgid "%s · %s · %d of %d"
 msgstr "%s · %s · %d / %d"
+
+msgid ", %d not found"
+msgstr ""
 
 msgid "-"
 msgstr ""
@@ -60,6 +66,12 @@ msgstr ""
 msgid "10 min"
 msgstr "10 分钟"
 
+msgid "100/120 Hz only"
+msgstr ""
+
+msgid "12 Hour"
+msgstr ""
+
 msgid "15 sec"
 msgstr "15 秒"
 
@@ -67,6 +79,9 @@ msgid "2 min"
 msgstr "2 分钟"
 
 msgid "200 MHz"
+msgstr ""
+
+msgid "24 Hour"
 msgstr ""
 
 msgid "30 sec"
@@ -83,6 +98,9 @@ msgstr ""
 
 msgid "45 sec"
 msgstr "45 秒"
+
+msgid "4:3"
+msgstr ""
 
 msgid "5 min"
 msgstr "5 分钟"
@@ -119,6 +137,13 @@ msgstr "ADB 启用已取消"
 
 msgid "ADB unavailable on this platform"
 msgstr "此平台不支持 ADB"
+
+msgid "AM/PM"
+msgstr ""
+
+#, fuzzy
+msgid "Accent"
+msgstr "最近游玩"
 
 msgid "Accounts"
 msgstr "账户"
@@ -189,6 +214,9 @@ msgstr "可用"
 msgid "Back"
 msgstr "返回"
 
+msgid "Background"
+msgstr ""
+
 msgid "Balanced"
 msgstr "均衡"
 
@@ -224,11 +252,17 @@ msgstr "主板"
 msgid "Boot Splash"
 msgstr "开机动画"
 
+msgid "Both"
+msgstr ""
+
 msgid "Box art"
 msgstr "游戏封面"
 
 msgid "Brazil (East)"
 msgstr "巴西（东部）"
+
+msgid "Breath"
+msgstr ""
 
 msgid "Brightness"
 msgstr "亮度"
@@ -236,7 +270,17 @@ msgstr "亮度"
 msgid "Browse"
 msgstr "浏览"
 
+msgid "Busy"
+msgstr ""
+
+msgid "Button Background"
+msgstr ""
+
 msgid "Button Hints"
+msgstr "按键提示"
+
+#, fuzzy
+msgid "Button Text"
 msgstr "按键提示"
 
 msgid "By system"
@@ -266,6 +310,10 @@ msgstr "选择"
 msgid "Clear"
 msgstr "清除"
 
+#, fuzzy
+msgid "Clear Done"
+msgstr "清除"
+
 msgid "Clock"
 msgstr "时钟"
 
@@ -281,10 +329,16 @@ msgstr "配色方案"
 msgid "Colors"
 msgstr "颜色"
 
+msgid "Comet"
+msgstr ""
+
 msgid "Command: %s"
 msgstr "命令：%s"
 
 msgid "Commodore 64"
+msgstr ""
+
+msgid "Connected"
 msgstr ""
 
 msgid "Continue"
@@ -308,6 +362,10 @@ msgstr "自定义"
 msgid "DMC"
 msgstr ""
 
+#, fuzzy
+msgid "Default"
+msgstr "默认"
+
 msgid "Defaults"
 msgstr "默认"
 
@@ -322,6 +380,9 @@ msgstr "禁用"
 
 msgid "Disable USB ADB and remove Leaf's boot restore marker?"
 msgstr "要禁用 USB ADB 并清除 Leaf 启动恢复标记吗？"
+
+msgid "Disconnected"
+msgstr ""
 
 msgid "Disk %d/%d"
 msgstr "光盘 %d/%d"
@@ -356,6 +417,9 @@ msgstr "已启用"
 msgid "Exit to Stock"
 msgstr "退出到原厂系统"
 
+msgid "Extra Large"
+msgstr ""
+
 msgid "Famicom Disk System"
 msgstr ""
 
@@ -376,6 +440,10 @@ msgstr "字体大小"
 
 msgid "Forget"
 msgstr "忘记"
+
+#, fuzzy
+msgid "Fountain"
+msgstr "美国山地"
 
 msgid "Frontend"
 msgstr "前端"
@@ -416,6 +484,12 @@ msgstr "已玩游戏"
 msgid "General"
 msgstr "通用"
 
+msgid "Glide"
+msgstr ""
+
+msgid "Good"
+msgstr ""
+
 msgid "HDMI Output"
 msgstr "HDMI 输出"
 
@@ -424,6 +498,12 @@ msgstr "HDMI 输出切换失败"
 
 msgid "HDMI output unavailable on this platform"
 msgstr "此平台不支持 HDMI 输出"
+
+msgid "Headset"
+msgstr ""
+
+msgid "Hiccup"
+msgstr ""
 
 msgid "Hidden"
 msgstr ""
@@ -434,10 +514,16 @@ msgstr "主页布局"
 msgid "Home Tabs"
 msgstr "主页标签"
 
+msgid "IP: %s"
+msgstr ""
+
 msgid "IPv4"
 msgstr ""
 
 msgid "IPv6"
+msgstr ""
+
+msgid "Icon"
 msgstr ""
 
 msgid "India"
@@ -470,6 +556,9 @@ msgstr "内核"
 msgid "Language"
 msgstr "语言"
 
+msgid "Large"
+msgstr ""
+
 msgid "Last played"
 msgstr "最近游玩的"
 
@@ -487,6 +576,9 @@ msgstr "启动"
 
 msgid "Layout"
 msgstr "布局"
+
+msgid "Leaf"
+msgstr ""
 
 msgid "Library"
 msgstr "游戏库"
@@ -515,11 +607,20 @@ msgstr "剩余内存"
 msgid "Menu"
 msgstr "菜单"
 
+msgid "Missing"
+msgstr ""
+
+msgid "Missing Only"
+msgstr ""
+
 msgid "Mode"
 msgstr "模式"
 
 msgid "Most played"
 msgstr "最常玩的"
+
+msgid "Mounted"
+msgstr ""
 
 msgid "Move"
 msgstr "移动"
@@ -540,6 +641,10 @@ msgid "Neo Geo Pocket Color"
 msgstr ""
 
 msgid "Network"
+msgstr "网络"
+
+#, fuzzy
+msgid "Network: %s"
 msgstr "网络"
 
 msgid "Nintendo 64"
@@ -585,6 +690,15 @@ msgstr "暂无即时存档"
 msgid "None"
 msgstr "无"
 
+msgid "Not connected"
+msgstr ""
+
+msgid "Not found in the ScreenScraper.fr database."
+msgstr ""
+
+msgid "Not mounted"
+msgstr ""
+
 msgid "OK"
 msgstr "确定"
 
@@ -596,6 +710,9 @@ msgstr "关闭"
 
 msgid "On"
 msgstr "开启"
+
+msgid "On (%d fps)"
+msgstr ""
 
 msgid "Open"
 msgstr "打开"
@@ -616,6 +733,10 @@ msgstr ""
 msgid "Path: Apps/%s"
 msgstr "路径：Apps/%s"
 
+#, fuzzy
+msgid "Percent"
+msgstr "最近游玩"
+
 msgid "Performance"
 msgstr "性能"
 
@@ -635,6 +756,9 @@ msgid "PlayStation"
 msgstr ""
 
 msgid "PlayStation Portable"
+msgstr ""
+
+msgid "Playing test sound…"
 msgstr ""
 
 msgid "Playtime"
@@ -658,6 +782,9 @@ msgstr "退出"
 
 msgid "RAM"
 msgstr "内存"
+
+msgid "Rainbow"
+msgstr ""
 
 #, fuzzy
 msgid "Reboot"
@@ -706,6 +833,10 @@ msgstr "修复"
 msgid "Replace"
 msgstr "替换"
 
+#, fuzzy
+msgid "Replace All"
+msgstr "替换"
+
 msgid "Rescan"
 msgstr "重新扫描"
 
@@ -745,6 +876,9 @@ msgstr "RetroArch 重置已取消"
 
 msgid "Revert"
 msgstr "还原"
+
+msgid "Rounded"
+msgstr ""
 
 msgid "Rumble"
 msgstr "震动"
@@ -791,6 +925,9 @@ msgstr "刮削队列"
 msgid "Scrape Result"
 msgstr "刮削结果"
 
+msgid "Scrape finished: %d found"
+msgstr ""
+
 msgid "ScreenScraper.fr"
 msgstr ""
 
@@ -799,6 +936,9 @@ msgstr "截图"
 
 msgid "Search"
 msgstr "搜索"
+
+msgid "Secondary Text"
+msgstr ""
 
 msgid "Sega 32X"
 msgstr ""
@@ -818,6 +958,10 @@ msgstr ""
 msgid "Select"
 msgstr "选择"
 
+#, fuzzy
+msgid "Selection"
+msgstr "选择"
+
 msgid "Services"
 msgstr "服务"
 
@@ -826,6 +970,9 @@ msgstr "设置您所在的时区"
 
 msgid "Settings"
 msgstr "设置"
+
+msgid "Signal: %s"
+msgstr ""
 
 msgid "Sleep"
 msgstr "休眠"
@@ -842,10 +989,22 @@ msgstr "存档位 %d"
 msgid "Slot Auto"
 msgstr "自动存档位"
 
+msgid "Small"
+msgstr ""
+
+msgid "Snap"
+msgstr ""
+
 msgid "SoC"
 msgstr ""
 
+msgid "Soft"
+msgstr ""
+
 msgid "Source Han Sans"
+msgstr ""
+
+msgid "Speaker"
 msgstr ""
 
 msgid "Speed"
@@ -853,6 +1012,9 @@ msgstr "速度"
 
 msgid "Split Over 10MB"
 msgstr "超过 10MB 时分割"
+
+msgid "Square"
+msgstr ""
 
 msgid "Stable"
 msgstr "稳定版"
@@ -870,17 +1032,38 @@ msgstr "随 Leaf 启动"
 msgid "Startup Tab"
 msgstr "启动标签"
 
+msgid "Static"
+msgstr ""
+
 msgid "Status Bar"
+msgstr "状态栏"
+
+#, fuzzy
+msgid "Status: %s"
 msgstr "状态栏"
 
 msgid "Stop"
 msgstr "停止"
+
+#, fuzzy
+msgid "Stop All"
+msgstr "停止"
+
+msgid "Stopped test sound"
+msgstr ""
 
 msgid "Storage free"
 msgstr "剩余存储"
 
 msgid "Strength"
 msgstr "震动强度"
+
+#, fuzzy
+msgid "Stretch"
+msgstr "震动强度"
+
+msgid "Strong"
+msgstr ""
 
 msgid "Super Famicom"
 msgstr ""
@@ -889,6 +1072,9 @@ msgid "Super Game Boy"
 msgstr ""
 
 msgid "Super Nintendo"
+msgstr ""
+
+msgid "Sweep"
 msgstr ""
 
 msgid "Switch"
@@ -920,6 +1106,9 @@ msgstr "标签页"
 
 msgid "Test Sound"
 msgstr "声音测试"
+
+msgid "Text"
+msgstr ""
 
 msgid "Time Zone"
 msgstr "时区"
@@ -976,6 +1165,9 @@ msgstr "不可用"
 msgid "Uninstall"
 msgstr "卸载"
 
+msgid "Unknown"
+msgstr ""
+
 msgid "Unmount"
 msgstr "卸载"
 
@@ -1014,6 +1206,9 @@ msgstr ""
 
 msgid "Volume"
 msgstr "音量"
+
+msgid "Weak"
+msgstr ""
 
 msgid "Wi-Fi"
 msgstr ""

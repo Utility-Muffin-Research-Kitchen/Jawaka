@@ -8,6 +8,10 @@ msgstr "Content-Type: text/plain; charset=UTF-8\n"
 msgid "%d %s games"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "%d Hz"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "%d apps"
 msgstr ""
@@ -42,6 +46,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "%s · %s · %d of %d"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid ", %d not found"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -81,6 +89,14 @@ msgid "10 min"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "100/120 Hz only"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "12 Hour"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "15 sec"
 msgstr ""
 
@@ -90,6 +106,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "200 MHz"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "24 Hour"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -110,6 +130,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "45 sec"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "4:3"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -158,6 +182,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "ADB unavailable on this platform"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "AM/PM"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Accent"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -252,6 +284,10 @@ msgstr ""
 msgid "Back"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Background"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Balanced"
 msgstr ""
@@ -297,11 +333,19 @@ msgid "Boot Splash"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Both"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Box art"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Brazil (East)"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Breath"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -313,7 +357,19 @@ msgid "Browse"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Busy"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Button Background"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Button Hints"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Button Text"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -352,6 +408,10 @@ msgstr ""
 msgid "Clear"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Clear Done"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Clock"
 msgstr ""
@@ -372,12 +432,20 @@ msgstr ""
 msgid "Colors"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Comet"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Command: %s"
 msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Commodore 64"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Connected"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -409,6 +477,10 @@ msgid "DMC"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Default"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Defaults"
 msgstr ""
 
@@ -426,6 +498,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Disable USB ADB and remove Leaf's boot restore marker?"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Disconnected"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -472,6 +548,10 @@ msgstr ""
 msgid "Exit to Stock"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Extra Large"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Famicom Disk System"
 msgstr ""
@@ -498,6 +578,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Forget"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Fountain"
 msgstr ""
 
 #: internal/platform/platform_common.c
@@ -553,6 +637,14 @@ msgid "General"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Glide"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Good"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "HDMI Output"
 msgstr ""
 
@@ -562,6 +654,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "HDMI output unavailable on this platform"
+msgstr ""
+
+#: internal/platform/platform_common.c
+msgid "Headset"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hiccup"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -577,11 +677,19 @@ msgid "Home Tabs"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "IP: %s"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "IPv4"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "IPv6"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Icon"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -625,6 +733,10 @@ msgid "Language"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Large"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Last played"
 msgstr ""
 
@@ -646,6 +758,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Layout"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Leaf"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -685,11 +801,23 @@ msgid "Menu"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Missing"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Missing Only"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Mode"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Most played"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Mounted"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -718,6 +846,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Network"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Network: %s"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -776,6 +908,18 @@ msgstr ""
 msgid "None"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Not connected"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Not found in the ScreenScraper.fr database."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Not mounted"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "OK"
 msgstr ""
@@ -790,6 +934,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "On"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "On (%d fps)"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -814,6 +962,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Path: Apps/%s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Percent"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -844,6 +996,10 @@ msgstr ""
 msgid "PlayStation Portable"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Playing test sound…"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Playtime"
 msgstr ""
@@ -870,6 +1026,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "RAM"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Rainbow"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -933,6 +1093,10 @@ msgid "Replace"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Replace All"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Rescan"
 msgstr ""
 
@@ -982,6 +1146,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Revert"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Rounded"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1044,6 +1212,10 @@ msgstr ""
 msgid "Scrape Result"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Scrape finished: %d found"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
 msgstr ""
@@ -1054,6 +1226,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Search"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Secondary Text"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1081,6 +1257,10 @@ msgid "Select"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Selection"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Services"
 msgstr ""
 
@@ -1090,6 +1270,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Settings"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Signal: %s"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1113,11 +1297,27 @@ msgid "Slot Auto"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Small"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Snap"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "SoC"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Soft"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Source Han Sans"
+msgstr ""
+
+#: internal/platform/platform_common.c
+msgid "Speaker"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1126,6 +1326,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Split Over 10MB"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Square"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1149,11 +1353,27 @@ msgid "Startup Tab"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Static"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Status Bar"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Status: %s"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Stop"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Stop All"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Stopped test sound"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1162,6 +1382,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Strength"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Stretch"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Strong"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1174,6 +1402,10 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Super Nintendo"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Sweep"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1214,6 +1446,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Test Sound"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Text"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1288,6 +1524,10 @@ msgstr ""
 msgid "Uninstall"
 msgstr ""
 
+#: internal/platform/platform_common.c
+msgid "Unknown"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Unmount"
 msgstr ""
@@ -1338,6 +1578,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Volume"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Weak"
 msgstr ""
 
 #: internal/settings/settings.c

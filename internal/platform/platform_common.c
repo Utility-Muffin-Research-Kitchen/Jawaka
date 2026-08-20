@@ -117,14 +117,19 @@ const char *jw_platform_audio_output_name(jw_platform_audio_output output) {
     }
 }
 
+/* JW_UI rather than T(): these strings have two kinds of caller. The Settings
+   row draws them, and the row renderer translates whatever it is handed; the
+   device layer also builds diagnostic result messages from them, which must
+   stay English. Marking gets them extracted without translating at the source,
+   so each caller gets what it needs. */
 const char *jw_platform_audio_output_label(jw_platform_audio_output output) {
     switch (output) {
-        case JW_PLATFORM_AUDIO_OUTPUT_SPEAKER: return "Speaker";
-        case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return "Headset";
+        case JW_PLATFORM_AUDIO_OUTPUT_SPEAKER: return JW_UI("Speaker");
+        case JW_PLATFORM_AUDIO_OUTPUT_HEADSET: return JW_UI("Headset");
         case JW_PLATFORM_AUDIO_OUTPUT_HDMI: return "HDMI";
         case JW_PLATFORM_AUDIO_OUTPUT_BLUETOOTH: return "Bluetooth";
         case JW_PLATFORM_AUDIO_OUTPUT_USB: return "USB-C";
-        default: return "Unknown";
+        default: return JW_UI("Unknown");
     }
 }
 

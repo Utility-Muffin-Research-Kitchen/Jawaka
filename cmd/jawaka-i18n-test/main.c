@@ -212,11 +212,12 @@ int main(int argc, char **argv) {
 
     /* Off unless asked for. A tester enables it; nobody else pays for it. */
     unsetenv("JAWAKA_I18N_COVERAGE");
+    setenv("JAWAKA_I18N_COVERAGE_TAG", "i18n-test", 1);
+    setenv("LOGS_PATH", userdata, 1);
     expect_true("coverage off by default", jw_i18n_load("zh_CN") &&
                                            !jw_i18n_coverage_enabled());
     (void)T("Definitely Not Translated");
-    snprintf(path, sizeof(path), "%s/cov-off.txt", userdata);
-    expect_true("dump writes nothing when off", jw_i18n_coverage_dump(path) == 0);
+    expect_true("nothing counted when off", jw_i18n_coverage_count() == 0);
 
     setenv("JAWAKA_I18N_COVERAGE", "1", 1);
     expect_true("coverage on with env", jw_i18n_load("zh_CN") &&
@@ -228,17 +229,45 @@ int main(int argc, char **argv) {
     (void)T("Definitely Not Translated");
     (void)T("Definitely Not Translated");
     (void)T("Also Missing");
-    snprintf(path, sizeof(path), "%s/cov-on.txt", userdata);
     expect_true("records misses, deduped, hits excluded",
-                jw_i18n_coverage_dump(path) == 2);
+                jw_i18n_coverage_count() == 2);
 
-    /* Reloading a language starts a fresh set rather than accumulating across
-       a language change. */
-    expect_true("reload clears the set", jw_i18n_load("zh_CN"));
+    /* The file is written as keys are found, not at exit -- that is the whole
+       point of the rewrite, so assert it is on disk BEFORE any teardown. */
+    snprintf(path, sizeof(path), "%s/i18n-coverage-i18n-test.txt", userdata);
+    {
+        FILE *fp = fopen(path, "r");
+        expect_true("file exists mid-run", fp != NULL);
+        int found = 0;
+        if (fp) {
+            char line[512];
+            while (fgets(line, sizeof(line), fp)) {
+                line[strcspn(line, "\n")] = '\0';
+                if (strcmp(line, "Definitely Not Translated") == 0 ||
+                    strcmp(line, "Also Missing") == 0) found++;
+            }
+            fclose(fp);
+        }
+        expect_true("both misses already on disk", found == 2);
+    }
+
+    /* A language change must not lose what is already recorded: reloading frees
+       the in-memory set, and the file has to survive that. */
+    expect_true("reload", jw_i18n_load("zh_CN"));
     (void)T("Only One Now");
-    snprintf(path, sizeof(path), "%s/cov-reload.txt", userdata);
-    expect_true("set is per-load", jw_i18n_coverage_dump(path) == 1);
+    expect_true("set is per-load", jw_i18n_coverage_count() == 1);
+    {
+        FILE *fp = fopen(path, "r");
+        int lines = 0;
+        if (fp) {
+            char line[512];
+            while (fgets(line, sizeof(line), fp)) if (line[0] != '#') lines++;
+            fclose(fp);
+        }
+        expect_true("earlier keys survived the reload", lines == 3);
+    }
     unsetenv("JAWAKA_I18N_COVERAGE");
+    unsetenv("JAWAKA_I18N_COVERAGE_TAG");
     jw_i18n_shutdown();
 
     if (failures) {
