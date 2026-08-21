@@ -1263,7 +1263,7 @@ msgid "System Update"
 msgstr "系统更新"
 
 msgid "Systems"
-msgstr "平台"
+msgstr "返回平台列表"
 
 msgid "count|Systems"
 msgstr "平台数"
