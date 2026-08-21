@@ -595,6 +595,7 @@ int jw_ss_search_rom_platforms(const jw_ss_client *client,
     }
 
     for (size_t i = 0; i < system_count; i++) {
+        memset(result, 0, sizeof(*result));
         jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
         int ret = jw__search_request(client, rom_name, md5_hash, file_size,
                                      system_ids[i], artwork_types, artwork_count,
@@ -603,6 +604,7 @@ int jw_ss_search_rom_platforms(const jw_ss_client *client,
         /* An md5 that ScreenScraper does not know can shadow a clean name
            match; retry without it before advancing to the next platform. */
         if (ret == 1 && md5_hash[0] != '\0') {
+            memset(result, 0, sizeof(*result));
             jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
             ret = jw__search_request(client, rom_name, "", 0, system_ids[i],
                                      artwork_types, artwork_count,

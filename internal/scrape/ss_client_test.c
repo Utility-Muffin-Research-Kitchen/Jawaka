@@ -22,11 +22,14 @@ static int fake_search(const char *rom_name, const char *md5_hash,
     int call = trace->call_count++;
     assert(strcmp(rom_name, "game.zip") == 0);
     assert(call < trace->outcome_count);
+    assert(result->game_name[0] == '\0');
     trace->systems[call] = system_id;
     snprintf(trace->hashes[call], sizeof(trace->hashes[call]), "%s", md5_hash);
     trace->sizes[call] = file_size;
     if (trace->outcomes[call] == 0)
         snprintf(result->game_name, sizeof(result->game_name), "Found");
+    else
+        snprintf(result->game_name, sizeof(result->game_name), "Stale");
     return trace->outcomes[call];
 }
 

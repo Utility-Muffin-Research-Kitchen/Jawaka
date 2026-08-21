@@ -582,8 +582,13 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
         pthread_mutex_unlock(&jw__w.mu);
         return JW__SCRAPE_ITEM_DONE;
     }
-    if (system_count > JW_SCRAPE_MAX_PLATFORM_IDS)
-        system_count = JW_SCRAPE_MAX_PLATFORM_IDS;
+    if (system_count > JW_SCRAPE_MAX_PLATFORM_IDS) {
+        pthread_mutex_lock(&jw__w.mu);
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_ERROR,
+                           "Too many ScreenScraper mappings for this system");
+        pthread_mutex_unlock(&jw__w.mu);
+        return JW__SCRAPE_ITEM_DONE;
+    }
 
     jw__scrape_prefs prefs;
     jw__prefs_load(&prefs);

@@ -318,6 +318,9 @@ msgstr ""
 msgid "Atari Lynx"
 msgstr ""
 
+msgid "Atomiswave"
+msgstr ""
+
 msgid "Audio Output"
 msgstr "音频输出"
 
@@ -526,15 +529,6 @@ msgstr "下载中"
 
 msgid "Dreamcast"
 msgstr ""
-
-msgid "Atomiswave"
-msgstr "Atomiswave"
-
-msgid "NEC PC-98"
-msgstr "NEC PC-98"
-
-msgid "Sega Naomi"
-msgstr "Sega Naomi"
 
 msgid "Drop"
 msgstr "放下"
@@ -775,6 +769,9 @@ msgstr "移动"
 
 msgid "Moving"
 msgstr "移动中"
+
+msgid "NEC PC-98"
+msgstr ""
 
 msgid "Nearby"
 msgstr "附近设备"
@@ -1125,6 +1122,9 @@ msgid "Sega Genesis"
 msgstr ""
 
 msgid "Sega Master System"
+msgstr ""
+
+msgid "Sega Naomi"
 msgstr ""
 
 msgid "Sega Saturn"
