@@ -571,8 +571,10 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     }
     jw__row_set_output(item->row_id, dest_abs);
 
-    int system_id = jw_scrape_platform_id(item->system);
-    if (system_id < 0) {
+    int system_ids[JW_SCRAPE_MAX_PLATFORM_IDS];
+    size_t system_count = jw_scrape_platform_ids(
+        item->system, system_ids, JW_SCRAPE_MAX_PLATFORM_IDS);
+    if (system_count == 0) {
         /* enqueue validates this; only reachable through races */
         pthread_mutex_lock(&jw__w.mu);
         jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_ERROR,
@@ -580,6 +582,8 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
         pthread_mutex_unlock(&jw__w.mu);
         return JW__SCRAPE_ITEM_DONE;
     }
+    if (system_count > JW_SCRAPE_MAX_PLATFORM_IDS)
+        system_count = JW_SCRAPE_MAX_PLATFORM_IDS;
 
     jw__scrape_prefs prefs;
     jw__prefs_load(&prefs);
@@ -594,11 +598,10 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     client.progress_userdata = &progress_ctx;
 
     jw_ss_result result;
-    int rc = jw_ss_search_rom(&client, rom_name, rom_abs, system_id,
-                              (const char *const *)prefs.artwork,
-                              prefs.artwork_count,
-                              (const char *const *)prefs.regions,
-                              prefs.region_count, &result);
+    int rc = jw_ss_search_rom_platforms(
+        &client, rom_name, rom_abs, system_ids, system_count,
+        (const char *const *)prefs.artwork, prefs.artwork_count,
+        (const char *const *)prefs.regions, prefs.region_count, &result);
     if (rc == 0) {
         rc = jw_ss_download_media(&client, result.media_url, dest_abs,
                                   JW_SCRAPE_MAX_DIM);
@@ -819,7 +822,7 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
         if (error) *error = "scraping unavailable in this build";
         return -1;
     }
-    if (jw_scrape_platform_id(system) < 0) {
+    if (jw_scrape_platform_ids(system, NULL, 0) == 0) {
         if (error) *error = "no ScreenScraper mapping for this system";
         return -1;
     }
@@ -873,7 +876,7 @@ int jw_scrape_count_missing_system(const char *system, int *out_missing,
         if (error) *error = "missing system";
         return -1;
     }
-    if (jw_scrape_platform_id(system) < 0)
+    if (jw_scrape_platform_ids(system, NULL, 0) == 0)
         return 0;   /* no ScreenScraper mapping -> nothing scrapeable */
 
     jw_game_entry *games = calloc(JW__SCRAPE_LIST_MAX, sizeof(*games));
@@ -924,7 +927,7 @@ int jw_scrape_missing_counts(jw_scrape_missing_row *out, int max,
 
     int n = 0, total_missing = 0;
     for (int i = 0; i < sys_count && n < max; i++) {
-        if (jw_scrape_platform_id(systems[i].name) < 0) continue;  /* unmapped */
+        if (jw_scrape_platform_ids(systems[i].name, NULL, 0) == 0) continue;
         int missing = 0, total = 0;
         if (jw_scrape_count_missing_system(systems[i].name, &missing, &total,
                                            NULL) != 0)
@@ -979,7 +982,7 @@ int jw_scrape_enqueue_all_full(bool missing_only,
         return -1;
     }
     for (int i = 0; i < sys_count; i++) {
-        if (jw_scrape_platform_id(systems[i].name) < 0) continue;  /* unmapped */
+        if (jw_scrape_platform_ids(systems[i].name, NULL, 0) == 0) continue;
         const char *err = NULL;
         jw_scrape_enqueue_result one;
         (void)jw_scrape_enqueue_system_full(systems[i].name, missing_only,
@@ -1011,7 +1014,7 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
         if (error) *error = "scraping unavailable in this build";
         return -1;
     }
-    if (jw_scrape_platform_id(system) < 0) {
+    if (jw_scrape_platform_ids(system, NULL, 0) == 0) {
         if (error) *error = "no ScreenScraper mapping for this system";
         return -1;
     }

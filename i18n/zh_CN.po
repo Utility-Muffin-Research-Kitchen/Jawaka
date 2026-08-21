@@ -527,6 +527,15 @@ msgstr "下载中"
 msgid "Dreamcast"
 msgstr ""
 
+msgid "Atomiswave"
+msgstr "Atomiswave"
+
+msgid "NEC PC-98"
+msgstr "NEC PC-98"
+
+msgid "Sega Naomi"
+msgstr "Sega Naomi"
+
 msgid "Drop"
 msgstr "放下"
 
