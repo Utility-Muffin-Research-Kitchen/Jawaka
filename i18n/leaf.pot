@@ -1716,6 +1716,10 @@ msgstr ""
 msgid "brightness failed"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "count|Systems"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "empty"
 msgstr ""
@@ -1746,6 +1750,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "performance unavailable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "platform|System"
 msgstr ""
 
 #: internal/settings/settings.c

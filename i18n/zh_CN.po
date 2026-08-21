@@ -1151,11 +1151,17 @@ msgstr "悉尼"
 msgid "System"
 msgstr "系统"
 
+msgid "platform|System"
+msgstr "平台"
+
 msgid "System Update"
 msgstr "系统更新"
 
 msgid "Systems"
 msgstr "平台"
+
+msgid "count|Systems"
+msgstr "平台数"
 
 msgid "Tab"
 msgstr "标签"
