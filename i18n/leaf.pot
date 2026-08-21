@@ -296,6 +296,10 @@ msgstr ""
 msgid "Atari Lynx"
 msgstr ""
 
+#: internal/launcher/system_names.c
+msgid "Atomiswave"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Audio Output"
 msgstr ""
@@ -936,6 +940,10 @@ msgstr ""
 msgid "Moving"
 msgstr ""
 
+#: internal/launcher/system_names.c
+msgid "NEC PC-98"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Nearby"
 msgstr ""
@@ -1446,6 +1454,10 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Sega Master System"
+msgstr ""
+
+#: internal/launcher/system_names.c
+msgid "Sega Naomi"
 msgstr ""
 
 #: internal/launcher/system_names.c

@@ -77,6 +77,27 @@ int jw_ss_search_rom(const jw_ss_client *client,
                      const char *const *region_prio, int region_count,
                      jw_ss_result *result);
 
+/* Search the same ROM across an ordered list of ScreenScraper platforms.
+   The ROM is hashed once; each platform gets hash then filename lookup.
+   Only a not-found result advances to the next platform. */
+int jw_ss_search_rom_platforms(const jw_ss_client *client,
+                               const char *rom_name,
+                               const char *rom_abs_path,
+                               const int *system_ids, size_t system_count,
+                               const char *const *artwork_types,
+                               int artwork_count,
+                               const char *const *region_prio,
+                               int region_count,
+                               jw_ss_result *result);
+
+#ifdef JW_SS_TESTING
+typedef int (*jw_ss_test_search_request_fn)(
+    const char *rom_name, const char *md5_hash, long file_size,
+    int system_id, jw_ss_result *result, void *userdata);
+void jw_ss_test_set_search_request(jw_ss_test_search_request_fn request,
+                                   void *userdata);
+#endif
+
 /* Download media to dest_path, always stored as PNG (JPEG sources are
    re-encoded). When max_dim > 0 images larger than max_dim on their longest
    side are downscaled to fit. Writes tmp + fsync + rename.
