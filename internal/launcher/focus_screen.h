@@ -67,6 +67,7 @@ typedef struct {
     const int  *pin;        /* JW_FOCUS_PIN_LEN digits 0..9 (pin_mode only) */
     int         pin_slot;    /* active slot 0..JW_FOCUS_PIN_LEN-1 */
     bool        error;       /* last attempt was wrong -> show a retry note */
+    const char *error_text;  /* retry note; NULL = English fallback */
     const char *title;       /* e.g. "Enter PIN to exit" / "Exit 5-Game Mode?" */
     const char *confirm;     /* when set (e.g. "Reboot?"), show a plain A/B
                                 confirm instead of the exit / PIN UI */

@@ -3628,7 +3628,7 @@ static void jw__render_scrape_queue_detail(const jw_settings_ui *ui,
        ellipsize to the rest of the width. */
     const char *info[][2] = {
         { "Status", jw__scrape_queue_state_label(row->state) },
-        { "System", row->system },
+        { T("platform|System"), row->system },
         { "ROM",    row->rom_path },
         { JW_UI("Output"), row->output_path[0] ? row->output_path : "Not written" },
     };
@@ -4226,7 +4226,7 @@ static void jw__render_library(const jw_settings_ui *ui, int x, int y, int w, in
     snprintf(buf, sizeof(buf), "%d", st->game_count);
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "Games", buf);
     snprintf(buf, sizeof(buf), "%d", st->system_count);
-    jw__about_push(rows, &n, JW_ABOUT_FIELD, "Systems", buf);
+    jw__about_push(rows, &n, JW_ABOUT_FIELD, "count|Systems", buf);
     snprintf(buf, sizeof(buf), "%d", st->app_count);
     jw__about_push(rows, &n, JW_ABOUT_FIELD, "Apps", buf);
     snprintf(buf, sizeof(buf), "%d", st->favorite_count);

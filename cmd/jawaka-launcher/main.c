@@ -715,7 +715,7 @@ static int jw__draw_tab_header(const jw_launcher_state *state) {
        single "Pick 5 Games" title (same chrome, so the header height + status bar
        stay put) instead of the confusing full four-tab bar. */
     if (state->focus_pick_active) {
-        const char *pick_label = "Pick 5 Games";
+        const char *pick_label = T("Pick 5 Games");
         cat_draw_tab_bar(&pick_label, 1, 0);
         cat_draw_status_bar(&sb);
         return bar_h;
@@ -2731,7 +2731,7 @@ static void jw__draw_carousel_tile(const jw_launcher_state *state, int tile_idx,
 /* Tools sub-menu drawn as a centered overlay list */
 static void jw__draw_tools_menu(jw_launcher_state *state) {
     static const char *kTools[] = {
-        "Recently Played", "Favorites", "Apps", "Settings"
+        JW_UI("Recently Played"), JW_UI("Favorites"), JW_UI("Apps"), JW_UI("Settings")
     };
     static const int kToolsCount = 4;
 
@@ -2767,7 +2767,7 @@ static void jw__draw_tools_menu(jw_launcher_state *state) {
                           theme->highlight);
         ap_color tc = sel ? theme->highlighted_text : theme->text;
         int ty = pill_y + (pill_h - body_h) / 2;
-        cat_draw_text_ellipsized(body, kTools[i], mx + CAT_S(12), ty, tc,
+        cat_draw_text_ellipsized(body, T(kTools[i]), mx + CAT_S(12), ty, tc,
                                  menu_w - CAT_S(24));
     }
 }
@@ -3608,11 +3608,11 @@ static void jw__render_focus(jw_launcher_state *state) {
         int sw = cat_get_screen_width(), sh = cat_get_screen_height();
         SDL_Color fg = { 235, 235, 235, 255 };
         TTF_Font *f = cat_get_font(CAT_FONT_MEDIUM);
-        const char *m = "No games available";
+        const char *m = T("No games available");
         int w = cat_measure_text(f, m);
         cat_draw_text(f, m, (sw - w) / 2, sh / 2 - CAT_S(24), fg);
         TTF_Font *fs = cat_get_font(CAT_FONT_SMALL);
-        const char *m2 = "Press MENU to exit";
+        const char *m2 = T("Press MENU to exit");
         int w2 = cat_measure_text(fs, m2);
         cat_draw_text(fs, m2, (sw - w2) / 2, sh / 2 + CAT_S(16), fg);
     }
@@ -3624,23 +3624,25 @@ static void jw__render_focus(jw_launcher_state *state) {
         uv.pin = state->focus_pin;
         uv.pin_slot = state->focus_pin_slot;
         uv.error = state->focus_pin_error;
+        uv.error_text = T("Wrong PIN, try again");
+        uv.confirm_hint = T("B: Back      A: Confirm");
         if (state->focus_unlock_confirm == 1) {
-            uv.confirm = "Reboot?";
+            uv.confirm = T("Reboot?");
         } else if (state->focus_unlock_confirm == 2) {
-            uv.confirm = "Shut Down?";
+            uv.confirm = T("Shut Down?");
         } else {
             int r = 0;
             if (uv.pin_mode) {
-                uv.title = "Enter PIN to exit";
-                uv.rows[r++] = (jw_focus_hint_row){ "Up/Down", "Digit",
-                                                    "Left/Right", "Slot", false };
+                uv.title = T("Enter PIN to exit");
+                uv.rows[r++] = (jw_focus_hint_row){ T("Up/Down"), T("Digit"),
+                                                    T("Left/Right"), T("Slot"), false };
             } else {
-                uv.title = "Exit 5-Game Mode?";
+                uv.title = T("Exit 5-Game Mode?");
             }
-            uv.rows[r++] = (jw_focus_hint_row){ "B", "Cancel", "A", "Confirm", false };
-            uv.rows[r++] = (jw_focus_hint_row){ "L1", "Reboot", "R1", "Shut Down", false };
+            uv.rows[r++] = (jw_focus_hint_row){ "B", T("Cancel"), "A", T("Confirm"), false };
+            uv.rows[r++] = (jw_focus_hint_row){ "L1", T("Reboot"), "R1", T("Shut Down"), false };
             if (state->focus_bt_pip)
-                uv.rows[r++] = (jw_focus_hint_row){ "Y", "Reconnect Bluetooth",
+                uv.rows[r++] = (jw_focus_hint_row){ "Y", T("Reconnect Bluetooth"),
                                                     NULL, NULL, true };
             uv.row_count = r;
         }
@@ -8150,10 +8152,11 @@ static void jw__fsetup_header(const char *title, const char *right) {
     int sw = cat_get_screen_width();
     TTF_Font *f = cat_get_font(CAT_FONT_LARGE);
     int y = CAT_S(24);
-    cat_draw_text(f, title, CAT_S(28), y, th->text);
+    cat_draw_text(f, T(title), CAT_S(28), y, th->text);
     if (right && right[0]) {
-        int w = cat_measure_text(f, right);
-        cat_draw_text(f, right, sw - CAT_S(28) - w, y, th->emphasis);
+        const char *translated = T(right);
+        int w = cat_measure_text(f, translated);
+        cat_draw_text(f, translated, sw - CAT_S(28) - w, y, th->emphasis);
     }
 }
 
@@ -8166,7 +8169,7 @@ static void jw__fsetup_footer(jw_launcher_state *state, const char *hint) {
         cat_draw_text(f, state->focus_setup_note, (sw - w) / 2, sh - CAT_S(84),
                       th->emphasis);
     }
-    jw_focus_draw_hint_kv(f, hint, sw / 2, sh - CAT_S(56), th->emphasis, th->text);
+    jw_focus_draw_hint_kv(f, T(hint), sw / 2, sh - CAT_S(56), th->emphasis, th->text);
 }
 
 /* option-menu (Lock / Style): highlight the cursor row. */
@@ -8182,8 +8185,9 @@ static void jw__fsetup_options(const char *const *opts, int n, int cursor) {
         int y = y0 + i * (ih + gap);
         bool sel = (i == cursor);
         if (sel) cat_draw_pill(x, y, w, ih, th->highlight);
-        int tw = cat_measure_text(f, opts[i]);
-        cat_draw_text(f, opts[i], x + (w - tw) / 2, y + (ih - fh) / 2,
+        const char *label = T(opts[i]);
+        int tw = cat_measure_text(f, label);
+        cat_draw_text(f, label, x + (w - tw) / 2, y + (ih - fh) / 2,
                       sel ? th->highlighted_text : th->text);
     }
 }
@@ -8242,14 +8246,14 @@ static void jw__fsetup_render_arrange(jw_launcher_state *state) {
 }
 
 static void jw__fsetup_render_lock(jw_launcher_state *state) {
-    static const char *const opts[] = { "No lock", "PIN" };
+    static const char *const opts[] = { JW_UI("No lock"), JW_UI("PIN") };
     jw__fsetup_header("Lock", NULL);
     jw__fsetup_options(opts, 2, state->focus_setup_choice);
     jw__fsetup_footer(state, "B: Back   A: Next");
 }
 
 static void jw__fsetup_render_style(jw_launcher_state *state) {
-    static const char *const opts[] = { "Theme colors", "Black & white" };
+    static const char *const opts[] = { JW_UI("Theme colors"), JW_UI("Black & white") };
     jw__fsetup_header("Style", NULL);
     jw__fsetup_options(opts, 2, state->focus_setup_choice);
     jw__fsetup_footer(state, "B: Back   A: Next");
@@ -8264,7 +8268,7 @@ static void jw__fsetup_render_pin(jw_launcher_state *state) {
                          state->focus_setup_pin_slot);
     if (state->focus_setup_pin_mismatch) {
         TTF_Font *f = cat_get_font(CAT_FONT_SMALL);
-        const char *m = "PINs did not match — try again";
+        const char *m = T("PINs did not match - try again");
         int w = cat_measure_text(f, m);
         cat_draw_text(f, m, (sw - w) / 2, sh / 2 + CAT_S(70),
                       (SDL_Color){ 0xFF, 0x3B, 0x30, 0xFF });
@@ -8300,8 +8304,8 @@ static void jw__fsetup_render_confirm(jw_launcher_state *state) {
     /* Confirmation popup over the dimmed preview — same panel as the exit overlay. */
     jw_focus_unlock_view uv;
     memset(&uv, 0, sizeof(uv));
-    uv.confirm      = "Start 5-Game Mode?";
-    uv.confirm_hint = "B: Back      A: Start";
+    uv.confirm      = T("Start 5-Game Mode?");
+    uv.confirm_hint = T("B: Back      A: Start");
     jw_focus_screen_render_unlock(bw, &uv);
 }
 

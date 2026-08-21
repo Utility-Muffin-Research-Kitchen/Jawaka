@@ -139,15 +139,15 @@ static void jw__menu_wait_for_show(void) {
    so it can't be fat-fingered. About and System Update are hosted here (they no
    longer live in Settings) via the shared jw_settings_ui render API. */
 static const char *kMenuItems[] = {
-    "Search",
-    "System Update",
-    "About",
-    "Rescan Library",
-    "Return to Launcher",
-    "Sleep",
-    "Exit to Stock",
-    "Reboot",
-    "Power Off",
+    JW_UI("Search"),
+    JW_UI("System Update"),
+    JW_UI("About"),
+    JW_UI("Rescan Library"),
+    JW_UI("Return to Launcher"),
+    JW_UI("Sleep"),
+    JW_UI("Exit to Stock"),
+    JW_UI("Reboot"),
+    JW_UI("Power Off"),
 };
 #define JW_MENU_COUNT       9
 #define JW_MENU_SEARCH      0
@@ -337,7 +337,7 @@ static void jw__render_menu(const jw_menu_state *state) {
 
         ap_color col = sel ? theme->highlighted_text : theme->text;
         int text_y   = pill_y + (pill_h - body_h) / 2;
-        cat_draw_text(body_font, kMenuItems[i], x, text_y, col);
+        cat_draw_text(body_font, T(kMenuItems[i]), x, text_y, col);
     }
 
     /* Right pane: the Rescan Library notification, sized to fill the pane (not a
