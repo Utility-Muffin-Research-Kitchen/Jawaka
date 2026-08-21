@@ -7,7 +7,7 @@ msgid "Recently Played"
 msgstr "最近游玩"
 
 msgid "Pick 5 Games"
-msgstr "选择 5 个游戏"
+msgstr "选择5个游戏"
 
 msgid "About"
 msgstr "关于"
@@ -64,16 +64,16 @@ msgid "Re-enter PIN"
 msgstr "再次输入 PIN"
 
 msgid "Set a PIN"
-msgstr "设置 PIN"
+msgstr "设置PIN"
 
 msgid "PIN"
-msgstr "PIN 码"
+msgstr "PIN码"
 
 msgid "PINs did not match - try again"
-msgstr "两次输入的 PIN 码不一致，请重试"
+msgstr "两次输入的PIN码不一致，请重试"
 
 msgid "Wrong PIN, try again"
-msgstr "PIN 码错误，请重试"
+msgstr "PIN码错误，请重试"
 
 msgid "Up/Down"
 msgstr "上/下"
@@ -241,7 +241,7 @@ msgid "816 MHz"
 msgstr ""
 
 msgid "A: On/Off   X: Grab to reorder"
-msgstr "A: 开/关   X: 抓取以调整顺序"
+msgstr "A：开/关   X：按下调整顺序"
 
 msgid "ADB"
 msgstr ""
@@ -1256,11 +1256,17 @@ msgstr "悉尼"
 msgid "System"
 msgstr "系统"
 
+msgid "platform|System"
+msgstr "平台"
+
 msgid "System Update"
 msgstr "系统更新"
 
 msgid "Systems"
 msgstr "平台"
+
+msgid "count|Systems"
+msgstr "平台数"
 
 msgid "Tab"
 msgstr "标签"
