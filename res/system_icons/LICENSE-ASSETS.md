@@ -1,7 +1,8 @@
 # Asset attribution
 
-The console icons in `system_icons/` (excluding `PORTS.png`, `PICO8.png`, and
-the original `_*.png` badges: `_tools.png`, `_default.png`, `_apps.png`) are
+The console icons in `system_icons/` (excluding `ATOMISWAVE.png`, `NAOMI.png`,
+`PORTS.png`, `PICO8.png`, and the original `_*.png` badges: `_tools.png`,
+`_default.png`, `_apps.png`) are
 derived from the libretro Systematic asset pack:
 
   Source:  https://git.libretro.com/libretro-assets/retroarch-assets
@@ -27,6 +28,10 @@ see `res/themes/Jawaka-Coverflow/system_icons/LICENSE-ASSETS.md` for attribution
 Central Scrutinizer's existing libretro Systematic-theme credit (CC BY 4.0).
 It is checked into this repository because that artwork is not one of the
 upstream PNG files fetched by `scripts/fetch-system-icons.sh`.
+
+`ATOMISWAVE.png` and `NAOMI.png` are 256px rasterizations of original SVGs in
+Central Scrutinizer. They are original UMRK work covered by the top-level MIT
+license.
 
 `_tools.png`, `_default.png`, and `_apps.png` (the Leaf badge, the fallback for
 apps that ship no icon) are original work, MIT-licensed under the top-level
