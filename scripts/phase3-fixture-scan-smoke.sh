@@ -28,6 +28,7 @@ mkdir -p \
     "$SD_ROOT/Roms/NAOMI" \
     "$SD_ROOT/Roms/NAOMI/direct" \
     "$SD_ROOT/Roms/NAOMI/vstrik3" \
+    "$SD_ROOT/Roms/PC98" \
     "$SD_ROOT/Roms/NES" \
     "$SD_ROOT/Roms/FC" \
     "$SD_ROOT/Roms/PS" \
@@ -61,6 +62,11 @@ printf 'rom\n' >"$SD_ROOT/Roms/NAOMI/mvsc2.zip"
 printf 'rom\n' >"$SD_ROOT/Roms/NAOMI/vstrik3.zip"
 printf 'disc\n' >"$SD_ROOT/Roms/NAOMI/vstrik3/gds-0006.chd"
 printf 'disc\n' >"$SD_ROOT/Roms/NAOMI/direct/direct.chd"
+printf 'disk a\n' >"$SD_ROOT/Roms/PC98/Dragon Knight 4 Special Disk (Disk 1 of 2)(Disk A).fdd"
+printf 'disk b\n' >"$SD_ROOT/Roms/PC98/Dragon Knight 4 Special Disk (Disk 2 of 2)(Disk B).fdd"
+printf 'standalone\n' >"$SD_ROOT/Roms/PC98/Standalone.fdd"
+printf 'np2kai "Dragon Knight 4 Special Disk (Disk 1 of 2)(Disk A).fdd" "Dragon Knight 4 Special Disk (Disk 2 of 2)(Disk B).fdd"\n' \
+    >"$SD_ROOT/Roms/PC98/Dragon Knight 4 Special Disk.cmd"
 # Folder folding: Roms/NES and Roms/FC both resolve to system FC. The same
 # title under both must collapse to one entry, preferring the canonical public
 # folder (Roms/NES). An alias-only title (no canonical twin) must be kept.
@@ -103,7 +109,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PATH"
 
-grep -F $'summary\tgames=15\tsystems=8\tapps=3' "$OUT_PATH" >/dev/null
+grep -F $'summary\tgames=17\tsystems=9\tapps=3' "$OUT_PATH" >/dev/null
 # Alias dedup: primary has one FC "Mario", and it is the canonical Roms/NES copy, not Roms/FC.
 # A secondary source alias copy with the same title remains separate.
 [ "$(grep -cF $'game\tFC\tMario\t' "$OUT_PATH")" = "2" ]
@@ -129,6 +135,13 @@ grep -F $'game\tNAOMI\tdirect\tRoms/NAOMI/direct/direct.chd\t' "$OUT_PATH" >/dev
 if grep -F 'gds-0006.chd' "$OUT_PATH" >/dev/null; then
     cat "$OUT_PATH" >&2
     echo "phase3 fixture scan exposed an archive dependency as a separate game" >&2
+    exit 1
+fi
+grep -F $'game\tPC98\tDragon Knight 4 Special Disk\tRoms/PC98/Dragon Knight 4 Special Disk.cmd\t' "$OUT_PATH" >/dev/null
+grep -F $'game\tPC98\tStandalone\tRoms/PC98/Standalone.fdd\t' "$OUT_PATH" >/dev/null
+if grep -F 'Dragon Knight 4 Special Disk (Disk ' "$OUT_PATH" >/dev/null; then
+    cat "$OUT_PATH" >&2
+    echo "phase3 fixture scan exposed a cmd dependency as a separate game" >&2
     exit 1
 fi
 grep -F $'game\tPS\tGame\tRoms/PS/Game.m3u\t' "$OUT_PATH" >/dev/null
@@ -160,7 +173,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PRUNE_PATH"
 
-grep -F $'summary\tgames=15\tsystems=8\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
+grep -F $'summary\tgames=17\tsystems=9\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
 if ! grep -F "$SECONDARY_ROOT" "$OUT_PRUNE_PATH" >/dev/null ||
    ! grep -F $'game\tGBA\tSecondary' "$OUT_PRUNE_PATH" >/dev/null ||
    ! grep -F $'app\tSecondary Native' "$OUT_PRUNE_PATH" >/dev/null; then

@@ -740,8 +740,81 @@ static void jw__collect_m3u_members(const jw_ra_system *system, const char *syst
     closedir(dir);
 }
 
-static int jw__name_is_m3u_member(const char *name, char members[][JW_M3U_MEMBER_LEN],
-                                  int member_count) {
+static void jw__collect_cmd_members(const jw_ra_system *system, const char *system_dir,
+                                    char members[][JW_M3U_MEMBER_LEN], int *member_count) {
+    if (!jw_ra_string_list_contains_casefold(&system->extensions, "cmd")) {
+        return;
+    }
+    DIR *dir = opendir(system_dir);
+    if (!dir) {
+        return;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && *member_count < JW_M3U_MAX_MEMBERS) {
+        char ext[16];
+        jw__extension_lower(entry->d_name, ext, sizeof(ext));
+        if (strcasecmp(ext, "cmd") != 0) {
+            continue;
+        }
+        char path[PATH_MAX];
+        if (snprintf(path, sizeof(path), "%s/%s", system_dir, entry->d_name) >=
+            (int)sizeof(path)) {
+            continue;
+        }
+        FILE *fp = fopen(path, "r");
+        if (!fp) {
+            continue;
+        }
+        char line[1024];
+        if (!fgets(line, sizeof(line), fp)) {
+            fclose(fp);
+            continue;
+        }
+        fclose(fp);
+
+        const char *p = line;
+        int token_index = 0;
+        while (*p && *member_count < JW_M3U_MAX_MEMBERS) {
+            while (isspace((unsigned char)*p)) p++;
+            if (!*p) break;
+            char token[JW_M3U_MEMBER_LEN];
+            size_t len = 0;
+            int quoted = 0;
+            while (*p && (quoted || !isspace((unsigned char)*p))) {
+                if (*p == '"') {
+                    quoted = !quoted;
+                } else if (len + 1 < sizeof(token)) {
+                    token[len++] = *p;
+                }
+                p++;
+            }
+            token[len] = '\0';
+            if (token_index++ == 0 || !token[0]) {
+                continue; /* executable name, then empty arguments */
+            }
+            char *base = token;
+            for (char *q = token; *q; q++) {
+                if (*q == '/' || *q == '\\') base = q + 1;
+            }
+            jw__extension_lower(base, ext, sizeof(ext));
+            if (!jw_ra_string_list_contains_casefold(&system->extensions, ext) &&
+                !jw_ra_string_list_contains_casefold(&system->archive_extensions, ext) &&
+                !jw_ra_string_list_contains_casefold(&system->playlist_extensions, ext)) {
+                continue;
+            }
+            char member_path[PATH_MAX];
+            if (snprintf(member_path, sizeof(member_path), "%s/%s", system_dir, base) <
+                    (int)sizeof(member_path) && jw__is_file(member_path)) {
+                snprintf(members[*member_count], JW_M3U_MEMBER_LEN, "%s", base);
+                (*member_count)++;
+            }
+        }
+    }
+    closedir(dir);
+}
+
+static int jw__name_is_launch_member(const char *name, char members[][JW_M3U_MEMBER_LEN],
+                                     int member_count) {
     for (int i = 0; i < member_count; i++) {
         if (strcasecmp(name, members[i]) == 0) {
             return 1;
@@ -944,7 +1017,7 @@ static void jw__maybe_generate_disc_m3u(const jw_ra_system *system, const char *
         }
         int already = 0;
         for (int m = 0; m < g->count && !already; m++) {
-            if (jw__name_is_m3u_member(g->files[m], existing, existing_count)) {
+            if (jw__name_is_launch_member(g->files[m], existing, existing_count)) {
                 already = 1;
             }
         }
@@ -1013,11 +1086,12 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
        we enumerate, so the generated playlist is picked up in this same pass. */
     jw__maybe_generate_disc_m3u(system, dir_abs);
 
-    /* Pre-pass: gather disc files referenced by any .m3u in THIS directory so
-       they can be hidden below (one entry per game; the m3u handles swapping). */
-    char m3u_members[JW_M3U_MAX_MEMBERS][JW_M3U_MEMBER_LEN];
-    int m3u_member_count = 0;
-    jw__collect_m3u_members(system, dir_abs, m3u_members, &m3u_member_count);
+    /* Pre-pass: gather files owned by launch descriptors in THIS directory so
+       only the .m3u/.cmd is listed, not each dependent disc image. */
+    char launch_members[JW_M3U_MAX_MEMBERS][JW_M3U_MEMBER_LEN];
+    int launch_member_count = 0;
+    jw__collect_m3u_members(system, dir_abs, launch_members, &launch_member_count);
+    jw__collect_cmd_members(system, dir_abs, launch_members, &launch_member_count);
 
     DIR *dir = opendir(dir_abs);
     if (!dir) {
@@ -1073,13 +1147,13 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
             continue;
         }
 
-        /* Hide disc files that an .m3u in this directory references — the .m3u is
-           the single list entry for that game / multi-disc set. */
-        if (m3u_member_count > 0) {
+        /* Hide files claimed by an .m3u/.cmd — its launch entry owns the set. */
+        if (launch_member_count > 0) {
             char this_ext[16];
             jw__extension_lower(entry->d_name, this_ext, sizeof(this_ext));
             if (!jw_ra_string_list_contains_casefold(&system->playlist_extensions, this_ext) &&
-                jw__name_is_m3u_member(entry->d_name, m3u_members, m3u_member_count)) {
+                jw__name_is_launch_member(entry->d_name, launch_members,
+                                          launch_member_count)) {
                 continue;
             }
         }
