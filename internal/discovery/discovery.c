@@ -771,6 +771,26 @@ static int jw__is_skippable_subdir(const char *name) {
     return 0;
 }
 
+/* MAME-style arcade sets launch through <set>.zip and keep dependent CHDs in
+   <set>/. Do not expose those support files as separate games. */
+static int jw__has_sibling_archive(const jw_ra_system *system, const char *dir_path) {
+    const char *mode = system && system->archive_mode && system->archive_mode[0]
+        ? system->archive_mode
+        : "pass_through";
+    if (!system || strcmp(mode, "pass_through") != 0) {
+        return 0;
+    }
+    for (size_t i = 0; i < system->archive_extensions.count; i++) {
+        char archive_path[PATH_MAX];
+        if (snprintf(archive_path, sizeof(archive_path), "%s.%s", dir_path,
+                     system->archive_extensions.items[i]) < (int)sizeof(archive_path) &&
+            jw__is_file(archive_path)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Detect a multi-disc marker — "(Disc 1)", "(Disc 2 of 3)", "(Disk 1)", "(CD 1)",
    "(CD1)" — in a content filename. On a match, writes the base title (the stem with
    the disc parenthetical removed and the extension stripped) and the disc number,
@@ -1023,7 +1043,8 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
         }
 
         if (jw__is_directory(abs)) {
-            if (jw__is_skippable_subdir(entry->d_name)) {
+            if (jw__is_skippable_subdir(entry->d_name) ||
+                jw__has_sibling_archive(system, abs)) {
                 continue;
             }
             char child_rel[PATH_MAX];
