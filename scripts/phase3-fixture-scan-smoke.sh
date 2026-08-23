@@ -24,6 +24,8 @@ mkdir -p \
     "$SD_ROOT/Roms/MD" \
     "$SD_ROOT/Roms/GBA" \
     "$SD_ROOT/Roms/ARCADE" \
+    "$SD_ROOT/Roms/ATOMISWAVE" \
+    "$SD_ROOT/Roms/NAOMI" \
     "$SD_ROOT/Roms/NES" \
     "$SD_ROOT/Roms/FC" \
     "$SD_ROOT/Roms/PS" \
@@ -42,6 +44,8 @@ cp "$UMRK_ROOT/miniloong-launcher-switcher/device/mlp1/defaults/cores.json" \
    "$SD_ROOT/.system/leaf/platforms/mlp1/defaults/cores.json"
 cp "$UMRK_ROOT/miniloong-launcher-switcher/device/mlp1/defaults/systems.json" \
    "$SD_ROOT/.system/leaf/platforms/mlp1/defaults/systems.json"
+cp "$UMRK_ROOT/miniloong-launcher-switcher/device/mlp1/defaults/arcade_names.txt" \
+   "$SD_ROOT/.system/leaf/platforms/mlp1/defaults/arcade_names.txt"
 printf '#!/bin/sh\nexec "$1"\n' >"$SD_ROOT/.system/leaf/platforms/mlp1/emulators/ports/launch.sh"
 chmod 755 "$SD_ROOT/.system/leaf/platforms/mlp1/emulators/ports/launch.sh"
 
@@ -50,6 +54,8 @@ printf 'archive\n' >"$SD_ROOT/Roms/MD/Sonic.md.zip"
 printf 'archive\n' >"$SD_ROOT/Roms/GBA/Example.gba.zip"
 printf 'bios\n' >"$SD_ROOT/Roms/ARCADE/neogeo.zip"
 printf 'rom\n' >"$SD_ROOT/Roms/ARCADE/mslug.zip"
+printf 'rom\n' >"$SD_ROOT/Roms/ATOMISWAVE/mslug6.zip"
+printf 'rom\n' >"$SD_ROOT/Roms/NAOMI/mvsc2.zip"
 # Folder folding: Roms/NES and Roms/FC both resolve to system FC. The same
 # title under both must collapse to one entry, preferring the canonical public
 # folder (Roms/NES). An alias-only title (no canonical twin) must be kept.
@@ -92,7 +98,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PATH"
 
-grep -F $'summary\tgames=11\tsystems=6\tapps=3' "$OUT_PATH" >/dev/null
+grep -F $'summary\tgames=13\tsystems=8\tapps=3' "$OUT_PATH" >/dev/null
 # Alias dedup: primary has one FC "Mario", and it is the canonical Roms/NES copy, not Roms/FC.
 # A secondary source alias copy with the same title remains separate.
 [ "$(grep -cF $'game\tFC\tMario\t' "$OUT_PATH")" = "2" ]
@@ -110,7 +116,9 @@ grep -F $'game\tMD\tSonic\tRoms/MD/Sonic.md.zip\tImages/MD/Sonic.png' "$OUT_PATH
 grep -F $'game\tGBA\tExample\tRoms/GBA/Example.gba.zip\t' "$OUT_PATH" >/dev/null
 grep -F "game"$'\t'"GBA"$'\t'"Example"$'\t'"$SECONDARY_ROOT/Roms/GBA/Example.gba.zip"$'\t' "$OUT_PATH" >/dev/null
 grep -F "game"$'\t'"GBA"$'\t'"Secondary"$'\t'"$SECONDARY_ROOT/Roms/GBA/Secondary.gba"$'\t'"$SECONDARY_ROOT/Roms/GBA/Imgs/Secondary.png" "$OUT_PATH" >/dev/null
-grep -F $'game\tARCADE\tmslug\tRoms/ARCADE/mslug.zip\t' "$OUT_PATH" >/dev/null
+grep -F $'game\tARCADE\tMetal Slug\tRoms/ARCADE/mslug.zip\t' "$OUT_PATH" >/dev/null
+grep -F $'game\tATOMISWAVE\tMetal Slug 6\tRoms/ATOMISWAVE/mslug6.zip\t' "$OUT_PATH" >/dev/null
+grep -F $'game\tNAOMI\tMarvel vs. Capcom 2 New Age of Heroes (Export, Korea)\tRoms/NAOMI/mvsc2.zip\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPS\tGame\tRoms/PS/Game.m3u\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tPORTS\tTest\tRoms/PORTS/Test.sh\t' "$OUT_PATH" >/dev/null
 grep -F $'app\tFixture Native\tApps/mlp1/FixtureNative.pak\tmlp1\ticon.png\t0.7.0' "$OUT_PATH" >/dev/null
@@ -140,7 +148,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PRUNE_PATH"
 
-grep -F $'summary\tgames=11\tsystems=6\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
+grep -F $'summary\tgames=13\tsystems=8\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
 if ! grep -F "$SECONDARY_ROOT" "$OUT_PRUNE_PATH" >/dev/null ||
    ! grep -F $'game\tGBA\tSecondary' "$OUT_PRUNE_PATH" >/dev/null ||
    ! grep -F $'app\tSecondary Native' "$OUT_PRUNE_PATH" >/dev/null; then
