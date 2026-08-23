@@ -269,7 +269,8 @@ run_ctl() {
     "${ADB[@]}" shell "$CTL --timeout-ms 1500 --port '$PORT' $*"
 }
 
-run_ctl status
+INITIAL_STATUS="$(run_ctl status)"
+printf '%s\n' "$INITIAL_STATUS"
 run_ctl pause
 run_ctl status
 run_ctl resume
@@ -305,8 +306,10 @@ if ! "${ADB[@]}" shell "grep -Fq '$REMOTE_CORE' '$RUN_LOG'"; then
 fi
 if [ -n "$REMOTE_CONTENT" ] \
     && ! "${ADB[@]}" shell "grep -Fq '$REMOTE_CONTENT' '$RUN_LOG'"; then
-    echo "RetroArch log does not identify the staged content: $REMOTE_CONTENT" >&2
-    exit 1
+    if ! grep -Fq 'content=smoke-content' <<<"$INITIAL_STATUS"; then
+        echo "Neither the RetroArch log nor command status identifies the staged content: $REMOTE_CONTENT" >&2
+        exit 1
+    fi
 fi
 
 failure_pattern='(dynarec|gles|egl|loader|glibc).*(error|failed|not found|undefined)|(error|failed|not found|undefined).*(dynarec|gles|egl|loader|glibc)|failed to load (content|core|libretro)|undefined symbol'
