@@ -18,6 +18,7 @@ static const jw__platform_entry jw__platforms[] = {
     {"A7800",      41},
     {"A800",       43},
     {"ARCADE",     75},
+    {"ATOMISWAVE", 53},
     {"C128",       87},
     {"C64",        66},
     {"COLECO",     60},
@@ -40,6 +41,9 @@ static const jw__platform_entry jw__platforms[] = {
     {"MS",         2},
     {"MSX",        62},
     {"N64",        14},
+    {"NAOMI",      56},
+    {"NAOMI",      227},
+    {"NAOMI",      230},
     {"NDS",        15},
     {"NEOGEO",     142},
     {"NES",        3},
@@ -47,6 +51,7 @@ static const jw__platform_entry jw__platforms[] = {
     {"NGPC",       82},
     {"P8",         234},
     {"PCE",        31},
+    {"PC98",       208},
     {"PICO",       234},
     {"PKM",        211},
     {"PS",         57},
@@ -94,12 +99,22 @@ static const jw__platform_entry jw__platforms[] = {
     {"DOS",                135},
 };
 
-int jw_scrape_platform_id(const char *system_tag) {
+size_t jw_scrape_platform_ids(const char *system_tag,
+                              int *out, size_t capacity) {
     if (!system_tag || !system_tag[0])
-        return -1;
+        return 0;
+    size_t count = 0;
     for (size_t i = 0; i < sizeof(jw__platforms) / sizeof(jw__platforms[0]); i++) {
-        if (strcasecmp(jw__platforms[i].tag, system_tag) == 0)
-            return jw__platforms[i].id;
+        if (strcasecmp(jw__platforms[i].tag, system_tag) != 0)
+            continue;
+        if (out && count < capacity)
+            out[count] = jw__platforms[i].id;
+        count++;
     }
-    return -1;
+    return count;
+}
+
+int jw_scrape_platform_id(const char *system_tag) {
+    int first = -1;
+    return jw_scrape_platform_ids(system_tag, &first, 1) > 0 ? first : -1;
 }

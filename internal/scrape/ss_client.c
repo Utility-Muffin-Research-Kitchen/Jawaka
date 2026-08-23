@@ -51,6 +51,17 @@ const char *jw_ss_last_error(void) {
     return jw__ss_error[0] ? jw__ss_error : NULL;
 }
 
+#ifdef JW_SS_TESTING
+static jw_ss_test_search_request_fn jw__test_search_request;
+static void *jw__test_search_request_userdata;
+
+void jw_ss_test_set_search_request(jw_ss_test_search_request_fn request,
+                                   void *userdata) {
+    jw__test_search_request = request;
+    jw__test_search_request_userdata = userdata;
+}
+#endif
+
 static void jw__ss_progress(const jw_ss_client *client, jw_ss_phase phase) {
     if (client && client->progress) {
         client->progress(client->progress_userdata, phase);
@@ -453,6 +464,13 @@ static int jw__search_request(const jw_ss_client *client, const char *rom_name,
                               const char *const *artwork_types, int artwork_count,
                               const char *const *region_prio, int region_count,
                               jw_ss_result *result) {
+#ifdef JW_SS_TESTING
+    if (jw__test_search_request) {
+        return jw__test_search_request(
+            rom_name, md5_hash, file_size, system_id, result,
+            jw__test_search_request_userdata);
+    }
+#endif
     char *url = jw__build_api_url(client, "jeuInfos.php", rom_name,
                                   md5_hash, file_size, system_id);
     if (!url)
@@ -540,17 +558,28 @@ static int jw__search_request(const jw_ss_client *client, const char *rom_name,
     return 0;
 }
 
-int jw_ss_search_rom(const jw_ss_client *client,
-                     const char *rom_name, const char *rom_abs_path,
-                     int system_id,
-                     const char *const *artwork_types, int artwork_count,
-                     const char *const *region_prio, int region_count,
-                     jw_ss_result *result) {
+int jw_ss_search_rom_platforms(const jw_ss_client *client,
+                               const char *rom_name,
+                               const char *rom_abs_path,
+                               const int *system_ids, size_t system_count,
+                               const char *const *artwork_types,
+                               int artwork_count,
+                               const char *const *region_prio,
+                               int region_count,
+                               jw_ss_result *result) {
     jw__ss_clear_error();
     memset(result, 0, sizeof(*result));
 
-    if (!jw_ss_available()) {
+    if (!jw_ss_available()
+#ifdef JW_SS_TESTING
+        && !jw__test_search_request
+#endif
+    ) {
         jw__ss_set_error("Scraping is unavailable in this build (no API credentials)");
+        return -1;
+    }
+    if (!system_ids || system_count == 0) {
+        jw__ss_set_error("No ScreenScraper platform ids provided");
         return -1;
     }
 
@@ -565,21 +594,38 @@ int jw_ss_search_rom(const jw_ss_client *client,
         file_size = 0;
     }
 
-    jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
-    int ret = jw__search_request(client, rom_name, md5_hash, file_size,
-                                 system_id, artwork_types, artwork_count,
-                                 region_prio, region_count, result);
-
-    /* An md5 that ScreenScraper does not know can shadow a clean name
-       match; retry without it. */
-    if (ret == 1 && md5_hash[0] != '\0') {
+    for (size_t i = 0; i < system_count; i++) {
+        memset(result, 0, sizeof(*result));
         jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
-        ret = jw__search_request(client, rom_name, "", 0, system_id,
-                                 artwork_types, artwork_count,
-                                 region_prio, region_count, result);
+        int ret = jw__search_request(client, rom_name, md5_hash, file_size,
+                                     system_ids[i], artwork_types, artwork_count,
+                                     region_prio, region_count, result);
+
+        /* An md5 that ScreenScraper does not know can shadow a clean name
+           match; retry without it before advancing to the next platform. */
+        if (ret == 1 && md5_hash[0] != '\0') {
+            memset(result, 0, sizeof(*result));
+            jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
+            ret = jw__search_request(client, rom_name, "", 0, system_ids[i],
+                                     artwork_types, artwork_count,
+                                     region_prio, region_count, result);
+        }
+        if (ret != 1)
+            return ret;
     }
 
-    return ret;
+    return 1;
+}
+
+int jw_ss_search_rom(const jw_ss_client *client,
+                     const char *rom_name, const char *rom_abs_path,
+                     int system_id,
+                     const char *const *artwork_types, int artwork_count,
+                     const char *const *region_prio, int region_count,
+                     jw_ss_result *result) {
+    return jw_ss_search_rom_platforms(
+        client, rom_name, rom_abs_path, &system_id, 1,
+        artwork_types, artwork_count, region_prio, region_count, result);
 }
 
 /* ── User validation (ssuserInfos.php) ────────────────────────────────── */
