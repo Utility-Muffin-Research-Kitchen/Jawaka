@@ -87,6 +87,28 @@ make mlp1-adb-input-capture
 make mlp1-adb-ra-command-smoke
 ```
 
+The RetroArch command smoke accepts an optional local content file and
+`CORE_SO`/`CORE_INFO` overrides. It stages them with RetroArch's FFmpeg runtime
+libraries only below a dedicated device
+`/tmp` directory, verifies the command channel after content rendering, saves a
+gameplay screenshot and verbose log under `build/mlp1-ra-command-smoke/`, then
+removes that exact device directory:
+
+```sh
+CORE_SO=../Cores-spruce/output/mlp1/cores/mupen64plus_next_libretro.so \
+CORE_INFO=../Cores-spruce/output/mlp1/info/mupen64plus_next_libretro.info \
+make mlp1-adb-ra-command-smoke CONTENT=/absolute/path/to/game.z64
+```
+
+An isolated RetroArch system directory can be staged with `SYSTEM_DIR`, for
+example when a core needs firmware. Its contents are removed with the rest of
+the temporary device directory:
+
+```sh
+SYSTEM_DIR=/absolute/path/to/retroarch-system \
+make mlp1-adb-ra-command-smoke CONTENT=/absolute/path/to/game.chd
+```
+
 ## Stage To MLP1
 
 Device staging is owned by the sibling `Leaf` repo. From `../Leaf`:
