@@ -1070,7 +1070,7 @@ mlp1-adb-input-capture:
 	scripts/adb-mlp1-input-capture.sh
 
 mlp1-adb-ra-command-smoke:
-	scripts/adb-mlp1-retroarch-command-smoke.sh
+	scripts/adb-mlp1-retroarch-command-smoke.sh $(if $(CONTENT),"$(CONTENT)")
 
 help:
 	@echo ""
