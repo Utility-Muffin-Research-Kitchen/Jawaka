@@ -201,7 +201,7 @@ No origin exists yet; origin will be added later.
 The suggested Phase 0+1 first commit set is approved:
 
 - `README.md`
-- plan copy or pointer back to `UMRK/plans/jawaka.md`
+- plan copy or pointer back to `umrk-workspace/plans/Jawaka/jawaka.md`
 - `Makefile` skeleton
 - three `main.c` stubs that boot and log
 - `scripts/mockgen.sh`

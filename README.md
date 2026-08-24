@@ -356,6 +356,8 @@ jawaka-platformctl request \
 - `third_party/cjson/` is vendored and used by the IPC/config paths.
 - `third_party/catastrophe/` is still a placeholder; use `CATASTROPHE_DIR` or an
   adjacent `../Catastrophe` checkout.
+- Current planning documents live in the sibling workspace repo under
+  `umrk-workspace/plans/Jawaka/`.
 - `docs/PLAN.md` and `docs/ARCHITECTURE_DECISIONS.md` are historical planning
   docs. Current behavior is best reflected by this README, the Makefile, and
   the implementation under `cmd/` and `internal/`.

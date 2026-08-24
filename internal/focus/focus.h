@@ -6,7 +6,7 @@
 
 /* 5-Game Mode ("focus mode") — the persistent state + recovery plumbing shared
    by the daemon (boot check) and the launcher/settings UI (later phases).
-   See plans/five-game-mode.md for the full design.
+   See umrk-workspace/plans/Jawaka/five-game-mode.md for the full design.
 
    The mode curates up to five games and locks the device into a stripped focus
    screen. This module owns:

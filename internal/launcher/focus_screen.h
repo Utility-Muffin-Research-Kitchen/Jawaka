@@ -14,7 +14,8 @@
 
    This module is pure render: the launcher resolves the chosen ids to tiles
    (title + box-art texture) and reads the battery, then calls the render fn.
-   No DB, IPC, or texture-cache dependency lives here. See plans/five-game-mode.md.
+   No DB, IPC, or texture-cache dependency lives here. See
+   umrk-workspace/plans/Jawaka/five-game-mode.md.
 
    Naming: public API is `jw_focus_screen_*`; module-private statics `jw__focus_*`. */
 

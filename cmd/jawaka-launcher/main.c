@@ -275,7 +275,8 @@ typedef struct {
     /* 5-Game Mode (focus mode): when active, the launcher renders only the
        curated focus screen and swallows normal navigation. Populated at startup
        from the JAWAKA_FOCUS_* env the daemon sets on each launcher spawn (so it
-       survives return-from-game). See plans/five-game-mode.md. */
+       survives return-from-game). See
+       umrk-workspace/plans/Jawaka/five-game-mode.md. */
     bool               focus_active;
     bool               focus_bw;         /* style: Black & white vs Theme */
     jw_focus_lock      focus_lock;       /* none/pin */

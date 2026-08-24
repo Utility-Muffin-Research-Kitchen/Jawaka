@@ -359,7 +359,8 @@ typedef struct {
     bool update_package_quiesce_release_warned;
     /* 5-Game Mode (focus mode): resolved once at boot from the persisted config
        + the SD recovery lock file. Later phases render the focus screen and gate
-       the launcher off this. See plans/five-game-mode.md. */
+       the launcher off this. See
+       umrk-workspace/plans/Jawaka/five-game-mode.md. */
     jw_focus_boot_decision focus_boot;
     jw_focus_config        focus_cfg;
     /* app-services-v1 (SVC-1) service supervisor; NULL when it could not be
@@ -898,7 +899,8 @@ static bool jw__roms_has_dir(const char *roms, const char *name) {
  * the polarity back. We never toggle enable and never unexport -- both latch the
  * motor on for this driver, which is how it got stranded during bring-up.
  * Amplitude only differentiates across a narrow band (see the floors below), so
- * the vocabulary is 1/2/3 burst PATTERNS by event weight. See plans/rumble.md. */
+ * the vocabulary is 1/2/3 burst PATTERNS by event weight. See
+ * umrk-workspace/plans/Jawaka/rumble.md. */
 #define JW_RUMBLE_CHIP    "/sys/class/pwm/pwmchip0"
 #define JW_RUMBLE_PWM     JW_RUMBLE_CHIP "/pwm0"
 #define JW_RUMBLE_PERIOD  1000000L   /* ns, 1 kHz -- matches stock S50loong */
@@ -7285,7 +7287,7 @@ static bool jw__input_game_switcher(void *userdata) {
    UI/focus (Weston up): kmsgrab the composited CRTC scanout and encode. In-game
    (Weston stopped, RetroArch is DRM master): phase 2, via the RA SCREENSHOT
    command. Capture runs on a detached worker so the input tick never blocks.
-   See plans/on-device-screenshots.md. */
+   See umrk-workspace/plans/Jawaka/on-device-screenshots.md. */
 #define JW_SS_SCANOUT_W   720   /* panel native (portrait); UI runs landscape */
 #define JW_SS_SCANOUT_H   960
 #define JW_SS_THROTTLE_MS 1000
