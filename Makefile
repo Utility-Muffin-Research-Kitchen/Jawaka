@@ -124,7 +124,7 @@ INPUT_PROXY_SRC := internal/platform/input_proxy_mlp1.c
 INPUT_ROSTER_SRC := internal/platform/input_roster_mlp1.c
 EXTERNAL_INPUT_SRC := internal/platform/external_input_monitor_mlp1.c
 BLUETOOTH_SRC := internal/platform/bluetooth_mlp1.c
-WIFI_SRC := internal/platform/wifi_mlp1.c
+WIFI_SRC := internal/platform/wifi_mlp1.c internal/platform/wifi_ssid.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_wayland.c $(BUILD)/generated/xdg-shell-protocol.c
 OSD_DEPS := $(BUILD)/generated/xdg-shell-client-protocol.h
 OSD_CFLAGS := $(CFLAGS_COMMON) $(WAYLAND_CFLAGS) -I$(BUILD)/generated
@@ -406,7 +406,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test catalog-folder-test standalone-policy-test scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -453,6 +453,11 @@ leaf-version-test: | $(BUILD)/bin
 		internal/platform/leaf_version_test.c $(LEAF_VERSION_SRC) \
 		third_party/cjson/cJSON.c
 	$(BUILD)/bin/leaf-version-test
+
+wifi-ssid-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/wifi-ssid-test \
+		internal/platform/wifi_ssid_test.c internal/platform/wifi_ssid.c
+	$(BUILD)/bin/wifi-ssid-test
 
 pakrat-catalog-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/pakrat-catalog-test \
@@ -1088,6 +1093,7 @@ help:
 	@echo "  make jawaka-platformctl      Build platform status/control helper"
 	@echo "  make jawaka-inhibitctl       Build suspend-inhibitor diagnostic helper"
 	@echo "  make suspend-inhibit-test suspend-inhibit-ipc-smoke  Run native lease/power tests"
+	@echo "  make wifi-ssid-test          Validate wpa_supplicant SSID conversions"
 	@echo "  make jawaka-retroarch-runner Build RetroArch app/config runner"
 	@echo "  make jawaka-update-runner    Build OTA install handoff runner"
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"

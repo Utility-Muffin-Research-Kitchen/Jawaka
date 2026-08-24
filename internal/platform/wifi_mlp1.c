@@ -1,4 +1,5 @@
 #include "internal/platform/wifi.h"
+#include "internal/platform/wifi_ssid.h"
 #include "internal/platform/paths.h"
 #include "cJSON.h"
 
@@ -220,7 +221,11 @@ int jw_wifi_status(jw_wifi_status_t *out) {
     }
 
     jw__wifi_field(dump, "wpa_state", out->state, sizeof(out->state));
-    jw__wifi_field(dump, "ssid", out->ssid, sizeof(out->ssid));
+    char encoded_ssid[JW_WIFI_SSID_PRINTABLE_SIZE];
+    jw__wifi_field(dump, "ssid", encoded_ssid, sizeof(encoded_ssid));
+    if (encoded_ssid[0]) {
+        (void)jw_wifi_ssid_decode(encoded_ssid, out->ssid, sizeof(out->ssid));
+    }
     jw__wifi_field(dump, "ip_address", out->ip, sizeof(out->ip));
     out->connected = (strcmp(out->state, "COMPLETED") == 0);
     out->rssi = out->connected ? jw__wifi_rssi() : 0;
@@ -257,8 +262,7 @@ static int jw__wifi_saved_ssids(char out[][64], int max) {
         char *st = NULL;
         char *id   = strtok_r(line, "\t", &st);
         char *name = id ? strtok_r(NULL, "\t", &st) : NULL;
-        if (name && name[0]) {
-            snprintf(out[count], 64, "%s", name);
+        if (name && jw_wifi_ssid_decode(name, out[count], 64) >= 0) {
             count++;
         }
     }
@@ -301,9 +305,11 @@ int jw_wifi_scan_results(const char *current_ssid, jw_wifi_network_t *out, int m
         char *freq  = bssid ? strtok_r(NULL, "\t", &save_tok) : NULL;
         char *sig   = freq  ? strtok_r(NULL, "\t", &save_tok) : NULL;
         char *flags = sig   ? strtok_r(NULL, "\t", &save_tok) : NULL;
-        char *ssid  = flags ? strtok_r(NULL, "\t", &save_tok) : NULL;
+        char *encoded_ssid = flags ? strtok_r(NULL, "\t", &save_tok) : NULL;
         (void)bssid; (void)freq;
-        if (!sig || !flags || !ssid || ssid[0] == '\0') {
+        char ssid[64];
+        if (!sig || !flags || !encoded_ssid ||
+            jw_wifi_ssid_decode(encoded_ssid, ssid, sizeof(ssid)) < 0) {
             continue;
         }
         int rssi = atoi(sig);
@@ -372,8 +378,11 @@ static int jw__wifi_saved_id(const char *ssid) {
     for (; line; line = strtok_r(NULL, "\n", &save_line)) {
         char *save_tok = NULL;
         char *id   = strtok_r(line, "\t", &save_tok);
-        char *name = id ? strtok_r(NULL, "\t", &save_tok) : NULL;
-        if (id && name && strcmp(name, ssid) == 0) {
+        char *encoded_name = id ? strtok_r(NULL, "\t", &save_tok) : NULL;
+        char name[64];
+        if (id && encoded_name &&
+            jw_wifi_ssid_decode(encoded_name, name, sizeof(name)) >= 0 &&
+            strcmp(name, ssid) == 0) {
             return atoi(id);
         }
     }
@@ -391,6 +400,14 @@ static void jw__wifi_trim_line(char *s) {
     }
 }
 
+static const char *jw__wifi_config_value(const char *line, const char *field) {
+    while (*line == ' ' || *line == '\t') line++;
+    size_t field_len = strlen(field);
+    return strncmp(line, field, field_len) == 0 && line[field_len] == '='
+               ? line + field_len + 1
+               : NULL;
+}
+
 static int jw__wifi_run_ok(const char *const *args, int nargs) {
     char buf[128];
     if (jw__wifi_run(args, nargs, buf, sizeof(buf)) < 0) {
@@ -398,6 +415,15 @@ static int jw__wifi_run_ok(const char *const *args, int nargs) {
     }
     jw__wifi_trim_line(buf);
     return strncmp(buf, "FAIL", 4) == 0 ? -1 : 0;
+}
+
+static int jw__wifi_set_ssid(const char *idbuf, const char *ssid) {
+    char hex[JW_WIFI_SSID_HEX_SIZE];
+    if (jw_wifi_ssid_hex(ssid, hex, sizeof(hex)) < 0) {
+        return -1;
+    }
+    const char *args[] = { "set_network", idbuf, "ssid", hex };
+    return jw__wifi_run_ok(args, 4);
 }
 
 static int jw__wifi_get_network(int id, const char *field,
@@ -649,11 +675,8 @@ jw_wifi_connect_result jw_wifi_connect(const char *ssid, bool secured) {
         }
         snprintf(idbuf, sizeof(idbuf), "%d", id);
 
-        char qssid[72];
-        snprintf(qssid, sizeof(qssid), "\"%s\"", ssid);
-        const char *set_ssid[] = { "set_network", idbuf, "ssid", qssid };
         const char *set_open[] = { "set_network", idbuf, "key_mgmt", "NONE" };
-        if (jw__wifi_run(set_ssid, 4, buf, sizeof(buf)) < 0 ||
+        if (jw__wifi_set_ssid(idbuf, ssid) < 0 ||
             jw__wifi_run(set_open, 4, buf, sizeof(buf)) < 0) {
             return JW_WIFI_CONNECT_FAILED;
         }
@@ -699,8 +722,11 @@ static int jw__wifi_ssid_sae(const char *ssid) {
         char *freq  = bssid ? strtok_r(NULL, "\t", &st) : NULL;
         char *sig   = freq  ? strtok_r(NULL, "\t", &st) : NULL;
         char *flags = sig   ? strtok_r(NULL, "\t", &st) : NULL;
-        char *name  = flags ? strtok_r(NULL, "\t", &st) : NULL;
-        if (name && strcmp(name, ssid) == 0) {
+        char *encoded_name = flags ? strtok_r(NULL, "\t", &st) : NULL;
+        char name[64];
+        if (encoded_name &&
+            jw_wifi_ssid_decode(encoded_name, name, sizeof(name)) >= 0 &&
+            strcmp(name, ssid) == 0) {
             return (flags && strstr(flags, "SAE") != NULL) ? 1 : 0;
         }
     }
@@ -756,10 +782,7 @@ jw_wifi_connect_result jw_wifi_connect_psk(const char *ssid, const char *psk) {
     }
     snprintf(idbuf, sizeof(idbuf), "%d", id);
 
-    char qssid[72];
-    snprintf(qssid, sizeof(qssid), "\"%s\"", ssid);
-    const char *set_ssid[] = { "set_network", idbuf, "ssid", qssid };
-    if (jw__wifi_run(set_ssid, 4, buf, sizeof(buf)) < 0) {
+    if (jw__wifi_set_ssid(idbuf, ssid) < 0) {
         return JW_WIFI_CONNECT_FAILED;
     }
 
@@ -1269,10 +1292,7 @@ static int jw__wifi_add_profile(const char *ssid, const char *psk) {
     }
     snprintf(idbuf, sizeof(idbuf), "%d", id);
 
-    char qssid[72];
-    snprintf(qssid, sizeof(qssid), "\"%s\"", ssid);
-    const char *set_ssid[] = { "set_network", idbuf, "ssid", qssid };
-    if (jw__wifi_run(set_ssid, 4, buf, sizeof(buf)) < 0) {
+    if (jw__wifi_set_ssid(idbuf, ssid) < 0) {
         return -1;
     }
     if (psk && psk[0]) {
@@ -1524,13 +1544,15 @@ int jw_wifi_restore(void) {
                 continue;
             }
             if (in_block) {
-                char *p;
-                if ((p = strstr(line, "ssid=\"")) != NULL) {
-                    sscanf(p, "ssid=\"%63[^\"]\"", ssid);
-                } else if ((p = strstr(line, "psk=\"")) != NULL) {
-                    sscanf(p, "psk=\"%127[^\"]\"", psk);
-                } else if ((p = strstr(line, "psk=")) != NULL) {
-                    p += 4;
+                const char *p = jw__wifi_config_value(line, "ssid");
+                if (p) {
+                    if (jw_wifi_ssid_parse_config(p, ssid, sizeof(ssid)) < 0) {
+                        ssid[0] = '\0';
+                    }
+                } else if ((p = jw__wifi_config_value(line, "psk")) != NULL &&
+                           *p == '"') {
+                    sscanf(p, "\"%127[^\"]\"", psk);
+                } else if (p) {
                     while (*p == ' ' || *p == '\t') p++;
                     if (*p && *p != '"') {
                         size_t i = 0;
@@ -1616,12 +1638,15 @@ int jw_wifi_harden(void) {
             continue;
         }
         if (in_block) {
-            char *p;
-            if ((p = strstr(line, "ssid=\"")) != NULL) {
-                sscanf(p, "ssid=\"%63[^\"]\"", ssid);
-            } else if ((p = strstr(line, "psk=\"")) != NULL) {
+            const char *p = jw__wifi_config_value(line, "ssid");
+            if (p) {
+                if (jw_wifi_ssid_parse_config(p, ssid, sizeof(ssid)) < 0) {
+                    ssid[0] = '\0';
+                }
+            } else if ((p = jw__wifi_config_value(line, "psk")) != NULL &&
+                       *p == '"') {
                 /* Quoted psk = a plaintext passphrase that needs hashing. */
-                sscanf(p, "psk=\"%127[^\"]\"", pass);
+                sscanf(p, "\"%127[^\"]\"", pass);
                 has_plaintext = 1;
             }
         }
