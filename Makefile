@@ -748,7 +748,7 @@ settings-status-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(BUILD)/bin/settings-status-test
 
 appearance-env-test: | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/appearance-env-test \
+	$(CC) $(CFLAGS_COMMON) -D_GNU_SOURCE -o $(BUILD)/bin/appearance-env-test \
 		internal/settings/appearance_env_test.c internal/settings/appearance.c \
 		internal/settings/theme_resolve.c internal/i18n/i18n.c internal/core/log.c \
 		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
