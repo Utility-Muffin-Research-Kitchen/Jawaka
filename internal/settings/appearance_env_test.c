@@ -77,8 +77,9 @@ int main(void) {
     setenv("UMRK_LANGUAGE", "en", 1);
     setenv("JAWAKA_LANGUAGE", "en", 1);
     fill_minimal(&env, "zh_CN");
-    jw_appearance_apply_env(&env);
-    if (!env_is("UMRK_LANGUAGE", "zh_CN"))
+    if (jw_appearance_apply_env(&env) != 0)
+        return fail("apply_env failed for stale en -> zh_CN");
+    if (!env_is("UMRK_LANGUAGE", "zh_CN") || !env_is("JAWAKA_LANGUAGE", "zh_CN"))
         return fail("stale en was not replaced by zh_CN");
 
     /* Missing settings: jw_appearance_resolve() must fully populate the env,
