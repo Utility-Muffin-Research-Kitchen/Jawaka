@@ -224,6 +224,14 @@ int jw_appearance_apply_env(const jw_appearance_env *env) {
     rc |= setenv("CAT_STATUS_CLOCK", env->status_clock[0] ? env->status_clock : "24", 1);
     rc |= setenv("CAT_STATUS_BT_STATE",
                  env->status_bt_state[0] ? env->status_bt_state : "0", 1);
+    /* Canonical per-launch language, plus its indefinite compatibility alias.
+       Both always carry the same value here; this child-side export runs after
+       fork() with overwrite semantics, so it replaces any stale language the
+       daemon environment still holds from an earlier game launch. */
+    rc |= setenv("UMRK_LANGUAGE",
+                  env->language[0] ? env->language : "en", 1);
+    rc |= setenv("JAWAKA_LANGUAGE",
+                  env->language[0] ? env->language : "en", 1);
     if (env->timezone[0]) {
         rc |= setenv("TZ", env->timezone, 1);
     }
