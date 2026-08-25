@@ -2694,14 +2694,23 @@ static void jw__tick_retroarch_audio_reinit(jw_daemon_state *state) {
    which is RetroArch's config writer alone. */
 static void jw__publish_language_env(jw_daemon_state *state) {
     if (!state || !state->db_path) {
+        unsetenv("UMRK_LANGUAGE");
         unsetenv("JAWAKA_LANGUAGE");
         return;
     }
     char lang[32] = "";
     if (jw_db_get_setting(state->db_path, "language", lang, sizeof(lang)) == 0 &&
         lang[0]) {
+        /* UMRK_LANGUAGE is canonical; JAWAKA_LANGUAGE is its indefinite
+           compatibility alias (PPSSPP and released launchers read it), so the
+           two are always set or cleared together with the same value. The
+           child-side jw_appearance_apply_env() re-exports the resolved
+           language for ordinary app launches with overwrite semantics and is
+           authoritative there. */
+        setenv("UMRK_LANGUAGE", lang, 1);
         setenv("JAWAKA_LANGUAGE", lang, 1);
     } else {
+        unsetenv("UMRK_LANGUAGE");
         unsetenv("JAWAKA_LANGUAGE");
     }
 }

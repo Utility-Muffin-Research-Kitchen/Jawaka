@@ -1960,7 +1960,8 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
        Chinese 12. Anything else falls back to English rather than shipping a
        half-translated menu in a language nobody selected. */
     {
-        const char *ui_lang = jw__env_value("JAWAKA_LANGUAGE");
+        const char *ui_lang = jw__env_value("UMRK_LANGUAGE");
+        if (!ui_lang) ui_lang = jw__env_value("JAWAKA_LANGUAGE");
         const char *retro_lang = "0";
         if (ui_lang && strcmp(ui_lang, "zh_CN") == 0) {
             retro_lang = "12";
@@ -2630,7 +2631,8 @@ char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdca
        Chinese 12. Anything else falls back to English rather than shipping a
        half-translated menu in a language nobody selected. */
     {
-        const char *ui_lang = jw__env_value("JAWAKA_LANGUAGE");
+        const char *ui_lang = jw__env_value("UMRK_LANGUAGE");
+        if (!ui_lang) ui_lang = jw__env_value("JAWAKA_LANGUAGE");
         const char *retro_lang = "0";
         if (ui_lang && strcmp(ui_lang, "zh_CN") == 0) {
             retro_lang = "12";
