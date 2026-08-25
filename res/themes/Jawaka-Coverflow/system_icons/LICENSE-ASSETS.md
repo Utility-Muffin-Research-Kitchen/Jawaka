@@ -17,9 +17,23 @@ are kept in the `umrk-assets` repository under `systems/icons`. Alias codes that
 share a console's artwork (e.g. NES/FC, SNES/SFC, GEN/GENESIS/MD) are local
 copies of the same source image.
 
-`ATOMISWAVE.png` and `NAOMI.png` are 1200px rasterizations of original UMRK
-SVGs in Central Scrutinizer and are covered by Jawaka's top-level MIT license.
-`PC98.png` is a rasterization of Central Scrutinizer's libretro
-Systematic-derived PC-98 SVG and follows that asset's CC BY-SA 4.0 terms.
+`ATOMISWAVE.png`, `NAOMI.png` and `PC98.png` are AI-generated renders (OpenAI
+ChatGPT). They replace earlier flat-vector rasterizations that did not match the
+photographic style of the rest of this directory. Each was background-removed to
+transparent alpha and squared to 1200x1200 on the framing the photographs above
+use. Purely AI-generated images carry no copyright of their own, and no rights
+are claimed in them.
+
+`PC98.png` was composed after a reference photograph, recorded here for
+provenance only — a CC0 source carries no obligation forward:
+
+  Author:  Darklanlan
+  Source:  https://commons.wikimedia.org/wiki/File:PC-9801_computer_set.jpg
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+
+`ATOMISWAVE.png` and `NAOMI.png` were not composed after a specific source
+image. Console and cabinet trade dress remains the property of the respective
+rights holders and appears here to identify the platform, as it does in the
+photographs above.
 
 `_tools.png` is an original Leaf UI badge, not derived from the above.
