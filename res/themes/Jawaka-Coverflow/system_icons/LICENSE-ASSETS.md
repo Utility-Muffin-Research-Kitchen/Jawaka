@@ -12,10 +12,12 @@ are derived from public-domain video game hardware photography by **Evan Amos**.
 These are the Cover Flow theme's own console art — distinct from the libretro
 Systematic pack credited in `res/system_icons/LICENSE-ASSETS.md`. The source
 photographs were background-removed (transparent alpha) and renamed from their
-console names to Jawaka short codes during import; the full-resolution originals
-are kept in the `umrk-assets` repository under `systems/icons`. Alias codes that
-share a console's artwork (e.g. NES/FC, SNES/SFC, GEN/GENESIS/MD) are local
-copies of the same source image.
+console names to Jawaka short codes during import. Source-size PNG masters are
+kept in `artwork/Jawaka-Coverflow/system_icons`; the 384px copies in this runtime
+directory are the versions packaged for the launcher. The original source
+photographs are kept in the `umrk-assets` repository under `systems/icons`.
+Alias codes that share a console's artwork (e.g. NES/FC, SNES/SFC,
+GEN/GENESIS/MD) are local copies of the same source image.
 
 `ATOMISWAVE.png`, `NAOMI.png` and `PC98.png` are AI-generated renders (OpenAI
 ChatGPT). They replace earlier flat-vector rasterizations that did not match the

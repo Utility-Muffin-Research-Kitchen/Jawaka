@@ -3069,12 +3069,6 @@ static jw_cover_loader jw__cover_loader = {
 
 static bool jw__cf_animating;
 static int  jw__cover_inline_decodes_this_frame;
-/* Set for the single render that follows a button press. A cover decode is
-   synchronous (~tens of ms on the A55), and while covers stream in the frame
-   loop stays "active" (never idles on input) — so a decode landing on the same
-   frame as a d-pad press stalls the highlight move. Skipping the inline decode
-   on input frames keeps navigation instant; covers still decode on idle frames. */
-static bool jw__suppress_inline_decode;
 
 static void *jw__cover_worker(void *arg) {
     jw_cover_loader *L = (jw_cover_loader *)arg;
@@ -3283,9 +3277,9 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
     return NULL;
 }
 
-/* Coverflow cards share the cover loader's "no inline decode while moving"
-   discipline. This is used for system/app icons as well as art, so a cold image
-   miss shows the normal placeholder card instead of stalling the carousel. */
+/* Coverflow cards always decode off the render thread. This is used for
+   system/app icons as well as art, so a cold image shows the normal placeholder
+   card instead of stalling the carousel. */
 static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *out_h) {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
@@ -3304,28 +3298,6 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
     char thumb[PATH_MAX];
     const char *thumb_path = jw__cover_thumb_path(path, thumb, sizeof(thumb))
                                  ? thumb : NULL;
-
-    if (!jw__cf_animating && !jw__suppress_inline_decode &&
-        jw__cover_inline_decodes_this_frame < 1) {
-        jw__cover_inline_decodes_this_frame++;
-        SDL_Texture *tex = NULL;
-        if (thumb_path) {
-            tex = cat_load_image_thumbnail(path, thumb_path, JW_COVER_THUMB_MAX, &w, &h);
-        } else {
-            tex = cat_load_image(path);
-            if (tex &&
-                (SDL_QueryTexture(tex, NULL, NULL, &w, &h) != 0 || w <= 0 || h <= 0)) {
-                SDL_DestroyTexture(tex);
-                tex = NULL;
-            }
-        }
-        if (tex) {
-            cat_cache_put(path, tex, w, h);
-            if (out_w) *out_w = w;
-            if (out_h) *out_h = h;
-            return tex;
-        }
-    }
 
     SDL_Surface *surf = NULL;
     if (jw__cover_async_take(path, thumb_path, &surf)) {
@@ -9645,12 +9617,10 @@ int main(void) {
             break;
         }
         cat_input_event ev;
-        bool had_input = false;
         bool was_menu_open = state.menu_open;
         bool was_settings_open = jw_settings_ui_is_open(&state.settings);
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
-            had_input = true;
             jw__handle_input(socket_path, db_path, &state, ev.button, &running);
         }
 
@@ -9785,10 +9755,6 @@ int main(void) {
            shorter ticks above still fire sooner). */
         cat_request_frame_in(1000);
 
-        /* Keep navigation instant while cover art streams in: skip the one
-           synchronous cover decode on the frame that handled a button press, so
-           the highlight/carousel moves without waiting on a decode. Covers keep
-           decoding on the idle frames between presses. */
         /* Screenshot flash (SIGUSR1 from jawakad after a UI/focus capture): a
            translucent white that fades out over the live scene, like RetroArch's.
            Render the scene with its present deferred, lay the fading white on top,
@@ -9814,9 +9780,7 @@ int main(void) {
                    until unrelated input. */
                 cat_request_frame_in(16);
                 g_defer_present = true;
-                jw__suppress_inline_decode = true;   /* no cover decodes during the fade */
                 jw__render_launcher(&state);   /* draw the scene, hold the present */
-                jw__suppress_inline_decode = false;
                 g_defer_present = false;
                 SDL_Renderer *r = cat_get_renderer();
                 SDL_BlendMode prev;
@@ -9832,9 +9796,7 @@ int main(void) {
             cat_request_frame();   /* resume the normal scene */
         }
 
-        jw__suppress_inline_decode = had_input;
         jw__render_launcher(&state);
-        jw__suppress_inline_decode = false;
     }
 
     jw__status_poller_shutdown();
