@@ -24,6 +24,7 @@ mkdir -p \
     "$SD_ROOT/Roms/MD" \
     "$SD_ROOT/Roms/GBA" \
     "$SD_ROOT/Roms/ARCADE" \
+    "$SD_ROOT/Roms/AMIGA" \
     "$SD_ROOT/Roms/ATOMISWAVE" \
     "$SD_ROOT/Roms/NAOMI" \
     "$SD_ROOT/Roms/NAOMI/direct" \
@@ -57,6 +58,11 @@ printf 'archive\n' >"$SD_ROOT/Roms/MD/Sonic.md.zip"
 printf 'archive\n' >"$SD_ROOT/Roms/GBA/Example.gba.zip"
 printf 'bios\n' >"$SD_ROOT/Roms/ARCADE/neogeo.zip"
 printf 'rom\n' >"$SD_ROOT/Roms/ARCADE/mslug.zip"
+printf 'disk one\n' >"$SD_ROOT/Roms/AMIGA/Workbench Disk 1.adf"
+printf 'archive\n' >"$SD_ROOT/Roms/AMIGA/Workbench Disk 2.zip"
+printf 'installed game\n' >"$SD_ROOT/Roms/AMIGA/Unrelated.lha"
+printf 'Workbench Disk 1.adf|Disk 1\nWorkbench Disk 2.zip#Disk2.adf\n#SAVEDISK:Save Disk\n' \
+    >"$SD_ROOT/Roms/AMIGA/Workbench.m3u"
 printf 'rom\n' >"$SD_ROOT/Roms/ATOMISWAVE/mslug6.zip"
 printf 'rom\n' >"$SD_ROOT/Roms/NAOMI/mvsc2.zip"
 printf 'rom\n' >"$SD_ROOT/Roms/NAOMI/vstrik3.zip"
@@ -109,7 +115,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PATH"
 
-grep -F $'summary\tgames=17\tsystems=9\tapps=3' "$OUT_PATH" >/dev/null
+grep -F $'summary\tgames=19\tsystems=10\tapps=3' "$OUT_PATH" >/dev/null
 # Alias dedup: primary has one FC "Mario", and it is the canonical Roms/NES copy, not Roms/FC.
 # A secondary source alias copy with the same title remains separate.
 [ "$(grep -cF $'game\tFC\tMario\t' "$OUT_PATH")" = "2" ]
@@ -128,6 +134,13 @@ grep -F $'game\tGBA\tExample\tRoms/GBA/Example.gba.zip\t' "$OUT_PATH" >/dev/null
 grep -F "game"$'\t'"GBA"$'\t'"Example"$'\t'"$SECONDARY_ROOT/Roms/GBA/Example.gba.zip"$'\t' "$OUT_PATH" >/dev/null
 grep -F "game"$'\t'"GBA"$'\t'"Secondary"$'\t'"$SECONDARY_ROOT/Roms/GBA/Secondary.gba"$'\t'"$SECONDARY_ROOT/Roms/GBA/Imgs/Secondary.png" "$OUT_PATH" >/dev/null
 grep -F $'game\tARCADE\tMetal Slug\tRoms/ARCADE/mslug.zip\t' "$OUT_PATH" >/dev/null
+grep -F $'game\tAMIGA\tWorkbench\tRoms/AMIGA/Workbench.m3u\t' "$OUT_PATH" >/dev/null
+grep -F $'game\tAMIGA\tUnrelated\tRoms/AMIGA/Unrelated.lha\t' "$OUT_PATH" >/dev/null
+if grep -F $'game\tAMIGA\tWorkbench Disk ' "$OUT_PATH" >/dev/null; then
+    cat "$OUT_PATH" >&2
+    echo "phase3 fixture scan exposed an Amiga m3u dependency as a separate game" >&2
+    exit 1
+fi
 grep -F $'game\tATOMISWAVE\tMetal Slug 6\tRoms/ATOMISWAVE/mslug6.zip\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tNAOMI\tMarvel vs. Capcom 2 New Age of Heroes (Export, Korea)\tRoms/NAOMI/mvsc2.zip\t' "$OUT_PATH" >/dev/null
 grep -F $'game\tNAOMI\tVirtua Striker 3\tRoms/NAOMI/vstrik3.zip\t' "$OUT_PATH" >/dev/null
@@ -173,7 +186,7 @@ UMRK_PLATFORM_PATH="$SD_ROOT/.system/leaf/platforms/mlp1" \
 SDCARD_PATHS="$SD_ROOT:$SECONDARY_ROOT" \
     "$JAWAKA_DIR/$BUILD_DIR/bin/jawaka-scan-smoke" "$SD_ROOT" "$DB_PATH" >"$OUT_PRUNE_PATH"
 
-grep -F $'summary\tgames=17\tsystems=9\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
+grep -F $'summary\tgames=19\tsystems=10\tapps=3' "$OUT_PRUNE_PATH" >/dev/null
 if ! grep -F "$SECONDARY_ROOT" "$OUT_PRUNE_PATH" >/dev/null ||
    ! grep -F $'game\tGBA\tSecondary' "$OUT_PRUNE_PATH" >/dev/null ||
    ! grep -F $'app\tSecondary Native' "$OUT_PRUNE_PATH" >/dev/null; then

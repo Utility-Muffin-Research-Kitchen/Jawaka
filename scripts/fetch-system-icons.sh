@@ -68,6 +68,7 @@ declare -a DOWNLOADS=(
   "WS|Bandai - WonderSwan"
   "WSC|Bandai - WonderSwan Color"
   "ARCADE|MAME"
+  "AMIGA|Commodore - Amiga"
 )
 
 # Aliases: alias_code|primary_code. The alias shares the primary's artwork via

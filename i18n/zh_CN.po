@@ -286,7 +286,7 @@ msgid "All Systems"
 msgstr "所有平台"
 
 msgid "Amiga"
-msgstr ""
+msgstr "Amiga"
 
 msgid "Appearance"
 msgstr "外观"
