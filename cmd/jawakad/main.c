@@ -4517,13 +4517,21 @@ static bool jw__child_kind_has_group_barrier(jw_child_kind kind) {
 }
 
 /* Only the RetroArch app runner gets a stop grace: it has to talk RetroArch
-   into saving before it can copy the config back. Must exceed the runner's own
-   QUIT + escalation budget so the runner, not the daemon, decides when to give
-   up. */
+   into saving before it can copy the config back. */
 static bool jw__child_kind_has_stop_grace(jw_child_kind kind) {
     return kind == JW_CHILD_RETROARCH_APP;
 }
-#define JW_RA_APP_STOP_GRACE_MS 7000
+
+/* Must stay ABOVE the runner's own worst case -- JW_RUNNER_STOP_CEILING_MS in
+   cmd/jawaka-retroarch-runner/main.c, currently 7000 ms (1000 promote + 4000
+   QUIT + 1000 TERM + 1000 KILL). Setting this equal to that ceiling, as an
+   earlier revision did, means a wedged RetroArch gets its group killed at the
+   exact moment the runner makes its final save attempt, which defeats the
+   grace. 9000 ms leaves 2 s of headroom.
+   This only costs a slow shutdown when RetroArch is actually wedged: measured
+   on an MLP1 (2026-08-26), a real reboot with the app tile open used about
+   2 s of this budget end to end. */
+#define JW_RA_APP_STOP_GRACE_MS 9000
 /* Bounded fallback for the group barrier above: past this the group is killed
    and the leader reaped anyway, so a wedged RetroArch cannot strand the device
    on a dead screen with no launcher. */

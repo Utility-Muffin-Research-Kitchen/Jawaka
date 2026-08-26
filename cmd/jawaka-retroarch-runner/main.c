@@ -22,16 +22,32 @@
 
 /* How long RetroArch may take to answer QUIT, write its config, and exit
    before the runner stops waiting and escalates.
-   PROVISIONAL: sized to comfortably cover the observed MLP1 clean-quit path
-   (UDP QUIT, save-on-exit write, FAT32 flush) with margin, pending the p95
-   device measurement the #48 plan calls for. jawakad allows slightly more
-   than this so the runner, not the daemon, is the one that gives up first. */
+
+   Measured on an MLP1 (2026-08-26, 112 KB shared config, app tile): the whole
+   runner cycle -- UDP QUIT, RetroArch's save-on-exit write, and the FAT32
+   copy-back -- took 956/1012/1014/1104 ms on a clean quit and
+   1513/1530/1531/1638 ms from a stop signal, RetroArch itself exiting 552 ms
+   after QUIT. Worst observed 1638 ms, with no long tail across 8 samples.
+   4000 ms is ~2.4x that. */
 #define JW_RUNNER_QUIT_GRACE_MS 4000
 
 /* After the grace expires RetroArch is not going to save. These only bound how
    long the forced teardown itself may take. */
 #define JW_RUNNER_TERM_GRACE_MS 1000
 #define JW_RUNNER_KILL_GRACE_MS 1000
+
+/* Budget for the pre-quit promotion, which runs before the QUIT grace starts.
+   Measured at roughly 500 ms; 1000 ms is the number the ceiling below is
+   allowed to assume. */
+#define JW_RUNNER_PROMOTE_BUDGET_MS 1000
+
+/* The longest this runner can take between a stop signal and its final save
+   attempt. jawakad MUST allow more than this before it kills the process
+   group, or it pre-empts the very save the grace exists for -- keep
+   JW_RA_APP_STOP_GRACE_MS in cmd/jawakad/main.c above this number. */
+#define JW_RUNNER_STOP_CEILING_MS \
+    (JW_RUNNER_PROMOTE_BUDGET_MS + JW_RUNNER_QUIT_GRACE_MS + \
+     JW_RUNNER_TERM_GRACE_MS + JW_RUNNER_KILL_GRACE_MS)
 
 /* Set from a signal handler and read nowhere else. The handler does nothing
    but this store: the quit request, the wait, the copy-back, and every log
