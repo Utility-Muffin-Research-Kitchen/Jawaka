@@ -12773,11 +12773,11 @@ static void jw__ipc_accept_ready(jw_daemon_state *state) {
 }
 
 static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
-    struct pollfd poll_fds[JW_DAEMON_IPC_CONNECTION_MAX + 1];
-    int slot_for_poll[JW_DAEMON_IPC_CONNECTION_MAX + 1];
+    struct pollfd poll_fds[JW_DAEMON_IPC_CONNECTION_MAX + 2];
+    int slot_for_poll[JW_DAEMON_IPC_CONNECTION_MAX + 2];
     nfds_t count = 1;
     memset(poll_fds, 0, sizeof(poll_fds));
-    for (int i = 0; i <= JW_DAEMON_IPC_CONNECTION_MAX; i++) {
+    for (int i = 0; i < JW_DAEMON_IPC_CONNECTION_MAX + 2; i++) {
         slot_for_poll[i] = -1;
     }
     poll_fds[0].fd = jw_ipc_server_fd(state->server);
@@ -12793,6 +12793,17 @@ static void jw__ipc_tick(jw_daemon_state *state, int timeout_ms) {
             poll_fds[count].events |= POLLOUT;
         }
         slot_for_poll[count] = i;
+        count++;
+    }
+
+    /* The input proxy used to be drained only once per daemon loop, while this
+       poll waited up to 50ms on IPC alone. A short press could therefore be
+       forwarded as adjacent down/up events and disappear between consumer
+       frames. Let physical input wake the existing loop immediately. */
+    int input_fd = jw_input_proxy_poll_fd(&state->input_proxy);
+    if (input_fd >= 0) {
+        poll_fds[count].fd = input_fd;
+        poll_fds[count].events = POLLIN;
         count++;
     }
 

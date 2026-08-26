@@ -981,6 +981,15 @@ int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {
     return -1;
 }
 
+int jw_input_proxy_poll_fd(const jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data) {
+        return -1;
+    }
+    const jw_mlp1_input_proxy_data *data =
+        (const jw_mlp1_input_proxy_data *)proxy->backend_data;
+    return data->input_fd;
+}
+
 void jw_input_proxy_tick(jw_input_proxy *proxy) {
     if (!proxy || !proxy->enabled || !proxy->backend_data) {
         return;
