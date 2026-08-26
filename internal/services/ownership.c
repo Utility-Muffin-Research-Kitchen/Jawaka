@@ -7,6 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+bool jw_svc_group_tracking_may_end(bool group_absent,
+                                   bool supervisor_exiting) {
+    return group_absent || supervisor_exiting;
+}
+
 #if defined(__linux__)
 
 #include <dirent.h>

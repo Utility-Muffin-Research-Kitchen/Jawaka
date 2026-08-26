@@ -4535,9 +4535,9 @@ static bool jw__child_kind_has_stop_grace(jw_child_kind kind) {
    on an MLP1 (2026-08-26), a real reboot with the app tile open used about
    2 s of this budget end to end. */
 #define JW_RA_APP_STOP_GRACE_MS 9000
-/* Bounded fallback for the group barrier above: past this the group is killed
-   and the leader reaped anyway, so a wedged RetroArch cannot strand the device
-   on a dead screen with no launcher. */
+/* Bounded fallback for the group barrier above: past this the group is killed.
+   Normal operation keeps the leader unreaped until absence is proven; shutdown
+   may reap so a wedged group cannot hang the platform transition. */
 #define JW_RA_APP_GROUP_WAIT_MS 5000
 /* How often to repeat the survived-SIGKILL error while a group refuses to
    clear, so a wedged teardown is visible without flooding the log. */
@@ -13120,7 +13120,9 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
                     usleep(20000);
                 }
             }
-            if (!absent && !state->shutdown_requested && !g_shutdown_requested) {
+            bool shutting_down =
+                state->shutdown_requested || g_shutdown_requested;
+            if (!jw_svc_group_tracking_may_end(absent, shutting_down)) {
                 /* Same answer as the writer barrier, for the same reason.
                  * Reaping here and forgetting the pgid would leave a RetroArch
                  * that outlived SIGKILL still holding the display and writing
@@ -13148,9 +13150,10 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
                 jw_log_error("RetroArch app pgid=%d survived SIGKILL during "
                              "shutdown; leaving it for the next generation to "
                              "clear", (int)pgid);
+            } else {
+                jw_log_info("RetroArch app pgid=%d confirmed absent after "
+                            "SIGKILL", (int)pgid);
             }
-            jw_log_info("RetroArch app pgid=%d confirmed absent after SIGKILL",
-                        (int)pgid);
         }
         do {
             waited = waitpid(state->child_pid, &status, 0);
