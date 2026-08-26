@@ -256,9 +256,12 @@ typedef struct {
        remembered rather than re-signalled and re-slept each time. */
     bool     child_stop_signalled;
     long long child_stop_deadline_ms;
-    /* When the group-absence wait for a reaped-but-not-absent group began, so
-       it can be bounded instead of hanging the launcher forever. */
+    /* When the group-absence wait for an exited-but-not-absent group began, so
+       the escalation to SIGKILL is bounded. */
     long long child_group_wait_started_ms;
+    /* Rate limit for the "survived SIGKILL" error, which is re-evaluated on
+       every daemon tick for as long as the group refuses to clear. */
+    long long child_group_kill_logged_ms;
     /* Per-launch private /dev/input view (plans/paired-wireless-controllers-mlp1):
        /run/jawaka/input-<child-pid>, removed when the child exits. Empty when
        the child launched without input isolation (desktop, generic apps). */
@@ -4536,6 +4539,9 @@ static bool jw__child_kind_has_stop_grace(jw_child_kind kind) {
    and the leader reaped anyway, so a wedged RetroArch cannot strand the device
    on a dead screen with no launcher. */
 #define JW_RA_APP_GROUP_WAIT_MS 5000
+/* How often to repeat the survived-SIGKILL error while a group refuses to
+   clear, so a wedged teardown is visible without flooding the log. */
+#define JW_RA_APP_GROUP_KILL_LOG_MS 5000
 /* The runner's distinct "app ran, settings could not be saved" status. */
 #define JW_RA_APP_EXIT_SAVE_FAILED 90
 
@@ -8368,6 +8374,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     state->child_stop_signalled = false;
     state->child_stop_deadline_ms = 0;
     state->child_group_wait_started_ms = 0;
+    state->child_group_kill_logged_ms = 0;
     state->pending_app = false;
     jw_log_info("spawned app pid=%d pgid=%d pak=%s", (int)pid,
                 (int)state->child_pgid, pak_abs);
@@ -13097,14 +13104,15 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
                 JW_RA_APP_GROUP_WAIT_MS) {
                 return;
             }
-            jw_log_error("RetroArch app pgid=%d still present after %d ms; "
-                         "killing the group", (int)pgid,
-                         JW_RA_APP_GROUP_WAIT_MS);
+            if (state->child_group_kill_logged_ms == 0) {
+                jw_log_error("RetroArch app pgid=%d still present after %d ms; "
+                             "killing the group", (int)pgid,
+                             JW_RA_APP_GROUP_WAIT_MS);
+            }
             (void)jw__signal_tracked_game_group(state, SIGKILL);
-            /* Prove the kill landed before forgetting the pgid. Reaping on the
-             * strength of having *sent* SIGKILL is not an absence proof, and
-             * once the leader is reaped the group id can be reused, so a
-             * survivor would become untrackable. */
+            /* Prove the kill landed before forgetting the pgid. Having *sent*
+             * SIGKILL is not an absence proof, and once the leader is reaped
+             * the group id can be reused, so a survivor becomes untrackable. */
             bool absent = false;
             for (int i = 0; i < 25 && !absent; i++) {
                 absent = jw_svc_group_absent(pgid);
@@ -13112,19 +13120,37 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
                     usleep(20000);
                 }
             }
-            if (!absent) {
-                /* Deliberately different from the writer barrier, which
-                 * preserves the launch record and refuses to reap. The app
-                 * tile has no play session to keep fail-safe, and never
-                 * reaping would leave the device on a dead screen with no
-                 * launcher. Reap, but say plainly what could not be proved. */
-                jw_log_error("RetroArch app pgid=%d survived SIGKILL; reaping "
-                             "the runner anyway to restore the launcher",
-                             (int)pgid);
-            } else {
-                jw_log_info("RetroArch app pgid=%d confirmed absent after "
-                            "SIGKILL", (int)pgid);
+            if (!absent && !state->shutdown_requested && !g_shutdown_requested) {
+                /* Same answer as the writer barrier, for the same reason.
+                 * Reaping here and forgetting the pgid would leave a RetroArch
+                 * that outlived SIGKILL still holding the display and writing
+                 * to the card, with a fresh launcher spawned on top of it and
+                 * nothing tracking either -- worse than a screen that stays
+                 * blank. A process that survives SIGKILL is in uninterruptible
+                 * sleep, which clears on its own, and each pass retries the
+                 * kill, so the device recovers by itself once it does. */
+                if (now - state->child_group_kill_logged_ms >
+                        JW_RA_APP_GROUP_KILL_LOG_MS ||
+                    state->child_group_kill_logged_ms == 0) {
+                    state->child_group_kill_logged_ms = now;
+                    jw_log_error("RetroArch app pgid=%d survived SIGKILL; "
+                                 "holding the runner unreaped until the group "
+                                 "is absent", (int)pgid);
+                }
+                return;
             }
+            if (!absent) {
+                /* Shutting down. Holding buys nothing here -- the tracking dies
+                 * with this process either way -- and the main loop only exits
+                 * once no child is left, so holding would hang the poweroff
+                 * instead. Reap so the daemon can finish, and leave the
+                 * survivor to the next boot's stale-launcher sweep. */
+                jw_log_error("RetroArch app pgid=%d survived SIGKILL during "
+                             "shutdown; leaving it for the next generation to "
+                             "clear", (int)pgid);
+            }
+            jw_log_info("RetroArch app pgid=%d confirmed absent after SIGKILL",
+                        (int)pgid);
         }
         do {
             waited = waitpid(state->child_pid, &status, 0);
@@ -13144,6 +13170,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     state->child_stop_signalled = false;
     state->child_stop_deadline_ms = 0;
     state->child_group_wait_started_ms = 0;
+    state->child_group_kill_logged_ms = 0;
 
     /* Remove the per-launch private input view once the child is reaped. */
     if (state->child_input_ns_dir[0]) {
@@ -13424,11 +13451,15 @@ static void jw__cleanup(jw_daemon_state *state) {
                 }
             }
             if (state->child_pid == child_pid) {
-                int status = 0;
-                (void)waitpid(child_pid, &status, WNOHANG);
-                state->child_pid = -1;
-                state->child_pgid = -1;
-                state->child_kind = JW_CHILD_NONE;
+                /* Do not reap the leader and fabricate absence, for the same
+                 * reason the writer path does not: this daemon is exiting, and
+                 * a RetroArch that outlived SIGKILL is still holding the
+                 * display and the card. Leave it visible to the next
+                 * generation's stale-launcher sweep rather than recording a
+                 * clean stop that did not happen. */
+                jw_log_error("cleanup: RetroArch app pgid=%d did not become "
+                             "absent; leaving it for the next generation to "
+                             "clear", (int)state->child_pgid);
             }
         } else if (jw__child_kind_has_writer_barrier(child_kind)) {
             state->shutdown_requested = true;
@@ -13539,6 +13570,7 @@ int main(int argc, char *argv[]) {
     state.child_stop_signalled = false;
     state.child_stop_deadline_ms = 0;
     state.child_group_wait_started_ms = 0;
+    state.child_group_kill_logged_ms = 0;
     state.menu_pid = -1;
     state.osd_pid = -1;
     state.cached_brightness_percent = -1;
