@@ -484,7 +484,8 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
            input_hotkey_block_delay frames, which breaks every hold-to-act
            control on that button (Select held = Goodboy Galaxy's warp).
            Leaf quits RetroArch over the network command interface, so the
-           Phase 2 Select+Start exit chord buys nothing. Daemon-owned so an
+           Phase 2 Select+Start exit chord is no longer worth that cost.
+           Daemon-owned so an
            upgrading device's persisted shared config cannot keep the old
            binds alive; unbinding the modifier alone would leave every hotkey
            bare, so both keys must change together. */
