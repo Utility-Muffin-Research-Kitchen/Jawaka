@@ -145,12 +145,6 @@ int main(void) {
 
     char core[PATH_MAX];
     snprintf(core, sizeof(core), "%s/mgba_libretro.so", cores);
-    char *append_cfg = jw_write_retroarch_append_config(runtime, root, core, NULL);
-    if (!append_cfg || verify_runtime(append_cfg, NULL) != 0) {
-        return fail("append config did not normalize protected sort keys");
-    }
-    unlink(append_cfg);
-    free(append_cfg);
 
     char error[256];
     char *runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
@@ -182,6 +176,58 @@ int main(void) {
     free(shared);
     unlink(runtime_cfg);
     free(runtime_cfg);
+
+#ifdef PLATFORM_MLP1
+    /* Upgrade path: a device that launched a game before the Select fix has
+       the stale Select+Start hotkey pair persisted in its shared config. The
+       daemon owns both keys, so the runtime config must carry each exactly
+       once as "nul" (a surviving "4"/"6" means the shared config won; a
+       half-fix that unbinds only the modifier would leave exit bound and turn
+       Start into a bare quit button), and the exit-time backup must leave
+       neither key in the shared config. */
+    {
+        if (write_text(shared_cfg,
+                       "menu_driver = \"rgui\"\n"
+                       "input_enable_hotkey_btn = \"4\"\n"
+                       "input_exit_emulator_btn = \"6\"\n") != 0) {
+            return fail("stale hotkey shared config write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "stale hotkey config generation failed");
+        }
+        char *stale_runtime = read_text(runtime_cfg);
+        int stale_ok =
+            stale_runtime &&
+            key_count(stale_runtime, "input_enable_hotkey_btn", NULL) == 1 &&
+            key_count(stale_runtime, "input_enable_hotkey_btn", "= \"nul\"") == 1 &&
+            key_count(stale_runtime, "input_exit_emulator_btn", NULL) == 1 &&
+            key_count(stale_runtime, "input_exit_emulator_btn", "= \"nul\"") == 1;
+        free(stale_runtime);
+        if (!stale_ok) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail("stale hotkey binds survived into the runtime config");
+        }
+        if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                       error, sizeof(error)) != 0) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail(error[0] ? error : "stale hotkey backup failed");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        char *healed = read_text(shared_cfg);
+        int healed_ok = healed &&
+                        key_count(healed, "input_enable_hotkey_btn", NULL) == 0 &&
+                        key_count(healed, "input_exit_emulator_btn", NULL) == 0;
+        free(healed);
+        if (!healed_ok) {
+            return fail("stale hotkey binds persisted to the shared config");
+        }
+    }
+#endif
 
     if (write_text(
             shared_cfg,

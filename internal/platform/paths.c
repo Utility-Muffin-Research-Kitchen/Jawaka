@@ -479,6 +479,18 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "notification_show_autoconfig",
         "notification_show_autoconfig_fails",
         "notification_show_config_override_load",
+        /* No RetroArch hotkey modifier on MLP1: any button bound as
+           input_enable_hotkey is masked from the core after
+           input_hotkey_block_delay frames, which breaks every hold-to-act
+           control on that button (Select held = Goodboy Galaxy's warp).
+           Leaf quits RetroArch over the network command interface, so the
+           Phase 2 Select+Start exit chord is no longer worth that cost.
+           Daemon-owned so an
+           upgrading device's persisted shared config cannot keep the old
+           binds alive; unbinding the modifier alone would leave every hotkey
+           bare, so both keys must change together. */
+        "input_enable_hotkey_btn",
+        "input_exit_emulator_btn",
         "input_max_users",
         "savestate_file_compression",
         "video_threaded",
@@ -2011,6 +2023,12 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "notification_show_autoconfig", "false");
     jw__retroarch_cfg_string(fp, "notification_show_autoconfig_fails", "false");
     jw__retroarch_cfg_string(fp, "notification_show_config_override_load", "false");
+    /* Select stays a plain RetroPad button: no hotkey modifier, no hotkey
+       exit. Both "nul" values are load-bearing as a pair -- with the modifier
+       unbound but exit still bound, input_keys_pressed() takes its "clear
+       everything" branch and Start alone would quit the game. */
+    jw__retroarch_cfg_string(fp, "input_enable_hotkey_btn", "nul");
+    jw__retroarch_cfg_string(fp, "input_exit_emulator_btn", "nul");
     jw__retroarch_cfg_max_users(fp, player_joypad_indices);
     jw__retroarch_cfg_string(fp, "savestate_file_compression", "false");
     jw__retroarch_cfg_string(fp, "video_driver", "gl");
@@ -2515,199 +2533,4 @@ int jw_reset_retroarch_shared_config(const char *sdcard_root,
 
     jw__set_error(status, status_size, "RetroArch config reset");
     return 0;
-}
-
-char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdcard_root,
-                                       const char *core_path,
-                                   const int player_joypad_indices[4]) {
-    if (!runtime_dir || !sdcard_root || !core_path) {
-        return NULL;
-    }
-
-    char sdroot_abs[PATH_MAX];
-    if (!realpath(sdcard_root, sdroot_abs)) {
-        if (!jw__format_string(sdroot_abs, sizeof(sdroot_abs), "%s", sdcard_root)) {
-            return NULL;
-        }
-    }
-
-    char *system_dir = NULL;
-    char *saves_dir = NULL;
-    char *states_dir = NULL;
-    if (jw__retroarch_storage_dirs(sdroot_abs, &system_dir, &saves_dir, &states_dir,
-                                   NULL, 0) != 0) {
-        return NULL;
-    }
-
-    char *path = jw__dup_printf("%s/retroarch-launch-%ld.cfg", runtime_dir, (long)getpid());
-    if (!path) {
-        free(system_dir);
-        free(saves_dir);
-        free(states_dir);
-        return NULL;
-    }
-
-    char core_dir[PATH_MAX];
-    if (!jw__format_string(core_dir, sizeof(core_dir), "%s", core_path)) {
-        free(system_dir);
-        free(saves_dir);
-        free(states_dir);
-        free(path);
-        return NULL;
-    }
-    char *slash = strrchr(core_dir, '/');
-    if (slash) {
-        *slash = '\0';
-    }
-
-    char *info_dir = jw__core_info_dir(core_path);
-    char *autoconfig_dir = jw__default_autoconfig_dir(sdroot_abs);
-    char *defaults_path = jw__platform_defaults_path(sdroot_abs, "retroarch.cfg");
-
-    FILE *fp = fopen(path, "wb");
-    if (!fp) {
-        free(defaults_path);
-        free(info_dir);
-        free(autoconfig_dir);
-        free(system_dir);
-        free(saves_dir);
-        free(states_dir);
-        free(path);
-        return NULL;
-    }
-
-    if (defaults_path) {
-        char *defaults_text = jw__read_text_file(defaults_path, 256u * 1024u);
-        if (defaults_text) {
-            /* The append-config compatibility path obeys the same protected
-               key contract as the normal merged session config. */
-            jw__write_retroarch_cfg_filtered(fp, defaults_text, NULL, true);
-            free(defaults_text);
-        }
-    }
-    jw__retroarch_cfg_string(fp, "system_directory", system_dir);
-    jw__retroarch_cfg_string(fp, "savefile_directory", saves_dir);
-    jw__retroarch_cfg_string(fp, "savestate_directory", states_dir);
-    jw__retroarch_cfg_string(fp, "sort_savefiles_enable", "true");
-    jw__retroarch_cfg_string(fp, "sort_savestates_enable", "true");
-    jw__retroarch_cfg_string(fp, "libretro_directory", core_dir);
-    if (info_dir && jw__is_directory(info_dir)) {
-        jw__retroarch_cfg_string(fp, "libretro_info_path", info_dir);
-    }
-    if (autoconfig_dir && jw__is_directory(autoconfig_dir)) {
-        jw__retroarch_cfg_string(fp, "joypad_autoconfig_dir", autoconfig_dir);
-    }
-    jw__retroarch_cfg_string(fp, "config_save_on_exit", "false");
-    jw__retroarch_cfg_string(fp, "network_cmd_enable", "true");
-    char command_port[16];
-    snprintf(command_port, sizeof(command_port), "%u", JW_RA_DEFAULT_PORT);
-    jw__retroarch_cfg_string(fp, "network_cmd_port", command_port);
-    jw__retroarch_cfg_string(fp, "pause_nonactive", "false");
-#ifdef PLATFORM_MLP1
-    jw__mlp1_retroarch_audio_cfg(fp);
-    jw__retroarch_cfg_string(fp, "audio_latency", "128");
-    jw__retroarch_cfg_string(fp, "audio_block_frames", "256");
-    jw__retroarch_cfg_string(fp, "video_threaded", "false");
-    /* Ozone draws its icons and text from assets_directory, which Leaf ships and
-       syncs into the durable user tree. Without this RetroArch falls back to
-       RGUI, which renders from a built-in bitmap font, reads no assets at all,
-       and cannot draw CJK -- leaving the shipped bundle, Chinese fallback font
-       included, inert. Written here so save-on-exit cannot revert it. */
-    jw__retroarch_cfg_string(fp, "menu_driver", "ozone");
-    /* Ozone's own default targets a 1080p desktop and is small on a 960x720
-       panel. Pinned rather than seeded because a seed only reaches a fresh
-       install, and most devices arrive here by update with "1.000000" already
-       persisted. RetroArch clamps this against the panel, so the stored value
-       is an upper bound rather than a literal multiplier. */
-    jw__retroarch_cfg_string(fp, "menu_scale_factor", "5.000000");
-    /* Selenium. Ozone stores its theme as an enum index, and that enum has
-       grown across RetroArch releases, so 13 was read back off the device after
-       picking the theme by name rather than guessed from the string table. */
-    jw__retroarch_cfg_string(fp, "ozone_menu_color_theme", "13");
-    /* Follow Leaf's UI language. RetroArch ships the translations already, so
-       this one integer is what makes its menus Chinese; the CJK font it needs to
-       draw them arrives in the same asset bundle Ozone reads. Values are
-       RETRO_LANGUAGE_* from libretro.h, not a guess: English 0, Simplified
-       Chinese 12. Anything else falls back to English rather than shipping a
-       half-translated menu in a language nobody selected. */
-    {
-        const char *ui_lang = jw__env_value("UMRK_LANGUAGE");
-        if (!ui_lang) ui_lang = jw__env_value("JAWAKA_LANGUAGE");
-        const char *retro_lang = "0";
-        if (ui_lang && strcmp(ui_lang, "zh_CN") == 0) {
-            retro_lang = "12";
-        }
-        jw__retroarch_cfg_string(fp, "user_language", retro_lang);
-    }
-    /* Pin RA's reported refresh to the live panel rate the daemon read from the
-       active DRM mode. RA's frame pacing — and Black Frame Insertion's
-       refresh-aware cadence — misfire if it believes 60Hz while the panel runs
-       100/120. Written in the protected section so it's correct from the first
-       frame of every launch, independent of save-on-exit; absent env (unknown
-       rate) leaves whatever the merged config had. */
-    {
-        const char *refresh_hz = jw__env_value("JAWAKA_REFRESH_RATE_HZ");
-        if (refresh_hz && refresh_hz[0]) {
-            int hz = atoi(refresh_hz);
-            if (hz >= 50 && hz <= 240) {
-                char refresh_val[24];
-                snprintf(refresh_val, sizeof(refresh_val), "%d.000000", hz);
-                jw__retroarch_cfg_string(fp, "video_refresh_rate", refresh_val);
-            }
-        }
-    }
-    /* Black Frame Insertion. The daemon sets JAWAKA_BFI=1 only when the user
-       enabled it AND the panel runs at twice a content rate (120Hz for 60fps,
-       100Hz for 50fps PAL) - one black frame per content frame mimics a CRT's
-       impulse, cutting motion blur. Written here and
-       stripped from the merge so the Leaf toggle is the single source of truth,
-       independent of RA's own menu / save-on-exit. */
-    {
-        const char *bfi = jw__env_value("JAWAKA_BFI");
-        jw__retroarch_cfg_string(fp, "video_black_frame_insertion",
-                                 (bfi && bfi[0] == '1') ? "1" : "0");
-    }
-    jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
-    /* The MLP1 is a Nintendo-style layout (A=East confirms) that reports
-       Xbox-style SDL button indices, so RetroArch's OK/Cancel default lands on
-       the wrong face button when swapped. RA's default (false) puts menu OK on
-       the A/East button — matching the OS. Pin it here so RA menus are correct
-       from the first launch on fresh installs AND upgrades, overriding any stale
-       user value persisted by save-on-exit. */
-    jw__retroarch_cfg_string(fp, "menu_swap_ok_cancel_buttons", "false");
-    jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
-    jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
-    jw__retroarch_cfg_string(fp, "builtin_imageviewer_enable", "false");
-    jw__retroarch_cfg_string(fp, "load_dummy_on_core_shutdown", "true");
-    jw__retroarch_cfg_string(fp, "notification_show_autoconfig", "false");
-    jw__retroarch_cfg_string(fp, "notification_show_autoconfig_fails", "false");
-    jw__retroarch_cfg_string(fp, "notification_show_config_override_load", "false");
-    jw__retroarch_cfg_max_users(fp, player_joypad_indices);
-    jw__retroarch_cfg_string(fp, "savestate_file_compression", "false");
-    jw__retroarch_cfg_string(fp, "video_driver", "gl");
-    jw__retroarch_cfg_string(fp, "video_context_driver", "sdl_gl");
-    jw__retroarch_cfg_string(fp, "aspect_ratio_index", "22");
-    jw__retroarch_cfg_string(fp, "video_force_aspect", "true");
-    jw__retroarch_cfg_string(fp, "video_scale_integer", "false");
-#endif
-    jw__retroarch_cfg_player_indices(fp, player_joypad_indices);
-
-    int failed = ferror(fp);
-    if (fclose(fp) != 0) {
-        failed = 1;
-    }
-
-    free(defaults_path);
-    free(info_dir);
-    free(autoconfig_dir);
-    free(system_dir);
-    free(saves_dir);
-    free(states_dir);
-    if (failed) {
-        unlink(path);
-        free(path);
-        return NULL;
-    }
-
-    return path;
 }

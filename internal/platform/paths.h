@@ -28,12 +28,9 @@ bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t err
 /* player_joypad_indices: per-user SDL joypad indices for players 1-4 from the
  * Jawaka input roster (-1 = unused player). Non-NULL also raises the generated
  * input_max_users to 4 on MLP1, and every generated index is protected from
- * append-config and persisted-config overrides because the values describe the
- * launch roster, not a user preference. NULL keeps the legacy single-player
- * behavior (no index keys, input_max_users 1). */
-char *jw_write_retroarch_append_config(const char *runtime_dir, const char *sdcard_root,
-                                        const char *core_path,
-                                        const int player_joypad_indices[4]);
+ * persisted-config overrides because the values describe the launch roster,
+ * not a user preference. NULL keeps the legacy single-player behavior (no
+ * index keys, input_max_users 1). */
 /* proxied_cheevos: when true this launch was routed through RAOfflineProxy, so
  * cheevos_custom_host and cheevos_hardcore_mode_enable are stripped from the
  * merged defaults/shared text and emitted exactly once with the proxy values.
