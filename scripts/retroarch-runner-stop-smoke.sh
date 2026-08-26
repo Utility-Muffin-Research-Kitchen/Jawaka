@@ -17,7 +17,9 @@ cleanup() {
     set +e
     [ -n "${RUNNER_PID:-}" ] && kill -KILL "$RUNNER_PID" 2>/dev/null
     [ -n "${FAKE_PID:-}" ] && kill -KILL "$FAKE_PID" 2>/dev/null
-    pkill -f fake-retroarch.py 2>/dev/null
+    # Matched on this run's temp dir, which every fixture path contains, so a
+    # concurrent build's fake RetroArch is never caught in the sweep.
+    pkill -f "$TMP_DIR" 2>/dev/null
     rm -rf "$TMP_DIR"
     exit "$status"
 }

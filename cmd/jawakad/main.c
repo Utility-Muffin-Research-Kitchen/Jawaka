@@ -6894,6 +6894,12 @@ static void jw__osd_settings_not_saved(jw_daemon_state *state) {
         return;
     }
     if (state->osd_pid <= 0) {
+        /* Mid-shutdown there is nobody left to read a banner and the screen is
+           about to go; starting an OSD process now would only leave a stray
+           child behind. The log still records the failure. */
+        if (state->shutdown_requested || g_shutdown_requested) {
+            return;
+        }
         jw__spawn_osd(state);
     }
     const char *request =
