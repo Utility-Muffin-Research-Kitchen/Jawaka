@@ -9,6 +9,7 @@ const char *jw_osd_game_stage_name(jw_osd_game_stage stage) {
         case JW_OSD_GAME_CHECKING: return "checking";
         case JW_OSD_GAME_SYNCING:  return "syncing";
         case JW_OSD_GAME_STOPPING: return "stopping";
+        case JW_OSD_GAME_SETTINGS_NOT_SAVED: return "settings-not-saved";
     }
     return "unknown";
 }
@@ -34,6 +35,8 @@ bool jw_osd_game_launch_parse(const cJSON *root,
         *stage = JW_OSD_GAME_SYNCING;
     } else if (strcmp(stage_item->valuestring, "stopping") == 0) {
         *stage = JW_OSD_GAME_STOPPING;
+    } else if (strcmp(stage_item->valuestring, "settings-not-saved") == 0) {
+        *stage = JW_OSD_GAME_SETTINGS_NOT_SAVED;
     } else {
         return false;
     }
@@ -77,6 +80,11 @@ void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
             break;
         case JW_OSD_GAME_STOPPING:
             snprintf(title, title_size, "SYNCTHING: STOPPING");
+            break;
+        case JW_OSD_GAME_SETTINGS_NOT_SAVED:
+            /* Only the glyphs the OSD's bitmap font actually has. */
+            snprintf(title, title_size, "RETROARCH SETTINGS");
+            snprintf(action, action_size, "NOT SAVED");
             break;
     }
 }

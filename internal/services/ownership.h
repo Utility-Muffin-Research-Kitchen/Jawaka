@@ -31,6 +31,11 @@
  */
 bool jw_svc_group_absent(pid_t pgid);
 
+/* Group tracking may end only after absence is proven, except when the
+ * supervisor itself is exiting and cannot preserve that tracking anyway. */
+bool jw_svc_group_tracking_may_end(bool group_absent,
+                                   bool supervisor_exiting);
+
 /* LIFE-1 subscription authentication: true only when `pid` currently names a
  * non-zombie member of the exact reserved process group `pgid`. A vanished,
  * unreadable, recycled-to-another-group, or zombie pid fails closed. */

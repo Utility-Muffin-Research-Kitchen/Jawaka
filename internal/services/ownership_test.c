@@ -136,6 +136,13 @@ static void jw__test_rejects_nonpositive_pgid(void) {
     puts("PASS ownership-test rejects non-positive pgid");
 }
 
+static void jw__test_group_tracking_release_policy(void) {
+    assert(!jw_svc_group_tracking_may_end(false, false));
+    assert(jw_svc_group_tracking_may_end(true, false));
+    assert(jw_svc_group_tracking_may_end(false, true));
+    puts("PASS ownership-test holds an unverified group until shutdown");
+}
+
 static void jw__test_simple_child(void) {
     pid_t child = fork();
     assert(child >= 0);
@@ -362,6 +369,7 @@ static void jw__test_newline_in_comm(void) {
 
 int main(void) {
     jw__test_rejects_nonpositive_pgid();
+    jw__test_group_tracking_release_policy();
     jw__test_simple_child();
     jw__test_zombie_alone_is_absent();
     jw__test_zombie_leader_live_descendant();

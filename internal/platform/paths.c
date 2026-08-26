@@ -476,6 +476,15 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "user_language",
         "menu_show_load_content_animation",
         "menu_swap_ok_cancel_buttons",
+        /* Leaf owns exactly one authoritative RetroArch config per platform.
+           RetroArch's Configuration File menu can point RARCH_PATH_CONFIG at
+           a different file (Save Main Configuration writes $HOME/.config/
+           retroarch/retroarch.cfg; Load Configuration switches to whatever is
+           picked), after which the working copy Leaf promotes on exit is stale
+           and the session's changes are silently lost. Hide the whole menu
+           rather than trying to redirect it: save-on-exit already persists
+           every ordinary change on a clean quit. */
+        "menu_show_configurations",
         "notification_show_autoconfig",
         "notification_show_autoconfig_fails",
         "notification_show_config_override_load",
@@ -635,11 +644,137 @@ static bool jw__release_managed_shader_dir(const char *path) {
     return suffix && strcmp(suffix, "/shaders") == 0;
 }
 
-static int jw__write_retroarch_cfg_filtered_skipping(
-    FILE *fp, const char *text, const char *override_text, bool dedupe,
-    const char *const *skip_keys, size_t skip_key_count) {
-    if (!fp || !text) {
+/* Growable byte sink. The filtered config is rendered here first so a caller
+   that is replacing a durable file never has to open that file before it knows
+   the replacement is complete. */
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} jw__buf;
+
+static void jw__buf_free(jw__buf *buf) {
+    if (buf) {
+        free(buf->data);
+        buf->data = NULL;
+        buf->len = 0;
+        buf->cap = 0;
+    }
+}
+
+static int jw__buf_append(jw__buf *buf, const char *bytes, size_t len) {
+    if (!buf || (!bytes && len)) {
         return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (buf->len + len + 1u > buf->cap) {
+        size_t cap = buf->cap ? buf->cap : 8192u;
+        while (cap < buf->len + len + 1u) {
+            if (cap > (size_t)-1 / 2u) {
+                return -1;
+            }
+            cap *= 2u;
+        }
+        char *grown = (char *)realloc(buf->data, cap);
+        if (!grown) {
+            return -1;
+        }
+        buf->data = grown;
+        buf->cap = cap;
+    }
+    memcpy(buf->data + buf->len, bytes, len);
+    buf->len += len;
+    buf->data[buf->len] = '\0';
+    return 0;
+}
+
+static int jw__buf_append_line(jw__buf *buf, const char *bytes, size_t len) {
+    return jw__buf_append(buf, bytes, len) != 0 || jw__buf_append(buf, "\n", 1u) != 0
+               ? -1
+               : 0;
+}
+
+/* Open-addressed set of the keys already emitted, so duplicate resolution is
+   one pass instead of a rescan per line. The rescan was O(n^2): a 1.8 MB
+   config -- well inside the 4 MiB ceiling this code accepts -- took ~7.9s on a
+   desktop and far longer on the device, blowing straight through the shutdown
+   budgets that now bound this work. */
+typedef struct {
+    char **keys;
+    size_t cap;
+} jw__keyset;
+
+static void jw__keyset_free(jw__keyset *set) {
+    if (!set || !set->keys) {
+        return;
+    }
+    for (size_t i = 0; i < set->cap; i++) {
+        free(set->keys[i]);
+    }
+    free(set->keys);
+    set->keys = NULL;
+    set->cap = 0;
+}
+
+static bool jw__keyset_init(jw__keyset *set, size_t expected) {
+    size_t cap = 64;
+    while (cap < expected * 2u && cap < (size_t)1 << 22) {
+        cap *= 2u;
+    }
+    set->keys = (char **)calloc(cap, sizeof(char *));
+    set->cap = set->keys ? cap : 0;
+    return set->keys != NULL;
+}
+
+static size_t jw__key_hash(const char *key) {
+    size_t h = 1469598103934665603ULL;
+    for (const unsigned char *p = (const unsigned char *)key; *p; p++) {
+        h = (h ^ *p) * 1099511628211ULL;
+    }
+    return h;
+}
+
+/* Returns true when `key` was already present. Insert-on-miss. On allocation
+   failure it reports "not seen", which degrades to keeping a duplicate rather
+   than dropping a setting. */
+static bool jw__keyset_seen(jw__keyset *set, const char *key) {
+    if (!set->keys || !set->cap) {
+        return false;
+    }
+    size_t mask = set->cap - 1u;
+    size_t i = jw__key_hash(key) & mask;
+    for (size_t probe = 0; probe < set->cap; probe++) {
+        char *slot = set->keys[i];
+        if (!slot) {
+            set->keys[i] = jw__dup_printf("%s", key);
+            return false;
+        }
+        if (strcmp(slot, key) == 0) {
+            return true;
+        }
+        i = (i + 1u) & mask;
+    }
+    return false;
+}
+
+static int jw__filter_retroarch_cfg(
+    jw__buf *out, const char *text, const char *override_text, bool dedupe,
+    const char *const *skip_keys, size_t skip_key_count) {
+    if (!out || !text) {
+        return -1;
+    }
+
+    jw__keyset seen = {NULL, 0};
+    if (dedupe) {
+        size_t lines = 1;
+        for (const char *p = text; *p; p++) {
+            if (*p == '\n') {
+                lines++;
+            }
+        }
+        (void)jw__keyset_init(&seen, lines);
     }
 
     const char *line = text;
@@ -656,16 +791,24 @@ static int jw__write_retroarch_cfg_filtered_skipping(
             }
             skip = skip ||
                    jw__retroarch_cfg_key_is_protected(key) ||
-                   (override_text && jw__retroarch_cfg_text_has_key(override_text, key)) ||
-                   (dedupe && next && jw__retroarch_cfg_text_has_key(next + 1, key));
+                   (override_text && jw__retroarch_cfg_text_has_key(override_text, key));
+            /* Keep the FIRST occurrence, which is the one RetroArch itself
+               used this session (libretro-common/file/config_file.c only adds
+               a key when it is not already in the map). The previous rescan
+               kept the LAST, so a duplicated key persisted a value the running
+               session never had. Checked after the other skips so a protected
+               or overridden key does not claim the slot. */
+            if (!skip && dedupe && jw__keyset_seen(&seen, key)) {
+                skip = true;
+            }
         } else if (len == strlen("# Jawaka protected runtime settings") &&
                    strncmp(line, "# Jawaka protected runtime settings", len) == 0) {
             skip = true;
         }
 
-        if (!skip) {
-            fwrite(line, 1, len, fp);
-            fputc('\n', fp);
+        if (!skip && jw__buf_append_line(out, line, len) != 0) {
+            jw__keyset_free(&seen);
+            return -1;
         }
         if (!next) {
             break;
@@ -673,14 +816,24 @@ static int jw__write_retroarch_cfg_filtered_skipping(
         line = next + 1;
     }
 
-    return ferror(fp) ? -1 : 0;
+    jw__keyset_free(&seen);
+    return 0;
 }
 
-static int jw__write_retroarch_cfg_filtered(FILE *fp, const char *text,
-                                            const char *override_text,
-                                            bool dedupe) {
-    return jw__write_retroarch_cfg_filtered_skipping(
-        fp, text, override_text, dedupe, NULL, 0);
+static int jw__write_retroarch_cfg_filtered_skipping(
+    FILE *fp, const char *text, const char *override_text, bool dedupe,
+    const char *const *skip_keys, size_t skip_key_count) {
+    if (!fp) {
+        return -1;
+    }
+    jw__buf buf = {NULL, 0, 0};
+    int rc = jw__filter_retroarch_cfg(&buf, text, override_text, dedupe,
+                                      skip_keys, skip_key_count);
+    if (rc == 0 && buf.len && fwrite(buf.data, 1, buf.len, fp) != buf.len) {
+        rc = -1;
+    }
+    jw__buf_free(&buf);
+    return rc != 0 || ferror(fp) ? -1 : 0;
 }
 
 static int jw__mkdir_child(const char *root, const char *name) {
@@ -2016,6 +2169,11 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
        from the first launch on fresh installs AND upgrades, overriding any stale
        user value persisted by save-on-exit. */
     jw__retroarch_cfg_string(fp, "menu_swap_ok_cancel_buttons", "false");
+    /* Remove the Configuration File menu. Its alternate load/save model is the
+       one supported way to move RetroArch off the file Leaf promotes back to
+       the durable shared config, so leaving it visible offers a path that
+       looks like saving and discards the session instead. */
+    jw__retroarch_cfg_string(fp, "menu_show_configurations", "false");
     jw__retroarch_cfg_string(fp, "check_firmware_before_loading", "false");
     jw__retroarch_cfg_string(fp, "builtin_mediaplayer_enable", "false");
     jw__retroarch_cfg_string(fp, "builtin_imageviewer_enable", "false");
@@ -2432,6 +2590,106 @@ bool jw_retroarch_shared_hardcore_enabled(const char *sdcard_root) {
     return enabled;
 }
 
+/* Replace `dest` with bytes the caller has already rendered in full.
+ *
+ * The old implementation opened the durable config "wb", which destroyed the
+ * only good copy before it knew the replacement could be written. This writes
+ * a unique same-directory temporary, flushes it all the way to the card, and
+ * renames it over `dest`. rename() is atomic within a directory on FAT32, so
+ * a reader sees either the whole old config or the whole new one -- never the
+ * truncated middle a failed write used to leave behind.
+ *
+ * On failure `dest` is untouched. If the bytes reached the card but the rename
+ * did not land and `recovery_path` is non-NULL, the temporary is kept there
+ * instead of being discarded; the caller must only pass a path whose contents
+ * are safe to leave on the card. */
+static int jw__commit_file_atomic(const char *dest, const char *bytes,
+                                  size_t len, const char *recovery_path) {
+    if (!dest || !dest[0] || (!bytes && len)) {
+        return -1;
+    }
+
+    char tmp[PATH_MAX];
+    const char *slash = strrchr(dest, '/');
+    int needed = slash ? snprintf(tmp, sizeof(tmp), "%.*s/.jw-cfg-XXXXXX",
+                                  (int)(slash - dest), dest)
+                       : snprintf(tmp, sizeof(tmp), ".jw-cfg-XXXXXX");
+    if (needed < 0 || (size_t)needed >= sizeof(tmp)) {
+        return -1;
+    }
+
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        return -1;
+    }
+
+    int rc = 0;
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(fd, bytes + written, len - written);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            rc = -1;
+            break;
+        }
+        written += (size_t)n;
+    }
+    /* Without this the rename can publish a zero-length file across a power
+       cut: the directory entry is durable long before the data is. */
+    if (rc == 0 && fsync(fd) != 0 && errno != EINVAL) {
+        rc = -1;
+    }
+    if (close(fd) != 0) {
+        rc = -1;
+    }
+    /* mkstemp creates 0600; the filtered config is ordinary user data and
+       carries no secret, so give it the mode the shared config already has. */
+    if (rc == 0) {
+        (void)chmod(tmp, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        if (rename(tmp, dest) != 0) {
+            rc = -1;
+            if (recovery_path && recovery_path[0] &&
+                rename(tmp, recovery_path) == 0) {
+                return -1;
+            }
+        }
+    }
+    if (rc != 0) {
+        (void)unlink(tmp);
+    }
+    return rc;
+}
+
+/* A recovery candidate is the ONLY copy of a session whose commit failed, so
+   it is cleared only once it is provably redundant -- byte for byte what the
+   durable config now holds. A later session saving successfully does not
+   recover it: that save came from a durable config which never held those
+   settings. */
+static void jw__reconcile_recovery_candidate(const char *recovery_path,
+                                             const char *bytes, size_t len) {
+    if (!recovery_path || !recovery_path[0]) {
+        return;
+    }
+    char *candidate = jw__read_text_file(recovery_path,
+                                         JW_RETROARCH_CONFIG_READ_MAX);
+    if (!candidate) {
+        return;
+    }
+    if (strlen(candidate) == len &&
+        (len == 0 || (bytes && memcmp(candidate, bytes, len) == 0))) {
+        (void)unlink(recovery_path);
+        jw_log_info("removed redundant RetroArch recovery candidate %s",
+                    recovery_path);
+    } else {
+        jw_log_warn("keeping RetroArch recovery candidate %s from an earlier "
+                    "failed save; it holds settings the shared config does not",
+                    recovery_path);
+    }
+    free(candidate);
+}
+
 int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdcard_root,
                                const jw_retroarch_launch_snapshot *snapshot,
                                char *error, size_t error_size) {
@@ -2448,18 +2706,14 @@ int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdca
         return -1;
     }
 
-    char *runtime_text = jw__read_text_file(runtime_config_path, 256u * 1024u);
+    /* Same ceiling the prepare and read paths use. The old 256 KiB limit here
+       meant a config large enough to launch was too large to save, and the
+       failure landed after the durable file had already been truncated. */
+    char *runtime_text = jw__read_text_file(runtime_config_path,
+                                            JW_RETROARCH_CONFIG_READ_MAX);
     if (!runtime_text) {
         free(shared_path);
         jw__set_error(error, error_size, "could not read RetroArch runtime config");
-        return -1;
-    }
-
-    FILE *fp = fopen(shared_path, "wb");
-    if (!fp) {
-        free(runtime_text);
-        free(shared_path);
-        jw__set_error(error, error_size, "could not write shared RetroArch config");
         return -1;
     }
 
@@ -2472,29 +2726,76 @@ int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdca
         "cheevos_custom_host",
         "cheevos_hardcore_mode_enable",
     };
+
+    /* Render everything before the durable file is touched at all. */
+    jw__buf filtered = {NULL, 0, 0};
     int rc;
     if (restore_transient) {
-        rc = jw__write_retroarch_cfg_filtered_skipping(
-            fp, runtime_text, NULL, true, transient_keys, 2u);
+        rc = jw__filter_retroarch_cfg(&filtered, runtime_text, NULL, true,
+                                      transient_keys, 2u);
         if (rc == 0 && snapshot->custom_host_present) {
-            rc = fprintf(fp, "%s\n", snapshot->custom_host_line) < 0 ? -1 : 0;
+            rc = jw__buf_append_line(&filtered, snapshot->custom_host_line,
+                                     strlen(snapshot->custom_host_line));
         }
         if (rc == 0 && snapshot->hardcore_present) {
-            rc = fprintf(fp, "%s\n", snapshot->hardcore_line) < 0 ? -1 : 0;
+            rc = jw__buf_append_line(&filtered, snapshot->hardcore_line,
+                                     strlen(snapshot->hardcore_line));
         }
     } else {
-        rc = jw__write_retroarch_cfg_filtered(fp, runtime_text, NULL, true);
-    }
-    if (fclose(fp) != 0) {
-        rc = -1;
+        rc = jw__filter_retroarch_cfg(&filtered, runtime_text, NULL, true, NULL, 0);
     }
     free(runtime_text);
-    free(shared_path);
     if (rc != 0) {
-        jw__set_error(error, error_size, "could not save shared RetroArch config");
+        jw__buf_free(&filtered);
+        free(shared_path);
+        /* Nothing was written: the previous shared config is still the last
+           good one. */
+        jw__set_error(error, error_size,
+                      "could not filter RetroArch config; previous settings kept");
         return -1;
     }
 
+    char *recovery_path = jw__dup_printf("%s.recovered", shared_path);
+
+    /* Skip the rewrite when the card would end up with the same bytes. Every
+       avoided write is one less chance for a power cut to catch this file
+       mid-replacement, and one less FAT32 erase cycle per launch. */
+    char *current = jw__read_text_file(shared_path, JW_RETROARCH_CONFIG_READ_MAX);
+    if (current && strlen(current) == filtered.len &&
+        (filtered.len == 0 || memcmp(current, filtered.data, filtered.len) == 0)) {
+        free(current);
+        /* Still reconcile: an unchanged save can be exactly what makes an
+           older candidate redundant. */
+        jw__reconcile_recovery_candidate(recovery_path, filtered.data,
+                                         filtered.len);
+        jw__buf_free(&filtered);
+        jw_log_info("RetroArch shared config unchanged; %s not rewritten", shared_path);
+        free(recovery_path);
+        free(shared_path);
+        return 0;
+    }
+    free(current);
+
+    const char *filtered_bytes = filtered.data;
+    size_t filtered_len = filtered.len;
+    if (jw__commit_file_atomic(shared_path, filtered.data, filtered.len,
+                               recovery_path) != 0) {
+        jw_log_error("RetroArch config backup could not commit %s -> %s",
+                     runtime_config_path, shared_path);
+        jw__buf_free(&filtered);
+        free(recovery_path);
+        free(shared_path);
+        jw__set_error(error, error_size,
+                      "could not save shared RetroArch config; previous settings kept");
+        return -1;
+    }
+
+    jw__reconcile_recovery_candidate(recovery_path, filtered_bytes, filtered_len);
+    jw_log_info("RetroArch shared config saved %s -> %s",
+                runtime_config_path, shared_path);
+    jw__buf_free(&filtered);
+    free(recovery_path);
+    free(shared_path);
     return 0;
 }
 
