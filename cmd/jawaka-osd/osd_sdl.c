@@ -161,11 +161,12 @@ void jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
 
 void jw_osd_backend_show_game_launch(jw_osd_game_stage stage,
                                      int pending_items, uint64_t now_ms) {
-    (void)now_ms;
     s_mode = 2;
     s_game_stage = stage;
     s_pending_items = pending_items < 0 ? 0 : pending_items;
-    s_hide_at = UINT64_MAX;
+    s_hide_at = JW_OSD_GAME_STAGE_IS_TRANSIENT(stage)
+                    ? now_ms + JW_OSD_GAME_TRANSIENT_MS
+                    : UINT64_MAX;
     s_visible = true;
     SDL_ShowWindow(s_window);
     SDL_RaiseWindow(s_window);

@@ -48,6 +48,24 @@ static char *read_text(const char *path) {
     return text;
 }
 
+/* Stand in for RetroArch's save-on-exit, which rewrites the whole --config
+   file with a single line per key. Changing a value in place is what that
+   looks like; prepending a duplicate is not, and would be resolved by the
+   backup's dedupe rather than by the user's edit. */
+static char *replace_line(const char *text, const char *old_line,
+                          const char *new_line) {
+    const char *at = text ? strstr(text, old_line) : NULL;
+    if (!at) return NULL;
+    size_t head = (size_t)(at - text);
+    size_t old_len = strlen(old_line);
+    char *out = malloc(strlen(text) - old_len + strlen(new_line) + 1u);
+    if (!out) return NULL;
+    memcpy(out, text, head);
+    strcpy(out + head, new_line);
+    strcat(out + head, at + old_len);
+    return out;
+}
+
 static int key_count(const char *text, const char *key, const char *value) {
     int count = 0;
     size_t key_len = strlen(key);
@@ -483,6 +501,214 @@ int main(void) {
         free(absent);
         if (!absent_ok) {
             return fail("proxied backup invented cheevos keys that were absent");
+        }
+    }
+
+    /* An ordinary, non-Leaf-owned key survives the full round trip the app
+       tile and every game launch use: prepare -> RetroArch rewrites the
+       working file -> backup -> prepare. This is the path Leaf#48 says loses
+       settings, so it is asserted end to end rather than one hop at a time. */
+    {
+        if (write_text(shared_cfg, "menu_driver = \"rgui\"\n"
+                                   "rewind_enable = \"false\"\n") != 0) {
+            return fail("round-trip shared config write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "round-trip config generation failed");
+        }
+        /* Stand in for RetroArch's save-on-exit: the user flipped the setting
+           and RetroArch rewrote its --config file. */
+        char *session = read_text(runtime_cfg);
+        if (!session) {
+            return fail("round-trip runtime config read failed");
+        }
+        char *changed = replace_line(session, "rewind_enable = \"false\"",
+                                     "rewind_enable = \"true\"");
+        free(session);
+        if (!changed) {
+            return fail("round-trip session edit failed");
+        }
+        int wrote = write_text(runtime_cfg, changed);
+        free(changed);
+        if (wrote != 0) {
+            return fail("round-trip session write failed");
+        }
+        if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                       error, sizeof(error)) != 0) {
+            return fail(error[0] ? error : "round-trip backup failed");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+
+        char *durable = read_text(shared_cfg);
+        int durable_ok = durable &&
+                         key_count(durable, "rewind_enable", "= \"true\"") == 1 &&
+                         key_count(durable, "rewind_enable", "= \"false\"") == 0;
+        free(durable);
+        if (!durable_ok) {
+            return fail("ordinary key did not reach the durable shared config");
+        }
+
+        /* And the next launch hands it back to RetroArch: RetroArch keeps the
+           FIRST occurrence, so a stale duplicate would silently win. */
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "round-trip re-prepare failed");
+        }
+        char *relaunch = read_text(runtime_cfg);
+        int relaunch_ok = relaunch &&
+                          key_count(relaunch, "rewind_enable", NULL) == 1 &&
+                          key_count(relaunch, "rewind_enable", "= \"true\"") == 1;
+        free(relaunch);
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        if (!relaunch_ok) {
+            return fail("ordinary key did not come back on the next launch");
+        }
+    }
+
+#ifdef PLATFORM_MLP1
+    /* Leaf#48 Branch B: RetroArch's Configuration File menu is the supported
+       way to point RARCH_PATH_CONFIG somewhere Leaf never reads, which loses
+       the session. The key is daemon-owned, so it must appear exactly once as
+       "false" in the working file even when the persisted config says
+       otherwise, and never reach the durable config. */
+    {
+        if (write_text(shared_cfg, "menu_driver = \"rgui\"\n"
+                                   "menu_show_configurations = \"true\"\n") != 0) {
+            return fail("configurations-menu shared config write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "configurations-menu config failed");
+        }
+        char *menu_runtime = read_text(runtime_cfg);
+        int menu_ok = menu_runtime &&
+                      key_count(menu_runtime, "menu_show_configurations", NULL) == 1 &&
+                      key_count(menu_runtime, "menu_show_configurations",
+                                "= \"false\"") == 1;
+        free(menu_runtime);
+        if (!menu_ok) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail("configurations menu was not hidden for the session");
+        }
+        if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                       error, sizeof(error)) != 0) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail(error[0] ? error : "configurations-menu backup failed");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        char *menu_shared = read_text(shared_cfg);
+        int menu_shared_ok = menu_shared &&
+                             key_count(menu_shared, "menu_show_configurations",
+                                       NULL) == 0;
+        free(menu_shared);
+        if (!menu_shared_ok) {
+            return fail("menu_show_configurations persisted to the shared config");
+        }
+    }
+#endif
+
+    /* Leaf#48 shared hardening: a backup that cannot be written must never
+       destroy the durable config it was replacing. The old implementation
+       opened it "wb" and truncated it before it knew the write could
+       succeed. */
+    {
+        static const char durable_text[] =
+            "menu_driver = \"rgui\"\n"
+            "rewind_enable = \"true\"\n";
+        if (write_text(shared_cfg, durable_text) != 0) {
+            return fail("atomic-backup durable write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "atomic-backup config generation failed");
+        }
+        /* Something the filtered result would definitely change, so a
+           successful commit could not be mistaken for the skip-if-unchanged
+           path. */
+        char *session = read_text(runtime_cfg);
+        char *changed = replace_line(
+            session, "rewind_enable = \"true\"",
+            "rewind_enable = \"false\"\ncheevos_password = \"hunter2\"");
+        free(session);
+        if (!changed) {
+            return fail("atomic-backup session edit failed");
+        }
+        int wrote = write_text(runtime_cfg, changed);
+        free(changed);
+        if (wrote != 0) {
+            return fail("atomic-backup session write failed");
+        }
+
+        /* Root ignores directory permissions, so only assert the read-only
+           parent case where it actually applies. */
+        if (geteuid() != 0) {
+            if (chmod(retroarch_dir, 0500) != 0) {
+                return fail("atomic-backup chmod failed");
+            }
+            int rc = jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                                error, sizeof(error));
+            if (chmod(retroarch_dir, 0755) != 0) {
+                return fail("atomic-backup chmod restore failed");
+            }
+            if (rc == 0) {
+                return fail("unwritable backup destination reported success");
+            }
+            char *survivor = read_text(shared_cfg);
+            int survived = survivor && strcmp(survivor, durable_text) == 0;
+            free(survivor);
+            if (!survived) {
+                return fail("failed backup damaged the durable shared config");
+            }
+            if (!read_text(runtime_cfg)) {
+                return fail("failed backup destroyed the working config");
+            }
+        }
+
+        /* Commit failure with the rendered bytes already complete: they are
+           kept as a recovery candidate rather than discarded. A directory
+           where the durable file belongs makes rename() fail for root and
+           non-root alike. */
+        char recovered[PATH_MAX + 16];
+        snprintf(recovered, sizeof(recovered), "%s.recovered", shared_cfg);
+        unlink(recovered);
+        if (unlink(shared_cfg) != 0 || mkdir(shared_cfg, 0755) != 0) {
+            return fail("atomic-backup commit-failure fixture setup failed");
+        }
+        if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                       error, sizeof(error)) == 0) {
+            return fail("uncommittable backup reported success");
+        }
+        struct stat dest_st;
+        if (stat(shared_cfg, &dest_st) != 0 || !S_ISDIR(dest_st.st_mode)) {
+            return fail("failed commit replaced the durable destination");
+        }
+        char *candidate = read_text(recovered);
+        int candidate_ok =
+            candidate &&
+            key_count(candidate, "rewind_enable", "= \"false\"") == 1 &&
+            /* Filtered, so it is safe to leave on the card: the raw working
+               file's plaintext achievement password is not in it. */
+            key_count(candidate, "cheevos_password", NULL) == 0 &&
+            key_count(candidate, "cheevos_token", NULL) == 0;
+        free(candidate);
+        if (!candidate_ok) {
+            return fail("commit failure left no secret-free recovery candidate");
+        }
+        unlink(recovered);
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        if (rmdir(shared_cfg) != 0) {
+            return fail("atomic-backup fixture teardown failed");
         }
     }
 

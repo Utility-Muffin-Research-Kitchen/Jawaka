@@ -94,8 +94,15 @@ typedef enum {
     JW_CHILD_MENU,
     JW_CHILD_RETROARCH,
     JW_CHILD_EMULATOR,
-    JW_CHILD_APP
+    JW_CHILD_APP,
+    /* The RetroArch.pak runner. A generic .pak app is killed on shutdown; this
+       one is asked to stop and given time to promote RetroArch's settings back
+       to the durable shared config first (see the runner's QUIT path). Kept
+       distinct so no other app inherits that grace. */
+    JW_CHILD_RETROARCH_APP
 } jw_child_kind;
+
+static bool jw__child_kind_is_app(jw_child_kind kind);
 
 typedef enum {
     JW_LAUNCH_TARGET_NONE = 0,
@@ -240,9 +247,18 @@ typedef struct {
        the same idle clock the proxy drives; Guide equals the Menu button. */
     jw_external_input_monitor external_input;
     pid_t child_pid;          /* foreground launcher, normal menu, RetroArch, or app */
-    pid_t child_pgid;         /* reserved writer group for RETROARCH/EMULATOR;
-                                 -1 for foreground paths outside LIFE-1 */
+    pid_t child_pgid;         /* reserved writer group for RETROARCH/EMULATOR and
+                                 the RetroArch app runner; -1 for foreground
+                                 paths with no group of their own */
     jw_child_kind child_kind;
+    /* Stop grace bookkeeping for JW_CHILD_RETROARCH_APP: the shutdown branch
+       runs every loop pass, so the SIGTERM must be sent once and the deadline
+       remembered rather than re-signalled and re-slept each time. */
+    bool     child_stop_signalled;
+    long long child_stop_deadline_ms;
+    /* When the group-absence wait for a reaped-but-not-absent group began, so
+       it can be bounded instead of hanging the launcher forever. */
+    long long child_group_wait_started_ms;
     /* Per-launch private /dev/input view (plans/paired-wireless-controllers-mlp1):
        /run/jawaka/input-<child-pid>, removed when the child exits. Empty when
        the child launched without input isolation (desktop, generic apps). */
@@ -3442,7 +3458,7 @@ static int jw__handle_package_quiesce_begin(jw_daemon_state *state,
         return jw__reply_error(client, "service supervisor unavailable");
     }
     if (state->shutdown_requested || state->pending_app ||
-        state->child_kind == JW_CHILD_APP ||
+        jw__child_kind_is_app(state->child_kind) ||
         state->update_install_job.active) {
         return jw__reply_error(client,
                                "foreground or update operation in progress");
@@ -3539,7 +3555,7 @@ static int jw__handle_package_mutation_begin(jw_daemon_state *state,
         return jw__reply_error(client, "service supervisor unavailable");
     }
     if (state->shutdown_requested || state->pending_app ||
-        state->child_kind == JW_CHILD_APP ||
+        jw__child_kind_is_app(state->child_kind) ||
         state->update_install_job.active) {
         return jw__reply_error(client,
                                "foreground or update operation in progress");
@@ -4473,13 +4489,47 @@ static const char *jw__child_name(jw_child_kind kind) {
         case JW_CHILD_RETROARCH: return "RetroArch";
         case JW_CHILD_EMULATOR: return "standalone emulator";
         case JW_CHILD_APP: return "app";
+        /* Deliberately the same binary name as JW_CHILD_APP: jw__spawn_child()
+           rejects both kinds, and the launcher path that maps a name to a
+           binary never sees either. */
+        case JW_CHILD_RETROARCH_APP: return "app";
         default: return NULL;
     }
+}
+
+/* Everything an app tile is: input-proxy handover, package-mutation blocking,
+   and returning to the launcher on exit. Both app kinds share all of it. */
+static bool jw__child_kind_is_app(jw_child_kind kind) {
+    return kind == JW_CHILD_APP || kind == JW_CHILD_RETROARCH_APP;
 }
 
 static bool jw__child_kind_has_writer_barrier(jw_child_kind kind) {
     return kind == JW_CHILD_RETROARCH || kind == JW_CHILD_EMULATOR;
 }
+
+/* Kinds whose whole process group must be proved absent before the leader is
+   reaped. For a writer this is the LIFE-1 barrier; for the RetroArch app it
+   stops a crashed runner from leaving RetroArch orphaned and still holding the
+   card. It is NOT a writer barrier: no active-game record is involved. */
+static bool jw__child_kind_has_group_barrier(jw_child_kind kind) {
+    return jw__child_kind_has_writer_barrier(kind) ||
+           kind == JW_CHILD_RETROARCH_APP;
+}
+
+/* Only the RetroArch app runner gets a stop grace: it has to talk RetroArch
+   into saving before it can copy the config back. Must exceed the runner's own
+   QUIT + escalation budget so the runner, not the daemon, decides when to give
+   up. */
+static bool jw__child_kind_has_stop_grace(jw_child_kind kind) {
+    return kind == JW_CHILD_RETROARCH_APP;
+}
+#define JW_RA_APP_STOP_GRACE_MS 7000
+/* Bounded fallback for the group barrier above: past this the group is killed
+   and the leader reaped anyway, so a wedged RetroArch cannot strand the device
+   on a dead screen with no launcher. */
+#define JW_RA_APP_GROUP_WAIT_MS 5000
+/* The runner's distinct "app ran, settings could not be saved" status. */
+#define JW_RA_APP_EXIT_SAVE_FAILED 90
 
 /* Both sides call setpgid to close the fork/exec race. The child call happens
  * before it can execute a writer; the parent confirms the exact group before
@@ -6835,6 +6885,28 @@ static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
     return rc;
 }
 
+/* The RetroArch app tile exited without its settings reaching the durable
+   shared config. The user changed something and it is gone; say so on screen
+   rather than only in the log, which is the silent-loss behavior Leaf#48
+   reported. Best-effort and self-dismissing: nothing waits on this. */
+static void jw__osd_settings_not_saved(jw_daemon_state *state) {
+    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
+        return;
+    }
+    if (state->osd_pid <= 0) {
+        jw__spawn_osd(state);
+    }
+    const char *request =
+        "{\"type\":\"show-game-launch\",\"stage\":\"settings-not-saved\"}";
+    char *response = NULL;
+    size_t response_len = 0;
+    if (jw_ipc_request_timeout(state->osd_socket_path, request, strlen(request),
+                               &response, &response_len, 100) != 0) {
+        jw_log_warn("retroarch app: settings-not-saved OSD request failed");
+    }
+    free(response);
+}
+
 static void jw__osd_game_launch_hide(jw_daemon_state *state) {
     if (!state || !state->osd_socket_path || state->osd_pid <= 0 ||
         jw__env_is_disabled("JAWAKA_OSD")) {
@@ -7965,7 +8037,7 @@ static int jw__input_isolation_parent_finish(jw_daemon_state *state,
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
     const char *name = jw__child_name(kind);
     if (!state || !name || kind == JW_CHILD_RETROARCH ||
-        kind == JW_CHILD_EMULATOR || kind == JW_CHILD_APP) {
+        kind == JW_CHILD_EMULATOR || jw__child_kind_is_app(kind)) {
         return -1;
     }
 
@@ -8213,6 +8285,14 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
+        if (app_is_retroarch) {
+            /* Both sides call setpgid so neither the fork/exec race nor a slow
+               parent can leave RetroArch outside the group the daemon signals.
+               RetroArch inherits this group from the runner, which lets a
+               shutdown escalate to the whole app without touching jawakad or
+               any other app. */
+            (void)jw__game_child_set_own_group();
+        }
         if (use_roster) {
             close(sync_pipe[1]);
             close(err_pipe[0]);
@@ -8257,9 +8337,26 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     state->child_pid = pid;
+    state->child_pgid = -1;
     state->child_kind = JW_CHILD_APP;
+    if (app_is_retroarch) {
+        /* Only track a pgid we could actually confirm. A group signal aimed at
+           an unverified id could reach jawakad itself or an unrelated app, so
+           an unreservable group falls back to signalling the runner alone. */
+        if (jw__reserve_game_process_group(pid)) {
+            state->child_pgid = pid;
+        } else {
+            jw_log_warn("RetroArch app pgid could not be reserved for pid=%d; "
+                        "stopping the runner alone", (int)pid);
+        }
+        state->child_kind = JW_CHILD_RETROARCH_APP;
+    }
+    state->child_stop_signalled = false;
+    state->child_stop_deadline_ms = 0;
+    state->child_group_wait_started_ms = 0;
     state->pending_app = false;
-    jw_log_info("spawned app pid=%d pak=%s", (int)pid, pak_abs);
+    jw_log_info("spawned app pid=%d pgid=%d pak=%s", (int)pid,
+                (int)state->child_pgid, pak_abs);
     return 0;
 }
 
@@ -12942,7 +13039,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
 
     int status = 0;
     pid_t waited = -1;
-    if (jw__child_kind_has_writer_barrier(state->child_kind)) {
+    if (jw__child_kind_has_group_barrier(state->child_kind)) {
         /* Observe without reaping. The zombie leader pins the pgid while any
          * descendant still exists, preventing group-id reuse from invalidating
          * the absence proof. Only after the whole group is non-writer/zombie
@@ -12960,7 +13057,31 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         pid_t pgid = state->child_pgid > 0 ? state->child_pgid
                                            : state->child_pid;
         if (!jw_svc_group_absent(pgid)) {
-            return;
+            if (jw__child_kind_has_writer_barrier(state->child_kind)) {
+                return;
+            }
+            /* RetroArch app tile: the runner is gone but RetroArch is not.
+             * There is no play session to keep fail-safe here, and refusing to
+             * reap forever would leave the device on a dead screen with no
+             * launcher, so bound the wait and then kill the group. */
+            long long now = jw__monotonic_ms();
+            if (state->child_group_wait_started_ms == 0) {
+                state->child_group_wait_started_ms = now;
+                jw_log_warn("RetroArch app runner pid=%d exited with pgid=%d "
+                            "still present; waiting for it to clear",
+                            (int)state->child_pid, (int)pgid);
+                return;
+            }
+            if (now - state->child_group_wait_started_ms <
+                JW_RA_APP_GROUP_WAIT_MS) {
+                return;
+            }
+            jw_log_error("RetroArch app pgid=%d still present after %d ms; "
+                         "killing the group", (int)pgid,
+                         JW_RA_APP_GROUP_WAIT_MS);
+            (void)jw__signal_tracked_game_group(state, SIGKILL);
+            /* The leader is already a zombie, so the reap below returns
+             * immediately whether or not the kill has landed yet. */
         }
         do {
             waited = waitpid(state->child_pid, &status, 0);
@@ -12977,6 +13098,9 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     state->child_pid = -1;
     state->child_pgid = -1;
     state->child_kind = JW_CHILD_NONE;
+    state->child_stop_signalled = false;
+    state->child_stop_deadline_ms = 0;
+    state->child_group_wait_started_ms = 0;
 
     /* Remove the per-launch private input view once the child is reaped. */
     if (state->child_input_ns_dir[0]) {
@@ -12998,6 +13122,13 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         jw_log_warn("%s terminated signal=%d", name ? name : "child", WTERMSIG(status));
     } else {
         jw_log_warn("%s changed state status=%d", name ? name : "child", status);
+    }
+
+    if (exited_kind == JW_CHILD_RETROARCH_APP && WIFEXITED(status) &&
+        WEXITSTATUS(status) == JW_RA_APP_EXIT_SAVE_FAILED) {
+        jw_log_error("RetroArch app pid=%d exited without saving its settings "
+                     "to the shared config", (int)exited_pid);
+        jw__osd_settings_not_saved(state);
     }
 
     if (exited_kind == JW_CHILD_RETROARCH) {
@@ -13035,7 +13166,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         return;
     }
 
-    if (exited_kind == JW_CHILD_APP || exited_kind == JW_CHILD_EMULATOR) {
+    if (jw__child_kind_is_app(exited_kind) || exited_kind == JW_CHILD_EMULATOR) {
         /* A standalone session leaves the watch-only proxy active; tear it
            down so the full grab-and-forward proxy can come back. */
         jw_input_proxy_shutdown(&state->input_proxy);
@@ -13133,7 +13264,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         return;
     }
 
-    if (exited_kind == JW_CHILD_APP) {
+    if (jw__child_kind_is_app(exited_kind)) {
         jw__spawn_child(state, JW_CHILD_LAUNCHER);
         return;
     }
@@ -13217,7 +13348,46 @@ static void jw__cleanup(jw_daemon_state *state) {
     if (state->child_pid > 0) {
         pid_t child_pid = state->child_pid;
         jw_child_kind child_kind = state->child_kind;
-        if (jw__child_kind_has_writer_barrier(child_kind)) {
+        if (jw__child_kind_has_stop_grace(child_kind)) {
+            /* The RetroArch app runner answers SIGTERM by asking RetroArch to
+             * quit over the command port, waiting for it to save, and copying
+             * the config back. Killing it after 50 ms -- what the generic app
+             * path below does -- is exactly how a session's settings were
+             * being lost. Wait for the runner's own budget, then escalate to
+             * the whole group so a wedged RetroArch cannot block a poweroff. */
+            state->shutdown_requested = true;
+            kill(child_pid, SIGTERM);
+            long long deadline = jw__monotonic_ms() + JW_RA_APP_STOP_GRACE_MS;
+            while (state->child_pid == child_pid &&
+                   jw__monotonic_ms() < deadline) {
+                jw__handle_child_exit(state);
+                if (state->child_pid == child_pid) {
+                    usleep(20000);
+                }
+            }
+            if (state->child_pid == child_pid) {
+                jw_log_warn("cleanup: RetroArch app pid=%d did not stop within "
+                            "%d ms; killing pgid=%d",
+                            (int)child_pid, JW_RA_APP_STOP_GRACE_MS,
+                            (int)state->child_pgid);
+                (void)jw__signal_tracked_game_group(state, SIGKILL);
+                deadline = jw__monotonic_ms() + 2000;
+                while (state->child_pid == child_pid &&
+                       jw__monotonic_ms() < deadline) {
+                    jw__handle_child_exit(state);
+                    if (state->child_pid == child_pid) {
+                        usleep(20000);
+                    }
+                }
+            }
+            if (state->child_pid == child_pid) {
+                int status = 0;
+                (void)waitpid(child_pid, &status, WNOHANG);
+                state->child_pid = -1;
+                state->child_pgid = -1;
+                state->child_kind = JW_CHILD_NONE;
+            }
+        } else if (jw__child_kind_has_writer_barrier(child_kind)) {
             state->shutdown_requested = true;
             (void)jw__signal_tracked_game_group(state, SIGTERM);
             long long deadline = jw__monotonic_ms() + 2000;
@@ -13323,6 +13493,9 @@ int main(int argc, char *argv[]) {
     state.mutation_recovery_lock.fd = -1;
     state.child_pid = -1;
     state.child_pgid = -1;
+    state.child_stop_signalled = false;
+    state.child_stop_deadline_ms = 0;
+    state.child_group_wait_started_ms = 0;
     state.menu_pid = -1;
     state.osd_pid = -1;
     state.cached_brightness_percent = -1;
@@ -13725,17 +13898,40 @@ int main(int argc, char *argv[]) {
         }
 
         if (state.shutdown_requested && state.child_pid > 0) {
-            if (jw__child_kind_has_writer_barrier(state.child_kind)) {
-                (void)jw__signal_tracked_game_group(&state, SIGTERM);
-            } else {
-                kill(state.child_pid, SIGTERM);
-            }
-            usleep(50000);
-            if (kill(state.child_pid, 0) == 0) {
-                if (jw__child_kind_has_writer_barrier(state.child_kind)) {
+            if (jw__child_kind_has_stop_grace(state.child_kind)) {
+                /* Signal once and remember the deadline: this branch runs on
+                 * every loop pass, so re-sending SIGTERM and re-sleeping would
+                 * restart the runner's save window on each iteration and then
+                 * kill it anyway. Only the runner is signalled here -- it needs
+                 * to stay alive long enough to promote the config; the group
+                 * kill is the escalation. */
+                if (!state.child_stop_signalled) {
+                    state.child_stop_signalled = true;
+                    state.child_stop_deadline_ms =
+                        jw__monotonic_ms() + JW_RA_APP_STOP_GRACE_MS;
+                    kill(state.child_pid, SIGTERM);
+                    jw_log_info("shutdown: asked RetroArch app pid=%d to stop; "
+                                "allowing %d ms to save",
+                                (int)state.child_pid, JW_RA_APP_STOP_GRACE_MS);
+                } else if (jw__monotonic_ms() >= state.child_stop_deadline_ms) {
+                    jw_log_warn("shutdown: RetroArch app pid=%d did not stop in "
+                                "time; killing pgid=%d",
+                                (int)state.child_pid, (int)state.child_pgid);
                     (void)jw__signal_tracked_game_group(&state, SIGKILL);
+                }
+            } else {
+                if (jw__child_kind_has_writer_barrier(state.child_kind)) {
+                    (void)jw__signal_tracked_game_group(&state, SIGTERM);
                 } else {
-                    kill(state.child_pid, SIGKILL);
+                    kill(state.child_pid, SIGTERM);
+                }
+                usleep(50000);
+                if (kill(state.child_pid, 0) == 0) {
+                    if (jw__child_kind_has_writer_barrier(state.child_kind)) {
+                        (void)jw__signal_tracked_game_group(&state, SIGKILL);
+                    } else {
+                        kill(state.child_pid, SIGKILL);
+                    }
                 }
             }
         }
