@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -704,11 +705,122 @@ int main(void) {
         if (!candidate_ok) {
             return fail("commit failure left no secret-free recovery candidate");
         }
-        unlink(recovered);
         unlink(runtime_cfg);
         free(runtime_cfg);
         if (rmdir(shared_cfg) != 0) {
             return fail("atomic-backup fixture teardown failed");
+        }
+
+        /* The candidate is the ONLY copy of that failed session. A later
+           session saving successfully does not recover it -- that save came
+           from a durable config which never held those settings -- so it must
+           survive until it is provably redundant. */
+        if (write_text(shared_cfg, durable_text) != 0) {
+            return fail("recovery-retention durable write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "recovery-retention config failed");
+        }
+        char *later = read_text(runtime_cfg);
+        char *later_changed = replace_line(later, "rewind_enable = \"true\"",
+                                           "rewind_enable = \"maybe\"");
+        free(later);
+        if (!later_changed || write_text(runtime_cfg, later_changed) != 0) {
+            free(later_changed);
+            return fail("recovery-retention session write failed");
+        }
+        free(later_changed);
+        if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                       error, sizeof(error)) != 0) {
+            return fail(error[0] ? error : "recovery-retention backup failed");
+        }
+        char *kept = read_text(recovered);
+        int kept_ok = kept && key_count(kept, "rewind_enable", "= \"false\"") == 1;
+        free(kept);
+        if (!kept_ok) {
+            return fail("a later successful save destroyed the recovery candidate");
+        }
+
+        /* Once the durable config holds exactly those bytes, the candidate is
+           redundant and should not linger. */
+        char *redundant = read_text(shared_cfg);
+        if (!redundant || write_text(recovered, redundant) != 0) {
+            free(redundant);
+            return fail("recovery-redundancy fixture write failed");
+        }
+        free(redundant);
+        if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                       error, sizeof(error)) != 0) {
+            return fail(error[0] ? error : "recovery-redundancy backup failed");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        if (read_text(recovered)) {
+            return fail("a redundant recovery candidate was left behind");
+        }
+    }
+
+    /* Duplicate resolution must match RetroArch's: it keeps the FIRST
+       occurrence of a key (libretro-common/file/config_file.c only adds a key
+       that is not already in the map). Keeping the last, as an earlier
+       implementation did, persisted a value the running session never used.
+
+       Also a complexity guard: the rescan-per-line this replaced was O(n^2),
+       and a config well inside the 4 MiB ceiling took long enough to blow
+       through the shutdown budget that now bounds the backup. The bound below
+       is deliberately loose -- it is here to catch a return to quadratic
+       behaviour, not to measure the machine. */
+    {
+        size_t big_lines = 40000;
+        size_t cap = big_lines * 64u + 256u;
+        char *big = malloc(cap);
+        if (!big) {
+            return fail("duplicate/scale fixture allocation failed");
+        }
+        size_t off = 0;
+        off += (size_t)sprintf(big + off, "dup_key = \"first\"\n");
+        for (size_t i = 0; i < big_lines; i++) {
+            off += (size_t)sprintf(big + off,
+                                   "user_key_%06zu = \"value_%06zu\"\n", i, i);
+        }
+        off += (size_t)sprintf(big + off, "dup_key = \"last\"\n");
+        int wrote = write_text(shared_cfg, big);
+        free(big);
+        if (wrote != 0) {
+            return fail("duplicate/scale fixture write failed");
+        }
+
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "duplicate/scale config generation failed");
+        }
+        clock_t started = clock();
+        int rc = jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                            error, sizeof(error));
+        double elapsed_ms =
+            (double)(clock() - started) * 1000.0 / (double)CLOCKS_PER_SEC;
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        if (rc != 0) {
+            return fail(error[0] ? error : "duplicate/scale backup failed");
+        }
+
+        char *big_shared = read_text(shared_cfg);
+        int dup_ok = big_shared &&
+                     key_count(big_shared, "dup_key", NULL) == 1 &&
+                     key_count(big_shared, "dup_key", "= \"first\"") == 1;
+        free(big_shared);
+        if (!dup_ok) {
+            return fail("backup did not keep RetroArch's first-wins duplicate");
+        }
+        if (elapsed_ms > 3000.0) {
+            fprintf(stderr, "retroarch-config-test: backup of %zu lines took "
+                            "%.0f ms; the per-line rescan is back\n",
+                    big_lines, elapsed_ms);
+            return 1;
         }
     }
 

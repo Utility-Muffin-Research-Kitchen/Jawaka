@@ -92,29 +92,40 @@ static void jw__sleep_ms(long ms) {
 
 /* Wait for `pid`, giving up at `deadline_ms` (0 = wait indefinitely).
    Returns 1 when the child was reaped, 0 on timeout, -1 on a wait error or on
-   a stop signal (the caller distinguishes the two by g_stop_requested).
+   a stop request (the caller distinguishes the two by g_stop_requested).
 
-   A stop signal MUST break the caller out of here rather than being retried:
-   restarting the wait is what leaves the save path unreachable and turns a
-   Leaf poweroff into a lost session. */
-static int jw__wait_child(pid_t pid, int *status, long long deadline_ms) {
+   `stop_breaks` belongs to the first wait only, the one that lasts the whole
+   session. A stop request MUST break out of it, or the save path is never
+   reached and a Leaf poweroff loses the session. Later waits run with the flag
+   already set and must ignore it.
+
+   That first wait polls rather than blocking. Relying on EINTR alone loses a
+   signal that arrives after the handlers are installed but before the wait is
+   entered: the flag is set, no interrupt is ever delivered, and the runner
+   sleeps until RetroArch exits on its own -- by which time the daemon has given
+   up and killed the group. Re-reading the flag each pass closes that window.
+   A wakeup every 200 ms costs nothing next to a running emulator. */
+static int jw__wait_child(pid_t pid, int *status, long long deadline_ms,
+                          bool stop_breaks) {
     for (;;) {
-        int flags = deadline_ms > 0 ? WNOHANG : 0;
-        pid_t r = waitpid(pid, status, flags);
+        pid_t r = waitpid(pid, status, WNOHANG);
         if (r == pid) {
             return 1;
         }
         if (r < 0) {
-            if (errno == EINTR && !g_stop_requested) {
+            if (errno == EINTR) {
                 continue;
             }
             return -1;
         }
-        /* r == 0: still running, and we are on the bounded path. */
-        if (jw__now_ms() >= deadline_ms) {
+        /* r == 0: still running. */
+        if (stop_breaks && g_stop_requested) {
+            return -1;
+        }
+        if (deadline_ms > 0 && jw__now_ms() >= deadline_ms) {
             return 0;
         }
-        jw__sleep_ms(25);
+        jw__sleep_ms(deadline_ms > 0 ? 25 : 200);
     }
 }
 
@@ -245,7 +256,7 @@ static int jw__launch_menu(void) {
 
     /* Phase 1: RetroArch owns the session. Block here until it exits on its
        own, or until a stop signal breaks the wait. */
-    int waited = jw__wait_child(pid, &status, 0);
+    int waited = jw__wait_child(pid, &status, 0, true);
     if (waited == 1) {
         child_reaped = true;
         clean_exit = true;
@@ -283,7 +294,7 @@ static int jw__launch_menu(void) {
                     jw_ra_result_string(quit));
         }
 
-        waited = jw__wait_child(pid, &status, jw__now_ms() + JW_RUNNER_QUIT_GRACE_MS);
+        waited = jw__wait_child(pid, &status, jw__now_ms() + JW_RUNNER_QUIT_GRACE_MS, false);
         if (waited == 1) {
             child_reaped = true;
             clean_exit = true;
@@ -300,11 +311,11 @@ static int jw__launch_menu(void) {
         fprintf(stderr, "RetroArch did not exit within %d ms of QUIT; forcing\n",
                 JW_RUNNER_QUIT_GRACE_MS);
         kill(pid, SIGTERM);
-        if (jw__wait_child(pid, &status, jw__now_ms() + JW_RUNNER_TERM_GRACE_MS) == 1) {
+        if (jw__wait_child(pid, &status, jw__now_ms() + JW_RUNNER_TERM_GRACE_MS, false) == 1) {
             child_reaped = true;
         } else {
             kill(pid, SIGKILL);
-            if (jw__wait_child(pid, &status, jw__now_ms() + JW_RUNNER_KILL_GRACE_MS) == 1) {
+            if (jw__wait_child(pid, &status, jw__now_ms() + JW_RUNNER_KILL_GRACE_MS, false) == 1) {
                 child_reaped = true;
             }
         }
@@ -364,13 +375,21 @@ done:
 }
 
 int main(int argc, char **argv) {
+    /* First thing, before argument parsing: jawakad can in principle ask this
+       runner to stop the moment it is spawned, and until the handlers exist a
+       SIGTERM kills it outright with the default disposition -- no promotion,
+       and the working config left on the card. The window before main() runs
+       cannot be closed from in here, but nothing after it should be inside the
+       gap. Installing for --reset-config too is harmless: it holds no session,
+       and the flag it sets is only ever read by the --menu path. */
+    jw__install_stop_handlers();
+
     if (argc != 2 || strcmp(argv[1], "--help") == 0) {
         jw__usage(argc == 2 ? stdout : stderr);
         return argc == 2 ? 0 : 2;
     }
 
     if (strcmp(argv[1], "--menu") == 0) {
-        jw__install_stop_handlers();
         return jw__launch_menu();
     }
     if (strcmp(argv[1], "--reset-config") == 0) {

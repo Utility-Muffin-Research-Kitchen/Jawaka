@@ -696,11 +696,85 @@ static int jw__buf_append_line(jw__buf *buf, const char *bytes, size_t len) {
                : 0;
 }
 
+/* Open-addressed set of the keys already emitted, so duplicate resolution is
+   one pass instead of a rescan per line. The rescan was O(n^2): a 1.8 MB
+   config -- well inside the 4 MiB ceiling this code accepts -- took ~7.9s on a
+   desktop and far longer on the device, blowing straight through the shutdown
+   budgets that now bound this work. */
+typedef struct {
+    char **keys;
+    size_t cap;
+} jw__keyset;
+
+static void jw__keyset_free(jw__keyset *set) {
+    if (!set || !set->keys) {
+        return;
+    }
+    for (size_t i = 0; i < set->cap; i++) {
+        free(set->keys[i]);
+    }
+    free(set->keys);
+    set->keys = NULL;
+    set->cap = 0;
+}
+
+static bool jw__keyset_init(jw__keyset *set, size_t expected) {
+    size_t cap = 64;
+    while (cap < expected * 2u && cap < (size_t)1 << 22) {
+        cap *= 2u;
+    }
+    set->keys = (char **)calloc(cap, sizeof(char *));
+    set->cap = set->keys ? cap : 0;
+    return set->keys != NULL;
+}
+
+static size_t jw__key_hash(const char *key) {
+    size_t h = 1469598103934665603ULL;
+    for (const unsigned char *p = (const unsigned char *)key; *p; p++) {
+        h = (h ^ *p) * 1099511628211ULL;
+    }
+    return h;
+}
+
+/* Returns true when `key` was already present. Insert-on-miss. On allocation
+   failure it reports "not seen", which degrades to keeping a duplicate rather
+   than dropping a setting. */
+static bool jw__keyset_seen(jw__keyset *set, const char *key) {
+    if (!set->keys || !set->cap) {
+        return false;
+    }
+    size_t mask = set->cap - 1u;
+    size_t i = jw__key_hash(key) & mask;
+    for (size_t probe = 0; probe < set->cap; probe++) {
+        char *slot = set->keys[i];
+        if (!slot) {
+            set->keys[i] = jw__dup_printf("%s", key);
+            return false;
+        }
+        if (strcmp(slot, key) == 0) {
+            return true;
+        }
+        i = (i + 1u) & mask;
+    }
+    return false;
+}
+
 static int jw__filter_retroarch_cfg(
     jw__buf *out, const char *text, const char *override_text, bool dedupe,
     const char *const *skip_keys, size_t skip_key_count) {
     if (!out || !text) {
         return -1;
+    }
+
+    jw__keyset seen = {NULL, 0};
+    if (dedupe) {
+        size_t lines = 1;
+        for (const char *p = text; *p; p++) {
+            if (*p == '\n') {
+                lines++;
+            }
+        }
+        (void)jw__keyset_init(&seen, lines);
     }
 
     const char *line = text;
@@ -717,14 +791,23 @@ static int jw__filter_retroarch_cfg(
             }
             skip = skip ||
                    jw__retroarch_cfg_key_is_protected(key) ||
-                   (override_text && jw__retroarch_cfg_text_has_key(override_text, key)) ||
-                   (dedupe && next && jw__retroarch_cfg_text_has_key(next + 1, key));
+                   (override_text && jw__retroarch_cfg_text_has_key(override_text, key));
+            /* Keep the FIRST occurrence, which is the one RetroArch itself
+               used this session (libretro-common/file/config_file.c only adds
+               a key when it is not already in the map). The previous rescan
+               kept the LAST, so a duplicated key persisted a value the running
+               session never had. Checked after the other skips so a protected
+               or overridden key does not claim the slot. */
+            if (!skip && dedupe && jw__keyset_seen(&seen, key)) {
+                skip = true;
+            }
         } else if (len == strlen("# Jawaka protected runtime settings") &&
                    strncmp(line, "# Jawaka protected runtime settings", len) == 0) {
             skip = true;
         }
 
         if (!skip && jw__buf_append_line(out, line, len) != 0) {
+            jw__keyset_free(&seen);
             return -1;
         }
         if (!next) {
@@ -733,6 +816,7 @@ static int jw__filter_retroarch_cfg(
         line = next + 1;
     }
 
+    jw__keyset_free(&seen);
     return 0;
 }
 
@@ -2578,6 +2662,34 @@ static int jw__commit_file_atomic(const char *dest, const char *bytes,
     return rc;
 }
 
+/* A recovery candidate is the ONLY copy of a session whose commit failed, so
+   it is cleared only once it is provably redundant -- byte for byte what the
+   durable config now holds. A later session saving successfully does not
+   recover it: that save came from a durable config which never held those
+   settings. */
+static void jw__reconcile_recovery_candidate(const char *recovery_path,
+                                             const char *bytes, size_t len) {
+    if (!recovery_path || !recovery_path[0]) {
+        return;
+    }
+    char *candidate = jw__read_text_file(recovery_path,
+                                         JW_RETROARCH_CONFIG_READ_MAX);
+    if (!candidate) {
+        return;
+    }
+    if (strlen(candidate) == len &&
+        (len == 0 || (bytes && memcmp(candidate, bytes, len) == 0))) {
+        (void)unlink(recovery_path);
+        jw_log_info("removed redundant RetroArch recovery candidate %s",
+                    recovery_path);
+    } else {
+        jw_log_warn("keeping RetroArch recovery candidate %s from an earlier "
+                    "failed save; it holds settings the shared config does not",
+                    recovery_path);
+    }
+    free(candidate);
+}
+
 int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdcard_root,
                                const jw_retroarch_launch_snapshot *snapshot,
                                char *error, size_t error_size) {
@@ -2652,6 +2764,10 @@ int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdca
     if (current && strlen(current) == filtered.len &&
         (filtered.len == 0 || memcmp(current, filtered.data, filtered.len) == 0)) {
         free(current);
+        /* Still reconcile: an unchanged save can be exactly what makes an
+           older candidate redundant. */
+        jw__reconcile_recovery_candidate(recovery_path, filtered.data,
+                                         filtered.len);
         jw__buf_free(&filtered);
         jw_log_info("RetroArch shared config unchanged; %s not rewritten", shared_path);
         free(recovery_path);
@@ -2660,6 +2776,8 @@ int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdca
     }
     free(current);
 
+    const char *filtered_bytes = filtered.data;
+    size_t filtered_len = filtered.len;
     if (jw__commit_file_atomic(shared_path, filtered.data, filtered.len,
                                recovery_path) != 0) {
         jw_log_error("RetroArch config backup could not commit %s -> %s",
@@ -2671,16 +2789,11 @@ int jw_backup_retroarch_config(const char *runtime_config_path, const char *sdca
                       "could not save shared RetroArch config; previous settings kept");
         return -1;
     }
-    jw__buf_free(&filtered);
 
-    /* A candidate from an earlier failed commit describes a session that is
-       over; leaving it next to a config that saved cleanly only invites
-       restoring the wrong one. */
-    if (recovery_path) {
-        (void)unlink(recovery_path);
-    }
+    jw__reconcile_recovery_candidate(recovery_path, filtered_bytes, filtered_len);
     jw_log_info("RetroArch shared config saved %s -> %s",
                 runtime_config_path, shared_path);
+    jw__buf_free(&filtered);
     free(recovery_path);
     free(shared_path);
     return 0;

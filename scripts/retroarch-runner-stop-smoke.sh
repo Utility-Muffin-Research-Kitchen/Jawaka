@@ -156,4 +156,42 @@ FAKE_PID=
 [ -z "$(working_files)" ] ||
     fail "wedged: the secret-bearing working config outlived RetroArch"
 
+# --------------------------------------- stop signal that lands before the wait
+# The runner installs its handlers before it prepares the config and forks, so a
+# stop signal can arrive while it is still doing that work -- before it ever
+# reaches the wait. Relying on EINTR alone loses that signal: the flag is set,
+# no interrupt is ever delivered, and the runner sleeps until RetroArch exits on
+# its own. The stand-in here never exits by itself within the test's lifetime,
+# so a runner that misses the signal simply never returns.
+# Repeated: exactly where the signal lands inside the runner's startup is a
+# race, so one pass can miss the window and prove nothing.
+for attempt in 1 2 3; do
+seed_shared
+start_runner quit
+# Signal as soon as the runner has demonstrably begun its work -- the working
+# config exists, so handlers are installed and prepare has run -- but without
+# waiting for RetroArch to come up. That lands in the window this is about,
+# rather than in the irreducible one before main() starts.
+for _ in $(seq 1 200); do
+    [ -n "$(working_files)" ] && break
+    sleep 0.05
+done
+kill -TERM "$RUNNER_PID"
+started=$SECONDS
+set +e
+wait "$RUNNER_PID"; rc=$?
+set -e
+RUNNER_PID=
+elapsed=$((SECONDS - started))
+[ "$elapsed" -le 20 ] ||
+    fail "early stop (attempt $attempt): runner took ${elapsed}s; the signal was missed before the wait"
+# Either exit is legitimate -- the race decides whether RetroArch was up in time
+# to answer QUIT -- but the runner must come back promptly either way.
+case "$rc" in
+    0|90) ;;
+    *) fail "early stop (attempt $attempt): runner status=$rc (want 0 or 90); $(cat "$TMP_DIR/runner.out")" ;;
+esac
+[ -z "$(working_files)" ] || fail "early stop (attempt $attempt): working config left behind"
+done
+
 echo "retroarch-runner-stop-smoke: ok"

@@ -13053,7 +13053,14 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
 
     int status = 0;
     pid_t waited = -1;
-    if (jw__child_kind_has_group_barrier(state->child_kind)) {
+    /* The barrier is only meaningful with a pgid we actually reserved. Without
+     * one, jw_svc_group_absent() would be asked about a group that never
+     * existed and would answer "absent" -- a proof of nothing. Supervise such a
+     * runner like a generic app instead of pretending the barrier holds. */
+    bool group_barrier = jw__child_kind_has_group_barrier(state->child_kind) &&
+                         (jw__child_kind_has_writer_barrier(state->child_kind) ||
+                          state->child_pgid > 0);
+    if (group_barrier) {
         /* Observe without reaping. The zombie leader pins the pgid while any
          * descendant still exists, preventing group-id reuse from invalidating
          * the absence proof. Only after the whole group is non-writer/zombie
@@ -13094,8 +13101,30 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
                          "killing the group", (int)pgid,
                          JW_RA_APP_GROUP_WAIT_MS);
             (void)jw__signal_tracked_game_group(state, SIGKILL);
-            /* The leader is already a zombie, so the reap below returns
-             * immediately whether or not the kill has landed yet. */
+            /* Prove the kill landed before forgetting the pgid. Reaping on the
+             * strength of having *sent* SIGKILL is not an absence proof, and
+             * once the leader is reaped the group id can be reused, so a
+             * survivor would become untrackable. */
+            bool absent = false;
+            for (int i = 0; i < 25 && !absent; i++) {
+                absent = jw_svc_group_absent(pgid);
+                if (!absent) {
+                    usleep(20000);
+                }
+            }
+            if (!absent) {
+                /* Deliberately different from the writer barrier, which
+                 * preserves the launch record and refuses to reap. The app
+                 * tile has no play session to keep fail-safe, and never
+                 * reaping would leave the device on a dead screen with no
+                 * launcher. Reap, but say plainly what could not be proved. */
+                jw_log_error("RetroArch app pgid=%d survived SIGKILL; reaping "
+                             "the runner anyway to restore the launcher",
+                             (int)pgid);
+            } else {
+                jw_log_info("RetroArch app pgid=%d confirmed absent after "
+                            "SIGKILL", (int)pgid);
+            }
         }
         do {
             waited = waitpid(state->child_pid, &status, 0);
