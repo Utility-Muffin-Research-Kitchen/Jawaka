@@ -71,6 +71,9 @@ int  jw_input_proxy_init_watch(jw_input_proxy *proxy,
                                jw_input_game_switcher_cb game_switcher,
                                void *userdata);
 int  jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy);
+/* Physical event fd used by the proxy. Poll it to wake the daemon before
+ * calling jw_input_proxy_tick(); -1 when no input backend is active. */
+int  jw_input_proxy_poll_fd(const jw_input_proxy *proxy);
 void jw_input_proxy_tick(jw_input_proxy *proxy);
 void jw_input_proxy_shutdown(jw_input_proxy *proxy);
 
