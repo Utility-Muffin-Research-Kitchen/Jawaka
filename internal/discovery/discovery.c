@@ -725,6 +725,12 @@ static void jw__collect_m3u_members(const jw_ra_system *system, const char *syst
             if (!s[0] || s[0] == '#') {
                 continue;
             }
+            /* Labels do not name files, and a ZIP member is owned by the ZIP
+               entry that Jawaka would otherwise expose beside the playlist. */
+            char *separator = strchr(s, '|');
+            if (separator) *separator = '\0';
+            separator = strchr(s, '#');
+            if (separator) *separator = '\0';
             /* Take the basename — m3u entries may be bare names or relative paths. */
             char *base = s;
             for (char *p = s; *p; p++) {

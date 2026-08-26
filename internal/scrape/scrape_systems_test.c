@@ -17,6 +17,13 @@ int main(void) {
     expect_int("PC-98 id", ids[0], 208);
     expect_int("Atomiswave id", jw_scrape_platform_id("atomiswave"), 53);
 
+    expect_int("Amiga count", (int)jw_scrape_platform_ids("AMIGA", ids, 4), 4);
+    expect_int("Amiga", ids[0], 64);
+    expect_int("Amiga AGA", ids[1], 111);
+    expect_int("Amiga CDTV", ids[2], 129);
+    expect_int("Amiga CD32", ids[3], 130);
+    expect_int("PUAE compatibility alias", jw_scrape_platform_id("PUAE"), 64);
+
     expect_int("Naomi count", (int)jw_scrape_platform_ids("NAOMI", ids, 4), 3);
     expect_int("Naomi", ids[0], 56);
     expect_int("Naomi GD-ROM", ids[1], 227);

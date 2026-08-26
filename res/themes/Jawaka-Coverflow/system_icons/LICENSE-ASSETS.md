@@ -1,7 +1,7 @@
 # Asset attribution
 
 The console icons in this directory (`system_icons/`, excluding
-`ATOMISWAVE.png`, `NAOMI.png`, `PC98.png`, and the UI badge glyph `_tools.png`)
+`AMIGA.png`, `ATOMISWAVE.png`, `NAOMI.png`, `PC98.png`, and the UI badge glyph `_tools.png`)
 are derived from public-domain video game hardware photography by **Evan Amos**.
 
   Author:  Evan Amos
@@ -12,10 +12,12 @@ are derived from public-domain video game hardware photography by **Evan Amos**.
 These are the Cover Flow theme's own console art — distinct from the libretro
 Systematic pack credited in `res/system_icons/LICENSE-ASSETS.md`. The source
 photographs were background-removed (transparent alpha) and renamed from their
-console names to Jawaka short codes during import; the full-resolution originals
-are kept in the `umrk-assets` repository under `systems/icons`. Alias codes that
-share a console's artwork (e.g. NES/FC, SNES/SFC, GEN/GENESIS/MD) are local
-copies of the same source image.
+console names to Jawaka short codes during import. Source-size PNG masters are
+kept in `artwork/Jawaka-Coverflow/system_icons`; the 384px copies in this runtime
+directory are the versions packaged for the launcher. The original source
+photographs are kept in the `umrk-assets` repository under `systems/icons`.
+Alias codes that share a console's artwork (e.g. NES/FC, SNES/SFC,
+GEN/GENESIS/MD) are local copies of the same source image.
 
 `ATOMISWAVE.png`, `NAOMI.png` and `PC98.png` are AI-generated renders (OpenAI
 ChatGPT). They replace earlier flat-vector rasterizations that did not match the
@@ -35,5 +37,19 @@ provenance only — a CC0 source carries no obligation forward:
 image. Console and cabinet trade dress remains the property of the respective
 rights holders and appears here to identify the platform, as it does in the
 photographs above.
+
+`AMIGA.png` is an AI-generated render (OpenAI ChatGPT), background-removed to
+transparent alpha and squared to 1200x1200 on the framing the photographs above
+use. Purely AI-generated images carry no copyright of their own, and no rights
+are claimed in the render itself. It was composed after the photograph below and
+follows its composition closely enough to be treated as a derivative work, so it
+is distributed under that photograph's terms:
+
+  Author:  Bill Bertram (Pixel8)
+  Source:  https://commons.wikimedia.org/wiki/File:Amiga500_system.jpg
+  Licence: CC BY-SA 2.5 (https://creativecommons.org/licenses/by-sa/2.5/)
+
+Console trade dress remains the property of the respective rights holders and
+appears here to identify the platform, as it does in the photographs above.
 
 `_tools.png` is an original Leaf UI badge, not derived from the above.
