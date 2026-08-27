@@ -97,11 +97,6 @@ typedef enum {
 /* English keys; translated at each use via T(). */
 static const char *kTabs[JW_TAB_COUNT] = { "Recents", "Favorites", "Games", "Apps" };
 
-/* Forward declarations: shared preview helper used by Tabs games-tab and the
- * Vertical preview pane. Defined alongside jw__load_system_icon below. */
-static void jw__draw_system_preview(int px, int py, int pw, int ph,
-                                     const char *system_code, int game_count);
-
 /* ─── Flat nav list (vertical + horizontal modes) ─────────────────────────── */
 
 typedef enum {
@@ -333,6 +328,13 @@ typedef struct {
        it -- restoring a breadcrumb on startup, or reloading a list in place. */
     bool                haptics_muted;
 } jw_launcher_state;
+
+/* Forward declarations: shared preview helper used by Tabs games-tab and the
+ * Vertical preview pane. Defined alongside jw__load_system_icon below; it takes
+ * the launcher state because the system-icon pack is a setting. */
+static void jw__draw_system_preview(const jw_launcher_state *state,
+                                    int px, int py, int pw, int ph,
+                                    const char *system_code, int game_count);
 
 /* Fire a semantic UI haptic (see internal/ipc jw_ipc_rumble). Fire-and-forget:
    the daemon owns the vocabulary (single/double/triple tick) and the
@@ -1965,7 +1967,7 @@ static void jw__render_games(const jw_launcher_state *state,
 
     if (state->system_count > 0 && state->list.cursor < state->system_count) {
         const jw_system_entry *sys = &state->systems[state->list.cursor];
-        jw__draw_system_preview(image.x, image.y, image.w, image.h,
+        jw__draw_system_preview(state, image.x, image.y, image.w, image.h,
                                 sys->name, sys->game_count);
     } else {
         cat_draw_rounded_rect(image.x, image.y, image.w, image.h, CAT_S(8),
@@ -2523,7 +2525,7 @@ static void jw__render_vertical_preview(const jw_launcher_state *state,
 
     if (it->kind == JW_FLAT_SYSTEM) {
         const jw_system_entry *sys = &state->systems[it->system_idx];
-        jw__draw_system_preview(px, py, pw, ph, sys->name, sys->game_count);
+        jw__draw_system_preview(state, px, py, pw, ph, sys->name, sys->game_count);
     } else {
         /* Non-system entries (Recents, Favorites, Apps, Settings): text only,
          * matches pre-icon behaviour. */
@@ -3629,6 +3631,108 @@ static void jw__render_focus(jw_launcher_state *state) {
 
 /* ─── System icon loader (shared across themes) ──────────────────────────── */
 
+/* Which artwork a system tile draws is a setting (Settings > Appearance > Layout
+ * > System Icons), not a consequence of the home layout. One builder owns the
+ * whole candidate order so the two consumers below cannot drift apart:
+ *
+ *   1. <sdcard_root>/Roms/<SYSTEM>/icon.png       user override; skipped for '_' codes
+ *   2. the selected built-in pack:
+ *        AUTO          <themes_dir>/<theme>/<coverflow_icon_dir>/<SYSTEM>.png
+ *        FLAT          (same path as 3 — folded into it)
+ *        PHOTOGRAPHIC  <themes_dir>/Jawaka-Coverflow/system_icons/<SYSTEM>.png
+ *   3. <themes_dir>/../system_icons/<SYSTEM>.png  shared flat baseline
+ *   4. <themes_dir>/../system_icons/_default.png  final fallback
+ *
+ * Step 3 stays in the list for every pack on purpose: the photographic pack has
+ * no asset for some aliases and pseudo-systems (_apps, for one), and those must
+ * fall back to a real flat icon rather than vanish.
+ *
+ * The photographic path assumes Jawaka-Coverflow sits beside the active theme,
+ * which holds for the four bundled themes. A theme loaded from another
+ * Catastrophe search root simply falls through to the flat pack.
+ *
+ * This builds strings only — no access(), no decode, no cache lookup. The two
+ * consumers probe differently and each keeps its own semantics. */
+
+#define JW_SYSTEM_ICON_PHOTO_THEME "Jawaka-Coverflow"
+#define JW_SYSTEM_ICON_MAX_CANDIDATES 4
+
+typedef struct {
+    char paths[JW_SYSTEM_ICON_MAX_CANDIDATES][PATH_MAX];
+    int  count;
+} jw_system_icon_candidates;
+
+static void jw__push_icon_candidate(jw_system_icon_candidates *out, const char *path) {
+    if (!out || !path || !path[0] || out->count >= JW_SYSTEM_ICON_MAX_CANDIDATES) {
+        return;
+    }
+    for (int i = 0; i < out->count; ++i) {
+        if (strcmp(out->paths[i], path) == 0) return;   /* FLAT names 2 and 3 alike */
+    }
+    if (jw__copy_path(out->paths[out->count], sizeof(out->paths[0]), path)) {
+        out->count++;
+    }
+}
+
+static void jw__build_system_icon_candidates(const jw_launcher_state *state,
+                                             const char *system_code,
+                                             jw_system_icon_candidates *out) {
+    out->count = 0;
+    if (!system_code || !system_code[0]) {
+        return;
+    }
+
+    int pack = state ? state->settings.system_icon_pack_index
+                     : JW_SYSTEM_ICON_PACK_AUTO;
+    if (pack < 0 || pack >= JW_SYSTEM_ICON_PACK_COUNT) {
+        pack = JW_SYSTEM_ICON_PACK_AUTO;
+    }
+
+    char path[PATH_MAX];
+    int n;
+
+    /* (1) user override on the sdcard */
+    if (system_code[0] != '_' && state && state->sdcard_root[0]) {
+        n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
+                     state->sdcard_root, system_code);
+        if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+    }
+
+    const char *theme_dir  = cat_get_active_theme_dir();
+    const char *theme_name = cat_get_active_theme_name();
+    if (!theme_dir || !theme_dir[0]) {
+        return;   /* no resolved theme root: nothing bundled to point at */
+    }
+
+    /* (2) the selected built-in pack. Only AUTO consults the active theme; an
+       explicit choice must not follow the layout or theme name. */
+    if (pack == JW_SYSTEM_ICON_PACK_AUTO) {
+        const cat_stylesheet *ss = cat_get_stylesheet();
+        const char *icon_dir = (ss && ss->launcher.coverflow_icon_dir[0])
+                                   ? ss->launcher.coverflow_icon_dir : "system_icons";
+        if (theme_name && theme_name[0]) {
+            n = snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
+                         theme_dir, theme_name, icon_dir, system_code);
+            if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+        }
+    } else if (pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC) {
+        n = snprintf(path, sizeof(path), "%s/%s/system_icons/%s.png",
+                     theme_dir, JW_SYSTEM_ICON_PHOTO_THEME, system_code);
+        if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+    }
+
+    /* (3) shared flat baseline next to the active theme root */
+    n = snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
+                 theme_dir, system_code);
+    if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+
+    /* (4) shared _default.png */
+    n = snprintf(path, sizeof(path), "%s/../system_icons/_default.png", theme_dir);
+    if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+}
+
+/* Path-only resolution for the asynchronous Coverflow system-card loader; its
+ * caller memoizes the result per system index/code. */
 static bool jw__resolve_system_icon_path(const jw_launcher_state *state,
                                          const char *system_code,
                                          char *out, size_t out_size) {
@@ -3639,44 +3743,13 @@ static bool jw__resolve_system_icon_path(const jw_launcher_state *state,
         return false;
     }
 
-    const cat_stylesheet *ss = cat_get_stylesheet();
-    const char *theme_dir = cat_get_active_theme_dir();
-    const char *theme_name = cat_get_active_theme_name();
-    const char *icon_dir = (ss && ss->launcher.coverflow_icon_dir[0])
-                               ? ss->launcher.coverflow_icon_dir : "system_icons";
-    char path[PATH_MAX];
-    int n = 0;
-
-    if (system_code[0] != '_' && state && state->sdcard_root[0]) {
-        n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
-                     state->sdcard_root, system_code);
-        if (n >= 0 && (size_t)n < sizeof(path) && jw__readable_path(path)) {
-            return jw__copy_path(out, out_size, path);
+    jw_system_icon_candidates cands;
+    jw__build_system_icon_candidates(state, system_code, &cands);
+    for (int i = 0; i < cands.count; ++i) {
+        if (jw__readable_path(cands.paths[i])) {
+            return jw__copy_path(out, out_size, cands.paths[i]);
         }
     }
-
-    if (theme_dir && theme_dir[0] && theme_name && theme_name[0]) {
-        n = snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
-                     theme_dir, theme_name, icon_dir, system_code);
-        if (n >= 0 && (size_t)n < sizeof(path) && jw__readable_path(path)) {
-            return jw__copy_path(out, out_size, path);
-        }
-    }
-
-    if (theme_dir && theme_dir[0]) {
-        n = snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
-                     theme_dir, system_code);
-        if (n >= 0 && (size_t)n < sizeof(path) && jw__readable_path(path)) {
-            return jw__copy_path(out, out_size, path);
-        }
-
-        n = snprintf(path, sizeof(path), "%s/../system_icons/_default.png",
-                     theme_dir);
-        if (n >= 0 && (size_t)n < sizeof(path) && jw__readable_path(path)) {
-            return jw__copy_path(out, out_size, path);
-        }
-    }
-
     return false;
 }
 
@@ -3705,65 +3778,23 @@ static const char *jw__cf_system_icon_path(jw_launcher_state *state, int idx) {
     return memo->path[0] ? memo->path : NULL;
 }
 
-/* Loader order:
- *   1. <sdcard_root>/Roms/<SYSTEM>/icon.png       (user override; skipped for codes starting with '_')
- *   2. <theme_dir>/<theme>/<icon_dir>/<SYSTEM>.png (theme-bundled override, if any)
- *   3. <themes_dir_parent>/system_icons/<SYSTEM>.png (shared baseline)
- *   4. <themes_dir_parent>/system_icons/_default.png (final fallback)
- * Returns NULL only if all four fail.
- * Pass "_tools" as system_code for the Tools tile.
+/* Synchronous render-time loader. Walks the same candidates through the image
+ * cache and returns the first one that actually decodes, so a readable but
+ * corrupt user override still falls through to a valid bundled icon. Going
+ * through jw__load_cached_image (rather than resolving a path first) is what
+ * keeps repeated draws off the filesystem: both the texture cache and the
+ * negative-miss cache answer without an access() probe.
+ * Pass "_tools" as system_code for the Tools tile, "_apps" for the Apps tile.
  */
-static SDL_Texture *jw__load_system_icon(const char *system_code,
+static SDL_Texture *jw__load_system_icon(const jw_launcher_state *state,
+                                         const char *system_code,
                                          int *out_w, int *out_h) {
-    const cat_stylesheet *ss = cat_get_stylesheet();
-    const char *theme_dir    = cat_get_active_theme_dir();
-    const char *theme_name   = cat_get_active_theme_name();
-    char path[1024];
-
-    /* (1) user override on the sdcard */
-    if (system_code[0] != '_') {
-        char *sdcard_root = jw_sdcard_root();
-        if (sdcard_root) {
-            snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
-                     sdcard_root, system_code);
-            SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
-            free(sdcard_root);
-            if (t) return t;
-        }
+    jw_system_icon_candidates cands;
+    jw__build_system_icon_candidates(state, system_code, &cands);
+    for (int i = 0; i < cands.count; ++i) {
+        SDL_Texture *t = jw__load_cached_image(cands.paths[i], out_w, out_h);
+        if (t) return t;
     }
-
-    /* (2) theme-bundled override, if the theme ships its own system_icons/ */
-    if (theme_dir[0] && theme_name[0]) {
-        int n = snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
-                         theme_dir, theme_name,
-                         ss->launcher.coverflow_icon_dir, system_code);
-        if (n > 0 && (size_t)n < sizeof(path)) {
-            SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
-            if (t) return t;
-        }
-    }
-
-    /* (3) shared baseline at <themes_dir_parent>/system_icons/<SYSTEM>.png.
-     * The shared icons live next to the active theme root. */
-    if (theme_dir[0]) {
-        int n = snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
-                         theme_dir, system_code);
-        if (n > 0 && (size_t)n < sizeof(path)) {
-            SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
-            if (t) return t;
-        }
-    }
-
-    /* (4) shared _default.png */
-    if (theme_dir[0]) {
-        int n = snprintf(path, sizeof(path), "%s/../system_icons/_default.png",
-                         theme_dir);
-        if (n > 0 && (size_t)n < sizeof(path)) {
-            SDL_Texture *t = jw__load_cached_image(path, out_w, out_h);
-            if (t) return t;
-        }
-    }
-
     return NULL;
 }
 
@@ -3772,8 +3803,9 @@ static SDL_Texture *jw__load_system_icon(const char *system_code,
  * preview pane so they stay visually consistent.
  *
  * Pass game_count < 0 to suppress the subtitle (e.g. non-system entries). */
-static void jw__draw_system_preview(int px, int py, int pw, int ph,
-                                     const char *system_code, int game_count) {
+static void jw__draw_system_preview(const jw_launcher_state *state,
+                                    int px, int py, int pw, int ph,
+                                    const char *system_code, int game_count) {
     ap_theme *theme   = cat_get_theme();
     TTF_Font *small   = cat_get_font(CAT_FONT_SMALL);
 
@@ -3793,7 +3825,7 @@ static void jw__draw_system_preview(int px, int py, int pw, int ph,
     SDL_Texture *tex = NULL;
     int tw = 0, th = 0;
     if (system_code && system_code[0])
-        tex = jw__load_system_icon(system_code, &tw, &th);
+        tex = jw__load_system_icon(state, system_code, &tw, &th);
 
     /* Vertical stack: icon + count (no name), centered in the pane. */
     int block_h = (tex ? icon_box : 0) + ((game_count >= 0) ? (gap + sub_h) : 0);
@@ -3876,7 +3908,7 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
     }
     if (!tex) {
         /* Apps that ship no icon fall back to the Leaf badge. */
-        tex = jw__load_system_icon("_apps", &icon_w, &icon_h);
+        tex = jw__load_system_icon(state, "_apps", &icon_w, &icon_h);
     }
 
     /* Vertical stack: icon + runtime metadata, centered in the pane. */
@@ -4024,7 +4056,7 @@ static SDL_Texture *jw__cf_cover(jw_launcher_state *state, const jw_game_entry *
         }
     }
     if (pending) return NULL;                         /* streaming in — leave blank */
-    return jw__load_system_icon(g->system, tw, th);   /* no cover -> system icon */
+    return jw__load_system_icon(state, g->system, tw, th);   /* no cover -> system icon */
 }
 
 /* Per-channel icon sources (Games=systems, Favorites/Recents=box art, Apps=icons).
@@ -4368,7 +4400,7 @@ static void jw__render_game_browser(const jw_launcher_state *state) {
             is_cover = (tex != NULL);
         }
         if (!tex && !pending)            /* genuine no-cover; while pending leave empty */
-            tex = jw__load_system_icon(game->system, &iw, &ih);
+            tex = jw__load_system_icon(state, game->system, &iw, &ih);
         if (tex) {
             /* Round real box art to match the list style; leave the icon
                fallback square. */
@@ -4456,7 +4488,7 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
         is_cover = (tex != NULL);
     }
     if (!tex && !pending)            /* genuine no-cover; while pending leave empty */
-        tex = jw__load_system_icon(game->system, &iw, &ih);
+        tex = jw__load_system_icon(state, game->system, &iw, &ih);
     if (tex) {
         /* Round real box art to match the list style; icon fallback stays square. */
         if (is_cover)
@@ -4613,7 +4645,7 @@ static void jw__render_search(const jw_launcher_state *state) {
                 is_cover = (tex != NULL);
             }
             if (!tex && !pending)        /* genuine no-cover; while pending leave empty */
-                tex = jw__load_system_icon(result->system, &iw, &ih);
+                tex = jw__load_system_icon(state, result->system, &iw, &ih);
         } else {
             jw_app_entry app;
             memset(&app, 0, sizeof(app));
@@ -4670,7 +4702,7 @@ static SDL_Texture *jw__cf_icon_search(void *ctx, int idx, int *tw, int *th) {
         if (t) return t;
     }
     if (pending) return NULL;                       /* streaming in — leave blank */
-    return jw__load_system_icon(sr->system, tw, th); /* no cover -> system icon */
+    return jw__load_system_icon(state, sr->system, tw, th); /* no cover -> system icon */
 }
 
 /* ── Cover Flow inline search keyboard ─────────────────────────────────────── */
@@ -7499,7 +7531,13 @@ static void jw__handle_switcher_input(const char *socket_path, const char *db_pa
 
 /* Host About / System Update modally over the launcher, on a dedicated settings UI
    instance (kept separate from the Settings tab's, so opening it from the menu can't
-   disturb the tab). Blocks until the user backs out, then returns to the overlay. */
+   disturb the tab). Blocks until the user backs out, then returns to the overlay.
+
+   NOTE: the launcher reads the system-icon pack from state->settings, the Settings
+   tab's instance. That is safe only because this modal host reaches About and
+   System Update, never the Layout page. If Layout is ever hosted here, a change
+   made on this instance would leave state->settings (and therefore the icons the
+   launcher draws) stale -- re-read the setting into state->settings on return. */
 static void jw__menu_host_setting(const char *socket_path, const char *db_path,
                                   jw_launcher_state *state, jw_settings_screen screen) {
     static jw_settings_ui *ui = NULL;
@@ -9519,6 +9557,36 @@ int main(void) {
     long long settings_start_ms = jw__monotonic_ms();
     jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
     long long settings_done_ms = jw__monotonic_ms();
+
+    /* System icons are chosen independently of the layout, so log which pack is
+       live -- and for Automatic, which one the active theme actually resolves to.
+       Automatic means "the active theme's own system_icons/, else the flat pack",
+       so the resolved name comes from probing that directory, not from the
+       layout: a theme that ships no icon dir is on flat whatever its layout. */
+    {
+        int pack = state.settings.system_icon_pack_index;
+        if (pack < 0 || pack >= JW_SYSTEM_ICON_PACK_COUNT)
+            pack = JW_SYSTEM_ICON_PACK_AUTO;
+        if (pack != JW_SYSTEM_ICON_PACK_AUTO) {
+            jw_log_info("system icon pack: %s",
+                        pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC ? "photographic" : "flat");
+        } else {
+            const char *theme_dir = cat_get_active_theme_dir();
+            const char *icon_dir  = ss->launcher.coverflow_icon_dir[0]
+                                        ? ss->launcher.coverflow_icon_dir : "system_icons";
+            char probe[PATH_MAX];
+            bool themed = false;
+            if (theme_dir && theme_dir[0] && theme_name && theme_name[0]) {
+                int n = snprintf(probe, sizeof(probe), "%s/%s/%s",
+                                 theme_dir, theme_name, icon_dir);
+                themed = n > 0 && (size_t)n < sizeof(probe) && jw__readable_path(probe);
+            }
+            const char *resolved = !themed ? "flat"
+                : (strcmp(theme_name, JW_SYSTEM_ICON_PHOTO_THEME) == 0 ? "photographic"
+                                                                       : "theme-bundled");
+            jw_log_info("system icon pack: automatic (resolved: %s)", resolved);
+        }
+    }
 
     /* Prime the startup tab's lazily-loaded contents so the first frame is
        correct (Favorites/Recents are normally loaded on tab entry, and the

@@ -43,6 +43,30 @@ int main(void) {
     if (ui.screen != JW_SETTINGS_LAYOUT || status[0] != '\0')
         return fail("leaving home tabs did not clear status");
 
+    /* System Icons cycles the three packs and rides the theme-changed flag --
+       that flag is what makes the launcher clear its memoized icon paths, so a
+       pack change with the flag down would keep drawing the old artwork. */
+    memset(&ui, 0, sizeof(ui));
+    ui.open = true;
+    ui.screen = JW_SETTINGS_LAYOUT;
+    ui.layout_list.cursor = JW_LAYOUT_SYSTEM_ICONS;
+    ui.system_icon_pack_index = JW_SYSTEM_ICON_PACK_AUTO;
+    for (int i = 1; i <= JW_SYSTEM_ICON_PACK_COUNT; i++) {
+        bool theme_changed = false;
+        jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status),
+                                     &theme_changed);
+        if (ui.system_icon_pack_index != i % JW_SYSTEM_ICON_PACK_COUNT)
+            return fail("System Icons did not cycle to the next pack");
+        if (!theme_changed)
+            return fail("System Icons change did not raise the rebuild flag");
+    }
+
+    bool theme_changed = false;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_LEFT, status, sizeof(status),
+                                 &theme_changed);
+    if (ui.system_icon_pack_index != JW_SYSTEM_ICON_PACK_COUNT - 1 || !theme_changed)
+        return fail("System Icons did not cycle backwards");
+
     puts("PASS settings-status-test");
     return 0;
 }
