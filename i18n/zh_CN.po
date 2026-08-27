@@ -1453,3 +1453,15 @@ msgstr "音量调节失败"
 
 msgid "—"
 msgstr ""
+
+msgid "System Icons"
+msgstr "系统图标"
+
+msgid "Automatic"
+msgstr "自动"
+
+msgid "Flat"
+msgstr "扁平"
+
+msgid "Photographic"
+msgstr "写实"

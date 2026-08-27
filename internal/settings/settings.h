@@ -29,6 +29,19 @@ extern const char *const kFontSizeLabels[JW_SETTINGS_FONT_SIZE_COUNT];
 #define JW_SETTINGS_CLOCK_STYLE_COUNT 4
 extern const char *const kClockStyleLabels[JW_SETTINGS_CLOCK_STYLE_COUNT];
 
+/* Which built-in system-icon artwork the launcher draws, chosen independently
+   of the home layout. AUTO keeps the historical layout-driven behavior: the
+   active theme's own system_icons/ first (photographic under Jawaka-Coverflow,
+   absent — so flat — under the other three). The explicit values pin one pack
+   regardless of layout. Persisted as the numeric value in "system_icon_pack_index";
+   a missing or out-of-range value means AUTO, so no migration is needed. */
+typedef enum {
+    JW_SYSTEM_ICON_PACK_AUTO = 0,
+    JW_SYSTEM_ICON_PACK_FLAT,
+    JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC,
+    JW_SYSTEM_ICON_PACK_COUNT
+} jw_system_icon_pack;
+
 /* ─── Screen states ────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -79,14 +92,15 @@ typedef enum {
 #define JW_COLOR_ROW_COUNT   7
 
 /* Layout page */
-#define JW_LAYOUT_HOME_STYLE  0   /* Tabs vs Coverflow home layout */
-#define JW_LAYOUT_PILL_SHAPE  1
-#define JW_LAYOUT_FONT_FAMILY 2
-#define JW_LAYOUT_FONT_SIZE   3
-#define JW_LAYOUT_TAB_SWITCH  4
-#define JW_LAYOUT_STARTUP_TAB 5   /* which tab the launcher opens on */
-#define JW_LAYOUT_HOME_TABS   6   /* opens the Home Tabs hide/reorder editor */
-#define JW_LAYOUT_ROW_COUNT   7
+#define JW_LAYOUT_HOME_STYLE   0   /* Tabs vs Coverflow home layout */
+#define JW_LAYOUT_SYSTEM_ICONS 1   /* which built-in system-icon pack to draw */
+#define JW_LAYOUT_PILL_SHAPE   2
+#define JW_LAYOUT_FONT_FAMILY  3
+#define JW_LAYOUT_FONT_SIZE    4
+#define JW_LAYOUT_TAB_SWITCH   5
+#define JW_LAYOUT_STARTUP_TAB  6   /* which tab the launcher opens on */
+#define JW_LAYOUT_HOME_TABS    7   /* opens the Home Tabs hide/reorder editor */
+#define JW_LAYOUT_ROW_COUNT    8
 
 /* Status Bar page */
 #define JW_STATUSBAR_HINTS   0
@@ -242,6 +256,7 @@ typedef struct {
     int                font_size_index;
     int                tab_glide;            /* 0 = Snap (instant), 1 = Glide (slide) */
     int                layout_mode;          /* 0 = Tabs, 1 = Coverflow (home layout) */
+    int                system_icon_pack_index; /* jw_system_icon_pack */
     bool               show_hints;
     int                clock_style_index;
     bool               show_battery;

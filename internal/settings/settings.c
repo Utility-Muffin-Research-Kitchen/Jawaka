@@ -159,6 +159,7 @@ typedef enum {
     JW_SETTING_BFI_ENABLED,
     JW_SETTING_HDMI_OUTPUT_MODE,
     JW_SETTING_HOME_TAB_ORDER,
+    JW_SETTING_SYSTEM_ICON_PACK_INDEX,
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -207,10 +208,18 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_BFI_ENABLED] = "bfi_enabled",
     [JW_SETTING_HDMI_OUTPUT_MODE] = "hdmi_output_mode",
     [JW_SETTING_HOME_TAB_ORDER] = "home_tab_order",
+    [JW_SETTING_SYSTEM_ICON_PACK_INDEX] = "system_icon_pack_index",
 };
 
 static const char *const kTabSwitchLabels[] = { JW_UI("Snap"), JW_UI("Glide") };
 #define JW_TAB_SWITCH_COUNT 2
+
+/* Indexed by jw_system_icon_pack. "Automatic" is the layout-driven default
+   the launcher has always had; the other two pin a pack. The row renderer
+   translates whatever it is handed, so these only need marking for extraction. */
+static const char *const kSystemIconPackLabels[JW_SYSTEM_ICON_PACK_COUNT] = {
+    JW_UI("Automatic"), JW_UI("Flat"), JW_UI("Photographic"),
+};
 
 /* Curated time-zone list for Settings > Behavior > Time Zone. Each entry maps a
    friendly label to an IANA zone id, exported as the TZ environment variable. The
@@ -1400,6 +1409,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->rumble_game = true;       /* in-game rumble default on */
     ui->layout_mode = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
                           ? 1 : 0;
+    /* Absent key == Automatic, so a fresh install keeps the historical
+       layout-driven artwork without a migration or a default row write. */
+    ui->system_icon_pack_index = JW_SYSTEM_ICON_PACK_AUTO;
     ui->refresh_rate_hz   = 60;
     ui->refresh_rate_supported = false;
     ui->bfi_enabled       = false;
@@ -1516,6 +1528,11 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 int idx = atoi(values[JW_SETTING_STARTUP_TAB_INDEX]);
                 if (idx >= 0 && idx < JW_STARTUP_TAB_COUNT)
                     ui->startup_tab_index = idx;
+            }
+            if (jw__setting_has(values, found, JW_SETTING_SYSTEM_ICON_PACK_INDEX)) {
+                int idx = atoi(values[JW_SETTING_SYSTEM_ICON_PACK_INDEX]);
+                if (idx >= 0 && idx < JW_SYSTEM_ICON_PACK_COUNT)
+                    ui->system_icon_pack_index = idx;
             }
             jw__parse_home_tab_order(
                 jw__setting_has(values, found, JW_SETTING_HOME_TAB_ORDER)
@@ -2201,6 +2218,11 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
                             JW_LAYOUT_ROW_COUNT, item_h);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_HOME_STYLE,
                         "Home Layout", ui->layout_mode == 1 ? "Coverflow" : "Tabs", true);
+    int pack = (ui->system_icon_pack_index >= 0 &&
+                ui->system_icon_pack_index < JW_SYSTEM_ICON_PACK_COUNT)
+               ? ui->system_icon_pack_index : JW_SYSTEM_ICON_PACK_AUTO;
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_SYSTEM_ICONS,
+                        "System Icons", kSystemIconPackLabels[pack], true);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
                         "List Style", kPillShapeLabels[ui->pill_shape_index], true);
     /* The themed families have no CJK glyphs, so a CJK language pins the face.
@@ -6070,6 +6092,19 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     int next = (ui->layout_mode + dir + 2) % 2;
                     if (next != ui->layout_mode)
                         jw__apply_layout(ui, next, theme_changed);
+                } else if (row == JW_LAYOUT_SYSTEM_ICONS) {
+                    int cur = (ui->system_icon_pack_index >= 0 &&
+                               ui->system_icon_pack_index < JW_SYSTEM_ICON_PACK_COUNT)
+                              ? ui->system_icon_pack_index : JW_SYSTEM_ICON_PACK_AUTO;
+                    int next = (cur + dir + JW_SYSTEM_ICON_PACK_COUNT) % JW_SYSTEM_ICON_PACK_COUNT;
+                    ui->system_icon_pack_index = next;
+                    /* Persist AUTO as 0 too: cycling back to it has to replace an
+                       earlier explicit choice, not leave it in the DB. */
+                    jw__persist_int(ui, "system_icon_pack_index", next);
+                    /* Reuse the theme-changed signal: it is what makes the launcher
+                       call jw__rebuild_for_layout(), which clears the memoized
+                       system-icon paths so the new pack shows immediately. */
+                    if (theme_changed) *theme_changed = true;
                 } else if (row == JW_LAYOUT_PILL_SHAPE) {
                     int next = (ui->pill_shape_index + dir + JW_SETTINGS_PILL_SHAPE_COUNT) % JW_SETTINGS_PILL_SHAPE_COUNT;
                     ui->pill_shape_index = next;

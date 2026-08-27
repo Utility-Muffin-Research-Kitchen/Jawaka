@@ -313,6 +313,10 @@ msgid "Auto Sleep"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Automatic"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Available"
 msgstr ""
 
@@ -666,6 +670,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Filter"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Flat"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1126,6 +1134,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Performance unavailable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Photographic"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1662,6 +1674,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "System"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "System Icons"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
