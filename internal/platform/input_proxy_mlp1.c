@@ -391,6 +391,13 @@ static void jw__cal_observe(jw_mlp1_input_proxy_data *data,
    the measure-mode observer. Non-stick ABS events never reach here. */
 static void jw__forward_stick_abs(jw_mlp1_input_proxy_data *data,
                                   const struct input_event *ev) {
+    if (data->uinput_fd < 0) {
+        /* Watch-only mode: there is nothing to forward, and measure mode exists
+           only to author a profile for the remap directly below -- which never
+           runs here. Left on, it logged a range line every 400ms for the whole
+           of a standalone session every time the stick moved. */
+        return;
+    }
     if (data->cal.loaded) {
         struct input_event out = *ev;
         out.value = jw_calibration_axis(&data->cal, ev->code == ABS_X, ev->value);
