@@ -338,6 +338,9 @@ static void jw__write_event(jw_mlp1_input_proxy_data *data,
 
 static void jw__forward_event(jw_mlp1_input_proxy_data *data,
                               const struct input_event *ev) {
+    if (data->uinput_fd < 0) {
+        return;   /* watch-only mode: observe hotkeys, forward nothing */
+    }
     /* Track which buttons are held-down on the virtual pad so the in-game menu
        can neutralize them before unpausing (see jw_input_proxy_release_buttons). */
     if (ev->type == EV_KEY && ev->code <= KEY_MAX) {
