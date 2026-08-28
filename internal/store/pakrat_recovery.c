@@ -628,6 +628,12 @@ int jw__pakrat_read_manifest(const char *pak_dir, const char *manifest_rel,
         jw__pakrat_manifest_string(root, "min_leaf_version",
                                    out->min_leaf_version,
                                    sizeof(out->min_leaf_version)) == 0;
+    /* Presence only. Whether the block is VALID is jw_content_manifest_validate's
+       question, asked later by the catalog compiler; a malformed `provides`
+       must still keep the pak out of the launch.sh requirement, or a typo
+       would turn a content pak into an uninstallable one. */
+    out->has_provides =
+        cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(root, "provides")) ? 1 : 0;
     cJSON_Delete(root);
     return fields_ok ? 0 : -1;
 }
@@ -664,9 +670,10 @@ static const char *jw__uncommitted_promote_reason(const char *target,
         return "artifact-mismatch";
     }
     char entry_point[PATH_MAX];
-    if (jw__pakrat_join2(entry_point, sizeof(entry_point), target,
-                         JW_PAKRAT_ENTRY_POINT) != 0 ||
-        !jw__pakrat_is_regular_file(entry_point)) {
+    if (!manifest.has_provides &&
+        (jw__pakrat_join2(entry_point, sizeof(entry_point), target,
+                          JW_PAKRAT_ENTRY_POINT) != 0 ||
+         !jw__pakrat_is_regular_file(entry_point))) {
         return "entry-point-missing";
     }
     if (!install->commit_token[0]) {
@@ -694,6 +701,15 @@ static int jw__validate_restored_tree(const jw_pakrat_recovery_context *ctx,
         strcmp(manifest.pak_version, install->version) != 0 ||
         strcmp(manifest.platform, install->platform) != 0) {
         fprintf(stderr, "restored Pak Rat tree does not match install record: %s\n",
+                install->store_id);
+        return -1;
+    }
+    char entry_point[PATH_MAX];
+    if (!manifest.has_provides &&
+        (jw__pakrat_join2(entry_point, sizeof(entry_point), target,
+                          JW_PAKRAT_ENTRY_POINT) != 0 ||
+         !jw__pakrat_is_regular_file(entry_point))) {
+        fprintf(stderr, "restored Pak Rat tree has no entry point or content: %s\n",
                 install->store_id);
         return -1;
     }
@@ -856,11 +872,7 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
                 return -1;
             }
         } else {
-            char entry_point[PATH_MAX];
-            if (jw__validate_restored_tree(ctx, install, target) != 0 ||
-                jw__pakrat_join2(entry_point, sizeof(entry_point), target,
-                                 JW_PAKRAT_ENTRY_POINT) != 0 ||
-                !jw__pakrat_is_regular_file(entry_point)) {
+            if (jw__validate_restored_tree(ctx, install, target) != 0) {
                 jw__pakrat_log(
                     ctx->state_dir,
                     "install-recover inconsistent legacy tree store_id=%s target=Apps/%s",

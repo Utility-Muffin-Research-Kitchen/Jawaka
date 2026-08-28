@@ -1,4 +1,5 @@
 #include "internal/scrape/scrape_systems.h"
+#include "internal/retroarch/catalog.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,20 @@ int main(void) {
     expect_int("Naomi truncated first", ids[0], 56);
     expect_int("Naomi truncated second", ids[1], 227);
     expect_int("unknown", (int)jw_scrape_platform_ids("PORTS", NULL, 0), 0);
+
+    jw_ra_system systems[1] = {0};
+    systems[0].id = "SCUMMVM";
+    systems[0].screenscraper_platform_ids[0] = 999;
+    systems[0].screenscraper_platform_ids[1] = 123;
+    systems[0].screenscraper_platform_id_count = 2;
+    jw_ra_catalog catalog = {.systems = systems, .system_count = 1};
+    expect_int("catalog count",
+               (int)jw_scrape_platform_ids_for_catalog(&catalog, "SCUMMVM", ids, 8), 2);
+    expect_int("catalog wins", ids[0], 999);
+    expect_int("catalog order", ids[1], 123);
+    expect_int("catalog fallback",
+               jw_scrape_platform_ids_for_catalog(&catalog, "GBA", ids, 8), 1);
+    expect_int("fallback id", ids[0], 12);
 
     puts("ScreenScraper platform mapping checks passed");
     return 0;

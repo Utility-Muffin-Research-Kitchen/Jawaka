@@ -7,8 +7,8 @@
 /* app-services-v1 (SVC-1) manifest validation.
  *
  * Normative source: plans/leaf-syncthing/contracts.md#svc-1--service-manifest
- * in the umrk-workspace sibling checkout. Schema and fixtures:
- * contracts/leaf-services/{app-services-v1.schema.json,manifests/} there.
+ * in the umrk-workspace sibling checkout. Public schema and fixtures:
+ * leaf-contracts/contracts/leaf-services/{app-services-v1.schema.json,manifests/}.
  * Rejection reason slugs returned by jw_service_manifest_validate() match
  * the fixture directory names under manifests/invalid/ exactly, so a test
  * can walk that fixture tree and assert reason-for-reason without a

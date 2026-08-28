@@ -174,6 +174,7 @@ typedef struct {
     jw_library_summary summary;
     jw_system_entry    systems[JW_MAX_SYSTEMS];
     jw_system_icon_memo system_icon_memos[JW_MAX_SYSTEMS];
+    jw_ra_catalog     *system_icon_catalog;
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
@@ -1021,6 +1022,14 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
     jw__resolve_system_names(db_path, state);
     jw__system_icon_memo_clear(state);
+    char catalog_error[160];
+    jw_ra_catalog *icon_catalog =
+        jw_ra_catalog_load(state->sdcard_root, catalog_error, sizeof(catalog_error));
+    jw_ra_catalog_free(state->system_icon_catalog);
+    state->system_icon_catalog = icon_catalog;
+    if (!icon_catalog) {
+        jw_log_warn("system icons: catalog unavailable: %s", catalog_error);
+    }
     jw_db_list_apps(db_path, state->apps, JW_MAX_APPS, &state->app_count);
 
     /* Dev-only layout filler: JAWAKA_FAKE_APPS=N appends N synthetic rows to
@@ -1792,6 +1801,9 @@ static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *ap
     if (app->managed) {
         return "Blocked";
     }
+    if (app->installed_owned && app->open_allowed) {
+        return "Open";
+    }
     if (!app->primary_action_allowed) {
         return "Unavailable";
     }
@@ -1803,6 +1815,27 @@ static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *ap
         case JW_PAKRAT_APP_UNMANAGED:        return "Install";
         default:                             return "Select";
     }
+}
+
+/* What the store can honestly say depends on what it can see. Before install
+   only the lane is known, so the line stays general; afterwards the installed
+   pak's own `provides` block names the systems it actually added. Installing
+   a content pak otherwise looks like nothing happened. */
+static void jw__pakrat_provides_line(const jw_pakrat_app_state *app,
+                                     char *out, size_t out_size) {
+    if (app->provides_summary[0]) {
+        snprintf(out, out_size, "Adds %s%s", app->provides_summary,
+                 app->content_only ? " — no app to open" : "");
+    } else {
+        snprintf(out, out_size,
+                 "Adds systems and emulators rather than an app to open.");
+    }
+}
+
+static void jw__pakrat_diagnostic_line(const jw_pakrat_app_state *app,
+                                       char *out, size_t out_size) {
+    snprintf(out, out_size, "Contribution refused — %s",
+             app->content_diagnostic);
 }
 
 static bool jw__pakrat_can_uninstall(const jw_pakrat_app_state *app) {
@@ -2116,6 +2149,16 @@ static int jw__pakrat_detail_content_h(const jw_pakrat_app_state *app,
                  app->installed_version);
         h += cat_measure_wrapped_text_height(body, missing, w) + CAT_S(18);
     }
+    if (app->provides_summary[0] || app->lane == JW_PAKRAT_LANE_CONTENT) {
+        char provides[256];
+        jw__pakrat_provides_line(app, provides, sizeof(provides));
+        h += cat_measure_wrapped_text_height(body, provides, w) + CAT_S(18);
+    }
+    if (app->content_diagnostic[0]) {
+        char note[256];
+        jw__pakrat_diagnostic_line(app, note, sizeof(note));
+        h += cat_measure_wrapped_text_height(body, note, w) + CAT_S(18);
+    }
     int row_h = TTF_FontHeight(small) + CAT_S(8);
     int rows = 3 + (app->managed ? 1 : 0);        /* catalog / installed / path [/ managed] */
     h += rows * row_h;
@@ -2160,6 +2203,23 @@ static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
                  app->installed_version);
         cat_draw_text_wrapped(c->body, line, x, cy, w,
                               theme->highlight, CAT_ALIGN_LEFT);
+        cy += cat_measure_wrapped_text_height(c->body, line, w) + CAT_S(18);
+    }
+    /* A content pak adds console tiles rather than an app to open, so the
+       detail page has to say what it added -- otherwise installing one looks
+       like nothing happened. */
+    if (app->provides_summary[0] || app->lane == JW_PAKRAT_LANE_CONTENT) {
+        jw__pakrat_provides_line(app, line, sizeof(line));
+        cat_draw_text_wrapped(c->body, line, x, cy, w, theme->text,
+                              CAT_ALIGN_LEFT);
+        cy += cat_measure_wrapped_text_height(c->body, line, w) + CAT_S(18);
+    }
+    /* And when the contribution was refused, this is the only place the user
+       can find out why: diagnostics.json is not something they can open. */
+    if (app->content_diagnostic[0]) {
+        jw__pakrat_diagnostic_line(app, line, sizeof(line));
+        cat_draw_text_wrapped(c->body, line, x, cy, w, theme->highlight,
+                              CAT_ALIGN_LEFT);
         cy += cat_measure_wrapped_text_height(c->body, line, w) + CAT_S(18);
     }
 
@@ -3636,14 +3696,16 @@ static void jw__render_focus(jw_launcher_state *state) {
  * whole candidate order so the two consumers below cannot drift apart:
  *
  *   1. <sdcard_root>/Roms/<SYSTEM>/icon.png       user override; skipped for '_' codes
- *   2. the selected built-in pack:
+ *   2. pak art for the selected pack
+ *   3. pak flat art (Photographic fallback; deduped for Flat/Auto)
+ *   4. the selected built-in pack:
  *        AUTO          <themes_dir>/<theme>/<coverflow_icon_dir>/<SYSTEM>.png
- *        FLAT          (same path as 3 — folded into it)
+ *        FLAT          (same path as 5 — folded into it)
  *        PHOTOGRAPHIC  <themes_dir>/Jawaka-Coverflow/system_icons/<SYSTEM>.png
- *   3. <themes_dir>/../system_icons/<SYSTEM>.png  shared flat baseline
- *   4. <themes_dir>/../system_icons/_default.png  final fallback
+ *   5. <themes_dir>/../system_icons/<SYSTEM>.png  shared flat baseline
+ *   6. <themes_dir>/../system_icons/_default.png  final fallback
  *
- * Step 3 stays in the list for every pack on purpose: the photographic pack has
+ * Step 5 stays in the list for every pack on purpose: the photographic pack has
  * no asset for some aliases and pseudo-systems (_apps, for one), and those must
  * fall back to a real flat icon rather than vanish.
  *
@@ -3655,7 +3717,7 @@ static void jw__render_focus(jw_launcher_state *state) {
  * consumers probe differently and each keeps its own semantics. */
 
 #define JW_SYSTEM_ICON_PHOTO_THEME "Jawaka-Coverflow"
-#define JW_SYSTEM_ICON_MAX_CANDIDATES 4
+#define JW_SYSTEM_ICON_MAX_CANDIDATES 6
 
 typedef struct {
     char paths[JW_SYSTEM_ICON_MAX_CANDIDATES][PATH_MAX];
@@ -3700,11 +3762,37 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
 
     const char *theme_dir  = cat_get_active_theme_dir();
     const char *theme_name = cat_get_active_theme_name();
+
+    /* (2-3) content-pak art. AUTO follows the active theme's pack; an absent
+       photographic asset deliberately falls through to the mandatory flat
+       asset. Both paths are resolved live from the catalog's provider. */
+    if (state && state->system_icon_catalog && system_code[0] != '_') {
+        const jw_ra_system *system = jw_ra_catalog_match_system_folder(
+            state->system_icon_catalog, system_code);
+        bool selected_photo =
+            pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC ||
+            (pack == JW_SYSTEM_ICON_PACK_AUTO && theme_name &&
+             strcmp(theme_name, JW_SYSTEM_ICON_PHOTO_THEME) == 0);
+        if (system) {
+            if (selected_photo &&
+                jw_ra_catalog_resolve_system_icon_path(
+                    state->system_icon_catalog, system, true,
+                    path, sizeof(path)) == 0) {
+                jw__push_icon_candidate(out, path);
+            }
+            if (jw_ra_catalog_resolve_system_icon_path(
+                    state->system_icon_catalog, system, false,
+                    path, sizeof(path)) == 0) {
+                jw__push_icon_candidate(out, path);
+            }
+        }
+    }
+
     if (!theme_dir || !theme_dir[0]) {
         return;   /* no resolved theme root: nothing bundled to point at */
     }
 
-    /* (2) the selected built-in pack. Only AUTO consults the active theme; an
+    /* (4) the selected built-in pack. Only AUTO consults the active theme; an
        explicit choice must not follow the layout or theme name. */
     if (pack == JW_SYSTEM_ICON_PACK_AUTO) {
         const cat_stylesheet *ss = cat_get_stylesheet();
@@ -3721,12 +3809,12 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
         if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
     }
 
-    /* (3) shared flat baseline next to the active theme root */
+    /* (5) shared flat baseline next to the active theme root */
     n = snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
                  theme_dir, system_code);
     if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
 
-    /* (4) shared _default.png */
+    /* (6) shared _default.png */
     n = snprintf(path, sizeof(path), "%s/../system_icons/_default.png", theme_dir);
     if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
 }
@@ -7763,8 +7851,9 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
     }
 }
 
-static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *state,
-                                    cat_button button) {
+static void jw__handle_pakrat_input(const char *socket_path, const char *db_path,
+                                    jw_launcher_state *state, cat_button button,
+                                    bool *running) {
     if (!state) {
         return;
     }
@@ -7787,7 +7876,20 @@ static void jw__handle_pakrat_input(const char *db_path, jw_launcher_state *stat
                 cat_scroll_state_move(&state->pakrat_detail_scroll, +line_h * 4);
                 break;
             case CAT_BTN_A:
-                jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_INSTALL);
+                if (state->pakrat_app_count > 0 &&
+                    state->pakrat_list.cursor >= 0 &&
+                    state->pakrat_list.cursor < state->pakrat_app_count &&
+                    state->pakrat_apps[state->pakrat_list.cursor].installed_owned &&
+                    state->pakrat_apps[state->pakrat_list.cursor].open_allowed) {
+                    const jw_pakrat_app_state *app =
+                        &state->pakrat_apps[state->pakrat_list.cursor];
+                    jw__launch_app_request(
+                        socket_path,
+                        app->app_name[0] ? app->app_name : app->package.name,
+                        app->app_pak_dir, state, running);
+                } else {
+                    jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_INSTALL);
+                }
                 break;
             case CAT_BTN_Y:
                 jw__run_pakrat_action(db_path, state, JW_PAKRAT_UI_UNINSTALL);
@@ -8772,7 +8874,7 @@ static void jw__handle_input_inner(const char *socket_path, const char *db_path,
     }
 
     if (state->pakrat_open) {
-        jw__handle_pakrat_input(db_path, state, button);
+        jw__handle_pakrat_input(socket_path, db_path, state, button, running);
         return;
     }
 

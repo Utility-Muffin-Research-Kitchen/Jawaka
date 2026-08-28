@@ -196,6 +196,34 @@ int main(void) {
     unlink(runtime_cfg);
     free(runtime_cfg);
 
+    /* S-2: the launch owns an immutable catalog snapshot. Its merged info
+       directory must beat the core-adjacent/default INFO_PATH guess. */
+    {
+        char launch_info[PATH_MAX];
+        snprintf(launch_info, sizeof(launch_info), "%s/gen-new-info", root);
+        if (mkdir_one(launch_info) != 0) {
+            return fail("per-launch info fixture mkdir failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config_with_info(
+            runtime, root, core, launch_info, NULL, true, false,
+            error, sizeof(error));
+        char *text = runtime_cfg ? read_text(runtime_cfg) : NULL;
+        char resolved_info[PATH_MAX];
+        if (!realpath(launch_info, resolved_info)) {
+            return fail("per-launch info fixture realpath failed");
+        }
+        char expected[PATH_MAX + 64];
+        snprintf(expected, sizeof(expected),
+                 "libretro_info_path = \"%s\"", resolved_info);
+        if (!runtime_cfg || !text || strstr(text, expected) == NULL) {
+            free(text);
+            return fail(error[0] ? error : "per-launch info path was not used");
+        }
+        free(text);
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+    }
+
 #ifdef PLATFORM_MLP1
     /* Upgrade path: a device that launched a game before the Select fix has
        the stale Select+Start hotkey pair persisted in its shared config. The

@@ -143,9 +143,21 @@ OSD_CFLAGS := $(CFLAGS_UI)
 OSD_LDLIBS := $(LDLIBS_UI)
 endif
 PLATFORM_COMMON_SRC := internal/platform/platform_common.c
+
+# CAT-1 effective catalog. internal/retroarch/catalog.c resolves through it,
+# so every build that links catalog.c links these too. Use lists are wrapped
+# in $(sort ...) where a build already carried sha256.c or leaf_version.c --
+# duplicates on a cc(1) command line are duplicate symbols, not a no-op.
+EFFECTIVE_CATALOG_SRCS := \
+	internal/catalog/effective.c \
+	internal/catalog/json.c \
+	internal/catalog/merge.c \
+	internal/update/sha256.c \
+	internal/platform/leaf_version.c
 LEAF_VERSION_SRC := internal/platform/leaf_version.c
 PAKRAT_CATALOG_SRC := internal/store/pakrat_catalog.c
 PAKRAT_STATE_LOGIC_SRC := internal/store/pakrat_state_logic.c
+CONTENT_MANIFEST_SRC := internal/catalog/manifest.c
 
 # ScreenScraper scrape engine (daemon-side; curl + vendored stb/miniz/md5).
 SCRAPE_SRCS := \
@@ -167,6 +179,7 @@ LDLIBS_DAEMON += $(CURL_LDFLAGS) -lpthread -lm
 
 DAEMON_SRCS := \
 	cmd/jawakad/main.c \
+	$(CONTENT_MANIFEST_SRC) \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_stream.c \
@@ -190,6 +203,7 @@ DAEMON_SRCS := \
 	internal/platform/raofflineproxy.c \
 	internal/power/suspend_inhibit.c \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/retroarch/command.c \
 	internal/retroarch/legacy_migration.c \
 	internal/retroarch/states.c \
@@ -233,6 +247,7 @@ RETROARCH_RUNNER_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/retroarch/command.c \
 	third_party/cjson/cJSON.c
 
@@ -251,6 +266,7 @@ PLATFORM_CTL_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	third_party/cjson/cJSON.c
 
 OSD_SRCS := \
@@ -262,6 +278,7 @@ OSD_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/paths.c \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	third_party/cjson/cJSON.c
 
 SCAN_SMOKE_SRCS := \
@@ -270,7 +287,9 @@ SCAN_SMOKE_SRCS := \
 	internal/db/db.c \
 	internal/db/relocation.c \
 	internal/discovery/discovery.c \
+	$(CONTENT_MANIFEST_SRC) \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/storage/sources.c \
 	third_party/cjson/cJSON.c
 
@@ -282,6 +301,7 @@ SCRAPE_SMOKE_SRCS := \
 	internal/db/relocation.c \
 	$(PLATFORM_ID_SRC) \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/storage/sources.c \
 	third_party/cjson/cJSON.c
 
@@ -299,7 +319,9 @@ PAKRAT_SMOKE_SRCS := \
 	internal/db/db.c \
 	internal/db/relocation.c \
 	internal/discovery/discovery.c \
+	$(CONTENT_MANIFEST_SRC) \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/storage/sources.c \
 	internal/store/catalog_source.c \
 	internal/store/managed_apps.c \
@@ -315,6 +337,14 @@ CATALOG_SMOKE_SRCS := \
 	cmd/jawaka-catalog-smoke/main.c \
 	$(PLATFORM_ID_SRC) \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
+	third_party/cjson/cJSON.c
+
+CONTENT_RUNTIME_SMOKE_SRCS := \
+	cmd/jawaka-content-runtime-smoke/main.c \
+	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
+	internal/platform/platform_id_mock.c \
 	third_party/cjson/cJSON.c
 
 I18N_TEST_SRCS := \
@@ -328,6 +358,7 @@ CORE_OVERRIDE_SMOKE_SRCS := \
 	internal/db/db.c \
 	internal/db/relocation.c \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/storage/sources.c \
 	third_party/cjson/cJSON.c
 
@@ -355,6 +386,7 @@ UI_SRCS := \
 	$(BLUETOOTH_SRC) \
 	$(WIFI_SRC) \
 	internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/retroarch/states.c \
 	internal/storage/sources.c \
 	internal/store/catalog_source.c \
@@ -367,6 +399,7 @@ UI_SRCS := \
 	internal/store/pakrat_txn.c \
 	internal/update/sha256.c \
 	internal/discovery/discovery.c \
+	$(CONTENT_MANIFEST_SRC) \
 	internal/db/db.c \
 	internal/focus/focus.c \
 	internal/db/relocation.c \
@@ -407,7 +440,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-folder-test standalone-policy-test scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -430,6 +463,7 @@ jawaka-scan-smoke: $(BUILD)/bin/jawaka-scan-smoke
 jawaka-scrape-smoke: $(BUILD)/bin/jawaka-scrape-smoke
 jawaka-pakrat-smoke: $(BUILD)/bin/jawaka-pakrat-smoke
 jawaka-catalog-smoke: $(BUILD)/bin/jawaka-catalog-smoke
+jawaka-content-runtime-smoke: $(BUILD)/bin/jawaka-content-runtime-smoke
 jawaka-core-override-smoke: $(BUILD)/bin/jawaka-core-override-smoke
 jawaka-i18n-test: $(BUILD)/bin/jawaka-i18n-test
 
@@ -517,6 +551,19 @@ service-manifest-test: | $(BUILD)/bin
 		third_party/cjson/cJSON.c
 	$(BUILD)/bin/service-manifest-test
 
+content-manifest-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/content-manifest-test \
+		internal/catalog/manifest_test.c internal/catalog/manifest.c \
+		internal/retroarch/catalog.c $(EFFECTIVE_CATALOG_SRCS) \
+		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/content-manifest-test
+
+catalog-merge-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/catalog-merge-test \
+		internal/catalog/merge_test.c internal/catalog/merge.c \
+		internal/catalog/json.c internal/update/sha256.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/catalog-merge-test
+
 $(BUILD)/bin/ownership-test: internal/services/ownership_test.c \
 		internal/services/ownership.c internal/services/ownership.h | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -DJW_SVC_OWNERSHIP_TESTING -o $(BUILD)/bin/ownership-test \
@@ -600,7 +647,7 @@ supervisor-test: | $(BUILD)/bin
 	$(BUILD)/bin/supervisor-test
 
 SERVICE_FIXTURE_ROOT := $(BUILD)/service-fixtures
-SERVICE_FIXTURE_INVALID := $(WORKSPACE_ROOT)/umrk-workspace/contracts/leaf-services/manifests/invalid
+SERVICE_FIXTURE_INVALID := $(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-services/manifests/invalid
 SERVICE_FIXTURE_TEST_ROOT ?= $(abspath $(SERVICE_FIXTURE_ROOT))
 
 $(BUILD)/bin/service-fixture: internal/services/fixtures/fixture_service.c | $(BUILD)/bin
@@ -645,7 +692,7 @@ life1-test: | $(BUILD)/bin
 
 wire-fixture-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) \
-		-DJW_TEST_WIRE_FIXTURES_ROOT=\"$(WORKSPACE_ROOT)/umrk-workspace/contracts/leaf-services/wire-fixtures\" \
+		-DJW_TEST_WIRE_FIXTURES_ROOT=\"$(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-services/wire-fixtures\" \
 		-o $(BUILD)/bin/wire-fixture-test \
 		internal/ipc/wire_fixture_test.c third_party/cjson/cJSON.c -lm
 	$(BUILD)/bin/wire-fixture-test
@@ -745,7 +792,7 @@ pinyin-search-test: | $(BUILD)/bin
 
 settings-status-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/settings-status-test \
-		internal/settings/settings_status_test.c $(UI_SRCS) $(LDLIBS_UI)
+		internal/settings/settings_status_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 	$(BUILD)/bin/settings-status-test
 
 appearance-env-test: | $(BUILD)/bin
@@ -775,6 +822,7 @@ legacy-migration-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/legacy-migration-test \
 		internal/retroarch/legacy_migration_test.c \
 		internal/retroarch/legacy_migration.c internal/retroarch/catalog.c \
+		$(EFFECTIVE_CATALOG_SRCS) \
 		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/legacy-migration-test
 
@@ -787,6 +835,7 @@ retroarch-config-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/retroarch-config-test \
 		internal/platform/paths_config_test.c internal/platform/paths.c \
 		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
+		$(EFFECTIVE_CATALOG_SRCS) \
 		internal/core/log.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/retroarch-config-test
 
@@ -795,6 +844,7 @@ raofflineproxy-bridge-test: | $(BUILD)/bin
 		internal/platform/raofflineproxy_bridge_test.c internal/platform/paths.c \
 		internal/platform/raofflineproxy.c \
 		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
+		$(EFFECTIVE_CATALOG_SRCS) \
 		internal/core/log.c third_party/cjson/cJSON.c -lpthread
 	$(BUILD)/bin/raofflineproxy-bridge-test
 
@@ -808,12 +858,31 @@ retroarch-recording-path-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -DPLATFORM_MLP1 -o $(BUILD)/bin/retroarch-recording-path-test \
 		internal/platform/paths_config_test.c internal/platform/paths.c \
 		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
+		$(EFFECTIVE_CATALOG_SRCS) \
 		internal/core/log.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/retroarch-recording-path-test
+
+# CAT-1. The expected digests come from the contract's own reference
+# implementation (leaf-contracts/contracts/leaf-content/scripts/canonical.py), so this also
+# proves the C canonical-bytes emitter agrees with it byte for byte.
+catalog-effective-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/catalog-effective-test \
+		internal/catalog/effective_test.c $(EFFECTIVE_CATALOG_SRCS) \
+		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/catalog-effective-test
+
+# End-to-end over a real release payload: the unit test uses a synthetic
+# three-file catalog and cannot answer "is it the SAME catalog".
+catalog-generation-smoke:
+	scripts/catalog-generation-smoke.sh
+
+content-catalog-smoke:
+	scripts/content-catalog-smoke.sh
 
 catalog-folder-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/catalog-folder-test \
 		internal/retroarch/catalog_folder_test.c internal/retroarch/catalog.c \
+		$(EFFECTIVE_CATALOG_SRCS) \
 		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/catalog-folder-test
 
@@ -826,7 +895,9 @@ standalone-policy-test: | $(BUILD)/bin
 scrape-systems-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/scrape-systems-test \
 		internal/scrape/scrape_systems_test.c \
-		internal/scrape/scrape_systems.c
+		internal/scrape/scrape_systems.c internal/retroarch/catalog.c \
+		$(EFFECTIVE_CATALOG_SRCS) internal/platform/platform_id_mock.c \
+		third_party/cjson/cJSON.c
 	$(BUILD)/bin/scrape-systems-test
 
 ss-client-test: $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
@@ -862,15 +933,15 @@ check-sdl:
 	@pkg-config --exists sdl2 SDL2_ttf SDL2_image 2>/dev/null || \
 		( echo "SDL2 libraries not found. Install with: brew install sdl2 sdl2_ttf sdl2_image" && exit 1 )
 
-$(BUILD)/bin/jawakad: $(DAEMON_SRCS) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
+$(BUILD)/bin/jawakad: $(sort $(DAEMON_SRCS)) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
 	@echo "  CC      $@"
-	@$(CC) $(CFLAGS_DAEMON) -o $@ $(DAEMON_SRCS) $(LDLIBS_DAEMON)
+	@$(CC) $(CFLAGS_DAEMON) -o $@ $(sort $(DAEMON_SRCS)) $(LDLIBS_DAEMON)
 
-$(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(UI_SRCS) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
-	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(UI_SRCS) $(LDLIBS_UI)
+$(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 
-$(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(UI_SRCS) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
-	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-menu/main.c $(UI_SRCS) $(LDLIBS_UI)
+$(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 
 $(BUILD)/generated:
 	@mkdir -p $(BUILD)/generated
@@ -899,44 +970,47 @@ $(BUILD)/generated/xdg-shell-protocol.c: $(BUILD)/generated/xdg-shell-client-pro
 	@test -n "$(WAYLAND_PROTOCOLS_DIR)" || { echo "wayland-protocols pkg-config data dir missing" >&2; exit 1; }
 	$(WAYLAND_SCANNER) private-code "$(WAYLAND_PROTOCOLS_DIR)/stable/xdg-shell/xdg-shell.xml" $@
 
-$(BUILD)/bin/jawaka-osd: $(OSD_SRCS) $(OSD_DEPS) $(CATASTROPHE_HEADER) | $(BUILD)/bin
-	$(CC) $(OSD_CFLAGS) -o $@ $(OSD_SRCS) $(OSD_LDLIBS)
+$(BUILD)/bin/jawaka-osd: $(sort $(OSD_SRCS)) $(OSD_DEPS) $(CATASTROPHE_HEADER) | $(BUILD)/bin
+	$(CC) $(OSD_CFLAGS) -o $@ $(sort $(OSD_SRCS)) $(OSD_LDLIBS)
 
-$(BUILD)/bin/jawaka-retroarchctl: $(RETROARCH_CTL_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ $(RETROARCH_CTL_SRCS)
+$(BUILD)/bin/jawaka-retroarchctl: $(sort $(RETROARCH_CTL_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(RETROARCH_CTL_SRCS))
 
-$(BUILD)/bin/jawaka-retroarch-runner: $(RETROARCH_RUNNER_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ $(RETROARCH_RUNNER_SRCS)
+$(BUILD)/bin/jawaka-retroarch-runner: $(sort $(RETROARCH_RUNNER_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(RETROARCH_RUNNER_SRCS))
 
-$(BUILD)/bin/jawaka-update-runner: $(UPDATE_RUNNER_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ $(UPDATE_RUNNER_SRCS)
+$(BUILD)/bin/jawaka-update-runner: $(sort $(UPDATE_RUNNER_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(UPDATE_RUNNER_SRCS))
 
-$(BUILD)/bin/jawaka-platformctl: $(PLATFORM_CTL_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ $(PLATFORM_CTL_SRCS) $(LDLIBS_COMMON)
+$(BUILD)/bin/jawaka-platformctl: $(sort $(PLATFORM_CTL_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(PLATFORM_CTL_SRCS)) $(LDLIBS_COMMON)
 
-$(BUILD)/bin/jawaka-scan-smoke: $(SCAN_SMOKE_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ $(SCAN_SMOKE_SRCS) $(LDLIBS_COMMON)
+$(BUILD)/bin/jawaka-scan-smoke: $(sort $(SCAN_SMOKE_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(SCAN_SMOKE_SRCS)) $(LDLIBS_COMMON)
 
-$(BUILD)/bin/jawaka-scrape-smoke: $(SCRAPE_SMOKE_SRCS) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
+$(BUILD)/bin/jawaka-scrape-smoke: $(sort $(SCRAPE_SMOKE_SRCS)) $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
 	@echo "  CC      $@"
-	@$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(SCRAPE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
+	@$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -o $@ $(sort $(SCRAPE_SMOKE_SRCS)) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread -lm
 
-$(BUILD)/bin/jawaka-pakrat-smoke: $(PAKRAT_SMOKE_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -DJW_ENABLE_FAULT_INJECTION=1 $(CURL_CFLAGS) -Ithird_party/miniz -o $@ $(PAKRAT_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lm
+$(BUILD)/bin/jawaka-pakrat-smoke: $(sort $(PAKRAT_SMOKE_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -DJW_ENABLE_FAULT_INJECTION=1 $(CURL_CFLAGS) -Ithird_party/miniz -o $@ $(sort $(PAKRAT_SMOKE_SRCS)) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lm
 
-$(BUILD)/bin/jawaka-catalog-smoke: $(CATALOG_SMOKE_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ $(CATALOG_SMOKE_SRCS)
+$(BUILD)/bin/jawaka-catalog-smoke: $(sort $(CATALOG_SMOKE_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(CATALOG_SMOKE_SRCS))
+
+$(BUILD)/bin/jawaka-content-runtime-smoke: $(sort $(CONTENT_RUNTIME_SMOKE_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(CONTENT_RUNTIME_SMOKE_SRCS))
 
 # Always built WITH the coverage recorder: this binary exists to test it, and a
 # test that silently compiles out what it asserts is worse than no test.
 $(BUILD)/bin/jawaka-i18n-test: $(I18N_TEST_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -DJW_I18N_COVERAGE -o $@ $(I18N_TEST_SRCS) $(LDLIBS_COMMON)
 
-$(BUILD)/bin/jawaka-core-override-smoke: $(CORE_OVERRIDE_SMOKE_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $@ $(CORE_OVERRIDE_SMOKE_SRCS) $(LDLIBS_COMMON)
+$(BUILD)/bin/jawaka-core-override-smoke: $(sort $(CORE_OVERRIDE_SMOKE_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ $(sort $(CORE_OVERRIDE_SMOKE_SRCS)) $(LDLIBS_COMMON)
 
-$(BUILD)/bin/jawaka-update-smoke: $(UPDATE_SMOKE_SRCS) | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -o $@ $(UPDATE_SMOKE_SRCS) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread
+$(BUILD)/bin/jawaka-update-smoke: $(sort $(UPDATE_SMOKE_SRCS)) | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) $(CURL_CFLAGS) -o $@ $(sort $(UPDATE_SMOKE_SRCS)) $(LDLIBS_COMMON) $(CURL_LDFLAGS) -lpthread
 
 $(BUILD)/bin/jawaka-inhibitctl: $(INHIBIT_CTL_SRCS) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $@ $(INHIBIT_CTL_SRCS)

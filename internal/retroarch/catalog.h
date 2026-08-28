@@ -18,6 +18,12 @@ typedef struct {
     char *config_folder;
     char *info_name;
     char *path;
+    /* Content-pak provenance. provider is Apps-relative (for example
+       "mlp1/ScummVM.pak"), never an absolute mount path. core_root_rel is
+       derived from file_name/path when the row is loaded. */
+    char *core_root_rel;
+    char *provider;
+    char *source_id;
     bool supports_menu;
     bool supports_savestate;
     bool supports_disk_control;
@@ -46,6 +52,16 @@ typedef struct {
     jw_ra_string_list alternate_cores;
     char *rom_root;
     char *image_root;
+    char *group;
+    char *bios_directory;
+    int screenscraper_platform_ids[8];
+    size_t screenscraper_platform_id_count;
+    /* Content-pak artwork provenance. Paths stay pak-relative in the catalog;
+       provider is Apps-relative and source_id names the owning card. */
+    char *icon_flat;
+    char *icon_photographic;
+    char *provider;
+    char *source_id;
 } jw_ra_system;
 
 typedef struct {
@@ -53,6 +69,8 @@ typedef struct {
     size_t core_count;
     jw_ra_system *systems;
     size_t system_count;
+    char *sdcard_root;
+    char *info_dir;
 } jw_ra_catalog;
 
 typedef struct {
@@ -73,11 +91,34 @@ typedef struct {
 jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t error_size);
 const jw_ra_catalog *jw_ra_catalog_get(const char *sdcard_root, char *error, size_t error_size);
 
-/* Resolve the platform defaults directory (where cores.json/systems.json/
-   arcade_names.txt live). Honors UMRK_PLATFORM_PATH / SYSTEM_PATH overrides,
-   otherwise derives <sdcard_root>/<.system|UMRK>/<platform_id>/defaults.
-   Returns 0 on success (out holds a NUL-terminated path), -1 on error. */
-int jw_ra_defaults_dir(const char *sdcard_root, char *out, size_t out_size);
+/* Two explicit seams, never one shared "defaults dir".
+
+   jw_ra_release_defaults_dir() -- the RELEASE-owned directory. Besides
+   cores.json/systems.json it holds arcade_names.txt, retroarch.cfg,
+   retroarch-record.cfg, and pulse-default.pa. Callers that want
+   release-owned data must name this one: repointing a shared accessor at
+   the effective catalog would have silently dropped arcade titles.
+
+   jw_ra_effective_catalog_dir() -- where a catalog READER loads
+   systems.json and cores.json from: the selected effective generation when
+   structural validation passes, otherwise the release defaults. Returns 1
+   for a generation, 0 for release defaults, -1 when neither resolved;
+   `reason` receives "effective" or the CAT-1 fallback reason.
+
+   Both honor the UMRK_PLATFORM_PATH / SYSTEM_PATH overrides, otherwise
+   derive <sdcard_root>/<.system|UMRK>/<platform_id>/defaults. Returns 0 on
+   success (out holds a NUL-terminated path), -1 on error. */
+int jw_ra_release_defaults_dir(const char *sdcard_root, char *out, size_t out_size);
+int jw_ra_effective_catalog_dir(const char *sdcard_root, char *out, size_t out_size,
+                                char *reason, size_t reason_size);
+
+/* Producer side (jawakad only): full provenance validation, then recompile
+   and republish the effective catalog if any release input moved. Returns 0
+   when a generation is published (`reason` is "published" or "reused"), 1
+   when the caller must run on release defaults (`reason` says why), -1 on a
+   hard error. */
+int jw_ra_catalog_refresh(const char *sdcard_root, char *generation,
+                          size_t generation_size, char *reason, size_t reason_size);
 void jw_ra_catalog_free(jw_ra_catalog *catalog);
 
 const jw_ra_system *jw_ra_catalog_find_system(const jw_ra_catalog *catalog, const char *system_id);
@@ -89,6 +130,31 @@ bool jw_ra_string_list_contains_casefold(const jw_ra_string_list *list, const ch
 bool jw_ra_core_is_packaged_retroarch(const jw_ra_core *core);
 /* RetroArch uses library_name verbatim as a FAT32 directory component. */
 bool jw_ra_core_folder_is_safe(const char *folder);
+
+/* Resolve one core against its live owner. Release cores use core_dir (or
+   platform_dir for type:path); content cores use APPS_PATH/provider and keep
+   only pak-relative paths in catalog data. require_executable applies to
+   standalone path cores. */
+int jw_ra_catalog_resolve_core_path(const jw_ra_catalog *catalog,
+                                    const jw_ra_core *core,
+                                    const char *core_dir,
+                                    const char *platform_dir,
+                                    bool require_executable,
+                                    char *out,
+                                    size_t out_size);
+
+/* The merged info directory belonging to this exact catalog snapshot. */
+int jw_ra_catalog_info_dir(const jw_ra_catalog *catalog,
+                           char *out,
+                           size_t out_size);
+
+/* Resolve one exact content-pak icon against its live Apps root. This only
+   builds the path; the launcher owns candidate fallback and image decoding. */
+int jw_ra_catalog_resolve_system_icon_path(const jw_ra_catalog *catalog,
+                                           const jw_ra_system *system,
+                                           bool photographic,
+                                           char *out,
+                                           size_t out_size);
 
 int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
                                     const char *system_id,

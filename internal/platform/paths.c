@@ -1560,6 +1560,8 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                size_t out_core_id_size,
                                                char *out_config_folder,
                                                size_t out_config_folder_size,
+                                               char *out_info_dir,
+                                               size_t out_info_dir_size,
                                                char *diagnostic,
                                                size_t diagnostic_size) {
     if (!system || !system[0]) {
@@ -1570,6 +1572,9 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
     }
     if (out_config_folder && out_config_folder_size > 0) {
         out_config_folder[0] = '\0';
+    }
+    if (out_info_dir && out_info_dir_size > 0) {
+        out_info_dir[0] = '\0';
     }
     if (diagnostic && diagnostic_size > 0) {
         diagnostic[0] = '\0';
@@ -1612,7 +1617,13 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
                 if (diagnostic && diagnostic_size > 0 && local_diagnostic[0]) {
                     snprintf(diagnostic, diagnostic_size, "%s", local_diagnostic);
                 }
-                char *path = jw__dup_printf("%s/%s", cores_dir, core_file);
+                if (out_info_dir && out_info_dir_size > 0) {
+                    (void)jw_ra_catalog_info_dir(catalog, out_info_dir,
+                                                 out_info_dir_size);
+                }
+                char *path = core_file[0] == '/'
+                                 ? jw__dup_printf("%s", core_file)
+                                 : jw__dup_printf("%s/%s", cores_dir, core_file);
                 free(sdcard_root);
                 free(cores_dir);
                 return path;
@@ -1668,7 +1679,8 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
 
 char *jw_retroarch_core_path_for_system(const char *system) {
     return jw_retroarch_core_path_for_system_choice(system, NULL, NULL, 0,
-                                                    NULL, 0, NULL, 0);
+                                                     NULL, 0, NULL, 0,
+                                                     NULL, 0);
 }
 
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size) {
@@ -2020,6 +2032,7 @@ static char *jw__retroarch_shared_config_path(const char *sdcard_root) {
 static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs,
                                                  const char *config_sdroot_abs,
                                                  const char *core_path,
+                                                 const char *explicit_info_dir,
                                                  const char *screenshot_dir,
                                                  const int player_joypad_indices[4],
                                                  bool persist_changes,
@@ -2059,7 +2072,9 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     }
 
     char *info_dir = NULL;
-    if (core_path && core_path[0]) {
+    if (explicit_info_dir && explicit_info_dir[0]) {
+        info_dir = jw__dup_realpath_or_literal(explicit_info_dir);
+    } else if (core_path && core_path[0]) {
         info_dir = jw__core_info_dir(core_path);
     } else {
         info_dir = jw__default_info_dir(sdroot_abs, core_dir);
@@ -2269,12 +2284,11 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     return ferror(fp) ? -1 : 0;
 }
 
-char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_root,
-                                  const char *core_path,
-                                  const int player_joypad_indices[4],
-                                  bool persist_changes,
-                                  bool proxied_cheevos,
-                                  char *error, size_t error_size) {
+char *jw_prepare_retroarch_config_with_info(
+    const char *runtime_dir, const char *sdcard_root, const char *core_path,
+    const char *explicit_info_dir, const int player_joypad_indices[4],
+    bool persist_changes, bool proxied_cheevos,
+    char *error, size_t error_size) {
     jw__set_error(error, error_size, "");
     if (!runtime_dir || !runtime_dir[0] || !sdcard_root || !sdcard_root[0]) {
         jw__set_error(error, error_size, "missing RetroArch config inputs");
@@ -2379,7 +2393,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
        must not also arrive from defaults or shared: RetroArch keeps the FIRST
        occurrence of a key, so a merged-in value would win over the override
        written below and the launch would bypass the proxy without saying so. */
-    const char *skip_keys[3];
+    const char *skip_keys[3] = {0};
     size_t skip_key_count = 0;
     if (migrate_release_shader_dir) {
         skip_keys[skip_key_count++] = "video_shader_dir";
@@ -2432,6 +2446,7 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
 
     fputs("\n# Jawaka protected runtime settings\n", fp);
     int protected_rc = jw__write_retroarch_protected_config(fp, content_sdroot_abs, config_sdroot_abs, core_path,
+                                                            explicit_info_dir,
                                                             shots_dir,
                                                             player_joypad_indices,
                                                             persist_changes,
@@ -2466,6 +2481,17 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
     }
 
     return runtime_path;
+}
+
+char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_root,
+                                  const char *core_path,
+                                  const int player_joypad_indices[4],
+                                  bool persist_changes,
+                                  bool proxied_cheevos,
+                                  char *error, size_t error_size) {
+    return jw_prepare_retroarch_config_with_info(
+        runtime_dir, sdcard_root, core_path, NULL, player_joypad_indices,
+        persist_changes, proxied_cheevos, error, error_size);
 }
 
 /* Exact line (without the trailing newline or CR) carrying key, for the

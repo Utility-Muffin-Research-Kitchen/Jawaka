@@ -431,8 +431,14 @@ static int jw__validate_runtime_manifest(const jw_pakrat_catalog_package *pkg,
     if (jw__pakrat_read_manifest(pak_dir, pkg->runtime_manifest_path,
                                  &manifest) != 0 ||
         jw__pakrat_join2(entry_point, sizeof(entry_point), pak_dir,
-                         "launch.sh") != 0 ||
-        !jw__pakrat_is_regular_file(entry_point)) {
+                         "launch.sh") != 0) {
+        return -1;
+    }
+    /* CONTENT-1's four-way table: a pak must be launchable, or contribute
+       content, or both. Only "neither" is broken. Requiring launch.sh
+       unconditionally would have made every pure content pak refuse to
+       install. */
+    if (!jw__pakrat_is_regular_file(entry_point) && !manifest.has_provides) {
         return -1;
     }
     return strcmp(manifest.platform, pkg->platform) == 0 &&
@@ -574,8 +580,16 @@ static int jw__begin_install_commit(const jw_pakrat_context *ctx,
     if (jw_db_open(ctx->db_path, &db) != 0 || !db ||
         jw_db_apply_schema(db) != 0 ||
         (clear_service_id && clear_service_id[0] &&
-         jw_pakrat_txn_attach_control_db(db, ctx->state_dir) != 0) ||
-        sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK ||
+         jw_pakrat_txn_attach_control_db(db, ctx->state_dir) != 0)) {
+        jw_db_close(db);
+        return -1;
+    }
+    /* Same reasoning as the uninstall commit: a library scan holds the write
+       lock for 6-9 seconds, and jw_db_open's 2s default is sized for
+       interactive writes. An install that loses that race fails outright
+       having already downloaded and staged the package. */
+    sqlite3_busy_timeout(db, JW_PAKRAT_COMMIT_BUSY_TIMEOUT_MS);
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK ||
         jw_scan_library(db, ctx->sdcard_root, out_scan) != 0) {
         if (db) {
             (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
@@ -1049,6 +1063,27 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         }
         mutation_ended = 1;
         jw_pakrat_mutation_lock_release(&mutation_lock);
+    }
+    /* Rescan AFTER promotion, the way uninstall already does.
+     *
+     * The only other scan in this function runs inside
+     * jw__begin_install_commit, before the package exists at its target path.
+     * That scan also enumerates content contributors and publishes an
+     * effective catalog -- one that necessarily EXCLUDES the pak being
+     * installed. Leaving it as the last word moves `current` backwards at the
+     * moment of install: a content pak's system would vanish from the catalog
+     * until some later scan happened to run, which on a device looked like
+     * "installing a content pak does nothing until you reboot".
+     *
+     * A failure here does not fail the install. The package is committed and
+     * authoritative by this point; the library is merely out of date, and the
+     * daemon notification below plus the next scan will settle it. */
+    if (jw_pakrat_rescan(ctx) != 0) {
+        fprintf(stderr,
+                "install: package committed, but the post-install library "
+                "refresh failed; the catalog will settle on the next scan\n");
+        jw__pakrat_log(ctx->state_dir,
+                       "install-refresh-deferred store_id=%s", store_id);
     }
     (void)jw__notify_daemon_scan(ctx);
 

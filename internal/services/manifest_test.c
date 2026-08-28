@@ -234,7 +234,7 @@ static void jw__test_inline_sanity(void) {
 /* ------------------------------------------------------------------------
  * Fixture-tree walk against the frozen A0 contract fixtures.
  *
- * contracts/leaf-services/README.md documents exactly two ways a consuming
+ * leaf-contracts/contracts/leaf-services/README.md documents exactly two ways a consuming
  * repo references that directory: a local sibling checkout (the default
  * below), or a pinned commit SHA in CI. Missing fixtures are a failure:
  * otherwise this target can report PASS without exercising the contract it
@@ -242,7 +242,7 @@ static void jw__test_inline_sanity(void) {
  * ------------------------------------------------------------------------ */
 
 #ifndef JW_TEST_FIXTURES_ROOT
-#define JW_TEST_FIXTURES_ROOT "../umrk-workspace/contracts/leaf-services/manifests"
+#define JW_TEST_FIXTURES_ROOT "../leaf-contracts/contracts/leaf-services/manifests"
 #endif
 
 static bool jw__test_fixture_json_string(cJSON *obj, const char *key, char *out, size_t out_size) {

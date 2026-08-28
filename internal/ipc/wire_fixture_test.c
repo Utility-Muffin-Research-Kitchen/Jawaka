@@ -10,7 +10,7 @@
 
 #ifndef JW_TEST_WIRE_FIXTURES_ROOT
 #define JW_TEST_WIRE_FIXTURES_ROOT \
-    "../umrk-workspace/contracts/leaf-services/wire-fixtures"
+    "../leaf-contracts/contracts/leaf-services/wire-fixtures"
 #endif
 
 #define JW_TEST_SEMANTIC_MAX (64u * 1024u)

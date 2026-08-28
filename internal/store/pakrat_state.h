@@ -28,6 +28,17 @@ typedef struct {
     char app_pak_dir[512];
     char gated_version[64];
     char gated_min_leaf_version[64];
+    /* CONTENT-1 facts read from the INSTALLED pak, not from the storefront
+       lane -- so a sideloaded pak in no lane at all still gets them right. */
+    /* Which storefront lane listed this package. Presentation only: it says
+       what the store can tell the user BEFORE anything is installed. It never
+       decides Open or install health -- those read the installed pak. */
+    jw_pakrat_catalog_lane lane;
+    int content_provides;   /* the installed pak declares a `provides` block */
+    int content_only;       /* ...and ships no executable launch.sh */
+    int open_allowed;       /* installed pak has an executable launch.sh */
+    char provides_summary[128];  /* e.g. "SCUMMVM" or "SNES +1 core" */
+    char content_diagnostic[192];/* newest diagnostics.json entry for this pak */
 } jw_pakrat_app_state;
 
 const char *jw_pakrat_app_status_name(jw_pakrat_app_status status);

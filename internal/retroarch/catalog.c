@@ -1,4 +1,5 @@
 #include "internal/retroarch/catalog.h"
+#include "internal/catalog/effective.h"
 #include "internal/platform/platform_id.h"
 
 #include "cJSON.h"
@@ -23,7 +24,16 @@ static int jw_ra_platform_uses_dot_system(const char *platform_id) {
             strcmp(platform_id, "my355") == 0);
 }
 
-static int jw_ra_resolve_defaults_dir(const char *sdcard_root, char *out, size_t out_size) {
+/* The RELEASE-owned defaults directory. Besides cores.json and systems.json
+   it also holds arcade_names.txt, retroarch.cfg, retroarch-record.cfg, and
+   pulse-default.pa -- none of which a content pak may touch and none of
+   which is ever copied into a generation. Callers that want
+   release-owned data name this function explicitly; callers that want the
+   effective catalog call jw_ra_effective_catalog_dir(). There is
+   deliberately no single "defaults dir" accessor that could be repointed to
+   mean both, because doing that would have silently dropped arcade titles
+   the moment a generation was published. */
+int jw_ra_release_defaults_dir(const char *sdcard_root, char *out, size_t out_size) {
     if (!out || out_size == 0) {
         return -1;
     }
@@ -63,8 +73,45 @@ static int jw_ra_resolve_defaults_dir(const char *sdcard_root, char *out, size_t
     return 0;
 }
 
-int jw_ra_defaults_dir(const char *sdcard_root, char *out, size_t out_size) {
-    return jw_ra_resolve_defaults_dir(sdcard_root, out, out_size);
+/* The directory a catalog READER should load systems.json and cores.json
+   from: the selected effective generation when structural validation passes,
+   otherwise the release defaults. Fail-closed by construction -- every
+   failure path inside jw_catalog_effective_dir() returns the release
+   defaults with a reason, and none of them returns a stale generation.
+
+   Returns 1 when the answer is a generation, 0 when it is the release
+   defaults, -1 when neither could be resolved. */
+int jw_ra_effective_catalog_dir(const char *sdcard_root, char *out, size_t out_size,
+                                char *reason, size_t reason_size) {
+    char generation_dir[PATH_MAX];
+    char local_reason[JW_CAT_REASON_MAX];
+    if (jw_catalog_effective_dir(sdcard_root, generation_dir, sizeof(generation_dir),
+                                 local_reason, sizeof(local_reason)) == JW_CAT_EFFECTIVE) {
+        if (snprintf(out, out_size, "%s", generation_dir) < (int)out_size) {
+            if (reason && reason_size > 0) {
+                snprintf(reason, reason_size, "%s", "effective");
+            }
+            return 1;
+        }
+        snprintf(local_reason, sizeof(local_reason), "%s", "generation-missing");
+    }
+    if (reason && reason_size > 0) {
+        snprintf(reason, reason_size, "%s", local_reason);
+    }
+    return jw_ra_release_defaults_dir(sdcard_root, out, out_size) == 0 ? 0 : -1;
+}
+
+int jw_ra_catalog_refresh(const char *sdcard_root, char *generation,
+                          size_t generation_size, char *reason, size_t reason_size) {
+    char defaults_dir[PATH_MAX];
+    if (jw_ra_release_defaults_dir(sdcard_root, defaults_dir, sizeof(defaults_dir)) != 0) {
+        if (reason && reason_size > 0) {
+            snprintf(reason, reason_size, "%s", "compile-failed");
+        }
+        return -1;
+    }
+    return jw_catalog_refresh(sdcard_root, defaults_dir, generation, generation_size,
+                              reason, reason_size);
 }
 
 static void jw_ra_set_error(char *error, size_t error_size, const char *message) {
@@ -92,6 +139,24 @@ static char *jw_ra_json_string(cJSON *object, const char *key) {
         return jw_ra_strdup("");
     }
     return jw_ra_strdup(item->valuestring);
+}
+
+static char *jw_ra_dirname_rel(const char *path) {
+    if (!path || !path[0]) {
+        return jw_ra_strdup("");
+    }
+    const char *slash = strrchr(path, '/');
+    if (!slash) {
+        return jw_ra_strdup("");
+    }
+    size_t len = (size_t)(slash - path);
+    char *copy = malloc(len + 1u);
+    if (!copy) {
+        return NULL;
+    }
+    memcpy(copy, path, len);
+    copy[len] = '\0';
+    return copy;
 }
 
 static bool jw_ra_json_bool(cJSON *object, const char *key, bool fallback) {
@@ -131,11 +196,6 @@ static char *jw_ra_read_text_file(const char *path, size_t max_size) {
     }
     text[read_count] = '\0';
     return text;
-}
-
-static int jw_ra_path_exists(const char *path) {
-    struct stat st;
-    return path && stat(path, &st) == 0;
 }
 
 static void jw_ra_string_list_free(jw_ra_string_list *list) {
@@ -222,6 +282,9 @@ static void jw_ra_core_free(jw_ra_core *core) {
     free(core->config_folder);
     free(core->info_name);
     free(core->path);
+    free(core->core_root_rel);
+    free(core->provider);
+    free(core->source_id);
     free(core->status);
 }
 
@@ -245,6 +308,12 @@ static void jw_ra_system_free(jw_ra_system *system) {
     jw_ra_string_list_free(&system->alternate_cores);
     free(system->rom_root);
     free(system->image_root);
+    free(system->group);
+    free(system->bios_directory);
+    free(system->icon_flat);
+    free(system->icon_photographic);
+    free(system->provider);
+    free(system->source_id);
 }
 
 void jw_ra_catalog_free(jw_ra_catalog *catalog) {
@@ -259,6 +328,8 @@ void jw_ra_catalog_free(jw_ra_catalog *catalog) {
     }
     free(catalog->cores);
     free(catalog->systems);
+    free(catalog->sdcard_root);
+    free(catalog->info_dir);
     free(catalog);
 }
 
@@ -272,6 +343,14 @@ static int jw_ra_load_core(cJSON *row, jw_ra_core *out) {
     out->config_folder = jw_ra_json_string(row, "config_folder");
     out->info_name = jw_ra_json_string(row, "info_name");
     out->path = jw_ra_json_string(row, "path");
+    out->provider = jw_ra_json_string(row, "provider");
+    if (out->provider && !out->provider[0]) {
+        free(out->provider);
+        out->provider = NULL;
+    }
+    out->source_id = out->provider ? jw_ra_strdup("primary") : NULL;
+    out->core_root_rel = jw_ra_dirname_rel(
+        out->type && strcmp(out->type, "path") == 0 ? out->path : out->file_name);
     out->status = jw_ra_json_string(row, "status");
     out->supports_menu = jw_ra_json_bool(row, "supports_menu", false);
     out->supports_savestate = jw_ra_json_bool(row, "supports_savestate", false);
@@ -279,7 +358,9 @@ static int jw_ra_load_core(cJSON *row, jw_ra_core *out) {
     out->needs_swap = jw_ra_json_bool(row, "needs_swap", false);
     out->requires_direct_drm = jw_ra_json_bool(row, "requires_direct_drm", false);
 
-    if (!out->id || !out->type || !out->status || !out->id[0] || !out->type[0] || !out->status[0]) {
+    if (!out->id || !out->type || !out->status || !out->core_root_rel ||
+        (out->provider && !out->source_id) ||
+        !out->id[0] || !out->type[0] || !out->status[0]) {
         return -1;
     }
     return 0;
@@ -296,11 +377,21 @@ static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
     out->legacy_flat_core = jw_ra_json_string(row, "legacy_flat_core");
     out->rom_root = jw_ra_json_string(row, "rom_root");
     out->image_root = jw_ra_json_string(row, "image_root");
+    out->group = jw_ra_json_string(row, "group");
+    out->bios_directory = jw_ra_json_string(row, "bios_directory");
+    out->icon_flat = jw_ra_json_string(row, "icon_flat");
+    out->icon_photographic = jw_ra_json_string(row, "icon_photographic");
+    out->provider = jw_ra_json_string(row, "provider");
+    if (out->provider && !out->provider[0]) {
+        free(out->provider);
+        out->provider = NULL;
+    }
+    out->source_id = out->provider ? jw_ra_strdup("primary") : NULL;
 
     /* Only the id is required. A system may have no default_core (discovered
        but not launchable on this device) — that's a launch-time concern, not a
        reason to reject the row and nuke the whole catalog. */
-    if (!out->id || !out->id[0]) {
+    if (!out->id || !out->id[0] || (out->provider && !out->source_id)) {
         return -1;
     }
     if (jw_ra_string_list_load(row, "patterns", &out->patterns) != 0 ||
@@ -312,6 +403,22 @@ static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
         jw_ra_string_list_load(row, "playlist_extensions", &out->playlist_extensions) != 0 ||
         jw_ra_string_list_load(row, "alternate_cores", &out->alternate_cores) != 0) {
         return -1;
+    }
+    cJSON *scraper_ids = cJSON_GetObjectItemCaseSensitive(
+        row, "screenscraper_platform_ids");
+    if (scraper_ids) {
+        if (!cJSON_IsArray(scraper_ids) || cJSON_GetArraySize(scraper_ids) > 8) {
+            return -1;
+        }
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, scraper_ids) {
+            if (!cJSON_IsNumber(item) || item->valuedouble != (double)item->valueint ||
+                item->valueint < 1 || item->valueint > 99999) {
+                return -1;
+            }
+            out->screenscraper_platform_ids[
+                out->screenscraper_platform_id_count++] = item->valueint;
+        }
     }
     return 0;
 }
@@ -362,27 +469,17 @@ static int jw_ra_metadata_signature_load(const char *sdcard_root,
     }
     memset(out, 0, sizeof(*out));
 
-    const char *platform_path = getenv("UMRK_PLATFORM_PATH");
-    const char *system_path = getenv("SYSTEM_PATH");
+    /* One decision point. This used to re-implement the env-override chain
+       inline, in two places, neither of which was jw_ra_defaults_dir() -- so
+       that function was never the single seam it looked like. */
     char defaults_dir[PATH_MAX];
-    if (platform_path && platform_path[0]) {
-        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/defaults",
-                     platform_path) >= (int)sizeof(defaults_dir)) {
-            jw_ra_set_error(error, error_size, "defaults path too long");
-            return -1;
-        }
-    } else if (system_path && system_path[0]) {
-        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/defaults",
-                     system_path) >= (int)sizeof(defaults_dir)) {
-            jw_ra_set_error(error, error_size, "defaults path too long");
-            return -1;
-        }
-    } else {
-        if (jw_ra_resolve_defaults_dir(sdcard_root, defaults_dir,
-                                       sizeof(defaults_dir)) != 0) {
-            jw_ra_set_error(error, error_size, "could not resolve defaults path");
-            return -1;
-        }
+    char resolution[JW_CAT_REASON_MAX];
+    int is_generation = jw_ra_effective_catalog_dir(sdcard_root, defaults_dir,
+                                                    sizeof(defaults_dir),
+                                                    resolution, sizeof(resolution));
+    if (is_generation < 0) {
+        jw_ra_set_error(error, error_size, "could not resolve catalog path");
+        return -1;
     }
 
     char cores_path[PATH_MAX];
@@ -397,8 +494,12 @@ static int jw_ra_metadata_signature_load(const char *sdcard_root,
         return -1;
     }
 
+    /* The cores.v2.json fallback is a RELEASE-payload question. A generation
+       always holds exactly one cores.json, because the compile already
+       settled which release file won before materializing it. */
     const char *selected_cores_path = cores_path;
-    if (!jw_ra_doc_has_expanded_cores(cores_path) && jw_ra_doc_has_expanded_cores(cores_v2_path)) {
+    if (!is_generation &&
+        !jw_ra_doc_has_expanded_cores(cores_path) && jw_ra_doc_has_expanded_cores(cores_v2_path)) {
         selected_cores_path = cores_v2_path;
     }
     snprintf(out->cores_path, sizeof(out->cores_path), "%s", selected_cores_path);
@@ -437,27 +538,14 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
         return NULL;
     }
 
-    const char *platform_path = getenv("UMRK_PLATFORM_PATH");
-    const char *system_path = getenv("SYSTEM_PATH");
     char defaults_dir[PATH_MAX];
-    if (platform_path && platform_path[0]) {
-        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/defaults",
-                     platform_path) >= (int)sizeof(defaults_dir)) {
-            jw_ra_set_error(error, error_size, "defaults path too long");
-            return NULL;
-        }
-    } else if (system_path && system_path[0]) {
-        if (snprintf(defaults_dir, sizeof(defaults_dir), "%s/defaults",
-                     system_path) >= (int)sizeof(defaults_dir)) {
-            jw_ra_set_error(error, error_size, "defaults path too long");
-            return NULL;
-        }
-    } else {
-        if (jw_ra_resolve_defaults_dir(sdcard_root, defaults_dir,
-                                       sizeof(defaults_dir)) != 0) {
-            jw_ra_set_error(error, error_size, "could not resolve defaults path");
-            return NULL;
-        }
+    char resolution[JW_CAT_REASON_MAX];
+    int is_generation = jw_ra_effective_catalog_dir(sdcard_root, defaults_dir,
+                                                    sizeof(defaults_dir),
+                                                    resolution, sizeof(resolution));
+    if (is_generation < 0) {
+        jw_ra_set_error(error, error_size, "could not resolve catalog path");
+        return NULL;
     }
 
     char cores_path[PATH_MAX];
@@ -473,8 +561,12 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
         return NULL;
     }
 
+    /* The cores.v2.json fallback is a RELEASE-payload question. A generation
+       always holds exactly one cores.json, because the compile already
+       settled which release file won before materializing it. */
     const char *selected_cores_path = cores_path;
-    if (!jw_ra_doc_has_expanded_cores(cores_path) && jw_ra_doc_has_expanded_cores(cores_v2_path)) {
+    if (!is_generation &&
+        !jw_ra_doc_has_expanded_cores(cores_path) && jw_ra_doc_has_expanded_cores(cores_v2_path)) {
         selected_cores_path = cores_v2_path;
     }
 
@@ -523,6 +615,43 @@ jw_ra_catalog *jw_ra_catalog_load(const char *sdcard_root, char *error, size_t e
         free(cores_text);
         free(systems_text);
         jw_ra_set_error(error, error_size, "out of memory");
+        return NULL;
+    }
+
+    catalog->sdcard_root = jw_ra_strdup(sdcard_root);
+    char info_dir[PATH_MAX];
+    if (is_generation) {
+        size_t len = strlen(defaults_dir);
+        if (len + sizeof("/info") > sizeof(info_dir)) {
+            info_dir[0] = '\0';
+        } else {
+            memcpy(info_dir, defaults_dir, len);
+            memcpy(info_dir + len, "/info", sizeof("/info"));
+        }
+    } else {
+        snprintf(info_dir, sizeof(info_dir), "%s", defaults_dir);
+        char *slash = strrchr(info_dir, '/');
+        if (slash) {
+            *slash = '\0';
+        }
+        size_t len = strlen(info_dir);
+        if (len + sizeof("/info") > sizeof(info_dir)) {
+            info_dir[0] = '\0';
+        } else {
+            memcpy(info_dir + len, "/info", sizeof("/info"));
+        }
+    }
+    catalog->info_dir = jw_ra_strdup(info_dir);
+    if (!catalog->sdcard_root || !catalog->info_dir ||
+        !catalog->info_dir[0]) {
+        jw_ra_catalog_free(catalog);
+        cJSON_Delete(cores_doc);
+        cJSON_Delete(systems_doc);
+        free(cores_text);
+        free(systems_text);
+        jw_ra_set_error(error, error_size,
+                        info_dir[0] ? "out of memory"
+                                    : "metadata path too long");
         return NULL;
     }
 
@@ -797,36 +926,119 @@ static bool jw_ra_core_is_packaged_path(const jw_ra_core *core) {
            core->path[0];
 }
 
-static bool jw_ra_core_file_exists(const char *core_dir, const char *file_name) {
-    char path[PATH_MAX];
-    if (!core_dir || !file_name || !file_name[0]) {
-        return false;
+int jw_ra_catalog_resolve_core_path(const jw_ra_catalog *catalog,
+                                    const jw_ra_core *core,
+                                    const char *core_dir,
+                                    const char *platform_dir,
+                                    bool require_executable,
+                                    char *out,
+                                    size_t out_size) {
+    if (!catalog || !core || !out || out_size == 0) {
+        return -1;
     }
-    if (snprintf(path, sizeof(path), "%s/%s", core_dir, file_name) >= (int)sizeof(path)) {
-        return false;
+    out[0] = '\0';
+    const char *rel = jw_ra_core_is_packaged_path(core) ? core->path : core->file_name;
+    int written = -1;
+    if (core->provider && core->provider[0]) {
+        const char *apps = getenv("APPS_PATH");
+        const char *leaf = strrchr(rel, '/');
+        leaf = leaf ? leaf + 1 : rel;
+        const char *root_rel = core->core_root_rel ? core->core_root_rel : "";
+        if (!apps || !apps[0]) {
+            if (!catalog->sdcard_root || !catalog->sdcard_root[0]) {
+                return -1;
+            }
+            written = root_rel[0]
+                          ? snprintf(out, out_size, "%s/Apps/%s/%s/%s",
+                                     catalog->sdcard_root, core->provider,
+                                     root_rel, leaf)
+                          : snprintf(out, out_size, "%s/Apps/%s/%s",
+                                     catalog->sdcard_root, core->provider, leaf);
+        } else {
+            written = root_rel[0]
+                          ? snprintf(out, out_size, "%s/%s/%s/%s", apps,
+                                     core->provider, root_rel, leaf)
+                          : snprintf(out, out_size, "%s/%s/%s", apps,
+                                     core->provider, leaf);
+        }
+    } else if (jw_ra_core_is_packaged_path(core)) {
+        if (rel[0] == '/') {
+            written = snprintf(out, out_size, "%s", rel);
+        } else if (platform_dir && platform_dir[0]) {
+            written = snprintf(out, out_size, "%s/%s", platform_dir, rel);
+        }
+    } else if (core_dir && core_dir[0]) {
+        written = snprintf(out, out_size, "%s/%s", core_dir, rel);
     }
-    return jw_ra_path_exists(path) != 0;
+    if (written < 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return -1;
+    }
+    struct stat st;
+    if (stat(out, &st) != 0 || !S_ISREG(st.st_mode) ||
+        (require_executable && access(out, X_OK) != 0)) {
+        out[0] = '\0';
+        return -1;
+    }
+    return 0;
 }
 
-static bool jw_ra_path_core_executable_exists(const char *platform_dir,
+int jw_ra_catalog_resolve_system_icon_path(const jw_ra_catalog *catalog,
+                                           const jw_ra_system *system,
+                                           bool photographic,
+                                           char *out,
+                                           size_t out_size) {
+    if (!catalog || !system || !system->provider || !system->provider[0] ||
+        !out || out_size == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+    const char *rel = photographic ? system->icon_photographic
+                                    : system->icon_flat;
+    if (!rel || !rel[0]) {
+        return -1;
+    }
+    const char *apps = getenv("APPS_PATH");
+    int written = apps && apps[0]
+                      ? snprintf(out, out_size, "%s/%s/%s", apps,
+                                 system->provider, rel)
+                      : snprintf(out, out_size, "%s/Apps/%s/%s",
+                                 catalog->sdcard_root, system->provider, rel);
+    if (written < 0 || (size_t)written >= out_size) {
+        out[0] = '\0';
+        return -1;
+    }
+    return 0;
+}
+
+int jw_ra_catalog_info_dir(const jw_ra_catalog *catalog,
+                           char *out,
+                           size_t out_size) {
+    if (!catalog || !catalog->info_dir || !catalog->info_dir[0] ||
+        !out || out_size == 0 ||
+        snprintf(out, out_size, "%s", catalog->info_dir) >= (int)out_size) {
+        return -1;
+    }
+    struct stat st;
+    return stat(out, &st) == 0 && S_ISDIR(st.st_mode) ? 0 : -1;
+}
+
+static bool jw_ra_core_file_exists(const jw_ra_catalog *catalog,
+                                   const jw_ra_core *core,
+                                   const char *core_dir,
+                                   const char *platform_dir) {
+    char path[PATH_MAX];
+    return jw_ra_catalog_resolve_core_path(catalog, core, core_dir, platform_dir,
+                                           false, path, sizeof(path)) == 0;
+}
+
+static bool jw_ra_path_core_executable_exists(const jw_ra_catalog *catalog,
+                                              const char *platform_dir,
                                               const jw_ra_core *core) {
     char path[PATH_MAX];
-    if (!jw_ra_core_is_packaged_path(core)) {
-        return false;
-    }
-    if (core->path[0] == '/') {
-        if (snprintf(path, sizeof(path), "%s", core->path) >=
-            (int)sizeof(path)) {
-            return false;
-        }
-    } else {
-        if (!platform_dir || !platform_dir[0] ||
-            snprintf(path, sizeof(path), "%s/%s", platform_dir,
-                     core->path) >= (int)sizeof(path)) {
-            return false;
-        }
-    }
-    return access(path, X_OK) == 0;
+    return jw_ra_core_is_packaged_path(core) &&
+           jw_ra_catalog_resolve_core_path(catalog, core, NULL, platform_dir,
+                                           true, path, sizeof(path)) == 0;
 }
 
 static const jw_ra_system *jw_ra_catalog_find_system_any(const jw_ra_catalog *catalog,
@@ -925,8 +1137,8 @@ int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
 
     const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
     if ((jw_ra_core_is_packaged_retroarch(core) &&
-         jw_ra_core_file_exists(core_dir, core->file_name)) ||
-        jw_ra_path_core_executable_exists(platform_dir, core)) {
+         jw_ra_core_file_exists(catalog, core, core_dir, platform_dir)) ||
+        jw_ra_path_core_executable_exists(catalog, platform_dir, core)) {
         jw_ra_add_core_choice(core, true, out, max_count, out_count);
     }
 
@@ -934,8 +1146,8 @@ int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
         const jw_ra_core *alternate =
             jw_ra_catalog_find_core(catalog, system->alternate_cores.items[i]);
         if (!((jw_ra_core_is_packaged_retroarch(alternate) &&
-               jw_ra_core_file_exists(core_dir, alternate->file_name)) ||
-              jw_ra_path_core_executable_exists(platform_dir, alternate))) {
+               jw_ra_core_file_exists(catalog, alternate, core_dir, platform_dir)) ||
+              jw_ra_path_core_executable_exists(catalog, platform_dir, alternate))) {
             continue;
         }
         jw_ra_add_core_choice(alternate, false, out, max_count, out_count);
@@ -970,8 +1182,16 @@ int jw_ra_catalog_resolve_core_file_for_choice(const jw_ra_catalog *catalog,
         } else {
             const jw_ra_core *preferred = jw_ra_catalog_find_core(catalog, preferred_core_id);
             if (jw_ra_core_is_packaged_retroarch(preferred) &&
-                jw_ra_core_file_exists(core_dir, preferred->file_name)) {
-                if (jw_ra_copy(core_file, core_file_size, preferred->file_name) != 0 ||
+                jw_ra_core_file_exists(catalog, preferred, core_dir, NULL)) {
+                char resolved[PATH_MAX];
+                const char *value = preferred->file_name;
+                if (preferred->provider &&
+                    jw_ra_catalog_resolve_core_path(catalog, preferred, core_dir,
+                                                    NULL, false, resolved,
+                                                    sizeof(resolved)) == 0) {
+                    value = resolved;
+                }
+                if (jw_ra_copy(core_file, core_file_size, value) != 0 ||
                     jw_ra_copy(core_id, core_id_size, preferred->id) != 0) {
                     jw_ra_set_error(diagnostic, diagnostic_size, "resolved preferred core path too long");
                     return -1;
@@ -1000,8 +1220,15 @@ int jw_ra_catalog_resolve_core_file_for_choice(const jw_ra_catalog *catalog,
     const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
     bool default_unavailable = true;
     if (jw_ra_core_is_packaged_retroarch(core) &&
-        jw_ra_core_file_exists(core_dir, core->file_name)) {
-        if (jw_ra_copy(core_file, core_file_size, core->file_name) != 0 ||
+        jw_ra_core_file_exists(catalog, core, core_dir, NULL)) {
+        char resolved[PATH_MAX];
+        const char *value = core->file_name;
+        if (core->provider &&
+            jw_ra_catalog_resolve_core_path(catalog, core, core_dir, NULL,
+                                            false, resolved, sizeof(resolved)) == 0) {
+            value = resolved;
+        }
+        if (jw_ra_copy(core_file, core_file_size, value) != 0 ||
             jw_ra_copy(core_id, core_id_size, core->id) != 0) {
             jw_ra_set_error(diagnostic, diagnostic_size, "resolved core path too long");
             return -1;
@@ -1020,10 +1247,17 @@ int jw_ra_catalog_resolve_core_file_for_choice(const jw_ra_catalog *catalog,
     for (size_t i = 0; i < system->alternate_cores.count; i++) {
         const jw_ra_core *alternate = jw_ra_catalog_find_core(catalog, system->alternate_cores.items[i]);
         if (!jw_ra_core_is_packaged_retroarch(alternate) ||
-            !jw_ra_core_file_exists(core_dir, alternate->file_name)) {
+            !jw_ra_core_file_exists(catalog, alternate, core_dir, NULL)) {
             continue;
         }
-        if (jw_ra_copy(core_file, core_file_size, alternate->file_name) != 0 ||
+        char resolved[PATH_MAX];
+        const char *value = alternate->file_name;
+        if (alternate->provider &&
+            jw_ra_catalog_resolve_core_path(catalog, alternate, core_dir, NULL,
+                                            false, resolved, sizeof(resolved)) == 0) {
+            value = resolved;
+        }
+        if (jw_ra_copy(core_file, core_file_size, value) != 0 ||
             jw_ra_copy(core_id, core_id_size, alternate->id) != 0) {
             jw_ra_set_error(diagnostic, diagnostic_size, "resolved alternate core path too long");
             return -1;

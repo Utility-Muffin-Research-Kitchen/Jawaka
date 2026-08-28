@@ -141,12 +141,20 @@ static int jw__gate_passes(const jw_pakrat_catalog_package *version,
 }
 
 static int jw__parse_package_history(const cJSON *app, const cJSON *package,
+                                     jw_pakrat_catalog_lane lane,
                                      jw__package_history *out) {
     jw_pakrat_catalog_package legacy;
     if (!out ||
         jw__fill_package(app, package, package, &legacy) != 0 ||
-        legacy.min_leaf_version[0] ||
         strcmp(jw__json_string(app, "version"), legacy.version) != 0) {
+        return -1;
+    }
+    /* In apps[] the legacy fields ARE the ungated safe floor, so carrying a
+       gate there would hand a gate-unaware client something it cannot run.
+       In content[] no gate-unaware client is looking, and the legacy fields
+       mirror the newest entry -- gate included, because that entry has one. */
+    if ((lane == JW_PAKRAT_LANE_CONTENT && !legacy.min_leaf_version[0]) ||
+        (lane != JW_PAKRAT_LANE_CONTENT && legacy.min_leaf_version[0])) {
         return -1;
     }
     memset(out, 0, sizeof(*out));
@@ -176,6 +184,10 @@ static int jw__parse_package_history(const cJSON *app, const cJSON *package,
             jw__fill_package(app, package, entry, &out->versions[i]) != 0) {
             return -1;
         }
+        if (lane == JW_PAKRAT_LANE_CONTENT &&
+            !out->versions[i].min_leaf_version[0]) {
+            return -1;
+        }
         for (int j = 0; j < i; j++) {
             if (strcmp(out->versions[i].version,
                        out->versions[j].version) == 0) {
@@ -193,22 +205,45 @@ static int jw__parse_package_history(const cJSON *app, const cJSON *package,
         }
     }
 
-    if (safe_floor_index < 0 || legacy_index < 0 ||
-        legacy_index != safe_floor_index ||
-        out->versions[legacy_index].min_leaf_version[0] ||
-        !jw__artifact_equal(&legacy, &out->versions[legacy_index])) {
+    if (lane == JW_PAKRAT_LANE_CONTENT) {
+        /* No ungated safe floor is required here, and none is expected: every
+           content package gates on the contract that defines it. The legacy
+           fields still have to mirror SOMETHING real, so they mirror the
+           newest entry rather than the newest ungated one. */
+        int newest_index = 0;
+        for (int i = 1; i < version_count; i++) {
+            if (jw__version_cmp_text(out->versions[i].version,
+                                     out->versions[newest_index].version) > 0) {
+                newest_index = i;
+            }
+        }
+        if (legacy_index < 0 || legacy_index != newest_index ||
+            !jw__artifact_equal(&legacy, &out->versions[legacy_index]) ||
+            strcmp(legacy.min_leaf_version,
+                   out->versions[legacy_index].min_leaf_version) != 0) {
+            return -1;
+        }
+    } else if (safe_floor_index < 0 || legacy_index < 0 ||
+               legacy_index != safe_floor_index ||
+               out->versions[legacy_index].min_leaf_version[0] ||
+               !jw__artifact_equal(&legacy, &out->versions[legacy_index])) {
+        /* apps[] is the gate-unaware lane: its legacy fields are what an old
+           client installs, so they must be the newest UNGATED entry. */
         return -1;
     }
     out->count = version_count;
     return 0;
 }
 
+/* Returns 0 when a version was selected, 1 when the package exists but has
+   nothing this device can install, and -1 when the catalog is malformed. */
 static int jw__select_package(const cJSON *app, const cJSON *package,
+                              jw_pakrat_catalog_lane lane,
                               const int device_version[3],
                               int device_known, int is_dev_override,
                               jw_pakrat_catalog_selection *out) {
     jw__package_history history;
-    if (jw__parse_package_history(app, package, &history) != 0) {
+    if (jw__parse_package_history(app, package, lane, &history) != 0) {
         return -1;
     }
     int selected_index = -1;
@@ -228,7 +263,11 @@ static int jw__select_package(const cJSON *app, const cJSON *package,
         }
     }
     if (selected_index < 0) {
-        return -1;
+        /* An apps[] package always has an ungated floor, so nothing passing
+           the gate means the catalog contradicts itself. A content package
+           has no floor by design: on a device below its minimum there is
+           simply nothing to offer, which is not an error. */
+        return lane == JW_PAKRAT_LANE_CONTENT ? 1 : -1;
     }
 
     memset(out, 0, sizeof(*out));
@@ -244,6 +283,39 @@ static int jw__select_package(const cJSON *app, const cJSON *package,
             return -1;
         }
     }
+    return 0;
+}
+
+/* S-3: an id may appear in exactly one lane. Both lanes resolve to the same
+   install_path, so two catalog entries pointing at one install path is a
+   duplicate-identity bug rather than a way to serve two audiences. The
+   generator and the CI validator reject this at publication time; the client
+   refuses it too, because a catalog that disagrees with itself is exactly the
+   "internally inconsistent" case this parser already fails closed on. */
+static int jw__lane_contains_id(const cJSON *lane, const char *id) {
+    const cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, lane) {
+        if (cJSON_IsObject(entry) &&
+            strcmp(jw__json_string(entry, "id"), id) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* An absent lane is not an error: `content` is optional, and `apps` may be
+   empty. A present-but-not-an-array lane is malformed. */
+static int jw__lane_array(const cJSON *root, const char *key,
+                          const cJSON **out) {
+    const cJSON *lane = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (!lane) {
+        *out = NULL;
+        return 0;
+    }
+    if (!cJSON_IsArray(lane)) {
+        return -1;
+    }
+    *out = lane;
     return 0;
 }
 
@@ -293,37 +365,73 @@ int jw_pakrat_catalog_parse_and_select(
     int device_known =
         jw_leaf_release_version_parse(device_leaf_version,
                                       device_version) == 0;
-    const cJSON *apps = cJSON_GetObjectItemCaseSensitive(root, "apps");
-    if (!cJSON_IsArray(apps)) {
+    const cJSON *apps = NULL;
+    const cJSON *content = NULL;
+    if (jw__lane_array(root, "apps", &apps) != 0 ||
+        jw__lane_array(root, "content", &content) != 0 || !apps) {
         cJSON_Delete(root);
         return -1;
     }
 
-    const cJSON *app = NULL;
-    cJSON_ArrayForEach(app, apps) {
-        if (!cJSON_IsObject(app)) {
-            cJSON_Delete(root);
-            return -1;
-        }
-        const cJSON *packages =
-            cJSON_GetObjectItemCaseSensitive(app, "packages");
-        if (!cJSON_IsArray(packages)) {
-            cJSON_Delete(root);
-            return -1;
-        }
-        const cJSON *package = NULL;
-        cJSON_ArrayForEach(package, packages) {
-            if (!cJSON_IsObject(package) ||
-                strcmp(jw__json_string(package, "platform"), platform) != 0) {
-                continue;
-            }
-            if (*out_count >= max_count ||
-                jw__select_package(app, package, device_version, device_known,
-                                   is_dev_override, &out[*out_count]) != 0) {
+    const struct {
+        const cJSON *lane;
+        jw_pakrat_catalog_lane kind;
+    } lanes[] = {{apps, JW_PAKRAT_LANE_APPS}, {content, JW_PAKRAT_LANE_CONTENT}};
+
+    for (size_t l = 0; l < sizeof(lanes) / sizeof(lanes[0]); l++) {
+        const cJSON *app = NULL;
+        cJSON_ArrayForEach(app, lanes[l].lane) {
+            if (!cJSON_IsObject(app)) {
                 cJSON_Delete(root);
                 return -1;
             }
-            (*out_count)++;
+            if (lanes[l].kind == JW_PAKRAT_LANE_CONTENT &&
+                jw__lane_contains_id(apps, jw__json_string(app, "id"))) {
+                cJSON_Delete(root);
+                return -1;
+            }
+            const cJSON *packages =
+                cJSON_GetObjectItemCaseSensitive(app, "packages");
+            if (!cJSON_IsArray(packages)) {
+                cJSON_Delete(root);
+                return -1;
+            }
+            const cJSON *package = NULL;
+            cJSON_ArrayForEach(package, packages) {
+                if (!cJSON_IsObject(package)) {
+                    continue;
+                }
+                const char *pkg_platform =
+                    jw__json_string(package, "platform");
+                /* D16: cores and standalone emulator binaries are
+                   platform-specific, so a content package must name a
+                   concrete platform. "shared" is refused rather than
+                   skipped -- skipping would hide a malformed catalog. */
+                if (lanes[l].kind == JW_PAKRAT_LANE_CONTENT &&
+                    strcmp(pkg_platform, "shared") == 0) {
+                    cJSON_Delete(root);
+                    return -1;
+                }
+                if (strcmp(pkg_platform, platform) != 0) {
+                    continue;
+                }
+                if (*out_count >= max_count) {
+                    cJSON_Delete(root);
+                    return -1;
+                }
+                int selected = jw__select_package(
+                    app, package, lanes[l].kind, device_version, device_known,
+                    is_dev_override, &out[*out_count]);
+                if (selected < 0) {
+                    cJSON_Delete(root);
+                    return -1;
+                }
+                if (selected > 0) {
+                    continue; /* nothing installable on this device */
+                }
+                out[*out_count].lane = lanes[l].kind;
+                (*out_count)++;
+            }
         }
     }
 
@@ -352,14 +460,21 @@ int jw_pakrat_catalog_find_exact(
         cJSON_Delete(root);
         return root_rc;
     }
-    const cJSON *apps = cJSON_GetObjectItemCaseSensitive(root, "apps");
-    if (!cJSON_IsArray(apps)) {
+    const cJSON *apps = NULL;
+    const cJSON *content = NULL;
+    if (jw__lane_array(root, "apps", &apps) != 0 ||
+        jw__lane_array(root, "content", &content) != 0 || !apps) {
         cJSON_Delete(root);
         return -1;
     }
 
+    /* Repair of an owned install must keep working after a package moves
+       lanes -- PortMaster does exactly that in Phase 9 -- so exact-version
+       lookup searches both lanes and does not care which one answers. */
+    const cJSON *lane_list[] = {apps, content};
+    for (size_t l = 0; l < sizeof(lane_list) / sizeof(lane_list[0]); l++) {
     const cJSON *app = NULL;
-    cJSON_ArrayForEach(app, apps) {
+    cJSON_ArrayForEach(app, lane_list[l]) {
         if (!cJSON_IsObject(app)) {
             cJSON_Delete(root);
             return -1;
@@ -380,7 +495,11 @@ int jw_pakrat_catalog_find_exact(
                 continue;
             }
             jw__package_history history;
-            if (jw__parse_package_history(app, package, &history) != 0) {
+            if (jw__parse_package_history(
+                    app, package,
+                    lane_list[l] == apps ? JW_PAKRAT_LANE_APPS
+                                         : JW_PAKRAT_LANE_CONTENT,
+                    &history) != 0) {
                 cJSON_Delete(root);
                 return -1;
             }
@@ -393,6 +512,7 @@ int jw_pakrat_catalog_find_exact(
                 }
             }
         }
+    }
     }
 
     cJSON_Delete(root);

@@ -17,7 +17,7 @@ if [[ ! "$REMOTE_DIR" =~ ^/tmp/jawaka-a2-[A-Za-z0-9._/-]+$ ]] ||
     exit 1
 fi
 
-CANONICAL_INVALID="$WORKSPACE_ROOT/umrk-workspace/contracts/leaf-services/manifests/invalid"
+CANONICAL_INVALID="$WORKSPACE_ROOT/leaf-contracts/contracts/leaf-services/manifests/invalid"
 if [ ! -d "$CANONICAL_INVALID" ]; then
     echo "canonical A0 fixture tree not found: $CANONICAL_INVALID" >&2
     exit 1

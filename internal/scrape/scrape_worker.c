@@ -31,6 +31,8 @@ typedef struct {
        "NES" for system "FC"), resolved on the enqueue/main thread so the worker
        never touches the unsynchronized catalog cache. */
     char image_dir[64];
+    int platform_ids[JW_SCRAPE_MAX_PLATFORM_IDS];
+    size_t platform_id_count;
     char rom_path[512];
 } jw__scrape_item;
 
@@ -360,6 +362,14 @@ static void jw__image_dir_for_system(const char *system, char *out, size_t out_s
     if (dir[0]) snprintf(out, out_size, "%s", dir);
 }
 
+static size_t jw__platform_ids_for_system(const char *system,
+                                          int *out, size_t capacity) {
+    char error[256];
+    const jw_ra_catalog *catalog =
+        jw_ra_catalog_get(jw__w.sdcard_root, error, sizeof(error));
+    return jw_scrape_platform_ids_for_catalog(catalog, system, out, capacity);
+}
+
 static int jw__resolve_paths(const jw__scrape_item *item,
                              char *rom_abs, size_t rom_abs_size,
                              char *rom_name, size_t rom_name_size,
@@ -454,6 +464,8 @@ static int jw__queue_push(const char *system, const char *rom_path) {
     slot->row_id = row->id;
     snprintf(slot->system, sizeof(slot->system), "%s", system);
     jw__image_dir_for_system(system, slot->image_dir, sizeof(slot->image_dir));
+    slot->platform_id_count = jw__platform_ids_for_system(
+        system, slot->platform_ids, JW_SCRAPE_MAX_PLATFORM_IDS);
     snprintf(slot->rom_path, sizeof(slot->rom_path), "%s", rom_path);
     jw__w.count++;
     return 1;
@@ -571,9 +583,8 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     }
     jw__row_set_output(item->row_id, dest_abs);
 
-    int system_ids[JW_SCRAPE_MAX_PLATFORM_IDS];
-    size_t system_count = jw_scrape_platform_ids(
-        item->system, system_ids, JW_SCRAPE_MAX_PLATFORM_IDS);
+    const int *system_ids = item->platform_ids;
+    size_t system_count = item->platform_id_count;
     if (system_count == 0) {
         /* enqueue validates this; only reachable through races */
         pthread_mutex_lock(&jw__w.mu);
@@ -827,7 +838,7 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
         if (error) *error = "scraping unavailable in this build";
         return -1;
     }
-    if (jw_scrape_platform_ids(system, NULL, 0) == 0) {
+    if (jw__platform_ids_for_system(system, NULL, 0) == 0) {
         if (error) *error = "no ScreenScraper mapping for this system";
         return -1;
     }
@@ -881,7 +892,7 @@ int jw_scrape_count_missing_system(const char *system, int *out_missing,
         if (error) *error = "missing system";
         return -1;
     }
-    if (jw_scrape_platform_ids(system, NULL, 0) == 0)
+    if (jw__platform_ids_for_system(system, NULL, 0) == 0)
         return 0;   /* no ScreenScraper mapping -> nothing scrapeable */
 
     jw_game_entry *games = calloc(JW__SCRAPE_LIST_MAX, sizeof(*games));
@@ -932,7 +943,7 @@ int jw_scrape_missing_counts(jw_scrape_missing_row *out, int max,
 
     int n = 0, total_missing = 0;
     for (int i = 0; i < sys_count && n < max; i++) {
-        if (jw_scrape_platform_ids(systems[i].name, NULL, 0) == 0) continue;
+        if (jw__platform_ids_for_system(systems[i].name, NULL, 0) == 0) continue;
         int missing = 0, total = 0;
         if (jw_scrape_count_missing_system(systems[i].name, &missing, &total,
                                            NULL) != 0)
@@ -987,7 +998,7 @@ int jw_scrape_enqueue_all_full(bool missing_only,
         return -1;
     }
     for (int i = 0; i < sys_count; i++) {
-        if (jw_scrape_platform_ids(systems[i].name, NULL, 0) == 0) continue;
+        if (jw__platform_ids_for_system(systems[i].name, NULL, 0) == 0) continue;
         const char *err = NULL;
         jw_scrape_enqueue_result one;
         (void)jw_scrape_enqueue_system_full(systems[i].name, missing_only,
@@ -1019,7 +1030,7 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
         if (error) *error = "scraping unavailable in this build";
         return -1;
     }
-    if (jw_scrape_platform_ids(system, NULL, 0) == 0) {
+    if (jw__platform_ids_for_system(system, NULL, 0) == 0) {
         if (error) *error = "no ScreenScraper mapping for this system";
         return -1;
     }

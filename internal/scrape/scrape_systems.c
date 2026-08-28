@@ -1,4 +1,5 @@
 #include "internal/scrape/scrape_systems.h"
+#include "internal/retroarch/catalog.h"
 
 #include <string.h>
 #include <strings.h>
@@ -116,6 +117,23 @@ size_t jw_scrape_platform_ids(const char *system_tag,
         count++;
     }
     return count;
+}
+
+size_t jw_scrape_platform_ids_for_catalog(const jw_ra_catalog *catalog,
+                                          const char *system_tag,
+                                          int *out, size_t capacity) {
+    const jw_ra_system *system =
+        jw_ra_catalog_match_system_folder(catalog, system_tag);
+    if (system && system->screenscraper_platform_id_count > 0) {
+        size_t count = system->screenscraper_platform_id_count;
+        size_t copied = count < capacity ? count : capacity;
+        if (out && copied > 0) {
+            memcpy(out, system->screenscraper_platform_ids,
+                   copied * sizeof(system->screenscraper_platform_ids[0]));
+        }
+        return count;
+    }
+    return jw_scrape_platform_ids(system_tag, out, capacity);
 }
 
 int jw_scrape_platform_id(const char *system_tag) {
