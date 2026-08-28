@@ -21,14 +21,11 @@ jobs:
         run: make -C Jawaka ctl1-test life1-test ipc-stream-test
 
       - name: Check out the pinned service contracts
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/checkout@v4
         with:
-          repository: Utility-Muffin-Research-Kitchen/umrk-workspace
-          ref: 5ab17d82c122b481f15c835e6ff9a21829d45aa9
-          ssh-key: ${{ secrets.UMRK_WORKSPACE_DEPLOY_KEY }}
-          path: umrk-workspace
+          repository: Utility-Muffin-Research-Kitchen/leaf-contracts
+          ref: ad5b27d3489c0dd7f3ebecb787563e8703c14945
+          path: leaf-contracts
 
       - name: Verify C framing against canonical fixtures
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: make -C Jawaka WORKSPACE_ROOT="$GITHUB_WORKSPACE" wire-fixture-test
