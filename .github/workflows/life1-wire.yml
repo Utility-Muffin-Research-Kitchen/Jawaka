@@ -24,8 +24,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Utility-Muffin-Research-Kitchen/leaf-contracts
-          ref: ad5b27d3489c0dd7f3ebecb787563e8703c14945
+          ref: 022a265bee1acc89748c194ae4f8d07f317d497c
           path: leaf-contracts
 
       - name: Verify C framing against canonical fixtures
         run: make -C Jawaka WORKSPACE_ROOT="$GITHUB_WORKSPACE" wire-fixture-test
+
+      - name: Verify content manifests against canonical fixtures
+        run: make -C Jawaka content-manifest-test catalog-merge-test
