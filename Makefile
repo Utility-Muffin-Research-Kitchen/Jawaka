@@ -163,6 +163,7 @@ CONTENT_MANIFEST_SRC := internal/catalog/manifest.c
 SCRAPE_SRCS := \
 	internal/scrape/ss_client.c \
 	internal/scrape/scrape_catalog.c \
+	internal/scrape/scrape_identity.c \
 	internal/scrape/scrape_md5.c \
 	internal/scrape/scrape_systems.c \
 	internal/scrape/scrape_worker.c \
@@ -899,6 +900,13 @@ scrape-systems-test: | $(BUILD)/bin
 		$(EFFECTIVE_CATALOG_SRCS) internal/platform/platform_id_mock.c \
 		third_party/cjson/cJSON.c
 	$(BUILD)/bin/scrape-systems-test
+
+.PHONY: scrape-identity-test
+scrape-identity-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/scrape-identity-test \
+		internal/scrape/scrape_identity_test.c \
+		internal/scrape/scrape_identity.c
+	$(BUILD)/bin/scrape-identity-test
 
 ss-client-test: $(SCRAPE_CREDENTIALS_HEADER) | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) $(SCRAPE_CFLAGS) -DJW_SS_TESTING \

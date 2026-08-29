@@ -1,4 +1,5 @@
 #include "internal/scrape/scrape_worker.h"
+#include "internal/scrape/scrape_identity.h"
 #include "internal/scrape/scrape_systems.h"
 #include "internal/scrape/ss_client.h"
 #include "internal/core/log.h"
@@ -33,6 +34,9 @@ typedef struct {
     char image_dir[64];
     int platform_ids[JW_SCRAPE_MAX_PLATFORM_IDS];
     size_t platform_id_count;
+    jw_ra_scrape_name_source name_source;
+    char lookup_extension[17];
+    char effective_title[256];
     char rom_path[512];
 } jw__scrape_item;
 
@@ -370,6 +374,41 @@ static size_t jw__platform_ids_for_system(const char *system,
     return jw_scrape_platform_ids_for_catalog(catalog, system, out, capacity);
 }
 
+static void jw__scrape_policy_for_system(
+    const char *system,
+    jw_ra_scrape_name_source *name_source,
+    char *lookup_extension,
+    size_t lookup_extension_size) {
+    *name_source = JW_RA_SCRAPE_NAME_FILENAME;
+    lookup_extension[0] = '\0';
+    char error[256];
+    const jw_ra_catalog *catalog =
+        jw_ra_catalog_get(jw__w.sdcard_root, error, sizeof(error));
+    const jw_ra_system *entry = catalog
+                                    ? jw_ra_catalog_find_system(catalog, system)
+                                    : NULL;
+    if (!entry || entry->screenscraper_name_source !=
+                      JW_RA_SCRAPE_NAME_DESCRIPTOR) {
+        return;
+    }
+    *name_source = entry->screenscraper_name_source;
+    snprintf(lookup_extension, lookup_extension_size, "%s",
+             entry->screenscraper_lookup_extension);
+}
+
+static void jw__log_scrape_policy(const char *system) {
+    jw_ra_scrape_name_source name_source;
+    char extension[17];
+    jw__scrape_policy_for_system(system, &name_source,
+                                 extension, sizeof(extension));
+    if (name_source == JW_RA_SCRAPE_NAME_DESCRIPTOR) {
+        jw_log_info("scrape: system=%s name_source=descriptor lookup_extension=%s",
+                    system, extension);
+    } else {
+        jw_log_info("scrape: system=%s name_source=filename", system);
+    }
+}
+
 static int jw__resolve_paths(const jw__scrape_item *item,
                              char *rom_abs, size_t rom_abs_size,
                              char *rom_name, size_t rom_name_size,
@@ -466,6 +505,11 @@ static int jw__queue_push(const char *system, const char *rom_path) {
     jw__image_dir_for_system(system, slot->image_dir, sizeof(slot->image_dir));
     slot->platform_id_count = jw__platform_ids_for_system(
         system, slot->platform_ids, JW_SCRAPE_MAX_PLATFORM_IDS);
+    jw__scrape_policy_for_system(system, &slot->name_source,
+                                 slot->lookup_extension,
+                                 sizeof(slot->lookup_extension));
+    snprintf(slot->effective_title, sizeof(slot->effective_title), "%s",
+             row->display_name);
     snprintf(slot->rom_path, sizeof(slot->rom_path), "%s", rom_path);
     jw__w.count++;
     return 1;
@@ -614,10 +658,27 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     client.progress_userdata = &progress_ctx;
 
     jw_ss_result result;
-    jw_ss_search_status search_status = jw_ss_search_rom_platforms(
-        &client, rom_name, rom_abs, system_ids, system_count,
-        (const char *const *)prefs.artwork, prefs.artwork_count,
-        (const char *const *)prefs.regions, prefs.region_count, &result);
+    jw_ss_search_status search_status;
+    if (item->name_source == JW_RA_SCRAPE_NAME_DESCRIPTOR) {
+        jw_scrape_identity_candidates candidates;
+        jw_scrape_identity_build(rom_abs, rom_name, item->effective_title,
+                                 item->lookup_extension, &candidates);
+        search_status = JW_SS_SEARCH_NOT_FOUND;
+        for (size_t i = 0; i < candidates.count; i++) {
+            search_status = jw_ss_search_rom_platforms(
+                &client, candidates.names[i], NULL, system_ids, system_count,
+                (const char *const *)prefs.artwork, prefs.artwork_count,
+                (const char *const *)prefs.regions, prefs.region_count, &result);
+            if (search_status != JW_SS_SEARCH_NOT_FOUND) {
+                break;
+            }
+        }
+    } else {
+        search_status = jw_ss_search_rom_platforms(
+            &client, rom_name, rom_abs, system_ids, system_count,
+            (const char *const *)prefs.artwork, prefs.artwork_count,
+            (const char *const *)prefs.regions, prefs.region_count, &result);
+    }
     int rc = search_status;
     if (search_status == JW_SS_SEARCH_FOUND) {
         rc = jw_ss_download_media(&client, result.media_url, dest_abs,
@@ -860,6 +921,7 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
         if (error) *error = "scrape queue is full";
         return -1;
     }
+    if (rc > 0) jw__log_scrape_policy(system);
     return rc;
 }
 
@@ -1090,6 +1152,7 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
     }
     if (out->enqueued > 0) pthread_cond_broadcast(&jw__w.cv);
     pthread_mutex_unlock(&jw__w.mu);
+    if (out->enqueued > 0) jw__log_scrape_policy(system);
     free(games);
     return out->enqueued;
 }
