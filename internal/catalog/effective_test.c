@@ -12,6 +12,8 @@
 
 #include "internal/catalog/effective.h"
 
+#include "cJSON.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -518,6 +520,95 @@ static void test_compile_failure_diagnostics(void) {
     check(!exists(selector), "failed compile invalidates the selector");
 }
 
+static void test_content_scrape_policy(void) {
+    rm_rf(sandbox);
+    mkdir_p(sandbox);
+    mkdir_p(defaults_dir);
+    seed_release("{\"platform\":\"mac\",\"systems\":[]}",
+                 "{\"platform\":\"mac\",\"cores\":[]}");
+    seed_release_id("2026-08-28-gtest001");
+
+    char pak_dir[PATH_MAX];
+    char path[PATH_MAX];
+    path_of(pak_dir, sizeof(pak_dir), "%s/ScummVM.pak", sandbox);
+    mkdir_p(pak_dir);
+    path_of(path, sizeof(path), "%s/cores", pak_dir);
+    mkdir_p(path);
+    path_of(path, sizeof(path), "%s/info", pak_dir);
+    mkdir_p(path);
+    path_of(path, sizeof(path), "%s/cores/scummvm_libretro.so", pak_dir);
+    write_text(path, "core");
+    path_of(path, sizeof(path), "%s/info/scummvm_libretro.info", pak_dir);
+    write_text(path, "info");
+    path_of(path, sizeof(path), "%s/pak.json", pak_dir);
+    write_text(path, "manifest-v1");
+
+    char contributor_json[8192];
+    snprintf(contributor_json, sizeof(contributor_json),
+             "[{\"provider\":\"mlp1/ScummVM.pak\","
+             "\"source_id\":\"primary\",\"pak_version\":\"1.0.0\","
+             "\"pak_dir\":\"%s\","
+             "\"provides\":{\"schema\":1,\"systems\":[{"
+             "\"id\":\"SCUMMVM\",\"name\":\"ScummVM\","
+             "\"patterns\":[\"SCUMMVM\"],"
+             "\"extensions\":[\"scummvm\",\"svm\"],"
+             "\"rom_root\":\"Roms/SCUMMVM\","
+             "\"image_root\":\"Images/SCUMMVM\","
+             "\"default_core\":\"scummvm\",\"alternate_cores\":[]}],"
+             "\"cores\":[{\"id\":\"scummvm\","
+             "\"display_name\":\"ScummVM\",\"type\":\"retroarch\","
+             "\"libretro_name\":\"scummvm\","
+             "\"file_name\":\"cores/scummvm_libretro.so\","
+             "\"info_name\":\"info/scummvm_libretro.info\","
+             "\"config_folder\":\"ScummVM\"}],"
+             "\"system_extensions\":[]},"
+             "\"content_scrape\":{\"schema\":1,\"systems\":[{"
+             "\"id\":\"SCUMMVM\",\"name_source\":\"descriptor\","
+             "\"lookup_extension\":\"scummvm\"}]}}]",
+             pak_dir);
+    cJSON *contributors = cJSON_Parse(contributor_json);
+    cJSON *diagnostics = cJSON_CreateArray();
+    check(contributors != NULL && diagnostics != NULL,
+          "content scrape contributor fixture parses");
+
+    char generation[JW_CAT_GEN_NAME_MAX];
+    char reason[JW_CAT_REASON_MAX];
+    int rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0, "content scrape contributor publishes");
+
+    path_of(path, sizeof(path), "%s/%s/systems.json", catalog_dir, generation);
+    const char *systems = read_text(path);
+    check(systems && strstr(systems,
+          "\"screenscraper_lookup_extension\":\"scummvm\"") != NULL,
+          "effective system contains lookup extension");
+    check(systems && strstr(systems,
+          "\"screenscraper_name_source\":\"descriptor\"") != NULL,
+          "effective system contains descriptor source");
+    check(systems && strstr(systems, "\"content_scrape\"") == NULL,
+          "effective system omits raw companion block");
+
+    path_of(path, sizeof(path), "%s/%s/stamp.json", catalog_dir, generation);
+    const char *stamp = read_text(path);
+    check(stamp && strstr(stamp, "\"rel\":\"pak.json\"") != NULL,
+          "active companion fingerprints pak.json");
+
+    char first_generation[JW_CAT_GEN_NAME_MAX];
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    path_of(path, sizeof(path), "%s/pak.json", pak_dir);
+    write_text(path, "manifest-v2");
+    rc = jw_catalog_refresh_with_contributors(
+        sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0, "changed companion manifest republishes");
+    check(strcmp(first_generation, generation) != 0,
+          "pak.json change moves the generation");
+
+    cJSON_Delete(diagnostics);
+    cJSON_Delete(contributors);
+}
+
 int main(void) {
     const char *base = getenv("TMPDIR");
     snprintf(sandbox, sizeof(sandbox), "%s/jw-effective-test-%ld",
@@ -542,6 +633,7 @@ int main(void) {
     test_cleanup_temps();
     test_missing_release_identity();
     test_compile_failure_diagnostics();
+    test_content_scrape_policy();
 
     rm_rf(sandbox);
     if (failures) {

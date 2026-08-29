@@ -1118,6 +1118,68 @@ static const char *jw_cat__json_text(const cJSON *object, const char *key) {
     return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
 }
 
+static int jw_cat__apply_content_scrape(cJSON *systems,
+                                        const cJSON *contributors) {
+    const cJSON *contributor = NULL;
+    cJSON_ArrayForEach(contributor, contributors) {
+        const char *provider = jw_cat__json_text(contributor, "provider");
+        const cJSON *block = cJSON_GetObjectItemCaseSensitive(
+            contributor, "content_scrape");
+        const cJSON *policy = NULL;
+        cJSON_ArrayForEach(policy,
+                           cJSON_GetObjectItemCaseSensitive(block, "systems")) {
+            cJSON *system = NULL;
+            cJSON_ArrayForEach(system, systems) {
+                if (strcmp(jw_cat__json_text(system, "id"),
+                           jw_cat__json_text(policy, "id")) != 0 ||
+                    strcmp(jw_cat__json_text(system, "provider"), provider) != 0) {
+                    continue;
+                }
+                cJSON_DeleteItemFromObjectCaseSensitive(
+                    system, "screenscraper_name_source");
+                cJSON_DeleteItemFromObjectCaseSensitive(
+                    system, "screenscraper_lookup_extension");
+                if (!cJSON_AddStringToObject(
+                        system, "screenscraper_name_source",
+                        jw_cat__json_text(policy, "name_source")) ||
+                    !cJSON_AddStringToObject(
+                        system, "screenscraper_lookup_extension",
+                        jw_cat__json_text(policy, "lookup_extension"))) {
+                    return -1;
+                }
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
+static bool jw_cat__content_scrape_affects(const cJSON *systems,
+                                           const cJSON *contributor) {
+    const char *provider = jw_cat__json_text(contributor, "provider");
+    const cJSON *block = cJSON_GetObjectItemCaseSensitive(
+        contributor, "content_scrape");
+    const cJSON *policy = NULL;
+    cJSON_ArrayForEach(policy,
+                       cJSON_GetObjectItemCaseSensitive(block, "systems")) {
+        const cJSON *system = NULL;
+        cJSON_ArrayForEach(system, systems) {
+            if (strcmp(jw_cat__json_text(system, "id"),
+                       jw_cat__json_text(policy, "id")) == 0 &&
+                strcmp(jw_cat__json_text(system, "provider"), provider) == 0 &&
+                strcmp(jw_cat__json_text(system,
+                                         "screenscraper_name_source"),
+                       jw_cat__json_text(policy, "name_source")) == 0 &&
+                strcmp(jw_cat__json_text(system,
+                                         "screenscraper_lookup_extension"),
+                       jw_cat__json_text(policy, "lookup_extension")) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static int jw_cat__file_stamp_cmp(const void *left, const void *right) {
     const jw_cat_file_stamp *a = left;
     const jw_cat_file_stamp *b = right;
@@ -1189,25 +1251,32 @@ static int jw_cat__stamp_declared_files(jw_cat_contributor_stamp *stamp,
             }
         }
     }
-    qsort(stamp->files, stamp->file_count, sizeof(*stamp->files),
-          jw_cat__file_stamp_cmp);
     return 0;
 }
 
 static int jw_cat__build_contributor_stamps(jw_cat_stamp *stamp,
-                                            const cJSON *contributors) {
+                                            const cJSON *contributors,
+                                            const char *systems_output) {
     int count = cJSON_IsArray(contributors) ? cJSON_GetArraySize(contributors) : 0;
     if (count <= 0) {
         return 0;
     }
+    cJSON *systems_doc = systems_output ? cJSON_Parse(systems_output) : NULL;
+    const cJSON *systems = cJSON_GetObjectItemCaseSensitive(systems_doc, "systems");
+    if (!cJSON_IsArray(systems)) {
+        cJSON_Delete(systems_doc);
+        return -1;
+    }
     stamp->contributors = calloc((size_t)count, sizeof(*stamp->contributors));
     if (!stamp->contributors) {
+        cJSON_Delete(systems_doc);
         return -1;
     }
     const cJSON *row = NULL;
     cJSON_ArrayForEach(row, contributors) {
         jw_cat_contributor_stamp *out =
             &stamp->contributors[stamp->contributor_count];
+        stamp->contributor_count++;
         out->provider = strdup(jw_cat__json_text(row, "provider"));
         out->source_id = strdup(jw_cat__json_text(row, "source_id"));
         out->pak_version = strdup(jw_cat__json_text(row, "pak_version"));
@@ -1218,15 +1287,21 @@ static int jw_cat__build_contributor_stamps(jw_cat_stamp *stamp,
         if (!out->provider || !out->source_id || !out->pak_version ||
             !pak_dir[0] || !canonical) {
             free(canonical);
+            cJSON_Delete(systems_doc);
             return -1;
         }
         jw_sha256_buf_hex(canonical, canonical_size, out->provides_sha256);
         free(canonical);
-        if (jw_cat__stamp_declared_files(out, pak_dir, provides) != 0) {
+        if (jw_cat__stamp_declared_files(out, pak_dir, provides) != 0 ||
+            (jw_cat__content_scrape_affects(systems, row) &&
+             jw_cat__stamp_add_file(out, pak_dir, "pak.json") != 0)) {
+            cJSON_Delete(systems_doc);
             return -1;
         }
-        stamp->contributor_count++;
+        qsort(out->files, out->file_count, sizeof(*out->files),
+              jw_cat__file_stamp_cmp);
     }
+    cJSON_Delete(systems_doc);
     qsort(stamp->contributors, stamp->contributor_count,
           sizeof(*stamp->contributors), jw_cat__contributor_stamp_cmp);
     return 0;
@@ -1291,6 +1366,14 @@ static int jw_cat__merge_outputs(const char *systems_path,
         cJSON_GetObjectItemCaseSensitive(merged, "cores"), true);
     cJSON_Delete(merged);
     if (!merged_systems || !merged_cores) {
+        cJSON_Delete(merged_systems);
+        cJSON_Delete(merged_cores);
+        cJSON_Delete(diagnostics);
+        cJSON_Delete(systems_doc);
+        cJSON_Delete(cores_doc);
+        return -1;
+    }
+    if (jw_cat__apply_content_scrape(merged_systems, contributors) != 0) {
         cJSON_Delete(merged_systems);
         cJSON_Delete(merged_cores);
         cJSON_Delete(diagnostics);
@@ -1458,7 +1541,8 @@ int jw_catalog_refresh_with_contributors(const char *sdcard_root,
             return 1;
         }
     }
-    if (jw_cat__build_contributor_stamps(&stamp, contributors) != 0) {
+    if (jw_cat__build_contributor_stamps(&stamp, contributors,
+                                         systems_output) != 0) {
         free(systems_output);
         free(cores_output);
         cJSON_Delete(merge_diagnostics);

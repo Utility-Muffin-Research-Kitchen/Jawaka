@@ -9,6 +9,11 @@ typedef struct {
     size_t count;
 } jw_ra_string_list;
 
+typedef enum {
+    JW_RA_SCRAPE_NAME_FILENAME = 0,
+    JW_RA_SCRAPE_NAME_DESCRIPTOR = 1,
+} jw_ra_scrape_name_source;
+
 typedef struct {
     char *id;
     char *display_name;
@@ -56,6 +61,8 @@ typedef struct {
     char *bios_directory;
     int screenscraper_platform_ids[8];
     size_t screenscraper_platform_id_count;
+    jw_ra_scrape_name_source screenscraper_name_source;
+    char screenscraper_lookup_extension[17];
     /* Content-pak artwork provenance. Paths stay pak-relative in the catalog;
        provider is Apps-relative and source_id names the owning card. */
     char *icon_flat;

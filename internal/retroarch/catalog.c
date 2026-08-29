@@ -270,6 +270,20 @@ bool jw_ra_string_list_contains_casefold(const jw_ra_string_list *list, const ch
     return false;
 }
 
+static bool jw_ra_scrape_extension_is_safe(const char *value) {
+    size_t length = value ? strlen(value) : 0;
+    if (length < 1u || length > 16u) {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        char c = value[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void jw_ra_core_free(jw_ra_core *core) {
     if (!core) {
         return;
@@ -419,6 +433,24 @@ static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
             out->screenscraper_platform_ids[
                 out->screenscraper_platform_id_count++] = item->valueint;
         }
+    }
+    cJSON *name_source = cJSON_GetObjectItemCaseSensitive(
+        row, "screenscraper_name_source");
+    cJSON *lookup_extension = cJSON_GetObjectItemCaseSensitive(
+        row, "screenscraper_lookup_extension");
+    if (name_source || lookup_extension) {
+        if (!cJSON_IsString(name_source) || !name_source->valuestring ||
+            strcmp(name_source->valuestring, "descriptor") != 0 ||
+            !cJSON_IsString(lookup_extension) || !lookup_extension->valuestring ||
+            !jw_ra_scrape_extension_is_safe(lookup_extension->valuestring) ||
+            !jw_ra_string_list_contains(&out->extensions,
+                                        lookup_extension->valuestring)) {
+            return -1;
+        }
+        out->screenscraper_name_source = JW_RA_SCRAPE_NAME_DESCRIPTOR;
+        snprintf(out->screenscraper_lookup_extension,
+                 sizeof(out->screenscraper_lookup_extension), "%s",
+                 lookup_extension->valuestring);
     }
     return 0;
 }

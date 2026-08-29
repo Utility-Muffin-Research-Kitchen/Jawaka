@@ -77,10 +77,54 @@ int main(void) {
     char error[256];
     jw_ra_catalog *catalog = jw_ra_catalog_load(root, error, sizeof(error));
     if (!catalog || !catalog->systems[0].legacy_flat_core ||
-        strcmp(catalog->systems[0].legacy_flat_core, "mgba") != 0) {
+        strcmp(catalog->systems[0].legacy_flat_core, "mgba") != 0 ||
+        catalog->systems[0].screenscraper_name_source !=
+            JW_RA_SCRAPE_NAME_FILENAME ||
+        catalog->systems[0].screenscraper_lookup_extension[0] != '\0') {
         return fail(error[0] ? error : "safe catalog rejected");
     }
     jw_ra_catalog_free(catalog);
+
+    if (write_text(systems,
+                   "{\"platform\":\"mac\",\"systems\":["
+                   "{\"id\":\"SCUMMVM\",\"extensions\":[\"scummvm\",\"svm\"],"
+                   "\"screenscraper_name_source\":\"descriptor\","
+                   "\"screenscraper_lookup_extension\":\"scummvm\"}]}") != 0 ||
+        (catalog = jw_ra_catalog_load(root, error, sizeof(error))) == NULL ||
+        catalog->systems[0].screenscraper_name_source !=
+            JW_RA_SCRAPE_NAME_DESCRIPTOR ||
+        strcmp(catalog->systems[0].screenscraper_lookup_extension,
+               "scummvm") != 0) {
+        jw_ra_catalog_free(catalog);
+        return fail(error[0] ? error : "descriptor scrape policy rejected");
+    }
+    jw_ra_catalog_free(catalog);
+
+    if (write_text(systems,
+                   "{\"platform\":\"mac\",\"systems\":["
+                   "{\"id\":\"SCUMMVM\",\"extensions\":[\"scummvm\"],"
+                   "\"screenscraper_name_source\":\"descriptor\"}]}") != 0 ||
+        (catalog = jw_ra_catalog_load(root, error, sizeof(error))) != NULL) {
+        jw_ra_catalog_free(catalog);
+        return fail("partial scrape policy accepted");
+    }
+
+    if (write_text(systems,
+                   "{\"platform\":\"mac\",\"systems\":["
+                   "{\"id\":\"SCUMMVM\",\"extensions\":[\"scummvm\"],"
+                   "\"screenscraper_name_source\":\"descriptor\","
+                   "\"screenscraper_lookup_extension\":\"svm\"}]}") != 0 ||
+        (catalog = jw_ra_catalog_load(root, error, sizeof(error))) != NULL) {
+        jw_ra_catalog_free(catalog);
+        return fail("undeclared scrape lookup extension accepted");
+    }
+
+    if (write_text(systems,
+                   "{\"platform\":\"mac\",\"systems\":["
+                   "{\"id\":\"GBA\",\"default_core\":\"mgba\","
+                   "\"legacy_flat_core\":\"mgba\"}]}") != 0) {
+        return fail("systems fixture restore failed");
+    }
 
     const char *missing_row =
         "{\"id\":\"mgba\",\"type\":\"retroarch\","

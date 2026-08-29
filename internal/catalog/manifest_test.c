@@ -14,6 +14,11 @@
 #define JW_CONTENT_FIXTURES_ROOT "../leaf-contracts/contracts/leaf-content/manifests"
 #endif
 
+#ifndef JW_CONTENT_SCRAPE_FIXTURE_PATH
+#define JW_CONTENT_SCRAPE_FIXTURE_PATH \
+    "../leaf-contracts/contracts/leaf-content/scrape/fixtures.json"
+#endif
+
 static char *read_file(const char *path) {
     FILE *file = fopen(path, "rb");
     if (!file || fseek(file, 0, SEEK_END) != 0) {
@@ -118,6 +123,67 @@ static int walk(const char *kind, bool expect_valid) {
     return count;
 }
 
+static int check_scrape_fixtures(void) {
+    cJSON *fixtures = load_optional_json(JW_CONTENT_SCRAPE_FIXTURE_PATH);
+    assert(fixtures);
+    const cJSON *base_provides = cJSON_GetObjectItemCaseSensitive(
+        fixtures, "base_provides");
+    const cJSON *cases = cJSON_GetObjectItemCaseSensitive(fixtures, "cases");
+    assert(cJSON_IsObject(base_provides) && cJSON_IsArray(cases));
+
+    int count = 0;
+    const cJSON *test_case = NULL;
+    cJSON_ArrayForEach(test_case, cases) {
+        const char *name = json_string(test_case, "name", "unnamed");
+        const cJSON *provided = cJSON_GetObjectItemCaseSensitive(test_case,
+                                                                 "provides");
+        const cJSON *content_scrape = cJSON_GetObjectItemCaseSensitive(
+            test_case, "content_scrape");
+        const cJSON *valid_item = cJSON_GetObjectItemCaseSensitive(test_case,
+                                                                   "valid");
+        bool expect_valid = cJSON_IsTrue(valid_item);
+
+        cJSON *document = cJSON_CreateObject();
+        assert(document);
+        cJSON_AddItemToObject(document, "provides", cJSON_Duplicate(
+            provided ? provided : base_provides, true));
+        if (content_scrape) {
+            cJSON_AddItemToObject(document, "content_scrape",
+                                  cJSON_Duplicate(content_scrape, true));
+        }
+
+        const cJSON *validated = NULL;
+        char reason[JW_CONTENT_REASON_MAX] = {0};
+        int status = jw_content_scrape_validate(document, &validated,
+                                                reason, sizeof(reason));
+        if (expect_valid) {
+            int wanted = content_scrape ? 1 : 0;
+            const cJSON *expected_block = cJSON_GetObjectItemCaseSensitive(
+                document, "content_scrape");
+            if (status != wanted || (status > 0 && validated != expected_block)) {
+                fprintf(stderr,
+                        "FAIL scrape/%s: expected status=%d, got status=%d reason=%s\n",
+                        name, wanted, status, reason);
+                assert(false);
+            }
+        } else {
+            const char *wanted = json_string(test_case, "reason", "");
+            if (status != -1 || strcmp(reason, wanted) != 0) {
+                fprintf(stderr,
+                        "FAIL scrape/%s: expected %s, got status=%d reason=%s\n",
+                        name, wanted, status, reason);
+                assert(false);
+            }
+        }
+        printf("ok: scrape/%s%s%s\n", name, expect_valid ? "" : " -> ",
+               expect_valid ? "" : reason);
+        cJSON_Delete(document);
+        count++;
+    }
+    cJSON_Delete(fixtures);
+    return count;
+}
+
 int main(void) {
     struct stat st;
     if (stat(JW_CONTENT_FIXTURES_ROOT, &st) != 0) {
@@ -126,10 +192,12 @@ int main(void) {
     }
     int valid = walk("valid", true);
     int invalid = walk("invalid", false);
+    int scrape = check_scrape_fixtures();
     printf("content-manifest-test: %d valid + %d invalid fixtures checked\n",
            valid, invalid);
     assert(valid == 8);
     assert(invalid == 49);
+    assert(scrape == 14);
     puts("PASS content-manifest-test");
     return 0;
 }

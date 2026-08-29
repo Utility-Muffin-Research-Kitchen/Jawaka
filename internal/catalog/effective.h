@@ -76,9 +76,10 @@ int jw_catalog_refresh(const char *sdcard_root,
                        char *reason,
                        size_t reason_size);
 
-/* Phase-2 producer entry point. `contributors` is a sorted array of validated
-   {provider,source_id,pak_version,pak_dir,provides} objects. `diagnostics` is
-   the enumeration validator's entries; merge diagnostics are appended. */
+/* Producer entry point. `contributors` is a sorted array of validated
+   {provider,source_id,pak_version,pak_dir,provides} objects, optionally with
+   a validated content_scrape companion. `diagnostics` is the enumeration
+   validator's entries; merge diagnostics are appended. */
 typedef struct cJSON cJSON;
 int jw_catalog_refresh_with_contributors(const char *sdcard_root,
                                          const char *release_defaults_dir,

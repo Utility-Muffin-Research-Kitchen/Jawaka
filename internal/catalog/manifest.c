@@ -647,6 +647,130 @@ static const char *jw_content__validate_extension(const cJSON *extension) {
     return NULL;
 }
 
+int jw_content_scrape_validate(const cJSON *document,
+                               const cJSON **out,
+                               char *reason,
+                               size_t reason_size) {
+    static const char *const block_keys[] = {"schema", "systems"};
+    static const char *const system_keys[] = {
+        "id", "name_source", "lookup_extension",
+    };
+    if (out) {
+        *out = NULL;
+    }
+    jw_content__reason(reason, reason_size, "");
+    if (!cJSON_IsObject(document) || !out) {
+        jw_content__reason(reason, reason_size, "malformed-content-scrape");
+        return -1;
+    }
+
+    const cJSON *block = jw_content__item(document, "content_scrape");
+    if (!block) {
+        return 0;
+    }
+    if (!cJSON_IsObject(block)) {
+        jw_content__reason(reason, reason_size, "malformed-content-scrape");
+        return -1;
+    }
+    if (!jw_content__object_keys(block, block_keys,
+                                 sizeof(block_keys) / sizeof(block_keys[0]))) {
+        jw_content__reason(reason, reason_size, "unknown-content-scrape-field");
+        return -1;
+    }
+    const cJSON *schema = jw_content__item(block, "schema");
+    if (!cJSON_IsNumber(schema) || schema->valuedouble != 1.0) {
+        jw_content__reason(reason, reason_size, "unknown-content-scrape-schema");
+        return -1;
+    }
+    const cJSON *rows = jw_content__item(block, "systems");
+    if (!cJSON_IsArray(rows) || cJSON_GetArraySize(rows) < 1 ||
+        cJSON_GetArraySize(rows) > 32) {
+        jw_content__reason(reason, reason_size,
+                           "malformed-content-scrape-systems");
+        return -1;
+    }
+
+    const cJSON *provides = jw_content__item(document, "provides");
+    const cJSON *provided_systems = jw_content__item(provides, "systems");
+    const cJSON *row = NULL;
+    cJSON_ArrayForEach(row, rows) {
+        if (!cJSON_IsObject(row)) {
+            jw_content__reason(reason, reason_size,
+                               "malformed-content-scrape-system");
+            return -1;
+        }
+        if (!jw_content__object_keys(row, system_keys,
+                                     sizeof(system_keys) / sizeof(system_keys[0]))) {
+            jw_content__reason(reason, reason_size,
+                               "unknown-content-scrape-field");
+            return -1;
+        }
+        const cJSON *id = jw_content__item(row, "id");
+        if (!cJSON_IsString(id) || !jw_content__system_id(id->valuestring)) {
+            jw_content__reason(reason, reason_size,
+                               "malformed-content-scrape-system-id");
+            return -1;
+        }
+        for (const cJSON *other = row->next; other; other = other->next) {
+            const cJSON *other_id = jw_content__item(other, "id");
+            if (cJSON_IsString(other_id) &&
+                strcmp(id->valuestring, other_id->valuestring) == 0) {
+                jw_content__reason(reason, reason_size,
+                                   "duplicate-content-scrape-system");
+                return -1;
+            }
+        }
+        const cJSON *name_source = jw_content__item(row, "name_source");
+        if (!cJSON_IsString(name_source) ||
+            strcmp(name_source->valuestring, "descriptor") != 0) {
+            jw_content__reason(reason, reason_size,
+                               "unknown-content-scrape-name-source");
+            return -1;
+        }
+        const cJSON *lookup_extension = jw_content__item(row, "lookup_extension");
+        if (!cJSON_IsString(lookup_extension) ||
+            !jw_content__extension(lookup_extension->valuestring, 16, true)) {
+            jw_content__reason(reason, reason_size,
+                               "malformed-content-scrape-lookup-extension");
+            return -1;
+        }
+
+        const cJSON *provided = NULL;
+        const cJSON *candidate = NULL;
+        cJSON_ArrayForEach(candidate, provided_systems) {
+            const cJSON *candidate_id = jw_content__item(candidate, "id");
+            if (cJSON_IsString(candidate_id) &&
+                strcmp(candidate_id->valuestring, id->valuestring) == 0) {
+                provided = candidate;
+                break;
+            }
+        }
+        if (!provided) {
+            jw_content__reason(reason, reason_size,
+                               "unknown-content-scrape-system");
+            return -1;
+        }
+        bool declared = false;
+        const cJSON *extension = NULL;
+        cJSON_ArrayForEach(extension, jw_content__item(provided, "extensions")) {
+            if (cJSON_IsString(extension) &&
+                strcmp(extension->valuestring,
+                       lookup_extension->valuestring) == 0) {
+                declared = true;
+                break;
+            }
+        }
+        if (!declared) {
+            jw_content__reason(reason, reason_size,
+                               "undeclared-content-scrape-extension");
+            return -1;
+        }
+    }
+
+    *out = block;
+    return 1;
+}
+
 bool jw_content_manifest_validate(const char *pak_json_text,
                                   const char *pak_abs_path,
                                   jw_content_install_lane lane,

@@ -31,6 +31,15 @@ bool jw_content_manifest_validate(const char *pak_json_text,
                                   char *reason,
                                   size_t reason_size);
 
+/* Validate optional CONTENT-SCRAPE-1 metadata on an already parsed pak.json.
+   Returns 1 and points `out` at the block when valid, 0 when absent, and -1
+   with a reason when invalid. Invalid companion metadata never invalidates
+   the separately validated CONTENT-1 contribution. */
+int jw_content_scrape_validate(const cJSON *document,
+                               const cJSON **out,
+                               char *reason,
+                               size_t reason_size);
+
 void jw_content_manifest_destroy(jw_content_manifest *manifest);
 
 #endif
