@@ -97,7 +97,7 @@ SCRAPE_CREDENTIALS_HEADER := $(BUILD)/generated/screenscraper_credentials.h
 # backup or a copied card could create, and then append to a log on the user's
 # SD card. This device already treats a dirty FAT as a hazard.
 
-CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -I. -Iinternal -Ithird_party/cjson
+CFLAGS_COMMON := $(CSTD) $(CWARN) $(CDEBUG) $(CFLAGS_PLATFORM) -D_POSIX_C_SOURCE=200809L -I. -Iinternal -Ithird_party/cjson
 ifeq ($(I18N_COVERAGE),1)
 CFLAGS_COMMON += -DJW_I18N_COVERAGE
 endif
