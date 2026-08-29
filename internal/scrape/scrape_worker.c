@@ -614,11 +614,12 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     client.progress_userdata = &progress_ctx;
 
     jw_ss_result result;
-    int rc = jw_ss_search_rom_platforms(
+    jw_ss_search_status search_status = jw_ss_search_rom_platforms(
         &client, rom_name, rom_abs, system_ids, system_count,
         (const char *const *)prefs.artwork, prefs.artwork_count,
         (const char *const *)prefs.regions, prefs.region_count, &result);
-    if (rc == 0) {
+    int rc = search_status;
+    if (search_status == JW_SS_SEARCH_FOUND) {
         rc = jw_ss_download_media(&client, result.media_url, dest_abs,
                                   JW_SCRAPE_MAX_DIM);
     }
@@ -672,10 +673,13 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     }
 
     pthread_mutex_lock(&jw__w.mu);
-    if (rc == 1) {
+    if (search_status == JW_SS_SEARCH_NOT_FOUND) {
         jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_NOT_FOUND,
                            "No matching artwork found");
-    } else if (rc == -2) {
+    } else if (search_status == JW_SS_SEARCH_NO_MEDIA) {
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_NOT_FOUND,
+                           "Game found, but no preferred artwork is available");
+    } else if (rc == JW_SS_SEARCH_CANCELLED) {
         jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_CANCELLED,
                            "Cancelled");
     } else {
