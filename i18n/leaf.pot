@@ -576,6 +576,10 @@ msgstr ""
 msgid "Disable USB ADB and remove Leaf's boot restore marker?"
 msgstr ""
 
+#: internal/platform/input_shortcuts.c
+msgid "Disabled"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Disconnected"
 msgstr ""
@@ -730,6 +734,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Game Rumble"
+msgstr ""
+
+#: internal/platform/input_shortcuts.c
+msgid "Game Switcher"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1236,7 +1244,7 @@ msgstr ""
 msgid "Reconnect Bluetooth"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/platform/input_shortcuts.c
 msgid "Recording"
 msgstr ""
 
@@ -1430,6 +1438,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
+msgstr ""
+
+#: internal/platform/input_shortcuts.c
+msgid "Screenshot"
 msgstr ""
 
 #: internal/settings/settings.c
