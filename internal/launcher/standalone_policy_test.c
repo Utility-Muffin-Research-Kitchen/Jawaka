@@ -77,6 +77,47 @@ int main(void) {
            jw_standalone_policy_uses_calibrated_virtual_input(
                "unrelated_core", "/sd/emulators/DraStic/launch.sh"),
            true);
+
+    expect("YabaSanshiro standalone identity",
+           jw_standalone_policy_is_yabasanshiro(
+               "yabasanshiro_standalone", NULL),
+           true);
+    expect("YabaSanshiro standalone path compatibility",
+           jw_standalone_policy_is_yabasanshiro(
+               "legacy_path_core",
+               "/sd/.system/leaf/platforms/mlp1/emulators/yabasanshiro/launch.sh"),
+           true);
+    expect("YabaSanshiro exact standalone identity",
+           jw_standalone_policy_is_yabasanshiro(
+               "yabasanshiro_standalone_preview", NULL),
+           false);
+    expect("YabaSanshiro exact package path",
+           jw_standalone_policy_is_yabasanshiro(
+               "legacy_path_core",
+               "/sd/emulators/yabasanshiro-preview/launch.sh"),
+           false);
+    expect("RetroArch YabaSanshiro is not standalone",
+           jw_standalone_policy_is_yabasanshiro(
+               "yabasanshiro", "/sd/cores/yabasanshiro_libretro.so"),
+           false);
+    expect("RetroArch YabaSanshiro keeps normal input",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "yabasanshiro", "/sd/cores/yabasanshiro_libretro.so"),
+           false);
+    expect("YabaSanshiro standalone calibrated input",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "yabasanshiro_standalone", NULL),
+           true);
+    expect("YabaSanshiro standalone path calibrated input",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "legacy_path_core",
+               "/sd/emulators/yabasanshiro/launch.sh"),
+           true);
+    expect("YabaSanshiro direct DRM remains metadata-driven",
+           jw_standalone_policy_requires_direct_drm(
+               "yabasanshiro_standalone",
+               "/sd/emulators/yabasanshiro/launch.sh", false),
+           false);
     expect("missing identity calibrated input",
            jw_standalone_policy_uses_calibrated_virtual_input(NULL, NULL),
            false);

@@ -16,7 +16,8 @@ mkdir -p \
     "$CORES_DIR" \
     "$DEFAULTS_DIR" \
     "$PLATFORM_ROOT/emulators/mupen64plus" \
-    "$PLATFORM_ROOT/emulators/flycast"
+    "$PLATFORM_ROOT/emulators/flycast" \
+    "$PLATFORM_ROOT/emulators/yabasanshiro"
 
 cat >"$DEFAULTS_DIR/cores.json" <<'JSON'
 {
@@ -77,6 +78,38 @@ cat >"$DEFAULTS_DIR/cores.json" <<'JSON'
       "file_name": "flycast_libretro.dylib",
       "config_folder": "Flycast",
       "info_name": "flycast_libretro.info",
+      "path": null,
+      "supports_menu": true,
+      "supports_savestate": true,
+      "supports_disk_control": true,
+      "needs_swap": false,
+      "requires_direct_drm": false,
+      "status": "packaged"
+    },
+    {
+      "id": "yabasanshiro_standalone",
+      "display_name": "YabaSanshiro Standalone",
+      "type": "path",
+      "libretro_name": null,
+      "file_name": null,
+      "config_folder": "YabaSanshiro Standalone",
+      "info_name": null,
+      "path": "emulators/yabasanshiro/launch.sh",
+      "supports_menu": true,
+      "supports_savestate": false,
+      "supports_disk_control": false,
+      "needs_swap": false,
+      "requires_direct_drm": true,
+      "status": "packaged"
+    },
+    {
+      "id": "yabasanshiro",
+      "display_name": "YabaSanshiro",
+      "type": "retroarch",
+      "libretro_name": "yabasanshiro",
+      "file_name": "yabasanshiro_libretro.dylib",
+      "config_folder": "YabaSanshiro",
+      "info_name": "yabasanshiro_libretro.info",
       "path": null,
       "supports_menu": true,
       "supports_savestate": true,
@@ -195,6 +228,24 @@ cat >"$DEFAULTS_DIR/systems.json" <<'JSON'
       "rom_root": "Roms/GBA",
       "image_root": "Images/GBA",
       "bios_notes": []
+    },
+    {
+      "id": "SATURN",
+      "name": "Sega Saturn",
+      "patterns": ["SATURN"],
+      "extensions": ["ccd", "chd", "cue", "iso", "mds"],
+      "archive_extensions": ["zip"],
+      "archive_inner_extensions": ["ccd", "chd", "cue", "iso", "mds"],
+      "archive_mode": "pass_through",
+      "file_names": [],
+      "ignore_file_names": [],
+      "playlist_extensions": ["m3u"],
+      "m3u_generation": "manual",
+      "default_core": "yabasanshiro",
+      "alternate_cores": ["yabasanshiro_standalone"],
+      "rom_root": "Roms/SATURN",
+      "image_root": "Images/SATURN",
+      "bios_notes": []
     }
   ]
 }
@@ -204,8 +255,11 @@ printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/mupen64plus/launch.sh"
 chmod 755 "$PLATFORM_ROOT/emulators/mupen64plus/launch.sh"
 printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/flycast/launch.sh"
 chmod 755 "$PLATFORM_ROOT/emulators/flycast/launch.sh"
+printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/yabasanshiro/launch.sh"
+chmod 755 "$PLATFORM_ROOT/emulators/yabasanshiro/launch.sh"
 : >"$CORES_DIR/mupen64plus_next_libretro.dylib"
 : >"$CORES_DIR/flycast_libretro.dylib"
+: >"$CORES_DIR/yabasanshiro_libretro.dylib"
 : >"$CORES_DIR/mgba_libretro.so"
 : >"$CORES_DIR/gpsp_libretro.so"
 
@@ -222,6 +276,8 @@ UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$SMOKE" "$SD_ROOT" DC "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/dc.tsv"
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$SMOKE" "$SD_ROOT" GBA "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/gba.tsv"
+UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+    "$SMOKE" "$SD_ROOT" SATURN "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/saturn.tsv"
 
 grep -F $'count\t2' "$TMP_ROOT/n64.tsv" >/dev/null
 grep -F $'choice\t0\tmupen64plus_standalone\tpath\tdefault\tMupen64Plus Standalone\temulators/mupen64plus/launch.sh' "$TMP_ROOT/n64.tsv" >/dev/null
@@ -238,6 +294,10 @@ grep -F $'choice\t1\tflycast\tretroarch\talternate\tFlycast\tflycast_libretro.dy
 grep -F $'count\t2' "$TMP_ROOT/gba.tsv" >/dev/null
 grep -F $'choice\t0\tmgba\tretroarch\tdefault\tmGBA\tmgba_libretro.so' "$TMP_ROOT/gba.tsv" >/dev/null
 grep -F $'choice\t1\tgpsp\tretroarch\talternate\tgpSP\tgpsp_libretro.so' "$TMP_ROOT/gba.tsv" >/dev/null
+
+grep -F $'count\t2' "$TMP_ROOT/saturn.tsv" >/dev/null
+grep -F $'choice\t0\tyabasanshiro\tretroarch\tdefault\tYabaSanshiro\tyabasanshiro_libretro.dylib\tshared-drm' "$TMP_ROOT/saturn.tsv" >/dev/null
+grep -F $'choice\t1\tyabasanshiro_standalone\tpath\talternate\tYabaSanshiro Standalone\temulators/yabasanshiro/launch.sh\tdirect-drm' "$TMP_ROOT/saturn.tsv" >/dev/null
 
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$OVERRIDE_SMOKE" "$SD_ROOT" GBA "$CORES_DIR" "$PLATFORM_ROOT" \
@@ -270,6 +330,17 @@ if grep -F 'flycast_standalone' "$TMP_ROOT/dc-noexec.tsv" >/dev/null; then
     exit 1
 fi
 
+chmod 644 "$PLATFORM_ROOT/emulators/yabasanshiro/launch.sh"
+UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+    "$SMOKE" "$SD_ROOT" SATURN "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/saturn-noexec.tsv"
+grep -F $'count\t1' "$TMP_ROOT/saturn-noexec.tsv" >/dev/null
+grep -F $'choice\t0\tyabasanshiro\tretroarch\tdefault\tYabaSanshiro\tyabasanshiro_libretro.dylib\tshared-drm' "$TMP_ROOT/saturn-noexec.tsv" >/dev/null
+if grep -F 'yabasanshiro_standalone' "$TMP_ROOT/saturn-noexec.tsv" >/dev/null; then
+    cat "$TMP_ROOT/saturn-noexec.tsv" >&2
+    echo "non-executable YabaSanshiro path core appeared in core choices" >&2
+    exit 1
+fi
+
 cat "$TMP_ROOT/n64.tsv"
 cat "$TMP_ROOT/n64alt.tsv"
 cat "$TMP_ROOT/n64-noexec.tsv"
@@ -277,3 +348,5 @@ cat "$TMP_ROOT/dc.tsv"
 cat "$TMP_ROOT/dc-noexec.tsv"
 cat "$TMP_ROOT/gba.tsv"
 cat "$TMP_ROOT/gba-override.tsv"
+cat "$TMP_ROOT/saturn.tsv"
+cat "$TMP_ROOT/saturn-noexec.tsv"
