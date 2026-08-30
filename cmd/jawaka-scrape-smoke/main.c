@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
     }
 
     printf("found: %s\n", result.game_name);
-    printf("media: %s (%s)\n", result.media_url, result.media_format);
+    printf("media format: %s\n", result.media_format);
     if (result.max_requests > 0)
         printf("quota: %d/%d, maxthreads=%d\n", result.requests_today,
                result.max_requests, result.max_threads);
