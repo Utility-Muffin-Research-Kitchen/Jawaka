@@ -1505,3 +1505,8 @@ msgstr "已被占用："
 #, fuzzy
 msgid "Could not save"
 msgstr "无法保存"
+
+# In-game Shortcuts help line. Marked fuzzy: suggested, not reviewed.
+#, fuzzy
+msgid "Hold Menu, then press the button.   X: Disable"
+msgstr "按住 Menu，再按对应按键。   X：禁用"

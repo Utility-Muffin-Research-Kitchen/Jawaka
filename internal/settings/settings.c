@@ -4439,7 +4439,20 @@ static void jw__shortcut_value(const jw_settings_ui *ui,
 static void jw__render_input_shortcuts(const jw_settings_ui *ui,
                                        int x, int y, int w, int h) {
     jw__draw_header("In-game Shortcuts", x, y, w);
-    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+
+    /* The modifier is fixed and never appears as a row, so the only place a
+       user learns it is here. X is likewise undiscoverable otherwise: it is
+       the one way out of the button list that is not a button. */
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int sub_h = jw__subheader_line_h(small) + cat_scale(6);
+    SDL_Rect sub;
+    SDL_Rect content = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
+    cat_draw_text_ellipsized(small, T("Hold Menu, then press the button.   X: Disable"),
+                             sub.x + cat_scale(12), sub.y, theme->hint,
+                             sub.w - cat_scale(24));
+
+    int ly = content.y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
     jw__begin_settings_rows(&ui->shortcuts_list, x, ly, w,
                             JW_SHORTCUT_ROW_COUNT, item_h);

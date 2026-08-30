@@ -797,6 +797,10 @@ msgid "Hidden"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Hold Menu, then press the button.   X: Disable"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Home Layout"
 msgstr ""
 
