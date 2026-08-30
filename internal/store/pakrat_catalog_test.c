@@ -88,6 +88,106 @@ static const char *catalog_legacy =
     "}]"
     "}";
 
+
+/* ---- STORE-CONTENT-1: the content[] lane ------------------------------- */
+
+#define CONTENT_ARTIFACT(url, sha) \
+    "\"artifact\":{" \
+      "\"url\":\"" url "\"," \
+      "\"name\":\"ScummVM.zip\"," \
+      "\"archive\":\"zip\"," \
+      "\"size\":100," \
+      "\"installed_size\":200," \
+      "\"sha256\":\"" sha "\"" \
+    "}"
+
+/* Every version gated, and no ungated safe floor anywhere -- the exact shape
+   the apps[] lane forbids and the reason content[] had to be a separate key
+   rather than a flag on an existing one. */
+static const char *catalog_content_all_gated =
+    "{"
+    "\"schema\":1,"
+    "\"product\":\"pak-rat\","
+    "\"apps\":[],"
+    "\"content\":[{"
+      "\"id\":\"org.umrk.scummvm\","
+      "\"name\":\"ScummVM\","
+      "\"summary\":\"ScummVM\","
+      "\"version\":\"1.0.0\","
+      "\"packages\":[{"
+        "\"platform\":\"mlp1\","
+        "\"runtime\":\"leaf\","
+        "\"version\":\"1.0.0\","
+        "\"min_leaf_version\":\"0.11.0\","
+        "\"install_name\":\"ScummVM.pak\","
+        "\"runtime_manifest_path\":\"pak.json\","
+        CONTENT_ARTIFACT("https://example.invalid/1.0.0/ScummVM.zip", SHA_FLOOR) ","
+        "\"versions\":[{"
+          "\"version\":\"1.0.0\","
+          "\"min_leaf_version\":\"0.11.0\","
+          CONTENT_ARTIFACT("https://example.invalid/1.0.0/ScummVM.zip", SHA_FLOOR)
+        "}]"
+      "}]"
+    "}]"
+    "}";
+
+/* S-3: the same id in both lanes. Both resolve to one install_path. */
+static const char *catalog_id_in_both_lanes =
+    "{"
+    "\"schema\":1,"
+    "\"product\":\"pak-rat\","
+    "\"apps\":[{"
+      "\"id\":\"org.umrk.scummvm\","
+      "\"name\":\"ScummVM\","
+      "\"summary\":\"ScummVM\","
+      "\"version\":\"1.0.0\","
+      "\"packages\":[{"
+        "\"platform\":\"mlp1\","
+        "\"runtime\":\"leaf\","
+        "\"version\":\"1.0.0\","
+        "\"install_name\":\"ScummVM.pak\","
+        "\"runtime_manifest_path\":\"pak.json\","
+        CONTENT_ARTIFACT("https://example.invalid/1.0.0/ScummVM.zip", SHA_FLOOR)
+      "}]"
+    "}],"
+    "\"content\":[{"
+      "\"id\":\"org.umrk.scummvm\","
+      "\"name\":\"ScummVM\","
+      "\"summary\":\"ScummVM\","
+      "\"version\":\"1.0.0\","
+      "\"packages\":[{"
+        "\"platform\":\"mlp1\","
+        "\"runtime\":\"leaf\","
+        "\"version\":\"1.0.0\","
+        "\"install_name\":\"ScummVM.pak\","
+        "\"runtime_manifest_path\":\"pak.json\","
+        CONTENT_ARTIFACT("https://example.invalid/1.0.0/ScummVM.zip", SHA_FLOOR)
+      "}]"
+    "}]"
+    "}";
+
+/* D16: a content package must name a concrete platform. */
+static const char *catalog_content_shared_platform =
+    "{"
+    "\"schema\":1,"
+    "\"product\":\"pak-rat\","
+    "\"apps\":[],"
+    "\"content\":[{"
+      "\"id\":\"org.umrk.scummvm\","
+      "\"name\":\"ScummVM\","
+      "\"summary\":\"ScummVM\","
+      "\"version\":\"1.0.0\","
+      "\"packages\":[{"
+        "\"platform\":\"shared\","
+        "\"runtime\":\"leaf\","
+        "\"version\":\"1.0.0\","
+        "\"install_name\":\"ScummVM.pak\","
+        "\"runtime_manifest_path\":\"pak.json\","
+        CONTENT_ARTIFACT("https://example.invalid/1.0.0/ScummVM.zip", SHA_FLOOR)
+      "}]"
+    "}]"
+    "}";
+
 static int parse(const char *json, const char *leaf, int dev,
                  jw_pakrat_catalog_selection *selection) {
     int count = 0;
@@ -184,6 +284,78 @@ int main(void) {
         "\"versions\":{}"
         "}]}]}";
     assert(parse(malformed_versions, "0.7.0", 0, &selection) == -1);
+
+    /* ---- STORE-CONTENT-1 ---------------------------------------------- */
+
+    /* An all-gated content package is valid: there is no safe floor to
+       protect, because no gate-unaware client can see this lane at all. */
+    assert(parse(catalog_content_all_gated, "0.11.0", 0, &selection) == 0);
+    assert(strcmp(selection.package.id, "org.umrk.scummvm") == 0);
+    assert(strcmp(selection.package.version, "1.0.0") == 0);
+    assert(selection.lane == JW_PAKRAT_LANE_CONTENT);
+
+    /* Same document, a device too old for the gate: nothing is offered.
+       The apps[] lane would have had a floor to fall back to; this one has
+       none by design, so the package is simply unavailable. */
+    {
+        jw_pakrat_catalog_selection none[1];
+        int count = -1;
+        assert(jw_pakrat_catalog_parse_and_select(
+                   catalog_content_all_gated, "mlp1", "0.10.0", 0, none, 1,
+                   &count) == 0);
+        assert(count == 0);
+    }
+
+    /* A package in apps[] keeps reporting the apps lane. */
+    assert(parse(catalog_versions, "v0.6.1", 0, &selection) == 0);
+    assert(selection.lane == JW_PAKRAT_LANE_APPS);
+
+    /* Exact-version repair searches both lanes, so it keeps working across
+       the PortMaster lane migration. */
+    assert(jw_pakrat_catalog_find_exact(
+               catalog_content_all_gated, "mlp1", "org.umrk.scummvm", "1.0.0",
+               &exact) == 0);
+    assert(strcmp(exact.version, "1.0.0") == 0);
+
+    assert(parse(catalog_id_in_both_lanes, "0.11.0", 0, &selection) == -1);
+    assert(parse(catalog_content_shared_platform, "0.11.0", 0, &selection) == -1);
+
+    /* Every content version is gated by construction, including the legacy
+       mirror. An ungated entry would expose a contract-dependent pak to a
+       client that cannot honor CONTENT-1. */
+    {
+        char ungated[8192];
+        assert(snprintf(ungated, sizeof(ungated), "%s",
+                        catalog_content_all_gated) < (int)sizeof(ungated));
+        char *gate = strstr(ungated, "\"min_leaf_version\":\"0.11.0\",");
+        assert(gate);
+        memmove(gate, gate + strlen("\"min_leaf_version\":\"0.11.0\","),
+                strlen(gate + strlen("\"min_leaf_version\":\"0.11.0\",")) + 1);
+        assert(parse(ungated, "0.11.0", 0, &selection) == -1);
+    }
+
+    /* A present-but-malformed content key is refused rather than ignored. */
+    {
+        const char *content_not_array =
+            "{\"schema\":1,\"product\":\"pak-rat\","
+            "\"apps\":[],\"content\":{}}";
+        jw_pakrat_catalog_selection none[1];
+        int count = 0;
+        assert(jw_pakrat_catalog_parse_and_select(
+                   content_not_array, "mlp1", "0.11.0", 0, none, 1,
+                   &count) == -1);
+    }
+
+    /* An ABSENT content key is not an error -- that is every storefront
+       published before this contract. */
+    {
+        jw_pakrat_catalog_selection one[1];
+        int count = 0;
+        assert(jw_pakrat_catalog_parse_and_select(
+                   catalog_legacy, "mlp1", "", 0, one, 1, &count) == 0);
+        assert(count == 1);
+        assert(one[0].lane == JW_PAKRAT_LANE_APPS);
+    }
 
     puts("PASS pakrat-catalog-test");
     return 0;

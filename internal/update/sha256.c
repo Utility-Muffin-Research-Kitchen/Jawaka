@@ -4,12 +4,6 @@
 #include <stdio.h>
 #include <string.h>
 
-typedef struct {
-    uint32_t state[8];
-    uint64_t bit_count;
-    unsigned char buffer[64];
-} jw_sha256_ctx;
-
 static const uint32_t JW_SHA256_K[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
     0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
@@ -107,7 +101,7 @@ static void jw__sha256_transform(jw_sha256_ctx *ctx,
     ctx->state[7] += h;
 }
 
-static void jw__sha256_init(jw_sha256_ctx *ctx) {
+void jw_sha256_init(jw_sha256_ctx *ctx) {
     ctx->state[0] = 0x6a09e667u;
     ctx->state[1] = 0xbb67ae85u;
     ctx->state[2] = 0x3c6ef372u;
@@ -120,9 +114,11 @@ static void jw__sha256_init(jw_sha256_ctx *ctx) {
     memset(ctx->buffer, 0, sizeof(ctx->buffer));
 }
 
-static void jw__sha256_update(jw_sha256_ctx *ctx,
-                              const unsigned char *data,
-                              size_t len) {
+void jw_sha256_update(jw_sha256_ctx *ctx, const void *data_in, size_t len) {
+    const unsigned char *data = (const unsigned char *)data_in;
+    if (!ctx || !data || len == 0) {
+        return;
+    }
     size_t used = (size_t)((ctx->bit_count >> 3u) & 63u);
     ctx->bit_count += (uint64_t)len * 8u;
 
@@ -159,8 +155,8 @@ static void jw__sha256_final(jw_sha256_ctx *ctx, unsigned char digest[32]) {
 
     size_t used = (size_t)((ctx->bit_count >> 3u) & 63u);
     size_t pad_len = (used < 56u) ? (56u - used) : (120u - used);
-    jw__sha256_update(ctx, pad, pad_len);
-    jw__sha256_update(ctx, len_be, sizeof(len_be));
+    jw_sha256_update(ctx, pad, pad_len);
+    jw_sha256_update(ctx, len_be, sizeof(len_be));
 
     for (int i = 0; i < 8; i++) {
         jw__store_be32(digest + (i * 4), ctx->state[i]);
@@ -177,14 +173,23 @@ static void jw__sha256_digest_to_hex(const unsigned char digest[32],
     out_hex[64] = '\0';
 }
 
+void jw_sha256_final_hex(jw_sha256_ctx *ctx, char out_hex[65]) {
+    if (!ctx || !out_hex) {
+        return;
+    }
+    unsigned char digest[32];
+    jw__sha256_final(ctx, digest);
+    jw__sha256_digest_to_hex(digest, out_hex);
+}
+
 void jw_sha256_buf_hex(const void *data, size_t len, char out_hex[65]) {
     if (!out_hex) {
         return;
     }
     jw_sha256_ctx ctx;
-    jw__sha256_init(&ctx);
+    jw_sha256_init(&ctx);
     if (data && len > 0) {
-        jw__sha256_update(&ctx, (const unsigned char *)data, len);
+        jw_sha256_update(&ctx, (const unsigned char *)data, len);
     }
     unsigned char digest[32];
     jw__sha256_final(&ctx, digest);
@@ -217,13 +222,13 @@ int jw_sha256_file_hex(const char *path,
     }
 
     jw_sha256_ctx ctx;
-    jw__sha256_init(&ctx);
+    jw_sha256_init(&ctx);
 
     unsigned char buf[32768];
     while (1) {
         size_t got = fread(buf, 1, sizeof(buf), fp);
         if (got > 0) {
-            jw__sha256_update(&ctx, buf, got);
+            jw_sha256_update(&ctx, buf, got);
         }
         if (got < sizeof(buf)) {
             if (ferror(fp)) {

@@ -21,6 +21,8 @@
 
 #define JW_PAKRAT_MANIFEST_MAX (1024u * 1024u)
 
+
+
 /* Test-only crash/pause points for the irreversible uninstall path. Dedicated
    smoke/test binaries define JW_ENABLE_FAULT_INJECTION; production jawakad and
    launcher builds compile this to an inert call. */
@@ -555,6 +557,8 @@ int jw_pakrat_txn_pending_persist(const char *db_path,
         }
     }
     if (rc != 0) {
+        fprintf(stderr, "pakrat uninstall: step 'final-db' failed: %s\n",
+                sqlite3_errmsg(db));
         sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
     }
     sqlite3_finalize(stmt);
@@ -842,14 +846,29 @@ static int jw__txn_package_paths(const jw_storage_source *source,
                ? 0 : -1;
 }
 
+/* Name the step that failed. "Confirmed uninstall could not be completed" on
+   its own sends you reading the whole transaction; this makes the failure
+   self-locating in a device log. */
+static int jw__uninstall_step_failed(const char *step) {
+    fprintf(stderr, "pakrat uninstall: step '%s' failed (errno=%d %s)\n",
+            step, errno, errno ? strerror(errno) : "-");
+    return -1;
+}
+
 int jw_pakrat_txn_complete_uninstall(const jw_pakrat_context *ctx,
                                      const jw_pakrat_pending_uninstall *pending) {
     if (!ctx || !pending || !pending->metadata.store_id[0]) {
+        fprintf(stderr,
+                "pakrat uninstall: step 'preconditions' failed "
+                "(ctx=%d pending=%d store_id=%d)\n",
+                ctx ? 1 : 0, pending ? 1 : 0,
+                (pending && pending->metadata.store_id[0]) ? 1 : 0);
         return -1;
     }
     jw_storage_source_list sources;
+    errno = 0;
     if (jw__txn_source_list(ctx, &sources) != 0) {
-        return -1;
+        return jw__uninstall_step_failed("source-list");
     }
     const jw_storage_source *primary = jw_storage_sources_primary(&sources);
     const jw_storage_source *apps_source =
@@ -858,41 +877,76 @@ int jw_pakrat_txn_complete_uninstall(const jw_pakrat_context *ctx,
         return 1; /* owning source absent: defer without mutation */
     }
     jw__txn_fault_crash("uninstall-before-revoke");
+    errno = 0;
     if (jw__txn_revoke(primary, &pending->metadata) != 0) {
-        return -1;
+        return jw__uninstall_step_failed("revoke");
     }
     jw__txn_fault_crash("uninstall-after-revoke");
     char target[PATH_MAX], stage[PATH_MAX], rollback[PATH_MAX];
+    errno = 0;
     if (jw__txn_package_paths(apps_source, pending, target, stage, rollback) != 0) {
-        return -1;
+        return jw__uninstall_step_failed("package-paths");
     }
     jw__txn_fault_crash("uninstall-before-package-remove");
-    if (jw__pakrat_remove_tree(target) != 0 ||
-        jw__pakrat_remove_tree(stage) != 0 ||
-        jw__pakrat_remove_tree(rollback) != 0) {
-        return -1;
+    errno = 0;
+    if (jw__pakrat_remove_tree(target) != 0) {
+        return jw__uninstall_step_failed("remove-target");
+    }
+    errno = 0;
+    if (jw__pakrat_remove_tree(stage) != 0) {
+        return jw__uninstall_step_failed("remove-stage");
+    }
+    errno = 0;
+    if (jw__pakrat_remove_tree(rollback) != 0) {
+        return jw__uninstall_step_failed("remove-rollback");
     }
     jw__pakrat_clear_origin_marker(target, pending->metadata.store_id);
     jw__txn_fault_crash("uninstall-after-package-remove");
+    errno = 0;
     if (jw__pakrat_path_exists(target) || jw__pakrat_path_exists(stage) ||
         jw__pakrat_path_exists(rollback)) {
-        return -1;
+        return jw__uninstall_step_failed("post-remove-verify");
     }
     jw__txn_fault_crash("uninstall-before-syncfs");
-    if (jw__pakrat_sync_filesystem(primary->root) != 0 ||
-        (apps_source != primary &&
-         jw__pakrat_sync_filesystem(apps_source->root) != 0)) {
-        return -1;
+    errno = 0;
+    if (jw__pakrat_sync_filesystem(primary->root) != 0) {
+        return jw__uninstall_step_failed("syncfs-primary");
+    }
+    errno = 0;
+    if (apps_source != primary &&
+        jw__pakrat_sync_filesystem(apps_source->root) != 0) {
+        return jw__uninstall_step_failed("syncfs-apps-source");
     }
     jw__txn_fault_crash("uninstall-after-syncfs");
 
     jw__txn_fault_crash("uninstall-before-final-db");
     sqlite3 *db = NULL;
+    errno = 0;
     if (jw_db_open(ctx->db_path, &db) != 0 || jw_db_apply_schema(db) != 0 ||
         (pending->metadata.service_id[0] &&
-         jw_pakrat_txn_attach_control_db(db, ctx->state_dir) != 0) ||
-        sqlite3_exec(db, "PRAGMA synchronous=FULL;BEGIN IMMEDIATE;", NULL,
+         jw_pakrat_txn_attach_control_db(db, ctx->state_dir) != 0)) {
+        fprintf(stderr, "pakrat uninstall: step 'final-db-open' failed: %s\n",
+                db ? sqlite3_errmsg(db) : "open failed");
+        jw_db_close(db);
+        return -1;
+    }
+    /* This is the commit point of an irreversible operation: the package is
+       already gone from disk, and only this transaction records that fact.
+       Failing it because a library scan happens to hold the write lock leaves
+       the install row behind and tells the user the uninstall failed when the
+       package is unrecoverably removed.
+
+       jw_db_open's 2s default is tuned for interactive writes (a favourite, a
+       recent) where waiting longer would feel like a hang. A scan holds the
+       lock for 6-9 seconds on a full library, so 2s loses that race whenever
+       the two overlap -- which a large package makes likely, because removing
+       it and syncing the filesystem takes long enough for a scan to start.
+       Wait it out instead. */
+    sqlite3_busy_timeout(db, JW_PAKRAT_COMMIT_BUSY_TIMEOUT_MS);
+    if (sqlite3_exec(db, "PRAGMA synchronous=FULL;BEGIN IMMEDIATE;", NULL,
                      NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "pakrat uninstall: step 'final-db-begin' failed: %s\n",
+                sqlite3_errmsg(db));
         jw_db_close(db);
         return -1;
     }
@@ -916,16 +970,61 @@ int jw_pakrat_txn_complete_uninstall(const jw_pakrat_context *ctx,
     stmt = NULL;
     static const char *delete_pending =
         "DELETE FROM pakrat_pending_uninstalls WHERE store_id=?1;";
+    /* Deliberately NOT "exactly one row was deleted".
+
+       jawakad runs TXN-1 recovery for pending uninstalls, so the daemon and a
+       CLI uninstall can be discharging the same intent concurrently. Removing
+       a large package takes seconds, which is ample time for the daemon to get
+       there first -- and then this DELETE legitimately affects zero rows.
+
+       Treating that as failure told the user "Confirmed uninstall could not be
+       completed" about an uninstall that had fully succeeded, just not by this
+       process. What matters is the END STATE, which is verified below, not
+       which process got there. Only a real SQL error is a failure. */
     if (rc == 0 &&
         (sqlite3_prepare_v2(db, delete_pending, -1, &stmt, NULL) != SQLITE_OK ||
          sqlite3_bind_text(stmt, 1, pending->metadata.store_id, -1,
                            SQLITE_TRANSIENT) != SQLITE_OK ||
-         sqlite3_step(stmt) != SQLITE_DONE || sqlite3_changes(db) != 1)) {
+         sqlite3_step(stmt) != SQLITE_DONE)) {
         rc = -1;
     }
+    if (rc != 0) {
+        fprintf(stderr, "pakrat uninstall: step 'final-db-deletes' failed: %s\n",
+                sqlite3_errmsg(db));
+    }
     sqlite3_finalize(stmt);
+    stmt = NULL;
+
+    /* The uninstall is complete when neither record survives, whoever removed
+       them. Verifying the state is what makes concurrent completion safe
+       instead of merely tolerated. */
+    if (rc == 0) {
+        static const char *verify =
+            "SELECT (SELECT COUNT(*) FROM pakrat_installs WHERE store_id=?1) + "
+            "(SELECT COUNT(*) FROM pakrat_pending_uninstalls WHERE store_id=?1);";
+        long long remaining = -1;
+        if (sqlite3_prepare_v2(db, verify, -1, &stmt, NULL) != SQLITE_OK ||
+            sqlite3_bind_text(stmt, 1, pending->metadata.store_id, -1,
+                              SQLITE_TRANSIENT) != SQLITE_OK ||
+            sqlite3_step(stmt) != SQLITE_ROW) {
+            rc = -1;
+        } else {
+            remaining = sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+        if (rc == 0 && remaining != 0) {
+            fprintf(stderr,
+                    "pakrat uninstall: step 'final-db-verify' failed: %lld "
+                    "record(s) still reference %s\n",
+                    remaining, pending->metadata.store_id);
+            rc = -1;
+        }
+    }
     jw__txn_fault_crash("uninstall-during-final-db");
     if (rc == 0 && sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "pakrat uninstall: step 'final-db-commit' failed: %s\n",
+                sqlite3_errmsg(db));
         rc = -1;
     }
     if (rc != 0) {

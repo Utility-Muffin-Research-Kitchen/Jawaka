@@ -22,10 +22,27 @@ typedef struct {
     long long artifact_installed_size;
 } jw_pakrat_catalog_package;
 
+/* STORE-CONTENT-1. A package that declares `provides` lives in `content[]`,
+   never in `apps[]`, because it is gated on the content-pak contract by
+   construction and `apps[]` is the gate-unaware lane. A client that predates
+   this contract parses `apps[]`, ignores the unknown `content` key, and never
+   learns a content pak exists -- which is the whole reason the lane is a new
+   key rather than a field on an existing one.
+
+   The lane is metadata for what the store SHOWS. It never decides whether
+   Pak Rat offers "Open": that comes from the installed pak's launch.sh, so
+   the answer stays right for a hybrid, for a pure content pak, and for a
+   sideloaded pak that is in no lane at all. */
+typedef enum {
+    JW_PAKRAT_LANE_APPS = 0,
+    JW_PAKRAT_LANE_CONTENT = 1
+} jw_pakrat_catalog_lane;
+
 typedef struct {
     jw_pakrat_catalog_package package;
     char gated_version[64];
     char gated_min_leaf_version[64];
+    jw_pakrat_catalog_lane lane;
 } jw_pakrat_catalog_selection;
 
 /* Parse one storefront and select the newest compatible version of every

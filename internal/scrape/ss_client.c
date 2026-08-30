@@ -458,12 +458,12 @@ static void jw__resolve_game_name(cJSON *names,
 
 /* ── ROM search ───────────────────────────────────────────────────────── */
 
-static int jw__search_request(const jw_ss_client *client, const char *rom_name,
-                              const char *md5_hash, long file_size,
-                              int system_id,
-                              const char *const *artwork_types, int artwork_count,
-                              const char *const *region_prio, int region_count,
-                              jw_ss_result *result) {
+static jw_ss_search_status jw__search_request(
+    const jw_ss_client *client, const char *rom_name,
+    const char *md5_hash, long file_size, int system_id,
+    const char *const *artwork_types, int artwork_count,
+    const char *const *region_prio, int region_count,
+    jw_ss_result *result) {
 #ifdef JW_SS_TESTING
     if (jw__test_search_request) {
         return jw__test_search_request(
@@ -474,7 +474,7 @@ static int jw__search_request(const jw_ss_client *client, const char *rom_name,
     char *url = jw__build_api_url(client, "jeuInfos.php", rom_name,
                                   md5_hash, file_size, system_id);
     if (!url)
-        return -1;
+        return JW_SS_SEARCH_ERROR;
 
     jw__curl_buffer buf;
     int http_code = jw__http_get(client, url, &buf, 2, NULL, 0);
@@ -482,17 +482,17 @@ static int jw__search_request(const jw_ss_client *client, const char *rom_name,
 
     if (http_code == -2) {
         free(buf.data);
-        return -2;
+        return JW_SS_SEARCH_CANCELLED;
     }
     if (http_code < 0) {
         if (!jw_ss_last_error())
             jw__ss_set_error("ScreenScraper request failed");
         free(buf.data);
-        return -1;
+        return JW_SS_SEARCH_ERROR;
     }
     if (http_code == 404) {
         free(buf.data);
-        return 1;
+        return JW_SS_SEARCH_NOT_FOUND;
     }
     if (http_code >= 400) {
         const char *msg = jw__http_status_error(http_code);
@@ -501,37 +501,37 @@ static int jw__search_request(const jw_ss_client *client, const char *rom_name,
         else
             jw__ss_set_error("ScreenScraper returned HTTP %d", http_code);
         free(buf.data);
-        return -1;
+        return JW_SS_SEARCH_ERROR;
     }
     if (!buf.data || buf.size == 0) {
         jw__ss_set_error("ScreenScraper returned an empty response");
         free(buf.data);
-        return -1;
+        return JW_SS_SEARCH_ERROR;
     }
 
     cJSON *json = cJSON_Parse(buf.data);
     free(buf.data);
     if (!json) {
         jw__ss_set_error("Failed to parse ScreenScraper response");
-        return -1;
+        return JW_SS_SEARCH_ERROR;
     }
 
     cJSON *response = cJSON_GetObjectItem(json, "response");
     if (!response) {
         cJSON_Delete(json);
         jw__ss_set_error("ScreenScraper response is missing 'response'");
-        return -1;
+        return JW_SS_SEARCH_ERROR;
     }
 
     cJSON *jeu = cJSON_GetObjectItem(response, "jeu");
     if (!jeu) {
         cJSON_Delete(json);
-        return 1;
+        return JW_SS_SEARCH_NOT_FOUND;
     }
     cJSON *game_id = cJSON_GetObjectItem(jeu, "id");
     if (!game_id || !cJSON_IsString(game_id) || game_id->valuestring[0] == '\0') {
         cJSON_Delete(json);
-        return 1;
+        return JW_SS_SEARCH_NOT_FOUND;
     }
 
     jw__resolve_game_name(cJSON_GetObjectItem(jeu, "noms"),
@@ -544,7 +544,7 @@ static int jw__search_request(const jw_ss_client *client, const char *rom_name,
                           result->media_url, sizeof(result->media_url),
                           result->media_format, sizeof(result->media_format)) != 0) {
         cJSON_Delete(json);
-        return 1;
+        return JW_SS_SEARCH_NO_MEDIA;
     }
 
     cJSON *ssuser = cJSON_GetObjectItem(response, "ssuser");
@@ -555,18 +555,15 @@ static int jw__search_request(const jw_ss_client *client, const char *rom_name,
     }
 
     cJSON_Delete(json);
-    return 0;
+    return JW_SS_SEARCH_FOUND;
 }
 
-int jw_ss_search_rom_platforms(const jw_ss_client *client,
-                               const char *rom_name,
-                               const char *rom_abs_path,
-                               const int *system_ids, size_t system_count,
-                               const char *const *artwork_types,
-                               int artwork_count,
-                               const char *const *region_prio,
-                               int region_count,
-                               jw_ss_result *result) {
+jw_ss_search_status jw_ss_search_rom_platforms(
+    const jw_ss_client *client, const char *rom_name,
+    const char *rom_abs_path, const int *system_ids, size_t system_count,
+    const char *const *artwork_types, int artwork_count,
+    const char *const *region_prio, int region_count,
+    jw_ss_result *result) {
     jw__ss_clear_error();
     memset(result, 0, sizeof(*result));
 
@@ -576,11 +573,11 @@ int jw_ss_search_rom_platforms(const jw_ss_client *client,
 #endif
     ) {
         jw__ss_set_error("Scraping is unavailable in this build (no API credentials)");
-        return -1;
+        return JW_SS_SEARCH_ERROR;
     }
     if (!system_ids || system_count == 0) {
         jw__ss_set_error("No ScreenScraper platform ids provided");
-        return -1;
+        return JW_SS_SEARCH_ERROR;
     }
 
     char md5_hash[33] = {0};
@@ -594,35 +591,43 @@ int jw_ss_search_rom_platforms(const jw_ss_client *client,
         file_size = 0;
     }
 
+    bool saw_no_media = false;
     for (size_t i = 0; i < system_count; i++) {
         memset(result, 0, sizeof(*result));
         jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
-        int ret = jw__search_request(client, rom_name, md5_hash, file_size,
-                                     system_ids[i], artwork_types, artwork_count,
-                                     region_prio, region_count, result);
+        jw_ss_search_status ret = jw__search_request(
+            client, rom_name, md5_hash, file_size, system_ids[i],
+            artwork_types, artwork_count, region_prio, region_count, result);
+        if (ret == JW_SS_SEARCH_NO_MEDIA)
+            saw_no_media = true;
 
-        /* An md5 that ScreenScraper does not know can shadow a clean name
-           match; retry without it before advancing to the next platform. */
-        if (ret == 1 && md5_hash[0] != '\0') {
+        /* A hash may identify a sparse clone entry while the same name finds
+           a media-bearing parent. Preserve that recovery for both not-found
+           and no-media before advancing to another declared platform. */
+        if ((ret == JW_SS_SEARCH_NOT_FOUND ||
+             ret == JW_SS_SEARCH_NO_MEDIA) && md5_hash[0] != '\0') {
             memset(result, 0, sizeof(*result));
             jw__ss_progress(client, JW_SS_PHASE_SEARCHING);
             ret = jw__search_request(client, rom_name, "", 0, system_ids[i],
                                      artwork_types, artwork_count,
                                      region_prio, region_count, result);
+            if (ret == JW_SS_SEARCH_NO_MEDIA)
+                saw_no_media = true;
         }
-        if (ret != 1)
+        if (ret == JW_SS_SEARCH_FOUND || ret < 0)
             return ret;
     }
 
-    return 1;
+    return saw_no_media ? JW_SS_SEARCH_NO_MEDIA : JW_SS_SEARCH_NOT_FOUND;
 }
 
-int jw_ss_search_rom(const jw_ss_client *client,
-                     const char *rom_name, const char *rom_abs_path,
-                     int system_id,
-                     const char *const *artwork_types, int artwork_count,
-                     const char *const *region_prio, int region_count,
-                     jw_ss_result *result) {
+jw_ss_search_status jw_ss_search_rom(
+    const jw_ss_client *client,
+    const char *rom_name, const char *rom_abs_path,
+    int system_id,
+    const char *const *artwork_types, int artwork_count,
+    const char *const *region_prio, int region_count,
+    jw_ss_result *result) {
     return jw_ss_search_rom_platforms(
         client, rom_name, rom_abs_path, &system_id, 1,
         artwork_types, artwork_count, region_prio, region_count, result);

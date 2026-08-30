@@ -20,6 +20,7 @@
 #include "internal/platform/wifi.h"
 #include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
+#include "internal/catalog/effective.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/retroarch/legacy_migration.h"
 #include "internal/retroarch/states.h"
@@ -1774,7 +1775,6 @@ static void jw__publish_runtime_path_env(const jw_daemon_state *state) {
     }
     if (getenv("SYSTEM_PATH")) {
         jw__setenvf_default("CORES_PATH", "%s/cores", getenv("SYSTEM_PATH"));
-        jw__setenvf_default("INFO_PATH", "%s/info", getenv("SYSTEM_PATH"));
     }
 
     char *retroarch_bin = jw_retroarch_bin_path();
@@ -4069,6 +4069,42 @@ fail:
     return -1;
 }
 
+/* CAT-1: publish the effective catalog. Full provenance validation lives
+   here and ONLY here -- readers do structural validation per load and never
+   rehash a catalog input on a request path.
+   See umrk-workspace/plans/pak-rat/content-paks-contract.md#cat-1. */
+static void jw__catalog_refresh(const char *sdcard_root, const char *when) {
+    char generation[JW_CAT_GEN_NAME_MAX] = "";
+    char reason[JW_CAT_REASON_MAX] = "";
+    int rc = jw_discovery_catalog_refresh(sdcard_root, generation,
+                                          sizeof(generation), reason,
+                                          sizeof(reason));
+    if (rc == 0) {
+        jw_log_info("catalog: %s %s (%s)", reason, generation, when);
+    } else {
+        /* Loud on purpose. Running on release defaults is correct and safe,
+           but it means a content pak silently does nothing, and the only
+           other place that says so is diagnostics.json. */
+        jw_log_warn("catalog: running on release defaults reason=%s (%s)",
+                    reason[0] ? reason : "unknown", when);
+    }
+}
+
+static void jw__catalog_init(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    /* Abandoned temp directories only. A finalized generation is never
+       pruned in v1: a CentralScrutinizer process can outlive a jawakad
+       crash, so even daemon startup is not a reader-free window. */
+    size_t removed = 0;
+    if (jw_catalog_cleanup_temps(state->sdcard_root, &removed) == 0 && removed > 0) {
+        jw_log_info("catalog: removed %zu abandoned temp director%s",
+                    removed, removed == 1 ? "y" : "ies");
+    }
+    jw__catalog_refresh(state->sdcard_root, "startup");
+}
+
 static void jw__scan_job_init(jw_daemon_state *state) {
     if (!state || state->scan_job.initialized) {
         return;
@@ -5688,6 +5724,8 @@ static char *jw__resolve_launch_core_path(jw_daemon_state *state,
                                           size_t out_core_id_size,
                                           char *out_config_folder,
                                           size_t out_config_folder_size,
+                                          char *out_info_dir,
+                                          size_t out_info_dir_size,
                                           char *diagnostic,
                                           size_t diagnostic_size) {
     if (out_core_id && out_core_id_size > 0) {
@@ -5698,6 +5736,9 @@ static char *jw__resolve_launch_core_path(jw_daemon_state *state,
     }
     if (out_config_folder && out_config_folder_size > 0) {
         out_config_folder[0] = '\0';
+    }
+    if (out_info_dir && out_info_dir_size > 0) {
+        out_info_dir[0] = '\0';
     }
 
     jw_game_entry game;
@@ -5731,6 +5772,8 @@ static char *jw__resolve_launch_core_path(jw_daemon_state *state,
                                                           out_core_id_size,
                                                           out_config_folder,
                                                           out_config_folder_size,
+                                                          out_info_dir,
+                                                          out_info_dir_size,
                                                           diagnostic,
                                                           diagnostic_size);
     if (core && source && preferred[0]) {
@@ -5780,6 +5823,7 @@ static int jw__platform_path(char *out, size_t out_size, const jw_daemon_state *
 }
 
 static int jw__resolve_path_core_executable(const jw_daemon_state *state,
+                                            const jw_ra_catalog *catalog,
                                             const jw_ra_core *core,
                                             char *out,
                                             size_t out_size) {
@@ -5787,25 +5831,13 @@ static int jw__resolve_path_core_executable(const jw_daemon_state *state,
         return -1;
     }
 
-    char candidate[PATH_MAX];
-    if (core->path[0] == '/') {
-        if (snprintf(candidate, sizeof(candidate), "%s", core->path) >=
-            (int)sizeof(candidate)) {
-            return -1;
-        }
-    } else {
-        char platform_path[PATH_MAX];
-        if (jw__platform_path(platform_path, sizeof(platform_path), state) != 0 ||
-            snprintf(candidate, sizeof(candidate), "%s/%s",
-                     platform_path, core->path) >= (int)sizeof(candidate)) {
-            return -1;
-        }
-    }
-
-    if (access(candidate, X_OK) != 0) {
+    char platform_path[PATH_MAX];
+    if (jw__platform_path(platform_path, sizeof(platform_path), state) != 0 ||
+        jw_ra_catalog_resolve_core_path(catalog, core, NULL, platform_path,
+                                        true, out, out_size) != 0) {
         return -1;
     }
-    return snprintf(out, out_size, "%s", candidate) < (int)out_size ? 0 : -1;
+    return 0;
 }
 
 static const jw_ra_system *jw__catalog_find_launch_system(const jw_ra_catalog *catalog,
@@ -5826,12 +5858,12 @@ static bool jw__try_path_core(const jw_daemon_state *state,
     }
 
     char exec_path[PATH_MAX];
-    if (jw__resolve_path_core_executable(state, core, exec_path, sizeof(exec_path)) != 0) {
+    if (jw__resolve_path_core_executable(state, catalog, core,
+                                         exec_path, sizeof(exec_path)) != 0) {
         return false;
     }
 
     memset(target, 0, sizeof(*target));
-    (void)catalog;
     target->kind = JW_LAUNCH_TARGET_STANDALONE;
     snprintf(target->path, sizeof(target->path), "%s", exec_path);
     snprintf(target->core_id, sizeof(target->core_id), "%s", core->id ? core->id : "");
@@ -5963,6 +5995,7 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
                                               core_id, sizeof(core_id),
                                               core_config_folder,
                                               sizeof(core_config_folder),
+                                              NULL, 0,
                                               diagnostic, sizeof(diagnostic));
     if (!core) {
         if (diagnostic[0]) {
@@ -8858,6 +8891,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     char *retroarch = jw_retroarch_bin_path();
     char core_id[64];
     char core_config_folder[256];
+    char info_dir[PATH_MAX];
     char core_diagnostic[256];
     char launch_warning[256];
     launch_warning[0] = '\0';
@@ -8867,6 +8901,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
                                               core_id, sizeof(core_id),
                                               core_config_folder,
                                               sizeof(core_config_folder),
+                                              info_dir, sizeof(info_dir),
                                               core_diagnostic,
                                               sizeof(core_diagnostic));
     char *runtime_config = NULL;
@@ -8989,14 +9024,10 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     /* Bake cheevos creds into the config write, then clear them from the parent
        env immediately so the plaintext password never persists in the daemon. */
     jw__cheevos_apply_env(&cheevos);
-    runtime_config = jw_prepare_retroarch_config(state->runtime_dir,
-                                                source_root,
-                                                core,
-                                                player_indices_arg,
-                                                persist_config,
-                                                rop_snapshot.proxied,
-                                                config_error,
-                                                sizeof(config_error));
+    runtime_config = jw_prepare_retroarch_config_with_info(
+        state->runtime_dir, source_root, core, info_dir,
+        player_indices_arg, persist_config, rop_snapshot.proxied,
+        config_error, sizeof(config_error));
     jw__cheevos_clear_env();
     jw__restore_env(storage_env, 3);
     if (!runtime_config) {
@@ -13707,6 +13738,10 @@ int main(int argc, char *argv[]) {
     /* Exported so child processes receive them via execv's inherited environment. */
     jw__publish_runtime_path_env(&state);
     jw__publish_audio_env(&state);
+
+    /* Before anything reads a catalog. Runs after the runtime env is
+       published because it needs $UMRK_INTERNAL_DATA_PATH. */
+    jw__catalog_init(&state);
 
     /* LIFE-1 recovery precedes service scan/autostart. A process restart while
        a writer may still exist must never be interpreted as an empty launch;

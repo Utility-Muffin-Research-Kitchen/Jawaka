@@ -100,17 +100,22 @@ int main(int argc, char **argv) {
     const char *rom_name = basename(rom_copy);
 
     jw_ss_result result;
-    int rc = jw_ss_search_rom(&client, rom_name, rom_path, system_id,
-                              jw_ss_default_artwork_priority,
-                              jw_ss_default_artwork_priority_count,
-                              jw_ss_default_region_priority,
-                              jw_ss_default_region_priority_count,
-                              &result);
-    if (rc == 1) {
+    jw_ss_search_status search_status = jw_ss_search_rom(
+        &client, rom_name, rom_path, system_id,
+        jw_ss_default_artwork_priority,
+        jw_ss_default_artwork_priority_count,
+        jw_ss_default_region_priority,
+        jw_ss_default_region_priority_count,
+        &result);
+    if (search_status == JW_SS_SEARCH_NOT_FOUND) {
         printf("not found: %s (system %s/%d)\n", rom_name, system_tag, system_id);
         return 1;
     }
-    if (rc != 0) {
+    if (search_status == JW_SS_SEARCH_NO_MEDIA) {
+        printf("no media: %s (system %s/%d)\n", rom_name, system_tag, system_id);
+        return 1;
+    }
+    if (search_status != JW_SS_SEARCH_FOUND) {
         fprintf(stderr, "lookup failed: %s\n",
                 jw_ss_last_error() ? jw_ss_last_error() : "unknown error");
         return 2;
@@ -128,7 +133,7 @@ int main(int argc, char **argv) {
         out_path = default_out;
     }
 
-    rc = jw_ss_download_media(&client, result.media_url, out_path, max_dim);
+    int rc = jw_ss_download_media(&client, result.media_url, out_path, max_dim);
     if (rc != 0) {
         fprintf(stderr, "download failed: %s\n",
                 jw_ss_last_error() ? jw_ss_last_error() : "unknown error");

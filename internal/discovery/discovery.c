@@ -1,6 +1,8 @@
 #include "internal/discovery/discovery.h"
 
 #include "cJSON.h"
+#include "internal/catalog/effective.h"
+#include "internal/catalog/manifest.h"
 #include "internal/db/db.h"
 #include "internal/platform/platform_id.h"
 #include "internal/retroarch/catalog.h"
@@ -1292,7 +1294,9 @@ static int jw__scan_roms_metadata(jw_scan_tx *tx,
     return 0;
 }
 
-static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root, jw_scan_result *out) {
+static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root,
+                         const jw_ra_catalog *catalog, bool compatibility,
+                         jw_scan_result *out) {
     /* Source lists are path-heavy. Keep both the scan snapshot and the
        post-enumeration revalidation snapshot off the small pthread stack. */
     jw_storage_source_list *sources = malloc(sizeof(*sources));
@@ -1302,22 +1306,6 @@ static int jw__scan_roms(jw_scan_tx *tx, const char *sdcard_root, jw_scan_result
         free(sources);
         free(current);
         return -1;
-    }
-
-    const char *disable_v2 = getenv("JAWAKA_DISABLE_RETROARCH_V2");
-    const jw_ra_catalog *catalog = NULL;
-    bool compatibility = disable_v2 && strcmp(disable_v2, "1") == 0;
-    if (disable_v2 && strcmp(disable_v2, "1") == 0) {
-        fprintf(stderr, "RetroArch discovery: metadata disabled, using compatibility scanner\n");
-    } else {
-        char error[256];
-        catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
-        if (!catalog) {
-            compatibility = true;
-            fprintf(stderr,
-                    "RetroArch discovery: metadata unavailable (%s), using compatibility scanner\n",
-                    error[0] ? error : "unknown error");
-        }
     }
 
     for (int i = 0; i < sources->count; i++) {
@@ -1391,6 +1379,260 @@ static const char *jw__scan_platform(void) {
     return (platform && platform[0]) ? platform : "mac";
 }
 
+static char *jw__read_manifest_text(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file || fseek(file, 0, SEEK_END) != 0) {
+        if (file) fclose(file);
+        return NULL;
+    }
+    long size = ftell(file);
+    if (size <= 0 || size > 8 * 1024 * 1024 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    char *text = malloc((size_t)size + 1u);
+    if (!text) {
+        fclose(file);
+        return NULL;
+    }
+    size_t got = fread(text, 1u, (size_t)size, file);
+    fclose(file);
+    if (got != (size_t)size) {
+        free(text);
+        return NULL;
+    }
+    text[got] = '\0';
+    return text;
+}
+
+static int jw__content_diagnostic(cJSON *entries, const char *provider,
+                                  const char *reason, const char *detail) {
+    cJSON *row = cJSON_CreateObject();
+    if (!row || !cJSON_AddStringToObject(row, "provider", provider) ||
+        !cJSON_AddStringToObject(row, "reason", reason) ||
+        !cJSON_AddStringToObject(row, "detail", detail) ||
+        !cJSON_AddItemToArray(entries, row)) {
+        cJSON_Delete(row);
+        return -1;
+    }
+    fprintf(stderr, "Content catalog: provider=%s reason=%s detail=%s\n",
+            provider, reason, detail);
+    return 0;
+}
+
+static int jw__content_enumerate_dir(const jw_storage_source *source,
+                                     const char *platform_dir,
+                                     jw_content_install_lane lane,
+                                     cJSON *contributors,
+                                     cJSON *diagnostics) {
+    char apps_path[PATH_MAX];
+    if (jw__format_string(apps_path, sizeof(apps_path), "%s/%s",
+                          source->apps_path, platform_dir) != 0) {
+        return -1;
+    }
+    DIR *dir = opendir(apps_path);
+    if (!dir) {
+        return 0;
+    }
+    int rc = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (jw__is_hidden(entry->d_name)) continue;
+        char pak_dir[PATH_MAX], manifest_path[PATH_MAX], provider[PATH_MAX];
+        if (jw__format_string(pak_dir, sizeof(pak_dir), "%s/%s",
+                              apps_path, entry->d_name) != 0 ||
+            !jw__is_directory(pak_dir) ||
+            jw__format_string(manifest_path, sizeof(manifest_path), "%s/pak.json",
+                              pak_dir) != 0 ||
+            jw__format_string(provider, sizeof(provider), "%s/%s",
+                              platform_dir, entry->d_name) != 0) {
+            continue;
+        }
+        char *manifest_text = jw__read_manifest_text(manifest_path);
+        if (!manifest_text) continue;
+        cJSON *probe = cJSON_Parse(manifest_text);
+        bool has_provides = cJSON_IsObject(probe) &&
+            cJSON_GetObjectItemCaseSensitive(probe, "provides") != NULL;
+        cJSON_Delete(probe);
+        if (!has_provides) {
+            free(manifest_text);
+            continue;
+        }
+
+        jw_content_manifest manifest;
+        char reason[JW_CONTENT_REASON_MAX] = "";
+        if (!jw_content_manifest_validate(manifest_text, pak_dir, lane, source->id,
+                                          &manifest, reason, sizeof(reason))) {
+            char detail[256];
+            snprintf(detail, sizeof(detail),
+                     "content contribution refused during manifest validation (%s)",
+                     reason[0] ? reason : "unknown");
+            if (jw__content_diagnostic(diagnostics, provider,
+                                       reason[0] ? reason : "unknown-field",
+                                       detail) != 0) rc = -1;
+            free(manifest_text);
+            if (rc != 0) break;
+            continue;
+        }
+
+        const cJSON *content_scrape = NULL;
+        int scrape_status = jw_content_scrape_validate(
+            manifest.document, &content_scrape, reason, sizeof(reason));
+        if (scrape_status < 0 &&
+            jw__content_diagnostic(
+                diagnostics, provider, reason,
+                "optional content scrape metadata ignored; filename behavior retained") != 0) {
+            jw_content_manifest_destroy(&manifest);
+            free(manifest_text);
+            rc = -1;
+            break;
+        }
+
+        cJSON *row = cJSON_CreateObject();
+        cJSON *pak_version = cJSON_GetObjectItemCaseSensitive(manifest.document,
+                                                              "pak_version");
+        if (!row || !cJSON_AddStringToObject(row, "provider", provider) ||
+            !cJSON_AddStringToObject(row, "source_id", source->id) ||
+            !cJSON_AddStringToObject(row, "pak_version",
+                                     cJSON_IsString(pak_version)
+                                         ? pak_version->valuestring : "") ||
+            !cJSON_AddStringToObject(row, "pak_dir", pak_dir)) {
+            cJSON_Delete(row);
+            jw_content_manifest_destroy(&manifest);
+            free(manifest_text);
+            rc = -1;
+            break;
+        }
+        cJSON_AddItemToObject(row, "provides", cJSON_Duplicate(manifest.provides, true));
+        if (scrape_status > 0) {
+            cJSON *copy = cJSON_Duplicate(content_scrape, true);
+            if (!copy || !cJSON_AddItemToObject(row, "content_scrape", copy)) {
+                cJSON_Delete(copy);
+                cJSON_Delete(row);
+                jw_content_manifest_destroy(&manifest);
+                free(manifest_text);
+                rc = -1;
+                break;
+            }
+        }
+        cJSON_AddItemToArray(contributors, row);
+        if (manifest.redundant_case_variant &&
+            jw__content_diagnostic(diagnostics, provider, "redundant-case-variant",
+                                   "patterns contains redundant case variants") != 0) {
+            rc = -1;
+        }
+        jw_content_manifest_destroy(&manifest);
+        free(manifest_text);
+        if (rc != 0) break;
+    }
+    closedir(dir);
+    return rc;
+}
+
+static int jw__content_json_compare(const void *left, const void *right) {
+    const cJSON *const *a = left;
+    const cJSON *const *b = right;
+    const cJSON *ap = cJSON_GetObjectItemCaseSensitive(*a, "provider");
+    const cJSON *bp = cJSON_GetObjectItemCaseSensitive(*b, "provider");
+    int result = strcmp(ap->valuestring, bp->valuestring);
+    if (result == 0) {
+        const cJSON *ar = cJSON_GetObjectItemCaseSensitive(*a, "reason");
+        const cJSON *br = cJSON_GetObjectItemCaseSensitive(*b, "reason");
+        if (cJSON_IsString(ar) && cJSON_IsString(br)) {
+            result = strcmp(ar->valuestring, br->valuestring);
+        }
+    }
+    if (result == 0) {
+        const cJSON *ad = cJSON_GetObjectItemCaseSensitive(*a, "detail");
+        const cJSON *bd = cJSON_GetObjectItemCaseSensitive(*b, "detail");
+        if (cJSON_IsString(ad) && cJSON_IsString(bd)) {
+            result = strcmp(ad->valuestring, bd->valuestring);
+        }
+    }
+    return result;
+}
+
+static int jw__content_sort(cJSON *array) {
+    int count = cJSON_GetArraySize(array);
+    cJSON **rows = count ? malloc((size_t)count * sizeof(*rows)) : NULL;
+    if (count && !rows) return -1;
+    for (int i = 0; i < count; i++) rows[i] = cJSON_GetArrayItem(array, i);
+    qsort(rows, (size_t)count, sizeof(*rows), jw__content_json_compare);
+    cJSON *sorted = cJSON_CreateArray();
+    if (!sorted) {
+        free(rows);
+        return -1;
+    }
+    for (int i = 0; i < count; i++)
+        cJSON_AddItemToArray(sorted, cJSON_DetachItemViaPointer(array, rows[i]));
+    while (sorted->child)
+        cJSON_AddItemToArray(array, cJSON_DetachItemFromArray(sorted, 0));
+    cJSON_Delete(sorted);
+    free(rows);
+    return 0;
+}
+
+int jw_discovery_catalog_refresh(const char *sdcard_root,
+                                 char *generation,
+                                 size_t generation_size,
+                                 char *reason,
+                                 size_t reason_size) {
+    jw_storage_source_list *sources = malloc(sizeof(*sources));
+    cJSON *contributors = cJSON_CreateArray();
+    cJSON *diagnostics = cJSON_CreateArray();
+    if (!sources || !contributors || !diagnostics ||
+        jw_storage_sources_resolve(sdcard_root, sources) != 0) {
+        free(sources);
+        cJSON_Delete(contributors);
+        cJSON_Delete(diagnostics);
+        (void)jw_catalog_record_failure(
+            sdcard_root, "compile-failed",
+            "could not resolve storage sources for content enumeration");
+        if (reason && reason_size) snprintf(reason, reason_size, "%s", "compile-failed");
+        return -1;
+    }
+    const char *platform = jw__scan_platform();
+    int enumerate_rc = 0;
+    for (int i = 0; i < sources->count && enumerate_rc == 0; i++) {
+        const jw_storage_source *source = &sources->sources[i];
+        if (!source->available) continue;
+        enumerate_rc = jw__content_enumerate_dir(
+            source, platform, JW_CONTENT_PLATFORM_LANE, contributors, diagnostics);
+        if (enumerate_rc == 0 && strcmp(platform, "shared") != 0) {
+            enumerate_rc = jw__content_enumerate_dir(
+                source, "shared", JW_CONTENT_SHARED_LANE, contributors, diagnostics);
+        }
+    }
+    free(sources);
+    if (enumerate_rc != 0 || jw__content_sort(contributors) != 0 ||
+        jw__content_sort(diagnostics) != 0) {
+        cJSON_Delete(contributors);
+        cJSON_Delete(diagnostics);
+        (void)jw_catalog_record_failure(
+            sdcard_root, "compile-failed",
+            "could not enumerate or sort content contributors");
+        if (reason && reason_size) snprintf(reason, reason_size, "%s", "compile-failed");
+        return -1;
+    }
+    char defaults_dir[PATH_MAX];
+    int rc = -1;
+    if (jw_ra_release_defaults_dir(sdcard_root, defaults_dir, sizeof(defaults_dir)) == 0) {
+        rc = jw_catalog_refresh_with_contributors(
+            sdcard_root, defaults_dir, contributors, diagnostics,
+            generation, generation_size, reason, reason_size);
+    } else {
+        (void)jw_catalog_record_failure(
+            sdcard_root, "compile-failed",
+            "could not resolve the release defaults directory");
+        if (reason && reason_size) {
+            snprintf(reason, reason_size, "%s", "compile-failed");
+        }
+    }
+    cJSON_Delete(contributors);
+    cJSON_Delete(diagnostics);
+    return rc;
+}
+
 static bool jw__load_pak_manifest(const char *pak_abs,
                                   char *name_buf,
                                   size_t name_size,
@@ -1403,7 +1645,11 @@ static bool jw__load_pak_manifest(const char *pak_abs,
                                   char *min_jawaka_version_buf,
                                   size_t min_jawaka_version_size,
                                   char *min_leaf_version_buf,
-                                  size_t min_leaf_version_size) {
+                                  size_t min_leaf_version_size,
+                                  bool *has_provides) {
+    if (has_provides) {
+        *has_provides = false;
+    }
     char pak_json_path[PATH_MAX];
     if (jw__format_string(pak_json_path, sizeof(pak_json_path), "%s/pak.json", pak_abs) != 0 ||
         !jw__is_file(pak_json_path)) {
@@ -1428,6 +1674,10 @@ static bool jw__load_pak_manifest(const char *pak_abs,
                 cJSON *root = cJSON_Parse(json);
                 if (root) {
                     cJSON *item = NULL;
+                    if (has_provides &&
+                        cJSON_GetObjectItemCaseSensitive(root, "provides")) {
+                        *has_provides = true;
+                    }
                     item = cJSON_GetObjectItem(root, "name");
                     if (cJSON_IsString(item) && item->valuestring) {
                         snprintf(name_buf, name_size, "%s", item->valuestring);
@@ -1527,6 +1777,8 @@ static int jw__scan_apps_dir(jw_scan_tx *tx, const jw_storage_source *source,
         min_jawaka_version_buf[0] = '\0';
         min_leaf_version_buf[0] = '\0';
 
+        bool has_provides = false;
+
         if (!jw__load_pak_manifest(pak_abs,
                                    name_buf, sizeof(name_buf),
                                    icon_buf, sizeof(icon_buf),
@@ -1535,7 +1787,8 @@ static int jw__scan_apps_dir(jw_scan_tx *tx, const jw_storage_source *source,
                                    min_jawaka_version_buf,
                                    sizeof(min_jawaka_version_buf),
                                    min_leaf_version_buf,
-                                   sizeof(min_leaf_version_buf))) {
+                                   sizeof(min_leaf_version_buf),
+                                   &has_provides)) {
             continue;
         }
 
@@ -1544,6 +1797,18 @@ static int jw__scan_apps_dir(jw_scan_tx *tx, const jw_storage_source *source,
                     "App discovery: skipping %s (manifest platform=%s, expected=%s)\n",
                     pak_abs, platform_buf, expected_platform);
             continue;
+        }
+
+        /* CONTENT-1 classification is independent of whether validation or
+           contribution succeeded. A pure content pak has no app to launch;
+           a hybrid remains an ordinary app because its launch.sh is real. */
+        if (has_provides) {
+            char launch_path[PATH_MAX];
+            if (jw__format_string(launch_path, sizeof(launch_path), "%s/launch.sh",
+                                  pak_abs) != 0 ||
+                !jw__is_file(launch_path) || access(launch_path, X_OK) != 0) {
+                continue;
+            }
         }
 
         if (jw__scan_insert_app(tx, pak_rel, name_buf, icon_buf, platform_buf,
@@ -1574,7 +1839,11 @@ static int jw__scan_apps_source(jw_scan_tx *tx, const jw_storage_source *source,
     return 0;
 }
 
-static int jw__scan_apps(jw_scan_tx *tx, const char *sdcard_root, jw_scan_result *out) {
+static int jw__scan_apps(jw_scan_tx *tx, const char *sdcard_root,
+                         const jw_ra_catalog *catalog, jw_scan_result *out) {
+    /* Kept in the signature deliberately: ROM and app classification belong
+       to one scan snapshot even though app rows do not inspect catalog data. */
+    (void)catalog;
     jw_storage_source_list *sources = malloc(sizeof(*sources));
     if (!sources || jw_storage_sources_resolve(sdcard_root, sources) != 0) {
         free(sources);
@@ -1718,9 +1987,8 @@ static int jw__load_name_map_file(sqlite3 *db, const char *path, int override) {
    on games.name (kept in sync by the games_au trigger) gives friendly search. Rows
    with no romname match are left byte-for-byte untouched, so non-arcade systems
    and unmapped arcade roms are unaffected. */
-static int jw__apply_arcade_names(sqlite3 *db, const char *sdcard_root) {
-    char error[256];
-    const jw_ra_catalog *catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
+static int jw__apply_arcade_names(sqlite3 *db, const char *sdcard_root,
+                                  const jw_ra_catalog *catalog) {
     if (!catalog) {
         /* Compat mode (no metadata): nothing declares name_map. */
         return 0;
@@ -1747,7 +2015,10 @@ static int jw__apply_arcade_names(sqlite3 *db, const char *sdcard_root) {
 
     /* Bundled map from the platform defaults dir. */
     char defaults_dir[PATH_MAX];
-    if (jw_ra_defaults_dir(sdcard_root, defaults_dir, sizeof(defaults_dir)) == 0) {
+    /* arcade_names.txt is release-owned and lives beside retroarch.cfg, NOT
+       in a generation. This call names the release seam explicitly -- the
+       whole point of splitting the two. */
+    if (jw_ra_release_defaults_dir(sdcard_root, defaults_dir, sizeof(defaults_dir)) == 0) {
         char bundled[PATH_MAX];
         if (snprintf(bundled, sizeof(bundled), "%s/arcade_names.txt", defaults_dir) <
                 (int)sizeof(bundled)) {
@@ -1824,14 +2095,12 @@ static int jw__apply_arcade_names(sqlite3 *db, const char *sdcard_root) {
     return status;
 }
 
-static int jw__dedup_folder_aliases(sqlite3 *db, const char *sdcard_root) {
+static int jw__dedup_folder_aliases(sqlite3 *db, const jw_ra_catalog *catalog) {
     /* After folder folding, a legacy alias folder (e.g. Roms/FC) and the
        canonical public folder (Roms/NES) both resolve to one system, so the
        same title can land twice. Collapse each system's duplicates, preferring
        the copy under the canonical public folder. Only metadata mode folds
        folders, so compat mode (no catalog) has nothing to dedup. */
-    char error[256];
-    const jw_ra_catalog *catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
     if (!catalog) {
         return 0;
     }
@@ -1854,6 +2123,43 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
 
     memset(out, 0, sizeof(*out));
 
+    /* P0-2: enumerate and compile first, then acquire exactly one immutable
+       catalog snapshot for every phase of this scan. */
+    char generation[JW_CAT_GEN_NAME_MAX] = "";
+    char refresh_reason[JW_CAT_REASON_MAX] = "";
+    int refresh_rc = jw_discovery_catalog_refresh(
+        sdcard_root, generation, sizeof(generation),
+        refresh_reason, sizeof(refresh_reason));
+    if (refresh_rc == 0) {
+        fprintf(stderr, "Content catalog: %s %s (scan)\n",
+                refresh_reason, generation);
+    } else {
+        fprintf(stderr, "Content catalog: release defaults reason=%s (scan)\n",
+                refresh_reason[0] ? refresh_reason : "compile-failed");
+    }
+
+    const char *disable_v2 = getenv("JAWAKA_DISABLE_RETROARCH_V2");
+    bool compatibility = disable_v2 && strcmp(disable_v2, "1") == 0;
+    const jw_ra_catalog *catalog = NULL;
+    if (compatibility) {
+        fprintf(stderr, "RetroArch discovery: metadata disabled, using compatibility scanner\n");
+    } else {
+        char error[256] = "";
+        catalog = jw_ra_catalog_get(sdcard_root, error, sizeof(error));
+        if (!catalog) {
+            compatibility = true;
+            fprintf(stderr,
+                    "RetroArch discovery: metadata unavailable (%s), using compatibility scanner\n",
+                    error[0] ? error : "unknown error");
+        }
+    }
+    /* Say which catalog this scan actually loaded, not merely which generation
+       was published a moment ago. The two can disagree, and when they do every
+       downstream symptom looks like a discovery bug. */
+    fprintf(stderr, "RetroArch discovery: scanning with %zu systems / %zu cores\n",
+            catalog ? catalog->system_count : (size_t)0,
+            catalog ? catalog->core_count : (size_t)0);
+
     /* Non-destructive rescan: upsert keeps stable ids so favorites/recents
        survive, then prune only the rows whose ROM/pak vanished from disk. */
     jw_scan_tx tx;
@@ -1861,17 +2167,17 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     tx.db = db;
 
     if (jw_db_scan_begin(db) != 0 ||
-        jw__scan_roms(&tx, sdcard_root, out) != 0 ||
-        jw__scan_apps(&tx, sdcard_root, out) != 0 ||
+        jw__scan_roms(&tx, sdcard_root, catalog, compatibility, out) != 0 ||
+        jw__scan_apps(&tx, sdcard_root, catalog, out) != 0 ||
         jw__scan_tx_commit(&tx) != 0) {
         jw__scan_tx_rollback(&tx);
         return -1;
     }
 
     if (jw__scan_tx_begin(&tx) != 0 ||
-        jw__dedup_folder_aliases(db, sdcard_root) != 0 ||
+        jw__dedup_folder_aliases(db, catalog) != 0 ||
         jw_db_scan_prune(db) != 0 ||
-        jw__apply_arcade_names(db, sdcard_root) != 0 ||
+        jw__apply_arcade_names(db, sdcard_root, catalog) != 0 ||
         jw__scan_tx_commit(&tx) != 0) {
         jw__scan_tx_rollback(&tx);
         return -1;

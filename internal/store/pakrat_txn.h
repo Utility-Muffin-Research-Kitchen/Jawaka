@@ -1,6 +1,14 @@
 #ifndef JW_STORE_PAKRAT_TXN_H
 #define JW_STORE_PAKRAT_TXN_H
 
+/* A full library scan holds the DB write lock for 6-9 seconds. A package
+   mutation's commit point has to outlast that rather than report a failure for
+   work it already did -- jw_db_open's 2s default is sized for interactive
+   writes (a favourite, a recent), where waiting longer would feel like a hang.
+   Generous on purpose: the alternative is telling a user their uninstall
+   failed after the package is already gone from disk. */
+#define JW_PAKRAT_COMMIT_BUSY_TIMEOUT_MS 30000
+
 #include "internal/db/db.h"
 #include "internal/services/manifest.h"
 #include "internal/store/pakrat.h"

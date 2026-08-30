@@ -109,13 +109,12 @@ static void fixture_env(txn_fixture *f) {
     setenv("APPS_PATHS", apps, 1);
 }
 
-static void fixture_setup(txn_fixture *f) {
+/* Derive every fixture path from the root, without creating anything. A
+   re-exec'd fault child rebuilds the fixture this way: the parent already
+   seeded it on disk, and re-seeding would destroy the state under test. */
+static void fixture_paths(txn_fixture *f, const char *root) {
     memset(f, 0, sizeof(*f));
-    snprintf(f->root, sizeof(f->root), "/tmp/jw-pakrat-txn.XXXXXX");
-    if (!mkdtemp(f->root)) {
-        fprintf(stderr, "mkdtemp: %s\n", strerror(errno));
-        exit(2);
-    }
+    snprintf(f->root, sizeof(f->root), "%s", root);
     join_path(f->primary, sizeof(f->primary), f->root, "primary");
     join_path(f->secondary, sizeof(f->secondary), f->root, "secondary");
     join_path(f->absent, sizeof(f->absent), f->root, "absent");
@@ -129,6 +128,24 @@ static void fixture_setup(txn_fixture *f) {
     join_path(f->primary_apps, sizeof(f->primary_apps), f->primary, "Apps");
     join_path(f->secondary_apps, sizeof(f->secondary_apps), f->secondary,
               "Apps");
+    fixture_env(f);
+    snprintf(f->ctx.platform, sizeof(f->ctx.platform), "mac");
+    snprintf(f->ctx.sdcard_root, sizeof(f->ctx.sdcard_root), "%s",
+             f->primary);
+    snprintf(f->ctx.state_dir, sizeof(f->ctx.state_dir), "%s", f->state);
+    snprintf(f->ctx.db_path, sizeof(f->ctx.db_path), "%s", f->db);
+    snprintf(f->ctx.runtime_dir, sizeof(f->ctx.runtime_dir), "%s",
+             f->runtime);
+}
+
+static void fixture_setup(txn_fixture *f) {
+    char root[PATH_MAX];
+    snprintf(root, sizeof(root), "/tmp/jw-pakrat-txn.XXXXXX");
+    if (!mkdtemp(root)) {
+        fprintf(stderr, "mkdtemp: %s\n", strerror(errno));
+        exit(2);
+    }
+    fixture_paths(f, root);
     if (jw__pakrat_mkdir_p(f->primary_userdata, 0700) != 0 ||
         jw__pakrat_mkdir_p(f->secondary_userdata, 0700) != 0 ||
         jw__pakrat_mkdir_p(f->primary_apps, 0700) != 0 ||
@@ -138,14 +155,6 @@ static void fixture_setup(txn_fixture *f) {
         fprintf(stderr, "fixture mkdir failed\n");
         exit(2);
     }
-    fixture_env(f);
-    snprintf(f->ctx.platform, sizeof(f->ctx.platform), "mac");
-    snprintf(f->ctx.sdcard_root, sizeof(f->ctx.sdcard_root), "%s",
-             f->primary);
-    snprintf(f->ctx.state_dir, sizeof(f->ctx.state_dir), "%s", f->state);
-    snprintf(f->ctx.db_path, sizeof(f->ctx.db_path), "%s", f->db);
-    snprintf(f->ctx.runtime_dir, sizeof(f->ctx.runtime_dir), "%s",
-             f->runtime);
 }
 
 static void fixture_teardown(txn_fixture *f) {
@@ -182,6 +191,60 @@ static void write_floor_pak(const char *pak_root) {
                "{\"id\":\"org.umrk.test.txn\",\"name\":\"TXN Floor\","
                "\"platform\":\"mac\",\"pak_version\":\"0.0.1\"}\n",
                0600);
+}
+
+static void write_content_pak(const char *pak_root) {
+    char manifest[PATH_MAX];
+    join_path(manifest, sizeof(manifest), pak_root, "pak.json");
+    write_file(manifest,
+               "{\"id\":\"org.umrk.test.content\",\"name\":\"Content\","
+               "\"platform\":\"mac\",\"pak_version\":\"1.0.0\","
+               "\"provides\":{\"systems\":[],\"cores\":[]}}\n",
+               0600);
+}
+
+static void test_content_only_recovery(void) {
+    static const char *sha =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    static const char *token = "0123456789abcdef0123456789abcdef";
+    for (int committed = 0; committed <= 1; committed++) {
+        txn_fixture f;
+        fixture_setup(&f);
+        char target[PATH_MAX];
+        join_path(target, sizeof(target), f.primary,
+                  "Apps/mac/Content.pak");
+        write_content_pak(target);
+        if (committed) {
+            jw_pakrat_commit_marker marker;
+            memset(&marker, 0, sizeof(marker));
+            snprintf(marker.store_id, sizeof(marker.store_id),
+                     "org.umrk.test.content");
+            snprintf(marker.version, sizeof(marker.version), "1.0.0");
+            snprintf(marker.artifact_sha256, sizeof(marker.artifact_sha256),
+                     "%s", sha);
+            snprintf(marker.token, sizeof(marker.token), "%s", token);
+            CHECK(jw__pakrat_write_commit_marker(target, &marker) == 0);
+        }
+        CHECK(jw_db_pakrat_upsert_install(
+                  f.db, "org.umrk.test.content", "1.0.0", "mac",
+                  "mac/Content.pak", sha, NULL,
+                  committed ? token : NULL) == 0);
+        jw_pakrat_install install;
+        CHECK(jw_db_pakrat_get_install(
+                  f.db, "org.umrk.test.content", &install) == 0);
+        jw_pakrat_recovery_context recovery;
+        memset(&recovery, 0, sizeof(recovery));
+        snprintf(recovery.platform, sizeof(recovery.platform), "mac");
+        snprintf(recovery.sdcard_root, sizeof(recovery.sdcard_root), "%s",
+                 f.primary);
+        snprintf(recovery.state_dir, sizeof(recovery.state_dir), "%s",
+                 f.state);
+        snprintf(recovery.db_path, sizeof(recovery.db_path), "%s", f.db);
+        CHECK(jw__pakrat_reconcile_transition(
+                  &recovery, install.store_id, install.install_path,
+                  &install) == 0);
+        fixture_teardown(&f);
+    }
 }
 
 static void test_manifest_and_cache(txn_fixture *f,
@@ -418,6 +481,92 @@ static void seed_uninstall_fixture(txn_fixture *f,
     sqlite3_close(control);
 }
 
+/* Absolute path to this test binary, captured before anything can chdir. */
+static char g_self[PATH_MAX];
+
+/* Fault children re-exec this binary instead of continuing in the forked
+   image.
+ *
+ * POSIX only permits async-signal-safe calls between fork() and exec() in a
+ * process that may be multithreaded, and this one is: the C runtime, and
+ * macOS's libsystem_trace in particular, start threads of their own. The
+ * child used to call straight into jw_db_open(), and on macOS
+ * sqlite3_open() reaches os_signpost_id_make_with_pointer() ->
+ * _os_log_preferences_refresh(), which is not fork-safe. When a preferences
+ * refresh happened to be due, the child died with SIGSEGV instead of the
+ * fault point's _exit(42) -- roughly one run in twenty, and always at a
+ * fault point AFTER the first database open, never before it.
+ *
+ * Re-execing makes the child a fresh process, so the fault points test what
+ * they are meant to test -- crash consistency of an irreversible uninstall --
+ * rather than the host's fork safety. The environment is set in the PARENT so
+ * the child does nothing but execv. */
+static pid_t spawn_fault_child(const txn_fixture *f, const char *mode,
+                               const char *point) {
+    setenv("JW_TXN_TEST_CHILD", mode, 1);
+    setenv("JW_TXN_TEST_ROOT", f->root, 1);
+    setenv("JW_PAKRAT_FAULT_AT", point, 1);
+
+    pid_t child = fork();
+    if (child == 0) {
+        char *const argv[] = {g_self, NULL};
+        execv(g_self, argv);
+        _exit(127);
+    }
+
+    unsetenv("JW_TXN_TEST_CHILD");
+    unsetenv("JW_TXN_TEST_ROOT");
+    unsetenv("JW_PAKRAT_FAULT_AT");
+    return child;
+}
+
+/* The re-exec'd half of spawn_fault_child. Rebuilds the fixture the parent
+   already seeded -- read-only, via the same manifest inspection production
+   uses -- then runs the one operation under test. */
+static int run_fault_child(const char *mode) {
+    const char *root = getenv("JW_TXN_TEST_ROOT");
+    if (!root || !root[0]) {
+        return 127;
+    }
+    txn_fixture f;
+    fixture_paths(&f, root);
+
+    char target[PATH_MAX];
+    join_path(target, sizeof(target), f.primary, "Apps/mac/TXN.pak");
+    jw_pakrat_txn_metadata metadata;
+    memset(&metadata, 0, sizeof(metadata));
+    char reason[JW_SVC_REASON_BUF] = {0};
+    if (jw_pakrat_txn_inspect_manifest(target, "pak.json", f.primary_userdata,
+                                       "org.umrk.test.txn", "mac/TXN.pak",
+                                       &metadata, reason,
+                                       sizeof(reason)) != 0) {
+        fprintf(stderr, "fault child: manifest invalid: %s\n", reason);
+        return 127;
+    }
+
+    if (strcmp(mode, "persist") == 0) {
+        int rc = jw_pakrat_txn_pending_persist(f.db, "primary", &metadata);
+        jw_pakrat_txn_metadata_destroy(&metadata);
+        return rc == 0 ? 90 : 91;
+    }
+    if (strcmp(mode, "complete") == 0) {
+        jw_pakrat_pending_uninstall pending;
+        int get_rc = jw_pakrat_txn_pending_get(f.db, metadata.store_id,
+                                               &pending);
+        int complete_rc =
+            get_rc == 0 ? jw_pakrat_txn_complete_uninstall(&f.ctx, &pending)
+                        : -1;
+        if (get_rc == 0) {
+            jw_pakrat_pending_uninstall_destroy(&pending);
+        }
+        jw_pakrat_txn_metadata_destroy(&metadata);
+        return complete_rc == 0 ? 90 : 91;
+    }
+    jw_pakrat_txn_metadata_destroy(&metadata);
+    fprintf(stderr, "fault child: unknown mode %s\n", mode);
+    return 127;
+}
+
 static void expect_fault_exit(pid_t child, const char *point) {
     int status = 0;
     CHECK(waitpid(child, &status, 0) == child);
@@ -464,14 +613,8 @@ static void test_pending_intent_faults(void) {
         uninstall_fixture_paths paths;
         fixture_setup(&f);
         seed_uninstall_fixture(&f, &metadata, &paths, false);
-        pid_t child = fork();
+        pid_t child = spawn_fault_child(&f, "persist", cases[i].point);
         CHECK(child >= 0);
-        if (child == 0) {
-            setenv("JW_PAKRAT_FAULT_AT", cases[i].point, 1);
-            int rc = jw_pakrat_txn_pending_persist(
-                f.db, "primary", &metadata);
-            _exit(rc == 0 ? 90 : 91);
-        }
         expect_fault_exit(child, cases[i].point);
         CHECK(jw__pakrat_path_exists(paths.target));
         CHECK(jw__pakrat_path_exists(paths.trust));
@@ -542,22 +685,8 @@ static void test_uninstall_completion_faults(void) {
         uninstall_fixture_paths paths;
         fixture_setup(&f);
         seed_uninstall_fixture(&f, &metadata, &paths, true);
-        pid_t child = fork();
+        pid_t child = spawn_fault_child(&f, "complete", cases[i].point);
         CHECK(child >= 0);
-        if (child == 0) {
-            setenv("JW_PAKRAT_FAULT_AT", cases[i].point, 1);
-            jw_pakrat_pending_uninstall pending;
-            int get_rc = jw_pakrat_txn_pending_get(
-                f.db, metadata.store_id, &pending);
-            int complete_rc = get_rc == 0
-                                  ? jw_pakrat_txn_complete_uninstall(
-                                        &f.ctx, &pending)
-                                  : -1;
-            if (get_rc == 0) {
-                jw_pakrat_pending_uninstall_destroy(&pending);
-            }
-            _exit(complete_rc == 0 ? 90 : 91);
-        }
         expect_fault_exit(child, cases[i].point);
         CHECK(jw__pakrat_path_exists(paths.trust) == cases[i].trust_present);
         CHECK(jw__pakrat_path_exists(paths.target) ==
@@ -590,7 +719,16 @@ static void test_uninstall_completion_faults(void) {
     }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc > 0 && argv[0] && !realpath(argv[0], g_self)) {
+        snprintf(g_self, sizeof(g_self), "%s", argv[0]);
+    }
+    /* Re-exec'd fault child: run one operation and exit, never the suite. */
+    const char *child_mode = getenv("JW_TXN_TEST_CHILD");
+    if (child_mode && child_mode[0]) {
+        return run_fault_child(child_mode);
+    }
+
     txn_fixture fixture;
     fixture_setup(&fixture);
     jw_pakrat_txn_metadata metadata;
@@ -603,6 +741,7 @@ int main(void) {
     test_pending_intent_faults();
     test_pending_intent_idempotence();
     test_uninstall_completion_faults();
+    test_content_only_recovery();
     if (failures == 0) {
         puts("PASS pakrat-txn-test");
         return 0;

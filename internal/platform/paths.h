@@ -22,6 +22,8 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                size_t out_core_id_size,
                                                char *out_config_folder,
                                                size_t out_config_folder_size,
+                                               char *out_info_dir,
+                                               size_t out_info_dir_size,
                                                char *diagnostic,
                                                size_t diagnostic_size);
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size);
@@ -46,6 +48,15 @@ char *jw_prepare_retroarch_config(const char *runtime_dir, const char *sdcard_ro
                                    bool persist_changes,
                                    bool proxied_cheevos,
                                    char *error, size_t error_size);
+
+/* Per-launch variant used when the core was selected from an immutable
+   effective-catalog snapshot. explicit_info_dir must come from that same
+   snapshot, so an in-session generation swap cannot leave INFO_PATH stale. */
+char *jw_prepare_retroarch_config_with_info(
+    const char *runtime_dir, const char *sdcard_root, const char *core_path,
+    const char *explicit_info_dir, const int player_joypad_indices[4],
+    bool persist_changes, bool proxied_cheevos,
+    char *error, size_t error_size);
 
 /* RAOfflineProxy transient launch bridge (umrk-workspace/plans/RAOfflineProxy).
  * When a game launch is routed through the offline-achievements proxy, the

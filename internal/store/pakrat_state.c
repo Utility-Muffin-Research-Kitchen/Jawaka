@@ -5,12 +5,16 @@
 #include "internal/store/catalog_source.h"
 #include "internal/store/managed_apps.h"
 #include "internal/store/pakrat_state_logic.h"
+#include "internal/storage/sources.h"
+
+#include "cJSON.h"
 
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 typedef struct {
     char *data;
@@ -297,6 +301,191 @@ int jw_pakrat_find_catalog_package_version(
     return parse_rc;
 }
 
+#define JW_PAKRAT_SMALL_FILE_MAX (256u * 1024u)
+
+static char *jw__read_small_file(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+        (unsigned long long)st.st_size > JW_PAKRAT_SMALL_FILE_MAX) {
+        return NULL;
+    }
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return NULL;
+    }
+    size_t len = (size_t)st.st_size;
+    char *buf = (char *)malloc(len + 1u);
+    if (!buf) {
+        fclose(fp);
+        return NULL;
+    }
+    size_t got = fread(buf, 1u, len, fp);
+    fclose(fp);
+    if (got != len) {
+        free(buf);
+        return NULL;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+/* A one-line answer to "what does this pak add?", for the store detail page.
+   Systems are what a user recognizes -- they become console tiles -- so they
+   lead; cores are counted rather than named because a core the user cannot
+   see by name is not information they can act on. */
+static void jw__summarize_provides(const cJSON *provides, char *out,
+                                   size_t out_size) {
+    const cJSON *systems = cJSON_GetObjectItemCaseSensitive(provides, "systems");
+    const cJSON *cores = cJSON_GetObjectItemCaseSensitive(provides, "cores");
+    const cJSON *extensions =
+        cJSON_GetObjectItemCaseSensitive(provides, "system_extensions");
+    char ids[96] = {0};
+    size_t used = 0;
+    int system_count = 0;
+
+    const cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, systems) {
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(entry, "id");
+        if (!cJSON_IsString(id) || !id->valuestring) {
+            continue;
+        }
+        system_count++;
+        int written = snprintf(ids + used, sizeof(ids) - used, "%s%s",
+                               used ? ", " : "", id->valuestring);
+        if (written < 0 || (size_t)written >= sizeof(ids) - used) {
+            ids[used] = '\0';
+            break;
+        }
+        used += (size_t)written;
+    }
+
+    int core_count = cJSON_IsArray(cores) ? cJSON_GetArraySize(cores) : 0;
+    int extension_count =
+        cJSON_IsArray(extensions) ? cJSON_GetArraySize(extensions) : 0;
+
+    if (system_count > 0 && core_count > 0) {
+        snprintf(out, out_size, "%s and %d core%s", ids, core_count,
+                 core_count == 1 ? "" : "s");
+    } else if (system_count > 0) {
+        snprintf(out, out_size, "%s", ids);
+    } else if (core_count > 0 && extension_count > 0) {
+        snprintf(out, out_size, "%d core%s for %d existing system%s",
+                 core_count, core_count == 1 ? "" : "s",
+                 extension_count, extension_count == 1 ? "" : "s");
+    } else if (core_count > 0) {
+        snprintf(out, out_size, "%d core%s", core_count,
+                 core_count == 1 ? "" : "s");
+    } else if (extension_count > 0) {
+        snprintf(out, out_size, "%d system extension%s", extension_count,
+                 extension_count == 1 ? "" : "s");
+    }
+}
+
+/* Surface the newest diagnostics.json entry for this provider. Without this a
+   refused contribution is silent: the pak installs, contributes nothing, and
+   the only explanation lives in a file the user has no way to open. */
+static void jw__read_content_diagnostic(const jw_pakrat_context *ctx,
+                                        const char *install_path,
+                                        char *out, size_t out_size) {
+    char path[PATH_MAX];
+    if (!ctx->state_dir[0] ||
+        snprintf(path, sizeof(path), "%s/catalog/diagnostics.json",
+                 ctx->state_dir) >= (int)sizeof(path)) {
+        return;
+    }
+    char *text = jw__read_small_file(path);
+    if (!text) {
+        return;
+    }
+    cJSON *root = cJSON_Parse(text);
+    free(text);
+    if (!root) {
+        return;
+    }
+    const cJSON *entries = cJSON_GetObjectItemCaseSensitive(root, "entries");
+    const cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, entries) {
+        const cJSON *provider =
+            cJSON_GetObjectItemCaseSensitive(entry, "provider");
+        const cJSON *reason = cJSON_GetObjectItemCaseSensitive(entry, "reason");
+        const cJSON *detail = cJSON_GetObjectItemCaseSensitive(entry, "detail");
+        if (!cJSON_IsString(provider) || !provider->valuestring ||
+            strcmp(provider->valuestring, install_path) != 0 ||
+            !cJSON_IsString(reason) || !reason->valuestring) {
+            continue;
+        }
+        snprintf(out, out_size, "%s: %s", reason->valuestring,
+                 (cJSON_IsString(detail) && detail->valuestring)
+                     ? detail->valuestring
+                     : "");
+    }
+    cJSON_Delete(root);
+}
+
+/* CONTENT-1 facts, read from the pak that is actually on disk.
+
+   Deliberately not derived from the storefront lane: the same answer has to
+   hold for a hybrid, for a pure content pak, and for a sideloaded pak the
+   storefront has never heard of. "Open" and "is this install damaged?" both
+   hang off this, so a lane-derived answer would be wrong in exactly the cases
+   that matter. */
+static void jw__fill_content_facts(const jw_pakrat_context *ctx,
+                                   const jw_pakrat_install *install,
+                                   jw_pakrat_app_state *state) {
+    jw_storage_source_list sources;
+    const jw_storage_source *source;
+    char pak_dir[PATH_MAX];
+    char manifest_path[PATH_MAX];
+    char launch_path[PATH_MAX];
+
+    if (!install->install_path[0] ||
+        jw_storage_sources_resolve(ctx->sdcard_root, &sources) != 0) {
+        return;
+    }
+    source = jw_storage_sources_find_by_id(
+        &sources, install->source_id[0] ? install->source_id : "primary");
+    if (!source || !source->available ||
+        snprintf(pak_dir, sizeof(pak_dir), "%s/Apps/%s", source->root,
+                 install->install_path) >= (int)sizeof(pak_dir) ||
+        snprintf(manifest_path, sizeof(manifest_path), "%s/pak.json",
+                 pak_dir) >= (int)sizeof(manifest_path)) {
+        return;
+    }
+
+    char *text = jw__read_small_file(manifest_path);
+    if (!text) {
+        return;
+    }
+    cJSON *root = cJSON_Parse(text);
+    free(text);
+    if (!root) {
+        return;
+    }
+    const cJSON *provides = cJSON_GetObjectItemCaseSensitive(root, "provides");
+    if (cJSON_IsObject(provides)) {
+        state->content_provides = 1;
+        jw__summarize_provides(provides, state->provides_summary,
+                               sizeof(state->provides_summary));
+    }
+    cJSON_Delete(root);
+
+    struct stat st;
+    int launchable =
+        snprintf(launch_path, sizeof(launch_path), "%s/launch.sh", pak_dir) <
+            (int)sizeof(launch_path) &&
+        stat(launch_path, &st) == 0 && S_ISREG(st.st_mode) &&
+        access(launch_path, X_OK) == 0;
+    state->open_allowed = launchable ? 1 : 0;
+    if (!state->content_provides) {
+        return;
+    }
+    state->content_only = state->open_allowed ? 0 : 1;
+
+    jw__read_content_diagnostic(ctx, install->install_path,
+                                state->content_diagnostic,
+                                sizeof(state->content_diagnostic));
+}
+
 int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
                               jw_pakrat_app_state *out,
                               int max_count,
@@ -338,6 +527,7 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
     for (int i = 0; i < package_count && *out_count < max_count; i++) {
         jw_pakrat_app_state *state = &out[*out_count];
         state->package = selections[i].package;
+        state->lane = selections[i].lane;
         state->status = JW_PAKRAT_APP_AVAILABLE;
         state->primary_action_allowed = 1;
         jw__copy(state->action_version, sizeof(state->action_version),
@@ -371,9 +561,10 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
             jw__copy(state->app_pak_dir, sizeof(state->app_pak_dir),
                      install.app_pak_dir);
 
+            jw__fill_content_facts(ctx, &install, state);
             state->status = jw_pakrat_resolve_owned_state(
                 state->package.version, install.version, install.app_present,
-                &state->primary_action_allowed);
+                state->content_only, &state->primary_action_allowed);
 
             int needs_exact =
                 state->status == JW_PAKRAT_APP_STALE ||

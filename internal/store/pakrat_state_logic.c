@@ -6,6 +6,7 @@ jw_pakrat_app_status jw_pakrat_resolve_owned_state(
     const char *selected_version,
     const char *installed_version,
     int app_present,
+    int content_only,
     int *out_primary_action_allowed) {
     int selected[3];
     int installed[3];
@@ -17,7 +18,9 @@ jw_pakrat_app_status jw_pakrat_resolve_owned_state(
     if (out_primary_action_allowed) {
         *out_primary_action_allowed = 0;
     }
-    if (!app_present) {
+    /* A content-only pak is DELIBERATELY absent from Apps (CONTENT-1 D6), so
+       only a pak that should have been listed and is not counts as stale. */
+    if (!app_present && !content_only) {
         if (out_primary_action_allowed) {
             *out_primary_action_allowed = valid && cmp == 0;
         }

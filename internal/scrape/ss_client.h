@@ -38,6 +38,14 @@ typedef enum {
     JW_SS_PHASE_SAVING,
 } jw_ss_phase;
 
+typedef enum {
+    JW_SS_SEARCH_CANCELLED = -2,
+    JW_SS_SEARCH_ERROR = -1,
+    JW_SS_SEARCH_FOUND = 0,
+    JW_SS_SEARCH_NOT_FOUND = 1,
+    JW_SS_SEARCH_NO_MEDIA = 2,
+} jw_ss_search_status;
+
 typedef void (*jw_ss_progress_fn)(void *userdata, jw_ss_phase phase);
 
 typedef struct {
@@ -69,29 +77,32 @@ typedef struct {
    unhashable files fall back to name+system only, as does a no-match
    retry when an md5 was sent). artwork_types/region_prio are
    priority-ordered ScreenScraper value strings.
-   Returns 0 found (result filled), 1 not found, -1 error, -2 cancelled. */
-int jw_ss_search_rom(const jw_ss_client *client,
-                     const char *rom_name, const char *rom_abs_path,
-                     int system_id,
-                     const char *const *artwork_types, int artwork_count,
-                     const char *const *region_prio, int region_count,
-                     jw_ss_result *result);
+   Returns a named JW_SS_SEARCH_* outcome. */
+jw_ss_search_status jw_ss_search_rom(
+    const jw_ss_client *client,
+    const char *rom_name, const char *rom_abs_path,
+    int system_id,
+    const char *const *artwork_types, int artwork_count,
+    const char *const *region_prio, int region_count,
+    jw_ss_result *result);
 
 /* Search the same ROM across an ordered list of ScreenScraper platforms.
    The ROM is hashed once; each platform gets hash then filename lookup.
-   Only a not-found result advances to the next platform. */
-int jw_ss_search_rom_platforms(const jw_ss_client *client,
-                               const char *rom_name,
-                               const char *rom_abs_path,
-                               const int *system_ids, size_t system_count,
-                               const char *const *artwork_types,
-                               int artwork_count,
-                               const char *const *region_prio,
-                               int region_count,
-                               jw_ss_result *result);
+   Same-identity variants continue after not-found or no-media. If none finds
+   media, no-media wins over not-found in the aggregate result. */
+jw_ss_search_status jw_ss_search_rom_platforms(
+    const jw_ss_client *client,
+    const char *rom_name,
+    const char *rom_abs_path,
+    const int *system_ids, size_t system_count,
+    const char *const *artwork_types,
+    int artwork_count,
+    const char *const *region_prio,
+    int region_count,
+    jw_ss_result *result);
 
 #ifdef JW_SS_TESTING
-typedef int (*jw_ss_test_search_request_fn)(
+typedef jw_ss_search_status (*jw_ss_test_search_request_fn)(
     const char *rom_name, const char *md5_hash, long file_size,
     int system_id, jw_ss_result *result, void *userdata);
 void jw_ss_test_set_search_request(jw_ss_test_search_request_fn request,

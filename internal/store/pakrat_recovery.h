@@ -76,6 +76,10 @@ typedef struct {
     char platform[64];
     char pak_version[64];
     char min_leaf_version[64];
+    /* CONTENT-1: a pure content pak legitimately ships no launch.sh, so the
+       install-time entry-point check has to know the difference between a
+       content pak and a broken one. */
+    int has_provides;
 } jw__pakrat_manifest;
 
 /* The single JSON path for Pak Rat manifest reads. Loads
