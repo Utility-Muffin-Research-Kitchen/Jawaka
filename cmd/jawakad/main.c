@@ -3813,11 +3813,15 @@ static void jw__tick_package_mutation_recovery(jw_daemon_state *state) {
     state->mutation_recovery_next_ms = now + 500;
     int rc = jw__recover_package_mutations(state);
     if (rc == 0 && state->pakrat_startup_recovery_needed) {
-        if (jw__run_pakrat_p1_recovery(state) == 0) {
+        int recovery_rc = jw__run_pakrat_p1_recovery(state);
+        if (recovery_rc == JW_PAKRAT_RECOVERY_OK) {
             state->pakrat_startup_recovery_needed = false;
             if (jw_svc_supervisor_scan(state->services) < 0) {
                 jw_log_warn("pakrat: post-recovery service rescan failed");
             }
+        } else if (recovery_rc == JW_PAKRAT_RECOVERY_REPAIR_REQUIRED) {
+            state->pakrat_startup_recovery_needed = false;
+            jw_log_error("pakrat: install-transition recovery requires manual repair; automatic retries stopped");
         } else {
             jw_log_warn("pakrat: install-transition recovery will retry");
         }
@@ -13773,10 +13777,16 @@ int main(int argc, char *argv[]) {
     state.pakrat_startup_recovery_needed = true;
     if (state.services) {
         jw__tick_package_mutation_recovery(&state);
-    } else if (jw__run_pakrat_p1_recovery(&state) == 0) {
-        state.pakrat_startup_recovery_needed = false;
     } else {
-        jw_log_warn("pakrat: install-transition recovery failed; continuing startup");
+        int recovery_rc = jw__run_pakrat_p1_recovery(&state);
+        if (recovery_rc == JW_PAKRAT_RECOVERY_OK) {
+            state.pakrat_startup_recovery_needed = false;
+        } else if (recovery_rc == JW_PAKRAT_RECOVERY_REPAIR_REQUIRED) {
+            state.pakrat_startup_recovery_needed = false;
+            jw_log_error("pakrat: install-transition recovery requires manual repair; automatic retries stopped");
+        } else {
+            jw_log_warn("pakrat: install-transition recovery failed; continuing startup");
+        }
     }
 
     /* One-time: pre-create the per-system Roms/ folders so a fresh card is ready

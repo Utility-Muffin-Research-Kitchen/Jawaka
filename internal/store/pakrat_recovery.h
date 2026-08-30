@@ -98,6 +98,12 @@ typedef struct {
     char db_path[PATH_MAX];
 } jw_pakrat_recovery_context;
 
+enum {
+    JW_PAKRAT_RECOVERY_FAILED = -1,
+    JW_PAKRAT_RECOVERY_OK = 0,
+    JW_PAKRAT_RECOVERY_REPAIR_REQUIRED = -2,
+};
+
 /* Reconcile one install target's transition siblings. |install| is the current
    ownership record, or NULL when the store id has none. Stale staging trees
    are always discarded. target absent + rollback present restores the
@@ -106,7 +112,9 @@ typedef struct {
    entry point, and install-record token all match; anything else is an
    uncommitted promote and rolls back to the sibling that was already running.
    Returns 1 (without mutation) when the owning Apps source is not positively
-   mounted, 0 on reconciliation, and -1 on an actual recovery error. */
+   mounted, JW_PAKRAT_RECOVERY_OK on reconciliation,
+   JW_PAKRAT_RECOVERY_REPAIR_REQUIRED when an inconsistent live tree has no
+   rollback, and JW_PAKRAT_RECOVERY_FAILED on another recovery error. */
 int  jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
                                      const char *store_id,
                                      const char *install_path,
@@ -116,7 +124,8 @@ int  jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
    and from the Pak Rat rescan path. Reconciles every recorded install, then
    sweeps the platform and shared Apps dirs for .pakrat-stage-* and
    .pakrat-rollback-* trees with no install row (an interrupted first install
-   leaves no row). */
+   leaves no row). A REPAIR_REQUIRED result is stable and must not be retried
+   on a timer; an explicit repair or ownership change is required. */
 int  jw_pakrat_recover_installs(const jw_pakrat_recovery_context *ctx);
 
 #endif
