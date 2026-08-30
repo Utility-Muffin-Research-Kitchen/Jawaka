@@ -869,7 +869,7 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
                     ctx->state_dir,
                     "install-recover inconsistent committed tree store_id=%s target=Apps/%s reason=%s",
                     store_id, install_path, reason);
-                return -1;
+                return JW_PAKRAT_RECOVERY_REPAIR_REQUIRED;
             }
         } else {
             if (jw__validate_restored_tree(ctx, install, target) != 0) {
@@ -877,7 +877,7 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
                     ctx->state_dir,
                     "install-recover inconsistent legacy tree store_id=%s target=Apps/%s",
                     store_id, install_path);
-                return -1;
+                return JW_PAKRAT_RECOVERY_REPAIR_REQUIRED;
             }
         }
         jw__pakrat_clear_origin_marker(target, store_id);
@@ -1207,6 +1207,7 @@ int jw_pakrat_recover_installs(const jw_pakrat_recovery_context *ctx) {
             &source_ctx, installs[i].store_id, installs[i].install_path,
             &installs[i]);
         if (reconcile_rc < 0) {
+            rc = reconcile_rc;
             goto done;
         }
     }

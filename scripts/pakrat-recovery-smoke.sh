@@ -187,6 +187,7 @@ run_smoke() {
 }
 
 run_daemon_recovery() {
+    local linger="${1:-0}"
     local runtime="$SHORT_RUNTIME_ROOT/$SCENARIO"
     local socket="$runtime/jawakad.sock"
     local log="$TMP_ROOT/daemon-$SCENARIO.log"
@@ -214,6 +215,9 @@ run_daemon_recovery() {
         cat "$log" >&2
         fail "daemon recovery: jawakad socket did not appear"
     }
+    if [ "$linger" != "0" ]; then
+        sleep "$linger"
+    fi
     kill "$DAEMON_PID" >/dev/null 2>&1 || true
     wait "$DAEMON_PID" >/dev/null 2>&1 || true
     DAEMON_PID=""
@@ -431,6 +435,20 @@ run_daemon_recovery
 expect_state "$OLD_VERSION" "$OLD_VERSION" "daemon-startup" "no"
 [ "$(cat "$INSTALL_PATH/payload.txt")" = "old-payload" ] ||
     fail "daemon-startup: startup hook left the uncommitted promoted tree live"
+
+# A committed ownership record with no matching marker or rollback cannot heal
+# with time. The daemon reports it once and disables its 500 ms startup retry.
+begin_scenario "daemon stops retrying a terminal committed-tree mismatch"
+install_old
+rm "$INSTALL_PATH/.pakrat-commit"
+run_daemon_recovery 1.2
+daemon_log="$TMP_ROOT/daemon-$SCENARIO.log"
+[ "$(grep -Fc 'pakrat: install-transition recovery requires manual repair; automatic retries stopped' "$daemon_log" || true)" = "1" ] ||
+    fail "terminal-recovery: daemon did not report exactly one repair-required error"
+[ "$(grep -Fc 'pakrat: install-transition recovery will retry' "$daemon_log" || true)" = "0" ] ||
+    fail "terminal-recovery: daemon kept retrying a stable mismatch"
+[ "$(grep -Fc "install-recover inconsistent committed tree store_id=$STORE_ID" "$STATE_DIR/store/logs/pakrat.log" || true)" = "1" ] ||
+    fail "terminal-recovery: recovery ran more than once"
 
 # The device-only removal test needs an observable boundary rather than a race.
 # Pause after promotion, prove the old record is still the commit authority,
