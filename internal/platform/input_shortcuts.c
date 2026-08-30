@@ -151,6 +151,20 @@ int jw_input_shortcuts_resolve(const char *const *values,
     return rejected;
 }
 
+jw_input_shortcut_button jw_input_shortcuts_cycle(jw_input_shortcut_button cur,
+                                                  int dir) {
+    const int n = JW_INPUT_SHORTCUT_BUTTON_COUNT;
+    if (!jw__button_in_range(cur)) {
+        return (jw_input_shortcut_button)0;
+    }
+    int step = dir < 0 ? -1 : 1;
+    int next = ((int)cur + step) % n;
+    if (next < 0) {
+        next += n;
+    }
+    return (jw_input_shortcut_button)next;
+}
+
 bool jw_input_shortcuts_action_for_button(const jw_input_shortcuts *shortcuts,
                                           jw_input_shortcut_button button,
                                           jw_input_shortcut_action *out) {

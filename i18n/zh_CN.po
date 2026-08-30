@@ -1480,3 +1480,28 @@ msgstr "游戏切换"
 #, fuzzy
 msgid "Screenshot"
 msgstr "截图"
+
+# In-game Shortcuts page. Marked fuzzy: suggested, not reviewed.
+# 保存 follows the existing "Save & Quit" -> 保存并退出 / "Saving" -> 保存中.
+# 快捷键 is the usual term for a shortcut key binding.
+#, fuzzy
+msgid "In-game Shortcuts"
+msgstr "游戏内快捷键"
+
+#, fuzzy
+msgid "Screenshot Shortcut"
+msgstr "截图快捷键"
+
+#, fuzzy
+msgid "Recording Shortcut"
+msgstr "录制快捷键"
+
+# Rendered as "<this> <action name>", e.g. "已被 游戏切换 使用" reads awkwardly
+# with the trailing noun; a reviewer may prefer to restructure the sentence.
+#, fuzzy
+msgid "Already used by"
+msgstr "已被占用："
+
+#, fuzzy
+msgid "Could not save"
+msgstr "无法保存"

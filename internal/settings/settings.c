@@ -160,6 +160,11 @@ typedef enum {
     JW_SETTING_HDMI_OUTPUT_MODE,
     JW_SETTING_HOME_TAB_ORDER,
     JW_SETTING_SYSTEM_ICON_PACK_INDEX,
+#ifdef PLATFORM_MLP1
+    JW_SETTING_SHORTCUT_SWITCHER,
+    JW_SETTING_SHORTCUT_SCREENSHOT,
+    JW_SETTING_SHORTCUT_RECORDING,
+#endif
     JW_SETTING_COUNT,
 } jw__setting_key;
 
@@ -209,6 +214,15 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_HDMI_OUTPUT_MODE] = "hdmi_output_mode",
     [JW_SETTING_HOME_TAB_ORDER] = "home_tab_order",
     [JW_SETTING_SYSTEM_ICON_PACK_INDEX] = "system_icon_pack_index",
+#ifdef PLATFORM_MLP1
+    /* Owned by internal/platform/input_shortcuts.c, which jawakad reads too.
+       Spelled here so the table stays readable, but the query below takes the
+       authoritative string from the model, so a drift between the two cannot
+       make this page and the daemon read different keys. */
+    [JW_SETTING_SHORTCUT_SWITCHER]   = "input_shortcut_game_switcher",
+    [JW_SETTING_SHORTCUT_SCREENSHOT] = "input_shortcut_screenshot",
+    [JW_SETTING_SHORTCUT_RECORDING]  = "input_shortcut_recording",
+#endif
 };
 
 static const char *const kTabSwitchLabels[] = { JW_UI("Snap"), JW_UI("Glide") };
@@ -297,6 +311,16 @@ static int jw__load_setting_values(const char *db_path,
         queries[i].out_size = JW_SETTINGS_VALUE_MAX;
         queries[i].found = 0;
     }
+#ifdef PLATFORM_MLP1
+    /* The shortcut keys belong to the shared model. Reading them from it here
+       means Settings and jawakad cannot end up querying different rows. */
+    queries[JW_SETTING_SHORTCUT_SWITCHER].key =
+        jw_input_shortcut_action_key(JW_INPUT_SHORTCUT_GAME_SWITCHER);
+    queries[JW_SETTING_SHORTCUT_SCREENSHOT].key =
+        jw_input_shortcut_action_key(JW_INPUT_SHORTCUT_SCREENSHOT);
+    queries[JW_SETTING_SHORTCUT_RECORDING].key =
+        jw_input_shortcut_action_key(JW_INPUT_SHORTCUT_RECORDING);
+#endif
     if (jw_db_get_settings(db_path, queries, JW_SETTING_COUNT) != 0) {
         return -1;
     }
@@ -1219,6 +1243,25 @@ static void jw__home_tabs_persist(jw_settings_ui *ui) {
     }
 }
 
+#ifdef PLATFORM_MLP1
+/* Like jw__persist, but says whether the write landed. The shortcut rows need
+   that: a failed write must leave the in-memory binding on its previous value
+   rather than showing a choice the card does not hold. */
+static bool jw__persist_checked(const jw_settings_ui *ui, const char *key,
+                                const char *val) {
+    if (!ui->db_path[0]) {
+        return false;
+    }
+    if (jw_db_set_setting(ui->db_path, key, val) != 0) {
+        return false;
+    }
+    if (ui->socket_path[0]) {
+        jw_ipc_rumble(ui->socket_path, "select");
+    }
+    return true;
+}
+#endif
+
 static void jw__persist_bool(const jw_settings_ui *ui, const char *key, bool val) {
     jw__persist(ui, key, val ? "1" : "0");
 }
@@ -1366,6 +1409,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
 
     cat_list_state_init(&ui->behavior_list,    jw__behavior_rows(ui));
     cat_list_state_init(&ui->controls_list,     JW_CONTROLS_ROW_COUNT);
+#ifdef PLATFORM_MLP1
+    cat_list_state_init(&ui->shortcuts_list,    JW_SHORTCUT_ROW_COUNT);
+    jw_input_shortcuts_defaults(&ui->shortcuts);
+#endif
     cat_list_state_init(&ui->home_tabs_list,   JW_HOME_TABS_COUNT);
     cat_list_state_init(&ui->update_list,      JW_UPDATE_ROW_COUNT);
     cat_list_state_init(&ui->update_picker_list, JW_UPDATE_PICKER_VISIBLE_ROWS);
@@ -1538,6 +1585,26 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 jw__setting_has(values, found, JW_SETTING_HOME_TAB_ORDER)
                     ? values[JW_SETTING_HOME_TAB_ORDER] : NULL,
                 ui->home_tab_order, &ui->home_tab_visible);
+#ifdef PLATFORM_MLP1
+            {
+                /* Resolve through the shared model so a hand-edited or
+                   half-written database lands on the same bindings the daemon
+                   will pick: unparseable falls back to the default, and a
+                   collision disables the lower-priority action. */
+                const char *shortcut_values[JW_INPUT_SHORTCUT_ACTION_COUNT];
+                shortcut_values[JW_INPUT_SHORTCUT_GAME_SWITCHER] =
+                    jw__setting_has(values, found, JW_SETTING_SHORTCUT_SWITCHER)
+                        ? values[JW_SETTING_SHORTCUT_SWITCHER] : NULL;
+                shortcut_values[JW_INPUT_SHORTCUT_SCREENSHOT] =
+                    jw__setting_has(values, found, JW_SETTING_SHORTCUT_SCREENSHOT)
+                        ? values[JW_SETTING_SHORTCUT_SCREENSHOT] : NULL;
+                shortcut_values[JW_INPUT_SHORTCUT_RECORDING] =
+                    jw__setting_has(values, found, JW_SETTING_SHORTCUT_RECORDING)
+                        ? values[JW_SETTING_SHORTCUT_RECORDING] : NULL;
+                (void)jw_input_shortcuts_resolve(shortcut_values, &ui->shortcuts,
+                                                 NULL, NULL);
+            }
+#endif
             /* Stored as seconds (what the daemon reads); map back to the label index. */
             if (jw__setting_has(values, found, JW_SETTING_AUTO_SLEEP_SECONDS)) {
                 int seconds = atoi(values[JW_SETTING_AUTO_SLEEP_SECONDS]);
@@ -4350,6 +4417,67 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
                         "Game Rumble",
                         ui->rumble_enabled ? (ui->rumble_game ? "On" : "Off") : "-", true);
 
+#ifdef PLATFORM_MLP1
+    jw__render_nav_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SHORTCUTS,
+                       "In-game Shortcuts");
+}
+
+/* "Menu + L1", or "Disabled". The modifier is fixed, so showing it on every
+   row is what makes the value read as a chord rather than a lone button. */
+static void jw__shortcut_value(const jw_settings_ui *ui,
+                               jw_input_shortcut_action action,
+                               char *out, size_t out_size) {
+    jw_input_shortcut_button button = ui->shortcuts.buttons[action];
+    const char *label = jw_input_shortcut_button_label(button);
+    if (button == JW_INPUT_SHORTCUT_BUTTON_NONE || !label) {
+        snprintf(out, out_size, "%s", T("Disabled"));
+        return;
+    }
+    snprintf(out, out_size, "Menu + %s", label);
+}
+
+static void jw__render_input_shortcuts(const jw_settings_ui *ui,
+                                       int x, int y, int w, int h) {
+    jw__draw_header("In-game Shortcuts", x, y, w);
+    int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__begin_settings_rows(&ui->shortcuts_list, x, ly, w,
+                            JW_SHORTCUT_ROW_COUNT, item_h);
+
+    char value[48];
+
+    jw__shortcut_value(ui, JW_INPUT_SHORTCUT_GAME_SWITCHER, value, sizeof(value));
+    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_SWITCHER,
+                        "Game Switcher", value, true);
+
+    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_SCREENSHOTS,
+                        "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
+
+    /* The binding row stays live while the feature is off. They are separate
+       switches: turning screenshots back on should find the button you chose,
+       not a binding that was quietly reset. */
+    jw__shortcut_value(ui, JW_INPUT_SHORTCUT_SCREENSHOT, value, sizeof(value));
+    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_SHOT_BIND,
+                        "Screenshot Shortcut", value, true);
+
+    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_RECORDING,
+                        "Recording", ui->recording_enabled ? "On" : "Off", true);
+
+    jw__shortcut_value(ui, JW_INPUT_SHORTCUT_RECORDING, value, sizeof(value));
+    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_BIND,
+                        "Recording Shortcut", value, true);
+
+    /* Both dependants read "-" while recording is off, matching how the rumble
+       rows dim when the master is off. */
+    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_SPLIT,
+                        "Split Over 10MB",
+                        ui->recording_enabled ? (ui->recording_split ? "On" : "Off") : "-", true);
+
+    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_KEEP,
+                        "Keep Original",
+                        ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-", true);
+}
+#else
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SCREENSHOTS,
                         "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
 
@@ -4366,6 +4494,61 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
                         "Keep Original",
                         ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-", true);
 }
+#endif
+
+#ifdef PLATFORM_MLP1
+/* Only three of the seven rows carry a binding; the rest are ordinary
+   toggles. Returns false for those. */
+static bool jw__shortcut_row_action(int row, jw_input_shortcut_action *out) {
+    switch (row) {
+        case JW_SHORTCUT_SWITCHER:  *out = JW_INPUT_SHORTCUT_GAME_SWITCHER; return true;
+        case JW_SHORTCUT_SHOT_BIND: *out = JW_INPUT_SHORTCUT_SCREENSHOT;    return true;
+        case JW_SHORTCUT_REC_BIND:  *out = JW_INPUT_SHORTCUT_RECORDING;     return true;
+        default: return false;
+    }
+}
+
+/* Take a new binding if nothing else holds that button and the write lands.
+   On either failure the in-memory value is left alone, so the row keeps
+   showing what is actually stored rather than a choice that did not stick. */
+static void jw__apply_shortcut(jw_settings_ui *ui,
+                               jw_input_shortcut_action action,
+                               jw_input_shortcut_button button,
+                               char *status_buf, size_t status_size) {
+    if (button == ui->shortcuts.buttons[action]) {
+        return;
+    }
+    jw_input_shortcut_action owner;
+    if (button != JW_INPUT_SHORTCUT_BUTTON_NONE &&
+        jw_input_shortcuts_action_for_button(&ui->shortcuts, button, &owner) &&
+        owner != action) {
+        /* Name the action holding it: "already used" alone leaves the user
+           hunting the other two rows for the clash. */
+        if (status_buf && status_size > 0) {
+            snprintf(status_buf, status_size, "%s %s", T("Already used by"),
+                     T(jw_input_shortcut_action_label(owner)));
+        }
+        return;
+    }
+
+    const char *key = jw_input_shortcut_action_key(action);
+    const char *name = jw_input_shortcut_button_name(button);
+    if (!key || !name || !jw__persist_checked(ui, key, name)) {
+        if (status_buf && status_size > 0) {
+            snprintf(status_buf, status_size, "%s", T("Could not save"));
+        }
+        return;
+    }
+
+    ui->shortcuts.buttons[action] = button;
+    if (status_buf && status_size > 0) {
+        status_buf[0] = '\0';
+    }
+    /* Phase 6 pushes the new snapshot to jawakad here, so a rebind takes
+       effect without a daemon restart. Until then the daemon picks it up on
+       its next start; the durable value is already correct either way. */
+}
+#endif
 
 /* Endonyms, so a speaker can find their own language without reading English.
    These render correctly even while the UI is still English: Catastrophe
@@ -5000,6 +5183,9 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_SCRAPE_DOWNLOAD: jw__render_scrape_download(ui, x, y, w, h);     break;
         case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
         case JW_SETTINGS_CONTROLS:   jw__render_controls(ui, x, y, w, h);                 break;
+#ifdef PLATFORM_MLP1
+        case JW_SETTINGS_INPUT_SHORTCUTS: jw__render_input_shortcuts(ui, x, y, w, h);   break;
+#endif
         case JW_SETTINGS_HOME_TABS:  jw__render_home_tabs(ui, x, y, w, h);               break;
         case JW_SETTINGS_UPDATE:     jw__render_update(ui, x, y, w, h);                  break;
         case JW_SETTINGS_UPDATE_PICKER: jw__render_update_picker(ui, x, y, w, h);        break;
@@ -7401,6 +7587,12 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     /* Read by the daemon at game launch, so it takes effect on
                        the next launch -- no need to touch a running game. */
                     jw__persist_bool(ui, "rumble_game", ui->rumble_game);
+#ifdef PLATFORM_MLP1
+                } else if (ui->controls_list.cursor == JW_CONTROLS_SHORTCUTS) {
+                    (void)dir;
+                    ui->screen = JW_SETTINGS_INPUT_SHORTCUTS;
+                }
+#else
                 } else if (ui->controls_list.cursor == JW_CONTROLS_SCREENSHOTS) {
                     (void)dir;
                     ui->screenshots_enabled = !ui->screenshots_enabled;
@@ -7425,12 +7617,72 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->recording_keep_src = !ui->recording_keep_src;
                     jw__persist_bool(ui, "recording_keep_source", ui->recording_keep_src);
                 }
+#endif
                 break;
             }
             case CAT_BTN_B:    ui->screen = JW_SETTINGS_HOME; break;
             default: break;
         }
         break;
+
+#ifdef PLATFORM_MLP1
+    /* ── In-game Shortcuts (MLP1) ────────────────────────────────────── */
+    case JW_SETTINGS_INPUT_SHORTCUTS:
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->shortcuts_list, -1, JW_SHORTCUT_ROW_COUNT);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->shortcuts_list, +1, JW_SHORTCUT_ROW_COUNT);
+                break;
+            case CAT_BTN_X: {
+                /* X clears a binding outright. Cycling to Disabled would mean
+                   walking the whole button list to reach it. */
+                jw_input_shortcut_action action;
+                if (!jw__shortcut_row_action(ui->shortcuts_list.cursor, &action))
+                    break;
+                jw__apply_shortcut(ui, action, JW_INPUT_SHORTCUT_BUTTON_NONE,
+                                   status_buf, status_size);
+                break;
+            }
+            case CAT_BTN_LEFT:
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A: {
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
+                jw_input_shortcut_action action;
+                if (jw__shortcut_row_action(ui->shortcuts_list.cursor, &action)) {
+                    jw_input_shortcut_button next =
+                        jw_input_shortcuts_cycle(ui->shortcuts.buttons[action], dir);
+                    jw__apply_shortcut(ui, action, next,
+                                       status_buf, status_size);
+                    break;
+                }
+                (void)dir;
+                if (ui->shortcuts_list.cursor == JW_SHORTCUT_SCREENSHOTS) {
+                    ui->screenshots_enabled = !ui->screenshots_enabled;
+                    jw__persist_bool(ui, "screenshots_enabled", ui->screenshots_enabled);
+                } else if (ui->shortcuts_list.cursor == JW_SHORTCUT_RECORDING) {
+                    ui->recording_enabled = !ui->recording_enabled;
+                    jw__persist_bool(ui, "recording_enabled", ui->recording_enabled);
+                } else if (ui->shortcuts_list.cursor == JW_SHORTCUT_REC_SPLIT) {
+                    if (!ui->recording_enabled) break;
+                    ui->recording_split = !ui->recording_split;
+                    jw__persist_bool(ui, "recording_split", ui->recording_split);
+                } else if (ui->shortcuts_list.cursor == JW_SHORTCUT_REC_KEEP) {
+                    if (!ui->recording_enabled) break;
+                    ui->recording_keep_src = !ui->recording_keep_src;
+                    jw__persist_bool(ui, "recording_keep_source", ui->recording_keep_src);
+                }
+                break;
+            }
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_CONTROLS;
+                if (status_buf && status_size > 0) status_buf[0] = '\0';
+                break;
+            default: break;
+        }
+        break;
+#endif
 
     /* ── Behavior ────────────────────────────────────────────────────── */
     case JW_SETTINGS_BEHAVIOR:

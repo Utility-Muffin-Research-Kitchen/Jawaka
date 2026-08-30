@@ -248,6 +248,10 @@ msgstr ""
 msgid "All Systems"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Already used by"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Amiga"
 msgstr ""
@@ -522,6 +526,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Core"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Could not save"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -810,6 +818,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Icon"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "In-game Shortcuts"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1248,6 +1260,10 @@ msgstr ""
 msgid "Recording"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Recording Shortcut"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Refresh"
 msgstr ""
@@ -1442,6 +1458,10 @@ msgstr ""
 
 #: internal/platform/input_shortcuts.c
 msgid "Screenshot"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Screenshot Shortcut"
 msgstr ""
 
 #: internal/settings/settings.c
