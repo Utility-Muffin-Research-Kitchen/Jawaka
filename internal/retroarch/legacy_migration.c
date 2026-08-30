@@ -1,7 +1,9 @@
 #ifdef __linux__
 #define _GNU_SOURCE
 #else
+#ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE
+#endif
 #endif
 
 #include "internal/retroarch/legacy_migration.h"
