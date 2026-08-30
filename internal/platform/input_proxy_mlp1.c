@@ -57,6 +57,12 @@ typedef struct {
                                      stick down in the game */
     bool deferred_menu_release;
     uint64_t deferred_menu_release_at_ms;
+    /* Action buttons forwarded as part of the current Menu chord, and the
+       virtual Menu-up they are holding back. RetroArch stops masking libretro
+       input the frame its hotkey modifier goes up, so an action still held at
+       that moment turns into a live press inside the running game. */
+    unsigned char chord_forwarded_keys[(KEY_MAX + 8) / 8];
+    bool menu_up_pending;
     uint64_t last_brightness_ms;
     uint64_t last_activity_ms;     /* monotonic ms of the last EV_KEY (auto-sleep) */
     bool swallow;                  /* screen-off stage: wake on input but don't forward it */
@@ -95,6 +101,23 @@ typedef struct {
 
 static bool jw__bit_is_set(const unsigned char *bits, int bit) {
     return (bits[bit / 8] & (1u << (bit % 8))) != 0;
+}
+
+static void jw__bit_set(unsigned char *bits, int bit) {
+    bits[bit / 8] |= (unsigned char)(1u << (bit % 8));
+}
+
+static void jw__bit_clear(unsigned char *bits, int bit) {
+    bits[bit / 8] &= (unsigned char)~(1u << (bit % 8));
+}
+
+static bool jw__bits_any(const unsigned char *bits, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (bits[i]) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static uint64_t jw__monotonic_ms(void) {
@@ -417,6 +440,25 @@ static void jw__flush_menu_press(jw_mlp1_input_proxy_data *data) {
     data->menu_forwarded = true;
 }
 
+/* Emit the virtual Menu-up a forwarded chord was holding back, once the last
+   action button it forwarded is up. Forced from the reset paths, where the
+   releases being waited on are never going to arrive. */
+static void jw__release_pending_menu_up(jw_mlp1_input_proxy_data *data,
+                                        bool force) {
+    if (!data->menu_up_pending) {
+        return;
+    }
+    if (!force &&
+        jw__bits_any(data->chord_forwarded_keys,
+                     sizeof(data->chord_forwarded_keys))) {
+        return;
+    }
+    jw__write_event(data, EV_KEY, BTN_MODE, 0);
+    jw__emit_syn(data);
+    data->menu_up_pending = false;
+    memset(data->chord_forwarded_keys, 0, sizeof(data->chord_forwarded_keys));
+}
+
 static void jw__emit_deferred_menu_tap(jw_mlp1_input_proxy_data *data) {
     jw__write_event(data, EV_KEY, BTN_MODE, 1);
     jw__emit_syn(data);
@@ -474,13 +516,30 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
     if (ev->code == BTN_MODE) {
         if (ev->value > 0 && !data->menu_held) {
             data->menu_held = true;
-            data->menu_forwarded = false;
+            /* The virtual modifier can still be down from a chord whose
+               release was deferred. Adopt it instead of deferring a second
+               press: the re-flush would be a duplicate the input core drops,
+               and the old chord's last action release would then emit a
+               Menu-up underneath this new hold. */
+            data->menu_forwarded = data->menu_up_pending;
+            data->menu_up_pending = false;
             data->chord_active = false;
             return;
         }
         if (ev->value == 0 && data->menu_held) {
             if (data->menu_forwarded) {
-                jw__forward_event(data, ev);
+                /* Physical Menu up while an action it forwarded is still down.
+                   Sending the modifier release now would unmask libretro input
+                   with that action held, and the core would read it as a fresh
+                   press. Hold the virtual Menu down; the action's own release
+                   below lets it go, so RetroArch always sees action-up before
+                   modifier-up. */
+                if (jw__bits_any(data->chord_forwarded_keys,
+                                 sizeof(data->chord_forwarded_keys))) {
+                    data->menu_up_pending = true;
+                } else {
+                    jw__forward_event(data, ev);
+                }
             } else if (!data->chord_active) {
                 bool handled = proxy->menu_tap && proxy->menu_tap(proxy->userdata);
                 if (!handled) {
@@ -592,6 +651,20 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
         jw__flush_menu_press(data);
     }
     jw__forward_event(data, ev);
+
+    /* Bookkeeping for the ordering guard above. Only real presses under an
+       already-flushed Menu join the chord: a repeat would re-add a code the
+       release is about to clear, and a button held from before Menu went down
+       was never masked in the first place. BTN_MODE reaches here only as its
+       own autorepeat, and must never wait on itself. */
+    if (ev->code != BTN_MODE) {
+        if (ev->value == 1 && data->menu_held && data->menu_forwarded) {
+            jw__bit_set(data->chord_forwarded_keys, ev->code);
+        } else if (ev->value == 0) {
+            jw__bit_clear(data->chord_forwarded_keys, ev->code);
+            jw__release_pending_menu_up(data, false);
+        }
+    }
 }
 
 /* ---- Force feedback -----------------------------------------------------
@@ -1130,7 +1203,13 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
         if (data->menu_forwarded) {
             jw__write_event(data, EV_KEY, BTN_MODE, 0);
             jw__emit_syn(data);
+            data->menu_up_pending = false;
         }
+        /* Third way BTN_MODE can be down: a chord whose physical Menu was
+           already released is holding the virtual one until its action buttons
+           come up. Those releases die with the screen, so let it go now. */
+        jw__release_pending_menu_up(data, true);
+        memset(data->chord_forwarded_keys, 0, sizeof(data->chord_forwarded_keys));
         data->menu_held                  = false;
         data->menu_forwarded             = false;
         data->chord_active               = false;
@@ -1184,6 +1263,11 @@ void jw_input_proxy_release_buttons(jw_input_proxy *proxy) {
     if (released_any) {
         jw__emit_syn(data);
     }
+    /* Every forwarded action just went up, so nothing is left for a deferred
+       Menu-up to wait on. Callers use this to flush input across a transition;
+       leaving the virtual modifier latched would strand it for the next app. */
+    memset(data->chord_forwarded_keys, 0, sizeof(data->chord_forwarded_keys));
+    jw__release_pending_menu_up(data, true);
 }
 
 bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) {
@@ -1228,6 +1312,7 @@ void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
     jw__ff_thread_stop(data);
     jw__release_deferred_menu_tap(data, true);
+    jw__release_pending_menu_up(data, true);
 
     if (data->input_fd >= 0) {
         ioctl(data->input_fd, EVIOCGRAB, 0);

@@ -103,6 +103,47 @@ static int verify_recordings(const char *path, const char *recordings_dir) {
     free(text);
     return ok ? 0 : -1;
 }
+
+static const char *const hotkey_keys[5] = {
+    "input_enable_hotkey_btn",
+    "input_hotkey_block_delay",
+    "input_exit_emulator_btn",
+    "input_menu_toggle_btn",
+    "input_menu_toggle_gamepad_combo",
+};
+
+/* Assert both the value and the occurrence count. A duplicated key makes a
+   plain text search look right while RetroArch uses the first, wrong value.
+   A NULL expectation means the key must be absent entirely, which is what the
+   durable config must look like for the protected exit bind. */
+static int verify_hotkeys(const char *path, const char *label,
+                          const char *modifier, const char *delay,
+                          const char *exit_btn, const char *menu_toggle,
+                          const char *combo) {
+    const char *want[5] = {modifier, delay, exit_btn, menu_toggle, combo};
+    char *text = read_text(path);
+    if (!text) return -1;
+    int ok = 1;
+    for (size_t i = 0; i < 5; i++) {
+        int total = key_count(text, hotkey_keys[i], NULL);
+        int matching = 0;
+        if (want[i]) {
+            char needle[64];
+            snprintf(needle, sizeof(needle), "= \"%s\"", want[i]);
+            matching = key_count(text, hotkey_keys[i], needle);
+        }
+        int key_ok = want[i] ? (total == 1 && matching == 1) : (total == 0);
+        if (!key_ok) {
+            fprintf(stderr,
+                    "retroarch-config-test: %s: %s: want %s, got %d line(s)\n",
+                    label, hotkey_keys[i],
+                    want[i] ? want[i] : "no line", total);
+            ok = 0;
+        }
+    }
+    free(text);
+    return ok ? 0 : -1;
+}
 #endif
 
 int main(void) {
@@ -135,11 +176,20 @@ int main(void) {
     }
     snprintf(default_cfg, sizeof(default_cfg), "%s/retroarch.cfg", defaults);
     snprintf(record_cfg, sizeof(record_cfg), "%s/retroarch-record.cfg", defaults);
-    if (write_text(default_cfg,
-                   "video_vsync = \"true\"\n"
-                   "sort_savefiles_enable = \"false\"\n"
-                   "sort_savestates_enable = \"false\"\n"
-                   "sort_savefiles_enable = \"false\"\n") != 0) {
+    /* Mirrors the five hotkey values device/mlp1/defaults/retroarch.cfg ships,
+       so the migration cases below see the real packaged baseline rather than
+       an empty one. */
+    static const char packaged_defaults[] =
+        "video_vsync = \"true\"\n"
+        "sort_savefiles_enable = \"false\"\n"
+        "sort_savestates_enable = \"false\"\n"
+        "sort_savefiles_enable = \"false\"\n"
+        "input_menu_toggle_btn = \"nul\"\n"
+        "input_menu_toggle_gamepad_combo = \"0\"\n"
+        "input_enable_hotkey_btn = \"5\"\n"
+        "input_hotkey_block_delay = \"0\"\n"
+        "input_exit_emulator_btn = \"nul\"\n";
+    if (write_text(default_cfg, packaged_defaults) != 0) {
         return fail("defaults write failed");
     }
     if (write_text(record_cfg, "# recording preset fixture\n") != 0) {
@@ -225,53 +275,202 @@ int main(void) {
     }
 
 #ifdef PLATFORM_MLP1
-    /* Upgrade path: a device that launched a game before the Select fix has
-       the stale Select+Start hotkey pair persisted in its shared config. The
-       daemon owns both keys, so the runtime config must carry each exactly
-       once as "nul" (a surviving "4"/"6" means the shared config won; a
-       half-fix that unbinds only the modifier would leave exit bound and turn
-       Start into a bare quit button), and the exit-time backup must leave
-       neither key in the shared config. */
+    /* Hotkey ownership and migration matrix. The modifier is user-owned: only
+       the two exactly-known old durable states are normalized, and every other
+       surviving value passes through. Exit stays daemon-owned and unbound in
+       the runtime config while never reaching the durable one. */
     {
-        if (write_text(shared_cfg,
-                       "menu_driver = \"rgui\"\n"
-                       "input_enable_hotkey_btn = \"4\"\n"
-                       "input_exit_emulator_btn = \"6\"\n") != 0) {
-            return fail("stale hotkey shared config write failed");
+        /* A fresh card has no durable config at all. Prepare seeds it from the
+           packaged defaults, so the new values arrive without any migration. */
+        if (unlink(shared_cfg) != 0) {
+            return fail("could not clear the durable config for the fresh case");
         }
         runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
                                                   true, false, error, sizeof(error));
         if (!runtime_cfg) {
-            return fail(error[0] ? error : "stale hotkey config generation failed");
+            return fail(error[0] ? error : "fresh hotkey config generation failed");
         }
-        char *stale_runtime = read_text(runtime_cfg);
-        int stale_ok =
-            stale_runtime &&
-            key_count(stale_runtime, "input_enable_hotkey_btn", NULL) == 1 &&
-            key_count(stale_runtime, "input_enable_hotkey_btn", "= \"nul\"") == 1 &&
-            key_count(stale_runtime, "input_exit_emulator_btn", NULL) == 1 &&
-            key_count(stale_runtime, "input_exit_emulator_btn", "= \"nul\"") == 1;
-        free(stale_runtime);
-        if (!stale_ok) {
+        if (verify_hotkeys(runtime_cfg, "fresh install",
+                           "5", "0", "nul", "nul", "0") != 0) {
             unlink(runtime_cfg);
             free(runtime_cfg);
-            return fail("stale hotkey binds survived into the runtime config");
+            return fail("fresh install did not get the packaged hotkey defaults");
         }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+
+        /* Each case: the durable state before launch, then the runtime values
+           it must produce. A NULL runtime expectation means the key must not
+           appear at all. */
+        static const struct {
+            const char *label;
+            const char *durable;
+            const char *modifier;
+            const char *delay;
+            const char *menu_toggle;
+            const char *combo;
+        } cases[] = {
+            {
+                /* The original MLP1 pair, recognized only together. */
+                "legacy Select+Start",
+                "menu_driver = \"rgui\"\n"
+                "input_enable_hotkey_btn = \"4\"\n"
+                "input_hotkey_block_delay = \"5\"\n"
+                "input_exit_emulator_btn = \"6\"\n"
+                "input_menu_toggle_btn = \"5\"\n"
+                "input_menu_toggle_gamepad_combo = \"0\"\n",
+                "5", "0", "nul", "0",
+            },
+            {
+                /* What the current beta leaves behind: the protected-key
+                   filter stripped the modifier on every promotion. */
+                "beta-stripped modifier",
+                "menu_driver = \"rgui\"\n"
+                "input_hotkey_block_delay = \"5\"\n"
+                "input_menu_toggle_btn = \"5\"\n"
+                "input_menu_toggle_gamepad_combo = \"0\"\n",
+                "5", "0", "nul", "0",
+            },
+            {
+                /* A custom modifier is a deliberate choice, not damage; the
+                   custom native-menu bind next to it is equally the user's. */
+                "custom modifier and menu bind",
+                "menu_driver = \"rgui\"\n"
+                "input_enable_hotkey_btn = \"7\"\n"
+                "input_hotkey_block_delay = \"5\"\n"
+                "input_menu_toggle_btn = \"2\"\n"
+                "input_menu_toggle_gamepad_combo = \"0\"\n",
+                "7", "5", "2", "0",
+            },
+            {
+                /* An explicit clear survives. RetroArch writes "nul" for a
+                   cleared bind, so this is distinguishable from the absent
+                   key above and needs no migration marker. */
+                "explicitly cleared modifier",
+                "menu_driver = \"rgui\"\n"
+                "input_enable_hotkey_btn = \"nul\"\n"
+                "input_hotkey_block_delay = \"0\"\n"
+                "input_menu_toggle_btn = \"nul\"\n"
+                "input_menu_toggle_gamepad_combo = \"0\"\n",
+                "nul", "0", "nul", "0",
+            },
+            {
+                /* Back on Menu by the user's own hand. Identical to the
+                   migrated value, and must not re-trigger the migration:
+                   their custom delay and combo stay untouched. */
+                "user chose Menu again",
+                "menu_driver = \"rgui\"\n"
+                "input_enable_hotkey_btn = \"5\"\n"
+                "input_hotkey_block_delay = \"3\"\n"
+                "input_menu_toggle_btn = \"nul\"\n"
+                "input_menu_toggle_gamepad_combo = \"2\"\n",
+                "5", "3", "nul", "2",
+            },
+        };
+
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            if (write_text(shared_cfg, cases[i].durable) != 0) {
+                return fail("hotkey durable fixture write failed");
+            }
+            runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                      true, false,
+                                                      error, sizeof(error));
+            if (!runtime_cfg) {
+                return fail(error[0] ? error : "hotkey config generation failed");
+            }
+            int runtime_ok =
+                verify_hotkeys(runtime_cfg, cases[i].label, cases[i].modifier,
+                               cases[i].delay, "nul", cases[i].menu_toggle,
+                               cases[i].combo) == 0;
+            if (!runtime_ok) {
+                unlink(runtime_cfg);
+                free(runtime_cfg);
+                return fail("runtime hotkey values are wrong for this case");
+            }
+            /* Save-on-exit promotion: the user-owned values persist and only
+               the protected exit bind is stripped. */
+            if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                           error, sizeof(error)) != 0) {
+                unlink(runtime_cfg);
+                free(runtime_cfg);
+                return fail(error[0] ? error : "hotkey backup failed");
+            }
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            if (verify_hotkeys(shared_cfg, cases[i].label, cases[i].modifier,
+                               cases[i].delay, NULL, cases[i].menu_toggle,
+                               cases[i].combo) != 0) {
+                return fail("durable hotkey values are wrong after promotion");
+            }
+            /* The next launch reads back what was just promoted and must not
+               migrate it a second time. */
+            runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                      true, false,
+                                                      error, sizeof(error));
+            if (!runtime_cfg) {
+                return fail(error[0] ? error : "hotkey relaunch config failed");
+            }
+            int stable = verify_hotkeys(runtime_cfg, cases[i].label,
+                                        cases[i].modifier, cases[i].delay,
+                                        "nul", cases[i].menu_toggle,
+                                        cases[i].combo) == 0;
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            if (!stable) {
+                return fail("hotkey values changed again on the next launch");
+            }
+        }
+
+        /* A modifier the user changes inside RetroArch survives the round
+           trip. This is the beta report: it used to be stripped on promotion
+           and regenerated as "nul" on the next launch. */
+        if (write_text(shared_cfg,
+                       "menu_driver = \"rgui\"\n"
+                       "input_enable_hotkey_btn = \"5\"\n"
+                       "input_hotkey_block_delay = \"0\"\n"
+                       "input_menu_toggle_btn = \"nul\"\n"
+                       "input_menu_toggle_gamepad_combo = \"0\"\n") != 0) {
+            return fail("hotkey round-trip fixture write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "hotkey round-trip config failed");
+        }
+        char *session = read_text(runtime_cfg);
+        char *changed = replace_line(session, "input_enable_hotkey_btn = \"5\"",
+                                     "input_enable_hotkey_btn = \"7\"");
+        free(session);
+        if (!changed || write_text(runtime_cfg, changed) != 0) {
+            free(changed);
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail("could not simulate a RetroArch modifier change");
+        }
+        free(changed);
         if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
                                        error, sizeof(error)) != 0) {
             unlink(runtime_cfg);
             free(runtime_cfg);
-            return fail(error[0] ? error : "stale hotkey backup failed");
+            return fail(error[0] ? error : "hotkey round-trip backup failed");
         }
         unlink(runtime_cfg);
         free(runtime_cfg);
-        char *healed = read_text(shared_cfg);
-        int healed_ok = healed &&
-                        key_count(healed, "input_enable_hotkey_btn", NULL) == 0 &&
-                        key_count(healed, "input_exit_emulator_btn", NULL) == 0;
-        free(healed);
-        if (!healed_ok) {
-            return fail("stale hotkey binds persisted to the shared config");
+        if (verify_hotkeys(shared_cfg, "user-changed modifier",
+                           "7", "0", NULL, "nul", "0") != 0) {
+            return fail("a modifier chosen in RetroArch did not persist");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "hotkey round-trip relaunch failed");
+        }
+        int kept = verify_hotkeys(runtime_cfg, "user-changed modifier",
+                                  "7", "0", "nul", "nul", "0") == 0;
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        if (!kept) {
+            return fail("a persisted modifier was rewritten on the next launch");
         }
     }
 #endif

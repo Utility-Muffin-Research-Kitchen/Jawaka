@@ -488,17 +488,20 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "notification_show_autoconfig",
         "notification_show_autoconfig_fails",
         "notification_show_config_override_load",
-        /* No RetroArch hotkey modifier on MLP1: any button bound as
-           input_enable_hotkey is masked from the core after
-           input_hotkey_block_delay frames, which breaks every hold-to-act
-           control on that button (Select held = Goodboy Galaxy's warp).
-           Leaf quits RetroArch over the network command interface, so the
-           Phase 2 Select+Start exit chord is no longer worth that cost.
-           Daemon-owned so an
-           upgrading device's persisted shared config cannot keep the old
-           binds alive; unbinding the modifier alone would leave every hotkey
-           bare, so both keys must change together. */
-        "input_enable_hotkey_btn",
+        /* Exit stays daemon-owned and unbound. Leaf quits RetroArch over the
+           network command interface, so a bind here buys nothing -- and a user
+           who clears input_enable_hotkey_btn would turn a stale exit bind into
+           a bare quit button under their thumb.
+
+           input_enable_hotkey_btn is deliberately NOT protected. Any button
+           bound as the modifier is masked from the core after
+           input_hotkey_block_delay frames, which is why Select was wrong (held
+           Select = Goodboy Galaxy's warp), but unbinding the modifier for
+           everyone left every other RetroArch hotkey bare and stripped the
+           user's own choice on every promotion. The packaged default is now the
+           dedicated Menu button and the value is user-owned; the migration in
+           jw_prepare_retroarch_config() normalizes only the exact known old
+           states. */
         "input_exit_emulator_btn",
         "input_max_users",
         "savestate_file_compression",
@@ -629,6 +632,82 @@ static char *jw__retroarch_cfg_text_string_value(const char *text,
                                                  const char *wanted_key) {
     return jw__retroarch_cfg_text_string_value_ex(text, wanted_key, false);
 }
+
+#ifdef PLATFORM_MLP1
+/* The MLP1 Menu button is joypad button 5 in the packaged "Loong Gamepad"
+   autoconfig profile. */
+#define JW_MLP1_HOTKEY_MODIFIER_DEFAULT "5"
+/* Zero frames. The input proxy flushes its deferred Menu-down immediately
+   ahead of the action it is forwarding, so RetroArch's upstream five-frame
+   grace would hand that action to the core before hotkey blocking starts. A
+   dedicated Menu button is never a game control, so the delay protects
+   nothing here. Still user-owned: only the exact upstream default migrates. */
+#define JW_MLP1_HOTKEY_BLOCK_DELAY_DEFAULT "0"
+
+typedef struct {
+    bool modifier;    /* emit input_enable_hotkey_btn = "5" */
+    bool block_delay; /* emit input_hotkey_block_delay = "0" */
+    bool menu_toggle; /* emit input_menu_toggle_btn = "nul" */
+} jw__retroarch_hotkey_migration;
+
+/* Normalize the two exactly-known old durable states and nothing else: the
+   original Select+Start hotkey pair, and the modifier-shaped hole the
+   protected-key rollout left behind (it stripped the key on every promotion,
+   which is what made a modifier chosen in RetroArch vanish on the next
+   launch). Any other surviving value is the user's and passes through
+   untouched -- an unrecognized modifier is a deliberate choice, not damage.
+
+   No sentinel and no sidecar state. RetroArch serializes a cleared bind as an
+   explicit "nul" (configuration.c: input_config_save_keybinds_user passes
+   save_empty=true), so a promoted "nul" is distinguishable from the absent key
+   this migration is looking for. Re-running the plan after a crash costs one
+   redundant normalization, which is the safer failure. */
+static jw__retroarch_hotkey_migration
+jw__plan_retroarch_hotkey_migration(const char *shared_text) {
+    jw__retroarch_hotkey_migration plan = {false, false, false};
+    /* No durable config yet: the packaged defaults already are these values. */
+    if (!shared_text) {
+        return plan;
+    }
+
+    bool have_modifier =
+        jw__retroarch_cfg_text_has_key(shared_text, "input_enable_hotkey_btn");
+    if (have_modifier) {
+        /* First occurrence, because that is the one RetroArch itself used. */
+        char *modifier = jw__retroarch_cfg_text_string_value_ex(
+            shared_text, "input_enable_hotkey_btn", true);
+        char *exit_btn = jw__retroarch_cfg_text_string_value_ex(
+            shared_text, "input_exit_emulator_btn", true);
+        plan.modifier = modifier && exit_btn &&
+                        strcmp(modifier, "4") == 0 &&
+                        strcmp(exit_btn, "6") == 0;
+        free(modifier);
+        free(exit_btn);
+    } else {
+        plan.modifier = true;
+    }
+
+    if (!plan.modifier) {
+        return plan;
+    }
+
+    if (!jw__retroarch_cfg_text_has_key(shared_text, "input_hotkey_block_delay")) {
+        plan.block_delay = true;
+    } else {
+        char *delay = jw__retroarch_cfg_text_string_value_ex(
+            shared_text, "input_hotkey_block_delay", true);
+        plan.block_delay = delay && strcmp(delay, "5") == 0;
+        free(delay);
+    }
+
+    char *menu_toggle = jw__retroarch_cfg_text_string_value_ex(
+        shared_text, "input_menu_toggle_btn", true);
+    plan.menu_toggle = menu_toggle && strcmp(menu_toggle, "5") == 0;
+    free(menu_toggle);
+
+    return plan;
+}
+#endif
 
 static bool jw__release_managed_shader_dir(const char *path) {
     static const char marker[] = "/.system/leaf/platforms/";
@@ -2196,11 +2275,11 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_string(fp, "notification_show_autoconfig", "false");
     jw__retroarch_cfg_string(fp, "notification_show_autoconfig_fails", "false");
     jw__retroarch_cfg_string(fp, "notification_show_config_override_load", "false");
-    /* Select stays a plain RetroPad button: no hotkey modifier, no hotkey
-       exit. Both "nul" values are load-bearing as a pair -- with the modifier
-       unbound but exit still bound, input_keys_pressed() takes its "clear
-       everything" branch and Start alone would quit the game. */
-    jw__retroarch_cfg_string(fp, "input_enable_hotkey_btn", "nul");
+    /* Exit is unbound on every launch and never promoted. The modifier next to
+       it is user-owned, so this "nul" is what keeps a user who clears the
+       modifier from turning Start -- or whatever an old config left bound --
+       into a bare quit button: with no modifier held, input_keys_pressed()
+       takes its "clear everything" branch and a bound exit fires on its own. */
     jw__retroarch_cfg_string(fp, "input_exit_emulator_btn", "nul");
     jw__retroarch_cfg_max_users(fp, player_joypad_indices);
     jw__retroarch_cfg_string(fp, "savestate_file_compression", "false");
@@ -2389,28 +2468,50 @@ char *jw_prepare_retroarch_config_with_info(
         }
     }
 
-    /* A proxied launch owns both cheevos keys for this session only, so they
-       must not also arrive from defaults or shared: RetroArch keeps the FIRST
-       occurrence of a key, so a merged-in value would win over the override
-       written below and the launch would bypass the proxy without saying so. */
-    const char *skip_keys[3] = {0};
-    size_t skip_key_count = 0;
-    if (migrate_release_shader_dir) {
-        skip_keys[skip_key_count++] = "video_shader_dir";
-    }
+#ifdef PLATFORM_MLP1
+    jw__retroarch_hotkey_migration hotkeys =
+        jw__plan_retroarch_hotkey_migration(shared_text);
+#endif
+
+    /* Keys Jawaka owns for this launch have to be skipped from the merge
+       inputs rather than appended afterwards: RetroArch keeps the FIRST
+       occurrence of a key, so a merged-in value would win over anything
+       written below it. The two arrays exist because the scopes differ -- a
+       packaged default is never a stale release-managed shader path, so that
+       one skip applies to the shared text only. */
+    const char *defaults_skip[5] = {0};
+    size_t defaults_skip_count = 0;
+    const char *shared_skip[6] = {0};
+    size_t shared_skip_count = 0;
+
     if (proxied_cheevos) {
-        skip_keys[skip_key_count++] = "cheevos_custom_host";
-        skip_keys[skip_key_count++] = "cheevos_hardcore_mode_enable";
+        defaults_skip[defaults_skip_count++] = "cheevos_custom_host";
+        defaults_skip[defaults_skip_count++] = "cheevos_hardcore_mode_enable";
+        shared_skip[shared_skip_count++] = "cheevos_custom_host";
+        shared_skip[shared_skip_count++] = "cheevos_hardcore_mode_enable";
     }
-    /* The shader skip is scoped to the shared text only (a packaged default
-       is never a stale release-managed path), the cheevos skips to both. */
-    size_t defaults_skip_first = migrate_release_shader_dir ? 1u : 0u;
+    if (migrate_release_shader_dir) {
+        shared_skip[shared_skip_count++] = "video_shader_dir";
+    }
+#ifdef PLATFORM_MLP1
+    if (hotkeys.modifier) {
+        defaults_skip[defaults_skip_count++] = "input_enable_hotkey_btn";
+        shared_skip[shared_skip_count++] = "input_enable_hotkey_btn";
+    }
+    if (hotkeys.block_delay) {
+        defaults_skip[defaults_skip_count++] = "input_hotkey_block_delay";
+        shared_skip[shared_skip_count++] = "input_hotkey_block_delay";
+    }
+    if (hotkeys.menu_toggle) {
+        defaults_skip[defaults_skip_count++] = "input_menu_toggle_btn";
+        shared_skip[shared_skip_count++] = "input_menu_toggle_btn";
+    }
+#endif
 
     if (defaults_text) {
         jw__write_retroarch_cfg_filtered_skipping(
             fp, defaults_text, shared_text, false,
-            skip_keys + defaults_skip_first,
-            skip_key_count - defaults_skip_first);
+            defaults_skip, defaults_skip_count);
     }
     if (shared_text) {
         /* Preserve RetroArch's order and duplicate-resolution semantics.
@@ -2424,8 +2525,27 @@ char *jw_prepare_retroarch_config_with_info(
            needs to own for one launch has to be skipped here rather than
            appended later. */
         jw__write_retroarch_cfg_filtered_skipping(
-            fp, shared_text, NULL, false, skip_keys, skip_key_count);
+            fp, shared_text, NULL, false, shared_skip, shared_skip_count);
     }
+#ifdef PLATFORM_MLP1
+    /* Exactly one occurrence of each migrated key, because every one of them
+       was skipped from both merge inputs above. These are user-owned values
+       being normalized once, so they belong here in the user section rather
+       than in the protected block: RetroArch's save-on-exit persists them and
+       the ordinary backup promotes them. If the session dies before that, the
+       same migration simply plans itself again next launch. */
+    if (hotkeys.modifier) {
+        jw__retroarch_cfg_string(fp, "input_enable_hotkey_btn",
+                                 JW_MLP1_HOTKEY_MODIFIER_DEFAULT);
+    }
+    if (hotkeys.block_delay) {
+        jw__retroarch_cfg_string(fp, "input_hotkey_block_delay",
+                                 JW_MLP1_HOTKEY_BLOCK_DELAY_DEFAULT);
+    }
+    if (hotkeys.menu_toggle) {
+        jw__retroarch_cfg_string(fp, "input_menu_toggle_btn", "nul");
+    }
+#endif
     /* Make the release-managed bundle browsable on first launch, but keep this
        key outside the protected section. A packaged default or a value already
        persisted by RetroArch always wins, except for a release-managed path

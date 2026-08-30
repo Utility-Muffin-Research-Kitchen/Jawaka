@@ -832,13 +832,23 @@ retroarch-command-test: | $(BUILD)/bin
 		internal/retroarch/command_test.c internal/retroarch/command.c
 	$(BUILD)/bin/retroarch-command-test
 
+RETROARCH_CONFIG_TEST_SRCS := \
+	internal/platform/paths_config_test.c internal/platform/paths.c \
+	internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
+	$(EFFECTIVE_CATALOG_SRCS) \
+	internal/core/log.c third_party/cjson/cJSON.c
+
+# Both platform shapes, because the hotkey ownership/migration matrix and the
+# rest of the MLP1 protected-key policy only compile under -DPLATFORM_MLP1,
+# while this Mac lane's default build is the one that covers the generic path.
 retroarch-config-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/retroarch-config-test \
-		internal/platform/paths_config_test.c internal/platform/paths.c \
-		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
-		$(EFFECTIVE_CATALOG_SRCS) \
-		internal/core/log.c third_party/cjson/cJSON.c
+		$(RETROARCH_CONFIG_TEST_SRCS)
 	$(BUILD)/bin/retroarch-config-test
+	$(CC) $(CFLAGS_COMMON) -DPLATFORM_MLP1 \
+		-o $(BUILD)/bin/retroarch-config-mlp1-test \
+		$(RETROARCH_CONFIG_TEST_SRCS)
+	$(BUILD)/bin/retroarch-config-mlp1-test
 
 raofflineproxy-bridge-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/raofflineproxy-bridge-test \
