@@ -1465,3 +1465,18 @@ msgstr "扁平"
 
 msgid "Photographic"
 msgstr "写实"
+
+# In-game shortcut bindings. Marked fuzzy: suggested, not reviewed.
+# "Game Switcher" follows the existing "Switcher" -> 游戏切换; "Screenshot"
+# follows "Screenshots" -> 截图; "Disabled" pairs with "Enabled" -> 已启用.
+#, fuzzy
+msgid "Disabled"
+msgstr "已禁用"
+
+#, fuzzy
+msgid "Game Switcher"
+msgstr "游戏切换"
+
+#, fuzzy
+msgid "Screenshot"
+msgstr "截图"
