@@ -1411,6 +1411,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->controls_list,     JW_CONTROLS_ROW_COUNT);
 #ifdef PLATFORM_MLP1
     cat_list_state_init(&ui->shortcuts_list,    JW_SHORTCUT_ROW_COUNT);
+    cat_list_state_init(&ui->shortcut_pick_list, JW_INPUT_SHORTCUT_BUTTON_COUNT);
     jw_input_shortcuts_defaults(&ui->shortcuts);
 #endif
     cat_list_state_init(&ui->home_tabs_list,   JW_HOME_TABS_COUNT);
@@ -4436,6 +4437,113 @@ static void jw__shortcut_value(const jw_settings_ui *ui,
     snprintf(out, out_size, "Menu + %s", label);
 }
 
+/* Which action currently holds `button`, ignoring the one being edited, or -1.
+   Drives the picker's annotation and its refusal. */
+static int jw__shortcut_owner_of(const jw_settings_ui *ui,
+                                 jw_input_shortcut_button button) {
+    if (button == JW_INPUT_SHORTCUT_BUTTON_NONE) {
+        return -1;   /* Disabled is shareable */
+    }
+    for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+        if (i != (int)ui->shortcut_pick_action &&
+            ui->shortcuts.buttons[i] == button) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+typedef struct { const jw_settings_ui *ui; } jw__shortcut_pick_ctx;
+
+/* The focus layer under the cursor row. Not optional: the item renderer lerps
+   its text toward theme->highlighted_text, which is the colour meant to sit ON
+   this pill. Without it the selected row is dark text on a dark background and
+   simply disappears -- which is what passing NULL here did. */
+static void jw__draw_shortcut_pick_focus(int x, int y, int w, int h, void *user) {
+    (void)user;
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int pill_h = TTF_FontHeight(body) + cat_scale(6);
+    int pill_y = y + (h - pill_h) / 2;
+    cat_draw_pill(x, pill_y, w - cat_scale(4), pill_h, theme->highlight);
+}
+
+static void jw__draw_shortcut_pick_item(int idx, int ix, int iy, int iw, int ih,
+                                        float focus, void *user) {
+    jw__shortcut_pick_ctx *ctx = (jw__shortcut_pick_ctx *)user;
+    const jw_settings_ui *ui = ctx ? ctx->ui : NULL;
+    if (!ui || idx < 0 || idx >= JW_INPUT_SHORTCUT_BUTTON_COUNT) return;
+
+    jw_input_shortcut_button button = (jw_input_shortcut_button)idx;
+    int owner = jw__shortcut_owner_of(ui, button);
+    bool taken = owner >= 0;
+    bool current = ui->shortcuts.buttons[ui->shortcut_pick_action] == button;
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int ty = iy + (ih - TTF_FontHeight(body)) / 2;
+
+    /* A taken row is drawn in the hint color, the same way an unavailable row
+       reads elsewhere. It stays selectable so the reason can be shown on the
+       press rather than leaving the user poking a row that ignores them. */
+    ap_color label_c = cat_draw_color_lerp(taken ? theme->hint : theme->text,
+                                           theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint,
+                                           theme->highlighted_text, focus);
+
+    char label[64];
+    const char *name = jw_input_shortcut_button_label(button);
+    if (button == JW_INPUT_SHORTCUT_BUTTON_NONE) {
+        snprintf(label, sizeof(label), "%s", T(name));
+    } else {
+        snprintf(label, sizeof(label), "Menu + %s", name);
+    }
+    cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c,
+                             iw * 2 / 3);
+
+    /* Right-hand column: who holds it, or a tick on the current choice. */
+    const char *value = NULL;
+    if (taken) {
+        value = T(jw_input_shortcut_action_label((jw_input_shortcut_action)owner));
+    } else if (current) {
+        value = T("Current");
+    }
+    if (value) {
+        int vw = cat_measure_text(body, value);
+        cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+    }
+}
+
+static void jw__render_shortcut_picker(const jw_settings_ui *ui,
+                                       int x, int y, int w, int h) {
+    const char *action_label =
+        jw_input_shortcut_action_label(ui->shortcut_pick_action);
+    jw__draw_header(action_label ? action_label : "Shortcut", x, y, w);
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    int sub_h = jw__subheader_line_h(small) + cat_scale(6);
+    SDL_Rect sub;
+    SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
+    cat_draw_text_ellipsized(small, T("A: Choose   B: Back"),
+                             sub.x + cat_scale(12), sub.y, theme->hint,
+                             sub.w - cat_scale(24));
+
+    int item_h = TTF_FontHeight(body) + cat_scale(12);
+    cat_box lb = { c.x, c.y, c.w, c.h, 0, 0, 0, 0 };
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&lb, item_h, JW_INPUT_SHORTCUT_BUTTON_COUNT,
+                                   &vis, &item_h);
+    ((cat_list_state *)&ui->shortcut_pick_list)->visible_rows = vis;
+    jw__shortcut_pick_ctx ctx = { ui };
+    cat_draw_list_pane_layered(lr.x, lr.y, lr.w, lr.h,
+                               JW_INPUT_SHORTCUT_BUTTON_COUNT,
+                               &ui->shortcut_pick_list, item_h,
+                               jw__draw_shortcut_pick_focus,
+                               jw__draw_shortcut_pick_item, &ctx);
+}
+
 static void jw__render_input_shortcuts(const jw_settings_ui *ui,
                                        int x, int y, int w, int h) {
     jw__draw_header("In-game Shortcuts", x, y, w);
@@ -4557,9 +4665,18 @@ static void jw__apply_shortcut(jw_settings_ui *ui,
     if (status_buf && status_size > 0) {
         status_buf[0] = '\0';
     }
-    /* Phase 6 pushes the new snapshot to jawakad here, so a rebind takes
-       effect without a daemon restart. Until then the daemon picks it up on
-       its next start; the durable value is already correct either way. */
+
+    /* Hand the daemon the whole snapshot so the next chord uses it. The
+       durable value is already written, so a failure here is not a rollback:
+       the binding is saved and simply is not live yet. Say so rather than
+       leaving the user to wonder why the chord they just set does nothing. */
+    if (ui->socket_path[0] &&
+        jw_ipc_set_input_shortcuts(ui->socket_path, &ui->shortcuts) != 0) {
+        if (status_buf && status_size > 0) {
+            snprintf(status_buf, status_size, "%s",
+                     T("Saved; active after restart"));
+        }
+    }
 }
 #endif
 
@@ -5198,6 +5315,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_CONTROLS:   jw__render_controls(ui, x, y, w, h);                 break;
 #ifdef PLATFORM_MLP1
         case JW_SETTINGS_INPUT_SHORTCUTS: jw__render_input_shortcuts(ui, x, y, w, h);   break;
+        case JW_SETTINGS_SHORTCUT_PICKER: jw__render_shortcut_picker(ui, x, y, w, h);   break;
 #endif
         case JW_SETTINGS_HOME_TABS:  jw__render_home_tabs(ui, x, y, w, h);               break;
         case JW_SETTINGS_UPDATE:     jw__render_update(ui, x, y, w, h);                  break;
@@ -7649,8 +7767,8 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 cat_list_state_move(&ui->shortcuts_list, +1, JW_SHORTCUT_ROW_COUNT);
                 break;
             case CAT_BTN_X: {
-                /* X clears a binding outright. Cycling to Disabled would mean
-                   walking the whole button list to reach it. */
+                /* X still clears outright, from the row: the common "I want
+                   this off" case should not need a trip through the picker. */
                 jw_input_shortcut_action action;
                 if (!jw__shortcut_row_action(ui->shortcuts_list.cursor, &action))
                     break;
@@ -7664,10 +7782,17 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
                 jw_input_shortcut_action action;
                 if (jw__shortcut_row_action(ui->shortcuts_list.cursor, &action)) {
-                    jw_input_shortcut_button next =
-                        jw_input_shortcuts_cycle(ui->shortcuts.buttons[action], dir);
-                    jw__apply_shortcut(ui, action, next,
-                                       status_buf, status_size);
+                    /* Open the picker rather than cycling in place. Twelve
+                       options is too many to walk blind, and cycling could not
+                       show which buttons the other actions already hold --
+                       it dead-ended on them instead. */
+                    ui->shortcut_pick_action = action;
+                    cat_list_state_init(&ui->shortcut_pick_list,
+                                        JW_INPUT_SHORTCUT_BUTTON_COUNT);
+                    ui->shortcut_pick_list.cursor =
+                        (int)ui->shortcuts.buttons[action];
+                    ui->screen = JW_SETTINGS_SHORTCUT_PICKER;
+                    if (status_buf && status_size > 0) status_buf[0] = '\0';
                     break;
                 }
                 (void)dir;
@@ -7690,6 +7815,41 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             }
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_CONTROLS;
+                if (status_buf && status_size > 0) status_buf[0] = '\0';
+                break;
+            default: break;
+        }
+        break;
+
+    /* ── Shortcut button picker (MLP1) ───────────────────────────────── */
+    case JW_SETTINGS_SHORTCUT_PICKER:
+        switch (button) {
+            case CAT_BTN_UP:
+                cat_list_state_move(&ui->shortcut_pick_list, -1,
+                                    JW_INPUT_SHORTCUT_BUTTON_COUNT);
+                break;
+            case CAT_BTN_DOWN:
+                cat_list_state_move(&ui->shortcut_pick_list, +1,
+                                    JW_INPUT_SHORTCUT_BUTTON_COUNT);
+                break;
+            case CAT_BTN_A: {
+                jw_input_shortcut_button choice =
+                    (jw_input_shortcut_button)ui->shortcut_pick_list.cursor;
+                /* apply_shortcut does the refusing; a taken row is already
+                   dimmed and annotated with its owner, so the message only
+                   confirms what the list showed rather than surprising the
+                   way cycling did. Stay put on failure so that message is
+                   read beside the list, and leave on success, where the row
+                   behind now shows the new value. */
+                jw__apply_shortcut(ui, ui->shortcut_pick_action, choice,
+                                   status_buf, status_size);
+                if (ui->shortcuts.buttons[ui->shortcut_pick_action] == choice) {
+                    ui->screen = JW_SETTINGS_INPUT_SHORTCUTS;
+                }
+                break;
+            }
+            case CAT_BTN_B:
+                ui->screen = JW_SETTINGS_INPUT_SHORTCUTS;
                 if (status_buf && status_size > 0) status_buf[0] = '\0';
                 break;
             default: break;

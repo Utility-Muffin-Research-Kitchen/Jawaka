@@ -14,6 +14,7 @@
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
+#include "internal/platform/input_shortcuts.h"
 #include "internal/platform/input_roster.h"
 #include "internal/platform/paths.h"
 #include "internal/platform/raofflineproxy.h"
@@ -244,6 +245,13 @@ typedef struct {
     jw_daemon_ipc_connection ipc_connections[JW_DAEMON_IPC_CONNECTION_MAX];
     jw_platform_context platform;
     jw_input_proxy input_proxy;
+    /* Which button performs which Leaf action, resolved once and held in
+       memory. The input path reads this and only this -- see
+       jw__on_shortcut_chord() for why it must never reach SQLite.
+       Phase 6 loads it from the settings table at startup and replaces it on
+       an IPC push from Settings; until then it is the compiled-in defaults,
+       which are the fixed chords this feature replaces. */
+    jw_input_shortcuts shortcuts;
     /* Non-grabbing observers for paired wireless controllers: activity feeds
        the same idle clock the proxy drives; Guide equals the Menu button. */
     jw_external_input_monitor external_input;
@@ -7882,6 +7890,86 @@ static bool jw__on_screenshot_hotkey(void *userdata) {
     return true;
 }
 
+/* Resolve a Menu chord against the daemon's shortcut snapshot and run the
+   action the user bound to that button.
+ *
+ * Never touches SQLite. This runs on the same main loop that drains evdev, and
+ * the settings helper opens a connection, reapplies schema, and can wait on
+ * SQLite's busy timeout -- paying that per chord would turn a settings lookup
+ * into dropped controller input. The snapshot is plain memory, replaced whole.
+ *
+ * Returns the handler's own answer, so a declining action (feature off, no
+ * RetroArch session) still forwards the chord to the game. */
+static bool jw__on_shortcut_chord(void *userdata,
+                                  jw_input_shortcut_button button) {
+    jw_daemon_state *state = (jw_daemon_state *)userdata;
+    if (!state) {
+        return false;
+    }
+    jw_input_shortcut_action action;
+    if (!jw_input_shortcuts_action_for_button(&state->shortcuts, button,
+                                              &action)) {
+        return false;   /* nothing bound to it: forward as an ordinary chord */
+    }
+    switch (action) {
+        case JW_INPUT_SHORTCUT_GAME_SWITCHER: return jw__input_game_switcher(state);
+        case JW_INPUT_SHORTCUT_SCREENSHOT:    return jw__on_screenshot_hotkey(state);
+        case JW_INPUT_SHORTCUT_RECORDING:     return jw__on_record_hotkey(state);
+        default: return false;
+    }
+}
+
+/* Load the shortcut bindings from the settings table into the daemon's
+   snapshot. Called once, before the full proxy starts polling -- this is the
+   only place the shortcut path touches SQLite, and it does so on a thread that
+   is not yet draining evdev.
+ *
+ * A read failure keeps the compiled-in defaults rather than disabling
+   everything: a card that cannot be read is not a user asking for no
+   shortcuts. Malformed and duplicate values are resolved fail-closed by the
+   shared model and logged individually, so a hand-edited database says which
+   key was wrong rather than silently doing nothing. */
+static void jw__load_shortcuts(jw_daemon_state *state) {
+    if (!state || !state->db_path[0]) {
+        return;
+    }
+    char values[JW_INPUT_SHORTCUT_ACTION_COUNT][32];
+    jw_db_setting_query q[JW_INPUT_SHORTCUT_ACTION_COUNT];
+    for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+        values[i][0] = '\0';
+        q[i].key = jw_input_shortcut_action_key((jw_input_shortcut_action)i);
+        q[i].out = values[i];
+        q[i].out_size = sizeof(values[i]);
+        q[i].found = 0;
+    }
+    if (jw_db_get_settings(state->db_path, q, JW_INPUT_SHORTCUT_ACTION_COUNT) != 0) {
+        jw_log_warn("input shortcuts: settings read failed; keeping defaults");
+        return;
+    }
+
+    const char *raw[JW_INPUT_SHORTCUT_ACTION_COUNT];
+    for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+        raw[i] = q[i].found ? values[i] : NULL;
+    }
+    bool invalid[JW_INPUT_SHORTCUT_ACTION_COUNT];
+    bool duplicate[JW_INPUT_SHORTCUT_ACTION_COUNT];
+    jw_input_shortcuts loaded;
+    int rejected = jw_input_shortcuts_resolve(raw, &loaded, invalid, duplicate);
+    for (int i = 0; rejected && i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+        if (invalid[i]) {
+            jw_log_warn("input shortcuts: %s has an unknown value \"%s\"; "
+                        "using the default",
+                        jw_input_shortcut_action_key((jw_input_shortcut_action)i),
+                        values[i]);
+        } else if (duplicate[i]) {
+            jw_log_warn("input shortcuts: %s wants a button another action "
+                        "already has; disabled",
+                        jw_input_shortcut_action_key((jw_input_shortcut_action)i));
+        }
+    }
+    state->shortcuts = loaded;
+}
+
 static void jw__start_input_proxy(jw_daemon_state *state) {
     if (!state) {
         return;
@@ -7894,9 +7982,8 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
 
     if (jw_input_proxy_init(&state->input_proxy, jw__input_brightness_delta,
                             jw__input_volume_delta, jw__input_menu_tap,
-                            jw__input_game_switcher, state) == 0) {
-        state->input_proxy.screenshot = jw__on_screenshot_hotkey;
-        state->input_proxy.record = jw__on_record_hotkey;
+                            state) == 0) {
+        state->input_proxy.shortcut = jw__on_shortcut_chord;
         state->input_proxy.rumble = jw__rumble_ff;
         jw__publish_retroarch_input_env(state);
     }
@@ -8297,7 +8384,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
            down and restores the full grab. */
         if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
                                       jw__input_volume_delta, jw__input_menu_tap,
-                                      jw__input_game_switcher, state) != 0) {
+                                      state) != 0) {
             jw_log_warn("input watch: init failed; volume/brightness keys unavailable this app session");
         }
     }
@@ -8532,7 +8619,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw__suspend_input_proxy_for_app(state);
         if (jw_input_proxy_init_watch(&state->input_proxy, jw__input_brightness_delta,
                                       jw__input_volume_delta, jw__input_menu_tap,
-                                      jw__input_game_switcher, state) != 0) {
+                                      state) != 0) {
             jw_log_warn("input watch: init failed; Menu exit unavailable this session");
         }
     }
@@ -11161,6 +11248,39 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_json(client, reply);
     }
 
+    if (strcmp(type->valuestring, "set-input-shortcuts") == 0) {
+        /* Settings pushes the complete snapshot after persisting it, so a
+           rebind takes effect without restarting the daemon.
+
+           Deliberately does not read the database. This handler runs on the
+           main loop; reopening SQLite here would put a settings query on the
+           same thread that drains evdev, which is exactly what the cached
+           snapshot exists to avoid. Everything needed is in the message.
+
+           The snapshot is rebuilt from scratch and validated before it is
+           installed, so a malformed or colliding message leaves the running
+           bindings alone rather than half-applying. */
+        cJSON *buttons = cJSON_GetObjectItemCaseSensitive(root, "buttons");
+        jw_input_shortcuts next;
+        bool ok = cJSON_IsArray(buttons) &&
+                  cJSON_GetArraySize(buttons) == JW_INPUT_SHORTCUT_ACTION_COUNT;
+        for (int i = 0; ok && i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+            cJSON *item = cJSON_GetArrayItem(buttons, i);
+            ok = cJSON_IsString(item) && item->valuestring &&
+                 jw_input_shortcut_button_parse(item->valuestring,
+                                                &next.buttons[i]);
+        }
+        if (!ok || !jw_input_shortcuts_valid(&next)) {
+            cJSON_Delete(root);
+            jw_log_warn("input shortcuts: rejected an invalid IPC snapshot; "
+                        "keeping the running bindings");
+            return jw__reply_error(client, "invalid input shortcuts");
+        }
+        state->shortcuts = next;   /* one assignment: never partly applied */
+        cJSON_Delete(root);
+        return jw__reply_ok(client, "set-input-shortcuts", NULL);
+    }
+
     if (strcmp(type->valuestring, "rumble") == 0) {
         cJSON *ev = cJSON_GetObjectItemCaseSensitive(root, "event");
         const char *event = cJSON_IsString(ev) ? ev->valuestring : NULL;
@@ -13602,6 +13722,10 @@ int main(int argc, char *argv[]) {
 
     jw_daemon_state state;
     memset(&state, 0, sizeof(state));
+    /* A zeroed snapshot would read as "everything disabled"; the defaults are
+       the fixed chords this replaces, so a daemon that never reaches the
+       settings load still behaves as it always did. */
+    jw_input_shortcuts_defaults(&state.shortcuts);
     state.mutation_recovery_lock.fd = -1;
     state.child_pid = -1;
     state.child_pgid = -1;
@@ -13832,6 +13956,8 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* Before the proxy polls: the input path must never reach SQLite. */
+    jw__load_shortcuts(&state);
     jw__start_input_proxy(&state);
     if (jw_external_input_monitor_init(&state.external_input,
                                        jw__input_menu_tap, &state) != 0) {

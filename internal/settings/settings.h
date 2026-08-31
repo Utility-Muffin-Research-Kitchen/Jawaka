@@ -67,6 +67,7 @@ typedef enum {
     /* Guarded rather than merely unreachable elsewhere, so every switch over
        this enum stops compiling on the platform that grows a new screen. */
     JW_SETTINGS_INPUT_SHORTCUTS, /* Menu-chord bindings + capture options */
+    JW_SETTINGS_SHORTCUT_PICKER, /* pick one action's button from the full list */
 #endif
     JW_SETTINGS_HOME_TABS,   /* hide + reorder the launcher's home tabs */
     JW_SETTINGS_UPDATE,
@@ -265,6 +266,10 @@ typedef struct {
     cat_list_state     controls_list;    /* Controls & Feedback page */
 #ifdef PLATFORM_MLP1
     cat_list_state     shortcuts_list;   /* In-game Shortcuts page */
+    cat_list_state     shortcut_pick_list; /* button picker for one action */
+    /* Which action the picker is editing. Set on entry; the picker reads no
+       other row state, so leaving and re-entering always starts consistent. */
+    jw_input_shortcut_action shortcut_pick_action;
     /* The live bindings. Loaded once at startup and edited in place; a
        rejected change (duplicate, or a failed write) leaves this untouched,
        so the row keeps showing what is actually stored. */

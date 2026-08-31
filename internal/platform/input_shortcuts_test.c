@@ -161,28 +161,6 @@ int main(void) {
     /* NULL report arrays are allowed. */
     assert(resolve3("l1", "l1", NULL, &s, NULL, NULL) == 1);
 
-    /* Cycling: Left/Right reaches every state and wraps at both ends. */
-    jw_input_shortcut_button cur = JW_INPUT_SHORTCUT_BUTTON_NONE;
-    for (int i = 0; i < JW_INPUT_SHORTCUT_BUTTON_COUNT; i++) {
-        assert(cur == (jw_input_shortcut_button)i);
-        cur = jw_input_shortcuts_cycle(cur, +1);
-    }
-    assert(cur == JW_INPUT_SHORTCUT_BUTTON_NONE); /* wrapped all the way round */
-    assert(jw_input_shortcuts_cycle(JW_INPUT_SHORTCUT_BUTTON_NONE, -1) ==
-           (jw_input_shortcut_button)(JW_INPUT_SHORTCUT_BUTTON_COUNT - 1));
-    assert(jw_input_shortcuts_cycle(JW_INPUT_SHORTCUT_BUTTON_L1, -1) ==
-           JW_INPUT_SHORTCUT_BUTTON_Y);
-    /* Only the sign of dir matters. */
-    assert(jw_input_shortcuts_cycle(JW_INPUT_SHORTCUT_BUTTON_A, +7) ==
-           jw_input_shortcuts_cycle(JW_INPUT_SHORTCUT_BUTTON_A, +1));
-    assert(jw_input_shortcuts_cycle(JW_INPUT_SHORTCUT_BUTTON_A, -7) ==
-           jw_input_shortcuts_cycle(JW_INPUT_SHORTCUT_BUTTON_A, -1));
-    /* Out of range does not run off the table. */
-    assert(jw_input_shortcuts_cycle(JW_INPUT_SHORTCUT_BUTTON_COUNT, +1) ==
-           (jw_input_shortcut_button)0);
-    assert(jw_input_shortcuts_cycle((jw_input_shortcut_button)-1, -1) ==
-           (jw_input_shortcut_button)0);
-
     /* Button lookup: the dispatch path's only question. */
     jw_input_shortcuts_defaults(&s);
     jw_input_shortcut_action action;

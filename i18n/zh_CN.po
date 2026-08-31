@@ -1510,3 +1510,20 @@ msgstr "无法保存"
 #, fuzzy
 msgid "Hold Menu, then press the button.   X: Disable"
 msgstr "按住 Menu，再按对应按键。   X：禁用"
+
+# Shown when the binding persisted but the daemon push failed.
+# Marked fuzzy: suggested, not reviewed.
+#, fuzzy
+msgid "Saved; active after restart"
+msgstr "已保存；重启后生效"
+
+# Shortcut picker. Marked fuzzy: suggested, not reviewed.
+# Follows the file's own entries: "Choose" -> 选择, "Back" -> 返回.
+#, fuzzy
+msgid "A: Choose   B: Back"
+msgstr "A：选择   B：返回"
+
+# Header fallback when the action name is unavailable; "Shortcut" alone.
+#, fuzzy
+msgid "Shortcut"
+msgstr "快捷键"

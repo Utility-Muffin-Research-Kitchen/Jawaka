@@ -105,15 +105,6 @@ int jw_input_shortcuts_resolve(const char *const *values,
                                jw_input_shortcuts *out,
                                bool *invalid, bool *duplicate);
 
-/* Step one place through the button list, wrapping at both ends. Disabled is
-   part of the cycle, so Left/Right alone can reach every state without the
-   caller special-casing it. `dir` is any non-zero step; its sign is what
-   matters. Lives here rather than in Settings because the wrap arithmetic is
-   over this enum and is worth a test that does not need a UI build.
-   Out-of-range input yields the first button. */
-jw_input_shortcut_button jw_input_shortcuts_cycle(jw_input_shortcut_button cur,
-                                                  int dir);
-
 /* Which action owns `button`, or false if none does. Disabled never matches,
    so several disabled actions do not collide with each other. */
 bool jw_input_shortcuts_action_for_button(const jw_input_shortcuts *shortcuts,

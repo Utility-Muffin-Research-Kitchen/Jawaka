@@ -9,7 +9,7 @@ CATASTROPHE_DIR ?= /workspace/Catastrophe
 MLP1_BUILD_PROFILE ?= release
 I18N_COVERAGE ?= 0
 
-.PHONY: all pakrat-smoke inhibit-smoke clean
+.PHONY: all pakrat-smoke inhibit-smoke chord-test clean
 
 all:
 	$(MAKE) -C "$(JAWAKA_DIR)" \
@@ -40,6 +40,16 @@ inhibit-smoke:
 		I18N_COVERAGE="$(I18N_COVERAGE)" \
 		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
 		jawaka-inhibitctl jawaka-platformctl
+
+chord-test:
+	$(MAKE) -C "$(JAWAKA_DIR)" \
+		BUILD="$(BUILD)" \
+		CSTD="-std=gnu11" \
+		PLATFORM=mlp1 \
+		MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		I18N_COVERAGE="$(I18N_COVERAGE)" \
+		CATASTROPHE_DIR="$(CATASTROPHE_DIR)" \
+		jawaka-input-proxy-chord-test
 
 clean:
 	$(MAKE) -C "$(JAWAKA_DIR)" BUILD="$(BUILD)" clean

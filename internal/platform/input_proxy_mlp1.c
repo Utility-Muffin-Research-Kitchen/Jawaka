@@ -48,13 +48,12 @@ typedef struct {
     bool menu_held;
     bool menu_forwarded;
     bool chord_active;
-    bool select_chord_consumed;   /* a Menu+Select chord ate the Select press;
-                                     swallow its matching release too */
-    bool screenshot_chord_consumed; /* a Menu+L1 screenshot chord ate the L1 press;
-                                       swallow its matching release too */
-    bool record_chord_consumed;   /* a Menu+R1 record chord ate the R1 press;
-                                     swallow its release too so R1 does not
-                                     stick down in the game */
+    /* Codes a claimed Menu chord ate the press of. Every later event for a
+       marked code is swallowed until its release, which clears the bit.
+       A bitset rather than one remembered code: several chord buttons can be
+       held at once, and a per-button boolean would have to be added for every
+       button the user can now bind. */
+    unsigned char chord_consumed_keys[(KEY_MAX + 8) / 8];
     bool deferred_menu_release;
     uint64_t deferred_menu_release_at_ms;
     /* Action buttons forwarded as part of the current Menu chord, and the
@@ -431,6 +430,31 @@ static void jw__forward_stick_abs(jw_mlp1_input_proxy_data *data,
     jw__forward_event(data, ev);
 }
 
+/* The one place symbolic shortcut buttons meet Linux codes. Settings and the
+   database deal only in the symbols; this table is why neither has to include
+   <linux/input.h>, and why an evdev code renumbering could not silently change
+   which action a stored binding means.
+
+   Note BTN_TL2/BTN_TR2: this pad reports its triggers as ordinary keys, even
+   though RetroArch's autoconfig maps them to SDL axes 4 and 5. The chord layer
+   sees the key, so L2 and R2 are bindable here regardless. */
+static jw_input_shortcut_button jw__shortcut_button_for_code(uint16_t code) {
+    switch (code) {
+        case BTN_EAST:   return JW_INPUT_SHORTCUT_BUTTON_A;
+        case BTN_SOUTH:  return JW_INPUT_SHORTCUT_BUTTON_B;
+        case BTN_NORTH:  return JW_INPUT_SHORTCUT_BUTTON_X;
+        case BTN_WEST:   return JW_INPUT_SHORTCUT_BUTTON_Y;
+        case BTN_TL:     return JW_INPUT_SHORTCUT_BUTTON_L1;
+        case BTN_TR:     return JW_INPUT_SHORTCUT_BUTTON_R1;
+        case BTN_TL2:    return JW_INPUT_SHORTCUT_BUTTON_L2;
+        case BTN_TR2:    return JW_INPUT_SHORTCUT_BUTTON_R2;
+        case BTN_SELECT: return JW_INPUT_SHORTCUT_BUTTON_SELECT;
+        case BTN_START:  return JW_INPUT_SHORTCUT_BUTTON_START;
+        case BTN_THUMBL: return JW_INPUT_SHORTCUT_BUTTON_L3;
+        default:         return JW_INPUT_SHORTCUT_BUTTON_NONE;
+    }
+}
+
 static void jw__flush_menu_press(jw_mlp1_input_proxy_data *data) {
     if (!data->menu_held || data->menu_forwarded || data->chord_active) {
         return;
@@ -553,87 +577,45 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
         }
     }
 
-    /* Menu + Select: open the in-game switcher. Mirrors Menu + Volume — the
-       chord is consumed by jawakad and neither Menu nor Select reaches the
-       running game. */
-    if (ev->code == BTN_SELECT) {
-        /* Swallow the release that pairs with a consumed chord press. */
-        if (ev->value == 0 && data->select_chord_consumed) {
-            data->select_chord_consumed = false;
-            return;
-        }
-        if (ev->value > 0 && data->menu_held && !data->menu_forwarded) {
-            bool handled = proxy->game_switcher &&
-                           proxy->game_switcher(proxy->userdata);
-            if (handled) {
-                data->chord_active = true;          /* suppress the Menu tap */
-                data->select_chord_consumed = true; /* suppress Select release */
-                return; /* keep the deferred Menu unflushed; drop Select press */
-            }
-            /* Not handled: fall through so the deferred Menu flushes and Select
-               forwards as an ordinary Menu+key chord. */
-        }
-    }
-
-    /* Menu + L1: take a screenshot. Mirrors Menu + Select — jawakad consumes the
-       chord and neither Menu nor L1 reaches the running game. If the callback
-       declines (feature disabled), fall through so L1 forwards normally. */
-    if (ev->code == BTN_TL) {
-        /* Once the chord has eaten the press, eat EVERYTHING for this code until
-           the release. Only swallowing value==0 was not enough: holding L1 past the
-           autorepeat delay emits value==2, which matched neither guard, fell to the
-           bottom of this function and was forwarded -- and jw__forward_event sets
-           held_keys for any value > 0. The real release was then swallowed here, so
-           the game saw L1 held down forever. */
-        if (data->screenshot_chord_consumed) {
+    /* Menu + a bindable button: the user's configured Leaf action.
+       jawakad resolves the symbol against its cached snapshot and returns
+       whether it claimed the chord; this layer only recognizes and consumes.
+       Nothing here knows which action a button means. */
+    jw_input_shortcut_button chord_button = jw__shortcut_button_for_code(ev->code);
+    if (chord_button != JW_INPUT_SHORTCUT_BUTTON_NONE) {
+        /* Once a chord has eaten the press, eat EVERYTHING for that code until
+           the release. Swallowing only value==0 was not enough: a held button
+           emits value==2 repeats, which matched neither guard, fell through to
+           the forward at the bottom -- and jw__forward_event sets held_keys for
+           any value > 0. The real release was then swallowed here, so the game
+           saw the button go down and never come up. This device does not appear
+           to emit repeats at all, but the guard costs nothing and an external
+           pad may; the proxy test drives synthetic repeats through this path. */
+        if (jw__bit_is_set(data->chord_consumed_keys, ev->code)) {
             if (ev->value == 0) {
-                data->screenshot_chord_consumed = false;
+                jw__bit_clear(data->chord_consumed_keys, ev->code);
             }
             return;
         }
-        /* value==1 only: consuming an autorepeat would leave the earlier real press
-           forwarded-down and then swallow its release, the same stuck key by the
-           other route. */
-        if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
-            bool handled = proxy->screenshot &&
-                           proxy->screenshot(proxy->userdata);
+        /* value==1 only. Claiming a repeat would leave the earlier real press
+           forwarded-down and then swallow its release: the same stuck key by
+           the other route. The pre-refactor Select block dispatched on
+           value > 0 and could re-open the switcher on a repeat; unifying on
+           the L1/R1 rule fixes that latent difference. */
+        /* uinput_fd < 0 is watch-only: nothing is grabbed, so a "consumed"
+           chord would reach the emulator anyway. Enforced here rather than
+           left to the caller not to assign the hook. */
+        if (ev->value == 1 && data->menu_held && !data->menu_forwarded &&
+            data->uinput_fd >= 0) {
+            bool handled = proxy->shortcut &&
+                           proxy->shortcut(proxy->userdata, chord_button);
             if (handled) {
-                data->chord_active = true;             /* suppress the Menu tap */
-                data->screenshot_chord_consumed = true; /* suppress L1 release */
-                return;                                 /* drop the L1 press */
+                data->chord_active = true;   /* suppress the Menu tap */
+                jw__bit_set(data->chord_consumed_keys, ev->code);
+                return; /* keep the deferred Menu unflushed; drop the press */
             }
-            /* Not handled: fall through so the deferred Menu flushes and L1
-               forwards as an ordinary Menu+key chord. */
-        }
-    }
-
-    /* Menu + R1: start or stop a recording. Same shape as Menu + L1 above --
-       jawakad consumes the chord so neither Menu nor R1 reaches the game. This
-       lives here rather than as a RetroArch hotkey because RetroArch's hotkeys
-       need a pad modifier held, and it stops blocking that modifier from the
-       core after input_hotkey_block_delay frames, so Select reaches the game and
-       presses buttons in it. */
-    if (ev->code == BTN_TR) {
-        /* Swallow every event for this code until the release -- see the L1 block
-           above. R1 is run or aim in most cores, so a stuck one is worse there. */
-        if (data->record_chord_consumed) {
-            if (ev->value == 0) {
-                data->record_chord_consumed = false;
-            }
-            return;
-        }
-        /* value==1 only: consuming an autorepeat would leave the earlier real press
-           forwarded-down, sticking R1 by the other route. */
-        if (ev->value == 1 && data->menu_held && !data->menu_forwarded) {
-            bool handled = proxy->record &&
-                           proxy->record(proxy->userdata);
-            if (handled) {
-                data->chord_active = true;          /* suppress the Menu tap */
-                data->record_chord_consumed = true; /* suppress R1 release */
-                return;                             /* drop the R1 press */
-            }
-            /* Not handled: fall through so the deferred Menu flushes and R1
-               forwards as an ordinary Menu+key chord. */
+            /* Declined: fall through so the deferred Menu flushes and the
+               button forwards as an ordinary Menu chord for RetroArch. */
         }
     }
 
@@ -897,7 +879,6 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
                                      jw_input_brightness_delta_cb brightness_delta,
                                      jw_input_volume_delta_cb volume_delta,
                                      jw_input_menu_tap_cb menu_tap,
-                                     jw_input_game_switcher_cb game_switcher,
                                      void *userdata,
                                      bool watch_only) {
     if (!proxy) {
@@ -907,7 +888,6 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
     proxy->brightness_delta = brightness_delta;
     proxy->volume_delta = volume_delta;
     proxy->menu_tap = menu_tap;
-    proxy->game_switcher = game_switcher;
     proxy->userdata = userdata;
 
     const char *enabled = getenv("JAWAKA_INPUT_PROXY");
@@ -1012,10 +992,9 @@ int jw_input_proxy_init(jw_input_proxy *proxy,
                         jw_input_brightness_delta_cb brightness_delta,
                         jw_input_volume_delta_cb volume_delta,
                         jw_input_menu_tap_cb menu_tap,
-                        jw_input_game_switcher_cb game_switcher,
                         void *userdata) {
     return jw__input_proxy_init_impl(proxy, brightness_delta, volume_delta,
-                                     menu_tap, game_switcher, userdata, false);
+                                     menu_tap, userdata, false);
 }
 
 /* Watch-only variant for standalone emulator sessions: the emulator reads the
@@ -1027,10 +1006,9 @@ int jw_input_proxy_init_watch(jw_input_proxy *proxy,
                               jw_input_brightness_delta_cb brightness_delta,
                               jw_input_volume_delta_cb volume_delta,
                               jw_input_menu_tap_cb menu_tap,
-                              jw_input_game_switcher_cb game_switcher,
                               void *userdata) {
     return jw__input_proxy_init_impl(proxy, brightness_delta, volume_delta,
-                                     menu_tap, game_switcher, userdata, true);
+                                     menu_tap, userdata, true);
 }
 
 int jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy) {
@@ -1213,9 +1191,7 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
         data->menu_held                  = false;
         data->menu_forwarded             = false;
         data->chord_active               = false;
-        data->select_chord_consumed      = false;
-        data->screenshot_chord_consumed  = false;
-        data->record_chord_consumed      = false;
+        memset(data->chord_consumed_keys, 0, sizeof(data->chord_consumed_keys));
     }
     data->swallow = swallow;
 }
