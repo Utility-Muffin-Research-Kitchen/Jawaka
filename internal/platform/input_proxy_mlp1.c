@@ -467,6 +467,8 @@ static void jw__flush_menu_press(jw_mlp1_input_proxy_data *data) {
 /* Emit the virtual Menu-up a forwarded chord was holding back, once the last
    action button it forwarded is up. Forced from the reset paths, where the
    releases being waited on are never going to arrive. */
+static void jw__reset_chord_state(jw_input_proxy *proxy);
+
 static void jw__release_pending_menu_up(jw_mlp1_input_proxy_data *data,
                                         bool force) {
     if (!data->menu_up_pending) {
@@ -1165,33 +1167,11 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
        off nothing is mid-gesture, and everything here is "waiting for a release
        that is no longer coming". */
     if (swallow && !data->swallow) {
-        /* Forced: the un-forced form waits out the hold timer, and that timer is
-           driven by a loop that is about to stop delivering events. An unreleased
-           BTN_MODE would read as Menu held down for as long as the screen is off. */
-        jw__release_deferred_menu_tap(data, true);
-        /* The deferred tap is only ONE of the two ways BTN_MODE can be down. A
-           Menu+key chord that fell through to an ordinary press flushes it via
-           jw__flush_menu_press, which writes through jw__write_event -- and that,
-           unlike jw__forward_event, sets no held_keys bit. So the release_buttons
-           call both callers make immediately before this cannot release it, and
-           menu_forwarded is the only remaining record that it is down. Clearing
-           that flag without emitting the release stranded BTN_MODE latched at 1
-           with nothing left that knew: the kernel then swallowed the next tap's
-           press as a duplicate and the app saw a bare release. */
-        if (data->menu_forwarded) {
-            jw__write_event(data, EV_KEY, BTN_MODE, 0);
-            jw__emit_syn(data);
-            data->menu_up_pending = false;
-        }
-        /* Third way BTN_MODE can be down: a chord whose physical Menu was
-           already released is holding the virtual one until its action buttons
-           come up. Those releases die with the screen, so let it go now. */
-        jw__release_pending_menu_up(data, true);
-        memset(data->chord_forwarded_keys, 0, sizeof(data->chord_forwarded_keys));
-        data->menu_held                  = false;
-        data->menu_forwarded             = false;
-        data->chord_active               = false;
-        memset(data->chord_consumed_keys, 0, sizeof(data->chord_consumed_keys));
+        /* Entering screen-off drops every event on the floor, including the
+           releases the chord machine is waiting on. Nothing is mid-gesture
+           with the screen off, so put the machine back to rest rather than
+           leaving it waiting for releases that are no longer coming. */
+        jw__reset_chord_state(proxy);
     }
     data->swallow = swallow;
 }
@@ -1260,6 +1240,50 @@ bool jw_input_proxy_take_power_edge(jw_input_proxy *proxy, jw_power_edge *edge) 
     return true;
 }
 
+/* Put the chord state machine back to rest and let go of anything the virtual
+ * pad is still holding.
+ *
+ * flush, screen-off and shutdown all discard events the machine is waiting on
+ * -- specifically the releases that clear a consumed chord and free a deferred
+ * Menu-up. Left set, a consumed bit outlives the press it belongs to and eats
+ * that button's next real press; a flushed-but-unreleased Menu strands the
+ * virtual modifier down with nothing left that knows.
+ *
+ * Idempotent. Every release is guarded by the state that records it, so a
+ * caller that already called jw_input_proxy_release_buttons() does not emit a
+ * second set of releases. */
+static void jw__reset_chord_state(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->backend_data) {
+        return;
+    }
+    jw_mlp1_input_proxy_data *data =
+        (jw_mlp1_input_proxy_data *)proxy->backend_data;
+
+    /* Forwarded buttons and axes, plus any deferred Menu-up they were holding
+       back. No-op in watch-only mode, where nothing was forwarded. */
+    jw_input_proxy_release_buttons(proxy);
+
+    /* Forced: the un-forced form waits out a hold timer driven by a loop that
+       may not run again. */
+    jw__release_deferred_menu_tap(data, true);
+
+    /* The remaining way BTN_MODE can be down: flushed by a chord that fell
+       through to an ordinary press. That goes out through jw__write_event, so
+       held_keys carries no bit for it and release_buttons cannot free it. */
+    if (data->menu_forwarded) {
+        jw__write_event(data, EV_KEY, BTN_MODE, 0);
+        jw__emit_syn(data);
+        data->menu_up_pending = false;
+    }
+    jw__release_pending_menu_up(data, true);
+
+    memset(data->chord_consumed_keys, 0, sizeof(data->chord_consumed_keys));
+    memset(data->chord_forwarded_keys, 0, sizeof(data->chord_forwarded_keys));
+    data->menu_held      = false;
+    data->menu_forwarded = false;
+    data->chord_active   = false;
+}
+
 void jw_input_proxy_flush(jw_input_proxy *proxy) {
     if (!proxy || !proxy->enabled || !proxy->backend_data) {
         return;
@@ -1278,6 +1302,11 @@ void jw_input_proxy_flush(jw_input_proxy *proxy) {
         }
     }
     data->power_edge_count = 0;   /* drop already-queued edges too */
+
+    /* The drain above just discarded whatever releases were queued, which
+       includes the ones that would clear a consumed chord and free a deferred
+       Menu-up. Reset for the same reason screen-off does. */
+    jw__reset_chord_state(proxy);
 }
 
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
@@ -1287,8 +1316,7 @@ void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
 
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
     jw__ff_thread_stop(data);
-    jw__release_deferred_menu_tap(data, true);
-    jw__release_pending_menu_up(data, true);
+    jw__reset_chord_state(proxy);
 
     if (data->input_fd >= 0) {
         ioctl(data->input_fd, EVIOCGRAB, 0);

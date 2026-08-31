@@ -286,10 +286,18 @@ int main(void) {
     jw_input_proxy_set_swallow(&g_proxy, true);
     n = drain(got, 16);
     {
-        const emitted want[] = {{BTN_MODE, 0}};
-        expect_seq("screen-off releases the pending Menu", got, n, want, 1);
+        /* The reset frees the still-held action first, then the modifier --
+           the same ordering the deferred Menu-up exists to guarantee. jawakad
+           calls jw_input_proxy_release_buttons() just before this, so in the
+           real caller the action is already up and only the modifier release
+           is emitted; the reset being idempotent is what makes both correct. */
+        const emitted want[] = {{BTN_NORTH, 0}, {BTN_MODE, 0}};
+        expect_seq("screen-off releases the action then the pending Menu",
+                   got, n, want, 2);
     }
     expect("no pending Menu after screen-off", !g_data.menu_up_pending);
+    expect("no key held after screen-off",
+           !jw__bits_any(g_data.held_keys, sizeof(g_data.held_keys)));
 
     /* A bare press with no Menu held is never a chord. */
     reset_proxy(false);
@@ -302,6 +310,64 @@ int main(void) {
         const emitted want[] = {{BTN_SELECT, 1}, {BTN_SELECT, 0}};
         expect_seq("bare press forwards unchanged", got, n, want, 2);
     }
+
+    /* --- flush mid-chord -------------------------------------------------
+       jw_input_proxy_flush() discards queued physical events, including the
+       releases the chord machine is waiting on. If it left state behind, the
+       consumed bit would outlive its press and eat that button's NEXT real
+       press, and a flushed Menu would stay latched down. */
+
+    /* Handled chord flushed before its physical release. */
+    reset_proxy(false);
+    g_claim[JW_INPUT_SHORTCUT_BUTTON_SELECT] = true;
+    feed(BTN_MODE, 1);
+    feed(BTN_SELECT, 1);          /* claimed; consumed bit set, release pending */
+    (void)drain(got, 16);
+    jw_input_proxy_flush(&g_proxy);
+    expect("flush clears the consumed bitset",
+           !jw__bits_any(g_data.chord_consumed_keys,
+                         sizeof(g_data.chord_consumed_keys)));
+    expect("flush clears menu_held", !g_data.menu_held);
+    expect("flush clears chord_active", !g_data.chord_active);
+    (void)drain(got, 16);
+    /* The next ordinary press must reach the game: not swallowed as though it
+       were still the old chord's release. */
+    g_claim[JW_INPUT_SHORTCUT_BUTTON_SELECT] = false;
+    feed(BTN_SELECT, 1);
+    feed(BTN_SELECT, 0);
+    n = drain(got, 16);
+    {
+        const emitted want[] = {{BTN_SELECT, 1}, {BTN_SELECT, 0}};
+        expect_seq("press after flush is forwarded, not swallowed", got, n, want, 2);
+    }
+
+    /* Forwarded chord flushed while Menu and the action are both held. The
+       virtual modifier must not be left down with no release coming. */
+    reset_proxy(false);
+    feed(BTN_MODE, 1);
+    feed(BTN_NORTH, 1);           /* declined: Menu-down + action-down forwarded */
+    (void)drain(got, 16);
+    jw_input_proxy_flush(&g_proxy);
+    n = drain(got, 16);
+    {
+        /* release_buttons frees the forwarded action, then the modifier. */
+        const emitted want[] = {{BTN_NORTH, 0}, {BTN_MODE, 0}};
+        expect_seq("flush releases the action then the modifier", got, n, want, 2);
+    }
+    expect("flush clears menu_forwarded", !g_data.menu_forwarded);
+    expect("flush leaves no pending Menu-up", !g_data.menu_up_pending);
+    expect("flush clears the forwarded bitset",
+           !jw__bits_any(g_data.chord_forwarded_keys,
+                         sizeof(g_data.chord_forwarded_keys)));
+    expect("flush leaves no key held", !jw__bits_any(g_data.held_keys,
+                                                     sizeof(g_data.held_keys)));
+
+    /* Flushing at rest emits nothing: the reset is idempotent, so a caller
+       that already released buttons does not get a second set. */
+    reset_proxy(false);
+    jw_input_proxy_flush(&g_proxy);
+    n = drain(got, 16);
+    expect("flush at rest emits nothing", n == 0);
 
     /* Watch-only never dispatches: nothing is grabbed, so a claimed chord
        would reach the emulator anyway. */
