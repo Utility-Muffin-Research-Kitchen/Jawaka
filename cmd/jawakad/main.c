@@ -277,11 +277,11 @@ typedef struct {
     char    child_input_ns_dir[PATH_MAX];
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
     uint64_t last_record_toggle_ms; /* debounce for the Menu+R1 record hotkey */
-    /* Capture opt-ins, refreshed only by jw__tick_feature_flags() on the main
-       loop. The input callback reads these and never the database. */
+    /* Capture opt-ins. Loaded once at startup and replaced by the Settings IPC
+       push, exactly like the bindings beside them -- never polled. The input
+       callback reads these and never the database. */
     bool     screenshots_enabled_cached;
     bool     recording_enabled_cached;
-    uint64_t feature_flags_checked_ms;   /* when both were last read */
     /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
        input tick, so avoid a sqlite open per event). */
     bool     rumble_enabled_cached;
@@ -7439,7 +7439,6 @@ static bool jw__input_game_switcher(void *userdata) {
 #define JW_SS_SCANOUT_H   960
 #define JW_SS_THROTTLE_MS 1000
 #define JW_RECORD_THROTTLE_MS 250 /* a toggle needs bounce protection, not a full second */
-#define JW_SS_ENABLE_TTL_MS 2000  /* re-read the opt-in flag from the DB at most this often */
 #define JW_SS_PRE_MAX     64      /* max pre-existing PNGs tracked for the in-game diff */
 
 typedef struct {
@@ -7832,10 +7831,10 @@ static bool jw__on_screenshot_hotkey(void *userdata) {
 
     uint64_t now = jw__screenshot_now_ms();
 
-    /* Opt-in gate, read from memory only. jw__tick_feature_flags() refreshes it
-       on the main loop; this function runs from the input callback, where a
-       database open would put SQLite's connect/schema/busy-timeout cost on the
-       same thread that drains evdev. */
+    /* Opt-in gate, read from memory only. Loaded at startup and replaced by
+       the Settings IPC push; this function runs from the input callback, where
+       a database open would put SQLite's connect/schema/busy-timeout cost on
+       the same thread that drains evdev. */
     if (!state->screenshots_enabled_cached) {
         return false;   /* decline so Menu+L1 forwards to the app */
     }
@@ -7914,23 +7913,42 @@ static bool jw__on_shortcut_chord(void *userdata,
    shortcuts. Malformed and duplicate values are resolved fail-closed by the
    shared model and logged individually, so a hand-edited database says which
    key was wrong rather than silently doing nothing. */
+/* Everything the chord path needs, in one database open at startup: the three
+   bindings and the two capture opt-ins that gate them.
+   The opt-ins used to be refreshed lazily from the handlers, and then from a
+   periodic tick -- both put SQLite on, or on the same loop as, the thread that
+   drains evdev. They follow the bindings instead: read once here, replaced by
+   the Settings IPC push, never polled. */
+#define JW_SHORTCUT_SETTING_COUNT (JW_INPUT_SHORTCUT_ACTION_COUNT + 2)
+
 static void jw__load_shortcuts(jw_daemon_state *state) {
     if (!state || !state->db_path[0]) {
         return;
     }
-    char values[JW_INPUT_SHORTCUT_ACTION_COUNT][32];
-    jw_db_setting_query q[JW_INPUT_SHORTCUT_ACTION_COUNT];
-    for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+    char values[JW_SHORTCUT_SETTING_COUNT][32];
+    jw_db_setting_query q[JW_SHORTCUT_SETTING_COUNT];
+    for (int i = 0; i < JW_SHORTCUT_SETTING_COUNT; i++) {
         values[i][0] = '\0';
-        q[i].key = jw_input_shortcut_action_key((jw_input_shortcut_action)i);
         q[i].out = values[i];
         q[i].out_size = sizeof(values[i]);
         q[i].found = 0;
     }
-    if (jw_db_get_settings(state->db_path, q, JW_INPUT_SHORTCUT_ACTION_COUNT) != 0) {
+    for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+        q[i].key = jw_input_shortcut_action_key((jw_input_shortcut_action)i);
+    }
+    q[JW_INPUT_SHORTCUT_ACTION_COUNT].key = "screenshots_enabled";
+    q[JW_INPUT_SHORTCUT_ACTION_COUNT + 1].key = "recording_enabled";
+
+    if (jw_db_get_settings(state->db_path, q, JW_SHORTCUT_SETTING_COUNT) != 0) {
         jw_log_warn("input shortcuts: settings read failed; keeping defaults");
         return;
     }
+
+    /* Both opt-ins default off, so an absent key reads as off. */
+    state->screenshots_enabled_cached =
+        strcmp(values[JW_INPUT_SHORTCUT_ACTION_COUNT], "1") == 0;
+    state->recording_enabled_cached =
+        strcmp(values[JW_INPUT_SHORTCUT_ACTION_COUNT + 1], "1") == 0;
 
     const char *raw[JW_INPUT_SHORTCUT_ACTION_COUNT];
     for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
@@ -7962,39 +7980,20 @@ static void jw__load_shortcuts(jw_daemon_state *state) {
         }
     }
     state->shortcuts = loaded;
-}
 
-/* Refresh the cached capture opt-ins from the settings table.
- *
- * Called from the main loop and once at startup -- never from the input
- * callback. Both flags used to be refreshed lazily inside their hotkey
- * handlers, which meant a chord arriving after the TTL expired paid for a
- * database open on the thread draining evdev. The plan requires no SQLite
- * helper be reachable from shortcut dispatch, and a lazy refresh inside the
- * handler is exactly such a path.
- *
- * The TTL is unchanged, so a toggle still takes effect within
- * JW_SS_ENABLE_TTL_MS; it is now spent on a loop iteration instead of on a
- * button press. */
-static void jw__tick_feature_flags(jw_daemon_state *state) {
-    if (!state || !state->db_path[0]) {
-        return;
-    }
-    uint64_t now = jw__screenshot_now_ms();
-    if (state->feature_flags_checked_ms != 0 &&
-        now - state->feature_flags_checked_ms < JW_SS_ENABLE_TTL_MS) {
-        return;
-    }
-    state->feature_flags_checked_ms = now;
-
-    char en[8] = "";
-    state->screenshots_enabled_cached =
-        (jw_db_get_setting(state->db_path, "screenshots_enabled",
-                           en, sizeof(en)) == 0 && strcmp(en, "1") == 0);
-    en[0] = '\0';
-    state->recording_enabled_cached =
-        (jw_db_get_setting(state->db_path, "recording_enabled",
-                           en, sizeof(en)) == 0 && strcmp(en, "1") == 0);
+    /* One line stating what the input path will actually act on. The warnings
+       above only fire when something was rejected, so without this a support
+       log cannot distinguish "loaded the defaults" from "never ran". */
+    jw_log_info("input shortcuts: switcher=%s screenshot=%s recording=%s "
+                "screenshots_enabled=%d recording_enabled=%d",
+                jw_input_shortcut_button_name(
+                    loaded.buttons[JW_INPUT_SHORTCUT_GAME_SWITCHER]),
+                jw_input_shortcut_button_name(
+                    loaded.buttons[JW_INPUT_SHORTCUT_SCREENSHOT]),
+                jw_input_shortcut_button_name(
+                    loaded.buttons[JW_INPUT_SHORTCUT_RECORDING]),
+                state->screenshots_enabled_cached ? 1 : 0,
+                state->recording_enabled_cached ? 1 : 0);
 }
 
 static void jw__start_input_proxy(jw_daemon_state *state) {
@@ -11297,13 +11296,18 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
                  jw_input_shortcut_button_parse(item->valuestring,
                                                 &next.buttons[i]);
         }
+        cJSON *shots = cJSON_GetObjectItemCaseSensitive(root, "screenshots_enabled");
+        cJSON *rec = cJSON_GetObjectItemCaseSensitive(root, "recording_enabled");
+        ok = ok && cJSON_IsBool(shots) && cJSON_IsBool(rec);
         if (!ok || !jw_input_shortcuts_valid(&next)) {
             cJSON_Delete(root);
             jw_log_warn("input shortcuts: rejected an invalid IPC snapshot; "
-                        "keeping the running bindings");
+                        "keeping the running state");
             return jw__reply_error(client, "invalid input shortcuts");
         }
         state->shortcuts = next;   /* one assignment: never partly applied */
+        state->screenshots_enabled_cached = cJSON_IsTrue(shots);
+        state->recording_enabled_cached = cJSON_IsTrue(rec);
         cJSON_Delete(root);
         return jw__reply_ok(client, "set-input-shortcuts", NULL);
     }
@@ -13987,7 +13991,6 @@ int main(int argc, char *argv[]) {
        the bindings and the capture opt-ins are in memory before the first
        chord can arrive. */
     jw__load_shortcuts(&state);
-    jw__tick_feature_flags(&state);
     jw__start_input_proxy(&state);
     if (jw_external_input_monitor_init(&state.external_input,
                                        jw__input_menu_tap, &state) != 0) {
@@ -14163,7 +14166,6 @@ int main(int argc, char *argv[]) {
         }
         jw__tick_scan_job(&state);
         jw__tick_startup_maintenance(&state);
-        jw__tick_feature_flags(&state);
 
         /* SVC-1 service supervision: poll child exit, run the stop sequence,
            retry stale-generation leases, and fire backoff/autostart. */

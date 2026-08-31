@@ -4636,6 +4636,20 @@ static bool jw__shortcut_row_action(int row, jw_input_shortcut_action *out) {
     }
 }
 
+/* Hand the daemon the whole in-game shortcut state. Called after any row on
+   the page persists, because the daemon reads the bindings and both capture
+   opt-ins from memory on the input path -- if Settings does not push them, the
+   only other way in is a database poll, which is what this replaces.
+   Returns false when the daemon did not take it. */
+static bool jw__push_shortcuts(const jw_settings_ui *ui) {
+    if (!ui->socket_path[0]) {
+        return true;   /* no daemon to tell; startup will read the durable value */
+    }
+    return jw_ipc_set_input_shortcuts(ui->socket_path, &ui->shortcuts,
+                                      ui->screenshots_enabled,
+                                      ui->recording_enabled) == 0;
+}
+
 /* Take a new binding if nothing else holds that button and the write lands.
    On either failure the in-memory value is left alone, so the row keeps
    showing what is actually stored rather than a choice that did not stick. */
@@ -4677,16 +4691,12 @@ static void jw__apply_shortcut(jw_settings_ui *ui,
         status_buf[0] = '\0';
     }
 
-    /* Hand the daemon the whole snapshot so the next chord uses it. The
-       durable value is already written, so a failure here is not a rollback:
-       the binding is saved and simply is not live yet. Say so rather than
-       leaving the user to wonder why the chord they just set does nothing. */
-    if (ui->socket_path[0] &&
-        jw_ipc_set_input_shortcuts(ui->socket_path, &ui->shortcuts) != 0) {
-        if (status_buf && status_size > 0) {
-            snprintf(status_buf, status_size, "%s",
-                     T("Saved; active after restart"));
-        }
+    /* Hand the daemon the whole state so the next chord uses it. The durable
+       value is already written, so a failure here is not a rollback: the
+       binding is saved and simply is not live yet. Say so rather than leaving
+       the user to wonder why the chord they just set does nothing. */
+    if (!jw__push_shortcuts(ui) && status_buf && status_size > 0) {
+        snprintf(status_buf, status_size, "%s", T("Saved; active after restart"));
     }
 }
 #endif
@@ -7810,9 +7820,19 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 if (ui->shortcuts_list.cursor == JW_SHORTCUT_SCREENSHOTS) {
                     ui->screenshots_enabled = !ui->screenshots_enabled;
                     jw__persist_bool(ui, "screenshots_enabled", ui->screenshots_enabled);
+                    /* The daemon gates the chord on this and reads it from
+                       memory, so it has to be told. */
+                    if (!jw__push_shortcuts(ui) && status_buf && status_size > 0) {
+                        snprintf(status_buf, status_size, "%s",
+                                 T("Saved; active after restart"));
+                    }
                 } else if (ui->shortcuts_list.cursor == JW_SHORTCUT_RECORDING) {
                     ui->recording_enabled = !ui->recording_enabled;
                     jw__persist_bool(ui, "recording_enabled", ui->recording_enabled);
+                    if (!jw__push_shortcuts(ui) && status_buf && status_size > 0) {
+                        snprintf(status_buf, status_size, "%s",
+                                 T("Saved; active after restart"));
+                    }
                 } else if (ui->shortcuts_list.cursor == JW_SHORTCUT_REC_SPLIT) {
                     if (!ui->recording_enabled) break;
                     ui->recording_split = !ui->recording_split;

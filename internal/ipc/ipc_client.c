@@ -715,7 +715,9 @@ int jw_ipc_rumble_preview(const char *socket_path, int strength) {
 }
 
 int jw_ipc_set_input_shortcuts(const char *socket_path,
-                               const jw_input_shortcuts *shortcuts) {
+                               const jw_input_shortcuts *shortcuts,
+                               bool screenshots_enabled,
+                               bool recording_enabled) {
     if (!shortcuts || !jw_input_shortcuts_valid(shortcuts)) {
         return -1;
     }
@@ -730,6 +732,8 @@ int jw_ipc_set_input_shortcuts(const char *socket_path,
         }
         cJSON_AddItemToArray(buttons, cJSON_CreateString(name));
     }
+    cJSON_AddBoolToObject(req, "screenshots_enabled", screenshots_enabled);
+    cJSON_AddBoolToObject(req, "recording_enabled", recording_enabled);
 
     cJSON *resp = NULL;
     if (ipc__request(socket_path, req, &resp) != 0) {

@@ -9,6 +9,9 @@ name: Input shortcuts
 # It builds in both platform shapes, because the migration only compiles under
 # -DPLATFORM_MLP1 and the default host build would never reach it.
 #
+# shortcut-dispatch-check is a shallow direct-call guard over the dispatch
+# functions; it does not follow the call graph. See the script header.
+#
 # Not covered here: input-proxy-chord-test, which includes input_proxy_mlp1.c
 # and needs <linux/input.h> plus uinput, so it cross-builds and runs on a
 # device (`make mlp1-adb-chord-test`). There is no runner for that.
@@ -29,3 +32,4 @@ jobs:
       - run: make input-shortcuts-test
       - run: make retroarch-config-test
       - run: make shortcut-dispatch-check
+      - run: make shortcut-ipc-smoke
