@@ -77,6 +77,72 @@ int main(void) {
            jw_standalone_policy_uses_calibrated_virtual_input(
                "unrelated_core", "/sd/emulators/DraStic/launch.sh"),
            true);
+
+    expect("YabaSanshiro standalone identity",
+           jw_standalone_policy_is_yabasanshiro(
+               "yabasanshiro_standalone", NULL),
+           true);
+    expect("YabaSanshiro standalone path compatibility",
+           jw_standalone_policy_is_yabasanshiro(
+               "legacy_path_core",
+               "/sd/.system/leaf/platforms/mlp1/emulators/yabasanshiro/launch.sh"),
+           true);
+    expect("YabaSanshiro exact standalone identity",
+           jw_standalone_policy_is_yabasanshiro(
+               "yabasanshiro_standalone_preview", NULL),
+           false);
+    expect("YabaSanshiro exact package path",
+           jw_standalone_policy_is_yabasanshiro(
+               "legacy_path_core",
+               "/sd/emulators/yabasanshiro-preview/launch.sh"),
+           false);
+    expect("RetroArch YabaSanshiro is not standalone",
+           jw_standalone_policy_is_yabasanshiro(
+               "yabasanshiro", "/sd/cores/yabasanshiro_libretro.so"),
+           false);
+    expect("RetroArch YabaSanshiro keeps normal input",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "yabasanshiro", "/sd/cores/yabasanshiro_libretro.so"),
+           false);
+    expect("YabaSanshiro standalone calibrated input",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "yabasanshiro_standalone", NULL),
+           true);
+    expect("YabaSanshiro standalone path calibrated input",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "legacy_path_core",
+               "/sd/emulators/yabasanshiro/launch.sh"),
+           true);
+    expect("YabaSanshiro direct DRM remains metadata-driven",
+           jw_standalone_policy_requires_direct_drm(
+               "yabasanshiro_standalone",
+               "/sd/emulators/yabasanshiro/launch.sh", false),
+           false);
+    expect("YabaSanshiro CHD supported",
+           jw_standalone_policy_supports_content(
+               "yabasanshiro_standalone", NULL,
+               "/sd/Roms/SATURN/Shining Force III.chd"),
+           true);
+    expect("YabaSanshiro ZIP rejected",
+           jw_standalone_policy_supports_content(
+               "yabasanshiro_standalone", NULL,
+               "/sd/Roms/SATURN/Rampage.ZIP"),
+           false);
+    expect("YabaSanshiro M3U rejected by package path",
+           jw_standalone_policy_supports_content(
+               "legacy_path_core", "/sd/emulators/yabasanshiro/launch.sh",
+               "Roms/SATURN/Enemy Zero.m3u"),
+           false);
+    expect("RetroArch YabaSanshiro keeps ZIP support",
+           jw_standalone_policy_supports_content(
+               "yabasanshiro", "/sd/cores/yabasanshiro_libretro.so",
+               "/sd/Roms/SATURN/Rampage.zip"),
+           true);
+    expect("Other standalone content unaffected",
+           jw_standalone_policy_supports_content(
+               "flycast_standalone", "/sd/emulators/flycast/launch.sh",
+               "/sd/Roms/DC/Game.zip"),
+           true);
     expect("missing identity calibrated input",
            jw_standalone_policy_uses_calibrated_virtual_input(NULL, NULL),
            false);

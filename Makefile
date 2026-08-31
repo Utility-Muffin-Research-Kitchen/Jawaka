@@ -411,6 +411,7 @@ UI_SRCS := \
 	internal/launcher/coverflow.c \
 	internal/launcher/focus_screen.c \
 	internal/launcher/game_switcher.c \
+	internal/launcher/standalone_policy.c \
 	internal/launcher/system_names.c \
 	internal/scrape/scrape_catalog.c \
 	internal/settings/appearance.c \

@@ -651,6 +651,16 @@ static bool jw__standalone_session_is_flycast(const jw_daemon_state *state) {
                                             session->core_path);
 }
 
+static bool jw__standalone_session_is_yabasanshiro(const jw_daemon_state *state) {
+    if (!jw__has_standalone_session(state)) {
+        return false;
+    }
+
+    const jw_retroarch_session *session = &state->retroarch_session;
+    return jw_standalone_policy_is_yabasanshiro(session->core_id,
+                                                 session->core_path);
+}
+
 static bool jw__standalone_target_is_mupen64plus(const jw_launch_target *target) {
     if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
         return false;
@@ -5865,8 +5875,11 @@ static const jw_ra_system *jw__catalog_find_launch_system(const jw_ra_catalog *c
 static bool jw__try_path_core(const jw_daemon_state *state,
                               const jw_ra_catalog *catalog,
                               const jw_ra_core *core,
+                              const char *rom_path,
                               jw_launch_target *target) {
-    if (!target || !jw__core_is_packaged_path(core)) {
+    if (!target || !jw__core_is_packaged_path(core) ||
+        !jw_standalone_policy_supports_content(
+            core->id, core->path, rom_path)) {
         return false;
     }
 
@@ -5927,7 +5940,7 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
 
     if (preferred[0] && jw__catalog_system_allows_core(ra_system, preferred)) {
         const jw_ra_core *core = jw_ra_catalog_find_core(catalog, preferred);
-        if (jw__try_path_core(state, catalog, core, target)) {
+        if (jw__try_path_core(state, catalog, core, rom_path, target)) {
             return true;
         }
         if (core && core->type && strcmp(core->type, "retroarch") == 0 &&
@@ -5937,13 +5950,13 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
     }
 
     const jw_ra_core *core = jw_ra_catalog_find_core(catalog, ra_system->default_core);
-    if (jw__try_path_core(state, catalog, core, target)) {
+    if (jw__try_path_core(state, catalog, core, rom_path, target)) {
         return true;
     }
 
     for (size_t i = 0; i < ra_system->alternate_cores.count; i++) {
         core = jw_ra_catalog_find_core(catalog, ra_system->alternate_cores.items[i]);
-        if (jw__try_path_core(state, catalog, core, target)) {
+        if (jw__try_path_core(state, catalog, core, rom_path, target)) {
             return true;
         }
     }
@@ -5989,9 +6002,9 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
 
         const jw_ra_core *core =
             jw_ra_catalog_find_core(catalog, requested_core_id);
-        if (!jw__try_path_core(state, catalog, core, target)) {
-            jw_log_warn("requested launch core is not an executable packaged path: core=%s",
-                        requested_core_id);
+        if (!jw__try_path_core(state, catalog, core, rom_path, target)) {
+            jw_log_warn("requested launch core is unavailable for content or is not an executable packaged path: core=%s rom=%s",
+                        requested_core_id, rom_path ? rom_path : "(none)");
             return -1;
         }
         return 0;
@@ -7334,8 +7347,9 @@ static bool jw__input_menu_tap(void *userdata) {
     }
 
     /* Standalone emulators own the display, so Jawaka's overlay menu cannot
-       appear above them. PPSSPP has a patched SIGUSR2 pause-menu hook. DraStic
-       and Flycast have native menu bindings, so let Menu reach the emulator.
+       appear above them. PPSSPP has a patched SIGUSR2 pause-menu hook. DraStic,
+       Flycast, and YabaSanshiro have native menu bindings, so let Menu reach
+       the emulator.
        Standalone emulators without a menu hook keep Menu as the exit key. */
     if (jw__has_standalone_session(state)) {
         pid_t pid = state->retroarch_session.pid;
@@ -7361,6 +7375,11 @@ static bool jw__input_menu_tap(void *userdata) {
         if (jw__standalone_session_is_flycast(state)) {
             state->standalone_quit_request_ms = 0;
             jw_log_info("menu tap: forwarding to Flycast native menu pid=%d", (int)pid);
+            return false;
+        }
+        if (jw__standalone_session_is_yabasanshiro(state)) {
+            state->standalone_quit_request_ms = 0;
+            jw_log_info("menu tap: forwarding to YabaSanshiro native menu pid=%d", (int)pid);
             return false;
         }
 
