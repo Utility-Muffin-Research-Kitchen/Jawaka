@@ -4,6 +4,7 @@
 #include "internal/ipc/ipc.h"
 #include "internal/db/db.h"
 #include "internal/platform/device.h"
+#include "internal/platform/input_shortcuts.h"
 
 #include <stdbool.h>
 
@@ -217,6 +218,29 @@ int jw_ipc_rumble(const char *socket_path, const char *event);
 /* Live one-tick preview at an exact strength (0-100), for the settings slider.
  * Ignores the stored strength and the enabled gate. Returns 0/-1. */
 int jw_ipc_rumble_preview(const char *socket_path, int strength);
+
+/* Hand jawakad the complete in-game shortcut state after Settings has
+ * persisted it: the three bindings plus the two capture opt-ins that gate
+ * them.
+ *
+ * The whole state, not the one row that changed: the daemon replaces its copy
+ * in a single assignment, so there is no window in which two actions hold the
+ * same button or a binding is live without its feature flag. Buttons travel as
+ * their persisted names, so the wire and the settings table cannot disagree
+ * about what "l1" means.
+ *
+ * The opt-ins ride along because they are the other half of the same question
+ * -- whether a chord does anything -- and the daemon reads both from memory on
+ * the input path. Without this it would have to poll the database for them.
+ *
+ * Returns 0 when the daemon accepted it. A non-zero result means the running
+ * daemon still has the previous state -- the durable values are already
+ * written either way, so the caller should say the change takes effect after a
+ * daemon restart rather than rolling anything back. */
+int jw_ipc_set_input_shortcuts(const char *socket_path,
+                               const jw_input_shortcuts *shortcuts,
+                               bool screenshots_enabled,
+                               bool recording_enabled);
 
 /* Ask jawakad to launch a game through the daemon-owned RetroArch process.
  * rom_path may be absolute or relative to the SD-card root.

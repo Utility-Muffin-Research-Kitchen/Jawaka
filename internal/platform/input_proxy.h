@@ -1,6 +1,8 @@
 #ifndef JW_PLATFORM_INPUT_PROXY_H
 #define JW_PLATFORM_INPUT_PROXY_H
 
+#include "internal/platform/input_shortcuts.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -11,24 +13,29 @@
 typedef void (*jw_input_brightness_delta_cb)(void *userdata, int delta_percent);
 typedef void (*jw_input_volume_delta_cb)(void *userdata, int delta_percent);
 typedef bool (*jw_input_menu_tap_cb)(void *userdata);
-/* Menu + Select chord: open the in-game game switcher. Return true when the
-   chord was consumed (the proxy then swallows Select and the Menu tap); return
-   false to let the events forward normally. */
-typedef bool (*jw_input_game_switcher_cb)(void *userdata);
-/* Menu + L1 chord: take a screenshot. Same contract as the switcher — return
-   true when consumed (proxy swallows L1 + the Menu tap), false to forward the
-   events normally (e.g. the feature is disabled). Optional; leave NULL to skip.
-   Assign directly on the proxy struct after init; it is read on the next tick. */
-typedef bool (*jw_input_screenshot_cb)(void *userdata);
 
-/* Menu + R1 chord: start or stop a game recording. Same contract as the
-   screenshot hook -- return true to consume the chord, false to let R1 forward
-   to the game as normal (no RetroArch session, feature off). Deliberately a
-   Leaf-level chord rather than a RetroArch hotkey: RetroArch's own hotkeys need
-   a modifier held on the pad, and it only blocks that modifier from the core for
-   input_hotkey_block_delay frames, so Select leaks through to the game. Menu is
-   never a game input and jawakad consumes the whole chord. */
-typedef bool (*jw_input_record_cb)(void *userdata);
+/* A Menu chord whose second button is one the shortcut model can name.
+ *
+ * The proxy does not know which action a button means -- that mapping is the
+ * user's, lives in the settings database, and is resolved by jawakad against
+ * its cached snapshot. The proxy's job is only to recognize the chord, hand
+ * over the symbolic button, and act on the answer.
+ *
+ * Return true when the chord was consumed: the proxy then swallows the press,
+ * every repeat, and the matching release, and suppresses the Menu tap, so
+ * neither half of the chord reaches the running game. Return false to decline
+ * -- the feature is off, or the foreground cannot perform the action -- and
+ * the proxy flushes the deferred Menu-down and forwards the button as an
+ * ordinary Menu chord for RetroArch to interpret.
+ *
+ * These are Leaf-level chords rather than RetroArch hotkeys because RetroArch
+ * only withholds its modifier from the core after input_hotkey_block_delay
+ * frames; Menu is never a game input and jawakad consumes the whole chord.
+ *
+ * Optional; leave NULL to forward every chord. Assign directly on the proxy
+ * struct after init -- it is read on the next tick. */
+typedef bool (*jw_input_shortcut_dispatch_cb)(void *userdata,
+                                              jw_input_shortcut_button button);
 /* Force feedback played on the virtual gamepad. The pad advertises FF_RUMBLE, so
    any emulator that rumbles through SDL (or evdev directly) reaches the motor
    here instead of needing its own sysfs sink. `magnitude` is the effect's two
@@ -48,27 +55,30 @@ typedef struct {
     jw_input_brightness_delta_cb brightness_delta;
     jw_input_volume_delta_cb volume_delta;
     jw_input_menu_tap_cb menu_tap;
-    jw_input_game_switcher_cb game_switcher;
-    jw_input_screenshot_cb screenshot;
-    jw_input_record_cb record;
+    jw_input_shortcut_dispatch_cb shortcut;
     jw_input_rumble_cb rumble;
     void *userdata;
 } jw_input_proxy;
 
+/* Assign `shortcut` on the returned struct to receive Menu chords. */
 int  jw_input_proxy_init(jw_input_proxy *proxy,
                          jw_input_brightness_delta_cb brightness_delta,
                          jw_input_volume_delta_cb volume_delta,
                          jw_input_menu_tap_cb menu_tap,
-                         jw_input_game_switcher_cb game_switcher,
                          void *userdata);
 /* Watch-only: observe the physical pad for hotkeys (volume/brightness/Menu)
    without grabbing it or creating a virtual device, so a standalone emulator
-   reads the pad directly while jawakad keeps the hotkeys. */
+   reads the pad directly while jawakad keeps the hotkeys.
+ *
+ * Menu chords are NOT dispatched here, and `shortcut` is ignored: with nothing
+ * grabbed there is nothing to consume, so a claimed chord would reach the
+ * emulator anyway. The old build attached a fixed game-switcher hook to this
+ * path, but it could only ever decline -- watch-only means no RetroArch session
+ * -- so removing it changes no observable behavior. */
 int  jw_input_proxy_init_watch(jw_input_proxy *proxy,
                                jw_input_brightness_delta_cb brightness_delta,
                                jw_input_volume_delta_cb volume_delta,
                                jw_input_menu_tap_cb menu_tap,
-                               jw_input_game_switcher_cb game_switcher,
                                void *userdata);
 int  jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy);
 /* Physical event fd used by the proxy. Poll it to wake the daemon before

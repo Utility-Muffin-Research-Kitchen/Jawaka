@@ -185,6 +185,10 @@ msgid "816 MHz"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "A: Choose   B: Back"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "A: On/Off   X: Grab to reorder"
 msgstr ""
 
@@ -246,6 +250,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "All Systems"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Already used by %s"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -525,6 +533,10 @@ msgid "Core"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Could not save"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Coverflow"
 msgstr ""
 
@@ -574,6 +586,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Disable USB ADB and remove Leaf's boot restore marker?"
+msgstr ""
+
+#: internal/platform/input_shortcuts.c
+msgid "Disabled"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -732,6 +748,10 @@ msgstr ""
 msgid "Game Rumble"
 msgstr ""
 
+#: internal/platform/input_shortcuts.c
+msgid "Game Switcher"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Games"
 msgstr ""
@@ -781,6 +801,10 @@ msgid "Hidden"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Hold Menu, then press the button.   X: Disable"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Home Layout"
 msgstr ""
 
@@ -802,6 +826,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Icon"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "In-game Shortcuts"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1236,8 +1264,12 @@ msgstr ""
 msgid "Reconnect Bluetooth"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/platform/input_shortcuts.c
 msgid "Recording"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Recording Shortcut"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1381,6 +1413,10 @@ msgid "Save State"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Saved; active after restart"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Saving"
 msgstr ""
 
@@ -1430,6 +1466,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
+msgstr ""
+
+#: internal/platform/input_shortcuts.c
+msgid "Screenshot"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Screenshot Shortcut"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1498,6 +1542,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Settings"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Shortcut"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

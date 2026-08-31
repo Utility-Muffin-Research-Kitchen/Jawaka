@@ -18,7 +18,7 @@ local preview loop with a generated mock SD-card tree.
 - Filesystem scanner for `Roms/`, `Images/`, and platform-guarded `Apps/`
   paks.
 - Local box art, system icons, multiple launcher themes, game search, and a
-  Select-driven game switcher.
+  game switcher (Select on the home screen, Menu + Select in a game by default).
 - MLP1 platform integration for launch lifecycle, brightness, volume, audio
   output, Wi-Fi, Bluetooth, ADB pin control, boot splash, secondary SD unmount,
   LEDs, sleep, reboot, power off, and Exit to Stock.
@@ -166,6 +166,36 @@ Q           desktop-only daemon shutdown
 ```
 
 On MLP1, Jawaka reads the Loong Gamepad through its platform input proxy.
+
+### In-game shortcuts (MLP1)
+
+Leaf's in-game actions are Menu chords. **Menu is the modifier and is fixed**;
+the second button is the user's, set in **Settings -> Controls & Feedback ->
+In-game Shortcuts**, which also offers Disabled.
+
+| Action | Default |
+| --- | --- |
+| Game Switcher | Menu + Select |
+| Screenshot | Menu + L1 |
+| Recording | Menu + R1 |
+
+Two enabled actions cannot share a button; the picker dims a button another
+action holds and names the owner. Bindings are stored as symbolic names
+(`l1`, `select`, `disabled`) rather than numbers, because evdev codes, SDL
+indices and RetroArch joypad ids disagree about which number a button is --
+`internal/platform/input_shortcuts.h` owns that vocabulary and the MLP1 input
+proxy alone maps it to evdev codes.
+
+Settings shows physical silkscreen names, not logical roles: the point of the
+screen is avoiding collisions with the buttons a user bound in RetroArch, and
+those are physical.
+
+RetroArch has its own hotkeys behind its own modifier, which defaults to Menu as
+well (`input_enable_hotkey_btn = "5"`) and is user-owned. **Where the two
+collide, Leaf wins** -- but only when its handler actually claims the chord. An
+unbound, disabled, or contextually unavailable action forwards the whole chord to
+RetroArch unchanged, so a declined screenshot still reaches whatever the user
+bound there.
 
 ## Runtime Environment
 

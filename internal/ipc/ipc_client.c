@@ -714,6 +714,36 @@ int jw_ipc_rumble_preview(const char *socket_path, int strength) {
     return ipc__notify(socket_path, req);
 }
 
+int jw_ipc_set_input_shortcuts(const char *socket_path,
+                               const jw_input_shortcuts *shortcuts,
+                               bool screenshots_enabled,
+                               bool recording_enabled) {
+    if (!shortcuts || !jw_input_shortcuts_valid(shortcuts)) {
+        return -1;
+    }
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "set-input-shortcuts");
+    cJSON *buttons = cJSON_AddArrayToObject(req, "buttons");
+    for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+        const char *name = jw_input_shortcut_button_name(shortcuts->buttons[i]);
+        if (!name || !buttons) {
+            cJSON_Delete(req);
+            return -1;
+        }
+        cJSON_AddItemToArray(buttons, cJSON_CreateString(name));
+    }
+    cJSON_AddBoolToObject(req, "screenshots_enabled", screenshots_enabled);
+    cJSON_AddBoolToObject(req, "recording_enabled", recording_enabled);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+    int rc = ipc__type_is(resp, "ok") ? 0 : -1;
+    cJSON_Delete(resp);
+    return rc;
+}
+
 int jw_ipc_library_status_full(const char *socket_path, jw_ipc_library_status_info *out) {
     if (out) {
         memset(out, 0, sizeof(*out));

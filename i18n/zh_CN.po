@@ -1465,3 +1465,66 @@ msgstr "扁平"
 
 msgid "Photographic"
 msgstr "写实"
+
+# In-game shortcut bindings. Marked fuzzy: suggested, not reviewed.
+# "Game Switcher" follows the existing "Switcher" -> 游戏切换; "Screenshot"
+# follows "Screenshots" -> 截图; "Disabled" pairs with "Enabled" -> 已启用.
+#, fuzzy
+msgid "Disabled"
+msgstr "已禁用"
+
+#, fuzzy
+msgid "Game Switcher"
+msgstr "游戏切换"
+
+#, fuzzy
+msgid "Screenshot"
+msgstr "截图"
+
+# In-game Shortcuts page. Marked fuzzy: suggested, not reviewed.
+# 保存 follows the existing "Save & Quit" -> 保存并退出 / "Saving" -> 保存中.
+# 快捷键 is the usual term for a shortcut key binding.
+#, fuzzy
+msgid "In-game Shortcuts"
+msgstr "游戏内快捷键"
+
+#, fuzzy
+msgid "Screenshot Shortcut"
+msgstr "截图快捷键"
+
+#, fuzzy
+msgid "Recording Shortcut"
+msgstr "录制快捷键"
+
+# Now one printf string, so the action name can sit where Chinese wants it:
+# "<action> 已占用" reads as "<action> already has it", rather than the
+# English order the old two-fragment concatenation forced.
+#, fuzzy
+msgid "Already used by %s"
+msgstr "已被 %s 占用"
+
+#, fuzzy
+msgid "Could not save"
+msgstr "无法保存"
+
+# In-game Shortcuts help line. Marked fuzzy: suggested, not reviewed.
+#, fuzzy
+msgid "Hold Menu, then press the button.   X: Disable"
+msgstr "按住 Menu，再按对应按键。   X：禁用"
+
+# Shown when the binding persisted but the daemon push failed.
+# Marked fuzzy: suggested, not reviewed.
+#, fuzzy
+msgid "Saved; active after restart"
+msgstr "已保存；重启后生效"
+
+# Shortcut picker. Marked fuzzy: suggested, not reviewed.
+# Follows the file's own entries: "Choose" -> 选择, "Back" -> 返回.
+#, fuzzy
+msgid "A: Choose   B: Back"
+msgstr "A：选择   B：返回"
+
+# Header fallback when the action name is unavailable; "Shortcut" alone.
+#, fuzzy
+msgid "Shortcut"
+msgstr "快捷键"

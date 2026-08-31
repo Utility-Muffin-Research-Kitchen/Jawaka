@@ -6,6 +6,7 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
+#include "internal/platform/input_shortcuts.h"
 #include "internal/platform/wifi.h"
 
 #include <stdbool.h>
@@ -62,6 +63,12 @@ typedef enum {
     JW_SETTINGS_SCRAPE_DOWNLOAD,   /* pick All Systems / a system to scrape missing art */
     JW_SETTINGS_BEHAVIOR,
     JW_SETTINGS_CONTROLS,    /* Controls & Feedback: rumble/haptics */
+#ifdef PLATFORM_MLP1
+    /* Guarded rather than merely unreachable elsewhere, so every switch over
+       this enum stops compiling on the platform that grows a new screen. */
+    JW_SETTINGS_INPUT_SHORTCUTS, /* Menu-chord bindings + capture options */
+    JW_SETTINGS_SHORTCUT_PICKER, /* pick one action's button from the full list */
+#endif
     JW_SETTINGS_HOME_TABS,   /* hide + reorder the launcher's home tabs */
     JW_SETTINGS_UPDATE,
     JW_SETTINGS_UPDATE_PICKER,
@@ -161,16 +168,40 @@ typedef enum {
 #define JW_BEHAVIOR_LANGUAGE    6
 #define JW_BEHAVIOR_ROW_COUNT   7
 
-/* Controls & Feedback page */
+/* Controls & Feedback page.
+   On MLP1 the four capture rows move to the In-game Shortcuts child page, so
+   this page ends at a single entry point to it. Everywhere else the page keeps
+   all eight rows and there is no child page: the shortcut bindings are an MLP1
+   input-proxy feature and mean nothing on the other backends. */
 #define JW_CONTROLS_RUMBLE      0   /* master on/off */
 #define JW_CONTROLS_STRENGTH    1   /* 0-100 %, left/right adjust */
 #define JW_CONTROLS_NAV         2   /* per-move navigation tick (opt-in) */
 #define JW_CONTROLS_GAME        3   /* hand the motor to emulators in-game */
+#ifdef PLATFORM_MLP1
+#define JW_CONTROLS_SHORTCUTS   4   /* -> JW_SETTINGS_INPUT_SHORTCUTS */
+#define JW_CONTROLS_ROW_COUNT   5
+#else
 #define JW_CONTROLS_SCREENSHOTS 4   /* Menu+L1 screenshot hotkey on/off */
 #define JW_CONTROLS_RECORDING   5   /* Menu+R1 game recording hotkey on/off */
 #define JW_CONTROLS_REC_SPLIT   6   /* split oversized clips into postable parts */
 #define JW_CONTROLS_REC_KEEP    7   /* keep the lossless .mkv after converting */
 #define JW_CONTROLS_ROW_COUNT   8
+#endif
+
+#ifdef PLATFORM_MLP1
+/* In-game Shortcuts page (MLP1 only). Each binding row sits under the feature
+   it belongs to, so "Screenshots off" and "Screenshot Shortcut disabled" read
+   as the two separate things they are: the toggle gates the feature, the
+   binding gates the chord. */
+#define JW_SHORTCUT_SWITCHER    0   /* Menu + <button> -> game switcher */
+#define JW_SHORTCUT_SCREENSHOTS 1   /* screenshot feature on/off */
+#define JW_SHORTCUT_SHOT_BIND   2   /* Menu + <button> -> screenshot */
+#define JW_SHORTCUT_RECORDING   3   /* recording feature on/off */
+#define JW_SHORTCUT_REC_BIND    4   /* Menu + <button> -> recording */
+#define JW_SHORTCUT_REC_SPLIT   5   /* split oversized clips into postable parts */
+#define JW_SHORTCUT_REC_KEEP    6   /* keep the lossless .mkv after converting */
+#define JW_SHORTCUT_ROW_COUNT   7
+#endif
 
 /* Home Tabs editor: one row per launcher tab (Recents/Favorites/Games/Apps).
    The rows are stored in display order; the first JW_HOME_TABS_COUNT entries of
@@ -233,6 +264,17 @@ typedef struct {
     bool               scrape_download_replace;      /* Y toggles missing-only vs replace-all */
     cat_list_state     behavior_list;
     cat_list_state     controls_list;    /* Controls & Feedback page */
+#ifdef PLATFORM_MLP1
+    cat_list_state     shortcuts_list;   /* In-game Shortcuts page */
+    cat_list_state     shortcut_pick_list; /* button picker for one action */
+    /* Which action the picker is editing. Set on entry; the picker reads no
+       other row state, so leaving and re-entering always starts consistent. */
+    jw_input_shortcut_action shortcut_pick_action;
+    /* The live bindings. Loaded once at startup and edited in place; a
+       rejected change (duplicate, or a failed write) leaves this untouched,
+       so the row keeps showing what is actually stored. */
+    jw_input_shortcuts shortcuts;
+#endif
     cat_list_state     update_list;
     int                update_channel_index;   /* 0 = Stable, 1 = Beta */
     cat_list_state     update_picker_list;

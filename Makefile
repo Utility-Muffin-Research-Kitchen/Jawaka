@@ -199,6 +199,7 @@ DAEMON_SRCS := \
 	$(INPUT_ROSTER_SRC) \
 	$(EXTERNAL_INPUT_SRC) \
 	internal/platform/calibration.c \
+	internal/platform/input_shortcuts.c \
 	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
 	internal/platform/raofflineproxy.c \
@@ -262,6 +263,7 @@ PLATFORM_CTL_SRCS := \
 	internal/core/log.c \
 	internal/ipc/ipc.c \
 	internal/ipc/ipc_client.c \
+	internal/platform/input_shortcuts.c \
 	internal/platform/platform_common.c \
 	internal/i18n/i18n.c \
 	$(PLATFORM_ID_SRC) \
@@ -382,6 +384,7 @@ UI_SRCS := \
 	$(PLATFORM_COMMON_SRC) \
 	$(PLATFORM_ID_SRC) \
 	internal/platform/cat_services.c \
+	internal/platform/input_shortcuts.c \
 	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
 	$(BLUETOOTH_SRC) \
@@ -441,7 +444,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -494,6 +497,25 @@ wifi-ssid-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/wifi-ssid-test \
 		internal/platform/wifi_ssid_test.c internal/platform/wifi_ssid.c
 	$(BUILD)/bin/wifi-ssid-test
+
+# Links input_shortcuts.c alone: it uses JW_UI(), which is a macro, so the
+# i18n.h include costs nothing at link time.
+# Shallow guard, not a unit test: no direct jw_db_*/sqlite3_* call in any of
+# the shortcut-dispatch function bodies. It does not follow the call graph --
+# the script header says so and says what that misses.
+shortcut-dispatch-check:
+	scripts/check-shortcut-dispatch-no-sqlite.sh
+
+# Startup load + live IPC update, against a local daemon on a temp SD tree.
+# Both live in jawakad, so no unit test over the shared model can reach them.
+shortcut-ipc-smoke:
+	scripts/shortcut-ipc-smoke.sh
+
+input-shortcuts-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/input-shortcuts-test \
+		internal/platform/input_shortcuts_test.c \
+		internal/platform/input_shortcuts.c
+	$(BUILD)/bin/input-shortcuts-test
 
 pakrat-catalog-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/pakrat-catalog-test \
@@ -775,6 +797,7 @@ service-client-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/service-client-test \
 		internal/ipc/service_client_test.c internal/ipc/ipc.c \
 		internal/ipc/ipc_client.c internal/ipc/ctl1.c \
+		internal/platform/input_shortcuts.c \
 		internal/platform/platform_common.c internal/i18n/i18n.c \
 		internal/core/log.c third_party/cjson/cJSON.c -lm
 	$(BUILD)/bin/service-client-test
@@ -831,6 +854,17 @@ retroarch-command-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/retroarch-command-test \
 		internal/retroarch/command_test.c internal/retroarch/command.c
 	$(BUILD)/bin/retroarch-command-test
+
+# Chord state machine, built for the device only: it includes
+# input_proxy_mlp1.c to reach the static handler, and that needs
+# <linux/input.h> and uinput. `make mlp1-adb-chord-test` cross-builds this and
+# runs it over adb.
+jawaka-input-proxy-chord-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/input-proxy-chord-test \
+		internal/platform/input_proxy_chord_test.c \
+		internal/platform/input_shortcuts.c \
+		internal/platform/calibration.c internal/core/log.c \
+		third_party/cjson/cJSON.c -lm -lpthread
 
 RETROARCH_CONFIG_TEST_SRCS := \
 	internal/platform/paths_config_test.c internal/platform/paths.c \
@@ -1180,6 +1214,18 @@ mlp1-adb-inhibit-smoke:
 
 mlp1-adb-input-capture:
 	scripts/adb-mlp1-input-capture.sh
+
+# Cross-build the chord state-machine test and run it on the device. Touches no
+# real input device -- the proxy's fds are a temp file and -1 -- so it is safe
+# to run while the launcher is up.
+mlp1-adb-chord-test:
+	docker run --rm \
+		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		-v "$(WORKSPACE_ROOT)":/workspace \
+		-w /workspace/Jawaka \
+		"$(MLP1_TOOLCHAIN_IMAGE)" \
+		make -f ports/mlp1/Makefile chord-test
+	scripts/adb-mlp1-chord-test.sh
 
 mlp1-adb-ra-command-smoke:
 	scripts/adb-mlp1-retroarch-command-smoke.sh $(if $(CONTENT),"$(CONTENT)")

@@ -309,6 +309,7 @@ def main() -> int:
             covered = len(translated & universe)
             print(f"{p.name}: {covered}/{len(universe)} translated "
                   f"({covered * 100 // max(1, len(universe))}%)")
+
     return rc
 
 
