@@ -1,0 +1,30 @@
+name: Input shortcuts
+
+# Leaf's in-game Menu chords: which physical button performs which action.
+# Settings writes these bindings and jawakad reads them, so both sides have to
+# interpret the same persisted strings -- input-shortcuts-test is what proves
+# they cannot drift apart.
+#
+# retroarch-config-test guards the MLP1 hotkey ownership and migration matrix.
+# It builds in both platform shapes, because the migration only compiles under
+# -DPLATFORM_MLP1 and the default host build would never reach it.
+#
+# Not covered here: input-proxy-chord-test, which includes input_proxy_mlp1.c
+# and needs <linux/input.h> plus uinput, so it cross-builds and runs on a
+# device (`make mlp1-adb-chord-test`). There is no runner for that.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make input-shortcuts-test
+      - run: make retroarch-config-test
