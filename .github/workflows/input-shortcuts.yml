@@ -32,4 +32,13 @@ jobs:
       - run: make input-shortcuts-test
       - run: make retroarch-config-test
       - run: make shortcut-dispatch-check
+
+  # Split out because it is the only job here that needs a dependency: the
+  # smoke runs a real jawakad, which links libcurl. Keeping it separate means
+  # an apt hiccup cannot fail the three checks that need nothing.
+  ipc-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev sqlite3
       - run: make shortcut-ipc-smoke
