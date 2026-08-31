@@ -7,7 +7,7 @@
 /* Build the `values` array resolve() takes, so a case reads as the three
    stored strings it actually is. NULL means the key is absent. */
 static int resolve3(const char *switcher, const char *shot, const char *rec,
-                    jw_input_shortcuts *out, bool *invalid, bool *duplicate) {
+                    jw_input_shortcuts *out, bool *invalid, int *duplicate) {
     const char *values[JW_INPUT_SHORTCUT_ACTION_COUNT];
     values[JW_INPUT_SHORTCUT_GAME_SWITCHER] = switcher;
     values[JW_INPUT_SHORTCUT_SCREENSHOT] = shot;
@@ -30,7 +30,7 @@ static void expect_bindings(const jw_input_shortcuts *s,
 int main(void) {
     jw_input_shortcuts s;
     bool invalid[JW_INPUT_SHORTCUT_ACTION_COUNT];
-    bool duplicate[JW_INPUT_SHORTCUT_ACTION_COUNT];
+    int duplicate[JW_INPUT_SHORTCUT_ACTION_COUNT];
 
     /* Every button round-trips through its persisted name. This is the
        property the whole module exists for: Settings writes a name and the
@@ -114,22 +114,40 @@ int main(void) {
     expect_bindings(&s, JW_INPUT_SHORTCUT_BUTTON_NONE,
                     JW_INPUT_SHORTCUT_BUTTON_NONE, JW_INPUT_SHORTCUT_BUTTON_NONE);
 
-    /* A corrupt value falls back to that action's default and is reported,
-       without disturbing the others. */
+    /* A present-but-corrupt value DISABLES its action rather than falling back
+       to the default. Falling back would silently arm a chord the stored
+       configuration does not describe, and the user could not tell a working
+       default from a value that failed to load. The others are untouched, and
+       an absent key still keeps its default. */
     assert(resolve3("select", "nonsense", NULL, &s, invalid, duplicate) == 1);
     expect_bindings(&s, JW_INPUT_SHORTCUT_BUTTON_SELECT,
-                    JW_INPUT_SHORTCUT_BUTTON_L1, JW_INPUT_SHORTCUT_BUTTON_R1);
+                    JW_INPUT_SHORTCUT_BUTTON_NONE, JW_INPUT_SHORTCUT_BUTTON_R1);
     assert(!invalid[JW_INPUT_SHORTCUT_GAME_SWITCHER]);
     assert(invalid[JW_INPUT_SHORTCUT_SCREENSHOT]);
     assert(!invalid[JW_INPUT_SHORTCUT_RECORDING]);
+
+    /* An empty string is a present value, not an absent key: a row written as
+       "" is corruption, not "never configured". */
+    assert(resolve3("", NULL, NULL, &s, invalid, duplicate) == 1);
+    expect_bindings(&s, JW_INPUT_SHORTCUT_BUTTON_NONE,
+                    JW_INPUT_SHORTCUT_BUTTON_L1, JW_INPUT_SHORTCUT_BUTTON_R1);
+    assert(invalid[JW_INPUT_SHORTCUT_GAME_SWITCHER]);
+
+    /* All three unreadable: everything off, nothing guessed. */
+    assert(resolve3("x!", "??", "  ", &s, invalid, duplicate) == 3);
+    expect_bindings(&s, JW_INPUT_SHORTCUT_BUTTON_NONE,
+                    JW_INPUT_SHORTCUT_BUTTON_NONE, JW_INPUT_SHORTCUT_BUTTON_NONE);
+    assert(invalid[0] && invalid[1] && invalid[2]);
 
     /* Duplicate: the lower-priority action loses and is disabled, never
        silently moved to some other button. */
     assert(resolve3("l1", "l1", "r1", &s, invalid, duplicate) == 1);
     expect_bindings(&s, JW_INPUT_SHORTCUT_BUTTON_L1,
                     JW_INPUT_SHORTCUT_BUTTON_NONE, JW_INPUT_SHORTCUT_BUTTON_R1);
-    assert(duplicate[JW_INPUT_SHORTCUT_SCREENSHOT]);
-    assert(!duplicate[JW_INPUT_SHORTCUT_GAME_SWITCHER]);
+    /* The loser records WHICH action kept the button, so a log can name both
+       sides of the clash. */
+    assert(duplicate[JW_INPUT_SHORTCUT_SCREENSHOT] == JW_INPUT_SHORTCUT_GAME_SWITCHER);
+    assert(duplicate[JW_INPUT_SHORTCUT_GAME_SWITCHER] == -1);
 
     /* Priority is declaration order, not storage order: Game Switcher keeps
        the button even when Screenshot is the one that "already had" L1 by
@@ -142,21 +160,32 @@ int main(void) {
     assert(resolve3("y", "y", "y", &s, invalid, duplicate) == 2);
     expect_bindings(&s, JW_INPUT_SHORTCUT_BUTTON_Y,
                     JW_INPUT_SHORTCUT_BUTTON_NONE, JW_INPUT_SHORTCUT_BUTTON_NONE);
-    assert(duplicate[JW_INPUT_SHORTCUT_SCREENSHOT]);
-    assert(duplicate[JW_INPUT_SHORTCUT_RECORDING]);
+    /* Both losers point at the Game Switcher, which declared first. */
+    assert(duplicate[JW_INPUT_SHORTCUT_SCREENSHOT] == JW_INPUT_SHORTCUT_GAME_SWITCHER);
+    assert(duplicate[JW_INPUT_SHORTCUT_RECORDING] == JW_INPUT_SHORTCUT_GAME_SWITCHER);
 
-    /* Invalid and duplicate can both happen in one load, and both count. */
+    /* Invalid and duplicate in one load: both counted, each reported through
+       its own channel, and an invalid entry cannot also read as a duplicate. */
     assert(resolve3("r1", "bogus", "r1", &s, invalid, duplicate) == 2);
     expect_bindings(&s, JW_INPUT_SHORTCUT_BUTTON_R1,
-                    JW_INPUT_SHORTCUT_BUTTON_L1, JW_INPUT_SHORTCUT_BUTTON_NONE);
+                    JW_INPUT_SHORTCUT_BUTTON_NONE, JW_INPUT_SHORTCUT_BUTTON_NONE);
     assert(invalid[JW_INPUT_SHORTCUT_SCREENSHOT]);
-    assert(duplicate[JW_INPUT_SHORTCUT_RECORDING]);
+    assert(duplicate[JW_INPUT_SHORTCUT_SCREENSHOT] == -1);
+    assert(!invalid[JW_INPUT_SHORTCUT_RECORDING]);
+    assert(duplicate[JW_INPUT_SHORTCUT_RECORDING] == JW_INPUT_SHORTCUT_GAME_SWITCHER);
+
+    /* A disabled winner is not a winner: three explicit "disabled" values are
+       all legal and none of them collide. */
+    assert(resolve3("disabled", "disabled", "disabled", &s, invalid, duplicate) == 0);
+    for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+        assert(!invalid[i] && duplicate[i] == -1);
+    }
 
     /* Flags are cleared on entry, so a caller reusing its arrays cannot read
        a stale report from the previous load. */
     assert(resolve3("select", "l1", "r1", &s, invalid, duplicate) == 0);
     for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
-        assert(!invalid[i] && !duplicate[i]);
+        assert(!invalid[i] && duplicate[i] == -1);
     }
     /* NULL report arrays are allowed. */
     assert(resolve3("l1", "l1", NULL, &s, NULL, NULL) == 1);

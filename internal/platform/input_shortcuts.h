@@ -91,19 +91,25 @@ void jw_input_shortcuts_defaults(jw_input_shortcuts *out);
 
 /* Resolve persisted values into a usable snapshot.
  *
- * `values` is indexed by action; a NULL or unparseable entry falls back to
- * that action's default. Two actions cannot share a button: on a collision the
+ * `values` is indexed by action. A NULL entry (the key is absent) keeps that
+ * action's default. A present but unparseable entry -- including an empty
+ * string -- **disables** that action rather than falling back, so a corrupt
+ * row cannot silently arm a chord the stored configuration does not describe.
+ * Two actions cannot share a button: on a collision the
  * lower-priority action is disabled, priority being declaration order (Game
  * Switcher, then Screenshot, then Recording). This is fail-closed on purpose
  * -- a hand-edited or half-written database must not make one button fire two
  * actions, and must never fire the wrong one.
  *
- * Returns the number of entries that were rejected. `invalid` and `duplicate`,
- * when non-NULL, receive per-action flags so the caller can log what it
- * dropped; a caller that does not care passes NULL for both. */
+ * Returns the number of entries that were rejected. When non-NULL, `invalid`
+ * receives a per-action flag for values that failed to parse, and `duplicate`
+ * receives, for each disabled loser, the action that kept the button (or -1).
+ * Reporting the winner rather than a bare flag is what lets a caller name both
+ * sides of the clash, which is what makes the log actionable. A caller that
+ * does not care passes NULL for both. */
 int jw_input_shortcuts_resolve(const char *const *values,
                                jw_input_shortcuts *out,
-                               bool *invalid, bool *duplicate);
+                               bool *invalid, int *duplicate);
 
 /* Which action owns `button`, or false if none does. Disabled never matches,
    so several disabled actions do not collide with each other. */

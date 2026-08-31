@@ -277,10 +277,11 @@ typedef struct {
     char    child_input_ns_dir[PATH_MAX];
     uint64_t last_screenshot_ms;    /* debounce for the Menu+L1 screenshot hotkey */
     uint64_t last_record_toggle_ms; /* debounce for the Menu+R1 record hotkey */
-    bool     screenshots_enabled_cached; /* cached opt-in flag (avoids a DB read per press) */
-    uint64_t screenshots_checked_ms;     /* when the flag was last read from the DB */
-    bool     recording_enabled_cached;   /* cached opt-in flag for the Menu+R1 hotkey */
-    uint64_t recording_checked_ms;       /* when that flag was last read from the DB */
+    /* Capture opt-ins, refreshed only by jw__tick_feature_flags() on the main
+       loop. The input callback reads these and never the database. */
+    bool     screenshots_enabled_cached;
+    bool     recording_enabled_cached;
+    uint64_t feature_flags_checked_ms;   /* when both were last read */
     /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
        input tick, so avoid a sqlite open per event). */
     bool     rumble_enabled_cached;
@@ -7790,19 +7791,9 @@ static bool jw__on_record_hotkey(void *userdata) {
         return false;
     }
 
-    /* Opt-in gate, cached the same way screenshots are: reading the flag opens
-       and closes sqlite, and this runs on the input tick. Declining lets R1
-       forward to the game, which is what a user with recording off expects. */
-    uint64_t gate_now = jw__screenshot_now_ms();
-    if (state->recording_checked_ms == 0 ||
-        gate_now - state->recording_checked_ms >= JW_SS_ENABLE_TTL_MS) {
-        char en[8] = "";
-        state->recording_enabled_cached =
-            (state->db_path &&
-             jw_db_get_setting(state->db_path, "recording_enabled", en, sizeof(en)) == 0 &&
-             strcmp(en, "1") == 0);
-        state->recording_checked_ms = gate_now;
-    }
+    /* Opt-in gate, read from memory only -- same reason as the screenshot hook.
+       Declining lets the button forward to the game, which is what a user with
+       recording off expects. */
     if (!state->recording_enabled_cached) {
         return false;
     }
@@ -7841,16 +7832,10 @@ static bool jw__on_screenshot_hotkey(void *userdata) {
 
     uint64_t now = jw__screenshot_now_ms();
 
-    /* Opt-in gate. Reading the flag opens/closes sqlite, and this runs on the
-       input tick, so cache it and refresh at most every JW_SS_ENABLE_TTL_MS. */
-    if (state->screenshots_checked_ms == 0 ||
-        now - state->screenshots_checked_ms >= JW_SS_ENABLE_TTL_MS) {
-        char en[8] = "";
-        state->screenshots_enabled_cached =
-            (jw_db_get_setting(state->db_path, "screenshots_enabled", en, sizeof(en)) == 0 &&
-             strcmp(en, "1") == 0);
-        state->screenshots_checked_ms = now;
-    }
+    /* Opt-in gate, read from memory only. jw__tick_feature_flags() refreshes it
+       on the main loop; this function runs from the input callback, where a
+       database open would put SQLite's connect/schema/busy-timeout cost on the
+       same thread that drains evdev. */
     if (!state->screenshots_enabled_cached) {
         return false;   /* decline so Menu+L1 forwards to the app */
     }
@@ -7952,22 +7937,64 @@ static void jw__load_shortcuts(jw_daemon_state *state) {
         raw[i] = q[i].found ? values[i] : NULL;
     }
     bool invalid[JW_INPUT_SHORTCUT_ACTION_COUNT];
-    bool duplicate[JW_INPUT_SHORTCUT_ACTION_COUNT];
+    int duplicate[JW_INPUT_SHORTCUT_ACTION_COUNT];
     jw_input_shortcuts loaded;
     int rejected = jw_input_shortcuts_resolve(raw, &loaded, invalid, duplicate);
     for (int i = 0; rejected && i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
+        jw_input_shortcut_action action = (jw_input_shortcut_action)i;
         if (invalid[i]) {
-            jw_log_warn("input shortcuts: %s has an unknown value \"%s\"; "
-                        "using the default",
-                        jw_input_shortcut_action_key((jw_input_shortcut_action)i),
-                        values[i]);
-        } else if (duplicate[i]) {
-            jw_log_warn("input shortcuts: %s wants a button another action "
-                        "already has; disabled",
-                        jw_input_shortcut_action_key((jw_input_shortcut_action)i));
+            jw_log_warn("input shortcuts: %s has an unreadable value \"%s\"; "
+                        "%s disabled",
+                        jw_input_shortcut_action_key(action), values[i],
+                        jw_input_shortcut_action_label(action));
+        } else if (duplicate[i] >= 0) {
+            /* Name both sides: "disabled" alone leaves the user checking the
+               other rows to find what took the button. */
+            jw_input_shortcut_action winner =
+                (jw_input_shortcut_action)duplicate[i];
+            jw_log_warn("input shortcuts: %s and %s both want %s; "
+                        "%s keeps it and %s is disabled",
+                        jw_input_shortcut_action_label(action),
+                        jw_input_shortcut_action_label(winner),
+                        jw_input_shortcut_button_name(loaded.buttons[duplicate[i]]),
+                        jw_input_shortcut_action_label(winner),
+                        jw_input_shortcut_action_label(action));
         }
     }
     state->shortcuts = loaded;
+}
+
+/* Refresh the cached capture opt-ins from the settings table.
+ *
+ * Called from the main loop and once at startup -- never from the input
+ * callback. Both flags used to be refreshed lazily inside their hotkey
+ * handlers, which meant a chord arriving after the TTL expired paid for a
+ * database open on the thread draining evdev. The plan requires no SQLite
+ * helper be reachable from shortcut dispatch, and a lazy refresh inside the
+ * handler is exactly such a path.
+ *
+ * The TTL is unchanged, so a toggle still takes effect within
+ * JW_SS_ENABLE_TTL_MS; it is now spent on a loop iteration instead of on a
+ * button press. */
+static void jw__tick_feature_flags(jw_daemon_state *state) {
+    if (!state || !state->db_path[0]) {
+        return;
+    }
+    uint64_t now = jw__screenshot_now_ms();
+    if (state->feature_flags_checked_ms != 0 &&
+        now - state->feature_flags_checked_ms < JW_SS_ENABLE_TTL_MS) {
+        return;
+    }
+    state->feature_flags_checked_ms = now;
+
+    char en[8] = "";
+    state->screenshots_enabled_cached =
+        (jw_db_get_setting(state->db_path, "screenshots_enabled",
+                           en, sizeof(en)) == 0 && strcmp(en, "1") == 0);
+    en[0] = '\0';
+    state->recording_enabled_cached =
+        (jw_db_get_setting(state->db_path, "recording_enabled",
+                           en, sizeof(en)) == 0 && strcmp(en, "1") == 0);
 }
 
 static void jw__start_input_proxy(jw_daemon_state *state) {
@@ -13956,8 +13983,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* Before the proxy polls: the input path must never reach SQLite. */
+    /* Before the proxy polls: the input path must never reach SQLite, so both
+       the bindings and the capture opt-ins are in memory before the first
+       chord can arrive. */
     jw__load_shortcuts(&state);
+    jw__tick_feature_flags(&state);
     jw__start_input_proxy(&state);
     if (jw_external_input_monitor_init(&state.external_input,
                                        jw__input_menu_tap, &state) != 0) {
@@ -14133,6 +14163,7 @@ int main(int argc, char *argv[]) {
         }
         jw__tick_scan_job(&state);
         jw__tick_startup_maintenance(&state);
+        jw__tick_feature_flags(&state);
 
         /* SVC-1 service supervision: poll child exit, run the stop sequence,
            retry stale-generation leases, and fire backoff/autostart. */

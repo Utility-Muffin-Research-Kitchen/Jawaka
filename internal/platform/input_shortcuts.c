@@ -99,31 +99,37 @@ void jw_input_shortcuts_defaults(jw_input_shortcuts *out) {
 
 int jw_input_shortcuts_resolve(const char *const *values,
                                jw_input_shortcuts *out,
-                               bool *invalid, bool *duplicate) {
+                               bool *invalid, int *duplicate) {
     if (!out) {
         return 0;
     }
     for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
         if (invalid) invalid[i] = false;
-        if (duplicate) duplicate[i] = false;
+        if (duplicate) duplicate[i] = -1;
     }
 
     jw_input_shortcuts_defaults(out);
     int rejected = 0;
 
-    /* Pass one: take every value that parses, fall back to the default for
-       every value that does not. A missing key is the ordinary case on a
-       device that has never opened this screen and is not counted as
-       rejected; a present but unparseable one is. */
+    /* Pass one. An absent key is the ordinary case on a device that has never
+       opened this screen, and keeps the default.
+
+       A key that is *present* but unparseable -- including an empty string --
+       disables that action instead. Falling back to the default there would
+       silently arm a chord the stored configuration does not describe: a
+       corrupted or hand-edited row would quietly behave as though it said
+       "select", and the user would have no way to tell a working default from
+       a value that failed to load. Fail closed and say so. */
     for (int i = 0; i < JW_INPUT_SHORTCUT_ACTION_COUNT; i++) {
         const char *value = values ? values[i] : NULL;
-        if (!value || !value[0]) {
-            continue;
+        if (!value) {
+            continue;   /* absent: keep the default */
         }
         jw_input_shortcut_button button;
-        if (jw_input_shortcut_button_parse(value, &button)) {
+        if (value[0] && jw_input_shortcut_button_parse(value, &button)) {
             out->buttons[i] = button;
         } else {
+            out->buttons[i] = JW_INPUT_SHORTCUT_BUTTON_NONE;
             if (invalid) invalid[i] = true;
             rejected++;
         }
@@ -141,7 +147,7 @@ int jw_input_shortcuts_resolve(const char *const *values,
         for (int j = 0; j < i; j++) {
             if (out->buttons[j] == out->buttons[i]) {
                 out->buttons[i] = JW_INPUT_SHORTCUT_BUTTON_NONE;
-                if (duplicate) duplicate[i] = true;
+                if (duplicate) duplicate[i] = j;   /* the action that kept it */
                 rejected++;
                 break;
             }

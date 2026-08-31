@@ -28,3 +28,4 @@ jobs:
       - uses: actions/checkout@v4
       - run: make input-shortcuts-test
       - run: make retroarch-config-test
+      - run: make shortcut-dispatch-check

@@ -253,7 +253,7 @@ msgid "All Systems"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Already used by"
+msgid "Already used by %s"
 msgstr ""
 
 #: internal/launcher/system_names.c

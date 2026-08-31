@@ -1496,11 +1496,12 @@ msgstr "截图快捷键"
 msgid "Recording Shortcut"
 msgstr "录制快捷键"
 
-# Rendered as "<this> <action name>", e.g. "已被 游戏切换 使用" reads awkwardly
-# with the trailing noun; a reviewer may prefer to restructure the sentence.
+# Now one printf string, so the action name can sit where Chinese wants it:
+# "<action> 已占用" reads as "<action> already has it", rather than the
+# English order the old two-fragment concatenation forced.
 #, fuzzy
-msgid "Already used by"
-msgstr "已被占用："
+msgid "Already used by %s"
+msgstr "已被 %s 占用"
 
 #, fuzzy
 msgid "Could not save"

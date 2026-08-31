@@ -1592,15 +1592,22 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                    half-written database lands on the same bindings the daemon
                    will pick: unparseable falls back to the default, and a
                    collision disables the lower-priority action. */
+                /* found[] directly, not jw__setting_has(): that helper treats
+                   an empty value as absent, but the shortcut model draws the
+                   line between "no row" (keep the default) and "a row that
+                   says nothing readable" (disable). Going through the helper
+                   would make Settings show a default where jawakad disables
+                   the action -- the precise disagreement this shared model
+                   exists to prevent. */
                 const char *shortcut_values[JW_INPUT_SHORTCUT_ACTION_COUNT];
                 shortcut_values[JW_INPUT_SHORTCUT_GAME_SWITCHER] =
-                    jw__setting_has(values, found, JW_SETTING_SHORTCUT_SWITCHER)
+                    found[JW_SETTING_SHORTCUT_SWITCHER]
                         ? values[JW_SETTING_SHORTCUT_SWITCHER] : NULL;
                 shortcut_values[JW_INPUT_SHORTCUT_SCREENSHOT] =
-                    jw__setting_has(values, found, JW_SETTING_SHORTCUT_SCREENSHOT)
+                    found[JW_SETTING_SHORTCUT_SCREENSHOT]
                         ? values[JW_SETTING_SHORTCUT_SCREENSHOT] : NULL;
                 shortcut_values[JW_INPUT_SHORTCUT_RECORDING] =
-                    jw__setting_has(values, found, JW_SETTING_SHORTCUT_RECORDING)
+                    found[JW_SETTING_SHORTCUT_RECORDING]
                         ? values[JW_SETTING_SHORTCUT_RECORDING] : NULL;
                 (void)jw_input_shortcuts_resolve(shortcut_values, &ui->shortcuts,
                                                  NULL, NULL);
@@ -4646,7 +4653,11 @@ static void jw__apply_shortcut(jw_settings_ui *ui,
         /* Name the action holding it: "already used" alone leaves the user
            hunting the other two rows for the clash. */
         if (status_buf && status_size > 0) {
-            snprintf(status_buf, status_size, "%s %s", T("Already used by"),
+            /* One printf string, not a concatenation: "already used by" and the
+               action name join differently in other languages, and gluing two
+               translated fragments with a space forces English word order on
+               all of them. */
+            snprintf(status_buf, status_size, T("Already used by %s"),
                      T(jw_input_shortcut_action_label(owner)));
         }
         return;
