@@ -118,6 +118,31 @@ int main(void) {
                "yabasanshiro_standalone",
                "/sd/emulators/yabasanshiro/launch.sh", false),
            false);
+    expect("YabaSanshiro CHD supported",
+           jw_standalone_policy_supports_content(
+               "yabasanshiro_standalone", NULL,
+               "/sd/Roms/SATURN/Shining Force III.chd"),
+           true);
+    expect("YabaSanshiro ZIP rejected",
+           jw_standalone_policy_supports_content(
+               "yabasanshiro_standalone", NULL,
+               "/sd/Roms/SATURN/Rampage.ZIP"),
+           false);
+    expect("YabaSanshiro M3U rejected by package path",
+           jw_standalone_policy_supports_content(
+               "legacy_path_core", "/sd/emulators/yabasanshiro/launch.sh",
+               "Roms/SATURN/Enemy Zero.m3u"),
+           false);
+    expect("RetroArch YabaSanshiro keeps ZIP support",
+           jw_standalone_policy_supports_content(
+               "yabasanshiro", "/sd/cores/yabasanshiro_libretro.so",
+               "/sd/Roms/SATURN/Rampage.zip"),
+           true);
+    expect("Other standalone content unaffected",
+           jw_standalone_policy_supports_content(
+               "flycast_standalone", "/sd/emulators/flycast/launch.sh",
+               "/sd/Roms/DC/Game.zip"),
+           true);
     expect("missing identity calibrated input",
            jw_standalone_policy_uses_calibrated_virtual_input(NULL, NULL),
            false);

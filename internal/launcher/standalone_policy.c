@@ -1,6 +1,7 @@
 #include "internal/launcher/standalone_policy.h"
 
 #include <string.h>
+#include <strings.h>
 
 static bool jw__string_equals(const char *value, const char *expected) {
     return value && expected && strcmp(value, expected) == 0;
@@ -53,6 +54,26 @@ bool jw_standalone_policy_is_ports(const char *core_id,
     return jw__string_equals(core_id, "ports") ||
            jw__path_contains(launcher_path, "/emulators/ports/") ||
            jw__path_contains(launcher_path, "/Roms/PORTS");
+}
+
+static bool jw__path_extension_is(const char *path, const char *extension) {
+    if (!path || !extension) {
+        return false;
+    }
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    const char *dot = strrchr(base, '.');
+    return dot && strcasecmp(dot, extension) == 0;
+}
+
+bool jw_standalone_policy_supports_content(const char *core_id,
+                                           const char *launcher_path,
+                                           const char *content_path) {
+    if (!jw_standalone_policy_is_yabasanshiro(core_id, launcher_path)) {
+        return true;
+    }
+    return !jw__path_extension_is(content_path, ".zip") &&
+           !jw__path_extension_is(content_path, ".m3u");
 }
 
 bool jw_standalone_policy_requires_direct_drm(

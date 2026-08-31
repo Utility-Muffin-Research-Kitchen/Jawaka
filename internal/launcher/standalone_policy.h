@@ -19,6 +19,12 @@ bool jw_standalone_policy_is_yabasanshiro(const char *core_id,
 bool jw_standalone_policy_is_ports(const char *core_id,
                                    const char *launcher_path);
 
+/* False only for content formats proven unsupported by a recognized
+   standalone. Other cores and untested formats remain eligible. */
+bool jw_standalone_policy_supports_content(const char *core_id,
+                                           const char *launcher_path,
+                                           const char *content_path);
+
 bool jw_standalone_policy_requires_direct_drm(const char *core_id,
                                               const char *launcher_path,
                                               bool metadata_requires_direct_drm);

@@ -15,6 +15,7 @@
 #include "internal/launcher/coverflow.h"
 #include "internal/launcher/focus_screen.h"
 #include "internal/launcher/game_switcher.h"
+#include "internal/launcher/standalone_policy.h"
 #include "internal/launcher/system_names.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/cat_services.h"
@@ -5109,6 +5110,8 @@ static void jw__render_search_cf(jw_launcher_state *state) {
 
 typedef struct { const jw_launcher_state *state; } jw__actions_ctx;
 
+static int jw__action_find_core(const jw_launcher_state *state,
+                                const char *core_id);
 static const char *jw__action_core_label(const jw_launcher_state *state,
                                          const char *core_id);
 static const char *jw__action_perf_label(const char *value);
@@ -5145,10 +5148,12 @@ static void jw__action_row_strings(const jw_launcher_state *state,
         case JW_ACTION_ROW_CORE:
             snprintf(title, title_size, "%s", T("Core"));
             if (state->action_scope == JW_ACTION_GAME &&
-                state->action_core_game_override[0]) {
+                jw__action_find_core(
+                    state, state->action_core_game_override) >= 0) {
                 snprintf(value, value_size, "%s (game)",
                          jw__action_core_label(state, state->action_core_game_override));
-            } else if (state->action_core_system_override[0]) {
+            } else if (jw__action_find_core(
+                           state, state->action_core_system_override) >= 0) {
                 snprintf(value, value_size, "%s (system)",
                          jw__action_core_label(state, state->action_core_system_override));
             } else if (state->action_core_effective[0]) {
@@ -5843,8 +5848,10 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
     } else if (state->action_scope == JW_ACTION_GAME) {
         jw__action_add_row(state, JW_ACTION_ROW_DISPLAY_NAME);
         if (state->action_core_count > 1 ||
-            state->action_core_game_override[0] ||
-            state->action_core_system_override[0]) {
+            jw__action_find_core(
+                state, state->action_core_game_override) >= 0 ||
+            jw__action_find_core(
+                state, state->action_core_system_override) >= 0) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
@@ -5889,11 +5896,30 @@ static void jw__action_refresh_core_choices(const char *db_path,
                                           JW_MAX_CORE_CHOICES,
                                           &state->action_core_count);
 
-    const char *preferred = state->action_core_game_override[0]
-        ? state->action_core_game_override
-        : state->action_core_system_override;
-    if (preferred && preferred[0] &&
-        jw__action_find_core(state, preferred) >= 0) {
+    if (state->action_scope == JW_ACTION_GAME) {
+        size_t kept = 0;
+        for (size_t i = 0; i < state->action_core_count; i++) {
+            jw_ra_core_choice *choice = &state->action_core_choices[i];
+            if (!jw_standalone_policy_supports_content(
+                    choice->id, choice->path, state->action_game.rom_path)) {
+                continue;
+            }
+            if (kept != i) {
+                state->action_core_choices[kept] = *choice;
+            }
+            kept++;
+        }
+        state->action_core_count = kept;
+    }
+
+    const char *preferred = NULL;
+    if (jw__action_find_core(state, state->action_core_game_override) >= 0) {
+        preferred = state->action_core_game_override;
+    } else if (jw__action_find_core(
+                   state, state->action_core_system_override) >= 0) {
+        preferred = state->action_core_system_override;
+    }
+    if (preferred) {
         jw__str_copy(state->action_core_effective,
                      sizeof(state->action_core_effective), preferred);
     } else if (state->action_core_count > 0) {
