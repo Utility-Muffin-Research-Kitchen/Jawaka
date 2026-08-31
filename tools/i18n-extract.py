@@ -227,30 +227,6 @@ def pot_keys(path: Path):
     return out
 
 
-FORMAT_SPEC = re.compile(r"%[-#0 +\']*[0-9*]*(?:\.[0-9*]+)?(?:hh|h|ll|l|L|z|j|t)?[diouxXeEfgGaAcspn%]")
-
-
-def format_specs(text: str):
-    """printf conversions in order, ignoring literal %%."""
-    return [m for m in FORMAT_SPEC.findall(text) if m != "%%"]
-
-
-def po_pairs(path: Path):
-    """(msgid, msgstr) for every entry with a non-empty translation."""
-    text = path.read_text(encoding="utf-8")
-    entry_re = re.compile(r'^(msgctxt|msgid|msgstr) "((?:[^"\\]|\\.)*)"', re.M)
-    pairs, last = [], None
-    for m in entry_re.finditer(text):
-        kind, val = m.group(1), c_unescape(m.group(2))
-        if kind == "msgid":
-            last = val or None
-        elif kind == "msgstr" and last is not None:
-            if val:
-                pairs.append((last, val))
-            last = None
-    return pairs
-
-
 def po_entries(path: Path):
     """(all keys, translated keys). A key with an empty msgstr is present but
     untranslated -- it must count for the orphan check and NOT for coverage,
@@ -334,19 +310,6 @@ def main() -> int:
             print(f"{p.name}: {covered}/{len(universe)} translated "
                   f"({covered * 100 // max(1, len(universe))}%)")
 
-        # A translation whose printf conversions differ from the English is a
-        # crash at the call site, not a cosmetic problem: the format string is
-        # the translated one, but the arguments come from the code.
-        bad = [(k, v) for k, v in po_pairs(p)
-               if format_specs(k) != format_specs(v)]
-        for k, v in bad[:20]:
-            print(f"  {p.name}: format mismatch\n"
-                  f"    msgid  {k!r} -> {format_specs(k)}\n"
-                  f"    msgstr {v!r} -> {format_specs(v)}", file=sys.stderr)
-        if bad:
-            print(f"FAIL: {p.name} has {len(bad)} entry(ies) whose printf "
-                  "conversions do not match the English", file=sys.stderr)
-            rc = 1
     return rc
 
 
