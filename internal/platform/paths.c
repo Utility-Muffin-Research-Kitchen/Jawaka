@@ -2098,6 +2098,65 @@ static char *jw__default_retroarch_config_dir(const char *sdcard_root) {
     return jw__dup_realpath_or_literal(path);
 }
 
+/* The durable leaf-recommended directory: the only place the in-game picker may
+   load a preset from. Returned as a resolved path so a caller can compare a
+   candidate against it without worrying about symlinks or "..". */
+/* True when `candidate` resolves to a .glslp inside the durable
+   leaf-recommended directory. realpath() first, so "..", a symlink, or a
+   relative path cannot walk out of it. On success `relative` receives the path
+   below that root, which is what gets logged: the SD mount root is noise and
+   changes between boots. */
+bool jw_retroarch_shader_path_is_recommended(const char *candidate,
+                                             char *resolved, size_t resolved_size,
+                                             char *relative, size_t relative_size) {
+    char real[PATH_MAX];
+    char *root;
+    size_t root_len;
+    bool ok = false;
+
+    if (!candidate || !candidate[0] || !resolved || !relative) {
+        return false;
+    }
+    if (!realpath(candidate, real)) {
+        return false;
+    }
+    root = jw_retroarch_recommended_shaders_dir();
+    if (!root) {
+        return false;
+    }
+    root_len = strlen(root);
+    while (root_len > 0 && root[root_len - 1] == '/') {
+        root_len--;
+    }
+    if (strncmp(real, root, root_len) == 0 && real[root_len] == '/' &&
+        real[root_len + 1] != '\0') {
+        const char *ext = strrchr(real, '.');
+        if (ext && strcmp(ext, ".glslp") == 0) {
+            snprintf(resolved, resolved_size, "%s", real);
+            snprintf(relative, relative_size, "%s", real + root_len + 1);
+            ok = true;
+        }
+    }
+    free(root);
+    return ok;
+}
+
+char *jw_retroarch_recommended_shaders_dir(void) {
+    char *root = jw_sdcard_root();
+    char *shaders = jw__default_retroarch_user_shaders_dir(root ? root : "");
+    free(root);
+    if (!shaders) {
+        return NULL;
+    }
+    char path[PATH_MAX];
+    if (!jw__format_string(path, sizeof(path), "%s/leaf-recommended", shaders)) {
+        free(shaders);
+        return NULL;
+    }
+    free(shaders);
+    return jw__dup_realpath_or_literal(path);
+}
+
 static char *jw__default_retroarch_shaders_dir(const char *sdcard_root) {
     char *user_dir = jw__default_retroarch_user_shaders_dir(sdcard_root);
     if (user_dir) {

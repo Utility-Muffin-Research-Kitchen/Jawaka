@@ -15,6 +15,10 @@ char *jw_osd_socket_path(void);
 char *jw_ingame_ui_mode_path(void);
 char *jw_db_path(void);
 char *jw_retroarch_bin_path(void);
+char *jw_retroarch_recommended_shaders_dir(void);
+bool jw_retroarch_shader_path_is_recommended(const char *candidate,
+                                             char *resolved, size_t resolved_size,
+                                             char *relative, size_t relative_size);
 char *jw_retroarch_core_path_for_system(const char *system);
 char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                const char *preferred_core_id,

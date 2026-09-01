@@ -85,6 +85,15 @@ static int occurrences(const char *text, const char *key) {
     return count;
 }
 
+static int jw__mkdir_p_test(const char *path) {
+    char buf[PATH_MAX];
+    snprintf(buf, sizeof(buf), "%s", path);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p == '/') { *p = '\0'; mkdir(buf, 0755); *p = '/'; }
+    }
+    return mkdir(buf, 0755) == 0 || errno == EEXIST ? 0 : -1;
+}
+
 static int key_count(const char *text, const char *key, const char *value) {
     int count = 0;
     size_t key_len = strlen(key);
@@ -621,6 +630,70 @@ int main(void) {
         free(runtime_cfg);
         if (!ok) {
             return fail("persisted values redirected or disabled shader discovery");
+        }
+    }
+
+    /* Picker paths are constrained to the durable leaf-recommended directory.
+       The daemon accepts a path only for apply, and only this one: anything
+       else would let whatever can reach the IPC socket load an arbitrary file
+       as a shader. */
+    {
+        char *recdir = jw_retroarch_recommended_shaders_dir();
+        char resolved[PATH_MAX];
+        char relative[PATH_MAX];
+        int ok = 1;
+
+        if (!recdir) {
+            return fail("recommended shader directory unavailable");
+        }
+        if (jw__mkdir_p_test(recdir) != 0) {
+            free(recdir);
+            return fail("recommended shader directory could not be created");
+        }
+
+        char good[PATH_MAX];
+        char wrong_ext[PATH_MAX];
+        char outside[PATH_MAX];
+        char escape[PATH_MAX];
+        snprintf(good, sizeof(good), "%s/crt-sharp.glslp", recdir);
+        snprintf(wrong_ext, sizeof(wrong_ext), "%s/notes.txt", recdir);
+        snprintf(outside, sizeof(outside), "%s/../escaped.glslp", recdir);
+        snprintf(escape, sizeof(escape), "%s/../../../../etc/passwd", recdir);
+        if (write_text(good, "#reference \"x\"\n") != 0 ||
+            write_text(wrong_ext, "notes\n") != 0) {
+            free(recdir);
+            return fail("shader path fixture write failed");
+        }
+        write_text(outside, "#reference \"x\"\n");
+
+        /* A real preset inside the directory is accepted, and the logged form
+           is relative to the root. */
+        if (!jw_retroarch_shader_path_is_recommended(good, resolved, sizeof(resolved),
+                                                     relative, sizeof(relative)) ||
+            strcmp(relative, "crt-sharp.glslp") != 0) {
+            ok = 0;
+        }
+        /* Everything else is refused. */
+        if (jw_retroarch_shader_path_is_recommended(wrong_ext, resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended(outside, resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended(escape, resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended("/etc/passwd", resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended("", resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended(NULL, resolved, sizeof(resolved),
+                                                    relative, sizeof(relative))) {
+            ok = 0;
+        }
+        unlink(good);
+        unlink(wrong_ext);
+        unlink(outside);
+        free(recdir);
+        if (!ok) {
+            return fail("picker shader path constraint is not enforced");
         }
     }
 
