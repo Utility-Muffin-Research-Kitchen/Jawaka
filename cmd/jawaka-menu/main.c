@@ -2104,15 +2104,8 @@ static void jw__shader_off_choice(
         jw__shader_notice(view->status);
         return;
     }
-    /* Removing an automatic preset does not synthesize an Off override. Query
-       once so a lost daemon is noticed; broader presets are reevaluated on the
-       next content load by RetroArch itself. */
-    jw_ipc_retroarch_shader_reply reply;
-    if (jw__ingame_shader_send(transport->ctx, JW_SHADER_PICKER_GET, NULL,
-                               JW_RA_SHADER_SCOPE_GAME, &reply) != 0 ||
-        reply.result != JW_RA_OK) {
-        jw__shader_notice(T("RetroArch did not confirm the shader. Reopen Shader or restart the game."));
-    }
+    /* Removing an automatic preset does not synthesize an Off override;
+       broader presets are reevaluated on the next content load by RetroArch. */
     jw__shader_notice(T("Saved preset removed. A broader preset may apply after content reload."));
     jw__shader_resume(socket_path, state, menu_running);
 }

@@ -2156,7 +2156,53 @@ static bool jw__shader_path_below(const char *real, const char *root,
     return n > 0 && (size_t)n < relative_size;
 }
 
+static char *jw__retroarch_effective_shader_dir(const char *runtime_config_path,
+                                                 const char *sdcard_root) {
+    if (!runtime_config_path || !runtime_config_path[0]) return NULL;
+    char *text = jw__read_text_file(runtime_config_path,
+                                    JW_RETROARCH_CONFIG_READ_MAX);
+    if (!text) return NULL;
+    /* RetroArch keeps the first duplicate key, so resolve the same value it
+       actually used for this running session. */
+    char *value = jw__retroarch_cfg_text_string_value_ex(
+        text, "video_shader_dir", true);
+    free(text);
+    if (!value || !value[0]) {
+        free(value);
+        return NULL;
+    }
+
+    char expanded[PATH_MAX];
+    const char *path = value;
+    char *home = NULL;
+    if (value[0] == '~') {
+        if (value[1] != '\0' && value[1] != '/') {
+            free(value);
+            return NULL;
+        }
+        home = jw_retroarch_state_dir(sdcard_root ? sdcard_root : "");
+        int n = home ? snprintf(expanded, sizeof(expanded), "%s%s",
+                                home, value + 1) : -1;
+        if (n < 0 || (size_t)n >= sizeof(expanded)) {
+            free(home);
+            free(value);
+            return NULL;
+        }
+        path = expanded;
+    }
+
+    char real[PATH_MAX];
+    struct stat st;
+    char *result = realpath(path, real) && stat(real, &st) == 0 &&
+                           S_ISDIR(st.st_mode)
+                     ? strdup(real) : NULL;
+    free(home);
+    free(value);
+    return result;
+}
+
 bool jw_retroarch_shader_path_is_restorable(const char *candidate,
+                                            const char *runtime_config_path,
                                             char *resolved, size_t resolved_size,
                                             char *relative, size_t relative_size) {
     char real[PATH_MAX];
@@ -2171,13 +2217,19 @@ bool jw_retroarch_shader_path_is_restorable(const char *candidate,
     char *sdroot = jw_sdcard_root();
     char *shaders = jw__default_retroarch_user_shaders_dir(sdroot ? sdroot : "");
     char *config = jw__default_retroarch_config_dir(sdroot ? sdroot : "");
+    char *effective = jw__retroarch_effective_shader_dir(
+        runtime_config_path, sdroot ? sdroot : "");
     free(sdroot);
     bool ok = (shaders && jw__shader_path_below(real, shaders, "shaders/",
                                                  relative, relative_size)) ||
               (config && jw__shader_path_below(real, config, "config/",
-                                                relative, relative_size));
+                                                relative, relative_size)) ||
+              (effective && jw__shader_path_below(real, effective,
+                                                  "video_shader_dir/",
+                                                  relative, relative_size));
     free(shaders);
     free(config);
+    free(effective);
     if (!ok || snprintf(resolved, resolved_size, "%s", real) >=
                    (int)resolved_size)
         return false;

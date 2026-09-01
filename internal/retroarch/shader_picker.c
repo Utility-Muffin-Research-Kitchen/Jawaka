@@ -173,8 +173,12 @@ jw_shader_picker_result jw_shader_picker_remove(
         return JW_SHADER_PICKER_REMOVE_FAILED;
     if (reply.outcome == JW_RA_SHADER_ABSENT)
         return JW_SHADER_PICKER_REMOVE_ABSENT;
-    return reply.outcome == JW_RA_SHADER_OK
-         ? JW_SHADER_PICKER_OK : JW_SHADER_PICKER_REMOVE_FAILED;
+    if (reply.outcome != JW_RA_SHADER_OK)
+        return JW_SHADER_PICKER_REMOVE_FAILED;
+    /* The preset was removed, but a lost daemon must not let the UI follow an
+       unconfirmed result with a contradictory success notice. */
+    return jw_sp__get_path(transport, NULL, 0)
+         ? JW_SHADER_PICKER_OK : JW_SHADER_PICKER_UNKNOWN_STATE;
 }
 
 bool jw_shader_picker_scope_enabled(jw_ra_shader_scope scope,

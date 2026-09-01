@@ -235,6 +235,16 @@ static void test_automatic_preset_reference(void) {
 
     fp = fopen(wrapper, "w");
     if (fp) {
+        fputs("#reference recommended.glslp\n", fp);
+        fclose(fp);
+    }
+    check(jw_shader_catalog_reference_target(wrapper, resolved, sizeof(resolved)),
+          "unquoted automatic preset reference resolves");
+    check(strcmp(resolved, expected) == 0,
+          "unquoted preset maps to its referenced recommendation");
+
+    fp = fopen(wrapper, "w");
+    if (fp) {
         fputs("#reference \"missing.glslp\"\n", fp);
         fclose(fp);
     }

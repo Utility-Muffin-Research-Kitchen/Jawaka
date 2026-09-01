@@ -651,9 +651,9 @@ int main(void) {
     }
 
     /* Preview paths are constrained to leaf-recommended. Restore separately
-       accepts a daemon-reported original below the durable shader or automatic
-       preset roots, so a failed preview can recover a custom/global preset
-       without turning preview into an arbitrary-file loader. */
+       accepts a daemon-reported original below the durable shader, automatic
+       preset, or effective browser roots, so a failed preview can recover a
+       custom/global preset without turning preview into an arbitrary loader. */
     {
         char *recdir = jw_retroarch_recommended_shaders_dir();
         char resolved[PATH_MAX];
@@ -674,6 +674,9 @@ int main(void) {
         char escape[PATH_MAX];
         char custom[PATH_MAX];
         char foreign[PATH_MAX];
+        char unconfigured_dir[PATH_MAX];
+        char unconfigured[PATH_MAX];
+        char shader_runtime_cfg[PATH_MAX];
         char automatic_dir[PATH_MAX];
         char automatic[PATH_MAX];
         snprintf(good, sizeof(good), "%s/crt-sharp.glslp", recdir);
@@ -682,10 +685,16 @@ int main(void) {
         snprintf(escape, sizeof(escape), "%s/../../../../etc/passwd", recdir);
         snprintf(custom, sizeof(custom), "%s/custom/user.glslp", user_shaders);
         snprintf(foreign, sizeof(foreign), "%s/outside.glslp", custom_shaders);
+        snprintf(unconfigured_dir, sizeof(unconfigured_dir), "%s/unconfigured", root);
+        snprintf(unconfigured, sizeof(unconfigured), "%s/outside.glslp",
+                 unconfigured_dir);
+        snprintf(shader_runtime_cfg, sizeof(shader_runtime_cfg),
+                 "%s/shader-runtime.cfg", runtime);
         snprintf(automatic_dir, sizeof(automatic_dir),
                  "%s/retroarch/.config/retroarch/config/FCEUmm", internal);
         snprintf(automatic, sizeof(automatic), "%s/Game.glslp", automatic_dir);
         if (jw__mkdir_p_test(user_shaders) != 0 ||
+            jw__mkdir_p_test(unconfigured_dir) != 0 ||
             jw__mkdir_p_test(automatic_dir) != 0) {
             free(recdir);
             return fail("shader restore directories could not be created");
@@ -700,6 +709,8 @@ int main(void) {
             write_text(wrong_ext, "notes\n") != 0 ||
             write_text(custom, "shaders = 0\n") != 0 ||
             write_text(foreign, "shaders = 0\n") != 0 ||
+            write_text(unconfigured, "shaders = 0\n") != 0 ||
+            write_text(shader_runtime_cfg, custom_cfg) != 0 ||
             write_text(automatic, "#reference \"x\"\n") != 0) {
             free(recdir);
             return fail("shader path fixture write failed");
@@ -728,18 +739,29 @@ int main(void) {
                                                     relative, sizeof(relative))) {
             ok = 0;
         }
-        if (!jw_retroarch_shader_path_is_restorable(custom, resolved,
+        if (!jw_retroarch_shader_path_is_restorable(custom, shader_runtime_cfg,
+                                                     resolved,
                                                      sizeof(resolved), relative,
                                                      sizeof(relative)) ||
             strcmp(relative, "shaders/custom/user.glslp") != 0 ||
-            !jw_retroarch_shader_path_is_restorable(automatic, resolved,
+            !jw_retroarch_shader_path_is_restorable(automatic, shader_runtime_cfg,
+                                                     resolved,
                                                      sizeof(resolved), relative,
                                                      sizeof(relative)) ||
             strcmp(relative, "config/FCEUmm/Game.glslp") != 0 ||
-            jw_retroarch_shader_path_is_restorable(foreign, resolved,
+            !jw_retroarch_shader_path_is_restorable(foreign, shader_runtime_cfg,
+                                                     resolved, sizeof(resolved),
+                                                     relative, sizeof(relative)) ||
+            strcmp(relative, "video_shader_dir/outside.glslp") != 0 ||
+            jw_retroarch_shader_path_is_restorable(foreign, NULL, resolved,
                                                     sizeof(resolved), relative,
                                                     sizeof(relative)) ||
-            jw_retroarch_shader_path_is_restorable("/etc/passwd", resolved,
+            jw_retroarch_shader_path_is_restorable(unconfigured,
+                                                    shader_runtime_cfg, resolved,
+                                                    sizeof(resolved), relative,
+                                                    sizeof(relative)) ||
+            jw_retroarch_shader_path_is_restorable("/etc/passwd",
+                                                    shader_runtime_cfg, resolved,
                                                     sizeof(resolved), relative,
                                                     sizeof(relative))) {
             ok = 0;
@@ -749,7 +771,10 @@ int main(void) {
         unlink(outside);
         unlink(custom);
         unlink(foreign);
+        unlink(unconfigured);
+        unlink(shader_runtime_cfg);
         unlink(automatic);
+        rmdir(unconfigured_dir);
         free(recdir);
         if (!ok) {
             return fail("picker shader path constraint is not enforced");

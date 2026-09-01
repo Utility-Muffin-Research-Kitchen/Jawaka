@@ -243,12 +243,41 @@ static void test_global_gate_and_unpatched_build(void) {
     check_fake(&f, "unpatched build probe");
 }
 
+static void test_remove_verification(void) {
+    const step unconfirmed[] = {
+        { JW_SHADER_PICKER_REMOVE, JW_RA_SHADER_SCOPE_GAME, NULL, 0,
+          JW_RA_OK, JW_RA_SHADER_OK, NULL },
+        { JW_SHADER_PICKER_GET, JW_RA_SHADER_SCOPE_GAME, NULL, -1,
+          JW_RA_TIMEOUT, JW_RA_SHADER_ERR, NULL },
+    };
+    fake f = { unconfirmed, 2, 0, 0 };
+    jw_shader_picker_transport t = transport(&f);
+    check(jw_shader_picker_remove(&t, JW_RA_SHADER_SCOPE_GAME) ==
+              JW_SHADER_PICKER_UNKNOWN_STATE,
+          "successful remove without verification is not reported as success");
+    check_fake(&f, "remove verification failure sequence");
+
+    const step confirmed[] = {
+        { JW_SHADER_PICKER_REMOVE, JW_RA_SHADER_SCOPE_GAME, NULL, 0,
+          JW_RA_OK, JW_RA_SHADER_OK, NULL },
+        { JW_SHADER_PICKER_GET, JW_RA_SHADER_SCOPE_GAME, NULL, 0,
+          JW_RA_OK, JW_RA_SHADER_NONE, NULL },
+    };
+    f = (fake){ confirmed, 2, 0, 0 };
+    t = transport(&f);
+    check(jw_shader_picker_remove(&t, JW_RA_SHADER_SCOPE_GAME) ==
+              JW_SHADER_PICKER_OK,
+          "verified remove is reported as success");
+    check_fake(&f, "remove verification success sequence");
+}
+
 int main(void) {
     test_preview_duplicate_and_cancel();
     test_apply_failure_and_restore_failure();
     test_timeout_reconciliation();
     test_save_remove_off_and_reload();
     test_global_gate_and_unpatched_build();
+    test_remove_verification();
     if (failures) {
         fprintf(stderr, "shader-picker-test: %d failure(s)\n", failures);
         return 1;

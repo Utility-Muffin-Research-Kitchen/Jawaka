@@ -21,9 +21,10 @@ bool jw_retroarch_shader_path_is_recommended(const char *candidate,
                                              char *resolved, size_t resolved_size,
                                              char *relative, size_t relative_size);
 /* Restore is narrower than a general shader load, but broader than preview:
-   it may reapply the path RetroArch reported from the durable shader or
-   automatic-preset roots. */
+   it may reapply the path RetroArch reported from the durable shader,
+   automatic-preset, or effective video_shader_dir roots. */
 bool jw_retroarch_shader_path_is_restorable(const char *candidate,
+                                            const char *runtime_config_path,
                                             char *resolved, size_t resolved_size,
                                             char *relative, size_t relative_size);
 char *jw_retroarch_core_path_for_system(const char *system);

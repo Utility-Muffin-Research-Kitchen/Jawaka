@@ -10514,8 +10514,9 @@ static int jw__handle_retroarch_shader(jw_daemon_state *state,
                   path_json->valuestring, resolved, sizeof(resolved), relative,
                   sizeof(relative))
             : jw_retroarch_shader_path_is_restorable(
-                  path_json->valuestring, resolved, sizeof(resolved), relative,
-                  sizeof(relative));
+                  path_json->valuestring,
+                  state->retroarch_session.config_path,
+                  resolved, sizeof(resolved), relative, sizeof(relative));
         if (!permitted) {
             jw_log_warn("retroarch-shader rejected %s path", operation);
             return jw__reply_error(client, "shader path not permitted");

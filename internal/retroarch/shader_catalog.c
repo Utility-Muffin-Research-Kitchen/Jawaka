@@ -65,16 +65,18 @@ bool jw_shader_catalog_reference_target(const char *preset_path,
         char *p = line;
         while (isspace((unsigned char)*p)) p++;
         if (strncmp(p, "#reference", 10) != 0 ||
-            !isspace((unsigned char)p[10]))
+            (!isspace((unsigned char)p[10]) && p[10] != '"' && p[10] != '\''))
             continue;
         p += 10;
         while (isspace((unsigned char)*p)) p++;
-        if (*p++ != '"') break;
-        char *end = strchr(p, '"');
-        if (!end) break;
-        *end++ = '\0';
-        while (isspace((unsigned char)*end)) end++;
-        if (*end != '\0' || !p[0]) break;
+        char quote = 0;
+        if (*p == '"' || *p == '\'') quote = *p++;
+        char *end = p;
+        while (*end && (quote ? *end != quote
+                               : !isspace((unsigned char)*end)))
+            end++;
+        if (end == p) break;
+        *end = '\0';
 
         if (p[0] == '/') {
             if (snprintf(candidate, sizeof(candidate), "%s", p) >=
