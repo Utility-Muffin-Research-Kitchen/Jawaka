@@ -9,6 +9,19 @@
 #define JW_RA_DEFAULT_TIMEOUT_MS 750u
 #define JW_RA_REPLY_MAX 1024u
 
+/* Shader-specific, because a first apply compiles and links on the GPU while
+ * every other command answers immediately. Measured on MLP1 over 25 first
+ * applies of the shipped recommendations plus one shader that fails to link:
+ * round trip p50 98ms, p95 115ms, max 117ms (including ~13ms of process spawn
+ * in the harness); the shader work alone is p50 85ms, p95 102ms, max 104ms.
+ * 1000ms is roughly 9x the measured p95 and still bounds the worst-case UI
+ * stall at one second. Unrelated commands keep JW_RA_DEFAULT_TIMEOUT_MS; there
+ * is no evidence to change those. */
+#define JW_RA_SHADER_TIMEOUT_MS 1000u
+
+/* Bounded lowercase hex, generated per exchange. */
+#define JW_RA_REQUEST_ID_MAX 17u
+
 typedef enum {
     JW_RA_OK = 0,
     JW_RA_TIMEOUT,
@@ -29,6 +42,28 @@ typedef struct {
     unsigned port;
     unsigned timeout_ms;
 } jw_ra_client;
+
+/* The four automatic-preset scopes RetroArch itself understands. Kept as an
+ * enum so a caller cannot pass a path where a scope belongs. */
+typedef enum {
+    JW_RA_SHADER_SCOPE_GAME = 0,
+    JW_RA_SHADER_SCOPE_PARENT,
+    JW_RA_SHADER_SCOPE_CORE,
+    JW_RA_SHADER_SCOPE_GLOBAL
+} jw_ra_shader_scope;
+
+/* What RetroArch reported. Distinct from jw_ra_result, which says whether the
+ * exchange itself worked: a shader that fails to link is a successful exchange
+ * carrying JW_RA_SHADER_ERR_APPLY. */
+typedef enum {
+    JW_RA_SHADER_OK = 0,
+    JW_RA_SHADER_NONE,            /* GET: nothing is loaded */
+    JW_RA_SHADER_ABSENT,          /* REMOVE: there was nothing to remove */
+    JW_RA_SHADER_ERR_MISSING,     /* SET: the preset is not on disk */
+    JW_RA_SHADER_ERR_UNSUPPORTED, /* SET: not a preset this driver can load */
+    JW_RA_SHADER_ERR_APPLY,       /* SET/CLEAR: compile, link or apply failed */
+    JW_RA_SHADER_ERR             /* SAVE/REMOVE failed */
+} jw_ra_shader_outcome;
 
 typedef struct {
     jw_ra_play_state state;
@@ -96,5 +131,32 @@ jw_ra_result jw_ra_show_message(const jw_ra_client *client, const char *message)
 jw_ra_result jw_ra_load_content_current_core(const jw_ra_client *client,
                                              const char *content_path,
                                              char *reply, size_t reply_size);
+
+
+/* Namespaced shader commands. Each generates one request ID, validates the
+ * reply source, ignores replies carrying any other ID until a single absolute
+ * deadline, and parses only the exact documented reply forms. */
+jw_ra_result jw_ra_get_shader(const jw_ra_client *client,
+                              jw_ra_shader_outcome *outcome,
+                              char *path, size_t path_size);
+jw_ra_result jw_ra_set_shader(const jw_ra_client *client,
+                              const char *preset_path,
+                              jw_ra_shader_outcome *outcome);
+jw_ra_result jw_ra_clear_shader(const jw_ra_client *client,
+                                jw_ra_shader_outcome *outcome);
+jw_ra_result jw_ra_save_shader_preset(const jw_ra_client *client,
+                                      jw_ra_shader_scope scope,
+                                      jw_ra_shader_outcome *outcome);
+jw_ra_result jw_ra_remove_shader_preset(const jw_ra_client *client,
+                                        jw_ra_shader_scope scope,
+                                        jw_ra_shader_outcome *outcome);
+
+/* Exposed for tests. */
+const char *jw_ra_shader_scope_token(jw_ra_shader_scope scope);
+jw_ra_result jw_ra_parse_shader_reply(const char *reply,
+                                      const char *request_id,
+                                      const char *operation,
+                                      jw_ra_shader_outcome *outcome,
+                                      char *path, size_t path_size);
 
 #endif
