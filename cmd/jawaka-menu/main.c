@@ -1861,10 +1861,10 @@ static bool jw__shader_confirmation(const char *message,
                                     const char *confirm_label) {
     cat_footer_item footer[] = {
         { .button = CAT_BTN_B, .label = T("Cancel"), .is_confirm = false },
-        { .button = CAT_BTN_A, .label = T(confirm_label), .is_confirm = true },
+        { .button = CAT_BTN_A, .label = confirm_label, .is_confirm = true },
     };
     cat_message_opts opts = {
-        .message = T(message),
+        .message = message,
         .footer = footer,
         .footer_count = 2,
     };
@@ -1877,7 +1877,7 @@ static void jw__shader_notice(const char *message) {
         { .button = CAT_BTN_A, .label = T("OK"), .is_confirm = true },
     };
     cat_message_opts opts = {
-        .message = T(message),
+        .message = message,
         .footer = footer,
         .footer_count = 1,
     };
@@ -1886,7 +1886,7 @@ static void jw__shader_notice(const char *message) {
 }
 
 static bool jw__shader_offer_settings(const char *message) {
-    return jw__shader_confirmation(message, "RetroArch Settings");
+    return jw__shader_confirmation(message, T("RetroArch Settings"));
 }
 
 static void jw__render_ingame_shader(const jw_ingame_state *state,
@@ -2052,13 +2052,13 @@ static void jw__shader_save_choice(
     }
     jw_ra_shader_scope scope = jw__shader_scope_from_index(index);
     if (!jw_shader_picker_scope_enabled(scope, JW_FUGAZI_RESOLVER_ASSEMBLED)) {
-        jw__shader_notice("All RetroArch requires a Leaf build with Fugazi's conflict resolver.");
+        jw__shader_notice(T("All RetroArch requires a Leaf build with Fugazi's conflict resolver."));
         return;
     }
     if (scope == JW_RA_SHADER_SCOPE_GLOBAL &&
         !jw__shader_confirmation(
-            "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?",
-            "Save globally"))
+            T("This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"),
+            T("Save globally")))
         return;
     jw_shader_picker_result result = jw_shader_picker_save(transport, scope);
     if (result != JW_SHADER_PICKER_OK) {
@@ -2095,7 +2095,7 @@ static void jw__shader_off_choice(
     if (index < 0) return;
     jw_ra_shader_scope scope = jw__shader_scope_from_index(index);
     if (!jw_shader_picker_scope_enabled(scope, JW_FUGAZI_RESOLVER_ASSEMBLED)) {
-        jw__shader_notice("All RetroArch requires a Leaf build with Fugazi's conflict resolver.");
+        jw__shader_notice(T("All RetroArch requires a Leaf build with Fugazi's conflict resolver."));
         return;
     }
     jw_shader_picker_result result = jw_shader_picker_remove(transport, scope);
@@ -2111,9 +2111,9 @@ static void jw__shader_off_choice(
     if (jw__ingame_shader_send(transport->ctx, JW_SHADER_PICKER_GET, NULL,
                                JW_RA_SHADER_SCOPE_GAME, &reply) != 0 ||
         reply.result != JW_RA_OK) {
-        jw__shader_notice("RetroArch did not confirm the shader. Reopen Shader or restart the game.");
+        jw__shader_notice(T("RetroArch did not confirm the shader. Reopen Shader or restart the game."));
     }
-    jw__shader_notice("Saved preset removed. A broader preset may apply after content reload.");
+    jw__shader_notice(T("Saved preset removed. A broader preset may apply after content reload."));
     jw__shader_resume(socket_path, state, menu_running);
 }
 
@@ -2131,7 +2131,7 @@ static void jw__ingame_show_shader(const char *socket_path,
     if (probe != JW_SHADER_PICKER_OK) {
         char message[256];
         jw__shader_result_status(probe, NULL, message, sizeof(message));
-        if (jw__shader_confirmation(message, "RetroArch Settings") &&
+        if (jw__shader_confirmation(message, T("RetroArch Settings")) &&
             jw_ipc_retroarch_action(socket_path, "settings", 0,
                                     state->status, sizeof(state->status)) == 0)
             *menu_running = false;
@@ -2227,8 +2227,8 @@ static void jw__ingame_show_shader(const char *socket_path,
                         jw__shader_result_status(result, NULL, view.status,
                                                  sizeof(view.status));
                     } else if (jw__shader_confirmation(
-                                   "In RetroArch, open Quick Menu -> Shaders.",
-                                   "Open") &&
+                                   T("In RetroArch, open Quick Menu -> Shaders."),
+                                   T("Open")) &&
                                jw_ipc_retroarch_action(
                                    socket_path, "settings", 0, state->status,
                                    sizeof(state->status)) == 0) {

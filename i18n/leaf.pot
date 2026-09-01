@@ -260,6 +260,10 @@ msgstr ""
 msgid "All RetroArch"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "All RetroArch requires a Leaf build with Fugazi's conflict resolver."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "All Systems"
 msgstr ""
@@ -850,6 +854,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Icon"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "In RetroArch, open Quick Menu -> Shaders."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1477,6 +1485,14 @@ msgid "Save State"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
+msgid "Save globally"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Saved preset removed. A broader preset may apply after content reload."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
 msgid "Saved presets are removed separately by scope."
 msgstr ""
 
@@ -1870,6 +1886,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "This game"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
