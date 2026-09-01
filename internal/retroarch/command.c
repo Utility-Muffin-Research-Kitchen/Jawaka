@@ -117,7 +117,12 @@ bool jw_ra_raw_command_supported(const char *command) {
 
     return jw_ra__starts_with_word(command, "GET_CONFIG_PARAM") ||
            jw_ra__starts_with_word(command, "GET_PATH") ||
+           jw_ra__starts_with_word(command, "JAWAKA_CLEAR_SHADER") ||
+           jw_ra__starts_with_word(command, "JAWAKA_GET_SHADER") ||
            jw_ra__starts_with_word(command, "JAWAKA_LOAD_CONTENT") ||
+           jw_ra__starts_with_word(command, "JAWAKA_REMOVE_SHADER_PRESET") ||
+           jw_ra__starts_with_word(command, "JAWAKA_SAVE_SHADER_PRESET") ||
+           jw_ra__starts_with_word(command, "JAWAKA_SET_SHADER") ||
            jw_ra__starts_with_word(command, "LOAD_CORE") ||
            jw_ra__starts_with_word(command, "LOAD_STATE_SLOT") ||
            jw_ra__starts_with_word(command, "PLAY_REPLAY_SLOT") ||
