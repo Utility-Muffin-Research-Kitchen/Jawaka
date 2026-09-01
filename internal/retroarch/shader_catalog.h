@@ -52,4 +52,12 @@ void jw_shader_catalog_free(jw_shader_catalog *catalog);
  * Exposed for tests. */
 bool jw_shader_catalog_path_ok(const char *path);
 
+/* Resolve the single #reference in a RetroArch automatic preset. RetroArch
+ * reports the automatic game/folder/core preset as active, while the picker
+ * needs to map that wrapper back to the recommendation it references. This is
+ * intentionally one hop: recommendation presets may themselves reference
+ * bundled shader implementations, and those are still distinct picker rows. */
+bool jw_shader_catalog_reference_target(const char *preset_path,
+                                        char *out, size_t out_size);
+
 #endif

@@ -10502,17 +10502,22 @@ static int jw__handle_retroarch_shader(jw_daemon_state *state,
 
     if (strcmp(operation, "get") == 0) {
         result = jw_ra_get_shader(&ra, &outcome, path, sizeof(path));
-    } else if (strcmp(operation, "set") == 0) {
+    } else if (strcmp(operation, "set") == 0 ||
+               strcmp(operation, "restore") == 0) {
         cJSON *path_json = cJSON_GetObjectItemCaseSensitive(root, "path");
         char resolved[PATH_MAX];
         if (!cJSON_IsString(path_json) || !path_json->valuestring[0]) {
             return jw__reply_error(client, "missing shader path");
         }
-        if (!jw_retroarch_shader_path_is_recommended(
-                path_json->valuestring, resolved, sizeof(resolved), relative,
-                sizeof(relative))) {
-            jw_log_warn("retroarch-shader rejected path outside the "
-                        "recommended shader directory");
+        bool permitted = strcmp(operation, "set") == 0
+            ? jw_retroarch_shader_path_is_recommended(
+                  path_json->valuestring, resolved, sizeof(resolved), relative,
+                  sizeof(relative))
+            : jw_retroarch_shader_path_is_restorable(
+                  path_json->valuestring, resolved, sizeof(resolved), relative,
+                  sizeof(relative));
+        if (!permitted) {
+            jw_log_warn("retroarch-shader rejected %s path", operation);
             return jw__reply_error(client, "shader path not permitted");
         }
         snprintf(path, sizeof(path), "%s", resolved);

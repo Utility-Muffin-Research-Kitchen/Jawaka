@@ -463,14 +463,15 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "joypad_autoconfig_dir",
         /* Automatic shader preset discovery. Protected so a persisted user
            value cannot redirect RetroArch to a directory Fugazi and the in-game
-           picker do not inspect, or switch auto-loading off and make every
-           saved preset silently stop applying. This is a discovery invariant
-           only; it is unrelated to the config-persistence work in decision
-           0007. video_shader_dir and video_shader_preset_save_reference_enable
-           stay user-owned: a genuine custom shader directory and both preset
-           save styles are supported. */
+           picker do not inspect, or switch loading off and make every saved
+           preset silently stop applying. RetroArch checks video_shader_enable
+           before it attempts automatic preset discovery, so all three values
+           are launch invariants. video_shader_dir and
+           video_shader_preset_save_reference_enable stay user-owned: a genuine
+           custom shader directory and both preset save styles are supported. */
         "rgui_config_directory",
         "auto_shaders_enable",
+        "video_shader_enable",
 #ifdef PLATFORM_MLP1
         "audio_device",
         "audio_driver",
@@ -2141,6 +2142,48 @@ bool jw_retroarch_shader_path_is_recommended(const char *candidate,
     return ok;
 }
 
+static bool jw__shader_path_below(const char *real, const char *root,
+                                  const char *label,
+                                  char *relative, size_t relative_size) {
+    if (!real || !root || !label || !relative || relative_size == 0) return false;
+    size_t root_len = strlen(root);
+    while (root_len > 0 && root[root_len - 1] == '/') root_len--;
+    if (strncmp(real, root, root_len) != 0 || real[root_len] != '/' ||
+        real[root_len + 1] == '\0')
+        return false;
+    int n = snprintf(relative, relative_size, "%s%s", label,
+                     real + root_len + 1);
+    return n > 0 && (size_t)n < relative_size;
+}
+
+bool jw_retroarch_shader_path_is_restorable(const char *candidate,
+                                            char *resolved, size_t resolved_size,
+                                            char *relative, size_t relative_size) {
+    char real[PATH_MAX];
+    struct stat st;
+    if (!candidate || !candidate[0] || !resolved || resolved_size == 0 ||
+        !relative || relative_size == 0 || !realpath(candidate, real) ||
+        stat(real, &st) != 0 || !S_ISREG(st.st_mode))
+        return false;
+    const char *ext = strrchr(real, '.');
+    if (!ext || strcmp(ext, ".glslp") != 0) return false;
+
+    char *sdroot = jw_sdcard_root();
+    char *shaders = jw__default_retroarch_user_shaders_dir(sdroot ? sdroot : "");
+    char *config = jw__default_retroarch_config_dir(sdroot ? sdroot : "");
+    free(sdroot);
+    bool ok = (shaders && jw__shader_path_below(real, shaders, "shaders/",
+                                                 relative, relative_size)) ||
+              (config && jw__shader_path_below(real, config, "config/",
+                                                relative, relative_size));
+    free(shaders);
+    free(config);
+    if (!ok || snprintf(resolved, resolved_size, "%s", real) >=
+                   (int)resolved_size)
+        return false;
+    return true;
+}
+
 char *jw_retroarch_recommended_shaders_dir(void) {
     char *root = jw_sdcard_root();
     char *shaders = jw__default_retroarch_user_shaders_dir(root ? root : "");
@@ -2155,6 +2198,28 @@ char *jw_retroarch_recommended_shaders_dir(void) {
     }
     free(shaders);
     return jw__dup_realpath_or_literal(path);
+}
+
+/* Release-owned catalog. Unlike video_shader_dir, this must never fall back to
+   the durable updater/custom root: only Leaf's assembled manifest is trusted
+   to advertise recommendations. The returned path may not exist so the picker
+   can surface its normal reinstall message. */
+char *jw_retroarch_shader_manifest_path(void) {
+    const char *root = jw__env_value("UMRK_RETROARCH_SHADERS_DIR");
+    char path[PATH_MAX];
+    if (!root) {
+        const char *platform = jw__env_value("UMRK_PLATFORM_PATH");
+        const char *system = jw__env_value("SYSTEM_PATH");
+        if (platform && jw__format_string(path, sizeof(path), "%s/shaders", platform))
+            root = path;
+        else if (system && jw__format_string(path, sizeof(path), "%s/shaders", system))
+            root = path;
+    }
+    if (!root) return NULL;
+    char manifest[PATH_MAX];
+    if (!jw__format_string(manifest, sizeof(manifest), "%s/manifest.json", root))
+        return NULL;
+    return strdup(manifest);
 }
 
 static char *jw__default_retroarch_shaders_dir(const char *sdcard_root) {
@@ -2291,11 +2356,12 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     if (autoconfig_dir && jw__is_directory(autoconfig_dir)) {
         jw__retroarch_cfg_string(fp, "joypad_autoconfig_dir", autoconfig_dir);
     }
-    /* Automatic shader preset discovery. Both keys are protected, so this is
-       the only place either is written: Fugazi, the in-game picker's save and
+    /* Automatic shader preset discovery. These keys are protected, so this is
+       the only place they are written: Fugazi, the in-game picker's save and
        remove, and RetroArch's own auto-load at content launch all have to
        resolve the same directory, and a persisted user value must not be able
-       to move it or switch auto-loading off. */
+       to move it or switch loading off. video_shader_enable is required here:
+       RetroArch returns before auto-loading when it starts false. */
     {
         char *shader_config_dir = jw__default_retroarch_config_dir(config_sdroot_abs);
         if (shader_config_dir) {
@@ -2304,6 +2370,7 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
         }
     }
     jw__retroarch_cfg_string(fp, "auto_shaders_enable", "true");
+    jw__retroarch_cfg_string(fp, "video_shader_enable", "true");
     jw__retroarch_cfg_string(fp, "config_save_on_exit", persist_changes ? "true" : "false");
     jw__retroarch_cfg_string(fp, "network_cmd_enable", "true");
     char command_port[16];

@@ -1178,6 +1178,159 @@ int jw_ipc_retroarch_action(const char *socket_path, const char *action,
     return 0;
 }
 
+static bool ipc__shader_result(const char *text, jw_ra_result *out) {
+    if (!text || !out) return false;
+    if (strcmp(text, "ok") == 0) *out = JW_RA_OK;
+    else if (strcmp(text, "timeout") == 0) *out = JW_RA_TIMEOUT;
+    else if (strcmp(text, "unsupported") == 0) *out = JW_RA_UNSUPPORTED;
+    else if (strcmp(text, "parse_error") == 0) *out = JW_RA_PARSE_ERROR;
+    else if (strcmp(text, "socket_error") == 0) *out = JW_RA_SOCKET_ERROR;
+    else return false;
+    return true;
+}
+
+static const char *ipc__shader_result_name(jw_ra_result result) {
+    switch (result) {
+        case JW_RA_OK: return "ok";
+        case JW_RA_TIMEOUT: return "timeout";
+        case JW_RA_UNSUPPORTED: return "unsupported";
+        case JW_RA_PARSE_ERROR: return "parse_error";
+        case JW_RA_SOCKET_ERROR: return "socket_error";
+    }
+    return "unknown";
+}
+
+static bool ipc__shader_outcome(const char *text,
+                                jw_ra_shader_outcome *out) {
+    if (!text || !out) return false;
+    if (strcmp(text, "ok") == 0) *out = JW_RA_SHADER_OK;
+    else if (strcmp(text, "none") == 0) *out = JW_RA_SHADER_NONE;
+    else if (strcmp(text, "absent") == 0) *out = JW_RA_SHADER_ABSENT;
+    else if (strcmp(text, "missing") == 0) *out = JW_RA_SHADER_ERR_MISSING;
+    else if (strcmp(text, "unsupported") == 0) *out = JW_RA_SHADER_ERR_UNSUPPORTED;
+    else if (strcmp(text, "apply") == 0) *out = JW_RA_SHADER_ERR_APPLY;
+    else if (strcmp(text, "error") == 0) *out = JW_RA_SHADER_ERR;
+    else return false;
+    return true;
+}
+
+static const char *ipc__shader_scope(jw_ra_shader_scope scope) {
+    switch (scope) {
+        case JW_RA_SHADER_SCOPE_GAME: return "game";
+        case JW_RA_SHADER_SCOPE_PARENT: return "parent";
+        case JW_RA_SHADER_SCOPE_CORE: return "core";
+        case JW_RA_SHADER_SCOPE_GLOBAL: return "global";
+    }
+    return NULL;
+}
+
+static int ipc__retroarch_shader(const char *socket_path,
+                                 const char *operation,
+                                 const char *path,
+                                 const char *scope,
+                                 jw_ipc_retroarch_shader_reply *out,
+                                 char *status, int status_len) {
+    if (!operation || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    out->result = JW_RA_PARSE_ERROR;
+    out->outcome = JW_RA_SHADER_ERR;
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "retroarch-shader");
+    cJSON_AddStringToObject(req, "operation", operation);
+    if (path) cJSON_AddStringToObject(req, "path", path);
+    if (scope) cJSON_AddStringToObject(req, "scope", scope);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0)
+            snprintf(status, (size_t)status_len, "%s", "RetroArch is not available");
+        return -1;
+    }
+
+    const cJSON *reply_op = cJSON_GetObjectItemCaseSensitive(resp, "operation");
+    const cJSON *result = cJSON_GetObjectItemCaseSensitive(resp, "result");
+    const cJSON *outcome = cJSON_GetObjectItemCaseSensitive(resp, "outcome");
+    const cJSON *reply_path = cJSON_GetObjectItemCaseSensitive(resp, "path");
+    bool valid = (ipc__type_is(resp, "ok") || ipc__type_is(resp, "error")) &&
+                 cJSON_IsString(reply_op) &&
+                 strcmp(reply_op->valuestring, operation) == 0 &&
+                 cJSON_IsString(result) &&
+                 ipc__shader_result(result->valuestring, &out->result);
+    if (valid && out->result == JW_RA_OK) {
+        valid = cJSON_IsString(outcome) &&
+                ipc__shader_outcome(outcome->valuestring, &out->outcome);
+    }
+    if (valid && cJSON_IsString(reply_path)) {
+        ipc__copy_string(out->path, sizeof(out->path), reply_path->valuestring);
+    }
+    if (!valid) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (status && status_len > 0)
+            snprintf(status, (size_t)status_len, "%s",
+                     cJSON_IsString(message) ? message->valuestring
+                                             : "Malformed shader reply");
+        cJSON_Delete(resp);
+        return -1;
+    }
+    if (status && status_len > 0) {
+        snprintf(status, (size_t)status_len, "%s",
+                 ipc__shader_result_name(out->result));
+    }
+    cJSON_Delete(resp);
+    return 0;
+}
+
+int jw_ipc_retroarch_shader_get(const char *socket_path,
+                                jw_ipc_retroarch_shader_reply *out,
+                                char *status, int status_len) {
+    return ipc__retroarch_shader(socket_path, "get", NULL, NULL,
+                                 out, status, status_len);
+}
+
+int jw_ipc_retroarch_shader_set(const char *socket_path, const char *path,
+                                jw_ipc_retroarch_shader_reply *out,
+                                char *status, int status_len) {
+    if (!path || !path[0]) return -1;
+    return ipc__retroarch_shader(socket_path, "set", path, NULL,
+                                 out, status, status_len);
+}
+
+int jw_ipc_retroarch_shader_restore(const char *socket_path, const char *path,
+                                    jw_ipc_retroarch_shader_reply *out,
+                                    char *status, int status_len) {
+    if (!path || !path[0]) return -1;
+    return ipc__retroarch_shader(socket_path, "restore", path, NULL,
+                                 out, status, status_len);
+}
+
+int jw_ipc_retroarch_shader_clear(const char *socket_path,
+                                  jw_ipc_retroarch_shader_reply *out,
+                                  char *status, int status_len) {
+    return ipc__retroarch_shader(socket_path, "clear", NULL, NULL,
+                                 out, status, status_len);
+}
+
+int jw_ipc_retroarch_shader_save(const char *socket_path,
+                                 jw_ra_shader_scope scope,
+                                 jw_ipc_retroarch_shader_reply *out,
+                                 char *status, int status_len) {
+    const char *token = ipc__shader_scope(scope);
+    if (!token) return -1;
+    return ipc__retroarch_shader(socket_path, "save", NULL, token,
+                                 out, status, status_len);
+}
+
+int jw_ipc_retroarch_shader_remove(const char *socket_path,
+                                   jw_ra_shader_scope scope,
+                                   jw_ipc_retroarch_shader_reply *out,
+                                   char *status, int status_len) {
+    const char *token = ipc__shader_scope(scope);
+    if (!token) return -1;
+    return ipc__retroarch_shader(socket_path, "remove", NULL, token,
+                                 out, status, status_len);
+}
+
 int jw_ipc_reset_retroarch_config(const char *socket_path,
                                   char *status, int status_len) {
     cJSON *req = cJSON_CreateObject();

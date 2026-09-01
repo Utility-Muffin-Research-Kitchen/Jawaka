@@ -2,6 +2,8 @@
 
 #include "cJSON.h"
 
+#include <ctype.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +44,62 @@ bool jw_shader_catalog_path_ok(const char *path) {
     }
     /* Something has to remain below the prefix. */
     return len > sizeof(prefix) - 1 + 6;
+}
+
+bool jw_shader_catalog_reference_target(const char *preset_path,
+                                        char *out, size_t out_size) {
+    char line[4096];
+    char candidate[PATH_MAX];
+    char resolved[PATH_MAX];
+    FILE *fp;
+
+    if (!preset_path || !preset_path[0] || !out || out_size == 0) return false;
+    out[0] = '\0';
+    fp = fopen(preset_path, "r");
+    if (!fp) return false;
+
+    bool found = false;
+    size_t inspected = 0;
+    while (inspected < 8192u && fgets(line, sizeof(line), fp)) {
+        inspected += strlen(line);
+        char *p = line;
+        while (isspace((unsigned char)*p)) p++;
+        if (strncmp(p, "#reference", 10) != 0 ||
+            !isspace((unsigned char)p[10]))
+            continue;
+        p += 10;
+        while (isspace((unsigned char)*p)) p++;
+        if (*p++ != '"') break;
+        char *end = strchr(p, '"');
+        if (!end) break;
+        *end++ = '\0';
+        while (isspace((unsigned char)*end)) end++;
+        if (*end != '\0' || !p[0]) break;
+
+        if (p[0] == '/') {
+            if (snprintf(candidate, sizeof(candidate), "%s", p) >=
+                (int)sizeof(candidate))
+                break;
+        } else {
+            const char *slash = strrchr(preset_path, '/');
+            size_t dir_len = slash ? (size_t)(slash - preset_path) : 1u;
+            const char *dir = slash ? preset_path : ".";
+            if (dir_len + 1u + strlen(p) + 1u > sizeof(candidate)) break;
+            memcpy(candidate, dir, dir_len);
+            candidate[dir_len] = '/';
+            strcpy(candidate + dir_len + 1u, p);
+        }
+        found = realpath(candidate, resolved) != NULL;
+        break;
+    }
+    fclose(fp);
+    if (!found) return false;
+    size_t len = strlen(resolved);
+    if (len < 6u || strcmp(resolved + len - 6u, ".glslp") != 0 ||
+        len >= out_size)
+        return false;
+    memcpy(out, resolved, len + 1u);
+    return true;
 }
 
 static char *jw_sc__dup(const char *s) {

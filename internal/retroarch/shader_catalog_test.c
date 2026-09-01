@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int failures;
@@ -208,6 +209,42 @@ static void test_path_rules(void) {
     check(!jw_shader_catalog_path_ok(NULL), "null rejected");
 }
 
+static void test_automatic_preset_reference(void) {
+    char dir[] = "/tmp/jw-shader-reference-XXXXXX";
+    char target[512], wrapper[512], resolved[512], expected[512];
+    check(mkdtemp(dir) != NULL, "reference fixture directory created");
+    snprintf(target, sizeof(target), "%s/recommended.glslp", dir);
+    snprintf(wrapper, sizeof(wrapper), "%s/game.glslp", dir);
+    FILE *fp = fopen(target, "w");
+    check(fp != NULL, "reference target created");
+    if (fp) {
+        fputs("shaders = 0\n", fp);
+        fclose(fp);
+    }
+    fp = fopen(wrapper, "w");
+    check(fp != NULL, "automatic preset wrapper created");
+    if (fp) {
+        fputs("#reference \"recommended.glslp\"\n", fp);
+        fclose(fp);
+    }
+    check(realpath(target, expected) != NULL, "reference target resolves");
+    check(jw_shader_catalog_reference_target(wrapper, resolved, sizeof(resolved)),
+          "automatic preset reference resolves");
+    check(strcmp(resolved, expected) == 0,
+          "automatic preset maps to its referenced recommendation");
+
+    fp = fopen(wrapper, "w");
+    if (fp) {
+        fputs("#reference \"missing.glslp\"\n", fp);
+        fclose(fp);
+    }
+    check(!jw_shader_catalog_reference_target(wrapper, resolved, sizeof(resolved)),
+          "missing reference target is not mapped");
+    unlink(wrapper);
+    unlink(target);
+    rmdir(dir);
+}
+
 int main(void) {
     test_valid();
     test_filtering();
@@ -215,6 +252,7 @@ int main(void) {
     test_oversized();
     test_row_cap();
     test_path_rules();
+    test_automatic_preset_reference();
 
     if (failures) {
         fprintf(stderr, "shader-catalog-test: %d failure(s)\n", failures);
