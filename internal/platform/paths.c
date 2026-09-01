@@ -461,6 +461,16 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "screenshot_directory",
         "savestate_thumbnail_enable",
         "joypad_autoconfig_dir",
+        /* Automatic shader preset discovery. Protected so a persisted user
+           value cannot redirect RetroArch to a directory Fugazi and the in-game
+           picker do not inspect, or switch auto-loading off and make every
+           saved preset silently stop applying. This is a discovery invariant
+           only; it is unrelated to the config-persistence work in decision
+           0007. video_shader_dir and video_shader_preset_save_reference_enable
+           stay user-owned: a genuine custom shader directory and both preset
+           save styles are supported. */
+        "rgui_config_directory",
+        "auto_shaders_enable",
 #ifdef PLATFORM_MLP1
         "audio_device",
         "audio_driver",
@@ -2051,6 +2061,43 @@ static char *jw__default_retroarch_user_shaders_dir(const char *sdcard_root) {
     return jw__dup_realpath_or_literal(path);
 }
 
+/* RetroArch's menu config directory: where it reads and writes *automatic*
+   shader presets (global/core/parent/game). Fugazi inspects the same directory,
+   and the in-game picker saves and removes through RetroArch's own machinery,
+   so all three have to agree on one location or a saved preset silently fails
+   to load. Derived from the runtime path contract, never from a hardcoded SD
+   mount root: /mnt/sdcard and /media/sdcard1 swap across reboots. */
+static char *jw__default_retroarch_config_dir(const char *sdcard_root) {
+    char *env_dir = jw__dup_env_value("UMRK_RETROARCH_CONFIG_DIR");
+    if (env_dir) {
+        if (jw__mkdir_p(env_dir, 0755) == 0) {
+            return env_dir;
+        }
+        free(env_dir);
+    }
+
+    const char *internal_data = jw__env_value("UMRK_INTERNAL_DATA_PATH");
+    char internal_path[PATH_MAX];
+    if (internal_data) {
+        if (!jw__format_string(internal_path, sizeof(internal_path), "%s",
+                               internal_data)) {
+            return NULL;
+        }
+    } else if (!jw__format_default_internal_data(
+                   internal_path, sizeof(internal_path), sdcard_root)) {
+        return NULL;
+    }
+
+    char path[PATH_MAX];
+    if (!jw__format_string(path, sizeof(path),
+                           "%s/retroarch/.config/retroarch/config",
+                           internal_path) ||
+        jw__mkdir_p(path, 0755) != 0) {
+        return NULL;
+    }
+    return jw__dup_realpath_or_literal(path);
+}
+
 static char *jw__default_retroarch_shaders_dir(const char *sdcard_root) {
     char *user_dir = jw__default_retroarch_user_shaders_dir(sdcard_root);
     if (user_dir) {
@@ -2185,6 +2232,19 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     if (autoconfig_dir && jw__is_directory(autoconfig_dir)) {
         jw__retroarch_cfg_string(fp, "joypad_autoconfig_dir", autoconfig_dir);
     }
+    /* Automatic shader preset discovery. Both keys are protected, so this is
+       the only place either is written: Fugazi, the in-game picker's save and
+       remove, and RetroArch's own auto-load at content launch all have to
+       resolve the same directory, and a persisted user value must not be able
+       to move it or switch auto-loading off. */
+    {
+        char *shader_config_dir = jw__default_retroarch_config_dir(config_sdroot_abs);
+        if (shader_config_dir) {
+            jw__retroarch_cfg_string(fp, "rgui_config_directory", shader_config_dir);
+            free(shader_config_dir);
+        }
+    }
+    jw__retroarch_cfg_string(fp, "auto_shaders_enable", "true");
     jw__retroarch_cfg_string(fp, "config_save_on_exit", persist_changes ? "true" : "false");
     jw__retroarch_cfg_string(fp, "network_cmd_enable", "true");
     char command_port[16];

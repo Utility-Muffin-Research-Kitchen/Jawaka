@@ -67,15 +67,46 @@ static char *replace_line(const char *text, const char *old_line,
     return out;
 }
 
+/* How many times a key appears at all, regardless of value. A protected key
+   must be written exactly once: twice would mean a persisted copy survived
+   alongside ours, and RetroArch takes the last one. */
+static int occurrences(const char *text, const char *key) {
+    int count = 0;
+    size_t key_len = strlen(key);
+    for (const char *line = text; line && *line;) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        if (len > key_len && strncmp(line, key, key_len) == 0 &&
+            (line[key_len] == ' ' || line[key_len] == '=')) {
+            count++;
+        }
+        line = end ? end + 1 : NULL;
+    }
+    return count;
+}
+
 static int key_count(const char *text, const char *key, const char *value) {
     int count = 0;
     size_t key_len = strlen(key);
     for (const char *line = text; line && *line;) {
         const char *next = strchr(line, '\n');
         size_t len = next ? (size_t)(next - line) : strlen(line);
-        if (len >= key_len && strncmp(line, key, key_len) == 0 &&
-            (!value || strstr(line, value))) {
-            count++;
+        /* The value search must stop at the end of THIS line. `line` points
+           into the whole text, so an unbounded strstr() runs on into later
+           keys: searching for "false" from a line holding "true" would happily
+           match some other key's value further down the file. */
+        if (len >= key_len && strncmp(line, key, key_len) == 0) {
+            if (!value) {
+                count++;
+            } else {
+                char buf[1024];
+                size_t copy = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
+                memcpy(buf, line, copy);
+                buf[copy] = '\0';
+                if (strstr(buf, value)) {
+                    count++;
+                }
+            }
         }
         line = next ? next + 1 : NULL;
     }
@@ -538,6 +569,60 @@ int main(void) {
     free(missing_runtime);
     unlink(runtime_cfg);
     free(runtime_cfg);
+
+    /* Automatic shader preset discovery is pinned; the browser root is not.
+       A user who redirects rgui_config_directory or switches auto_shaders_enable
+       off would break every saved preset silently: RetroArch would look
+       somewhere Fugazi and the in-game picker never write, or stop auto-loading
+       altogether, and nothing would say so. */
+    {
+        if (write_text(shared_cfg,
+                       "menu_driver = \"rgui\"\n"
+                       "rgui_config_directory = \"/tmp/attacker-owned\"\n"
+                       "auto_shaders_enable = \"false\"\n"
+                       "video_shader_preset_save_reference_enable = \"false\"\n") != 0) {
+            return fail("shader discovery override write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "shader discovery config generation failed");
+        }
+        char *disc = read_text(runtime_cfg);
+        if (!disc) {
+            return fail("shader discovery runtime config unreadable");
+        }
+        int ok =
+            /* The persisted values must not survive at all. */
+            key_count(disc, "rgui_config_directory", "/tmp/attacker-owned") == 0 &&
+            key_count(disc, "auto_shaders_enable", "false") == 0 &&
+            /* Auto-loading stays on, exactly once. */
+            key_count(disc, "auto_shaders_enable", "true") == 1 &&
+            /* And the config directory is written exactly once, by us. */
+            occurrences(disc, "rgui_config_directory") == 1 &&
+            /* This one stays the user's: both save styles are supported. */
+            key_count(disc, "video_shader_preset_save_reference_enable",
+                      "false") == 1;
+        if (!ok) {
+            fprintf(stderr,
+                    "  rgui_config_directory=/tmp/attacker-owned : %d\n"
+                    "  auto_shaders_enable=false                 : %d\n"
+                    "  auto_shaders_enable=true                  : %d\n"
+                    "  rgui_config_directory occurrences         : %d\n"
+                    "  save_reference_enable=false (user)        : %d\n",
+                    key_count(disc, "rgui_config_directory", "/tmp/attacker-owned"),
+                    key_count(disc, "auto_shaders_enable", "false"),
+                    key_count(disc, "auto_shaders_enable", "true"),
+                    occurrences(disc, "rgui_config_directory"),
+                    key_count(disc, "video_shader_preset_save_reference_enable", "false"));
+        }
+        free(disc);
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        if (!ok) {
+            return fail("persisted values redirected or disabled shader discovery");
+        }
+    }
 
     /* Launch roster: every generated index lands in the protected block,
        unused players are omitted entirely, and a persisted override cannot
