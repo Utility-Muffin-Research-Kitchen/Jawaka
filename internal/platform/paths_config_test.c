@@ -67,15 +67,55 @@ static char *replace_line(const char *text, const char *old_line,
     return out;
 }
 
+/* How many times a key appears at all, regardless of value. A protected key
+   must be written exactly once: twice would mean a persisted copy survived
+   alongside ours, and RetroArch takes the last one. */
+static int occurrences(const char *text, const char *key) {
+    int count = 0;
+    size_t key_len = strlen(key);
+    for (const char *line = text; line && *line;) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        if (len > key_len && strncmp(line, key, key_len) == 0 &&
+            (line[key_len] == ' ' || line[key_len] == '=')) {
+            count++;
+        }
+        line = end ? end + 1 : NULL;
+    }
+    return count;
+}
+
+static int jw__mkdir_p_test(const char *path) {
+    char buf[PATH_MAX];
+    snprintf(buf, sizeof(buf), "%s", path);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p == '/') { *p = '\0'; mkdir(buf, 0755); *p = '/'; }
+    }
+    return mkdir(buf, 0755) == 0 || errno == EEXIST ? 0 : -1;
+}
+
 static int key_count(const char *text, const char *key, const char *value) {
     int count = 0;
     size_t key_len = strlen(key);
     for (const char *line = text; line && *line;) {
         const char *next = strchr(line, '\n');
         size_t len = next ? (size_t)(next - line) : strlen(line);
-        if (len >= key_len && strncmp(line, key, key_len) == 0 &&
-            (!value || strstr(line, value))) {
-            count++;
+        /* The value search must stop at the end of THIS line. `line` points
+           into the whole text, so an unbounded strstr() runs on into later
+           keys: searching for "false" from a line holding "true" would happily
+           match some other key's value further down the file. */
+        if (len >= key_len && strncmp(line, key, key_len) == 0) {
+            if (!value) {
+                count++;
+            } else {
+                char buf[1024];
+                size_t copy = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
+                memcpy(buf, line, copy);
+                buf[copy] = '\0';
+                if (strstr(buf, value)) {
+                    count++;
+                }
+            }
         }
         line = next ? next + 1 : NULL;
     }
@@ -208,6 +248,16 @@ int main(void) {
     setenv("UMRK_INTERNAL_DATA_PATH", internal, 1);
     setenv("UMRK_RETROARCH_SHADERS_DIR", shaders, 1);
     setenv("UMRK_RETROARCH_USER_SHADERS_DIR", user_shaders, 1);
+    {
+        char expected[PATH_MAX];
+        snprintf(expected, sizeof(expected), "%s/manifest.json", shaders);
+        char *manifest = jw_retroarch_shader_manifest_path();
+        if (!manifest || strcmp(manifest, expected) != 0) {
+            free(manifest);
+            return fail("release shader manifest path does not follow the runtime contract");
+        }
+        free(manifest);
+    }
     if (!jw_primary_recordings_path(recordings_dir, sizeof(recordings_dir), root)) {
         return fail("could not resolve primary recordings path");
     }
@@ -538,6 +588,198 @@ int main(void) {
     free(missing_runtime);
     unlink(runtime_cfg);
     free(runtime_cfg);
+
+    /* Automatic shader preset discovery is pinned; the browser root is not.
+       A user who redirects rgui_config_directory or switches either enable
+       flag off would break every saved preset silently: RetroArch would look
+       somewhere Fugazi and the in-game picker never write, or return before
+       automatic discovery, and nothing would say so. */
+    {
+        if (write_text(shared_cfg,
+                       "menu_driver = \"rgui\"\n"
+                       "rgui_config_directory = \"/tmp/attacker-owned\"\n"
+                       "auto_shaders_enable = \"false\"\n"
+                       "video_shader_enable = \"false\"\n"
+                       "video_shader_preset_save_reference_enable = \"false\"\n") != 0) {
+            return fail("shader discovery override write failed");
+        }
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "shader discovery config generation failed");
+        }
+        char *disc = read_text(runtime_cfg);
+        if (!disc) {
+            return fail("shader discovery runtime config unreadable");
+        }
+        int ok =
+            /* The persisted values must not survive at all. */
+            key_count(disc, "rgui_config_directory", "/tmp/attacker-owned") == 0 &&
+            key_count(disc, "auto_shaders_enable", "false") == 0 &&
+            key_count(disc, "video_shader_enable", "false") == 0 &&
+            /* Shader loading and automatic discovery stay on, exactly once. */
+            key_count(disc, "auto_shaders_enable", "true") == 1 &&
+            key_count(disc, "video_shader_enable", "true") == 1 &&
+            /* And the config directory is written exactly once, by us. */
+            occurrences(disc, "rgui_config_directory") == 1 &&
+            /* This one stays the user's: both save styles are supported. */
+            key_count(disc, "video_shader_preset_save_reference_enable",
+                      "false") == 1;
+        if (!ok) {
+            fprintf(stderr,
+                    "  rgui_config_directory=/tmp/attacker-owned : %d\n"
+                    "  auto_shaders_enable=false                 : %d\n"
+                    "  video_shader_enable=false                : %d\n"
+                    "  auto_shaders_enable=true                  : %d\n"
+                    "  video_shader_enable=true                 : %d\n"
+                    "  rgui_config_directory occurrences         : %d\n"
+                    "  save_reference_enable=false (user)        : %d\n",
+                    key_count(disc, "rgui_config_directory", "/tmp/attacker-owned"),
+                    key_count(disc, "auto_shaders_enable", "false"),
+                    key_count(disc, "video_shader_enable", "false"),
+                    key_count(disc, "auto_shaders_enable", "true"),
+                    key_count(disc, "video_shader_enable", "true"),
+                    occurrences(disc, "rgui_config_directory"),
+                    key_count(disc, "video_shader_preset_save_reference_enable", "false"));
+        }
+        free(disc);
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        if (!ok) {
+            return fail("persisted values redirected or disabled shader discovery");
+        }
+    }
+
+    /* Preview paths are constrained to leaf-recommended. Restore separately
+       accepts a daemon-reported original below the durable shader, automatic
+       preset, or effective browser roots, so a failed preview can recover a
+       custom/global preset without turning preview into an arbitrary loader. */
+    {
+        char *recdir = jw_retroarch_recommended_shaders_dir();
+        char resolved[PATH_MAX];
+        char relative[PATH_MAX];
+        int ok = 1;
+
+        if (!recdir) {
+            return fail("recommended shader directory unavailable");
+        }
+        if (jw__mkdir_p_test(recdir) != 0) {
+            free(recdir);
+            return fail("recommended shader directory could not be created");
+        }
+
+        char good[PATH_MAX];
+        char wrong_ext[PATH_MAX];
+        char outside[PATH_MAX];
+        char escape[PATH_MAX];
+        char custom[PATH_MAX];
+        char foreign[PATH_MAX];
+        char unconfigured_dir[PATH_MAX];
+        char unconfigured[PATH_MAX];
+        char shader_runtime_cfg[PATH_MAX];
+        char automatic_dir[PATH_MAX];
+        char automatic[PATH_MAX];
+        snprintf(good, sizeof(good), "%s/crt-sharp.glslp", recdir);
+        snprintf(wrong_ext, sizeof(wrong_ext), "%s/notes.txt", recdir);
+        snprintf(outside, sizeof(outside), "%s/../escaped.glslp", recdir);
+        snprintf(escape, sizeof(escape), "%s/../../../../etc/passwd", recdir);
+        snprintf(custom, sizeof(custom), "%s/custom/user.glslp", user_shaders);
+        snprintf(foreign, sizeof(foreign), "%s/outside.glslp", custom_shaders);
+        snprintf(unconfigured_dir, sizeof(unconfigured_dir), "%s/unconfigured", root);
+        snprintf(unconfigured, sizeof(unconfigured), "%s/outside.glslp",
+                 unconfigured_dir);
+        snprintf(shader_runtime_cfg, sizeof(shader_runtime_cfg),
+                 "%s/shader-runtime.cfg", runtime);
+        snprintf(automatic_dir, sizeof(automatic_dir),
+                 "%s/retroarch/.config/retroarch/config/FCEUmm", internal);
+        snprintf(automatic, sizeof(automatic), "%s/Game.glslp", automatic_dir);
+        if (jw__mkdir_p_test(user_shaders) != 0 ||
+            jw__mkdir_p_test(unconfigured_dir) != 0 ||
+            jw__mkdir_p_test(automatic_dir) != 0) {
+            free(recdir);
+            return fail("shader restore directories could not be created");
+        }
+        char custom_dir[PATH_MAX];
+        snprintf(custom_dir, sizeof(custom_dir), "%s/custom", user_shaders);
+        if (jw__mkdir_p_test(custom_dir) != 0) {
+            free(recdir);
+            return fail("custom shader directory could not be created");
+        }
+        if (write_text(good, "#reference \"x\"\n") != 0 ||
+            write_text(wrong_ext, "notes\n") != 0 ||
+            write_text(custom, "shaders = 0\n") != 0 ||
+            write_text(foreign, "shaders = 0\n") != 0 ||
+            write_text(unconfigured, "shaders = 0\n") != 0 ||
+            write_text(shader_runtime_cfg, custom_cfg) != 0 ||
+            write_text(automatic, "#reference \"x\"\n") != 0) {
+            free(recdir);
+            return fail("shader path fixture write failed");
+        }
+        write_text(outside, "#reference \"x\"\n");
+
+        /* A real preset inside the directory is accepted, and the logged form
+           is relative to the root. */
+        if (!jw_retroarch_shader_path_is_recommended(good, resolved, sizeof(resolved),
+                                                     relative, sizeof(relative)) ||
+            strcmp(relative, "crt-sharp.glslp") != 0) {
+            ok = 0;
+        }
+        /* Everything else is refused. */
+        if (jw_retroarch_shader_path_is_recommended(wrong_ext, resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended(outside, resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended(escape, resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended("/etc/passwd", resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended("", resolved, sizeof(resolved),
+                                                    relative, sizeof(relative)) ||
+            jw_retroarch_shader_path_is_recommended(NULL, resolved, sizeof(resolved),
+                                                    relative, sizeof(relative))) {
+            ok = 0;
+        }
+        if (!jw_retroarch_shader_path_is_restorable(custom, shader_runtime_cfg,
+                                                     resolved,
+                                                     sizeof(resolved), relative,
+                                                     sizeof(relative)) ||
+            strcmp(relative, "shaders/custom/user.glslp") != 0 ||
+            !jw_retroarch_shader_path_is_restorable(automatic, shader_runtime_cfg,
+                                                     resolved,
+                                                     sizeof(resolved), relative,
+                                                     sizeof(relative)) ||
+            strcmp(relative, "config/FCEUmm/Game.glslp") != 0 ||
+            !jw_retroarch_shader_path_is_restorable(foreign, shader_runtime_cfg,
+                                                     resolved, sizeof(resolved),
+                                                     relative, sizeof(relative)) ||
+            strcmp(relative, "video_shader_dir/outside.glslp") != 0 ||
+            jw_retroarch_shader_path_is_restorable(foreign, NULL, resolved,
+                                                    sizeof(resolved), relative,
+                                                    sizeof(relative)) ||
+            jw_retroarch_shader_path_is_restorable(unconfigured,
+                                                    shader_runtime_cfg, resolved,
+                                                    sizeof(resolved), relative,
+                                                    sizeof(relative)) ||
+            jw_retroarch_shader_path_is_restorable("/etc/passwd",
+                                                    shader_runtime_cfg, resolved,
+                                                    sizeof(resolved), relative,
+                                                    sizeof(relative))) {
+            ok = 0;
+        }
+        unlink(good);
+        unlink(wrong_ext);
+        unlink(outside);
+        unlink(custom);
+        unlink(foreign);
+        unlink(unconfigured);
+        unlink(shader_runtime_cfg);
+        unlink(automatic);
+        rmdir(unconfigured_dir);
+        free(recdir);
+        if (!ok) {
+            return fail("picker shader path constraint is not enforced");
+        }
+    }
 
     /* Launch roster: every generated index lands in the protected block,
        unused players are omitted entirely, and a persisted override cannot

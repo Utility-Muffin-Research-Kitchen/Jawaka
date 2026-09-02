@@ -12,6 +12,8 @@
 #include "internal/launcher/game_switcher.h"
 #include "internal/platform/cat_services.h"
 #include "internal/platform/paths.h"
+#include "internal/retroarch/shader_catalog.h"
+#include "internal/retroarch/shader_picker.h"
 #include "internal/retroarch/states.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
@@ -170,17 +172,25 @@ static const char *kInGameItems[] = {
     "Load State",
     "Reset",
     "Performance",
+    "Shader",
     "RetroArch Settings",
     "Quit",
 };
-#define JW_INGAME_COUNT     7
+#define JW_INGAME_COUNT     8
 #define JW_INGAME_CONTINUE  0
 #define JW_INGAME_SAVE      1
 #define JW_INGAME_LOAD      2
 #define JW_INGAME_RESET     3
 #define JW_INGAME_PERF      4
-#define JW_INGAME_SETTINGS  5
-#define JW_INGAME_QUIT      6
+#define JW_INGAME_SHADER    5
+#define JW_INGAME_SETTINGS  6
+#define JW_INGAME_QUIT      7
+
+_Static_assert(sizeof(kInGameItems) / sizeof(kInGameItems[0]) == JW_INGAME_COUNT,
+               "in-game row count must match its table");
+_Static_assert(JW_INGAME_SHADER == JW_INGAME_PERF + 1 &&
+               JW_INGAME_SETTINGS == JW_INGAME_SHADER + 1,
+               "Shader must stay between Performance and RetroArch Settings");
 
 #define JW_INGAME_PERF_ROWS 5
 #define JW_INGAME_PERF_PROFILE 0
@@ -267,6 +277,7 @@ typedef struct {
     int                             perf_cpu_index;
     int                             perf_gpu_index;
     int                             perf_dmc_index;
+    char                            shader_label[96];
     jw_ipc_retroarch_session_info   session;
     SDL_Texture                    *still_tex;       /* paused-game still behind the menu */
     SDL_Texture                    *thumb_tex;       /* selected-slot savestate thumbnail */
@@ -905,6 +916,107 @@ static void jw__ingame_perf_refresh(const char *socket_path,
     }
 }
 
+typedef struct {
+    const char *socket_path;
+} jw_ingame_shader_transport;
+
+static int jw__ingame_shader_send(
+    void *ctx, jw_shader_picker_operation operation, const char *path,
+    jw_ra_shader_scope scope, jw_ipc_retroarch_shader_reply *reply) {
+    jw_ingame_shader_transport *transport = ctx;
+    if (!transport || !transport->socket_path) return -1;
+    switch (operation) {
+        case JW_SHADER_PICKER_GET:
+            return jw_ipc_retroarch_shader_get(transport->socket_path, reply,
+                                                NULL, 0);
+        case JW_SHADER_PICKER_SET:
+            return jw_ipc_retroarch_shader_set(transport->socket_path, path,
+                                                reply, NULL, 0);
+        case JW_SHADER_PICKER_RESTORE:
+            return jw_ipc_retroarch_shader_restore(transport->socket_path, path,
+                                                    reply, NULL, 0);
+        case JW_SHADER_PICKER_CLEAR:
+            return jw_ipc_retroarch_shader_clear(transport->socket_path, reply,
+                                                  NULL, 0);
+        case JW_SHADER_PICKER_SAVE:
+            return jw_ipc_retroarch_shader_save(transport->socket_path, scope,
+                                                 reply, NULL, 0);
+        case JW_SHADER_PICKER_REMOVE:
+            return jw_ipc_retroarch_shader_remove(transport->socket_path, scope,
+                                                   reply, NULL, 0);
+    }
+    return -1;
+}
+
+static jw_shader_picker_transport jw__ingame_shader_transport(
+    jw_ingame_shader_transport *ctx, const char *socket_path) {
+    ctx->socket_path = socket_path;
+    jw_shader_picker_transport transport = {
+        .send = jw__ingame_shader_send,
+        .ctx = ctx,
+    };
+    return transport;
+}
+
+static bool jw__ingame_shader_row_path(const char *recommended_root,
+                                       const jw_shader_catalog_row *row,
+                                       char *out, size_t out_size) {
+    static const char prefix[] = "leaf-recommended/";
+    if (!recommended_root || !row || !row->path ||
+        strncmp(row->path, prefix, sizeof(prefix) - 1) != 0)
+        return false;
+    int n = snprintf(out, out_size, "%s/%s", recommended_root,
+                     row->path + sizeof(prefix) - 1);
+    return n > 0 && (size_t)n < out_size;
+}
+
+static void jw__ingame_shader_refresh(const char *socket_path,
+                                      jw_ingame_state *state) {
+    snprintf(state->shader_label, sizeof(state->shader_label), "%s",
+             T("Unavailable"));
+    jw_ingame_shader_transport ctx;
+    jw_shader_picker_transport transport =
+        jw__ingame_shader_transport(&ctx, socket_path);
+    jw_shader_picker_state picker;
+    jw_shader_picker_init(&picker);
+    if (jw_shader_picker_probe(&picker, &transport) != JW_SHADER_PICKER_OK)
+        return;
+    if (!picker.current_path[0]) {
+        snprintf(state->shader_label, sizeof(state->shader_label), "%s", T("Off"));
+        return;
+    }
+
+    char *manifest = jw_retroarch_shader_manifest_path();
+    char *root = jw_retroarch_recommended_shaders_dir();
+    jw_shader_catalog catalog;
+    bool found = false;
+    bool loaded = manifest && root &&
+                  jw_shader_catalog_load(manifest, state->session.system, &catalog);
+    if (loaded) {
+        char referenced[PATH_MAX] = "";
+        (void)jw_shader_catalog_reference_target(picker.current_path,
+                                                  referenced,
+                                                  sizeof(referenced));
+        for (size_t i = 0; i < catalog.count; i++) {
+            char path[PATH_MAX];
+            if (jw__ingame_shader_row_path(root, &catalog.rows[i], path,
+                                           sizeof(path)) &&
+                (strcmp(path, picker.current_path) == 0 ||
+                 (referenced[0] && strcmp(path, referenced) == 0))) {
+                snprintf(state->shader_label, sizeof(state->shader_label), "%s",
+                         catalog.rows[i].display_name);
+                found = true;
+                break;
+            }
+        }
+        jw_shader_catalog_free(&catalog);
+    }
+    if (!found)
+        snprintf(state->shader_label, sizeof(state->shader_label), "%s", T("Custom"));
+    free(manifest);
+    free(root);
+}
+
 static const char *jw__ingame_perf_active_label(const jw_ingame_state *state) {
     if (!state || !state->perf_ready || !state->perf.supported) {
         return "Unavailable";
@@ -984,6 +1096,9 @@ static void jw__ingame_detail(const jw_ingame_state *state, int item,
         } else {
             snprintf(out, out_size, "%s", jw__ingame_perf_active_label(state));
         }
+    } else if (item == JW_INGAME_SHADER) {
+        snprintf(out, out_size, "%s", state->shader_label[0]
+                                      ? state->shader_label : T("Unavailable"));
     }
 }
 
@@ -1271,7 +1386,7 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
         ap_color col = sel ? theme->highlighted_text : theme->text;
         int text_y   = pill_y + (pill_h - body_h) / 2;
 
-        char detail[64];
+        char detail[96];
         jw__ingame_detail(state, i, detail, sizeof(detail));
         bool show_detail = !preview_active && detail[0] && detail_w > CAT_S(40);
         int label_w = show_detail ? detail_x - x - CAT_S(10)
@@ -1636,6 +1751,521 @@ static void jw__ingame_show_performance(const char *socket_path,
     }
 }
 
+static void jw__ingame_continue(const char *socket_path,
+                                jw_ingame_state *state, bool *running);
+
+/* Global shader writes stay off until the assembled Leaf build contains the
+   ownership-safe Fugazi resolver. Flip this only with that assembly change. */
+#define JW_FUGAZI_RESOLVER_ASSEMBLED false
+
+typedef struct {
+    jw_shader_catalog catalog;
+    jw_shader_picker_state picker;
+    cat_list_state list;
+    char *recommended_root;
+    bool catalog_valid;
+    bool custom_row;
+    int applied_cursor;
+    char status[256];
+} jw_ingame_shader_view;
+
+static int jw__shader_item_count(const jw_ingame_shader_view *view) {
+    return 1 + (int)view->catalog.count + (view->custom_row ? 1 : 0) + 1;
+}
+
+static int jw__shader_custom_index(const jw_ingame_shader_view *view) {
+    return view->custom_row ? 1 + (int)view->catalog.count : -1;
+}
+
+static int jw__shader_advanced_index(const jw_ingame_shader_view *view) {
+    return jw__shader_item_count(view) - 1;
+}
+
+static const jw_shader_catalog_row *jw__shader_item_row(
+    const jw_ingame_shader_view *view, int index) {
+    if (index <= 0 || index > (int)view->catalog.count) return NULL;
+    return &view->catalog.rows[index - 1];
+}
+
+static const char *jw__shader_item_label(const jw_ingame_shader_view *view,
+                                         int index) {
+    if (index == 0) return T("Off");
+    const jw_shader_catalog_row *row = jw__shader_item_row(view, index);
+    if (row) return row->display_name;
+    if (index == jw__shader_custom_index(view)) return T("Custom (current)");
+    return T("Advanced RetroArch menu…");
+}
+
+static bool jw__shader_item_path(const jw_ingame_shader_view *view, int index,
+                                 char *out, size_t out_size) {
+    if (index == 0) {
+        if (out_size) out[0] = '\0';
+        return true;
+    }
+    const jw_shader_catalog_row *row = jw__shader_item_row(view, index);
+    if (row)
+        return jw__ingame_shader_row_path(view->recommended_root, row,
+                                          out, out_size);
+    if (index == jw__shader_custom_index(view)) {
+        int n = snprintf(out, out_size, "%s", view->picker.original_path);
+        return n >= 0 && (size_t)n < out_size;
+    }
+    return false;
+}
+
+static void jw__shader_result_status(jw_shader_picker_result result,
+                                     const char *scope,
+                                     char *out, size_t out_size) {
+    const char *message = NULL;
+    switch (result) {
+        case JW_SHADER_PICKER_UNAVAILABLE:
+            message = T("RetroArch is not available. Shader unchanged.");
+            break;
+        case JW_SHADER_PICKER_UNSUPPORTED_BUILD:
+            message = T("This RetroArch build does not support Leaf's shader picker.");
+            break;
+        case JW_SHADER_PICKER_MISSING:
+            message = T("Leaf's shader files are incomplete. Update or reinstall Leaf.");
+            break;
+        case JW_SHADER_PICKER_UNSUPPORTED_TYPE:
+            message = T("Leaf's in-game picker supports GLSL presets (.glslp).");
+            break;
+        case JW_SHADER_PICKER_APPLY_FAILED:
+            message = T("This shader could not compile or link on this video driver. Previous shader restored.");
+            break;
+        case JW_SHADER_PICKER_UNKNOWN_STATE:
+            message = T("RetroArch did not confirm the shader. Reopen Shader or restart the game.");
+            break;
+        case JW_SHADER_PICKER_RESTORE_FAILED:
+            message = T("Shader failed and the previous shader could not be restored. Reopen the game.");
+            break;
+        case JW_SHADER_PICKER_SAVE_FAILED:
+            snprintf(out, out_size,
+                     T("Shader is active for this session, but could not be saved for %s."),
+                     scope ? scope : T("that scope"));
+            return;
+        case JW_SHADER_PICKER_REMOVE_ABSENT:
+            message = T("No saved shader exists at that scope.");
+            break;
+        case JW_SHADER_PICKER_REMOVE_FAILED:
+            message = T("The saved shader could not be removed.");
+            break;
+        case JW_SHADER_PICKER_OK:
+            message = "";
+            break;
+    }
+    snprintf(out, out_size, "%s", message ? message : T("Shader operation failed."));
+}
+
+static bool jw__shader_confirmation(const char *message,
+                                    const char *confirm_label) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = T("Cancel"), .is_confirm = false },
+        { .button = CAT_BTN_A, .label = confirm_label, .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+static void jw__shader_notice(const char *message) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_A, .label = T("OK"), .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 1,
+    };
+    cat_confirm_result result;
+    (void)cat_confirmation(&opts, &result);
+}
+
+static bool jw__shader_offer_settings(const char *message) {
+    return jw__shader_confirmation(message, T("RetroArch Settings"));
+}
+
+static void jw__render_ingame_shader(const jw_ingame_state *state,
+                                     const jw_ingame_shader_view *view) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    cat_status_bar_opts sb = state->status_bar;
+
+    cat_clear_screen();
+    if (state->still_tex) {
+        int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+        cat_draw_image(state->still_tex, 0, 0, sw, sh);
+        ap_color scrim = { 0, 0, 0, 165 };
+        cat_draw_rect(0, 0, sw, sh, scrim);
+    }
+    SDL_Rect content = cat_get_content_rect(true, true, false);
+    jw__draw_ingame_underlay(content, CAT_S(4), content.y - CAT_S(4));
+    cat_draw_screen_title(T("Shader"), &sb);
+    jw__draw_ingame_underlay(content, content.y + CAT_S(4),
+                             content.y + content.h - CAT_S(8));
+
+    int pad = CAT_S(24);
+    int x = content.x + pad;
+    int right = content.x + content.w - pad;
+    int list_w = (right - x) * 48 / 100;
+    int detail_x = x + list_w + CAT_S(18);
+    int detail_w = right - detail_x;
+    int body_h = TTF_FontHeight(body);
+    int small_h = TTF_FontHeight(small);
+    int item_h = body_h + CAT_S(10);
+    int top = content.y + CAT_S(16);
+    int bottom = content.y + content.h - CAT_S(18) - small_h;
+    int count = jw__shader_item_count(view);
+
+    for (int row = 0; row < view->list.visible_rows; row++) {
+        int i = view->list.scroll_offset + row;
+        if (i >= count) break;
+        int y = top + row * item_h;
+        bool selected = i == view->list.cursor;
+        if (selected)
+            cat_draw_pill(x - CAT_S(10), y, list_w, item_h - CAT_S(3),
+                          theme->highlight);
+        cat_draw_text_ellipsized(body, jw__shader_item_label(view, i), x,
+                                 y + CAT_S(3),
+                                 selected ? theme->highlighted_text : theme->text,
+                                 list_w - CAT_S(10));
+    }
+
+    const jw_shader_catalog_row *selected =
+        jw__shader_item_row(view, view->list.cursor);
+    const char *description = NULL;
+    const char *constraint = NULL;
+    if (selected) {
+        description = selected->description;
+        if (selected->constraint_count > 0) {
+            constraint = selected->constraints[0];
+            /* The active-system filter already enforces simple "GBA only"
+               constraints. Prefer the safety/performance caveat the device
+               matrix asks the user to see when one is present. */
+            for (size_t i = 0; i < selected->constraint_count; i++) {
+                if (strstr(selected->constraints[i], "BFI")) {
+                    constraint = selected->constraints[i];
+                    break;
+                }
+            }
+        }
+    } else if (view->list.cursor == 0) {
+        description = T("Disable shaders for this session.");
+        constraint = T("Saved presets are removed separately by scope.");
+    } else if (view->list.cursor == jw__shader_custom_index(view)) {
+        description = T("A custom or updater shader is active.");
+        constraint = T("Use Advanced to edit it in RetroArch.");
+    } else {
+        description = T("Open RetroArch's full shader browser.");
+        constraint = T("Quick Menu -> Shaders");
+    }
+    int dy = top;
+    if (description && description[0]) {
+        dy += cat_draw_text_wrapped(body, description, detail_x, dy, detail_w,
+                                    theme->text, CAT_ALIGN_LEFT);
+        dy += CAT_S(8);
+    }
+    if (constraint && constraint[0])
+        cat_draw_text_wrapped(small, constraint, detail_x, dy, detail_w,
+                              theme->hint, CAT_ALIGN_LEFT);
+
+    const char *status = view->status;
+    if (!status[0] && !view->catalog_valid)
+        status = T("Recommended shaders are unavailable. Update or reinstall Leaf.");
+    if (status[0])
+        cat_draw_text_wrapped(small, status, x,
+                              bottom - small_h * 2 - CAT_S(4), right - x,
+                              theme->hint, CAT_ALIGN_LEFT);
+
+    if (state->show_hints) {
+        cat_set_footer_bg_opacity(JW_INGAME_UNDERLAY_ALPHA);
+        cat_footer_item footer[] = {
+            { CAT_BTN_UP, "Move", false, JW_HINT_DEVICE("\xe2\x86\x91\xe2\x86\x93", "\xe2\x86\x91\xe2\x86\x93") },
+            { CAT_BTN_B, "Back", true, JW_HINT("B") },
+            { CAT_BTN_A, "Select", true, JW_HINT("A") },
+        };
+        jw__menu_footer(footer, 3);
+    }
+    cat_present();
+}
+
+static int jw__shader_scope_list(bool include_session) {
+    cat_list_item items[] = {
+        { .label = T("This game") },
+        { .label = T("This folder") },
+        { .label = T("This core") },
+        { .label = T("All RetroArch"),
+          .trailing_text = JW_FUGAZI_RESOLVER_ASSEMBLED
+                         ? NULL : T("Requires Fugazi resolver"),
+          .disabled = !JW_FUGAZI_RESOLVER_ASSEMBLED },
+        { .label = T("This session") },
+    };
+    cat_footer_item footer[] = {
+        { CAT_BTN_B, T("Back"), true, JW_HINT("B") },
+        { CAT_BTN_A, T("Select"), true, JW_HINT("A") },
+    };
+    int count = include_session ? 5 : 4;
+    cat_list_opts opts = cat_list_default_opts(T("Shader scope"), items, count);
+    opts.footer = footer;
+    opts.footer_count = 2;
+    opts.initial_index = 0;
+    cat_list_result result;
+    return cat_list(&opts, &result) == CAT_OK ? result.selected_index : -1;
+}
+
+static jw_ra_shader_scope jw__shader_scope_from_index(int index) {
+    static const jw_ra_shader_scope scopes[] = {
+        JW_RA_SHADER_SCOPE_GAME,
+        JW_RA_SHADER_SCOPE_PARENT,
+        JW_RA_SHADER_SCOPE_CORE,
+        JW_RA_SHADER_SCOPE_GLOBAL,
+    };
+    return index >= 0 && index < 4 ? scopes[index] : JW_RA_SHADER_SCOPE_GAME;
+}
+
+static const char *jw__shader_scope_label(int index) {
+    static const char *labels[] = {
+        "This game", "This folder", "This core", "All RetroArch",
+    };
+    return index >= 0 && index < 4 ? T(labels[index]) : T("that scope");
+}
+
+static void jw__shader_resume(const char *socket_path, jw_ingame_state *state,
+                              bool *menu_running) {
+    jw__ingame_continue(socket_path, state, menu_running);
+}
+
+static void jw__shader_save_choice(
+    const char *socket_path, jw_ingame_state *state,
+    jw_ingame_shader_view *view, const jw_shader_picker_transport *transport,
+    bool *menu_running) {
+    int index = jw__shader_scope_list(true);
+    if (index < 0) return;
+    if (index == 4) {
+        jw__shader_resume(socket_path, state, menu_running);
+        return;
+    }
+    jw_ra_shader_scope scope = jw__shader_scope_from_index(index);
+    if (!jw_shader_picker_scope_enabled(scope, JW_FUGAZI_RESOLVER_ASSEMBLED)) {
+        jw__shader_notice(T("All RetroArch requires a Leaf build with Fugazi's conflict resolver."));
+        return;
+    }
+    if (scope == JW_RA_SHADER_SCOPE_GLOBAL &&
+        !jw__shader_confirmation(
+            T("This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"),
+            T("Save globally")))
+        return;
+    jw_shader_picker_result result = jw_shader_picker_save(transport, scope);
+    if (result != JW_SHADER_PICKER_OK) {
+        jw__shader_result_status(result, jw__shader_scope_label(index),
+                                 view->status, sizeof(view->status));
+        jw__shader_notice(view->status);
+    }
+    jw__shader_resume(socket_path, state, menu_running);
+}
+
+static void jw__shader_off_choice(
+    const char *socket_path, jw_ingame_state *state,
+    jw_ingame_shader_view *view, const jw_shader_picker_transport *transport,
+    bool *menu_running) {
+    cat_list_item items[] = {
+        { .label = T("This session"),
+          .trailing_text = T("Ends on reload or exit") },
+        { .label = T("Remove saved preset…") },
+    };
+    cat_footer_item footer[] = {
+        { CAT_BTN_B, T("Back"), true, JW_HINT("B") },
+        { CAT_BTN_A, T("Select"), true, JW_HINT("A") },
+    };
+    cat_list_opts opts = cat_list_default_opts(T("Shader Off"), items, 2);
+    opts.footer = footer;
+    opts.footer_count = 2;
+    cat_list_result choice;
+    if (cat_list(&opts, &choice) != CAT_OK) return;
+    if (choice.selected_index == 0) {
+        jw__shader_resume(socket_path, state, menu_running);
+        return;
+    }
+    int index = jw__shader_scope_list(false);
+    if (index < 0) return;
+    jw_ra_shader_scope scope = jw__shader_scope_from_index(index);
+    if (!jw_shader_picker_scope_enabled(scope, JW_FUGAZI_RESOLVER_ASSEMBLED)) {
+        jw__shader_notice(T("All RetroArch requires a Leaf build with Fugazi's conflict resolver."));
+        return;
+    }
+    jw_shader_picker_result result = jw_shader_picker_remove(transport, scope);
+    if (result != JW_SHADER_PICKER_OK) {
+        jw__shader_result_status(result, NULL, view->status, sizeof(view->status));
+        jw__shader_notice(view->status);
+        return;
+    }
+    /* Removing an automatic preset does not synthesize an Off override;
+       broader presets are reevaluated on the next content load by RetroArch. */
+    jw__shader_notice(T("Saved preset removed. A broader preset may apply after content reload."));
+    jw__shader_resume(socket_path, state, menu_running);
+}
+
+static void jw__ingame_show_shader(const char *socket_path,
+                                   jw_ingame_state *state,
+                                   bool *menu_running) {
+    jw_ingame_shader_view view;
+    memset(&view, 0, sizeof(view));
+    jw_ingame_shader_transport ctx;
+    jw_shader_picker_transport transport =
+        jw__ingame_shader_transport(&ctx, socket_path);
+    jw_shader_picker_init(&view.picker);
+
+    jw_shader_picker_result probe = jw_shader_picker_probe(&view.picker, &transport);
+    if (probe != JW_SHADER_PICKER_OK) {
+        char message[256];
+        jw__shader_result_status(probe, NULL, message, sizeof(message));
+        if (jw__shader_confirmation(message, T("RetroArch Settings")) &&
+            jw_ipc_retroarch_action(socket_path, "settings", 0,
+                                    state->status, sizeof(state->status)) == 0)
+            *menu_running = false;
+        return;
+    }
+
+    char *manifest = jw_retroarch_shader_manifest_path();
+    view.recommended_root = jw_retroarch_recommended_shaders_dir();
+    view.catalog_valid = manifest && view.recommended_root &&
+        jw_shader_catalog_load(manifest, state->session.system, &view.catalog);
+    free(manifest);
+
+    int initial = 0;
+    if (view.picker.original_path[0]) {
+        char referenced[PATH_MAX] = "";
+        (void)jw_shader_catalog_reference_target(view.picker.original_path,
+                                                  referenced,
+                                                  sizeof(referenced));
+        initial = -1;
+        for (size_t i = 0; i < view.catalog.count; i++) {
+            char path[PATH_MAX];
+            if (jw__ingame_shader_row_path(view.recommended_root,
+                                           &view.catalog.rows[i], path,
+                                           sizeof(path)) &&
+                (strcmp(path, view.picker.original_path) == 0 ||
+                 (referenced[0] && strcmp(path, referenced) == 0))) {
+                initial = 1 + (int)i;
+                break;
+            }
+        }
+        if (initial < 0) {
+            view.custom_row = true;
+            initial = jw__shader_custom_index(&view);
+        }
+    }
+    cat_list_state_init(&view.list, 8);
+    cat_list_state_jump(&view.list, initial, jw__shader_item_count(&view));
+    view.applied_cursor = initial;
+
+    bool running = true;
+    while (running && *menu_running && !g_hide_requested) {
+        cat_request_frame_in(100);
+        cat_input_event ev;
+        while (cat_poll_input(&ev)) {
+            if (!ev.pressed) continue;
+            if (ev.repeated && (ev.button == CAT_BTN_UP || ev.button == CAT_BTN_DOWN))
+                continue; /* queued hold-repeat must not chain synchronous compiles */
+            if (ev.button == CAT_BTN_UP || ev.button == CAT_BTN_DOWN) {
+                int before = view.list.cursor;
+                cat_list_state_move(&view.list,
+                                    ev.button == CAT_BTN_UP ? -1 : +1,
+                                    jw__shader_item_count(&view));
+                if (view.list.cursor != before &&
+                    view.list.cursor != jw__shader_advanced_index(&view)) {
+                    char path[PATH_MAX];
+                    if (jw__shader_item_path(&view, view.list.cursor,
+                                             path, sizeof(path))) {
+                        jw_shader_picker_result result = jw_shader_picker_preview(
+                            &view.picker, &transport, path[0] ? path : NULL);
+                        if (result == JW_SHADER_PICKER_OK) {
+                            view.applied_cursor = view.list.cursor;
+                            view.status[0] = '\0';
+                        } else {
+                            jw__shader_result_status(result, NULL, view.status,
+                                                     sizeof(view.status));
+                            if (result == JW_SHADER_PICKER_UNAVAILABLE) {
+                                snprintf(state->status, sizeof(state->status),
+                                         "%s", view.status);
+                                running = false;
+                            } else {
+                                cat_list_state_jump(&view.list,
+                                                    view.applied_cursor,
+                                                    jw__shader_item_count(&view));
+                            }
+                        }
+                    }
+                }
+            } else if (ev.button == CAT_BTN_B) {
+                jw_shader_picker_result result =
+                    jw_shader_picker_cancel(&view.picker, &transport);
+                if (result == JW_SHADER_PICKER_OK) {
+                    running = false;
+                } else {
+                    jw__shader_result_status(result, NULL, view.status,
+                                             sizeof(view.status));
+                }
+            } else if (ev.button == CAT_BTN_A || ev.button == CAT_BTN_START) {
+                int cursor = view.list.cursor;
+                if (cursor == jw__shader_advanced_index(&view)) {
+                    jw_shader_picker_result result =
+                        jw_shader_picker_cancel(&view.picker, &transport);
+                    if (result != JW_SHADER_PICKER_OK) {
+                        jw__shader_result_status(result, NULL, view.status,
+                                                 sizeof(view.status));
+                    } else if (jw__shader_confirmation(
+                                   T("In RetroArch, open Quick Menu -> Shaders."),
+                                   T("Open")) &&
+                               jw_ipc_retroarch_action(
+                                   socket_path, "settings", 0, state->status,
+                                   sizeof(state->status)) == 0) {
+                        *menu_running = false;
+                    }
+                } else if (cursor == jw__shader_custom_index(&view)) {
+                    snprintf(view.status, sizeof(view.status), "%s",
+                             T("Use Advanced to manage custom shaders."));
+                } else if (cursor == 0) {
+                    jw__shader_off_choice(socket_path, state, &view, &transport,
+                                          menu_running);
+                } else {
+                    char path[PATH_MAX];
+                    jw_shader_picker_result result =
+                        jw__shader_item_path(&view, cursor, path, sizeof(path))
+                        ? jw_shader_picker_preview(&view.picker, &transport, path)
+                        : JW_SHADER_PICKER_MISSING;
+                    if (result == JW_SHADER_PICKER_OK) {
+                        jw__shader_save_choice(socket_path, state, &view,
+                                               &transport, menu_running);
+                    } else {
+                        jw__shader_result_status(result, NULL, view.status,
+                                                 sizeof(view.status));
+                    }
+                }
+            }
+
+            if (view.status[0] &&
+                !view.picker.current_known &&
+                jw__shader_offer_settings(view.status) &&
+                jw_ipc_retroarch_action(socket_path, "settings", 0,
+                                        state->status,
+                                        sizeof(state->status)) == 0) {
+                *menu_running = false;
+            }
+        }
+        if (running && *menu_running)
+            jw__render_ingame_shader(state, &view);
+    }
+    jw_shader_catalog_free(&view.catalog);
+    free(view.recommended_root);
+    jw__ingame_shader_refresh(socket_path, state);
+}
+
 static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) {
     state->session_details_ready = false;
     if (jw_ipc_get_retroarch_session(socket_path, &state->session,
@@ -1652,6 +2282,7 @@ static void jw__ingame_refresh(const char *socket_path, jw_ingame_state *state) 
     }
     jw__ingame_resolve_titles(state);
     jw__ingame_perf_refresh(socket_path, state);
+    jw__ingame_shader_refresh(socket_path, state);
 }
 
 static void jw__copy_env_string(const char *name, char *out, size_t out_size) {
@@ -1757,6 +2388,9 @@ static int jw__ingame_activate(const char *socket_path, jw_ingame_state *state,
             break;
         case JW_INGAME_PERF:
             jw__ingame_show_performance(socket_path, state);
+            return 0;
+        case JW_INGAME_SHADER:
+            jw__ingame_show_shader(socket_path, state, running);
             return 0;
         case JW_INGAME_SETTINGS:
             action = "settings";
@@ -1876,7 +2510,8 @@ static void jw__handle_ingame_input(const char *socket_path,
             /* Tick on the outcome: activate refuses when there is no session or
                savestates are unavailable, and Performance only opens a submenu
                (the launcher signals an overlay open with "select"). */
-            if (state->list.cursor == JW_INGAME_PERF) {
+            if (state->list.cursor == JW_INGAME_PERF ||
+                state->list.cursor == JW_INGAME_SHADER) {
                 jw__haptic(socket_path, "select");
                 jw__ingame_activate(socket_path, state, running);
             } else {

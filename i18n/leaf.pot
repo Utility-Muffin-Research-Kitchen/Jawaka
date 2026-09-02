@@ -184,6 +184,10 @@ msgstr ""
 msgid "816 MHz"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "A custom or updater shader is active."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "A: Choose   B: Back"
 msgstr ""
@@ -244,8 +248,20 @@ msgstr ""
 msgid "Adjust"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Advanced RetroArch menu…"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "All"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "All RetroArch"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "All RetroArch requires a Leaf build with Fugazi's conflict resolver."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -548,8 +564,12 @@ msgstr ""
 msgid "Cursor Movement"
 msgstr ""
 
-#: internal/platform/platform_common.c
+#: cmd/jawaka-menu/main.c
 msgid "Custom"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Custom (current)"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -586,6 +606,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Disable USB ADB and remove Leaf's boot restore marker?"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Disable shaders for this session."
 msgstr ""
 
 #: internal/platform/input_shortcuts.c
@@ -646,6 +670,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Enabled"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Ends on reload or exit"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -828,6 +856,10 @@ msgstr ""
 msgid "Icon"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "In RetroArch, open Quick Menu -> Shaders."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "In-game Shortcuts"
 msgstr ""
@@ -902,6 +934,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Leaf"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Leaf's shader files are incomplete. Update or reinstall Leaf."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1057,6 +1097,10 @@ msgid "No save in this slot"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
+msgid "No saved shader exists at that scope."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
 msgid "No saves"
 msgstr ""
 
@@ -1104,7 +1148,7 @@ msgstr ""
 msgid "OS"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-menu/main.c
 msgid "Off"
 msgstr ""
 
@@ -1118,6 +1162,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Open"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Open RetroArch's full shader browser."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1225,6 +1273,10 @@ msgid "Queued"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
+msgid "Quick Menu -> Shaders"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
 msgid "Quit"
 msgstr ""
 
@@ -1258,6 +1310,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Recents"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Recommended shaders are unavailable. Update or reinstall Leaf."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1304,6 +1360,10 @@ msgstr ""
 msgid "Remove"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Remove saved preset…"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Removing retained Pak Rat data"
 msgstr ""
@@ -1322,6 +1382,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Replace All"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Requires Fugazi resolver"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1372,6 +1436,14 @@ msgstr ""
 msgid "RetroArch Settings"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "RetroArch did not confirm the shader. Reopen Shader or restart the game."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "RetroArch is not available. Shader unchanged."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "RetroArch reset canceled"
 msgstr ""
@@ -1410,6 +1482,18 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Save State"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Save globally"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Saved preset removed. A broader preset may apply after content reload."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Saved presets are removed separately by scope."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1542,6 +1626,30 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Settings"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader Off"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader failed and the previous shader could not be restored. Reopen the game."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader is active for this session, but could not be saved for %s."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader operation failed."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader scope"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1756,8 +1864,40 @@ msgstr ""
 msgid "Text"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "The saved shader could not be removed."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Theme colors"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This RetroArch build does not support Leaf's shader picker."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This core"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This folder"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This game"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This session"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This shader could not compile or link on this video driver. Previous shader restored."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1824,7 +1964,7 @@ msgstr ""
 msgid "UTC"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-menu/main.c
 msgid "Unavailable"
 msgstr ""
 
@@ -1874,6 +2014,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Uptime"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Use Advanced to edit it in RetroArch."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Use Advanced to manage custom shaders."
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1982,6 +2130,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "space"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "that scope"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c

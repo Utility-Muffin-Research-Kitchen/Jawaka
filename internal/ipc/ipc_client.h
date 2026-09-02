@@ -5,6 +5,7 @@
 #include "internal/db/db.h"
 #include "internal/platform/device.h"
 #include "internal/platform/input_shortcuts.h"
+#include "internal/retroarch/command.h"
 
 #include <stdbool.h>
 
@@ -280,6 +281,34 @@ int jw_ipc_get_retroarch_session(const char *socket_path,
  * value is action-specific; pass 0 when unused. */
 int jw_ipc_retroarch_action(const char *socket_path, const char *action,
                             int value, char *status, int status_len);
+
+typedef struct {
+    jw_ra_result result;
+    jw_ra_shader_outcome outcome;
+    char path[1024];
+} jw_ipc_retroarch_shader_reply;
+
+/* Closed, typed client side of jawakad's retroarch-shader request. */
+int jw_ipc_retroarch_shader_get(const char *socket_path,
+                                jw_ipc_retroarch_shader_reply *out,
+                                char *status, int status_len);
+int jw_ipc_retroarch_shader_set(const char *socket_path, const char *path,
+                                jw_ipc_retroarch_shader_reply *out,
+                                char *status, int status_len);
+int jw_ipc_retroarch_shader_restore(const char *socket_path, const char *path,
+                                    jw_ipc_retroarch_shader_reply *out,
+                                    char *status, int status_len);
+int jw_ipc_retroarch_shader_clear(const char *socket_path,
+                                  jw_ipc_retroarch_shader_reply *out,
+                                  char *status, int status_len);
+int jw_ipc_retroarch_shader_save(const char *socket_path,
+                                 jw_ra_shader_scope scope,
+                                 jw_ipc_retroarch_shader_reply *out,
+                                 char *status, int status_len);
+int jw_ipc_retroarch_shader_remove(const char *socket_path,
+                                   jw_ra_shader_scope scope,
+                                   jw_ipc_retroarch_shader_reply *out,
+                                   char *status, int status_len);
 
 /* Reset the shared RetroArch config back to packaged platform defaults. */
 int jw_ipc_reset_retroarch_config(const char *socket_path,

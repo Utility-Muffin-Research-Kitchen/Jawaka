@@ -12,6 +12,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 const char *jw_ra_result_string(jw_ra_result result) {
@@ -117,7 +118,12 @@ bool jw_ra_raw_command_supported(const char *command) {
 
     return jw_ra__starts_with_word(command, "GET_CONFIG_PARAM") ||
            jw_ra__starts_with_word(command, "GET_PATH") ||
+           jw_ra__starts_with_word(command, "JAWAKA_CLEAR_SHADER") ||
+           jw_ra__starts_with_word(command, "JAWAKA_GET_SHADER") ||
            jw_ra__starts_with_word(command, "JAWAKA_LOAD_CONTENT") ||
+           jw_ra__starts_with_word(command, "JAWAKA_REMOVE_SHADER_PRESET") ||
+           jw_ra__starts_with_word(command, "JAWAKA_SAVE_SHADER_PRESET") ||
+           jw_ra__starts_with_word(command, "JAWAKA_SET_SHADER") ||
            jw_ra__starts_with_word(command, "LOAD_CORE") ||
            jw_ra__starts_with_word(command, "LOAD_STATE_SLOT") ||
            jw_ra__starts_with_word(command, "PLAY_REPLAY_SLOT") ||
@@ -250,6 +256,322 @@ static jw_ra_result jw_ra__exchange(const jw_ra_client *client,
 
     close(fd);
     return JW_RA_OK;
+}
+
+static void jw_ra__trim_line(char *s);
+
+/* ---------------------------------------------------------- shader commands */
+
+const char *jw_ra_shader_scope_token(jw_ra_shader_scope scope) {
+    switch (scope) {
+        case JW_RA_SHADER_SCOPE_GAME:   return "GAME";
+        case JW_RA_SHADER_SCOPE_PARENT: return "PARENT";
+        case JW_RA_SHADER_SCOPE_CORE:   return "CORE";
+        case JW_RA_SHADER_SCOPE_GLOBAL: return "GLOBAL";
+    }
+    return NULL;
+}
+
+/* Lowercase hex, bounded. The ID is echoed back into a reply we then compare,
+ * so it must not contain anything that could be read as another field. */
+static void jw_ra__make_request_id(char *out, size_t out_size) {
+    static const char digits[] = "0123456789abcdef";
+    static unsigned counter;
+    unsigned long long seed;
+    struct timespec ts;
+    size_t i;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    seed = (unsigned long long)ts.tv_sec * 1000000000ull +
+           (unsigned long long)ts.tv_nsec;
+    seed ^= (unsigned long long)getpid() << 32;
+    seed += ++counter;
+
+    for (i = 0; i + 1 < out_size && i < 12; i++) {
+        out[i] = digits[seed & 0xfu];
+        seed >>= 4;
+    }
+    out[i] = '\0';
+}
+
+static long jw_ra__now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
+}
+
+/* Parse exactly the documented reply forms. Anything else is a parse error:
+ * a partially-recognised reply is worse than none, because it would be acted
+ * on. `operation` is the verb this exchange asked for; a reply describing a
+ * different one belongs to another request. */
+jw_ra_result jw_ra_parse_shader_reply(const char *reply,
+                                      const char *request_id,
+                                      const char *operation,
+                                      jw_ra_shader_outcome *outcome,
+                                      char *path, size_t path_size) {
+    const char *p = reply;
+    size_t id_len, op_len;
+
+    if (!reply || !request_id || !operation || !outcome) {
+        return JW_RA_PARSE_ERROR;
+    }
+    if (strncmp(p, "JAWAKA_SHADER ", 14) != 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+    p += 14;
+
+    id_len = strlen(request_id);
+    if (strncmp(p, request_id, id_len) != 0 || p[id_len] == '\0') {
+        /* Either a different request ID, or ours with nothing after it. The
+         * first is somebody else's reply and must be ignored; the second is a
+         * truncated reply to ours and is malformed. */
+        if (strncmp(p, request_id, id_len) == 0) {
+            return JW_RA_PARSE_ERROR;
+        }
+        return JW_RA_TIMEOUT;
+    }
+    if (p[id_len] != ' ') {
+        /* Our ID is a prefix of a longer one: still somebody else's request. */
+        return JW_RA_TIMEOUT;
+    }
+    p += id_len + 1;
+
+    op_len = strlen(operation);
+    if (strncmp(p, operation, op_len) != 0 || p[op_len] != ' ') {
+        return JW_RA_PARSE_ERROR;
+    }
+    p += op_len + 1;
+
+    /* SAVE and REMOVE echo the scope before the outcome; skip it. */
+    if (strcmp(operation, "SAVE") == 0 || strcmp(operation, "REMOVE") == 0) {
+        const char *space = strchr(p, ' ');
+        if (!space) {
+            return JW_RA_PARSE_ERROR;
+        }
+        p = space + 1;
+    }
+
+    if (strcmp(p, "OK") == 0) {
+        *outcome = JW_RA_SHADER_OK;
+        return JW_RA_OK;
+    }
+    if (strcmp(p, "NONE") == 0) {
+        *outcome = JW_RA_SHADER_NONE;
+        return JW_RA_OK;
+    }
+    if (strcmp(p, "ABSENT") == 0) {
+        *outcome = JW_RA_SHADER_ABSENT;
+        return JW_RA_OK;
+    }
+    if (strcmp(p, "ERROR") == 0) {
+        *outcome = JW_RA_SHADER_ERR;
+        return JW_RA_OK;
+    }
+    if (strncmp(p, "ERROR ", 6) == 0) {
+        const char *reason = p + 6;
+        if (strcmp(reason, "missing") == 0) {
+            *outcome = JW_RA_SHADER_ERR_MISSING;
+        } else if (strcmp(reason, "unsupported") == 0) {
+            *outcome = JW_RA_SHADER_ERR_UNSUPPORTED;
+        } else if (strcmp(reason, "apply") == 0) {
+            *outcome = JW_RA_SHADER_ERR_APPLY;
+        } else {
+            return JW_RA_PARSE_ERROR;
+        }
+        return JW_RA_OK;
+    }
+    if (strncmp(p, "OK ", 3) == 0) {
+        /* GET OK <path>. The path is the rest of the line verbatim: it may
+         * contain spaces. */
+        if (!path || path_size == 0) {
+            return JW_RA_PARSE_ERROR;
+        }
+        if (strlen(p + 3) >= path_size) {
+            return JW_RA_PARSE_ERROR;
+        }
+        snprintf(path, path_size, "%s", p + 3);
+        *outcome = JW_RA_SHADER_OK;
+        return JW_RA_OK;
+    }
+    return JW_RA_PARSE_ERROR;
+}
+
+/* One exchange, one request ID, one absolute deadline.
+ *
+ * The socket is connect()ed so the kernel drops datagrams from anywhere other
+ * than RetroArch: that is the source validation, and it costs nothing. Replies
+ * carrying another request ID are ignored, but they never extend the deadline
+ * -- otherwise a chatty peer could hold the UI open indefinitely. */
+static jw_ra_result jw_ra__shader_exchange(const jw_ra_client *client,
+                                           const char *command,
+                                           const char *request_id,
+                                           const char *operation,
+                                           jw_ra_shader_outcome *outcome,
+                                           char *path, size_t path_size) {
+    jw_ra_result result;
+    struct sockaddr_storage addr;
+    socklen_t addr_len = 0;
+    int fd = -1;
+    size_t command_len;
+    unsigned timeout_ms;
+    long deadline;
+
+    if (!command || !request_id || !operation || !outcome) {
+        return JW_RA_PARSE_ERROR;
+    }
+    if (!jw_ra_raw_command_supported(command)) {
+        return JW_RA_UNSUPPORTED;
+    }
+
+    result = jw_ra__resolve(client, &addr, &addr_len);
+    if (result != JW_RA_OK) {
+        return result;
+    }
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        return JW_RA_SOCKET_ERROR;
+    }
+    if (connect(fd, (struct sockaddr *)&addr, addr_len) != 0) {
+        close(fd);
+        return JW_RA_SOCKET_ERROR;
+    }
+
+    command_len = strlen(command);
+    if (send(fd, command, command_len, 0) != (ssize_t)command_len) {
+        close(fd);
+        return JW_RA_SOCKET_ERROR;
+    }
+
+    timeout_ms = client && client->timeout_ms ? client->timeout_ms
+                                             : JW_RA_SHADER_TIMEOUT_MS;
+    deadline = jw_ra__now_ms() + (long)timeout_ms;
+
+    for (;;) {
+        char reply[JW_RA_REPLY_MAX];
+        fd_set read_fds;
+        struct timeval tv;
+        long remaining = deadline - jw_ra__now_ms();
+        ssize_t nread;
+        int ready;
+
+        if (remaining <= 0) {
+            close(fd);
+            return JW_RA_TIMEOUT;
+        }
+
+        FD_ZERO(&read_fds);
+        FD_SET(fd, &read_fds);
+        tv.tv_sec = (time_t)(remaining / 1000L);
+        tv.tv_usec = (suseconds_t)((remaining % 1000L) * 1000L);
+
+        ready = select(fd + 1, &read_fds, NULL, NULL, &tv);
+        if (ready == 0) {
+            close(fd);
+            return JW_RA_TIMEOUT;
+        }
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            return JW_RA_SOCKET_ERROR;
+        }
+
+        nread = recv(fd, reply, sizeof(reply) - 1u, 0);
+        if (nread < 0) {
+            close(fd);
+            return JW_RA_SOCKET_ERROR;
+        }
+        reply[nread] = '\0';
+        jw_ra__trim_line(reply);
+
+        result = jw_ra_parse_shader_reply(reply, request_id, operation,
+                                          outcome, path, path_size);
+        if (result == JW_RA_TIMEOUT) {
+            /* Somebody else's reply. Keep waiting against the same deadline. */
+            continue;
+        }
+        close(fd);
+        return result;
+    }
+}
+
+jw_ra_result jw_ra_get_shader(const jw_ra_client *client,
+                              jw_ra_shader_outcome *outcome,
+                              char *path, size_t path_size) {
+    char id[JW_RA_REQUEST_ID_MAX];
+    char command[64];
+
+    if (path && path_size > 0) {
+        path[0] = '\0';
+    }
+    jw_ra__make_request_id(id, sizeof(id));
+    snprintf(command, sizeof(command), "JAWAKA_GET_SHADER %s", id);
+    return jw_ra__shader_exchange(client, command, id, "GET", outcome,
+                                  path, path_size);
+}
+
+jw_ra_result jw_ra_set_shader(const jw_ra_client *client,
+                              const char *preset_path,
+                              jw_ra_shader_outcome *outcome) {
+    char id[JW_RA_REQUEST_ID_MAX];
+    char command[JW_RA_REPLY_MAX];
+    int written;
+
+    if (!preset_path || !preset_path[0]) {
+        return JW_RA_PARSE_ERROR;
+    }
+    jw_ra__make_request_id(id, sizeof(id));
+    written = snprintf(command, sizeof(command), "JAWAKA_SET_SHADER %s %s",
+                       id, preset_path);
+    if (written < 0 || (size_t)written >= sizeof(command)) {
+        return JW_RA_PARSE_ERROR;
+    }
+    return jw_ra__shader_exchange(client, command, id, "SET", outcome, NULL, 0);
+}
+
+jw_ra_result jw_ra_clear_shader(const jw_ra_client *client,
+                                jw_ra_shader_outcome *outcome) {
+    char id[JW_RA_REQUEST_ID_MAX];
+    char command[64];
+
+    jw_ra__make_request_id(id, sizeof(id));
+    snprintf(command, sizeof(command), "JAWAKA_CLEAR_SHADER %s", id);
+    return jw_ra__shader_exchange(client, command, id, "CLEAR", outcome,
+                                  NULL, 0);
+}
+
+static jw_ra_result jw_ra__shader_preset_op(const jw_ra_client *client,
+                                            const char *verb,
+                                            const char *operation,
+                                            jw_ra_shader_scope scope,
+                                            jw_ra_shader_outcome *outcome) {
+    char id[JW_RA_REQUEST_ID_MAX];
+    char command[128];
+    const char *token = jw_ra_shader_scope_token(scope);
+
+    if (!token) {
+        return JW_RA_PARSE_ERROR;
+    }
+    jw_ra__make_request_id(id, sizeof(id));
+    snprintf(command, sizeof(command), "%s %s %s", verb, id, token);
+    return jw_ra__shader_exchange(client, command, id, operation, outcome,
+                                  NULL, 0);
+}
+
+jw_ra_result jw_ra_save_shader_preset(const jw_ra_client *client,
+                                      jw_ra_shader_scope scope,
+                                      jw_ra_shader_outcome *outcome) {
+    return jw_ra__shader_preset_op(client, "JAWAKA_SAVE_SHADER_PRESET",
+                                   "SAVE", scope, outcome);
+}
+
+jw_ra_result jw_ra_remove_shader_preset(const jw_ra_client *client,
+                                        jw_ra_shader_scope scope,
+                                        jw_ra_shader_outcome *outcome) {
+    return jw_ra__shader_preset_op(client, "JAWAKA_REMOVE_SHADER_PRESET",
+                                   "REMOVE", scope, outcome);
 }
 
 jw_ra_result jw_ra_send_raw(const jw_ra_client *client, const char *command) {

@@ -461,6 +461,17 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "screenshot_directory",
         "savestate_thumbnail_enable",
         "joypad_autoconfig_dir",
+        /* Automatic shader preset discovery. Protected so a persisted user
+           value cannot redirect RetroArch to a directory Fugazi and the in-game
+           picker do not inspect, or switch loading off and make every saved
+           preset silently stop applying. RetroArch checks video_shader_enable
+           before it attempts automatic preset discovery, so all three values
+           are launch invariants. video_shader_dir and
+           video_shader_preset_save_reference_enable stay user-owned: a genuine
+           custom shader directory and both preset save styles are supported. */
+        "rgui_config_directory",
+        "auto_shaders_enable",
+        "video_shader_enable",
 #ifdef PLATFORM_MLP1
         "audio_device",
         "audio_driver",
@@ -2051,6 +2062,218 @@ static char *jw__default_retroarch_user_shaders_dir(const char *sdcard_root) {
     return jw__dup_realpath_or_literal(path);
 }
 
+/* RetroArch's menu config directory: where it reads and writes *automatic*
+   shader presets (global/core/parent/game). Fugazi inspects the same directory,
+   and the in-game picker saves and removes through RetroArch's own machinery,
+   so all three have to agree on one location or a saved preset silently fails
+   to load. Derived from the runtime path contract, never from a hardcoded SD
+   mount root: /mnt/sdcard and /media/sdcard1 swap across reboots. */
+static char *jw__default_retroarch_config_dir(const char *sdcard_root) {
+    char *env_dir = jw__dup_env_value("UMRK_RETROARCH_CONFIG_DIR");
+    if (env_dir) {
+        if (jw__mkdir_p(env_dir, 0755) == 0) {
+            return env_dir;
+        }
+        free(env_dir);
+    }
+
+    const char *internal_data = jw__env_value("UMRK_INTERNAL_DATA_PATH");
+    char internal_path[PATH_MAX];
+    if (internal_data) {
+        if (!jw__format_string(internal_path, sizeof(internal_path), "%s",
+                               internal_data)) {
+            return NULL;
+        }
+    } else if (!jw__format_default_internal_data(
+                   internal_path, sizeof(internal_path), sdcard_root)) {
+        return NULL;
+    }
+
+    char path[PATH_MAX];
+    if (!jw__format_string(path, sizeof(path),
+                           "%s/retroarch/.config/retroarch/config",
+                           internal_path) ||
+        jw__mkdir_p(path, 0755) != 0) {
+        return NULL;
+    }
+    return jw__dup_realpath_or_literal(path);
+}
+
+/* The durable leaf-recommended directory: the only place the in-game picker may
+   load a preset from. Returned as a resolved path so a caller can compare a
+   candidate against it without worrying about symlinks or "..". */
+/* True when `candidate` resolves to a .glslp inside the durable
+   leaf-recommended directory. realpath() first, so "..", a symlink, or a
+   relative path cannot walk out of it. On success `relative` receives the path
+   below that root, which is what gets logged: the SD mount root is noise and
+   changes between boots. */
+bool jw_retroarch_shader_path_is_recommended(const char *candidate,
+                                             char *resolved, size_t resolved_size,
+                                             char *relative, size_t relative_size) {
+    char real[PATH_MAX];
+    char *root;
+    size_t root_len;
+    bool ok = false;
+
+    if (!candidate || !candidate[0] || !resolved || !relative) {
+        return false;
+    }
+    if (!realpath(candidate, real)) {
+        return false;
+    }
+    root = jw_retroarch_recommended_shaders_dir();
+    if (!root) {
+        return false;
+    }
+    root_len = strlen(root);
+    while (root_len > 0 && root[root_len - 1] == '/') {
+        root_len--;
+    }
+    if (strncmp(real, root, root_len) == 0 && real[root_len] == '/' &&
+        real[root_len + 1] != '\0') {
+        const char *ext = strrchr(real, '.');
+        if (ext && strcmp(ext, ".glslp") == 0) {
+            snprintf(resolved, resolved_size, "%s", real);
+            snprintf(relative, relative_size, "%s", real + root_len + 1);
+            ok = true;
+        }
+    }
+    free(root);
+    return ok;
+}
+
+static bool jw__shader_path_below(const char *real, const char *root,
+                                  const char *label,
+                                  char *relative, size_t relative_size) {
+    if (!real || !root || !label || !relative || relative_size == 0) return false;
+    size_t root_len = strlen(root);
+    while (root_len > 0 && root[root_len - 1] == '/') root_len--;
+    if (strncmp(real, root, root_len) != 0 || real[root_len] != '/' ||
+        real[root_len + 1] == '\0')
+        return false;
+    int n = snprintf(relative, relative_size, "%s%s", label,
+                     real + root_len + 1);
+    return n > 0 && (size_t)n < relative_size;
+}
+
+static char *jw__retroarch_effective_shader_dir(const char *runtime_config_path,
+                                                 const char *sdcard_root) {
+    if (!runtime_config_path || !runtime_config_path[0]) return NULL;
+    char *text = jw__read_text_file(runtime_config_path,
+                                    JW_RETROARCH_CONFIG_READ_MAX);
+    if (!text) return NULL;
+    /* RetroArch keeps the first duplicate key, so resolve the same value it
+       actually used for this running session. */
+    char *value = jw__retroarch_cfg_text_string_value_ex(
+        text, "video_shader_dir", true);
+    free(text);
+    if (!value || !value[0]) {
+        free(value);
+        return NULL;
+    }
+
+    char expanded[PATH_MAX];
+    const char *path = value;
+    char *home = NULL;
+    if (value[0] == '~') {
+        if (value[1] != '\0' && value[1] != '/') {
+            free(value);
+            return NULL;
+        }
+        home = jw_retroarch_state_dir(sdcard_root ? sdcard_root : "");
+        int n = home ? snprintf(expanded, sizeof(expanded), "%s%s",
+                                home, value + 1) : -1;
+        if (n < 0 || (size_t)n >= sizeof(expanded)) {
+            free(home);
+            free(value);
+            return NULL;
+        }
+        path = expanded;
+    }
+
+    char real[PATH_MAX];
+    struct stat st;
+    char *result = realpath(path, real) && stat(real, &st) == 0 &&
+                           S_ISDIR(st.st_mode)
+                     ? strdup(real) : NULL;
+    free(home);
+    free(value);
+    return result;
+}
+
+bool jw_retroarch_shader_path_is_restorable(const char *candidate,
+                                            const char *runtime_config_path,
+                                            char *resolved, size_t resolved_size,
+                                            char *relative, size_t relative_size) {
+    char real[PATH_MAX];
+    struct stat st;
+    if (!candidate || !candidate[0] || !resolved || resolved_size == 0 ||
+        !relative || relative_size == 0 || !realpath(candidate, real) ||
+        stat(real, &st) != 0 || !S_ISREG(st.st_mode))
+        return false;
+    const char *ext = strrchr(real, '.');
+    if (!ext || strcmp(ext, ".glslp") != 0) return false;
+
+    char *sdroot = jw_sdcard_root();
+    char *shaders = jw__default_retroarch_user_shaders_dir(sdroot ? sdroot : "");
+    char *config = jw__default_retroarch_config_dir(sdroot ? sdroot : "");
+    char *effective = jw__retroarch_effective_shader_dir(
+        runtime_config_path, sdroot ? sdroot : "");
+    free(sdroot);
+    bool ok = (shaders && jw__shader_path_below(real, shaders, "shaders/",
+                                                 relative, relative_size)) ||
+              (config && jw__shader_path_below(real, config, "config/",
+                                                relative, relative_size)) ||
+              (effective && jw__shader_path_below(real, effective,
+                                                  "video_shader_dir/",
+                                                  relative, relative_size));
+    free(shaders);
+    free(config);
+    free(effective);
+    if (!ok || snprintf(resolved, resolved_size, "%s", real) >=
+                   (int)resolved_size)
+        return false;
+    return true;
+}
+
+char *jw_retroarch_recommended_shaders_dir(void) {
+    char *root = jw_sdcard_root();
+    char *shaders = jw__default_retroarch_user_shaders_dir(root ? root : "");
+    free(root);
+    if (!shaders) {
+        return NULL;
+    }
+    char path[PATH_MAX];
+    if (!jw__format_string(path, sizeof(path), "%s/leaf-recommended", shaders)) {
+        free(shaders);
+        return NULL;
+    }
+    free(shaders);
+    return jw__dup_realpath_or_literal(path);
+}
+
+/* Release-owned catalog. Unlike video_shader_dir, this must never fall back to
+   the durable updater/custom root: only Leaf's assembled manifest is trusted
+   to advertise recommendations. The returned path may not exist so the picker
+   can surface its normal reinstall message. */
+char *jw_retroarch_shader_manifest_path(void) {
+    const char *root = jw__env_value("UMRK_RETROARCH_SHADERS_DIR");
+    char path[PATH_MAX];
+    if (!root) {
+        const char *platform = jw__env_value("UMRK_PLATFORM_PATH");
+        const char *system = jw__env_value("SYSTEM_PATH");
+        if (platform && jw__format_string(path, sizeof(path), "%s/shaders", platform))
+            root = path;
+        else if (system && jw__format_string(path, sizeof(path), "%s/shaders", system))
+            root = path;
+    }
+    if (!root) return NULL;
+    char manifest[PATH_MAX];
+    if (!jw__format_string(manifest, sizeof(manifest), "%s/manifest.json", root))
+        return NULL;
+    return strdup(manifest);
+}
+
 static char *jw__default_retroarch_shaders_dir(const char *sdcard_root) {
     char *user_dir = jw__default_retroarch_user_shaders_dir(sdcard_root);
     if (user_dir) {
@@ -2185,6 +2408,21 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     if (autoconfig_dir && jw__is_directory(autoconfig_dir)) {
         jw__retroarch_cfg_string(fp, "joypad_autoconfig_dir", autoconfig_dir);
     }
+    /* Automatic shader preset discovery. These keys are protected, so this is
+       the only place they are written: Fugazi, the in-game picker's save and
+       remove, and RetroArch's own auto-load at content launch all have to
+       resolve the same directory, and a persisted user value must not be able
+       to move it or switch loading off. video_shader_enable is required here:
+       RetroArch returns before auto-loading when it starts false. */
+    {
+        char *shader_config_dir = jw__default_retroarch_config_dir(config_sdroot_abs);
+        if (shader_config_dir) {
+            jw__retroarch_cfg_string(fp, "rgui_config_directory", shader_config_dir);
+            free(shader_config_dir);
+        }
+    }
+    jw__retroarch_cfg_string(fp, "auto_shaders_enable", "true");
+    jw__retroarch_cfg_string(fp, "video_shader_enable", "true");
     jw__retroarch_cfg_string(fp, "config_save_on_exit", persist_changes ? "true" : "false");
     jw__retroarch_cfg_string(fp, "network_cmd_enable", "true");
     char command_port[16];

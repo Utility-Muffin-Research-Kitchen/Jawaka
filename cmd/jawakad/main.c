@@ -10423,6 +10423,133 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
     return jw__reply_retroarch_result(client, action, result);
 }
 
+/* Shader operations for the in-game picker.
+ *
+ * Deliberately a closed request rather than a raw RetroArch command over the UI
+ * IPC: operation, path and scope are the only inputs, each validated here. A
+ * general passthrough would let anything that can reach the socket drive
+ * RetroArch directly. */
+static int jw__reply_shader_result(jw_ipc_client *client, const char *operation,
+                                   jw_ra_result result,
+                                   jw_ra_shader_outcome outcome,
+                                   const char *path) {
+    static const char *outcome_names[] = {
+        "ok", "none", "absent", "missing", "unsupported", "apply", "error"
+    };
+    bool transport_ok = result == JW_RA_OK;
+    cJSON *root = cJSON_CreateObject();
+    /* An apply failure is a successful exchange: the picker needs to tell
+       "RetroArch says this shader will not compile" from "RetroArch did not
+       answer", because only the second is worth retrying. */
+    cJSON_AddStringToObject(root, "type", transport_ok ? "ok" : "error");
+    cJSON_AddStringToObject(root, "operation", operation ? operation : "");
+    cJSON_AddStringToObject(root, "result", jw_ra_result_string(result));
+    if (transport_ok) {
+        size_t index = (size_t)outcome;
+        cJSON_AddStringToObject(
+            root, "outcome",
+            index < sizeof(outcome_names) / sizeof(outcome_names[0])
+                ? outcome_names[index] : "error");
+    } else {
+        cJSON_AddStringToObject(root, "message", jw_ra_result_string(result));
+    }
+    if (path && path[0]) {
+        cJSON_AddStringToObject(root, "path", path);
+    }
+    return jw__reply_json(client, root);
+}
+
+static bool jw__shader_scope_from_string(const char *text,
+                                         jw_ra_shader_scope *out) {
+    if (!text) {
+        return false;
+    }
+    if (strcmp(text, "game") == 0) {
+        *out = JW_RA_SHADER_SCOPE_GAME;
+    } else if (strcmp(text, "parent") == 0) {
+        *out = JW_RA_SHADER_SCOPE_PARENT;
+    } else if (strcmp(text, "core") == 0) {
+        *out = JW_RA_SHADER_SCOPE_CORE;
+    } else if (strcmp(text, "global") == 0) {
+        *out = JW_RA_SHADER_SCOPE_GLOBAL;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static int jw__handle_retroarch_shader(jw_daemon_state *state,
+                                       jw_ipc_client *client, cJSON *root) {
+    cJSON *op_json = cJSON_GetObjectItemCaseSensitive(root, "operation");
+    if (!cJSON_IsString(op_json) || !op_json->valuestring[0]) {
+        return jw__reply_error(client, "missing shader operation");
+    }
+    if (!jw__has_retroarch_session(state)) {
+        return jw__reply_error(client, "no active RetroArch session");
+    }
+
+    const char *operation = op_json->valuestring;
+    jw_ra_client ra = jw_ra_client_default();
+    ra.timeout_ms = JW_RA_SHADER_TIMEOUT_MS;
+    jw_ra_shader_outcome outcome = JW_RA_SHADER_ERR;
+    jw_ra_result result = JW_RA_UNSUPPORTED;
+    char path[PATH_MAX];
+    char relative[PATH_MAX];
+    const char *scope_log = "-";
+
+    path[0] = '\0';
+    relative[0] = '\0';
+
+    if (strcmp(operation, "get") == 0) {
+        result = jw_ra_get_shader(&ra, &outcome, path, sizeof(path));
+    } else if (strcmp(operation, "set") == 0 ||
+               strcmp(operation, "restore") == 0) {
+        cJSON *path_json = cJSON_GetObjectItemCaseSensitive(root, "path");
+        char resolved[PATH_MAX];
+        if (!cJSON_IsString(path_json) || !path_json->valuestring[0]) {
+            return jw__reply_error(client, "missing shader path");
+        }
+        bool permitted = strcmp(operation, "set") == 0
+            ? jw_retroarch_shader_path_is_recommended(
+                  path_json->valuestring, resolved, sizeof(resolved), relative,
+                  sizeof(relative))
+            : jw_retroarch_shader_path_is_restorable(
+                  path_json->valuestring,
+                  state->retroarch_session.config_path,
+                  resolved, sizeof(resolved), relative, sizeof(relative));
+        if (!permitted) {
+            jw_log_warn("retroarch-shader rejected %s path", operation);
+            return jw__reply_error(client, "shader path not permitted");
+        }
+        snprintf(path, sizeof(path), "%s", resolved);
+        result = jw_ra_set_shader(&ra, resolved, &outcome);
+    } else if (strcmp(operation, "clear") == 0) {
+        result = jw_ra_clear_shader(&ra, &outcome);
+    } else if (strcmp(operation, "save") == 0 ||
+               strcmp(operation, "remove") == 0) {
+        cJSON *scope_json = cJSON_GetObjectItemCaseSensitive(root, "scope");
+        jw_ra_shader_scope scope;
+        /* Scopes only. A path here would let a caller write a preset anywhere
+           RetroArch can reach. */
+        if (!cJSON_IsString(scope_json) ||
+            !jw__shader_scope_from_string(scope_json->valuestring, &scope)) {
+            return jw__reply_error(client, "invalid shader scope");
+        }
+        scope_log = scope_json->valuestring;
+        result = strcmp(operation, "save") == 0
+                     ? jw_ra_save_shader_preset(&ra, scope, &outcome)
+                     : jw_ra_remove_shader_preset(&ra, scope, &outcome);
+    } else {
+        return jw__reply_error(client, "unknown shader operation");
+    }
+
+    jw_log_info("retroarch-shader operation=%s scope=%s preset=%s result=%s",
+                operation, scope_log, relative[0] ? relative : "-",
+                jw_ra_result_string(result));
+    return jw__reply_shader_result(client, operation, result, outcome,
+                                   strcmp(operation, "get") == 0 ? path : NULL);
+}
+
 static pid_t jw__suspend_request_pid(jw_ipc_client *client, cJSON *request) {
     pid_t pid = 0;
     if (jw_ipc_client_peer_pid(client, &pid) == 0 && pid > 0) return pid;
@@ -11520,6 +11647,9 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_retroarch_session(state, client);
     }
 
+    if (strcmp(type->valuestring, "retroarch-shader") == 0) {
+        return jw__handle_retroarch_shader(state, client, root);
+    }
     if (strcmp(type->valuestring, "retroarch-action") == 0) {
         int rc = jw__handle_retroarch_action(state, client, root);
         cJSON_Delete(root);
