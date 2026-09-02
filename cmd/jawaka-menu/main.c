@@ -1262,6 +1262,13 @@ static void jw__ingame_update_thumb(jw_ingame_state *state) {
         SDL_DestroyTexture(state->thumb_tex);
         state->thumb_tex = NULL;
     }
+    if (state->list.anim_active) {
+        /* File decode is the only cold work in the main menu render loop. Keep
+           the old slot cleared while focus moves, then load only the row where
+           the 80 ms list animation actually settles. */
+        state->thumb_slot = INT_MIN;
+        return;
+    }
     state->thumb_slot = slot;
     char path[PATH_MAX];
     if (jw__slot_thumb_path(state, slot, path, sizeof(path))) {
@@ -1293,6 +1300,57 @@ static void jw__draw_ingame_underlay(SDL_Rect content, int top, int bottom) {
     panel.a = JW_INGAME_UNDERLAY_ALPHA;
     cat_draw_rounded_rect(content.x + CAT_S(8), top,
                           content.w - CAT_S(16), bottom - top, CAT_S(14), panel);
+}
+
+static void jw__draw_ingame_list_focus(int x, int y, int w, int h, void *user) {
+    (void)user;
+    int pill_h = h - CAT_S(4);
+    cat_draw_pill(x, y + (h - pill_h) / 2, w, pill_h,
+                  cat_get_theme()->highlight);
+}
+
+typedef struct {
+    const jw_ingame_state *state;
+    TTF_Font *body;
+    TTF_Font *small;
+    int label_x;
+    int list_w;
+    int item_w;
+    int detail_x;
+    int detail_w;
+    bool preview_active;
+} jw__ingame_menu_rows;
+
+static void jw__draw_ingame_menu_item(int i, int ix, int iy, int iw, int ih,
+                                      float focus, void *user) {
+    (void)ix; (void)iw;
+    jw__ingame_menu_rows *rows = user;
+    ap_theme *theme = cat_get_theme();
+    int body_h = TTF_FontHeight(rows->body);
+    int pill_h = ih - CAT_S(4);
+    if (pill_h < body_h + CAT_S(2)) pill_h = body_h + CAT_S(2);
+    int text_y = iy + (ih - pill_h) / 2 + (pill_h - body_h) / 2;
+    ap_color text = cat_draw_color_lerp(theme->text,
+                                         theme->highlighted_text, focus);
+    ap_color hint = cat_draw_color_lerp(theme->hint,
+                                         theme->highlighted_text, focus);
+
+    char detail[96];
+    jw__ingame_detail(rows->state, i, detail, sizeof(detail));
+    bool show_detail = !rows->preview_active && detail[0] &&
+                       rows->detail_w > CAT_S(40);
+    int label_w = show_detail ? rows->detail_x - rows->label_x - CAT_S(10)
+                : (rows->preview_active ? rows->item_w - CAT_S(10)
+                                        : rows->list_w - CAT_S(8));
+    const char *label = (i == JW_INGAME_QUIT)
+                      ? (rows->state->quit_save ? T("Save & Quit") : T("Quit"))
+                      : T(kInGameItems[i]);
+    cat_draw_text_ellipsized(rows->body, label, rows->label_x, text_y,
+                             text, label_w);
+    if (show_detail) {
+        cat_draw_text_ellipsized(rows->small, detail, rows->detail_x,
+                                 text_y + CAT_S(2), hint, rows->detail_w);
+    }
 }
 
 static void jw__render_ingame_menu(const jw_ingame_state *state) {
@@ -1350,10 +1408,6 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
             item_h = min_item_h;
         }
     }
-    int pill_h   = item_h - CAT_S(4);
-    if (pill_h < body_h + CAT_S(2)) {
-        pill_h = body_h + CAT_S(2);
-    }
     int pill_w = list_w;
 
     jw__draw_ingame_underlay(content, content.y + CAT_S(4), bottom_y);
@@ -1375,36 +1429,22 @@ static void jw__render_ingame_menu(const jw_ingame_state *state) {
                                  theme->hint, list_w);
     }
 
-    for (int i = 0; i < JW_INGAME_COUNT; i++) {
-        int iy     = top_y + i * item_h;
-        int pill_y = iy + (item_h - pill_h) / 2;
-        bool sel   = (i == state->list.cursor);
-
-        if (sel)
-            cat_draw_pill(x - CAT_S(10), pill_y, pill_w, pill_h, theme->highlight);
-
-        ap_color col = sel ? theme->highlighted_text : theme->text;
-        int text_y   = pill_y + (pill_h - body_h) / 2;
-
-        char detail[96];
-        jw__ingame_detail(state, i, detail, sizeof(detail));
-        bool show_detail = !preview_active && detail[0] && detail_w > CAT_S(40);
-        int label_w = show_detail ? detail_x - x - CAT_S(10)
-                    : (preview_active ? item_w - CAT_S(10) : list_w - CAT_S(8));
-        /* The Quit row label tracks the armed mode (Save & Quit by default;
-           Left/Right toggles to a plain discard Quit). */
-        const char *label = (i == JW_INGAME_QUIT)
-                          ? (state->quit_save ? T("Save & Quit") : T("Quit"))
-                          : T(kInGameItems[i]);
-        cat_draw_text_ellipsized(body_font, label, x, text_y,
-                                 col, label_w);
-        if (show_detail) {
-            cat_draw_text_ellipsized(small, detail, detail_x,
-                                     text_y + CAT_S(2),
-                                     sel ? theme->highlighted_text : theme->hint,
-                                     detail_w);
-        }
-    }
+    jw__ingame_menu_rows rows = {
+        .state = state,
+        .body = body_font,
+        .small = small,
+        .label_x = x,
+        .list_w = list_w,
+        .item_w = item_w,
+        .detail_x = detail_x,
+        .detail_w = detail_w,
+        .preview_active = preview_active,
+    };
+    cat_draw_list_pane_layered(x - CAT_S(10), top_y, pill_w,
+                               JW_INGAME_COUNT * item_h,
+                               JW_INGAME_COUNT, &state->list, item_h,
+                               jw__draw_ingame_list_focus,
+                               jw__draw_ingame_menu_item, &rows);
 
     /* Slot thumbnail preview (Save/Load): the saved image in the selected slot,
        or a placeholder when the slot is empty. */
@@ -1597,6 +1637,35 @@ static bool jw__ingame_perf_adjust(const char *socket_path,
     }
 }
 
+typedef struct {
+    TTF_Font *body;
+    TTF_Font *small;
+    const char **labels;
+    const char **values;
+    int label_x;
+    int detail_x;
+    int detail_w;
+} jw__ingame_perf_rows;
+
+static void jw__draw_ingame_perf_item(int i, int ix, int iy, int iw, int ih,
+                                      float focus, void *user) {
+    (void)ix; (void)iw;
+    jw__ingame_perf_rows *rows = user;
+    ap_theme *theme = cat_get_theme();
+    int body_h = TTF_FontHeight(rows->body);
+    int pill_h = ih - CAT_S(4);
+    int text_y = iy + (ih - pill_h) / 2 + (pill_h - body_h) / 2;
+    ap_color text = cat_draw_color_lerp(theme->text,
+                                         theme->highlighted_text, focus);
+    ap_color hint = cat_draw_color_lerp(theme->hint,
+                                         theme->highlighted_text, focus);
+    cat_draw_text_ellipsized(rows->body, rows->labels[i], rows->label_x,
+                             text_y, text,
+                             rows->detail_x - rows->label_x - CAT_S(10));
+    cat_draw_text_ellipsized(rows->small, rows->values[i], rows->detail_x,
+                             text_y + CAT_S(2), hint, rows->detail_w);
+}
+
 static void jw__render_ingame_performance(const jw_ingame_state *state,
                                           const cat_list_state *list) {
     ap_theme *theme     = cat_get_theme();
@@ -1624,7 +1693,6 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
     int small_h = TTF_FontHeight(small);
     int item_h = body_h + CAT_S(12);
     int top_y = content.y + CAT_S(18);
-    int pill_h = item_h - CAT_S(4);
     int detail_x = x + list_w * 48 / 100;
     int detail_w = right - detail_x;
 
@@ -1662,22 +1730,20 @@ static void jw__render_ingame_performance(const jw_ingame_state *state,
         top_y += small_h + CAT_S(12);
     }
 
-    for (int i = 0; i < JW_INGAME_PERF_ROWS; i++) {
-        int iy = top_y + i * item_h;
-        int pill_y = iy + (item_h - pill_h) / 2;
-        bool sel = list && i == list->cursor;
-        if (sel) {
-            cat_draw_pill(x - CAT_S(10), pill_y, list_w, pill_h, theme->highlight);
-        }
-        ap_color col = sel ? theme->highlighted_text : theme->text;
-        int text_y = pill_y + (pill_h - body_h) / 2;
-        cat_draw_text_ellipsized(body_font, labels[i], x, text_y,
-                                 col, detail_x - x - CAT_S(10));
-        cat_draw_text_ellipsized(small, values[i], detail_x,
-                                 text_y + CAT_S(2),
-                                 sel ? theme->highlighted_text : theme->hint,
-                                 detail_w);
-    }
+    jw__ingame_perf_rows rows = {
+        .body = body_font,
+        .small = small,
+        .labels = labels,
+        .values = values,
+        .label_x = x,
+        .detail_x = detail_x,
+        .detail_w = detail_w,
+    };
+    cat_draw_list_pane_layered(x - CAT_S(10), top_y, list_w,
+                               JW_INGAME_PERF_ROWS * item_h,
+                               JW_INGAME_PERF_ROWS, list, item_h,
+                               jw__draw_ingame_list_focus,
+                               jw__draw_ingame_perf_item, &rows);
 
     if (state->show_hints && state->status[0]) {
         int y = content.y + content.h - small_h - CAT_S(10);
@@ -1757,6 +1823,7 @@ static void jw__ingame_continue(const char *socket_path,
 /* Global shader writes stay off until the assembled Leaf build contains the
    ownership-safe Fugazi resolver. Flip this only with that assembly change. */
 #define JW_FUGAZI_RESOLVER_ASSEMBLED false
+#define JW_SHADER_PREVIEW_SETTLE_MS 80u
 
 typedef struct {
     jw_shader_catalog catalog;
@@ -1766,6 +1833,7 @@ typedef struct {
     bool catalog_valid;
     bool custom_row;
     int applied_cursor;
+    jw_shader_preview_coalescer preview;
     char status[256];
 } jw_ingame_shader_view;
 
@@ -1792,7 +1860,7 @@ static const char *jw__shader_item_label(const jw_ingame_shader_view *view,
     if (index == 0) return T("Off");
     const jw_shader_catalog_row *row = jw__shader_item_row(view, index);
     if (row) return row->display_name;
-    if (index == jw__shader_custom_index(view)) return T("Custom (current)");
+    if (index == jw__shader_custom_index(view)) return T("Save current shader…");
     return T("Advanced RetroArch menu…");
 }
 
@@ -1889,6 +1957,48 @@ static bool jw__shader_offer_settings(const char *message) {
     return jw__shader_confirmation(message, T("RetroArch Settings"));
 }
 
+static jw_shader_picker_result jw__shader_apply_preview(
+    jw_ingame_shader_view *view,
+    const jw_shader_picker_transport *transport,
+    int cursor) {
+    char path[PATH_MAX];
+    jw_shader_picker_result result =
+        jw__shader_item_path(view, cursor, path, sizeof(path))
+        ? jw_shader_picker_preview(&view->picker, transport,
+                                   path[0] ? path : NULL)
+        : JW_SHADER_PICKER_MISSING;
+    if (result == JW_SHADER_PICKER_OK) {
+        view->applied_cursor = cursor;
+        view->status[0] = '\0';
+    } else {
+        jw__shader_result_status(result, NULL, view->status,
+                                 sizeof(view->status));
+        if (result != JW_SHADER_PICKER_UNAVAILABLE) {
+            cat_list_state_jump(&view->list, view->applied_cursor,
+                                jw__shader_item_count(view));
+        }
+    }
+    return result;
+}
+
+typedef struct {
+    const jw_ingame_shader_view *view;
+    TTF_Font *body;
+} jw__ingame_shader_rows;
+
+static void jw__draw_ingame_shader_item(int i, int ix, int iy, int iw, int ih,
+                                        float focus, void *user) {
+    jw__ingame_shader_rows *rows = user;
+    ap_theme *theme = cat_get_theme();
+    ap_color text = cat_draw_color_lerp(theme->text,
+                                         theme->highlighted_text, focus);
+    cat_draw_text_ellipsized(rows->body,
+                             jw__shader_item_label(rows->view, i),
+                             ix + CAT_S(10), iy + CAT_S(3), text,
+                             iw - CAT_S(20));
+    (void)ih;
+}
+
 static void jw__render_ingame_shader(const jw_ingame_state *state,
                                      const jw_ingame_shader_view *view) {
     ap_theme *theme = cat_get_theme();
@@ -1922,19 +2032,11 @@ static void jw__render_ingame_shader(const jw_ingame_state *state,
     int bottom = content.y + content.h - CAT_S(18) - small_h;
     int count = jw__shader_item_count(view);
 
-    for (int row = 0; row < view->list.visible_rows; row++) {
-        int i = view->list.scroll_offset + row;
-        if (i >= count) break;
-        int y = top + row * item_h;
-        bool selected = i == view->list.cursor;
-        if (selected)
-            cat_draw_pill(x - CAT_S(10), y, list_w, item_h - CAT_S(3),
-                          theme->highlight);
-        cat_draw_text_ellipsized(body, jw__shader_item_label(view, i), x,
-                                 y + CAT_S(3),
-                                 selected ? theme->highlighted_text : theme->text,
-                                 list_w - CAT_S(10));
-    }
+    jw__ingame_shader_rows rows = { .view = view, .body = body };
+    cat_draw_list_pane_layered(x - CAT_S(10), top, list_w, bottom - top,
+                               count, &view->list, item_h,
+                               jw__draw_ingame_list_focus,
+                               jw__draw_ingame_shader_item, &rows);
 
     const jw_shader_catalog_row *selected =
         jw__shader_item_row(view, view->list.cursor);
@@ -1958,7 +2060,7 @@ static void jw__render_ingame_shader(const jw_ingame_state *state,
         description = T("Disable shaders for this session.");
         constraint = T("Saved presets are removed separately by scope.");
     } else if (view->list.cursor == jw__shader_custom_index(view)) {
-        description = T("A custom or updater shader is active.");
+        description = T("Choose where RetroArch should load this shader automatically.");
         constraint = T("Use Advanced to edit it in RetroArch.");
     } else {
         description = T("Open RetroArch's full shader browser.");
@@ -2163,6 +2265,7 @@ static void jw__ingame_show_shader(const char *socket_path,
     cat_list_state_init(&view.list, 8);
     cat_list_state_jump(&view.list, initial, jw__shader_item_count(&view));
     view.applied_cursor = initial;
+    jw_shader_preview_coalescer_init(&view.preview);
 
     bool running = true;
     while (running && *menu_running && !g_hide_requested) {
@@ -2170,39 +2273,23 @@ static void jw__ingame_show_shader(const char *socket_path,
         cat_input_event ev;
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
-            if (ev.repeated && (ev.button == CAT_BTN_UP || ev.button == CAT_BTN_DOWN))
-                continue; /* queued hold-repeat must not chain synchronous compiles */
             if (ev.button == CAT_BTN_UP || ev.button == CAT_BTN_DOWN) {
                 int before = view.list.cursor;
                 cat_list_state_move(&view.list,
                                     ev.button == CAT_BTN_UP ? -1 : +1,
                                     jw__shader_item_count(&view));
-                if (view.list.cursor != before &&
-                    view.list.cursor != jw__shader_advanced_index(&view)) {
-                    char path[PATH_MAX];
-                    if (jw__shader_item_path(&view, view.list.cursor,
-                                             path, sizeof(path))) {
-                        jw_shader_picker_result result = jw_shader_picker_preview(
-                            &view.picker, &transport, path[0] ? path : NULL);
-                        if (result == JW_SHADER_PICKER_OK) {
-                            view.applied_cursor = view.list.cursor;
-                            view.status[0] = '\0';
-                        } else {
-                            jw__shader_result_status(result, NULL, view.status,
-                                                     sizeof(view.status));
-                            if (result == JW_SHADER_PICKER_UNAVAILABLE) {
-                                snprintf(state->status, sizeof(state->status),
-                                         "%s", view.status);
-                                running = false;
-                            } else {
-                                cat_list_state_jump(&view.list,
-                                                    view.applied_cursor,
-                                                    jw__shader_item_count(&view));
-                            }
-                        }
+                if (view.list.cursor != before) {
+                    view.status[0] = '\0';
+                    if (view.list.cursor == jw__shader_advanced_index(&view)) {
+                        jw_shader_preview_coalescer_cancel(&view.preview);
+                    } else {
+                        jw_shader_preview_coalescer_schedule(
+                            &view.preview, view.list.cursor, SDL_GetTicks(),
+                            JW_SHADER_PREVIEW_SETTLE_MS);
                     }
                 }
             } else if (ev.button == CAT_BTN_B) {
+                jw_shader_preview_coalescer_cancel(&view.preview);
                 jw_shader_picker_result result =
                     jw_shader_picker_cancel(&view.picker, &transport);
                 if (result == JW_SHADER_PICKER_OK) {
@@ -2213,6 +2300,7 @@ static void jw__ingame_show_shader(const char *socket_path,
                 }
             } else if (ev.button == CAT_BTN_A || ev.button == CAT_BTN_START) {
                 int cursor = view.list.cursor;
+                jw_shader_preview_coalescer_cancel(&view.preview);
                 if (cursor == jw__shader_advanced_index(&view)) {
                     jw_shader_picker_result result =
                         jw_shader_picker_cancel(&view.picker, &transport);
@@ -2227,24 +2315,17 @@ static void jw__ingame_show_shader(const char *socket_path,
                                    sizeof(state->status)) == 0) {
                         *menu_running = false;
                     }
-                } else if (cursor == jw__shader_custom_index(&view)) {
-                    snprintf(view.status, sizeof(view.status), "%s",
-                             T("Use Advanced to manage custom shaders."));
-                } else if (cursor == 0) {
-                    jw__shader_off_choice(socket_path, state, &view, &transport,
-                                          menu_running);
                 } else {
-                    char path[PATH_MAX];
-                    jw_shader_picker_result result =
-                        jw__shader_item_path(&view, cursor, path, sizeof(path))
-                        ? jw_shader_picker_preview(&view.picker, &transport, path)
-                        : JW_SHADER_PICKER_MISSING;
+                    jw_shader_picker_result result = jw__shader_apply_preview(
+                        &view, &transport, cursor);
                     if (result == JW_SHADER_PICKER_OK) {
-                        jw__shader_save_choice(socket_path, state, &view,
-                                               &transport, menu_running);
-                    } else {
-                        jw__shader_result_status(result, NULL, view.status,
-                                                 sizeof(view.status));
+                        if (cursor == 0) {
+                            jw__shader_off_choice(socket_path, state, &view,
+                                                  &transport, menu_running);
+                        } else {
+                            jw__shader_save_choice(socket_path, state, &view,
+                                                   &transport, menu_running);
+                        }
                     }
                 }
             }
@@ -2255,6 +2336,25 @@ static void jw__ingame_show_shader(const char *socket_path,
                 jw_ipc_retroarch_action(socket_path, "settings", 0,
                                         state->status,
                                         sizeof(state->status)) == 0) {
+                *menu_running = false;
+            }
+        }
+        int preview_cursor;
+        if (running && *menu_running &&
+            jw_shader_preview_coalescer_take(
+                &view.preview, SDL_GetTicks(), view.list.anim_active,
+                &preview_cursor) &&
+            preview_cursor == view.list.cursor) {
+            jw_shader_picker_result result = jw__shader_apply_preview(
+                &view, &transport, preview_cursor);
+            if (result == JW_SHADER_PICKER_UNAVAILABLE) {
+                snprintf(state->status, sizeof(state->status), "%s", view.status);
+                running = false;
+            } else if (view.status[0] && !view.picker.current_known &&
+                       jw__shader_offer_settings(view.status) &&
+                       jw_ipc_retroarch_action(socket_path, "settings", 0,
+                                               state->status,
+                                               sizeof(state->status)) == 0) {
                 *menu_running = false;
             }
         }

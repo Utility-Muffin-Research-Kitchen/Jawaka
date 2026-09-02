@@ -89,6 +89,38 @@ static void test_preview_duplicate_and_cancel(void) {
     check_fake(&f, "preview/cancel operation sequence");
 }
 
+static void test_preview_coalescer(void) {
+    jw_shader_preview_coalescer coalescer;
+    int cursor = -1;
+    jw_shader_preview_coalescer_init(&coalescer);
+    check(!jw_shader_preview_coalescer_take(&coalescer, 100, false, &cursor),
+          "idle coalescer does nothing");
+    jw_shader_preview_coalescer_schedule(&coalescer, 1, 100, 80);
+    check(!jw_shader_preview_coalescer_take(&coalescer, 179, false, &cursor),
+          "preview waits for focus to settle");
+    jw_shader_preview_coalescer_schedule(&coalescer, 2, 150, 80);
+    check(!jw_shader_preview_coalescer_take(&coalescer, 229, false, &cursor),
+          "new movement restarts the settle window");
+    check(!jw_shader_preview_coalescer_take(&coalescer, 230, true, &cursor),
+          "due preview waits for visual focus to settle");
+    check(jw_shader_preview_coalescer_take(&coalescer, 230, false, &cursor) &&
+              cursor == 2,
+          "only the final cursor becomes due");
+    check(!jw_shader_preview_coalescer_take(&coalescer, 231, false, &cursor),
+          "a due preview is consumed once");
+
+    jw_shader_preview_coalescer_schedule(&coalescer, 3, UINT32_MAX - 20, 80);
+    check(!jw_shader_preview_coalescer_take(&coalescer, 40, false, &cursor),
+          "settle deadline is wrap-safe before expiry");
+    check(jw_shader_preview_coalescer_take(&coalescer, 59, false, &cursor) &&
+              cursor == 3,
+          "settle deadline is wrap-safe at expiry");
+    jw_shader_preview_coalescer_schedule(&coalescer, 4, 100, 80);
+    jw_shader_preview_coalescer_cancel(&coalescer);
+    check(!jw_shader_preview_coalescer_take(&coalescer, 200, false, &cursor),
+          "cancel drops pending work");
+}
+
 static void test_apply_failure_and_restore_failure(void) {
     const step restored[] = {
         { JW_SHADER_PICKER_GET, JW_RA_SHADER_SCOPE_GAME, NULL, 0,
@@ -272,6 +304,7 @@ static void test_remove_verification(void) {
 }
 
 int main(void) {
+    test_preview_coalescer();
     test_preview_duplicate_and_cancel();
     test_apply_failure_and_restore_failure();
     test_timeout_reconciliation();

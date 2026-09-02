@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 typedef enum {
     JW_SHADER_PICKER_GET = 0,
@@ -45,6 +46,21 @@ typedef struct {
     char original_path[1024]; /* empty means Off */
     char current_path[1024];  /* empty means Off */
 } jw_shader_picker_state;
+
+typedef struct {
+    uint32_t due_ms;
+    int cursor;
+    bool pending;
+} jw_shader_preview_coalescer;
+
+void jw_shader_preview_coalescer_init(jw_shader_preview_coalescer *coalescer);
+void jw_shader_preview_coalescer_schedule(
+    jw_shader_preview_coalescer *coalescer, int cursor,
+    uint32_t now_ms, uint32_t settle_ms);
+void jw_shader_preview_coalescer_cancel(jw_shader_preview_coalescer *coalescer);
+bool jw_shader_preview_coalescer_take(
+    jw_shader_preview_coalescer *coalescer, uint32_t now_ms,
+    bool focus_anim_active, int *cursor);
 
 void jw_shader_picker_init(jw_shader_picker_state *state);
 jw_shader_picker_result jw_shader_picker_probe(
