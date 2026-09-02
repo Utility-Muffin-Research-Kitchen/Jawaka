@@ -245,7 +245,7 @@ msgid "Adjust"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
-msgid "Advanced RetroArch menu…"
+msgid "Advanced RetroArch menu"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -652,6 +652,10 @@ msgstr ""
 msgid "Eastern Europe"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Edit the current shader in RetroArch."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Empty"
 msgstr ""
@@ -852,10 +856,6 @@ msgstr ""
 msgid "Icon"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
-msgid "In RetroArch, open Quick Menu -> Shaders."
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "In-game Shortcuts"
 msgstr ""
@@ -930,6 +930,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Leaf"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Leaf asks where to save when the menu closes."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1160,10 +1164,6 @@ msgstr ""
 msgid "Open"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
-msgid "Open RetroArch's full shader browser."
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "Open-source components"
 msgstr ""
@@ -1266,10 +1266,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Queued"
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "Quick Menu -> Shaders"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c

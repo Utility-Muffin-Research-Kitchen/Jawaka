@@ -34,7 +34,8 @@ typedef enum {
     JW_RA_STATE_UNKNOWN = 0,
     JW_RA_STATE_CONTENTLESS,
     JW_RA_STATE_PLAYING,
-    JW_RA_STATE_PAUSED
+    JW_RA_STATE_PAUSED,
+    JW_RA_STATE_MENU
 } jw_ra_play_state;
 
 typedef struct {
@@ -98,6 +99,7 @@ jw_ra_result jw_ra_pause_direct(const jw_ra_client *client);
 jw_ra_result jw_ra_resume_direct(const jw_ra_client *client);
 jw_ra_result jw_ra_menu_toggle(const jw_ra_client *client);
 jw_ra_result jw_ra_open_menu(const jw_ra_client *client);
+jw_ra_result jw_ra_open_shader_menu(const jw_ra_client *client);
 jw_ra_result jw_ra_quit(const jw_ra_client *client);
 jw_ra_result jw_ra_reset(const jw_ra_client *client);
 jw_ra_result jw_ra_audio_reinit(const jw_ra_client *client);
@@ -153,6 +155,7 @@ jw_ra_result jw_ra_remove_shader_preset(const jw_ra_client *client,
 
 /* Exposed for tests. */
 const char *jw_ra_shader_scope_token(jw_ra_shader_scope scope);
+jw_ra_result jw_ra_parse_status_reply(const char *reply, jw_ra_status *status);
 jw_ra_result jw_ra_parse_shader_reply(const char *reply,
                                       const char *request_id,
                                       const char *operation,

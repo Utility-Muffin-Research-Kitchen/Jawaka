@@ -31,6 +31,7 @@ const char *jw_ra_play_state_string(jw_ra_play_state state) {
         case JW_RA_STATE_CONTENTLESS: return "contentless";
         case JW_RA_STATE_PLAYING: return "playing";
         case JW_RA_STATE_PAUSED: return "paused";
+        case JW_RA_STATE_MENU: return "menu";
         case JW_RA_STATE_UNKNOWN:
         default: return "unknown";
     }
@@ -126,6 +127,7 @@ bool jw_ra_raw_command_supported(const char *command) {
            jw_ra__starts_with_word(command, "JAWAKA_SET_SHADER") ||
            jw_ra__starts_with_word(command, "LOAD_CORE") ||
            jw_ra__starts_with_word(command, "LOAD_STATE_SLOT") ||
+           jw_ra__starts_with_word(command, "OPEN_MENU") ||
            jw_ra__starts_with_word(command, "PLAY_REPLAY_SLOT") ||
            jw_ra__starts_with_word(command, "READ_CORE_MEMORY") ||
            jw_ra__starts_with_word(command, "SEEK_REPLAY") ||
@@ -611,7 +613,7 @@ static void jw_ra__copy_token(char *dst, size_t dst_size, const char *start, siz
     dst[len] = '\0';
 }
 
-static jw_ra_result jw_ra__parse_status(const char *reply, jw_ra_status *status) {
+jw_ra_result jw_ra_parse_status_reply(const char *reply, jw_ra_status *status) {
     const char *p;
     const char *token_end;
     const char *comma;
@@ -648,6 +650,9 @@ static jw_ra_result jw_ra__parse_status(const char *reply, jw_ra_status *status)
     } else if ((size_t)(token_end - p) == strlen("PAUSED") &&
                strncmp(p, "PAUSED", (size_t)(token_end - p)) == 0) {
         status->state = JW_RA_STATE_PAUSED;
+    } else if ((size_t)(token_end - p) == strlen("MENU") &&
+               strncmp(p, "MENU", (size_t)(token_end - p)) == 0) {
+        status->state = JW_RA_STATE_MENU;
     } else {
         return JW_RA_PARSE_ERROR;
     }
@@ -754,7 +759,7 @@ jw_ra_result jw_ra_get_status(const jw_ra_client *client, jw_ra_status *status) 
     if (result != JW_RA_OK) {
         return result;
     }
-    return jw_ra__parse_status(reply, status);
+    return jw_ra_parse_status_reply(reply, status);
 }
 
 jw_ra_result jw_ra_get_info(const jw_ra_client *client, jw_ra_info *info) {
@@ -810,6 +815,10 @@ jw_ra_result jw_ra_menu_toggle(const jw_ra_client *client) {
 
 jw_ra_result jw_ra_open_menu(const jw_ra_client *client) {
     return jw_ra_send_raw(client, "OPEN_MENU");
+}
+
+jw_ra_result jw_ra_open_shader_menu(const jw_ra_client *client) {
+    return jw_ra_send_raw(client, "OPEN_MENU SHADERS");
 }
 
 jw_ra_result jw_ra_quit(const jw_ra_client *client) {

@@ -122,11 +122,24 @@ static void shader_scope_tests(void) {
     }
 }
 
+static void menu_status_tests(void) {
+    jw_ra_status status;
+
+    if (jw_ra_parse_status_reply(
+            "GET_STATUS MENU mGBA,example.zip,crc32=0", &status) != JW_RA_OK ||
+        status.state != JW_RA_STATE_MENU || strcmp(status.system, "mGBA") != 0 ||
+        strcmp(status.content, "example.zip") != 0) {
+        fprintf(stderr, "retroarch-command-test: menu status not parsed\n");
+        exit(1);
+    }
+}
+
 int main(void) {
     expect_supported("SET_SHADER /tmp/example.glslp");
     expect_supported("SET_SHADER\t/tmp/example.glslp");
     expect_supported("GET_CONFIG_PARAM video_shader");
     expect_supported("GET_PERF_INFO");
+    expect_supported("OPEN_MENU SHADERS");
     expect_supported("SCREENSHOT");
 
     expect_rejected(NULL);
@@ -143,6 +156,7 @@ int main(void) {
 
     shader_reply_tests();
     shader_scope_tests();
+    menu_status_tests();
 
     puts("PASS retroarch-command-test");
     return 0;

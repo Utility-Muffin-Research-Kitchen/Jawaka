@@ -6,8 +6,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT_DIR/cmd/jawaka-menu/main.c"
+DAEMON_SRC="$ROOT_DIR/cmd/jawakad/main.c"
+COMMAND_SRC="$ROOT_DIR/internal/retroarch/command.c"
 
 body_for() {
+    local source="${2:-$SRC}"
     awk -v fn="$1" '
         !inside && $0 ~ "^static .*" fn "\\(" { inside = 1; found = 1 }
         inside {
@@ -18,7 +21,7 @@ body_for() {
             if (seen_open && depth == 0) exit
         }
         END { if (!found) exit 2 }
-    ' "$SRC"
+    ' "$source"
 }
 
 fail() {
@@ -28,12 +31,12 @@ fail() {
 
 require() {
     local text="$1" needle="$2" message="$3"
-    grep -Fq -- "$needle" <<<"$text" || fail "$message"
+    [[ "$text" == *"$needle"* ]] || fail "$message"
 }
 
 reject() {
     local text="$1" needle="$2" message="$3"
-    if grep -Fq -- "$needle" <<<"$text"; then fail "$message"; fi
+    if [[ "$text" == *"$needle"* ]]; then fail "$message"; fi
 }
 
 require_order() {
@@ -66,6 +69,11 @@ require_order "$thumb" "if (state->list.anim_active)" \
     "cold thumbnail lookup can run before focus settles"
 
 picker="$(body_for jw__ingame_show_shader)"
+shader_labels="$(body_for jw__shader_item_label)"
+require "$shader_labels" 'T("Advanced RetroArch menu")' \
+    "Advanced label is not the requested full text"
+reject "$shader_labels" 'Advanced RetroArch menu…' \
+    "Advanced label regained an ellipsis"
 require "$picker" "int cursor = view.list.cursor;" \
     "activation no longer snapshots the logical cursor"
 reject "$picker" "int cursor = view.applied_cursor;" \
@@ -78,6 +86,52 @@ require "$picker" "jw__shader_save_choice(socket_path, state, &view," \
     "non-Off shader activation no longer enters the scope chooser"
 reject "$picker" "cursor == jw__shader_custom_index" \
     "the custom row bypasses the shared recommendation save route"
+require "$picker" '"shader-settings"' \
+    "Advanced no longer requests the direct RetroArch shader handoff"
+reject "$picker" "In RetroArch, open Quick Menu -> Shaders." \
+    "the obsolete manual-navigation hint returned"
+
+scope_prompt="$(body_for jw__ingame_prompt_shader_scope)"
+require "$scope_prompt" "jw_shader_picker_probe(" \
+    "automatic scope prompt no longer reads RetroArch's active shader"
+require "$scope_prompt" "&running, true);" \
+    "automatic scope prompt no longer resumes when the chooser is dismissed"
+
+ui_mode="$(body_for jw__ingame_ui_mode_read)"
+require "$ui_mode" 'else if (strcmp(buf, "shader-scope") == 0)' \
+    "resident menu no longer recognizes the automatic shader scope surface"
+
+daemon_action="$(body_for jw__handle_retroarch_action "$DAEMON_SRC")"
+require "$daemon_action" 'strcmp(action, "shader-settings") == 0' \
+    "daemon no longer accepts the direct shader handoff action"
+require "$daemon_action" "jw_ra_open_menu(&ra)" \
+    "daemon no longer starts RetroArch's input-flushing menu handoff"
+
+daemon_menu_tap="$(body_for jw__input_menu_tap "$DAEMON_SRC")"
+require "$daemon_menu_tap" "if (state->advanced_shader_pending)" \
+    "Menu can stack Leaf over the Advanced RetroArch flow"
+require "$daemon_menu_tap" "jw_ra_menu_toggle(&client)" \
+    "Menu no longer closes the foreground RetroArch shader menu"
+
+daemon_tick="$(body_for jw__tick_advanced_shader "$DAEMON_SRC")"
+require_order "$daemon_tick" \
+    "if (status.state == JW_RA_STATE_MENU)" \
+    "now + JW_ADVANCED_SHADER_SETTLE_MS" \
+    "shader destination can be sent before RetroArch's menu is initialized"
+require_order "$daemon_tick" \
+    "if (!state->advanced_shader_destination_sent)" \
+    "jw_ra_open_shader_menu(&client)" \
+    "shader destination no longer waits for the menu settle gate"
+require "$daemon_tick" $'if (!state->advanced_shader_menu_seen) {\n        if (now - state->advanced_shader_started_ms >=' \
+    "scope prompt can race ahead of RetroArch's asynchronous menu open"
+require "$daemon_tick" $'if (!state->advanced_shader_destination_sent) {\n        jw__advanced_shader_clear(state);\n        return;' \
+    "scope prompt can open before the Shaders destination was sent"
+
+command_src="$(<"$COMMAND_SRC")"
+require "$command_src" 'jw_ra_send_raw(client, "OPEN_MENU SHADERS")' \
+    "typed client no longer requests the shader screen"
+require "$command_src" "status->state = JW_RA_STATE_MENU" \
+    "typed client no longer recognizes RetroArch's menu state"
 
 item_path="$(body_for jw__shader_item_path)"
 require "$item_path" "view->picker.original_path" \
