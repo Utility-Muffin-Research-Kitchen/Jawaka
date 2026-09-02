@@ -282,6 +282,8 @@ typedef struct {
     SDL_Texture                    *still_tex;       /* paused-game still behind the menu */
     SDL_Texture                    *thumb_tex;       /* selected-slot savestate thumbnail */
     int                             thumb_slot;      /* slot thumb_tex is for (INT_MIN = none) */
+    long long                       thumb_move_ms;   /* accepted move into Save/Load */
+    long long                       thumb_present_ms;/* first frame still owed for that move */
     bool                            quit_save;       /* Quit row armed to Save & Quit (default) */
     /* Decoupled Save/Load slot selection (Item 3): the menu drives explicit
        slots rather than RetroArch's single shared slot. Save is a numeric target
@@ -1271,8 +1273,19 @@ static void jw__ingame_update_thumb(jw_ingame_state *state) {
     }
     state->thumb_slot = slot;
     char path[PATH_MAX];
-    if (jw__slot_thumb_path(state, slot, path, sizeof(path))) {
+    long long decode_start_ms = jw__monotonic_ms();
+    bool found = jw__slot_thumb_path(state, slot, path, sizeof(path));
+    if (found) {
         state->thumb_tex = jw__load_blend_texture(path); /* NULL -> placeholder */
+    }
+    long long decode_done_ms = jw__monotonic_ms();
+    if (state->thumb_move_ms > 0) {
+        jw_log_info(
+            "in-game thumbnail timings: move_to_decode_ms=%lld decode_ms=%lld outcome=%s",
+            decode_start_ms - state->thumb_move_ms,
+            decode_done_ms - decode_start_ms,
+            state->thumb_tex ? "texture" : "placeholder");
+        state->thumb_move_ms = 0;
     }
 }
 
@@ -2609,11 +2622,20 @@ static void jw__handle_ingame_input(const char *socket_path,
                                     cat_button button, bool *running) {
     switch (button) {
         case CAT_BTN_UP:
-            cat_list_state_move(&state->list, -1, JW_INGAME_COUNT);
+        case CAT_BTN_DOWN: {
+            int before = state->list.cursor;
+            cat_list_state_move(&state->list,
+                                button == CAT_BTN_UP ? -1 : +1,
+                                JW_INGAME_COUNT);
+            if (state->list.cursor != before) {
+                bool on_thumb = state->session.savestate_supported &&
+                    (state->list.cursor == JW_INGAME_SAVE ||
+                     state->list.cursor == JW_INGAME_LOAD);
+                state->thumb_move_ms = on_thumb ? jw__monotonic_ms() : 0;
+                state->thumb_present_ms = state->thumb_move_ms;
+            }
             break;
-        case CAT_BTN_DOWN:
-            cat_list_state_move(&state->list, +1, JW_INGAME_COUNT);
-            break;
+        }
         case CAT_BTN_LEFT:
             jw__haptic(socket_path,
                        jw__ingame_adjust(socket_path, state, -1) ? "nav" : "blocked");
@@ -2947,6 +2969,13 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
             }
             jw__ingame_update_thumb(&state);
             jw__render_ingame_menu(&state);
+            if (state.thumb_present_ms > 0) {
+                jw_log_info(
+                    "in-game thumbnail timings: input_to_present_ms=%lld outcome=%s",
+                    jw__monotonic_ms() - state.thumb_present_ms,
+                    state.thumb_tex ? "texture" : "placeholder");
+                state.thumb_present_ms = 0;
+            }
         }
         }
 
