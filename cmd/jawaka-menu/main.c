@@ -1835,9 +1835,11 @@ static void jw__ingame_continue(const char *socket_path,
 static void jw__ingame_refresh(const char *socket_path,
                                jw_ingame_state *state);
 
-/* Global shader writes stay off until the assembled Leaf build contains the
-   ownership-safe Fugazi resolver. Flip this only with that assembly change. */
-#define JW_FUGAZI_RESOLVER_ASSEMBLED false
+/* Global shader writes need the ownership-safe Fugazi resolver in the assembled
+   Leaf build, so that a global save Fugazi did not make stays recoverable.
+   Fugazi 0.2.0 carries it. Return this to false if Leaf ever assembles an older
+   Fugazi, because the picker would then create a conflict nothing can resolve. */
+#define JW_FUGAZI_RESOLVER_ASSEMBLED true
 #define JW_SHADER_PREVIEW_SETTLE_MS 80u
 
 typedef struct {

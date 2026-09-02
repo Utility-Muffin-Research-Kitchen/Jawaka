@@ -137,8 +137,11 @@ item_path="$(body_for jw__shader_item_path)"
 require "$item_path" "view->picker.original_path" \
     "the custom row no longer preserves the active Advanced preset"
 
-require "$(<"$SRC")" "#define JW_FUGAZI_RESOLVER_ASSEMBLED false" \
-    "All RetroArch was enabled without an assembled Fugazi resolver"
+# Fugazi 0.2.0 assembles the ownership-safe resolver, so All RetroArch ships
+# enabled. The interlock is now the assembled Fugazi version rather than this
+# constant: an older Fugazi cannot resolve a conflict the picker can create.
+require "$(<"$SRC")" "#define JW_FUGAZI_RESOLVER_ASSEMBLED true" \
+    "the assembly gate no longer reflects the shipped Fugazi resolver"
 require "$(body_for jw__shader_save_choice)" \
     "jw_shader_picker_scope_enabled(scope, JW_FUGAZI_RESOLVER_ASSEMBLED)" \
     "shader save no longer enforces the assembly gate"
