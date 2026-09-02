@@ -1834,6 +1834,8 @@ typedef struct {
     bool custom_row;
     int applied_cursor;
     jw_shader_preview_coalescer preview;
+    long long move_ms;
+    long long present_ms;
     char status[256];
 } jw_ingame_shader_view;
 
@@ -2279,6 +2281,8 @@ static void jw__ingame_show_shader(const char *socket_path,
                                     ev.button == CAT_BTN_UP ? -1 : +1,
                                     jw__shader_item_count(&view));
                 if (view.list.cursor != before) {
+                    view.move_ms = jw__monotonic_ms();
+                    view.present_ms = view.move_ms;
                     view.status[0] = '\0';
                     if (view.list.cursor == jw__shader_advanced_index(&view)) {
                         jw_shader_preview_coalescer_cancel(&view.preview);
@@ -2345,8 +2349,14 @@ static void jw__ingame_show_shader(const char *socket_path,
                 &view.preview, SDL_GetTicks(), view.list.anim_active,
                 &preview_cursor) &&
             preview_cursor == view.list.cursor) {
+            long long preview_start_ms = jw__monotonic_ms();
             jw_shader_picker_result result = jw__shader_apply_preview(
                 &view, &transport, preview_cursor);
+            long long preview_done_ms = jw__monotonic_ms();
+            jw_log_info(
+                "shader picker preview timings: move_to_apply_ms=%lld apply_ms=%lld cursor=%d",
+                view.move_ms > 0 ? preview_start_ms - view.move_ms : -1,
+                preview_done_ms - preview_start_ms, preview_cursor);
             if (result == JW_SHADER_PICKER_UNAVAILABLE) {
                 snprintf(state->status, sizeof(state->status), "%s", view.status);
                 running = false;
@@ -2358,8 +2368,15 @@ static void jw__ingame_show_shader(const char *socket_path,
                 *menu_running = false;
             }
         }
-        if (running && *menu_running)
+        if (running && *menu_running) {
             jw__render_ingame_shader(state, &view);
+            if (view.present_ms > 0) {
+                jw_log_info(
+                    "shader picker navigation timings: input_to_present_ms=%lld cursor=%d",
+                    jw__monotonic_ms() - view.present_ms, view.list.cursor);
+                view.present_ms = 0;
+            }
+        }
     }
     jw_shader_catalog_free(&view.catalog);
     free(view.recommended_root);
