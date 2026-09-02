@@ -293,6 +293,11 @@ typedef struct {
     bool menu_in_game;
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
     int menu_standby_attempts;/* respawn guard for a crashing standby within one session */
+    bool advanced_shader_pending;   /* RetroArch Shaders is foreground; offer scope after close */
+    bool advanced_shader_menu_seen; /* RetroArch's initial menu surface was observed */
+    bool advanced_shader_destination_sent; /* Shaders was requested after menu initialization */
+    long long advanced_shader_started_ms;
+    long long advanced_shader_next_poll_ms;
     long long standalone_quit_request_ms; /* Menu-tap quit sent to a standalone
                                  emulator without a native menu signal (0 = none);
                                  a second tap after the grace period escalates
@@ -4758,6 +4763,14 @@ static void jw__retroarch_session_clear(jw_retroarch_session *session) {
     memset(session, 0, sizeof(*session));
 }
 
+static void jw__advanced_shader_clear(jw_daemon_state *state) {
+    state->advanced_shader_pending = false;
+    state->advanced_shader_menu_seen = false;
+    state->advanced_shader_destination_sent = false;
+    state->advanced_shader_started_ms = 0;
+    state->advanced_shader_next_poll_ms = 0;
+}
+
 static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         int game_id,
                                         const char *system, const char *rom_path,
@@ -4801,6 +4814,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     /* Fresh session: no menu shown yet, reset the standby respawn guard. */
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
+    jw__advanced_shader_clear(state);
 
     jw_log_info("RetroArch session started pid=%d system=%s source=%s core=%s core_id=%s core_folder=%s config=%s rom=%s",
                 (int)pid, session->system, session->source_root,
@@ -4962,6 +4976,7 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
     state->retroarch_resume_on_menu_exit = false;
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
+    jw__advanced_shader_clear(state);
 
     jw_log_info("RetroArch session retargeted in-process pid=%d runtime_s=%ld resident_switches=%d system=%s source=%s core=%s core_id=%s core_folder=%s rom=%s",
                 (int)session->pid, runtime_s, session->resident_switches,
@@ -5197,6 +5212,7 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
 
     state->post_launch_resume_pending = false;
     state->post_launch_resume_attempts = 0;
+    jw__advanced_shader_clear(state);
     jw__retroarch_session_clear(session);
     if (!state->pending_launch) {
         state->perf_session_override = false;
@@ -5323,9 +5339,9 @@ static void jw__write_ingame_ui_mode(const char *mode) {
     free(path);
 }
 
-/* Reveal the resident in-game UI in either "menu" or "switcher" mode. Pauses
-   RetroArch, records the desired mode, then reveals the warm standby (SIGUSR1)
-   or cold-spawns it. Reversible: this never saves or quits. */
+/* Reveal the resident in-game UI in menu, switcher, or shader-scope mode.
+   Pauses RetroArch, records the desired mode, then reveals the warm standby
+   (SIGUSR1) or cold-spawns it. Reversible: this never saves or quits. */
 static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode) {
     long long start_ms = jw__monotonic_ms();
     if (!jw__has_retroarch_session(state)) {
@@ -5449,6 +5465,74 @@ static int jw__request_close_in_game_menu(jw_daemon_state *state) {
     }
     jw_log_info("in-game menu closed via Menu toggle");
     return 0;
+}
+
+#define JW_ADVANCED_SHADER_POLL_MS 25
+#define JW_ADVANCED_SHADER_SETTLE_MS 100
+#define JW_ADVANCED_SHADER_OPEN_TIMEOUT_MS 2000
+
+static void jw__tick_advanced_shader(jw_daemon_state *state) {
+    long long now;
+    jw_ra_client client;
+    jw_ra_status status;
+
+    if (!state || !state->advanced_shader_pending) {
+        return;
+    }
+    if (!jw__has_retroarch_session(state)) {
+        jw__advanced_shader_clear(state);
+        return;
+    }
+
+    now = jw__monotonic_ms();
+    if (now < state->advanced_shader_next_poll_ms) {
+        return;
+    }
+    state->advanced_shader_next_poll_ms = now + JW_ADVANCED_SHADER_POLL_MS;
+    client = jw_ra_client_default();
+    if (jw_ra_get_status(&client, &status) != JW_RA_OK) {
+        return;
+    }
+    if (status.state == JW_RA_STATE_MENU) {
+        if (!state->advanced_shader_menu_seen) {
+            state->advanced_shader_menu_seen = true;
+            state->advanced_shader_next_poll_ms =
+                now + JW_ADVANCED_SHADER_SETTLE_MS;
+            return;
+        }
+        if (!state->advanced_shader_destination_sent) {
+            jw_ra_result result = jw_ra_open_shader_menu(&client);
+            if (result != JW_RA_OK) {
+                jw_log_warn("advanced shader destination failed result=%s",
+                            jw_ra_result_string(result));
+                jw__advanced_shader_clear(state);
+                return;
+            }
+            state->advanced_shader_destination_sent = true;
+            jw_log_info("advanced shader menu observed; opened shader screen");
+        }
+        return;
+    }
+    if (!state->advanced_shader_menu_seen) {
+        if (now - state->advanced_shader_started_ms >=
+            JW_ADVANCED_SHADER_OPEN_TIMEOUT_MS) {
+            jw_log_warn("advanced shader menu was not observed; automatic scope prompt disabled");
+            jw__advanced_shader_clear(state);
+        }
+        return;
+    }
+    if (!state->advanced_shader_destination_sent) {
+        jw__advanced_shader_clear(state);
+        return;
+    }
+
+    jw__advanced_shader_clear(state);
+    if (jw__request_open_in_game_ui(state, "shader-scope") != 0) {
+        jw_log_warn("advanced shader menu closed but scope prompt could not open");
+        (void)jw_ra_resume_direct(&client);
+    } else {
+        jw_log_info("advanced shader menu closed; opened scope prompt");
+    }
 }
 
 static int jw__resolve_rom_path(const jw_daemon_state *state, const char *rom_path,
@@ -7409,6 +7493,23 @@ static bool jw__input_menu_tap(void *userdata) {
 
     if (!jw__has_retroarch_session(state)) {
         return false;
+    }
+
+    if (state->advanced_shader_pending) {
+        jw_ra_client client = jw_ra_client_default();
+        jw_ra_status status;
+        jw_ra_result result = jw_ra_get_status(&client, &status);
+        if (result == JW_RA_OK && status.state == JW_RA_STATE_MENU) {
+            result = jw_ra_menu_toggle(&client);
+            jw_log_info("menu tap: closing RetroArch shader menu result=%s",
+                        jw_ra_result_string(result));
+        } else {
+            jw_log_info("menu tap: waiting for Advanced shader handoff state=%s result=%s",
+                        result == JW_RA_OK
+                            ? jw_ra_play_state_string(status.state) : "unknown",
+                        jw_ra_result_string(result));
+        }
+        return true;
     }
 
     /* Menu toggles: tap to open, tap again to close. */
@@ -10322,6 +10423,18 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
         if (result == JW_RA_OK) {
             state->retroarch_resume_on_menu_exit = false;
             state->menu_visible = false;
+        }
+    } else if (strcmp(action, "shader-settings") == 0) {
+        result = jw_ra_open_menu(&ra);
+        if (result == JW_RA_OK) {
+            long long now = jw__monotonic_ms();
+            state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
+            state->advanced_shader_pending = true;
+            state->advanced_shader_menu_seen = false;
+            state->advanced_shader_destination_sent = false;
+            state->advanced_shader_started_ms = now;
+            state->advanced_shader_next_poll_ms = now;
         }
     } else if (strcmp(action, "quit") == 0) {
         result = jw_ra_quit(&ra);
@@ -14241,6 +14354,7 @@ int main(int argc, char *argv[]) {
         jw__tick_retroarch_warning(&state);
         jw__tick_in_game_menu_prewarm(&state);
         jw__handle_menu_exit(&state);
+        jw__tick_advanced_shader(&state);
         jw__handle_osd_exit(&state);
         jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);

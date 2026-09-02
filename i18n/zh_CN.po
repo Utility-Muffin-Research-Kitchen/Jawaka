@@ -1518,8 +1518,8 @@ msgstr "快捷键"
 
 # In-game shader picker. Marked fuzzy: suggested, not reviewed.
 #, fuzzy
-msgid "Advanced RetroArch menu…"
-msgstr "RetroArch 高级菜单…"
+msgid "Advanced RetroArch menu"
+msgstr "RetroArch 高级菜单"
 
 #, fuzzy
 msgid "All RetroArch"
@@ -1538,8 +1538,8 @@ msgid "Ends on reload or exit"
 msgstr "重新加载内容或退出后结束"
 
 #, fuzzy
-msgid "In RetroArch, open Quick Menu -> Shaders."
-msgstr "在 RetroArch 中，打开“快捷菜单 -> 着色器”。"
+msgid "Edit the current shader in RetroArch."
+msgstr "在 RetroArch 中编辑当前着色器。"
 
 #, fuzzy
 msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
@@ -1554,12 +1554,8 @@ msgid "No saved shader exists at that scope."
 msgstr "该作用范围内没有已保存的着色器。"
 
 #, fuzzy
-msgid "Open RetroArch's full shader browser."
-msgstr "打开 RetroArch 的完整着色器浏览器。"
-
-#, fuzzy
-msgid "Quick Menu -> Shaders"
-msgstr "快捷菜单 -> 着色器"
+msgid "Leaf asks where to save when the menu closes."
+msgstr "RetroArch 菜单关闭后，Leaf 会询问保存位置。"
 
 #, fuzzy
 msgid "Recommended shaders are unavailable. Update or reinstall Leaf."
