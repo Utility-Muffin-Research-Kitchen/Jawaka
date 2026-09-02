@@ -5582,9 +5582,10 @@ static void jw__render_menu(const jw_launcher_state *state) {
 
     cat_footer_item footer[] = {
         { CAT_BTN_L1, "Tab",    false, JW_HINT_DEVICE(";/t", "L1/R1") },
+        { CAT_BTN_B,  "Back",   true,  JW_HINT("B") },
         { CAT_BTN_A,  "Select", true,  JW_HINT("A") },
     };
-    jw__draw_footer(state, footer, 2);
+    jw__draw_footer(state, footer, 3);
     jw__present();
 }
 
@@ -7827,8 +7828,8 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
     }
 
     /* Settings tab: forward to the real settings UI (its own sub-nav + priming).
-       MENU closes the whole menu; B at settings home closes the UI (still_open
-       false), which backs out of the menu to the games view. */
+       MENU closes the whole menu from any depth; B at the settings home (the only
+       place still_open comes back false) also exits System back to Content. */
     if (state->menu_tab == JW_SMTAB_SETTINGS) {
         if (button == CAT_BTN_MENU) {
             jw_settings_ui_close(&state->settings);
@@ -7843,9 +7844,15 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
         if (theme_changed)
             jw__rebuild_for_layout(state);
         if (!still_open) {
-            /* B at the settings home is a no-op: stay in System. Only MENU exits
-               back to Content. Re-enter so the UI stays open at its home. */
-            jw_settings_ui_enter(&state->settings);
+            /* The settings UI only reports itself closed at its own home, so this
+               is B at the root — exit System back to Content, matching B in every
+               other view. From a sub-page it handles B itself and stays open, so
+               this branch cannot fire mid-depth. Close explicitly even though it
+               already shut: jw_settings_ui_close is what frees scrape_detail_art
+               and resets the screen to HOME for the next open. */
+            jw_settings_ui_close(&state->settings);
+            state->menu_open = false;
+            state->status[0] = '\0';
         }
         return;
     }
@@ -7863,12 +7870,15 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
         case CAT_BTN_A:
             jw__menu_activate(socket_path, db_path, state, running);
             break;
+        case CAT_BTN_B:
         case CAT_BTN_MENU:
-            /* MENU exits System back to Content; B stays inside System (no-op at
-               a tab's root — you leave via MENU). Ticks on the way out as well as
-               in: leaving a page is the same kind of event as entering one, and a
-               button that buzzes opening a screen but goes dead closing it reads
-               as a dropped input. */
+            /* Both exit System back to Content. MENU does it from any depth; B
+               only lands here at a tab's root, since Pak Rat is dispatched before
+               menu_open and the hosted pages run their own loop — so B still means
+               "step back one level" everywhere it has a level to step back to.
+               Ticks on the way out as well as in: leaving a page is the same kind
+               of event as entering one, and a button that buzzes opening a screen
+               but goes dead closing it reads as a dropped input. */
             state->menu_open = false;
             state->status[0] = '\0';
             break;
