@@ -184,10 +184,6 @@ msgstr ""
 msgid "816 MHz"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
-msgid "A custom or updater shader is active."
-msgstr ""
-
 #: internal/settings/settings.c
 msgid "A: Choose   B: Back"
 msgstr ""
@@ -488,6 +484,10 @@ msgstr ""
 msgid "Choose"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Choose where RetroArch should load this shader automatically."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Clear"
 msgstr ""
@@ -566,10 +566,6 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Custom"
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "Custom (current)"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1485,6 +1481,10 @@ msgid "Save State"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
+msgid "Save current shader…"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
 msgid "Save globally"
 msgstr ""
 
@@ -2018,10 +2018,6 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Use Advanced to edit it in RetroArch."
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "Use Advanced to manage custom shaders."
 msgstr ""
 
 #: internal/launcher/system_names.c

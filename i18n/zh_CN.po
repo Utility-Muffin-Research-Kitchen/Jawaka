@@ -1518,10 +1518,6 @@ msgstr "快捷键"
 
 # In-game shader picker. Marked fuzzy: suggested, not reviewed.
 #, fuzzy
-msgid "A custom or updater shader is active."
-msgstr "当前已启用自定义或更新器着色器。"
-
-#, fuzzy
 msgid "Advanced RetroArch menu…"
 msgstr "RetroArch 高级菜单…"
 
@@ -1532,10 +1528,6 @@ msgstr "所有 RetroArch 游戏"
 #, fuzzy
 msgid "All RetroArch requires a Leaf build with Fugazi's conflict resolver."
 msgstr "所有 RetroArch 游戏需要包含 Fugazi 冲突解析器的 Leaf 版本。"
-
-#, fuzzy
-msgid "Custom (current)"
-msgstr "自定义（当前）"
 
 #, fuzzy
 msgid "Disable shaders for this session."
@@ -1592,6 +1584,14 @@ msgstr "RetroArch 不可用。着色器未更改。"
 #, fuzzy
 msgid "Save globally"
 msgstr "全局保存"
+
+#, fuzzy
+msgid "Save current shader…"
+msgstr "保存当前着色器…"
+
+#, fuzzy
+msgid "Choose where RetroArch should load this shader automatically."
+msgstr "选择 RetroArch 应自动加载此着色器的作用范围。"
 
 #, fuzzy
 msgid "Saved preset removed. A broader preset may apply after content reload."
@@ -1659,11 +1659,7 @@ msgstr "此着色器无法在当前视频驱动下编译或链接。已恢复之
 
 #, fuzzy
 msgid "Use Advanced to edit it in RetroArch."
-msgstr "使用“高级”在 RetroArch 中编辑。"
-
-#, fuzzy
-msgid "Use Advanced to manage custom shaders."
-msgstr "使用“高级”管理自定义着色器。"
+msgstr "使用高级选项在 RetroArch 中编辑。"
 
 #, fuzzy
 msgid "that scope"
