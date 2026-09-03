@@ -33,6 +33,7 @@ DEFAULT_CATASTROPHE_DIR := $(if $(wildcard ../Catastrophe/include/catastrophe.h)
 CATASTROPHE_DIR ?= $(DEFAULT_CATASTROPHE_DIR)
 CATASTROPHE_INCLUDE := $(CATASTROPHE_DIR)/include
 CATASTROPHE_HEADER := $(CATASTROPHE_INCLUDE)/catastrophe.h
+CATASTROPHE_WIDGETS_HEADER := $(CATASTROPHE_INCLUDE)/catastrophe_widgets.h
 CATASTROPHE_RES := $(CATASTROPHE_DIR)/res
 
 SDL_CFLAGS := $(shell pkg-config --cflags sdl2 SDL2_ttf SDL2_image)
@@ -1007,10 +1008,10 @@ $(BUILD)/bin/jawakad: $(sort $(DAEMON_SRCS)) $(SCRAPE_CREDENTIALS_HEADER) | $(BU
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS_DAEMON) -o $@ $(sort $(DAEMON_SRCS)) $(LDLIBS_DAEMON)
 
-$(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
+$(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) $(CATASTROPHE_WIDGETS_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 
-$(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
+$(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) $(CATASTROPHE_WIDGETS_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 
 $(BUILD)/generated:
