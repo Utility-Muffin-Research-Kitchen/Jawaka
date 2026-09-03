@@ -112,6 +112,13 @@ require "$daemon_menu_tap" "if (state->advanced_shader_pending)" \
     "Menu can stack Leaf over the Advanced RetroArch flow"
 require "$daemon_menu_tap" "jw_ra_menu_toggle(&client)" \
     "Menu no longer closes the foreground RetroArch shader menu"
+require_order "$daemon_menu_tap" \
+    "if (state->advanced_shader_pending)" \
+    "status.state == JW_RA_STATE_MENU" \
+    "ordinary RetroArch-menu passthrough can bypass Advanced shader close handling"
+require "$daemon_menu_tap" \
+    'jw_log_info("menu tap: forwarding to foreground RetroArch menu")' \
+    "Menu cannot reach RetroArch's native binding listener"
 
 daemon_tick="$(body_for jw__tick_advanced_shader "$DAEMON_SRC")"
 require_order "$daemon_tick" \

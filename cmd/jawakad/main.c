@@ -7512,6 +7512,20 @@ static bool jw__input_menu_tap(void *userdata) {
         return true;
     }
 
+    /* RetroArch's bind-all listener must be able to see the dedicated Menu
+       button. When its native menu is already foreground, pass the deferred
+       tap through instead of stacking Leaf's menu over it. The direct native
+       menu binding is nul by default, so an ordinary tap is otherwise inert;
+       a binding prompt consumes it as button 5. Advanced shader handoff stays
+       above this branch because Menu deliberately closes that flow. */
+    jw_ra_client client = jw_ra_client_default();
+    jw_ra_status status;
+    if (jw_ra_get_status(&client, &status) == JW_RA_OK &&
+        status.state == JW_RA_STATE_MENU) {
+        jw_log_info("menu tap: forwarding to foreground RetroArch menu");
+        return false;
+    }
+
     /* Menu toggles: tap to open, tap again to close. */
     if (state->menu_visible) {
         jw__request_close_in_game_menu(state);
