@@ -54,6 +54,7 @@ static long long jw__monotonic_ms(void) {
    show (SIGUSR1). Writing one byte from the async-signal-safe handler lets the
    parked poll() in jw__menu_wait_for_show() return instantly. */
 static int g_show_pipe[2] = { -1, -1 };
+static int g_hide_pipe[2] = { -1, -1 };
 
 static void jw__menu_show_signal(int signo) {
     (void)signo;
@@ -68,9 +69,24 @@ static void jw__menu_show_signal(int signo) {
    the visible render loop so the menu drops back to standby. */
 static volatile sig_atomic_t g_hide_requested = 0;
 
+static bool jw__menu_hide_requested(void) {
+    return g_hide_requested != 0;
+}
+
 static void jw__menu_hide_signal(int signo) {
     (void)signo;
+    int saved_errno = errno;
     g_hide_requested = 1;
+    const char b = 1;
+    ssize_t n = write(g_hide_pipe[1], &b, 1);
+    (void)n;
+    errno = saved_errno;
+}
+
+static void jw__menu_clear_hide(void) {
+    char buf[64];
+    while (read(g_hide_pipe[0], buf, sizeof(buf)) > 0) { }
+    g_hide_requested = 0;
 }
 
 /* Install the SIGUSR1 show handler and self-pipe. Call before cat_init so a
@@ -84,6 +100,17 @@ static int jw__menu_init_show_signal(void) {
     }
     fcntl(g_show_pipe[0], F_SETFL, O_NONBLOCK);
     fcntl(g_show_pipe[1], F_SETFL, O_NONBLOCK);
+    if (pipe(g_hide_pipe) != 0) {
+        jw_log_error("in-game menu: hide pipe failed: %s", strerror(errno));
+        return -1;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (fcntl(g_hide_pipe[i], F_SETFL, O_NONBLOCK) < 0 ||
+            fcntl(g_hide_pipe[i], F_SETFD, FD_CLOEXEC) < 0) {
+            jw_log_error("in-game menu: hide pipe setup failed: %s", strerror(errno));
+            return -1;
+        }
+    }
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -95,8 +122,8 @@ static int jw__menu_init_show_signal(void) {
         return -1;
     }
 
-    /* Hide signal: no SA_RESTART so it promptly interrupts the idle poll() in
-       cat_present() and the visible loop can re-check g_hide_requested. */
+    /* The pipe stays readable even if SIGUSR2 arrives before cat_present()
+       starts waiting or is delivered to a graphics helper thread. */
     struct sigaction sh;
     memset(&sh, 0, sizeof(sh));
     sh.sa_handler = jw__menu_hide_signal;
@@ -1269,6 +1296,7 @@ static void jw__ingame_update_thumb(jw_ingame_state *state) {
            the old slot cleared while focus moves, then load only the row where
            the 80 ms list animation actually settles. */
         state->thumb_slot = INT_MIN;
+        cat_request_frame(); /* decode once more after the final animation frame */
         return;
     }
     state->thumb_slot = slot;
@@ -1786,7 +1814,6 @@ static void jw__ingame_show_performance(const char *socket_path,
 
     bool running = true;
     while (running && !g_hide_requested) {
-        cat_request_frame_in(100);
         cat_input_event ev;
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
@@ -1954,6 +1981,7 @@ static bool jw__shader_confirmation(const char *message,
         .message = message,
         .footer = footer,
         .footer_count = 2,
+        .cancel_requested = jw__menu_hide_requested,
     };
     cat_confirm_result result;
     return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
@@ -1967,6 +1995,7 @@ static void jw__shader_notice(const char *message) {
         .message = message,
         .footer = footer,
         .footer_count = 1,
+        .cancel_requested = jw__menu_hide_requested,
     };
     cat_confirm_result result;
     (void)cat_confirmation(&opts, &result);
@@ -2132,6 +2161,7 @@ static int jw__shader_scope_list(bool include_session) {
     };
     int count = include_session ? 5 : 4;
     cat_list_opts opts = cat_list_default_opts(T("Shader scope"), items, count);
+    opts.cancel_requested = jw__menu_hide_requested;
     opts.footer = footer;
     opts.footer_count = 2;
     opts.initial_index = 0;
@@ -2214,6 +2244,7 @@ static void jw__shader_off_choice(
         { CAT_BTN_A, T("Select"), true, JW_HINT("A") },
     };
     cat_list_opts opts = cat_list_default_opts(T("Shader Off"), items, 2);
+    opts.cancel_requested = jw__menu_hide_requested;
     opts.footer = footer;
     opts.footer_count = 2;
     cat_list_result choice;
@@ -2298,7 +2329,6 @@ static void jw__ingame_show_shader(const char *socket_path,
 
     bool running = true;
     while (running && *menu_running && !g_hide_requested) {
-        cat_request_frame_in(100);
         cat_input_event ev;
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
@@ -2394,6 +2424,10 @@ static void jw__ingame_show_shader(const char *socket_path,
             }
         }
         if (running && *menu_running) {
+            if (view.preview.pending) {
+                int32_t remaining = (int32_t)(view.preview.due_ms - SDL_GetTicks());
+                cat_request_frame_in(remaining > 0 ? (uint32_t)remaining : 1);
+            }
             jw__render_ingame_shader(state, &view);
             if (view.present_ms > 0) {
                 jw_log_info(
@@ -2919,7 +2953,6 @@ static void jw__ingame_show_switcher(const char *socket_path, const char *db_pat
 
     bool running = true;
     while (running && !g_hide_requested) {
-        cat_request_frame_in(100);
         cat_input_event ev;
         while (cat_poll_input(&ev)) {
             if (!ev.pressed) continue;
@@ -2958,7 +2991,7 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
            If one already arrived, the daemon has resumed the game and cleared
            visibility, so skip showing entirely and go back to standby. */
         if (g_hide_requested) {
-            g_hide_requested = 0;
+            jw__menu_clear_hide();
             continue;
         }
 
@@ -3015,10 +3048,6 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
 
         bool running = true;
         while (running && !g_hide_requested) {
-            /* Bound the idle poll() in cat_present() so a SIGUSR2 that lands in
-               the tiny window before poll() still gets noticed within ~100ms,
-               instead of sleeping to the next minute boundary. */
-            cat_request_frame_in(100);
             cat_input_event ev;
             while (cat_poll_input(&ev)) {
                 if (!ev.pressed) continue;
@@ -3039,7 +3068,7 @@ static int jw__run_ingame_menu(const char *socket_path, const char *db_path,
         /* Leave reason: running=false (Continue/Save/Load/Reset/Quit, daemon
            already resumed) or g_hide_requested (Menu toggle closed, daemon
            already resumed). Either way just hide back to standby. */
-        g_hide_requested = 0;
+        jw__menu_clear_hide();
         cat_hide_window();
         jw__ingame_free_imagery(&state); /* don't hold textures while parked */
         first_show = false;
@@ -3206,6 +3235,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     jw_cat_services_install(socket_path);
+    if (in_game) cat_set_idle_wake_fd(g_hide_pipe[0]);
     long long cat_done_ms = jw__monotonic_ms();
 
     /* Resolve theme: env > DB > default Jawaka-Tabs.
