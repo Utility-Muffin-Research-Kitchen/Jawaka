@@ -656,6 +656,16 @@ static bool jw__standalone_session_is_flycast(const jw_daemon_state *state) {
                                             session->core_path);
 }
 
+static bool jw__standalone_session_is_fun_drastic(const jw_daemon_state *state) {
+    if (!jw__has_standalone_session(state)) {
+        return false;
+    }
+
+    const jw_retroarch_session *session = &state->retroarch_session;
+    return jw_standalone_policy_is_fun_drastic(session->core_id,
+                                               session->core_path);
+}
+
 static bool jw__standalone_session_is_yabasanshiro(const jw_daemon_state *state) {
     if (!jw__has_standalone_session(state)) {
         return false;
@@ -7432,8 +7442,8 @@ static bool jw__input_menu_tap(void *userdata) {
 
     /* Standalone emulators own the display, so Jawaka's overlay menu cannot
        appear above them. PPSSPP has a patched SIGUSR2 pause-menu hook. DraStic,
-       Flycast, and YabaSanshiro have native menu bindings, so let Menu reach
-       the emulator.
+       Fun DraStic, Flycast, and YabaSanshiro have native menu bindings, so let
+       Menu reach the emulator.
        Standalone emulators without a menu hook keep Menu as the exit key. */
     if (jw__has_standalone_session(state)) {
         pid_t pid = state->retroarch_session.pid;
@@ -7449,6 +7459,11 @@ static bool jw__input_menu_tap(void *userdata) {
         if (jw__standalone_session_is_drastic(state)) {
             state->standalone_quit_request_ms = 0;
             jw_log_info("menu tap: forwarding to DraStic native menu pid=%d", (int)pid);
+            return false;
+        }
+        if (jw__standalone_session_is_fun_drastic(state)) {
+            state->standalone_quit_request_ms = 0;
+            jw_log_info("menu tap: forwarding to Fun DraStic native menu pid=%d", (int)pid);
             return false;
         }
         if (jw__standalone_session_is_mupen64plus(state)) {
