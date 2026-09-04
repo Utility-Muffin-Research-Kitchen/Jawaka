@@ -2387,10 +2387,6 @@ static void jw__ingame_show_shader(const char *socket_path,
             }
         }
         if (running && *menu_running) {
-            if (view.preview.pending) {
-                int32_t remaining = (int32_t)(view.preview.due_ms - SDL_GetTicks());
-                cat_request_frame_in(remaining > 0 ? (uint32_t)remaining : 1);
-            }
             jw__render_ingame_shader(state, &view);
             if (view.present_ms > 0) {
                 jw_log_info(
