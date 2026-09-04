@@ -9,6 +9,7 @@
 #include "internal/ipc/ipc_stream.h"
 #include "internal/ipc/life1.h"
 #include "internal/launcher/active_game.h"
+#include "internal/launcher/bios.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/platform/external_input_monitor.h"
 #include "internal/platform/bluetooth.h"
@@ -685,6 +686,13 @@ static bool jw__standalone_target_is_mupen64plus(const jw_launch_target *target)
 
 static bool jw__env_is_disabled(const char *name);
 static bool jw__env_is_truthy(const char *name);
+
+static bool jw__standalone_target_is_yabasanshiro(const jw_launch_target *target) {
+    if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
+        return false;
+    }
+    return jw_standalone_policy_is_yabasanshiro(target->core_id, target->path);
+}
 
 static bool jw__standalone_target_is_ports(const jw_launch_target *target) {
     if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
@@ -6058,6 +6066,85 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
     return false;
 }
 
+/* ── Saturn BIOS selection ──────────────────────────────────────────────────
+   Resolved per launch, applied to the forked child only, and only for the
+   YabaSanshiro standalone. A selection saved while standalone was the core
+   stays in the database when the user switches to the RetroArch core: it is
+   neither applied nor validated for that launch, so a missing dormant BIOS
+   cannot block another emulator.
+
+   The stored value is logical (source id + BIOS-relative path). The absolute
+   path is produced here, against the cards mounted right now, and never
+   persisted -- the two MLP1 mounts swap across reboots. */
+
+typedef struct {
+    bool applies;                 /* this launch is the Saturn standalone */
+    jw_bios_resolution resolution;
+    jw_bios_file_status status;   /* file choices only */
+    char abs_path[PATH_MAX];      /* set only when status is OK */
+} jw__bios_launch;
+
+static void jw__resolve_launch_bios(jw_daemon_state *state,
+                                    const jw_launch_target *target,
+                                    const char *system,
+                                    const char *rom_path,
+                                    jw__bios_launch *out) {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->status = JW_BIOS_FILE_NO_CHOICE;
+    if (!state || !jw__standalone_target_is_yabasanshiro(target)) {
+        return;
+    }
+    out->applies = true;
+
+    jw_game_entry game;
+    memset(&game, 0, sizeof(game));
+    bool have_game = jw__lookup_launch_game(state, rom_path, &game) == 0;
+    const char *system_key = jw__launch_system_key(system, have_game ? &game : NULL);
+
+    char game_value[JW_BIOS_VALUE_MAX];
+    char system_value[JW_BIOS_VALUE_MAX];
+    game_value[0] = '\0';
+    system_value[0] = '\0';
+    if (have_game && game.id > 0 && state->db_path) {
+        (void)jw_db_get_game_setting(state->db_path, game.id,
+                                     JW_CONTENT_SETTING_SATURN_BIOS,
+                                     game_value, sizeof(game_value));
+    }
+    if (state->db_path && system_key && system_key[0]) {
+        (void)jw_db_get_system_setting(state->db_path, system_key,
+                                       JW_CONTENT_SETTING_SATURN_BIOS,
+                                       system_value, sizeof(system_value));
+    }
+
+    jw_bios_resolve(game_value, system_value, &out->resolution);
+    if (out->resolution.choice.kind != JW_BIOS_CHOICE_FILE) {
+        return;
+    }
+
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0) {
+        out->status = JW_BIOS_FILE_SOURCE_UNAVAILABLE;
+        return;
+    }
+    out->status = jw_bios_resolve_file(&sources, &out->resolution.choice,
+                                       out->abs_path, sizeof(out->abs_path));
+}
+
+/* NULL when the launch may proceed; otherwise a static, actionable reason.
+   Never falls back to HLE or to another file: an unavailable explicit choice
+   stops the launch so the user can fix or change it. */
+static const char *jw__bios_launch_error(const jw__bios_launch *bios) {
+    if (!bios || !bios->applies ||
+        bios->resolution.choice.kind != JW_BIOS_CHOICE_FILE ||
+        bios->status == JW_BIOS_FILE_OK) {
+        return NULL;
+    }
+    return jw_bios_file_status_text(bios->status);
+}
+
 static int jw__resolve_launch_target(jw_daemon_state *state,
                                      const char *system,
                                      const char *rom_path,
@@ -6398,6 +6485,20 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
         jw__resolve_library_game(state, game.id, &game, &sources, &source,
                                  rom_abs, sizeof(rom_abs)) != 0) {
         if (out_error) *out_error = "ROM path missing";
+        return -1;
+    }
+
+    /* An explicitly selected Saturn BIOS that is gone, unreadable or the wrong
+       size refuses the request here, while the launcher is still on screen and
+       the user can correct the choice. */
+    jw__bios_launch bios;
+    jw__resolve_launch_bios(state, &target, system, rom_path, &bios);
+    const char *bios_error = jw__bios_launch_error(&bios);
+    if (bios_error) {
+        jw_log_warn("launch blocked: %s (source=%s path=%s)", bios_error,
+                    bios.resolution.choice.source_id,
+                    bios.resolution.choice.rel_path);
+        if (out_error) *out_error = bios_error;
         return -1;
     }
     return 0;
@@ -8742,6 +8843,34 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         return -1;
     }
 
+    /* Re-resolve the Saturn BIOS choice here, not only at request time: a card
+       can be pulled between the two. This is the last check before the display
+       handoff, so a stale selection never reaches a black screen the user
+       cannot back out of. */
+    jw__bios_launch bios;
+    jw__resolve_launch_bios(state, target, state->pending_launch_system,
+                            state->pending_launch_rom_path, &bios);
+    const char *bios_error = jw__bios_launch_error(&bios);
+    if (bios_error) {
+        jw_log_error("standalone launch blocked: %s (source=%s path=%s)",
+                     bios_error, bios.resolution.choice.source_id,
+                     bios.resolution.choice.rel_path);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
+    }
+    if (bios.applies) {
+        jw_log_info("saturn bios: mode=%s origin=%s%s%s",
+                    bios.resolution.choice.kind == JW_BIOS_CHOICE_FILE
+                        ? "external" : "hle",
+                    bios.resolution.origin == JW_BIOS_ORIGIN_GAME ? "game"
+                        : bios.resolution.origin == JW_BIOS_ORIGIN_SYSTEM
+                            ? "system" : "default",
+                    bios.abs_path[0] ? " file=" : "",
+                    bios.abs_path[0] ? bios.abs_path : "");
+    }
+
     jw_platform_result ready_result;
     jw_platform_frontend_ready(&state->platform, "launcher", &ready_result);
     jw_log_info("standalone emulator launch transition readiness code=%s",
@@ -8904,6 +9033,20 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
         setenv("JAWAKA_GAME_CORE_ID", target->core_id, 1);
+        /* The Saturn BIOS contract with Yabasanshiro-standalone's launch.sh.
+           Always written here, never in the daemon's own environment: an
+           unrelated ambient override must not survive into a game, and a
+           non-Saturn child must not inherit a resolved Saturn choice. */
+        if (bios.applies && bios.resolution.choice.kind == JW_BIOS_CHOICE_FILE) {
+            setenv("YABASANSHIRO_BIOS_MODE", "external", 1);
+            setenv("YABASANSHIRO_BIOS_FILE", bios.abs_path, 1);
+        } else if (bios.applies) {
+            setenv("YABASANSHIRO_BIOS_MODE", "hle", 1);
+            unsetenv("YABASANSHIRO_BIOS_FILE");
+        } else {
+            unsetenv("YABASANSHIRO_BIOS_MODE");
+            unsetenv("YABASANSHIRO_BIOS_FILE");
+        }
         if (direct_drm) {
             setenv("JAWAKA_DIRECT_DRM", "1", 1);
         }

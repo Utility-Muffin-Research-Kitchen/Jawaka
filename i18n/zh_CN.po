@@ -1660,3 +1660,106 @@ msgstr "使用高级选项在 RetroArch 中编辑。"
 #, fuzzy
 msgid "that scope"
 msgstr "该作用范围"
+
+# Saturn BIOS selection (Core actions menu). BIOS stays English per the glossary.
+msgid "512 KiB candidate"
+msgstr "512 KiB 候选文件"
+
+msgid "BIOS file ready"
+msgstr "BIOS 文件可用"
+
+msgid "Browse BIOS folder"
+msgstr "浏览 BIOS 文件夹"
+
+msgid "Folder"
+msgstr "文件夹"
+
+msgid "HLE"
+msgstr "HLE"
+
+msgid "HLE, no BIOS file"
+msgstr "HLE，不使用 BIOS 文件"
+
+msgid "Main SD Card"
+msgstr "主 SD 卡"
+
+msgid "Next page"
+msgstr "下一页"
+
+msgid "No BIOS file"
+msgstr "不使用 BIOS 文件"
+
+msgid "No BIOS file selected"
+msgstr "未选择 BIOS 文件"
+
+msgid "Pick another Saturn BIOS from the options menu."
+msgstr "请在选项菜单中另选一个 Saturn BIOS。"
+
+msgid "Previous page"
+msgstr "上一页"
+
+msgid "Reading folder..."
+msgstr "正在读取文件夹…"
+
+msgid "Refresh this folder"
+msgstr "刷新此文件夹"
+
+msgid "Saturn BIOS"
+msgstr "Saturn BIOS"
+
+msgid "Saturn BIOS update failed"
+msgstr "Saturn BIOS 设置更新失败"
+
+msgid "Second SD Card"
+msgstr "副 SD 卡"
+
+msgid "Selected BIOS card is not mounted"
+msgstr "所选 BIOS 所在的卡未挂载"
+
+msgid "Selected BIOS file cannot be read"
+msgstr "所选 BIOS 文件无法读取"
+
+msgid "Selected BIOS file is missing"
+msgstr "所选 BIOS 文件已丢失"
+
+msgid "Selected BIOS file is not a 512 KiB image"
+msgstr "所选 BIOS 文件不是 512 KiB 镜像"
+
+msgid "Selected BIOS file is not a file"
+msgstr "所选 BIOS 不是一个文件"
+
+msgid "Selected BIOS file is unavailable"
+msgstr "所选 BIOS 文件不可用"
+
+msgid "Selected BIOS file left the BIOS folder"
+msgstr "所选 BIOS 文件已不在 BIOS 文件夹内"
+
+msgid "Selected BIOS path is not usable"
+msgstr "所选 BIOS 路径不可用"
+
+msgid "Size is not proof that a file is a Saturn BIOS."
+msgstr "文件大小不能证明它是 Saturn BIOS。"
+
+msgid "That BIOS file cannot be saved as a selection."
+msgstr "无法保存该 BIOS 文件的选择。"
+
+msgid "That card is not mounted right now."
+msgstr "该卡当前未挂载。"
+
+msgid "That file name is too long to select."
+msgstr "该文件名过长，无法选择。"
+
+msgid "That folder could not be read."
+msgstr "无法读取该文件夹。"
+
+msgid "That folder name is too long to open."
+msgstr "该文件夹名过长，无法打开。"
+
+msgid "Up one level"
+msgstr "返回上一级"
+
+msgid "Use the system setting"
+msgstr "使用系统设置"
+
+msgid "Now"
+msgstr "当前"

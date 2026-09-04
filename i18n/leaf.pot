@@ -160,6 +160,10 @@ msgstr ""
 msgid "5 min"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "512 KiB candidate"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "528 MHz"
 msgstr ""
@@ -352,6 +356,10 @@ msgstr ""
 msgid "B: Back   A: Next"
 msgstr ""
 
+#: internal/launcher/bios.c
+msgid "BIOS file ready"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Back"
 msgstr ""
@@ -430,6 +438,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Browse"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Browse BIOS folder"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -576,7 +588,7 @@ msgstr ""
 msgid "DMC"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Default"
 msgstr ""
 
@@ -720,6 +732,10 @@ msgstr ""
 msgid "Flat"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Folder"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Font"
 msgstr ""
@@ -810,6 +826,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "HDMI output unavailable on this platform"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "HLE"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "HLE, no BIOS file"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -980,6 +1004,10 @@ msgstr ""
 msgid "MSX"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Main SD Card"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Memory free"
 msgstr ""
@@ -1044,6 +1072,10 @@ msgstr ""
 msgid "Network: %s"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Next page"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Nintendo 64"
 msgstr ""
@@ -1054,6 +1086,14 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Nintendo Entertainment System"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "No BIOS file"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "No BIOS file selected"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1136,8 +1176,12 @@ msgstr ""
 msgid "Not found in the ScreenScraper.fr database."
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Not mounted"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Now"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1224,6 +1268,10 @@ msgstr ""
 msgid "Pick Update"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Pick another Saturn BIOS from the options menu."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Play"
 msgstr ""
@@ -1260,6 +1308,10 @@ msgstr ""
 msgid "Press MENU to exit"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Previous page"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Profile"
 msgstr ""
@@ -1282,6 +1334,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Re-enter PIN"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reading folder..."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1326,6 +1382,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Refresh Rate"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Refresh this folder"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1468,6 +1528,14 @@ msgstr ""
 msgid "Safely unmount the secondary SD card?"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Saturn BIOS"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Saturn BIOS update failed"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Save & Quit"
 msgstr ""
@@ -1572,6 +1640,10 @@ msgstr ""
 msgid "Searching"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Second SD Card"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Secondary Text"
 msgstr ""
@@ -1602,6 +1674,38 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Select"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS card is not mounted"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file cannot be read"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file is missing"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file is not a 512 KiB image"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file is not a file"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file is unavailable"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file left the BIOS folder"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS path is not usable"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1666,6 +1770,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Signal: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Size is not proof that a file is a Saturn BIOS."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1860,6 +1968,26 @@ msgstr ""
 msgid "Text"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "That BIOS file cannot be saved as a selection."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "That card is not mounted right now."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "That file name is too long to select."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "That folder could not be read."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "That folder name is too long to open."
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "The saved shader could not be removed."
 msgstr ""
@@ -1960,7 +2088,7 @@ msgstr ""
 msgid "UTC"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
 msgid "Unavailable"
 msgstr ""
 
@@ -1997,6 +2125,10 @@ msgid "Unsupported"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Up one level"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Up/Down"
 msgstr ""
 
@@ -2014,6 +2146,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Use Advanced to edit it in RetroArch."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Use the system setting"
 msgstr ""
 
 #: internal/launcher/system_names.c
