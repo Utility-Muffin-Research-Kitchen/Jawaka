@@ -162,6 +162,8 @@ typedef enum {
     JW_SETTING_HDMI_OUTPUT_MODE,
     JW_SETTING_HOME_TAB_ORDER,
     JW_SETTING_SYSTEM_ICON_PACK_INDEX,
+    JW_SETTING_USER_THEME,
+    JW_SETTING_GRID_DENSITY_INDEX,
 #ifdef PLATFORM_MLP1
     JW_SETTING_SHORTCUT_SWITCHER,
     JW_SETTING_SHORTCUT_SCREENSHOT,
@@ -216,6 +218,8 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_HDMI_OUTPUT_MODE] = "hdmi_output_mode",
     [JW_SETTING_HOME_TAB_ORDER] = "home_tab_order",
     [JW_SETTING_SYSTEM_ICON_PACK_INDEX] = "system_icon_pack_index",
+    [JW_SETTING_USER_THEME] = "user_theme",
+    [JW_SETTING_GRID_DENSITY_INDEX] = "grid_density_index",
 #ifdef PLATFORM_MLP1
     /* Owned by internal/platform/input_shortcuts.c, which jawakad reads too.
        Spelled here so the table stays readable, but the query below takes the
@@ -236,6 +240,14 @@ static const char *const kTabSwitchLabels[] = { JW_UI("Snap"), JW_UI("Glide") };
 static const char *const kSystemIconPackLabels[JW_SYSTEM_ICON_PACK_COUNT] = {
     JW_UI("Automatic"), JW_UI("Flat"), JW_UI("Photographic"),
 };
+
+/* Indexed by grid_density_index. Automatic follows the theme. The three pinned
+   densities are the ones that divide a 4:3 panel cleanly with square tiles. */
+static const char *const kGridDensityLabels[JW_GRID_DENSITY_COUNT] = {
+    JW_UI("Automatic"), JW_UI("2 x 2"), JW_UI("3 x 2"), JW_UI("4 x 3"),
+};
+static const int kGridDensityCols[JW_GRID_DENSITY_COUNT] = { 0, 2, 3, 4 };
+static const int kGridDensityRows[JW_GRID_DENSITY_COUNT] = { 0, 2, 2, 3 };
 
 /* Curated time-zone list for Settings > Behavior > Time Zone. Each entry maps a
    friendly label to an IANA zone id, exported as the TZ environment variable. The
@@ -1129,10 +1141,27 @@ static void jw__apply_led(jw_settings_ui *ui) {
                    ui->led_brightness, ui->led_speed, status, sizeof(status));
 }
 
+static jw_settings_ui *g_settings_ui_for_overrides;   /* set by jw_settings_ui_init */
+
 static void jw__apply_persisted_overrides_from_values(
         char values[JW_SETTING_COUNT][JW_SETTINGS_VALUE_MAX],
         const unsigned char found[JW_SETTING_COUNT]) {
     ap_theme *t = cat_get_theme();
+
+    /* User theme + grid density live in the settings struct rather than the
+       live theme, so cat_stylesheet_apply cannot clobber them -- but re-read
+       them here anyway so every re-apply path sees the same persisted truth. */
+    if (g_settings_ui_for_overrides) {
+        jw_settings_ui *ui = g_settings_ui_for_overrides;
+        if (jw__setting_has(values, found, JW_SETTING_USER_THEME))
+            snprintf(ui->user_theme_dir, sizeof(ui->user_theme_dir), "%s",
+                     values[JW_SETTING_USER_THEME]);
+        ui->user_theme_index = jw_user_themes_find(&ui->user_themes, ui->user_theme_dir);
+        if (jw__setting_has(values, found, JW_SETTING_GRID_DENSITY_INDEX)) {
+            int idx = atoi(values[JW_SETTING_GRID_DENSITY_INDEX]);
+            if (idx >= 0 && idx < JW_GRID_DENSITY_COUNT) ui->grid_density_index = idx;
+        }
+    }
 
     {
         int idx = jw__setting_has(values, found, JW_SETTING_PILL_SHAPE_INDEX)
@@ -1373,6 +1402,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     memset(ui, 0, sizeof(*ui));
     ui->open   = false;
     ui->screen = JW_SETTINGS_HOME;
+    ui->user_theme_index = -1;
+    g_settings_ui_for_overrides = ui;
     ui->wifi_monitor_fd = -1;
     ui->adb_enabled = -1;
     ui->adb_intent_enabled = -1;
@@ -1586,6 +1617,14 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 int idx = atoi(values[JW_SETTING_SYSTEM_ICON_PACK_INDEX]);
                 if (idx >= 0 && idx < JW_SYSTEM_ICON_PACK_COUNT)
                     ui->system_icon_pack_index = idx;
+            }
+            if (jw__setting_has(values, found, JW_SETTING_USER_THEME))
+                snprintf(ui->user_theme_dir, sizeof(ui->user_theme_dir), "%s",
+                         values[JW_SETTING_USER_THEME]);
+            if (jw__setting_has(values, found, JW_SETTING_GRID_DENSITY_INDEX)) {
+                int idx = atoi(values[JW_SETTING_GRID_DENSITY_INDEX]);
+                if (idx >= 0 && idx < JW_GRID_DENSITY_COUNT)
+                    ui->grid_density_index = idx;
             }
             jw__parse_home_tab_order(
                 jw__setting_has(values, found, JW_SETTING_HOME_TAB_ORDER)
@@ -2300,11 +2339,33 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
                         "Home Layout",
                         ui->layout_mode == 2 ? "Grid"
                         : ui->layout_mode == 1 ? "Coverflow" : "Tabs", true);
+    /* Theme sits above System Icons so the fallback relationship reads
+       top-down: the theme's art wins where it exists, System Icons fills the
+       rest. That is also why the pack row says so rather than being greyed --
+       coverage is dynamic (a new Roms folder changes it) and deciding it would
+       put file probes on the render path. */
+    bool themed = ui->user_theme_index >= 0 &&
+                  ui->user_theme_index < ui->user_themes.count;
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_THEME,
+                        "Theme",
+                        themed ? ui->user_themes.items[ui->user_theme_index].name
+                               : "None",
+                        true);
     int pack = (ui->system_icon_pack_index >= 0 &&
                 ui->system_icon_pack_index < JW_SYSTEM_ICON_PACK_COUNT)
                ? ui->system_icon_pack_index : JW_SYSTEM_ICON_PACK_AUTO;
+    char pack_val[64];
+    if (themed)
+        snprintf(pack_val, sizeof(pack_val), T("%s \xc2\xb7 fallback"),
+                 T(kSystemIconPackLabels[pack]));
+    else
+        snprintf(pack_val, sizeof(pack_val), "%s", T(kSystemIconPackLabels[pack]));
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_SYSTEM_ICONS,
-                        "System Icons", kSystemIconPackLabels[pack], true);
+                        "System Icons", pack_val, true);
+    int dens = (ui->grid_density_index >= 0 && ui->grid_density_index < JW_GRID_DENSITY_COUNT)
+               ? ui->grid_density_index : 0;
+    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_GRID_SIZE,
+                        "Grid Size", kGridDensityLabels[dens], ui->layout_mode == 2);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
                         "List Style", kPillShapeLabels[ui->pill_shape_index], true);
     /* The themed families have no CJK glyphs, so a CJK language pins the face.
@@ -6371,7 +6432,18 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 if (row == JW_APPEAR_THEME)
                     jw__cycle_color_scheme(ui, +1, theme_changed);
                 else if (row == JW_APPEAR_COLORS)   ui->screen = JW_SETTINGS_COLORS;
-                else if (row == JW_APPEAR_LAYOUT)   ui->screen = JW_SETTINGS_LAYOUT;
+                else if (row == JW_APPEAR_LAYOUT) {
+                    ui->screen = JW_SETTINGS_LAYOUT;
+                    /* Rescan so a theme folder dropped onto the card appears
+                       without a relaunch; one opendir plus a few small reads. */
+                    if (ui->user_themes.root[0] || ui->user_theme_dir[0]) {
+                        char root[PATH_MAX];
+                        snprintf(root, sizeof(root), "%s", ui->user_themes.root);
+                        char *slash = strrchr(root, '/');
+                        if (slash) { *slash = '\0';
+                            jw_settings_ui_set_themes_root(ui, root); }
+                    }
+                }
                 else if (row == JW_APPEAR_STATUSBAR) ui->screen = JW_SETTINGS_STATUS_BAR;
                 break;
             }
@@ -6438,6 +6510,60 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     int next = (ui->layout_mode + dir + 3) % 3;
                     if (next != ui->layout_mode)
                         jw__apply_layout(ui, next, theme_changed);
+                } else if (row == JW_LAYOUT_THEME) {
+                    int n = ui->user_themes.count;
+                    /* Cycle None, then every theme; -1 is None. */
+                    int cur = (ui->user_theme_index >= 0 && ui->user_theme_index < n)
+                              ? ui->user_theme_index : -1;
+                    int next = cur + dir;
+                    if (next < -1) next = n - 1;
+                    if (next >= n) next = -1;
+                    if (next == cur) break;
+                    ui->user_theme_index = next;
+                    snprintf(ui->user_theme_dir, sizeof(ui->user_theme_dir), "%s",
+                             next >= 0 ? ui->user_themes.items[next].dir : "");
+                    jw__persist(ui, "user_theme", ui->user_theme_dir);
+                    if (next >= 0 && status_buf && status_size > 0) {
+                        /* Validate on selection, not on every frame, and say it
+                           here: a rejected icon that silently does not appear is
+                           worse than an ugly one, since the creator cannot tell why. */
+                        int present = 0, flagged = 0;
+                        int rejected = jw_user_theme_validate(&ui->user_themes, next,
+                                                              &present, &flagged);
+                        const char *name = ui->user_themes.items[next].name;
+                        if (rejected && flagged)
+                            snprintf(status_buf, status_size,
+                                     T("%s: %d icons over %dpx skipped, %d off-size"),
+                                     name, rejected, JW_USER_THEME_ICON_MAX_PX, flagged);
+                        else if (rejected)
+                            snprintf(status_buf, status_size,
+                                     T("%s: %d icons over %dpx skipped"),
+                                     name, rejected, JW_USER_THEME_ICON_MAX_PX);
+                        else if (flagged)
+                            snprintf(status_buf, status_size,
+                                     T("%s: %d icons not %dx%d (contain-fit)"),
+                                     name, flagged, JW_USER_THEME_ICON_TARGET_PX,
+                                     JW_USER_THEME_ICON_TARGET_PX);
+                        else if (present)
+                            snprintf(status_buf, status_size, T("%s: %d icons ok"),
+                                     name, present);
+                    } else if (status_buf && status_size > 0) {
+                        status_buf[0] = '\0';
+                    }
+                    /* The launcher rebuilds for the layout on this flag: memoized
+                       icon paths clear and the wallpaper re-resolves. */
+                    if (theme_changed) *theme_changed = true;
+                } else if (row == JW_LAYOUT_GRID_SIZE) {
+                    if (ui->layout_mode != 2) break;   /* row is greyed off-Grid */
+                    int cur = (ui->grid_density_index >= 0 &&
+                               ui->grid_density_index < JW_GRID_DENSITY_COUNT)
+                              ? ui->grid_density_index : 0;
+                    int next = (cur + dir + JW_GRID_DENSITY_COUNT) % JW_GRID_DENSITY_COUNT;
+                    ui->grid_density_index = next;
+                    /* Persist Automatic as 0 too, so cycling back replaces an
+                       earlier pinned density instead of leaving it in the DB. */
+                    jw__persist_int(ui, "grid_density_index", next);
+                    if (theme_changed) *theme_changed = true;
                 } else if (row == JW_LAYOUT_SYSTEM_ICONS) {
                     int cur = (ui->system_icon_pack_index >= 0 &&
                                ui->system_icon_pack_index < JW_SYSTEM_ICON_PACK_COUNT)
@@ -8057,4 +8183,45 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
             jw_ipc_rumble(ui->socket_path, "select");          /* page enter / back */
     }
     return still_open;
+}
+
+
+/* ─── User themes ───────────────────────────────────────────────────────── */
+
+void jw_settings_ui_set_themes_root(jw_settings_ui *ui, const char *sdcard_root) {
+    if (!ui) return;
+    jw_user_themes_scan(&ui->user_themes, sdcard_root);
+    ui->user_theme_index = jw_user_themes_find(&ui->user_themes, ui->user_theme_dir);
+}
+
+const jw_user_theme_catalog *jw_settings_user_themes(const jw_settings_ui *ui) {
+    return ui ? &ui->user_themes : NULL;
+}
+
+int jw_settings_user_theme_index(const jw_settings_ui *ui) {
+    if (!ui) return -1;
+    return (ui->user_theme_index >= 0 && ui->user_theme_index < ui->user_themes.count)
+               ? ui->user_theme_index : -1;
+}
+
+bool jw_settings_grid_density(const jw_settings_ui *ui, int *cols, int *rows) {
+    if (cols) *cols = 0;
+    if (rows) *rows = 0;
+    if (!ui) return false;
+    int d = ui->grid_density_index;
+    if (d > 0 && d < JW_GRID_DENSITY_COUNT) {
+        if (cols) *cols = kGridDensityCols[d];
+        if (rows) *rows = kGridDensityRows[d];
+        return true;
+    }
+    int i = jw_settings_user_theme_index(ui);
+    if (i >= 0) {
+        const jw_user_theme *t = &ui->user_themes.items[i];
+        if (t->grid_cols > 0 && t->grid_rows > 0) {
+            if (cols) *cols = t->grid_cols;
+            if (rows) *rows = t->grid_rows;
+            return true;
+        }
+    }
+    return false;
 }

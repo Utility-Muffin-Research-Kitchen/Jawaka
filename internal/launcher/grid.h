@@ -57,9 +57,11 @@ void jw_grid_step(jw_grid *g, cat_list_state *ls, int count, int dx, int dy,
 
 /* Draw every visible tile. Returns true while the scroll tween is running so
    the caller keeps requesting frames. */
+/* label_fn may be NULL. A label is a full-tile overlay authored at the tile's
+   own size, drawn over the composited art on the same rect. */
 bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
                   const cat_list_state *ls, int count,
-                  jw_grid_icon_fn icon_fn, void *ctx,
+                  jw_grid_icon_fn icon_fn, jw_grid_icon_fn label_fn, void *ctx,
                   uint32_t now, uint32_t anim_ms);
 
 #endif

@@ -119,7 +119,8 @@ static bool jw__grid_ensure_scratch(jw_grid *g, int size) {
    border width with a matching smaller radius. Art stays plain; rounding and
    border are Leaf's, which is what makes them themeable. */
 static void jw__grid_draw_tile(jw_grid *g, int x, int y, SDL_Texture *art,
-                               int aw, int ah, int bw, cat_draw_color bc, int radius) {
+                               int aw, int ah, SDL_Texture *label,
+                               int bw, cat_draw_color bc, int radius) {
     int tile = g->tile;
     cat_draw_rounded_rect(x, y, tile, tile, radius, bc);
 
@@ -147,6 +148,12 @@ static void jw__grid_draw_tile(jw_grid *g, int x, int y, SDL_Texture *art,
         SDL_Rect dst = { (inner - dw) / 2, (inner - dh) / 2, dw, dh };
         SDL_RenderCopy(r, art, NULL, &dst);
     }
+    if (label) {
+        /* Full-tile overlay: the author positioned the wordmark within a tile-
+           sized canvas, so it maps onto the interior edge to edge. */
+        SDL_Rect full = { 0, 0, inner, inner };
+        SDL_RenderCopy(r, label, NULL, &full);
+    }
     SDL_SetRenderTarget(r, prev);
 
     int ir = jw__grid_max(0, radius - bw);
@@ -155,7 +162,7 @@ static void jw__grid_draw_tile(jw_grid *g, int x, int y, SDL_Texture *art,
 
 bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
                   const cat_list_state *ls, int count,
-                  jw_grid_icon_fn icon_fn, void *ctx,
+                  jw_grid_icon_fn icon_fn, jw_grid_icon_fn label_fn, void *ctx,
                   uint32_t now, uint32_t anim_ms) {
     if (!g || !l || !ls || count <= 0) return false;
     int cols = g->cols, rows = g->rows, pitch = g->tile + g->gutter;
@@ -187,8 +194,10 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
             int x = g->x0 + c * pitch;
             int aw = 0, ah = 0;
             SDL_Texture *art = icon_fn ? icon_fn(ctx, idx, &aw, &ah) : NULL;
+            int lw = 0, lh = 0;
+            SDL_Texture *label = label_fn ? label_fn(ctx, idx, &lw, &lh) : NULL;
             bool focused = (idx == ls->cursor);
-            jw__grid_draw_tile(g, x, y, art, aw, ah,
+            jw__grid_draw_tile(g, x, y, art, aw, ah, label,
                                focused ? bw_focus : bw_norm,
                                focused ? focus : border, g->radius);
         }

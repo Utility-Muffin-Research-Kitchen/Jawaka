@@ -14,6 +14,8 @@
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/coverflow.h"
 #include "internal/launcher/grid.h"
+#include "internal/launcher/user_themes.h"
+#include <SDL2/SDL_image.h>
 #include "internal/launcher/focus_screen.h"
 #include "internal/launcher/game_switcher.h"
 #include "internal/launcher/standalone_policy.h"
@@ -219,6 +221,14 @@ typedef struct {
        bundled in internal/launcher/coverflow.{c,h}. */
     jw_coverflow       cf;
     jw_grid            grid;
+    /* Grid-only: resolved per layout rebuild. The wallpaper decodes off-thread
+       like a Coverflow card; status polarity is sampled once from its top-right
+       region (or forced by theme.json) so light icons never sit on a light sky. */
+    char               grid_wallpaper[PATH_MAX];
+    bool               grid_status_dark;
+    /* Label overlays resolved once per tile per rebuild, not per frame. */
+    char               grid_label_path[JW_MAX_SYSTEMS + 4][256];
+    unsigned char      grid_label_done[JW_MAX_SYSTEMS + 4];
     /* Tab-switch slide (Glide setting): two content snapshots cross-slide. */
     bool               tab_anim_active;
     int                tab_anim_dir;        /* +1 = next (from right), -1 = prev */
@@ -3771,6 +3781,26 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
     char path[PATH_MAX];
     int n;
 
+    /* (0) the selected user theme, for the view this layout draws. Wins over
+       everything, falls through for any system it does not supply, and never
+       for _default (Leaf's safety net, not a tile). Over-cap PNGs are refused
+       here so a 4000 px photo never reaches the decoder. */
+    if (state) {
+        const cat_stylesheet *ss0 = cat_get_stylesheet();
+        const char *view = NULL;
+        if (ss0 && ss0->launcher.layout == CAT_LAUNCHER_GRID)           view = "grid";
+        else if (ss0 && ss0->launcher.layout == CAT_LAUNCHER_COVERFLOW) view = "coverflow";
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (view && ti >= 0 &&
+            jw_user_theme_icon_path(jw_settings_user_themes(&state->settings), ti,
+                                    view, system_code, path, sizeof(path))) {
+            int w = 0, h = 0;
+            if (jw_user_theme_png_dims(path, &w, &h) &&
+                w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX)
+                jw__push_icon_candidate(out, path);
+        }
+    }
+
     /* (1) user override on the sdcard */
     if (system_code[0] != '_' && state && state->sdcard_root[0]) {
         n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
@@ -5687,6 +5717,51 @@ static bool jw__view_wants_shoulder_repeat(const jw_launcher_state *state) {
 static void jw__render_focus_setup(jw_launcher_state *state);
 static void jw__focus_setup_begin(jw_launcher_state *state);
 
+/* Resolve the grid wallpaper for the selected user theme and sample its
+   top-right region for status polarity. Decoding the wallpaper once here is a
+   one-time cost per layout/theme change, never per frame; the draw path uses
+   the off-thread loader. Sampling the region rather than the whole image
+   matters: a dark wallpaper can still be blown out in that one corner. */
+static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
+    state->grid_wallpaper[0] = '\0';
+    state->grid_status_dark  = false;   /* default: light icons on a dark stage */
+    int ti = jw_settings_user_theme_index(&state->settings);
+    if (ti < 0) return;
+    const jw_user_theme_catalog *cat = jw_settings_user_themes(&state->settings);
+    if (!jw_user_theme_wallpaper_path(cat, ti, "grid", state->grid_wallpaper,
+                                      sizeof(state->grid_wallpaper))) {
+        state->grid_wallpaper[0] = '\0';
+        return;
+    }
+    const jw_user_theme *t = &cat->items[ti];
+    if (t->status_style == JW_USER_THEME_STATUS_DARK)  { state->grid_status_dark = true;  return; }
+    if (t->status_style == JW_USER_THEME_STATUS_LIGHT) { state->grid_status_dark = false; return; }
+
+    SDL_Surface *surf = IMG_Load(state->grid_wallpaper);
+    if (!surf) return;
+    SDL_Surface *rgba = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA8888, 0);
+    SDL_FreeSurface(surf);
+    if (!rgba) return;
+    /* The status band on a 960x720 panel is roughly the top 12% by height and
+       the right 30% by width; sample every 4th pixel of that box. */
+    int x0 = rgba->w * 70 / 100, y1 = rgba->h * 12 / 100;
+    if (y1 < 1) y1 = 1;
+    unsigned long sum = 0, n = 0;
+    SDL_LockSurface(rgba);
+    for (int y = 0; y < y1; y += 4) {
+        const uint8_t *row = (const uint8_t *)rgba->pixels + y * rgba->pitch;
+        for (int x = x0; x < rgba->w; x += 4) {
+            uint32_t px; memcpy(&px, row + x * 4, 4);
+            uint8_t r, g, b, a; SDL_GetRGBA(px, rgba->format, &r, &g, &b, &a);
+            sum += (unsigned long)(r * 299 + g * 587 + b * 114) / 1000;
+            n++;
+        }
+    }
+    SDL_UnlockSurface(rgba);
+    SDL_FreeSurface(rgba);
+    if (n) state->grid_status_dark = (sum / n) > 128;
+}
+
 /* Grid tile art. Systems go through the memoized path resolver and the
    off-thread decoder exactly like Coverflow cards, so a cold icon shows the
    plate and fills in on a later frame instead of stalling the scroll. The
@@ -5705,9 +5780,83 @@ static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
     return NULL;
 }
 
+/* Label overlay: a full-tile wordmark PNG. Resolved once per tile per rebuild
+   from three candidates -- the user's per-system Roms/<SYSTEM>/label.png, the
+   selected theme's grid/labels/, then the stylesheet's grid_label_dir -- and
+   memoized, so the per-frame cost is one cached-texture lookup. Absent means
+   no label: the grid is graphical and renders no text of its own. */
+static bool jw__grid_file_exists(const char *path) {
+    return path && path[0] && access(path, R_OK) == 0;
+}
+
+/* Memo copy: a label path that does not fit the memo is dropped, not
+   truncated -- a truncated path is never a real file. memcpy rather than a
+   %s format so gcc's truncation analysis has nothing to flag. */
+static void jw__grid_memo_path(char *dst, size_t n, const char *src) {
+    size_t len = src ? strlen(src) : 0;
+    if (len == 0 || len >= n) { dst[0] = '\0'; return; }
+    memcpy(dst, src, len + 1);
+}
+
+static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
+    jw_launcher_state *state = (jw_launcher_state *)ctx;
+    *tw = 0; *th = 0;
+    if (idx < 0 || idx >= state->flat_count || idx >= JW_MAX_SYSTEMS + 4) return NULL;
+    if (!state->grid_label_done[idx]) {
+        state->grid_label_done[idx] = 1;
+        state->grid_label_path[idx][0] = '\0';
+        const jw_flat_item *it = &state->flat_items[idx];
+        const char *code = (it->kind == JW_FLAT_SYSTEM) ? state->systems[it->system_idx].name
+                         : (it->kind == JW_FLAT_APPS)   ? "_apps" : NULL;
+        if (!code || !code[0]) return NULL;
+        char cand[PATH_MAX];
+        int n;
+        if (code[0] != '_' && state->sdcard_root[0]) {
+            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/label.png", state->sdcard_root, code);
+            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
+        }
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (!state->grid_label_path[idx][0] && ti >= 0 &&
+            jw_user_theme_label_path(jw_settings_user_themes(&state->settings), ti,
+                                     "grid", code, cand, sizeof(cand)) &&
+            jw__grid_file_exists(cand))
+            jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
+        if (!state->grid_label_path[idx][0]) {
+            const cat_stylesheet *ss = cat_get_stylesheet();
+            const char *theme_dir = cat_get_active_theme_dir();
+            const char *theme_name = cat_get_active_theme_name();
+            if (ss && theme_dir && theme_dir[0] && theme_name && theme_name[0] &&
+                ss->launcher.grid_label_dir[0]) {
+                n = snprintf(cand, sizeof(cand), "%s/%s/%s/%s.png",
+                             theme_dir, theme_name, ss->launcher.grid_label_dir, code);
+                if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                    jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
+            }
+        }
+    }
+    if (!state->grid_label_path[idx][0]) return NULL;
+    return jw__load_coverflow_image(state->grid_label_path[idx], tw, th);
+}
+
 static void jw__render_grid(jw_launcher_state *state) {
     cat_clear_screen();
     const cat_stylesheet *ss = cat_get_stylesheet();
+
+    /* Wallpaper: cover-fit, centred, clipped by the screen. Off-thread decode,
+       so the first frame after a theme change shows the stage colour. */
+    if (state->grid_wallpaper[0]) {
+        int ww = 0, wh = 0;
+        SDL_Texture *wp = jw__load_coverflow_image(state->grid_wallpaper, &ww, &wh);
+        if (wp && ww > 0 && wh > 0) {
+            int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+            float sc = (float)sw / (float)ww;
+            if ((float)sh / (float)wh > sc) sc = (float)sh / (float)wh;
+            int dw = (int)(ww * sc), dh = (int)(wh * sc);
+            SDL_Rect dst = { (sw - dw) / 2, (sh - dh) / 2, dw, dh };
+            SDL_RenderCopy(cat_get_renderer(), wp, NULL, &dst);
+        }
+    }
 
     /* Status: the tab header's inline no-pill idiom, centred in the band the
        grid reserved above its first row. Phase 2 derives light/dark from the
@@ -5719,11 +5868,20 @@ static void jw__render_grid(jw_launcher_state *state) {
     sb.no_pill    = true;
     sb.use_y      = true;
     sb.y_position = (state->grid.status_h - pill_h) / 2;
+    /* Polarity: the status bar draws text and icons in theme.hint. Swap it for
+       this one draw when the wallpaper region behind it is light, and put the
+       stylesheet's colour straight back so nothing else in the frame sees it. */
+    ap_theme *theme = cat_get_theme();
+    cat_draw_color saved_hint = theme->hint;
+    if (state->grid_wallpaper[0])
+        theme->hint = state->grid_status_dark ? (cat_draw_color){ 0x14, 0x1A, 0x14, 0xFF }
+                                              : (cat_draw_color){ 0xF2, 0xF5, 0xEF, 0xFF };
     cat_draw_status_bar(&sb);
+    theme->hint = saved_hint;
 
     uint32_t now = SDL_GetTicks();
     bool anim = jw_grid_draw(&state->grid, &ss->launcher, &state->list,
-                             state->flat_count, jw__grid_icon, state,
+                             state->flat_count, jw__grid_icon, jw__grid_label, state,
                              now, ss->launcher.grid_anim_ms);
     jw__cf_animating |= anim;
     if (anim) cat_request_frame();
@@ -7405,9 +7563,20 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
     } else if (layout == CAT_LAUNCHER_GRID) {
         jw__build_grid_list(state);
         jw_grid_reset(&state->grid);
-        jw_grid_layout(&state->grid, &ss->launcher,
+        memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
+        /* Density: the user's explicit pick, else the selected theme's
+           recommendation, else the stylesheet. Applied to a copy so the
+           stylesheet stays what the theme authored. */
+        cat_stylesheet_launcher eff = ss->launcher;
+        int dc = 0, dr = 0;
+        if (jw_settings_grid_density(&state->settings, &dc, &dr)) {
+            eff.grid_cols = dc;
+            eff.grid_rows = dr;
+        }
+        jw_grid_layout(&state->grid, &eff,
                        cat_get_screen_width(), cat_get_screen_height(),
                        cat_get_status_bar_height());
+        jw__grid_resolve_wallpaper(state);
     } else {
         state->flat_count = 0;
     }
@@ -9794,6 +9963,7 @@ int main(void) {
     /* Init settings UI with the currently-active theme */
     long long settings_start_ms = jw__monotonic_ms();
     jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
+    jw_settings_ui_set_themes_root(&state.settings, state.sdcard_root);
     long long settings_done_ms = jw__monotonic_ms();
 
     /* System icons are chosen independently of the layout, so log which pack is
