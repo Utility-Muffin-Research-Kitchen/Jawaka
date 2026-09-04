@@ -31,7 +31,10 @@ void jw_grid_layout(jw_grid *g, const cat_stylesheet_launcher *l,
     g->radius   = tile * l->grid_radius_pct / 100;
     g->status_h = status_h;
     g->x0       = (screen_w - block_w) / 2;
-    g->y0       = status_h + (avail_h - block_h) / 2;
+    /* Top-anchored: the first row sits one gutter below the status band and
+       the vertical slack goes to the bottom, per the plan. */
+    g->y0       = status_h + gutter;
+    (void)block_h;
 }
 
 void jw_grid_reset(jw_grid *g) {
@@ -40,6 +43,8 @@ void jw_grid_reset(jw_grid *g) {
     g->anim_from_row = 0.0f;
     g->anim_start_ms = 0;
     g->anim_active   = false;
+    g->focus_prev    = -1;
+    g->focus_anim_start_ms = 0;
 }
 
 static float jw__grid_scroll_now(const jw_grid *g, uint32_t now, uint32_t anim_ms) {
@@ -83,6 +88,10 @@ void jw_grid_step(jw_grid *g, cat_list_state *ls, int count, int dx, int dy,
             idx = (cand2 < count) ? cand2 : count - 1;
         }
     }
+    if (idx != ls->cursor) {
+        g->focus_prev = ls->cursor;
+        g->focus_anim_start_ms = now;
+    }
     ls->cursor = idx;
 
     int row        = idx / cols;
@@ -118,14 +127,19 @@ static bool jw__grid_ensure_scratch(jw_grid *g, int size) {
    (plate + contain-fit art) is composited off screen then drawn inset by the
    border width with a matching smaller radius. Art stays plain; rounding and
    border are Leaf's, which is what makes them themeable. */
-static void jw__grid_draw_tile(jw_grid *g, int x, int y, SDL_Texture *art,
+static void jw__grid_draw_tile(jw_grid *g, int x, int y, int size, SDL_Texture *art,
                                int aw, int ah, SDL_Texture *label,
                                int bw, cat_draw_color bc, int radius) {
-    int tile = g->tile;
-    cat_draw_rounded_rect(x, y, tile, tile, radius, bc);
+    /* `size` may exceed the cell (focus scale); centre it on the cell. */
+    int off = (size - g->tile) / 2;
+    x -= off; y -= off;
+    cat_draw_rounded_rect(x, y, size, size, radius, bc);
 
-    int inner = tile - 2 * bw;
-    if (inner <= 0) return;
+    int inner_draw = size - 2 * bw;
+    if (inner_draw <= 0) return;
+    /* Compose at the base tile size once; the draw below scales the result, so
+       focus animation never rebuilds the scratch texture. */
+    int inner = g->tile;
     SDL_Renderer *r = cat_get_renderer();
     if (!jw__grid_ensure_scratch(g, inner)) return;
 
@@ -157,7 +171,7 @@ static void jw__grid_draw_tile(jw_grid *g, int x, int y, SDL_Texture *art,
     SDL_SetRenderTarget(r, prev);
 
     int ir = jw__grid_max(0, radius - bw);
-    cat_draw_image_rounded_ex(g->scratch, x + bw, y + bw, inner, inner, ir, CAT_CORNER_ALL);
+    cat_draw_image_rounded_ex(g->scratch, x + bw, y + bw, inner_draw, inner_draw, ir, CAT_CORNER_ALL);
 }
 
 bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
@@ -183,23 +197,44 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
     SDL_Rect clip = { 0, g->status_h, cat_get_screen_width(), cat_get_screen_height() - g->status_h };
     SDL_RenderSetClipRect(r, &clip);
 
+    /* Focus scale tween, shared duration with the row scroll. */
+    float grow = (float)jw__grid_max(100, l->grid_focus_scale_pct) / 100.0f - 1.0f;
+    float ft = 1.0f;
+    if (anim_ms > 0 && g->focus_prev >= 0) {
+        uint32_t el = now - g->focus_anim_start_ms;
+        ft = el >= anim_ms ? 1.0f : jw_cf_ease_in_out_cubic((float)el / (float)anim_ms);
+    }
+    if (ft >= 1.0f) g->focus_prev = -1;
+    else animating = true;
+    int focus_idx = ls->cursor;
+
     int total_rows = (count + cols - 1) / cols;
     int first = jw__grid_max(0, (int)scroll - 1);
     int last  = jw__grid_min(total_rows - 1, (int)scroll + rows + 1);
-    for (int row = first; row <= last; row++) {
-        int y = g->y0 + (int)(((float)row - scroll) * (float)pitch);
-        for (int c = 0; c < cols; c++) {
-            int idx = row * cols + c;
-            if (idx >= count) break;
-            int x = g->x0 + c * pitch;
-            int aw = 0, ah = 0;
-            SDL_Texture *art = icon_fn ? icon_fn(ctx, idx, &aw, &ah) : NULL;
-            int lw = 0, lh = 0;
-            SDL_Texture *label = label_fn ? label_fn(ctx, idx, &lw, &lh) : NULL;
-            bool focused = (idx == ls->cursor);
-            jw__grid_draw_tile(g, x, y, art, aw, ah, label,
-                               focused ? bw_focus : bw_norm,
-                               focused ? focus : border, g->radius);
+    /* Pass 1: every tile but the focused one, so the focused tile can overlap
+       its neighbours when it grows. The previously focused tile eases back. */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int row = first; row <= last; row++) {
+            int y = g->y0 + (int)(((float)row - scroll) * (float)pitch);
+            for (int c = 0; c < cols; c++) {
+                int idx = row * cols + c;
+                if (idx >= count) break;
+                bool focused = (idx == focus_idx);
+                if ((pass == 0) == focused) continue;
+                int x = g->x0 + c * pitch;
+                int aw = 0, ah = 0;
+                SDL_Texture *art = icon_fn ? icon_fn(ctx, idx, &aw, &ah) : NULL;
+                int lw = 0, lh = 0;
+                SDL_Texture *label = label_fn ? label_fn(ctx, idx, &lw, &lh) : NULL;
+                float sc = 1.0f;
+                if (focused)                     sc = 1.0f + grow * ft;
+                else if (idx == g->focus_prev)   sc = 1.0f + grow * (1.0f - ft);
+                int size = (int)((float)g->tile * sc);
+                int radius = (int)((float)g->radius * sc);
+                jw__grid_draw_tile(g, x, y, size, art, aw, ah, label,
+                                   focused ? bw_focus : bw_norm,
+                                   focused ? focus : border, radius);
+            }
         }
     }
 

@@ -30,6 +30,11 @@ typedef struct {
     uint32_t anim_start_ms;
     bool     anim_active;
 
+    /* Focus tween: the newly focused tile grows and the previous one shrinks
+       over the same duration as a row scroll. */
+    int      focus_prev;          /* -1 = none */
+    uint32_t focus_anim_start_ms;
+
     /* Off-screen composition target, sized to the tile interior. */
     SDL_Texture *scratch;
     int          scratch_size;
