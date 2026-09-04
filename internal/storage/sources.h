@@ -72,5 +72,13 @@ int jw_storage_resolve_rom(const jw_storage_source *source,
                            const char *rom_relpath,
                            bool require_regular_file,
                            char *out, size_t out_size);
+/* Resolve a BIOS-root-relative path to an absolute path inside that source's
+   configured BIOS root. Containment is checked after realpath(), so a symlink
+   or a ".." component that leaves the root fails rather than resolving. The
+   caller still stats the result: this says where the file may live, not
+   whether it is a usable image. */
+int jw_storage_resolve_bios(const jw_storage_source *source,
+                            const char *bios_relpath,
+                            char *out, size_t out_size);
 
 #endif /* JW_STORAGE_SOURCES_H */

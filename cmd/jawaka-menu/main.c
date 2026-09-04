@@ -1867,7 +1867,6 @@ static void jw__ingame_refresh(const char *socket_path,
    Fugazi 0.2.0 carries it. Return this to false if Leaf ever assembles an older
    Fugazi, because the picker would then create a conflict nothing can resolve. */
 #define JW_FUGAZI_RESOLVER_ASSEMBLED true
-#define JW_SHADER_PREVIEW_SETTLE_MS 80u
 
 typedef struct {
     jw_shader_catalog catalog;
@@ -1877,8 +1876,6 @@ typedef struct {
     bool catalog_valid;
     bool custom_row;
     int applied_cursor;
-    jw_shader_preview_coalescer preview;
-    long long move_ms;
     long long present_ms;
     char status[256];
 } jw_ingame_shader_view;
@@ -2005,15 +2002,15 @@ static bool jw__shader_offer_settings(const char *message) {
     return jw__shader_confirmation(message, T("RetroArch Settings"));
 }
 
-static jw_shader_picker_result jw__shader_apply_preview(
+static jw_shader_picker_result jw__shader_apply_selection(
     jw_ingame_shader_view *view,
     const jw_shader_picker_transport *transport,
     int cursor) {
     char path[PATH_MAX];
     jw_shader_picker_result result =
         jw__shader_item_path(view, cursor, path, sizeof(path))
-        ? jw_shader_picker_preview(&view->picker, transport,
-                                   path[0] ? path : NULL)
+        ? jw_shader_picker_apply(&view->picker, transport,
+                                 path[0] ? path : NULL)
         : JW_SHADER_PICKER_MISSING;
     if (result == JW_SHADER_PICKER_OK) {
         view->applied_cursor = cursor;
@@ -2325,7 +2322,6 @@ static void jw__ingame_show_shader(const char *socket_path,
     cat_list_state_init(&view.list, 8);
     cat_list_state_jump(&view.list, initial, jw__shader_item_count(&view));
     view.applied_cursor = initial;
-    jw_shader_preview_coalescer_init(&view.preview);
 
     bool running = true;
     while (running && *menu_running && !g_hide_requested) {
@@ -2338,19 +2334,12 @@ static void jw__ingame_show_shader(const char *socket_path,
                                     ev.button == CAT_BTN_UP ? -1 : +1,
                                     jw__shader_item_count(&view));
                 if (view.list.cursor != before) {
-                    view.move_ms = jw__monotonic_ms();
-                    view.present_ms = view.move_ms;
+                    /* The backdrop is a frozen still, so browsing must not
+                       block input applying an invisible shader preview. */
+                    view.present_ms = jw__monotonic_ms();
                     view.status[0] = '\0';
-                    if (view.list.cursor == jw__shader_advanced_index(&view)) {
-                        jw_shader_preview_coalescer_cancel(&view.preview);
-                    } else {
-                        jw_shader_preview_coalescer_schedule(
-                            &view.preview, view.list.cursor, SDL_GetTicks(),
-                            JW_SHADER_PREVIEW_SETTLE_MS);
-                    }
                 }
             } else if (ev.button == CAT_BTN_B) {
-                jw_shader_preview_coalescer_cancel(&view.preview);
                 jw_shader_picker_result result =
                     jw_shader_picker_cancel(&view.picker, &transport);
                 if (result == JW_SHADER_PICKER_OK) {
@@ -2361,7 +2350,6 @@ static void jw__ingame_show_shader(const char *socket_path,
                 }
             } else if (ev.button == CAT_BTN_A || ev.button == CAT_BTN_START) {
                 int cursor = view.list.cursor;
-                jw_shader_preview_coalescer_cancel(&view.preview);
                 if (cursor == jw__shader_advanced_index(&view)) {
                     jw_shader_picker_result result =
                         jw_shader_picker_cancel(&view.picker, &transport);
@@ -2374,7 +2362,7 @@ static void jw__ingame_show_shader(const char *socket_path,
                         *menu_running = false;
                     }
                 } else {
-                    jw_shader_picker_result result = jw__shader_apply_preview(
+                    jw_shader_picker_result result = jw__shader_apply_selection(
                         &view, &transport, cursor);
                     if (result == JW_SHADER_PICKER_OK) {
                         if (cursor == 0) {
@@ -2395,31 +2383,6 @@ static void jw__ingame_show_shader(const char *socket_path,
                 jw_ipc_retroarch_action(socket_path, "settings", 0,
                                         state->status,
                                         sizeof(state->status)) == 0) {
-                *menu_running = false;
-            }
-        }
-        int preview_cursor;
-        if (running && *menu_running &&
-            jw_shader_preview_coalescer_take(
-                &view.preview, SDL_GetTicks(), view.list.anim_active,
-                &preview_cursor) &&
-            preview_cursor == view.list.cursor) {
-            long long preview_start_ms = jw__monotonic_ms();
-            jw_shader_picker_result result = jw__shader_apply_preview(
-                &view, &transport, preview_cursor);
-            long long preview_done_ms = jw__monotonic_ms();
-            jw_log_info(
-                "shader picker preview timings: move_to_apply_ms=%lld apply_ms=%lld cursor=%d",
-                view.move_ms > 0 ? preview_start_ms - view.move_ms : -1,
-                preview_done_ms - preview_start_ms, preview_cursor);
-            if (result == JW_SHADER_PICKER_UNAVAILABLE) {
-                snprintf(state->status, sizeof(state->status), "%s", view.status);
-                running = false;
-            } else if (view.status[0] && !view.picker.current_known &&
-                       jw__shader_offer_settings(view.status) &&
-                       jw_ipc_retroarch_action(socket_path, "settings", 0,
-                                               state->status,
-                                               sizeof(state->status)) == 0) {
                 *menu_running = false;
             }
         }

@@ -15,6 +15,7 @@
 #include "internal/launcher/coverflow.h"
 #include "internal/launcher/focus_screen.h"
 #include "internal/launcher/game_switcher.h"
+#include "internal/launcher/bios.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/launcher/system_names.h"
 #include "internal/platform/bluetooth.h"
@@ -127,11 +128,99 @@ typedef enum {
     JW_ACTION_ROW_SEARCH = 0,
     JW_ACTION_ROW_DISPLAY_NAME,
     JW_ACTION_ROW_CORE,
+    JW_ACTION_ROW_BIOS,          /* Saturn standalone only; opens a picker */
     JW_ACTION_ROW_PERFORMANCE,
     JW_ACTION_ROW_SCRAPE,        /* game: replace art */
     JW_ACTION_ROW_SCRAPE_CANCEL, /* swap-in while the target is queued */
     JW_ACTION_ROW_RESET
 } jw_action_row_kind;
+
+/* ─── Saturn BIOS picker ───────────────────────────────────────────────────
+   A lazy folder browser over the configured BIOS/SATURN roots of both cards. It never
+   walks the trees: it lists exactly the folder you are standing in, one bounded
+   page at a time, off the UI thread, and keeps a handful of pages so stepping
+   back out does not rescan. See internal/launcher/bios.{c,h} for the listing
+   itself and umrk-workspace/plans/bios-selection-menu.md for the contract. */
+
+#define JW_BIOS_PICKER_CACHE_PAGES 4
+/* Enough page cursors for 16384 eligible rows in one folder; beyond that the
+   picker stops offering Next rather than paging into a wrong cursor. */
+#define JW_BIOS_PICKER_MAX_PAGES 64
+#define JW_BIOS_PICKER_VIEW_ROWS (JW_BIOS_PAGE_ROWS + 8)
+
+typedef enum {
+    JW_BIOS_ROW_DEFAULT = 0,
+    JW_BIOS_ROW_HLE,
+    JW_BIOS_ROW_SOURCE,      /* index: source index in the resolved list */
+    JW_BIOS_ROW_UP,
+    JW_BIOS_ROW_DIR,         /* index: row index in picker->rows */
+    JW_BIOS_ROW_FILE,        /* index: row index in picker->rows */
+    JW_BIOS_ROW_PREV_PAGE,
+    JW_BIOS_ROW_NEXT_PAGE,
+    JW_BIOS_ROW_REFRESH,
+} jw_bios_row_kind;
+
+typedef struct {
+    jw_bios_row_kind kind;
+    int              index;
+} jw_bios_view_row;
+
+typedef struct {
+    bool          valid;
+    char          source_id[JW_STORAGE_SOURCE_ID_MAX];
+    char          rel_dir[JW_BIOS_REL_PATH_MAX];
+    int           page;
+    jw_bios_entry rows[JW_BIOS_PAGE_ROWS];
+    int           row_count;
+    bool          has_more;
+    unsigned      used_at;   /* LRU stamp */
+} jw_bios_page_cache;
+
+/* One worker for the life of an open picker. The UI thread publishes a request
+   and reads the newest matching result; a superseded read is cancelled between
+   batches rather than allowed to install stale rows. */
+typedef struct {
+    pthread_t       thread;
+    bool            thread_started;
+    pthread_mutex_t mu;
+    pthread_cond_t  cv;
+    bool            running;
+    bool            have_request;
+    unsigned        request_gen;
+    char            request_dir[PATH_MAX];
+    jw_bios_entry   request_after;
+    bool            request_have_after;
+    bool            have_result;
+    unsigned        result_gen;
+    jw_bios_entry   result_rows[JW_BIOS_PAGE_ROWS];
+    int             result_count;
+    jw_bios_list_result result_info;
+} jw_bios_scanner;
+
+typedef struct {
+    bool             in_folder;          /* false: the Default/HLE/cards root */
+    char             source_id[JW_STORAGE_SOURCE_ID_MAX];
+    char             source_label[64];
+    char             rel_dir[JW_BIOS_REL_PATH_MAX];
+    char             dir_abs[PATH_MAX];
+    int              page;
+    jw_bios_entry    page_cursor[JW_BIOS_PICKER_MAX_PAGES];
+    int              page_cursor_count;  /* cursors known for pages 1..count */
+    jw_bios_entry    rows[JW_BIOS_PAGE_ROWS];
+    int              row_count;
+    bool             has_more;
+    bool             loading;
+    bool             failed;
+    unsigned         generation;
+    jw_bios_view_row view[JW_BIOS_PICKER_VIEW_ROWS];
+    int              view_count;
+    cat_list_state   list;
+    jw_bios_page_cache cache[JW_BIOS_PICKER_CACHE_PAGES];
+    unsigned         cache_clock;
+    jw_bios_scanner  scanner;
+    jw_storage_source_list sources;
+    char             message[192];
+} jw_bios_picker;
 
 /* Coverflow runtime state (jw_games_cf, jw_cf_cube, and the jw_coverflow bundle)
    lives in internal/launcher/coverflow.h — the CF module owns those types. */
@@ -247,6 +336,18 @@ typedef struct {
     char               action_core_system_override[64];
     char               action_perf_game_override[64];
     char               action_perf_system_override[64];
+    /* Saturn BIOS: the stored overrides, what they resolve to, and whether the
+       effective emulator is the one this setting applies to. A dormant choice
+       is kept and shown again when the core is switched back. */
+    char               action_bios_game_override[JW_BIOS_VALUE_MAX];
+    char               action_bios_system_override[JW_BIOS_VALUE_MAX];
+    jw_bios_resolution action_bios_resolution;
+    jw_bios_file_status action_bios_status;
+    bool               action_bios_supported;
+    /* Allocated only while the picker is open: its page cache and scan buffers
+       are a few hundred KiB that nothing else in the launcher needs. NULL means
+       closed, so there is one liveness test rather than two. */
+    jw_bios_picker    *bios_picker;
     char               action_system_display_override[64];
     bool               action_scrape_pending;   /* target has queued scrape work */
     /* System menu (MENU button): an in-launcher overlay, not a separate process,
@@ -2390,6 +2491,7 @@ static void jw__tab_anim_clear(jw_launcher_state *state) {
    one is live. (Definitions follow further down.) */
 static void jw__render_tabbed(const jw_launcher_state *state);
 static void jw__render_actions(const jw_launcher_state *state);
+static void jw__render_bios_picker(const jw_launcher_state *state);
 static void jw__render_search(const jw_launcher_state *state);
 static void jw__render_game_browser(const jw_launcher_state *state);
 
@@ -5116,6 +5218,40 @@ static const char *jw__action_core_label(const jw_launcher_state *state,
                                          const char *core_id);
 static const char *jw__action_perf_label(const char *value);
 
+static const char *jw__bios_basename(const char *rel_path) {
+    const char *slash = rel_path ? strrchr(rel_path, '/') : NULL;
+    return (slash && slash[1]) ? slash + 1 : (rel_path ? rel_path : "");
+}
+
+/* Origin suffix matching the Core and Performance rows: which scope the
+   effective value came from, not where the file is stored. */
+static const char *jw__bios_origin_suffix(jw_bios_origin origin) {
+    switch (origin) {
+        case JW_BIOS_ORIGIN_GAME:   return "game";
+        case JW_BIOS_ORIGIN_SYSTEM: return "system";
+        case JW_BIOS_ORIGIN_DEFAULT:
+        default:                    return "default";
+    }
+}
+
+static void jw__bios_row_value(const jw_launcher_state *state,
+                               char *out, size_t out_size) {
+    const jw_bios_resolution *resolution = &state->action_bios_resolution;
+    const char *scope = jw__bios_origin_suffix(resolution->origin);
+    if (resolution->choice.kind != JW_BIOS_CHOICE_FILE) {
+        snprintf(out, out_size, "%s (%s)", T("HLE"), scope);
+        return;
+    }
+    const char *name = jw__bios_basename(resolution->choice.rel_path);
+    if (state->action_bios_status == JW_BIOS_FILE_OK) {
+        snprintf(out, out_size, "%s (%s)", name, scope);
+    } else {
+        /* Never quietly reads as HLE: an unavailable choice says so, and the
+           launch is refused rather than substituted. */
+        snprintf(out, out_size, "%s: %s (%s)", T("Unavailable"), name, scope);
+    }
+}
+
 static void jw__action_row_strings(const jw_launcher_state *state,
                                    jw_action_row_kind row,
                                    char *title, size_t title_size,
@@ -5162,6 +5298,10 @@ static void jw__action_row_strings(const jw_launcher_state *state,
             } else {
                 snprintf(value, value_size, "%s", "Unavailable");
             }
+            break;
+        case JW_ACTION_ROW_BIOS:
+            snprintf(title, title_size, "%s", T("Saturn BIOS"));
+            jw__bios_row_value(state, value, value_size);
             break;
         case JW_ACTION_ROW_PERFORMANCE:
             snprintf(title, title_size, "%s", "Performance");
@@ -5319,6 +5459,12 @@ static void jw__render_actions_cf(jw_launcher_state *state) {
 }
 
 static void jw__render_actions(const jw_launcher_state *state) {
+    /* The BIOS picker floats over the actions menu it was opened from, in
+       every layout, so every actions render site reaches it. */
+    if (state->bios_picker) {
+        jw__render_bios_picker(state);
+        return;
+    }
     if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
         jw__render_actions_cf((jw_launcher_state *)state);
         return;
@@ -5782,6 +5928,834 @@ static bool jw__runtime_cores_dir(const jw_launcher_state *state,
     return false;
 }
 
+
+/* ─── Saturn BIOS picker ──────────────────────────────────────────────────
+   Opened from the BIOS action row. Default and HLE are built in; the rest is
+   a lazy walk of each card's configured BIOS/SATURN root. Nothing is scanned until
+   you step into a folder, and each folder is read one bounded page at a time
+   on a worker thread, so a slow card never blocks drawing or B. */
+
+static void jw__refresh_after_action_write(const char *db_path,
+                                           jw_launcher_state *state);
+static void jw__render_bios_picker(const jw_launcher_state *state);
+
+typedef struct {
+    jw_bios_picker *picker;
+    unsigned        generation;
+} jw__bios_cancel_ctx;
+
+/* Called between listing batches: a newer request, or a closing picker,
+   abandons this read rather than letting it install stale rows. */
+static bool jw__bios_scan_cancelled(void *user) {
+    jw__bios_cancel_ctx *ctx = (jw__bios_cancel_ctx *)user;
+    if (!ctx || !ctx->picker) {
+        return true;
+    }
+    jw_bios_scanner *scanner = &ctx->picker->scanner;
+    pthread_mutex_lock(&scanner->mu);
+    bool stop = !scanner->running || scanner->request_gen != ctx->generation;
+    pthread_mutex_unlock(&scanner->mu);
+    return stop;
+}
+
+static void *jw__bios_scan_worker(void *arg) {
+    jw_bios_picker *picker = (jw_bios_picker *)arg;
+    jw_bios_scanner *scanner = &picker->scanner;
+    for (;;) {
+        pthread_mutex_lock(&scanner->mu);
+        while (scanner->running && !scanner->have_request) {
+            pthread_cond_wait(&scanner->cv, &scanner->mu);
+        }
+        if (!scanner->running) {
+            pthread_mutex_unlock(&scanner->mu);
+            break;
+        }
+        unsigned generation = scanner->request_gen;
+        char dir[PATH_MAX];
+        snprintf(dir, sizeof(dir), "%s", scanner->request_dir);
+        jw_bios_entry after = scanner->request_after;
+        bool have_after = scanner->request_have_after;
+        scanner->have_request = false;
+        pthread_mutex_unlock(&scanner->mu);
+
+        jw_bios_entry rows[JW_BIOS_PAGE_ROWS];
+        jw_bios_list_result info;
+        int count = 0;
+        jw__bios_cancel_ctx ctx = { picker, generation };
+        (void)jw_bios_list_dir(dir, have_after ? &after : NULL, rows,
+                               JW_BIOS_PAGE_ROWS, &count,
+                               jw__bios_scan_cancelled, &ctx, &info);
+
+        pthread_mutex_lock(&scanner->mu);
+        if (scanner->running && generation == scanner->request_gen &&
+            !info.cancelled) {
+            if (count > 0) {
+                memcpy(scanner->result_rows, rows,
+                       sizeof(rows[0]) * (size_t)count);
+            }
+            scanner->result_count = count;
+            scanner->result_info = info;
+            scanner->result_gen = generation;
+            scanner->have_result = true;
+        }
+        pthread_mutex_unlock(&scanner->mu);
+    }
+    return NULL;
+}
+
+static void jw__bios_scanner_start(jw_bios_picker *picker) {
+    jw_bios_scanner *scanner = &picker->scanner;
+    if (scanner->thread_started) {
+        return;
+    }
+    pthread_mutex_init(&scanner->mu, NULL);
+    pthread_cond_init(&scanner->cv, NULL);
+    scanner->running = true;
+    scanner->have_request = false;
+    scanner->have_result = false;
+    if (pthread_create(&scanner->thread, NULL, jw__bios_scan_worker, picker) != 0) {
+        scanner->running = false;
+        pthread_cond_destroy(&scanner->cv);
+        pthread_mutex_destroy(&scanner->mu);
+        return;
+    }
+    scanner->thread_started = true;
+}
+
+static void jw__bios_scanner_stop(jw_bios_picker *picker) {
+    jw_bios_scanner *scanner = &picker->scanner;
+    if (!scanner->thread_started) {
+        return;
+    }
+    pthread_mutex_lock(&scanner->mu);
+    scanner->running = false;
+    pthread_cond_signal(&scanner->cv);
+    pthread_mutex_unlock(&scanner->mu);
+    pthread_join(scanner->thread, NULL);
+    pthread_cond_destroy(&scanner->cv);
+    pthread_mutex_destroy(&scanner->mu);
+    scanner->thread_started = false;
+}
+
+static void jw__bios_scan_request(jw_bios_picker *picker, const char *dir_abs,
+                                  const jw_bios_entry *after) {
+    jw_bios_scanner *scanner = &picker->scanner;
+    if (!scanner->thread_started) {
+        picker->failed = true;
+        picker->loading = false;
+        return;
+    }
+    pthread_mutex_lock(&scanner->mu);
+    picker->generation++;
+    scanner->request_gen = picker->generation;
+    snprintf(scanner->request_dir, sizeof(scanner->request_dir), "%s", dir_abs);
+    scanner->request_have_after = after != NULL;
+    if (after) {
+        scanner->request_after = *after;
+    }
+    scanner->have_request = true;
+    scanner->have_result = false;
+    pthread_cond_signal(&scanner->cv);
+    pthread_mutex_unlock(&scanner->mu);
+    picker->loading = true;
+    picker->failed = false;
+    picker->row_count = 0;
+    picker->has_more = false;
+}
+
+static void jw__bios_picker_build_view(jw_launcher_state *state);
+
+static void jw__bios_cache_store(jw_bios_picker *picker) {
+    jw_bios_page_cache *slot = NULL;
+    unsigned oldest = 0;
+    for (int i = 0; i < JW_BIOS_PICKER_CACHE_PAGES; i++) {
+        jw_bios_page_cache *entry = &picker->cache[i];
+        if (entry->valid && entry->page == picker->page &&
+            strcmp(entry->source_id, picker->source_id) == 0 &&
+            strcmp(entry->rel_dir, picker->rel_dir) == 0) {
+            slot = entry;
+            break;
+        }
+        if (!entry->valid) {
+            slot = entry;
+            break;
+        }
+        if (!slot || entry->used_at < oldest) {
+            slot = entry;
+            oldest = entry->used_at;
+        }
+    }
+    if (!slot) {
+        return;
+    }
+    slot->valid = true;
+    snprintf(slot->source_id, sizeof(slot->source_id), "%s", picker->source_id);
+    snprintf(slot->rel_dir, sizeof(slot->rel_dir), "%s", picker->rel_dir);
+    slot->page = picker->page;
+    slot->row_count = picker->row_count;
+    if (picker->row_count > 0) {
+        memcpy(slot->rows, picker->rows,
+               sizeof(slot->rows[0]) * (size_t)picker->row_count);
+    }
+    slot->has_more = picker->has_more;
+    slot->used_at = ++picker->cache_clock;
+}
+
+static bool jw__bios_cache_load(jw_bios_picker *picker) {
+    for (int i = 0; i < JW_BIOS_PICKER_CACHE_PAGES; i++) {
+        jw_bios_page_cache *entry = &picker->cache[i];
+        if (!entry->valid || entry->page != picker->page ||
+            strcmp(entry->source_id, picker->source_id) != 0 ||
+            strcmp(entry->rel_dir, picker->rel_dir) != 0) {
+            continue;
+        }
+        picker->row_count = entry->row_count;
+        if (entry->row_count > 0) {
+            memcpy(picker->rows, entry->rows,
+                   sizeof(picker->rows[0]) * (size_t)entry->row_count);
+        }
+        picker->has_more = entry->has_more;
+        picker->loading = false;
+        picker->failed = false;
+        entry->used_at = ++picker->cache_clock;
+        return true;
+    }
+    return false;
+}
+
+/* Record the cursor that starts the next page, so paging forward never has to
+   re-count what it has already walked past. */
+static void jw__bios_note_page_cursor(jw_bios_picker *picker) {
+    if (picker->row_count <= 0 || picker->page >= JW_BIOS_PICKER_MAX_PAGES) {
+        return;
+    }
+    picker->page_cursor[picker->page] = picker->rows[picker->row_count - 1];
+    if (picker->page + 1 > picker->page_cursor_count) {
+        picker->page_cursor_count = picker->page + 1;
+    }
+}
+
+static void jw__bios_picker_load_page(jw_launcher_state *state) {
+    jw_bios_picker *picker = state->bios_picker;
+    if (jw__bios_cache_load(picker)) {
+        jw__bios_note_page_cursor(picker);
+        jw__bios_picker_build_view(state);
+        return;
+    }
+    const jw_bios_entry *after = NULL;
+    if (picker->page > 0) {
+        if (picker->page > picker->page_cursor_count ||
+            picker->page > JW_BIOS_PICKER_MAX_PAGES) {
+            picker->page = 0;
+        } else {
+            after = &picker->page_cursor[picker->page - 1];
+        }
+    }
+    jw__bios_scan_request(picker, picker->dir_abs, after);
+    jw__bios_picker_build_view(state);
+}
+
+/* Install a finished listing. Results from a superseded request are dropped by
+   generation, so removing a card mid-scan cannot apply a stale page. */
+static void jw__bios_picker_poll(jw_launcher_state *state) {
+    jw_bios_picker *picker = state->bios_picker;
+    jw_bios_scanner *scanner = &picker->scanner;
+    if (!scanner->thread_started) {
+        return;
+    }
+    bool installed = false;
+    pthread_mutex_lock(&scanner->mu);
+    if (scanner->have_result && scanner->result_gen == picker->generation) {
+        picker->row_count = scanner->result_count;
+        if (scanner->result_count > 0) {
+            memcpy(picker->rows, scanner->result_rows,
+                   sizeof(picker->rows[0]) * (size_t)scanner->result_count);
+        }
+        picker->has_more = scanner->result_info.has_more;
+        picker->failed = scanner->result_info.failed;
+        picker->loading = false;
+        scanner->have_result = false;
+        installed = true;
+    }
+    pthread_mutex_unlock(&scanner->mu);
+    if (installed) {
+        if (!picker->failed) {
+            jw__bios_cache_store(picker);
+            jw__bios_note_page_cursor(picker);
+        }
+        jw__bios_picker_build_view(state);
+        cat_request_frame();
+    }
+}
+
+static void jw__bios_source_label(const jw_storage_source *source,
+                                  char *out, size_t out_size) {
+    if (!source) {
+        out[0] = '\0';
+        return;
+    }
+    if (strcmp(source->id, "primary") == 0) {
+        snprintf(out, out_size, "%s", T("Main SD Card"));
+    } else if (strcmp(source->id, "secondary_sd") == 0) {
+        snprintf(out, out_size, "%s", T("Second SD Card"));
+    } else {
+        snprintf(out, out_size, "%s", source->id);
+    }
+}
+
+static void jw__bios_view_add(jw_bios_picker *picker, jw_bios_row_kind kind,
+                              int index) {
+    if (picker->view_count >= JW_BIOS_PICKER_VIEW_ROWS) {
+        return;
+    }
+    picker->view[picker->view_count].kind = kind;
+    picker->view[picker->view_count].index = index;
+    picker->view_count++;
+}
+
+static void jw__bios_picker_build_view(jw_launcher_state *state) {
+    jw_bios_picker *picker = state->bios_picker;
+    int old_cursor = picker->list.cursor;
+    picker->view_count = 0;
+    if (!picker->in_folder) {
+        jw__bios_view_add(picker, JW_BIOS_ROW_DEFAULT, 0);
+        jw__bios_view_add(picker, JW_BIOS_ROW_HLE, 0);
+        for (int i = 0; i < picker->sources.count; i++) {
+            if (!picker->sources.sources[i].configured) {
+                continue;
+            }
+            jw__bios_view_add(picker, JW_BIOS_ROW_SOURCE, i);
+        }
+    } else {
+        jw__bios_view_add(picker, JW_BIOS_ROW_UP, 0);
+        for (int i = 0; i < picker->row_count; i++) {
+            jw__bios_view_add(picker,
+                              picker->rows[i].is_dir ? JW_BIOS_ROW_DIR
+                                                     : JW_BIOS_ROW_FILE,
+                              i);
+        }
+        if (picker->page > 0) {
+            jw__bios_view_add(picker, JW_BIOS_ROW_PREV_PAGE, 0);
+        }
+        if (picker->has_more) {
+            jw__bios_view_add(picker, JW_BIOS_ROW_NEXT_PAGE, 0);
+        }
+        jw__bios_view_add(picker, JW_BIOS_ROW_REFRESH, 0);
+    }
+    cat_list_state_init(&picker->list, 7);
+    cat_list_state_jump(&picker->list, old_cursor, picker->view_count);
+}
+
+static void jw__bios_picker_close(jw_launcher_state *state) {
+    jw_bios_picker *picker = state->bios_picker;
+    if (!picker) {
+        return;
+    }
+    /* Stop the worker before the memory it reads goes away. */
+    jw__bios_scanner_stop(picker);
+    state->bios_picker = NULL;
+    free(picker);
+}
+
+static void jw__bios_picker_open(jw_launcher_state *state) {
+    jw__bios_picker_close(state);
+    jw_bios_picker *picker = calloc(1, sizeof(*picker));
+    if (!picker) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 T("Not enough memory to open the BIOS picker"));
+        return;
+    }
+    state->bios_picker = picker;
+    if (jw_storage_sources_resolve(state->sdcard_root, &picker->sources) != 0) {
+        picker->sources.count = 0;
+    }
+    jw__bios_scanner_start(picker);
+    jw__bios_picker_build_view(state);
+    /* Open on the current selection so the picker says what is in force. */
+    const jw_bios_resolution *resolution = &state->action_bios_resolution;
+    if (resolution->choice.kind == JW_BIOS_CHOICE_HLE) {
+        cat_list_state_jump(&picker->list, 1, picker->view_count);
+    }
+}
+
+static void jw__bios_picker_enter_source(jw_launcher_state *state, int index) {
+    jw_bios_picker *picker = state->bios_picker;
+    if (index < 0 || index >= picker->sources.count) {
+        return;
+    }
+    const jw_storage_source *source = &picker->sources.sources[index];
+    if (!source->available || !source->bios_path[0]) {
+        snprintf(picker->message, sizeof(picker->message), "%s",
+                 T("That card is not mounted right now."));
+        return;
+    }
+    picker->message[0] = '\0';
+    picker->in_folder = true;
+    snprintf(picker->source_id, sizeof(picker->source_id), "%s", source->id);
+    jw__bios_source_label(source, picker->source_label,
+                          sizeof(picker->source_label));
+    snprintf(picker->rel_dir, sizeof(picker->rel_dir), "%s",
+             JW_BIOS_SATURN_SUBDIR);
+    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s/%s",
+             source->bios_path, JW_BIOS_SATURN_SUBDIR);
+    picker->page = 0;
+    picker->page_cursor_count = 0;
+    picker->list.cursor = 0;
+    picker->list.scroll_offset = 0;
+    jw__bios_picker_load_page(state);
+}
+
+static void jw__bios_picker_enter_dir(jw_launcher_state *state, const char *name) {
+    jw_bios_picker *picker = state->bios_picker;
+    char rel[JW_BIOS_REL_PATH_MAX];
+    char abs[PATH_MAX];
+    if (!jw_bios_rel_join(picker->rel_dir, name, rel, sizeof(rel)) ||
+        snprintf(abs, sizeof(abs), "%s/%s", picker->dir_abs, name) >= (int)sizeof(abs)) {
+        snprintf(picker->message, sizeof(picker->message), "%s",
+                 T("That folder name is too long to open."));
+        return;
+    }
+    picker->message[0] = '\0';
+    snprintf(picker->rel_dir, sizeof(picker->rel_dir), "%s", rel);
+    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s", abs);
+    picker->page = 0;
+    picker->page_cursor_count = 0;
+    picker->list.cursor = 0;
+    picker->list.scroll_offset = 0;
+    jw__bios_picker_load_page(state);
+}
+
+static void jw__bios_picker_go_up(jw_launcher_state *state) {
+    jw_bios_picker *picker = state->bios_picker;
+    picker->message[0] = '\0';
+    if (strcasecmp(picker->rel_dir, JW_BIOS_SATURN_SUBDIR) == 0) {
+        /* At a card's Saturn BIOS root: back to Default / HLE / the card list. */
+        picker->in_folder = false;
+        picker->row_count = 0;
+        picker->has_more = false;
+        picker->loading = false;
+        picker->page = 0;
+        picker->page_cursor_count = 0;
+        picker->list.cursor = 0;
+        picker->list.scroll_offset = 0;
+        jw__bios_picker_build_view(state);
+        return;
+    }
+    char parent[JW_BIOS_REL_PATH_MAX];
+    jw_bios_rel_parent(picker->rel_dir, parent, sizeof(parent));
+    const jw_storage_source *source =
+        jw_storage_sources_find_by_id(&picker->sources, picker->source_id);
+    if (!source) {
+        picker->in_folder = false;
+        jw__bios_picker_build_view(state);
+        return;
+    }
+    snprintf(picker->rel_dir, sizeof(picker->rel_dir), "%s", parent);
+    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s/%s",
+             source->bios_path, parent);
+    picker->page = 0;
+    picker->page_cursor_count = 0;
+    picker->list.cursor = 0;
+    picker->list.scroll_offset = 0;
+    jw__bios_picker_load_page(state);
+}
+
+/* Persist at the scope the actions menu was opened at. A NULL choice is
+   Default: the override is removed, not replaced with a value. */
+static void jw__bios_apply_choice(const char *db_path, jw_launcher_state *state,
+                                  const jw_bios_choice *choice) {
+    int rc;
+    char value[JW_BIOS_VALUE_MAX];
+    if (choice) {
+        if (!jw_bios_choice_format(choice, value, sizeof(value))) {
+            snprintf(state->status, sizeof(state->status), "%s",
+                     T("That BIOS file cannot be saved as a selection."));
+            return;
+        }
+        rc = state->action_scope == JW_ACTION_GAME
+            ? jw_db_set_game_setting(db_path, state->action_game.id,
+                                     JW_CONTENT_SETTING_SATURN_BIOS, value)
+            : jw_db_set_system_setting(db_path, state->action_system,
+                                       JW_CONTENT_SETTING_SATURN_BIOS, value);
+    } else {
+        rc = state->action_scope == JW_ACTION_GAME
+            ? jw_db_delete_game_setting(db_path, state->action_game.id,
+                                        JW_CONTENT_SETTING_SATURN_BIOS)
+            : jw_db_delete_system_setting(db_path, state->action_system,
+                                          JW_CONTENT_SETTING_SATURN_BIOS);
+    }
+    if (rc != 0) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 T("Saturn BIOS update failed"));
+        return;
+    }
+    jw__bios_picker_close(state);
+    jw__refresh_after_action_write(db_path, state);
+    char shown[192];
+    jw__bios_row_value(state, shown, sizeof(shown));
+    snprintf(state->status, sizeof(state->status), "%s: %.160s",
+             T("Saturn BIOS"), shown);
+}
+
+static void jw__bios_picker_select_file(const char *db_path,
+                                        jw_launcher_state *state,
+                                        const char *name) {
+    jw_bios_picker *picker = state->bios_picker;
+    jw_bios_choice choice;
+    memset(&choice, 0, sizeof(choice));
+    choice.kind = JW_BIOS_CHOICE_FILE;
+    snprintf(choice.source_id, sizeof(choice.source_id), "%s", picker->source_id);
+    if (!jw_bios_rel_join(picker->rel_dir, name, choice.rel_path,
+                          sizeof(choice.rel_path))) {
+        snprintf(picker->message, sizeof(picker->message), "%s",
+                 T("That file name is too long to select."));
+        return;
+    }
+    /* Re-check now, against the card as it is at this moment: a cached row is
+       never authority to save a path that has since moved or changed. */
+    jw_bios_file_status status =
+        jw_bios_resolve_file(&picker->sources, &choice, NULL, 0);
+    if (status != JW_BIOS_FILE_OK) {
+        snprintf(picker->message, sizeof(picker->message), "%s",
+                 T(jw_bios_file_status_text(status)));
+        jw__bios_picker_load_page(state);
+        return;
+    }
+    jw__bios_apply_choice(db_path, state, &choice);
+}
+
+static void jw__handle_bios_picker_input(const char *db_path,
+                                         jw_launcher_state *state,
+                                         cat_button button) {
+    jw_bios_picker *picker = state->bios_picker;
+    if (picker->list.cursor < 0 || picker->list.cursor >= picker->view_count) {
+        picker->list.cursor = 0;
+    }
+    switch (button) {
+        case CAT_BTN_UP:
+            cat_list_state_move(&picker->list, -1, picker->view_count);
+            break;
+        case CAT_BTN_DOWN:
+            cat_list_state_move(&picker->list, +1, picker->view_count);
+            break;
+        case CAT_BTN_A: {
+            if (picker->view_count == 0) {
+                break;
+            }
+            jw_bios_view_row row = picker->view[picker->list.cursor];
+            switch (row.kind) {
+                case JW_BIOS_ROW_DEFAULT:
+                    jw__bios_apply_choice(db_path, state, NULL);
+                    break;
+                case JW_BIOS_ROW_HLE: {
+                    jw_bios_choice choice;
+                    memset(&choice, 0, sizeof(choice));
+                    choice.kind = JW_BIOS_CHOICE_HLE;
+                    jw__bios_apply_choice(db_path, state, &choice);
+                    break;
+                }
+                case JW_BIOS_ROW_SOURCE:
+                    jw__bios_picker_enter_source(state, row.index);
+                    break;
+                case JW_BIOS_ROW_UP:
+                    jw__bios_picker_go_up(state);
+                    break;
+                case JW_BIOS_ROW_DIR:
+                    if (row.index >= 0 && row.index < picker->row_count) {
+                        jw__bios_picker_enter_dir(state,
+                                                  picker->rows[row.index].name);
+                    }
+                    break;
+                case JW_BIOS_ROW_FILE:
+                    if (row.index >= 0 && row.index < picker->row_count) {
+                        jw__bios_picker_select_file(db_path, state,
+                                                    picker->rows[row.index].name);
+                    }
+                    break;
+                case JW_BIOS_ROW_PREV_PAGE:
+                    if (picker->page > 0) {
+                        picker->page--;
+                        picker->list.cursor = 0;
+                        picker->list.scroll_offset = 0;
+                        jw__bios_picker_load_page(state);
+                    }
+                    break;
+                case JW_BIOS_ROW_NEXT_PAGE:
+                    if (picker->has_more &&
+                        picker->page + 1 < JW_BIOS_PICKER_MAX_PAGES) {
+                        picker->page++;
+                        picker->list.cursor = 0;
+                        picker->list.scroll_offset = 0;
+                        jw__bios_picker_load_page(state);
+                    }
+                    break;
+                case JW_BIOS_ROW_REFRESH:
+                    memset(picker->cache, 0, sizeof(picker->cache));
+                    if (jw_storage_sources_resolve(state->sdcard_root,
+                                                   &picker->sources) != 0) {
+                        picker->sources.count = 0;
+                    }
+                    picker->message[0] = '\0';
+                    jw__bios_picker_load_page(state);
+                    break;
+            }
+            break;
+        }
+        case CAT_BTN_B:
+            /* B backs out one level and finally closes without writing. */
+            if (picker->in_folder) {
+                jw__bios_picker_go_up(state);
+            } else {
+                jw__bios_picker_close(state);
+            }
+            break;
+        case CAT_BTN_X:
+            jw__bios_picker_close(state);
+            break;
+        default:
+            break;
+    }
+}
+
+/* ── Picker rendering ─────────────────────────────────────────────────── */
+
+typedef struct { const jw_launcher_state *state; } jw__bios_picker_ctx;
+
+static void jw__bios_view_row_strings(const jw_launcher_state *state,
+                                      const jw_bios_view_row *row,
+                                      char *title, size_t title_size,
+                                      char *value, size_t value_size) {
+    const jw_bios_picker *picker = state->bios_picker;
+    const jw_bios_resolution *resolution = &state->action_bios_resolution;
+    title[0] = '\0';
+    value[0] = '\0';
+    switch (row->kind) {
+        case JW_BIOS_ROW_DEFAULT:
+            snprintf(title, title_size, "%s", T("Default"));
+            snprintf(value, value_size, "%s",
+                     state->action_scope == JW_ACTION_GAME
+                         ? T("Use the system setting")
+                         : T("HLE, no BIOS file"));
+            break;
+        case JW_BIOS_ROW_HLE:
+            snprintf(title, title_size, "%s", T("HLE"));
+            snprintf(value, value_size, "%s", T("No BIOS file"));
+            break;
+        case JW_BIOS_ROW_SOURCE: {
+            if (row->index < 0 || row->index >= picker->sources.count) {
+                break;
+            }
+            const jw_storage_source *source = &picker->sources.sources[row->index];
+            char label[64];
+            jw__bios_source_label(source, label, sizeof(label));
+            snprintf(title, title_size, "%s", label);
+            snprintf(value, value_size, "%s",
+                     source->available ? T("Browse BIOS folder")
+                                       : T("Not mounted"));
+            break;
+        }
+        case JW_BIOS_ROW_UP:
+            snprintf(title, title_size, "%s", T("Up one level"));
+            break;
+        case JW_BIOS_ROW_DIR:
+            if (row->index >= 0 && row->index < picker->row_count) {
+                snprintf(title, title_size, "%s/", picker->rows[row->index].name);
+                snprintf(value, value_size, "%s", T("Folder"));
+            }
+            break;
+        case JW_BIOS_ROW_FILE: {
+            if (row->index < 0 || row->index >= picker->row_count) {
+                break;
+            }
+            const char *name = picker->rows[row->index].name;
+            /* The same filename on two cards, or in two folders, is two
+               different selections: compare the whole logical identity. */
+            char rel[JW_BIOS_REL_PATH_MAX];
+            bool current =
+                resolution->choice.kind == JW_BIOS_CHOICE_FILE &&
+                strcmp(resolution->choice.source_id, picker->source_id) == 0 &&
+                jw_bios_rel_join(picker->rel_dir, name, rel, sizeof(rel)) &&
+                strcmp(resolution->choice.rel_path, rel) == 0;
+            snprintf(title, title_size, "%s%s", current ? "* " : "", name);
+            snprintf(value, value_size, "%s", T("512 KiB candidate"));
+            break;
+        }
+        case JW_BIOS_ROW_PREV_PAGE:
+            snprintf(title, title_size, "%s", T("Previous page"));
+            break;
+        case JW_BIOS_ROW_NEXT_PAGE:
+            snprintf(title, title_size, "%s", T("Next page"));
+            break;
+        case JW_BIOS_ROW_REFRESH:
+            snprintf(title, title_size, "%s", T("Refresh this folder"));
+            break;
+    }
+}
+
+static void jw__draw_bios_picker_item(int idx, int ix, int iy, int iw, int ih,
+                                      bool selected, void *user) {
+    jw__bios_picker_ctx *ctx = (jw__bios_picker_ctx *)user;
+    const jw_launcher_state *state = ctx ? ctx->state : NULL;
+    if (!state || idx < 0 || idx >= state->bios_picker->view_count) {
+        return;
+    }
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+
+    int pill_h = TTF_FontHeight(body) + CAT_S(8);
+    int pill_y = iy + (ih - pill_h) / 2;
+    if (selected) {
+        cat_draw_pill(ix, pill_y, iw - CAT_S(4), pill_h, theme->highlight);
+    }
+
+    char title[320];
+    char value[160];
+    jw__bios_view_row_strings(state, &state->bios_picker->view[idx],
+                              title, sizeof(title), value, sizeof(value));
+
+    ap_color title_c = selected ? theme->highlighted_text : theme->text;
+    ap_color value_c = selected ? theme->highlighted_text : theme->hint;
+    int text_y = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
+    int value_w = value[0] ? iw * 38 / 100 : 0;
+    int title_w = iw - value_w - CAT_S(28);
+
+    cat_draw_text_ellipsized(body, title, ix + CAT_S(10), text_y, title_c, title_w);
+    if (value[0]) {
+        int value_y = pill_y + (pill_h - TTF_FontHeight(small)) / 2;
+        cat_draw_text_ellipsized(small, value, ix + iw - value_w - CAT_S(12),
+                                 value_y, value_c, value_w);
+    }
+}
+
+/* Sub-header: where you are, plus whatever the last action has to say. Long
+   filenames and translated strings ellipsize rather than overrun the panel. */
+static void jw__bios_picker_subtitle(const jw_launcher_state *state,
+                                     char *out, size_t out_size) {
+    const jw_bios_picker *picker = state->bios_picker;
+    if (picker->message[0]) {
+        snprintf(out, out_size, "%s", picker->message);
+        return;
+    }
+    if (picker->loading) {
+        snprintf(out, out_size, "%s", T("Reading folder..."));
+        return;
+    }
+    if (picker->failed) {
+        snprintf(out, out_size, "%s", T("That folder could not be read."));
+        return;
+    }
+    if (!picker->in_folder) {
+        /* Say what is in force before anything is changed, and be honest that
+           the size filter recognizes a shape, not Saturn firmware. */
+        char current[192];
+        jw__bios_row_value(state, current, sizeof(current));
+        snprintf(out, out_size, "%s: %s  |  %s", T("Now"), current,
+                 T("Size is not proof that a file is a Saturn BIOS."));
+        return;
+    }
+    if (picker->rel_dir[0]) {
+        snprintf(out, out_size, "%s / BIOS/%s", picker->source_label,
+                 picker->rel_dir);
+    } else {
+        snprintf(out, out_size, "%s / BIOS", picker->source_label);
+    }
+}
+
+static void jw__render_bios_picker(const jw_launcher_state *state) {
+    jw__bios_picker_poll((jw_launcher_state *)state);
+    const jw_bios_picker *picker = state->bios_picker;
+    bool coverflow = cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW;
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *large = cat_get_font(CAT_FONT_EXTRA_LARGE);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
+
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    int fh = jw__footer_height(state);
+    int margin = CAT_S(12);
+
+    /* Cover Flow keeps its own chrome: the dimmed stage behind, the platinum
+       selection in front — the same treatment the CF actions menu and keyboard
+       already use, so the picker does not arrive as a foreign panel. */
+    cat_draw_color saved_highlight = theme->highlight;
+    cat_draw_color saved_highlighted_text = theme->highlighted_text;
+    cat_draw_color saved_text = theme->text;
+    cat_draw_color saved_hint = theme->hint;
+    int title_y;
+    bool tabbed = !coverflow &&
+                  cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_TABBED;
+    if (coverflow) {
+        SDL_Renderer *r = cat_get_renderer();
+        SDL_SetRenderDrawColor(r, 6, 7, 9, 255);
+        SDL_RenderClear(r);
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 172);
+        SDL_RenderFillRect(r, NULL);
+        cat_draw_color cf_seltext = { 12, 14, 18, 255 };
+        cat_draw_color cf_text    = { 236, 238, 240, 255 };
+        cat_draw_color cf_hint    = { 150, 154, 160, 255 };
+        theme->highlight        = kCfSelect;
+        theme->highlighted_text = cf_seltext;
+        theme->text             = cf_text;
+        theme->hint             = cf_hint;
+        title_y = CAT_S(12);
+    } else {
+        cat_clear_screen();
+        if (tabbed) {
+            title_y = jw__draw_tab_header(state) + CAT_S(2);
+        } else {
+            jw__draw_status_bar(state);
+            title_y = CAT_S(6);
+        }
+    }
+
+    cat_draw_text_ellipsized(large, T("Saturn BIOS"), margin, title_y,
+                             theme->text, sw - margin * 2);
+
+    char subtitle[256];
+    jw__bios_picker_subtitle(state, subtitle, sizeof(subtitle));
+    int sub_y = title_y + TTF_FontHeight(large) + CAT_S(2);
+    cat_draw_text_ellipsized(small, subtitle, margin, sub_y, theme->hint,
+                             sw - margin * 2);
+
+    int header_h = sub_y + TTF_FontHeight(small) + CAT_S(6);
+    int hint_pad = (fh > 0) ? margin : 0;
+    cat_box page = { 0, header_h, sw, sh - header_h - fh - hint_pad,
+                     margin, margin, 0, margin };
+    int item_h = TTF_FontHeight(body) + CAT_S(12);
+    int vis = 0;
+    SDL_Rect lr = cat_box_fit_rows(&page, item_h, picker->view_count,
+                                   &vis, &item_h);
+    ((cat_list_state *)&picker->list)->visible_rows = vis;
+    jw__bios_picker_ctx ctx = { state };
+    if (picker->view_count > 0) {
+        cat_draw_list_pane(lr.x, lr.y, lr.w, lr.h, picker->view_count,
+                           &picker->list, item_h, jw__draw_bios_picker_item,
+                           &ctx);
+    }
+
+    cat_footer_item footer[] = {
+        { CAT_BTN_B, "Back",   true, JW_HINT("B") },
+        { CAT_BTN_A, "Select", true, JW_HINT("A") },
+    };
+    jw__draw_footer(state, footer, 2);
+
+    if (coverflow) {
+        theme->highlight        = saved_highlight;
+        theme->highlighted_text = saved_highlighted_text;
+        theme->text             = saved_text;
+        theme->hint             = saved_hint;
+    }
+    /* Keep frames coming only while a listing is actually in flight. */
+    if (picker->loading) {
+        cat_request_frame();
+    }
+    jw__present();
+}
+
 static int jw__action_find_core(const jw_launcher_state *state, const char *core_id) {
     if (!state || !core_id || !core_id[0]) {
         return -1;
@@ -5842,6 +6816,11 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
         if (state->action_core_count > 1 || state->action_core_system_override[0]) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
         }
+        /* Shown whenever the Saturn standalone is the effective emulator, even
+           when Core itself is hidden for having only one eligible choice. */
+        if (state->action_bios_supported) {
+            jw__action_add_row(state, JW_ACTION_ROW_BIOS);
+        }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
         /* Per-system scraping moved to Settings > Game Art > Scrape Missing
            Artwork; the system X menu no longer offers it. */
@@ -5854,6 +6833,9 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_find_core(
                 state, state->action_core_system_override) >= 0) {
             jw__action_add_row(state, JW_ACTION_ROW_CORE);
+        }
+        if (state->action_bios_supported) {
+            jw__action_add_row(state, JW_ACTION_ROW_BIOS);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
         jw__action_add_row(state, state->action_scrape_pending
@@ -5940,6 +6922,8 @@ static void jw__action_refresh_overrides(const char *db_path,
     state->action_perf_game_override[0] = '\0';
     state->action_perf_system_override[0] = '\0';
     state->action_system_display_override[0] = '\0';
+    state->action_bios_game_override[0] = '\0';
+    state->action_bios_system_override[0] = '\0';
 
     const char *system = state->action_scope == JW_ACTION_GAME
         ? state->action_game.system
@@ -5954,6 +6938,10 @@ static void jw__action_refresh_overrides(const char *db_path,
                                      JW_CONTENT_SETTING_PERFORMANCE_PROFILE,
                                      state->action_perf_game_override,
                                      sizeof(state->action_perf_game_override));
+        (void)jw_db_get_game_setting(db_path, state->action_game.id,
+                                     JW_CONTENT_SETTING_SATURN_BIOS,
+                                     state->action_bios_game_override,
+                                     sizeof(state->action_bios_game_override));
     }
     if (system && system[0]) {
         (void)jw_db_get_system_setting(db_path, system,
@@ -5968,7 +6956,46 @@ static void jw__action_refresh_overrides(const char *db_path,
                                        JW_CONTENT_SETTING_DISPLAY_NAME,
                                        state->action_system_display_override,
                                        sizeof(state->action_system_display_override));
+        (void)jw_db_get_system_setting(db_path, system,
+                                       JW_CONTENT_SETTING_SATURN_BIOS,
+                                       state->action_bios_system_override,
+                                       sizeof(state->action_bios_system_override));
     }
+}
+
+/* Resolve the Saturn BIOS row from the values just read. This validates one
+   file -- it never scans a BIOS tree, so opening the actions menu or changing
+   Core costs no directory work. A choice saved while the Saturn standalone was
+   selected stays in the database under another core; it is simply not applied
+   or validated, and comes back when the standalone is selected again. */
+static void jw__action_refresh_bios(jw_launcher_state *state) {
+    if (!state) {
+        return;
+    }
+    state->action_bios_supported = false;
+    state->action_bios_status = JW_BIOS_FILE_NO_CHOICE;
+    memset(&state->action_bios_resolution, 0, sizeof(state->action_bios_resolution));
+
+    const char *effective = state->action_core_effective;
+    if (!effective[0] || !jw_standalone_policy_is_yabasanshiro(effective, NULL)) {
+        return;
+    }
+    state->action_bios_supported = true;
+    jw_bios_resolve(state->action_scope == JW_ACTION_GAME
+                        ? state->action_bios_game_override : NULL,
+                    state->action_bios_system_override,
+                    &state->action_bios_resolution);
+    if (state->action_bios_resolution.choice.kind != JW_BIOS_CHOICE_FILE) {
+        return;
+    }
+    jw_storage_source_list sources;
+    if (jw_storage_sources_resolve(state->sdcard_root, &sources) != 0) {
+        state->action_bios_status = JW_BIOS_FILE_SOURCE_UNAVAILABLE;
+        return;
+    }
+    state->action_bios_status =
+        jw_bios_resolve_file(&sources, &state->action_bios_resolution.choice,
+                             NULL, 0);
 }
 
 static void jw__action_refresh_scrape_pending(jw_launcher_state *state) {
@@ -5992,6 +7019,7 @@ static void jw__action_refresh_scrape_pending(jw_launcher_state *state) {
 static void jw__action_refresh(const char *db_path, jw_launcher_state *state) {
     jw__action_refresh_overrides(db_path, state);
     jw__action_refresh_core_choices(db_path, state);
+    jw__action_refresh_bios(state);
     jw__action_refresh_scrape_pending(state);
     jw__action_refresh_rows(state);
 }
@@ -6753,6 +7781,22 @@ static int jw__launch_app_at(const char *socket_path, jw_launcher_state *state,
     return jw__launch_app_request(socket_path, app->name, app->pak_dir, state, running);
 }
 
+/* The daemon refuses a launch whose selected Saturn BIOS is gone, unreadable or
+   the wrong size, and answers with the stable English text from
+   internal/launcher/bios.c. Translate it here and say where to fix it: nothing
+   was changed, and nothing silently fell back to HLE. */
+static void jw__bios_localize_launch_status(jw_launcher_state *state) {
+    for (int status = 0; status <= (int)JW_BIOS_FILE_WRONG_SIZE; status++) {
+        const char *text = jw_bios_file_status_text((jw_bios_file_status)status);
+        if (strcmp(state->status, text) != 0) {
+            continue;
+        }
+        snprintf(state->status, sizeof(state->status), "%s %s", T(text),
+                 T("Pick another Saturn BIOS from the options menu."));
+        return;
+    }
+}
+
 static int jw__launch_game_entry_with_mode(const char *socket_path,
                                            jw_launcher_state *state,
                                            const jw_game_entry *game,
@@ -6773,6 +7817,7 @@ static int jw__launch_game_entry_with_mode(const char *socket_path,
         : jw_ipc_launch_game(socket_path, game->system, game->rom_path,
                              state->status, sizeof(state->status));
     if (rc != 0) {
+        jw__bios_localize_launch_status(state);
         /* The launcher stays up on a refusal, so this is the one outcome worth
            reporting by touch. */
         jw__haptic(state, "blocked");
@@ -6829,6 +7874,7 @@ static int jw__launch_selected_search_result(const char *socket_path,
 
     if (jw_ipc_launch_game(socket_path, result->system, result->rom_path,
                            state->status, sizeof(state->status)) != 0) {
+        jw__bios_localize_launch_status(state);
         jw__haptic(state, "blocked");   /* refused: the launcher is still here */
         return -1;
     }
@@ -7060,6 +8106,8 @@ static void jw__reset_action_overrides(const char *db_path,
                                         JW_CONTENT_SETTING_PERFORMANCE_PROFILE);
         rc |= jw_db_delete_game_setting(db_path, state->action_game.id,
                                         JW_CONTENT_SETTING_DISPLAY_NAME);
+        rc |= jw_db_delete_game_setting(db_path, state->action_game.id,
+                                        JW_CONTENT_SETTING_SATURN_BIOS);
     } else if (state->action_scope == JW_ACTION_SYSTEM) {
         rc |= jw_db_delete_system_setting(db_path, state->action_system,
                                           JW_CONTENT_SETTING_CORE_ID);
@@ -7067,6 +8115,8 @@ static void jw__reset_action_overrides(const char *db_path,
                                           JW_CONTENT_SETTING_PERFORMANCE_PROFILE);
         rc |= jw_db_delete_system_setting(db_path, state->action_system,
                                           JW_CONTENT_SETTING_DISPLAY_NAME);
+        rc |= jw_db_delete_system_setting(db_path, state->action_system,
+                                          JW_CONTENT_SETTING_SATURN_BIOS);
     }
     if (rc == 0) {
         snprintf(state->status, sizeof(state->status), "%s", "Overrides reset");
@@ -7177,6 +8227,11 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
         case JW_ACTION_ROW_CORE:
             jw__cycle_action_core(db_path, state, +1);
             break;
+        case JW_ACTION_ROW_BIOS:
+            /* A list, not a cycler: arbitrary filenames do not fit Core's
+               left/right pair. */
+            jw__bios_picker_open(state);
+            break;
         case JW_ACTION_ROW_PERFORMANCE:
             jw__cycle_action_performance(db_path, state, +1);
             break;
@@ -7197,6 +8252,10 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
 static void jw__handle_actions_input(const char *socket_path, const char *db_path,
                                      jw_launcher_state *state,
                                      cat_button button, bool *running) {
+    if (state->bios_picker) {
+        jw__handle_bios_picker_input(db_path, state, button);
+        return;
+    }
     switch (button) {
         case CAT_BTN_UP:
             cat_list_state_move(&state->action_list, -1, state->action_row_count);
@@ -7210,7 +8269,11 @@ static void jw__handle_actions_input(const char *socket_path, const char *db_pat
                 state->action_list.cursor < state->action_row_count) {
                 jw_action_row_kind row = state->action_rows[state->action_list.cursor];
                 int dir = button == CAT_BTN_LEFT ? -1 : +1;
-                if (row == JW_ACTION_ROW_CORE) {
+                if (row == JW_ACTION_ROW_BIOS) {
+                    if (button == CAT_BTN_RIGHT) {
+                        jw__bios_picker_open(state);
+                    }
+                } else if (row == JW_ACTION_ROW_CORE) {
                     jw__cycle_action_core(db_path, state, dir);
                 } else if (row == JW_ACTION_ROW_PERFORMANCE) {
                     jw__cycle_action_performance(db_path, state, dir);
@@ -7222,6 +8285,7 @@ static void jw__handle_actions_input(const char *socket_path, const char *db_pat
             break;
         case CAT_BTN_X:   /* X opened the menu; let it toggle closed too */
         case CAT_BTN_B:
+            jw__bios_picker_close(state);
             state->actions_open = false;
             state->action_scope = JW_ACTION_NONE;
             state->status[0] = '\0';

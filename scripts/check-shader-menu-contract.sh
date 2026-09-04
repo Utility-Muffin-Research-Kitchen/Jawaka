@@ -78,10 +78,14 @@ require "$picker" "int cursor = view.list.cursor;" \
     "activation no longer snapshots the logical cursor"
 reject "$picker" "int cursor = view.applied_cursor;" \
     "activation uses the previously applied row instead of the logical cursor"
+reject "$picker" "jw_shader_preview_coalescer_" \
+    "browsing still schedules an invisible shader preview"
 require_order "$picker" \
-    "if (view.list.cursor == jw__shader_advanced_index(&view))" \
-    "jw_shader_preview_coalescer_schedule(" \
-    "Advanced is not excluded before preview scheduling"
+    "else if (ev.button == CAT_BTN_A || ev.button == CAT_BTN_START)" \
+    "jw__shader_apply_selection(" \
+    "shader application no longer follows explicit activation"
+[ "$(grep -cF 'jw__shader_apply_selection(' <<<"$picker")" -eq 1 ] || \
+    fail "shader application must have only the explicit activation call site"
 require "$picker" "jw__shader_save_choice(socket_path, state, &view," \
     "non-Off shader activation no longer enters the scope chooser"
 reject "$picker" "cursor == jw__shader_custom_index" \

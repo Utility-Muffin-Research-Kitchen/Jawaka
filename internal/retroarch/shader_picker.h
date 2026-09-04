@@ -5,7 +5,6 @@
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 
 typedef enum {
     JW_SHADER_PICKER_GET = 0,
@@ -47,25 +46,11 @@ typedef struct {
     char current_path[1024];  /* empty means Off */
 } jw_shader_picker_state;
 
-typedef struct {
-    uint32_t due_ms;
-    int cursor;
-    bool pending;
-} jw_shader_preview_coalescer;
-
-void jw_shader_preview_coalescer_init(jw_shader_preview_coalescer *coalescer);
-void jw_shader_preview_coalescer_schedule(
-    jw_shader_preview_coalescer *coalescer, int cursor,
-    uint32_t now_ms, uint32_t settle_ms);
-void jw_shader_preview_coalescer_cancel(jw_shader_preview_coalescer *coalescer);
-bool jw_shader_preview_coalescer_take(
-    jw_shader_preview_coalescer *coalescer, uint32_t now_ms,
-    bool focus_anim_active, int *cursor);
-
 void jw_shader_picker_init(jw_shader_picker_state *state);
 jw_shader_picker_result jw_shader_picker_probe(
     jw_shader_picker_state *state, const jw_shader_picker_transport *transport);
-jw_shader_picker_result jw_shader_picker_preview(
+/* Apply only on explicit selection; list navigation does not change RetroArch. */
+jw_shader_picker_result jw_shader_picker_apply(
     jw_shader_picker_state *state, const jw_shader_picker_transport *transport,
     const char *path);
 jw_shader_picker_result jw_shader_picker_cancel(

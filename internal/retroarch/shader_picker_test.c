@@ -63,7 +63,7 @@ static void check_fake(fake *f, const char *name) {
     check(f->next == f->count, "all expected operations consumed");
 }
 
-static void test_preview_duplicate_and_cancel(void) {
+static void test_apply_duplicate_and_cancel(void) {
     const step steps[] = {
         { JW_SHADER_PICKER_GET, JW_RA_SHADER_SCOPE_GAME, NULL, 0,
           JW_RA_OK, JW_RA_SHADER_OK, "/old.glslp" },
@@ -78,47 +78,33 @@ static void test_preview_duplicate_and_cancel(void) {
     jw_shader_picker_init(&state);
     check(jw_shader_picker_probe(&state, &t) == JW_SHADER_PICKER_OK,
           "probe succeeds");
-    check(jw_shader_picker_preview(&state, &t, "/new.glslp") == JW_SHADER_PICKER_OK,
-          "preview succeeds");
-    check(jw_shader_picker_preview(&state, &t, "/new.glslp") == JW_SHADER_PICKER_OK,
-          "duplicate preview is suppressed");
+    check(jw_shader_picker_apply(&state, &t, "/new.glslp") == JW_SHADER_PICKER_OK,
+          "explicit selection applies");
+    check(jw_shader_picker_apply(&state, &t, "/new.glslp") == JW_SHADER_PICKER_OK,
+          "duplicate application is suppressed");
     check(jw_shader_picker_cancel(&state, &t) == JW_SHADER_PICKER_OK,
           "cancel restores original");
     check(strcmp(state.current_path, "/old.glslp") == 0,
           "cancel tracks restored path");
-    check_fake(&f, "preview/cancel operation sequence");
+    check_fake(&f, "apply/cancel operation sequence");
 }
 
-static void test_preview_coalescer(void) {
-    jw_shader_preview_coalescer coalescer;
-    int cursor = -1;
-    jw_shader_preview_coalescer_init(&coalescer);
-    check(!jw_shader_preview_coalescer_take(&coalescer, 100, false, &cursor),
-          "idle coalescer does nothing");
-    jw_shader_preview_coalescer_schedule(&coalescer, 1, 100, 80);
-    check(!jw_shader_preview_coalescer_take(&coalescer, 179, false, &cursor),
-          "preview waits for focus to settle");
-    jw_shader_preview_coalescer_schedule(&coalescer, 2, 150, 80);
-    check(!jw_shader_preview_coalescer_take(&coalescer, 229, false, &cursor),
-          "new movement restarts the settle window");
-    check(!jw_shader_preview_coalescer_take(&coalescer, 230, true, &cursor),
-          "due preview waits for visual focus to settle");
-    check(jw_shader_preview_coalescer_take(&coalescer, 230, false, &cursor) &&
-              cursor == 2,
-          "only the final cursor becomes due");
-    check(!jw_shader_preview_coalescer_take(&coalescer, 231, false, &cursor),
-          "a due preview is consumed once");
-
-    jw_shader_preview_coalescer_schedule(&coalescer, 3, UINT32_MAX - 20, 80);
-    check(!jw_shader_preview_coalescer_take(&coalescer, 40, false, &cursor),
-          "settle deadline is wrap-safe before expiry");
-    check(jw_shader_preview_coalescer_take(&coalescer, 59, false, &cursor) &&
-              cursor == 3,
-          "settle deadline is wrap-safe at expiry");
-    jw_shader_preview_coalescer_schedule(&coalescer, 4, 100, 80);
-    jw_shader_preview_coalescer_cancel(&coalescer);
-    check(!jw_shader_preview_coalescer_take(&coalescer, 200, false, &cursor),
-          "cancel drops pending work");
+static void test_cancel_without_apply(void) {
+    const step steps[] = {
+        { JW_SHADER_PICKER_GET, JW_RA_SHADER_SCOPE_GAME, NULL, 0,
+          JW_RA_OK, JW_RA_SHADER_OK, "/old.glslp" },
+    };
+    fake f = { steps, 1, 0, 0 };
+    jw_shader_picker_transport t = transport(&f);
+    jw_shader_picker_state state;
+    jw_shader_picker_init(&state);
+    check(jw_shader_picker_probe(&state, &t) == JW_SHADER_PICKER_OK,
+          "probe succeeds before browsing");
+    check(jw_shader_picker_cancel(&state, &t) == JW_SHADER_PICKER_OK,
+          "Back without a selection leaves the shader alone");
+    check(strcmp(state.current_path, "/old.glslp") == 0,
+          "browsing preserves the current shader");
+    check_fake(&f, "Back without applying sends no mutation");
 }
 
 static void test_apply_failure_and_restore_failure(void) {
@@ -135,7 +121,7 @@ static void test_apply_failure_and_restore_failure(void) {
     jw_shader_picker_state state;
     jw_shader_picker_init(&state);
     jw_shader_picker_probe(&state, &t);
-    check(jw_shader_picker_preview(&state, &t, "/bad.glslp") ==
+    check(jw_shader_picker_apply(&state, &t, "/bad.glslp") ==
               JW_SHADER_PICKER_APPLY_FAILED,
           "apply failure is reported after restoration");
     check(strcmp(state.current_path, "/old.glslp") == 0,
@@ -154,7 +140,7 @@ static void test_apply_failure_and_restore_failure(void) {
     t = transport(&f);
     jw_shader_picker_init(&state);
     jw_shader_picker_probe(&state, &t);
-    check(jw_shader_picker_preview(&state, &t, "/bad.glslp") ==
+    check(jw_shader_picker_apply(&state, &t, "/bad.glslp") ==
               JW_SHADER_PICKER_RESTORE_FAILED,
           "restore failure is distinct");
     check(!state.current_known, "restore failure marks current state unknown");
@@ -175,7 +161,7 @@ static void test_timeout_reconciliation(void) {
     jw_shader_picker_state state;
     jw_shader_picker_init(&state);
     jw_shader_picker_probe(&state, &t);
-    check(jw_shader_picker_preview(&state, &t, "/new.glslp") == JW_SHADER_PICKER_OK,
+    check(jw_shader_picker_apply(&state, &t, "/new.glslp") == JW_SHADER_PICKER_OK,
           "late success is accepted after state query");
     check_fake(&f, "timeout success reconciliation sequence");
 
@@ -193,7 +179,7 @@ static void test_timeout_reconciliation(void) {
     t = transport(&f);
     jw_shader_picker_init(&state);
     jw_shader_picker_probe(&state, &t);
-    check(jw_shader_picker_preview(&state, &t, "/new.glslp") ==
+    check(jw_shader_picker_apply(&state, &t, "/new.glslp") ==
               JW_SHADER_PICKER_APPLY_FAILED,
           "unexpected timeout state is restored but never called success");
     check(strcmp(state.current_path, "/old.glslp") == 0,
@@ -212,7 +198,7 @@ static void test_timeout_reconciliation(void) {
     t = transport(&f);
     jw_shader_picker_init(&state);
     jw_shader_picker_probe(&state, &t);
-    check(jw_shader_picker_preview(&state, &t, "/new.glslp") ==
+    check(jw_shader_picker_apply(&state, &t, "/new.glslp") ==
               JW_SHADER_PICKER_UNKNOWN_STATE,
           "double timeout reports unknown state");
     check(!state.current_known, "double timeout never claims a state");
@@ -238,7 +224,7 @@ static void test_save_remove_off_and_reload(void) {
     jw_shader_picker_state state;
     jw_shader_picker_init(&state);
     jw_shader_picker_probe(&state, &t);
-    check(jw_shader_picker_preview(&state, &t, NULL) == JW_SHADER_PICKER_OK,
+    check(jw_shader_picker_apply(&state, &t, NULL) == JW_SHADER_PICKER_OK,
           "Off clears only the live session");
     check(jw_shader_picker_save(&t, JW_RA_SHADER_SCOPE_PARENT) ==
               JW_SHADER_PICKER_SAVE_FAILED,
@@ -304,8 +290,8 @@ static void test_remove_verification(void) {
 }
 
 int main(void) {
-    test_preview_coalescer();
-    test_preview_duplicate_and_cancel();
+    test_cancel_without_apply();
+    test_apply_duplicate_and_cancel();
     test_apply_failure_and_restore_failure();
     test_timeout_reconciliation();
     test_save_remove_off_and_reload();
