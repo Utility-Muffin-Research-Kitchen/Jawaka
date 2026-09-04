@@ -13,6 +13,7 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/coverflow.h"
+#include "internal/launcher/grid.h"
 #include "internal/launcher/focus_screen.h"
 #include "internal/launcher/game_switcher.h"
 #include "internal/launcher/standalone_policy.h"
@@ -217,6 +218,7 @@ typedef struct {
     /* Cover Flow runtime state (slide tween + both carousels + channel cube),
        bundled in internal/launcher/coverflow.{c,h}. */
     jw_coverflow       cf;
+    jw_grid            grid;
     /* Tab-switch slide (Glide setting): two content snapshots cross-slide. */
     bool               tab_anim_active;
     int                tab_anim_dir;        /* +1 = next (from right), -1 = prev */
@@ -695,8 +697,10 @@ static int jw__flat_cursor_for_system(const jw_launcher_state *state,
 }
 
 static void jw__draw_status_bar(const jw_launcher_state *state) {
-    /* Coverflow hides the status bar entirely for now — chrome-light stage. */
-    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
+    /* Coverflow hides the status bar entirely for now — chrome-light stage.
+       Grid draws its own no-pill band above the tiles (jw__render_grid). */
+    cat_launcher_layout lay = cat_get_stylesheet()->launcher.layout;
+    if (lay == CAT_LAUNCHER_COVERFLOW || lay == CAT_LAUNCHER_GRID)
         return;
     cat_status_bar_opts opts = {0};
     jw_settings_status_bar_opts(&state->settings, &opts);
@@ -956,6 +960,19 @@ static void jw__build_carousel_list(jw_launcher_state *state) {
     for (int i = 0; i < state->system_count && n < JW_MAX_SYSTEMS + 4; i++)
         state->flat_items[n++] = (jw_flat_item){ JW_FLAT_SYSTEM, i };
     state->flat_items[n++] = (jw_flat_item){ JW_FLAT_TOOLS, 0 };
+    state->flat_count = n;
+}
+
+/* Grid: containers only. A system holds games and Apps holds apps, so both are
+   tiles; Recents, Favorites and Settings are views over things that live
+   elsewhere and are reached the way every layout reaches them (Select opens the
+   switcher, MENU opens System). Tools is not inherited -- it is Coverflow's lid
+   over exactly this discontinuity. See plans/grid-view-and-user-themes.md. */
+static void jw__build_grid_list(jw_launcher_state *state) {
+    int n = 0;
+    for (int i = 0; i < state->system_count && n < JW_MAX_SYSTEMS + 4; i++)
+        state->flat_items[n++] = (jw_flat_item){ JW_FLAT_SYSTEM, i };
+    state->flat_items[n++] = (jw_flat_item){ JW_FLAT_APPS, 0 };
     state->flat_count = n;
 }
 
@@ -3797,11 +3814,23 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
        explicit choice must not follow the layout or theme name. */
     if (pack == JW_SYSTEM_ICON_PACK_AUTO) {
         const cat_stylesheet *ss = cat_get_stylesheet();
-        const char *icon_dir = (ss && ss->launcher.coverflow_icon_dir[0])
-                                   ? ss->launcher.coverflow_icon_dir : "system_icons";
+        bool grid = ss && ss->launcher.layout == CAT_LAUNCHER_GRID;
+        const char *icon_dir = "system_icons";
+        if (grid && ss->launcher.grid_icon_dir[0])
+            icon_dir = ss->launcher.grid_icon_dir;
+        else if (ss && ss->launcher.coverflow_icon_dir[0])
+            icon_dir = ss->launcher.coverflow_icon_dir;
         if (theme_name && theme_name[0]) {
             n = snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
                          theme_dir, theme_name, icon_dir, system_code);
+            if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+        }
+        /* Grid ships no rounded-square art of its own yet; it draws the
+           rounding and border itself, so the photographic set is the right
+           plain art to sit under them (plan: Phase 1 uses the built-in set). */
+        if (grid) {
+            n = snprintf(path, sizeof(path), "%s/%s/system_icons/%s.png",
+                         theme_dir, JW_SYSTEM_ICON_PHOTO_THEME, system_code);
             if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
         }
     } else if (pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC) {
@@ -5658,6 +5687,49 @@ static bool jw__view_wants_shoulder_repeat(const jw_launcher_state *state) {
 static void jw__render_focus_setup(jw_launcher_state *state);
 static void jw__focus_setup_begin(jw_launcher_state *state);
 
+/* Grid tile art. Systems go through the memoized path resolver and the
+   off-thread decoder exactly like Coverflow cards, so a cold icon shows the
+   plate and fills in on a later frame instead of stalling the scroll. The
+   Apps tile is the shared _apps identity asset via the synchronous loader. */
+static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
+    jw_launcher_state *state = (jw_launcher_state *)ctx;
+    *tw = 0; *th = 0;
+    if (idx < 0 || idx >= state->flat_count) return NULL;
+    const jw_flat_item *it = &state->flat_items[idx];
+    if (it->kind == JW_FLAT_SYSTEM) {
+        const char *path = jw__cf_system_icon_path(state, it->system_idx);
+        return jw__load_coverflow_image(path, tw, th);
+    }
+    if (it->kind == JW_FLAT_APPS)
+        return jw__load_system_icon(state, "_apps", tw, th);
+    return NULL;
+}
+
+static void jw__render_grid(jw_launcher_state *state) {
+    cat_clear_screen();
+    const cat_stylesheet *ss = cat_get_stylesheet();
+
+    /* Status: the tab header's inline no-pill idiom, centred in the band the
+       grid reserved above its first row. Phase 2 derives light/dark from the
+       wallpaper region behind it; Phase 1 has a fixed background, so the
+       stylesheet's status colour is correct as authored. */
+    int pill_h = CAT_DS(CAT__PILL_SIZE);
+    cat_status_bar_opts sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &sb);
+    sb.no_pill    = true;
+    sb.use_y      = true;
+    sb.y_position = (state->grid.status_h - pill_h) / 2;
+    cat_draw_status_bar(&sb);
+
+    uint32_t now = SDL_GetTicks();
+    bool anim = jw_grid_draw(&state->grid, &ss->launcher, &state->list,
+                             state->flat_count, jw__grid_icon, state,
+                             now, ss->launcher.grid_anim_ms);
+    jw__cf_animating |= anim;
+    if (anim) cat_request_frame();
+    jw__present();
+}
+
 static void jw__render_launcher(jw_launcher_state *state) {
     jw__cf_animating = false;
     jw__cover_inline_decodes_this_frame = 0;
@@ -5726,6 +5798,7 @@ static void jw__render_launcher(jw_launcher_state *state) {
         case CAT_LAUNCHER_VERTICAL:   jw__render_vertical(state);   break;
         case CAT_LAUNCHER_HORIZONTAL: jw__render_horizontal(state); break;
         case CAT_LAUNCHER_COVERFLOW:  jw__render_coverflow(state);  break;
+        case CAT_LAUNCHER_GRID:       jw__render_grid(state);       break;
         default:                      jw__render_tabbed(state);     break;
     }
 }
@@ -7329,6 +7402,12 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         jw__build_carousel_list(state);
     } else if (layout == CAT_LAUNCHER_VERTICAL) {
         jw__build_flat_list(state);
+    } else if (layout == CAT_LAUNCHER_GRID) {
+        jw__build_grid_list(state);
+        jw_grid_reset(&state->grid);
+        jw_grid_layout(&state->grid, &ss->launcher,
+                       cat_get_screen_width(), cat_get_screen_height(),
+                       cat_get_status_bar_height());
     } else {
         state->flat_count = 0;
     }
@@ -9066,6 +9145,27 @@ static void jw__handle_input_inner(const char *socket_path, const char *db_path,
     bool cf_channels = (layout == CAT_LAUNCHER_COVERFLOW);
     int count = (layout == CAT_LAUNCHER_TABBED || cf_channels)
                     ? jw__tab_list_count(state) : state->flat_count;
+
+    /* Grid moves in two axes over one linear list; everything else below is
+       the existing per-layout handling. A falls through to jw__activate_flat
+       (grid is neither tabbed nor a channel layout), B stays unmapped at home,
+       and L1/R1/X/Y are deliberately unbound in Phase 1. */
+    if (layout == CAT_LAUNCHER_GRID) {
+        int dx = 0, dy = 0;
+        switch (button) {
+            case CAT_BTN_LEFT:  dx = -1; break;
+            case CAT_BTN_RIGHT: dx = +1; break;
+            case CAT_BTN_UP:    dy = -1; break;
+            case CAT_BTN_DOWN:  dy = +1; break;
+            default: break;
+        }
+        if (dx || dy) {
+            jw_grid_step(&state->grid, &state->list, count, dx, dy,
+                         SDL_GetTicks(), cat_get_stylesheet()->launcher.grid_anim_ms);
+            cat_request_frame();
+            return;
+        }
+    }
 
     switch (button) {
         case CAT_BTN_UP:

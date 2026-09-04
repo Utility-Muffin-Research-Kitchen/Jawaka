@@ -14,7 +14,7 @@
 
 /* ─── Data tables ──────────────────────────────────────────────────────── */
 
-#define JW_SETTINGS_THEME_COUNT 4
+#define JW_SETTINGS_THEME_COUNT 5
 extern const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT];
 extern const bool        kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT];
 
@@ -99,7 +99,7 @@ typedef enum {
 #define JW_COLOR_ROW_COUNT   7
 
 /* Layout page */
-#define JW_LAYOUT_HOME_STYLE   0   /* Tabs vs Coverflow home layout */
+#define JW_LAYOUT_HOME_STYLE   0   /* Tabs / Coverflow / Grid home layout */
 #define JW_LAYOUT_SYSTEM_ICONS 1   /* which built-in system-icon pack to draw */
 #define JW_LAYOUT_PILL_SHAPE   2
 #define JW_LAYOUT_FONT_FAMILY  3
@@ -297,7 +297,7 @@ typedef struct {
     int                font_family_index;
     int                font_size_index;
     int                tab_glide;            /* 0 = Snap (instant), 1 = Glide (slide) */
-    int                layout_mode;          /* 0 = Tabs, 1 = Coverflow (home layout) */
+    int                layout_mode;          /* 0 = Tabs, 1 = Coverflow, 2 = Grid (home layout) */
     int                system_icon_pack_index; /* jw_system_icon_pack */
     bool               show_hints;
     int                clock_style_index;

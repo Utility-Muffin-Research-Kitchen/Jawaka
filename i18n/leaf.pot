@@ -773,6 +773,10 @@ msgid "Good"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Grid"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "HDMI Output"
 msgstr ""
 

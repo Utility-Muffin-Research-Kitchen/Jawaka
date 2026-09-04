@@ -28,6 +28,7 @@ const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT] = {
     "Jawaka-Vertical",
     "Jawaka-Horizontal",
     "Jawaka-Coverflow",
+    "Jawaka-Grid",
 };
 
 /* Focus-on-Tabs: only Jawaka-Tabs is an actively-supported layout. The others
@@ -38,6 +39,7 @@ const bool kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT] = {
     false,  /* Jawaka-Vertical */
     false,  /* Jawaka-Horizontal */
     false,  /* Jawaka-Coverflow */
+    false,  /* Jawaka-Grid -- switched via Home Layout, like Coverflow */
 };
 
 const char *const kPillShapeLabels[JW_SETTINGS_PILL_SHAPE_COUNT] = {
@@ -1455,8 +1457,11 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->rumble_strength = 65;     /* ~Medium */
     ui->rumble_nav = false;       /* per-move tick opt-in */
     ui->rumble_game = true;       /* in-game rumble default on */
-    ui->layout_mode = (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
-                          ? 1 : 0;
+    {
+        cat_launcher_layout lay = cat_get_stylesheet()->launcher.layout;
+        ui->layout_mode = (lay == CAT_LAUNCHER_GRID) ? 2
+                        : (lay == CAT_LAUNCHER_COVERFLOW) ? 1 : 0;
+    }
     /* Absent key == Automatic, so a fresh install keeps the historical
        layout-driven artwork without a migration or a default row write. */
     ui->system_icon_pack_index = JW_SYSTEM_ICON_PACK_AUTO;
@@ -2292,7 +2297,9 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
     jw__begin_settings_rows(&ui->layout_list, x, ly, w,
                             JW_LAYOUT_ROW_COUNT, item_h);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_HOME_STYLE,
-                        "Home Layout", ui->layout_mode == 1 ? "Coverflow" : "Tabs", true);
+                        "Home Layout",
+                        ui->layout_mode == 2 ? "Grid"
+                        : ui->layout_mode == 1 ? "Coverflow" : "Tabs", true);
     int pack = (ui->system_icon_pack_index >= 0 &&
                 ui->system_icon_pack_index < JW_SYSTEM_ICON_PACK_COUNT)
                ? ui->system_icon_pack_index : JW_SYSTEM_ICON_PACK_AUTO;
@@ -5407,13 +5414,14 @@ static void jw__cycle_color_scheme(jw_settings_ui *ui, int direction, bool *them
         jw_ipc_rumble(ui->socket_path, "select");
 }
 
-/* Switch the home layout (Tabs <-> Coverflow) live. Loading the matching theme
+/* Switch the home layout (Tabs / Coverflow / Grid) live. Loading the matching theme
    makes its bundled assets resolve (e.g. the Coverflow console icons) and sets the
    layout; cat_stylesheet_apply overwrites the theme colours, so re-apply the user's
    colour scheme afterwards. Persist the choice as the theme name so a cold boot
    restores it, and signal a rebuild so the home list is rebuilt for the layout. */
 static void jw__apply_layout(jw_settings_ui *ui, int mode, bool *theme_changed) {
-    const char *tn = (mode == 1) ? "Jawaka-Coverflow" : "Jawaka-Tabs";
+    const char *tn = (mode == 2) ? "Jawaka-Grid"
+                   : (mode == 1) ? "Jawaka-Coverflow" : "Jawaka-Tabs";
     cat_stylesheet ss;
     if (cat_stylesheet_load_theme(&ss, tn) != CAT_OK)
         return;
@@ -6427,7 +6435,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
                 int row = ui->layout_list.cursor;
                 if (row == JW_LAYOUT_HOME_STYLE) {
-                    int next = (ui->layout_mode + dir + 2) % 2;
+                    int next = (ui->layout_mode + dir + 3) % 3;
                     if (next != ui->layout_mode)
                         jw__apply_layout(ui, next, theme_changed);
                 } else if (row == JW_LAYOUT_SYSTEM_ICONS) {
