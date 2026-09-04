@@ -7,34 +7,6 @@ static bool jw_sp__same(const char *a, const char *b) {
     return strcmp(a ? a : "", b ? b : "") == 0;
 }
 
-void jw_shader_preview_coalescer_init(jw_shader_preview_coalescer *coalescer) {
-    if (coalescer) memset(coalescer, 0, sizeof(*coalescer));
-}
-
-void jw_shader_preview_coalescer_schedule(
-    jw_shader_preview_coalescer *coalescer, int cursor,
-    uint32_t now_ms, uint32_t settle_ms) {
-    if (!coalescer) return;
-    coalescer->cursor = cursor;
-    coalescer->due_ms = now_ms + settle_ms;
-    coalescer->pending = true;
-}
-
-void jw_shader_preview_coalescer_cancel(jw_shader_preview_coalescer *coalescer) {
-    if (coalescer) coalescer->pending = false;
-}
-
-bool jw_shader_preview_coalescer_take(
-    jw_shader_preview_coalescer *coalescer, uint32_t now_ms,
-    bool focus_anim_active, int *cursor) {
-    if (!coalescer || !coalescer->pending || focus_anim_active ||
-        (int32_t)(now_ms - coalescer->due_ms) < 0)
-        return false;
-    coalescer->pending = false;
-    if (cursor) *cursor = coalescer->cursor;
-    return true;
-}
-
 static bool jw_sp__get_path(const jw_shader_picker_transport *transport,
                             char *path, size_t path_size) {
     jw_ipc_retroarch_shader_reply reply;
@@ -108,14 +80,14 @@ static jw_shader_picker_result jw_sp__restore(
     return JW_SHADER_PICKER_OK;
 }
 
-jw_shader_picker_result jw_shader_picker_preview(
+jw_shader_picker_result jw_shader_picker_apply(
     jw_shader_picker_state *state, const jw_shader_picker_transport *transport,
     const char *path) {
     if (!state || !state->supported || !transport || !transport->send)
         return JW_SHADER_PICKER_UNAVAILABLE;
     const char *desired = path ? path : "";
     if (state->current_known && jw_sp__same(state->current_path, desired))
-        return JW_SHADER_PICKER_OK; /* duplicate cursor event */
+        return JW_SHADER_PICKER_OK; /* already applied */
 
     char previous[sizeof(state->current_path)];
     bool previous_known = state->current_known;
