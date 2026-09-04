@@ -198,7 +198,6 @@ typedef struct {
 } jw_bios_scanner;
 
 typedef struct {
-    bool             open;
     bool             in_folder;          /* false: the Default/HLE/cards root */
     char             source_id[JW_STORAGE_SOURCE_ID_MAX];
     char             source_label[64];
@@ -345,7 +344,10 @@ typedef struct {
     jw_bios_resolution action_bios_resolution;
     jw_bios_file_status action_bios_status;
     bool               action_bios_supported;
-    jw_bios_picker     bios_picker;
+    /* Allocated only while the picker is open: its page cache and scan buffers
+       are a few hundred KiB that nothing else in the launcher needs. NULL means
+       closed, so there is one liveness test rather than two. */
+    jw_bios_picker    *bios_picker;
     char               action_system_display_override[64];
     bool               action_scrape_pending;   /* target has queued scrape work */
     /* System menu (MENU button): an in-launcher overlay, not a separate process,
@@ -5459,7 +5461,7 @@ static void jw__render_actions_cf(jw_launcher_state *state) {
 static void jw__render_actions(const jw_launcher_state *state) {
     /* The BIOS picker floats over the actions menu it was opened from, in
        every layout, so every actions render site reaches it. */
-    if (state->bios_picker.open) {
+    if (state->bios_picker) {
         jw__render_bios_picker(state);
         return;
     }
@@ -6134,7 +6136,7 @@ static void jw__bios_note_page_cursor(jw_bios_picker *picker) {
 }
 
 static void jw__bios_picker_load_page(jw_launcher_state *state) {
-    jw_bios_picker *picker = &state->bios_picker;
+    jw_bios_picker *picker = state->bios_picker;
     if (jw__bios_cache_load(picker)) {
         jw__bios_note_page_cursor(picker);
         jw__bios_picker_build_view(state);
@@ -6156,7 +6158,7 @@ static void jw__bios_picker_load_page(jw_launcher_state *state) {
 /* Install a finished listing. Results from a superseded request are dropped by
    generation, so removing a card mid-scan cannot apply a stale page. */
 static void jw__bios_picker_poll(jw_launcher_state *state) {
-    jw_bios_picker *picker = &state->bios_picker;
+    jw_bios_picker *picker = state->bios_picker;
     jw_bios_scanner *scanner = &picker->scanner;
     if (!scanner->thread_started) {
         return;
@@ -6212,7 +6214,7 @@ static void jw__bios_view_add(jw_bios_picker *picker, jw_bios_row_kind kind,
 }
 
 static void jw__bios_picker_build_view(jw_launcher_state *state) {
-    jw_bios_picker *picker = &state->bios_picker;
+    jw_bios_picker *picker = state->bios_picker;
     int old_cursor = picker->list.cursor;
     picker->view_count = 0;
     if (!picker->in_folder) {
@@ -6245,19 +6247,25 @@ static void jw__bios_picker_build_view(jw_launcher_state *state) {
 }
 
 static void jw__bios_picker_close(jw_launcher_state *state) {
-    jw_bios_picker *picker = &state->bios_picker;
-    if (!picker->open) {
+    jw_bios_picker *picker = state->bios_picker;
+    if (!picker) {
         return;
     }
+    /* Stop the worker before the memory it reads goes away. */
     jw__bios_scanner_stop(picker);
-    memset(picker, 0, sizeof(*picker));
+    state->bios_picker = NULL;
+    free(picker);
 }
 
 static void jw__bios_picker_open(jw_launcher_state *state) {
-    jw_bios_picker *picker = &state->bios_picker;
     jw__bios_picker_close(state);
-    memset(picker, 0, sizeof(*picker));
-    picker->open = true;
+    jw_bios_picker *picker = calloc(1, sizeof(*picker));
+    if (!picker) {
+        snprintf(state->status, sizeof(state->status), "%s",
+                 T("Not enough memory to open the BIOS picker"));
+        return;
+    }
+    state->bios_picker = picker;
     if (jw_storage_sources_resolve(state->sdcard_root, &picker->sources) != 0) {
         picker->sources.count = 0;
     }
@@ -6271,7 +6279,7 @@ static void jw__bios_picker_open(jw_launcher_state *state) {
 }
 
 static void jw__bios_picker_enter_source(jw_launcher_state *state, int index) {
-    jw_bios_picker *picker = &state->bios_picker;
+    jw_bios_picker *picker = state->bios_picker;
     if (index < 0 || index >= picker->sources.count) {
         return;
     }
@@ -6296,7 +6304,7 @@ static void jw__bios_picker_enter_source(jw_launcher_state *state, int index) {
 }
 
 static void jw__bios_picker_enter_dir(jw_launcher_state *state, const char *name) {
-    jw_bios_picker *picker = &state->bios_picker;
+    jw_bios_picker *picker = state->bios_picker;
     char rel[JW_BIOS_REL_PATH_MAX];
     char abs[PATH_MAX];
     if (!jw_bios_rel_join(picker->rel_dir, name, rel, sizeof(rel)) ||
@@ -6316,7 +6324,7 @@ static void jw__bios_picker_enter_dir(jw_launcher_state *state, const char *name
 }
 
 static void jw__bios_picker_go_up(jw_launcher_state *state) {
-    jw_bios_picker *picker = &state->bios_picker;
+    jw_bios_picker *picker = state->bios_picker;
     picker->message[0] = '\0';
     if (!picker->rel_dir[0]) {
         /* At a card's BIOS root: back to Default / HLE / the card list. */
@@ -6395,7 +6403,7 @@ static void jw__bios_apply_choice(const char *db_path, jw_launcher_state *state,
 static void jw__bios_picker_select_file(const char *db_path,
                                         jw_launcher_state *state,
                                         const char *name) {
-    jw_bios_picker *picker = &state->bios_picker;
+    jw_bios_picker *picker = state->bios_picker;
     jw_bios_choice choice;
     memset(&choice, 0, sizeof(choice));
     choice.kind = JW_BIOS_CHOICE_FILE;
@@ -6422,7 +6430,7 @@ static void jw__bios_picker_select_file(const char *db_path,
 static void jw__handle_bios_picker_input(const char *db_path,
                                          jw_launcher_state *state,
                                          cat_button button) {
-    jw_bios_picker *picker = &state->bios_picker;
+    jw_bios_picker *picker = state->bios_picker;
     if (picker->list.cursor < 0 || picker->list.cursor >= picker->view_count) {
         picker->list.cursor = 0;
     }
@@ -6520,7 +6528,7 @@ static void jw__bios_view_row_strings(const jw_launcher_state *state,
                                       const jw_bios_view_row *row,
                                       char *title, size_t title_size,
                                       char *value, size_t value_size) {
-    const jw_bios_picker *picker = &state->bios_picker;
+    const jw_bios_picker *picker = state->bios_picker;
     const jw_bios_resolution *resolution = &state->action_bios_resolution;
     title[0] = '\0';
     value[0] = '\0';
@@ -6591,7 +6599,7 @@ static void jw__draw_bios_picker_item(int idx, int ix, int iy, int iw, int ih,
                                       bool selected, void *user) {
     jw__bios_picker_ctx *ctx = (jw__bios_picker_ctx *)user;
     const jw_launcher_state *state = ctx ? ctx->state : NULL;
-    if (!state || idx < 0 || idx >= state->bios_picker.view_count) {
+    if (!state || idx < 0 || idx >= state->bios_picker->view_count) {
         return;
     }
     ap_theme *theme = cat_get_theme();
@@ -6606,7 +6614,7 @@ static void jw__draw_bios_picker_item(int idx, int ix, int iy, int iw, int ih,
 
     char title[320];
     char value[160];
-    jw__bios_view_row_strings(state, &state->bios_picker.view[idx],
+    jw__bios_view_row_strings(state, &state->bios_picker->view[idx],
                               title, sizeof(title), value, sizeof(value));
 
     ap_color title_c = selected ? theme->highlighted_text : theme->text;
@@ -6627,7 +6635,7 @@ static void jw__draw_bios_picker_item(int idx, int ix, int iy, int iw, int ih,
    filenames and translated strings ellipsize rather than overrun the panel. */
 static void jw__bios_picker_subtitle(const jw_launcher_state *state,
                                      char *out, size_t out_size) {
-    const jw_bios_picker *picker = &state->bios_picker;
+    const jw_bios_picker *picker = state->bios_picker;
     if (picker->message[0]) {
         snprintf(out, out_size, "%s", picker->message);
         return;
@@ -6659,7 +6667,7 @@ static void jw__bios_picker_subtitle(const jw_launcher_state *state,
 
 static void jw__render_bios_picker(const jw_launcher_state *state) {
     jw__bios_picker_poll((jw_launcher_state *)state);
-    const jw_bios_picker *picker = &state->bios_picker;
+    const jw_bios_picker *picker = state->bios_picker;
     bool coverflow = cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW;
 
     ap_theme *theme = cat_get_theme();
@@ -8247,7 +8255,7 @@ static void jw__select_action_row(const char *socket_path, const char *db_path,
 static void jw__handle_actions_input(const char *socket_path, const char *db_path,
                                      jw_launcher_state *state,
                                      cat_button button, bool *running) {
-    if (state->bios_picker.open) {
+    if (state->bios_picker) {
         jw__handle_bios_picker_input(db_path, state, button);
         return;
     }

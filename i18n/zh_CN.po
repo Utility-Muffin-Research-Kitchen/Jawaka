@@ -1763,3 +1763,6 @@ msgstr "使用系统设置"
 
 msgid "Now"
 msgstr "当前"
+
+msgid "Not enough memory to open the BIOS picker"
+msgstr "内存不足，无法打开 BIOS 选择器"

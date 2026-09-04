@@ -1172,6 +1172,10 @@ msgstr ""
 msgid "Not connected"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Not enough memory to open the BIOS picker"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Not found in the ScreenScraper.fr database."
 msgstr ""
