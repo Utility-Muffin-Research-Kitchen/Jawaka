@@ -15,6 +15,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define JW_GRID_SCRATCH_MAX 16
+
 typedef struct {
     /* Derived geometry (px). Recomputed by jw_grid_layout; never authored. */
     int cols, rows;
@@ -35,8 +37,13 @@ typedef struct {
     int      focus_prev;          /* -1 = none */
     uint32_t focus_anim_start_ms;
 
-    /* Off-screen composition target, sized to the tile interior. */
-    SDL_Texture *scratch;
+    /* Off-screen composition targets, sized to the tile. A pool rather than one
+       texture: on this GPU a target texture written and then sampled again in
+       the same frame comes back holding another tile's pixels, so each tile in a
+       frame gets its own, used round-robin. */
+    SDL_Texture *scratch[JW_GRID_SCRATCH_MAX];
+    int          scratch_count;
+    int          scratch_next;
     int          scratch_size;
 } jw_grid;
 

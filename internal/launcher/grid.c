@@ -1,10 +1,19 @@
 #include "internal/launcher/grid.h"
-#include "internal/launcher/coverflow.h"   /* jw_cf_ease_in_out_cubic: one easing for all carousels */
+#include <math.h>
 
 #include "catastrophe.h"
 #include <SDL2/SDL.h>
 
 static int jw__grid_max(int a, int b) { return a > b ? a : b; }
+
+/* Ease-out: motion starts at full speed on the press and settles at the end.
+   Ease-in-out barely moves for its first third, which reads as input lag. */
+static float jw__grid_ease_out(float t) {
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    float u = 1.0f - t;
+    return 1.0f - u * u * u;
+}
 static int jw__grid_min(int a, int b) { return a < b ? a : b; }
 
 void jw_grid_layout(jw_grid *g, const cat_stylesheet_launcher *l,
@@ -31,9 +40,9 @@ void jw_grid_layout(jw_grid *g, const cat_stylesheet_launcher *l,
     g->radius   = tile * l->grid_radius_pct / 100;
     g->status_h = status_h;
     g->x0       = (screen_w - block_w) / 2;
-    /* Top-anchored: the first row sits one gutter below the status band and
+    /* Top-anchored: the first row sits half a gutter below the status band and
        the vertical slack goes to the bottom, per the plan. */
-    g->y0       = status_h + gutter;
+    g->y0       = status_h + gutter / 2;
     (void)block_h;
 }
 
@@ -51,7 +60,7 @@ static float jw__grid_scroll_now(const jw_grid *g, uint32_t now, uint32_t anim_m
     if (!g->anim_active || anim_ms == 0) return (float)g->scroll_row;
     uint32_t el = now - g->anim_start_ms;
     if (el >= anim_ms) return (float)g->scroll_row;
-    float t = jw_cf_ease_in_out_cubic((float)el / (float)anim_ms);
+    float t = jw__grid_ease_out((float)el / (float)anim_ms);
     return g->anim_from_row + ((float)g->scroll_row - g->anim_from_row) * t;
 }
 
@@ -111,67 +120,110 @@ void jw_grid_step(jw_grid *g, cat_list_state *ls, int count, int dx, int dy,
     }
 }
 
-static bool jw__grid_ensure_scratch(jw_grid *g, int size) {
-    if (g->scratch && g->scratch_size == size) return true;
-    if (g->scratch) { SDL_DestroyTexture(g->scratch); g->scratch = NULL; }
-    SDL_Renderer *r = cat_get_renderer();
-    g->scratch = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA8888,
-                                   SDL_TEXTUREACCESS_TARGET, size, size);
-    if (!g->scratch) { g->scratch_size = 0; return false; }
-    SDL_SetTextureBlendMode(g->scratch, SDL_BLENDMODE_BLEND);
-    g->scratch_size = size;
-    return true;
+static SDL_Texture *jw__grid_scratch(jw_grid *g, int size) {
+    if (g->scratch_size != size) {
+        for (int i = 0; i < g->scratch_count; i++)
+            if (g->scratch[i]) { SDL_DestroyTexture(g->scratch[i]); g->scratch[i] = NULL; }
+        g->scratch_count = 0;
+        g->scratch_next  = 0;
+        g->scratch_size  = size;
+    }
+    int i = g->scratch_next;
+    if (i >= JW_GRID_SCRATCH_MAX) i = 0;
+    if (!g->scratch[i]) {
+        SDL_Renderer *r = cat_get_renderer();
+        g->scratch[i] = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA8888,
+                                          SDL_TEXTUREACCESS_TARGET, size, size);
+        if (!g->scratch[i]) return NULL;
+        SDL_SetTextureBlendMode(g->scratch[i], SDL_BLENDMODE_BLEND);
+        if (i + 1 > g->scratch_count) g->scratch_count = i + 1;
+    }
+    g->scratch_next = (i + 1) % JW_GRID_SCRATCH_MAX;
+    return g->scratch[i];
 }
 
-/* One tile: the border is a rounded rect of the border colour, and the content
-   (plate + contain-fit art) is composited off screen then drawn inset by the
-   border width with a matching smaller radius. Art stays plain; rounding and
-   border are Leaf's, which is what makes them themeable. */
 static void jw__grid_draw_tile(jw_grid *g, int x, int y, int size, SDL_Texture *art,
                                int aw, int ah, SDL_Texture *label,
                                int bw, cat_draw_color bc, int radius) {
-    /* `size` may exceed the cell (focus scale); centre it on the cell. */
-    int off = (size - g->tile) / 2;
-    x -= off; y -= off;
-    cat_draw_rounded_rect(x, y, size, size, radius, bc);
-
-    int inner_draw = size - 2 * bw;
-    if (inner_draw <= 0) return;
-    /* Compose at the base tile size once; the draw below scales the result, so
-       focus animation never rebuilds the scratch texture. */
     int inner = g->tile;
+    if (inner <= 0 || size <= 0) return;
     SDL_Renderer *r = cat_get_renderer();
-    if (!jw__grid_ensure_scratch(g, inner)) return;
+    SDL_Texture *scratch = jw__grid_scratch(g, inner);
+    if (!scratch) return;
+
+    /* `size` exceeds the cell when the tile is focused; centre the growth. */
+    int off = (size - g->tile) / 2;
+    int sx = x - off, sy = y - off;
+    int bwc = bw < 0 ? 0 : (bw > inner / 4 ? inner / 4 : bw);
+    /* Border and radius are authored against the base tile and scale with it, so
+       a focused tile grows whole rather than growing a fixed-width ring. */
+    int bws = bwc * size / inner;
+    if (bws < 1 && bwc > 0) bws = 1;
+    int rad_out = radius * size / inner;
+
+    /* The ring goes down first and the art lands inside it. Composing the art
+       full-bleed and the ring on top would need a ring primitive; this way a
+       filled rounded rect is all it takes, and the art still reaches the edge. */
+    cat_draw_rounded_rect(sx, sy, size, size, rad_out, bc);
 
     SDL_Texture *prev = SDL_GetRenderTarget(r);
-    SDL_SetRenderTarget(r, g->scratch);
+    SDL_Rect prev_vp, prev_clip;
+    SDL_bool had_clip = SDL_RenderIsClipEnabled(r);
+    SDL_RenderGetViewport(r, &prev_vp);
+    SDL_RenderGetClipRect(r, &prev_clip);
+    SDL_SetRenderTarget(r, scratch);
+    /* Viewport and clip carry across a target switch. Left as they were, a fill
+       or clear covers only part of the tile and the rest keeps whatever the GPU
+       memory held — which is where the torn tiles came from. */
+    SDL_RenderSetViewport(r, NULL);
+    SDL_RenderSetClipRect(r, NULL);
+
+    /* Cover every pixel of the target explicitly rather than trusting a clear:
+       the plate is opaque, so this both clears and lays the backing down in one
+       pass, and an explicit rect cannot be trimmed by a stale viewport. */
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+
+    /* Plate behind the art: art with transparency (the cut-out console icons)
+       reads as a tile rather than as a hole in the wallpaper. Opaque, the theme
+       background lifted a little toward white. */
+    cat_draw_color pbg = cat_get_theme()->background;
+    SDL_Rect whole = { 0, 0, inner, inner };
+    SDL_SetRenderDrawColor(r, (Uint8)(pbg.r + (255 - pbg.r) * 16 / 255),
+                              (Uint8)(pbg.g + (255 - pbg.g) * 16 / 255),
+                              (Uint8)(pbg.b + (255 - pbg.b) * 16 / 255), 255);
+    SDL_RenderFillRect(r, &whole);
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
-    SDL_RenderClear(r);
-    /* Subtle plate so a transparent or undersized icon still reads as a tile. */
-    SDL_SetRenderDrawColor(r, 255, 255, 255, 16);
-    SDL_Rect plate = { 0, 0, inner, inner };
-    SDL_RenderFillRect(r, &plate);
+
     if (art && aw > 0 && ah > 0) {
-        /* Contain-fit, centred: never distorted; wrong-shaped art looks obviously
-           wrong to its author rather than subtly wrong. */
-        int pad = inner / 12;
-        int box = inner - 2 * pad;
-        float sc = (float)box / (float)(aw > ah ? aw : ah);
-        int dw = (int)(aw * sc), dh = (int)(ah * sc);
+        /* Cover-fit: the art fills the tile edge to edge and the mask below
+           rounds it to the tile's own corners, so square art sits in the tile
+           exactly. Off-square art is centred and cropped, never distorted. */
+        float sc = (float)inner / (float)(aw < ah ? aw : ah);
+        int dw = (int)(aw * sc + 0.5f), dh = (int)(ah * sc + 0.5f);
         SDL_Rect dst = { (inner - dw) / 2, (inner - dh) / 2, dw, dh };
         SDL_RenderCopy(r, art, NULL, &dst);
     }
     if (label) {
         /* Full-tile overlay: the author positioned the wordmark within a tile-
-           sized canvas, so it maps onto the interior edge to edge. */
+           sized canvas, so it maps onto the tile edge to edge. */
         SDL_Rect full = { 0, 0, inner, inner };
         SDL_RenderCopy(r, label, NULL, &full);
     }
-    SDL_SetRenderTarget(r, prev);
 
-    int ir = jw__grid_max(0, radius - bw);
-    cat_draw_image_rounded_ex(g->scratch, x + bw, y + bw, inner_draw, inner_draw, ir, CAT_CORNER_ALL);
+    /* Round the composite off to the shape the ring leaves for it. Where the
+       renderer rejects the custom blend the corners simply stay square. */
+    cat_mask_rounded_rect(0, 0, inner, inner, jw__grid_max(0, radius - bwc), CAT_CORNER_ALL);
+
+    SDL_SetRenderTarget(r, prev);
+    SDL_RenderSetViewport(r, &prev_vp);
+    if (had_clip) SDL_RenderSetClipRect(r, &prev_clip);
+    else          SDL_RenderSetClipRect(r, NULL);
+    /* Land the composition before the texture is sampled: SDL batches draws, and
+       a batch that both writes and reads a target texture is where stale pixels
+       creep in. */
+    SDL_RenderFlush(r);
+    SDL_Rect out = { sx + bws, sy + bws, size - 2 * bws, size - 2 * bws };
+    SDL_RenderCopy(r, scratch, NULL, &out);
 }
 
 bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
@@ -179,38 +231,43 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
                   jw_grid_icon_fn icon_fn, jw_grid_icon_fn label_fn, void *ctx,
                   uint32_t now, uint32_t anim_ms) {
     if (!g || !l || !ls || count <= 0) return false;
+    g->scratch_next = 0;   /* one texture per tile per frame, reused next frame */
     int cols = g->cols, rows = g->rows, pitch = g->tile + g->gutter;
     float scroll = jw__grid_scroll_now(g, now, anim_ms);
     bool animating = g->anim_active && (now - g->anim_start_ms) < anim_ms;
     if (!animating) g->anim_active = false;
 
     cat_draw_color border = cat_color_to_sdl(l->grid_border_color);
+    /* Sentinel alpha 0 = the theme's selection colour (accent is the footer
+       pill background in cat_theme, not the highlight). */
     cat_draw_color focus  = (CAT_COLOR_A(l->grid_focus_border_color) == 0)
-                                ? cat_get_theme()->accent
+                                ? cat_get_theme()->highlight
                                 : cat_color_to_sdl(l->grid_focus_border_color);
     int bw_norm  = cat_scale(l->grid_border_w);
     int bw_focus = cat_scale(l->grid_focus_border_w);
 
-    /* Tiles never draw into the status band, even mid-scroll. */
-    SDL_Renderer *r = cat_get_renderer();
-    SDL_Rect prev_clip; SDL_RenderGetClipRect(r, &prev_clip);
-    SDL_Rect clip = { 0, g->status_h, cat_get_screen_width(), cat_get_screen_height() - g->status_h };
-    SDL_RenderSetClipRect(r, &clip);
+    /* No renderer clip here: a clip rect stays in force across every render-
+       target switch (the tile scratch, and cat_draw_image_rounded_ex's own),
+       which clipped the clears and let stale texture rows through. The caller
+       draws the status bar after the tiles, so it floats over anything that
+       passes beneath it during a scroll. */
 
     /* Focus scale tween, shared duration with the row scroll. */
     float grow = (float)jw__grid_max(100, l->grid_focus_scale_pct) / 100.0f - 1.0f;
     float ft = 1.0f;
     if (anim_ms > 0 && g->focus_prev >= 0) {
         uint32_t el = now - g->focus_anim_start_ms;
-        ft = el >= anim_ms ? 1.0f : jw_cf_ease_in_out_cubic((float)el / (float)anim_ms);
+        ft = el >= anim_ms ? 1.0f : jw__grid_ease_out((float)el / (float)anim_ms);
     }
     if (ft >= 1.0f) g->focus_prev = -1;
     else animating = true;
     int focus_idx = ls->cursor;
 
+    /* Only the page's rows draw: at rest exactly `rows` of them, so no partial
+       row peeks in below; mid-scroll one more, the row sliding in or out. */
     int total_rows = (count + cols - 1) / cols;
-    int first = jw__grid_max(0, (int)scroll - 1);
-    int last  = jw__grid_min(total_rows - 1, (int)scroll + rows + 1);
+    int first = jw__grid_max(0, (int)floorf(scroll));
+    int last  = jw__grid_min(total_rows - 1, (int)ceilf(scroll) + rows - 1);
     /* Pass 1: every tile but the focused one, so the focused tile can overlap
        its neighbours when it grows. The previously focused tile eases back. */
     for (int pass = 0; pass < 2; pass++) {
@@ -230,15 +287,15 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
                 if (focused)                     sc = 1.0f + grow * ft;
                 else if (idx == g->focus_prev)   sc = 1.0f + grow * (1.0f - ft);
                 int size = (int)((float)g->tile * sc);
-                int radius = (int)((float)g->radius * sc);
+                /* Border and radius are composed at the base tile size; the blit
+                   scales them with the tile, which is what "the whole tile grows"
+                   means. Nothing here pre-scales them. */
                 jw__grid_draw_tile(g, x, y, size, art, aw, ah, label,
                                    focused ? bw_focus : bw_norm,
-                                   focused ? focus : border, radius);
+                                   focused ? focus : border, g->radius);
             }
         }
     }
 
-    if (prev_clip.w == 0 && prev_clip.h == 0) SDL_RenderSetClipRect(r, NULL);
-    else                                      SDL_RenderSetClipRect(r, &prev_clip);
     return animating;
 }

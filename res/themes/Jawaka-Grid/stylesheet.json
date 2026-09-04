@@ -45,11 +45,13 @@
     "grid_gutter": 48,
     "grid_radius_pct": 18,
     "grid_border_w": 2,
-    "grid_focus_border_w": 3,
+    "grid_focus_border_w": 6,
     "grid_border_color": "#FFFFFF3C",
+    "grid_focus_border_color": "#22E8F0",
     "grid_anim_ms": 180,
     "grid_icon_dir": "system_icons",
     "grid_label_dir": "grid_labels",
-    "grid_focus_scale_pct": 110
+    "grid_focus_scale_pct": 110,
+    "grid_status_scale_pct": 70
   }
 }

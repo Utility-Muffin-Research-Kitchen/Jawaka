@@ -226,6 +226,8 @@ typedef struct {
        region (or forced by theme.json) so light icons never sit on a light sky. */
     char               grid_wallpaper[PATH_MAX];
     bool               grid_status_dark;
+    SDL_Texture       *grid_status_tex;      /* stock-size status cluster, drawn scaled down */
+    int                grid_status_tex_w, grid_status_tex_h;
     /* Label overlays resolved once per tile per rebuild, not per frame. */
     char               grid_label_path[JW_MAX_SYSTEMS + 4][256];
     unsigned char      grid_label_done[JW_MAX_SYSTEMS + 4];
@@ -5858,16 +5860,44 @@ static void jw__render_grid(jw_launcher_state *state) {
         }
     }
 
-    /* Status: the tab header's inline no-pill idiom, centred in the band the
-       grid reserved above its first row. Phase 2 derives light/dark from the
-       wallpaper region behind it; Phase 1 has a fixed background, so the
-       stylesheet's status colour is correct as authored. */
+    uint32_t now = SDL_GetTicks();
+    bool anim = jw_grid_draw(&state->grid, &ss->launcher, &state->list,
+                             state->flat_count, jw__grid_icon, jw__grid_label, state,
+                             now, ss->launcher.grid_anim_ms);
+
+    /* Status: the tab header's inline no-pill idiom, drawn AFTER the tiles so it
+       floats over anything that passes beneath it mid-scroll (the tiles use no
+       clip rect). Catastrophe draws the cluster at one fixed size, so it is
+       rendered at stock size into an off-screen target and blitted scaled down,
+       right edge pinned to the screen's right edge. */
+    int sw = cat_get_screen_width();
     int pill_h = CAT_DS(CAT__PILL_SIZE);
+    SDL_Renderer *r = cat_get_renderer();
+    if (state->grid_status_tex &&
+        (state->grid_status_tex_w != sw || state->grid_status_tex_h != pill_h)) {
+        SDL_DestroyTexture(state->grid_status_tex);
+        state->grid_status_tex = NULL;
+    }
+    if (!state->grid_status_tex) {
+        state->grid_status_tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA8888,
+                                                   SDL_TEXTUREACCESS_TARGET, sw, pill_h);
+        state->grid_status_tex_w = sw;
+        state->grid_status_tex_h = pill_h;
+        /* Drawn over a cleared transparent target, the cluster's colour is
+           premultiplied by its coverage; blit it as such so anti-aliased edges
+           do not darken a second time. */
+        if (state->grid_status_tex)
+            SDL_SetTextureBlendMode(state->grid_status_tex,
+                SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                                           SDL_BLENDOPERATION_ADD,
+                                           SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                                           SDL_BLENDOPERATION_ADD));
+    }
     cat_status_bar_opts sb = {0};
     jw_settings_status_bar_opts(&state->settings, &sb);
     sb.no_pill    = true;
     sb.use_y      = true;
-    sb.y_position = (state->grid.status_h - pill_h) / 2;
+    sb.y_position = 0;
     /* Polarity: the status bar draws text and icons in theme.hint. Swap it for
        this one draw when the wallpaper region behind it is light, and put the
        stylesheet's colour straight back so nothing else in the frame sees it. */
@@ -5876,13 +5906,23 @@ static void jw__render_grid(jw_launcher_state *state) {
     if (state->grid_wallpaper[0])
         theme->hint = state->grid_status_dark ? (cat_draw_color){ 0x14, 0x1A, 0x14, 0xFF }
                                               : (cat_draw_color){ 0xF2, 0xF5, 0xEF, 0xFF };
-    cat_draw_status_bar(&sb);
+    if (state->grid_status_tex) {
+        SDL_Texture *prev = SDL_GetRenderTarget(r);
+        SDL_SetRenderTarget(r, state->grid_status_tex);
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
+        SDL_RenderClear(r);
+        cat_draw_status_bar(&sb);
+        SDL_SetRenderTarget(r, prev);
+        int pct = ss->launcher.grid_status_scale_pct > 0 ? ss->launcher.grid_status_scale_pct : 100;
+        int dw = sw * pct / 100, dh = pill_h * pct / 100;
+        SDL_Rect dst = { sw - dw, CAT_S(6), dw, dh };
+        SDL_RenderCopy(r, state->grid_status_tex, NULL, &dst);
+    } else {
+        sb.y_position = CAT_S(6);
+        cat_draw_status_bar(&sb);
+    }
     theme->hint = saved_hint;
-
-    uint32_t now = SDL_GetTicks();
-    bool anim = jw_grid_draw(&state->grid, &ss->launcher, &state->list,
-                             state->flat_count, jw__grid_icon, jw__grid_label, state,
-                             now, ss->launcher.grid_anim_ms);
     jw__cf_animating |= anim;
     if (anim) cat_request_frame();
     jw__present();
@@ -7573,9 +7613,11 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
             eff.grid_cols = dc;
             eff.grid_rows = dr;
         }
+        /* Status band: the stock cluster is drawn at grid_status_scale_pct and
+           sits high, so the band is the scaled pill plus a small pad each side. */
+        int band = CAT_S(6) * 2 + CAT_DS(CAT__PILL_SIZE) * eff.grid_status_scale_pct / 100;
         jw_grid_layout(&state->grid, &eff,
-                       cat_get_screen_width(), cat_get_screen_height(),
-                       cat_get_status_bar_height());
+                       cat_get_screen_width(), cat_get_screen_height(), band);
         jw__grid_resolve_wallpaper(state);
     } else {
         state->flat_count = 0;
