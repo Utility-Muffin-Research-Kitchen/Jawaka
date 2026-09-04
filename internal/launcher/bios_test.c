@@ -91,7 +91,7 @@ static void test_value_grammar(void) {
     assert(choice.kind == JW_BIOS_CHOICE_DEFAULT);
     jw_bios_choice_parse("file:primary", &choice);
     assert(choice.kind == JW_BIOS_CHOICE_DEFAULT);
-    jw_bios_choice_parse("file::saturn.bin", &choice);
+    jw_bios_choice_parse("file::SATURN/saturn.bin", &choice);
     assert(choice.kind == JW_BIOS_CHOICE_DEFAULT);
     jw_bios_choice_parse("file:primary:/etc/passwd", &choice);
     assert(choice.kind == JW_BIOS_CHOICE_DEFAULT);
@@ -105,27 +105,32 @@ static void test_value_grammar(void) {
 
     /* Source id and relative path stay together, so a half-applied update
        cannot point a saved selection at the other card's file. */
-    jw_bios_choice_parse("file:secondary_sd:Saturn/Sega Saturn BIOS (JP).bin",
+    /* The picker stores every selection below the dedicated Saturn folder. */
+    jw_bios_choice_parse("file:secondary_sd:SATURN/Sega Saturn BIOS (JP).bin",
                          &choice);
     assert(choice.kind == JW_BIOS_CHOICE_FILE);
     assert(strcmp(choice.source_id, "secondary_sd") == 0);
-    assert(strcmp(choice.rel_path, "Saturn/Sega Saturn BIOS (JP).bin") == 0);
+    assert(strcmp(choice.rel_path, "SATURN/Sega Saturn BIOS (JP).bin") == 0);
     assert(jw_bios_choice_format(&choice, value, sizeof(value)));
-    assert(strcmp(value, "file:secondary_sd:Saturn/Sega Saturn BIOS (JP).bin") == 0);
+    assert(strcmp(value, "file:secondary_sd:SATURN/Sega Saturn BIOS (JP).bin") == 0);
+
+    /* Old root-level selections are not allowed to bypass BIOS/SATURN. */
+    jw_bios_choice_parse("file:primary:saturn_bios.bin", &choice);
+    assert(choice.kind == JW_BIOS_CHOICE_DEFAULT);
 
     /* Only the first colon separates: a filename may contain one. */
-    jw_bios_choice_parse("file:primary:odd:name.bin", &choice);
+    jw_bios_choice_parse("file:primary:SATURN/odd:name.bin", &choice);
     assert(choice.kind == JW_BIOS_CHOICE_FILE);
     assert(strcmp(choice.source_id, "primary") == 0);
-    assert(strcmp(choice.rel_path, "odd:name.bin") == 0);
+    assert(strcmp(choice.rel_path, "SATURN/odd:name.bin") == 0);
 
     /* Shell metacharacters are data. Nothing here evaluates them, and the
        round trip must not lose or rewrite a byte of the name. */
-    jw_bios_choice_parse("file:primary:weird/$(reboot) `x` ;rm -rf.bin", &choice);
+    jw_bios_choice_parse("file:primary:SATURN/weird/$(reboot) `x` ;rm -rf.bin", &choice);
     assert(choice.kind == JW_BIOS_CHOICE_FILE);
-    assert(strcmp(choice.rel_path, "weird/$(reboot) `x` ;rm -rf.bin") == 0);
+    assert(strcmp(choice.rel_path, "SATURN/weird/$(reboot) `x` ;rm -rf.bin") == 0);
     assert(jw_bios_choice_format(&choice, value, sizeof(value)));
-    assert(strcmp(value, "file:primary:weird/$(reboot) `x` ;rm -rf.bin") == 0);
+    assert(strcmp(value, "file:primary:SATURN/weird/$(reboot) `x` ;rm -rf.bin") == 0);
 
     /* Default has no stored representation: the caller deletes the setting. */
     memset(&choice, 0, sizeof(choice));
@@ -147,17 +152,18 @@ static void test_precedence(void) {
     assert(resolution.origin == JW_BIOS_ORIGIN_DEFAULT);
 
     /* A game-level Default inherits the system file. */
-    jw_bios_resolve("", "file:primary:saturn.bin", &resolution);
+    jw_bios_resolve("", "file:primary:SATURN/saturn.bin", &resolution);
     assert(resolution.choice.kind == JW_BIOS_CHOICE_FILE);
-    assert(strcmp(resolution.choice.rel_path, "saturn.bin") == 0);
+    assert(strcmp(resolution.choice.rel_path, "SATURN/saturn.bin") == 0);
     assert(resolution.origin == JW_BIOS_ORIGIN_SYSTEM);
 
     /* Explicit HLE at game level opts one title out of a system-wide file. */
-    jw_bios_resolve("hle", "file:primary:saturn.bin", &resolution);
+    jw_bios_resolve("hle", "file:primary:SATURN/saturn.bin", &resolution);
     assert(resolution.choice.kind == JW_BIOS_CHOICE_HLE);
     assert(resolution.origin == JW_BIOS_ORIGIN_GAME);
 
-    jw_bios_resolve("file:secondary_sd:jp.bin", "file:primary:saturn.bin",
+    jw_bios_resolve("file:secondary_sd:SATURN/jp.bin",
+                    "file:primary:SATURN/saturn.bin",
                     &resolution);
     assert(resolution.origin == JW_BIOS_ORIGIN_GAME);
     assert(strcmp(resolution.choice.source_id, "secondary_sd") == 0);
@@ -178,36 +184,36 @@ static void test_validation(void) {
 
     /* A custom, non-standard filename with no known checksum is accepted on
        size alone; nothing calls it verified. */
-    choice = file_choice("primary", "Saturn/my saturn dump.bin");
+    choice = file_choice("primary", "SATURN/my saturn dump.bin");
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_OK);
     char expected[JW_STORAGE_PATH_MAX];
-    path_of(expected, sizeof(expected), "card1/BIOS/Saturn/my saturn dump.bin");
+    path_of(expected, sizeof(expected), "card1/BIOS/SATURN/my saturn dump.bin");
     assert(strcmp(abs, expected) == 0);
 
     /* Duplicate filenames on different cards stay distinct selections. */
-    choice = file_choice("secondary_sd", "Saturn/my saturn dump.bin");
+    choice = file_choice("secondary_sd", "SATURN/my saturn dump.bin");
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_OK);
-    path_of(expected, sizeof(expected), "card2/BIOS/Saturn/my saturn dump.bin");
+    path_of(expected, sizeof(expected), "card2/BIOS/SATURN/my saturn dump.bin");
     assert(strcmp(abs, expected) == 0);
 
-    choice = file_choice("primary", "Saturn/toosmall.bin");
+    choice = file_choice("primary", "SATURN/toosmall.bin");
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_WRONG_SIZE);
     assert(abs[0] == '\0');
 
-    choice = file_choice("primary", "Saturn/gone.bin");
+    choice = file_choice("primary", "SATURN/gone.bin");
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_MISSING);
 
-    choice = file_choice("primary", "Saturn");
+    choice = file_choice("primary", "SATURN/nested");
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_NOT_REGULAR);
 
     /* A symlink out of the BIOS root is never resolved, even when its target
        is a perfectly valid image. */
-    choice = file_choice("primary", "escape.bin");
+    choice = file_choice("primary", "SATURN/escape.bin");
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_OUTSIDE_ROOT);
 
@@ -215,14 +221,18 @@ static void test_validation(void) {
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_INVALID_PATH);
 
-    choice = file_choice("no_such_card", "Saturn/my saturn dump.bin");
+    choice = file_choice("primary", "root-level.bin");
+    assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
+           JW_BIOS_FILE_INVALID_PATH);
+
+    choice = file_choice("no_such_card", "SATURN/my saturn dump.bin");
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_SOURCE_UNAVAILABLE);
 
     /* The card is configured but not mounted: the selection stays identifiable
        and is reported as unavailable rather than replaced. */
     build_sources(&sources, false);
-    choice = file_choice("secondary_sd", "Saturn/my saturn dump.bin");
+    choice = file_choice("secondary_sd", "SATURN/my saturn dump.bin");
     assert(jw_bios_resolve_file(&sources, &choice, abs, sizeof(abs)) ==
            JW_BIOS_FILE_SOURCE_UNAVAILABLE);
 
@@ -248,26 +258,25 @@ static void test_listing(void) {
     jw_bios_list_result result;
     int count = 0;
 
-    path_of(dir, sizeof(dir), "card1/BIOS");
+    path_of(dir, sizeof(dir), "card1/BIOS/SATURN");
     assert(jw_bios_list_dir(dir, NULL, rows, JW_BIOS_PAGE_ROWS, &count,
                             NULL, NULL, &result) == 0);
     assert(!result.failed && !result.cancelled && !result.has_more);
     /* Subfolders first, then eligible files, each byte-ascending. The wrong
        sized file, the symlink and the unreadable-size decoys never appear. */
-    assert(count == 4);
-    assert(rows[0].is_dir && strcmp(rows[0].name, "Saturn") == 0);
-    assert(rows[1].is_dir && strcmp(rows[1].name, "many") == 0);
-    assert(rows[2].is_dir && strcmp(rows[2].name, "nested") == 0);
-    assert(!rows[3].is_dir && strcmp(rows[3].name, "root-level.bin") == 0);
+    assert(count == 3);
+    assert(rows[0].is_dir && strcmp(rows[0].name, "many") == 0);
+    assert(rows[1].is_dir && strcmp(rows[1].name, "nested") == 0);
+    assert(!rows[2].is_dir && strcmp(rows[2].name, "my saturn dump.bin") == 0);
 
     /* Enumerating a folder does not descend into it. */
-    path_of(dir, sizeof(dir), "card1/BIOS/nested");
+    path_of(dir, sizeof(dir), "card1/BIOS/SATURN/nested");
     assert(jw_bios_list_dir(dir, NULL, rows, JW_BIOS_PAGE_ROWS, &count,
                             NULL, NULL, &result) == 0);
     assert(count == 1);
     assert(rows[0].is_dir && strcmp(rows[0].name, "deeper") == 0);
 
-    path_of(dir, sizeof(dir), "card1/BIOS/nested/deeper");
+    path_of(dir, sizeof(dir), "card1/BIOS/SATURN/nested/deeper");
     assert(jw_bios_list_dir(dir, NULL, rows, JW_BIOS_PAGE_ROWS, &count,
                             NULL, NULL, &result) == 0);
     assert(count == 1);
@@ -282,7 +291,7 @@ static void test_listing(void) {
    eligible file stays reachable by paging, with no duplicate and no gap. */
 static void test_paging(void) {
     char dir[JW_STORAGE_PATH_MAX];
-    path_of(dir, sizeof(dir), "card1/BIOS/many");
+    path_of(dir, sizeof(dir), "card1/BIOS/SATURN/many");
 
     jw_bios_entry rows[JW_BIOS_PAGE_ROWS];
     jw_bios_entry cursor;
@@ -336,17 +345,17 @@ static void test_paging(void) {
 static void test_rel_helpers(void) {
     char out[JW_BIOS_REL_PATH_MAX];
 
-    assert(jw_bios_rel_join("", "Saturn", out, sizeof(out)));
-    assert(strcmp(out, "Saturn") == 0);
-    assert(jw_bios_rel_join("Saturn", "jp.bin", out, sizeof(out)));
-    assert(strcmp(out, "Saturn/jp.bin") == 0);
-    assert(!jw_bios_rel_join("Saturn", "..", out, sizeof(out)));
-    assert(!jw_bios_rel_join("Saturn", "a/b", out, sizeof(out)));
-    assert(!jw_bios_rel_join("Saturn", "", out, sizeof(out)));
+    assert(jw_bios_rel_join("", "SATURN", out, sizeof(out)));
+    assert(strcmp(out, "SATURN") == 0);
+    assert(jw_bios_rel_join("SATURN", "jp.bin", out, sizeof(out)));
+    assert(strcmp(out, "SATURN/jp.bin") == 0);
+    assert(!jw_bios_rel_join("SATURN", "..", out, sizeof(out)));
+    assert(!jw_bios_rel_join("SATURN", "a/b", out, sizeof(out)));
+    assert(!jw_bios_rel_join("SATURN", "", out, sizeof(out)));
 
-    jw_bios_rel_parent("Saturn/deep/jp.bin", out, sizeof(out));
-    assert(strcmp(out, "Saturn/deep") == 0);
-    jw_bios_rel_parent("Saturn", out, sizeof(out));
+    jw_bios_rel_parent("SATURN/deep/jp.bin", out, sizeof(out));
+    assert(strcmp(out, "SATURN/deep") == 0);
+    jw_bios_rel_parent("SATURN", out, sizeof(out));
     assert(out[0] == '\0');
     jw_bios_rel_parent("", out, sizeof(out));
     assert(out[0] == '\0');
@@ -355,37 +364,37 @@ static void test_rel_helpers(void) {
 static void build_tree(void) {
     make_dir("card1");
     make_dir("card1/BIOS");
-    make_dir("card1/BIOS/Saturn");
-    make_dir("card1/BIOS/nested");
-    make_dir("card1/BIOS/nested/deeper");
-    make_dir("card1/BIOS/many");
+    make_dir("card1/BIOS/SATURN");
+    make_dir("card1/BIOS/SATURN/nested");
+    make_dir("card1/BIOS/SATURN/nested/deeper");
+    make_dir("card1/BIOS/SATURN/many");
     make_dir("card2");
     make_dir("card2/BIOS");
-    make_dir("card2/BIOS/Saturn");
+    make_dir("card2/BIOS/SATURN");
     make_dir("outside");
 
-    make_file("card1/BIOS/Saturn/my saturn dump.bin", JW_BIOS_SATURN_IMAGE_BYTES);
-    make_file("card1/BIOS/Saturn/toosmall.bin", 1024);
+    make_file("card1/BIOS/SATURN/my saturn dump.bin", JW_BIOS_SATURN_IMAGE_BYTES);
+    make_file("card1/BIOS/SATURN/toosmall.bin", 1024);
     make_file("card1/BIOS/root-level.bin", JW_BIOS_SATURN_IMAGE_BYTES);
     make_file("card1/BIOS/notes.txt", 12);
-    make_file("card1/BIOS/nested/deeper/buried.bin", JW_BIOS_SATURN_IMAGE_BYTES);
-    make_file("card2/BIOS/Saturn/my saturn dump.bin", JW_BIOS_SATURN_IMAGE_BYTES);
+    make_file("card1/BIOS/SATURN/nested/deeper/buried.bin", JW_BIOS_SATURN_IMAGE_BYTES);
+    make_file("card2/BIOS/SATURN/my saturn dump.bin", JW_BIOS_SATURN_IMAGE_BYTES);
     make_file("outside/saturn.bin", JW_BIOS_SATURN_IMAGE_BYTES);
 
     char target[JW_STORAGE_PATH_MAX];
     char link[JW_STORAGE_PATH_MAX];
     path_of(target, sizeof(target), "outside/saturn.bin");
-    path_of(link, sizeof(link), "card1/BIOS/escape.bin");
+    path_of(link, sizeof(link), "card1/BIOS/SATURN/escape.bin");
     assert(symlink(target, link) == 0);
 
     for (int i = 0; i < 600; i++) {
         char name[64];
-        snprintf(name, sizeof(name), "card1/BIOS/many/bios-%04d.bin", i);
+        snprintf(name, sizeof(name), "card1/BIOS/SATURN/many/bios-%04d.bin", i);
         make_file(name, JW_BIOS_SATURN_IMAGE_BYTES);
     }
     for (int i = 0; i < 400; i++) {
         char name[64];
-        snprintf(name, sizeof(name), "card1/BIOS/many/junk-%04d.dat", i);
+        snprintf(name, sizeof(name), "card1/BIOS/SATURN/many/junk-%04d.dat", i);
         make_file(name, 64);
     }
 }

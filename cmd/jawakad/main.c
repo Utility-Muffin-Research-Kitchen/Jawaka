@@ -5684,11 +5684,23 @@ static void jw__restore_env(jw_saved_env *saved, int count) {
     }
 }
 
-static void jw__publish_retroarch_source_dirs(const jw_storage_source *source) {
+static void jw__publish_retroarch_source_dirs(const jw_storage_source *source,
+                                              const char *system) {
     if (!source) {
         return;
     }
-    setenv("BIOS_PATH", source->bios_path, 1);
+    if (system && strcasecmp(system, "SATURN") == 0) {
+        char saturn_bios_path[JW_STORAGE_PATH_MAX +
+                              sizeof(JW_BIOS_SATURN_SUBDIR) + 1u];
+        int written = snprintf(saturn_bios_path, sizeof(saturn_bios_path),
+                               "%s/%s", source->bios_path,
+                               JW_BIOS_SATURN_SUBDIR);
+        if (written >= 0 && written < (int)sizeof(saturn_bios_path)) {
+            setenv("BIOS_PATH", saturn_bios_path, 1);
+        }
+    } else {
+        setenv("BIOS_PATH", source->bios_path, 1);
+    }
     setenv("SAVES_PATH", source->saves_path, 1);
     setenv("STATES_PATH", source->states_path, 1);
 }
@@ -9417,7 +9429,8 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         jw__save_env(&storage_env[0], "BIOS_PATH");
         jw__save_env(&storage_env[1], "SAVES_PATH");
         jw__save_env(&storage_env[2], "STATES_PATH");
-        jw__publish_retroarch_source_dirs(rom_source);
+        jw__publish_retroarch_source_dirs(rom_source,
+                                          state->pending_launch_system);
     }
 
     char config_error[256];

@@ -3,7 +3,8 @@
 
 /* Saturn BIOS selection for the YabaSanshiro standalone emulator.
 
-   The launcher persists a LOGICAL choice (source id + BIOS-root-relative path)
+   The launcher persists a LOGICAL choice (source id + BIOS-root-relative path
+   below the dedicated SATURN folder)
    and never an absolute mount path: the two MLP1 SD mounts swap across reboots,
    so an absolute path recorded today names a different card tomorrow. The
    absolute path exists only inside one resolved launch.
@@ -18,6 +19,10 @@
 
 /* Game- and system-scoped content setting key (jw_db_*_setting). */
 #define JW_CONTENT_SETTING_SATURN_BIOS "saturn_bios"
+
+/* Canonical child of every source's general BIOS root. RetroArch and the
+   standalone picker both use this folder for Saturn firmware. */
+#define JW_BIOS_SATURN_SUBDIR "SATURN"
 
 /* Every Saturn BIOS image is a raw 512 KiB dump: the emulator allocates
    0x80000 bytes and fills them with T123Load(BiosRom, 0x80000, 2, file).
@@ -83,7 +88,7 @@ typedef enum {
 
 /* Re-resolve a stored choice against the sources mounted right now. Succeeds
    only for a readable regular file of exactly JW_BIOS_SATURN_IMAGE_BYTES that
-   lives inside its own source's BIOS root. */
+   lives inside its own source's BIOS/SATURN folder. */
 jw_bios_file_status jw_bios_resolve_file(const jw_storage_source_list *sources,
                                          const jw_bios_choice *choice,
                                          char *out_abs, size_t out_abs_size);

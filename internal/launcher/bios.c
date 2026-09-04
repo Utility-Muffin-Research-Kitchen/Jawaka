@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -13,6 +14,13 @@ static void jw__bios_copy(char *out, size_t out_size, const char *value) {
         return;
     }
     snprintf(out, out_size, "%s", value ? value : "");
+}
+
+static bool jw__bios_saturn_rel_path_valid(const char *rel_path) {
+    static const char prefix[] = JW_BIOS_SATURN_SUBDIR "/";
+    return jw_storage_relative_path_valid(rel_path) &&
+           strncasecmp(rel_path, prefix, sizeof(prefix) - 1u) == 0 &&
+           rel_path[sizeof(prefix) - 1u] != '\0';
 }
 
 void jw_bios_choice_parse(const char *value, jw_bios_choice *out) {
@@ -40,7 +48,8 @@ void jw_bios_choice_parse(const char *value, jw_bios_choice *out) {
         return;
     }
     const char *rel = separator + 1;
-    if (!jw_storage_relative_path_valid(rel) || strlen(rel) >= sizeof(out->rel_path)) {
+    if (!jw__bios_saturn_rel_path_valid(rel) ||
+        strlen(rel) >= sizeof(out->rel_path)) {
         return;
     }
     memcpy(out->source_id, source, source_len);
@@ -59,7 +68,7 @@ bool jw_bios_choice_format(const jw_bios_choice *choice, char *out, size_t out_s
             return snprintf(out, out_size, "hle") < (int)out_size;
         case JW_BIOS_CHOICE_FILE: {
             if (!choice->source_id[0] || strchr(choice->source_id, ':') ||
-                !jw_storage_relative_path_valid(choice->rel_path)) {
+                !jw__bios_saturn_rel_path_valid(choice->rel_path)) {
                 return false;
             }
             int needed = snprintf(out, out_size, "file:%s:%s",
@@ -121,7 +130,7 @@ jw_bios_file_status jw_bios_resolve_file(const jw_storage_source_list *sources,
     if (!choice || choice->kind != JW_BIOS_CHOICE_FILE) {
         return JW_BIOS_FILE_NO_CHOICE;
     }
-    if (!jw_storage_relative_path_valid(choice->rel_path)) {
+    if (!jw__bios_saturn_rel_path_valid(choice->rel_path)) {
         return JW_BIOS_FILE_INVALID_PATH;
     }
     const jw_storage_source *source =

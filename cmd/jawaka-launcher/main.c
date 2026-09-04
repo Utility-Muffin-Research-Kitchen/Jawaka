@@ -136,7 +136,7 @@ typedef enum {
 } jw_action_row_kind;
 
 /* ─── Saturn BIOS picker ───────────────────────────────────────────────────
-   A lazy folder browser over the configured BIOS roots of both cards. It never
+   A lazy folder browser over the configured BIOS/SATURN roots of both cards. It never
    walks the trees: it lists exactly the folder you are standing in, one bounded
    page at a time, off the UI thread, and keeps a handful of pages so stepping
    back out does not rescan. See internal/launcher/bios.{c,h} for the listing
@@ -5931,7 +5931,7 @@ static bool jw__runtime_cores_dir(const jw_launcher_state *state,
 
 /* ─── Saturn BIOS picker ──────────────────────────────────────────────────
    Opened from the BIOS action row. Default and HLE are built in; the rest is
-   a lazy walk of each card's configured BIOS root. Nothing is scanned until
+   a lazy walk of each card's configured BIOS/SATURN root. Nothing is scanned until
    you step into a folder, and each folder is read one bounded page at a time
    on a worker thread, so a slow card never blocks drawing or B. */
 
@@ -6294,8 +6294,10 @@ static void jw__bios_picker_enter_source(jw_launcher_state *state, int index) {
     snprintf(picker->source_id, sizeof(picker->source_id), "%s", source->id);
     jw__bios_source_label(source, picker->source_label,
                           sizeof(picker->source_label));
-    picker->rel_dir[0] = '\0';
-    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s", source->bios_path);
+    snprintf(picker->rel_dir, sizeof(picker->rel_dir), "%s",
+             JW_BIOS_SATURN_SUBDIR);
+    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s/%s",
+             source->bios_path, JW_BIOS_SATURN_SUBDIR);
     picker->page = 0;
     picker->page_cursor_count = 0;
     picker->list.cursor = 0;
@@ -6326,8 +6328,8 @@ static void jw__bios_picker_enter_dir(jw_launcher_state *state, const char *name
 static void jw__bios_picker_go_up(jw_launcher_state *state) {
     jw_bios_picker *picker = state->bios_picker;
     picker->message[0] = '\0';
-    if (!picker->rel_dir[0]) {
-        /* At a card's BIOS root: back to Default / HLE / the card list. */
+    if (strcasecmp(picker->rel_dir, JW_BIOS_SATURN_SUBDIR) == 0) {
+        /* At a card's Saturn BIOS root: back to Default / HLE / the card list. */
         picker->in_folder = false;
         picker->row_count = 0;
         picker->has_more = false;
@@ -6349,13 +6351,8 @@ static void jw__bios_picker_go_up(jw_launcher_state *state) {
         return;
     }
     snprintf(picker->rel_dir, sizeof(picker->rel_dir), "%s", parent);
-    if (parent[0]) {
-        snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s/%s",
-                 source->bios_path, parent);
-    } else {
-        snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s",
-                 source->bios_path);
-    }
+    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s/%s",
+             source->bios_path, parent);
     picker->page = 0;
     picker->page_cursor_count = 0;
     picker->list.cursor = 0;
