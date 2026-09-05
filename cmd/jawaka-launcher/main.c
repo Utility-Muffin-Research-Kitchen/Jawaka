@@ -225,7 +225,10 @@ typedef struct {
        like a Coverflow card; status polarity is sampled once from its top-right
        region (or forced by theme.json) so light icons never sit on a light sky. */
     char               grid_wallpaper[PATH_MAX];
-    bool               grid_status_dark;
+    bool               grid_status_dark;   /* top-right region is light -> draw dark */
+    bool               grid_count_dark;    /* bottom-left, sampled separately */
+    char               grid_pad_path[JW_MAX_SYSTEMS + 4][256];
+    unsigned char      grid_pad_done[JW_MAX_SYSTEMS + 4];
     SDL_Texture       *grid_status_tex;      /* stock-size status cluster, drawn scaled down */
     int                grid_status_tex_w, grid_status_tex_h;
     /* Label overlays resolved once per tile per rebuild, not per frame. */
@@ -5724,9 +5727,31 @@ static void jw__focus_setup_begin(jw_launcher_state *state);
    one-time cost per layout/theme change, never per frame; the draw path uses
    the off-thread loader. Sampling the region rather than the whole image
    matters: a dark wallpaper can still be blown out in that one corner. */
+/* Mean luma of a box, sampling every 4th pixel. Returns false for an empty box. */
+static bool jw__grid_region_light(SDL_Surface *rgba, int x0, int x1, int y0, int y1) {
+    unsigned long sum = 0, n = 0;
+    if (x1 > rgba->w) x1 = rgba->w;
+    if (y1 > rgba->h) y1 = rgba->h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    SDL_LockSurface(rgba);
+    for (int y = y0; y < y1; y += 4) {
+        const uint8_t *row = (const uint8_t *)rgba->pixels + y * rgba->pitch;
+        for (int x = x0; x < x1; x += 4) {
+            uint32_t px; memcpy(&px, row + x * 4, 4);
+            uint8_t r, g, b, a; SDL_GetRGBA(px, rgba->format, &r, &g, &b, &a);
+            sum += (unsigned long)(r * 299 + g * 587 + b * 114) / 1000;
+            n++;
+        }
+    }
+    SDL_UnlockSurface(rgba);
+    return n && (sum / n) > 128;
+}
+
 static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
     state->grid_wallpaper[0] = '\0';
     state->grid_status_dark  = false;   /* default: light icons on a dark stage */
+    state->grid_count_dark   = false;
     int ti = jw_settings_user_theme_index(&state->settings);
     if (ti < 0) return;
     const jw_user_theme_catalog *cat = jw_settings_user_themes(&state->settings);
@@ -5736,32 +5761,30 @@ static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
         return;
     }
     const jw_user_theme *t = &cat->items[ti];
-    if (t->status_style == JW_USER_THEME_STATUS_DARK)  { state->grid_status_dark = true;  return; }
-    if (t->status_style == JW_USER_THEME_STATUS_LIGHT) { state->grid_status_dark = false; return; }
+    /* An explicit style is the author's decision for the whole overlay; only
+       "auto" reads the wallpaper, and then each corner answers for itself. */
+    if (t->status_style == JW_USER_THEME_STATUS_DARK) {
+        state->grid_status_dark = state->grid_count_dark = true;  return;
+    }
+    if (t->status_style == JW_USER_THEME_STATUS_LIGHT) {
+        state->grid_status_dark = state->grid_count_dark = false; return;
+    }
 
     SDL_Surface *surf = IMG_Load(state->grid_wallpaper);
     if (!surf) return;
     SDL_Surface *rgba = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA8888, 0);
     SDL_FreeSurface(surf);
     if (!rgba) return;
-    /* The status band on a 960x720 panel is roughly the top 12% by height and
-       the right 30% by width; sample every 4th pixel of that box. */
-    int x0 = rgba->w * 70 / 100, y1 = rgba->h * 12 / 100;
-    if (y1 < 1) y1 = 1;
-    unsigned long sum = 0, n = 0;
-    SDL_LockSurface(rgba);
-    for (int y = 0; y < y1; y += 4) {
-        const uint8_t *row = (const uint8_t *)rgba->pixels + y * rgba->pitch;
-        for (int x = x0; x < rgba->w; x += 4) {
-            uint32_t px; memcpy(&px, row + x * 4, 4);
-            uint8_t r, g, b, a; SDL_GetRGBA(px, rgba->format, &r, &g, &b, &a);
-            sum += (unsigned long)(r * 299 + g * 587 + b * 114) / 1000;
-            n++;
-        }
-    }
-    SDL_UnlockSurface(rgba);
+    /* The two overlays sit in opposite corners and a wallpaper can be light
+       under one and dark under the other, so each samples the region it
+       actually covers: the status band is the top 12% by the right 30%, the
+       count is the bottom 12% by the left 30%. */
+    int band_h = rgba->h * 12 / 100; if (band_h < 1) band_h = 1;
+    state->grid_status_dark = jw__grid_region_light(rgba, rgba->w * 70 / 100, rgba->w,
+                                                    0, band_h);
+    state->grid_count_dark  = jw__grid_region_light(rgba, 0, rgba->w * 30 / 100,
+                                                    rgba->h - band_h, rgba->h);
     SDL_FreeSurface(rgba);
-    if (n) state->grid_status_dark = (sum / n) > 128;
 }
 
 /* Grid tile art. Systems go through the memoized path resolver and the
@@ -5841,6 +5864,47 @@ static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
     return jw__load_coverflow_image(state->grid_label_path[idx], tw, th);
 }
 
+/* Controller silhouette for the count indicator. Same three-candidate chain as
+   the label -- Roms/<SYSTEM>/pad.png, the theme's grid/pads/, then Leaf's own
+   set beside the themes -- and memoized the same way. Absent falls back to
+   Catastrophe's generic gamepad, so a partial set is fine. The art is drawn
+   tinted, so it wants to be a white shape with alpha. */
+static SDL_Texture *jw__grid_pad(jw_launcher_state *state, int idx, int *tw, int *th) {
+    *tw = 0; *th = 0;
+    if (idx < 0 || idx >= state->flat_count || idx >= JW_MAX_SYSTEMS + 4) return NULL;
+    if (!state->grid_pad_done[idx]) {
+        state->grid_pad_done[idx] = 1;
+        state->grid_pad_path[idx][0] = '\0';
+        const jw_flat_item *it = &state->flat_items[idx];
+        const char *code = (it->kind == JW_FLAT_SYSTEM) ? state->systems[it->system_idx].name
+                         : (it->kind == JW_FLAT_APPS)   ? "_apps" : NULL;
+        if (!code || !code[0]) return NULL;
+        char cand[PATH_MAX];
+        int n;
+        if (code[0] != '_' && state->sdcard_root[0]) {
+            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/pad.png", state->sdcard_root, code);
+            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                jw__grid_memo_path(state->grid_pad_path[idx], sizeof(state->grid_pad_path[idx]), cand);
+        }
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (!state->grid_pad_path[idx][0] && ti >= 0 &&
+            jw_user_theme_pad_path(jw_settings_user_themes(&state->settings), ti,
+                                   "grid", code, cand, sizeof(cand)) &&
+            jw__grid_file_exists(cand))
+            jw__grid_memo_path(state->grid_pad_path[idx], sizeof(state->grid_pad_path[idx]), cand);
+        if (!state->grid_pad_path[idx][0]) {
+            const char *theme_dir = cat_get_active_theme_dir();
+            if (theme_dir && theme_dir[0]) {
+                n = snprintf(cand, sizeof(cand), "%s/../grid_pads/%s.png", theme_dir, code);
+                if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                    jw__grid_memo_path(state->grid_pad_path[idx], sizeof(state->grid_pad_path[idx]), cand);
+            }
+        }
+    }
+    if (!state->grid_pad_path[idx][0]) return NULL;
+    return jw__load_coverflow_image(state->grid_pad_path[idx], tw, th);
+}
+
 static void jw__render_grid(jw_launcher_state *state) {
     cat_clear_screen();
     const cat_stylesheet *ss = cat_get_stylesheet();
@@ -5909,7 +5973,7 @@ static void jw__render_grid(jw_launcher_state *state) {
     cat_draw_color ind_color = theme->hint;
     if (state->grid_wallpaper[0]) {
         theme->hint = state->grid_status_dark ? grid_dark : grid_light;
-        ind_color   = theme->hint;
+        ind_color   = state->grid_count_dark  ? grid_dark : grid_light;
     }
     if (state->grid_status_tex) {
         SDL_Texture *prev = SDL_GetRenderTarget(r);
@@ -5939,7 +6003,10 @@ static void jw__render_grid(jw_launcher_state *state) {
         if (sit->kind == JW_FLAT_SYSTEM)    sel_count = state->systems[sit->system_idx].game_count;
         else if (sit->kind == JW_FLAT_APPS) sel_count = state->app_count;
     }
-    jw_grid_draw_count(&state->grid, sel_count, cat_get_screen_height(), ind_color);
+    int pw = 0, ph = 0;
+    SDL_Texture *pad = sel_count >= 0 ? jw__grid_pad(state, sel, &pw, &ph) : NULL;
+    jw_grid_draw_count(&state->grid, sel_count, cat_get_screen_height(), ind_color,
+                       pad, pw, ph);
     jw__cf_animating |= anim;
     if (anim) cat_request_frame();
     jw__present();
@@ -7621,6 +7688,7 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         jw__build_grid_list(state);
         jw_grid_reset(&state->grid);
         memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
+        memset(state->grid_pad_done, 0, sizeof(state->grid_pad_done));
         /* Density: the user's explicit pick, else the selected theme's
            recommendation, else the stylesheet. Applied to a copy so the
            stylesheet stays what the theme authored. */
