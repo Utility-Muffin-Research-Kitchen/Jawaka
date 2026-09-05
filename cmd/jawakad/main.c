@@ -294,7 +294,7 @@ typedef struct {
     bool menu_in_game;
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
     int menu_standby_attempts;/* respawn guard for a crashing standby within one session */
-    bool advanced_shader_pending;   /* RetroArch Shaders is foreground; offer scope after close */
+    bool advanced_shader_pending;   /* Track direct entry into RetroArch Shaders until close */
     bool advanced_shader_menu_seen; /* RetroArch's initial menu surface was observed */
     bool advanced_shader_destination_sent; /* Shaders was requested after menu initialization */
     long long advanced_shader_started_ms;
@@ -5357,7 +5357,7 @@ static void jw__write_ingame_ui_mode(const char *mode) {
     free(path);
 }
 
-/* Reveal the resident in-game UI in menu, switcher, or shader-scope mode.
+/* Reveal the resident in-game UI in menu or switcher mode.
    Pauses RetroArch, records the desired mode, then reveals the warm standby
    (SIGUSR1) or cold-spawns it. Reversible: this never saves or quits. */
 static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode) {
@@ -5534,7 +5534,7 @@ static void jw__tick_advanced_shader(jw_daemon_state *state) {
     if (!state->advanced_shader_menu_seen) {
         if (now - state->advanced_shader_started_ms >=
             JW_ADVANCED_SHADER_OPEN_TIMEOUT_MS) {
-            jw_log_warn("advanced shader menu was not observed; automatic scope prompt disabled");
+            jw_log_warn("advanced shader menu was not observed; shader handoff cancelled");
             jw__advanced_shader_clear(state);
         }
         return;
@@ -5545,12 +5545,10 @@ static void jw__tick_advanced_shader(jw_daemon_state *state) {
     }
 
     jw__advanced_shader_clear(state);
-    if (jw__request_open_in_game_ui(state, "shader-scope") != 0) {
-        jw_log_warn("advanced shader menu closed but scope prompt could not open");
-        (void)jw_ra_resume_direct(&client);
-    } else {
-        jw_log_info("advanced shader menu closed; opened scope prompt");
-    }
+    /* Scope is now selected directly in jawaka-menu with Left/Right. Once
+       RetroArch's advanced shader screen closes, simply resume the game; the
+       launcher menu will be opened normally when requested. */
+    (void)jw_ra_resume_direct(&client);
 }
 
 static int jw__resolve_rom_path(const jw_daemon_state *state, const char *rom_path,

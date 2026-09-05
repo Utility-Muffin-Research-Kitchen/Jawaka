@@ -1530,12 +1530,8 @@ msgid "All RetroArch requires a Leaf build with Fugazi's conflict resolver."
 msgstr "所有 RetroArch 游戏需要包含 Fugazi 冲突解析器的 Leaf 版本。"
 
 #, fuzzy
-msgid "Disable shaders for this session."
-msgstr "在本次会话中禁用着色器。"
-
-#, fuzzy
-msgid "Ends on reload or exit"
-msgstr "重新加载内容或退出后结束"
+msgid "Remove the saved preset at the selected scope and turn shaders off."
+msgstr "移除所选作用范围内已保存的预设，并关闭着色器。"
 
 #, fuzzy
 msgid "Edit the current shader in RetroArch."
@@ -1554,20 +1550,12 @@ msgid "No saved shader exists at that scope."
 msgstr "该作用范围内没有已保存的着色器。"
 
 #, fuzzy
-msgid "Leaf asks where to save when the menu closes."
-msgstr "RetroArch 菜单关闭后，Leaf 会询问保存位置。"
+msgid "Save your edits in RetroArch before you leave."
+msgstr "离开前，请在 RetroArch 中保存修改。"
 
 #, fuzzy
 msgid "Recommended shaders are unavailable. Update or reinstall Leaf."
 msgstr "推荐的着色器不可用。请更新或重新安装 Leaf。"
-
-#, fuzzy
-msgid "Remove saved preset…"
-msgstr "移除已保存的预设…"
-
-#, fuzzy
-msgid "Requires Fugazi resolver"
-msgstr "需要 Fugazi 冲突解析器"
 
 #, fuzzy
 msgid "RetroArch did not confirm the shader. Reopen Shader or restart the game."
@@ -1590,20 +1578,16 @@ msgid "Choose where RetroArch should load this shader automatically."
 msgstr "选择 RetroArch 应自动加载此着色器的作用范围。"
 
 #, fuzzy
-msgid "Saved preset removed. A broader preset may apply after content reload."
-msgstr "已移除保存的预设。重新加载内容后可能会应用范围更广的预设。"
+msgid "A broader preset may apply after you reload the game."
+msgstr "重新加载游戏后，可能会应用作用范围更广的预设。"
 
 #, fuzzy
-msgid "Saved presets are removed separately by scope."
-msgstr "已保存的预设需按作用范围单独移除。"
+msgid "Scope"
+msgstr "作用范围"
 
 #, fuzzy
 msgid "Shader"
 msgstr "着色器"
-
-#, fuzzy
-msgid "Shader Off"
-msgstr "关闭着色器"
 
 #, fuzzy
 msgid "Shader failed and the previous shader could not be restored. Reopen the game."
@@ -1630,10 +1614,6 @@ msgid "This RetroArch build does not support Leaf's shader picker."
 msgstr "当前 RetroArch 版本不支持 Leaf 的着色器选择器。"
 
 #, fuzzy
-msgid "This core"
-msgstr "此核心"
-
-#, fuzzy
 msgid "This folder"
 msgstr "此文件夹"
 
@@ -1644,10 +1624,6 @@ msgstr "此游戏"
 #, fuzzy
 msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
 msgstr "这会替换所有 RetroArch 游戏的着色器，也可能替换 Fugazi。是否继续？"
-
-#, fuzzy
-msgid "This session"
-msgstr "本次会话"
 
 #, fuzzy
 msgid "This shader could not compile or link on this video driver. Previous shader restored."

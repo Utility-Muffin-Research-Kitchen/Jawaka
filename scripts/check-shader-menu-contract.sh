@@ -87,7 +87,7 @@ require_order "$picker" \
 [ "$(grep -cF 'jw__shader_apply_selection(' <<<"$picker")" -eq 1 ] || \
     fail "shader application must have only the explicit activation call site"
 require "$picker" "jw__shader_save_choice(socket_path, state, &view," \
-    "non-Off shader activation no longer enters the scope chooser"
+    "non-Off shader activation no longer saves at the selected scope"
 reject "$picker" "cursor == jw__shader_custom_index" \
     "the custom row bypasses the shared recommendation save route"
 require "$picker" '"shader-settings"' \
@@ -95,15 +95,14 @@ require "$picker" '"shader-settings"' \
 reject "$picker" "In RetroArch, open Quick Menu -> Shaders." \
     "the obsolete manual-navigation hint returned"
 
-scope_prompt="$(body_for jw__ingame_prompt_shader_scope)"
-require "$scope_prompt" "jw_shader_picker_probe(" \
-    "automatic scope prompt no longer reads RetroArch's active shader"
-require "$scope_prompt" "&running, true);" \
-    "automatic scope prompt no longer resumes when the chooser is dismissed"
+reject "$(<"$SRC")" "jw__ingame_prompt_shader_scope" \
+    "the removed automatic scope prompt returned"
+reject "$(<"$SRC")" "jw__shader_scope_list" \
+    "the separate scope chooser returned"
 
 ui_mode="$(body_for jw__ingame_ui_mode_read)"
-require "$ui_mode" 'else if (strcmp(buf, "shader-scope") == 0)' \
-    "resident menu no longer recognizes the automatic shader scope surface"
+reject "$ui_mode" '"shader-scope"' \
+    "resident menu still recognizes the removed automatic scope surface"
 
 daemon_action="$(body_for jw__handle_retroarch_action "$DAEMON_SRC")"
 require "$daemon_action" 'strcmp(action, "shader-settings") == 0' \
@@ -134,9 +133,13 @@ require_order "$daemon_tick" \
     "jw_ra_open_shader_menu(&client)" \
     "shader destination no longer waits for the menu settle gate"
 require "$daemon_tick" $'if (!state->advanced_shader_menu_seen) {\n        if (now - state->advanced_shader_started_ms >=' \
-    "scope prompt can race ahead of RetroArch's asynchronous menu open"
+    "shader handoff no longer times out when RetroArch's menu fails to open"
 require "$daemon_tick" $'if (!state->advanced_shader_destination_sent) {\n        jw__advanced_shader_clear(state);\n        return;' \
-    "scope prompt can open before the Shaders destination was sent"
+    "game can resume before the Shaders destination was sent"
+require "$daemon_tick" "jw_ra_resume_direct(&client)" \
+    "closing Advanced no longer resumes the game"
+reject "$daemon_tick" "jw__request_open_in_game_ui(" \
+    "closing Advanced reopens Leaf instead of resuming the game"
 
 command_src="$(<"$COMMAND_SRC")"
 require "$command_src" 'jw_ra_send_raw(client, "OPEN_MENU SHADERS")' \
@@ -153,9 +156,9 @@ require "$item_path" "view->picker.original_path" \
 # constant: an older Fugazi cannot resolve a conflict the picker can create.
 require "$(<"$SRC")" "#define JW_FUGAZI_RESOLVER_ASSEMBLED true" \
     "the assembly gate no longer reflects the shipped Fugazi resolver"
-require "$(body_for jw__shader_save_choice)" \
-    "jw_shader_picker_scope_enabled(scope, JW_FUGAZI_RESOLVER_ASSEMBLED)" \
-    "shader save no longer enforces the assembly gate"
+require "$(body_for jw__shader_scope_cycle)" \
+    "jw_shader_picker_scope_enabled(" \
+    "scope navigation no longer enforces the assembly gate"
 require "$(body_for jw__shader_off_choice)" \
     "jw_shader_picker_scope_enabled(scope, JW_FUGAZI_RESOLVER_ASSEMBLED)" \
     "shader removal no longer enforces the assembly gate"
