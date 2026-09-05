@@ -5,6 +5,7 @@
 #include "internal/launcher/system_names.h"
 #include "internal/platform/device.h"
 #include "internal/platform/leaf_version.h"
+#include "internal/platform/paths.h"
 #include "internal/platform/platform_id.h"
 #include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
@@ -3305,6 +3306,12 @@ static void jw__scrape_download_rebuild_rows(jw_settings_ui *ui) {
     int count = m->system_count;
     if (count > JW_IPC_MISSING_MAX_SYSTEMS) count = JW_IPC_MISSING_MAX_SYSTEMS;
 
+    char *sdcard_root = jw_sdcard_root();
+    char catalog_error[160];
+    const jw_ra_catalog *catalog =
+        jw_ra_catalog_get(sdcard_root, catalog_error, sizeof(catalog_error));
+    free(sdcard_root);
+
     for (int i = 0; i < count; i++) {
         const jw_ipc_scrape_missing_row *src = &m->systems[i];
         jw_scrape_download_row *dst = &ui->scrape_download_rows[ui->scrape_download_row_count];
@@ -3316,7 +3323,8 @@ static void jw__scrape_download_rebuild_rows(jw_settings_ui *ui) {
         ui->scrape_download_total_games += src->total;
 
         char display[JW_SCRAPE_DOWNLOAD_LABEL_MAX];
-        jw_system_display_name(ui->db_path, src->system, display, sizeof(display));
+        jw_system_display_name(ui->db_path, catalog, src->system,
+                               display, sizeof(display));
         jw__copy_trimmed_or_fallback(dst->label, sizeof(dst->label),
                                      display, src->system);
         ui->scrape_download_row_count++;
