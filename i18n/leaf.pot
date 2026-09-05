@@ -188,6 +188,10 @@ msgstr ""
 msgid "816 MHz"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "A broader preset may apply after you reload the game."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "A: Choose   B: Back"
 msgstr ""
@@ -616,10 +620,6 @@ msgstr ""
 msgid "Disable USB ADB and remove Leaf's boot restore marker?"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
-msgid "Disable shaders for this session."
-msgstr ""
-
 #: internal/platform/input_shortcuts.c
 msgid "Disabled"
 msgstr ""
@@ -682,10 +682,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Enabled"
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "Ends on reload or exit"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -954,10 +950,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Leaf"
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "Leaf asks where to save when the menu closes."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1417,7 +1409,7 @@ msgid "Remove"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
-msgid "Remove saved preset…"
+msgid "Remove the saved preset at the selected scope and turn shaders off."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1438,10 +1430,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Replace All"
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "Requires Fugazi resolver"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1557,11 +1545,7 @@ msgid "Save globally"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
-msgid "Saved preset removed. A broader preset may apply after content reload."
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "Saved presets are removed separately by scope."
+msgid "Save your edits in RetroArch before you leave."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1590,6 +1574,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scanning…"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Scope"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1734,10 +1722,6 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader"
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "Shader Off"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -2005,10 +1989,6 @@ msgid "This RetroArch build does not support Leaf's shader picker."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
-msgid "This core"
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
 msgid "This folder"
 msgstr ""
 
@@ -2018,10 +1998,6 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
-msgstr ""
-
-#: cmd/jawaka-menu/main.c
-msgid "This session"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c

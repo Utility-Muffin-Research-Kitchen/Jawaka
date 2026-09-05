@@ -294,7 +294,7 @@ typedef struct {
     bool menu_in_game;
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
     int menu_standby_attempts;/* respawn guard for a crashing standby within one session */
-    bool advanced_shader_pending;   /* RetroArch Shaders is foreground; offer scope after close */
+    bool advanced_shader_pending;   /* Track direct entry into RetroArch Shaders until close */
     bool advanced_shader_menu_seen; /* RetroArch's initial menu surface was observed */
     bool advanced_shader_destination_sent; /* Shaders was requested after menu initialization */
     long long advanced_shader_started_ms;
@@ -5534,7 +5534,7 @@ static void jw__tick_advanced_shader(jw_daemon_state *state) {
     if (!state->advanced_shader_menu_seen) {
         if (now - state->advanced_shader_started_ms >=
             JW_ADVANCED_SHADER_OPEN_TIMEOUT_MS) {
-            jw_log_warn("advanced shader menu was not observed; automatic scope prompt disabled");
+            jw_log_warn("advanced shader menu was not observed; shader handoff cancelled");
             jw__advanced_shader_clear(state);
         }
         return;
