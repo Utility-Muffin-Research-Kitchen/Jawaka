@@ -5900,12 +5900,17 @@ static void jw__render_grid(jw_launcher_state *state) {
     sb.y_position = 0;
     /* Polarity: the status bar draws text and icons in theme.hint. Swap it for
        this one draw when the wallpaper region behind it is light, and put the
-       stylesheet's colour straight back so nothing else in the frame sees it. */
+       stylesheet's colour straight back so nothing else in the frame sees it.
+       The count indicator in the opposite corner takes the same colour. */
+    const cat_draw_color grid_dark  = { 0x14, 0x1A, 0x14, 0xFF };
+    const cat_draw_color grid_light = { 0xF2, 0xF5, 0xEF, 0xFF };
     ap_theme *theme = cat_get_theme();
     cat_draw_color saved_hint = theme->hint;
-    if (state->grid_wallpaper[0])
-        theme->hint = state->grid_status_dark ? (cat_draw_color){ 0x14, 0x1A, 0x14, 0xFF }
-                                              : (cat_draw_color){ 0xF2, 0xF5, 0xEF, 0xFF };
+    cat_draw_color ind_color = theme->hint;
+    if (state->grid_wallpaper[0]) {
+        theme->hint = state->grid_status_dark ? grid_dark : grid_light;
+        ind_color   = theme->hint;
+    }
     if (state->grid_status_tex) {
         SDL_Texture *prev = SDL_GetRenderTarget(r);
         SDL_SetRenderTarget(r, state->grid_status_tex);
@@ -5923,6 +5928,18 @@ static void jw__render_grid(jw_launcher_state *state) {
         cat_draw_status_bar(&sb);
     }
     theme->hint = saved_hint;
+
+    /* Item count for the focused tile, bottom-left. Systems report their game
+       count; Apps reports how many apps are installed. Anything else counts
+       nothing and draws no indicator. */
+    int sel = state->list.cursor;
+    int sel_count = -1;
+    if (sel >= 0 && sel < state->flat_count) {
+        const jw_flat_item *sit = &state->flat_items[sel];
+        if (sit->kind == JW_FLAT_SYSTEM)    sel_count = state->systems[sit->system_idx].game_count;
+        else if (sit->kind == JW_FLAT_APPS) sel_count = state->app_count;
+    }
+    jw_grid_draw_count(&state->grid, sel_count, cat_get_screen_height(), ind_color);
     jw__cf_animating |= anim;
     if (anim) cat_request_frame();
     jw__present();

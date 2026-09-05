@@ -3,6 +3,7 @@
 
 #include "catastrophe.h"
 #include <SDL2/SDL.h>
+#include <stdio.h>
 
 static int jw__grid_max(int a, int b) { return a > b ? a : b; }
 
@@ -298,4 +299,34 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
     }
 
     return animating;
+}
+
+/* The gamepad is Catastrophe's atlas icon, tinted through the same colour-mod
+   path the status icons use. Its d-pad and buttons are transparent holes, so
+   one colour is the whole glyph and it needs no second tone of its own. */
+void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
+                        cat_draw_color color) {
+    if (!g || count < 0) return;
+    TTF_Font *font = cat_get_font(CAT_FONT_SMALL);
+    if (!font) return;
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", count);
+
+    int icon = cat_device_icon_px();          /* 0 when the atlas is unavailable */
+    int gap  = icon > 0 ? cat_scale(6) : 0;
+    int th   = TTF_FontHeight(font);
+    int block_h = th > icon ? th : icon;
+
+    /* The slack the layout left below the last row. Clamped both ways so a
+       dense grid that leaves almost none still draws on screen. */
+    int bottom = g->y0 + g->rows * (g->tile + g->gutter) - g->gutter;
+    int y = bottom + (screen_h - bottom - block_h) / 2;
+    if (y + block_h > screen_h) y = screen_h - block_h;
+    if (y < bottom)             y = bottom;
+    int x = cat_scale(16);
+
+    if (icon > 0)
+        cat_draw_device_icon(CAT_DEVICE_ICON_CONTROLLER, x, y + (block_h - icon) / 2, color);
+    cat_draw_text(font, buf, x + icon + gap, y + (block_h - th) / 2, color);
 }

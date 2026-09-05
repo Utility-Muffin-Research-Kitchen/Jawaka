@@ -76,4 +76,11 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
                   jw_grid_icon_fn icon_fn, jw_grid_icon_fn label_fn, void *ctx,
                   uint32_t now, uint32_t anim_ms);
 
+/* Bottom-left item count for the focused tile: Catastrophe's gamepad icon and
+   the number, mirroring the status cluster's inset on the opposite corner. It
+   sits in the slack below the last row, so it never overlaps a tile. `count`
+   below zero draws nothing (an entry that counts nothing). */
+void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
+                        cat_draw_color color);
+
 #endif
