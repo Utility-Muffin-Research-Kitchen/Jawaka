@@ -49,6 +49,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
@@ -3769,6 +3770,50 @@ static void jw__push_icon_candidate(jw_system_icon_candidates *out, const char *
     }
 }
 
+static bool jw__dir_exists(const char *path) {
+    struct stat st;
+    return path && path[0] && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* The scanner accepts any of a system's alias folders but records its games
+   under the catalog id, so Roms/<id>/ is frequently not the folder the user
+   actually has -- a card with Roms/NES/ still reports the system as FC. Find
+   the folder that is really on the card: the id, then the catalog's own
+   rom_root, then any accepted alias. NULL when the system has no folder here,
+   in which case there is no per-system override to look for. */
+static const char *jw__system_rom_folder(const jw_launcher_state *state,
+                                         const char *system_code,
+                                         char *buf, size_t n) {
+    if (!state || !state->sdcard_root[0] || !system_code || !system_code[0]) return NULL;
+    char probe[PATH_MAX];
+    int w = snprintf(probe, sizeof(probe), "%s/Roms/%s", state->sdcard_root, system_code);
+    if (w > 0 && (size_t)w < sizeof(probe) && jw__dir_exists(probe)) return system_code;
+    if (!state->system_icon_catalog) return NULL;
+
+    const jw_ra_system *sys = jw_ra_catalog_find_system(state->system_icon_catalog, system_code);
+    if (!sys) return NULL;
+
+    /* rom_root is "Roms/<FOLDER>"; the alias list holds bare folder names. */
+    const char *root = sys->rom_root ? strrchr(sys->rom_root, '/') : NULL;
+    const char *cands[1 + 16];
+    size_t ncand = 0;
+    if (root && root[1]) cands[ncand++] = root + 1;
+    for (size_t i = 0; i < sys->patterns.count && ncand < sizeof(cands) / sizeof(cands[0]); i++)
+        if (sys->patterns.items[i] && sys->patterns.items[i][0])
+            cands[ncand++] = sys->patterns.items[i];
+
+    for (size_t i = 0; i < ncand; i++) {
+        w = snprintf(probe, sizeof(probe), "%s/Roms/%s", state->sdcard_root, cands[i]);
+        if (w > 0 && (size_t)w < sizeof(probe) && jw__dir_exists(probe)) {
+            size_t len = strlen(cands[i]);
+            if (len >= n) return NULL;
+            memcpy(buf, cands[i], len + 1);
+            return buf;
+        }
+    }
+    return NULL;
+}
+
 static void jw__build_system_icon_candidates(const jw_launcher_state *state,
                                              const char *system_code,
                                              jw_system_icon_candidates *out) {
@@ -3806,11 +3851,15 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
         }
     }
 
-    /* (1) user override on the sdcard */
+    /* (1) user override on the sdcard, in whichever alias folder they have */
     if (system_code[0] != '_' && state && state->sdcard_root[0]) {
-        n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
-                     state->sdcard_root, system_code);
-        if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+        char folder[128];
+        const char *rom_dir = jw__system_rom_folder(state, system_code, folder, sizeof(folder));
+        if (rom_dir) {
+            n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
+                         state->sdcard_root, rom_dir);
+            if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+        }
     }
 
     const char *theme_dir  = cat_get_active_theme_dir();
@@ -5836,8 +5885,10 @@ static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
         if (!code || !code[0]) return NULL;
         char cand[PATH_MAX];
         int n;
-        if (code[0] != '_' && state->sdcard_root[0]) {
-            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/label.png", state->sdcard_root, code);
+        char folder[128];
+        const char *rom_dir = code[0] != '_' ? jw__system_rom_folder(state, code, folder, sizeof(folder)) : NULL;
+        if (rom_dir && state->sdcard_root[0]) {
+            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/label.png", state->sdcard_root, rom_dir);
             if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
                 jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
         }
@@ -5881,8 +5932,10 @@ static SDL_Texture *jw__grid_pad(jw_launcher_state *state, int idx, int *tw, int
         if (!code || !code[0]) return NULL;
         char cand[PATH_MAX];
         int n;
-        if (code[0] != '_' && state->sdcard_root[0]) {
-            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/pad.png", state->sdcard_root, code);
+        char folder[128];
+        const char *rom_dir = code[0] != '_' ? jw__system_rom_folder(state, code, folder, sizeof(folder)) : NULL;
+        if (rom_dir && state->sdcard_root[0]) {
+            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/pad.png", state->sdcard_root, rom_dir);
             if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
                 jw__grid_memo_path(state->grid_pad_path[idx], sizeof(state->grid_pad_path[idx]), cand);
         }
