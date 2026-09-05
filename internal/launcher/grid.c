@@ -306,7 +306,7 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
    one colour is the whole glyph and it needs no second tone of its own. */
 void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
                         cat_draw_color color,
-                        SDL_Texture *pad, int pad_w, int pad_h) {
+                        SDL_Texture *ctrl, int ctrl_w, int ctrl_h) {
     if (!g || count < 0) return;
     TTF_Font *font = cat_get_font(CAT_FONT_SMALL);
     if (!font) return;
@@ -317,9 +317,9 @@ void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
     int th = TTF_FontHeight(font);
     /* A themed pad is drawn at the number's height, whatever it was authored
        at; the atlas glyph has one native size and is drawn at it. */
-    bool have_pad = pad && pad_w > 0 && pad_h > 0;
-    int icon_h = have_pad ? th : cat_device_icon_px();   /* 0 = no atlas either */
-    int icon_w = have_pad ? (pad_w * icon_h + pad_h / 2) / pad_h : icon_h;
+    bool have_ctrl = ctrl && ctrl_w > 0 && ctrl_h > 0;
+    int icon_h = have_ctrl ? th : cat_device_icon_px();   /* 0 = no atlas either */
+    int icon_w = have_ctrl ? (ctrl_w * icon_h + ctrl_h / 2) / ctrl_h : icon_h;
     int icon = icon_h;
     int gap  = icon_h > 0 ? cat_scale(6) : 0;
     int block_h = th > icon ? th : icon;
@@ -332,14 +332,14 @@ void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
     if (y < bottom)             y = bottom;
     int x = cat_scale(16);
 
-    if (have_pad) {
-        /* Tint through the same colour-mod path the atlas glyph uses, so a
-           themed pad and the status cluster stay the same colour. */
+    if (have_ctrl) {
+        /* Tint through the same colour-mod path the atlas glyph uses, so themed
+           controller art and the status cluster stay the same colour. */
         SDL_Rect dst = { x, y + (block_h - icon_h) / 2, icon_w, icon_h };
-        SDL_SetTextureBlendMode(pad, SDL_BLENDMODE_BLEND);
-        SDL_SetTextureColorMod(pad, color.r, color.g, color.b);
-        SDL_SetTextureAlphaMod(pad, color.a);
-        SDL_RenderCopy(cat_get_renderer(), pad, NULL, &dst);
+        SDL_SetTextureBlendMode(ctrl, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureColorMod(ctrl, color.r, color.g, color.b);
+        SDL_SetTextureAlphaMod(ctrl, color.a);
+        SDL_RenderCopy(cat_get_renderer(), ctrl, NULL, &dst);
     } else if (icon > 0) {
         cat_draw_device_icon(CAT_DEVICE_ICON_CONTROLLER, x, y + (block_h - icon) / 2, color);
         icon_w = icon;

@@ -66,10 +66,10 @@ bool jw_user_theme_label_path(const jw_user_theme_catalog *cat, int idx,
                               const char *view, const char *system_code,
                               char *out, size_t out_size);
 
-/* <root>/<dir>/<view>/pads/<CODE>.png -- the controller silhouette drawn beside
-   the item count. Tinted at draw time, so the art is a white shape with alpha
-   rather than coloured. */
-bool jw_user_theme_pad_path(const jw_user_theme_catalog *cat, int idx,
+/* <root>/<dir>/<view>/controllers/<CODE>.png -- the controller silhouette drawn
+   beside the item count. Tinted at draw time, so the art is a white shape with
+   alpha rather than coloured. */
+bool jw_user_theme_controller_path(const jw_user_theme_catalog *cat, int idx,
                             const char *view, const char *system_code,
                             char *out, size_t out_size);
 /* Per-view wallpaper first, then the theme-wide one. png/jpg/jpeg. */

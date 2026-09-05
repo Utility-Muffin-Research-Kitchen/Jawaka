@@ -186,10 +186,10 @@ bool jw_user_theme_label_path(const jw_user_theme_catalog *cat, int idx,
     return jw__ut_asset(cat, idx, view, "labels", system_code, out, out_size);
 }
 
-bool jw_user_theme_pad_path(const jw_user_theme_catalog *cat, int idx,
+bool jw_user_theme_controller_path(const jw_user_theme_catalog *cat, int idx,
                             const char *view, const char *system_code,
                             char *out, size_t out_size) {
-    return jw__ut_asset(cat, idx, view, "pads", system_code, out, out_size);
+    return jw__ut_asset(cat, idx, view, "controllers", system_code, out, out_size);
 }
 
 bool jw_user_theme_wallpaper_path(const jw_user_theme_catalog *cat, int idx,

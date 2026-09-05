@@ -228,8 +228,8 @@ typedef struct {
     char               grid_wallpaper[PATH_MAX];
     bool               grid_status_dark;   /* top-right region is light -> draw dark */
     bool               grid_count_dark;    /* bottom-left, sampled separately */
-    char               grid_pad_path[JW_MAX_SYSTEMS + 4][256];
-    unsigned char      grid_pad_done[JW_MAX_SYSTEMS + 4];
+    char               grid_ctrl_path[JW_MAX_SYSTEMS + 4][256];
+    unsigned char      grid_ctrl_done[JW_MAX_SYSTEMS + 4];
     SDL_Texture       *grid_status_tex;      /* stock-size status cluster, drawn scaled down */
     int                grid_status_tex_w, grid_status_tex_h;
     /* Label overlays resolved once per tile per rebuild, not per frame. */
@@ -5916,16 +5916,16 @@ static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
 }
 
 /* Controller silhouette for the count indicator. Same three-candidate chain as
-   the label -- Roms/<SYSTEM>/pad.png, the theme's grid/pads/, then Leaf's own
-   set beside the themes -- and memoized the same way. Absent falls back to
-   Catastrophe's generic gamepad, so a partial set is fine. The art is drawn
-   tinted, so it wants to be a white shape with alpha. */
-static SDL_Texture *jw__grid_pad(jw_launcher_state *state, int idx, int *tw, int *th) {
+   the label -- Roms/<SYSTEM>/controller.png, the theme's grid/controllers/, then
+   Leaf's own set beside the themes -- and memoized the same way. Absent falls
+   back to Catastrophe's generic gamepad, so a partial set is fine. The art is
+   drawn tinted, so it wants to be a white shape with alpha. */
+static SDL_Texture *jw__grid_controller(jw_launcher_state *state, int idx, int *tw, int *th) {
     *tw = 0; *th = 0;
     if (idx < 0 || idx >= state->flat_count || idx >= JW_MAX_SYSTEMS + 4) return NULL;
-    if (!state->grid_pad_done[idx]) {
-        state->grid_pad_done[idx] = 1;
-        state->grid_pad_path[idx][0] = '\0';
+    if (!state->grid_ctrl_done[idx]) {
+        state->grid_ctrl_done[idx] = 1;
+        state->grid_ctrl_path[idx][0] = '\0';
         const jw_flat_item *it = &state->flat_items[idx];
         const char *code = (it->kind == JW_FLAT_SYSTEM) ? state->systems[it->system_idx].name
                          : (it->kind == JW_FLAT_APPS)   ? "_apps" : NULL;
@@ -5935,27 +5935,27 @@ static SDL_Texture *jw__grid_pad(jw_launcher_state *state, int idx, int *tw, int
         char folder[128];
         const char *rom_dir = code[0] != '_' ? jw__system_rom_folder(state, code, folder, sizeof(folder)) : NULL;
         if (rom_dir && state->sdcard_root[0]) {
-            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/pad.png", state->sdcard_root, rom_dir);
+            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/controller.png", state->sdcard_root, rom_dir);
             if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
-                jw__grid_memo_path(state->grid_pad_path[idx], sizeof(state->grid_pad_path[idx]), cand);
+                jw__grid_memo_path(state->grid_ctrl_path[idx], sizeof(state->grid_ctrl_path[idx]), cand);
         }
         int ti = jw_settings_user_theme_index(&state->settings);
-        if (!state->grid_pad_path[idx][0] && ti >= 0 &&
-            jw_user_theme_pad_path(jw_settings_user_themes(&state->settings), ti,
+        if (!state->grid_ctrl_path[idx][0] && ti >= 0 &&
+            jw_user_theme_controller_path(jw_settings_user_themes(&state->settings), ti,
                                    "grid", code, cand, sizeof(cand)) &&
             jw__grid_file_exists(cand))
-            jw__grid_memo_path(state->grid_pad_path[idx], sizeof(state->grid_pad_path[idx]), cand);
-        if (!state->grid_pad_path[idx][0]) {
+            jw__grid_memo_path(state->grid_ctrl_path[idx], sizeof(state->grid_ctrl_path[idx]), cand);
+        if (!state->grid_ctrl_path[idx][0]) {
             const char *theme_dir = cat_get_active_theme_dir();
             if (theme_dir && theme_dir[0]) {
-                n = snprintf(cand, sizeof(cand), "%s/../grid_pads/%s.png", theme_dir, code);
+                n = snprintf(cand, sizeof(cand), "%s/../grid_controllers/%s.png", theme_dir, code);
                 if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
-                    jw__grid_memo_path(state->grid_pad_path[idx], sizeof(state->grid_pad_path[idx]), cand);
+                    jw__grid_memo_path(state->grid_ctrl_path[idx], sizeof(state->grid_ctrl_path[idx]), cand);
             }
         }
     }
-    if (!state->grid_pad_path[idx][0]) return NULL;
-    return jw__load_coverflow_image(state->grid_pad_path[idx], tw, th);
+    if (!state->grid_ctrl_path[idx][0]) return NULL;
+    return jw__load_coverflow_image(state->grid_ctrl_path[idx], tw, th);
 }
 
 static void jw__render_grid(jw_launcher_state *state) {
@@ -6056,10 +6056,10 @@ static void jw__render_grid(jw_launcher_state *state) {
         if (sit->kind == JW_FLAT_SYSTEM)    sel_count = state->systems[sit->system_idx].game_count;
         else if (sit->kind == JW_FLAT_APPS) sel_count = state->app_count;
     }
-    int pw = 0, ph = 0;
-    SDL_Texture *pad = sel_count >= 0 ? jw__grid_pad(state, sel, &pw, &ph) : NULL;
+    int cw = 0, ch = 0;
+    SDL_Texture *ctrl = sel_count >= 0 ? jw__grid_controller(state, sel, &cw, &ch) : NULL;
     jw_grid_draw_count(&state->grid, sel_count, cat_get_screen_height(), ind_color,
-                       pad, pw, ph);
+                       ctrl, cw, ch);
     jw__cf_animating |= anim;
     if (anim) cat_request_frame();
     jw__present();
@@ -7741,7 +7741,7 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         jw__build_grid_list(state);
         jw_grid_reset(&state->grid);
         memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
-        memset(state->grid_pad_done, 0, sizeof(state->grid_pad_done));
+        memset(state->grid_ctrl_done, 0, sizeof(state->grid_ctrl_done));
         /* Density: the user's explicit pick, else the selected theme's
            recommendation, else the stylesheet. Applied to a copy so the
            stylesheet stays what the theme authored. */
