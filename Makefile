@@ -945,6 +945,16 @@ catalog-generation-smoke:
 content-catalog-smoke:
 	scripts/content-catalog-smoke.sh
 
+.PHONY: system-names-test
+system-names-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/system-names-test \
+		internal/launcher/system_names_test.c internal/launcher/system_names.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
+		internal/i18n/i18n.c internal/core/log.c internal/retroarch/catalog.c \
+		$(EFFECTIVE_CATALOG_SRCS) \
+		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/system-names-test
+
 catalog-folder-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/catalog-folder-test \
 		internal/retroarch/catalog_folder_test.c internal/retroarch/catalog.c \

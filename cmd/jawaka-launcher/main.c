@@ -264,7 +264,7 @@ typedef struct {
     jw_library_summary summary;
     jw_system_entry    systems[JW_MAX_SYSTEMS];
     jw_system_icon_memo system_icon_memos[JW_MAX_SYSTEMS];
-    jw_ra_catalog     *system_icon_catalog;
+    jw_ra_catalog     *system_catalog;
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
@@ -756,7 +756,7 @@ static int jw__system_cmp_display(const void *a, const void *b) {
    then sorts the list alphabetically by that display name. */
 static void jw__resolve_system_names(const char *db_path, jw_launcher_state *state) {
     for (int i = 0; i < state->system_count; i++) {
-        jw_system_display_name(db_path, state->systems[i].name,
+        jw_system_display_name(db_path, state->system_catalog, state->systems[i].name,
                                state->systems[i].display_name,
                                sizeof(state->systems[i].display_name));
     }
@@ -1122,15 +1122,15 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     }
 
     jw_db_list_systems(db_path, state->systems, JW_MAX_SYSTEMS, &state->system_count);
-    jw__resolve_system_names(db_path, state);
     jw__system_icon_memo_clear(state);
     char catalog_error[160];
-    jw_ra_catalog *icon_catalog =
+    jw_ra_catalog *catalog =
         jw_ra_catalog_load(state->sdcard_root, catalog_error, sizeof(catalog_error));
-    jw_ra_catalog_free(state->system_icon_catalog);
-    state->system_icon_catalog = icon_catalog;
-    if (!icon_catalog) {
-        jw_log_warn("system icons: catalog unavailable: %s", catalog_error);
+    jw_ra_catalog_free(state->system_catalog);
+    state->system_catalog = catalog;
+    jw__resolve_system_names(db_path, state);
+    if (!catalog) {
+        jw_log_warn("system names/icons: catalog unavailable: %s", catalog_error);
     }
     jw_db_list_apps(db_path, state->apps, JW_MAX_APPS, &state->app_count);
 
@@ -3869,9 +3869,9 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
     /* (2-3) content-pak art. AUTO follows the active theme's pack; an absent
        photographic asset deliberately falls through to the mandatory flat
        asset. Both paths are resolved live from the catalog's provider. */
-    if (state && state->system_icon_catalog && system_code[0] != '_') {
+    if (state && state->system_catalog && system_code[0] != '_') {
         const jw_ra_system *system = jw_ra_catalog_match_system_folder(
-            state->system_icon_catalog, system_code);
+            state->system_catalog, system_code);
         bool selected_photo =
             pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC ||
             (pack == JW_SYSTEM_ICON_PACK_AUTO && theme_name &&
@@ -3879,12 +3879,12 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
         if (system) {
             if (selected_photo &&
                 jw_ra_catalog_resolve_system_icon_path(
-                    state->system_icon_catalog, system, true,
+                    state->system_catalog, system, true,
                     path, sizeof(path)) == 0) {
                 jw__push_icon_candidate(out, path);
             }
             if (jw_ra_catalog_resolve_system_icon_path(
-                    state->system_icon_catalog, system, false,
+                    state->system_catalog, system, false,
                     path, sizeof(path)) == 0) {
                 jw__push_icon_candidate(out, path);
             }
@@ -7033,7 +7033,8 @@ static void jw__open_system_actions(const char *db_path, jw_launcher_state *stat
     state->action_scope = JW_ACTION_SYSTEM;
     memset(&state->action_game, 0, sizeof(state->action_game));
     snprintf(state->action_system, sizeof(state->action_system), "%s", system);
-    jw_system_display_name(db_path, system, state->action_system_display,
+    jw_system_display_name(db_path, state->system_catalog, system,
+                           state->action_system_display,
                            sizeof(state->action_system_display));
     if (!state->action_system_display[0] && display_name && display_name[0]) {
         snprintf(state->action_system_display, sizeof(state->action_system_display),
@@ -7053,7 +7054,8 @@ static void jw__open_game_actions(const char *db_path, jw_launcher_state *state,
     state->action_scope = JW_ACTION_GAME;
     state->action_game = *game;
     snprintf(state->action_system, sizeof(state->action_system), "%s", game->system);
-    jw_system_display_name(db_path, game->system, state->action_system_display,
+    jw_system_display_name(db_path, state->system_catalog, game->system,
+                           state->action_system_display,
                            sizeof(state->action_system_display));
     jw__action_refresh(db_path, state);
     /* No "Actions: ..." status echo - the name is already the sub-header. */
@@ -7175,7 +7177,8 @@ static void jw__open_search(const char *db_path, jw_launcher_state *state) {
 static int jw__open_system_games(const char *db_path, const char *system,
                                  jw_launcher_state *state) {
     char display_name[64];
-    jw_system_display_name(db_path, system, display_name, sizeof(display_name));
+    jw_system_display_name(db_path, state->system_catalog, system,
+                           display_name, sizeof(display_name));
 
     int rc = jw__load_system_games_full(db_path, system, state, 0);
     if (rc != 0) {
@@ -7903,7 +7906,7 @@ static void jw__refresh_action_system_display(const char *db_path,
     if (!state || !db_path || !state->action_system[0]) {
         return;
     }
-    jw_system_display_name(db_path, state->action_system,
+    jw_system_display_name(db_path, state->system_catalog, state->action_system,
                            state->action_system_display,
                            sizeof(state->action_system_display));
     if (state->games_open && strcmp(state->game_system, state->action_system) == 0) {

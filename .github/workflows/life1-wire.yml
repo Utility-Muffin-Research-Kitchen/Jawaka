@@ -32,3 +32,6 @@ jobs:
 
       - name: Verify content manifests against canonical fixtures
         run: make -C Jawaka content-manifest-test catalog-merge-test
+
+      - name: Verify system display names and rename precedence
+        run: make -C Jawaka system-names-test
