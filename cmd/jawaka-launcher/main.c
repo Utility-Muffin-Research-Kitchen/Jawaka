@@ -228,8 +228,6 @@ typedef struct {
     char               grid_wallpaper[PATH_MAX];
     bool               grid_status_dark;   /* top-right region is light -> draw dark */
     bool               grid_count_dark;    /* bottom-left, sampled separately */
-    char               grid_ctrl_path[JW_MAX_SYSTEMS + 4][256];
-    unsigned char      grid_ctrl_done[JW_MAX_SYSTEMS + 4];
     SDL_Texture       *grid_status_tex;      /* stock-size status cluster, drawn scaled down */
     int                grid_status_tex_w, grid_status_tex_h;
     /* Label overlays resolved once per tile per rebuild, not per frame. */
@@ -5915,47 +5913,24 @@ static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
     return jw__load_coverflow_image(state->grid_label_path[idx], tw, th);
 }
 
-/* Controller silhouette for the count indicator. Same three-candidate chain as
-   the label -- Roms/<SYSTEM>/controller.png, the theme's grid/controllers/, then
-   Leaf's own set beside the themes -- and memoized the same way. Absent falls
-   back to Catastrophe's generic gamepad, so a partial set is fine. The art is
-   drawn tinted, so it wants to be a white shape with alpha. */
-static SDL_Texture *jw__grid_controller(jw_launcher_state *state, int idx, int *tw, int *th) {
+/* The count indicator's mark: Leaf's controller for a system, its apps mark for
+   the Apps tile. Deliberately not themeable and not per system -- it labels what
+   the number counts, the same way the battery labels a percentage, so it stays
+   the same everywhere. White art with alpha; the caller tints it. */
+static SDL_Texture *jw__grid_count_glyph(jw_launcher_state *state, int idx,
+                                         int *tw, int *th) {
     *tw = 0; *th = 0;
-    if (idx < 0 || idx >= state->flat_count || idx >= JW_MAX_SYSTEMS + 4) return NULL;
-    if (!state->grid_ctrl_done[idx]) {
-        state->grid_ctrl_done[idx] = 1;
-        state->grid_ctrl_path[idx][0] = '\0';
-        const jw_flat_item *it = &state->flat_items[idx];
-        const char *code = (it->kind == JW_FLAT_SYSTEM) ? state->systems[it->system_idx].name
-                         : (it->kind == JW_FLAT_APPS)   ? "_apps" : NULL;
-        if (!code || !code[0]) return NULL;
-        char cand[PATH_MAX];
-        int n;
-        char folder[128];
-        const char *rom_dir = code[0] != '_' ? jw__system_rom_folder(state, code, folder, sizeof(folder)) : NULL;
-        if (rom_dir && state->sdcard_root[0]) {
-            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/controller.png", state->sdcard_root, rom_dir);
-            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
-                jw__grid_memo_path(state->grid_ctrl_path[idx], sizeof(state->grid_ctrl_path[idx]), cand);
-        }
-        int ti = jw_settings_user_theme_index(&state->settings);
-        if (!state->grid_ctrl_path[idx][0] && ti >= 0 &&
-            jw_user_theme_controller_path(jw_settings_user_themes(&state->settings), ti,
-                                   "grid", code, cand, sizeof(cand)) &&
-            jw__grid_file_exists(cand))
-            jw__grid_memo_path(state->grid_ctrl_path[idx], sizeof(state->grid_ctrl_path[idx]), cand);
-        if (!state->grid_ctrl_path[idx][0]) {
-            const char *theme_dir = cat_get_active_theme_dir();
-            if (theme_dir && theme_dir[0]) {
-                n = snprintf(cand, sizeof(cand), "%s/../grid_controllers/%s.png", theme_dir, code);
-                if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
-                    jw__grid_memo_path(state->grid_ctrl_path[idx], sizeof(state->grid_ctrl_path[idx]), cand);
-            }
-        }
-    }
-    if (!state->grid_ctrl_path[idx][0]) return NULL;
-    return jw__load_coverflow_image(state->grid_ctrl_path[idx], tw, th);
+    if (idx < 0 || idx >= state->flat_count) return NULL;
+    const jw_flat_item *it = &state->flat_items[idx];
+    const char *mark = (it->kind == JW_FLAT_SYSTEM) ? "controller"
+                     : (it->kind == JW_FLAT_APPS)   ? "apps" : NULL;
+    if (!mark) return NULL;
+    const char *theme_dir = cat_get_active_theme_dir();
+    if (!theme_dir || !theme_dir[0]) return NULL;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/../ui/%s.png", theme_dir, mark);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return NULL;
+    return jw__load_cached_image(path, tw, th);
 }
 
 static void jw__render_grid(jw_launcher_state *state) {
@@ -6056,10 +6031,10 @@ static void jw__render_grid(jw_launcher_state *state) {
         if (sit->kind == JW_FLAT_SYSTEM)    sel_count = state->systems[sit->system_idx].game_count;
         else if (sit->kind == JW_FLAT_APPS) sel_count = state->app_count;
     }
-    int cw = 0, ch = 0;
-    SDL_Texture *ctrl = sel_count >= 0 ? jw__grid_controller(state, sel, &cw, &ch) : NULL;
+    int gw = 0, gh = 0;
+    SDL_Texture *glyph = sel_count >= 0 ? jw__grid_count_glyph(state, sel, &gw, &gh) : NULL;
     jw_grid_draw_count(&state->grid, sel_count, cat_get_screen_height(), ind_color,
-                       ctrl, cw, ch);
+                       glyph, gw, gh);
     jw__cf_animating |= anim;
     if (anim) cat_request_frame();
     jw__present();
@@ -7741,7 +7716,6 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         jw__build_grid_list(state);
         jw_grid_reset(&state->grid);
         memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
-        memset(state->grid_ctrl_done, 0, sizeof(state->grid_ctrl_done));
         /* Density: the user's explicit pick, else the selected theme's
            recommendation, else the stylesheet. Applied to a copy so the
            stylesheet stays what the theme authored. */
