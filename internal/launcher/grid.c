@@ -306,7 +306,7 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
    one colour is the whole glyph and it needs no second tone of its own. */
 void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
                         cat_draw_color color,
-                        SDL_Texture *glyph, int glyph_w, int glyph_h) {
+                        SDL_Texture *glyph, int glyph_w, int glyph_h, int reserve_w) {
     if (!g || count < 0) return;
     TTF_Font *font = cat_get_font(CAT_FONT_SMALL);
     if (!font) return;
@@ -318,11 +318,24 @@ void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
     /* A themed pad is drawn at the number's height, whatever it was authored
        at; the atlas glyph has one native size and is drawn at it. */
     bool have_glyph = glyph && glyph_w > 0 && glyph_h > 0;
-    int icon_h = have_glyph ? th : cat_device_icon_px();   /* 0 = no atlas either */
-    int icon_w = have_glyph ? (glyph_w * icon_h + glyph_h / 2) / glyph_h : icon_h;
+    /* A mark that already fits the line draws 1:1. These are small hard-edged
+       glyphs, and 24 px of art stretched to a 37 px line box is a blurred 1.5x
+       upscale for no gain -- at native size the mark matches the height of the
+       digits' own ink. Anything taller than the line is scaled down to fit. */
+    int icon_h, icon_w;
+    if (have_glyph) {
+        icon_h = glyph_h <= th ? glyph_h : th;
+        icon_w = glyph_h <= th ? glyph_w : (glyph_w * icon_h + glyph_h / 2) / glyph_h;
+    } else {
+        icon_h = cat_device_icon_px();   /* 0 = no atlas either */
+        icon_w = icon_h;
+    }
     int icon = icon_h;
     int gap  = icon_h > 0 ? cat_scale(6) : 0;
     int block_h = th > icon ? th : icon;
+    /* The column the mark sits in. Wider than the mark whenever another mark is
+       wider, which is what keeps the number still. */
+    int slot_w = reserve_w > icon_w ? reserve_w : icon_w;
 
     /* The slack the layout left below the last row. Clamped both ways so a
        dense grid that leaves almost none still draws on screen. */
@@ -334,15 +347,17 @@ void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
 
     if (have_glyph) {
         /* Tint through the same colour-mod path the atlas icons use, so the
-           glyph and the status cluster stay the same colour. */
-        SDL_Rect dst = { x, y + (block_h - icon_h) / 2, icon_w, icon_h };
+           glyph and the status cluster stay the same colour. Right-aligned in
+           the slot: a narrower mark indents from the left rather than dragging
+           the number left with it. */
+        SDL_Rect dst = { x + slot_w - icon_w, y + (block_h - icon_h) / 2, icon_w, icon_h };
         SDL_SetTextureBlendMode(glyph, SDL_BLENDMODE_BLEND);
         SDL_SetTextureColorMod(glyph, color.r, color.g, color.b);
         SDL_SetTextureAlphaMod(glyph, color.a);
         SDL_RenderCopy(cat_get_renderer(), glyph, NULL, &dst);
     } else if (icon > 0) {
-        cat_draw_device_icon(CAT_DEVICE_ICON_CONTROLLER, x, y + (block_h - icon) / 2, color);
-        icon_w = icon;
+        cat_draw_device_icon(CAT_DEVICE_ICON_CONTROLLER,
+                             x + slot_w - icon, y + (block_h - icon) / 2, color);
     }
-    cat_draw_text(font, buf, x + icon_w + gap, y + (block_h - th) / 2, color);
+    cat_draw_text(font, buf, x + slot_w + gap, y + (block_h - th) / 2, color);
 }

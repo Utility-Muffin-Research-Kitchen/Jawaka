@@ -5917,20 +5917,37 @@ static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
    the Apps tile. Deliberately not themeable and not per system -- it labels what
    the number counts, the same way the battery labels a percentage, so it stays
    the same everywhere. White art with alpha; the caller tints it. */
-static SDL_Texture *jw__grid_count_glyph(jw_launcher_state *state, int idx,
-                                         int *tw, int *th) {
+static SDL_Texture *jw__grid_mark(const char *name, int *tw, int *th) {
     *tw = 0; *th = 0;
+    const char *theme_dir = cat_get_active_theme_dir();
+    if (!theme_dir || !theme_dir[0] || !name) return NULL;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/../ui/%s.png", theme_dir, name);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return NULL;
+    return jw__load_cached_image(path, tw, th);
+}
+
+/* Pick the mark for the focused tile, and report the width of the widest mark
+   so the caller can keep the number in one place. Both are cached textures, so
+   measuring the one we are not drawing costs a lookup. */
+static SDL_Texture *jw__grid_count_glyph(jw_launcher_state *state, int idx,
+                                         int *tw, int *th, int *reserve_w) {
+    *tw = 0; *th = 0; *reserve_w = 0;
     if (idx < 0 || idx >= state->flat_count) return NULL;
     const jw_flat_item *it = &state->flat_items[idx];
     const char *mark = (it->kind == JW_FLAT_SYSTEM) ? "controller"
                      : (it->kind == JW_FLAT_APPS)   ? "apps" : NULL;
     if (!mark) return NULL;
-    const char *theme_dir = cat_get_active_theme_dir();
-    if (!theme_dir || !theme_dir[0]) return NULL;
-    char path[PATH_MAX];
-    int n = snprintf(path, sizeof(path), "%s/../ui/%s.png", theme_dir, mark);
-    if (n <= 0 || (size_t)n >= sizeof(path)) return NULL;
-    return jw__load_cached_image(path, tw, th);
+
+    int cw = 0, chh = 0, aw = 0, ah = 0;
+    SDL_Texture *ctrl = jw__grid_mark("controller", &cw, &chh);
+    SDL_Texture *apps = jw__grid_mark("apps", &aw, &ah);
+    *reserve_w = cw > aw ? cw : aw;
+
+    SDL_Texture *use = (mark[0] == 'c') ? ctrl : apps;
+    *tw = (mark[0] == 'c') ? cw : aw;
+    *th = (mark[0] == 'c') ? chh : ah;
+    return use;
 }
 
 static void jw__render_grid(jw_launcher_state *state) {
@@ -6031,10 +6048,11 @@ static void jw__render_grid(jw_launcher_state *state) {
         if (sit->kind == JW_FLAT_SYSTEM)    sel_count = state->systems[sit->system_idx].game_count;
         else if (sit->kind == JW_FLAT_APPS) sel_count = state->app_count;
     }
-    int gw = 0, gh = 0;
-    SDL_Texture *glyph = sel_count >= 0 ? jw__grid_count_glyph(state, sel, &gw, &gh) : NULL;
+    int gw = 0, gh = 0, reserve = 0;
+    SDL_Texture *glyph = sel_count >= 0
+                       ? jw__grid_count_glyph(state, sel, &gw, &gh, &reserve) : NULL;
     jw_grid_draw_count(&state->grid, sel_count, cat_get_screen_height(), ind_color,
-                       glyph, gw, gh);
+                       glyph, gw, gh, reserve);
     jw__cf_animating |= anim;
     if (anim) cat_request_frame();
     jw__present();

@@ -80,10 +80,13 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
    number, mirroring the status cluster's inset on the opposite corner. It sits
    in the slack below the last row, so it never overlaps a tile. `count` below
    zero draws nothing (an entry that counts nothing).
-   `glyph` is Leaf's controller or apps mark, drawn tinted to `color` and scaled
-   to the number's height; NULL falls back to Catastrophe's atlas gamepad. */
+   `glyph` is Leaf's controller or apps mark, drawn tinted to `color`; NULL falls
+   back to Catastrophe's atlas gamepad. `reserve_w` is the width of the widest
+   mark: every glyph is right-aligned inside it and the number starts after it,
+   so neither the number nor the marks' right edges move when the focused tile
+   changes from a system to Apps. Pass 0 to reserve exactly this glyph. */
 void jw_grid_draw_count(const jw_grid *g, int count, int screen_h,
                         cat_draw_color color,
-                        SDL_Texture *glyph, int glyph_w, int glyph_h);
+                        SDL_Texture *glyph, int glyph_w, int glyph_h, int reserve_w);
 
 #endif
