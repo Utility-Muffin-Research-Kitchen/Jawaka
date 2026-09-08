@@ -2045,7 +2045,8 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
         "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
         "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''), "
-        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id), "
+        "COALESCE(g.last_played,0), g.playtime_s "
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
@@ -2138,6 +2139,12 @@ static void jw__fill_game_entry(sqlite3_stmt *stmt, jw_game_entry *out) {
                            sizeof(out->image_relpath));
     jw__pakrat_copy_column(stmt, 8, out->image_path, sizeof(out->image_path));
     out->favorite = sqlite3_column_int(stmt, 9);
+    /* Appended columns: a caller whose SELECT predates them still fills
+       everything above, and these stay zero. */
+    if (sqlite3_column_count(stmt) > 11) {
+        out->last_played = sqlite3_column_int64(stmt, 10);
+        out->playtime_s  = sqlite3_column_int(stmt, 11);
+    }
 }
 
 static int jw__get_game(const char *db_path, const char *where_sql,
@@ -2160,7 +2167,8 @@ static int jw__get_game(const char *db_path, const char *where_sql,
         "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
         "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''), "
-        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id), "
+        "COALESCE(g.last_played,0), g.playtime_s "
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' ";
@@ -2401,7 +2409,8 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
     static const char *sql =
         "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
-        "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''),1 "
+        "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''),1, "
+        "COALESCE(g.last_played,0), g.playtime_s "
         "FROM games g JOIN favorites f ON f.kind = 'game' AND f.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
@@ -2513,7 +2522,8 @@ int jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
         "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
         "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''), "
-        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id), "
+        "COALESCE(g.last_played,0), g.playtime_s "
         "FROM games g JOIN recents r ON r.kind = 'game' AND r.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "

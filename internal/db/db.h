@@ -87,6 +87,8 @@ typedef struct {
     char rom_path[512];
     char image_path[512];
     int  favorite;   /* 1 if present in favorites, else 0 */
+    long long last_played;  /* unix seconds, 0 if never */
+    int  playtime_s;        /* seconds accumulated in this game */
 } jw_game_entry;
 
 typedef enum {
