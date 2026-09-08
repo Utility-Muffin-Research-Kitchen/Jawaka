@@ -26,6 +26,33 @@ static bool jw__ut_join(char *out, size_t n, const char *a, const char *b) {
 
 /* Bounded copy that tolerates overlapping src/dst (name defaults to dir, both
    inside the same entry) and gives gcc nothing to flag. */
+/* "#RRGGBB" or "#RRGGBBAA" -> a cat_color. Note the packing: cat_color is
+   little-endian (red in the low byte, alpha in the high one), not the order the
+   text is written in, so the channels are assembled explicitly rather than
+   shifted in as one blob. */
+static bool jw__ut_parse_color(const char *str, uint32_t *out) {
+    if (!str || *str != '#') return false;
+    const char *h = str + 1;
+    size_t n = strlen(h);
+    if (n != 6 && n != 8) return false;
+    uint8_t ch[4] = { 0, 0, 0, 0xFF };
+    for (size_t i = 0; i < n; i += 2) {
+        int hi = -1, lo = -1;
+        for (int k = 0; k < 2; k++) {
+            char c = h[i + k];
+            int d = (c >= '0' && c <= '9') ? c - '0'
+                  : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                  : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+            if (d < 0) return false;
+            if (k == 0) hi = d; else lo = d;
+        }
+        ch[i / 2] = (uint8_t)((hi << 4) | lo);
+    }
+    *out = ((uint32_t)ch[3] << 24) | ((uint32_t)ch[2] << 16) |
+           ((uint32_t)ch[1] << 8)  |  (uint32_t)ch[0];
+    return true;
+}
+
 static void jw__ut_copy(char *dst, size_t n, const char *src) {
     if (!dst || n == 0) return;
     size_t len = src ? strnlen(src, n - 1) : 0;
@@ -77,6 +104,35 @@ static bool jw__ut_parse(jw_user_theme *t, const char *theme_dir) {
         if (cJSON_IsNumber(c) && c->valueint >= 1 && c->valueint <= 8) t->grid_cols = c->valueint;
         if (cJSON_IsNumber(r) && r->valueint >= 1 && r->valueint <= 6) t->grid_rows = r->valueint;
     }
+    /* colors: #RRGGBB or #RRGGBBAA, plus two plain 0-255 numbers. Anything
+       absent or malformed is simply not set, so a theme that gets one key wrong
+       loses that key and nothing else. */
+    cJSON *colors = cJSON_GetObjectItemCaseSensitive(root, "colors");
+    if (cJSON_IsObject(colors)) {
+        struct { const char *key; uint32_t *val; bool *has; } map[] = {
+            { "text",           &t->text,           &t->has_text },
+            { "highlight",      &t->highlight,      &t->has_highlight },
+            { "highlight_text", &t->highlight_text, &t->has_highlight_text },
+            { "underlay",       &t->underlay,       &t->has_underlay },
+            { "tile_border",    &t->tile_border,    &t->has_tile_border },
+            { "focus_ring",     &t->focus_ring,     &t->has_focus_ring },
+        };
+        for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+            cJSON *c = cJSON_GetObjectItemCaseSensitive(colors, map[i].key);
+            uint32_t v;
+            if (cJSON_IsString(c) && jw__ut_parse_color(c->valuestring, &v)) {
+                *map[i].val = v;
+                *map[i].has = true;
+            }
+        }
+        cJSON *o = cJSON_GetObjectItemCaseSensitive(colors, "underlay_opacity");
+        if (cJSON_IsNumber(o) && o->valueint >= 0 && o->valueint <= 255)
+            t->underlay_opacity = o->valueint;
+        cJSON *sh = cJSON_GetObjectItemCaseSensitive(colors, "shadow");
+        if (cJSON_IsNumber(sh) && sh->valueint >= 0 && sh->valueint <= 255)
+            t->shadow = sh->valueint;
+    }
+
     cJSON *ss = cJSON_GetObjectItemCaseSensitive(root, "status_style");
     if (cJSON_IsString(ss) && ss->valuestring) {
         if (strcmp(ss->valuestring, "light") == 0)      t->status_style = JW_USER_THEME_STATUS_LIGHT;
@@ -131,6 +187,10 @@ int jw_user_themes_scan(jw_user_theme_catalog *cat, const char *sdcard_root) {
 
         jw_user_theme *t = &cat->items[cat->count];
         memset(t, 0, sizeof(*t));
+        /* 0 is a legal opacity and a legal shadow, so "unset" has to be its own
+           value rather than whatever memset leaves behind. */
+        t->underlay_opacity = -1;
+        t->shadow           = -1;
         jw__ut_copy(t->dir, sizeof(t->dir), e->d_name);
         if (!jw__ut_parse(t, dir)) {
             jw_log_warn("user theme %s: no readable theme.json; skipped", e->d_name);
@@ -184,6 +244,12 @@ bool jw_user_theme_label_path(const jw_user_theme_catalog *cat, int idx,
                               const char *view, const char *system_code,
                               char *out, size_t out_size) {
     return jw__ut_asset(cat, idx, view, "labels", system_code, out, out_size);
+}
+
+bool jw_user_theme_wordmark_path(const jw_user_theme_catalog *cat, int idx,
+                                 const char *view, const char *system_code,
+                                 char *out, size_t out_size) {
+    return jw__ut_asset(cat, idx, view, "wordmarks", system_code, out, out_size);
 }
 
 bool jw_user_theme_wallpaper_path(const jw_user_theme_catalog *cat, int idx,

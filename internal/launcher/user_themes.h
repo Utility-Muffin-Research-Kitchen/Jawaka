@@ -11,6 +11,7 @@
 
 #include <limits.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
 
 #define JW_USER_THEME_MAX      32
@@ -39,6 +40,16 @@ typedef struct {
     bool has_grid_labels;
     bool has_coverflow_icons;
     bool has_wallpaper;
+
+    /* theme.json "colors". Scoped to Grid View: a theme dresses the grid, it
+       does not repaint Leaf. Every entry is optional -- `has_*` false means the
+       view keeps whatever it already used. */
+    bool     has_text, has_highlight, has_highlight_text;
+    bool     has_underlay, has_tile_border, has_focus_ring;
+    uint32_t text, highlight, highlight_text;   /* 0xRRGGBBAA */
+    uint32_t underlay, tile_border, focus_ring;
+    int      underlay_opacity;                  /* 0-255, -1 = unset */
+    int      shadow;                            /* 0-255, -1 = unset */
 } jw_user_theme;
 
 typedef struct {
@@ -66,6 +77,13 @@ bool jw_user_theme_label_path(const jw_user_theme_catalog *cat, int idx,
                               const char *view, const char *system_code,
                               char *out, size_t out_size);
 /* Per-view wallpaper first, then the theme-wide one. png/jpg/jpeg. */
+/* <root>/<dir>/<view>/wordmarks/<CODE>.png -- the system's logo, drawn at the
+   bottom of the games view. Authored white on transparency: Leaf tints it to the
+   list's text colour so the logo belongs to the interface. */
+bool jw_user_theme_wordmark_path(const jw_user_theme_catalog *cat, int idx,
+                                 const char *view, const char *system_code,
+                                 char *out, size_t out_size);
+
 bool jw_user_theme_wallpaper_path(const jw_user_theme_catalog *cat, int idx,
                                   const char *view, char *out, size_t out_size);
 
