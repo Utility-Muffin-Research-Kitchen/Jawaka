@@ -410,6 +410,7 @@ UI_SRCS := \
 	internal/launcher/console_colors.c \
 	internal/launcher/coverflow.c \
 	internal/launcher/grid.c \
+	internal/launcher/grid_games.c \
 	internal/launcher/user_themes.c \
 	internal/launcher/focus_screen.c \
 	internal/launcher/game_switcher.c \
