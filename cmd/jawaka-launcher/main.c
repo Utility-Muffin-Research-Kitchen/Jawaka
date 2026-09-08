@@ -14,6 +14,7 @@
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/coverflow.h"
 #include "internal/launcher/grid.h"
+#include "internal/launcher/grid_games.h"
 #include "internal/launcher/user_themes.h"
 #include <SDL2/SDL_image.h>
 #include "internal/launcher/focus_screen.h"
@@ -5950,6 +5951,233 @@ static SDL_Texture *jw__grid_count_glyph(jw_launcher_state *state, int idx,
     return use;
 }
 
+/* The grid views draw the status cluster smaller than stock. Catastrophe draws
+   it at one fixed size, so it is rendered into an off-screen target and blitted
+   scaled, right edge pinned to the screen. Shared by both grid views so their
+   chrome cannot drift apart. */
+static void jw__grid_status(jw_launcher_state *state, int pct, int y) {
+    int sw = cat_get_screen_width();
+    int pill_h = CAT_DS(CAT__PILL_SIZE);
+    SDL_Renderer *r = cat_get_renderer();
+    if (state->grid_status_tex &&
+        (state->grid_status_tex_w != sw || state->grid_status_tex_h != pill_h)) {
+        SDL_DestroyTexture(state->grid_status_tex);
+        state->grid_status_tex = NULL;
+    }
+    if (!state->grid_status_tex) {
+        state->grid_status_tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA8888,
+                                                   SDL_TEXTUREACCESS_TARGET, sw, pill_h);
+        state->grid_status_tex_w = sw;
+        state->grid_status_tex_h = pill_h;
+        /* Drawn over a cleared transparent target, the cluster's colour is
+           premultiplied by its coverage; blit it as such so anti-aliased edges
+           do not darken a second time. */
+        if (state->grid_status_tex)
+            SDL_SetTextureBlendMode(state->grid_status_tex,
+                SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                                           SDL_BLENDOPERATION_ADD,
+                                           SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                                           SDL_BLENDOPERATION_ADD));
+    }
+    cat_status_bar_opts sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &sb);
+    sb.no_pill = true; sb.use_y = true; sb.y_position = 0;
+    if (pct <= 0) pct = 100;
+    if (state->grid_status_tex) {
+        SDL_Texture *prev = SDL_GetRenderTarget(r);
+        SDL_SetRenderTarget(r, state->grid_status_tex);
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
+        SDL_RenderClear(r);
+        cat_draw_status_bar(&sb);
+        SDL_SetRenderTarget(r, prev);
+        int dw = sw * pct / 100, dh = pill_h * pct / 100;
+        SDL_Rect dst = { sw - dw, y, dw, dh };
+        SDL_RenderCopy(r, state->grid_status_tex, NULL, &dst);
+    } else {
+        sb.y_position = y;
+        cat_draw_status_bar(&sb);
+    }
+}
+
+/* ── Grid View: the games list ───────────────────────────────────────────── */
+
+#define GG_STATUS_PCT 85   /* between stock and the home grid's 70 */
+
+static const char *jw__gg_name(void *ctx, int idx) {
+    jw_launcher_state *st = (jw_launcher_state *)ctx;
+    if (idx < 0 || idx >= st->game_count) return "";
+    /* Display only: the stored name keeps its region and dump tags so box-art
+       matching and search still work on the full filename. Rotating buffers
+       because a frame asks for several rows before drawing any of them. */
+    static char buf[4][256];
+    static int  slot;
+    slot = (slot + 1) % 4;
+    jw__clean_rom_name(st->games[idx].name, buf[slot], sizeof(buf[slot]));
+    return buf[slot];
+}
+
+static SDL_Texture *jw__gg_art(void *ctx, int idx, int *w, int *h) {
+    jw_launcher_state *st = (jw_launcher_state *)ctx;
+    *w = 0; *h = 0;
+    if (idx < 0 || idx >= st->game_count) return NULL;
+    const jw_game_entry *g = &st->games[idx];
+    if (!g->image_path[0]) return NULL;
+    char abs[PATH_MAX];
+    if (jw__resolve_sdcard_path(st, g->image_path, abs, sizeof(abs)) != 0) return NULL;
+    bool pending = false;
+    return jw__load_cover(st, abs, w, h, &pending);
+}
+
+/* "3 days ago" beats a date here: the number is only ever read as recency. */
+static void jw__gg_when(long long unix_s, char *out, size_t n) {
+    out[0] = '\0';
+    if (unix_s <= 0) return;
+    long long now = (long long)time(NULL);
+    long long d = (now - unix_s) / 86400;
+    if (d <= 0)      snprintf(out, n, "%s", T("Today"));
+    else if (d == 1) snprintf(out, n, "%s", T("Yesterday"));
+    else if (d < 30) snprintf(out, n, T("%lld days ago"), d);
+    else             snprintf(out, n, T("%lld months ago"), d / 30);
+}
+
+static void jw__gg_playtime(int secs, char *out, size_t n) {
+    out[0] = '\0';
+    if (secs <= 0) return;
+    if (secs < 3600) snprintf(out, n, T("%dm"), secs / 60);
+    else             snprintf(out, n, T("%dh %dm"), secs / 3600, (secs % 3600) / 60);
+}
+
+/* The system's logo for the games view. Same three-candidate shape as the tile
+   art -- the user's own file in the ROM folder, the selected theme, then Leaf's
+   own set -- and memoized per system so the frame costs one cached lookup. */
+static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) {
+    *tw = 0; *th = 0;
+    const char *code = state->game_system;
+    if (!code || !code[0]) return NULL;
+
+    static char cached_code[64];
+    static char cached_path[PATH_MAX];
+    if (strncmp(cached_code, code, sizeof(cached_code) - 1) != 0) {
+        snprintf(cached_code, sizeof(cached_code), "%s", code);
+        cached_path[0] = '\0';
+        char cand[PATH_MAX];
+        int n;
+        char folder[128];
+        const char *rom_dir = jw__system_rom_folder(state, code, folder, sizeof(folder));
+        if (rom_dir && state->sdcard_root[0]) {
+            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/wordmark.png",
+                         state->sdcard_root, rom_dir);
+            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                snprintf(cached_path, sizeof(cached_path), "%s", cand);
+        }
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (!cached_path[0] && ti >= 0 &&
+            jw_user_theme_wordmark_path(jw_settings_user_themes(&state->settings), ti,
+                                        "grid", code, cand, sizeof(cand)) &&
+            jw__grid_file_exists(cand))
+            snprintf(cached_path, sizeof(cached_path), "%s", cand);
+        if (!cached_path[0]) {
+            const char *theme_dir = cat_get_active_theme_dir();
+            if (theme_dir && theme_dir[0]) {
+                n = snprintf(cand, sizeof(cand), "%s/../grid_wordmarks/%s.png", theme_dir, code);
+                if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                    snprintf(cached_path, sizeof(cached_path), "%s", cand);
+            }
+        }
+    }
+    if (!cached_path[0]) return NULL;
+    return jw__load_coverflow_image(cached_path, tw, th);
+}
+
+static void jw__render_grid_games(jw_launcher_state *state) {
+    cat_clear_screen();
+    ap_theme *theme = cat_get_theme();
+
+    if (state->grid_wallpaper[0]) {
+        int ww = 0, wh = 0;
+        SDL_Texture *wp = jw__load_coverflow_image(state->grid_wallpaper, &ww, &wh);
+        if (wp && ww > 0 && wh > 0) {
+            int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+            float sc = (float)sw / (float)ww;
+            if ((float)sh / (float)wh > sc) sc = (float)sh / (float)wh;
+            int dw = (int)(ww * sc), dh = (int)(wh * sc);
+            SDL_Rect dst = { (sw - dw) / 2, (sh - dh) / 2, dw, dh };
+            SDL_RenderCopy(cat_get_renderer(), wp, NULL, &dst);
+        }
+    }
+
+    /* Until theme.json carries colour, the style comes from the stylesheet the
+       layout already uses, so the view is themed by whatever themes Leaf. */
+    /* Grid View's colours come from the selected theme's theme.json, scoped to
+       this view. Anything the theme leaves out falls back to Leaf's own value,
+       so a theme dresses the grid without repainting menus or settings. */
+    jw_grid_games_style style = {
+        .underlay       = { 0xFF, 0xFF, 0xFF, 0xB2 },
+        .ink            = { 0, 0, 0, 0 },       /* derived unless a theme says */
+        .highlight      = theme->highlight,
+        .highlight_text = theme->highlighted_text,
+        .shadow         = 120,
+        .radius         = cat_scale(14),
+    };
+    {
+        const jw_user_theme_catalog *tc = jw_settings_user_themes(&state->settings);
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (tc && ti >= 0 && ti < tc->count) {
+            const jw_user_theme *ut = &tc->items[ti];
+            if (ut->has_underlay)       style.underlay       = cat_color_to_sdl(ut->underlay);
+            if (ut->underlay_opacity >= 0) style.underlay.a  = (Uint8)ut->underlay_opacity;
+            if (ut->has_text)           style.ink            = cat_color_to_sdl(ut->text);
+            if (ut->has_highlight)      style.highlight      = cat_color_to_sdl(ut->highlight);
+            if (ut->has_highlight_text) style.highlight_text = cat_color_to_sdl(ut->highlight_text);
+            if (ut->shadow >= 0)        style.shadow         = ut->shadow;
+        }
+    }
+
+    /* Only facts we actually have get a box. An unscraped library shows none,
+       and the cover takes the space instead of a row of empty labels. */
+    jw_grid_games_meta meta[JW_GRID_GAMES_MAX_META];
+    int meta_n = 0;
+    char when[64] = "", played[64] = "";
+    if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
+        const jw_game_entry *g = &state->games[state->game_list.cursor];
+        jw__gg_when(g->last_played, when, sizeof(when));
+        jw__gg_playtime(g->playtime_s, played, sizeof(played));
+        if (played[0]) meta[meta_n++] = (jw_grid_games_meta){ T("PLAYED"), played };
+        if (when[0])   meta[meta_n++] = (jw_grid_games_meta){ T("LAST PLAYED"), when };
+    }
+
+    int wmw = 0, wmh = 0;
+    SDL_Texture *wm = jw__gg_wordmark(state, &wmw, &wmh);
+
+    /* Between the stock cluster and the home grid's 70%: big enough to read at
+       arm's length, small enough not to crowd the cover. The columns start below
+       whatever height that works out to, so the two can never overlap. */
+    const int status_pct = GG_STATUS_PCT;
+    const int status_y   = CAT_S(6);
+    const int top_bar    = status_y + CAT_DS(CAT__PILL_SIZE) * status_pct / 100 + CAT_S(8);
+
+    jw_grid_games_draw(&state->game_list, state->game_count,
+                       jw__gg_name, jw__gg_art, state,
+                       meta, meta_n, NULL,
+                       wm, wmw, wmh,
+                       state->game_system_display, top_bar, &style);
+
+    /* Status cluster last so it floats over everything, at the same reduced size
+       and sampled polarity as the grid home. */
+    cat_draw_color saved_hint = theme->hint;
+    if (state->grid_wallpaper[0])
+        theme->hint = state->grid_status_dark ? (cat_draw_color){ 0x14, 0x1A, 0x14, 0xFF }
+                                              : (cat_draw_color){ 0xF2, 0xF5, 0xEF, 0xFF };
+    jw__grid_status(state, status_pct, status_y);
+    theme->hint = saved_hint;
+
+    /* Every renderer ends here. Without it the draw commands are never flushed:
+       SDL's vertex arena grows without bound and the display keeps showing the
+       previously presented frame. */
+    jw__present();
+}
+
 static void jw__render_grid(jw_launcher_state *state) {
     cat_clear_screen();
     const cat_stylesheet *ss = cat_get_stylesheet();
@@ -6110,6 +6338,8 @@ static void jw__render_launcher(jw_launcher_state *state) {
         if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
             /* hold-repeat already set for this frame in jw__render_launcher */
             jw__render_coverflow_games(state);
+        } else if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_GRID) {
+            jw__render_grid_games(state);
         } else {
             jw__render_game_browser(state);
         }
