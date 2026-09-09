@@ -432,6 +432,10 @@ int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
                             bool *out_supported);
 int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
                             char *status, int status_len);
+int jw_ipc_get_color_temp(const char *socket_path, int *out_kelvin,
+                          bool *out_supported);
+int jw_ipc_set_color_temp(const char *socket_path, int kelvin,
+                          char *status, int status_len);
 /* UI language. The daemon persists it and restarts the launcher, which comes
    back with the matching font and string table -- there is no live switch, and
    no getter, because the launcher reads the setting itself at startup. */

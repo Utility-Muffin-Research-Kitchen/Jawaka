@@ -137,13 +137,14 @@ typedef enum {
 
 /* Display & Sound page */
 #define JW_DISPLAY_BRIGHTNESS   0
-#define JW_DISPLAY_REFRESH_RATE 1
-#define JW_DISPLAY_BFI          2
-#define JW_DISPLAY_HDMI         3
-#define JW_DISPLAY_VOLUME       4
-#define JW_DISPLAY_OUTPUT       5
-#define JW_DISPLAY_TEST_SOUND   6
-#define JW_DISPLAY_ROW_COUNT    7
+#define JW_DISPLAY_COLOR_TEMP   1   /* grouped with Brightness: both retune the panel image */
+#define JW_DISPLAY_REFRESH_RATE 2
+#define JW_DISPLAY_BFI          3
+#define JW_DISPLAY_HDMI         4
+#define JW_DISPLAY_VOLUME       5
+#define JW_DISPLAY_OUTPUT       6
+#define JW_DISPLAY_TEST_SOUND   7
+#define JW_DISPLAY_ROW_COUNT    8
 
 /* Wi-Fi page. Bluetooth is its own top-level category rather than a row here:
    the two radios are what people look for by name, and a Bluetooth row sitting
@@ -428,6 +429,8 @@ typedef struct {
     bool               test_sound_playing;  /* Display&Sound: Test Sound clip active */
     int                refresh_rate_hz;     /* display refresh: 60, 100, or 120 */
     bool               refresh_rate_supported; /* platform offers refresh-rate switching */
+    int                color_temp_kelvin;   /* display colour-temperature target in K (6500 = neutral) */
+    bool               color_temp_supported; /* platform offers colour-temperature correction */
     bool               bfi_enabled;         /* Black Frame Insertion (RA): 100/120Hz only */
     int                hdmi_output_mode;    /* HDMI out: 0 off, 1 4:3 pillarbox, 2 stretch */
     int                hdmi_connected;      /* HDMI cable: -1 unknown, 0 no, 1 yes */
