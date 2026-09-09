@@ -142,3 +142,16 @@ int jw_platform_clamp_brightness_percent(int percent) {
     }
     return percent;
 }
+
+int jw_platform_clamp_color_temp_k(int kelvin) {
+    if (kelvin < JW_PLATFORM_COLOR_TEMP_MIN_K) {
+        kelvin = JW_PLATFORM_COLOR_TEMP_MIN_K;
+    }
+    if (kelvin > JW_PLATFORM_COLOR_TEMP_MAX_K) {
+        kelvin = JW_PLATFORM_COLOR_TEMP_MAX_K;
+    }
+    /* Snap to the step grid so the slider lands on round values regardless of
+       where a stored / IPC value came from. */
+    int step = JW_PLATFORM_COLOR_TEMP_STEP_K;
+    return ((kelvin + step / 2) / step) * step;
+}

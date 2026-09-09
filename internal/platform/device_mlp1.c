@@ -7,6 +7,8 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
+#include <stdint.h>
 #include <linux/netlink.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
@@ -248,6 +250,12 @@ static int s_mlp1_target_refresh_hz = -1;
 /* HDMI output mode (0 off / 1 4:3 / 2 stretch); last applied, -1 until set. */
 enum { JW_MLP1_HDMI_OFF = 0, JW_MLP1_HDMI_4_3 = 1, JW_MLP1_HDMI_STRETCH = 2 };
 static int s_mlp1_hdmi_mode = -1;
+
+/* Colour-temperature target in K, last value we programmed into the CRTC gamma
+   LUT. -1 until set. The LUT is volatile hardware state (cleared on every boot
+   and Weston restart), so jawakad replays the persisted value at startup; this
+   cache just answers platform-status without re-reading the ramp. */
+static int s_mlp1_color_temp_k = -1;
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -1396,6 +1404,177 @@ static int jw__mlp1_write_weston_override(int hz) {
         return -1;
     }
     return 0;
+}
+
+/* ── Colour temperature (DRM CRTC gamma LUT) ─────────────────────────────
+   The RK3566 VOP2 exposes a per-CRTC GAMMA_LUT (1024 entries here). There is no
+   sysfs knob for it and no vendor colour-temperature control; the legacy
+   DRM_IOCTL_MODE_SETGAMMA path programs it directly. jawakad runs as root, so
+   the ioctl succeeds even though Weston holds DRM master — verified on hardware,
+   the ramp takes effect live with no compositor restart (unlike refresh rate).
+   The LUT is volatile: cleared on boot and on any Weston restart, so jawakad
+   replays the persisted value at startup (jw__apply_persisted_color_temp) and
+   the Leaf platform.d hook covers the pre-daemon window.
+
+   Only the uapi structs we use are declared here, matching the raw-ioctl style
+   already used elsewhere in this file, so no libdrm header/link dependency is
+   added to the cross build. */
+#define JW_MLP1_DRM_CARD "/dev/dri/card0"
+
+struct jw__drm_mode_modeinfo {
+    uint32_t clock;
+    uint16_t hdisplay, hsync_start, hsync_end, htotal, hskew;
+    uint16_t vdisplay, vsync_start, vsync_end, vtotal, vscan;
+    uint32_t vrefresh;
+    uint32_t flags;
+    uint32_t type;
+    char name[32];
+};
+struct jw__drm_mode_card_res {
+    uint64_t fb_id_ptr, crtc_id_ptr, connector_id_ptr, encoder_id_ptr;
+    uint32_t count_fbs, count_crtcs, count_connectors, count_encoders;
+    uint32_t min_width, max_width, min_height, max_height;
+};
+struct jw__drm_mode_crtc {
+    uint64_t set_connectors_ptr;
+    uint32_t count_connectors;
+    uint32_t crtc_id;
+    uint32_t fb_id;
+    uint32_t x, y;
+    uint32_t gamma_size;
+    uint32_t mode_valid;
+    struct jw__drm_mode_modeinfo mode;
+};
+struct jw__drm_mode_crtc_lut {
+    uint32_t crtc_id;
+    uint32_t gamma_size;
+    uint64_t red, green, blue;
+};
+#define JW__DRM_IOCTL_MODE_GETRESOURCES _IOWR('d', 0xA0, struct jw__drm_mode_card_res)
+#define JW__DRM_IOCTL_MODE_GETCRTC      _IOWR('d', 0xA1, struct jw__drm_mode_crtc)
+#define JW__DRM_IOCTL_MODE_SETGAMMA     _IOWR('d', 0xA5, struct jw__drm_mode_crtc_lut)
+
+/* Tanner Helland black-body approximation: kelvin -> per-channel linear scale in
+   [0,1]. At/above ~6600 K red is pulled down (cooler); below it, blue. */
+static void jw__mlp1_kelvin_to_rgb(int kelvin, double *r, double *g, double *b) {
+    double t = kelvin / 100.0;
+    double red, grn, blu;
+    if (t <= 66.0) {
+        red = 255.0;
+        grn = 99.4708025861 * log(t) - 161.1195681661;
+    } else {
+        red = 329.698727446 * pow(t - 60.0, -0.1332047592);
+        grn = 288.1221695283 * pow(t - 60.0, -0.0755148492);
+    }
+    if (t >= 66.0) {
+        blu = 255.0;
+    } else if (t <= 19.0) {
+        blu = 0.0;
+    } else {
+        blu = 138.5177312231 * log(t - 10.0) - 305.0447927307;
+    }
+    *r = (red < 0 ? 0 : red > 255 ? 255 : red) / 255.0;
+    *g = (grn < 0 ? 0 : grn > 255 ? 255 : grn) / 255.0;
+    *b = (blu < 0 ? 0 : blu > 255 ? 255 : blu) / 255.0;
+}
+
+/* Pick the internal-panel CRTC: mode_valid with a non-zero gamma table. Returns
+   0 and fills *crtc_id / *gamma_size on success, -1 otherwise. */
+static int jw__mlp1_drm_pick_crtc(int fd, uint32_t *crtc_id, uint32_t *gamma_size) {
+    struct jw__drm_mode_card_res res;
+    memset(&res, 0, sizeof(res));
+    if (ioctl(fd, JW__DRM_IOCTL_MODE_GETRESOURCES, &res) != 0 || res.count_crtcs == 0) {
+        return -1;
+    }
+    uint32_t n = res.count_crtcs;
+    uint32_t *ids = calloc(n, sizeof(*ids));
+    if (!ids) {
+        return -1;
+    }
+    memset(&res, 0, sizeof(res));
+    res.crtc_id_ptr = (uint64_t)(uintptr_t)ids;
+    res.count_crtcs = n;
+    int rc = -1;
+    if (ioctl(fd, JW__DRM_IOCTL_MODE_GETRESOURCES, &res) == 0) {
+        for (uint32_t i = 0; i < res.count_crtcs; i++) {
+            struct jw__drm_mode_crtc c;
+            memset(&c, 0, sizeof(c));
+            c.crtc_id = ids[i];
+            if (ioctl(fd, JW__DRM_IOCTL_MODE_GETCRTC, &c) != 0) {
+                continue;
+            }
+            if (c.mode_valid && c.gamma_size > 0) {
+                *crtc_id = c.crtc_id;
+                *gamma_size = c.gamma_size;
+                rc = 0;
+                break;
+            }
+        }
+    }
+    free(ids);
+    return rc;
+}
+
+/* Program the CRTC gamma LUT for the given colour-temperature target. NEUTRAL_K
+   writes a true identity ramp (LUT bypass equivalent). Returns 0 on success. */
+static int jw__mlp1_set_color_temp(int kelvin) {
+    kelvin = jw_platform_clamp_color_temp_k(kelvin);
+    double rf = 1.0, gf = 1.0, bf = 1.0;
+    if (kelvin != JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+        jw__mlp1_kelvin_to_rgb(kelvin, &rf, &gf, &bf);
+    }
+
+    int fd = open(JW_MLP1_DRM_CARD, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        jw_log_warn("color-temp: open %s: %s", JW_MLP1_DRM_CARD, strerror(errno));
+        return -1;
+    }
+
+    uint32_t crtc_id = 0, gamma_size = 0;
+    int rc = -1;
+    if (jw__mlp1_drm_pick_crtc(fd, &crtc_id, &gamma_size) != 0) {
+        jw_log_warn("color-temp: no gamma-capable CRTC");
+        close(fd);
+        return -1;
+    }
+
+    uint16_t *r = malloc(gamma_size * sizeof(*r));
+    uint16_t *g = malloc(gamma_size * sizeof(*g));
+    uint16_t *b = malloc(gamma_size * sizeof(*b));
+    if (r && g && b) {
+        for (uint32_t i = 0; i < gamma_size; i++) {
+            double base = (double)i / (double)(gamma_size - 1); /* 0..1 */
+            double rv = base * rf, gv = base * gf, bv = base * bf;
+            r[i] = (uint16_t)lround((rv < 0 ? 0 : rv > 1 ? 1 : rv) * 65535.0);
+            g[i] = (uint16_t)lround((gv < 0 ? 0 : gv > 1 ? 1 : gv) * 65535.0);
+            b[i] = (uint16_t)lround((bv < 0 ? 0 : bv > 1 ? 1 : bv) * 65535.0);
+        }
+        struct jw__drm_mode_crtc_lut lut;
+        memset(&lut, 0, sizeof(lut));
+        lut.crtc_id = crtc_id;
+        lut.gamma_size = gamma_size;
+        lut.red = (uint64_t)(uintptr_t)r;
+        lut.green = (uint64_t)(uintptr_t)g;
+        lut.blue = (uint64_t)(uintptr_t)b;
+        if (ioctl(fd, JW__DRM_IOCTL_MODE_SETGAMMA, &lut) == 0) {
+            rc = 0;
+        } else {
+            jw_log_warn("color-temp: SETGAMMA crtc %u: %s", crtc_id, strerror(errno));
+        }
+    }
+    free(r);
+    free(g);
+    free(b);
+    close(fd);
+
+    if (rc == 0) {
+        s_mlp1_color_temp_k = kelvin;
+    }
+    return rc;
+}
+
+static int jw__mlp1_get_color_temp(void) {
+    return s_mlp1_color_temp_k;
 }
 
 static int jw__mlp1_set_refresh_rate(int hz) {
@@ -2773,6 +2952,7 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
     }
     out->boot_splash_enabled = jw__mlp1_boot_splash_enabled(ctx) ? 1 : 0;
     out->refresh_rate_hz = jw__mlp1_get_refresh_hz();
+    out->color_temp_kelvin = jw__mlp1_get_color_temp();
     out->hdmi_connected = jw__mlp1_hdmi_connected() ? 1 : 0;
     out->hdmi_output_mode = s_mlp1_hdmi_mode;
 }
@@ -3189,6 +3369,24 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         jw_log_info("display: refresh rate -> %d Hz", hz);
         char msg[32];
         snprintf(msg, sizeof(msg), "switching to %d Hz", hz);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SET_COLOR_TEMP) {
+        int kelvin = jw_platform_clamp_color_temp_k(value);
+        if (jw__mlp1_set_color_temp(kelvin) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   "colour temperature change failed");
+            return;
+        }
+        jw_log_info("display: colour temperature -> %d K", kelvin);
+        char msg[40];
+        if (kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+            snprintf(msg, sizeof(msg), "colour temperature neutral");
+        } else {
+            snprintf(msg, sizeof(msg), "colour temperature %d K", kelvin);
+        }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }
@@ -3663,6 +3861,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .adb = true,
             .boot_splash = true,
             .refresh_rate = true,
+            .color_temperature = true,
             .hdmi_output = true,
             .led = true,
             .performance = true,
