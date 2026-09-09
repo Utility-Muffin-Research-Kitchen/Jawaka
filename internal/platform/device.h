@@ -13,6 +13,16 @@
 #define JW_PLATFORM_BRIGHTNESS_STEP_PERCENT 5
 #define JW_PLATFORM_VOLUME_STEP_PERCENT 5
 
+/* Display colour-temperature correction, applied through the DRM CRTC gamma LUT.
+   The value is the target fed to the black-body curve, not a measurement of the
+   resulting white point: on a panel that is already warm, a target ABOVE
+   NEUTRAL_K cools the image back toward neutral. NEUTRAL_K is the identity
+   detent (LUT bypass); below it warms, above it cools. */
+#define JW_PLATFORM_COLOR_TEMP_MIN_K     4000
+#define JW_PLATFORM_COLOR_TEMP_MAX_K     10000
+#define JW_PLATFORM_COLOR_TEMP_STEP_K    100
+#define JW_PLATFORM_COLOR_TEMP_NEUTRAL_K 6500
+
 #define JW_LED_BRIGHTNESS_MAX 10
 #define JW_LED_SPEED_MAX 10
 
@@ -78,6 +88,7 @@ typedef struct {
     bool adb;
     bool boot_splash;
     bool refresh_rate;   /* runtime display refresh-rate switching (e.g. 60/100/120 Hz) */
+    bool color_temperature; /* runtime display colour-temperature correction (gamma LUT) */
     bool hdmi_output;    /* HDMI external output: 4:3 pillarbox / stretch / off */
     bool led;
     bool performance;
@@ -110,6 +121,7 @@ typedef struct {
     int adb_intent_enabled;    /* -1 unknown/unavailable, 0 no, 1 yes */
     int boot_splash_enabled;   /* -1 unknown/unavailable, 0 no, 1 yes */
     int refresh_rate_hz;       /* current panel refresh in Hz; -1 unknown/unsupported */
+    int color_temp_kelvin;     /* applied colour-temperature target in K; -1 unknown/unsupported */
     int hdmi_connected;        /* HDMI cable: -1 unknown, 0 disconnected, 1 connected */
     int hdmi_output_mode;      /* applied output: -1 unknown, 0 off, 1 4:3, 2 stretch */
 } jw_platform_status;
@@ -224,7 +236,8 @@ typedef enum {
     JW_PLATFORM_ACTION_SET_BOOT_SPLASH,
     JW_PLATFORM_ACTION_PLAY_TEST_SOUND,  /* play a short clip on the current audio output */
     JW_PLATFORM_ACTION_SET_REFRESH_RATE, /* value = target panel refresh in Hz (60/90) */
-    JW_PLATFORM_ACTION_SET_HDMI_OUTPUT   /* value = 0 off / 1 4:3 pillarbox / 2 stretch */
+    JW_PLATFORM_ACTION_SET_HDMI_OUTPUT,  /* value = 0 off / 1 4:3 pillarbox / 2 stretch */
+    JW_PLATFORM_ACTION_SET_COLOR_TEMP    /* value = colour-temperature target in K (see JW_PLATFORM_COLOR_TEMP_*) */
 } jw_platform_action;
 
 typedef enum {
@@ -262,6 +275,8 @@ const char *jw_platform_perf_profile_name(jw_platform_perf_profile profile);
 const char *jw_platform_perf_profile_label(jw_platform_perf_profile profile);
 const char *jw_platform_result_code_name(jw_platform_result_code code);
 int  jw_platform_clamp_brightness_percent(int percent);
+/* Clamp to [MIN_K, MAX_K] and snap to the nearest STEP_K. */
+int  jw_platform_clamp_color_temp_k(int kelvin);
 void jw_platform_perform_action(jw_platform_context *ctx, jw_platform_action action,
                                 int value, jw_platform_result *out);
 void jw_platform_get_performance_status(jw_platform_context *ctx,
