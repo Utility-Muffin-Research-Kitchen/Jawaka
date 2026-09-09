@@ -2146,6 +2146,7 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "adb", cap && cap->adb);
     cJSON_AddBoolToObject(root, "boot_splash", cap && cap->boot_splash);
     cJSON_AddBoolToObject(root, "refresh_rate", cap && cap->refresh_rate);
+    cJSON_AddBoolToObject(root, "color_temperature", cap && cap->color_temperature);
     cJSON_AddBoolToObject(root, "hdmi_output", cap && cap->hdmi_output);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
     cJSON_AddBoolToObject(root, "performance", cap && cap->performance);
@@ -2202,6 +2203,7 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "adb_intent_enabled", status->adb_intent_enabled);
     jw__json_add_int_or_null(root, "boot_splash_enabled", status->boot_splash_enabled);
     jw__json_add_int_or_null(root, "refresh_rate_hz", status->refresh_rate_hz);
+    jw__json_add_int_or_null(root, "color_temp_kelvin", status->color_temp_kelvin);
     jw__json_add_int_or_null(root, "hdmi_connected", status->hdmi_connected);
     jw__json_add_int_or_null(root, "hdmi_output_mode", status->hdmi_output_mode);
     return root;
@@ -7821,6 +7823,36 @@ static void jw__apply_persisted_brightness(jw_daemon_state *state) {
         jw_log_info("applied persisted brightness value=%d", result.value);
     } else {
         jw_log_warn("persisted brightness apply failed: %s", result.message);
+    }
+}
+
+/* The colour-temperature LUT is volatile hardware state (cleared on every boot
+   and Weston restart), so unlike the refresh-rate weston.ini override it has to
+   be replayed here. Key is "color_temp_k", written by the settings UI; absent
+   means "never set" -> leave the panel at its native white point. */
+static void jw__apply_persisted_color_temp(jw_daemon_state *state) {
+    char value[32];
+    if (!state || !state->db_path ||
+        jw_db_get_setting(state->db_path, "color_temp_k",
+                          value, sizeof(value)) != 0 ||
+        !value[0]) {
+        return;
+    }
+
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || (end && *end != '\0')) {
+        jw_log_warn("ignoring invalid persisted color temperature: %s", value);
+        return;
+    }
+
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_COLOR_TEMP,
+                               (int)parsed, &result);
+    if (result.code == JW_PLATFORM_RESULT_OK) {
+        jw_log_info("applied persisted color temperature value=%ld K", parsed);
+    } else if (result.code != JW_PLATFORM_RESULT_UNSUPPORTED) {
+        jw_log_warn("persisted color temperature apply failed: %s", result.message);
     }
 }
 
@@ -15885,6 +15917,7 @@ int main(int argc, char *argv[]) {
     (void)jw__perf_apply_frontend(&state, "startup");
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
+    jw__apply_persisted_color_temp(&state);
     jw__apply_persisted_led(&state);
 
     /* 5-Game Mode boot check: decide whether to enter the locked focus screen
