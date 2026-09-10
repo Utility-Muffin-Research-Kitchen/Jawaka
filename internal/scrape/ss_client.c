@@ -1,5 +1,6 @@
 #include "internal/scrape/ss_client.h"
 #include "internal/scrape/scrape_md5.h"
+#include "internal/core/scraped_text.h"
 
 #include "cJSON.h"
 
@@ -387,10 +388,12 @@ static void jw__ss_field(cJSON *jeu, const char *key, char *out, size_t out_len)
     if (!node) return;
     if (cJSON_IsString(node)) {
         snprintf(out, out_len, "%s", node->valuestring);
+        jw_clean_scraped_text(out);
         return;
     }
     cJSON *text = cJSON_GetObjectItem(node, "text");
     if (cJSON_IsString(text)) snprintf(out, out_len, "%s", text->valuestring);
+    jw_clean_scraped_text(out);
 }
 
 /* Pick a localised string out of an array of { "langue": ..., "text": ... },
@@ -407,12 +410,17 @@ static void jw__ss_lang_text(cJSON *arr, char *out, size_t out_len) {
         if (cJSON_IsString(lang) && cJSON_IsString(text) &&
             strcmp(lang->valuestring, "en") == 0) {
             snprintf(out, out_len, "%s", text->valuestring);
+            jw_clean_scraped_text(out);
             return;
         }
     }
     for (int i = 0; i < count; i++) {
         cJSON *text = cJSON_GetObjectItem(cJSON_GetArrayItem(arr, i), "text");
-        if (cJSON_IsString(text)) { snprintf(out, out_len, "%s", text->valuestring); return; }
+        if (cJSON_IsString(text)) {
+            snprintf(out, out_len, "%s", text->valuestring);
+            jw_clean_scraped_text(out);
+            return;
+        }
     }
 }
 
