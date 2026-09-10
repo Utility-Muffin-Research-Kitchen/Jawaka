@@ -209,6 +209,28 @@ int  jw_db_get_game_by_rom_path(const char *db_path, const char *rom_path,
 int  jw_db_get_game_by_id(const char *db_path, int game_id, jw_game_entry *out);
 int  jw_db_get_game_setting(const char *db_path, int game_id,
                             const char *key, char *out, size_t out_size);
+/* Scraped facts about one game. Stored as game_settings rows under an "ss."
+   prefix rather than columns: they are sparse, they arrive long after the row
+   does, and a key the scraper stops sending should not leave a dead column. */
+typedef struct {
+    char genre[96];
+    char developer[96];
+    char publisher[96];
+    char players[16];
+    char rating[8];       /* ScreenScraper's note, 0-20 */
+    char year[8];
+    char synopsis[1200];
+} jw_game_meta;
+
+/* Write whatever fields are non-empty, resolving the game by rom_path in one
+   statement. Empty fields are left alone rather than blanked, so a rescrape that
+   returns less than the last one does not erase what is already known. */
+int  jw_db_set_game_meta(const char *db_path, const char *rom_path,
+                         const jw_game_meta *meta);
+
+/* Read one game's scraped facts. Missing keys come back as empty strings. */
+int  jw_db_get_game_meta(const char *db_path, int game_id, jw_game_meta *out);
+
 int  jw_db_set_game_setting(const char *db_path, int game_id,
                             const char *key, const char *value);
 int  jw_db_delete_game_setting(const char *db_path, int game_id,

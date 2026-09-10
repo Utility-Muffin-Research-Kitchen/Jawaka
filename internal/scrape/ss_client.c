@@ -376,6 +376,69 @@ static const char *jw__http_status_error(int code) {
     }
 }
 
+static void jw__resolve_game_name(cJSON *names, const char *const *region_prio,
+                                  int region_count, char *name_out, size_t name_len);
+
+/* ScreenScraper wraps most single facts as { "text": ... }; a few are plain
+   strings. Both shapes appear in the wild, so accept either. */
+static void jw__ss_field(cJSON *jeu, const char *key, char *out, size_t out_len) {
+    out[0] = '\0';
+    cJSON *node = cJSON_GetObjectItem(jeu, key);
+    if (!node) return;
+    if (cJSON_IsString(node)) {
+        snprintf(out, out_len, "%s", node->valuestring);
+        return;
+    }
+    cJSON *text = cJSON_GetObjectItem(node, "text");
+    if (cJSON_IsString(text)) snprintf(out, out_len, "%s", text->valuestring);
+}
+
+/* Pick a localised string out of an array of { "langue": ..., "text": ... },
+   preferring English and otherwise taking whatever the first entry offers, so a
+   game documented only in French still says something. */
+static void jw__ss_lang_text(cJSON *arr, char *out, size_t out_len) {
+    out[0] = '\0';
+    if (!cJSON_IsArray(arr)) return;
+    int count = cJSON_GetArraySize(arr);
+    for (int i = 0; i < count; i++) {
+        cJSON *e = cJSON_GetArrayItem(arr, i);
+        cJSON *lang = cJSON_GetObjectItem(e, "langue");
+        cJSON *text = cJSON_GetObjectItem(e, "text");
+        if (cJSON_IsString(lang) && cJSON_IsString(text) &&
+            strcmp(lang->valuestring, "en") == 0) {
+            snprintf(out, out_len, "%s", text->valuestring);
+            return;
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        cJSON *text = cJSON_GetObjectItem(cJSON_GetArrayItem(arr, i), "text");
+        if (cJSON_IsString(text)) { snprintf(out, out_len, "%s", text->valuestring); return; }
+    }
+}
+
+/* Genres arrive as a list, each with its own localised names. One is enough for
+   a chip, so take the first. */
+static void jw__ss_genre(cJSON *jeu, char *out, size_t out_len) {
+    out[0] = '\0';
+    cJSON *genres = cJSON_GetObjectItem(jeu, "genres");
+    if (!cJSON_IsArray(genres) || cJSON_GetArraySize(genres) == 0) return;
+    jw__ss_lang_text(cJSON_GetObjectItem(cJSON_GetArrayItem(genres, 0), "noms"),
+                     out, out_len);
+}
+
+/* Release dates are per region and written "YYYY-MM-DD" or just "YYYY"; only the
+   year is worth a chip. */
+static void jw__ss_year(cJSON *jeu, const char *const *region_prio, int region_count,
+                        char *out, size_t out_len) {
+    out[0] = '\0';
+    char date[32];
+    jw__resolve_game_name(cJSON_GetObjectItem(jeu, "dates"), region_prio, region_count,
+                          date, sizeof(date));
+    if (strlen(date) < 4 || out_len < 5) return;
+    memcpy(out, date, 4);
+    out[4] = '\0';
+}
+
 static int jw__resolve_media(cJSON *medias,
                              const char *const *media_types, int type_count,
                              const char *const *region_prio, int region_count,
@@ -546,6 +609,17 @@ static jw_ss_search_status jw__search_request(
         cJSON_Delete(json);
         return JW_SS_SEARCH_NO_MEDIA;
     }
+
+    /* The rest of the response, kept rather than discarded. Every one of these
+       is optional and an absent field simply stays empty. */
+    jw__ss_genre(jeu, result->genre, sizeof(result->genre));
+    jw__ss_field(jeu, "developpeur", result->developer, sizeof(result->developer));
+    jw__ss_field(jeu, "editeur",     result->publisher, sizeof(result->publisher));
+    jw__ss_field(jeu, "joueurs",     result->players,   sizeof(result->players));
+    jw__ss_field(jeu, "note",        result->rating,    sizeof(result->rating));
+    jw__ss_year(jeu, region_prio, region_count, result->year, sizeof(result->year));
+    jw__ss_lang_text(cJSON_GetObjectItem(jeu, "synopsis"),
+                     result->synopsis, sizeof(result->synopsis));
 
     cJSON *ssuser = cJSON_GetObjectItem(response, "ssuser");
     if (ssuser) {
