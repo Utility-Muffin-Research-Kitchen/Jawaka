@@ -14,6 +14,8 @@
 #define GG_SYN_MAX_LINES 24
 #define GG_SYN_SCROLL_MS 900   /* per line */
 #define GG_SYN_HOLD_MS  2200   /* pause at each end */
+#define GG_MARQUEE_HOLD_MS   1400  /* pause at each end of a too-wide chip */
+#define GG_MARQUEE_MS_PER_PX   18  /* creep speed, ~55px a second */
 #define GG_WORDMARK_H 96   /* tall enough that a typical wordmark spans the column */
 #define GG_ART_PCT    50   /* cover owns the top half of the right column */
 
@@ -257,7 +259,17 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
     const int info_y  = top + art_h + GAP;
     const int info_h  = sh - M - wm_slot - info_y;
 
-    int chip_rows = (meta_count + 2) / 3;
+    /* Chips flow across three columns and a chip may claim two of them, so the
+       row count comes from the flow rather than from the count. */
+    int chip_rows = 0;
+    {
+        int used = 0;
+        for (int i = 0; i < meta_count && i < JW_GRID_GAMES_MAX_META; ++i) {
+            int span = meta[i].span < 1 ? 1 : (meta[i].span > 3 ? 3 : meta[i].span);
+            if (used == 0 || used + span > 3) { chip_rows++; used = 0; }
+            used += span;
+        }
+    }
     int chip_h    = chip_rows > 0
                   ? chip_rows * cat_scale(GG_CHIP_H) + (chip_rows - 1) * cat_scale(GG_CHIP_GAP)
                   : 0;
@@ -295,18 +307,23 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
 
     int y = info_y;
     int cw = (rw - cat_scale(GG_CHIP_GAP) * 2) / 3;
+    int used = 0, crow = -1;
     for (int i = 0; i < meta_count && i < JW_GRID_GAMES_MAX_META; ++i) {
-        int cx = rx + (i % 3) * (cw + cat_scale(GG_CHIP_GAP));
-        int cy = y + (i / 3) * (cat_scale(GG_CHIP_H) + cat_scale(GG_CHIP_GAP));
+        int span = meta[i].span < 1 ? 1 : (meta[i].span > 3 ? 3 : meta[i].span);
+        if (crow < 0 || used + span > 3) { crow++; used = 0; }
+        int cx  = rx + used * (cw + cat_scale(GG_CHIP_GAP));
+        int cyw = span * cw + (span - 1) * cat_scale(GG_CHIP_GAP);
+        int cy  = y + crow * (cat_scale(GG_CHIP_H) + cat_scale(GG_CHIP_GAP));
         int chh = cat_scale(GG_CHIP_H);
-        gg_panel(cx, cy, cw, chh, cat_scale(10), st);
+        used += span;
+        gg_panel(cx, cy, cyw, chh, cat_scale(10), st);
         if (meta[i].stars > 0) {
             /* Five stars, filled to the nearest half. Drawn rather than set in
                type: the user can change the font family, and a star glyph is not
                guaranteed to survive that. */
             int r    = chh / 4;
             int step = r * 5 / 2;
-            int sx   = cx + (cw - (step * 4 + r * 2)) / 2 + r;
+            int sx   = cx + (cyw - (step * 4 + r * 2)) / 2 + r;
             int sy   = cy + chh / 2;
             cat_draw_color dim = ink;
             dim.a = 70;
@@ -326,12 +343,48 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
                 sx += step;
             }
         } else {
-            static gg_fit_slot chip_fit[JW_GRID_GAMES_MAX_META];
-            int vw = 0;
-            const char *cv = gg_fit(&chip_fit[i % JW_GRID_GAMES_MAX_META], small,
-                                    meta[i].value, cw - cat_scale(20), &vw);
-            cat_draw_text(small, cv, cx + (cw - vw) / 2,
-                          cy + (chh - TTF_FontHeight(small)) / 2, ink);
+            int pad   = cat_scale(10);
+            int inner = cyw - pad * 2;
+            int tw = 0, th = 0;
+            TTF_SizeUTF8(small, meta[i].value, &tw, &th);
+            int ty = cy + (chh - TTF_FontHeight(small)) / 2;
+
+            if (tw <= inner) {
+                cat_draw_text(small, meta[i].value, cx + (cyw - tw) / 2, ty, ink);
+            } else {
+                /* Wider than its chip: creep it through rather than cut it. A
+                   pak's author is often longer than a year or a playtime, and
+                   half a name tells you less than the whole one. Held at each
+                   end so both are readable. State is per chip slot and resets
+                   whenever the text changes, which is on every selection. */
+                static char     mq_text[JW_GRID_GAMES_MAX_META][128];
+                static uint32_t mq_start[JW_GRID_GAMES_MAX_META];
+                int slot = i % JW_GRID_GAMES_MAX_META;
+                uint32_t now = SDL_GetTicks();
+                if (strcmp(mq_text[slot], meta[i].value) != 0) {
+                    gg_copy(mq_text[slot], sizeof(mq_text[slot]), meta[i].value);
+                    mq_start[slot] = now;
+                }
+
+                float travel = (float)(tw - inner);
+                float creep  = travel * (float)GG_MARQUEE_MS_PER_PX;
+                float total  = GG_MARQUEE_HOLD_MS * 2.0f + creep;
+                float t      = fmodf((float)(now - mq_start[slot]), total);
+                int   off;
+                if (t < GG_MARQUEE_HOLD_MS)             off = 0;
+                else if (t < GG_MARQUEE_HOLD_MS + creep)
+                    off = (int)((t - GG_MARQUEE_HOLD_MS) / (float)GG_MARQUEE_MS_PER_PX);
+                else                                    off = (int)travel;
+
+                SDL_Renderer *rr = cat_get_renderer();
+                SDL_Rect prev, clip = { cx + pad, cy, inner, chh };
+                SDL_RenderGetClipRect(rr, &prev);
+                SDL_RenderSetClipRect(rr, &clip);
+                cat_draw_text(small, meta[i].value, cx + pad - off, ty, ink);
+                if (prev.w == 0 && prev.h == 0) SDL_RenderSetClipRect(rr, NULL);
+                else                            SDL_RenderSetClipRect(rr, &prev);
+                cat_request_frame();
+            }
         }
     }
     y += chip_h + (chip_h ? cat_scale(GG_CHIP_GAP) : 0);

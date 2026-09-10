@@ -6302,10 +6302,10 @@ static void jw__render_grid_games(jw_launcher_state *state) {
             if (stars > 10) stars = 10;
         }
 
-        if (stars > 0)       meta[meta_n++] = (jw_grid_games_meta){ "", stars };
-        if (gm.year[0])      meta[meta_n++] = (jw_grid_games_meta){ gm.year, 0 };
+        if (stars > 0)       meta[meta_n++] = (jw_grid_games_meta){ .value = "", .stars = stars };
+        if (gm.year[0])      meta[meta_n++] = (jw_grid_games_meta){ .value = gm.year };
         if (played[0] && meta_n < JW_GRID_GAMES_MAX_META)
-            meta[meta_n++] = (jw_grid_games_meta){ played, 0 };
+            meta[meta_n++] = (jw_grid_games_meta){ .value = played };
         if (gm.synopsis[0]) synopsis = gm.synopsis;
     }
 
@@ -6442,10 +6442,12 @@ static void jw__render_grid_apps(jw_launcher_state *state) {
             snprintf(version, sizeof(version), "%s%s",
                      (app->pak_version[0] == 'v' || app->pak_version[0] == 'V') ? "" : "v",
                      app->pak_version);
-            meta[meta_n++] = (jw_grid_games_meta){ version, 0 };
+            meta[meta_n++] = (jw_grid_games_meta){ .value = version };
         }
+        /* Two columns: an author is a name, and names do not fit the width a
+           year does. Longer ones still marquee inside it. */
         if (info && info->author[0])
-            meta[meta_n++] = (jw_grid_games_meta){ info->author, 0 };
+            meta[meta_n++] = (jw_grid_games_meta){ .value = info->author, .span = 2 };
         if (info && info->description[0]) synopsis = info->description;
     }
 

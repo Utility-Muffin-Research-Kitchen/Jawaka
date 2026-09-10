@@ -25,6 +25,7 @@
 typedef struct {
     const char *value;   /* drawn as-is; no label, the shape of the value says what it is */
     int         stars;   /* 0 = a text value; 1-10 = half-stars out of five */
+    int         span;    /* chip width in columns of three; 0 and 1 both mean one */
 } jw_grid_games_meta;
 
 /* Everything a theme gets to decide about this view. The launcher fills it from
