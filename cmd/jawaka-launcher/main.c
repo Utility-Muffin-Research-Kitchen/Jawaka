@@ -3440,6 +3440,57 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
     return jw__load_image_sized(path, JW_COVER_THUMB_MAX, out_w, out_h);
 }
 
+/* Art for a page that has to arrive whole. Coverflow streams its cards in
+   because it is a carousel and an inline decode would hitch the tween, but
+   every other layout has always drawn its system icons synchronously through
+   jw__load_system_icon -- the page is simply there on the frame it appears.
+   The systems grid puts twelve icons on screen at once, so it belongs with the
+   rest of Leaf, not with Coverflow.
+
+   Synchronous here is affordable because it decodes the thumbnail, not the
+   source: a few tens of KB and a few ms, against the ~200ms of a cold 512px
+   PNG. A cold image still goes to the worker, but through the pre-warm ring
+   rather than the priority slot -- the slot is newest-wins, so twelve tiles
+   asking for it in one frame overwrite each other and the page assembles a
+   tile at a time. The ring drains steadily instead, and each thumbnail it
+   lands is picked up inline on the next frame. */
+static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
+                                        int *out_w, int *out_h) {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    if (!path || !path[0]) return NULL;
+
+    int w = 0, h = 0;
+    SDL_Texture *cached = cat_cache_get(path, &w, &h);
+    if (cached) {
+        if (out_w) *out_w = w;
+        if (out_h) *out_h = h;
+        return cached;
+    }
+
+    char thumb[PATH_MAX];
+    const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
+    if (tp && cat_thumbnail_is_cached(path, tp)) {
+        SDL_Surface *surf = IMG_Load(tp);
+        if (surf) {                        /* a corrupt one falls through to rebuild */
+            SDL_Texture *tex = cat_texture_from_surface(surf);
+            w = surf->w;
+            h = surf->h;
+            SDL_FreeSurface(surf);
+            if (tex) {
+                cat_cache_put(path, tex, w, h);
+                if (out_w) *out_w = w;
+                if (out_h) *out_h = h;
+                return tex;
+            }
+        }
+    }
+
+    jw__cover_prewarm_enqueue(path, tp, max_dim);
+    cat_request_frame_in(40);
+    return NULL;
+}
+
 /* The wallpaper covers the whole panel, so it is the one image that must not
    go through the cover thumbnailer: a 384px thumbnail stretched to fill 960x720
    is visibly blocky. Decode it at full size and let the texture cache hold it.
@@ -5894,16 +5945,10 @@ static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
     SDL_FreeSurface(rgba);
 }
 
-/* Grid tile art. Systems go through the memoized path resolver and the
-   off-thread decoder exactly like Coverflow cards, so a cold icon shows the
-   plate and fills in on a later frame instead of stalling the scroll. The
-   Apps tile is the shared _apps identity asset via the synchronous loader. */
-/* How many uncached tiles may claim the loader per frame, beyond the focused
-   one. Two keeps the page filling briskly without the requests trampling
-   each other. Reset at the top of every grid frame. */
-#define JW_GRID_ICON_BUDGET 2
-static int jw__grid_icon_budget;
-
+/* Grid tile art. Systems go through the memoized path resolver and the same
+   whole-page loader the other layouts use for their system icons, so a page
+   that has been visited once is complete on the frame it appears. The Apps
+   tile is the shared _apps identity asset. */
 static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
     jw_launcher_state *state = (jw_launcher_state *)ctx;
     *tw = 0; *th = 0;
@@ -5911,22 +5956,7 @@ static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
     const jw_flat_item *it = &state->flat_items[idx];
     if (it->kind == JW_FLAT_SYSTEM) {
         const char *path = jw__cf_system_icon_path(state, it->system_idx);
-        /* The loader keeps one priority slot on a newest-wins basis, so twelve
-           tiles asking every frame overwrite each other eleven times and only
-           the last survives. Take turns instead: the focused tile always asks,
-           and a small budget of the rest ask per frame. Each request then
-           completes, so the page fills in a few frames rather than one tile per
-           decode cycle. (The pre-warm ring cannot do this job -- it only builds
-           thumbnails on disk and frees the surface.) */
-        if (!path || !path[0]) return NULL;
-        SDL_Texture *cached = cat_cache_get(path, tw, th);
-        if (cached) return cached;
-        if (idx == state->list.cursor || jw__grid_icon_budget > 0) {
-            if (idx != state->list.cursor) jw__grid_icon_budget--;
-            return jw__load_image_sized(path, JW_GRID_TILE_MAX, tw, th);
-        }
-        cat_request_frame_in(40);          /* come back for the rest */
-        return NULL;
+        return jw__load_page_image(path, JW_GRID_TILE_MAX, tw, th);
     }
     if (it->kind == JW_FLAT_APPS)
         return jw__load_system_icon(state, "_apps", tw, th);
@@ -6155,7 +6185,7 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
         }
     }
     if (!cached_path[0]) return NULL;
-    return jw__load_image_sized(cached_path, JW_WORDMARK_MAX, tw, th);
+    return jw__load_page_image(cached_path, JW_WORDMARK_MAX, tw, th);
 }
 
 static void jw__render_grid_games(jw_launcher_state *state) {
@@ -6272,11 +6302,9 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     jw__present();
 }
 
-/* Grid tiles all ask for their art in the same frame, and the async loader keeps
-   one priority slot on a newest-wins basis -- so twelve tiles overwrite each
-   other eleven times and the art trickles in. Push them through the low-priority
-   ring instead, which the worker drains steadily, and let the cursor's own tile
-   keep the priority slot. */
+/* Build the thumbnails for this page and the next before the cursor gets there,
+   so scrolling arrives on art that jw__load_page_image can pick up inline. Only
+   ever queues what is genuinely missing; a warm page enqueues nothing. */
 static void jw__grid_prewarm_icons(jw_launcher_state *state) {
     if (state->flat_count <= 0) return;
     int per_page = state->grid.cols * state->grid.rows;
@@ -6317,7 +6345,6 @@ static void jw__render_grid(jw_launcher_state *state) {
         }
     }
 
-    jw__grid_icon_budget = JW_GRID_ICON_BUDGET;
     jw__grid_prewarm_icons(state);
 
     /* Tile borders follow the selected theme when it names them. */
