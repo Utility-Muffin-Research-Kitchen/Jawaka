@@ -4,6 +4,7 @@
 #include "catastrophe_widgets.h"
 
 #include "cJSON.h"
+#include "internal/core/scraped_text.h"
 #include "internal/core/autodemo.h"
 #include "internal/core/env.h"
 #include "internal/core/log.h"
@@ -6219,29 +6220,14 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
     return jw__load_page_image(cached_path, JW_WORDMARK_MAX, tw, th);
 }
 
-static void jw__render_grid_games(jw_launcher_state *state) {
-    cat_clear_screen();
+/* Grid View's colours come from the selected theme's theme.json, scoped to this
+   view: a theme dresses the grid without repainting menus or settings. Anything
+   the theme leaves out falls back to Leaf's own value. Shared by the games and
+   apps pages so the two cannot drift apart. */
+static void jw__grid_view_style(const jw_launcher_state *state,
+                                jw_grid_games_style *out) {
     ap_theme *theme = cat_get_theme();
-
-    if (state->grid_wallpaper[0]) {
-        int ww = 0, wh = 0;
-        SDL_Texture *wp = jw__load_wallpaper(state->grid_wallpaper, &ww, &wh);
-        if (wp && ww > 0 && wh > 0) {
-            int sw = cat_get_screen_width(), sh = cat_get_screen_height();
-            float sc = (float)sw / (float)ww;
-            if ((float)sh / (float)wh > sc) sc = (float)sh / (float)wh;
-            int dw = (int)(ww * sc), dh = (int)(wh * sc);
-            SDL_Rect dst = { (sw - dw) / 2, (sh - dh) / 2, dw, dh };
-            SDL_RenderCopy(cat_get_renderer(), wp, NULL, &dst);
-        }
-    }
-
-    /* Until theme.json carries colour, the style comes from the stylesheet the
-       layout already uses, so the view is themed by whatever themes Leaf. */
-    /* Grid View's colours come from the selected theme's theme.json, scoped to
-       this view. Anything the theme leaves out falls back to Leaf's own value,
-       so a theme dresses the grid without repainting menus or settings. */
-    jw_grid_games_style style = {
+    *out = (jw_grid_games_style){
         .underlay       = { 0xFF, 0xFF, 0xFF, 0xB2 },
         .ink            = { 0, 0, 0, 0 },       /* derived unless a theme says */
         .highlight      = theme->highlight,
@@ -6249,19 +6235,42 @@ static void jw__render_grid_games(jw_launcher_state *state) {
         .shadow         = 120,
         .radius         = cat_scale(14),
     };
-    {
-        const jw_user_theme_catalog *tc = jw_settings_user_themes(&state->settings);
-        int ti = jw_settings_user_theme_index(&state->settings);
-        if (tc && ti >= 0 && ti < tc->count) {
-            const jw_user_theme *ut = &tc->items[ti];
-            if (ut->has_underlay)       style.underlay       = cat_color_to_sdl(ut->underlay);
-            if (ut->underlay_opacity >= 0) style.underlay.a  = (Uint8)ut->underlay_opacity;
-            if (ut->has_text)           style.ink            = cat_color_to_sdl(ut->text);
-            if (ut->has_highlight)      style.highlight      = cat_color_to_sdl(ut->highlight);
-            if (ut->has_highlight_text) style.highlight_text = cat_color_to_sdl(ut->highlight_text);
-            if (ut->shadow >= 0)        style.shadow         = ut->shadow;
-        }
-    }
+
+    const jw_user_theme_catalog *tc = jw_settings_user_themes(&state->settings);
+    int ti = jw_settings_user_theme_index(&state->settings);
+    if (!tc || ti < 0 || ti >= tc->count) return;
+
+    const jw_user_theme *ut = &tc->items[ti];
+    if (ut->has_underlay)          out->underlay       = cat_color_to_sdl(ut->underlay);
+    if (ut->underlay_opacity >= 0) out->underlay.a     = (Uint8)ut->underlay_opacity;
+    if (ut->has_text)              out->ink            = cat_color_to_sdl(ut->text);
+    if (ut->has_highlight)         out->highlight      = cat_color_to_sdl(ut->highlight);
+    if (ut->has_highlight_text)    out->highlight_text = cat_color_to_sdl(ut->highlight_text);
+    if (ut->shadow >= 0)           out->shadow         = ut->shadow;
+}
+
+/* The wallpaper under every Grid View page, cover-fit and centred. */
+static void jw__grid_draw_wallpaper(jw_launcher_state *state) {
+    if (!state->grid_wallpaper[0]) return;
+    int ww = 0, wh = 0;
+    SDL_Texture *wp = jw__load_wallpaper(state->grid_wallpaper, &ww, &wh);
+    if (!wp || ww <= 0 || wh <= 0) return;
+    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+    float sc = (float)sw / (float)ww;
+    if ((float)sh / (float)wh > sc) sc = (float)sh / (float)wh;
+    int dw = (int)(ww * sc), dh = (int)(wh * sc);
+    SDL_Rect dst = { (sw - dw) / 2, (sh - dh) / 2, dw, dh };
+    SDL_RenderCopy(cat_get_renderer(), wp, NULL, &dst);
+}
+
+static void jw__render_grid_games(jw_launcher_state *state) {
+    cat_clear_screen();
+    ap_theme *theme = cat_get_theme();
+
+    jw__grid_draw_wallpaper(state);
+
+    jw_grid_games_style style;
+    jw__grid_view_style(state, &style);
 
     /* Only facts we actually have get a box, and only the ones a glance can use:
        a rating, a year and how recently it was played. Genre, developer and
@@ -6333,6 +6342,136 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     jw__present();
 }
 
+/* ─── Grid View: the apps page ────────────────────────────────────────────────
+   The same list-and-detail page the games use, fed apps instead: the launcher
+   hands the renderer names, art and facts, so matching the games view is a
+   matter of what is passed in rather than a second layout to keep in step. */
+
+static const char *jw__ga_name(void *ctx, int idx) {
+    const jw_launcher_state *st = (const jw_launcher_state *)ctx;
+    if (idx < 0 || idx >= st->app_count) return "";
+    return st->apps[idx].name;
+}
+
+static SDL_Texture *jw__ga_art(void *ctx, int idx, int *w, int *h) {
+    jw_launcher_state *st = (jw_launcher_state *)ctx;
+    *w = 0; *h = 0;
+    if (idx < 0 || idx >= st->app_count) return NULL;
+    char abs[PATH_MAX];
+    if (jw__resolve_app_icon_path(st, &st->apps[idx], abs, sizeof(abs)) != 0) return NULL;
+    /* App icons are small and already whole files -- the synchronous loader is
+       what every other view uses for them, and there is only ever one on screen. */
+    return jw__load_cached_image(abs, w, h);
+}
+
+/* A pak's description and author live in its pak.json, not in the apps table.
+   Read them from the pak when the cursor lands on it rather than migrating the
+   schema for two optional strings: it is one small file per selection, and the
+   result is memoised so it is not per frame. Most paks carry neither, and the
+   page is built to show nothing rather than an empty label. */
+typedef struct {
+    char dir[512];
+    char description[600];
+    char author[64];
+} jw_pak_info;
+
+static void jw__ga_pak_info(const jw_launcher_state *state, int idx,
+                            const jw_pak_info **out) {
+    static jw_pak_info memo;
+    *out = &memo;
+    if (idx < 0 || idx >= state->app_count) { memo.dir[0] = '\0'; return; }
+
+    const jw_app_entry *app = &state->apps[idx];
+    if (memo.dir[0] && strcmp(memo.dir, app->pak_dir) == 0) return;
+
+    snprintf(memo.dir, sizeof(memo.dir), "%s", app->pak_dir);
+    memo.description[0] = '\0';
+    memo.author[0] = '\0';
+
+    /* pak_dir is stored relative to the card root, the same as a cover path. */
+    char dir[PATH_MAX];
+    if (jw__resolve_sdcard_path(state, app->pak_dir, dir, sizeof(dir)) != 0) return;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/pak.json", dir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char buf[16384];
+    size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[len] = '\0';
+
+    cJSON *root = cJSON_ParseWithLength(buf, len);
+    if (!root) return;
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(root, "description");
+    if (cJSON_IsString(v) && v->valuestring)
+        snprintf(memo.description, sizeof(memo.description), "%s", v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(root, "author");
+    if (cJSON_IsString(v) && v->valuestring)
+        snprintf(memo.author, sizeof(memo.author), "%s", v->valuestring);
+    cJSON_Delete(root);
+
+    jw_clean_scraped_text(memo.description);
+    jw_clean_scraped_text(memo.author);
+}
+
+static void jw__render_grid_apps(jw_launcher_state *state) {
+    cat_clear_screen();
+    ap_theme *theme = cat_get_theme();
+
+    jw__grid_draw_wallpaper(state);
+
+    jw_grid_games_style style;
+    jw__grid_view_style(state, &style);
+
+    /* The same rule the games page follows: only facts we actually have, and
+       only the ones a glance can use. A pak that declares neither shows no
+       boxes at all rather than a row of empty labels. */
+    jw_grid_games_meta meta[JW_GRID_GAMES_MAX_META];
+    int meta_n = 0;
+    char version[80] = "";
+    const char *synopsis = NULL;
+    const jw_pak_info *info = NULL;
+
+    jw__ga_pak_info(state, state->app_list.cursor, &info);
+    if (state->app_count > 0 && state->app_list.cursor < state->app_count) {
+        const jw_app_entry *app = &state->apps[state->app_list.cursor];
+        if (app->pak_version[0]) {
+            /* Some paks write the v, some do not; the chip reads the same either way. */
+            snprintf(version, sizeof(version), "%s%s",
+                     (app->pak_version[0] == 'v' || app->pak_version[0] == 'V') ? "" : "v",
+                     app->pak_version);
+            meta[meta_n++] = (jw_grid_games_meta){ version, 0 };
+        }
+        if (info && info->author[0])
+            meta[meta_n++] = (jw_grid_games_meta){ info->author, 0 };
+        if (info && info->description[0]) synopsis = info->description;
+    }
+
+    const int status_pct = GG_STATUS_PCT;
+    const int status_y   = CAT_S(6);
+    const int top_bar    = status_y + CAT_DS(CAT__PILL_SIZE) * status_pct / 100 + CAT_S(8);
+
+    /* No wordmark: the apps mark in res/ui is a 24px status glyph, not artwork
+       for a 460px slot. The renderer falls back to the name, which is what a
+       system without a logo does too. */
+    jw_grid_games_draw(&state->app_list, state->app_count,
+                       jw__ga_name, jw__ga_art, state,
+                       meta, meta_n, synopsis,
+                       NULL, 0, 0,
+                       T("Apps"), top_bar, &style);
+
+    cat_draw_color saved_hint = theme->hint;
+    if (state->grid_wallpaper[0])
+        theme->hint = state->grid_status_dark ? (cat_draw_color){ 0x14, 0x1A, 0x14, 0xFF }
+                                              : (cat_draw_color){ 0xF2, 0xF5, 0xEF, 0xFF };
+    jw__grid_status(state, status_pct, status_y);
+    theme->hint = saved_hint;
+
+    jw__present();
+}
+
 /* Build the thumbnails for this page and the next before the cursor gets there,
    so scrolling arrives on art that jw__load_page_image can pick up inline. Only
    ever queues what is genuinely missing; a warm page enqueues nothing. */
@@ -6361,20 +6500,7 @@ static void jw__render_grid(jw_launcher_state *state) {
     cat_clear_screen();
     const cat_stylesheet *ss = cat_get_stylesheet();
 
-    /* Wallpaper: cover-fit, centred, clipped by the screen. Off-thread decode,
-       so the first frame after a theme change shows the stage colour. */
-    if (state->grid_wallpaper[0]) {
-        int ww = 0, wh = 0;
-        SDL_Texture *wp = jw__load_wallpaper(state->grid_wallpaper, &ww, &wh);
-        if (wp && ww > 0 && wh > 0) {
-            int sw = cat_get_screen_width(), sh = cat_get_screen_height();
-            float sc = (float)sw / (float)ww;
-            if ((float)sh / (float)wh > sc) sc = (float)sh / (float)wh;
-            int dw = (int)(ww * sc), dh = (int)(wh * sc);
-            SDL_Rect dst = { (sw - dw) / 2, (sh - dh) / 2, dw, dh };
-            SDL_RenderCopy(cat_get_renderer(), wp, NULL, &dst);
-        }
-    }
+    jw__grid_draw_wallpaper(state);
 
     jw__grid_prewarm_icons(state);
 
@@ -6540,7 +6666,11 @@ static void jw__render_launcher(jw_launcher_state *state) {
     }
 
     if (state->apps_open) {
-        jw__render_app_browser(state);
+        if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_GRID) {
+            jw__render_grid_apps(state);
+        } else {
+            jw__render_app_browser(state);
+        }
         return;
     }
 
