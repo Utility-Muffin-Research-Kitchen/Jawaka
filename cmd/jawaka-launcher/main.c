@@ -3389,10 +3389,10 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
 /* Coverflow cards always decode off the render thread. This is used for
    system/app icons as well as art, so a cold image shows the normal placeholder
    card instead of stalling the carousel. */
-/* The largest a tile is ever drawn: 263px at the 3x2 density, 289 when focused
-   and scaled to 110%. Decoding smaller than that upscales and softens the art;
-   decoding at the cover's 384 wastes half the pixels on something this size. */
-#define JW_GRID_TILE_MAX 296
+/* The largest a tile is ever drawn: 263px at the sparsest 3x2 density, 315 when
+   focused and scaled to 120%. Decoding smaller than that upscales and softens
+   the art; decoding at the cover's 384 wastes pixels on something this size. */
+#define JW_GRID_TILE_MAX 320
 
 /* A wordmark is drawn at most the width of the info column, so decoding it at
    cover size throws away detail the slot can show -- the wide marks are ~1400px

@@ -51,7 +51,7 @@
     "grid_anim_ms": 180,
     "grid_icon_dir": "system_icons",
     "grid_label_dir": "grid_labels",
-    "grid_focus_scale_pct": 110,
+    "grid_focus_scale_pct": 120,
     "grid_status_scale_pct": 70
   }
 }
