@@ -1548,3 +1548,9 @@ msgstr "%s：%d 个图标超过 %dpx 已跳过，%d 个尺寸不符"
 
 msgid "%s: %d icons not %dx%d (contain-fit)"
 msgstr "%s：%d 个图标不是 %dx%d（等比缩放）"
+
+msgid "%dm"
+msgstr "%d分钟"
+
+msgid "%dh %dm"
+msgstr "%d小时%d分钟"

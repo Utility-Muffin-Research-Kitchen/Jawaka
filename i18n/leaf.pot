@@ -44,6 +44,14 @@ msgstr ""
 msgid "%d/%d done"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "%dh %dm"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%dm"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "%ldd ago"
 msgstr ""
