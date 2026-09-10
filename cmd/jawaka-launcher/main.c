@@ -3384,7 +3384,15 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
 /* Coverflow cards always decode off the render thread. This is used for
    system/app icons as well as art, so a cold image shows the normal placeholder
    card instead of stalling the carousel. */
-#define JW_GRID_TILE_MAX 224   /* tiles draw at 172-258px; 384 was five times the pixels */
+/* The largest a tile is ever drawn: 263px at the 3x2 density, 289 when focused
+   and scaled to 110%. Decoding smaller than that upscales and softens the art;
+   decoding at the cover's 384 wastes half the pixels on something this size. */
+#define JW_GRID_TILE_MAX 296
+
+/* A wordmark is drawn at most the width of the info column, so decoding it at
+   cover size throws away detail the slot can show -- the wide marks are ~1400px
+   sources landing in a ~460px slot. */
+#define JW_WORDMARK_MAX 512
 
 /* max_dim is the longest edge the caller will actually draw. Decoding a tile
    at cover size costs several times the pixels for no visible gain, and on
@@ -3430,6 +3438,37 @@ static SDL_Texture *jw__load_image_sized(const char *path, int max_dim,
 
 static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *out_h) {
     return jw__load_image_sized(path, JW_COVER_THUMB_MAX, out_w, out_h);
+}
+
+/* The wallpaper covers the whole panel, so it is the one image that must not
+   go through the cover thumbnailer: a 384px thumbnail stretched to fill 960x720
+   is visibly blocky. Decode it at full size and let the texture cache hold it.
+   Drawn every frame, it stays at the head of the LRU, so this costs one decode. */
+static SDL_Texture *jw__load_wallpaper(const char *path, int *out_w, int *out_h) {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    if (!path || !path[0]) return NULL;
+
+    int w = 0, h = 0;
+    SDL_Texture *cached = cat_cache_get(path, &w, &h);
+    if (cached) {
+        if (out_w) *out_w = w;
+        if (out_h) *out_h = h;
+        return cached;
+    }
+
+    SDL_Surface *surf = IMG_Load(path);
+    if (!surf) return NULL;
+    SDL_Texture *tex = cat_texture_from_surface(surf);
+    w = surf->w;
+    h = surf->h;
+    SDL_FreeSurface(surf);
+    if (!tex) return NULL;
+
+    cat_cache_put(path, tex, w, h);
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    return tex;
 }
 
 /* Pre-warm covers around the cursor so navigating lands on art that is already
@@ -6116,7 +6155,7 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
         }
     }
     if (!cached_path[0]) return NULL;
-    return jw__load_coverflow_image(cached_path, tw, th);
+    return jw__load_image_sized(cached_path, JW_WORDMARK_MAX, tw, th);
 }
 
 static void jw__render_grid_games(jw_launcher_state *state) {
@@ -6125,7 +6164,7 @@ static void jw__render_grid_games(jw_launcher_state *state) {
 
     if (state->grid_wallpaper[0]) {
         int ww = 0, wh = 0;
-        SDL_Texture *wp = jw__load_coverflow_image(state->grid_wallpaper, &ww, &wh);
+        SDL_Texture *wp = jw__load_wallpaper(state->grid_wallpaper, &ww, &wh);
         if (wp && ww > 0 && wh > 0) {
             int sw = cat_get_screen_width(), sh = cat_get_screen_height();
             float sc = (float)sw / (float)ww;
@@ -6267,7 +6306,7 @@ static void jw__render_grid(jw_launcher_state *state) {
        so the first frame after a theme change shows the stage colour. */
     if (state->grid_wallpaper[0]) {
         int ww = 0, wh = 0;
-        SDL_Texture *wp = jw__load_coverflow_image(state->grid_wallpaper, &ww, &wh);
+        SDL_Texture *wp = jw__load_wallpaper(state->grid_wallpaper, &ww, &wh);
         if (wp && ww > 0 && wh > 0) {
             int sw = cat_get_screen_width(), sh = cat_get_screen_height();
             float sc = (float)sw / (float)ww;
