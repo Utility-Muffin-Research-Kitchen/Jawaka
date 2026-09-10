@@ -482,6 +482,10 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
                                       int content_y, int content_h, int margin,
                                       const char *empty_msg);
 
+/* Defined with the cover pre-warmer; called here because rebuilding a list in
+   place can hand back the same allocation and leave its window key unchanged. */
+static void jw__cover_prewarm_invalidate(void);
+
 static void jw__reset_game_data(jw_launcher_state *state) {
     if (!state) {
         return;
@@ -510,6 +514,7 @@ static void jw__replace_game_data(jw_launcher_state *state, jw_game_entry *games
     state->games = games;
     state->game_capacity = capacity;
     state->game_count = count;
+    jw__cover_prewarm_invalidate();
 }
 
 typedef int (*jw__game_list_loader)(const char *db_path, jw_game_entry *out,
@@ -3529,9 +3534,35 @@ static SDL_Texture *jw__load_wallpaper(const char *path, int *out_w, int *out_h)
    skips covers already decoded or already thumbnailed. */
 #define JW_PREWARM_BEHIND 2
 #define JW_PREWARM_AHEAD  16
+
+/* The sweep stats every cover in its window -- two SD-card stat() calls each,
+   and only the cover under the cursor is ever in the texture cache, so nearly
+   the whole window reaches them. Re-running it on frames where the window did
+   not move buys nothing, and the grid games view redraws continuously while a
+   synopsis autoscrolls, which would otherwise mean that cost every frame for as
+   long as the page is open. Same guard the search sweep already carries. The
+   list identity is part of the key so moving between systems re-sweeps. */
+static const jw_game_entry *s_prewarm_games;
+static int s_prewarm_count  = -1;
+static int s_prewarm_cursor = -1;
+
+static void jw__cover_prewarm_invalidate(void) {
+    s_prewarm_games  = NULL;
+    s_prewarm_count  = -1;
+    s_prewarm_cursor = -1;
+}
+
 static void jw__cover_prewarm(const jw_launcher_state *state,
                               const jw_game_entry *games, int count, int cursor) {
     if (!state || !games || count <= 0) return;
+    if (games == s_prewarm_games && count == s_prewarm_count &&
+        cursor == s_prewarm_cursor) {
+        return;                                    /* window unchanged */
+    }
+    s_prewarm_games  = games;
+    s_prewarm_count  = count;
+    s_prewarm_cursor = cursor;
+
     int from = cursor - JW_PREWARM_BEHIND;
     if (from < 0) from = 0;
     int to = cursor + JW_PREWARM_AHEAD;
