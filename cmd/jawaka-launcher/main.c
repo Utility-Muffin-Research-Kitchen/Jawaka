@@ -3143,11 +3143,13 @@ typedef struct {
     /* High-priority request: the cover under the cursor (latest wins). */
     char            req_path[PATH_MAX];
     char            req_thumb[PATH_MAX];
+    int             req_max;          /* longest edge wanted, px */
     bool            has_req;
 
     /* Low-priority pre-warm queue (FIFO ring of covers to build ahead of time). */
     char            q_path[JW_COVER_QUEUE_MAX][PATH_MAX];
     char            q_thumb[JW_COVER_QUEUE_MAX][PATH_MAX];
+    int             q_max[JW_COVER_QUEUE_MAX];
     int             q_head;
     int             q_count;
 
@@ -3175,23 +3177,27 @@ static void *jw__cover_worker(void *arg) {
         if (L->stop) break;
 
         char path[PATH_MAX], thumb[PATH_MAX];
+        int  max_dim;
         bool was_req;
         if (L->has_req) {                          /* priority: cursor cover first */
             snprintf(path, sizeof(path), "%s", L->req_path);
             snprintf(thumb, sizeof(thumb), "%s", L->req_thumb);
+            max_dim = L->req_max;
             L->has_req = false;
             was_req = true;
         } else {                                   /* else drain the pre-warm queue */
             snprintf(path, sizeof(path), "%s", L->q_path[L->q_head]);
             snprintf(thumb, sizeof(thumb), "%s", L->q_thumb[L->q_head]);
+            max_dim = L->q_max[L->q_head];
             L->q_head = (L->q_head + 1) % JW_COVER_QUEUE_MAX;
             L->q_count--;
             was_req = false;
         }
         pthread_mutex_unlock(&L->lock);
 
+        if (max_dim <= 0) max_dim = JW_COVER_THUMB_MAX;
         SDL_Surface *surf = cat_decode_thumbnail_surface(path, thumb[0] ? thumb : NULL,
-                                                         JW_COVER_THUMB_MAX);
+                                                         max_dim);
 
         pthread_mutex_lock(&L->lock);
         if (was_req) {
@@ -3249,7 +3255,8 @@ static void jw__cover_loader_shutdown(void) {
 
 /* If a decoded surface for `path` is ready, consume it into *out and return true.
    Otherwise set `path` as the priority request (newest wins) and return false. */
-static bool jw__cover_async_take(const char *path, const char *thumb, SDL_Surface **out) {
+static bool jw__cover_async_take(const char *path, const char *thumb, int max_dim,
+                                 SDL_Surface **out) {
     jw_cover_loader *L = &jw__cover_loader;
     jw__cover_loader_ensure();
     if (!L->started) return false;
@@ -3266,7 +3273,8 @@ static bool jw__cover_async_take(const char *path, const char *thumb, SDL_Surfac
            cover that is about to be requested later in the same frame. The worker
            still replaces stale results when a newer decode completes. */
         if (!L->has_req || strcmp(L->req_path, path) != 0) {
-            snprintf(L->req_path, sizeof(L->req_path), "%s", path);
+            L->req_max = max_dim;
+    snprintf(L->req_path, sizeof(L->req_path), "%s", path);
             snprintf(L->req_thumb, sizeof(L->req_thumb), "%s", thumb ? thumb : "");
             L->has_req = true;
             pthread_cond_signal(&L->cond);
@@ -3279,7 +3287,7 @@ static bool jw__cover_async_take(const char *path, const char *thumb, SDL_Surfac
 /* Append a cover to the low-priority pre-warm queue, skipping duplicates and the
    in-flight priority request. Caller has already confirmed the thumbnail is
    missing. No-op when the queue is full (we just pre-warm fewer covers). */
-static void jw__cover_prewarm_enqueue(const char *path, const char *thumb) {
+static void jw__cover_prewarm_enqueue(const char *path, const char *thumb, int max_dim) {
     jw_cover_loader *L = &jw__cover_loader;
     jw__cover_loader_ensure();
     if (!L->started) return;
@@ -3293,6 +3301,7 @@ static void jw__cover_prewarm_enqueue(const char *path, const char *thumb) {
         int tail = (L->q_head + L->q_count) % JW_COVER_QUEUE_MAX;
         snprintf(L->q_path[tail], PATH_MAX, "%s", path);
         snprintf(L->q_thumb[tail], PATH_MAX, "%s", thumb ? thumb : "");
+        L->q_max[tail] = max_dim;
         L->q_count++;
         pthread_cond_signal(&L->cond);
     }
@@ -3327,7 +3336,7 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
        the surface it returns; the carousel keeps moving while art streams in. The
        worker decodes the on-disk thumbnail when present, else the source. */
     SDL_Surface *surf = NULL;
-    if (jw__cover_async_take(cover_abs, thumb_path, &surf)) {
+    if (jw__cover_async_take(cover_abs, thumb_path, JW_COVER_THUMB_MAX, &surf)) {
         SDL_Texture *tex = cat_texture_from_surface(surf);
         w = surf->w;
         h = surf->h;
@@ -3375,7 +3384,14 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
 /* Coverflow cards always decode off the render thread. This is used for
    system/app icons as well as art, so a cold image shows the normal placeholder
    card instead of stalling the carousel. */
-static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *out_h) {
+#define JW_GRID_TILE_MAX 224   /* tiles draw at 172-258px; 384 was five times the pixels */
+
+/* max_dim is the longest edge the caller will actually draw. Decoding a tile
+   at cover size costs several times the pixels for no visible gain, and on
+   one worker thread that is the difference between a page appearing and a
+   page filling in. */
+static SDL_Texture *jw__load_image_sized(const char *path, int max_dim,
+                                         int *out_w, int *out_h) {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
     if (!path || !path[0]) {
@@ -3395,7 +3411,7 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
                                  ? thumb : NULL;
 
     SDL_Surface *surf = NULL;
-    if (jw__cover_async_take(path, thumb_path, &surf)) {
+    if (jw__cover_async_take(path, thumb_path, max_dim, &surf)) {
         SDL_Texture *tex = cat_texture_from_surface(surf);
         w = surf->w;
         h = surf->h;
@@ -3410,6 +3426,10 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
 
     cat_request_frame_in(40);
     return NULL;
+}
+
+static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *out_h) {
+    return jw__load_image_sized(path, JW_COVER_THUMB_MAX, out_w, out_h);
 }
 
 /* Pre-warm covers around the cursor so navigating lands on art that is already
@@ -3435,7 +3455,7 @@ static void jw__cover_prewarm(const jw_launcher_state *state,
         char thumb[PATH_MAX];
         const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(abs, tp)) continue;  /* already built */
-        jw__cover_prewarm_enqueue(abs, tp);
+        jw__cover_prewarm_enqueue(abs, tp, JW_COVER_THUMB_MAX);
     }
 }
 
@@ -3473,7 +3493,7 @@ static void jw__cover_prewarm_search(const jw_launcher_state *state,
         char thumb[PATH_MAX];
         const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(abs, tp)) continue;
-        jw__cover_prewarm_enqueue(abs, tp);
+        jw__cover_prewarm_enqueue(abs, tp, JW_COVER_THUMB_MAX);
     }
 }
 
@@ -5839,6 +5859,12 @@ static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
    off-thread decoder exactly like Coverflow cards, so a cold icon shows the
    plate and fills in on a later frame instead of stalling the scroll. The
    Apps tile is the shared _apps identity asset via the synchronous loader. */
+/* How many uncached tiles may claim the loader per frame, beyond the focused
+   one. Two keeps the page filling briskly without the requests trampling
+   each other. Reset at the top of every grid frame. */
+#define JW_GRID_ICON_BUDGET 2
+static int jw__grid_icon_budget;
+
 static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
     jw_launcher_state *state = (jw_launcher_state *)ctx;
     *tw = 0; *th = 0;
@@ -5846,7 +5872,22 @@ static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
     const jw_flat_item *it = &state->flat_items[idx];
     if (it->kind == JW_FLAT_SYSTEM) {
         const char *path = jw__cf_system_icon_path(state, it->system_idx);
-        return jw__load_coverflow_image(path, tw, th);
+        /* The loader keeps one priority slot on a newest-wins basis, so twelve
+           tiles asking every frame overwrite each other eleven times and only
+           the last survives. Take turns instead: the focused tile always asks,
+           and a small budget of the rest ask per frame. Each request then
+           completes, so the page fills in a few frames rather than one tile per
+           decode cycle. (The pre-warm ring cannot do this job -- it only builds
+           thumbnails on disk and frees the surface.) */
+        if (!path || !path[0]) return NULL;
+        SDL_Texture *cached = cat_cache_get(path, tw, th);
+        if (cached) return cached;
+        if (idx == state->list.cursor || jw__grid_icon_budget > 0) {
+            if (idx != state->list.cursor) jw__grid_icon_budget--;
+            return jw__load_image_sized(path, JW_GRID_TILE_MAX, tw, th);
+        }
+        cat_request_frame_in(40);          /* come back for the rest */
+        return NULL;
     }
     if (it->kind == JW_FLAT_APPS)
         return jw__load_system_icon(state, "_apps", tw, th);
@@ -6029,18 +6070,6 @@ static SDL_Texture *jw__gg_art(void *ctx, int idx, int *w, int *h) {
     return jw__load_cover(st, abs, w, h, &pending);
 }
 
-/* "3 days ago" beats a date here: the number is only ever read as recency. */
-static void jw__gg_when(long long unix_s, char *out, size_t n) {
-    out[0] = '\0';
-    if (unix_s <= 0) return;
-    long long now = (long long)time(NULL);
-    long long d = (now - unix_s) / 86400;
-    if (d <= 0)      snprintf(out, n, "%s", T("Today"));
-    else if (d == 1) snprintf(out, n, "%s", T("Yesterday"));
-    else if (d < 30) snprintf(out, n, T("%lld days ago"), d);
-    else             snprintf(out, n, T("%lld months ago"), d / 30);
-}
-
 static void jw__gg_playtime(int secs, char *out, size_t n) {
     out[0] = '\0';
     if (secs <= 0) return;
@@ -6134,18 +6163,44 @@ static void jw__render_grid_games(jw_launcher_state *state) {
         }
     }
 
-    /* Only facts we actually have get a box. An unscraped library shows none,
-       and the cover takes the space instead of a row of empty labels. */
+    /* Only facts we actually have get a box, and only the ones a glance can use:
+       a rating, a year and how recently it was played. Genre, developer and
+       publisher are reference rather than recognition, and the synopsis says
+       more about a game than any of them. An unscraped library shows none,
+       and the cover keeps its half of the column rather than showing a row of
+       empty labels. The scraped facts are read once per selected game, not per
+       frame -- it is a database round trip. */
     jw_grid_games_meta meta[JW_GRID_GAMES_MAX_META];
     int meta_n = 0;
-    char when[64] = "", played[64] = "";
+    char played[64] = "";
+    static jw_game_meta gm;
+    static int gm_game_id = -1;
+    const char *synopsis = NULL;
     if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
         const jw_game_entry *g = &state->games[state->game_list.cursor];
-        jw__gg_when(g->last_played, when, sizeof(when));
+        if (g->id != gm_game_id) {
+            gm_game_id = g->id;
+            if (jw_db_get_game_meta(state->db_path, g->id, &gm) != 0)
+                memset(&gm, 0, sizeof(gm));
+        }
         jw__gg_playtime(g->playtime_s, played, sizeof(played));
-        if (played[0]) meta[meta_n++] = (jw_grid_games_meta){ T("PLAYED"), played };
-        if (when[0])   meta[meta_n++] = (jw_grid_games_meta){ T("LAST PLAYED"), when };
+        /* ScreenScraper scores out of 20, which is five stars at four points
+           each -- so half-star granularity comes out exactly, no rounding. */
+        int stars = 0;
+        if (gm.rating[0]) {
+            int n = atoi(gm.rating);
+            if (n > 0) stars = (n + 1) / 2;      /* 0-20 -> 0-10 half-stars */
+            if (stars > 10) stars = 10;
+        }
+
+        if (stars > 0)       meta[meta_n++] = (jw_grid_games_meta){ "", stars };
+        if (gm.year[0])      meta[meta_n++] = (jw_grid_games_meta){ gm.year, 0 };
+        if (played[0] && meta_n < JW_GRID_GAMES_MAX_META)
+            meta[meta_n++] = (jw_grid_games_meta){ played, 0 };
+        if (gm.synopsis[0]) synopsis = gm.synopsis;
     }
+
+    jw__cover_prewarm(state, state->games, state->game_count, state->game_list.cursor);
 
     int wmw = 0, wmh = 0;
     SDL_Texture *wm = jw__gg_wordmark(state, &wmw, &wmh);
@@ -6159,7 +6214,7 @@ static void jw__render_grid_games(jw_launcher_state *state) {
 
     jw_grid_games_draw(&state->game_list, state->game_count,
                        jw__gg_name, jw__gg_art, state,
-                       meta, meta_n, NULL,
+                       meta, meta_n, synopsis,
                        wm, wmw, wmh,
                        state->game_system_display, top_bar, &style);
 
@@ -6176,6 +6231,32 @@ static void jw__render_grid_games(jw_launcher_state *state) {
        SDL's vertex arena grows without bound and the display keeps showing the
        previously presented frame. */
     jw__present();
+}
+
+/* Grid tiles all ask for their art in the same frame, and the async loader keeps
+   one priority slot on a newest-wins basis -- so twelve tiles overwrite each
+   other eleven times and the art trickles in. Push them through the low-priority
+   ring instead, which the worker drains steadily, and let the cursor's own tile
+   keep the priority slot. */
+static void jw__grid_prewarm_icons(jw_launcher_state *state) {
+    if (state->flat_count <= 0) return;
+    int per_page = state->grid.cols * state->grid.rows;
+    if (per_page <= 0) return;
+    int first = state->grid.scroll_row * state->grid.cols;
+    int last  = first + per_page * 2;          /* this page and the next */
+    if (first < 0) first = 0;
+    if (last > state->flat_count - 1) last = state->flat_count - 1;
+    for (int i = first; i <= last; ++i) {
+        const jw_flat_item *it = &state->flat_items[i];
+        if (it->kind != JW_FLAT_SYSTEM) continue;
+        const char *path = jw__cf_system_icon_path(state, it->system_idx);
+        if (!path || !path[0]) continue;
+        if (cat_cache_get(path, NULL, NULL)) continue;          /* already decoded */
+        char thumb[PATH_MAX];
+        const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
+        if (tp && cat_thumbnail_is_cached(path, tp)) continue;  /* already built */
+        jw__cover_prewarm_enqueue(path, tp, JW_GRID_TILE_MAX);
+    }
 }
 
 static void jw__render_grid(jw_launcher_state *state) {
@@ -6197,10 +6278,25 @@ static void jw__render_grid(jw_launcher_state *state) {
         }
     }
 
+    jw__grid_icon_budget = JW_GRID_ICON_BUDGET;
+    jw__grid_prewarm_icons(state);
+
+    /* Tile borders follow the selected theme when it names them. */
+    cat_draw_color tile_border = { 0, 0, 0, 0 }, focus_ring = { 0, 0, 0, 0 };
+    {
+        const jw_user_theme_catalog *tc = jw_settings_user_themes(&state->settings);
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (tc && ti >= 0 && ti < tc->count) {
+            const jw_user_theme *ut = &tc->items[ti];
+            if (ut->has_tile_border) tile_border = cat_color_to_sdl(ut->tile_border);
+            if (ut->has_focus_ring)  focus_ring  = cat_color_to_sdl(ut->focus_ring);
+        }
+    }
+
     uint32_t now = SDL_GetTicks();
     bool anim = jw_grid_draw(&state->grid, &ss->launcher, &state->list,
                              state->flat_count, jw__grid_icon, jw__grid_label, state,
-                             now, ss->launcher.grid_anim_ms);
+                             now, ss->launcher.grid_anim_ms, tile_border, focus_ring);
 
     /* Status: the tab header's inline no-pill idiom, drawn AFTER the tiles so it
        floats over anything that passes beneath it mid-scroll (the tiles use no

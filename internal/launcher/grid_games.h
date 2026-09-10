@@ -23,8 +23,8 @@
 /* One labelled fact about the selected game. The launcher formats the value,
    so this module never learns what a playtime or a release date is. */
 typedef struct {
-    const char *label;   /* short, drawn small and dim */
-    const char *value;
+    const char *value;   /* drawn as-is; no label, the shape of the value says what it is */
+    int         stars;   /* 0 = a text value; 1-10 = half-stars out of five */
 } jw_grid_games_meta;
 
 /* Everything a theme gets to decide about this view. The launcher fills it from
@@ -40,12 +40,6 @@ typedef struct {
 
 typedef const char *(*jw_grid_games_name_fn)(void *ctx, int idx);
 typedef SDL_Texture *(*jw_grid_games_art_fn)(void *ctx, int idx, int *w, int *h);
-
-/* How many rows fit the list panel at the current font and screen size. The
-   caller writes this back into its list state, the same way the box-model
-   browser does, so a count cached at another font size cannot draw rows off the
-   bottom of the panel. */
-int jw_grid_games_visible_rows(void);
 
 /* Draw the whole view. `top_bar` is the band reserved above both columns;
    the caller sizes it from the status cluster it is about to draw, so the

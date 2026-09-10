@@ -230,7 +230,8 @@ static void jw__grid_draw_tile(jw_grid *g, int x, int y, int size, SDL_Texture *
 bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
                   const cat_list_state *ls, int count,
                   jw_grid_icon_fn icon_fn, jw_grid_icon_fn label_fn, void *ctx,
-                  uint32_t now, uint32_t anim_ms) {
+                  uint32_t now, uint32_t anim_ms,
+                  cat_draw_color border_override, cat_draw_color focus_override) {
     if (!g || !l || !ls || count <= 0) return false;
     g->scratch_next = 0;   /* one texture per tile per frame, reused next frame */
     int cols = g->cols, rows = g->rows, pitch = g->tile + g->gutter;
@@ -238,10 +239,12 @@ bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
     bool animating = g->anim_active && (now - g->anim_start_ms) < anim_ms;
     if (!animating) g->anim_active = false;
 
-    cat_draw_color border = cat_color_to_sdl(l->grid_border_color);
+    cat_draw_color border = border_override.a ? border_override
+                                              : cat_color_to_sdl(l->grid_border_color);
     /* Sentinel alpha 0 = the theme's selection colour (accent is the footer
        pill background in cat_theme, not the highlight). */
-    cat_draw_color focus  = (CAT_COLOR_A(l->grid_focus_border_color) == 0)
+    cat_draw_color focus  = focus_override.a ? focus_override
+                          : (CAT_COLOR_A(l->grid_focus_border_color) == 0)
                                 ? cat_get_theme()->highlight
                                 : cat_color_to_sdl(l->grid_focus_border_color);
     int bw_norm  = cat_scale(l->grid_border_w);

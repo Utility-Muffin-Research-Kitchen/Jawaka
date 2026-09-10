@@ -1,5 +1,6 @@
 #include "internal/launcher/grid_games.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -8,8 +9,11 @@
 #define GG_GAP        20
 #define GG_TOPBAR     40
 #define GG_ROW_PAD    10
-#define GG_CHIP_H     54
+#define GG_CHIP_H     32
 #define GG_CHIP_GAP    8
+#define GG_SYN_MAX_LINES 24
+#define GG_SYN_SCROLL_MS 900   /* per line */
+#define GG_SYN_HOLD_MS  2200   /* pause at each end */
 #define GG_WORDMARK_H 96   /* tall enough that a typical wordmark spans the column */
 #define GG_ART_PCT    50   /* cover owns the top half of the right column */
 
@@ -28,12 +32,6 @@ static int gg_row_h(void) {
     return TTF_FontHeight(f) + cat_scale(GG_ROW_PAD);
 }
 
-int jw_grid_games_visible_rows(void) {
-    int top = cat_scale(GG_TOPBAR) + cat_scale(GG_MARGIN);
-    int h   = cat_get_screen_height() - top - cat_scale(GG_MARGIN);
-    int rows = h / gg_row_h();
-    return rows > 0 ? rows : 1;
-}
 
 /* Text on a translucent panel is derived, never authored: a theme cannot end up
    with white on white by accident. Same rule as the status polarity over a
@@ -157,6 +155,37 @@ static int gg_wrap(TTF_Font *f, const char *text, int maxw,
     return n;
 }
 
+/* Rows go through Catastrophe's layered list pane, the same widget the tabbed
+   browser uses: the highlight is its own layer that eases between rows while the
+   row content stays put, and the pane owns scrolling and the scrollbar. Drawing
+   the rows by hand meant no sliding focus and a list that felt slower than every
+   other view in Leaf. */
+typedef struct {
+    jw_grid_games_name_fn name_fn;
+    void          *ctx;
+    TTF_Font      *font;
+    cat_draw_color ink, sel_ink, highlight;
+    int            pad_x;
+} gg_list_ctx;
+
+static void gg_focus_draw(int x, int y, int w, int h, void *user) {
+    gg_list_ctx *c = (gg_list_ctx *)user;
+    int pill_h = TTF_FontHeight(c->font) + cat_scale(8);
+    cat_draw_pill(x, y + (h - pill_h) / 2, w, pill_h, c->highlight);
+}
+
+static void gg_item_draw(int idx, int x, int y, int w, int h, float focus, void *user) {
+    gg_list_ctx *c = (gg_list_ctx *)user;
+    static gg_fit_slot row_fit[32];
+    const char *label = gg_fit(&row_fit[idx % 32], c->font,
+                               c->name_fn ? c->name_fn(c->ctx, idx) : "",
+                               w - c->pad_x * 2, NULL);
+    /* Colour follows the moving highlight rather than snapping at either end. */
+    cat_draw_color col = cat_draw_color_lerp(c->ink, c->sel_ink, focus);
+    cat_draw_text(c->font, label, x + c->pad_x,
+                  y + (h - TTF_FontHeight(c->font)) / 2, col);
+}
+
 void jw_grid_games_draw(const cat_list_state *ls, int count,
                         jw_grid_games_name_fn name_fn,
                         jw_grid_games_art_fn art_fn, void *ctx,
@@ -169,8 +198,14 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
 
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *rowf  = gg_row_font();
-    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-    TTF_Font *tiny  = cat_get_font(CAT_FONT_TINY);
+    /* The info section runs a tier below the rest of the view: seven labelled
+       facts and a synopsis in one column is dense, and at the list's size they
+       crowd each other and truncate. */
+    /* Info values carry no label: a year, a rating, a player count and a genre
+       each read from their own shape, so the words naming them were spending
+       half of every box to say what the value already says. Small type suits
+       them -- they are reference, not the thing being read. */
+    TTF_Font *small = cat_get_font(CAT_FONT_TINY);
     if (!body || !small) return;
 
     const int M   = cat_scale(GG_MARGIN);
@@ -193,31 +228,19 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
     if (rows < 1) rows = 1;
     ((cat_list_state *)ls)->visible_rows = rows;
 
-    int first = ls->scroll_offset;
-    if (first > count - rows) first = count - rows;
-    if (first < 0) first = 0;
-
-    int body_h = TTF_FontHeight(body);
-    int text_x = lx + cat_scale(20);
-    int text_w = lw - cat_scale(40);
-    for (int i = 0; i < rows && first + i < count; ++i) {
-        int idx = first + i;
-        int ry = ly + cat_scale(8) + i * row_h;
-        bool sel = (idx == ls->cursor);
-        if (sel)
-            cat_draw_rounded_rect(lx + cat_scale(8), ry - cat_scale(2),
-                                  lw - cat_scale(16), row_h - cat_scale(2),
-                                  (row_h - cat_scale(2)) / 2, st->highlight);
-        /* Fitted through the per-row cache, then drawn by the plain path so the
-           rendered texture is cached too. Re-fitting these every frame is what
-           kept the launcher pinned at 100% and starved input. */
-        static gg_fit_slot row_fit[32];
-        const char *label = gg_fit(&row_fit[i % 32], rowf,
-                                   name_fn ? name_fn(ctx, idx) : "", text_w, NULL);
-        cat_draw_text(rowf, label, text_x,
-                      ry + (row_h - cat_scale(2) - TTF_FontHeight(rowf)) / 2 - cat_scale(1),
-                      sel ? st->highlight_text : ink);
-    }
+    gg_list_ctx lctx = {
+        .name_fn   = name_fn,
+        .ctx       = ctx,
+        .font      = rowf,
+        .ink       = ink,
+        .sel_ink   = st->highlight_text,
+        .highlight = st->highlight,
+        .pad_x     = cat_scale(20),
+    };
+    cat_draw_list_pane_layered(lx + cat_scale(8), ly + cat_scale(6),
+                               lw - cat_scale(16), lh - cat_scale(12),
+                               count, ls, row_h,
+                               gg_focus_draw, gg_item_draw, &lctx);
 
     /* ── right: cover, then whatever facts we have ──────────────────────── */
     int rx = lx + lw + GAP;
@@ -242,13 +265,19 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
 
     /* The synopsis takes whatever the chips leave, and wraps to fit it. */
     int syn_avail = info_h - chip_h - (chip_h ? cat_scale(GG_CHIP_GAP) : 0);
-    int syn_line  = TTF_FontHeight(small) + cat_scale(4);
-    int syn_max   = syn_avail > cat_scale(34) ? (syn_avail - cat_scale(34)) / syn_line : 0;
-    if (syn_max > 4) syn_max = 4;
-    char syn_lines[4][256];
-    int syn_n = (synopsis && syn_max > 0)
-              ? gg_wrap(small, synopsis, rw - cat_scale(26), syn_lines, syn_max) : 0;
-    int syn_h = syn_n ? cat_scale(30) + syn_n * syn_line + cat_scale(4) : 0;
+    /* The synopsis is the one long-form block here, so it takes the smallest
+       tier and the tightest leading: it is read as a paragraph, not scanned. */
+    TTF_Font *syn_f = cat_get_font(CAT_FONT_MICRO);
+    int syn_line  = TTF_FontHeight(syn_f) + cat_scale(1);
+    int syn_vis   = syn_avail > cat_scale(16) ? (syn_avail - cat_scale(16)) / syn_line : 0;
+    if (syn_vis > GG_SYN_MAX_LINES) syn_vis = GG_SYN_MAX_LINES;
+    /* Wrap the whole blurb, not just the part that fits: the extra lines are
+       what the panel scrolls through. */
+    char syn_lines[GG_SYN_MAX_LINES][256];
+    int syn_n = (synopsis && syn_vis > 0)
+              ? gg_wrap(syn_f, synopsis, rw - cat_scale(26), syn_lines, GG_SYN_MAX_LINES) : 0;
+    int syn_shown = syn_n < syn_vis ? syn_n : syn_vis;
+    int syn_h = syn_shown ? cat_scale(12) + syn_shown * syn_line + cat_scale(6) : 0;
 
     /* The cover draws pure: no plate, no shadow, no rounding of its own. A
        portrait cover in a landscape slot simply sits narrower, which is the
@@ -269,26 +298,89 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
     for (int i = 0; i < meta_count && i < JW_GRID_GAMES_MAX_META; ++i) {
         int cx = rx + (i % 3) * (cw + cat_scale(GG_CHIP_GAP));
         int cy = y + (i / 3) * (cat_scale(GG_CHIP_H) + cat_scale(GG_CHIP_GAP));
-        gg_panel(cx, cy, cw, cat_scale(GG_CHIP_H), cat_scale(10), st);
-        cat_draw_color dim = ink;
-        dim.a = 160;
-        if (tiny) cat_draw_text(tiny, meta[i].label, cx + cat_scale(12), cy + cat_scale(8), dim);
-        static gg_fit_slot chip_fit[JW_GRID_GAMES_MAX_META];
-        const char *cv = gg_fit(&chip_fit[i % JW_GRID_GAMES_MAX_META], small,
-                                meta[i].value, cw - cat_scale(24), NULL);
-        cat_draw_text(small, cv, cx + cat_scale(12), cy + cat_scale(26), ink);
+        int chh = cat_scale(GG_CHIP_H);
+        gg_panel(cx, cy, cw, chh, cat_scale(10), st);
+        if (meta[i].stars > 0) {
+            /* Five stars, filled to the nearest half. Drawn rather than set in
+               type: the user can change the font family, and a star glyph is not
+               guaranteed to survive that. */
+            int r    = chh / 4;
+            int step = r * 5 / 2;
+            int sx   = cx + (cw - (step * 4 + r * 2)) / 2 + r;
+            int sy   = cy + chh / 2;
+            cat_draw_color dim = ink;
+            dim.a = 70;
+            for (int k = 0; k < 5; k++) {
+                int filled = meta[i].stars - k * 2;   /* 2 = full, 1 = half */
+                cat_draw_star(sx, sy, r, filled >= 2 ? ink : dim);
+                if (filled == 1) {
+                    /* Half: redraw the left side over the dim star. */
+                    SDL_Renderer *rr = cat_get_renderer();
+                    SDL_Rect clip_prev, half = { sx - r, sy - r, r, r * 2 };
+                    SDL_RenderGetClipRect(rr, &clip_prev);
+                    SDL_RenderSetClipRect(rr, &half);
+                    cat_draw_star(sx, sy, r, ink);
+                    if (clip_prev.w == 0 && clip_prev.h == 0) SDL_RenderSetClipRect(rr, NULL);
+                    else                                      SDL_RenderSetClipRect(rr, &clip_prev);
+                }
+                sx += step;
+            }
+        } else {
+            static gg_fit_slot chip_fit[JW_GRID_GAMES_MAX_META];
+            int vw = 0;
+            const char *cv = gg_fit(&chip_fit[i % JW_GRID_GAMES_MAX_META], small,
+                                    meta[i].value, cw - cat_scale(20), &vw);
+            cat_draw_text(small, cv, cx + (cw - vw) / 2,
+                          cy + (chh - TTF_FontHeight(small)) / 2, ink);
+        }
     }
     y += chip_h + (chip_h ? cat_scale(GG_CHIP_GAP) : 0);
 
-    if (syn_n) {
+    if (syn_shown) {
         gg_panel(rx, y, rw, syn_h, cat_scale(10), st);
-        cat_draw_color dim = ink; dim.a = 160;
-        if (tiny) cat_draw_text(tiny, "SYNOPSIS", rx + cat_scale(12), y + cat_scale(8), dim);
-        int ty = y + cat_scale(28);
-        for (int i = 0; i < syn_n; ++i) {
-            cat_draw_text(small, syn_lines[i], rx + cat_scale(13), ty, ink);
-            ty += TTF_FontHeight(small) + cat_scale(4);
+
+        /* Longer than the panel: creep through it, pausing at each end so the
+           first and last lines are actually readable. State is function-static
+           because only one synopsis is on screen, and it resets whenever the
+           text changes. */
+        float first_line = 0.0f;
+        if (syn_n > syn_shown) {
+            static char     last_text[128];
+            static uint32_t started_ms;
+            uint32_t now = SDL_GetTicks();
+            char key[128];
+            gg_copy(key, sizeof(key), syn_lines[0]);
+            if (strcmp(key, last_text) != 0) {
+                gg_copy(last_text, sizeof(last_text), key);
+                started_ms = now;
+            }
+            int   over    = syn_n - syn_shown;
+            float travel  = (float)over * (float)GG_SYN_SCROLL_MS;
+            float total   = GG_SYN_HOLD_MS * 2.0f + travel;
+            float t       = fmodf((float)(now - started_ms), total);
+            if (t < GG_SYN_HOLD_MS)                 first_line = 0.0f;
+            else if (t < GG_SYN_HOLD_MS + travel)   first_line = (t - GG_SYN_HOLD_MS) / (float)GG_SYN_SCROLL_MS;
+            else                                    first_line = (float)over;
+            cat_request_frame();               /* keep it moving */
         }
+
+        /* Clipped so a part-scrolled line is cut rather than spilling past the
+           panel. No render target changes inside, so the rect is safe here. */
+        SDL_Renderer *r = cat_get_renderer();
+        SDL_Rect prev_clip;
+        SDL_RenderGetClipRect(r, &prev_clip);
+        SDL_Rect clip = { rx, y + cat_scale(6), rw, syn_h - cat_scale(10) };
+        SDL_RenderSetClipRect(r, &clip);
+
+        int base = y + cat_scale(10) - (int)(first_line * (float)syn_line);
+        for (int i = 0; i < syn_n; ++i) {
+            int ty = base + i * syn_line;
+            if (ty + syn_line < clip.y || ty > clip.y + clip.h) continue;
+            cat_draw_text(syn_f, syn_lines[i], rx + cat_scale(13), ty, ink);
+        }
+
+        if (prev_clip.w == 0 && prev_clip.h == 0) SDL_RenderSetClipRect(r, NULL);
+        else                                      SDL_RenderSetClipRect(r, &prev_clip);
         y += syn_h;
     }
 
@@ -319,7 +411,7 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
         int nw = 0;
         const char *fitted = gg_fit(&name_fit, body, system_name, rw, &nw);
         cat_draw_text(body, fitted, rx + (rw - nw) / 2,
-                      wy + (wm_slot - body_h) / 2,
+                      wy + (wm_slot - TTF_FontHeight(body)) / 2,
                       (cat_draw_color){ 0xEE, 0xF4, 0xEA, 0xFF });
     }
 

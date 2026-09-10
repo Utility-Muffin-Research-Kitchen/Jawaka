@@ -71,10 +71,13 @@ void jw_grid_step(jw_grid *g, cat_list_state *ls, int count, int dx, int dy,
    the caller keeps requesting frames. */
 /* label_fn may be NULL. A label is a full-tile overlay authored at the tile's
    own size, drawn over the composited art on the same rect. */
+/* `border` and `focus_ring` override the stylesheet's tile colours when their
+   alpha is non-zero; a theme that sets neither keeps Leaf's own. */
 bool jw_grid_draw(jw_grid *g, const cat_stylesheet_launcher *l,
                   const cat_list_state *ls, int count,
                   jw_grid_icon_fn icon_fn, jw_grid_icon_fn label_fn, void *ctx,
-                  uint32_t now, uint32_t anim_ms);
+                  uint32_t now, uint32_t anim_ms,
+                  cat_draw_color border_override, cat_draw_color focus_override);
 
 /* Bottom-left item count for the focused tile: a controller silhouette and the
    number, mirroring the status cluster's inset on the opposite corner. It sits
