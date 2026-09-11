@@ -1,5 +1,4 @@
 #include "internal/db/db.h"
-#include "internal/core/scraped_text.h"
 #include "internal/search/pinyin.h"
 #include "internal/db/relocation.h"
 #include "internal/storage/sources.h"
@@ -2137,10 +2136,6 @@ int jw_db_get_game_meta(const char *db_path, int game_id, jw_game_meta *out) {
             if (strcmp(k, kGameMetaFields[i].key) != 0) continue;
             char *dst = (char *)out + kGameMetaFields[i].off;
             snprintf(dst, kGameMetaFields[i].len, "%s", v);
-            /* Rows written before the scraper started cleaning its own output
-               still hold HTML entities and raw line breaks. Cheap, idempotent,
-               and it saves a rescrape of the whole library. */
-            jw_clean_scraped_text(dst);
             break;
         }
     }

@@ -116,7 +116,13 @@ static const jw__color_scheme kColorSchemes[] = {
 
 static void jw__apply_color_scheme(jw_settings_ui *ui, int index, bool *theme_changed);
 
-#define JW_SETTINGS_VALUE_MAX 64
+/* Wide enough for the longest value any key actually holds. The user theme is
+   a filesystem folder name, declared as 128 bytes at scan, in the catalog and
+   in the settings struct; reading it back through a 64-byte row silently cut a
+   64-127 byte name to 63, after which the exact catalog lookup missed and the
+   active theme fell back to None. A settings identity must not be shortened by
+   the table it happens to travel through. 50 keys, so the cost is a few KB. */
+#define JW_SETTINGS_VALUE_MAX 128
 typedef enum {
     JW_SETTING_PILL_SHAPE_INDEX = 0,
     JW_SETTING_FONT_FAMILY_INDEX,
@@ -1563,11 +1569,14 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 if (idx >= 0 && idx < JW_SETTINGS_CLOCK_STYLE_COUNT)
                     ui->clock_style_index = idx;
             }
+            /* These three are 64-byte fields by design, and the value row is
+               now wide enough to hold a longer one, so say where the cut is
+               rather than leaving it to whichever buffer happens to be smaller. */
             if (jw__setting_has(values, found, JW_SETTING_TIMEZONE))
-                snprintf(ui->timezone, sizeof(ui->timezone), "%s",
+                snprintf(ui->timezone, sizeof(ui->timezone), "%.63s",
                          values[JW_SETTING_TIMEZONE]);
             if (jw__setting_has(values, found, JW_SETTING_SS_USER))
-                snprintf(ui->ss_username, sizeof(ui->ss_username), "%s",
+                snprintf(ui->ss_username, sizeof(ui->ss_username), "%.63s",
                          values[JW_SETTING_SS_USER]);
             if (jw__setting_has(values, found, JW_SETTING_SS_VERIFIED))
                 ui->ss_verified = (strcmp(values[JW_SETTING_SS_VERIFIED], "1") == 0);
@@ -1592,7 +1601,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 jw_ss_default_region_priority_count,
                 ui->scrape_region_order);
             if (jw__setting_has(values, found, JW_SETTING_RA_USER))
-                snprintf(ui->ra_username, sizeof(ui->ra_username), "%s",
+                snprintf(ui->ra_username, sizeof(ui->ra_username), "%.63s",
                          values[JW_SETTING_RA_USER]);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
                 ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
