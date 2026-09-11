@@ -4031,9 +4031,9 @@ static const char *jw__system_rom_folder(const jw_launcher_state *state,
     char probe[PATH_MAX];
     int w = snprintf(probe, sizeof(probe), "%s/Roms/%s", state->sdcard_root, system_code);
     if (w > 0 && (size_t)w < sizeof(probe) && jw__dir_exists(probe)) return system_code;
-    if (!state->system_icon_catalog) return NULL;
+    if (!state->system_catalog) return NULL;
 
-    const jw_ra_system *sys = jw_ra_catalog_find_system(state->system_icon_catalog, system_code);
+    const jw_ra_system *sys = jw_ra_catalog_find_system(state->system_catalog, system_code);
     if (!sys) return NULL;
 
     /* rom_root is "Roms/<FOLDER>"; the alias list holds bare folder names. */
