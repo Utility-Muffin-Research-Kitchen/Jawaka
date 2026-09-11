@@ -3597,6 +3597,13 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
     return jw__load_image_sized(path, JW_COVER_THUMB_MAX, out_w, out_h);
 }
 
+/* How many consecutive frames of asking, with nothing ever landing, before the
+   page stops believing the thumbnail cache can be written. Generous: a genuinely
+   cold page is expected to miss for a while as the ring grinds through it. */
+#define JW_PAGE_IMAGE_STUCK_FRAMES 90
+static int  jw__page_image_misses;
+static bool jw__page_image_no_disk;
+
 /* Art for a page that has to arrive whole. Coverflow streams its cards in
    because it is a carousel and an inline decode would hitch the tween, but
    every other layout has always drawn its system icons synchronously through
@@ -3620,6 +3627,7 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
     int w = 0, h = 0;
     SDL_Texture *cached = cat_cache_get(path, &w, &h);
     if (cached) {
+        jw__page_image_misses = 0;
         if (out_w) *out_w = w;
         if (out_h) *out_h = h;
         return cached;
@@ -3628,6 +3636,7 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
     char thumb[PATH_MAX];
     const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
     if (tp && cat_thumbnail_is_cached(path, tp)) {
+        jw__page_image_misses = 0;
         SDL_Surface *surf = IMG_Load(tp);
         if (surf) {                        /* a corrupt one falls through to rebuild */
             SDL_Texture *tex = cat_texture_from_surface(surf);
@@ -3643,6 +3652,36 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
         }
     }
 
+    /* The ring only writes thumbnails and frees the surface, so it can deliver
+       nothing when the write fails -- a full card, or a thumbs path that is not
+       a directory. Catastrophe treats persistence as best effort and ignores
+       IMG_SavePNG's result by design, so there is no status to consult: the
+       symptom is readable artwork staying blank while the page re-enqueues the
+       same jobs forever. Detect it by behaviour, then stop trusting the disk and
+       take the priority slot, which hands the surface back directly. */
+    if (jw__page_image_no_disk) {
+        SDL_Surface *surf = NULL;
+        if (jw__cover_async_take(path, tp, max_dim, &surf)) {
+            SDL_Texture *tex = cat_texture_from_surface(surf);
+            w = surf->w;
+            h = surf->h;
+            SDL_FreeSurface(surf);
+            if (tex) {
+                cat_cache_put(path, tex, w, h);
+                if (out_w) *out_w = w;
+                if (out_h) *out_h = h;
+                return tex;
+            }
+        }
+        cat_request_frame_in(40);
+        return NULL;
+    }
+
+    if (++jw__page_image_misses > JW_PAGE_IMAGE_STUCK_FRAMES) {
+        jw_log_warn("page art: thumbnail cache is not persisting; "
+                    "decoding through the priority slot instead");
+        jw__page_image_no_disk = true;
+    }
     jw__cover_prewarm_enqueue(path, tp, max_dim);
     cat_request_frame_in(40);
     return NULL;
