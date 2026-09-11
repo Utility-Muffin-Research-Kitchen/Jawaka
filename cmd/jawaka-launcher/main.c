@@ -5242,13 +5242,16 @@ static void jw__bios_row_value(const jw_launcher_state *state,
         snprintf(out, out_size, "%s (%s)", T("HLE"), scope);
         return;
     }
+    /* A BIOS file name can be the full rel-path length; the row it goes in is a
+       couple of hundred bytes. Bound the name so the scope suffix is never the
+       part that gets cut -- it is what tells HLE from a real file. */
     const char *name = jw__bios_basename(resolution->choice.rel_path);
     if (state->action_bios_status == JW_BIOS_FILE_OK) {
-        snprintf(out, out_size, "%s (%s)", name, scope);
+        snprintf(out, out_size, "%.120s (%s)", name, scope);
     } else {
         /* Never quietly reads as HLE: an unavailable choice says so, and the
            launch is refused rather than substituted. */
-        snprintf(out, out_size, "%s: %s (%s)", T("Unavailable"), name, scope);
+        snprintf(out, out_size, "%s: %.120s (%s)", T("Unavailable"), name, scope);
     }
 }
 
@@ -6350,9 +6353,18 @@ static void jw__bios_picker_go_up(jw_launcher_state *state) {
         jw__bios_picker_build_view(state);
         return;
     }
+    /* The parent is always shorter than the directory we are in, which already
+       fit -- but say so rather than navigate to a silently truncated path, the
+       same way jw__bios_picker_enter_dir refuses a name that will not fit. */
+    char up_abs[PATH_MAX];
+    if (snprintf(up_abs, sizeof(up_abs), "%s/%s",
+                 source->bios_path, parent) >= (int)sizeof(up_abs)) {
+        snprintf(picker->message, sizeof(picker->message), "%s",
+                 T("That folder name is too long to open."));
+        return;
+    }
     snprintf(picker->rel_dir, sizeof(picker->rel_dir), "%s", parent);
-    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s/%s",
-             source->bios_path, parent);
+    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s", up_abs);
     picker->page = 0;
     picker->page_cursor_count = 0;
     picker->list.cursor = 0;
@@ -6655,7 +6667,7 @@ static void jw__bios_picker_subtitle(const jw_launcher_state *state,
         return;
     }
     if (picker->rel_dir[0]) {
-        snprintf(out, out_size, "%s / BIOS/%s", picker->source_label,
+        snprintf(out, out_size, "%s / BIOS/%.160s", picker->source_label,
                  picker->rel_dir);
     } else {
         snprintf(out, out_size, "%s / BIOS", picker->source_label);
