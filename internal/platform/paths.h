@@ -17,6 +17,8 @@ char *jw_db_path(void);
 char *jw_retroarch_bin_path(void);
 char *jw_retroarch_shader_manifest_path(void);
 char *jw_retroarch_recommended_shaders_dir(void);
+/* <system>/launcher/res -- shared identity art for binaries outside the launcher. */
+char *jw_launcher_res_dir(void);
 bool jw_retroarch_shader_path_is_recommended(const char *candidate,
                                              char *resolved, size_t resolved_size,
                                              char *relative, size_t relative_size);
