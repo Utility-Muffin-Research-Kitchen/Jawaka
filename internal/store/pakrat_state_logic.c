@@ -2,6 +2,11 @@
 
 #include "internal/platform/leaf_version.h"
 
+int jw_pakrat_primary_action_opens(const jw_pakrat_app_state *app) {
+    return app && !app->managed && app->installed_owned && app->open_allowed &&
+           app->status != JW_PAKRAT_APP_UPDATE_AVAILABLE;
+}
+
 jw_pakrat_app_status jw_pakrat_resolve_owned_state(
     const char *selected_version,
     const char *installed_version,

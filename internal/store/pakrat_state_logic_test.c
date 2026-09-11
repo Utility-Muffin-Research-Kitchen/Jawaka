@@ -22,6 +22,28 @@ static void expect(const char *selected, const char *installed, int present,
 }
 
 int main(void) {
+    jw_pakrat_app_state app = {
+        .status = JW_PAKRAT_APP_INSTALLED,
+        .installed_owned = 1,
+        .open_allowed = 1,
+        .primary_action_allowed = 1,
+    };
+    assert(jw_pakrat_primary_action_opens(&app));
+    app.status = JW_PAKRAT_APP_UPDATE_AVAILABLE;
+    assert(!jw_pakrat_primary_action_opens(&app));
+    app.status = JW_PAKRAT_APP_INSTALLED;
+    app.primary_action_allowed = 0; /* Catalog gates must not block Open. */
+    assert(jw_pakrat_primary_action_opens(&app));
+    app.open_allowed = 0; /* Content-only paks have no app to open. */
+    assert(!jw_pakrat_primary_action_opens(&app));
+    app.open_allowed = 1;
+    app.managed = 1;
+    assert(!jw_pakrat_primary_action_opens(&app));
+    app.managed = 0;
+    app.installed_owned = 0;
+    assert(!jw_pakrat_primary_action_opens(&app));
+    assert(!jw_pakrat_primary_action_opens(NULL));
+
     expect("0.2.0", "0.2.0", 1, JW_PAKRAT_APP_INSTALLED, 1);
     expect("0.3.0", "0.2.0", 1, JW_PAKRAT_APP_UPDATE_AVAILABLE, 1);
     expect("0.1.2", "0.2.0", 1, JW_PAKRAT_APP_INSTALLED, 0);

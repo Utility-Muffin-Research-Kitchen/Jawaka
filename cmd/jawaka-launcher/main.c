@@ -28,6 +28,7 @@
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 #include "internal/store/pakrat_state.h"
+#include "internal/store/pakrat_state_logic.h"
 #include "internal/store/pakrat_txn.h"
 
 #include <SDL2/SDL.h>
@@ -1903,7 +1904,7 @@ static const char *jw__pakrat_primary_action_label(const jw_pakrat_app_state *ap
     if (app->managed) {
         return "Blocked";
     }
-    if (app->installed_owned && app->open_allowed) {
+    if (jw_pakrat_primary_action_opens(app)) {
         return "Open";
     }
     if (!app->primary_action_allowed) {
@@ -8982,8 +8983,8 @@ static void jw__handle_pakrat_input(const char *socket_path, const char *db_path
                 if (state->pakrat_app_count > 0 &&
                     state->pakrat_list.cursor >= 0 &&
                     state->pakrat_list.cursor < state->pakrat_app_count &&
-                    state->pakrat_apps[state->pakrat_list.cursor].installed_owned &&
-                    state->pakrat_apps[state->pakrat_list.cursor].open_allowed) {
+                    jw_pakrat_primary_action_opens(
+                        &state->pakrat_apps[state->pakrat_list.cursor])) {
                     const jw_pakrat_app_state *app =
                         &state->pakrat_apps[state->pakrat_list.cursor];
                     jw__launch_app_request(

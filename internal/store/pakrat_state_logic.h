@@ -3,6 +3,10 @@
 
 #include "internal/store/pakrat_state.h"
 
+/* Keep the primary-action label and button dispatch in sync: an available
+   update takes priority over opening the installed app. */
+int jw_pakrat_primary_action_opens(const jw_pakrat_app_state *app);
+
 /* Resolve an owned install without ever treating an older catalog selection as
    an update. Invalid versions fail closed.
 
