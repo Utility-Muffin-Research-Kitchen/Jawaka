@@ -592,6 +592,31 @@ bool jw_storage_relative_path_valid(const char *path) {
     }
 }
 
+int jw_storage_resolve_bios(const jw_storage_source *source,
+                            const char *bios_relpath,
+                            char *out, size_t out_size) {
+    if (!source || !source->configured || !source->available ||
+        !source->bios_path[0] ||
+        !jw_storage_relative_path_valid(bios_relpath) || !out || out_size == 0) {
+        return -1;
+    }
+    char candidate[JW_STORAGE_PATH_MAX];
+    if (!jw__format(candidate, sizeof(candidate), "%s/%s",
+                    source->bios_path, bios_relpath)) {
+        return -1;
+    }
+    char resolved[JW_STORAGE_PATH_MAX];
+    if (!realpath(candidate, resolved)) {
+        return -1;
+    }
+    char bios_root[JW_STORAGE_PATH_MAX];
+    jw__realpath_or_literal(source->bios_path, bios_root, sizeof(bios_root));
+    if (!jw__path_is_within(resolved, bios_root)) {
+        return -1;
+    }
+    return jw__format(out, out_size, "%s", resolved) ? 0 : -1;
+}
+
 int jw_storage_resolve_rom(const jw_storage_source *source,
                            const char *rom_relpath,
                            bool require_regular_file,

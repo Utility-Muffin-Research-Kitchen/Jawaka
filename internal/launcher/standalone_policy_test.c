@@ -78,6 +78,56 @@ int main(void) {
                "unrelated_core", "/sd/emulators/DraStic/launch.sh"),
            true);
 
+    /* Fun DraStic is a second NDS standalone sharing the DraStic binary. The
+       two must not recognize each other: a collision would make every Fun
+       DraStic session log the wrong emulator and would entangle any future
+       policy divergence between the packages. */
+    expect("Fun DraStic identity",
+           jw_standalone_policy_is_fun_drastic(
+               "fun_drastic", "/sd/emulators/fun-drastic/launch.sh"),
+           true);
+    expect("Fun DraStic path compatibility",
+           jw_standalone_policy_is_fun_drastic(
+               "legacy_path_core",
+               "/sd/.system/leaf/platforms/mlp1/emulators/fun-drastic/launch.sh"),
+           true);
+    expect("Fun DraStic exact identity",
+           jw_standalone_policy_is_fun_drastic("fun_drastic_preview", NULL),
+           false);
+    expect("Fun DraStic exact package path",
+           jw_standalone_policy_is_fun_drastic(
+               "legacy_path_core", "/sd/emulators/fun-drastic-preview/launch.sh"),
+           false);
+    expect("DraStic does not answer for Fun DraStic",
+           jw_standalone_policy_is_drastic(
+               "fun_drastic", "/sd/emulators/fun-drastic/launch.sh"),
+           false);
+    expect("Fun DraStic does not answer for DraStic",
+           jw_standalone_policy_is_fun_drastic(
+               "drastic", "/sd/emulators/drastic/launch.sh"),
+           false);
+    expect("Fun DraStic calibrated input (paired wireless controllers)",
+           jw_standalone_policy_uses_calibrated_virtual_input(
+               "fun_drastic", "/sd/emulators/fun-drastic/launch.sh"),
+           true);
+    expect("Fun DraStic no implicit direct DRM",
+           jw_standalone_policy_requires_direct_drm(
+               "fun_drastic", "/sd/emulators/fun-drastic/launch.sh", false),
+           false);
+    /* drastic64 is byte-identical in both packages, so content support cannot
+       diverge; archive handling goes through the hook's system() interposition
+       and the unzip_roms key, not through a Jawaka restriction. */
+    expect("Fun DraStic ZIP supported",
+           jw_standalone_policy_supports_content(
+               "fun_drastic", "/sd/emulators/fun-drastic/launch.sh",
+               "/sd/Roms/NDS/Game.zip"),
+           true);
+    expect("Fun DraStic 7z supported",
+           jw_standalone_policy_supports_content(
+               "fun_drastic", "/sd/emulators/fun-drastic/launch.sh",
+               "/sd/Roms/NDS/Game.7z"),
+           true);
+
     expect("YabaSanshiro standalone identity",
            jw_standalone_policy_is_yabasanshiro(
                "yabasanshiro_standalone", NULL),

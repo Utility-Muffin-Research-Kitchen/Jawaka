@@ -10,11 +10,23 @@ char *jw_state_dir(void);
 char *jw_socket_path(void);
 char *jw_osd_socket_path(void);
 /* Runtime file selecting which surface the resident in-game UI shows on its
-   next reveal: contents are "menu" (default) or "switcher". Written by the
-   daemon before SIGUSR1, read by jawaka-menu --in-game on each show. */
+   next reveal: "menu" (default) or "switcher". Written by
+   the daemon before SIGUSR1, read by jawaka-menu --in-game on each show. */
 char *jw_ingame_ui_mode_path(void);
 char *jw_db_path(void);
 char *jw_retroarch_bin_path(void);
+char *jw_retroarch_shader_manifest_path(void);
+char *jw_retroarch_recommended_shaders_dir(void);
+bool jw_retroarch_shader_path_is_recommended(const char *candidate,
+                                             char *resolved, size_t resolved_size,
+                                             char *relative, size_t relative_size);
+/* Restore is narrower than a general shader load, but broader than preview:
+   it may reapply the path RetroArch reported from the durable shader,
+   automatic-preset, or effective video_shader_dir roots. */
+bool jw_retroarch_shader_path_is_restorable(const char *candidate,
+                                            const char *runtime_config_path,
+                                            char *resolved, size_t resolved_size,
+                                            char *relative, size_t relative_size);
 char *jw_retroarch_core_path_for_system(const char *system);
 char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                const char *preferred_core_id,

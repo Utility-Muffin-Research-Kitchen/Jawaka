@@ -9,6 +9,7 @@
 #include "internal/ipc/ipc_stream.h"
 #include "internal/ipc/life1.h"
 #include "internal/launcher/active_game.h"
+#include "internal/launcher/bios.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/platform/external_input_monitor.h"
 #include "internal/platform/bluetooth.h"
@@ -293,6 +294,11 @@ typedef struct {
     bool menu_in_game;
     bool menu_visible;        /* standby menu is currently shown (RetroArch paused under it) */
     int menu_standby_attempts;/* respawn guard for a crashing standby within one session */
+    bool advanced_shader_pending;   /* Track direct entry into RetroArch Shaders until close */
+    bool advanced_shader_menu_seen; /* RetroArch's initial menu surface was observed */
+    bool advanced_shader_destination_sent; /* Shaders was requested after menu initialization */
+    long long advanced_shader_started_ms;
+    long long advanced_shader_next_poll_ms;
     long long standalone_quit_request_ms; /* Menu-tap quit sent to a standalone
                                  emulator without a native menu signal (0 = none);
                                  a second tap after the grace period escalates
@@ -651,6 +657,16 @@ static bool jw__standalone_session_is_flycast(const jw_daemon_state *state) {
                                             session->core_path);
 }
 
+static bool jw__standalone_session_is_fun_drastic(const jw_daemon_state *state) {
+    if (!jw__has_standalone_session(state)) {
+        return false;
+    }
+
+    const jw_retroarch_session *session = &state->retroarch_session;
+    return jw_standalone_policy_is_fun_drastic(session->core_id,
+                                               session->core_path);
+}
+
 static bool jw__standalone_session_is_yabasanshiro(const jw_daemon_state *state) {
     if (!jw__has_standalone_session(state)) {
         return false;
@@ -670,6 +686,13 @@ static bool jw__standalone_target_is_mupen64plus(const jw_launch_target *target)
 
 static bool jw__env_is_disabled(const char *name);
 static bool jw__env_is_truthy(const char *name);
+
+static bool jw__standalone_target_is_yabasanshiro(const jw_launch_target *target) {
+    if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
+        return false;
+    }
+    return jw_standalone_policy_is_yabasanshiro(target->core_id, target->path);
+}
 
 static bool jw__standalone_target_is_ports(const jw_launch_target *target) {
     if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
@@ -4758,6 +4781,14 @@ static void jw__retroarch_session_clear(jw_retroarch_session *session) {
     memset(session, 0, sizeof(*session));
 }
 
+static void jw__advanced_shader_clear(jw_daemon_state *state) {
+    state->advanced_shader_pending = false;
+    state->advanced_shader_menu_seen = false;
+    state->advanced_shader_destination_sent = false;
+    state->advanced_shader_started_ms = 0;
+    state->advanced_shader_next_poll_ms = 0;
+}
+
 static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
                                         int game_id,
                                         const char *system, const char *rom_path,
@@ -4801,6 +4832,7 @@ static void jw__retroarch_session_start(jw_daemon_state *state, pid_t pid,
     /* Fresh session: no menu shown yet, reset the standby respawn guard. */
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
+    jw__advanced_shader_clear(state);
 
     jw_log_info("RetroArch session started pid=%d system=%s source=%s core=%s core_id=%s core_folder=%s config=%s rom=%s",
                 (int)pid, session->system, session->source_root,
@@ -4962,6 +4994,7 @@ static void jw__retroarch_session_retarget(jw_daemon_state *state,
     state->retroarch_resume_on_menu_exit = false;
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
+    jw__advanced_shader_clear(state);
 
     jw_log_info("RetroArch session retargeted in-process pid=%d runtime_s=%ld resident_switches=%d system=%s source=%s core=%s core_id=%s core_folder=%s rom=%s",
                 (int)session->pid, runtime_s, session->resident_switches,
@@ -5197,6 +5230,7 @@ static void jw__retroarch_session_finish(jw_daemon_state *state, pid_t pid, int 
 
     state->post_launch_resume_pending = false;
     state->post_launch_resume_attempts = 0;
+    jw__advanced_shader_clear(state);
     jw__retroarch_session_clear(session);
     if (!state->pending_launch) {
         state->perf_session_override = false;
@@ -5323,9 +5357,9 @@ static void jw__write_ingame_ui_mode(const char *mode) {
     free(path);
 }
 
-/* Reveal the resident in-game UI in either "menu" or "switcher" mode. Pauses
-   RetroArch, records the desired mode, then reveals the warm standby (SIGUSR1)
-   or cold-spawns it. Reversible: this never saves or quits. */
+/* Reveal the resident in-game UI in menu or switcher mode.
+   Pauses RetroArch, records the desired mode, then reveals the warm standby
+   (SIGUSR1) or cold-spawns it. Reversible: this never saves or quits. */
 static int jw__request_open_in_game_ui(jw_daemon_state *state, const char *mode) {
     long long start_ms = jw__monotonic_ms();
     if (!jw__has_retroarch_session(state)) {
@@ -5449,6 +5483,72 @@ static int jw__request_close_in_game_menu(jw_daemon_state *state) {
     }
     jw_log_info("in-game menu closed via Menu toggle");
     return 0;
+}
+
+#define JW_ADVANCED_SHADER_POLL_MS 25
+#define JW_ADVANCED_SHADER_SETTLE_MS 100
+#define JW_ADVANCED_SHADER_OPEN_TIMEOUT_MS 2000
+
+static void jw__tick_advanced_shader(jw_daemon_state *state) {
+    long long now;
+    jw_ra_client client;
+    jw_ra_status status;
+
+    if (!state || !state->advanced_shader_pending) {
+        return;
+    }
+    if (!jw__has_retroarch_session(state)) {
+        jw__advanced_shader_clear(state);
+        return;
+    }
+
+    now = jw__monotonic_ms();
+    if (now < state->advanced_shader_next_poll_ms) {
+        return;
+    }
+    state->advanced_shader_next_poll_ms = now + JW_ADVANCED_SHADER_POLL_MS;
+    client = jw_ra_client_default();
+    if (jw_ra_get_status(&client, &status) != JW_RA_OK) {
+        return;
+    }
+    if (status.state == JW_RA_STATE_MENU) {
+        if (!state->advanced_shader_menu_seen) {
+            state->advanced_shader_menu_seen = true;
+            state->advanced_shader_next_poll_ms =
+                now + JW_ADVANCED_SHADER_SETTLE_MS;
+            return;
+        }
+        if (!state->advanced_shader_destination_sent) {
+            jw_ra_result result = jw_ra_open_shader_menu(&client);
+            if (result != JW_RA_OK) {
+                jw_log_warn("advanced shader destination failed result=%s",
+                            jw_ra_result_string(result));
+                jw__advanced_shader_clear(state);
+                return;
+            }
+            state->advanced_shader_destination_sent = true;
+            jw_log_info("advanced shader menu observed; opened shader screen");
+        }
+        return;
+    }
+    if (!state->advanced_shader_menu_seen) {
+        if (now - state->advanced_shader_started_ms >=
+            JW_ADVANCED_SHADER_OPEN_TIMEOUT_MS) {
+            jw_log_warn("advanced shader menu was not observed; shader handoff cancelled");
+            jw__advanced_shader_clear(state);
+        }
+        return;
+    }
+    if (!state->advanced_shader_destination_sent) {
+        jw__advanced_shader_clear(state);
+        return;
+    }
+
+    jw__advanced_shader_clear(state);
+    /* Scope is now selected directly in jawaka-menu with Left/Right. Once
+       RetroArch's advanced shader screen closes, simply resume the game; the
+       launcher menu will be opened normally when requested. */
+    (void)jw_ra_resume_direct(&client);
 }
 
 static int jw__resolve_rom_path(const jw_daemon_state *state, const char *rom_path,
@@ -5582,11 +5682,23 @@ static void jw__restore_env(jw_saved_env *saved, int count) {
     }
 }
 
-static void jw__publish_retroarch_source_dirs(const jw_storage_source *source) {
+static void jw__publish_retroarch_source_dirs(const jw_storage_source *source,
+                                              const char *system) {
     if (!source) {
         return;
     }
-    setenv("BIOS_PATH", source->bios_path, 1);
+    if (system && strcasecmp(system, "SATURN") == 0) {
+        char saturn_bios_path[JW_STORAGE_PATH_MAX +
+                              sizeof(JW_BIOS_SATURN_SUBDIR) + 1u];
+        int written = snprintf(saturn_bios_path, sizeof(saturn_bios_path),
+                               "%s/%s", source->bios_path,
+                               JW_BIOS_SATURN_SUBDIR);
+        if (written >= 0 && written < (int)sizeof(saturn_bios_path)) {
+            setenv("BIOS_PATH", saturn_bios_path, 1);
+        }
+    } else {
+        setenv("BIOS_PATH", source->bios_path, 1);
+    }
     setenv("SAVES_PATH", source->saves_path, 1);
     setenv("STATES_PATH", source->states_path, 1);
 }
@@ -5964,6 +6076,85 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
     return false;
 }
 
+/* ── Saturn BIOS selection ──────────────────────────────────────────────────
+   Resolved per launch, applied to the forked child only, and only for the
+   YabaSanshiro standalone. A selection saved while standalone was the core
+   stays in the database when the user switches to the RetroArch core: it is
+   neither applied nor validated for that launch, so a missing dormant BIOS
+   cannot block another emulator.
+
+   The stored value is logical (source id + BIOS-relative path). The absolute
+   path is produced here, against the cards mounted right now, and never
+   persisted -- the two MLP1 mounts swap across reboots. */
+
+typedef struct {
+    bool applies;                 /* this launch is the Saturn standalone */
+    jw_bios_resolution resolution;
+    jw_bios_file_status status;   /* file choices only */
+    char abs_path[PATH_MAX];      /* set only when status is OK */
+} jw__bios_launch;
+
+static void jw__resolve_launch_bios(jw_daemon_state *state,
+                                    const jw_launch_target *target,
+                                    const char *system,
+                                    const char *rom_path,
+                                    jw__bios_launch *out) {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->status = JW_BIOS_FILE_NO_CHOICE;
+    if (!state || !jw__standalone_target_is_yabasanshiro(target)) {
+        return;
+    }
+    out->applies = true;
+
+    jw_game_entry game;
+    memset(&game, 0, sizeof(game));
+    bool have_game = jw__lookup_launch_game(state, rom_path, &game) == 0;
+    const char *system_key = jw__launch_system_key(system, have_game ? &game : NULL);
+
+    char game_value[JW_BIOS_VALUE_MAX];
+    char system_value[JW_BIOS_VALUE_MAX];
+    game_value[0] = '\0';
+    system_value[0] = '\0';
+    if (have_game && game.id > 0 && state->db_path) {
+        (void)jw_db_get_game_setting(state->db_path, game.id,
+                                     JW_CONTENT_SETTING_SATURN_BIOS,
+                                     game_value, sizeof(game_value));
+    }
+    if (state->db_path && system_key && system_key[0]) {
+        (void)jw_db_get_system_setting(state->db_path, system_key,
+                                       JW_CONTENT_SETTING_SATURN_BIOS,
+                                       system_value, sizeof(system_value));
+    }
+
+    jw_bios_resolve(game_value, system_value, &out->resolution);
+    if (out->resolution.choice.kind != JW_BIOS_CHOICE_FILE) {
+        return;
+    }
+
+    jw_storage_source_list sources;
+    if (jw__storage_sources(state, &sources) != 0) {
+        out->status = JW_BIOS_FILE_SOURCE_UNAVAILABLE;
+        return;
+    }
+    out->status = jw_bios_resolve_file(&sources, &out->resolution.choice,
+                                       out->abs_path, sizeof(out->abs_path));
+}
+
+/* NULL when the launch may proceed; otherwise a static, actionable reason.
+   Never falls back to HLE or to another file: an unavailable explicit choice
+   stops the launch so the user can fix or change it. */
+static const char *jw__bios_launch_error(const jw__bios_launch *bios) {
+    if (!bios || !bios->applies ||
+        bios->resolution.choice.kind != JW_BIOS_CHOICE_FILE ||
+        bios->status == JW_BIOS_FILE_OK) {
+        return NULL;
+    }
+    return jw_bios_file_status_text(bios->status);
+}
+
 static int jw__resolve_launch_target(jw_daemon_state *state,
                                      const char *system,
                                      const char *rom_path,
@@ -6304,6 +6495,20 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
         jw__resolve_library_game(state, game.id, &game, &sources, &source,
                                  rom_abs, sizeof(rom_abs)) != 0) {
         if (out_error) *out_error = "ROM path missing";
+        return -1;
+    }
+
+    /* An explicitly selected Saturn BIOS that is gone, unreadable or the wrong
+       size refuses the request here, while the launcher is still on screen and
+       the user can correct the choice. */
+    jw__bios_launch bios;
+    jw__resolve_launch_bios(state, &target, system, rom_path, &bios);
+    const char *bios_error = jw__bios_launch_error(&bios);
+    if (bios_error) {
+        jw_log_warn("launch blocked: %s (source=%s path=%s)", bios_error,
+                    bios.resolution.choice.source_id,
+                    bios.resolution.choice.rel_path);
+        if (out_error) *out_error = bios_error;
         return -1;
     }
     return 0;
@@ -7348,8 +7553,8 @@ static bool jw__input_menu_tap(void *userdata) {
 
     /* Standalone emulators own the display, so Jawaka's overlay menu cannot
        appear above them. PPSSPP has a patched SIGUSR2 pause-menu hook. DraStic,
-       Flycast, and YabaSanshiro have native menu bindings, so let Menu reach
-       the emulator.
+       Fun DraStic, Flycast, and YabaSanshiro have native menu bindings, so let
+       Menu reach the emulator.
        Standalone emulators without a menu hook keep Menu as the exit key. */
     if (jw__has_standalone_session(state)) {
         pid_t pid = state->retroarch_session.pid;
@@ -7365,6 +7570,11 @@ static bool jw__input_menu_tap(void *userdata) {
         if (jw__standalone_session_is_drastic(state)) {
             state->standalone_quit_request_ms = 0;
             jw_log_info("menu tap: forwarding to DraStic native menu pid=%d", (int)pid);
+            return false;
+        }
+        if (jw__standalone_session_is_fun_drastic(state)) {
+            state->standalone_quit_request_ms = 0;
+            jw_log_info("menu tap: forwarding to Fun DraStic native menu pid=%d", (int)pid);
             return false;
         }
         if (jw__standalone_session_is_mupen64plus(state)) {
@@ -7408,6 +7618,37 @@ static bool jw__input_menu_tap(void *userdata) {
     }
 
     if (!jw__has_retroarch_session(state)) {
+        return false;
+    }
+
+    if (state->advanced_shader_pending) {
+        jw_ra_client client = jw_ra_client_default();
+        jw_ra_status status;
+        jw_ra_result result = jw_ra_get_status(&client, &status);
+        if (result == JW_RA_OK && status.state == JW_RA_STATE_MENU) {
+            result = jw_ra_menu_toggle(&client);
+            jw_log_info("menu tap: closing RetroArch shader menu result=%s",
+                        jw_ra_result_string(result));
+        } else {
+            jw_log_info("menu tap: waiting for Advanced shader handoff state=%s result=%s",
+                        result == JW_RA_OK
+                            ? jw_ra_play_state_string(status.state) : "unknown",
+                        jw_ra_result_string(result));
+        }
+        return true;
+    }
+
+    /* RetroArch's bind-all listener must be able to see the dedicated Menu
+       button. When its native menu is already foreground, pass the deferred
+       tap through instead of stacking Leaf's menu over it. The direct native
+       menu binding is nul by default, so an ordinary tap is otherwise inert;
+       a binding prompt consumes it as button 5. Advanced shader handoff stays
+       above this branch because Menu deliberately closes that flow. */
+    jw_ra_client client = jw_ra_client_default();
+    jw_ra_status status;
+    if (jw_ra_get_status(&client, &status) == JW_RA_OK &&
+        status.state == JW_RA_STATE_MENU) {
+        jw_log_info("menu tap: forwarding to foreground RetroArch menu");
         return false;
     }
 
@@ -8612,6 +8853,34 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         return -1;
     }
 
+    /* Re-resolve the Saturn BIOS choice here, not only at request time: a card
+       can be pulled between the two. This is the last check before the display
+       handoff, so a stale selection never reaches a black screen the user
+       cannot back out of. */
+    jw__bios_launch bios;
+    jw__resolve_launch_bios(state, target, state->pending_launch_system,
+                            state->pending_launch_rom_path, &bios);
+    const char *bios_error = jw__bios_launch_error(&bios);
+    if (bios_error) {
+        jw_log_error("standalone launch blocked: %s (source=%s path=%s)",
+                     bios_error, bios.resolution.choice.source_id,
+                     bios.resolution.choice.rel_path);
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
+    }
+    if (bios.applies) {
+        jw_log_info("saturn bios: mode=%s origin=%s%s%s",
+                    bios.resolution.choice.kind == JW_BIOS_CHOICE_FILE
+                        ? "external" : "hle",
+                    bios.resolution.origin == JW_BIOS_ORIGIN_GAME ? "game"
+                        : bios.resolution.origin == JW_BIOS_ORIGIN_SYSTEM
+                            ? "system" : "default",
+                    bios.abs_path[0] ? " file=" : "",
+                    bios.abs_path[0] ? bios.abs_path : "");
+    }
+
     jw_platform_result ready_result;
     jw_platform_frontend_ready(&state->platform, "launcher", &ready_result);
     jw_log_info("standalone emulator launch transition readiness code=%s",
@@ -8774,6 +9043,20 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
         setenv("JAWAKA_GAME_CORE_ID", target->core_id, 1);
+        /* The Saturn BIOS contract with Yabasanshiro-standalone's launch.sh.
+           Always written here, never in the daemon's own environment: an
+           unrelated ambient override must not survive into a game, and a
+           non-Saturn child must not inherit a resolved Saturn choice. */
+        if (bios.applies && bios.resolution.choice.kind == JW_BIOS_CHOICE_FILE) {
+            setenv("YABASANSHIRO_BIOS_MODE", "external", 1);
+            setenv("YABASANSHIRO_BIOS_FILE", bios.abs_path, 1);
+        } else if (bios.applies) {
+            setenv("YABASANSHIRO_BIOS_MODE", "hle", 1);
+            unsetenv("YABASANSHIRO_BIOS_FILE");
+        } else {
+            unsetenv("YABASANSHIRO_BIOS_MODE");
+            unsetenv("YABASANSHIRO_BIOS_FILE");
+        }
         if (direct_drm) {
             setenv("JAWAKA_DIRECT_DRM", "1", 1);
         }
@@ -9144,7 +9427,8 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         jw__save_env(&storage_env[0], "BIOS_PATH");
         jw__save_env(&storage_env[1], "SAVES_PATH");
         jw__save_env(&storage_env[2], "STATES_PATH");
-        jw__publish_retroarch_source_dirs(rom_source);
+        jw__publish_retroarch_source_dirs(rom_source,
+                                          state->pending_launch_system);
     }
 
     char config_error[256];
@@ -10323,6 +10607,18 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
             state->retroarch_resume_on_menu_exit = false;
             state->menu_visible = false;
         }
+    } else if (strcmp(action, "shader-settings") == 0) {
+        result = jw_ra_open_menu(&ra);
+        if (result == JW_RA_OK) {
+            long long now = jw__monotonic_ms();
+            state->retroarch_resume_on_menu_exit = false;
+            state->menu_visible = false;
+            state->advanced_shader_pending = true;
+            state->advanced_shader_menu_seen = false;
+            state->advanced_shader_destination_sent = false;
+            state->advanced_shader_started_ms = now;
+            state->advanced_shader_next_poll_ms = now;
+        }
     } else if (strcmp(action, "quit") == 0) {
         result = jw_ra_quit(&ra);
         if (result == JW_RA_OK) {
@@ -10421,6 +10717,133 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
     jw_log_info("retroarch-action requested action=%s result=%s",
                 action, jw_ra_result_string(result));
     return jw__reply_retroarch_result(client, action, result);
+}
+
+/* Shader operations for the in-game picker.
+ *
+ * Deliberately a closed request rather than a raw RetroArch command over the UI
+ * IPC: operation, path and scope are the only inputs, each validated here. A
+ * general passthrough would let anything that can reach the socket drive
+ * RetroArch directly. */
+static int jw__reply_shader_result(jw_ipc_client *client, const char *operation,
+                                   jw_ra_result result,
+                                   jw_ra_shader_outcome outcome,
+                                   const char *path) {
+    static const char *outcome_names[] = {
+        "ok", "none", "absent", "missing", "unsupported", "apply", "error"
+    };
+    bool transport_ok = result == JW_RA_OK;
+    cJSON *root = cJSON_CreateObject();
+    /* An apply failure is a successful exchange: the picker needs to tell
+       "RetroArch says this shader will not compile" from "RetroArch did not
+       answer", because only the second is worth retrying. */
+    cJSON_AddStringToObject(root, "type", transport_ok ? "ok" : "error");
+    cJSON_AddStringToObject(root, "operation", operation ? operation : "");
+    cJSON_AddStringToObject(root, "result", jw_ra_result_string(result));
+    if (transport_ok) {
+        size_t index = (size_t)outcome;
+        cJSON_AddStringToObject(
+            root, "outcome",
+            index < sizeof(outcome_names) / sizeof(outcome_names[0])
+                ? outcome_names[index] : "error");
+    } else {
+        cJSON_AddStringToObject(root, "message", jw_ra_result_string(result));
+    }
+    if (path && path[0]) {
+        cJSON_AddStringToObject(root, "path", path);
+    }
+    return jw__reply_json(client, root);
+}
+
+static bool jw__shader_scope_from_string(const char *text,
+                                         jw_ra_shader_scope *out) {
+    if (!text) {
+        return false;
+    }
+    if (strcmp(text, "game") == 0) {
+        *out = JW_RA_SHADER_SCOPE_GAME;
+    } else if (strcmp(text, "parent") == 0) {
+        *out = JW_RA_SHADER_SCOPE_PARENT;
+    } else if (strcmp(text, "core") == 0) {
+        *out = JW_RA_SHADER_SCOPE_CORE;
+    } else if (strcmp(text, "global") == 0) {
+        *out = JW_RA_SHADER_SCOPE_GLOBAL;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static int jw__handle_retroarch_shader(jw_daemon_state *state,
+                                       jw_ipc_client *client, cJSON *root) {
+    cJSON *op_json = cJSON_GetObjectItemCaseSensitive(root, "operation");
+    if (!cJSON_IsString(op_json) || !op_json->valuestring[0]) {
+        return jw__reply_error(client, "missing shader operation");
+    }
+    if (!jw__has_retroarch_session(state)) {
+        return jw__reply_error(client, "no active RetroArch session");
+    }
+
+    const char *operation = op_json->valuestring;
+    jw_ra_client ra = jw_ra_client_default();
+    ra.timeout_ms = JW_RA_SHADER_TIMEOUT_MS;
+    jw_ra_shader_outcome outcome = JW_RA_SHADER_ERR;
+    jw_ra_result result = JW_RA_UNSUPPORTED;
+    char path[PATH_MAX];
+    char relative[PATH_MAX];
+    const char *scope_log = "-";
+
+    path[0] = '\0';
+    relative[0] = '\0';
+
+    if (strcmp(operation, "get") == 0) {
+        result = jw_ra_get_shader(&ra, &outcome, path, sizeof(path));
+    } else if (strcmp(operation, "set") == 0 ||
+               strcmp(operation, "restore") == 0) {
+        cJSON *path_json = cJSON_GetObjectItemCaseSensitive(root, "path");
+        char resolved[PATH_MAX];
+        if (!cJSON_IsString(path_json) || !path_json->valuestring[0]) {
+            return jw__reply_error(client, "missing shader path");
+        }
+        bool permitted = strcmp(operation, "set") == 0
+            ? jw_retroarch_shader_path_is_recommended(
+                  path_json->valuestring, resolved, sizeof(resolved), relative,
+                  sizeof(relative))
+            : jw_retroarch_shader_path_is_restorable(
+                  path_json->valuestring,
+                  state->retroarch_session.config_path,
+                  resolved, sizeof(resolved), relative, sizeof(relative));
+        if (!permitted) {
+            jw_log_warn("retroarch-shader rejected %s path", operation);
+            return jw__reply_error(client, "shader path not permitted");
+        }
+        snprintf(path, sizeof(path), "%s", resolved);
+        result = jw_ra_set_shader(&ra, resolved, &outcome);
+    } else if (strcmp(operation, "clear") == 0) {
+        result = jw_ra_clear_shader(&ra, &outcome);
+    } else if (strcmp(operation, "save") == 0 ||
+               strcmp(operation, "remove") == 0) {
+        cJSON *scope_json = cJSON_GetObjectItemCaseSensitive(root, "scope");
+        jw_ra_shader_scope scope;
+        /* Scopes only. A path here would let a caller write a preset anywhere
+           RetroArch can reach. */
+        if (!cJSON_IsString(scope_json) ||
+            !jw__shader_scope_from_string(scope_json->valuestring, &scope)) {
+            return jw__reply_error(client, "invalid shader scope");
+        }
+        scope_log = scope_json->valuestring;
+        result = strcmp(operation, "save") == 0
+                     ? jw_ra_save_shader_preset(&ra, scope, &outcome)
+                     : jw_ra_remove_shader_preset(&ra, scope, &outcome);
+    } else {
+        return jw__reply_error(client, "unknown shader operation");
+    }
+
+    jw_log_info("retroarch-shader operation=%s scope=%s preset=%s result=%s",
+                operation, scope_log, relative[0] ? relative : "-",
+                jw_ra_result_string(result));
+    return jw__reply_shader_result(client, operation, result, outcome,
+                                   strcmp(operation, "get") == 0 ? path : NULL);
 }
 
 static pid_t jw__suspend_request_pid(jw_ipc_client *client, cJSON *request) {
@@ -11520,6 +11943,9 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_retroarch_session(state, client);
     }
 
+    if (strcmp(type->valuestring, "retroarch-shader") == 0) {
+        return jw__handle_retroarch_shader(state, client, root);
+    }
     if (strcmp(type->valuestring, "retroarch-action") == 0) {
         int rc = jw__handle_retroarch_action(state, client, root);
         cJSON_Delete(root);
@@ -14111,6 +14537,7 @@ int main(int argc, char *argv[]) {
         jw__tick_retroarch_warning(&state);
         jw__tick_in_game_menu_prewarm(&state);
         jw__handle_menu_exit(&state);
+        jw__tick_advanced_shader(&state);
         jw__handle_osd_exit(&state);
         jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);

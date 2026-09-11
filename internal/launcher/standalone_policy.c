@@ -49,6 +49,15 @@ bool jw_standalone_policy_is_yabasanshiro(const char *core_id,
            jw__path_contains(launcher_path, "/emulators/yabasanshiro/");
 }
 
+bool jw_standalone_policy_is_fun_drastic(const char *core_id,
+                                         const char *launcher_path) {
+    /* Match the exact id and the exact deployment directory. The DraStic
+       predicate looks for "/drastic/", which does not match "/fun-drastic/",
+       so neither one catches the other. */
+    return jw__string_equals(core_id, "fun_drastic") ||
+           jw__path_contains(launcher_path, "/emulators/fun-drastic/");
+}
+
 bool jw_standalone_policy_is_ports(const char *core_id,
                                    const char *launcher_path) {
     return jw__string_equals(core_id, "ports") ||
@@ -91,6 +100,7 @@ bool jw_standalone_policy_uses_calibrated_virtual_input(
            jw_standalone_policy_is_flycast(core_id, launcher_path) ||
            jw_standalone_policy_is_ppsspp(core_id, launcher_path) ||
            jw_standalone_policy_is_drastic(core_id, launcher_path) ||
+           jw_standalone_policy_is_fun_drastic(core_id, launcher_path) ||
            jw_standalone_policy_is_yabasanshiro(core_id, launcher_path) ||
            jw_standalone_policy_is_ports(core_id, launcher_path);
 }

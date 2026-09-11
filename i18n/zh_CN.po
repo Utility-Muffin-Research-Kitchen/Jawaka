@@ -1516,6 +1516,203 @@ msgstr "A：选择   B：返回"
 msgid "Shortcut"
 msgstr "快捷键"
 
+# In-game shader picker. Reviewed by dapass5 in PR #117 review; fuzzy cleared.
+msgid "Advanced RetroArch menu"
+msgstr "RetroArch 高级菜单"
+
+msgid "All RetroArch"
+msgstr "所有 RetroArch 游戏"
+
+msgid "All RetroArch requires a Leaf build with Fugazi's conflict resolver."
+msgstr "所有 RetroArch 游戏需要包含 Fugazi 冲突解析器的 Leaf 版本。"
+
+msgid "Remove the saved preset at the selected scope and turn shaders off."
+msgstr "移除所选作用范围内已保存的预设，并关闭着色器。"
+
+msgid "Edit the current shader in RetroArch."
+msgstr "在 RetroArch 中编辑当前着色器。"
+
+msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
+msgstr "Leaf 的游戏内选择器支持 GLSL 预设（.glslp）。"
+
+msgid "Leaf's shader files are incomplete. Update or reinstall Leaf."
+msgstr "Leaf 的着色器文件不完整。请更新或重新安装 Leaf。"
+
+msgid "No saved shader exists at that scope."
+msgstr "该作用范围内没有已保存的着色器。"
+
+msgid "Save your edits in RetroArch before you leave."
+msgstr "离开前，请在 RetroArch 中保存修改。"
+
+msgid "Recommended shaders are unavailable. Update or reinstall Leaf."
+msgstr "推荐的着色器不可用。请更新或重新安装 Leaf。"
+
+msgid "RetroArch did not confirm the shader. Reopen Shader or restart the game."
+msgstr "RetroArch 未确认着色器。请重新打开“着色器”或重启游戏。"
+
+msgid "RetroArch is not available. Shader unchanged."
+msgstr "RetroArch 不可用。着色器未更改。"
+
+msgid "Save globally"
+msgstr "全局保存"
+
+msgid "Save current shader…"
+msgstr "保存当前着色器…"
+
+msgid "Choose where RetroArch should load this shader automatically."
+msgstr "选择 RetroArch 应自动加载此着色器的作用范围。"
+
+msgid "A broader preset may apply after you reload the game."
+msgstr "重新加载游戏后，可能会应用作用范围更广的预设。"
+
+msgid "Scope"
+msgstr "作用范围"
+
+msgid "Shader"
+msgstr "着色器"
+
+msgid "Shader failed and the previous shader could not be restored. Reopen the game."
+msgstr "着色器应用失败，且无法恢复之前的着色器。请重新打开游戏。"
+
+msgid "Shader is active for this session, but could not be saved for %s."
+msgstr "着色器在本次会话中已启用，但无法保存到%s。"
+
+msgid "Shader operation failed."
+msgstr "着色器操作失败。"
+
+msgid "Shader scope"
+msgstr "着色器作用范围"
+
+msgid "The saved shader could not be removed."
+msgstr "无法移除已保存的着色器。"
+
+msgid "This RetroArch build does not support Leaf's shader picker."
+msgstr "当前 RetroArch 版本不支持 Leaf 的着色器选择器。"
+
+msgid "This folder"
+msgstr "此文件夹"
+
+msgid "This game"
+msgstr "此游戏"
+
+msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
+msgstr "这会替换所有 RetroArch 游戏的着色器，也可能替换 Fugazi。是否继续？"
+
+msgid "This shader could not compile or link on this video driver. Previous shader restored."
+msgstr "此着色器无法在当前视频驱动下编译或链接。已恢复之前的着色器。"
+
+msgid "Use Advanced to edit it in RetroArch."
+msgstr "使用高级选项在 RetroArch 中编辑。"
+
+msgid "that scope"
+msgstr "该作用范围"
+
+# Saturn BIOS selection (Core actions menu). BIOS stays English per the glossary.
+msgid "512 KiB candidate"
+msgstr "512 KiB 候选文件"
+
+msgid "BIOS file ready"
+msgstr "BIOS 文件可用"
+
+msgid "Browse BIOS folder"
+msgstr "浏览 BIOS 文件夹"
+
+msgid "Folder"
+msgstr "文件夹"
+
+msgid "HLE"
+msgstr "HLE"
+
+msgid "HLE, no BIOS file"
+msgstr "HLE，不使用 BIOS 文件"
+
+msgid "Main SD Card"
+msgstr "主 SD 卡"
+
+msgid "Next page"
+msgstr "下一页"
+
+msgid "No BIOS file"
+msgstr "不使用 BIOS 文件"
+
+msgid "No BIOS file selected"
+msgstr "未选择 BIOS 文件"
+
+msgid "Pick another Saturn BIOS from the options menu."
+msgstr "请在选项菜单中另选一个 Saturn BIOS。"
+
+msgid "Previous page"
+msgstr "上一页"
+
+msgid "Reading folder..."
+msgstr "正在读取文件夹…"
+
+msgid "Refresh this folder"
+msgstr "刷新此文件夹"
+
+msgid "Saturn BIOS"
+msgstr "Saturn BIOS"
+
+msgid "Saturn BIOS update failed"
+msgstr "Saturn BIOS 设置更新失败"
+
+msgid "Second SD Card"
+msgstr "副 SD 卡"
+
+msgid "Selected BIOS card is not mounted"
+msgstr "所选 BIOS 所在的卡未挂载"
+
+msgid "Selected BIOS file cannot be read"
+msgstr "所选 BIOS 文件无法读取"
+
+msgid "Selected BIOS file is missing"
+msgstr "所选 BIOS 文件已丢失"
+
+msgid "Selected BIOS file is not a 512 KiB image"
+msgstr "所选 BIOS 文件不是 512 KiB 镜像"
+
+msgid "Selected BIOS file is not a file"
+msgstr "所选 BIOS 不是一个文件"
+
+msgid "Selected BIOS file is unavailable"
+msgstr "所选 BIOS 文件不可用"
+
+msgid "Selected BIOS file left the BIOS folder"
+msgstr "所选 BIOS 文件已不在 BIOS 文件夹内"
+
+msgid "Selected BIOS path is not usable"
+msgstr "所选 BIOS 路径不可用"
+
+msgid "Size is not proof that a file is a Saturn BIOS."
+msgstr "文件大小不能证明它是 Saturn BIOS。"
+
+msgid "That BIOS file cannot be saved as a selection."
+msgstr "无法保存该 BIOS 文件的选择。"
+
+msgid "That card is not mounted right now."
+msgstr "该卡当前未挂载。"
+
+msgid "That file name is too long to select."
+msgstr "该文件名过长，无法选择。"
+
+msgid "That folder could not be read."
+msgstr "无法读取该文件夹。"
+
+msgid "That folder name is too long to open."
+msgstr "该文件夹名过长，无法打开。"
+
+msgid "Up one level"
+msgstr "返回上一级"
+
+msgid "Use the system setting"
+msgstr "使用系统设置"
+
+msgid "Now"
+msgstr "当前"
+
+msgid "Not enough memory to open the BIOS picker"
+msgstr "内存不足，无法打开 BIOS 选择器"
+
 msgid "Grid"
 msgstr "网格"
 

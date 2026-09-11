@@ -17,7 +17,9 @@ mkdir -p \
     "$DEFAULTS_DIR" \
     "$PLATFORM_ROOT/emulators/mupen64plus" \
     "$PLATFORM_ROOT/emulators/flycast" \
-    "$PLATFORM_ROOT/emulators/yabasanshiro"
+    "$PLATFORM_ROOT/emulators/yabasanshiro" \
+    "$PLATFORM_ROOT/emulators/drastic" \
+    "$PLATFORM_ROOT/emulators/fun-drastic"
 
 cat >"$DEFAULTS_DIR/cores.json" <<'JSON'
 {
@@ -114,6 +116,38 @@ cat >"$DEFAULTS_DIR/cores.json" <<'JSON'
       "supports_menu": true,
       "supports_savestate": true,
       "supports_disk_control": true,
+      "needs_swap": false,
+      "requires_direct_drm": false,
+      "status": "packaged"
+    },
+    {
+      "id": "drastic",
+      "display_name": "DraStic",
+      "type": "path",
+      "libretro_name": null,
+      "file_name": null,
+      "config_folder": null,
+      "info_name": null,
+      "path": "emulators/drastic/launch.sh",
+      "supports_menu": true,
+      "supports_savestate": false,
+      "supports_disk_control": false,
+      "needs_swap": false,
+      "requires_direct_drm": false,
+      "status": "packaged"
+    },
+    {
+      "id": "fun_drastic",
+      "display_name": "Fun DraStic",
+      "type": "path",
+      "libretro_name": null,
+      "file_name": null,
+      "config_folder": null,
+      "info_name": null,
+      "path": "emulators/fun-drastic/launch.sh",
+      "supports_menu": true,
+      "supports_savestate": false,
+      "supports_disk_control": false,
       "needs_swap": false,
       "requires_direct_drm": false,
       "status": "packaged"
@@ -230,6 +264,24 @@ cat >"$DEFAULTS_DIR/systems.json" <<'JSON'
       "bios_notes": []
     },
     {
+      "id": "NDS",
+      "name": "Nintendo DS",
+      "patterns": ["NDS"],
+      "extensions": ["nds"],
+      "archive_extensions": ["7z", "zip"],
+      "archive_inner_extensions": ["nds"],
+      "archive_mode": "pass_through",
+      "file_names": [],
+      "ignore_file_names": [],
+      "playlist_extensions": [],
+      "m3u_generation": "none",
+      "default_core": "drastic",
+      "alternate_cores": ["fun_drastic"],
+      "rom_root": "Roms/NDS",
+      "image_root": "Images/NDS",
+      "bios_notes": []
+    },
+    {
       "id": "SATURN",
       "name": "Sega Saturn",
       "patterns": ["SATURN"],
@@ -257,6 +309,10 @@ printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/flycast/launch.sh"
 chmod 755 "$PLATFORM_ROOT/emulators/flycast/launch.sh"
 printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/yabasanshiro/launch.sh"
 chmod 755 "$PLATFORM_ROOT/emulators/yabasanshiro/launch.sh"
+printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/drastic/launch.sh"
+chmod 755 "$PLATFORM_ROOT/emulators/drastic/launch.sh"
+printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/fun-drastic/launch.sh"
+chmod 755 "$PLATFORM_ROOT/emulators/fun-drastic/launch.sh"
 : >"$CORES_DIR/mupen64plus_next_libretro.dylib"
 : >"$CORES_DIR/flycast_libretro.dylib"
 : >"$CORES_DIR/yabasanshiro_libretro.dylib"
@@ -278,6 +334,12 @@ UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$SMOKE" "$SD_ROOT" GBA "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/gba.tsv"
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$SMOKE" "$SD_ROOT" SATURN "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/saturn.tsv"
+# Two path cores over the same emulator binary. DraStic stays the NDS default
+# and Fun DraStic is the ordered alternate; the fifth argument reports what a
+# persisted per-game choice of fun_drastic resolves to.
+UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+    "$SMOKE" "$SD_ROOT" NDS "$CORES_DIR" "$PLATFORM_ROOT" fun_drastic \
+    >"$TMP_ROOT/nds.tsv"
 
 grep -F $'count\t2' "$TMP_ROOT/n64.tsv" >/dev/null
 grep -F $'choice\t0\tmupen64plus_standalone\tpath\tdefault\tMupen64Plus Standalone\temulators/mupen64plus/launch.sh' "$TMP_ROOT/n64.tsv" >/dev/null
@@ -298,6 +360,11 @@ grep -F $'choice\t1\tgpsp\tretroarch\talternate\tgpSP\tgpsp_libretro.so' "$TMP_R
 grep -F $'count\t2' "$TMP_ROOT/saturn.tsv" >/dev/null
 grep -F $'choice\t0\tyabasanshiro\tretroarch\tdefault\tYabaSanshiro\tyabasanshiro_libretro.dylib\tshared-drm' "$TMP_ROOT/saturn.tsv" >/dev/null
 grep -F $'choice\t1\tyabasanshiro_standalone\tpath\talternate\tYabaSanshiro Standalone\temulators/yabasanshiro/launch.sh\tdirect-drm' "$TMP_ROOT/saturn.tsv" >/dev/null
+
+grep -F $'count\t2' "$TMP_ROOT/nds.tsv" >/dev/null
+grep -F $'choice\t0\tdrastic\tpath\tdefault\tDraStic\temulators/drastic/launch.sh\tshared-drm' "$TMP_ROOT/nds.tsv" >/dev/null
+grep -F $'choice\t1\tfun_drastic\tpath\talternate\tFun DraStic\temulators/fun-drastic/launch.sh\tshared-drm' "$TMP_ROOT/nds.tsv" >/dev/null
+grep -F $'preferred\tfun_drastic\tpath\talternate\temulators/fun-drastic/launch.sh' "$TMP_ROOT/nds.tsv" >/dev/null
 
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$OVERRIDE_SMOKE" "$SD_ROOT" GBA "$CORES_DIR" "$PLATFORM_ROOT" \
@@ -336,10 +403,31 @@ UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
 grep -F $'count\t1' "$TMP_ROOT/saturn-noexec.tsv" >/dev/null
 grep -F $'choice\t0\tyabasanshiro\tretroarch\tdefault\tYabaSanshiro\tyabasanshiro_libretro.dylib\tshared-drm' "$TMP_ROOT/saturn-noexec.tsv" >/dev/null
 if grep -F 'yabasanshiro_standalone' "$TMP_ROOT/saturn-noexec.tsv" >/dev/null; then
-    cat "$TMP_ROOT/saturn-noexec.tsv" >&2
+    cat "$TMP_ROOT/saturn-noexec.tsv"
+cat "$TMP_ROOT/nds.tsv"
+cat "$TMP_ROOT/nds-noexec.tsv"
+cat "$TMP_ROOT/nds-nodefault.tsv" >&2
     echo "non-executable YabaSanshiro path core appeared in core choices" >&2
     exit 1
 fi
+
+chmod 644 "$PLATFORM_ROOT/emulators/fun-drastic/launch.sh"
+UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+    "$SMOKE" "$SD_ROOT" NDS "$CORES_DIR" "$PLATFORM_ROOT" fun_drastic \
+    >"$TMP_ROOT/nds-noexec.tsv"
+grep -F $'count\t1' "$TMP_ROOT/nds-noexec.tsv" >/dev/null
+grep -F $'choice\t0\tdrastic\tpath\tdefault\tDraStic\temulators/drastic/launch.sh\tshared-drm' "$TMP_ROOT/nds-noexec.tsv" >/dev/null
+grep -F $'preferred\tfun_drastic\tunavailable' "$TMP_ROOT/nds-noexec.tsv" >/dev/null
+chmod 755 "$PLATFORM_ROOT/emulators/fun-drastic/launch.sh"
+
+# The default must survive a missing alternate: DraStic is the NDS default and
+# an unstaged Fun DraStic package cannot take Nintendo DS down with it.
+chmod 644 "$PLATFORM_ROOT/emulators/drastic/launch.sh"
+UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+    "$SMOKE" "$SD_ROOT" NDS "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/nds-nodefault.tsv"
+grep -F $'count\t1' "$TMP_ROOT/nds-nodefault.tsv" >/dev/null
+grep -F $'choice\t0\tfun_drastic\tpath\talternate\tFun DraStic\temulators/fun-drastic/launch.sh\tshared-drm' "$TMP_ROOT/nds-nodefault.tsv" >/dev/null
+chmod 755 "$PLATFORM_ROOT/emulators/drastic/launch.sh"
 
 cat "$TMP_ROOT/n64.tsv"
 cat "$TMP_ROOT/n64alt.tsv"
@@ -350,3 +438,6 @@ cat "$TMP_ROOT/gba.tsv"
 cat "$TMP_ROOT/gba-override.tsv"
 cat "$TMP_ROOT/saturn.tsv"
 cat "$TMP_ROOT/saturn-noexec.tsv"
+cat "$TMP_ROOT/nds.tsv"
+cat "$TMP_ROOT/nds-noexec.tsv"
+cat "$TMP_ROOT/nds-nodefault.tsv"

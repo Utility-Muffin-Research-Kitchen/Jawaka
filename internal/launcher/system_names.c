@@ -8,8 +8,8 @@
 
 /* Full console names for the system folder codes stored in the library. The
    metadata catalog still carries terse source labels for some systems, so these
-   user-facing names stay here until metadata names are curated. Unknown ids
-   fall back to the id itself. */
+   user-facing names stay here until release metadata names are curated.
+   Content paks supply their own names through the effective catalog. */
 static const struct { const char *id; const char *name; } kSystemDisplayNames[] = {
     { "FC",      "Nintendo Entertainment System" },
     { "NES",     "Nintendo Entertainment System" },
@@ -73,6 +73,7 @@ static const struct { const char *id; const char *name; } kSystemDisplayNames[] 
 };
 
 void jw_system_display_name(const char *db_path,
+                            const jw_ra_catalog *catalog,
                             const char *system_id,
                             char *out,
                             size_t out_size) {
@@ -94,16 +95,27 @@ void jw_system_display_name(const char *db_path,
         return;
     }
 
+    const jw_ra_system *system =
+        jw_ra_catalog_match_system_folder(catalog, system_id);
+    const char *catalog_name = system ? system->name : NULL;
+    if (catalog_name && catalog_name[0] && system->provider) {
+        snprintf(out, out_size, "%s", catalog_name);
+        return;
+    }
+
     /* Only the built-in names go through the translation table, and the .po
        decides per entry: 街机 for "Arcade" makes sense, translating "Vectrex"
        does not, and an untranslated entry renders as its English literal. The
-       two other tiers stay raw on purpose -- the DB override above is the
-       user's own rename, and the fallthrough below is their folder name; a
-       folder called "Settings" must not come back as 设置. */
+       other tiers stay raw on purpose: manual renames, catalog names, and
+       folder names are authored text. A folder called "Settings" must not
+       come back as 设置. */
     for (size_t i = 0; i < sizeof(kSystemDisplayNames) / sizeof(kSystemDisplayNames[0]); i++) {
         if (strcasecmp(system_id, kSystemDisplayNames[i].id) == 0) {
             snprintf(out, out_size, "%s", T(kSystemDisplayNames[i].name));
             return;
         }
+    }
+    if (catalog_name && catalog_name[0]) {
+        snprintf(out, out_size, "%s", catalog_name);
     }
 }

@@ -200,6 +200,10 @@ msgstr ""
 msgid "5 min"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "512 KiB candidate"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "528 MHz"
 msgstr ""
@@ -222,6 +226,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "816 MHz"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "A broader preset may apply after you reload the game."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -284,8 +292,20 @@ msgstr ""
 msgid "Adjust"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Advanced RetroArch menu"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "All"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "All RetroArch"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "All RetroArch requires a Leaf build with Fugazi's conflict resolver."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -380,6 +400,10 @@ msgstr ""
 msgid "B: Back   A: Next"
 msgstr ""
 
+#: internal/launcher/bios.c
+msgid "BIOS file ready"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Back"
 msgstr ""
@@ -460,6 +484,10 @@ msgstr ""
 msgid "Browse"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Browse BIOS folder"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Busy"
 msgstr ""
@@ -510,6 +538,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Choose"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Choose where RetroArch should load this shader automatically."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -588,7 +620,7 @@ msgstr ""
 msgid "Cursor Movement"
 msgstr ""
 
-#: internal/platform/platform_common.c
+#: cmd/jawaka-menu/main.c
 msgid "Custom"
 msgstr ""
 
@@ -600,7 +632,7 @@ msgstr ""
 msgid "DMC"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Default"
 msgstr ""
 
@@ -672,6 +704,10 @@ msgstr ""
 msgid "Eastern Europe"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Edit the current shader in RetroArch."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Empty"
 msgstr ""
@@ -730,6 +766,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Flat"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Folder"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -830,6 +870,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "HDMI output unavailable on this platform"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "HLE"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "HLE, no BIOS file"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -952,6 +1000,14 @@ msgstr ""
 msgid "Leaf"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Leaf's shader files are incomplete. Update or reinstall Leaf."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Left/Right"
 msgstr ""
@@ -986,6 +1042,10 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "MSX"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Main SD Card"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1052,6 +1112,10 @@ msgstr ""
 msgid "Network: %s"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Next page"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Nintendo 64"
 msgstr ""
@@ -1062,6 +1126,14 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Nintendo Entertainment System"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "No BIOS file"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "No BIOS file selected"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1105,6 +1177,10 @@ msgid "No save in this slot"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
+msgid "No saved shader exists at that scope."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
 msgid "No saves"
 msgstr ""
 
@@ -1136,12 +1212,20 @@ msgstr ""
 msgid "Not connected"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Not enough memory to open the BIOS picker"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Not found in the ScreenScraper.fr database."
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Not mounted"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Now"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1152,7 +1236,7 @@ msgstr ""
 msgid "OS"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-menu/main.c
 msgid "Off"
 msgstr ""
 
@@ -1228,6 +1312,10 @@ msgstr ""
 msgid "Pick Update"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Pick another Saturn BIOS from the options menu."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Play"
 msgstr ""
@@ -1264,6 +1352,10 @@ msgstr ""
 msgid "Press MENU to exit"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Previous page"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Profile"
 msgstr ""
@@ -1289,6 +1381,10 @@ msgid "Re-enter PIN"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Reading folder..."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Reboot"
 msgstr ""
 
@@ -1306,6 +1402,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Recents"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Recommended shaders are unavailable. Update or reinstall Leaf."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1326,6 +1426,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Refresh Rate"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Refresh this folder"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1350,6 +1454,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Remove"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Remove the saved preset at the selected scope and turn shaders off."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1420,6 +1528,14 @@ msgstr ""
 msgid "RetroArch Settings"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "RetroArch did not confirm the shader. Reopen Shader or restart the game."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "RetroArch is not available. Shader unchanged."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "RetroArch reset canceled"
 msgstr ""
@@ -1452,12 +1568,32 @@ msgstr ""
 msgid "Safely unmount the secondary SD card?"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Saturn BIOS"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Saturn BIOS update failed"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Save & Quit"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Save State"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Save current shader…"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Save globally"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Save your edits in RetroArch before you leave."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1486,6 +1622,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scanning…"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Scope"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1540,6 +1680,10 @@ msgstr ""
 msgid "Searching"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Second SD Card"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Secondary Text"
 msgstr ""
@@ -1572,6 +1716,38 @@ msgstr ""
 msgid "Select"
 msgstr ""
 
+#: internal/launcher/bios.c
+msgid "Selected BIOS card is not mounted"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file cannot be read"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file is missing"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file is not a 512 KiB image"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file is not a file"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file is unavailable"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS file left the BIOS folder"
+msgstr ""
+
+#: internal/launcher/bios.c
+msgid "Selected BIOS path is not usable"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Selection"
 msgstr ""
@@ -1592,6 +1768,26 @@ msgstr ""
 msgid "Settings"
 msgstr ""
 
+#: cmd/jawaka-menu/main.c
+msgid "Shader"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader failed and the previous shader could not be restored. Reopen the game."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader is active for this session, but could not be saved for %s."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader operation failed."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Shader scope"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Shortcut"
 msgstr ""
@@ -1610,6 +1806,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Signal: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Size is not proof that a file is a Saturn BIOS."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1809,7 +2009,51 @@ msgid "Theme"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "That BIOS file cannot be saved as a selection."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "That card is not mounted right now."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "That file name is too long to select."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "That folder could not be read."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "That folder name is too long to open."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "The saved shader could not be removed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Theme colors"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This RetroArch build does not support Leaf's shader picker."
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This folder"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This game"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "This shader could not compile or link on this video driver. Previous shader restored."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1876,7 +2120,7 @@ msgstr ""
 msgid "UTC"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Unavailable"
 msgstr ""
 
@@ -1913,6 +2157,10 @@ msgid "Unsupported"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Up one level"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Up/Down"
 msgstr ""
 
@@ -1926,6 +2174,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Uptime"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "Use Advanced to edit it in RetroArch."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Use the system setting"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -2034,6 +2290,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "space"
+msgstr ""
+
+#: cmd/jawaka-menu/main.c
+msgid "that scope"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c

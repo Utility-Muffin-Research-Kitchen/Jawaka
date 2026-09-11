@@ -246,6 +246,7 @@ Music/<artist>/<album>/<track>
 Apps/<platform>/<Name>.pak/
 Apps/shared/<Name>.pak/
 BIOS/
+  SATURN/                       # Saturn firmware
 Saves/
 States/
 Cheats/

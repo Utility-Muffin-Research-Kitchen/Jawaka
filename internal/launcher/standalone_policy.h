@@ -16,6 +16,13 @@ bool jw_standalone_policy_is_drastic(const char *core_id,
                                      const char *launcher_path);
 bool jw_standalone_policy_is_yabasanshiro(const char *core_id,
                                           const char *launcher_path);
+/* Fun DraStic is a second Nintendo DS standalone: tenlevels' frontend over the
+   same closed-source drastic64 binary the DraStic package ships. It gets its
+   own predicate rather than widening is_drastic(), the way YabaSanshiro did:
+   the ids collide on substring, every session would otherwise log the wrong
+   emulator's name, and the two packages must be able to diverge on policy. */
+bool jw_standalone_policy_is_fun_drastic(const char *core_id,
+                                         const char *launcher_path);
 bool jw_standalone_policy_is_ports(const char *core_id,
                                    const char *launcher_path);
 

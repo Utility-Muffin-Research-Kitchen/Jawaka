@@ -33,6 +33,7 @@ DEFAULT_CATASTROPHE_DIR := $(if $(wildcard ../Catastrophe/include/catastrophe.h)
 CATASTROPHE_DIR ?= $(DEFAULT_CATASTROPHE_DIR)
 CATASTROPHE_INCLUDE := $(CATASTROPHE_DIR)/include
 CATASTROPHE_HEADER := $(CATASTROPHE_INCLUDE)/catastrophe.h
+CATASTROPHE_WIDGETS_HEADER := $(CATASTROPHE_INCLUDE)/catastrophe_widgets.h
 CATASTROPHE_RES := $(CATASTROPHE_DIR)/res
 
 SDL_CFLAGS := $(shell pkg-config --cflags sdl2 SDL2_ttf SDL2_image)
@@ -188,6 +189,7 @@ DAEMON_SRCS := \
 	internal/ipc/ctl1.c \
 	internal/ipc/life1.c \
 	internal/launcher/active_game.c \
+	internal/launcher/bios.c \
 	internal/launcher/standalone_policy.c \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
@@ -391,6 +393,8 @@ UI_SRCS := \
 	$(WIFI_SRC) \
 	internal/retroarch/catalog.c \
 	$(EFFECTIVE_CATALOG_SRCS) \
+	internal/retroarch/shader_catalog.c \
+	internal/retroarch/shader_picker.c \
 	internal/retroarch/states.c \
 	internal/storage/sources.c \
 	internal/store/catalog_source.c \
@@ -407,6 +411,7 @@ UI_SRCS := \
 	internal/db/db.c \
 	internal/focus/focus.c \
 	internal/db/relocation.c \
+	internal/launcher/bios.c \
 	internal/launcher/console_colors.c \
 	internal/launcher/coverflow.c \
 	internal/launcher/grid.c \
@@ -448,7 +453,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test storage-sources-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -854,6 +859,21 @@ legacy-migration-test: | $(BUILD)/bin
 		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/legacy-migration-test
 
+shader-catalog-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/shader-catalog-test \
+		internal/retroarch/shader_catalog_test.c \
+		internal/retroarch/shader_catalog.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/shader-catalog-test
+
+shader-picker-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/shader-picker-test \
+		internal/retroarch/shader_picker_test.c \
+		internal/retroarch/shader_picker.c
+	$(BUILD)/bin/shader-picker-test
+
+shader-menu-contract-test:
+	bash scripts/check-shader-menu-contract.sh
+
 retroarch-command-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/retroarch-command-test \
 		internal/retroarch/command_test.c internal/retroarch/command.c
@@ -928,12 +948,31 @@ catalog-generation-smoke:
 content-catalog-smoke:
 	scripts/content-catalog-smoke.sh
 
+.PHONY: system-names-test
+system-names-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/system-names-test \
+		internal/launcher/system_names_test.c internal/launcher/system_names.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
+		internal/i18n/i18n.c internal/core/log.c internal/retroarch/catalog.c \
+		$(EFFECTIVE_CATALOG_SRCS) \
+		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/system-names-test
+
 catalog-folder-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/catalog-folder-test \
 		internal/retroarch/catalog_folder_test.c internal/retroarch/catalog.c \
 		$(EFFECTIVE_CATALOG_SRCS) \
 		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/catalog-folder-test
+
+bios-launch-contract-check:
+	scripts/check-bios-launch-contract.sh
+
+bios-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/bios-test \
+		internal/launcher/bios_test.c internal/launcher/bios.c \
+		internal/storage/sources.c
+	$(BUILD)/bin/bios-test
 
 standalone-policy-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/standalone-policy-test \
@@ -993,10 +1032,10 @@ $(BUILD)/bin/jawakad: $(sort $(DAEMON_SRCS)) $(SCRAPE_CREDENTIALS_HEADER) | $(BU
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS_DAEMON) -o $@ $(sort $(DAEMON_SRCS)) $(LDLIBS_DAEMON)
 
-$(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
+$(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) $(CATASTROPHE_WIDGETS_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 
-$(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
+$(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) $(CATASTROPHE_WIDGETS_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 
 $(BUILD)/generated:
