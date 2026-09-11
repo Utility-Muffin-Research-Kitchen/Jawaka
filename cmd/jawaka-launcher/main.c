@@ -6384,10 +6384,22 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
     const char *code = state->game_system;
     if (!code || !code[0]) return NULL;
 
+    /* Keyed by the theme as well as the system. Keyed by code alone, switching
+       theme and reopening the same system kept the previous theme's resolved
+       path -- and clearing the texture cache would only reload the wrong file. */
+    int theme_idx = jw_settings_user_theme_index(&state->settings);
+    const char *theme_name = cat_get_active_theme_name();
     static char cached_code[64];
+    static char cached_theme[256];   /* matches the theme-name source width */
+    static int  cached_theme_idx = -2;
     static char cached_path[PATH_MAX];
-    if (strncmp(cached_code, code, sizeof(cached_code) - 1) != 0) {
+    if (strncmp(cached_code, code, sizeof(cached_code) - 1) != 0 ||
+        cached_theme_idx != theme_idx ||
+        strncmp(cached_theme, theme_name ? theme_name : "",
+                sizeof(cached_theme) - 1) != 0) {
         snprintf(cached_code, sizeof(cached_code), "%s", code);
+        snprintf(cached_theme, sizeof(cached_theme), "%s", theme_name ? theme_name : "");
+        cached_theme_idx = theme_idx;
         cached_path[0] = '\0';
         char cand[PATH_MAX];
         int n;
@@ -6480,13 +6492,18 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     jw_grid_games_meta meta[JW_GRID_GAMES_MAX_META];
     int meta_n = 0;
     char played[64] = "";
+    /* Generation as well as id: the scraper rewrites the same game's rows and
+       bumps library.generation, so an id-only key kept a one-game system showing
+       its pre-scrape blanks until some other game was selected. */
     static jw_game_meta gm;
     static int gm_game_id = -1;
+    static int gm_generation = -1;
     const char *synopsis = NULL;
     if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
         const jw_game_entry *g = &state->games[state->game_list.cursor];
-        if (g->id != gm_game_id) {
+        if (g->id != gm_game_id || gm_generation != state->library_generation) {
             gm_game_id = g->id;
+            gm_generation = state->library_generation;
             if (jw_db_get_game_meta(state->db_path, g->id, &gm) != 0)
                 memset(&gm, 0, sizeof(gm));
         }
@@ -6571,6 +6588,7 @@ typedef struct {
     char dir[512];
     char description[600];
     char author[64];
+    int  generation;      /* an update rewrites pak.json in place */
 } jw_pak_info;
 
 static void jw__ga_pak_info(const jw_launcher_state *state, int idx,
@@ -6580,9 +6598,13 @@ static void jw__ga_pak_info(const jw_launcher_state *state, int idx,
     if (idx < 0 || idx >= state->app_count) { memo.dir[0] = '\0'; return; }
 
     const jw_app_entry *app = &state->apps[idx];
-    if (memo.dir[0] && strcmp(memo.dir, app->pak_dir) == 0) return;
+    if (memo.dir[0] && strcmp(memo.dir, app->pak_dir) == 0 &&
+        memo.generation == state->library_generation) {
+        return;
+    }
 
     snprintf(memo.dir, sizeof(memo.dir), "%s", app->pak_dir);
+    memo.generation = state->library_generation;
     memo.description[0] = '\0';
     memo.author[0] = '\0';
 
