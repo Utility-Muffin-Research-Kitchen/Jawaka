@@ -119,45 +119,79 @@ static const char *gg_fit(gg_fit_slot *slot, TTF_Font *f, const char *src,
 }
 
 /* Wrap on spaces to a pixel width; returns how many lines were produced. */
-/* Wrapping costs one real TTF_SizeUTF8 per word: a probe is a partial sentence,
-   which is never a string the text cache holds, so every probe misses. On a
-   synopsis of a couple of hundred words that is a couple of hundred font
-   measurements, and the page redraws continuously while the blurb autoscrolls.
-   The answer only changes when the selection does, so wrap once and keep it. */
+/* Length of the UTF-8 character starting at this lead byte. A byte that is not
+   a lead byte counts as one, so malformed input still advances. */
+static size_t gg_utf8_clen(unsigned char c) {
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+/* Greedy wrap over characters rather than space-delimited words.
+   The previous version looked only for ASCII spaces and copied at most 127
+   bytes of a "word", so Chinese -- one space-free run -- was cut at an arbitrary
+   byte boundary into invalid UTF-8, an over-wide word was accepted whole and
+   clipped by the panel instead of wrapped, and bytes past the 127th were skipped
+   entirely when a space followed.
+   Breaking at the last space is still preferred; a run with no space in it
+   breaks on a character boundary instead of overflowing or being truncated.
+   Wrapping costs one real TTF_SizeUTF8 per step, so the caller memoises the
+   result and this runs once per selection rather than once per frame. */
 static int gg_wrap(TTF_Font *f, const char *text, int maxw,
                    char lines[][256], int max_lines) {
-    if (!text || !text[0]) return 0;
+    if (!text || !text[0] || max_lines <= 0) return 0;
+
     int n = 0;
-    const char *p = text;
     char cur[256];
+    size_t cl = 0;
+    size_t brk = 0;              /* bytes of cur just past the last space; 0 = none */
     cur[0] = '\0';
-    while (*p && n < max_lines) {
-        const char *sp = strchr(p, ' ');
-        size_t wlen = sp ? (size_t)(sp - p) : strlen(p);
-        char word[128];
-        if (wlen >= sizeof(word)) wlen = sizeof(word) - 1;
-        memcpy(word, p, wlen);
-        word[wlen] = '\0';
 
-        char probe[256];
-        size_t cl = strlen(cur);
-        if (cl + 1 + wlen < sizeof(probe)) {
-            memcpy(probe, cur, cl);
-            if (cl) probe[cl++] = ' ';
-            memcpy(probe + cl, word, wlen);
-            probe[cl + wlen] = '\0';
-        } else {
-            probe[0] = '\0';
-        }
+    for (const char *p = text; *p && n < max_lines; ) {
+        size_t clen = gg_utf8_clen((unsigned char)*p);
+        size_t avail = strlen(p);
+        if (clen > avail) clen = avail;
 
-        if (probe[0] && (cat_measure_text(f, probe) <= maxw || !cur[0])) {
-            gg_copy(cur, sizeof(cur), probe);
-        } else {
+        if (cl + clen + 1 >= sizeof(cur)) {        /* line buffer is full */
             gg_copy(lines[n++], 256, cur);
-            gg_copy(cur, sizeof(cur), word);
+            cl = 0; brk = 0; cur[0] = '\0';
+            continue;
         }
-        p = sp ? sp + 1 : p + wlen;
+
+        memcpy(cur + cl, p, clen);
+        cur[cl + clen] = '\0';
+
+        if (cl > 0 && cat_measure_text(f, cur) > maxw) {
+            char tail[256];
+            if (brk > 0) {
+                size_t tl = (cl + clen) - brk;
+                memcpy(tail, cur + brk, tl);
+                tail[tl] = '\0';
+                size_t cut = brk;
+                while (cut > 0 && cur[cut - 1] == ' ') cut--;   /* drop the space */
+                cur[cut] = '\0';
+            } else {
+                memcpy(tail, p, clen);
+                tail[clen] = '\0';
+                cur[cl] = '\0';
+            }
+            gg_copy(lines[n++], 256, cur);
+
+            const char *t = tail;                  /* a line never opens on a space */
+            while (*t == ' ') t++;
+            gg_copy(cur, sizeof(cur), t);
+            cl = strlen(cur);
+            brk = 0;
+        } else {
+            cl += clen;
+        }
+
+        if (clen == 1 && *p == ' ') brk = cl;
+        p += clen;
     }
+
     if (cur[0] && n < max_lines) gg_copy(lines[n++], 256, cur);
     return n;
 }
