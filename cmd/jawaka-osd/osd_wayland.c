@@ -474,6 +474,10 @@ static void jw__toast_rect(int *out_x, int *out_y, int *out_w, int *out_h) {
     if (out_h) *out_h = h;
 }
 
+/* Which mode the last damage rectangle described. -1 means "nothing on screen
+   yet", which forces a full-surface damage on the next show. */
+static int s_damaged_mode = -1;
+
 static void jw__destroy_surface(void) {
     if (s_osd.buffer) {
         wl_buffer_destroy(s_osd.buffer);
@@ -498,6 +502,7 @@ static void jw__destroy_surface(void) {
     }
     s_osd.visible = false;
     s_osd.configured = false;
+    s_damaged_mode = -1;      /* a new surface shows nothing yet */
 }
 
 static void jw__hide_surface(void) {
@@ -659,7 +664,20 @@ static int jw__show_surface(void) {
     int w = 0;
     int h = 0;
     jw__toast_rect(&x, &y, &w, &h);
-    wl_surface_damage_buffer(s_osd.surface, x, y, w, h);
+
+    /* Damage is the region where the new buffer differs from what the surface
+       already shows -- clearing shared memory does not tell the compositor
+       anything. The level pill sits top-left and the launch toast bottom-centre,
+       so on a change of mode the pixels the old one occupied also changed, and
+       reporting only the new rectangle can leave the old one on screen until an
+       unrelated repaint. Report the whole surface across a transition and keep
+       the tight rectangle for repeated updates within one mode. */
+    if (s_damaged_mode != s_osd.mode) {
+        wl_surface_damage_buffer(s_osd.surface, 0, 0, s_osd.width, s_osd.height);
+        s_damaged_mode = s_osd.mode;
+    } else {
+        wl_surface_damage_buffer(s_osd.surface, x, y, w, h);
+    }
     wl_surface_commit(s_osd.surface);
     wl_display_flush(s_osd.display);
     s_osd.visible = true;
