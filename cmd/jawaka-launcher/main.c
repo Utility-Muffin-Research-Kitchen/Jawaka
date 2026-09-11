@@ -1126,6 +1126,32 @@ static int jw__tab_list_count(const jw_launcher_state *state) {
 
 /* ─── Library scan ────────────────────────────────────────────────────────── */
 
+/* Put the selected tile back on screen after a cursor move that was not
+   directional -- a library refresh or a resume. Grid picks its visible rows from
+   its own scroll_row, which cat_list_state_jump does not touch, so without this
+   the page can show a row that does not contain the selection: the tile looks
+   absent while A still opens it. Snaps rather than tweens, since there was no
+   gesture to animate from. */
+static void jw__grid_reveal_cursor(jw_launcher_state *state) {
+    jw_grid *g = &state->grid;
+    if (g->cols <= 0 || g->rows <= 0) return;
+
+    int rows_total = (state->flat_count + g->cols - 1) / g->cols;
+    int max_top = rows_total - g->rows;
+    if (max_top < 0) max_top = 0;
+
+    int row = (state->list.cursor >= 0 ? state->list.cursor : 0) / g->cols;
+    int top = g->scroll_row;
+    if (row < top)                 top = row;
+    else if (row >= top + g->rows) top = row - g->rows + 1;
+    if (top > max_top) top = max_top;
+    if (top < 0) top = 0;
+
+    g->scroll_row    = top;
+    g->anim_from_row = (float)top;
+    g->anim_active   = false;
+}
+
 static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *state) {
     if (!db_path || !state) {
         return -1;
@@ -1251,6 +1277,29 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
             flat_cursor = count > 0 ? count - 1 : 0;
         }
         cat_list_state_jump(&state->list, flat_cursor, count);
+    } else if (layout == CAT_LAUNCHER_GRID) {
+        /* Grid used to fall through to the tabbed branch, which counts tabs and
+           never rebuilds flat_items[]. A background scan that added a system
+           left its tile absent; one that removed a system left a tile pointing
+           past the new end of systems[]; a sort change reassigned the indices
+           the label memos are keyed by, so an overlay could name a different
+           system. Rebuild the containers, keep the selection by identity, and
+           drop the tile-index memos. */
+        jw__build_grid_list(state);
+        memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
+        memset(state->grid_label_path, 0, sizeof(state->grid_label_path));
+        int count = state->flat_count;
+        if (selected_system[0]) {
+            int selected_cursor = jw__flat_cursor_for_system(state, selected_system);
+            if (selected_cursor >= 0) {
+                flat_cursor = selected_cursor;
+            }
+        }
+        if (flat_cursor >= count) {
+            flat_cursor = count > 0 ? count - 1 : 0;
+        }
+        cat_list_state_jump(&state->list, flat_cursor, count);
+        jw__grid_reveal_cursor(state);
     } else if (layout == CAT_LAUNCHER_VERTICAL) {
         jw__build_flat_list(state);
         int count = state->flat_count;
@@ -8711,6 +8760,8 @@ static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
                     ? jw__tab_list_count(state) : state->flat_count;
     int target = (state->current_tab == JW_TAB_RECENTS) ? 0 : r->list_cursor;
     cat_list_state_jump(&state->list, target, count);
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_GRID)
+        jw__grid_reveal_cursor(state);
 }
 
 static int jw__launch_app_request(const char *socket_path, const char *name,
