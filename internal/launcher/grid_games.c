@@ -119,6 +119,11 @@ static const char *gg_fit(gg_fit_slot *slot, TTF_Font *f, const char *src,
 }
 
 /* Wrap on spaces to a pixel width; returns how many lines were produced. */
+/* Wrapping costs one real TTF_SizeUTF8 per word: a probe is a partial sentence,
+   which is never a string the text cache holds, so every probe misses. On a
+   synopsis of a couple of hundred words that is a couple of hundred font
+   measurements, and the page redraws continuously while the blurb autoscrolls.
+   The answer only changes when the selection does, so wrap once and keep it. */
 static int gg_wrap(TTF_Font *f, const char *text, int maxw,
                    char lines[][256], int max_lines) {
     if (!text || !text[0]) return 0;
@@ -285,9 +290,30 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
     if (syn_vis > GG_SYN_MAX_LINES) syn_vis = GG_SYN_MAX_LINES;
     /* Wrap the whole blurb, not just the part that fits: the extra lines are
        what the panel scrolls through. */
-    char syn_lines[GG_SYN_MAX_LINES][256];
-    int syn_n = (synopsis && syn_vis > 0)
-              ? gg_wrap(syn_f, synopsis, rw - cat_scale(26), syn_lines, GG_SYN_MAX_LINES) : 0;
+    static struct {
+        char      text[1400];
+        int       maxw;
+        TTF_Font *font;
+        char      lines[GG_SYN_MAX_LINES][256];
+        int       n;
+    } syn_cache;
+    int syn_wrap_w = rw - cat_scale(26);
+    if (synopsis && syn_vis > 0) {
+        if (syn_cache.font != syn_f || syn_cache.maxw != syn_wrap_w ||
+            strcmp(syn_cache.text, synopsis) != 0) {
+            gg_copy(syn_cache.text, sizeof(syn_cache.text), synopsis);
+            syn_cache.font = syn_f;
+            syn_cache.maxw = syn_wrap_w;
+            syn_cache.n = gg_wrap(syn_f, synopsis, syn_wrap_w,
+                                  syn_cache.lines, GG_SYN_MAX_LINES);
+        }
+    } else {
+        syn_cache.text[0] = '\0';
+        syn_cache.font = NULL;
+        syn_cache.n = 0;
+    }
+    char (*syn_lines)[256] = syn_cache.lines;
+    int syn_n = syn_cache.n;
     int syn_shown = syn_n < syn_vis ? syn_n : syn_vis;
     int syn_h = syn_shown ? cat_scale(12) + syn_shown * syn_line + cat_scale(6) : 0;
 
