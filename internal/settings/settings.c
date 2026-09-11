@@ -1958,12 +1958,14 @@ static void jw__begin_settings_rows(const cat_list_state *list,
 static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
                                      int w, int row, const char *label,
                                      const char *value, bool cycler, int item_h,
-                                     const ap_color *value_override) {
+                                     const ap_color *value_override, bool toggle) {
     /* Both strings are translated here, not at the 45 call sites. T() falls back
        to its argument, so values that are data rather than UI text -- a game
        count, a timezone, a Bluetooth device name -- miss the table and pass
        through unchanged. That is what makes wrapping the helper safe rather than
        having to classify every call site. */
+    bool toggle_on = toggle && value && value[1] == 'n';   /* "On" vs "Off" */
+
     label = T(label);
     if (value) value = T(value);
     ap_theme *theme = cat_get_theme();
@@ -1987,7 +1989,40 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
     if (value) {
         int body_h = TTF_FontHeight(body);
         int vw = cat_measure_text(body, value);
-        if (cycler) {
+        if (toggle) {
+            /* A switch says "this is the whole choice" in a way arrows cannot:
+               two states, and which one you are in, without reading. The word
+               stays -- the switch shows the state, the word names it. */
+            int tr_h = body_h * 5 / 8;
+            int tr_w = tr_h * 19 / 10;
+            int gap  = cat_scale(10);
+            int tx   = x + w - cat_scale(16) - tr_w;
+            int vx   = tx - gap - vw;
+            if (vx < x + w / 2) { vx = x + w / 2; }
+            int tr_y = ty + (body_h - tr_h) / 2;
+
+            cat_draw_text(body, value, vx, ty, value_c);
+
+            /* The row's own backdrop, so every part of the switch reads
+               against the track whether the row is selected or not. */
+            ap_color backdrop =
+                cat_draw_color_lerp(theme->background, theme->highlight, focus);
+
+            /* Outer cap is the border; the interior fills it when on and drops
+               back to the backdrop when off, leaving just the ring. */
+            int bw = cat_scale(4);
+            cat_draw_rounded_rect(tx, tr_y, tr_w, tr_h, tr_h / 2, value_c);
+            cat_draw_rounded_rect(tx + bw, tr_y + bw, tr_w - bw * 2, tr_h - bw * 2,
+                                  (tr_h - bw * 2) / 2,
+                                  toggle_on ? value_c : backdrop);
+
+            int inset  = bw + cat_scale(3);          /* gap inside the border */
+            int knob_d = tr_h - inset * 2;
+            if (knob_d < cat_scale(6)) knob_d = cat_scale(6);   /* stays a dot */
+            int knob_x = toggle_on ? tx + tr_w - inset - knob_d : tx + inset;
+            cat_draw_rounded_rect(knob_x, tr_y + inset, knob_d, knob_d,
+                                  knob_d / 2, toggle_on ? backdrop : value_c);
+        } else if (cycler) {
             /* Solid triangles flank the value, matching the tab-switcher
                affordance: ◀ value ▶. Triangles are sized to the text cap and
                vertically centered. */
@@ -2014,7 +2049,7 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
 static void jw__render_list_row_h(const cat_list_state *list, int x, int y,
                                   int w, int row, const char *label,
                                   const char *value, bool cycler, int item_h) {
-    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, NULL);
+    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, NULL, false);
 }
 
 /* The canonical settings list row: medium font + cat_scale(12) padding. */
@@ -2025,12 +2060,27 @@ static void jw__render_list_row(const cat_list_state *list, int x, int y,
     jw__render_list_row_h(list, x, y, w, row, label, value, cycler, item_h);
 }
 
+/* A binary setting: the switch shows the state, the word names it. Only rows
+   whose whole choice is on-or-off call this -- a cycler whose current value
+   happens to read "Off" (Auto sleep, say, which runs Off / 15 seconds / ... /
+   10 minutes) is not binary and keeps its arrows. A row passing anything but
+   "On"/"Off" falls back to a cycler on its own, which is what the sub-options
+   showing "-" while their parent is off rely on. */
+static void jw__render_toggle_row(const cat_list_state *list, int x, int y,
+                                  int w, int row, const char *label,
+                                  const char *value) {
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    bool binary = value && (strcmp(value, "On") == 0 || strcmp(value, "Off") == 0);
+    jw__render_list_row_impl(list, x, y, w, row, label, value, true, item_h,
+                             NULL, binary);
+}
+
 /* Canonical row with a value-color override (unselected rows only). */
 static void jw__render_list_row_vc(const cat_list_state *list, int x, int y,
                                    int w, int row, const char *label,
                                    const char *value, bool cycler, ap_color value_c) {
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, &value_c);
+    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, &value_c, false);
 }
 
 /* Row pitch for the Display & Sound page. The Brightness/Volume sliders need the
@@ -2522,8 +2572,8 @@ static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, i
     snprintf(bright, sizeof(bright), "%d", ui->led_brightness);
     snprintf(speed,  sizeof(speed),  "%d", ui->led_speed);
 
-    jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_ENABLE,
-                        "Enable", ui->led_enabled ? "On" : "Off", true);
+    jw__render_toggle_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_ENABLE,
+                          "Enable", ui->led_enabled ? "On" : "Off");
     jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_MODE,
                         "Mode", kLedModeLabels[mode], true);
     jw__render_list_row(&ui->lighting_list, x, ly, w, JW_LIGHTING_COLOR,
@@ -4417,21 +4467,21 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
     jw__begin_settings_rows(&ui->controls_list, x, ly, w,
                             JW_CONTROLS_ROW_COUNT, item_h);
 
-    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RUMBLE,
-                        "Rumble", ui->rumble_enabled ? "On" : "Off", true);
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RUMBLE,
+                          "Rumble", ui->rumble_enabled ? "On" : "Off");
 
     char strength[16];
     snprintf(strength, sizeof(strength), "%d%%", ui->rumble_strength);
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_STRENGTH,
                         "Strength", ui->rumble_enabled ? strength : "-", true);
 
-    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_NAV,
-                        "Cursor Movement",
-                        ui->rumble_enabled ? (ui->rumble_nav ? "On" : "Off") : "-", true);
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_NAV,
+                          "Cursor Movement",
+                          ui->rumble_enabled ? (ui->rumble_nav ? "On" : "Off") : "-");
 
-    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_GAME,
-                        "Game Rumble",
-                        ui->rumble_enabled ? (ui->rumble_game ? "On" : "Off") : "-", true);
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_GAME,
+                          "Game Rumble",
+                          ui->rumble_enabled ? (ui->rumble_game ? "On" : "Off") : "-");
 
 #ifdef PLATFORM_MLP1
     jw__render_nav_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SHORTCUTS,
@@ -4586,8 +4636,8 @@ static void jw__render_input_shortcuts(const jw_settings_ui *ui,
     jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_SWITCHER,
                         "Game Switcher", value, true);
 
-    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_SCREENSHOTS,
-                        "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
+    jw__render_toggle_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_SCREENSHOTS,
+                          "Screenshots", ui->screenshots_enabled ? "On" : "Off");
 
     /* The binding row stays live while the feature is off. They are separate
        switches: turning screenshots back on should find the button you chose,
@@ -4596,8 +4646,8 @@ static void jw__render_input_shortcuts(const jw_settings_ui *ui,
     jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_SHOT_BIND,
                         "Screenshot Shortcut", value, true);
 
-    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_RECORDING,
-                        "Recording", ui->recording_enabled ? "On" : "Off", true);
+    jw__render_toggle_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_RECORDING,
+                          "Recording", ui->recording_enabled ? "On" : "Off");
 
     jw__shortcut_value(ui, JW_INPUT_SHORTCUT_RECORDING, value, sizeof(value));
     jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_BIND,
@@ -4605,30 +4655,30 @@ static void jw__render_input_shortcuts(const jw_settings_ui *ui,
 
     /* Both dependants read "-" while recording is off, matching how the rumble
        rows dim when the master is off. */
-    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_SPLIT,
-                        "Split Over 10MB",
-                        ui->recording_enabled ? (ui->recording_split ? "On" : "Off") : "-", true);
+    jw__render_toggle_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_SPLIT,
+                          "Split Over 10MB",
+                          ui->recording_enabled ? (ui->recording_split ? "On" : "Off") : "-");
 
-    jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_KEEP,
-                        "Keep Original",
-                        ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-", true);
+    jw__render_toggle_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_KEEP,
+                          "Keep Original",
+                          ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-");
 }
 #else
-    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SCREENSHOTS,
-                        "Screenshots", ui->screenshots_enabled ? "On" : "Off", true);
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SCREENSHOTS,
+                          "Screenshots", ui->screenshots_enabled ? "On" : "Off");
 
-    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RECORDING,
-                        "Recording", ui->recording_enabled ? "On" : "Off", true);
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RECORDING,
+                          "Recording", ui->recording_enabled ? "On" : "Off");
 
     /* Both dependants read "-" while recording is off, matching how the rumble
        rows above dim when the master is off. */
-    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_REC_SPLIT,
-                        "Split Over 10MB",
-                        ui->recording_enabled ? (ui->recording_split ? "On" : "Off") : "-", true);
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_REC_SPLIT,
+                          "Split Over 10MB",
+                          ui->recording_enabled ? (ui->recording_split ? "On" : "Off") : "-");
 
-    jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_REC_KEEP,
-                        "Keep Original",
-                        ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-", true);
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_REC_KEEP,
+                          "Keep Original",
+                          ui->recording_enabled ? (ui->recording_keep_src ? "On" : "Off") : "-");
 }
 #endif
 
@@ -4759,8 +4809,13 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
     const char *splash = ui->boot_splash_supported
                          ? (ui->boot_splash_enabled ? "On" : "Off")
                          : "Unavailable";
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
-                        "Boot Splash", splash, ui->boot_splash_supported);
+    if (ui->boot_splash_supported) {
+        jw__render_toggle_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
+                              "Boot Splash", splash);
+    } else {
+        jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
+                            "Boot Splash", splash, false);
+    }
 
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_RESET_RETROARCH,
                         "Reset RetroArch Config", "Defaults", true);
