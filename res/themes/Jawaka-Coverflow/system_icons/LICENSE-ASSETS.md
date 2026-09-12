@@ -1,7 +1,7 @@
 # Asset attribution
 
 The console icons in this directory (`system_icons/`, excluding
-`AMIGA.png`, `ATOMISWAVE.png`, `NAOMI.png`, `PC98.png`, and the UI badge glyph `_tools.png`)
+`AMIGA.png`, `ATOMISWAVE.png`, `NAOMI.png`, `PC98.png`, `PICO8.png`, and the UI badge glyph `_tools.png`)
 are derived from public-domain video game hardware photography by **Evan Amos**.
 
   Author:  Evan Amos
@@ -53,3 +53,12 @@ Console trade dress remains the property of the respective rights holders and
 appears here to identify the platform, as it does in the photographs above.
 
 `_tools.png` is an original Leaf UI badge, not derived from the above.
+
+`PICO8.png` is a ChatGPT-generated illustration supplied by the user on
+September 12, 2026. It depicts a fictional PICO-8 console and controller;
+reference-image details were not supplied. The original 1349x1166 RGBA PNG
+is archived unchanged in `umrk-assets/Systems/ICONS/PICO8.png`. This 384x384
+transparent runtime copy contains the complete image, scaled and centered
+without cropping or stretching. The same copy is used by PICO-8-pak.
+No exclusive rights are claimed in the generated illustration. PICO-8 names
+and marks identify the platform; this is not official Lexaloffle artwork.
