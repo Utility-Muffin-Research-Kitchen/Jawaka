@@ -818,6 +818,23 @@ static int jw__flat_cursor_for_system(const jw_launcher_state *state,
     return -1;
 }
 
+/* Where a non-system container (Apps, Settings, Recents, Favorites) sits in the
+   rebuilt list. Those have no system name to match on, so restoring them by the
+   old numeric cursor silently selects whatever slid into that slot: adding one
+   system to [FC, Apps] makes [FC, PS, Apps], and a cursor held at 1 opens PS. */
+static int jw__flat_cursor_for_kind(const jw_launcher_state *state,
+                                    jw_flat_kind kind) {
+    if (!state) {
+        return -1;
+    }
+    for (int i = 0; i < state->flat_count; i++) {
+        if (state->flat_items[i].kind == kind) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 static void jw__draw_status_bar(const jw_launcher_state *state) {
     /* Coverflow hides the status bar entirely for now — chrome-light stage.
        Grid draws its own no-pill band above the tiles (jw__render_grid). */
@@ -1162,6 +1179,8 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     int game_cursor = state->game_list.cursor;
     int app_cursor = state->app_list.cursor;
     char selected_system[64] = "";
+    jw_flat_kind selected_kind = JW_FLAT_SYSTEM;
+    bool have_selected_kind = false;
 
     const cat_stylesheet *ss_before = cat_get_stylesheet();
     cat_launcher_layout layout_before = ss_before->launcher.layout;
@@ -1174,6 +1193,8 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
         }
     } else if (state->list.cursor >= 0 && state->list.cursor < state->flat_count) {
         const jw_flat_item *it = &state->flat_items[state->list.cursor];
+        selected_kind = it->kind;
+        have_selected_kind = true;
         if (it->kind == JW_FLAT_SYSTEM &&
             it->system_idx >= 0 && it->system_idx < state->system_count) {
             snprintf(selected_system, sizeof(selected_system), "%s",
@@ -1294,6 +1315,11 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
             if (selected_cursor >= 0) {
                 flat_cursor = selected_cursor;
             }
+        } else if (have_selected_kind) {
+            int selected_cursor = jw__flat_cursor_for_kind(state, selected_kind);
+            if (selected_cursor >= 0) {
+                flat_cursor = selected_cursor;
+            }
         }
         if (flat_cursor >= count) {
             flat_cursor = count > 0 ? count - 1 : 0;
@@ -1305,6 +1331,11 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
         int count = state->flat_count;
         if (selected_system[0]) {
             int selected_cursor = jw__flat_cursor_for_system(state, selected_system);
+            if (selected_cursor >= 0) {
+                flat_cursor = selected_cursor;
+            }
+        } else if (have_selected_kind) {
+            int selected_cursor = jw__flat_cursor_for_kind(state, selected_kind);
             if (selected_cursor >= 0) {
                 flat_cursor = selected_cursor;
             }
@@ -3356,6 +3387,15 @@ static void *jw__cover_worker(void *arg) {
         SDL_Surface *surf = cat_decode_thumbnail_surface(path, thumb[0] ? thumb : NULL,
                                                          max_dim);
 
+        /* The pre-warm contract is that a decoded cover is on disk afterwards, so
+           the surface can be dropped and picked up inline on a later frame. When
+           the write silently fails -- a full card, a thumbs path that is not a
+           directory -- dropping it strands readable artwork forever. Persistence
+           is best effort by design and IMG_SavePNG's result is deliberately
+           ignored, so ask the disk rather than trust the contract. Two stats on
+           the worker thread, outside the lock, only on a cold decode. */
+        bool persisted = !surf || !thumb[0] || cat_thumbnail_is_cached(path, thumb);
+
         pthread_mutex_lock(&L->lock);
         if (was_req) {
             if (L->has_done && L->done_surf) {     /* drop a previous undelivered result */
@@ -3368,6 +3408,13 @@ static void *jw__cover_worker(void *arg) {
                 L->done_surf = surf;
                 L->has_done = true;
             }
+        } else if (surf && !persisted && !L->has_done) {
+            /* Could not land on disk: hand it back so the page can draw it. The
+               priority slot keeps precedence -- a cursor cover the user is
+               waiting on must not be displaced by a background pre-warm. */
+            snprintf(L->done_path, sizeof(L->done_path), "%s", path);
+            L->done_surf = surf;
+            L->has_done = true;
         } else if (surf) {
             SDL_FreeSurface(surf);                 /* pre-warm: thumbnail is on disk now */
         }
@@ -3436,6 +3483,25 @@ static bool jw__cover_async_take(const char *path, const char *thumb, int max_di
             L->has_req = true;
             pthread_cond_signal(&L->cond);
         }
+    }
+    pthread_mutex_unlock(&L->lock);
+    return got;
+}
+
+/* Consume a ready surface for `path` if the worker left one, without ever
+   claiming the priority slot. A page asks for every tile on every frame, so
+   jw__cover_async_take's newest-wins request would have the twelve of them
+   overwrite each other and starve the cursor cover. */
+static bool jw__cover_async_poll(const char *path, SDL_Surface **out) {
+    jw_cover_loader *L = &jw__cover_loader;
+    if (!L->started) return false;
+    bool got = false;
+    pthread_mutex_lock(&L->lock);
+    if (L->has_done && L->done_surf && strcmp(L->done_path, path) == 0) {
+        *out = L->done_surf;
+        L->done_surf = NULL;
+        L->has_done = false;
+        got = true;
     }
     pthread_mutex_unlock(&L->lock);
     return got;
@@ -3597,13 +3663,6 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
     return jw__load_image_sized(path, JW_COVER_THUMB_MAX, out_w, out_h);
 }
 
-/* How many consecutive frames of asking, with nothing ever landing, before the
-   page stops believing the thumbnail cache can be written. Generous: a genuinely
-   cold page is expected to miss for a while as the ring grinds through it. */
-#define JW_PAGE_IMAGE_STUCK_FRAMES 90
-static int  jw__page_image_misses;
-static bool jw__page_image_no_disk;
-
 /* Art for a page that has to arrive whole. Coverflow streams its cards in
    because it is a carousel and an inline decode would hitch the tween, but
    every other layout has always drawn its system icons synchronously through
@@ -3617,7 +3676,8 @@ static bool jw__page_image_no_disk;
    rather than the priority slot -- the slot is newest-wins, so twelve tiles
    asking for it in one frame overwrite each other and the page assembles a
    tile at a time. The ring drains steadily instead, and each thumbnail it
-   lands is picked up inline on the next frame. */
+   lands is picked up inline on the next frame -- or, when the thumbnail could
+   not be written, the surface itself. */
 static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
                                         int *out_w, int *out_h) {
     if (out_w) *out_w = 0;
@@ -3627,7 +3687,6 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
     int w = 0, h = 0;
     SDL_Texture *cached = cat_cache_get(path, &w, &h);
     if (cached) {
-        jw__page_image_misses = 0;
         if (out_w) *out_w = w;
         if (out_h) *out_h = h;
         return cached;
@@ -3636,7 +3695,6 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
     char thumb[PATH_MAX];
     const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
     if (tp && cat_thumbnail_is_cached(path, tp)) {
-        jw__page_image_misses = 0;
         SDL_Surface *surf = IMG_Load(tp);
         if (surf) {                        /* a corrupt one falls through to rebuild */
             SDL_Texture *tex = cat_texture_from_surface(surf);
@@ -3652,36 +3710,25 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
         }
     }
 
-    /* The ring only writes thumbnails and frees the surface, so it can deliver
-       nothing when the write fails -- a full card, or a thumbs path that is not
-       a directory. Catastrophe treats persistence as best effort and ignores
-       IMG_SavePNG's result by design, so there is no status to consult: the
-       symptom is readable artwork staying blank while the page re-enqueues the
-       same jobs forever. Detect it by behaviour, then stop trusting the disk and
-       take the priority slot, which hands the surface back directly. */
-    if (jw__page_image_no_disk) {
-        SDL_Surface *surf = NULL;
-        if (jw__cover_async_take(path, tp, max_dim, &surf)) {
-            SDL_Texture *tex = cat_texture_from_surface(surf);
-            w = surf->w;
-            h = surf->h;
-            SDL_FreeSurface(surf);
-            if (tex) {
-                cat_cache_put(path, tex, w, h);
-                if (out_w) *out_w = w;
-                if (out_h) *out_h = h;
-                return tex;
-            }
+    /* The ring normally writes a thumbnail and frees the surface, and the branch
+       above picks it up from disk next frame. When the write could not land the
+       worker hands the surface back instead, so collect it here. This is per
+       asset: a page of mostly-cached tiles cannot mask one tile that is stuck,
+       which a global "is the disk working" flag could not distinguish. */
+    SDL_Surface *ring = NULL;
+    if (jw__cover_async_poll(path, &ring)) {
+        SDL_Texture *tex = cat_texture_from_surface(ring);
+        w = ring->w;
+        h = ring->h;
+        SDL_FreeSurface(ring);
+        if (tex) {
+            cat_cache_put(path, tex, w, h);
+            if (out_w) *out_w = w;
+            if (out_h) *out_h = h;
+            return tex;
         }
-        cat_request_frame_in(40);
-        return NULL;
     }
 
-    if (++jw__page_image_misses > JW_PAGE_IMAGE_STUCK_FRAMES) {
-        jw_log_warn("page art: thumbnail cache is not persisting; "
-                    "decoding through the priority slot instead");
-        jw__page_image_no_disk = true;
-    }
     jw__cover_prewarm_enqueue(path, tp, max_dim);
     cat_request_frame_in(40);
     return NULL;
@@ -6425,20 +6472,30 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
 
     /* Keyed by the theme as well as the system. Keyed by code alone, switching
        theme and reopening the same system kept the previous theme's resolved
-       path -- and clearing the texture cache would only reload the wrong file. */
-    int theme_idx = jw_settings_user_theme_index(&state->settings);
+       path -- and clearing the texture cache would only reload the wrong file.
+
+       The user theme is identified by its folder, not by its catalog index: the
+       catalog is rescanned whenever the Layout page is entered, so an index is
+       only stable until a folder is added, removed or renamed on the card. A
+       rename that reshuffles the list can hand a different theme the index the
+       memo was keyed by, which is invisible to a key built from the index. */
+    const char *theme_dir  = state->settings.user_theme_dir;
     const char *theme_name = cat_get_active_theme_name();
     static char cached_code[64];
     static char cached_theme[256];   /* matches the theme-name source width */
-    static int  cached_theme_idx = -2;
+    static char cached_theme_dir[128];  /* matches jw_settings_ui.user_theme_dir */
+    static bool cached_valid;
     static char cached_path[PATH_MAX];
-    if (strncmp(cached_code, code, sizeof(cached_code) - 1) != 0 ||
-        cached_theme_idx != theme_idx ||
+    if (!cached_valid ||
+        strncmp(cached_code, code, sizeof(cached_code) - 1) != 0 ||
+        strncmp(cached_theme_dir, theme_dir,
+                sizeof(cached_theme_dir) - 1) != 0 ||
         strncmp(cached_theme, theme_name ? theme_name : "",
                 sizeof(cached_theme) - 1) != 0) {
         snprintf(cached_code, sizeof(cached_code), "%s", code);
         snprintf(cached_theme, sizeof(cached_theme), "%s", theme_name ? theme_name : "");
-        cached_theme_idx = theme_idx;
+        snprintf(cached_theme_dir, sizeof(cached_theme_dir), "%s", theme_dir);
+        cached_valid = true;
         cached_path[0] = '\0';
         char cand[PATH_MAX];
         int n;
