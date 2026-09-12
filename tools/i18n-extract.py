@@ -41,6 +41,7 @@ FUNNELS = [
     "T",
     "jw__render_list_row",
     "jw__render_list_row_h",
+    "jw__render_toggle_row",
     "jw__render_nav_row",
     "jw__draw_header",
     "jw__draw_slider_row",
