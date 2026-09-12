@@ -2086,10 +2086,11 @@ static void jw__render_list_row_vc(const cat_list_state *list, int x, int y,
     jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, &value_c);
 }
 
-/* Row pitch for the Display & Sound page. The Brightness/Volume sliders need the
-   taller slot for their track, so the Audio Output row (a plain list row between
-   them) must share this same pitch — otherwise the three rows, each positioned by
-   row*own_height, overlap and gap.
+/* Row pitch for the Display & Sound page. Every row here positions itself as
+   row*item_h, so they must all be handed the same value or they overlap and gap.
+   The pitch matches a plain nav row now: the sliders used to need a taller slot
+   for a full-width track under the label, and that track sits inline beside the
+   value instead.
 
    avail_h is the height of the content area the rows are drawn into. The natural
    pitch is used whenever the rows fit, which is every case at the default font
@@ -2101,7 +2102,7 @@ static void jw__render_list_row_vc(const cat_list_state *list, int x, int y,
    row uses), so there is a lot to give back before that floor is reached.
    Pass avail_h <= 0 to ask for the natural pitch without any fitting. */
 static int jw__display_row_h_fit(int avail_h) {
-    int natural = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(28);
+    int natural = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
     if (avail_h <= 0 || JW_DISPLAY_ROW_COUNT * natural <= avail_h) {
         return natural;
     }
@@ -2470,22 +2471,36 @@ static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int
                                             theme->highlighted_text, focus);
     ap_color value_c = cat_draw_color_lerp(theme->hint,
                                             theme->highlighted_text, focus);
-    int ty = pill_y + cat_scale(8);
-
-    cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
-                              w / 2 - cat_scale(20));
+    int fh = TTF_FontHeight(body);
+    int ty = pill_y + (pill_h - fh) / 2;
 
     char value_str[32];
     snprintf(value_str, sizeof(value_str), "%d%%", percent);
-    int vw = cat_measure_text(body, value_str);
-    cat_draw_text(body, value_str, x + w - vw - cat_scale(16), ty, value_c);
 
-    int track_x = x + cat_scale(12);
-    int track_y = pill_y + pill_h - cat_scale(16);
-    int track_w = w - cat_scale(32);
+    /* The value column is sized for the widest reading, not this one, so the
+       track does not shift as the number gains or loses a digit. */
+    int val_w = cat_measure_text(body, "100%");
+    int vw = cat_measure_text(body, value_str);
+    int val_x = x + w - cat_scale(16) - val_w;
+
+    int track_w = cat_scale(216);
+    int track_h = cat_scale(9);
+    int track_x = val_x - cat_scale(14) - track_w;
+    int track_y = ty + (fh - track_h) / 2;
+    int radius = track_h / 2;
+
+    /* The label takes what the track and value leave, so a long translation
+       ellipsizes rather than running underneath them. */
+    cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
+                              track_x - x - cat_scale(24));
+
+    cat_draw_text(body, value_str, val_x + (val_w - vw), ty, value_c);
+
+    cat_draw_rounded_rect(track_x, track_y, track_w, track_h, radius,
+                          cat_hex_to_color("#ffffff33"));
     int fill_w = (track_w * percent) / 100;
-    cat_draw_rect(track_x, track_y, track_w, cat_scale(4), cat_hex_to_color("#ffffff33"));
-    cat_draw_rect(track_x, track_y, fill_w, cat_scale(4), value_c);
+    if (fill_w < track_h) fill_w = track_h;      /* never shorter than its own cap */
+    cat_draw_rounded_rect(track_x, track_y, fill_w, track_h, radius, value_c);
 }
 
 static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_base, int w,
