@@ -59,6 +59,8 @@ September 12, 2026. It depicts a fictional PICO-8 console and controller;
 reference-image details were not supplied. The original 1349x1166 RGBA PNG
 is archived unchanged in `umrk-assets/Systems/ICONS/PICO8.png`. This 384x384
 transparent runtime copy contains the complete image, scaled and centered
-without cropping or stretching. The same copy is used by PICO-8-pak.
+without cropping or stretching. Its longest image dimension occupies 70% of
+the canvas to match the visual weight of NES and PlayStation in Games.
+PICO-8-pak uses a larger framing of the same illustration for its Apps entry.
 No exclusive rights are claimed in the generated illustration. PICO-8 names
 and marks identify the platform; this is not official Lexaloffle artwork.
