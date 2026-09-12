@@ -10,6 +10,9 @@ const char *jw_osd_game_stage_name(jw_osd_game_stage stage) {
         case JW_OSD_GAME_SYNCING:  return "syncing";
         case JW_OSD_GAME_STOPPING: return "stopping";
         case JW_OSD_GAME_SETTINGS_NOT_SAVED: return "settings-not-saved";
+        case JW_OSD_PICO8_EXIT_CONFIRM: return "pico8-exit";
+        case JW_OSD_PICO8_IMPORT: return "pico8-import";
+        case JW_OSD_PICO8_IMPORT_FAILED: return "pico8-import-failed";
     }
     return "unknown";
 }
@@ -37,6 +40,12 @@ bool jw_osd_game_launch_parse(const cJSON *root,
         *stage = JW_OSD_GAME_STOPPING;
     } else if (strcmp(stage_item->valuestring, "settings-not-saved") == 0) {
         *stage = JW_OSD_GAME_SETTINGS_NOT_SAVED;
+    } else if (strcmp(stage_item->valuestring, "pico8-exit") == 0) {
+        *stage = JW_OSD_PICO8_EXIT_CONFIRM;
+    } else if (strcmp(stage_item->valuestring, "pico8-import") == 0) {
+        *stage = JW_OSD_PICO8_IMPORT;
+    } else if (strcmp(stage_item->valuestring, "pico8-import-failed") == 0) {
+        *stage = JW_OSD_PICO8_IMPORT_FAILED;
     } else {
         return false;
     }
@@ -67,6 +76,18 @@ void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
         return;
     }
     switch (stage) {
+        case JW_OSD_PICO8_IMPORT:
+            snprintf(title, title_size, "ADDING SPLORE FAVORITES");
+            snprintf(action, action_size, "PLEASE WAIT");
+            break;
+        case JW_OSD_PICO8_IMPORT_FAILED:
+            snprintf(title, title_size, "SPLORE IMPORT INCOMPLETE");
+            snprintf(action, action_size, "TRY SPLORE AGAIN");
+            break;
+        case JW_OSD_PICO8_EXIT_CONFIRM:
+            snprintf(title, title_size, "RETURN TO LEAF?");
+            snprintf(action, action_size, "PRESS MENU AGAIN");
+            break;
         case JW_OSD_GAME_CHECKING:
             snprintf(title, title_size, "SYNCTHING: CHECKING SAVES");
             break;

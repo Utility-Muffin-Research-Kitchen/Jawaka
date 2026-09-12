@@ -272,6 +272,7 @@ static void jw__draw_glyph(uint32_t *pixels, int width, int height,
 static const char *jw__glyph(char c) {
     switch (c) {
         case ':': return "00000001000010000000001000010000000";
+        case '?': return "01110100010000100010001000000000100";
         case '0': return "01110100011001110101110011000101110";
         case '1': return "00100011000010000100001000010001110";
         case '2': return "01110100010000100110010001000011111";

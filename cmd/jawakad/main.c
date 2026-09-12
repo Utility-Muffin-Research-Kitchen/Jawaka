@@ -11,6 +11,7 @@
 #include "internal/launcher/active_game.h"
 #include "internal/launcher/bios.h"
 #include "internal/launcher/standalone_policy.h"
+#include "internal/launcher/pico8.h"
 #include "internal/platform/external_input_monitor.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
@@ -102,7 +103,10 @@ typedef enum {
        one is asked to stop and given time to promote RetroArch's settings back
        to the durable shared config first (see the runner's QUIT path). Kept
        distinct so no other app inherits that grace. */
-    JW_CHILD_RETROARCH_APP
+    JW_CHILD_RETROARCH_APP,
+    /* Splore can have a downloader child; reap only after its group clears. */
+    JW_CHILD_PICO8_APP,
+    JW_CHILD_PICO8_IMPORT
 } jw_child_kind;
 
 static bool jw__child_kind_is_app(jw_child_kind kind);
@@ -153,6 +157,7 @@ typedef struct {
     char core_id[64];
     char core_config_folder[256];
     bool requires_direct_drm;
+    bool native_pico8;
     char diagnostic[256];
 } jw_launch_target;
 
@@ -303,6 +308,7 @@ typedef struct {
                                  emulator without a native menu signal (0 = none);
                                  a second tap after the grace period escalates
                                  to SIGKILL */
+    long long pico8_exit_confirm_until_ms;
     bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
     bool direct_drm_active;
@@ -790,8 +796,8 @@ static bool jw__standalone_target_requests_direct_drm(
 static bool jw__standalone_target_uses_calibrated_virtual_input(
         const jw_launch_target *target) {
     return target && target->kind == JW_LAUNCH_TARGET_STANDALONE &&
-           jw_standalone_policy_uses_calibrated_virtual_input(
-               target->core_id, target->path);
+           (target->native_pico8 || jw_standalone_policy_uses_calibrated_virtual_input(
+               target->core_id, target->path));
 }
 
 static long long jw__monotonic_ms(void) {
@@ -1978,6 +1984,9 @@ static int jw__reply_hello_ok(jw_ipc_client *client) {
     if (jw_storage_source_paths_v2_valid()) {
         cJSON_AddItemToArray(features, cJSON_CreateString("source-paths-v2"));
     }
+    if (jw_input_roster_supported() && jw_storage_source_paths_v2_valid()) {
+        cJSON_AddItemToArray(features, cJSON_CreateString(JW_PICO8_CAPABILITY));
+    }
     return jw__reply_json(client, root);
 }
 
@@ -2305,6 +2314,9 @@ static int jw__perf_apply_current_context(jw_daemon_state *state,
                                           const char *reason) {
     if (state && state->retroarch_session.active) {
         return jw__perf_apply_game(state, state->retroarch_session.system, reason);
+    }
+    if (state && state->child_kind == JW_CHILD_PICO8_APP) {
+        return jw__perf_apply_game(state, "PICO8", reason);
     }
     return jw__perf_apply_frontend(state, reason);
 }
@@ -4203,6 +4215,15 @@ static void *jw__scan_job_main(void *arg) {
         jw_db_close(db);
         ok = 0;
         } else {
+        jw_storage_source_list pico8_sources;
+        jw_pico8_paths pico8_paths;
+        char pico8_report[PATH_MAX];
+        if (jw_storage_sources_resolve(sdcard_root, &pico8_sources) == 0 &&
+            jw_pico8_resolve_paths(&pico8_sources, NULL, &pico8_paths) &&
+            snprintf(pico8_report, sizeof(pico8_report), "%s/splore-library.tsv", pico8_paths.home) < (int)sizeof(pico8_report) &&
+            jw_pico8_apply_library(db, pico8_report) != 0) {
+            jw_log_warn("PICO-8 import metadata could not be applied; next scan will retry");
+        }
         if (titles.group_count > 0) {
             jw_db_imported_title_group *groups =
                 calloc((size_t)titles.group_count, sizeof(*groups));
@@ -4578,6 +4599,8 @@ static const char *jw__child_name(jw_child_kind kind) {
            rejects both kinds, and the launcher path that maps a name to a
            binary never sees either. */
         case JW_CHILD_RETROARCH_APP: return "app";
+        case JW_CHILD_PICO8_APP: return "PICO-8 app";
+        case JW_CHILD_PICO8_IMPORT: return "PICO-8 import";
         default: return NULL;
     }
 }
@@ -4585,7 +4608,8 @@ static const char *jw__child_name(jw_child_kind kind) {
 /* Everything an app tile is: input-proxy handover, package-mutation blocking,
    and returning to the launcher on exit. Both app kinds share all of it. */
 static bool jw__child_kind_is_app(jw_child_kind kind) {
-    return kind == JW_CHILD_APP || kind == JW_CHILD_RETROARCH_APP;
+    return kind == JW_CHILD_APP || kind == JW_CHILD_RETROARCH_APP ||
+           kind == JW_CHILD_PICO8_APP || kind == JW_CHILD_PICO8_IMPORT;
 }
 
 static bool jw__child_kind_has_writer_barrier(jw_child_kind kind) {
@@ -4598,7 +4622,7 @@ static bool jw__child_kind_has_writer_barrier(jw_child_kind kind) {
    card. It is NOT a writer barrier: no active-game record is involved. */
 static bool jw__child_kind_has_group_barrier(jw_child_kind kind) {
     return jw__child_kind_has_writer_barrier(kind) ||
-           kind == JW_CHILD_RETROARCH_APP;
+           kind == JW_CHILD_RETROARCH_APP || kind == JW_CHILD_PICO8_APP || kind == JW_CHILD_PICO8_IMPORT;
 }
 
 /* Only the RetroArch app runner gets a stop grace: it has to talk RetroArch
@@ -5577,7 +5601,7 @@ static int jw__resolve_rom_path(const jw_daemon_state *state, const char *rom_pa
     return 0;
 }
 
-static int jw__storage_sources(jw_daemon_state *state, jw_storage_source_list *out) {
+static int jw__storage_sources(const jw_daemon_state *state, jw_storage_source_list *out) {
     if (!state || !out) {
         return -1;
     }
@@ -6001,7 +6025,21 @@ static bool jw__try_path_core(const jw_daemon_state *state,
         return false;
     }
 
+    bool native_pico8 = jw_pico8_core_matches(core->id, core->provider, core->path);
+    if (core->id && strcmp(core->id, JW_PICO8_CORE) == 0) {
+        jw_storage_source_list sources;
+        jw_pico8_paths paths;
+        if (!native_pico8 || !jw_input_roster_supported() ||
+            !jw_storage_source_paths_v2_valid() ||
+            jw__storage_sources(state, &sources) != 0 ||
+            !jw_pico8_resolve_paths(&sources, NULL, &paths) ||
+            !jw_pico8_preflight(exec_path, &paths)) {
+            jw_log_warn("PICO-8 preflight unavailable; using normal RetroArch fallback (saved core preference unchanged)");
+            return false;
+        }
+    }
     memset(target, 0, sizeof(*target));
+    target->native_pico8 = native_pico8;
     target->kind = JW_LAUNCH_TARGET_STANDALONE;
     snprintf(target->path, sizeof(target->path), "%s", exec_path);
     snprintf(target->core_id, sizeof(target->core_id), "%s", core->id ? core->id : "");
@@ -6068,6 +6106,9 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
 
     for (size_t i = 0; i < ra_system->alternate_cores.count; i++) {
         core = jw_ra_catalog_find_core(catalog, ra_system->alternate_cores.items[i]);
+        /* Native PICO-8 is opt-in: installing the hybrid pak must not replace
+           FAKE-08 just because path cores are considered before libretro. */
+        if (core && core->id && strcmp(core->id, JW_PICO8_CORE) == 0) continue;
         if (jw__try_path_core(state, catalog, core, rom_path, target)) {
             return true;
         }
@@ -6188,6 +6229,8 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
             !jw__catalog_system_allows_core(ra_system, requested_core_id)) {
             jw_log_warn("requested launch core is not allowed: system=%s core=%s",
                         system_key ? system_key : "(none)", requested_core_id);
+            if (system_key && strcmp(system_key, "PICO8") == 0 &&
+                strcmp(requested_core_id, JW_PICO8_CORE) == 0) goto retroarch_fallback;
             return -1;
         }
 
@@ -6196,6 +6239,8 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
         if (!jw__try_path_core(state, catalog, core, rom_path, target)) {
             jw_log_warn("requested launch core is unavailable for content or is not an executable packaged path: core=%s rom=%s",
                         requested_core_id, rom_path ? rom_path : "(none)");
+            if (system_key && strcmp(system_key, "PICO8") == 0 &&
+                strcmp(requested_core_id, JW_PICO8_CORE) == 0) goto retroarch_fallback;
             return -1;
         }
         return 0;
@@ -6205,6 +6250,7 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
         return 0;
     }
 
+retroarch_fallback:;
     char core_id[64];
     char core_config_folder[256];
     char diagnostic[256];
@@ -7155,6 +7201,12 @@ static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
     int rc = jw_ipc_request_timeout(state->osd_socket_path, request,
                                     strlen(request), &response, &response_len,
                                     100);
+    if (rc == 0) {
+        cJSON *reply = response ? cJSON_Parse(response) : NULL;
+        cJSON *type = reply ? cJSON_GetObjectItemCaseSensitive(reply, "type") : NULL;
+        if (!cJSON_IsString(type) || strcmp(type->valuestring, "ok") != 0) rc = -1;
+        cJSON_Delete(reply);
+    }
     free(response);
     if (rc != 0) {
         jw_log_warn("life1: launch OSD request failed stage=%s",
@@ -7548,6 +7600,27 @@ static bool jw__input_menu_tap(void *userdata) {
        the daemon owns the pad. The waiting OSD labels this exact Menu action;
        cancellation still leaves each subscriber its bounded ack window. */
     if (jw__game_coordination_start_now(state, "start-now-menu")) {
+        return true;
+    }
+
+    if (state && state->child_pid > 0 &&
+        (state->child_kind == JW_CHILD_PICO8_APP ||
+         (jw__has_standalone_session(state) &&
+          strcmp(state->retroarch_session.core_id, JW_PICO8_CORE) == 0))) {
+        if (!jw_pico8_exit_confirmed(&state->pico8_exit_confirm_until_ms,
+                                     jw__monotonic_ms())) {
+            /* Never arm a hidden confirmation if the OSD cannot show it. */
+            if (jw__osd_game_launch(state, "pico8-exit", 0) != 0)
+                state->pico8_exit_confirm_until_ms = 0;
+        } else {
+            jw__osd_game_launch_hide(state);
+            /* SDL turns SIGTERM into its normal quit event. Signal the native
+               leader so it can save config and CARTDATA, then let the existing
+               group barrier supervise any remaining downloader children. */
+            jw_log_info("PICO-8: confirmed MENU exit pid=%d", (int)state->child_pid);
+            if (kill(state->child_pid, SIGTERM) != 0 && errno != ESRCH)
+                jw_log_warn("PICO-8 quit request failed: %s", strerror(errno));
+        }
         return true;
     }
 
@@ -8629,19 +8702,23 @@ static int jw__spawn_app(jw_daemon_state *state) {
         return -1;
     }
 
-    jw_storage_source_list sources;
+    jw_storage_source_list sources = {0};
     const jw_storage_source *app_source = NULL;
     if (jw__storage_sources(state, &sources) == 0) {
         app_source = jw_storage_sources_find_for_path(&sources, pak_abs);
     }
 
     bool app_is_retroarch = jw__pak_dir_is_retroarch(state->pending_app_pak_dir);
+    bool app_is_pico8 = jw_pico8_app_matches(jw_storage_sources_primary(&sources), pak_abs);
+    jw_pico8_paths pico8_paths;
+    bool pico8_paths_ready = app_is_pico8 && jw_storage_source_paths_v2_valid() &&
+                            jw_pico8_resolve_paths(&sources, NULL, &pico8_paths);
 
     jw_input_roster roster;
     char sdl_devices[JW_INPUT_ISOLATION_SDL_MAX];
     sdl_devices[0] = '\0';
     bool use_roster = false;
-    if (app_is_retroarch && jw_input_roster_supported()) {
+    if ((app_is_retroarch || app_is_pico8) && jw_input_roster_supported()) {
         /* RetroArch.pak menu launches consume the same protected roster as
            core launches (plans/paired-wireless-controllers-mlp1): the proxy
            stays in full grab-and-forward mode so calibrated built-in input and
@@ -8654,7 +8731,8 @@ static int jw__spawn_app(jw_daemon_state *state) {
         char roster_error[256];
         if (jw__launch_prepare_input_roster(
                 state, &roster, sdl_devices, sizeof(sdl_devices), dummy_indices,
-                "retroarch-menu", roster_error, sizeof(roster_error)) < 0) {
+                app_is_pico8 ? JW_PICO8_CORE : "retroarch-menu",
+                roster_error, sizeof(roster_error)) < 0) {
             jw_log_error("RetroArch app launch blocked: %s", roster_error);
             state->pending_app = false;
             return -1;
@@ -8676,7 +8754,8 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
     jw__reconcile_audio(state, "app-launch", false);
     jw__publish_audio_env(state);
-    (void)jw__perf_apply_frontend(state, "app-launch");
+    if (app_is_pico8) (void)jw__perf_apply_game(state, "PICO8", "app-launch");
+    else (void)jw__perf_apply_frontend(state, "app-launch");
 
     /* Resolve appearance from the DB here in the parent — opening SQLite between
        fork() and execv() is not fork-safe on macOS (os_log landmine). */
@@ -8715,7 +8794,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
-        if (app_is_retroarch) {
+        if (app_is_retroarch || app_is_pico8) {
             /* Both sides call setpgid so neither the fork/exec race nor a slow
                parent can leave RetroArch outside the group the daemon signals.
                RetroArch inherits this group from the runner, which lets a
@@ -8732,6 +8811,8 @@ static int jw__spawn_app(jw_daemon_state *state) {
         }
         jw_appearance_apply_env(&appearance);
         jw__publish_source_content_env(app_source);
+        jw_pico8_export(pico8_paths_ready ? &pico8_paths : NULL,
+                        app_is_pico8 && use_roster);
         /* Only the RetroArch runner gets cheevos creds (it writes its own RA
            config); every other app has them explicitly cleared so the plaintext
            password never reaches third-party app code. */
@@ -8769,7 +8850,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     state->child_pid = pid;
     state->child_pgid = -1;
     state->child_kind = JW_CHILD_APP;
-    if (app_is_retroarch) {
+    if (app_is_retroarch || app_is_pico8) {
         /* Only track a pgid we could actually confirm. A group signal aimed at
            an unverified id could reach jawakad itself or an unrelated app, so
            an unreservable group falls back to signalling the runner alone. */
@@ -8779,7 +8860,8 @@ static int jw__spawn_app(jw_daemon_state *state) {
             jw_log_warn("RetroArch app pgid could not be reserved for pid=%d; "
                         "stopping the runner alone", (int)pid);
         }
-        state->child_kind = JW_CHILD_RETROARCH_APP;
+        if (app_is_retroarch) state->child_kind = JW_CHILD_RETROARCH_APP;
+        else state->child_kind = JW_CHILD_PICO8_APP;
     }
     state->child_stop_signalled = false;
     state->child_stop_deadline_ms = 0;
@@ -8820,6 +8902,15 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         snprintf(source_root, sizeof(source_root), "%s", state->sdcard_root);
     }
 
+    jw_pico8_paths pico8_paths;
+    if (target->native_pico8 &&
+        !jw_pico8_resolve_paths(&sources, rom_source, &pico8_paths)) {
+        jw_log_error("PICO-8 launch paths unavailable");
+        state->pending_launch = false;
+        state->pending_launch_resume_switcher = false;
+        state->pending_launch_override_unverified = false;
+        return -1;
+    }
     bool direct_drm = jw__standalone_target_requests_direct_drm(state, target, rom_abs);
 
     bool switcher_resume = state->pending_launch_resume_switcher;
@@ -9039,6 +9130,8 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         }
         jw_appearance_apply_env(&appearance);
         jw__publish_source_content_env(rom_source);
+        jw_pico8_export(target->native_pico8 ? &pico8_paths : NULL,
+                        target->native_pico8 && use_roster);
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
@@ -13684,6 +13777,41 @@ static void jw__terminate_menu_child(jw_daemon_state *state, bool force) {
     }
 }
 
+/* Run only after the native Apps process-group barrier. The importer owns no
+ * display or input and cannot overlap a game or package mutation. */
+static bool jw__spawn_pico8_import(jw_daemon_state *state) {
+    jw_storage_source_list sources;
+    jw_pico8_paths paths;
+    if (jw__storage_sources(state, &sources) != 0 ||
+        !jw_pico8_resolve_paths(&sources, NULL, &paths)) return false;
+    char favourites[PATH_MAX], journal[PATH_MAX];
+    if (snprintf(favourites, sizeof(favourites), "%s/favourites.txt", paths.home) >= (int)sizeof(favourites) ||
+        snprintf(journal, sizeof(journal), "%s/splore-imports.sqlite3", paths.home) >= (int)sizeof(journal)) return false;
+    /* First-time setup failures have no favourites or import state to process. */
+    if (access(favourites, F_OK) != 0 && access(journal, F_OK) != 0) return false;
+    const jw_storage_source *primary = jw_storage_sources_primary(&sources);
+    char helper[PATH_MAX];
+    int n = snprintf(helper, sizeof(helper), "%s/%s/bin/pico8-import", primary->apps_path, JW_PICO8_PROVIDER);
+    if (n < 0 || n >= (int)sizeof(helper) || access(helper, X_OK) != 0) return false;
+    pid_t pid = fork();
+    if (pid < 0) { jw_log_warn("PICO-8 importer could not start"); return false; }
+    if (pid == 0) {
+        if (setpgid(0, 0) != 0) _exit(126);
+        jw_pico8_export(&paths, false);
+        execl(helper, helper, (char *)NULL);
+        _exit(127);
+    }
+    (void)setpgid(pid, pid);
+    state->child_pid = pid;
+    state->child_pgid = getpgid(pid) == pid ? pid : -1;
+    state->child_kind = JW_CHILD_PICO8_IMPORT;
+    state->child_stop_deadline_ms = jw__monotonic_ms() + 30000;
+    state->child_stop_signalled = false;
+    jw_log_info("PICO-8 import started pid=%d", (int)pid);
+    (void)jw__osd_game_launch(state, "pico8-import", 0);
+    return true;
+}
+
 static void jw__handle_child_exit(jw_daemon_state *state) {
     if (!state || state->child_pid <= 0) {
         return;
@@ -13798,6 +13926,10 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
 
     jw_child_kind exited_kind = state->child_kind;
     pid_t exited_pid = waited;
+    if (state->pico8_exit_confirm_until_ms) {
+        jw__osd_game_launch_hide(state);
+        state->pico8_exit_confirm_until_ms = 0;
+    }
     state->child_pid = -1;
     state->child_pgid = -1;
     state->child_kind = JW_CHILD_NONE;
@@ -13875,6 +14007,19 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
            down so the full grab-and-forward proxy can come back. */
         jw_input_proxy_shutdown(&state->input_proxy);
         jw__start_input_proxy(state);
+    }
+    if (exited_kind == JW_CHILD_PICO8_APP) {
+        (void)jw__perf_apply_frontend(state, "pico8-app-exit");
+        if (group_barrier && jw__spawn_pico8_import(state)) return;
+    }
+    if (exited_kind == JW_CHILD_PICO8_IMPORT) {
+        jw__osd_game_launch_hide(state);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            jw_log_warn("Some Splore favourites could not be imported; see PICO-8 import errors above. Next exit will retry.");
+            (void)jw__osd_game_launch(state, "pico8-import-failed", 0);
+        }
+        if (jw__start_scan_job(state, "after Splore import") < 0)
+            jw_log_warn("PICO-8 import scan could not start; next scan will retry");
     }
 
     /* Switch-game: the old RetroArch quit with a game already queued, so spawn
@@ -14609,6 +14754,12 @@ int main(int argc, char *argv[]) {
             if (jw__start_scan_job(&state, "after storage change") < 0) {
                 jw_log_warn("storage hotplug: library rescan could not start");
             }
+        }
+        if (state.child_kind == JW_CHILD_PICO8_IMPORT && state.child_pid > 0 &&
+            !state.child_stop_signalled && jw__monotonic_ms() >= state.child_stop_deadline_ms) {
+            state.child_stop_signalled = true;
+            jw_log_warn("PICO-8 import timed out; unfinished imports will retry next exit");
+            (void)jw__signal_tracked_game_group(&state, SIGKILL);
         }
         jw__tick_scan_job(&state);
         jw__tick_startup_maintenance(&state);
