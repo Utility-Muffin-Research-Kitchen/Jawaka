@@ -92,7 +92,20 @@ require "$validate" "*out_error = bios_error" \
     "the launch request path no longer reports why the BIOS was refused"
 
 # 4. No silent fallback, and no "auto" from the new UI path.
-if grep -q '"auto"' "$BIOS_SRC" || grep -q '"auto"' "$LAUNCHER_SRC"; then
+#
+# Scoped to the BIOS code rather than the whole launcher. Searching every line
+# of main.c meant any unrelated comment containing the word tripped the guard --
+# a wallpaper comment describing a status-polarity setting did exactly that --
+# which teaches people to reword innocent prose instead of trusting the check.
+# The invariant is unchanged: no "auto" in the BIOS grammar or its picker.
+bios_ui="$(awk '
+    /^static .*jw__bios/ { inside = 1 }
+    inside { print; opens = gsub(/\{/, "{"); depth += opens
+             closes = gsub(/\}/, "}"); depth -= closes
+             if (opens > 0) seen = 1
+             if (seen && depth == 0) { inside = 0; seen = 0 } }
+' "$LAUNCHER_SRC")"
+if grep -q '"auto"' "$BIOS_SRC" || printf '%s' "$bios_ui" | grep -q '"auto"'; then
     fail "auto reappeared in the picker or the BIOS value grammar"
 fi
 if grep -n 'YABASANSHIRO_BIOS_MODE", "auto"' "$DAEMON_SRC" >/dev/null; then

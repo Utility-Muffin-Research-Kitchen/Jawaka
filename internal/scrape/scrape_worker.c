@@ -700,6 +700,20 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
             jw_log_info("scrape: image saved but no game row for %s (rc=%d)",
                         item->rom_path, db_rc);
         }
+        /* The facts came back in the same response as the artwork, so store them
+           while we have them. Best effort: a game with art and no metadata is a
+           normal state, and the view renders only what exists. */
+        jw_game_meta meta;
+        memset(&meta, 0, sizeof(meta));
+        snprintf(meta.genre,     sizeof(meta.genre),     "%s", result.genre);
+        snprintf(meta.developer, sizeof(meta.developer), "%s", result.developer);
+        snprintf(meta.publisher, sizeof(meta.publisher), "%s", result.publisher);
+        snprintf(meta.players,   sizeof(meta.players),   "%s", result.players);
+        snprintf(meta.rating,    sizeof(meta.rating),    "%s", result.rating);
+        snprintf(meta.year,      sizeof(meta.year),      "%s", result.year);
+        snprintf(meta.synopsis,  sizeof(meta.synopsis),  "%s", result.synopsis);
+        jw_db_set_game_meta(jw__w.db_path, item->rom_path, &meta);
+
         jw_db_increment_setting(jw__w.db_path, "library.generation");
 
         pthread_mutex_lock(&jw__w.mu);

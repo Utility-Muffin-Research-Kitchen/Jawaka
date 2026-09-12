@@ -60,6 +60,16 @@ typedef struct {
     char game_name[512];
     char media_url[1024];
     char media_format[16];    /* "png" or "jpg" */
+    /* Facts from the same jeuInfos response the artwork comes from, so filling
+       these costs no extra request and no extra quota. Any field the response
+       omits stays empty; the caller stores only what it got. */
+    char genre[96];
+    char developer[96];
+    char publisher[96];
+    char players[16];         /* "1", "1-2", "4" ... as ScreenScraper words it */
+    char rating[8];           /* ScreenScraper's note, 0-20 */
+    char year[8];             /* first release year */
+    char synopsis[1200];
     int  requests_today;
     int  max_requests;
     int  max_threads;

@@ -44,6 +44,14 @@ msgstr ""
 msgid "%d/%d done"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "%dh %dm"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%dm"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "%ldd ago"
 msgstr ""
@@ -66,6 +74,26 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "%s · %s · %d of %d"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%s · fallback"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%s: %d icons not %dx%d (contain-fit)"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%s: %d icons ok"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%s: %d icons over %dpx skipped"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%s: %d icons over %dpx skipped, %d off-size"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -124,12 +152,20 @@ msgstr ""
 msgid "2 min"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "2 x 2"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "200 MHz"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "24 Hour"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "3 x 2"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -142,6 +178,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "324 MHz"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "4 x 3"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -810,6 +850,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Good"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Grid"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Grid Size"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1978,6 +2026,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "The saved shader could not be removed."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Theme"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

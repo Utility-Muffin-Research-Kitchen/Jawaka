@@ -4,6 +4,7 @@
 #include "catastrophe_widgets.h"
 
 #include "cJSON.h"
+#include "internal/core/scraped_text.h"
 #include "internal/core/autodemo.h"
 #include "internal/core/env.h"
 #include "internal/core/log.h"
@@ -13,6 +14,10 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/coverflow.h"
+#include "internal/launcher/grid.h"
+#include "internal/launcher/grid_games.h"
+#include "internal/launcher/user_themes.h"
+#include <SDL2/SDL_image.h>
 #include "internal/launcher/focus_screen.h"
 #include "internal/launcher/game_switcher.h"
 #include "internal/launcher/bios.h"
@@ -48,6 +53,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #define JW_MAX_SYSTEMS 64
 #define JW_MAX_APPS    64
@@ -307,6 +313,18 @@ typedef struct {
     /* Cover Flow runtime state (slide tween + both carousels + channel cube),
        bundled in internal/launcher/coverflow.{c,h}. */
     jw_coverflow       cf;
+    jw_grid            grid;
+    /* Grid-only: resolved per layout rebuild. The wallpaper decodes off-thread
+       like a Coverflow card; status polarity is sampled once from its top-right
+       region (or forced by theme.json) so light icons never sit on a light sky. */
+    char               grid_wallpaper[PATH_MAX];
+    bool               grid_status_dark;   /* top-right region is light -> draw dark */
+    bool               grid_count_dark;    /* bottom-left, sampled separately */
+    SDL_Texture       *grid_status_tex;      /* stock-size status cluster, drawn scaled down */
+    int                grid_status_tex_w, grid_status_tex_h;
+    /* Label overlays resolved once per tile per rebuild, not per frame. */
+    char               grid_label_path[JW_MAX_SYSTEMS + 4][256];
+    unsigned char      grid_label_done[JW_MAX_SYSTEMS + 4];
     /* Tab-switch slide (Glide setting): two content snapshots cross-slide. */
     bool               tab_anim_active;
     int                tab_anim_dir;        /* +1 = next (from right), -1 = prev */
@@ -567,6 +585,10 @@ static void jw__render_game_list_pane(const jw_launcher_state *state,
                                       int content_y, int content_h, int margin,
                                       const char *empty_msg);
 
+/* Defined with the cover pre-warmer; called here because rebuilding a list in
+   place can hand back the same allocation and leave its window key unchanged. */
+static void jw__cover_prewarm_invalidate(void);
+
 static void jw__reset_game_data(jw_launcher_state *state) {
     if (!state) {
         return;
@@ -595,6 +617,7 @@ static void jw__replace_game_data(jw_launcher_state *state, jw_game_entry *games
     state->games = games;
     state->game_capacity = capacity;
     state->game_count = count;
+    jw__cover_prewarm_invalidate();
 }
 
 typedef int (*jw__game_list_loader)(const char *db_path, jw_game_entry *out,
@@ -796,9 +819,28 @@ static int jw__flat_cursor_for_system(const jw_launcher_state *state,
     return -1;
 }
 
+/* Where a non-system container (Apps, Settings, Recents, Favorites) sits in the
+   rebuilt list. Those have no system name to match on, so restoring them by the
+   old numeric cursor silently selects whatever slid into that slot: adding one
+   system to [FC, Apps] makes [FC, PS, Apps], and a cursor held at 1 opens PS. */
+static int jw__flat_cursor_for_kind(const jw_launcher_state *state,
+                                    jw_flat_kind kind) {
+    if (!state) {
+        return -1;
+    }
+    for (int i = 0; i < state->flat_count; i++) {
+        if (state->flat_items[i].kind == kind) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 static void jw__draw_status_bar(const jw_launcher_state *state) {
-    /* Coverflow hides the status bar entirely for now — chrome-light stage. */
-    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW)
+    /* Coverflow hides the status bar entirely for now — chrome-light stage.
+       Grid draws its own no-pill band above the tiles (jw__render_grid). */
+    cat_launcher_layout lay = cat_get_stylesheet()->launcher.layout;
+    if (lay == CAT_LAUNCHER_COVERFLOW || lay == CAT_LAUNCHER_GRID)
         return;
     cat_status_bar_opts opts = {0};
     jw_settings_status_bar_opts(&state->settings, &opts);
@@ -1061,6 +1103,19 @@ static void jw__build_carousel_list(jw_launcher_state *state) {
     state->flat_count = n;
 }
 
+/* Grid: containers only. A system holds games and Apps holds apps, so both are
+   tiles; Recents, Favorites and Settings are views over things that live
+   elsewhere and are reached the way every layout reaches them (Select opens the
+   switcher, MENU opens System). Tools is not inherited -- it is Coverflow's lid
+   over exactly this discontinuity. See plans/grid-view-and-user-themes.md. */
+static void jw__build_grid_list(jw_launcher_state *state) {
+    int n = 0;
+    for (int i = 0; i < state->system_count && n < JW_MAX_SYSTEMS + 4; i++)
+        state->flat_items[n++] = (jw_flat_item){ JW_FLAT_SYSTEM, i };
+    state->flat_items[n++] = (jw_flat_item){ JW_FLAT_APPS, 0 };
+    state->flat_count = n;
+}
+
 static const char *jw__flat_label(const jw_launcher_state *state, int idx) {
     if (idx < 0 || idx >= state->flat_count) return "";
     const jw_flat_item *it = &state->flat_items[idx];
@@ -1089,6 +1144,32 @@ static int jw__tab_list_count(const jw_launcher_state *state) {
 
 /* ─── Library scan ────────────────────────────────────────────────────────── */
 
+/* Put the selected tile back on screen after a cursor move that was not
+   directional -- a library refresh or a resume. Grid picks its visible rows from
+   its own scroll_row, which cat_list_state_jump does not touch, so without this
+   the page can show a row that does not contain the selection: the tile looks
+   absent while A still opens it. Snaps rather than tweens, since there was no
+   gesture to animate from. */
+static void jw__grid_reveal_cursor(jw_launcher_state *state) {
+    jw_grid *g = &state->grid;
+    if (g->cols <= 0 || g->rows <= 0) return;
+
+    int rows_total = (state->flat_count + g->cols - 1) / g->cols;
+    int max_top = rows_total - g->rows;
+    if (max_top < 0) max_top = 0;
+
+    int row = (state->list.cursor >= 0 ? state->list.cursor : 0) / g->cols;
+    int top = g->scroll_row;
+    if (row < top)                 top = row;
+    else if (row >= top + g->rows) top = row - g->rows + 1;
+    if (top > max_top) top = max_top;
+    if (top < 0) top = 0;
+
+    g->scroll_row    = top;
+    g->anim_from_row = (float)top;
+    g->anim_active   = false;
+}
+
 static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *state) {
     if (!db_path || !state) {
         return -1;
@@ -1099,6 +1180,8 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     int game_cursor = state->game_list.cursor;
     int app_cursor = state->app_list.cursor;
     char selected_system[64] = "";
+    jw_flat_kind selected_kind = JW_FLAT_SYSTEM;
+    bool have_selected_kind = false;
 
     const cat_stylesheet *ss_before = cat_get_stylesheet();
     cat_launcher_layout layout_before = ss_before->launcher.layout;
@@ -1111,6 +1194,8 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
         }
     } else if (state->list.cursor >= 0 && state->list.cursor < state->flat_count) {
         const jw_flat_item *it = &state->flat_items[state->list.cursor];
+        selected_kind = it->kind;
+        have_selected_kind = true;
         if (it->kind == JW_FLAT_SYSTEM &&
             it->system_idx >= 0 && it->system_idx < state->system_count) {
             snprintf(selected_system, sizeof(selected_system), "%s",
@@ -1214,11 +1299,44 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
             flat_cursor = count > 0 ? count - 1 : 0;
         }
         cat_list_state_jump(&state->list, flat_cursor, count);
+    } else if (layout == CAT_LAUNCHER_GRID) {
+        /* Grid used to fall through to the tabbed branch, which counts tabs and
+           never rebuilds flat_items[]. A background scan that added a system
+           left its tile absent; one that removed a system left a tile pointing
+           past the new end of systems[]; a sort change reassigned the indices
+           the label memos are keyed by, so an overlay could name a different
+           system. Rebuild the containers, keep the selection by identity, and
+           drop the tile-index memos. */
+        jw__build_grid_list(state);
+        memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
+        memset(state->grid_label_path, 0, sizeof(state->grid_label_path));
+        int count = state->flat_count;
+        if (selected_system[0]) {
+            int selected_cursor = jw__flat_cursor_for_system(state, selected_system);
+            if (selected_cursor >= 0) {
+                flat_cursor = selected_cursor;
+            }
+        } else if (have_selected_kind) {
+            int selected_cursor = jw__flat_cursor_for_kind(state, selected_kind);
+            if (selected_cursor >= 0) {
+                flat_cursor = selected_cursor;
+            }
+        }
+        if (flat_cursor >= count) {
+            flat_cursor = count > 0 ? count - 1 : 0;
+        }
+        cat_list_state_jump(&state->list, flat_cursor, count);
+        jw__grid_reveal_cursor(state);
     } else if (layout == CAT_LAUNCHER_VERTICAL) {
         jw__build_flat_list(state);
         int count = state->flat_count;
         if (selected_system[0]) {
             int selected_cursor = jw__flat_cursor_for_system(state, selected_system);
+            if (selected_cursor >= 0) {
+                flat_cursor = selected_cursor;
+            }
+        } else if (have_selected_kind) {
+            int selected_cursor = jw__flat_cursor_for_kind(state, selected_kind);
             if (selected_cursor >= 0) {
                 flat_cursor = selected_cursor;
             }
@@ -3203,6 +3321,10 @@ static bool jw__cover_thumb_path(const char *cover_abs, char *out, size_t out_si
    inline, but coverflow motion can route them through the worker to avoid
    mid-animation hitches. */
 #define JW_COVER_QUEUE_MAX 48          /* pre-warm backlog cap (ring buffer) */
+/* Handbacks are only produced when the thumbnail cache cannot be written, and a
+   page drains them every frame, so this need only cover one frame's worth of
+   arrivals. Small on purpose: each entry holds a decoded surface. */
+#define JW_COVER_HANDBACK_MAX 4
 
 typedef struct {
     pthread_t       thread;
@@ -3214,11 +3336,13 @@ typedef struct {
     /* High-priority request: the cover under the cursor (latest wins). */
     char            req_path[PATH_MAX];
     char            req_thumb[PATH_MAX];
+    int             req_max;          /* longest edge wanted, px */
     bool            has_req;
 
     /* Low-priority pre-warm queue (FIFO ring of covers to build ahead of time). */
     char            q_path[JW_COVER_QUEUE_MAX][PATH_MAX];
     char            q_thumb[JW_COVER_QUEUE_MAX][PATH_MAX];
+    int             q_max[JW_COVER_QUEUE_MAX];
     int             q_head;
     int             q_count;
 
@@ -3226,6 +3350,17 @@ typedef struct {
     char            done_path[PATH_MAX];
     SDL_Surface    *done_surf;
     bool            has_done;
+
+    /* Pre-warm surfaces the thumbnail write could not persist, handed back so a
+       page can still draw them. Kept apart from the priority slot and bounded:
+       a page asks for every tile every frame and can leave before a decode
+       lands, so delivery must retire what the page no longer wants instead of
+       waiting on it. Sharing one slot let a single unclaimed result from a page
+       the user had left block every later handback. */
+    char            hb_path[JW_COVER_HANDBACK_MAX][PATH_MAX];
+    SDL_Surface    *hb_surf[JW_COVER_HANDBACK_MAX];
+    int             hb_head;                 /* oldest entry */
+    int             hb_count;
 } jw_cover_loader;
 
 static jw_cover_loader jw__cover_loader = {
@@ -3235,6 +3370,44 @@ static jw_cover_loader jw__cover_loader = {
 
 static bool jw__cf_animating;
 static int  jw__cover_inline_decodes_this_frame;
+
+/* Hand a surface back for later collection. Caller holds the lock.
+   Replaces any pending entry for the same path, and when full drops the oldest:
+   a result nobody has claimed is by definition the one least likely to be
+   wanted, and dropping it only costs a re-decode, whereas keeping it would
+   stall every page that follows. */
+static void jw__cover_handback_put(jw_cover_loader *L, const char *path,
+                                   SDL_Surface *surf) {
+    for (int i = 0; i < L->hb_count; ++i) {
+        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
+        if (strcmp(L->hb_path[idx], path) == 0) {
+            SDL_FreeSurface(L->hb_surf[idx]);
+            L->hb_surf[idx] = surf;
+            return;
+        }
+    }
+    if (L->hb_count == JW_COVER_HANDBACK_MAX) {
+        SDL_FreeSurface(L->hb_surf[L->hb_head]);
+        L->hb_surf[L->hb_head] = NULL;
+        L->hb_head = (L->hb_head + 1) % JW_COVER_HANDBACK_MAX;
+        L->hb_count--;
+    }
+    int tail = (L->hb_head + L->hb_count) % JW_COVER_HANDBACK_MAX;
+    snprintf(L->hb_path[tail], PATH_MAX, "%s", path);
+    L->hb_surf[tail] = surf;
+    L->hb_count++;
+}
+
+/* Free every pending handback. Caller holds the lock. */
+static void jw__cover_handback_clear(jw_cover_loader *L) {
+    for (int i = 0; i < L->hb_count; ++i) {
+        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
+        SDL_FreeSurface(L->hb_surf[idx]);
+        L->hb_surf[idx] = NULL;
+    }
+    L->hb_head = 0;
+    L->hb_count = 0;
+}
 
 static void *jw__cover_worker(void *arg) {
     jw_cover_loader *L = (jw_cover_loader *)arg;
@@ -3246,23 +3419,36 @@ static void *jw__cover_worker(void *arg) {
         if (L->stop) break;
 
         char path[PATH_MAX], thumb[PATH_MAX];
+        int  max_dim;
         bool was_req;
         if (L->has_req) {                          /* priority: cursor cover first */
             snprintf(path, sizeof(path), "%s", L->req_path);
             snprintf(thumb, sizeof(thumb), "%s", L->req_thumb);
+            max_dim = L->req_max;
             L->has_req = false;
             was_req = true;
         } else {                                   /* else drain the pre-warm queue */
             snprintf(path, sizeof(path), "%s", L->q_path[L->q_head]);
             snprintf(thumb, sizeof(thumb), "%s", L->q_thumb[L->q_head]);
+            max_dim = L->q_max[L->q_head];
             L->q_head = (L->q_head + 1) % JW_COVER_QUEUE_MAX;
             L->q_count--;
             was_req = false;
         }
         pthread_mutex_unlock(&L->lock);
 
+        if (max_dim <= 0) max_dim = JW_COVER_THUMB_MAX;
         SDL_Surface *surf = cat_decode_thumbnail_surface(path, thumb[0] ? thumb : NULL,
-                                                         JW_COVER_THUMB_MAX);
+                                                         max_dim);
+
+        /* The pre-warm contract is that a decoded cover is on disk afterwards, so
+           the surface can be dropped and picked up inline on a later frame. When
+           the write silently fails -- a full card, a thumbs path that is not a
+           directory -- dropping it strands readable artwork forever. Persistence
+           is best effort by design and IMG_SavePNG's result is deliberately
+           ignored, so ask the disk rather than trust the contract. Two stats on
+           the worker thread, outside the lock, only on a cold decode. */
+        bool persisted = !surf || !thumb[0] || cat_thumbnail_is_cached(path, thumb);
 
         pthread_mutex_lock(&L->lock);
         if (was_req) {
@@ -3276,6 +3462,12 @@ static void *jw__cover_worker(void *arg) {
                 L->done_surf = surf;
                 L->has_done = true;
             }
+        } else if (surf && !persisted) {
+            /* Could not land on disk: hand it back so the page can draw it.
+               Never through the priority slot -- a cursor cover the user is
+               waiting on must not be displaced by a background pre-warm, and an
+               unclaimed pre-warm result must not be able to block later ones. */
+            jw__cover_handback_put(L, path, surf);
         } else if (surf) {
             SDL_FreeSurface(surf);                 /* pre-warm: thumbnail is on disk now */
         }
@@ -3309,6 +3501,7 @@ static void jw__cover_loader_shutdown(void) {
         SDL_FreeSurface(L->done_surf);
         L->done_surf = NULL;
     }
+    jw__cover_handback_clear(L);
     L->has_done = false;
     L->has_req = false;
     L->q_head = 0;
@@ -3320,7 +3513,8 @@ static void jw__cover_loader_shutdown(void) {
 
 /* If a decoded surface for `path` is ready, consume it into *out and return true.
    Otherwise set `path` as the priority request (newest wins) and return false. */
-static bool jw__cover_async_take(const char *path, const char *thumb, SDL_Surface **out) {
+static bool jw__cover_async_take(const char *path, const char *thumb, int max_dim,
+                                 SDL_Surface **out) {
     jw_cover_loader *L = &jw__cover_loader;
     jw__cover_loader_ensure();
     if (!L->started) return false;
@@ -3337,7 +3531,8 @@ static bool jw__cover_async_take(const char *path, const char *thumb, SDL_Surfac
            cover that is about to be requested later in the same frame. The worker
            still replaces stale results when a newer decode completes. */
         if (!L->has_req || strcmp(L->req_path, path) != 0) {
-            snprintf(L->req_path, sizeof(L->req_path), "%s", path);
+            L->req_max = max_dim;
+    snprintf(L->req_path, sizeof(L->req_path), "%s", path);
             snprintf(L->req_thumb, sizeof(L->req_thumb), "%s", thumb ? thumb : "");
             L->has_req = true;
             pthread_cond_signal(&L->cond);
@@ -3347,10 +3542,42 @@ static bool jw__cover_async_take(const char *path, const char *thumb, SDL_Surfac
     return got;
 }
 
+/* Consume a ready surface for `path` if the worker left one, without ever
+   claiming the priority slot. A page asks for every tile on every frame, so
+   jw__cover_async_take's newest-wins request would have the twelve of them
+   overwrite each other and starve the cursor cover. */
+static bool jw__cover_async_poll(const char *path, SDL_Surface **out) {
+    jw_cover_loader *L = &jw__cover_loader;
+    if (!L->started) return false;
+    bool got = false;
+    pthread_mutex_lock(&L->lock);
+    for (int i = 0; i < L->hb_count; ++i) {
+        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
+        if (strcmp(L->hb_path[idx], path) != 0) continue;
+        *out = L->hb_surf[idx];
+        L->hb_surf[idx] = NULL;
+        /* Close the gap by sliding the older entries forward, so the ring stays
+           oldest-first and eviction keeps meaning what it says. */
+        for (int j = i; j > 0; --j) {
+            int dst = (L->hb_head + j) % JW_COVER_HANDBACK_MAX;
+            int src = (L->hb_head + j - 1) % JW_COVER_HANDBACK_MAX;
+            memcpy(L->hb_path[dst], L->hb_path[src], PATH_MAX);
+            L->hb_surf[dst] = L->hb_surf[src];
+        }
+        L->hb_surf[L->hb_head] = NULL;
+        L->hb_head = (L->hb_head + 1) % JW_COVER_HANDBACK_MAX;
+        L->hb_count--;
+        got = true;
+        break;
+    }
+    pthread_mutex_unlock(&L->lock);
+    return got;
+}
+
 /* Append a cover to the low-priority pre-warm queue, skipping duplicates and the
    in-flight priority request. Caller has already confirmed the thumbnail is
    missing. No-op when the queue is full (we just pre-warm fewer covers). */
-static void jw__cover_prewarm_enqueue(const char *path, const char *thumb) {
+static void jw__cover_prewarm_enqueue(const char *path, const char *thumb, int max_dim) {
     jw_cover_loader *L = &jw__cover_loader;
     jw__cover_loader_ensure();
     if (!L->started) return;
@@ -3364,6 +3591,7 @@ static void jw__cover_prewarm_enqueue(const char *path, const char *thumb) {
         int tail = (L->q_head + L->q_count) % JW_COVER_QUEUE_MAX;
         snprintf(L->q_path[tail], PATH_MAX, "%s", path);
         snprintf(L->q_thumb[tail], PATH_MAX, "%s", thumb ? thumb : "");
+        L->q_max[tail] = max_dim;
         L->q_count++;
         pthread_cond_signal(&L->cond);
     }
@@ -3398,7 +3626,7 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
        the surface it returns; the carousel keeps moving while art streams in. The
        worker decodes the on-disk thumbnail when present, else the source. */
     SDL_Surface *surf = NULL;
-    if (jw__cover_async_take(cover_abs, thumb_path, &surf)) {
+    if (jw__cover_async_take(cover_abs, thumb_path, JW_COVER_THUMB_MAX, &surf)) {
         SDL_Texture *tex = cat_texture_from_surface(surf);
         w = surf->w;
         h = surf->h;
@@ -3446,7 +3674,22 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
 /* Coverflow cards always decode off the render thread. This is used for
    system/app icons as well as art, so a cold image shows the normal placeholder
    card instead of stalling the carousel. */
-static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *out_h) {
+/* The largest a tile is ever drawn: 263px at the sparsest 3x2 density, 315 when
+   focused and scaled to 120%. Decoding smaller than that upscales and softens
+   the art; decoding at the cover's 384 wastes pixels on something this size. */
+#define JW_GRID_TILE_MAX 320
+
+/* A wordmark is drawn at most the width of the info column, so decoding it at
+   cover size throws away detail the slot can show -- the wide marks are ~1400px
+   sources landing in a ~460px slot. */
+#define JW_WORDMARK_MAX 512
+
+/* max_dim is the longest edge the caller will actually draw. Decoding a tile
+   at cover size costs several times the pixels for no visible gain, and on
+   one worker thread that is the difference between a page appearing and a
+   page filling in. */
+static SDL_Texture *jw__load_image_sized(const char *path, int max_dim,
+                                         int *out_w, int *out_h) {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
     if (!path || !path[0]) {
@@ -3466,7 +3709,7 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
                                  ? thumb : NULL;
 
     SDL_Surface *surf = NULL;
-    if (jw__cover_async_take(path, thumb_path, &surf)) {
+    if (jw__cover_async_take(path, thumb_path, max_dim, &surf)) {
         SDL_Texture *tex = cat_texture_from_surface(surf);
         w = surf->w;
         h = surf->h;
@@ -3483,6 +3726,112 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
     return NULL;
 }
 
+static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *out_h) {
+    return jw__load_image_sized(path, JW_COVER_THUMB_MAX, out_w, out_h);
+}
+
+/* Art for a page that has to arrive whole. Coverflow streams its cards in
+   because it is a carousel and an inline decode would hitch the tween, but
+   every other layout has always drawn its system icons synchronously through
+   jw__load_system_icon -- the page is simply there on the frame it appears.
+   The systems grid puts twelve icons on screen at once, so it belongs with the
+   rest of Leaf, not with Coverflow.
+
+   Synchronous here is affordable because it decodes the thumbnail, not the
+   source: a few tens of KB and a few ms, against the ~200ms of a cold 512px
+   PNG. A cold image still goes to the worker, but through the pre-warm ring
+   rather than the priority slot -- the slot is newest-wins, so twelve tiles
+   asking for it in one frame overwrite each other and the page assembles a
+   tile at a time. The ring drains steadily instead, and each thumbnail it
+   lands is picked up inline on the next frame -- or, when the thumbnail could
+   not be written, the surface itself. */
+static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
+                                        int *out_w, int *out_h) {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    if (!path || !path[0]) return NULL;
+
+    int w = 0, h = 0;
+    SDL_Texture *cached = cat_cache_get(path, &w, &h);
+    if (cached) {
+        if (out_w) *out_w = w;
+        if (out_h) *out_h = h;
+        return cached;
+    }
+
+    char thumb[PATH_MAX];
+    const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
+    if (tp && cat_thumbnail_is_cached(path, tp)) {
+        SDL_Surface *surf = IMG_Load(tp);
+        if (surf) {                        /* a corrupt one falls through to rebuild */
+            SDL_Texture *tex = cat_texture_from_surface(surf);
+            w = surf->w;
+            h = surf->h;
+            SDL_FreeSurface(surf);
+            if (tex) {
+                cat_cache_put(path, tex, w, h);
+                if (out_w) *out_w = w;
+                if (out_h) *out_h = h;
+                return tex;
+            }
+        }
+    }
+
+    /* The ring normally writes a thumbnail and frees the surface, and the branch
+       above picks it up from disk next frame. When the write could not land the
+       worker hands the surface back instead, so collect it here. This is per
+       asset: a page of mostly-cached tiles cannot mask one tile that is stuck,
+       which a global "is the disk working" flag could not distinguish. */
+    SDL_Surface *ring = NULL;
+    if (jw__cover_async_poll(path, &ring)) {
+        SDL_Texture *tex = cat_texture_from_surface(ring);
+        w = ring->w;
+        h = ring->h;
+        SDL_FreeSurface(ring);
+        if (tex) {
+            cat_cache_put(path, tex, w, h);
+            if (out_w) *out_w = w;
+            if (out_h) *out_h = h;
+            return tex;
+        }
+    }
+
+    jw__cover_prewarm_enqueue(path, tp, max_dim);
+    cat_request_frame_in(40);
+    return NULL;
+}
+
+/* The wallpaper covers the whole panel, so it is the one image that must not
+   go through the cover thumbnailer: a 384px thumbnail stretched to fill 960x720
+   is visibly blocky. Decode it at full size and let the texture cache hold it.
+   Drawn every frame, it stays at the head of the LRU, so this costs one decode. */
+static SDL_Texture *jw__load_wallpaper(const char *path, int *out_w, int *out_h) {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
+    if (!path || !path[0]) return NULL;
+
+    int w = 0, h = 0;
+    SDL_Texture *cached = cat_cache_get(path, &w, &h);
+    if (cached) {
+        if (out_w) *out_w = w;
+        if (out_h) *out_h = h;
+        return cached;
+    }
+
+    SDL_Surface *surf = IMG_Load(path);
+    if (!surf) return NULL;
+    SDL_Texture *tex = cat_texture_from_surface(surf);
+    w = surf->w;
+    h = surf->h;
+    SDL_FreeSurface(surf);
+    if (!tex) return NULL;
+
+    cat_cache_put(path, tex, w, h);
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    return tex;
+}
+
 /* Pre-warm covers around the cursor so navigating lands on art that is already
    built. Windows the work (a few behind, more ahead) so even huge systems only
    enqueue near-cursor covers, while small lists (Favorites/Recents) fill within a
@@ -3490,9 +3839,35 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
    skips covers already decoded or already thumbnailed. */
 #define JW_PREWARM_BEHIND 2
 #define JW_PREWARM_AHEAD  16
+
+/* The sweep stats every cover in its window -- two SD-card stat() calls each,
+   and only the cover under the cursor is ever in the texture cache, so nearly
+   the whole window reaches them. Re-running it on frames where the window did
+   not move buys nothing, and the grid games view redraws continuously while a
+   synopsis autoscrolls, which would otherwise mean that cost every frame for as
+   long as the page is open. Same guard the search sweep already carries. The
+   list identity is part of the key so moving between systems re-sweeps. */
+static const jw_game_entry *s_prewarm_games;
+static int s_prewarm_count  = -1;
+static int s_prewarm_cursor = -1;
+
+static void jw__cover_prewarm_invalidate(void) {
+    s_prewarm_games  = NULL;
+    s_prewarm_count  = -1;
+    s_prewarm_cursor = -1;
+}
+
 static void jw__cover_prewarm(const jw_launcher_state *state,
                               const jw_game_entry *games, int count, int cursor) {
     if (!state || !games || count <= 0) return;
+    if (games == s_prewarm_games && count == s_prewarm_count &&
+        cursor == s_prewarm_cursor) {
+        return;                                    /* window unchanged */
+    }
+    s_prewarm_games  = games;
+    s_prewarm_count  = count;
+    s_prewarm_cursor = cursor;
+
     int from = cursor - JW_PREWARM_BEHIND;
     if (from < 0) from = 0;
     int to = cursor + JW_PREWARM_AHEAD;
@@ -3506,7 +3881,7 @@ static void jw__cover_prewarm(const jw_launcher_state *state,
         char thumb[PATH_MAX];
         const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(abs, tp)) continue;  /* already built */
-        jw__cover_prewarm_enqueue(abs, tp);
+        jw__cover_prewarm_enqueue(abs, tp, JW_COVER_THUMB_MAX);
     }
 }
 
@@ -3544,7 +3919,7 @@ static void jw__cover_prewarm_search(const jw_launcher_state *state,
         char thumb[PATH_MAX];
         const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(abs, tp)) continue;
-        jw__cover_prewarm_enqueue(abs, tp);
+        jw__cover_prewarm_enqueue(abs, tp, JW_COVER_THUMB_MAX);
     }
 }
 
@@ -3840,6 +4215,50 @@ static void jw__push_icon_candidate(jw_system_icon_candidates *out, const char *
     }
 }
 
+static bool jw__dir_exists(const char *path) {
+    struct stat st;
+    return path && path[0] && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* The scanner accepts any of a system's alias folders but records its games
+   under the catalog id, so Roms/<id>/ is frequently not the folder the user
+   actually has -- a card with Roms/NES/ still reports the system as FC. Find
+   the folder that is really on the card: the id, then the catalog's own
+   rom_root, then any accepted alias. NULL when the system has no folder here,
+   in which case there is no per-system override to look for. */
+static const char *jw__system_rom_folder(const jw_launcher_state *state,
+                                         const char *system_code,
+                                         char *buf, size_t n) {
+    if (!state || !state->sdcard_root[0] || !system_code || !system_code[0]) return NULL;
+    char probe[PATH_MAX];
+    int w = snprintf(probe, sizeof(probe), "%s/Roms/%s", state->sdcard_root, system_code);
+    if (w > 0 && (size_t)w < sizeof(probe) && jw__dir_exists(probe)) return system_code;
+    if (!state->system_catalog) return NULL;
+
+    const jw_ra_system *sys = jw_ra_catalog_find_system(state->system_catalog, system_code);
+    if (!sys) return NULL;
+
+    /* rom_root is "Roms/<FOLDER>"; the alias list holds bare folder names. */
+    const char *root = sys->rom_root ? strrchr(sys->rom_root, '/') : NULL;
+    const char *cands[1 + 16];
+    size_t ncand = 0;
+    if (root && root[1]) cands[ncand++] = root + 1;
+    for (size_t i = 0; i < sys->patterns.count && ncand < sizeof(cands) / sizeof(cands[0]); i++)
+        if (sys->patterns.items[i] && sys->patterns.items[i][0])
+            cands[ncand++] = sys->patterns.items[i];
+
+    for (size_t i = 0; i < ncand; i++) {
+        w = snprintf(probe, sizeof(probe), "%s/Roms/%s", state->sdcard_root, cands[i]);
+        if (w > 0 && (size_t)w < sizeof(probe) && jw__dir_exists(probe)) {
+            size_t len = strlen(cands[i]);
+            if (len >= n) return NULL;
+            memcpy(buf, cands[i], len + 1);
+            return buf;
+        }
+    }
+    return NULL;
+}
+
 static void jw__build_system_icon_candidates(const jw_launcher_state *state,
                                              const char *system_code,
                                              jw_system_icon_candidates *out) {
@@ -3857,11 +4276,35 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
     char path[PATH_MAX];
     int n;
 
-    /* (1) user override on the sdcard */
+    /* (0) the selected user theme, for the view this layout draws. Wins over
+       everything, falls through for any system it does not supply, and never
+       for _default (Leaf's safety net, not a tile). Over-cap PNGs are refused
+       here so a 4000 px photo never reaches the decoder. */
+    if (state) {
+        const cat_stylesheet *ss0 = cat_get_stylesheet();
+        const char *view = NULL;
+        if (ss0 && ss0->launcher.layout == CAT_LAUNCHER_GRID)           view = "grid";
+        else if (ss0 && ss0->launcher.layout == CAT_LAUNCHER_COVERFLOW) view = "coverflow";
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (view && ti >= 0 &&
+            jw_user_theme_icon_path(jw_settings_user_themes(&state->settings), ti,
+                                    view, system_code, path, sizeof(path))) {
+            int w = 0, h = 0;
+            if (jw_user_theme_png_dims(path, &w, &h) &&
+                w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX)
+                jw__push_icon_candidate(out, path);
+        }
+    }
+
+    /* (1) user override on the sdcard, in whichever alias folder they have */
     if (system_code[0] != '_' && state && state->sdcard_root[0]) {
-        n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
-                     state->sdcard_root, system_code);
-        if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+        char folder[128];
+        const char *rom_dir = jw__system_rom_folder(state, system_code, folder, sizeof(folder));
+        if (rom_dir) {
+            n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
+                         state->sdcard_root, rom_dir);
+            if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+        }
     }
 
     const char *theme_dir  = cat_get_active_theme_dir();
@@ -3900,11 +4343,23 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
        explicit choice must not follow the layout or theme name. */
     if (pack == JW_SYSTEM_ICON_PACK_AUTO) {
         const cat_stylesheet *ss = cat_get_stylesheet();
-        const char *icon_dir = (ss && ss->launcher.coverflow_icon_dir[0])
-                                   ? ss->launcher.coverflow_icon_dir : "system_icons";
+        bool grid = ss && ss->launcher.layout == CAT_LAUNCHER_GRID;
+        const char *icon_dir = "system_icons";
+        if (grid && ss->launcher.grid_icon_dir[0])
+            icon_dir = ss->launcher.grid_icon_dir;
+        else if (ss && ss->launcher.coverflow_icon_dir[0])
+            icon_dir = ss->launcher.coverflow_icon_dir;
         if (theme_name && theme_name[0]) {
             n = snprintf(path, sizeof(path), "%s/%s/%s/%s.png",
                          theme_dir, theme_name, icon_dir, system_code);
+            if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+        }
+        /* Grid ships no rounded-square art of its own yet; it draws the
+           rounding and border itself, so the photographic set is the right
+           plain art to sit under them (plan: Phase 1 uses the built-in set). */
+        if (grid) {
+            n = snprintf(path, sizeof(path), "%s/%s/system_icons/%s.png",
+                         theme_dir, JW_SYSTEM_ICON_PHOTO_THEME, system_code);
             if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
         }
     } else if (pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC) {
@@ -5243,13 +5698,16 @@ static void jw__bios_row_value(const jw_launcher_state *state,
         snprintf(out, out_size, "%s (%s)", T("HLE"), scope);
         return;
     }
+    /* A BIOS file name can be the full rel-path length; the row it goes in is a
+       couple of hundred bytes. Bound the name so the scope suffix is never the
+       part that gets cut -- it is what tells HLE from a real file. */
     const char *name = jw__bios_basename(resolution->choice.rel_path);
     if (state->action_bios_status == JW_BIOS_FILE_OK) {
-        snprintf(out, out_size, "%s (%s)", name, scope);
+        snprintf(out, out_size, "%.120s (%s)", name, scope);
     } else {
         /* Never quietly reads as HLE: an unavailable choice says so, and the
            launch is refused rather than substituted. */
-        snprintf(out, out_size, "%s: %s (%s)", T("Unavailable"), name, scope);
+        snprintf(out, out_size, "%s: %.120s (%s)", T("Unavailable"), name, scope);
     }
 }
 
@@ -5805,6 +6263,733 @@ static bool jw__view_wants_shoulder_repeat(const jw_launcher_state *state) {
 static void jw__render_focus_setup(jw_launcher_state *state);
 static void jw__focus_setup_begin(jw_launcher_state *state);
 
+/* Resolve the grid wallpaper for the selected user theme and sample its
+   top-right region for status polarity. Decoding the wallpaper once here is a
+   one-time cost per layout/theme change, never per frame; the draw path uses
+   the off-thread loader. Sampling the region rather than the whole image
+   matters: a dark wallpaper can still be blown out in that one corner. */
+/* Mean luma of a box, sampling every 4th pixel. Returns false for an empty box. */
+static bool jw__grid_region_light(SDL_Surface *rgba, int x0, int x1, int y0, int y1) {
+    unsigned long sum = 0, n = 0;
+    if (x1 > rgba->w) x1 = rgba->w;
+    if (y1 > rgba->h) y1 = rgba->h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    SDL_LockSurface(rgba);
+    for (int y = y0; y < y1; y += 4) {
+        const uint8_t *row = (const uint8_t *)rgba->pixels + y * rgba->pitch;
+        for (int x = x0; x < x1; x += 4) {
+            uint32_t px; memcpy(&px, row + x * 4, 4);
+            uint8_t r, g, b, a; SDL_GetRGBA(px, rgba->format, &r, &g, &b, &a);
+            sum += (unsigned long)(r * 299 + g * 587 + b * 114) / 1000;
+            n++;
+        }
+    }
+    SDL_UnlockSurface(rgba);
+    return n && (sum / n) > 128;
+}
+
+static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
+    state->grid_wallpaper[0] = '\0';
+    state->grid_status_dark  = false;   /* default: light icons on a dark stage */
+    state->grid_count_dark   = false;
+    int ti = jw_settings_user_theme_index(&state->settings);
+    if (ti < 0) return;
+    const jw_user_theme_catalog *cat = jw_settings_user_themes(&state->settings);
+    if (!jw_user_theme_wallpaper_path(cat, ti, "grid", state->grid_wallpaper,
+                                      sizeof(state->grid_wallpaper))) {
+        state->grid_wallpaper[0] = '\0';
+        return;
+    }
+    const jw_user_theme *t = &cat->items[ti];
+    /* An explicit style is the author's decision for the whole overlay; only
+       "auto" reads the wallpaper, and then each corner answers for itself. */
+    if (t->status_style == JW_USER_THEME_STATUS_DARK) {
+        state->grid_status_dark = state->grid_count_dark = true;  return;
+    }
+    if (t->status_style == JW_USER_THEME_STATUS_LIGHT) {
+        state->grid_status_dark = state->grid_count_dark = false; return;
+    }
+
+    SDL_Surface *surf = IMG_Load(state->grid_wallpaper);
+    if (!surf) return;
+    SDL_Surface *rgba = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA8888, 0);
+    SDL_FreeSurface(surf);
+    if (!rgba) return;
+    /* The two overlays sit in opposite corners and a wallpaper can be light
+       under one and dark under the other, so each samples the region it
+       actually covers: the status band is the top 12% by the right 30%, the
+       count is the bottom 12% by the left 30%. */
+    int band_h = rgba->h * 12 / 100; if (band_h < 1) band_h = 1;
+    state->grid_status_dark = jw__grid_region_light(rgba, rgba->w * 70 / 100, rgba->w,
+                                                    0, band_h);
+    state->grid_count_dark  = jw__grid_region_light(rgba, 0, rgba->w * 30 / 100,
+                                                    rgba->h - band_h, rgba->h);
+    SDL_FreeSurface(rgba);
+}
+
+/* Grid tile art. Systems go through the memoized path resolver and the same
+   whole-page loader the other layouts use for their system icons, so a page
+   that has been visited once is complete on the frame it appears. The Apps
+   tile is the shared _apps identity asset. */
+static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
+    jw_launcher_state *state = (jw_launcher_state *)ctx;
+    *tw = 0; *th = 0;
+    if (idx < 0 || idx >= state->flat_count) return NULL;
+    const jw_flat_item *it = &state->flat_items[idx];
+    if (it->kind == JW_FLAT_SYSTEM) {
+        const char *path = jw__cf_system_icon_path(state, it->system_idx);
+        return jw__load_page_image(path, JW_GRID_TILE_MAX, tw, th);
+    }
+    if (it->kind == JW_FLAT_APPS)
+        return jw__load_system_icon(state, "_apps", tw, th);
+    return NULL;
+}
+
+/* Label overlay: a full-tile wordmark PNG. Resolved once per tile per rebuild
+   from three candidates -- the user's per-system Roms/<SYSTEM>/label.png, the
+   selected theme's grid/labels/, then the stylesheet's grid_label_dir -- and
+   memoized, so the per-frame cost is one cached-texture lookup. Absent means
+   no label: the grid is graphical and renders no text of its own. */
+static bool jw__grid_file_exists(const char *path) {
+    return path && path[0] && access(path, R_OK) == 0;
+}
+
+/* Memo copy: a label path that does not fit the memo is dropped, not
+   truncated -- a truncated path is never a real file. memcpy rather than a
+   %s format so gcc's truncation analysis has nothing to flag. */
+static void jw__grid_memo_path(char *dst, size_t n, const char *src) {
+    size_t len = src ? strlen(src) : 0;
+    if (len == 0 || len >= n) { dst[0] = '\0'; return; }
+    memcpy(dst, src, len + 1);
+}
+
+static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
+    jw_launcher_state *state = (jw_launcher_state *)ctx;
+    *tw = 0; *th = 0;
+    if (idx < 0 || idx >= state->flat_count || idx >= JW_MAX_SYSTEMS + 4) return NULL;
+    if (!state->grid_label_done[idx]) {
+        state->grid_label_done[idx] = 1;
+        state->grid_label_path[idx][0] = '\0';
+        const jw_flat_item *it = &state->flat_items[idx];
+        const char *code = (it->kind == JW_FLAT_SYSTEM) ? state->systems[it->system_idx].name
+                         : (it->kind == JW_FLAT_APPS)   ? "_apps" : NULL;
+        if (!code || !code[0]) return NULL;
+        char cand[PATH_MAX];
+        int n;
+        char folder[128];
+        const char *rom_dir = code[0] != '_' ? jw__system_rom_folder(state, code, folder, sizeof(folder)) : NULL;
+        if (rom_dir && state->sdcard_root[0]) {
+            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/label.png", state->sdcard_root, rom_dir);
+            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
+        }
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (!state->grid_label_path[idx][0] && ti >= 0 &&
+            jw_user_theme_label_path(jw_settings_user_themes(&state->settings), ti,
+                                     "grid", code, cand, sizeof(cand)) &&
+            jw__grid_file_exists(cand))
+            jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
+        if (!state->grid_label_path[idx][0]) {
+            const cat_stylesheet *ss = cat_get_stylesheet();
+            const char *theme_dir = cat_get_active_theme_dir();
+            const char *theme_name = cat_get_active_theme_name();
+            if (ss && theme_dir && theme_dir[0] && theme_name && theme_name[0] &&
+                ss->launcher.grid_label_dir[0]) {
+                n = snprintf(cand, sizeof(cand), "%s/%s/%s/%s.png",
+                             theme_dir, theme_name, ss->launcher.grid_label_dir, code);
+                if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                    jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
+            }
+        }
+    }
+    if (!state->grid_label_path[idx][0]) return NULL;
+    return jw__load_coverflow_image(state->grid_label_path[idx], tw, th);
+}
+
+/* The count indicator's mark: Leaf's controller for a system, its apps mark for
+   the Apps tile. Deliberately not themeable and not per system -- it labels what
+   the number counts, the same way the battery labels a percentage, so it stays
+   the same everywhere. White art with alpha; the caller tints it. */
+static SDL_Texture *jw__grid_mark(const char *name, int *tw, int *th) {
+    *tw = 0; *th = 0;
+    const char *theme_dir = cat_get_active_theme_dir();
+    if (!theme_dir || !theme_dir[0] || !name) return NULL;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/../ui/%s.png", theme_dir, name);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return NULL;
+    return jw__load_cached_image(path, tw, th);
+}
+
+/* Pick the mark for the focused tile, and report the width of the widest mark
+   so the caller can keep the number in one place. Both are cached textures, so
+   measuring the one we are not drawing costs a lookup. */
+static SDL_Texture *jw__grid_count_glyph(jw_launcher_state *state, int idx,
+                                         int *tw, int *th, int *reserve_w) {
+    *tw = 0; *th = 0; *reserve_w = 0;
+    if (idx < 0 || idx >= state->flat_count) return NULL;
+    const jw_flat_item *it = &state->flat_items[idx];
+    const char *mark = (it->kind == JW_FLAT_SYSTEM) ? "controller"
+                     : (it->kind == JW_FLAT_APPS)   ? "apps" : NULL;
+    if (!mark) return NULL;
+
+    int cw = 0, chh = 0, aw = 0, ah = 0;
+    SDL_Texture *ctrl = jw__grid_mark("controller", &cw, &chh);
+    SDL_Texture *apps = jw__grid_mark("apps", &aw, &ah);
+    *reserve_w = cw > aw ? cw : aw;
+
+    SDL_Texture *use = (mark[0] == 'c') ? ctrl : apps;
+    *tw = (mark[0] == 'c') ? cw : aw;
+    *th = (mark[0] == 'c') ? chh : ah;
+    return use;
+}
+
+/* The grid views draw the status cluster smaller than stock. Catastrophe draws
+   it at one fixed size, so it is rendered into an off-screen target and blitted
+   scaled, right edge pinned to the screen. Shared by both grid views so their
+   chrome cannot drift apart. */
+static void jw__grid_status(jw_launcher_state *state, int pct, int y) {
+    int sw = cat_get_screen_width();
+    int pill_h = CAT_DS(CAT__PILL_SIZE);
+    SDL_Renderer *r = cat_get_renderer();
+    if (state->grid_status_tex &&
+        (state->grid_status_tex_w != sw || state->grid_status_tex_h != pill_h)) {
+        SDL_DestroyTexture(state->grid_status_tex);
+        state->grid_status_tex = NULL;
+    }
+    if (!state->grid_status_tex) {
+        state->grid_status_tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA8888,
+                                                   SDL_TEXTUREACCESS_TARGET, sw, pill_h);
+        state->grid_status_tex_w = sw;
+        state->grid_status_tex_h = pill_h;
+        /* Drawn over a cleared transparent target, the cluster's colour is
+           premultiplied by its coverage; blit it as such so anti-aliased edges
+           do not darken a second time. */
+        if (state->grid_status_tex)
+            SDL_SetTextureBlendMode(state->grid_status_tex,
+                SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                                           SDL_BLENDOPERATION_ADD,
+                                           SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                                           SDL_BLENDOPERATION_ADD));
+    }
+    cat_status_bar_opts sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &sb);
+    sb.no_pill = true; sb.use_y = true; sb.y_position = 0;
+    if (pct <= 0) pct = 100;
+    if (state->grid_status_tex) {
+        SDL_Texture *prev = SDL_GetRenderTarget(r);
+        SDL_SetRenderTarget(r, state->grid_status_tex);
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
+        SDL_RenderClear(r);
+        cat_draw_status_bar(&sb);
+        SDL_SetRenderTarget(r, prev);
+        int dw = sw * pct / 100, dh = pill_h * pct / 100;
+        SDL_Rect dst = { sw - dw, y, dw, dh };
+        SDL_RenderCopy(r, state->grid_status_tex, NULL, &dst);
+    } else {
+        sb.y_position = y;
+        cat_draw_status_bar(&sb);
+    }
+}
+
+/* ── Grid View: the games list ───────────────────────────────────────────── */
+
+#define GG_STATUS_PCT 85   /* between stock and the home grid's 70 */
+
+static const char *jw__gg_name(void *ctx, int idx) {
+    jw_launcher_state *st = (jw_launcher_state *)ctx;
+    if (idx < 0 || idx >= st->game_count) return "";
+    /* Display only: the stored name keeps its region and dump tags so box-art
+       matching and search still work on the full filename. Rotating buffers
+       because a frame asks for several rows before drawing any of them. */
+    static char buf[4][256];
+    static int  slot;
+    slot = (slot + 1) % 4;
+    jw__clean_rom_name(st->games[idx].name, buf[slot], sizeof(buf[slot]));
+    return buf[slot];
+}
+
+static SDL_Texture *jw__gg_art(void *ctx, int idx, int *w, int *h) {
+    jw_launcher_state *st = (jw_launcher_state *)ctx;
+    *w = 0; *h = 0;
+    if (idx < 0 || idx >= st->game_count) return NULL;
+    const jw_game_entry *g = &st->games[idx];
+    if (!g->image_path[0]) return NULL;
+    char abs[PATH_MAX];
+    if (jw__resolve_sdcard_path(st, g->image_path, abs, sizeof(abs)) != 0) return NULL;
+    bool pending = false;
+    return jw__load_cover(st, abs, w, h, &pending);
+}
+
+static void jw__gg_playtime(int secs, char *out, size_t n) {
+    out[0] = '\0';
+    if (secs <= 0) return;
+    if (secs < 3600) snprintf(out, n, T("%dm"), secs / 60);
+    else             snprintf(out, n, T("%dh %dm"), secs / 3600, (secs % 3600) / 60);
+}
+
+/* The system's logo for the games view. Same three-candidate shape as the tile
+   art -- the user's own file in the ROM folder, the selected theme, then Leaf's
+   own set -- and memoized per system so the frame costs one cached lookup. */
+static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) {
+    *tw = 0; *th = 0;
+    const char *code = state->game_system;
+    if (!code || !code[0]) return NULL;
+
+    /* Keyed by the theme as well as the system. Keyed by code alone, switching
+       theme and reopening the same system kept the previous theme's resolved
+       path -- and clearing the texture cache would only reload the wrong file.
+
+       The user theme is identified by its folder, not by its catalog index: the
+       catalog is rescanned whenever the Layout page is entered, so an index is
+       only stable until a folder is added, removed or renamed on the card. A
+       rename that reshuffles the list can hand a different theme the index the
+       memo was keyed by, which is invisible to a key built from the index. */
+    const char *theme_dir  = state->settings.user_theme_dir;
+    const char *theme_name = cat_get_active_theme_name();
+    static char cached_code[64];
+    static char cached_theme[256];   /* matches the theme-name source width */
+    static char cached_theme_dir[128];  /* matches jw_settings_ui.user_theme_dir */
+    static bool cached_valid;
+    static char cached_path[PATH_MAX];
+    if (!cached_valid ||
+        strncmp(cached_code, code, sizeof(cached_code) - 1) != 0 ||
+        strncmp(cached_theme_dir, theme_dir,
+                sizeof(cached_theme_dir) - 1) != 0 ||
+        strncmp(cached_theme, theme_name ? theme_name : "",
+                sizeof(cached_theme) - 1) != 0) {
+        snprintf(cached_code, sizeof(cached_code), "%s", code);
+        snprintf(cached_theme, sizeof(cached_theme), "%s", theme_name ? theme_name : "");
+        snprintf(cached_theme_dir, sizeof(cached_theme_dir), "%s", theme_dir);
+        cached_valid = true;
+        cached_path[0] = '\0';
+        char cand[PATH_MAX];
+        int n;
+        char folder[128];
+        const char *rom_dir = jw__system_rom_folder(state, code, folder, sizeof(folder));
+        if (rom_dir && state->sdcard_root[0]) {
+            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/wordmark.png",
+                         state->sdcard_root, rom_dir);
+            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                snprintf(cached_path, sizeof(cached_path), "%s", cand);
+        }
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (!cached_path[0] && ti >= 0 &&
+            jw_user_theme_wordmark_path(jw_settings_user_themes(&state->settings), ti,
+                                        "grid", code, cand, sizeof(cand)) &&
+            jw__grid_file_exists(cand))
+            snprintf(cached_path, sizeof(cached_path), "%s", cand);
+        if (!cached_path[0]) {
+            const char *theme_dir = cat_get_active_theme_dir();
+            if (theme_dir && theme_dir[0]) {
+                n = snprintf(cand, sizeof(cand), "%s/../grid_wordmarks/%s.png", theme_dir, code);
+                if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+                    snprintf(cached_path, sizeof(cached_path), "%s", cand);
+            }
+        }
+    }
+    if (!cached_path[0]) return NULL;
+    return jw__load_page_image(cached_path, JW_WORDMARK_MAX, tw, th);
+}
+
+/* Grid View's colours come from the selected theme's theme.json, scoped to this
+   view: a theme dresses the grid without repainting menus or settings. Anything
+   the theme leaves out falls back to Leaf's own value. Shared by the games and
+   apps pages so the two cannot drift apart. */
+static void jw__grid_view_style(const jw_launcher_state *state,
+                                jw_grid_games_style *out) {
+    ap_theme *theme = cat_get_theme();
+    *out = (jw_grid_games_style){
+        .underlay       = { 0xFF, 0xFF, 0xFF, 0xB2 },
+        .ink            = { 0, 0, 0, 0 },       /* derived unless a theme says */
+        .highlight      = theme->highlight,
+        .highlight_text = theme->highlighted_text,
+        .shadow         = 120,
+        .radius         = cat_scale(14),
+    };
+
+    const jw_user_theme_catalog *tc = jw_settings_user_themes(&state->settings);
+    int ti = jw_settings_user_theme_index(&state->settings);
+    if (!tc || ti < 0 || ti >= tc->count) return;
+
+    const jw_user_theme *ut = &tc->items[ti];
+    if (ut->has_underlay)          out->underlay       = cat_color_to_sdl(ut->underlay);
+    if (ut->underlay_opacity >= 0) out->underlay.a     = (Uint8)ut->underlay_opacity;
+    if (ut->has_text)              out->ink            = cat_color_to_sdl(ut->text);
+    if (ut->has_highlight)         out->highlight      = cat_color_to_sdl(ut->highlight);
+    if (ut->has_highlight_text)    out->highlight_text = cat_color_to_sdl(ut->highlight_text);
+    if (ut->shadow >= 0)           out->shadow         = ut->shadow;
+}
+
+/* The wallpaper under every Grid View page, cover-fit and centred. */
+static void jw__grid_draw_wallpaper(jw_launcher_state *state) {
+    if (!state->grid_wallpaper[0]) return;
+    int ww = 0, wh = 0;
+    SDL_Texture *wp = jw__load_wallpaper(state->grid_wallpaper, &ww, &wh);
+    if (!wp || ww <= 0 || wh <= 0) return;
+    int sw = cat_get_screen_width(), sh = cat_get_screen_height();
+    float sc = (float)sw / (float)ww;
+    if ((float)sh / (float)wh > sc) sc = (float)sh / (float)wh;
+    int dw = (int)(ww * sc), dh = (int)(wh * sc);
+    SDL_Rect dst = { (sw - dw) / 2, (sh - dh) / 2, dw, dh };
+    SDL_RenderCopy(cat_get_renderer(), wp, NULL, &dst);
+}
+
+static void jw__render_grid_games(jw_launcher_state *state) {
+    cat_clear_screen();
+    ap_theme *theme = cat_get_theme();
+
+    jw__grid_draw_wallpaper(state);
+
+    jw_grid_games_style style;
+    jw__grid_view_style(state, &style);
+
+    /* Only facts we actually have get a box, and only the ones a glance can use:
+       a rating, a year and how recently it was played. Genre, developer and
+       publisher are reference rather than recognition, and the synopsis says
+       more about a game than any of them. An unscraped library shows none,
+       and the cover keeps its half of the column rather than showing a row of
+       empty labels. The scraped facts are read once per selected game, not per
+       frame -- it is a database round trip. */
+    jw_grid_games_meta meta[JW_GRID_GAMES_MAX_META];
+    int meta_n = 0;
+    char played[64] = "";
+    /* Generation as well as id: the scraper rewrites the same game's rows and
+       bumps library.generation, so an id-only key kept a one-game system showing
+       its pre-scrape blanks until some other game was selected. */
+    static jw_game_meta gm;
+    static int gm_game_id = -1;
+    static int gm_generation = -1;
+    const char *synopsis = NULL;
+    if (state->game_count > 0 && state->game_list.cursor < state->game_count) {
+        const jw_game_entry *g = &state->games[state->game_list.cursor];
+        if (g->id != gm_game_id || gm_generation != state->library_generation) {
+            gm_game_id = g->id;
+            gm_generation = state->library_generation;
+            if (jw_db_get_game_meta(state->db_path, g->id, &gm) != 0)
+                memset(&gm, 0, sizeof(gm));
+        }
+        jw__gg_playtime(g->playtime_s, played, sizeof(played));
+        /* ScreenScraper scores out of 20, which is five stars at four points
+           each -- so half-star granularity comes out exactly, no rounding. */
+        int stars = 0;
+        if (gm.rating[0]) {
+            int n = atoi(gm.rating);
+            if (n > 0) stars = (n + 1) / 2;      /* 0-20 -> 0-10 half-stars */
+            if (stars > 10) stars = 10;
+        }
+
+        if (stars > 0)       meta[meta_n++] = (jw_grid_games_meta){ .value = "", .stars = stars };
+        if (gm.year[0])      meta[meta_n++] = (jw_grid_games_meta){ .value = gm.year };
+        if (played[0] && meta_n < JW_GRID_GAMES_MAX_META)
+            meta[meta_n++] = (jw_grid_games_meta){ .value = played };
+        if (gm.synopsis[0]) synopsis = gm.synopsis;
+    }
+
+    jw__cover_prewarm(state, state->games, state->game_count, state->game_list.cursor);
+
+    int wmw = 0, wmh = 0;
+    SDL_Texture *wm = jw__gg_wordmark(state, &wmw, &wmh);
+
+    /* Between the stock cluster and the home grid's 70%: big enough to read at
+       arm's length, small enough not to crowd the cover. The columns start below
+       whatever height that works out to, so the two can never overlap. */
+    const int status_pct = GG_STATUS_PCT;
+    const int status_y   = CAT_S(6);
+    const int top_bar    = status_y + CAT_DS(CAT__PILL_SIZE) * status_pct / 100 + CAT_S(8);
+
+    jw_grid_games_draw(&state->game_list, state->game_count,
+                       jw__gg_name, jw__gg_art, state,
+                       meta, meta_n, synopsis,
+                       wm, wmw, wmh,
+                       state->game_system_display, top_bar, &style);
+
+    /* Status cluster last so it floats over everything, at the same reduced size
+       and sampled polarity as the grid home. */
+    cat_draw_color saved_hint = theme->hint;
+    if (state->grid_wallpaper[0])
+        theme->hint = state->grid_status_dark ? (cat_draw_color){ 0x14, 0x1A, 0x14, 0xFF }
+                                              : (cat_draw_color){ 0xF2, 0xF5, 0xEF, 0xFF };
+    jw__grid_status(state, status_pct, status_y);
+    theme->hint = saved_hint;
+
+    /* Every renderer ends here. Without it the draw commands are never flushed:
+       SDL's vertex arena grows without bound and the display keeps showing the
+       previously presented frame. */
+    jw__present();
+}
+
+/* ─── Grid View: the apps page ────────────────────────────────────────────────
+   The same list-and-detail page the games use, fed apps instead: the launcher
+   hands the renderer names, art and facts, so matching the games view is a
+   matter of what is passed in rather than a second layout to keep in step. */
+
+static const char *jw__ga_name(void *ctx, int idx) {
+    const jw_launcher_state *st = (const jw_launcher_state *)ctx;
+    if (idx < 0 || idx >= st->app_count) return "";
+    return st->apps[idx].name;
+}
+
+static SDL_Texture *jw__ga_art(void *ctx, int idx, int *w, int *h) {
+    jw_launcher_state *st = (jw_launcher_state *)ctx;
+    *w = 0; *h = 0;
+    if (idx < 0 || idx >= st->app_count) return NULL;
+    char abs[PATH_MAX];
+    if (jw__resolve_app_icon_path(st, &st->apps[idx], abs, sizeof(abs)) != 0) return NULL;
+    /* App icons are small and already whole files -- the synchronous loader is
+       what every other view uses for them, and there is only ever one on screen. */
+    return jw__load_cached_image(abs, w, h);
+}
+
+/* A pak's description and author live in its pak.json, not in the apps table.
+   Read them from the pak when the cursor lands on it rather than migrating the
+   schema for two optional strings: it is one small file per selection, and the
+   result is memoised so it is not per frame. Most paks carry neither, and the
+   page is built to show nothing rather than an empty label. */
+typedef struct {
+    char dir[512];
+    char description[600];
+    char author[64];
+    int  generation;      /* an update rewrites pak.json in place */
+} jw_pak_info;
+
+static void jw__ga_pak_info(const jw_launcher_state *state, int idx,
+                            const jw_pak_info **out) {
+    static jw_pak_info memo;
+    *out = &memo;
+    if (idx < 0 || idx >= state->app_count) { memo.dir[0] = '\0'; return; }
+
+    const jw_app_entry *app = &state->apps[idx];
+    if (memo.dir[0] && strcmp(memo.dir, app->pak_dir) == 0 &&
+        memo.generation == state->library_generation) {
+        return;
+    }
+
+    snprintf(memo.dir, sizeof(memo.dir), "%s", app->pak_dir);
+    memo.generation = state->library_generation;
+    memo.description[0] = '\0';
+    memo.author[0] = '\0';
+
+    /* pak_dir is stored relative to the card root, the same as a cover path. */
+    char dir[PATH_MAX];
+    if (jw__resolve_sdcard_path(state, app->pak_dir, dir, sizeof(dir)) != 0) return;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/pak.json", dir);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char buf[16384];
+    size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[len] = '\0';
+
+    cJSON *root = cJSON_ParseWithLength(buf, len);
+    if (!root) return;
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(root, "description");
+    if (cJSON_IsString(v) && v->valuestring)
+        snprintf(memo.description, sizeof(memo.description), "%s", v->valuestring);
+    v = cJSON_GetObjectItemCaseSensitive(root, "author");
+    if (cJSON_IsString(v) && v->valuestring)
+        snprintf(memo.author, sizeof(memo.author), "%s", v->valuestring);
+    cJSON_Delete(root);
+
+    jw_clean_scraped_text(memo.description);
+    jw_clean_scraped_text(memo.author);
+}
+
+static void jw__render_grid_apps(jw_launcher_state *state) {
+    cat_clear_screen();
+    ap_theme *theme = cat_get_theme();
+
+    jw__grid_draw_wallpaper(state);
+
+    jw_grid_games_style style;
+    jw__grid_view_style(state, &style);
+
+    /* The same rule the games page follows: only facts we actually have, and
+       only the ones a glance can use. A pak that declares neither shows no
+       boxes at all rather than a row of empty labels. */
+    jw_grid_games_meta meta[JW_GRID_GAMES_MAX_META];
+    int meta_n = 0;
+    char version[80] = "";
+    const char *synopsis = NULL;
+    const jw_pak_info *info = NULL;
+
+    jw__ga_pak_info(state, state->app_list.cursor, &info);
+    if (state->app_count > 0 && state->app_list.cursor < state->app_count) {
+        const jw_app_entry *app = &state->apps[state->app_list.cursor];
+        if (app->pak_version[0]) {
+            /* Some paks write the v, some do not; the chip reads the same either way. */
+            snprintf(version, sizeof(version), "%s%s",
+                     (app->pak_version[0] == 'v' || app->pak_version[0] == 'V') ? "" : "v",
+                     app->pak_version);
+            meta[meta_n++] = (jw_grid_games_meta){ .value = version };
+        }
+        /* Two columns: an author is a name, and names do not fit the width a
+           year does. Longer ones still marquee inside it. */
+        if (info && info->author[0])
+            meta[meta_n++] = (jw_grid_games_meta){ .value = info->author, .span = 2 };
+        if (info && info->description[0]) synopsis = info->description;
+    }
+
+    const int status_pct = GG_STATUS_PCT;
+    const int status_y   = CAT_S(6);
+    const int top_bar    = status_y + CAT_DS(CAT__PILL_SIZE) * status_pct / 100 + CAT_S(8);
+
+    /* No wordmark: the apps mark in res/ui is a 24px status glyph, not artwork
+       for a 460px slot. The renderer falls back to the name, which is what a
+       system without a logo does too. */
+    jw_grid_games_draw(&state->app_list, state->app_count,
+                       jw__ga_name, jw__ga_art, state,
+                       meta, meta_n, synopsis,
+                       NULL, 0, 0,
+                       T("Apps"), top_bar, &style);
+
+    cat_draw_color saved_hint = theme->hint;
+    if (state->grid_wallpaper[0])
+        theme->hint = state->grid_status_dark ? (cat_draw_color){ 0x14, 0x1A, 0x14, 0xFF }
+                                              : (cat_draw_color){ 0xF2, 0xF5, 0xEF, 0xFF };
+    jw__grid_status(state, status_pct, status_y);
+    theme->hint = saved_hint;
+
+    jw__present();
+}
+
+/* Build the thumbnails for this page and the next before the cursor gets there,
+   so scrolling arrives on art that jw__load_page_image can pick up inline. Only
+   ever queues what is genuinely missing; a warm page enqueues nothing. */
+static void jw__grid_prewarm_icons(jw_launcher_state *state) {
+    if (state->flat_count <= 0) return;
+    int per_page = state->grid.cols * state->grid.rows;
+    if (per_page <= 0) return;
+    int first = state->grid.scroll_row * state->grid.cols;
+    int last  = first + per_page * 2;          /* this page and the next */
+    if (first < 0) first = 0;
+    if (last > state->flat_count - 1) last = state->flat_count - 1;
+    for (int i = first; i <= last; ++i) {
+        const jw_flat_item *it = &state->flat_items[i];
+        if (it->kind != JW_FLAT_SYSTEM) continue;
+        const char *path = jw__cf_system_icon_path(state, it->system_idx);
+        if (!path || !path[0]) continue;
+        if (cat_cache_get(path, NULL, NULL)) continue;          /* already decoded */
+        char thumb[PATH_MAX];
+        const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
+        if (tp && cat_thumbnail_is_cached(path, tp)) continue;  /* already built */
+        jw__cover_prewarm_enqueue(path, tp, JW_GRID_TILE_MAX);
+    }
+}
+
+static void jw__render_grid(jw_launcher_state *state) {
+    cat_clear_screen();
+    const cat_stylesheet *ss = cat_get_stylesheet();
+
+    jw__grid_draw_wallpaper(state);
+
+    jw__grid_prewarm_icons(state);
+
+    /* Tile borders follow the selected theme when it names them. */
+    cat_draw_color tile_border = { 0, 0, 0, 0 }, focus_ring = { 0, 0, 0, 0 };
+    {
+        const jw_user_theme_catalog *tc = jw_settings_user_themes(&state->settings);
+        int ti = jw_settings_user_theme_index(&state->settings);
+        if (tc && ti >= 0 && ti < tc->count) {
+            const jw_user_theme *ut = &tc->items[ti];
+            if (ut->has_tile_border) tile_border = cat_color_to_sdl(ut->tile_border);
+            if (ut->has_focus_ring)  focus_ring  = cat_color_to_sdl(ut->focus_ring);
+        }
+    }
+
+    uint32_t now = SDL_GetTicks();
+    bool anim = jw_grid_draw(&state->grid, &ss->launcher, &state->list,
+                             state->flat_count, jw__grid_icon, jw__grid_label, state,
+                             now, ss->launcher.grid_anim_ms, tile_border, focus_ring);
+
+    /* Status: the tab header's inline no-pill idiom, drawn AFTER the tiles so it
+       floats over anything that passes beneath it mid-scroll (the tiles use no
+       clip rect). Catastrophe draws the cluster at one fixed size, so it is
+       rendered at stock size into an off-screen target and blitted scaled down,
+       right edge pinned to the screen's right edge. */
+    int sw = cat_get_screen_width();
+    int pill_h = CAT_DS(CAT__PILL_SIZE);
+    SDL_Renderer *r = cat_get_renderer();
+    if (state->grid_status_tex &&
+        (state->grid_status_tex_w != sw || state->grid_status_tex_h != pill_h)) {
+        SDL_DestroyTexture(state->grid_status_tex);
+        state->grid_status_tex = NULL;
+    }
+    if (!state->grid_status_tex) {
+        state->grid_status_tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA8888,
+                                                   SDL_TEXTUREACCESS_TARGET, sw, pill_h);
+        state->grid_status_tex_w = sw;
+        state->grid_status_tex_h = pill_h;
+        /* Drawn over a cleared transparent target, the cluster's colour is
+           premultiplied by its coverage; blit it as such so anti-aliased edges
+           do not darken a second time. */
+        if (state->grid_status_tex)
+            SDL_SetTextureBlendMode(state->grid_status_tex,
+                SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                                           SDL_BLENDOPERATION_ADD,
+                                           SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                                           SDL_BLENDOPERATION_ADD));
+    }
+    cat_status_bar_opts sb = {0};
+    jw_settings_status_bar_opts(&state->settings, &sb);
+    sb.no_pill    = true;
+    sb.use_y      = true;
+    sb.y_position = 0;
+    /* Polarity: the status bar draws text and icons in theme.hint. Swap it for
+       this one draw when the wallpaper region behind it is light, and put the
+       stylesheet's colour straight back so nothing else in the frame sees it.
+       The count indicator in the opposite corner takes the same colour. */
+    const cat_draw_color grid_dark  = { 0x14, 0x1A, 0x14, 0xFF };
+    const cat_draw_color grid_light = { 0xF2, 0xF5, 0xEF, 0xFF };
+    ap_theme *theme = cat_get_theme();
+    cat_draw_color saved_hint = theme->hint;
+    cat_draw_color ind_color = theme->hint;
+    if (state->grid_wallpaper[0]) {
+        theme->hint = state->grid_status_dark ? grid_dark : grid_light;
+        ind_color   = state->grid_count_dark  ? grid_dark : grid_light;
+    }
+    if (state->grid_status_tex) {
+        SDL_Texture *prev = SDL_GetRenderTarget(r);
+        SDL_SetRenderTarget(r, state->grid_status_tex);
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
+        SDL_RenderClear(r);
+        cat_draw_status_bar(&sb);
+        SDL_SetRenderTarget(r, prev);
+        int pct = ss->launcher.grid_status_scale_pct > 0 ? ss->launcher.grid_status_scale_pct : 100;
+        int dw = sw * pct / 100, dh = pill_h * pct / 100;
+        SDL_Rect dst = { sw - dw, CAT_S(6), dw, dh };
+        SDL_RenderCopy(r, state->grid_status_tex, NULL, &dst);
+    } else {
+        sb.y_position = CAT_S(6);
+        cat_draw_status_bar(&sb);
+    }
+    theme->hint = saved_hint;
+
+    /* Item count for the focused tile, bottom-left. Systems report their game
+       count; Apps reports how many apps are installed. Anything else counts
+       nothing and draws no indicator. */
+    int sel = state->list.cursor;
+    int sel_count = -1;
+    if (sel >= 0 && sel < state->flat_count) {
+        const jw_flat_item *sit = &state->flat_items[sel];
+        if (sit->kind == JW_FLAT_SYSTEM)    sel_count = state->systems[sit->system_idx].game_count;
+        else if (sit->kind == JW_FLAT_APPS) sel_count = state->app_count;
+    }
+    int gw = 0, gh = 0, reserve = 0;
+    SDL_Texture *glyph = sel_count >= 0
+                       ? jw__grid_count_glyph(state, sel, &gw, &gh, &reserve) : NULL;
+    jw_grid_draw_count(&state->grid, sel_count, cat_get_screen_height(), ind_color,
+                       glyph, gw, gh, reserve);
+    jw__cf_animating |= anim;
+    if (anim) cat_request_frame();
+    jw__present();
+}
+
 static void jw__render_launcher(jw_launcher_state *state) {
     jw__cf_animating = false;
     jw__cover_inline_decodes_this_frame = 0;
@@ -5857,6 +7042,8 @@ static void jw__render_launcher(jw_launcher_state *state) {
         if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_COVERFLOW) {
             /* hold-repeat already set for this frame in jw__render_launcher */
             jw__render_coverflow_games(state);
+        } else if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_GRID) {
+            jw__render_grid_games(state);
         } else {
             jw__render_game_browser(state);
         }
@@ -5864,7 +7051,11 @@ static void jw__render_launcher(jw_launcher_state *state) {
     }
 
     if (state->apps_open) {
-        jw__render_app_browser(state);
+        if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_GRID) {
+            jw__render_grid_apps(state);
+        } else {
+            jw__render_app_browser(state);
+        }
         return;
     }
 
@@ -5873,6 +7064,7 @@ static void jw__render_launcher(jw_launcher_state *state) {
         case CAT_LAUNCHER_VERTICAL:   jw__render_vertical(state);   break;
         case CAT_LAUNCHER_HORIZONTAL: jw__render_horizontal(state); break;
         case CAT_LAUNCHER_COVERFLOW:  jw__render_coverflow(state);  break;
+        case CAT_LAUNCHER_GRID:       jw__render_grid(state);       break;
         default:                      jw__render_tabbed(state);     break;
     }
 }
@@ -6351,9 +7543,18 @@ static void jw__bios_picker_go_up(jw_launcher_state *state) {
         jw__bios_picker_build_view(state);
         return;
     }
+    /* The parent is always shorter than the directory we are in, which already
+       fit -- but say so rather than navigate to a silently truncated path, the
+       same way jw__bios_picker_enter_dir refuses a name that will not fit. */
+    char up_abs[PATH_MAX];
+    if (snprintf(up_abs, sizeof(up_abs), "%s/%s",
+                 source->bios_path, parent) >= (int)sizeof(up_abs)) {
+        snprintf(picker->message, sizeof(picker->message), "%s",
+                 T("That folder name is too long to open."));
+        return;
+    }
     snprintf(picker->rel_dir, sizeof(picker->rel_dir), "%s", parent);
-    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s/%s",
-             source->bios_path, parent);
+    snprintf(picker->dir_abs, sizeof(picker->dir_abs), "%s", up_abs);
     picker->page = 0;
     picker->page_cursor_count = 0;
     picker->list.cursor = 0;
@@ -6656,7 +7857,7 @@ static void jw__bios_picker_subtitle(const jw_launcher_state *state,
         return;
     }
     if (picker->rel_dir[0]) {
-        snprintf(out, out_size, "%s / BIOS/%s", picker->source_label,
+        snprintf(out, out_size, "%s / BIOS/%.160s", picker->source_label,
                  picker->rel_dir);
     } else {
         snprintf(out, out_size, "%s / BIOS", picker->source_label);
@@ -7744,6 +8945,8 @@ static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
                     ? jw__tab_list_count(state) : state->flat_count;
     int target = (state->current_tab == JW_TAB_RECENTS) ? 0 : r->list_cursor;
     cat_list_state_jump(&state->list, target, count);
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_GRID)
+        jw__grid_reveal_cursor(state);
 }
 
 static int jw__launch_app_request(const char *socket_path, const char *name,
@@ -8397,6 +9600,25 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         jw__build_carousel_list(state);
     } else if (layout == CAT_LAUNCHER_VERTICAL) {
         jw__build_flat_list(state);
+    } else if (layout == CAT_LAUNCHER_GRID) {
+        jw__build_grid_list(state);
+        jw_grid_reset(&state->grid);
+        memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
+        /* Density: the user's explicit pick, else the selected theme's
+           recommendation, else the stylesheet. Applied to a copy so the
+           stylesheet stays what the theme authored. */
+        cat_stylesheet_launcher eff = ss->launcher;
+        int dc = 0, dr = 0;
+        if (jw_settings_grid_density(&state->settings, &dc, &dr)) {
+            eff.grid_cols = dc;
+            eff.grid_rows = dr;
+        }
+        /* Status band: the stock cluster is drawn at grid_status_scale_pct and
+           sits high, so the band is the scaled pill plus a small pad each side. */
+        int band = CAT_S(6) * 2 + CAT_DS(CAT__PILL_SIZE) * eff.grid_status_scale_pct / 100;
+        jw_grid_layout(&state->grid, &eff,
+                       cat_get_screen_width(), cat_get_screen_height(), band);
+        jw__grid_resolve_wallpaper(state);
     } else {
         state->flat_count = 0;
     }
@@ -10135,6 +11357,27 @@ static void jw__handle_input_inner(const char *socket_path, const char *db_path,
     int count = (layout == CAT_LAUNCHER_TABBED || cf_channels)
                     ? jw__tab_list_count(state) : state->flat_count;
 
+    /* Grid moves in two axes over one linear list; everything else below is
+       the existing per-layout handling. A falls through to jw__activate_flat
+       (grid is neither tabbed nor a channel layout), B stays unmapped at home,
+       and L1/R1/X/Y are deliberately unbound in Phase 1. */
+    if (layout == CAT_LAUNCHER_GRID) {
+        int dx = 0, dy = 0;
+        switch (button) {
+            case CAT_BTN_LEFT:  dx = -1; break;
+            case CAT_BTN_RIGHT: dx = +1; break;
+            case CAT_BTN_UP:    dy = -1; break;
+            case CAT_BTN_DOWN:  dy = +1; break;
+            default: break;
+        }
+        if (dx || dy) {
+            jw_grid_step(&state->grid, &state->list, count, dx, dy,
+                         SDL_GetTicks(), cat_get_stylesheet()->launcher.grid_anim_ms);
+            cat_request_frame();
+            return;
+        }
+    }
+
     switch (button) {
         case CAT_BTN_UP:
             if (cf_channels) {
@@ -10762,6 +12005,7 @@ int main(void) {
     /* Init settings UI with the currently-active theme */
     long long settings_start_ms = jw__monotonic_ms();
     jw_settings_ui_init(&state.settings, db_path, theme_name, socket_path);
+    jw_settings_ui_set_themes_root(&state.settings, state.sdcard_root);
     long long settings_done_ms = jw__monotonic_ms();
 
     /* System icons are chosen independently of the layout, so log which pack is

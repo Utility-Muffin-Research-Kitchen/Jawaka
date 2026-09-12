@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <unistd.h>
 
 #define JW_DB_SCHEMA_VERSION 6
@@ -2045,7 +2046,8 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
         "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
         "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''), "
-        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id), "
+        "COALESCE(g.last_played,0), g.playtime_s "
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
@@ -2066,6 +2068,78 @@ int jw_db_list_games_for_system(const char *db_path, const char *system,
     }
 
     sqlite3_finalize(stmt);
+    jw_db_close(db);
+    return 0;
+}
+
+
+/* The "ss." prefix keeps scraped facts distinct from settings a user sets, so a
+   rescrape can replace them without touching display_name or a core override. */
+static const struct { const char *key; size_t off; size_t len; } kGameMetaFields[] = {
+    { "ss.genre",     offsetof(jw_game_meta, genre),     sizeof(((jw_game_meta *)0)->genre) },
+    { "ss.developer", offsetof(jw_game_meta, developer), sizeof(((jw_game_meta *)0)->developer) },
+    { "ss.publisher", offsetof(jw_game_meta, publisher), sizeof(((jw_game_meta *)0)->publisher) },
+    { "ss.players",   offsetof(jw_game_meta, players),   sizeof(((jw_game_meta *)0)->players) },
+    { "ss.rating",    offsetof(jw_game_meta, rating),    sizeof(((jw_game_meta *)0)->rating) },
+    { "ss.year",      offsetof(jw_game_meta, year),      sizeof(((jw_game_meta *)0)->year) },
+    { "ss.synopsis",  offsetof(jw_game_meta, synopsis),  sizeof(((jw_game_meta *)0)->synopsis) },
+};
+
+int jw_db_set_game_meta(const char *db_path, const char *rom_path,
+                        const jw_game_meta *meta) {
+    if (!db_path || !rom_path || !meta) return -1;
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+    if (jw_db_apply_schema(db) != 0) { jw_db_close(db); return -1; }
+
+    static const char *sql =
+        "INSERT INTO game_settings (game_id, key, value, updated_at) "
+        "SELECT id, ?2, ?3, strftime('%s','now') FROM games WHERE rom_path = ?1 "
+        "ON CONFLICT(game_id, key) DO UPDATE SET value = ?3, "
+        "  updated_at = strftime('%s','now');";
+
+    int wrote = 0;
+    for (size_t i = 0; i < sizeof(kGameMetaFields) / sizeof(kGameMetaFields[0]); i++) {
+        const char *val = (const char *)meta + kGameMetaFields[i].off;
+        if (!val[0]) continue;                 /* absent: leave what is stored */
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) continue;
+        sqlite3_bind_text(st, 1, rom_path, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, kGameMetaFields[i].key, -1, SQLITE_STATIC);
+        sqlite3_bind_text(st, 3, val, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_DONE) wrote++;
+        sqlite3_finalize(st);
+    }
+    jw_db_close(db);
+    return wrote > 0 ? 0 : -1;
+}
+
+int jw_db_get_game_meta(const char *db_path, int game_id, jw_game_meta *out) {
+    if (!db_path || !out || game_id <= 0) return -1;
+    memset(out, 0, sizeof(*out));
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+
+    static const char *sql =
+        "SELECT key, value FROM game_settings WHERE game_id = ? AND key LIKE 'ss.%';";
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+    sqlite3_bind_int(st, 1, game_id);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const char *k = (const char *)sqlite3_column_text(st, 0);
+        const char *v = (const char *)sqlite3_column_text(st, 1);
+        if (!k || !v) continue;
+        for (size_t i = 0; i < sizeof(kGameMetaFields) / sizeof(kGameMetaFields[0]); i++) {
+            if (strcmp(k, kGameMetaFields[i].key) != 0) continue;
+            char *dst = (char *)out + kGameMetaFields[i].off;
+            snprintf(dst, kGameMetaFields[i].len, "%s", v);
+            break;
+        }
+    }
+    sqlite3_finalize(st);
     jw_db_close(db);
     return 0;
 }
@@ -2138,6 +2212,12 @@ static void jw__fill_game_entry(sqlite3_stmt *stmt, jw_game_entry *out) {
                            sizeof(out->image_relpath));
     jw__pakrat_copy_column(stmt, 8, out->image_path, sizeof(out->image_path));
     out->favorite = sqlite3_column_int(stmt, 9);
+    /* Appended columns: a caller whose SELECT predates them still fills
+       everything above, and these stay zero. */
+    if (sqlite3_column_count(stmt) > 11) {
+        out->last_played = sqlite3_column_int64(stmt, 10);
+        out->playtime_s  = sqlite3_column_int(stmt, 11);
+    }
 }
 
 static int jw__get_game(const char *db_path, const char *where_sql,
@@ -2160,7 +2240,8 @@ static int jw__get_game(const char *db_path, const char *where_sql,
         "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
         "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''), "
-        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id), "
+        "COALESCE(g.last_played,0), g.playtime_s "
         "FROM games g "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' ";
@@ -2401,7 +2482,8 @@ int jw_db_list_favorite_games(const char *db_path, jw_game_entry *out,
     static const char *sql =
         "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
-        "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''),1 "
+        "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''),1, "
+        "COALESCE(g.last_played,0), g.playtime_s "
         "FROM games g JOIN favorites f ON f.kind = 'game' AND f.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "
@@ -2513,7 +2595,8 @@ int jw_db_list_recent_games(const char *db_path, jw_game_entry *out,
         "SELECT g.id, g.system, COALESCE(NULLIF(gs.value, ''), NULLIF(ig.value, ''), g.name), "
         "g.source_id,g.rom_relpath,g.rom_path,COALESCE(g.image_root_kind,''),"
         "COALESCE(g.image_relpath,''),COALESCE(g.image_path,''), "
-        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id) "
+        "EXISTS(SELECT 1 FROM favorites f WHERE f.kind = 'game' AND f.target_id = g.id), "
+        "COALESCE(g.last_played,0), g.playtime_s "
         "FROM games g JOIN recents r ON r.kind = 'game' AND r.target_id = g.id "
         "LEFT JOIN game_settings gs ON gs.game_id = g.id AND gs.key = 'display_name' "
         "LEFT JOIN game_settings ig ON ig.game_id = g.id AND ig.key = 'imported_display_name' "

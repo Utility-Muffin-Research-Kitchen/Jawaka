@@ -14,7 +14,9 @@
 
 /* ─── Data tables ──────────────────────────────────────────────────────── */
 
-#define JW_SETTINGS_THEME_COUNT 4
+#include "internal/launcher/user_themes.h"
+
+#define JW_SETTINGS_THEME_COUNT 5
 extern const char *const kJawakaThemes[JW_SETTINGS_THEME_COUNT];
 extern const bool        kJawakaThemeEnabled[JW_SETTINGS_THEME_COUNT];
 
@@ -99,15 +101,22 @@ typedef enum {
 #define JW_COLOR_ROW_COUNT   7
 
 /* Layout page */
-#define JW_LAYOUT_HOME_STYLE   0   /* Tabs vs Coverflow home layout */
-#define JW_LAYOUT_SYSTEM_ICONS 1   /* which built-in system-icon pack to draw */
-#define JW_LAYOUT_PILL_SHAPE   2
-#define JW_LAYOUT_FONT_FAMILY  3
-#define JW_LAYOUT_FONT_SIZE    4
-#define JW_LAYOUT_TAB_SWITCH   5
-#define JW_LAYOUT_STARTUP_TAB  6   /* which tab the launcher opens on */
-#define JW_LAYOUT_HOME_TABS    7   /* opens the Home Tabs hide/reorder editor */
-#define JW_LAYOUT_ROW_COUNT    8
+#define JW_LAYOUT_HOME_STYLE   0   /* Tabs / Coverflow / Grid home layout */
+#define JW_LAYOUT_THEME        1   /* user theme from <sdcard>/Themes, or None */
+#define JW_LAYOUT_SYSTEM_ICONS 2   /* which built-in system-icon pack to draw; the
+                                      fallback whenever a user theme has no icon */
+#define JW_LAYOUT_GRID_SIZE    3   /* Grid density: Automatic follows the theme */
+#define JW_LAYOUT_PILL_SHAPE   4
+#define JW_LAYOUT_FONT_FAMILY  5
+#define JW_LAYOUT_FONT_SIZE    6
+#define JW_LAYOUT_TAB_SWITCH   7
+#define JW_LAYOUT_STARTUP_TAB  8   /* which tab the launcher opens on */
+#define JW_LAYOUT_HOME_TABS    9   /* opens the Home Tabs hide/reorder editor */
+#define JW_LAYOUT_ROW_COUNT    10
+
+/* Grid density picker. 0 follows the theme (theme.json "grid" recommendation,
+   else the stylesheet); the rest pin a density. Persisted as an index. */
+#define JW_GRID_DENSITY_COUNT  4
 
 /* Status Bar page */
 #define JW_STATUSBAR_HINTS   0
@@ -297,8 +306,15 @@ typedef struct {
     int                font_family_index;
     int                font_size_index;
     int                tab_glide;            /* 0 = Snap (instant), 1 = Glide (slide) */
-    int                layout_mode;          /* 0 = Tabs, 1 = Coverflow (home layout) */
+    int                layout_mode;          /* 0 = Tabs, 1 = Coverflow, 2 = Grid (home layout) */
     int                system_icon_pack_index; /* jw_system_icon_pack */
+    /* User themes (Phase 2 of plans/grid-view-and-user-themes.md). The catalog
+       is rescanned when the Layout page is entered so a folder dropped onto
+       the card shows up without a relaunch. index -1 = None. */
+    jw_user_theme_catalog user_themes;
+    int                user_theme_index;
+    char               user_theme_dir[128];  /* persisted key "user_theme" */
+    int                grid_density_index;   /* persisted key "grid_density_index" */
     bool               show_hints;
     int                clock_style_index;
     bool               show_battery;
@@ -521,5 +537,16 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
 bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
                                    char *status_buf, size_t status_buf_size,
                                    bool *theme_changed);
+
+
+/* User themes. The launcher owns the SD root, so it hands it over after init;
+   the scan runs then and again whenever the Layout page is entered. */
+void jw_settings_ui_set_themes_root(jw_settings_ui *ui, const char *sdcard_root);
+const jw_user_theme_catalog *jw_settings_user_themes(const jw_settings_ui *ui);
+int  jw_settings_user_theme_index(const jw_settings_ui *ui);   /* -1 = None */
+/* Effective grid density: the user's explicit choice wins, then the selected
+   theme's recommendation, else 0/0 meaning "use the stylesheet". Returns true
+   when cols/rows were set by either source. */
+bool jw_settings_grid_density(const jw_settings_ui *ui, int *cols, int *rows);
 
 #endif

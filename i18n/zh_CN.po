@@ -1712,3 +1712,42 @@ msgstr "当前"
 
 msgid "Not enough memory to open the BIOS picker"
 msgstr "内存不足，无法打开 BIOS 选择器"
+
+msgid "Grid"
+msgstr "网格"
+
+msgid "Grid Size"
+msgstr "网格大小"
+
+msgid "Theme"
+msgstr "主题"
+
+msgid "2 x 2"
+msgstr "2 x 2"
+
+msgid "3 x 2"
+msgstr "3 x 2"
+
+msgid "4 x 3"
+msgstr "4 x 3"
+
+msgid "%s · fallback"
+msgstr "%s · 备用"
+
+msgid "%s: %d icons ok"
+msgstr "%s：%d 个图标正常"
+
+msgid "%s: %d icons over %dpx skipped"
+msgstr "%s：%d 个图标超过 %dpx，已跳过"
+
+msgid "%s: %d icons over %dpx skipped, %d off-size"
+msgstr "%s：%d 个图标超过 %dpx 已跳过，%d 个尺寸不符"
+
+msgid "%s: %d icons not %dx%d (contain-fit)"
+msgstr "%s：%d 个图标不是 %dx%d（等比缩放）"
+
+msgid "%dm"
+msgstr "%d分钟"
+
+msgid "%dh %dm"
+msgstr "%d小时%d分钟"
