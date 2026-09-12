@@ -128,8 +128,8 @@ BLUETOOTH_SRC := internal/platform/bluetooth_mlp1.c
 WIFI_SRC := internal/platform/wifi_mlp1.c internal/platform/wifi_ssid.c
 OSD_BACKEND_SRC := cmd/jawaka-osd/osd_wayland.c $(BUILD)/generated/xdg-shell-protocol.c
 OSD_DEPS := $(BUILD)/generated/xdg-shell-client-protocol.h
-OSD_CFLAGS := $(CFLAGS_COMMON) $(WAYLAND_CFLAGS) -I$(BUILD)/generated
-OSD_LDLIBS := $(LDLIBS_COMMON) $(WAYLAND_LDFLAGS)
+OSD_CFLAGS := $(CFLAGS_COMMON) $(WAYLAND_CFLAGS) -I$(BUILD)/generated -Ithird_party/stb
+OSD_LDLIBS := $(LDLIBS_COMMON) $(WAYLAND_LDFLAGS) -lm
 else
 PLATFORM_BACKEND_SRC := internal/platform/device_mock.c
 PLATFORM_ID_SRC := internal/platform/platform_id_mock.c

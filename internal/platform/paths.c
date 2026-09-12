@@ -2236,6 +2236,30 @@ bool jw_retroarch_shader_path_is_restorable(const char *candidate,
     return true;
 }
 
+/* The launcher's res/ directory. Separate binaries that draw shared identity
+   art -- the OSD's volume and brightness glyphs -- need it, and only the
+   launcher's own tree knows where it is. SYSTEM_PATH wins when the environment
+   pins one, matching how every other platform-scoped path here resolves. */
+char *jw_launcher_res_dir(void) {
+    const char *system_path = jw__env_value("SYSTEM_PATH");
+    char out[PATH_MAX];
+    if (system_path && system_path[0]) {
+        if (jw__format_string(out, sizeof(out), "%s/launcher/res", system_path)) {
+            return jw__dup_printf("%s", out);
+        }
+        return NULL;
+    }
+
+    char *sdcard_root = jw_sdcard_root();
+    if (!sdcard_root) {
+        return NULL;
+    }
+    bool ok = jw__format_default_system_child(out, sizeof(out), sdcard_root,
+                                              "launcher/res");
+    free(sdcard_root);
+    return ok ? jw__dup_printf("%s", out) : NULL;
+}
+
 char *jw_retroarch_recommended_shaders_dir(void) {
     char *root = jw_sdcard_root();
     char *shaders = jw__default_retroarch_user_shaders_dir(root ? root : "");

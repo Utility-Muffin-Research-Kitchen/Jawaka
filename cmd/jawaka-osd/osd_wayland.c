@@ -5,6 +5,22 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdbool.h>
+#include "internal/core/log.h"
+#include "internal/platform/paths.h"
+
+/* PNG only: the daemon's copy also builds the JPEG decoder, which is what uses
+   these two helpers, so a PNG-only build leaves them unreferenced. Vendored
+   code, so silence it here rather than editing the header or dragging in a
+   decoder the OSD has no use for. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#include "stb_image.h"
+#pragma GCC diagnostic pop
+
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +30,17 @@
 #include <wayland-client.h>
 
 #define JW_OSD_HIDE_AFTER_MS 1200u
+
+/* Volume and brightness: a rounded pill inset from the top-left corner. */
+#define JW_OSD_PILL_PCT        50   /* share of screen width */
+#define JW_OSD_PILL_H          60
+#define JW_OSD_INSET           28
+#define JW_OSD_PILL_ALPHA     168
+#define JW_OSD_GLYPH_PAD       12
+#define JW_OSD_LINE_ON         10   /* filled portion */
+#define JW_OSD_LINE_OFF        10   /* remainder: same weight as the fill */
+#define JW_OSD_LINE_OFF_ALPHA  70
+#define JW_OSD_LINE_TAIL       26   /* gap between the line and the pill edge */
 
 typedef struct {
     struct wl_display *display;
@@ -74,6 +101,76 @@ static uint32_t jw__argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
     return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
+/* WL_SHM_FORMAT_ARGB8888 is premultiplied: the compositor expects the colour
+   already scaled by its own alpha. Writing straight colour is close enough to
+   invisible for near-black, which is why the old toast got away with it, but a
+   translucent white blows out badly. Everything new goes through here. */
+static uint32_t jw__premul(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
+    return ((uint32_t)a << 24) |
+           ((uint32_t)((r * a + 127) / 255) << 16) |
+           ((uint32_t)((g * a + 127) / 255) << 8) |
+           ((uint32_t)((b * a + 127) / 255));
+}
+
+/* Source-over, both sides premultiplied, with an extra coverage term so edges
+   can be anti-aliased by weight rather than by a second pass. */
+static void jw__blend(uint32_t *dst, uint32_t src, int coverage) {
+    if (coverage <= 0) return;
+    uint32_t sa = (src >> 24) & 0xFF;
+    if (coverage < 255) {
+        sa = (sa * (uint32_t)coverage + 127) / 255;
+        uint32_t sr = (((src >> 16) & 0xFF) * (uint32_t)coverage + 127) / 255;
+        uint32_t sg = (((src >> 8) & 0xFF) * (uint32_t)coverage + 127) / 255;
+        uint32_t sb = ((src & 0xFF) * (uint32_t)coverage + 127) / 255;
+        src = (sa << 24) | (sr << 16) | (sg << 8) | sb;
+    }
+    if (sa == 255) { *dst = src; return; }
+
+    uint32_t inv = 255 - sa;
+    uint32_t d = *dst;
+    uint32_t a = sa + (((d >> 24) & 0xFF) * inv + 127) / 255;
+    uint32_t r = ((src >> 16) & 0xFF) + ((((d >> 16) & 0xFF) * inv + 127) / 255);
+    uint32_t g = ((src >> 8) & 0xFF) + ((((d >> 8) & 0xFF) * inv + 127) / 255);
+    uint32_t b = (src & 0xFF) + (((d & 0xFF) * inv + 127) / 255);
+    *dst = (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+/* Rounded rect with anti-aliased corners. Coverage comes from the distance to
+   the corner centre, so a fully rounded pill (radius == height/2) reads smooth
+   at the size the OSD draws it. */
+static void jw__fill_round_rect(uint32_t *pixels, int width, int height,
+                                int x, int y, int w, int h, int radius,
+                                uint32_t color) {
+    if (!pixels || w <= 0 || h <= 0) return;
+    if (radius * 2 > w) radius = w / 2;
+    if (radius * 2 > h) radius = h / 2;
+    if (radius < 0) radius = 0;
+
+    for (int py = y; py < y + h; py++) {
+        if (py < 0 || py >= height) continue;
+        for (int px = x; px < x + w; px++) {
+            if (px < 0 || px >= width) continue;
+            int cov = 255;
+            if (radius > 0) {
+                double cx = 0.0, cy = 0.0;
+                int corner = 0;
+                if (px < x + radius)          { cx = x + radius - 0.5;         corner = 1; }
+                else if (px >= x + w - radius){ cx = x + w - radius - 0.5;     corner = 1; }
+                if (py < y + radius)          { cy = y + radius - 0.5;         corner += 1; }
+                else if (py >= y + h - radius){ cy = y + h - radius - 0.5;     corner += 1; }
+                if (corner == 2) {
+                    double dx = px + 0.5 - cx, dy = py + 0.5 - cy;
+                    double dist = sqrt(dx * dx + dy * dy);
+                    double edge = radius - dist + 0.5;
+                    if (edge <= 0.0) continue;
+                    if (edge < 1.0) cov = (int)(edge * 255.0);
+                }
+            }
+            jw__blend(&pixels[py * width + px], color, cov);
+        }
+    }
+}
+
 static void jw__fill_rect(uint32_t *pixels, int width, int height,
                           int x, int y, int w, int h, uint32_t color) {
     if (!pixels || w <= 0 || h <= 0) {
@@ -97,6 +194,77 @@ static void jw__fill_rect(uint32_t *pixels, int width, int height,
         uint32_t *dst = pixels + row * width + x;
         for (int col = 0; col < w; col++) {
             dst[col] = color;
+        }
+    }
+}
+
+/* ---- glyph art -------------------------------------------------------------
+   The speaker and sun were drawn rectangle by rectangle, which shows at this
+   size. They are PNGs in the launcher's res/ui now, decoded once and scaled on
+   blit. If either is missing the OSD still draws -- it falls back to the old
+   primitives rather than showing a bar with a hole where the icon goes. */
+typedef struct {
+    unsigned char *pixels;   /* RGBA8, stb order */
+    int            w, h;
+    bool           tried;
+} jw_osd_glyph;
+
+static jw_osd_glyph s_glyph_volume;
+static jw_osd_glyph s_glyph_brightness;
+
+static void jw__glyph_load(jw_osd_glyph *g, const char *name) {
+    if (g->tried) return;
+    g->tried = true;
+    char *res = jw_launcher_res_dir();
+    if (!res) return;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/ui/%s.png", res, name);
+    free(res);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        jw_log_warn("osd: no glyph at %s; falling back to drawn art", path);
+        return;
+    }
+    unsigned char *buf = NULL;
+    long len = 0;
+    if (fseek(f, 0, SEEK_END) == 0 && (len = ftell(f)) > 0 &&
+        fseek(f, 0, SEEK_SET) == 0) {
+        buf = (unsigned char *)malloc((size_t)len);
+        if (buf && fread(buf, 1, (size_t)len, f) != (size_t)len) {
+            free(buf);
+            buf = NULL;
+        }
+    }
+    fclose(f);
+    if (!buf) return;
+
+    int comp = 0;
+    g->pixels = stbi_load_from_memory(buf, (int)len, &g->w, &g->h, &comp, 4);
+    free(buf);
+    if (!g->pixels) {
+        jw_log_warn("osd: glyph %s did not decode; falling back to drawn art", path);
+    }
+}
+
+/* Nearest-neighbour is enough going down from 256px to ~34, and it keeps the
+   OSD free of a resampler. The source is white on transparency, so the tint is
+   just the glyph alpha scaled into the requested colour. */
+static void jw__draw_glyph(uint32_t *pixels, int width, int height,
+                           const jw_osd_glyph *g, int x, int y, int box,
+                           uint8_t r, uint8_t gr, uint8_t b) {
+    if (!g->pixels || g->w <= 0 || g->h <= 0 || box <= 0) return;
+    for (int row = 0; row < box; row++) {
+        int py = y + row;
+        if (py < 0 || py >= height) continue;
+        int sy = row * g->h / box;
+        for (int col = 0; col < box; col++) {
+            int px = x + col;
+            if (px < 0 || px >= width) continue;
+            int sx = col * g->w / box;
+            unsigned char a = g->pixels[(sy * g->w + sx) * 4 + 3];
+            if (!a) continue;
+            jw__blend(&pixels[py * width + px], jw__premul(a, r, gr, b), 255);
         }
     }
 }
@@ -162,58 +330,8 @@ static int jw__text_width(const char *text, int scale) {
     return length == 0 ? 0 : (int)length * 6 * scale - scale;
 }
 
-static void jw__draw_segment(uint32_t *pixels, int width, int height,
-                             int x, int y, int scale, int segment, uint32_t color) {
-    int t = scale;
-    int l = scale * 5;
-    switch (segment) {
-        case 0: jw__fill_rect(pixels, width, height, x + t, y, l, t, color); break;
-        case 1: jw__fill_rect(pixels, width, height, x + l + t, y + t, t, l, color); break;
-        case 2: jw__fill_rect(pixels, width, height, x + l + t, y + l + 2 * t, t, l, color); break;
-        case 3: jw__fill_rect(pixels, width, height, x + t, y + 2 * l + 2 * t, l, t, color); break;
-        case 4: jw__fill_rect(pixels, width, height, x, y + l + 2 * t, t, l, color); break;
-        case 5: jw__fill_rect(pixels, width, height, x, y + t, t, l, color); break;
-        case 6: jw__fill_rect(pixels, width, height, x + t, y + l + t, l, t, color); break;
-    }
-}
 
-static void jw__draw_digit(uint32_t *pixels, int width, int height,
-                           int x, int y, int scale, int digit, uint32_t color) {
-    static const uint8_t digits[10] = {
-        0x3f, 0x06, 0x5b, 0x4f, 0x66,
-        0x6d, 0x7d, 0x07, 0x7f, 0x6f
-    };
-    if (digit < 0 || digit > 9) {
-        return;
-    }
-    uint8_t mask = digits[digit];
-    for (int segment = 0; segment < 7; segment++) {
-        if (mask & (1u << segment)) {
-            jw__draw_segment(pixels, width, height, x, y, scale, segment, color);
-        }
-    }
-}
 
-static void jw__draw_percent(uint32_t *pixels, int width, int height,
-                             int x, int y, int percent, uint32_t color) {
-    int scale = 3;
-    int digit_w = scale * 7;
-    if (percent >= 100) {
-        jw__draw_digit(pixels, width, height, x, y, scale, 1, color);
-        x += digit_w + scale * 2;
-        jw__draw_digit(pixels, width, height, x, y, scale, 0, color);
-        x += digit_w + scale * 2;
-        jw__draw_digit(pixels, width, height, x, y, scale, 0, color);
-    } else {
-        int tens = percent / 10;
-        int ones = percent % 10;
-        if (tens > 0) {
-            jw__draw_digit(pixels, width, height, x, y, scale, tens, color);
-            x += digit_w + scale * 2;
-        }
-        jw__draw_digit(pixels, width, height, x, y, scale, ones, color);
-    }
-}
 
 static void jw__draw_sun(uint32_t *pixels, int width, int height,
                          int cx, int cy, uint32_t color) {
@@ -236,23 +354,35 @@ static void jw__draw_speaker(uint32_t *pixels, int width, int height,
     jw__fill_rect(pixels, width, height, cx + 14, cy - 8, 3, 16, color);
 }
 
+static void jw__toast_rect(int *out_x, int *out_y, int *out_w, int *out_h);
+
 static void jw__draw_osd(void) {
     uint32_t *pixels = (uint32_t *)s_osd.pixels;
-    int toast_w = 520;
-    int toast_h = 96;
-    if (toast_w > s_osd.width - 48) {
-        toast_w = s_osd.width - 48;
-    }
-    int x = (s_osd.width - toast_w) / 2;
-    int y = s_osd.height - toast_h - 48;
+    if (!pixels) return;
+
+    /* Start from nothing every time. The buffer is only zeroed when it is
+       created, and these draws composite rather than overwrite, so a surface
+       that stays up across repeated presses would stack one translucent pill on
+       the last until it read as opaque. Whole buffer, not the damaged rect: the
+       modes do not share a region, so clearing only the current one would leave
+       the other mode's pixels behind. */
+    memset(pixels, 0, s_osd.buffer_size);
 
     uint32_t bg = jw__argb(220, 18, 20, 24);
-    uint32_t track = jw__argb(255, 72, 76, 84);
     uint32_t fill = jw__argb(255, 250, 210, 92);
     uint32_t knob = jw__argb(255, 255, 240, 150);
 
-    jw__fill_rect(pixels, s_osd.width, s_osd.height, x, y, toast_w, toast_h, bg);
     if (s_osd.mode == 2) {
+        /* The game-launch toast keeps its own look deliberately: it is a
+           message, not a level, and it is read rather than glanced at. */
+        int toast_w = 520;
+        int toast_h = 96;
+        if (toast_w > s_osd.width - 48) {
+            toast_w = s_osd.width - 48;
+        }
+        int x = (s_osd.width - toast_w) / 2;
+        int y = s_osd.height - toast_h - 48;
+        jw__fill_rect(pixels, s_osd.width, s_osd.height, x, y, toast_w, toast_h, bg);
         char title[64];
         char action[32];
         jw_osd_game_launch_text(s_osd.game_stage, s_osd.pending_items,
@@ -269,36 +399,84 @@ static void jw__draw_osd(void) {
         }
         return;
     }
-    if (s_osd.mode == 1) {
-        jw__draw_speaker(pixels, s_osd.width, s_osd.height, x + 44, y + 48, fill);
+
+    /* ---- volume and brightness ----------------------------------------------
+       A pill in the top-left corner: the glyph for what is changing, and one
+       line for where it now sits. No number -- the length is the readout, and a
+       digit is something to read rather than glance at. */
+    int x, y, pill_w, pill_h;
+    jw__toast_rect(&x, &y, &pill_w, &pill_h);
+    int radius = pill_h / 2;
+
+    jw__fill_round_rect(pixels, s_osd.width, s_osd.height,
+                        x, y, pill_w, pill_h, radius,
+                        jw__premul(JW_OSD_PILL_ALPHA, 16, 18, 22));
+
+    int box = pill_h - JW_OSD_GLYPH_PAD * 2;
+    int gx  = x + JW_OSD_GLYPH_PAD + JW_OSD_GLYPH_PAD / 2;
+    int gy  = y + (pill_h - box) / 2;
+
+    jw_osd_glyph *glyph = (s_osd.mode == 1) ? &s_glyph_volume : &s_glyph_brightness;
+    jw__glyph_load(glyph, (s_osd.mode == 1) ? "osd-volume" : "osd-brightness");
+    if (glyph->pixels) {
+        jw__draw_glyph(pixels, s_osd.width, s_osd.height, glyph, gx, gy, box,
+                       255, 255, 255);
+    } else if (s_osd.mode == 1) {
+        jw__draw_speaker(pixels, s_osd.width, s_osd.height,
+                         gx + box / 2, gy + box / 2, jw__premul(255, 255, 255, 255));
     } else {
-        jw__draw_sun(pixels, s_osd.width, s_osd.height, x + 44, y + 48, fill);
+        jw__draw_sun(pixels, s_osd.width, s_osd.height,
+                     gx + box / 2, gy + box / 2, jw__premul(255, 255, 255, 255));
     }
 
-    int track_x = x + 88;
-    int track_y = y + 44;
-    int track_w = toast_w - 190;
-    jw__fill_rect(pixels, s_osd.width, s_osd.height, track_x, track_y, track_w, 12, track);
-    jw__fill_rect(pixels, s_osd.width, s_osd.height, track_x, track_y,
-                  (track_w * s_osd.percent) / 100, 12, fill);
-    int knob_x = track_x + (track_w * s_osd.percent) / 100 - 7;
-    jw__fill_rect(pixels, s_osd.width, s_osd.height, knob_x, track_y - 8, 14, 28, knob);
-    jw__draw_percent(pixels, s_osd.width, s_osd.height,
-                     x + toast_w - 82, y + 34, s_osd.percent, knob);
+    /* The line stops short of the pill's right edge rather than running to it,
+       so the pill reads as holding the line instead of being cropped by it. */
+    int line_x = gx + box + JW_OSD_GLYPH_PAD + JW_OSD_GLYPH_PAD / 2;
+    int line_w = x + pill_w - JW_OSD_LINE_TAIL - line_x;
+    if (line_w < JW_OSD_LINE_ON) line_w = JW_OSD_LINE_ON;
+
+    int on_h  = JW_OSD_LINE_ON;
+    int off_h = JW_OSD_LINE_OFF;
+    int on_w  = (line_w * s_osd.percent) / 100;
+    if (on_w < on_h) on_w = on_h;          /* never shorter than its own cap */
+
+    /* Rest of the line first, full width, so the filled part caps over it. */
+    jw__fill_round_rect(pixels, s_osd.width, s_osd.height,
+                        line_x, y + (pill_h - off_h) / 2, line_w, off_h, off_h / 2,
+                        jw__premul(JW_OSD_LINE_OFF_ALPHA, 255, 255, 255));
+    jw__fill_round_rect(pixels, s_osd.width, s_osd.height,
+                        line_x, y + (pill_h - on_h) / 2, on_w, on_h, on_h / 2,
+                        jw__premul(255, 255, 255, 255));
 }
 
+/* The damage region must be the region actually drawn. These two used to be
+   written out separately, so moving the level overlay to the top-left left the
+   damage rect pointing at the bottom and the compositor never picked the new
+   one up. Both the draw and the damage call this now. */
 static void jw__toast_rect(int *out_x, int *out_y, int *out_w, int *out_h) {
-    int toast_w = 520;
-    int toast_h = 96;
-    if (toast_w > s_osd.width - 48) {
-        toast_w = s_osd.width - 48;
+    int x, y, w, h;
+    if (s_osd.mode == 2) {
+        w = 520;
+        h = 96;
+        if (w > s_osd.width - 48) w = s_osd.width - 48;
+        x = (s_osd.width - w) / 2;
+        y = s_osd.height - h - 48;
+    } else {
+        h = JW_OSD_PILL_H;
+        w = s_osd.width * JW_OSD_PILL_PCT / 100;
+        if (w > s_osd.width - JW_OSD_INSET * 2) w = s_osd.width - JW_OSD_INSET * 2;
+        x = JW_OSD_INSET;
+        y = JW_OSD_INSET;
     }
-
-    if (out_x) *out_x = (s_osd.width - toast_w) / 2;
-    if (out_y) *out_y = s_osd.height - toast_h - 48;
-    if (out_w) *out_w = toast_w;
-    if (out_h) *out_h = toast_h;
+    if (out_x) *out_x = x;
+    if (out_y) *out_y = y;
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
 }
+
+/* Which mode the last damage rectangle described. -1 means "nothing on screen
+   yet", which forces a full-surface damage on the next show. */
+static int s_damaged_mode = -1;
 
 static void jw__destroy_surface(void) {
     if (s_osd.buffer) {
@@ -324,6 +502,7 @@ static void jw__destroy_surface(void) {
     }
     s_osd.visible = false;
     s_osd.configured = false;
+    s_damaged_mode = -1;      /* a new surface shows nothing yet */
 }
 
 static void jw__hide_surface(void) {
@@ -485,7 +664,20 @@ static int jw__show_surface(void) {
     int w = 0;
     int h = 0;
     jw__toast_rect(&x, &y, &w, &h);
-    wl_surface_damage_buffer(s_osd.surface, x, y, w, h);
+
+    /* Damage is the region where the new buffer differs from what the surface
+       already shows -- clearing shared memory does not tell the compositor
+       anything. The level pill sits top-left and the launch toast bottom-centre,
+       so on a change of mode the pixels the old one occupied also changed, and
+       reporting only the new rectangle can leave the old one on screen until an
+       unrelated repaint. Report the whole surface across a transition and keep
+       the tight rectangle for repeated updates within one mode. */
+    if (s_damaged_mode != s_osd.mode) {
+        wl_surface_damage_buffer(s_osd.surface, 0, 0, s_osd.width, s_osd.height);
+        s_damaged_mode = s_osd.mode;
+    } else {
+        wl_surface_damage_buffer(s_osd.surface, x, y, w, h);
+    }
     wl_surface_commit(s_osd.surface);
     wl_display_flush(s_osd.display);
     s_osd.visible = true;
