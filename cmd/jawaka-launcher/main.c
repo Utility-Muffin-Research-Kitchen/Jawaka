@@ -3320,6 +3320,10 @@ static bool jw__cover_thumb_path(const char *cover_abs, char *out, size_t out_si
    inline, but coverflow motion can route them through the worker to avoid
    mid-animation hitches. */
 #define JW_COVER_QUEUE_MAX 48          /* pre-warm backlog cap (ring buffer) */
+/* Handbacks are only produced when the thumbnail cache cannot be written, and a
+   page drains them every frame, so this need only cover one frame's worth of
+   arrivals. Small on purpose: each entry holds a decoded surface. */
+#define JW_COVER_HANDBACK_MAX 4
 
 typedef struct {
     pthread_t       thread;
@@ -3345,6 +3349,17 @@ typedef struct {
     char            done_path[PATH_MAX];
     SDL_Surface    *done_surf;
     bool            has_done;
+
+    /* Pre-warm surfaces the thumbnail write could not persist, handed back so a
+       page can still draw them. Kept apart from the priority slot and bounded:
+       a page asks for every tile every frame and can leave before a decode
+       lands, so delivery must retire what the page no longer wants instead of
+       waiting on it. Sharing one slot let a single unclaimed result from a page
+       the user had left block every later handback. */
+    char            hb_path[JW_COVER_HANDBACK_MAX][PATH_MAX];
+    SDL_Surface    *hb_surf[JW_COVER_HANDBACK_MAX];
+    int             hb_head;                 /* oldest entry */
+    int             hb_count;
 } jw_cover_loader;
 
 static jw_cover_loader jw__cover_loader = {
@@ -3354,6 +3369,44 @@ static jw_cover_loader jw__cover_loader = {
 
 static bool jw__cf_animating;
 static int  jw__cover_inline_decodes_this_frame;
+
+/* Hand a surface back for later collection. Caller holds the lock.
+   Replaces any pending entry for the same path, and when full drops the oldest:
+   a result nobody has claimed is by definition the one least likely to be
+   wanted, and dropping it only costs a re-decode, whereas keeping it would
+   stall every page that follows. */
+static void jw__cover_handback_put(jw_cover_loader *L, const char *path,
+                                   SDL_Surface *surf) {
+    for (int i = 0; i < L->hb_count; ++i) {
+        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
+        if (strcmp(L->hb_path[idx], path) == 0) {
+            SDL_FreeSurface(L->hb_surf[idx]);
+            L->hb_surf[idx] = surf;
+            return;
+        }
+    }
+    if (L->hb_count == JW_COVER_HANDBACK_MAX) {
+        SDL_FreeSurface(L->hb_surf[L->hb_head]);
+        L->hb_surf[L->hb_head] = NULL;
+        L->hb_head = (L->hb_head + 1) % JW_COVER_HANDBACK_MAX;
+        L->hb_count--;
+    }
+    int tail = (L->hb_head + L->hb_count) % JW_COVER_HANDBACK_MAX;
+    snprintf(L->hb_path[tail], PATH_MAX, "%s", path);
+    L->hb_surf[tail] = surf;
+    L->hb_count++;
+}
+
+/* Free every pending handback. Caller holds the lock. */
+static void jw__cover_handback_clear(jw_cover_loader *L) {
+    for (int i = 0; i < L->hb_count; ++i) {
+        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
+        SDL_FreeSurface(L->hb_surf[idx]);
+        L->hb_surf[idx] = NULL;
+    }
+    L->hb_head = 0;
+    L->hb_count = 0;
+}
 
 static void *jw__cover_worker(void *arg) {
     jw_cover_loader *L = (jw_cover_loader *)arg;
@@ -3408,13 +3461,12 @@ static void *jw__cover_worker(void *arg) {
                 L->done_surf = surf;
                 L->has_done = true;
             }
-        } else if (surf && !persisted && !L->has_done) {
-            /* Could not land on disk: hand it back so the page can draw it. The
-               priority slot keeps precedence -- a cursor cover the user is
-               waiting on must not be displaced by a background pre-warm. */
-            snprintf(L->done_path, sizeof(L->done_path), "%s", path);
-            L->done_surf = surf;
-            L->has_done = true;
+        } else if (surf && !persisted) {
+            /* Could not land on disk: hand it back so the page can draw it.
+               Never through the priority slot -- a cursor cover the user is
+               waiting on must not be displaced by a background pre-warm, and an
+               unclaimed pre-warm result must not be able to block later ones. */
+            jw__cover_handback_put(L, path, surf);
         } else if (surf) {
             SDL_FreeSurface(surf);                 /* pre-warm: thumbnail is on disk now */
         }
@@ -3448,6 +3500,7 @@ static void jw__cover_loader_shutdown(void) {
         SDL_FreeSurface(L->done_surf);
         L->done_surf = NULL;
     }
+    jw__cover_handback_clear(L);
     L->has_done = false;
     L->has_req = false;
     L->q_head = 0;
@@ -3497,11 +3550,24 @@ static bool jw__cover_async_poll(const char *path, SDL_Surface **out) {
     if (!L->started) return false;
     bool got = false;
     pthread_mutex_lock(&L->lock);
-    if (L->has_done && L->done_surf && strcmp(L->done_path, path) == 0) {
-        *out = L->done_surf;
-        L->done_surf = NULL;
-        L->has_done = false;
+    for (int i = 0; i < L->hb_count; ++i) {
+        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
+        if (strcmp(L->hb_path[idx], path) != 0) continue;
+        *out = L->hb_surf[idx];
+        L->hb_surf[idx] = NULL;
+        /* Close the gap by sliding the older entries forward, so the ring stays
+           oldest-first and eviction keeps meaning what it says. */
+        for (int j = i; j > 0; --j) {
+            int dst = (L->hb_head + j) % JW_COVER_HANDBACK_MAX;
+            int src = (L->hb_head + j - 1) % JW_COVER_HANDBACK_MAX;
+            memcpy(L->hb_path[dst], L->hb_path[src], PATH_MAX);
+            L->hb_surf[dst] = L->hb_surf[src];
+        }
+        L->hb_surf[L->hb_head] = NULL;
+        L->hb_head = (L->hb_head + 1) % JW_COVER_HANDBACK_MAX;
+        L->hb_count--;
         got = true;
+        break;
     }
     pthread_mutex_unlock(&L->lock);
     return got;
