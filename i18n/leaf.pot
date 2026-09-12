@@ -65,10 +65,6 @@ msgid "%ldm ago"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "%s \\xc2\\xb7 fallback"
-msgstr ""
-
-#: internal/settings/settings.c
 msgid "%s first"
 msgstr ""
 
@@ -78,6 +74,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "%s · %s · %d of %d"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "%s · fallback"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2004,10 +2004,6 @@ msgstr ""
 msgid "Text"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Theme"
-msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "That BIOS file cannot be saved as a selection."
 msgstr ""
@@ -2030,6 +2026,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "The saved shader could not be removed."
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Theme"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

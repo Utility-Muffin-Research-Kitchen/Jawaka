@@ -2366,7 +2366,7 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
                ? ui->system_icon_pack_index : JW_SYSTEM_ICON_PACK_AUTO;
     char pack_val[64];
     if (themed)
-        snprintf(pack_val, sizeof(pack_val), T("%s \xc2\xb7 fallback"),
+        snprintf(pack_val, sizeof(pack_val), T("%s · fallback"),
                  T(kSystemIconPackLabels[pack]));
     else
         snprintf(pack_val, sizeof(pack_val), "%s", T(kSystemIconPackLabels[pack]));

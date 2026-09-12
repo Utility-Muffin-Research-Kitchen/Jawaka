@@ -1731,8 +1731,8 @@ msgstr "3 x 2"
 msgid "4 x 3"
 msgstr "4 x 3"
 
-msgid "%s \xc2\xb7 fallback"
-msgstr "%s \xc2\xb7 备用"
+msgid "%s · fallback"
+msgstr "%s · 备用"
 
 msgid "%s: %d icons ok"
 msgstr "%s：%d 个图标正常"
