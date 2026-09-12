@@ -42,6 +42,16 @@ static void expect_invalid(const char *json) {
 }
 
 int main(void) {
+    expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"pico8-import\"}",
+                 JW_OSD_PICO8_IMPORT, 0, "ADDING SPLORE FAVORITES", "PLEASE WAIT");
+    expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"pico8-import-failed\"}",
+                 JW_OSD_PICO8_IMPORT_FAILED, 0, "SPLORE IMPORT INCOMPLETE", "TRY SPLORE AGAIN");
+    assert(!JW_OSD_GAME_STAGE_IS_TRANSIENT(JW_OSD_PICO8_IMPORT));
+    assert(JW_OSD_GAME_STAGE_IS_TRANSIENT(JW_OSD_PICO8_IMPORT_FAILED));
+    expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"pico8-exit\"}",
+                 JW_OSD_PICO8_EXIT_CONFIRM, 0, "RETURN TO LEAF?", "PRESS MENU AGAIN");
+    assert(JW_OSD_GAME_STAGE_IS_TRANSIENT(JW_OSD_PICO8_EXIT_CONFIRM));
+    expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"pico8-exit\",\"pending_items\":0}");
     expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"checking\"}",
                  JW_OSD_GAME_CHECKING, 0, "SYNCTHING: CHECKING SAVES", "");
     expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"syncing\",\"pending_items\":1}",

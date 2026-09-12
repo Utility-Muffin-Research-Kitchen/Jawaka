@@ -191,6 +191,7 @@ DAEMON_SRCS := \
 	internal/launcher/active_game.c \
 	internal/launcher/bios.c \
 	internal/launcher/standalone_policy.c \
+	internal/launcher/pico8.c \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
 	$(BLUETOOTH_SRC) \
@@ -1326,3 +1327,11 @@ help:
 	@echo ""
 	@echo "Catastrophe include root: $(CATASTROPHE_INCLUDE)"
 	@echo ""
+
+.PHONY: pico8-test
+pico8-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/pico8-test \
+		internal/launcher/pico8_test.c internal/launcher/pico8.c \
+		internal/storage/sources.c internal/db/db.c internal/db/relocation.c \
+		$(LDLIBS_COMMON)
+	$(BUILD)/bin/pico8-test
