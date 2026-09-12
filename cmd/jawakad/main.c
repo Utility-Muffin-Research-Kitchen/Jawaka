@@ -309,6 +309,7 @@ typedef struct {
                                  a second tap after the grace period escalates
                                  to SIGKILL */
     long long pico8_exit_confirm_until_ms;
+    long long pico8_quit_request_ms;
     bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
     bool direct_drm_active;
@@ -7617,9 +7618,16 @@ static bool jw__input_menu_tap(void *userdata) {
             /* SDL turns SIGTERM into its normal quit event. Signal the native
                leader so it can save config and CARTDATA, then let the existing
                group barrier supervise any remaining downloader children. */
-            jw_log_info("PICO-8: confirmed MENU exit pid=%d", (int)state->child_pid);
-            if (kill(state->child_pid, SIGTERM) != 0 && errno != ESRCH)
-                jw_log_warn("PICO-8 quit request failed: %s", strerror(errno));
+            int signal = jw_pico8_exit_signal(&state->pico8_quit_request_ms,
+                                              jw__monotonic_ms());
+            if (signal) {
+                jw_log_info("PICO-8: confirmed MENU exit pid=%d signal=%d",
+                            (int)state->child_pid, signal);
+                int rc = signal == SIGKILL ? jw__signal_tracked_game_group(state, signal)
+                                          : kill(state->child_pid, signal);
+                if (rc != 0 && errno != ESRCH)
+                    jw_log_warn("PICO-8 quit request failed: %s", strerror(errno));
+            }
         }
         return true;
     }
@@ -8733,7 +8741,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
                 state, &roster, sdl_devices, sizeof(sdl_devices), dummy_indices,
                 app_is_pico8 ? JW_PICO8_CORE : "retroarch-menu",
                 roster_error, sizeof(roster_error)) < 0) {
-            jw_log_error("RetroArch app launch blocked: %s", roster_error);
+            jw_log_error("%s app launch blocked: %s", app_is_pico8 ? "PICO-8" : "RetroArch", roster_error);
             state->pending_app = false;
             return -1;
         }
@@ -8774,8 +8782,8 @@ static int jw__spawn_app(jw_daemon_state *state) {
     int err_pipe[2] = { -1, -1 };
     if (use_roster &&
         (jw__pipe_cloexec(sync_pipe) != 0 || jw__pipe_cloexec(err_pipe) != 0)) {
-        jw_log_error("RetroArch app launch blocked: %s: control pipe creation failed",
-                     JW_INPUT_ROSTER_ERR_NAMESPACE);
+        jw_log_error("%s app launch blocked: %s: control pipe creation failed",
+                     app_is_pico8 ? "PICO-8" : "RetroArch", JW_INPUT_ROSTER_ERR_NAMESPACE);
         state->pending_app = false;
         return -1;
     }
@@ -8841,7 +8849,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
         close(sync_pipe[1]);
         close(err_pipe[0]);
         if (isolation_rc != 0) {
-            jw_log_error("RetroArch app launch blocked: %s", isolation_error);
+            jw_log_error("%s app launch blocked: %s", app_is_pico8 ? "PICO-8" : "RetroArch", isolation_error);
             state->pending_app = false;
             return -1;
         }
@@ -13930,6 +13938,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         jw__osd_game_launch_hide(state);
         state->pico8_exit_confirm_until_ms = 0;
     }
+    state->pico8_quit_request_ms = 0;
     state->child_pid = -1;
     state->child_pgid = -1;
     state->child_kind = JW_CHILD_NONE;

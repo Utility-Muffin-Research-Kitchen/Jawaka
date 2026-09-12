@@ -31,6 +31,9 @@ bool jw_pico8_preflight(const char *wrapper, const jw_pico8_paths *paths);
 /* First/expired tap arms a short confirmation window; a second consumes it. */
 bool jw_pico8_exit_confirmed(long long *deadline, long long now);
 
+/* Signal for a confirmed exit: graceful first, force after two seconds. */
+int jw_pico8_exit_signal(long long *requested, long long now);
+
 /* Apply importer metadata after a successful ordinary library scan. */
 int jw_pico8_apply_library(sqlite3 *db, const char *report);
 

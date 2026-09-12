@@ -25,6 +25,13 @@ bool jw_pico8_exit_confirmed(long long *deadline, long long now) {
     return false;
 }
 
+/* Preserve the first request time so repeated confirmations cannot postpone
+ * the controller escape from a hung SDL quit handler. */
+int jw_pico8_exit_signal(long long *requested, long long now) {
+    if (!*requested) { *requested = now; return SIGTERM; }
+    return now - *requested >= 2000 ? SIGKILL : 0;
+}
+
 bool jw_pico8_app_matches(const jw_storage_source *primary, const char *pak_abs) {
     char expected[JW_STORAGE_PATH_MAX];
     if (!primary || !primary->primary || !primary->available || !pak_abs) return false;
@@ -119,8 +126,40 @@ bool jw_pico8_preflight(const char *wrapper, const jw_pico8_paths *paths) {
 int jw_pico8_apply_library(sqlite3 *db, const char *report) {
     FILE *fp = fopen(report, "r");
     if (!fp) return errno == ENOENT ? 0 : -1;
+    typedef struct { char path[160], title[256]; const char *path_ref; } item;
+    item *items = NULL;
+    jw_db_imported_title_group *groups = NULL;
+    int count = 0, rc = -1;
     sqlite3_stmt *seed = NULL, *mark = NULL;
-    int rc = -1;
+    bool transaction = false;
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        char *tab = strchr(line, '\t'), *nl = strchr(line, '\n');
+        if (!tab || !nl || strchr(tab+1, '\t')) goto done;
+        *tab = 0; *nl = 0;
+        size_t n = strlen(line);
+        if (!n || n > 96 || !tab[1] || strlen(tab+1) > 255) goto done;
+        for (const char *p = line; *p; p++)
+            if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')) goto done;
+        for (const unsigned char *p = (unsigned char *)tab+1; *p; p++)
+            if (*p < 32 || *p == 127) goto done;
+        item *grown = count < 10000 ? realloc(items, (size_t)(count+1)*sizeof(*items)) : NULL;
+        if (!grown) goto done;
+        items = grown;
+        snprintf(items[count].path, sizeof(items[count].path), "Roms/PICO8/Splore/%s.p8.png", line);
+        snprintf(items[count].title, sizeof(items[count].title), "%s", tab+1);
+        count++;
+    }
+    if (ferror(fp)) goto done;
+    if (!count) { rc = 0; goto done; }
+    groups = calloc((size_t)count, sizeof(*groups));
+    if (!groups) goto done;
+    for (int i = 0; i < count; i++) {
+        items[i].path_ref = items[i].path;
+        groups[i] = (jw_db_imported_title_group){.provider=JW_PICO8_PROVIDER,
+            .title=items[i].title, .rom_paths=&items[i].path_ref, .rom_path_count=1};
+    }
+    if (jw_db_apply_imported_title_groups(db, groups, count, NULL) != 0) goto done;
     if (sqlite3_prepare_v2(db,
         "INSERT OR IGNORE INTO game_settings(game_id,key,value,updated_at) "
         "SELECT id,'core_id','pico8_native',strftime('%s','now') FROM games "
@@ -130,27 +169,19 @@ int jw_pico8_apply_library(sqlite3 *db, const char *report) {
         "INSERT OR IGNORE INTO game_settings(game_id,key,value,updated_at) "
         "SELECT id,'pico8_imported','1',strftime('%s','now') FROM games "
         "WHERE rom_path=? AND system='PICO8' AND source_id='primary'",-1,&mark,NULL)!=SQLITE_OK) goto done;
-    char line[512];
-    while (fgets(line,sizeof(line),fp)) {
-        char *tab=strchr(line,'\t'), *nl=strchr(line,'\n');
-        if (!tab || !nl || strchr(tab+1,'\t')) goto done;
-        *tab=0; *nl=0;
-        size_t n=strlen(line);
-        if (!n || n>96 || !tab[1] || strlen(tab+1)>255) goto done;
-        for (const char *p=line; *p; p++) if (!((*p>='a'&&*p<='z')||(*p>='0'&&*p<='9')||*p=='_')) goto done;
-        for (const unsigned char *p=(unsigned char *)tab+1; *p; p++) if (*p<32 || *p==127) goto done;
-        char path[160]; snprintf(path,sizeof(path),"Roms/PICO8/Splore/%s.p8.png",line);
-        const char *paths[]={path};
-        jw_db_imported_title_group group={.provider=JW_PICO8_PROVIDER,.title=tab+1,.rom_paths=paths,.rom_path_count=1};
-        if (jw_db_apply_imported_title_groups(db,&group,1,NULL)!=0) goto done;
-        if (sqlite3_exec(db,"BEGIN IMMEDIATE",NULL,NULL,NULL)!=SQLITE_OK) goto done;
-        sqlite3_bind_text(seed,1,path,-1,SQLITE_TRANSIENT);
-        sqlite3_bind_text(mark,1,path,-1,SQLITE_TRANSIENT);
-        bool ok=sqlite3_step(seed)==SQLITE_DONE && sqlite3_step(mark)==SQLITE_DONE;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) goto done;
+    transaction = true;
+    for (int i = 0; i < count; i++) {
+        sqlite3_bind_text(seed, 1, items[i].path, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(mark, 1, items[i].path, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(seed) != SQLITE_DONE || sqlite3_step(mark) != SQLITE_DONE) goto done;
         sqlite3_reset(seed); sqlite3_reset(mark);
-        if (sqlite3_exec(db,ok?"COMMIT":"ROLLBACK",NULL,NULL,NULL)!=SQLITE_OK || !ok) goto done;
     }
-    rc=ferror(fp)?-1:0;
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) goto done;
+    transaction = false;
+    rc = 0;
 done:
-    sqlite3_finalize(seed); sqlite3_finalize(mark); fclose(fp); return rc;
+    if (transaction) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_finalize(seed); sqlite3_finalize(mark);
+    free(groups); free(items); fclose(fp); return rc;
 }

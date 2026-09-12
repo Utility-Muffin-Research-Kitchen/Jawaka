@@ -2,6 +2,7 @@
 #include "cmd/jawaka-osd/game_launch.h"
 #include "internal/db/db.h"
 #include <assert.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,7 @@ static int scalar(sqlite3 *db, const char *sql) {
     assert(sqlite3_step(st)==SQLITE_ROW);
     int value=sqlite3_column_int(st,0); sqlite3_finalize(st); return value;
 }
+static int count_commit(void *p) { (*(int *)p)++; return 0; }
 static void library_test(void) {
     sqlite3 *db=NULL;
     assert(sqlite3_open(":memory:",&db)==SQLITE_OK);
@@ -48,12 +50,49 @@ static void library_test(void) {
     assert(scalar(db,"SELECT COUNT(*) FROM game_settings WHERE key='core_id'")==0);
     fp=fopen(report,"w"); assert(fp); fputs("../other\tInvalid\n",fp); fclose(fp);
     assert(jw_pico8_apply_library(db,report)!=0);
+    /* Many carts still use only two commits, and a malformed trailing row
+       cannot apply a valid prefix. */
+    fp=fopen(report,"w"); assert(fp);
+    for (int i=0; i<100; i++) {
+        char path[160]; snprintf(path,sizeof(path),"Roms/PICO8/Splore/batch_%d.p8.png",i);
+        assert(jw_db_insert_game(db,"PICO8","batch",path,NULL)==0);
+        fprintf(fp,"batch_%d\tBatch title %d\n",i,i);
+    }
+    fputs("../bad\tInvalid\n",fp); fclose(fp);
+    int commits=0; sqlite3_commit_hook(db,count_commit,&commits);
+    assert(jw_pico8_apply_library(db,report)!=0 && commits==0);
+    assert(scalar(db,"SELECT COUNT(*) FROM game_settings WHERE key='core_id'")==0);
+    fp=fopen(report,"w"); assert(fp);
+    for (int i=0; i<100; i++) fprintf(fp,"batch_%d\tBatch title %d\n",i,i);
+    fclose(fp);
+    /* Fail midway through seeding: all core choices and markers roll back. */
+    assert(sqlite3_exec(db,"CREATE TRIGGER fail_seed BEFORE INSERT ON game_settings "
+        "WHEN NEW.key='pico8_imported' AND NEW.game_id=(SELECT id FROM games WHERE rom_path='Roms/PICO8/Splore/batch_50.p8.png') "
+        "BEGIN SELECT RAISE(ABORT,'fixture'); END",NULL,NULL,NULL)==SQLITE_OK);
+    assert(jw_pico8_apply_library(db,report)!=0);
+    assert(scalar(db,"SELECT COUNT(*) FROM game_settings WHERE key='core_id'")==0);
+    assert(scalar(db,"SELECT COUNT(*) FROM game_settings WHERE key='pico8_imported'")==1);
+    assert(sqlite3_exec(db,"DROP TRIGGER fail_seed",NULL,NULL,NULL)==SQLITE_OK);
+    commits=0;
+    assert(jw_pico8_apply_library(db,report)==0 && commits==2);
+    assert(scalar(db,"SELECT COUNT(*) FROM game_settings WHERE key='core_id'")==100);
+    commits=0;
+    assert(jw_pico8_apply_library(db,report)==0 && commits==2);
     unlink(report); sqlite3_close(db);
 }
 
 int main(void) {
     library_test();
     assert(JW_PICO8_EXIT_CONFIRM_MS == JW_OSD_GAME_TRANSIENT_MS);
+    long long requested = 0;
+    assert(jw_pico8_exit_signal(&requested, 1000) == SIGTERM);
+    assert(jw_pico8_exit_signal(&requested, 1100) == 0);
+    assert(jw_pico8_exit_signal(&requested, 2999) == 0);
+    assert(requested == 1000);
+    assert(jw_pico8_exit_signal(&requested, 3000) == SIGKILL);
+    assert(jw_pico8_exit_signal(&requested, 4000) == SIGKILL);
+    requested = 0; /* Next session starts with a normal quit again. */
+    assert(jw_pico8_exit_signal(&requested, 5000) == SIGTERM);
     long long deadline = 0;
     assert(!jw_pico8_exit_confirmed(&deadline, 1000));
     assert(jw_pico8_exit_confirmed(&deadline, 1100));
