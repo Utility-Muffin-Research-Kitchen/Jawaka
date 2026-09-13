@@ -381,7 +381,7 @@ static void clear_forbidden(cJSON *node) {
     }
 }
 
-static cJSON *find_id(cJSON *array, const char *id) {
+static cJSON *find_id(const cJSON *array, const char *id) {
     cJSON *row = NULL;
     cJSON_ArrayForEach(row, array) {
         if (strcasecmp(text(row, "id"), id) == 0) return row;
@@ -662,4 +662,65 @@ done:
     candidates_free(&all);
     claims_free(&release);
     return rc;
+}
+
+/* A release-system claim needs this provider's surviving alternate core. */
+static bool art_eligible(const cJSON *system, const cJSON *cores,
+                         const cJSON *contributor) {
+    if (!system) return false;
+    const char *provider = text(contributor, "provider");
+    if (text(system, "provider")[0])
+        return strcmp(text(system, "provider"), provider) == 0;
+    const cJSON *extension = NULL;
+    cJSON_ArrayForEach(extension, item(item(contributor, "provides"), "system_extensions")) {
+        if (strcmp(text(extension, "system_id"), text(system, "id"))) continue;
+        const cJSON *core_id = NULL;
+        cJSON_ArrayForEach(core_id, item(extension, "add_alternate_cores")) {
+            if (!cJSON_IsString(core_id)) continue;
+            const cJSON *core = find_id(cores, core_id->valuestring);
+            if (!core || strcmp(text(core, "provider"), provider)) continue;
+            const cJSON *alternate = NULL;
+            cJSON_ArrayForEach(alternate, item(system, "alternate_cores")) {
+                if (cJSON_IsString(alternate) && !strcmp(alternate->valuestring, core_id->valuestring))
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+int jw_catalog_apply_content_art(cJSON *systems, const cJSON *cores,
+                                  const cJSON *contributors, cJSON *diagnostics) {
+    /* At most 64 contributors with 32 entries each. Count eligible claims before
+       applying any, so conflict handling cannot depend on enumeration order. */
+    const cJSON *contributor = NULL;
+    cJSON_ArrayForEach(contributor, contributors) {
+        const cJSON *entry = NULL;
+        cJSON_ArrayForEach(entry, item(item(contributor, "content_art"), "systems")) {
+            const char *id = text(entry, "id");
+            const char *provider = text(contributor, "provider");
+            cJSON *system = find_id(systems, id);
+            if (!art_eligible(system, cores, contributor)) {
+                if (record(diagnostics, provider, "ineligible-content-art-system", strdup(id))) return -1;
+                continue;
+            }
+            int claims = 0;
+            const cJSON *other = NULL;
+            cJSON_ArrayForEach(other, contributors) {
+                if (!art_eligible(system, cores, other)) continue;
+                const cJSON *claim = NULL;
+                cJSON_ArrayForEach(claim, item(item(other, "content_art"), "systems"))
+                    if (!strcmp(text(claim, "id"), id)) claims++;
+            }
+            if (claims > 1) {
+                if (record(diagnostics, provider, "conflicting-content-art-system", strdup(id))) return -1;
+                continue;
+            }
+            cJSON_DeleteItemFromObjectCaseSensitive(system, "wordmark");
+            cJSON_DeleteItemFromObjectCaseSensitive(system, "wordmark_provider");
+            if (!cJSON_AddStringToObject(system, "wordmark", text(entry, "wordmark")) ||
+                !cJSON_AddStringToObject(system, "wordmark_provider", provider)) return -1;
+        }
+    }
+    return sort_diagnostics(diagnostics);
 }

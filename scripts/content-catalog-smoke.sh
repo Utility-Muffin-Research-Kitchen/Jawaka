@@ -160,6 +160,51 @@ assert rows[1][1:] == [core, standalone, str(catalog / sys.argv[5] / "info"), fl
 PY
 echo "ok: pak-relative core/standalone paths resolve live; generation swap moves info"
 
+# CONTENT-ART-1 is compiled during discovery; a bad optional block must leave
+# the contributed system and both launchable cores available in the same scan.
+python3 - "$SCAN" "$SD" "$DB" "$STATE_DIR/catalog" <<'PYART'
+import json, pathlib, subprocess, sys
+scan, sd, db, catalog = sys.argv[1:]
+catalog = pathlib.Path(catalog)
+pak = pathlib.Path(sd, "Apps/mac/ContentTest.pak")
+manifest_path = pak / "pak.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["content_art"] = {"schema": 1, "systems": [
+    {"id": "CONTENTTEST", "wordmark": "art/mark.png"}]}
+manifest_path.write_text(json.dumps(manifest))
+image = pak / "art/mark.png"
+image.write_bytes(bytes.fromhex("89504e470d0a1a0a") + b"one")
+
+def rescan():
+    output = subprocess.check_output([scan, sd, db], text=True)
+    assert "game\tCONTENTTEST\tgame\t" in output, output
+    generation = catalog / (catalog / "current").read_text().strip()
+    systems = json.loads((generation / "systems.json").read_text())["systems"]
+    cores = json.loads((generation / "cores.json").read_text())["cores"]
+    assert {"contenttest", "contentpath"} <= {c["id"] for c in cores}
+    return generation, next(s for s in systems if s["id"] == "CONTENTTEST")
+
+first, system = rescan()
+assert system["wordmark"] == "art/mark.png"
+assert system["wordmark_provider"] == system["provider"] == "mac/ContentTest.pak"
+stamp = json.loads((first / "stamp.json").read_text())
+files = stamp["contributors"][0]["files"]
+assert {"pak.json", "art/mark.png"} <= {f["rel"] for f in files}
+image.write_bytes(bytes.fromhex("89504e470d0a1a0a") + b"two")
+second, system = rescan()
+assert second != first
+image.write_bytes(b"invalid PNG")
+_, system = rescan()
+assert "wordmark" not in system
+entries = json.loads((catalog / "diagnostics.json").read_text())["entries"]
+assert any(e["reason"] == "unsupported-content-art-image" for e in entries)
+manifest["content_art"]["systems"][0]["wordmark"] = "art/mark.png\0hidden"
+manifest_path.write_text(json.dumps(manifest))
+_, system = rescan()
+assert "wordmark" not in system
+print("ok: wordmark provenance, replacement and fail-soft discovery")
+PYART
+
 rm -rf "$SD/Apps/mac/ContentTest.pak"
 SECOND="$TMP_ROOT/second.txt"
 "$SCAN" "$SD" "$DB" > "$SECOND"

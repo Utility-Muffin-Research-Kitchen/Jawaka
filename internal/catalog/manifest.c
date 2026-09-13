@@ -99,6 +99,44 @@ static bool jw_content__escaped_nul(const char *json) {
     return false;
 }
 
+/* Preserve CONTENT-1's NUL rejection outside the optional art value. cJSON
+   cannot retain embedded NULs, so invalidate that whole companion before parsing. */
+static char *jw_content__without_nul_art(const char *json) {
+    char *copy = strdup(json);
+    if (!copy) return NULL;
+    const char *p = json;
+    while (*p && *p != '{') p++;
+    if (*p) p++;
+    while (*p) {
+        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',') p++;
+        if (*p != '"') break;
+        const char *end = NULL;
+        cJSON *key = cJSON_ParseWithOpts(p, &end, false);
+        if (!cJSON_IsString(key) || !end) { cJSON_Delete(key); break; }
+        bool art = strcmp(key->valuestring, "content_art") == 0;
+        cJSON_Delete(key);
+        p = end;
+        while (*p && *p != ':') p++;
+        if (!*p) break;
+        p++;
+        const char *value = p;
+        cJSON *parsed = cJSON_ParseWithOpts(value, &end, false);
+        if (!parsed || !end) { cJSON_Delete(parsed); break; }
+        cJSON_Delete(parsed);
+        if (art) {
+            char *raw = strndup(value, (size_t)(end - value));
+            bool invalid = raw && jw_content__escaped_nul(raw);
+            free(raw);
+            if (invalid && end - value >= 4) {
+                memset(copy + (value - json), ' ', (size_t)(end - value));
+                memcpy(copy + (value - json), "null", 4);
+            }
+        }
+        p = end;
+    }
+    return copy;
+}
+
 static bool jw_content__system_id(const char *s) {
     size_t len = s ? strlen(s) : 0;
     if (len < 2 || len > 32) {
@@ -647,6 +685,76 @@ static const char *jw_content__validate_extension(const cJSON *extension) {
     return NULL;
 }
 
+int jw_content_art_validate(const cJSON *document, const char *pak_dir,
+                            const cJSON **out, char *reason, size_t reason_size) {
+    static const char *const block_keys[] = {"schema", "systems"};
+    static const char *const row_keys[] = {"id", "wordmark"};
+    const char *error = NULL;
+    if (out) *out = NULL;
+    jw_content__reason(reason, reason_size, "");
+    if (!out || !pak_dir || !cJSON_IsObject(document)) {
+        jw_content__reason(reason, reason_size, "malformed-content-art");
+        return -1;
+    }
+    const cJSON *block = jw_content__item(document, "content_art");
+    if (!block) return 0;
+    if (!cJSON_IsObject(block)) error = "malformed-content-art";
+    else if (!jw_content__object_keys(block, block_keys, 2))
+        error = "unknown-content-art-field";
+    const cJSON *schema = jw_content__item(block, "schema");
+    if (!error && (!cJSON_IsNumber(schema) || schema->valuedouble != 1))
+        error = "unknown-content-art-schema";
+    const cJSON *rows = jw_content__item(block, "systems");
+    if (!error && (!cJSON_IsArray(rows) || cJSON_GetArraySize(rows) < 1 ||
+                   cJSON_GetArraySize(rows) > 32))
+        error = "malformed-content-art-systems";
+    const cJSON *row = NULL;
+    cJSON_ArrayForEach(row, rows) {
+        if (error) break;
+        if (!cJSON_IsObject(row)) { error = "malformed-content-art-system"; break; }
+        if (!jw_content__object_keys(row, row_keys, 2)) {
+            error = "unknown-content-art-field"; break;
+        }
+        const cJSON *id = jw_content__item(row, "id");
+        if (!cJSON_IsString(id) || !jw_content__system_id(id->valuestring)) {
+            error = "malformed-content-art-system-id"; break;
+        }
+        for (const cJSON *other = row->next; other; other = other->next) {
+            const cJSON *other_id = jw_content__item(other, "id");
+            if (cJSON_IsString(other_id) && !strcmp(id->valuestring, other_id->valuestring))
+                error = "duplicate-content-art-system";
+        }
+        if (error) break;
+        const cJSON *path = jw_content__item(row, "wordmark");
+        if (!cJSON_IsString(path) || !path->valuestring[0] || strlen(path->valuestring) > 4096) {
+            error = "malformed-content-art-wordmark"; break;
+        }
+        const char *path_error = jw_content__path_reason(path, pak_dir, false);
+        if (path_error) {
+            snprintf(reason, reason_size, "content-art-%s", path_error);
+            return -1;
+        }
+        char full[PATH_MAX];
+        if (snprintf(full, sizeof(full), "%s/%s", pak_dir, path->valuestring) >= (int)sizeof(full)) {
+            error = "content-art-missing-file"; break;
+        }
+        FILE *file = fopen(full, "rb");
+        if (!file) { error = "unreadable-content-art-image"; break; }
+        unsigned char signature[8];
+        size_t got = fread(signature, 1, sizeof(signature), file);
+        bool read_error = ferror(file);
+        fclose(file);
+        size_t len = strlen(path->valuestring);
+        if (read_error) error = "unreadable-content-art-image";
+        else if (len < 4 || strcasecmp(path->valuestring + len - 4, ".png") ||
+                 got != 8 || memcmp(signature, "\x89PNG\r\n\x1a\n", 8))
+            error = "unsupported-content-art-image";
+    }
+    if (error) { jw_content__reason(reason, reason_size, error); return -1; }
+    *out = block;
+    return 1;
+}
+
 int jw_content_scrape_validate(const cJSON *document,
                                const cJSON **out,
                                char *reason,
@@ -794,11 +902,16 @@ bool jw_content_manifest_validate(const char *pak_json_text,
         jw_content__reason(reason, reason_size, "secondary-source-unsupported");
         return false;
     }
-    if (jw_content__escaped_nul(pak_json_text)) {
+    char *sanitized = jw_content__escaped_nul(pak_json_text)
+                          ? jw_content__without_nul_art(pak_json_text) : NULL;
+    const char *input = sanitized ? sanitized : pak_json_text;
+    if (jw_content__escaped_nul(input)) {
+        free(sanitized);
         jw_content__reason(reason, reason_size, "invalid-json");
         return false;
     }
-    cJSON *document = cJSON_ParseWithOpts(pak_json_text, NULL, true);
+    cJSON *document = cJSON_ParseWithOpts(input, NULL, true);
+    free(sanitized);
     if (!cJSON_IsObject(document)) {
         cJSON_Delete(document);
         jw_content__reason(reason, reason_size, "invalid-json");

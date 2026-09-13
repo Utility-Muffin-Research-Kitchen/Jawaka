@@ -40,6 +40,10 @@ int jw_content_scrape_validate(const cJSON *document,
                                char *reason,
                                size_t reason_size);
 
+/* CONTENT-ART-1 has the same fail-soft return convention; paths use pak_abs_path. */
+int jw_content_art_validate(const cJSON *document, const char *pak_abs_path,
+                            const cJSON **out, char *reason, size_t reason_size);
+
 void jw_content_manifest_destroy(jw_content_manifest *manifest);
 
 #endif

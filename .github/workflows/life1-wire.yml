@@ -24,14 +24,31 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Utility-Muffin-Research-Kitchen/leaf-contracts
-          ref: 022a265bee1acc89748c194ae4f8d07f317d497c
+          ref: f11a28a613a02cccbeccc0f0af1c01f7339fa875
           path: leaf-contracts
 
       - name: Verify C framing against canonical fixtures
         run: make -C Jawaka WORKSPACE_ROOT="$GITHUB_WORKSPACE" wire-fixture-test
 
       - name: Verify content manifests against canonical fixtures
-        run: make -C Jawaka content-manifest-test catalog-merge-test
+        run: make -C Jawaka content-manifest-test catalog-merge-test content-art-test catalog-effective-test catalog-folder-test
 
       - name: Verify system display names and rename precedence
         run: make -C Jawaka system-names-test
+
+  wordmark-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jawaka
+      - name: Check out the pinned UI toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: Utility-Muffin-Research-Kitchen/Catastrophe
+          ref: 3a04236bbe07b537bebf35e62f98ef8b5a3bb33f
+          path: Catastrophe
+      - name: Install native renderer dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsqlite3-dev libcurl4-openssl-dev
+      - name: Verify wordmark fallback and invalidation with the real loader
+        run: make -C Jawaka wordmark-test

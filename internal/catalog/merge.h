@@ -10,4 +10,8 @@ int jw_catalog_merge(const cJSON *base,
                      cJSON **out_catalog,
                      cJSON **out_diagnostics);
 
+/* Apply validated CONTENT-ART-1 blocks after the ordinary merge. */
+int jw_catalog_apply_content_art(cJSON *systems, const cJSON *cores,
+                                  const cJSON *contributors, cJSON *diagnostics);
+
 #endif

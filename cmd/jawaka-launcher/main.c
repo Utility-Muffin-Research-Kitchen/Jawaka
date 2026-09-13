@@ -274,6 +274,7 @@ typedef struct {
     jw_system_entry    systems[JW_MAX_SYSTEMS];
     jw_system_icon_memo system_icon_memos[JW_MAX_SYSTEMS];
     jw_ra_catalog     *system_catalog;
+    unsigned           wordmark_revision;
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
@@ -1236,6 +1237,8 @@ static void jw__grid_reveal_cursor(jw_launcher_state *state) {
     g->anim_active   = false;
 }
 
+static jw_cover_loader *jw__covers(void);
+
 static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *state) {
     if (!db_path || !state) {
         return -1;
@@ -1278,6 +1281,12 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     char catalog_error[160];
     jw_ra_catalog *catalog =
         jw_ra_catalog_load(state->sdcard_root, catalog_error, sizeof(catalog_error));
+    /* A provider may replace bytes at the same path. Retire in-flight surfaces
+       before adopting the new catalog, then invalidate texture and path memos. */
+    jw_cover_loader_shutdown(jw__covers());
+    jw_cover_loader_forget_failures(jw__covers());
+    cat_cache_clear();
+    state->wordmark_revision++;
     jw_ra_catalog_free(state->system_catalog);
     state->system_catalog = catalog;
     jw__resolve_system_names(db_path, state);
@@ -3591,8 +3600,11 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
    tile at a time. The ring drains steadily instead, and each thumbnail it
    lands is picked up inline on the next frame -- or, when the thumbnail could
    not be written, the surface itself. */
-static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
-                                        int *out_w, int *out_h) {
+static SDL_Texture *jw__load_page_image_status(const char *path, int max_dim,
+                                               int *out_w, int *out_h,
+                                               const char *thumb_override,
+                                               bool *failed) {
+    if (failed) *failed = false;
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
     if (!path || !path[0]) return NULL;
@@ -3606,7 +3618,8 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
     }
 
     char thumb[PATH_MAX];
-    const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
+    const char *tp = thumb_override ? thumb_override :
+        (jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL);
     if (tp && cat_thumbnail_is_cached(path, tp)) {
         SDL_Surface *surf = IMG_Load(tp);
         if (surf) {                        /* a corrupt one falls through to rebuild */
@@ -3634,6 +3647,7 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
         /* Undecodable: draw the placeholder. The enqueue only runs a spaced
            retry; an exhausted failure is skipped without a decode. */
         jw_cover_loader_enqueue(jw__covers(), path, tp, max_dim);
+        if (failed) *failed = true;
         return NULL;
     }
     if (status == JW_COVER_READY) {
@@ -3648,11 +3662,32 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
             if (out_h) *out_h = h;
             return tex;
         }
+        if (failed) *failed = true;
+        return NULL;
     }
 
+    if (!jw_cover_loader_ensure(jw__covers())) {
+        SDL_Surface *surface = cat_decode_thumbnail_surface(path, tp, max_dim);
+        SDL_Texture *texture = surface ? cat_texture_from_surface(surface) : NULL;
+        if (texture) {
+            if (out_w) *out_w = surface->w;
+            if (out_h) *out_h = surface->h;
+            cat_cache_put(path, texture, surface->w, surface->h);
+        } else {
+            jw_cover_loader_record_failure(jw__covers(), path);
+            if (failed) *failed = true;
+        }
+        SDL_FreeSurface(surface);
+        return texture;
+    }
     jw_cover_loader_enqueue(jw__covers(), path, tp, max_dim);
     cat_request_frame_in(40);
     return NULL;
+}
+
+static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
+                                        int *out_w, int *out_h) {
+    return jw__load_page_image_status(path, max_dim, out_w, out_h, NULL, NULL);
 }
 
 /* The wallpaper covers the whole panel, so it is the one image that must not
@@ -6386,68 +6421,73 @@ static void jw__gg_playtime(int secs, char *out, size_t n) {
     else             snprintf(out, n, T("%dh %dm"), secs / 3600, (secs % 3600) / 60);
 }
 
-/* The system's logo for the games view. Same three-candidate shape as the tile
-   art -- the user's own file in the ROM folder, the selected theme, then Leaf's
-   own set -- and memoized per system so the frame costs one cached lookup. */
+/* Wordmark candidates retain precedence while a cold image is pending. A
+   failed decode advances to the next candidate; missing all four leaves text. */
 static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) {
     *tw = 0; *th = 0;
     const char *code = state->game_system;
-    if (!code || !code[0]) return NULL;
-
-    /* Keyed by the theme as well as the system. Keyed by code alone, switching
-       theme and reopening the same system kept the previous theme's resolved
-       path -- and clearing the texture cache would only reload the wrong file.
-
-       The user theme is identified by its folder, not by its catalog index: the
-       catalog is rescanned whenever the Layout page is entered, so an index is
-       only stable until a folder is added, removed or renamed on the card. A
-       rename that reshuffles the list can hand a different theme the index the
-       memo was keyed by, which is invisible to a key built from the index. */
-    const char *theme_dir  = state->settings.user_theme_dir;
-    const char *theme_name = cat_get_active_theme_name();
-    static char cached_code[64];
-    static char cached_theme[256];   /* matches the theme-name source width */
-    static char cached_theme_dir[128];  /* matches jw_settings_ui.user_theme_dir */
-    static bool cached_valid;
-    static char cached_path[PATH_MAX];
-    if (!cached_valid ||
-        strncmp(cached_code, code, sizeof(cached_code) - 1) != 0 ||
-        strncmp(cached_theme_dir, theme_dir,
-                sizeof(cached_theme_dir) - 1) != 0 ||
-        strncmp(cached_theme, theme_name ? theme_name : "",
-                sizeof(cached_theme) - 1) != 0) {
-        snprintf(cached_code, sizeof(cached_code), "%s", code);
-        snprintf(cached_theme, sizeof(cached_theme), "%s", theme_name ? theme_name : "");
-        snprintf(cached_theme_dir, sizeof(cached_theme_dir), "%s", theme_dir);
-        cached_valid = true;
-        cached_path[0] = '\0';
-        char cand[PATH_MAX];
-        int n;
+    if (!code[0]) return NULL;
+    const char *theme = cat_get_active_theme_name();
+    const char *theme_dir = state->settings.user_theme_dir;
+    static struct {
+        char code[64], theme[256], theme_dir[128];
+        char paths[4][PATH_MAX];
+        bool failed[4], valid;
+        unsigned revision;
+    } memo;
+    if (!memo.valid || memo.revision != state->wordmark_revision ||
+        strcmp(memo.code, code) || strcmp(memo.theme, theme ? theme : "") ||
+        strcmp(memo.theme_dir, theme_dir)) {
+        bool invalidate = memo.valid && (memo.revision != state->wordmark_revision ||
+            strcmp(memo.theme, theme ? theme : "") || strcmp(memo.theme_dir, theme_dir));
+        if (invalidate) {
+            jw_cover_loader_shutdown(jw__covers());
+            jw_cover_loader_forget_failures(jw__covers());
+            cat_cache_clear();
+        }
+        memset(&memo, 0, sizeof(memo));
+        memo.valid = true;
+        memo.revision = state->wordmark_revision;
+        snprintf(memo.code, sizeof(memo.code), "%s", code);
+        snprintf(memo.theme, sizeof(memo.theme), "%s", theme ? theme : "");
+        snprintf(memo.theme_dir, sizeof(memo.theme_dir), "%s", theme_dir);
         char folder[128];
         const char *rom_dir = jw__system_rom_folder(state, code, folder, sizeof(folder));
         if (rom_dir && state->sdcard_root[0]) {
-            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/wordmark.png",
-                         state->sdcard_root, rom_dir);
-            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
-                snprintf(cached_path, sizeof(cached_path), "%s", cand);
+            int n = snprintf(memo.paths[0], PATH_MAX, "%s/Roms/%s/wordmark.png",
+                             state->sdcard_root, rom_dir);
+            if (n < 0 || n >= PATH_MAX) memo.paths[0][0] = '\0';
         }
         int ti = jw_settings_user_theme_index(&state->settings);
-        if (!cached_path[0] && ti >= 0 &&
+        if (ti >= 0)
             jw_user_theme_wordmark_path(jw_settings_user_themes(&state->settings), ti,
-                                        "grid", code, cand, sizeof(cand)) &&
-            jw__grid_file_exists(cand))
-            snprintf(cached_path, sizeof(cached_path), "%s", cand);
-        if (!cached_path[0]) {
-            const char *theme_dir = cat_get_active_theme_dir();
-            if (theme_dir && theme_dir[0]) {
-                n = snprintf(cand, sizeof(cand), "%s/../grid_wordmarks/%s.png", theme_dir, code);
-                if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
-                    snprintf(cached_path, sizeof(cached_path), "%s", cand);
-            }
+                                        "grid", code, memo.paths[1], PATH_MAX);
+        const jw_ra_system *system = jw_ra_catalog_match_system_folder(state->system_catalog, code);
+        if (jw_ra_catalog_resolve_system_wordmark_path(state->system_catalog, system,
+                                                       memo.paths[2], PATH_MAX))
+            memo.paths[2][0] = '\0';
+        const char *builtin = cat_get_active_theme_dir();
+        if (builtin && builtin[0]) {
+            int n = snprintf(memo.paths[3], PATH_MAX, "%s/../grid_wordmarks/%s.png", builtin, code);
+            if (n < 0 || n >= PATH_MAX) memo.paths[3][0] = '\0';
         }
+        for (int i = 0; i < 4; i++)
+            memo.failed[i] = !jw__grid_file_exists(memo.paths[i]);
     }
-    if (!cached_path[0]) return NULL;
-    return jw__load_page_image(cached_path, JW_WORDMARK_MAX, tw, th);
+    for (int i = 0; i < 4; i++) {
+        if (memo.failed[i]) continue;
+        /* CAT-1's immutable generation is part of the thumbnail identity. A PNG
+           replaced with the same mtime/size still gets a fresh derived image. */
+        char thumb[PATH_MAX], key[PATH_MAX * 2];
+        snprintf(key, sizeof(key), "%s|%s", memo.paths[i],
+                 state->system_catalog && state->system_catalog->info_dir
+                     ? state->system_catalog->info_dir : "");
+        const char *tp = jw__cover_thumb_path(key, thumb, sizeof(thumb)) ? thumb : NULL;
+        SDL_Texture *texture = jw__load_page_image_status(memo.paths[i], JW_WORDMARK_MAX,
+                                                         tw, th, tp, &memo.failed[i]);
+        if (texture || !memo.failed[i]) return texture;
+    }
+    return NULL;
 }
 
 /* Grid View's colours come from the selected theme's theme.json, scoped to this

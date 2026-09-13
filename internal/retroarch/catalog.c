@@ -326,6 +326,8 @@ static void jw_ra_system_free(jw_ra_system *system) {
     free(system->bios_directory);
     free(system->icon_flat);
     free(system->icon_photographic);
+    free(system->wordmark);
+    free(system->wordmark_provider);
     free(system->provider);
     free(system->source_id);
 }
@@ -380,6 +382,35 @@ static int jw_ra_load_core(cJSON *row, jw_ra_core *out) {
     return 0;
 }
 
+static bool jw_ra_art_relative(const char *path) {
+    if (!path || !path[0] || path[0] == '/' || strlen(path) > 4096 || strchr(path, '\\')) return false;
+    for (const char *p = path; *p; p++) {
+        if ((unsigned char)*p < 32) return false;
+        if ((p == path || p[-1] == '/') && p[0] == '.' && p[1] == '.' &&
+            (p[2] == '/' || p[2] == '\0')) return false;
+    }
+    return true;
+}
+
+static bool jw_ra_art_alnum(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
+
+static bool jw_ra_art_provider(const char *provider) {
+    if (!jw_ra_art_relative(provider)) return false;
+    const char *slash = strchr(provider, '/');
+    size_t len = strlen(provider);
+    if (!slash || !jw_ra_art_alnum(provider[0]) || !jw_ra_art_alnum(slash[1]) ||
+        strchr(slash + 1, '/') ||
+        slash - provider > 64 || strlen(slash + 1) < 5 || strlen(slash + 1) > 68 ||
+        strcmp(provider + len - 4, ".pak")) return false;
+    for (const char *p = provider; *p; p++) {
+        if (jw_ra_art_alnum(*p) || strchr("/_.-", *p) || (*p == ' ' && p > slash)) continue;
+        return false;
+    }
+    return true;
+}
+
 static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
     memset(out, 0, sizeof(*out));
     out->id = jw_ra_json_string(row, "id");
@@ -401,6 +432,14 @@ static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
         out->provider = NULL;
     }
     out->source_id = out->provider ? jw_ra_strdup("primary") : NULL;
+
+    const cJSON *wordmark = cJSON_GetObjectItemCaseSensitive(row, "wordmark");
+    const cJSON *wordmark_provider = cJSON_GetObjectItemCaseSensitive(row, "wordmark_provider");
+    if (cJSON_IsString(wordmark) && jw_ra_art_relative(wordmark->valuestring) &&
+        cJSON_IsString(wordmark_provider) && jw_ra_art_provider(wordmark_provider->valuestring)) {
+        out->wordmark = jw_ra_strdup(wordmark->valuestring);
+        out->wordmark_provider = jw_ra_strdup(wordmark_provider->valuestring);
+    }
 
     /* Only the id is required. A system may have no default_core (discovered
        but not launchable on this device) — that's a launch-time concern, not a
@@ -1041,6 +1080,26 @@ int jw_ra_catalog_resolve_system_icon_path(const jw_ra_catalog *catalog,
         return -1;
     }
     return 0;
+}
+
+int jw_ra_catalog_resolve_system_wordmark_path(const jw_ra_catalog *catalog,
+                                               const jw_ra_system *system,
+                                               char *out, size_t out_size) {
+    if (!system || !jw_ra_art_relative(system->wordmark) ||
+        !jw_ra_art_provider(system->wordmark_provider)) return -1;
+    /* CONTENT-1 is primary-only. Use the same live Apps root as pak icons,
+       with the artwork provider instead of changing system ownership. */
+    jw_ra_system art = {.provider = system->wordmark_provider,
+                        .icon_flat = system->wordmark};
+    if (jw_ra_catalog_resolve_system_icon_path(catalog, &art, false, out, out_size)) return -1;
+    char root[PATH_MAX], real_root[PATH_MAX], real_file[PATH_MAX];
+    art.icon_flat = ".";
+    if (jw_ra_catalog_resolve_system_icon_path(catalog, &art, false, root, sizeof(root)) ||
+        !realpath(root, real_root) || !realpath(out, real_file)) return -1;
+    size_t len = strlen(real_root);
+    struct stat st;
+    return strncmp(real_file, real_root, len) == 0 && real_file[len] == '/' &&
+           stat(real_file, &st) == 0 && S_ISREG(st.st_mode) ? 0 : -1;
 }
 
 int jw_ra_catalog_info_dir(const jw_ra_catalog *catalog,

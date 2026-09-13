@@ -67,6 +67,8 @@ typedef struct {
        provider is Apps-relative and source_id names the owning card. */
     char *icon_flat;
     char *icon_photographic;
+    char *wordmark;
+    char *wordmark_provider;
     char *provider;
     char *source_id;
 } jw_ra_system;
@@ -151,6 +153,10 @@ int jw_ra_catalog_resolve_core_path(const jw_ra_catalog *catalog,
                                     size_t out_size);
 
 /* The merged info directory belonging to this exact catalog snapshot. */
+int jw_ra_catalog_resolve_system_wordmark_path(const jw_ra_catalog *catalog,
+                                               const jw_ra_system *system,
+                                               char *out, size_t out_size);
+
 int jw_ra_catalog_info_dir(const jw_ra_catalog *catalog,
                            char *out,
                            size_t out_size);
