@@ -23,6 +23,7 @@
 #include "internal/launcher/bios.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/launcher/system_names.h"
+#include "internal/launcher/system_activity.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/cat_services.h"
 #include "internal/platform/device.h"
@@ -385,6 +386,7 @@ typedef struct {
     char               platform_root[PATH_MAX];
     char               socket_path[PATH_MAX];
     char               status[256];
+    jw_system_activity system_activity;
     bool               scan_ready;
     bool               scan_running;
     bool               library_populated;
@@ -884,6 +886,58 @@ static int jw__footer_height(const jw_launcher_state *state) {
     return jw_settings_show_hints(&state->settings) ? cat_get_footer_height() : 0;
 }
 
+/* System owns this strip; browser inventory/status strings never enter it. */
+static const char *jw__system_activity_text(const jw_launcher_state *state) {
+    return jw_system_activity_text(&state->system_activity, SDL_GetTicks(),
+                                    T("Library updating..."));
+}
+
+static int jw__system_activity_height(const jw_launcher_state *state) {
+    return jw__system_activity_text(state)[0]
+        ? TTF_FontHeight(cat_get_font(CAT_FONT_SMALL)) + CAT_S(8) : 0;
+}
+
+static void jw__draw_system_activity(const jw_launcher_state *state) {
+    int h = jw__system_activity_height(state);
+    if (!h) return;
+    int margin = CAT_S(12);
+    int bottom = cat_get_screen_height() - jw__footer_height(state) - margin;
+    cat_draw_text_ellipsized(cat_get_font(CAT_FONT_SMALL),
+        jw__system_activity_text(state), margin + CAT_S(12), bottom - h + CAT_S(4),
+        cat_get_theme()->hint, cat_get_screen_width() - 2 * (margin + CAT_S(12)));
+}
+
+static void jw__system_activity_tick(jw_launcher_state *state) {
+    state->system_activity.scan_running = state->scan_running;
+    jw_system_notice *notices[] = {
+        &state->system_activity.feedback, &state->system_activity.completion
+    };
+    uint32_t now = SDL_GetTicks();
+    for (int i = 0; i < 2; ++i) {
+        uint32_t remaining = jw_system_notice_remaining(notices[i], now);
+        if (remaining && state->menu_open) cat_request_frame_in(remaining);
+        if (!remaining && notices[i]->text[0]) {
+            notices[i]->text[0] = '\0';
+            if (state->menu_open) cat_request_frame();
+        }
+    }
+}
+
+/* A fresh output buffer detects repeated feedback without treating navigation
+   as a new message. Leaving a page discards its feedback, not ongoing work. */
+static bool jw__system_settings_input(jw_launcher_state *state, jw_settings_ui *ui,
+                                      cat_button button, bool *theme_changed) {
+    jw_settings_screen before = jw_settings_ui_screen(ui);
+    char feedback[256] = "";
+    bool open = jw_settings_ui_handle_button(ui, button, feedback, sizeof(feedback),
+                                              theme_changed);
+    if (!open || before != jw_settings_ui_screen(ui))
+        state->system_activity.feedback.text[0] = '\0';
+    else if (feedback[0])
+        jw_system_notice_set(&state->system_activity.feedback, feedback, SDL_GetTicks());
+    return open;
+}
+
 /* ─── Browse-page box model ──────────────────────────────────────────────────
  * The single layout used by every list-left / image-right page (Recents,
  * Favorites, Games, the in-system game browser, search). Built on Catastrophe's
@@ -907,12 +961,13 @@ static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
                              SDL_Rect *list, SDL_Rect *image, int *item_h) {
     int pad     = CAT_S(JW_BROWSE_PAD);
     int hints_h = jw__footer_height(state);
+    int activity_h = state->menu_open ? jw__system_activity_height(state) : 0;
     /* The content box owns no bottom padding; the gap above the hint bar is the
        hint box's own top padding, so it disappears with the hints. */
-    int hint_pad = (hints_h > 0) ? pad : 0;
+    int hint_pad = (hints_h > 0 || activity_h > 0) ? pad : 0;
     cat_box content = {
         0, header_h, cat_get_screen_width(),
-        cat_get_screen_height() - header_h - hints_h - hint_pad,
+        cat_get_screen_height() - header_h - hints_h - hint_pad - activity_h,
         pad, pad, 0, pad
     };
     int list_w = cat_box_content(&content).w * 58 / 100;
@@ -930,7 +985,17 @@ static void jw__browse_boxes(const jw_launcher_state *state, int header_h,
        rect, so the clamped count must land back in the list state — otherwise
        a count cached when the box was taller (hints off, smaller font) keeps
        drawing rows under the hint bar. Same idiom as the settings pickers. */
-    if (ls) ((cat_list_state *)ls)->visible_rows = vis;
+    if (ls) {
+        cat_list_state *motion = (cat_list_state *)ls;
+        motion->visible_rows = vis;
+        if (state->menu_open && item_count > 0) {
+            int max_scroll = item_count > vis ? item_count - vis : 0;
+            if (motion->scroll_offset > max_scroll) motion->scroll_offset = max_scroll;
+            if (motion->cursor < motion->scroll_offset ||
+                motion->cursor >= motion->scroll_offset + vis)
+                cat_list_state_jump(motion, motion->cursor, item_count);
+        }
+    }
     /* The row pill is centered in its cell (pill_h = body + CAT_S(6); see
        jw__draw_rom_item), so the first/last pills sit inset from the cell edges
        by (ih - pill_h)/2. Inset the icon box by that same amount so its top and
@@ -1756,6 +1821,23 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
 
     bool active = strcmp(s.state, "running") == 0 ||
                   strcmp(s.state, "paused-quota") == 0;
+    jw_system_activity *activity = &state->system_activity;
+    if (active) {
+        activity->completion.text[0] = '\0';
+        if (strcmp(s.state, "paused-quota") == 0) {
+            snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
+                     s.message[0] ? s.message : T("daily quota exceeded"));
+        } else if (s.current_system[0]) {
+            int shown = s.done < s.total ? s.done + 1 : s.total;
+            snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping %s · %d/%d"),
+                     s.current_system, shown, s.total);
+        } else {
+            snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping: %d/%d"),
+                     s.done, s.total);
+        }
+    } else {
+        activity->scrape[0] = '\0';
+    }
     if (active) {
         char item[224] = "";
         if (s.current_name[0]) {
@@ -1797,6 +1879,7 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
                 snprintf(state->status + n, cap - (size_t)n,
                          ", %d cancelled", s.cancelled);
             }
+            jw_system_notice_set(&activity->completion, state->status, SDL_GetTicks());
             cat_request_frame();
         }
     }
@@ -2565,26 +2648,11 @@ static void jw__render_settings(const jw_launcher_state *state,
        box's own top padding) - so the Settings list sits on the same row grid
        as the browse tabs instead of a slightly denser one. */
     int hints_h = jw__footer_height(state);
-    TTF_Font *status_font = cat_get_font(CAT_FONT_SMALL);
-    int status_h = state->status[0]
-        ? TTF_FontHeight(status_font) + CAT_S(8)
-        : 0;
-    int sh_inner = content_h - margin - ((hints_h > 0) ? margin : 0) - status_h;
+    int status_h = jw__system_activity_height(state);
+    int sh_inner = content_h - margin - ((hints_h > 0 || status_h > 0) ? margin : 0) - status_h;
     if (sh_inner < 0) sh_inner = 0;
-
     jw_settings_ui_render(&state->settings, sx, sy, sw_inner, sh_inner);
-
-    /* Settings actions report success and failure through state->status. The
-       System-menu-hosted Settings path used to reserve no place to draw it, so
-       failures such as an unavailable scraper looked exactly like a dropped A
-       press. Keep one line below the page only while there is feedback to show. */
-    if (status_h > 0) {
-        ap_theme *theme = cat_get_theme();
-        int status_y = sy + sh_inner + CAT_S(4);
-        cat_draw_text_ellipsized(status_font, state->status,
-                                 sx + CAT_S(12), status_y, theme->hint,
-                                 sw_inner - CAT_S(24));
-    }
+    jw__draw_system_activity(state);
 }
 
 /* The current tab's content dispatch, factored out so it can draw to the screen
@@ -6190,6 +6258,7 @@ static void jw__render_menu(const jw_launcher_state *state) {
         { CAT_BTN_B,  "Back",   true,  JW_HINT("B") },
         { CAT_BTN_A,  "Select", true,  JW_HINT("A") },
     };
+    jw__draw_system_activity(state);
     jw__draw_footer(state, footer, 3);
     jw__present();
 }
@@ -6198,6 +6267,7 @@ static void jw__render_menu(const jw_launcher_state *state) {
    Settings renders the real settings UI, so enter it; the Actions/Info list
    states are initialized lazily when L1/R1 lands on them. */
 static void jw__open_menu(jw_launcher_state *state) {
+    state->system_activity.feedback.text[0] = '\0';
     state->menu_open = true;
     state->menu_tab  = JW_SMTAB_SETTINGS;
     jw_settings_ui_enter(&state->settings);
@@ -6205,6 +6275,7 @@ static void jw__open_menu(jw_launcher_state *state) {
 
 static void jw__switch_system_tab(jw_launcher_state *state, int direction) {
     if (!state) return;
+    state->system_activity.feedback.text[0] = '\0';
     /* Moving along the System tab row is movement, so it ticks like the home tab
        row does: "nav", gated on the opt-in navigation tick, rather than the
        "select" a context change gets. The row wraps, so there is no boundary to
@@ -9958,7 +10029,7 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
        has to come from here. The matching one fires when the loop ends. */
     jw__haptic(state, "select");
 
-    char status[256] = { 0 };
+    state->system_activity.feedback.text[0] = '\0';
     bool hints = jw_settings_show_hints(&state->settings);
     int m = CAT_S(12);
     bool running = true;
@@ -9986,8 +10057,7 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
                 break;
             }
             bool theme_changed = false;
-            jw_settings_ui_handle_button(ui, ev.button, status, sizeof(status),
-                                         &theme_changed);
+            jw__system_settings_input(state, ui, ev.button, &theme_changed);
             if (theme_changed)
                 jw__rebuild_for_layout(state);
             if (!jw_settings_ui_is_open(ui) ||
@@ -10000,12 +10070,19 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
         if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE)
             jw_settings_ui_refresh_update(ui);
 
+        jw__poll_library_generation(socket_path, db_path, state);
+        jw__poll_scrape_status(state);
+        jw__system_activity_tick(state);
         cat_clear_screen();
         /* Keep the Actions/Info tab bar pinned at top while a page is open, so the
            system side matches the content side (which never drops its tab bar). */
-        jw__draw_menu_tab_bar(state);
-        SDL_Rect cr = cat_get_content_rect(true, hints, false);
-        jw_settings_ui_render(ui, cr.x + m, cr.y, cr.w - m * 2, cr.h);
+        int header_h = jw__draw_menu_tab_bar(state);
+        int activity_h = jw__system_activity_height(state);
+        int content_h = cat_get_screen_height() - header_h - jw__footer_height(state)
+            - m - ((hints || activity_h) ? m : 0) - activity_h;
+        jw_settings_ui_render(ui, m, header_h + m,
+                               cat_get_screen_width() - m * 2, content_h);
+        jw__draw_system_activity(state);
         if (hints) {
             jw_settings_screen scr = jw_settings_ui_screen(ui);
             if (scr == JW_SETTINGS_ABOUT || scr == JW_SETTINGS_LIBRARY ||
@@ -10023,6 +10100,7 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
         }
         jw__present();
     }
+    state->system_activity.feedback.text[0] = '\0';
     jw_settings_ui_close(ui);
     jw__haptic(state, "select");   /* handed the screen back */
     cat_request_frame();
@@ -10068,7 +10146,10 @@ static void jw__menu_activate(const char *socket_path, const char *db_path,
             state->menu_scanning = true;
             cat_request_frame();
             jw__render_menu(state);
-            jw_ipc_scan_library(socket_path, buf, sizeof(buf));
+            int rc = jw_ipc_scan_library(socket_path, buf, sizeof(buf));
+            jw_system_notice_set(&state->system_activity.feedback,
+                rc == 0 ? T("Library scan requested") : (buf[0] ? buf : T("Library scan failed")),
+                SDL_GetTicks());
             jw_ipc_library_status_info lib;
             if (jw_ipc_library_status_full(socket_path, &lib) == 0) {
                 state->library_generation = lib.generation;
@@ -10128,9 +10209,7 @@ static void jw__handle_menu_input(const char *socket_path, const char *db_path,
             return;
         }
         bool theme_changed = false;
-        bool still_open = jw_settings_ui_handle_button(
-            &state->settings, button,
-            state->status, sizeof(state->status), &theme_changed);
+        bool still_open = jw__system_settings_input(state, &state->settings, button, &theme_changed);
         if (theme_changed)
             jw__rebuild_for_layout(state);
         if (!still_open) {
@@ -11318,9 +11397,7 @@ static void jw__handle_input_inner(const char *socket_path, const char *db_path,
             }
         }
         bool theme_changed = false;
-        bool still_open = jw_settings_ui_handle_button(
-            &state->settings, button,
-            state->status, sizeof(state->status), &theme_changed);
+        bool still_open = jw__system_settings_input(state, &state->settings, button, &theme_changed);
         if (theme_changed)
             jw__rebuild_for_layout(state);
         if (!still_open && layout == CAT_LAUNCHER_TABBED) {
@@ -12245,6 +12322,7 @@ int main(void) {
         jw__status_poller_sync(&state.settings);
         jw__poll_library_generation(socket_path, db_path, &state);
         jw__poll_scrape_status(&state);
+        jw__system_activity_tick(&state);
 
         /* 1080p120 auto-revert: when the daemon has armed a revert (after a
            deliberate switch to a 120Hz TV mode), show the blocking keep-or-revert

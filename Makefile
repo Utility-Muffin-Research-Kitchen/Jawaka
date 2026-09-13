@@ -827,7 +827,7 @@ pinyin-search-test: | $(BUILD)/bin
 settings-status-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/settings-status-test \
 		internal/settings/settings_status_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
-	$(BUILD)/bin/settings-status-test
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/settings-status-test
 
 appearance-env-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -D_GNU_SOURCE -o $(BUILD)/bin/appearance-env-test \
@@ -1033,7 +1033,7 @@ $(BUILD)/bin/jawakad: $(sort $(DAEMON_SRCS)) $(SCRAPE_CREDENTIALS_HEADER) | $(BU
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS_DAEMON) -o $@ $(sort $(DAEMON_SRCS)) $(LDLIBS_DAEMON)
 
-$(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) $(CATASTROPHE_WIDGETS_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
+$(BUILD)/bin/jawaka-launcher: cmd/jawaka-launcher/main.c internal/launcher/system_activity.h $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) $(CATASTROPHE_WIDGETS_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $@ cmd/jawaka-launcher/main.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
 
 $(BUILD)/bin/jawaka-menu: cmd/jawaka-menu/main.c $(sort $(UI_SRCS)) $(CATASTROPHE_HEADER) $(CATASTROPHE_WIDGETS_HEADER) | $(BUILD)/bin check-catastrophe check-sdl
