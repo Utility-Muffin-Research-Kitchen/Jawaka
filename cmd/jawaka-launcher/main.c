@@ -3701,11 +3701,6 @@ static SDL_Texture *jw__load_page_image_status(const char *path, int max_dim,
     return NULL;
 }
 
-static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
-                                        int *out_w, int *out_h) {
-    return jw__load_page_image_status(path, max_dim, out_w, out_h, NULL, NULL);
-}
-
 /* The wallpaper covers the whole panel, so it is the one image that must not
    go through the cover thumbnailer: a 384px thumbnail stretched to fill 960x720
    is visibly blocky. Decode it at full size and let the texture cache hold it.
@@ -6272,7 +6267,10 @@ static const char *jw__grid_system_icon_path(jw_launcher_state *state, int idx) 
     jw_system_icon_memo *memo = &state->system_icon_memos[idx];
     if (strcmp(memo->code, code)) {
         memset(memo, 0, sizeof(*memo));
-        jw__copy_path(memo->code, sizeof(memo->code), code);
+        size_t i = 0;
+        for (; i + 1 < sizeof(memo->code) && code[i]; ++i)
+            memo->code[i] = code[i];
+        memo->code[i] = '\0';
     }
     if (!memo->done) {
         jw_system_icon_candidates candidates;
