@@ -12,8 +12,7 @@ They add a white canvas and contain no image-model output.
   The unchanged full-color vector is `originals/scummvm_logo.svg` in
   [scummvm-media](https://github.com/scummvm/scummvm-media/tree/3685fcd62e09277e114eb0ef99091a9c55335f00),
   revision `3685fcd62e09277e114eb0ef99091a9c55335f00`. The card adaptation is
-  also CC BY-SA 3.0. See `../WORDMARKS/sources/SCUMMVM-notes.txt` for the
-  upstream credit and branding licence statement.
+  also CC BY-SA 3.0. See the [upstream credit and branding licence statement](https://github.com/scummvm/scummvm-media/blob/3685fcd62e09277e114eb0ef99091a9c55335f00/originals/notes.txt).
 - **EASYRPG:** EasyRPG Team, [official logo download](https://easyrpg.org/downloads/logos/logo_with_text_dark_right.svg),
   downloaded 2026-09-13; source timestamp 2021-10-29. Its [branding licence](https://blog.easyrpg.org/2023/04/)
   is [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The card
@@ -40,18 +39,18 @@ They add a white canvas and contain no image-model output.
   [Commons source](https://commons.wikimedia.org/wiki/File:PC9800_logo_1982.svg),
   2016-06-29, designated PD-textlogo. Reuses the pilot derivative's P, C,
   hyphen, 9 and 8 paths, omitting the final 00 and Japanese suffix; dark ink
-  replaces white. See `../WORDMARKS/README.md` for the original derivation.
+  replaces white. See [the PC-98 wordmark credits](../../../../grid_wordmarks/WORDMARK-SOURCE.md) for the original derivation.
 - **PICO8:** Original UMRK geometric PICO-8 lettering, [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
   Reuses the pilot master with dark ink. It contains no official rainbow
   emblem, traced logo or tagline. PICO-8 is Lexaloffle's name.
 - **ARCADE, PORTS:** Original UMRK label compositions using outlined Lexend
   Bold glyphs, dedicated to CC0 1.0. Font copyright 2018 The Lexend Project
-  Authors, SIL OFL 1.1; see `sources/Lexend-OFL.txt`. The source font is
+  Authors, SIL OFL 1.1; see [the included font licence](../../../../grid_wordmarks/Lexend-OFL.txt). The source font is
   Catastrophe's `res/fonts/Lexend/Lexend-Bold.ttf`; the paths are embedded, so
   consumers need no font installation.
 
 Source page URLs, downloaded SVG URLs and revision IDs for the five additional
-Commons vectors are retained in `sources/commons.json`. Brand names and marks
+Commons vectors are retained in [the included source records](commons.json). Brand names and marks
 remain their respective owners' trademarks; these credits do not imply endorsement.
 
 
