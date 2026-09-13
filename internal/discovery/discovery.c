@@ -4,6 +4,7 @@
 #include "internal/catalog/effective.h"
 #include "internal/catalog/manifest.h"
 #include "internal/db/db.h"
+#include "internal/discovery/art_path.h"
 #include "internal/platform/platform_id.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/storage/sources.h"
@@ -41,6 +42,7 @@ typedef struct {
     int      writes;
     bool     active;
     bool     savepoint;
+    jw_art_index *art_index;   /* art folders read once per scan */
 } jw_scan_tx;
 
 static int jw__scan_tx_begin(jw_scan_tx *tx) {
@@ -294,28 +296,9 @@ static void jw__title_from_metadata_filename(const jw_ra_system *system,
                                              const char *filename,
                                              char *out,
                                              size_t out_size) {
-    snprintf(out, out_size, "%s", filename ? filename : "");
-
-    char outer_ext[64];
-    jw__extension_lower(filename, outer_ext, sizeof(outer_ext));
-    int archive = jw_ra_string_list_contains_casefold(&system->archive_extensions, outer_ext);
-    int playlist = jw_ra_string_list_contains_casefold(&system->playlist_extensions, outer_ext);
-    int content = jw_ra_string_list_contains_casefold(&system->extensions, outer_ext);
-
-    if (archive || playlist || content) {
-        jw__strip_last_extension(out);
-    }
-
-    if (archive || content) {
-        /* Also strip a content double-extension ("cart.p8.png") so titles
-           don't keep the inner suffix. */
-        char inner_ext[64];
-        jw__extension_lower(out, inner_ext, sizeof(inner_ext));
-        if (jw_ra_string_list_contains_casefold(&system->archive_inner_extensions, inner_ext) ||
-            jw_ra_string_list_contains_casefold(&system->extensions, inner_ext)) {
-            jw__strip_last_extension(out);
-        }
-    }
+    /* The title doubles as the art stem; the scraper's missing-art check
+       derives it through the same helper. */
+    jw_art_stem_for_rom(system, filename, out, out_size);
 }
 
 static int jw__system_already_counted(char systems[][64], int count, const char *system) {
@@ -503,6 +486,7 @@ static int jw__metadata_system_has_packaged_launch_target(const jw_ra_catalog *c
 }
 
 static const char *jw__metadata_image_path(const jw_ra_system *system,
+                                           jw_art_index *art_index,
                                            const jw_storage_source *source,
                                            const char *physical_folder,
                                            const char *title,
@@ -510,46 +494,15 @@ static const char *jw__metadata_image_path(const jw_ra_system *system,
                                            size_t image_abs_size,
                                            char *image_rel,
                                            size_t image_rel_size) {
-    const char *canonical_root = system->image_root && system->image_root[0]
-        ? system->image_root
+    if (jw_art_find_for_rom(art_index, source, system->image_root, physical_folder, title,
+                            image_abs, image_abs_size,
+                            image_rel, image_rel_size) != 0) {
+        return NULL;
+    }
+    return jw_storage_db_path_for_source(source, image_rel, image_abs,
+                                         image_rel, image_rel_size) == 0
+        ? image_rel
         : NULL;
-    if (canonical_root &&
-        snprintf(image_abs, image_abs_size, "%s/%s/%s.png",
-                 source->root, canonical_root, title) < (int)image_abs_size &&
-        snprintf(image_rel, image_rel_size, "%s/%s.png",
-                 canonical_root, title) < (int)image_rel_size &&
-        jw__is_file(image_abs)) {
-        return jw_storage_db_path_for_source(source, image_rel, image_abs,
-                                             image_rel, image_rel_size) == 0
-            ? image_rel
-            : NULL;
-    }
-
-    if (physical_folder && physical_folder[0] &&
-        snprintf(image_abs, image_abs_size, "%s/%s/%s.png",
-                 source->images_path, physical_folder, title) < (int)image_abs_size &&
-        snprintf(image_rel, image_rel_size, "Images/%s/%s.png",
-                 physical_folder, title) < (int)image_rel_size &&
-        jw__is_file(image_abs)) {
-        return jw_storage_db_path_for_source(source, image_rel, image_abs,
-                                             image_rel, image_rel_size) == 0
-            ? image_rel
-            : NULL;
-    }
-
-    if (physical_folder && physical_folder[0] &&
-        snprintf(image_abs, image_abs_size, "%s/%s/Imgs/%s.png",
-                 source->roms_path, physical_folder, title) < (int)image_abs_size &&
-        snprintf(image_rel, image_rel_size, "Roms/%s/Imgs/%s.png",
-                 physical_folder, title) < (int)image_rel_size &&
-        jw__is_file(image_abs)) {
-        return jw_storage_db_path_for_source(source, image_rel, image_abs,
-                                             image_rel, image_rel_size) == 0
-            ? image_rel
-            : NULL;
-    }
-
-    return NULL;
 }
 
 static int jw__scan_roms_compat(jw_scan_tx *tx, const jw_storage_source *source,
@@ -625,21 +578,11 @@ static int jw__scan_roms_compat(jw_scan_tx *tx, const jw_storage_source *source,
                                               rom_rel, sizeof(rom_rel)) != 0) {
                 continue;
             }
-            if (jw__format_string(image_abs, sizeof(image_abs), "%s/%s/%s.png",
-                                  source->images_path, system_entry->d_name, title) == 0 &&
-                jw__format_string(image_rel, sizeof(image_rel), "Images/%s/%s.png",
-                                  system_entry->d_name, title) == 0 &&
-                jw__is_file(image_abs) &&
+            if (jw_art_find_for_rom(tx->art_index, source, NULL, system_entry->d_name, title,
+                                    image_abs, sizeof(image_abs),
+                                    image_rel, sizeof(image_rel)) == 0 &&
                 jw_storage_db_path_for_source(source, image_rel, image_abs,
                                               image_rel, sizeof(image_rel)) == 0) {
-                image_path = image_rel;
-            } else if (jw__format_string(image_abs, sizeof(image_abs), "%s/%s/Imgs/%s.png",
-                                         source->roms_path, system_entry->d_name, title) == 0 &&
-                       jw__format_string(image_rel, sizeof(image_rel), "Roms/%s/Imgs/%s.png",
-                                         system_entry->d_name, title) == 0 &&
-                       jw__is_file(image_abs) &&
-                       jw_storage_db_path_for_source(source, image_rel, image_abs,
-                                                     image_rel, sizeof(image_rel)) == 0) {
                 image_path = image_rel;
             }
 
@@ -1186,7 +1129,7 @@ static int jw__scan_system_dir(jw_scan_tx *tx,
             continue;
         }
 
-        image_path = jw__metadata_image_path(system, source, system_folder, title,
+        image_path = jw__metadata_image_path(system, tx->art_index, source, system_folder, title,
                                              image_abs, sizeof(image_abs),
                                              image_rel, sizeof(image_rel));
 
@@ -2165,12 +2108,15 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
     jw_scan_tx tx;
     memset(&tx, 0, sizeof(tx));
     tx.db = db;
+    /* NULL on allocation failure: lookups then read their folder per call. */
+    tx.art_index = jw_art_index_new();
 
     if (jw_db_scan_begin(db) != 0 ||
         jw__scan_roms(&tx, sdcard_root, catalog, compatibility, out) != 0 ||
         jw__scan_apps(&tx, sdcard_root, catalog, out) != 0 ||
         jw__scan_tx_commit(&tx) != 0) {
         jw__scan_tx_rollback(&tx);
+        jw_art_index_free(tx.art_index);
         return -1;
     }
 
@@ -2180,9 +2126,11 @@ int jw_scan_library(sqlite3 *db, const char *sdcard_root, jw_scan_result *out) {
         jw__apply_arcade_names(db, sdcard_root, catalog) != 0 ||
         jw__scan_tx_commit(&tx) != 0) {
         jw__scan_tx_rollback(&tx);
+        jw_art_index_free(tx.art_index);
         return -1;
     }
 
+    jw_art_index_free(tx.art_index);
     jw__refresh_result_counts(db, out);
     return 0;
 }

@@ -225,6 +225,7 @@ DAEMON_SRCS := \
 	internal/settings/appearance.c \
 	internal/i18n/i18n.c \
 	internal/settings/theme_resolve.c \
+internal/discovery/art_path.c \
 internal/discovery/discovery.c \
 	$(SCRAPE_SRCS) \
 	internal/services/manifest.c \
@@ -292,6 +293,7 @@ SCAN_SMOKE_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	internal/db/db.c \
 	internal/db/relocation.c \
+	internal/discovery/art_path.c \
 	internal/discovery/discovery.c \
 	$(CONTENT_MANIFEST_SRC) \
 	internal/retroarch/catalog.c \
@@ -301,6 +303,7 @@ SCAN_SMOKE_SRCS := \
 
 SCRAPE_SMOKE_SRCS := \
 	cmd/jawaka-scrape-smoke/main.c \
+	internal/discovery/art_path.c \
 	$(SCRAPE_SRCS) \
 	internal/core/log.c \
 	internal/db/db.c \
@@ -324,6 +327,7 @@ PAKRAT_SMOKE_SRCS := \
 	$(PLATFORM_ID_SRC) \
 	internal/db/db.c \
 	internal/db/relocation.c \
+	internal/discovery/art_path.c \
 	internal/discovery/discovery.c \
 	$(CONTENT_MANIFEST_SRC) \
 	internal/retroarch/catalog.c \
@@ -407,6 +411,7 @@ UI_SRCS := \
 	internal/store/pakrat_state.c \
 	internal/store/pakrat_txn.c \
 	internal/update/sha256.c \
+	internal/discovery/art_path.c \
 	internal/discovery/discovery.c \
 	$(CONTENT_MANIFEST_SRC) \
 	internal/db/db.c \
@@ -415,6 +420,7 @@ UI_SRCS := \
 	internal/launcher/bios.c \
 	internal/launcher/console_colors.c \
 	internal/launcher/coverflow.c \
+	internal/launcher/cover_loader.c \
 	internal/launcher/grid.c \
 	internal/launcher/grid_games.c \
 	internal/launcher/user_themes.c \
@@ -981,6 +987,39 @@ standalone-policy-test: | $(BUILD)/bin
 		internal/launcher/standalone_policy.c
 	$(BUILD)/bin/standalone-policy-test
 
+.PHONY: scrape-art-test
+scrape-art-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -Ithird_party/stb -Ithird_party/miniz -Ithird_party/md5 \
+		-o $(BUILD)/bin/scrape-art-test \
+		internal/scrape/scrape_art_test.c internal/scrape/scrape_worker.c \
+		internal/scrape/scrape_catalog.c internal/scrape/scrape_identity.c \
+		internal/scrape/scrape_md5.c internal/scrape/scrape_systems.c \
+		internal/discovery/art_path.c internal/discovery/discovery.c \
+		$(CONTENT_MANIFEST_SRC) internal/core/log.c internal/db/db.c \
+		internal/db/relocation.c internal/storage/sources.c \
+		internal/retroarch/catalog.c $(EFFECTIVE_CATALOG_SRCS) \
+		internal/platform/platform_id_mlp1.c \
+		third_party/md5/md5.c third_party/miniz/miniz.c \
+		third_party/miniz/miniz_tdef.c third_party/miniz/miniz_tinfl.c \
+		third_party/miniz/miniz_zip.c third_party/cjson/cJSON.c \
+		$(LDLIBS_COMMON) -lpthread -lm
+	JW_TEST_DEFAULTS_DIR=../miniloong-launcher-switcher/device/mlp1/defaults \
+		$(BUILD)/bin/scrape-art-test
+
+.PHONY: cover-failure-test
+cover-failure-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/cover-failure-test \
+		internal/launcher/cover_loader_test.c internal/launcher/cover_loader.c -lpthread
+	$(BUILD)/bin/cover-failure-test
+
+.PHONY: art-path-test
+art-path-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/art-path-test \
+		internal/discovery/art_path_test.c internal/discovery/art_path.c \
+		internal/retroarch/catalog.c $(EFFECTIVE_CATALOG_SRCS) \
+		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/art-path-test
+
 scrape-systems-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/scrape-systems-test \
 		internal/scrape/scrape_systems_test.c \
@@ -1296,6 +1335,9 @@ help:
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
 	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
 	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
+	@echo "  make art-path-test         Validate box-art lookup order and extension casing"
+	@echo "  make scrape-art-test       Validate missing-art checks against JPEG and fallback art"
+	@echo "  make cover-failure-test    Validate launcher handling of undecodable cover art"
 	@echo "  make update-local-manifest-smoke  Validate developer artifact.url handling"
 	@echo "  make pakrat-state-smoke      Exercise Pak Rat stale + managed-state safeguards"
 	@echo "  make pakrat-txn-test         Exercise service-pak mutation metadata and uninstall"

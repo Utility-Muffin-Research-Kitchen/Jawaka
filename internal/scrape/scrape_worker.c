@@ -4,6 +4,7 @@
 #include "internal/scrape/ss_client.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
+#include "internal/discovery/art_path.h"
 #include "internal/retroarch/catalog.h"
 #include "internal/storage/sources.h"
 
@@ -939,26 +940,70 @@ int jw_scrape_enqueue_game(const char *system, const char *rom_path,
     return rc;
 }
 
-/* True if the art file a scrape would write for this game already exists on disk
-   (checked at the write path so art that landed without a rescan still counts).
-   Shared by the enqueue and the missing-count paths. */
+/* The Roms/ folder a ROM physically sits in ("FC" for Roms/FC/Mario.nes, also
+   for nested Roms/FC/Hacks/Mario.nes), or "" when it is outside roms_path. */
+static void jw__rom_physical_folder(const jw_storage_source *source,
+                                    const char *rom_abs, const char *rom_path,
+                                    char *out, size_t out_size) {
+    out[0] = '\0';
+    const char *rest = NULL;
+    size_t roms_len = strlen(source->roms_path);
+    if (roms_len > 0 && strncmp(rom_abs, source->roms_path, roms_len) == 0 &&
+        rom_abs[roms_len] == '/') {
+        rest = rom_abs + roms_len + 1;
+    } else if (strncmp(rom_path, "Roms/", 5) == 0) {
+        rest = rom_path + 5;
+    }
+    const char *slash = rest ? strchr(rest, '/') : NULL;
+    if (!slash || slash == rest || (size_t)(slash - rest) >= out_size) {
+        return;
+    }
+    memcpy(out, rest, (size_t)(slash - rest));
+    out[slash - rest] = '\0';
+}
+
+/* True if the game already has art on disk, wherever the library scan would
+   find it (canonical image root, Images/<folder>, Roms/<folder>/Imgs, in any
+   accepted format) or where a scrape would write it. Checked on disk so art
+   that landed without a rescan still counts. Shared by the enqueue and the
+   missing-count paths; runs on the calling thread, like the image-dir lookup. */
 static bool jw__game_art_exists(const jw_storage_source_list *sources,
+                                jw_art_index *art_index,
                                 const char *system, const char *rom_path) {
-    char rom_abs[PATH_MAX], art_abs[PATH_MAX];
+    char rom_abs[PATH_MAX];
     if (jw_storage_resolve_path(sources, rom_path, rom_abs, sizeof(rom_abs)) != 0)
         return false;
-    char rom_copy[512], base[256];
-    snprintf(rom_copy, sizeof(rom_copy), "%s", rom_path);
-    jw__art_base(basename(rom_copy), base, sizeof(base));
     const jw_storage_source *source =
         jw_storage_sources_find_for_path(sources, rom_abs);
     if (!source) source = jw_storage_sources_primary(sources);
-    char image_dir[64];
+    if (!source) return false;
+
+    char rom_copy[512];
+    snprintf(rom_copy, sizeof(rom_copy), "%s", rom_path);
+    const char *rom_name = basename(rom_copy);
+
+    char error[256];
+    const jw_ra_catalog *catalog =
+        jw_ra_catalog_get(jw__w.sdcard_root, error, sizeof(error));
+    const jw_ra_system *sys =
+        catalog ? jw_ra_catalog_find_system(catalog, system) : NULL;
+
+    char folder[256], stem[256], art_abs[PATH_MAX], art_rel[PATH_MAX];
+    jw__rom_physical_folder(source, rom_abs, rom_path, folder, sizeof(folder));
+    jw_art_stem_for_rom(sys, rom_name, stem, sizeof(stem));
+    if (jw_art_find_for_rom(art_index, source, sys ? sys->image_root : NULL, folder, stem,
+                            art_abs, sizeof(art_abs),
+                            art_rel, sizeof(art_rel)) == 0) {
+        return true;
+    }
+
+    /* The scrape destination keeps only the last extension off the stem. */
+    char base[256], image_dir[64], dir[PATH_MAX], name[PATH_MAX];
+    jw__art_base(rom_name, base, sizeof(base));
     jw__image_dir_for_system(system, image_dir, sizeof(image_dir));
-    return source &&
-           snprintf(art_abs, sizeof(art_abs), "%s/%s/%s.png",
-                    source->images_path, image_dir, base) < (int)sizeof(art_abs) &&
-           access(art_abs, R_OK) == 0;
+    return snprintf(dir, sizeof(dir), "%s/%s",
+                    source->images_path, image_dir) < (int)sizeof(dir) &&
+           jw_art_find(art_index, dir, base, name, sizeof(name)) == 0;
 }
 
 /* Count a system's games that still need art (and its total). Returns 0 on
@@ -994,11 +1039,14 @@ int jw_scrape_count_missing_system(const char *system, int *out_missing,
         sources.count > 0;
 
     int missing = 0;
+    jw_art_index *art_index = have_sources ? jw_art_index_new() : NULL;
     for (int i = 0; i < game_count; i++) {
-        if (have_sources && jw__game_art_exists(&sources, system, games[i].rom_path))
+        if (have_sources &&
+            jw__game_art_exists(&sources, art_index, system, games[i].rom_path))
             continue;
         missing++;   /* with no resolvable sources we can't verify -> treat as missing */
     }
+    jw_art_index_free(art_index);
     if (out_total)   *out_total   = game_count;
     if (out_missing) *out_missing = missing;
     free(games);
@@ -1134,17 +1182,21 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
         jw_storage_sources_resolve(jw__w.sdcard_root, &sources) == 0 &&
         sources.count > 0;
 
+    /* One pass over the system: read each art folder once, before taking
+       the queue lock. */
+    jw_art_index *art_index = have_sources ? jw_art_index_new() : NULL;
     bool queue_full = false;
     pthread_mutex_lock(&jw__w.mu);
     if (!jw__w.running) {
         pthread_mutex_unlock(&jw__w.mu);
+        jw_art_index_free(art_index);
         free(games);
         if (error) *error = "scrape worker not running";
         return -1;
     }
     for (int i = 0; i < game_count; i++) {
         if (missing_only && have_sources &&
-            jw__game_art_exists(&sources, system, games[i].rom_path)) {
+            jw__game_art_exists(&sources, art_index, system, games[i].rom_path)) {
             out->skipped_existing++;
             continue;   /* art already on disk */
         }
@@ -1166,6 +1218,7 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
     }
     if (out->enqueued > 0) pthread_cond_broadcast(&jw__w.cv);
     pthread_mutex_unlock(&jw__w.mu);
+    jw_art_index_free(art_index);
     if (out->enqueued > 0) jw__log_scrape_policy(system);
     free(games);
     return out->enqueued;
