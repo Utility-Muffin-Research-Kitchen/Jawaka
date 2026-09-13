@@ -90,13 +90,22 @@ int main(int argc, char **argv) {
     cJSON *pak = cJSON_Duplicate(get(paks, "owner"), true);
     cJSON_DeleteItemFromObjectCaseSensitive(pak, "content_art");
     char *plain = cJSON_PrintUnformatted(pak); size_t n = strlen(plain);
-    char raw[8192]; snprintf(raw, sizeof(raw), "%.*s,\"content_art\":{\"bad\":\"x\\u0000y\"}}", (int)n - 1, plain);
+    char raw[8192]; snprintf(raw, sizeof(raw), "%.*s,\"content_art\":{\"schema\":1,\"systems\":[{\"id\":\"TEST\",\"wordmark\":\"art/mark.png\\u0000suffix\"}]}}", (int)n - 1, plain);
     jw_content_manifest manifest; char reason[64]; const cJSON *block;
     assert(jw_content_manifest_validate(raw, pak_dir, JW_CONTENT_PLATFORM_LANE, "primary", &manifest, reason, sizeof(reason)));
     assert(jw_content_art_validate(manifest.document, pak_dir, &block, reason, sizeof(reason)) == -1);
+    assert(!strcmp(reason, "malformed-content-art"));
     jw_content_manifest_destroy(&manifest);
     snprintf(raw, sizeof(raw), "%.*s,\"other\":\"x\\u0000y\"}", (int)n - 1, plain);
     assert(!jw_content_manifest_validate(raw, pak_dir, JW_CONTENT_PLATFORM_LANE, "primary", &manifest, reason, sizeof(reason)));
+    const char *schemas[] = {"1.0", "1e0", "2.0", "2e0", "1.5", "true", "\"1\""};
+    for (int i = 0; i < 7; i++) {
+        snprintf(raw, sizeof(raw), "%.*s,\"content_art\":{\"schema\":%s,\"systems\":[{\"id\":\"TEST\",\"wordmark\":\"art/mark.png\"}]}}", (int)n - 1, plain, schemas[i]);
+        assert(jw_content_manifest_validate(raw, pak_dir, JW_CONTENT_PLATFORM_LANE, "primary", &manifest, reason, sizeof(reason)));
+        int status = jw_content_art_validate(manifest.document, pak_dir, &block, reason, sizeof(reason));
+        assert(i < 4 ? status == 1 : status == -1 && !strcmp(reason, "unknown-content-art-schema"));
+        jw_content_manifest_destroy(&manifest);
+    }
     free(plain); cJSON_Delete(pak);
 
     cJSON_ArrayForEach(test, get(fixtures, "generation_cases")) {
