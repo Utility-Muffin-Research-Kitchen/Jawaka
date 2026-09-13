@@ -14,6 +14,7 @@
 #include "internal/ipc/ipc_client.h"
 #include "internal/launcher/console_colors.h"
 #include "internal/launcher/coverflow.h"
+#include "internal/launcher/cover_loader.h"
 #include "internal/launcher/grid.h"
 #include "internal/launcher/grid_games.h"
 #include "internal/launcher/user_themes.h"
@@ -1741,6 +1742,8 @@ static void jw__status_poller_shutdown(void) {
     P->started = false;
 }
 
+static jw_cover_loader *jw__covers(void);   /* defined with the cover loader */
+
 static void jw__poll_library_generation(const char *socket_path,
                                         const char *db_path,
                                         jw_launcher_state *state) {
@@ -1791,6 +1794,8 @@ static void jw__poll_library_generation(const char *socket_path,
            covers rebuild from fresh sources; untouched covers re-decode their
            small thumbnails (~15ms each) at worst. */
         cat_cache_clear();
+        /* A rescan is also how the user retries art that failed to decode. */
+        jw_cover_loader_forget_failures(jw__covers());
         snprintf(state->status, sizeof(state->status), T("%d games, %d systems, %d apps"),
                  state->summary.game_count, state->system_count, state->summary.app_count);
         cat_request_frame();
@@ -3373,298 +3378,52 @@ static bool jw__cover_thumb_path(const char *cover_abs, char *out, size_t out_si
     return n > 0 && n < (int)out_size;
 }
 
-/* ---- Background cover decoder -----------------------------------------------
-   Generating a thumbnail means decoding the full ~1MB source image, which blocks
-   the UI thread ~200ms — so the *first* pass through a list (before any thumbnails
-   exist) stutters, and the cover under the cursor shows blank until it is built.
-   Move that decode to a worker thread with two inputs:
-     - a high-priority slot = the cover under the cursor (latest wins), decoded
-       first and handed back to the UI as a texture; and
-     - a low-priority FIFO queue = the rest of the visible list (pre-warm), decoded
-       only when the priority slot is idle. Pre-warm decodes just write the
-       thumbnail to disk; the surface is discarded, so when the cursor later lands
-       on that cover jw__load_cover hits the fast on-disk thumbnail path.
-   Net effect: scroll freely while covers fill in a beat ahead of the cursor, in
-   Favorites/Recents/search/systems alike. Existing thumbnails usually decode
-   inline, but coverflow motion can route them through the worker to avoid
-   mid-animation hitches. */
-#define JW_COVER_QUEUE_MAX 48          /* pre-warm backlog cap (ring buffer) */
-/* Handbacks are only produced when the thumbnail cache cannot be written, and a
-   page drains them every frame, so this need only cover one frame's worth of
-   arrivals. Small on purpose: each entry holds a decoded surface. */
-#define JW_COVER_HANDBACK_MAX 4
+/* ---- Background cover decoder ----------------------------------------------
+   The worker, its priority slot, pre-warm ring, handbacks, and failed-decode
+   bookkeeping live in internal/launcher/cover_loader.c. The launcher supplies
+   the SDL/Catastrophe decode and a clock. */
+static void *jw__cover_decode(const char *path, const char *thumb, int max_dim,
+                              void *userdata) {
+    (void)userdata;
+    return cat_decode_thumbnail_surface(path, thumb, max_dim);
+}
 
-typedef struct {
-    pthread_t       thread;
-    pthread_mutex_t lock;
-    pthread_cond_t  cond;
-    bool            started;
-    bool            stop;
+static void jw__cover_free_surface(void *surface, void *userdata) {
+    (void)userdata;
+    SDL_FreeSurface((SDL_Surface *)surface);
+}
 
-    /* High-priority request: the cover under the cursor (latest wins). */
-    char            req_path[PATH_MAX];
-    char            req_thumb[PATH_MAX];
-    int             req_max;          /* longest edge wanted, px */
-    bool            has_req;
+static bool jw__cover_is_persisted(const char *path, const char *thumb, void *userdata) {
+    (void)userdata;
+    return cat_thumbnail_is_cached(path, thumb);
+}
 
-    /* Low-priority pre-warm queue (FIFO ring of covers to build ahead of time). */
-    char            q_path[JW_COVER_QUEUE_MAX][PATH_MAX];
-    char            q_thumb[JW_COVER_QUEUE_MAX][PATH_MAX];
-    int             q_max[JW_COVER_QUEUE_MAX];
-    int             q_head;
-    int             q_count;
+static uint32_t jw__cover_now_ms(void *userdata) {
+    (void)userdata;
+    return SDL_GetTicks();
+}
 
-    /* Result: worker -> main (only the priority request is delivered this way). */
-    char            done_path[PATH_MAX];
-    SDL_Surface    *done_surf;
-    bool            has_done;
+static jw_cover_loader jw__cover_loader;
+static bool jw__cover_loader_ready;
 
-    /* Pre-warm surfaces the thumbnail write could not persist, handed back so a
-       page can still draw them. Kept apart from the priority slot and bounded:
-       a page asks for every tile every frame and can leave before a decode
-       lands, so delivery must retire what the page no longer wants instead of
-       waiting on it. Sharing one slot let a single unclaimed result from a page
-       the user had left block every later handback. */
-    char            hb_path[JW_COVER_HANDBACK_MAX][PATH_MAX];
-    SDL_Surface    *hb_surf[JW_COVER_HANDBACK_MAX];
-    int             hb_head;                 /* oldest entry */
-    int             hb_count;
-} jw_cover_loader;
-
-static jw_cover_loader jw__cover_loader = {
-    .lock = PTHREAD_MUTEX_INITIALIZER,
-    .cond = PTHREAD_COND_INITIALIZER,
-};
+/* The shared cover loader, set up on first use (main thread only). */
+static jw_cover_loader *jw__covers(void) {
+    if (!jw__cover_loader_ready) {
+        const jw_cover_loader_ops ops = {
+            .decode = jw__cover_decode,
+            .free_surface = jw__cover_free_surface,
+            .is_persisted = jw__cover_is_persisted,
+            .now_ms = jw__cover_now_ms,
+            .default_max_dim = JW_COVER_THUMB_MAX,
+        };
+        jw_cover_loader_init(&jw__cover_loader, &ops);
+        jw__cover_loader_ready = true;
+    }
+    return &jw__cover_loader;
+}
 
 static bool jw__cf_animating;
 static int  jw__cover_inline_decodes_this_frame;
-
-/* Hand a surface back for later collection. Caller holds the lock.
-   Replaces any pending entry for the same path, and when full drops the oldest:
-   a result nobody has claimed is by definition the one least likely to be
-   wanted, and dropping it only costs a re-decode, whereas keeping it would
-   stall every page that follows. */
-static void jw__cover_handback_put(jw_cover_loader *L, const char *path,
-                                   SDL_Surface *surf) {
-    for (int i = 0; i < L->hb_count; ++i) {
-        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
-        if (strcmp(L->hb_path[idx], path) == 0) {
-            SDL_FreeSurface(L->hb_surf[idx]);
-            L->hb_surf[idx] = surf;
-            return;
-        }
-    }
-    if (L->hb_count == JW_COVER_HANDBACK_MAX) {
-        SDL_FreeSurface(L->hb_surf[L->hb_head]);
-        L->hb_surf[L->hb_head] = NULL;
-        L->hb_head = (L->hb_head + 1) % JW_COVER_HANDBACK_MAX;
-        L->hb_count--;
-    }
-    int tail = (L->hb_head + L->hb_count) % JW_COVER_HANDBACK_MAX;
-    snprintf(L->hb_path[tail], PATH_MAX, "%s", path);
-    L->hb_surf[tail] = surf;
-    L->hb_count++;
-}
-
-/* Free every pending handback. Caller holds the lock. */
-static void jw__cover_handback_clear(jw_cover_loader *L) {
-    for (int i = 0; i < L->hb_count; ++i) {
-        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
-        SDL_FreeSurface(L->hb_surf[idx]);
-        L->hb_surf[idx] = NULL;
-    }
-    L->hb_head = 0;
-    L->hb_count = 0;
-}
-
-static void *jw__cover_worker(void *arg) {
-    jw_cover_loader *L = (jw_cover_loader *)arg;
-    pthread_mutex_lock(&L->lock);
-    for (;;) {
-        while (!L->stop && !L->has_req && L->q_count == 0) {
-            pthread_cond_wait(&L->cond, &L->lock);
-        }
-        if (L->stop) break;
-
-        char path[PATH_MAX], thumb[PATH_MAX];
-        int  max_dim;
-        bool was_req;
-        if (L->has_req) {                          /* priority: cursor cover first */
-            snprintf(path, sizeof(path), "%s", L->req_path);
-            snprintf(thumb, sizeof(thumb), "%s", L->req_thumb);
-            max_dim = L->req_max;
-            L->has_req = false;
-            was_req = true;
-        } else {                                   /* else drain the pre-warm queue */
-            snprintf(path, sizeof(path), "%s", L->q_path[L->q_head]);
-            snprintf(thumb, sizeof(thumb), "%s", L->q_thumb[L->q_head]);
-            max_dim = L->q_max[L->q_head];
-            L->q_head = (L->q_head + 1) % JW_COVER_QUEUE_MAX;
-            L->q_count--;
-            was_req = false;
-        }
-        pthread_mutex_unlock(&L->lock);
-
-        if (max_dim <= 0) max_dim = JW_COVER_THUMB_MAX;
-        SDL_Surface *surf = cat_decode_thumbnail_surface(path, thumb[0] ? thumb : NULL,
-                                                         max_dim);
-
-        /* The pre-warm contract is that a decoded cover is on disk afterwards, so
-           the surface can be dropped and picked up inline on a later frame. When
-           the write silently fails -- a full card, a thumbs path that is not a
-           directory -- dropping it strands readable artwork forever. Persistence
-           is best effort by design and IMG_SavePNG's result is deliberately
-           ignored, so ask the disk rather than trust the contract. Two stats on
-           the worker thread, outside the lock, only on a cold decode. */
-        bool persisted = !surf || !thumb[0] || cat_thumbnail_is_cached(path, thumb);
-
-        pthread_mutex_lock(&L->lock);
-        if (was_req) {
-            if (L->has_done && L->done_surf) {     /* drop a previous undelivered result */
-                SDL_FreeSurface(L->done_surf);
-                L->done_surf = NULL;
-                L->has_done = false;
-            }
-            if (surf) {
-                snprintf(L->done_path, sizeof(L->done_path), "%s", path);
-                L->done_surf = surf;
-                L->has_done = true;
-            }
-        } else if (surf && !persisted) {
-            /* Could not land on disk: hand it back so the page can draw it.
-               Never through the priority slot -- a cursor cover the user is
-               waiting on must not be displaced by a background pre-warm, and an
-               unclaimed pre-warm result must not be able to block later ones. */
-            jw__cover_handback_put(L, path, surf);
-        } else if (surf) {
-            SDL_FreeSurface(surf);                 /* pre-warm: thumbnail is on disk now */
-        }
-    }
-    pthread_mutex_unlock(&L->lock);
-    return NULL;
-}
-
-static void jw__cover_loader_ensure(void) {
-    jw_cover_loader *L = &jw__cover_loader;
-    if (L->started) return;            /* called on the main thread only */
-    L->started = true;
-    if (pthread_create(&L->thread, NULL, jw__cover_worker, L) != 0) {
-        L->started = false;            /* no worker -> callers decode synchronously */
-    }
-}
-
-static void jw__cover_loader_shutdown(void) {
-    jw_cover_loader *L = &jw__cover_loader;
-    if (!L->started) return;
-
-    pthread_mutex_lock(&L->lock);
-    L->stop = true;
-    pthread_cond_signal(&L->cond);
-    pthread_mutex_unlock(&L->lock);
-
-    pthread_join(L->thread, NULL);
-
-    pthread_mutex_lock(&L->lock);
-    if (L->done_surf) {
-        SDL_FreeSurface(L->done_surf);
-        L->done_surf = NULL;
-    }
-    jw__cover_handback_clear(L);
-    L->has_done = false;
-    L->has_req = false;
-    L->q_head = 0;
-    L->q_count = 0;
-    L->stop = false;
-    L->started = false;
-    pthread_mutex_unlock(&L->lock);
-}
-
-/* If a decoded surface for `path` is ready, consume it into *out and return true.
-   Otherwise set `path` as the priority request (newest wins) and return false. */
-static bool jw__cover_async_take(const char *path, const char *thumb, int max_dim,
-                                 SDL_Surface **out) {
-    jw_cover_loader *L = &jw__cover_loader;
-    jw__cover_loader_ensure();
-    if (!L->started) return false;
-    bool got = false;
-    pthread_mutex_lock(&L->lock);
-    if (L->has_done && strcmp(L->done_path, path) == 0) {
-        *out = L->done_surf;
-        L->done_surf = NULL;
-        L->has_done = false;
-        got = true;
-    } else {
-        /* Keep an unmatched result for the rest of this draw pass. Coverflow draws
-           side cards before the centre card, so dropping it here can discard the
-           cover that is about to be requested later in the same frame. The worker
-           still replaces stale results when a newer decode completes. */
-        if (!L->has_req || strcmp(L->req_path, path) != 0) {
-            L->req_max = max_dim;
-    snprintf(L->req_path, sizeof(L->req_path), "%s", path);
-            snprintf(L->req_thumb, sizeof(L->req_thumb), "%s", thumb ? thumb : "");
-            L->has_req = true;
-            pthread_cond_signal(&L->cond);
-        }
-    }
-    pthread_mutex_unlock(&L->lock);
-    return got;
-}
-
-/* Consume a ready surface for `path` if the worker left one, without ever
-   claiming the priority slot. A page asks for every tile on every frame, so
-   jw__cover_async_take's newest-wins request would have the twelve of them
-   overwrite each other and starve the cursor cover. */
-static bool jw__cover_async_poll(const char *path, SDL_Surface **out) {
-    jw_cover_loader *L = &jw__cover_loader;
-    if (!L->started) return false;
-    bool got = false;
-    pthread_mutex_lock(&L->lock);
-    for (int i = 0; i < L->hb_count; ++i) {
-        int idx = (L->hb_head + i) % JW_COVER_HANDBACK_MAX;
-        if (strcmp(L->hb_path[idx], path) != 0) continue;
-        *out = L->hb_surf[idx];
-        L->hb_surf[idx] = NULL;
-        /* Close the gap by sliding the older entries forward, so the ring stays
-           oldest-first and eviction keeps meaning what it says. */
-        for (int j = i; j > 0; --j) {
-            int dst = (L->hb_head + j) % JW_COVER_HANDBACK_MAX;
-            int src = (L->hb_head + j - 1) % JW_COVER_HANDBACK_MAX;
-            memcpy(L->hb_path[dst], L->hb_path[src], PATH_MAX);
-            L->hb_surf[dst] = L->hb_surf[src];
-        }
-        L->hb_surf[L->hb_head] = NULL;
-        L->hb_head = (L->hb_head + 1) % JW_COVER_HANDBACK_MAX;
-        L->hb_count--;
-        got = true;
-        break;
-    }
-    pthread_mutex_unlock(&L->lock);
-    return got;
-}
-
-/* Append a cover to the low-priority pre-warm queue, skipping duplicates and the
-   in-flight priority request. Caller has already confirmed the thumbnail is
-   missing. No-op when the queue is full (we just pre-warm fewer covers). */
-static void jw__cover_prewarm_enqueue(const char *path, const char *thumb, int max_dim) {
-    jw_cover_loader *L = &jw__cover_loader;
-    jw__cover_loader_ensure();
-    if (!L->started) return;
-    pthread_mutex_lock(&L->lock);
-    bool dup = (L->has_req && strcmp(L->req_path, path) == 0);
-    for (int i = 0; !dup && i < L->q_count; ++i) {
-        int idx = (L->q_head + i) % JW_COVER_QUEUE_MAX;
-        if (strcmp(L->q_path[idx], path) == 0) dup = true;
-    }
-    if (!dup && L->q_count < JW_COVER_QUEUE_MAX) {
-        int tail = (L->q_head + L->q_count) % JW_COVER_QUEUE_MAX;
-        snprintf(L->q_path[tail], PATH_MAX, "%s", path);
-        snprintf(L->q_thumb[tail], PATH_MAX, "%s", thumb ? thumb : "");
-        L->q_max[tail] = max_dim;
-        L->q_count++;
-        pthread_cond_signal(&L->cond);
-    }
-    pthread_mutex_unlock(&L->lock);
-}
 
 /* Load a cover texture. Returns the texture when ready (cached, fast-thumbnail, or
    freshly-decoded by the worker). When the cover still needs the worker to build
@@ -3693,8 +3452,15 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
        Hand the cover to the worker (priority slot, newest-wins) and only upload
        the surface it returns; the carousel keeps moving while art streams in. The
        worker decodes the on-disk thumbnail when present, else the source. */
-    SDL_Surface *surf = NULL;
-    if (jw__cover_async_take(cover_abs, thumb_path, JW_COVER_THUMB_MAX, &surf)) {
+    jw_cover_loader *loader = jw__covers();
+    void *ready = NULL;
+    jw_cover_status status = jw_cover_loader_take(loader, cover_abs, thumb_path,
+                                                  JW_COVER_THUMB_MAX, &ready);
+    if (status == JW_COVER_FAILED) {
+        return NULL;                           /* undecodable art: caller's fallback */
+    }
+    if (status == JW_COVER_READY) {
+        SDL_Surface *surf = ready;
         SDL_Texture *tex = cat_texture_from_surface(surf);
         w = surf->w;
         h = surf->h;
@@ -3712,11 +3478,17 @@ static SDL_Texture *jw__load_cover(const jw_launcher_state *state, const char *c
        async path, so decode inline (bounded to one per frame, matching the cover
        budget) rather than marking the cover pending forever. Leaving out_pending
        false lets the caller show its system-icon fallback until art arrives. */
-    if (!jw__cover_loader.started) {
+    if (!loader->started) {
+        if (jw_cover_loader_is_failed(loader, cover_abs)) {
+            return NULL;                       /* failed recently: keep the fallback */
+        }
         if (!jw__cf_animating && jw__cover_inline_decodes_this_frame < 1) {
             jw__cover_inline_decodes_this_frame++;
             SDL_Surface *isurf = cat_decode_thumbnail_surface(cover_abs, thumb_path,
                                                               JW_COVER_THUMB_MAX);
+            if (!isurf) {
+                jw_cover_loader_record_failure(loader, cover_abs);
+            }
             if (isurf) {
                 SDL_Texture *tex = cat_texture_from_surface(isurf);
                 w = isurf->w;
@@ -3776,8 +3548,14 @@ static SDL_Texture *jw__load_image_sized(const char *path, int max_dim,
     const char *thumb_path = jw__cover_thumb_path(path, thumb, sizeof(thumb))
                                  ? thumb : NULL;
 
-    SDL_Surface *surf = NULL;
-    if (jw__cover_async_take(path, thumb_path, max_dim, &surf)) {
+    void *ready = NULL;
+    jw_cover_status status = jw_cover_loader_take(jw__covers(), path, thumb_path,
+                                                  max_dim, &ready);
+    if (status == JW_COVER_FAILED) {
+        return NULL;                /* undecodable: the placeholder card stays */
+    }
+    if (status == JW_COVER_READY) {
+        SDL_Surface *surf = ready;
         SDL_Texture *tex = cat_texture_from_surface(surf);
         w = surf->w;
         h = surf->h;
@@ -3850,8 +3628,16 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
        worker hands the surface back instead, so collect it here. This is per
        asset: a page of mostly-cached tiles cannot mask one tile that is stuck,
        which a global "is the disk working" flag could not distinguish. */
-    SDL_Surface *ring = NULL;
-    if (jw__cover_async_poll(path, &ring)) {
+    void *handed_back = NULL;
+    jw_cover_status status = jw_cover_loader_poll(jw__covers(), path, &handed_back);
+    if (status == JW_COVER_FAILED) {
+        /* Undecodable: draw the placeholder. The enqueue only runs a spaced
+           retry; an exhausted failure is skipped without a decode. */
+        jw_cover_loader_enqueue(jw__covers(), path, tp, max_dim);
+        return NULL;
+    }
+    if (status == JW_COVER_READY) {
+        SDL_Surface *ring = handed_back;
         SDL_Texture *tex = cat_texture_from_surface(ring);
         w = ring->w;
         h = ring->h;
@@ -3864,7 +3650,7 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
         }
     }
 
-    jw__cover_prewarm_enqueue(path, tp, max_dim);
+    jw_cover_loader_enqueue(jw__covers(), path, tp, max_dim);
     cat_request_frame_in(40);
     return NULL;
 }
@@ -3949,7 +3735,7 @@ static void jw__cover_prewarm(const jw_launcher_state *state,
         char thumb[PATH_MAX];
         const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(abs, tp)) continue;  /* already built */
-        jw__cover_prewarm_enqueue(abs, tp, JW_COVER_THUMB_MAX);
+        jw_cover_loader_enqueue(jw__covers(), abs, tp, JW_COVER_THUMB_MAX);
     }
 }
 
@@ -3987,7 +3773,7 @@ static void jw__cover_prewarm_search(const jw_launcher_state *state,
         char thumb[PATH_MAX];
         const char *tp = jw__cover_thumb_path(abs, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(abs, tp)) continue;
-        jw__cover_prewarm_enqueue(abs, tp, JW_COVER_THUMB_MAX);
+        jw_cover_loader_enqueue(jw__covers(), abs, tp, JW_COVER_THUMB_MAX);
     }
 }
 
@@ -6948,7 +6734,7 @@ static void jw__grid_prewarm_icons(jw_launcher_state *state) {
         char thumb[PATH_MAX];
         const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(path, tp)) continue;  /* already built */
-        jw__cover_prewarm_enqueue(path, tp, JW_GRID_TILE_MAX);
+        jw_cover_loader_enqueue(jw__covers(), path, tp, JW_GRID_TILE_MAX);
     }
 }
 
@@ -12396,7 +12182,7 @@ int main(void) {
     }
 
     jw__status_poller_shutdown();
-    jw__cover_loader_shutdown();
+    jw_cover_loader_shutdown(jw__covers());
     jw__close_game_browser(&state);
     /* Hand-off exit. The launcher only ever exits to be respawned (into the menu /
        an app / a game) or for shutdown, so the OS reclaims everything — memory, the
