@@ -249,6 +249,27 @@ static void test_missing_file_fails(void) {
     assert(take_until_settled(missing) == JW_COVER_READY);
 }
 
+static void test_failure_cache_eviction_resets_entry(void) {
+    wait_idle();
+    jw_cover_loader_forget_failures(&g_loader);
+    char path[PATH_MAX], oldest[PATH_MAX];
+    snprintf(oldest, sizeof(oldest), "%s/capacity-0.jpg", g_root);
+    for (int i = 0; i < JW_COVER_FAIL_MAX; i++) {
+        snprintf(path, sizeof(path), "%s/capacity-%d.jpg", g_root, i);
+        for (int attempt = 0; attempt < JW_COVER_FAIL_ATTEMPTS; attempt++) {
+            jw_cover_loader_record_failure(&g_loader, path);
+        }
+    }
+
+    snprintf(path, sizeof(path), "%s/capacity-new.jpg", g_root);
+    jw_cover_loader_record_failure(&g_loader, path);
+    assert(jw_cover_loader_is_failed(&g_loader, path));
+    assert(!jw_cover_loader_is_failed(&g_loader, oldest));
+    /* The new path gets its own retry budget, not the evicted path's count. */
+    advance(JW_COVER_FAIL_RETRY_MS);
+    assert(!jw_cover_loader_is_failed(&g_loader, path));
+}
+
 static void remove_tree(const char *path) {
     DIR *d = opendir(path);
     if (d) {
@@ -283,6 +304,7 @@ int main(void) {
     test_selected_cover_failure_is_bounded();
     test_prewarm_failure_is_bounded();
     test_missing_file_fails();
+    test_failure_cache_eviction_resets_entry();
 
     jw_cover_loader_shutdown(&g_loader);
     assert(atomic_load(&g_live_surfaces) == 0);

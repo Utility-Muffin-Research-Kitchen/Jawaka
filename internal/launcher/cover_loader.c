@@ -85,6 +85,7 @@ static void jw__failure_record(jw_cover_loader *L, const char *path,
            more bounded round of attempts for that file. */
         f = &L->failures[L->fail_next];
         L->fail_next = (L->fail_next + 1) % JW_COVER_FAIL_MAX;
+        f->used = false;
     }
     if (!f->used) {
         memset(f, 0, sizeof(*f));
