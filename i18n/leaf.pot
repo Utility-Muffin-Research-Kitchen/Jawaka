@@ -1016,6 +1016,18 @@ msgstr ""
 msgid "Library"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Library scan failed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Library scan requested"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Library updating..."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Lighting"
 msgstr ""
@@ -1652,6 +1664,18 @@ msgstr ""
 msgid "Scrape finished: %d found"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping %s · %d/%d"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping paused: %.200s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Scraping: %d/%d"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "ScreenScraper.fr"
 msgstr ""
@@ -2242,6 +2266,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "count|Systems"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "daily quota exceeded"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
