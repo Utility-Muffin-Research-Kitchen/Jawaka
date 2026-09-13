@@ -1,7 +1,7 @@
 # Sample grid icon sources
 
 Eleven added cards come from `umrk-assets/Systems/GRID_ICONS`, revision
-`ea2bff2469922992f5f22a04d28713f090c26e8c`. Existing theme art is unchanged. Public builds use these vendored
+`ea2bff2469922992f5f22a04d28713f090c26e8c`. The eight variant corrections below follow in revision `851b8c712ccc12551fdb809f88a56de7925e07de`. Other theme art is unchanged. Public builds use these vendored
 PNGs without fetching the private source repository.
 
 
@@ -68,3 +68,23 @@ remain their respective owners' trademarks; these credits do not imply endorseme
 - `SCUMMVM.png`: `f68d07fa5f0ed6f125e4609da243c3af1232f0c296ca02d43ae84eaf8d55a248`
 - `VB.png`: `333df29369b80f3033529b4fc4422535397450537a4e184036b6258f72525a94`
 - `VECTREX.png`: `156a456cc09499dea4ba9f6ea55385ec1e75813f94c6107abe7d36c36ca770e0`
+
+## Eight corrected variants
+
+Source revision: `851b8c712ccc12551fdb809f88a56de7925e07de`. These replace the Genesis,
+Dreamcast, NES, non-CD and unversioned placeholders. Attribution and exact
+source records are in [the wordmark inventory](../../../../grid_wordmarks/INVENTORY-SOURCE.md).
+Each card is centered on white; 32X, Atomiswave, Naomi and FDS retain color.
+PCECD uses the PC Engine CD-ROM² logo. The MAME cards add outlined Lexend year
+labels. Atomiswave's small TM suffix also uses outlined Lexend glyphs.
+
+| ID | PNG SHA-256 |
+| --- | --- |
+| 32X | `08ab31285e9f150b642c7215310da4fd988ed8c349e2b1913e3f507c8b2eee0f` |
+| MD32X | `08ab31285e9f150b642c7215310da4fd988ed8c349e2b1913e3f507c8b2eee0f` |
+| ATOMISWAVE | `b1e1d8fa8bda597becb607f225c4204713276268fd7498f5985a557f76d25c67` |
+| NAOMI | `8a53a8675a125a17cd5244b0f9754a63abc5b058aa20609171302526de890bf5` |
+| FDS | `d7b63f1d67b584b8aa26dea7991853787eb0710687be9d8c70c8360715f7c9cf` |
+| PCECD | `cdb329d1dbe54ff88f28910a3cb456eb89df9b73c4bee428636a406b14a7c6f8` |
+| MAME2003 | `5c2b553a4304394df01ff15fccd329c51e41b10327a808e1fb07fe408727ce16` |
+| MAME2010 | `d1d453e70300506db258c7c2e610613eeac7038755aadb93e4ffcb126ec08fff` |
