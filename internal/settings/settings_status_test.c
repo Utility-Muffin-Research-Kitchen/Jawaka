@@ -4,6 +4,7 @@
 #include "catastrophe_widgets.h"
 
 #include "internal/settings/settings.h"
+#include "internal/launcher/system_activity.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -11,6 +12,107 @@
 static int fail(const char *message) {
     fprintf(stderr, "settings-status-test: %s\n", message);
     return 1;
+}
+
+static int check_activity(void) {
+    jw_system_activity activity = {0};
+    if (jw_system_activity_text(&activity, 0, "Scanning")[0])
+        return fail("idle System has a status line");
+    activity.scan_running = true;
+    snprintf(activity.scrape, sizeof(activity.scrape), "Scraping Genesis · 42/175");
+    if (strcmp(jw_system_activity_text(&activity, 100, "Scanning"), activity.scrape))
+        return fail("library scan hid scrape progress");
+    jw_system_notice_set(&activity.feedback, "Saved", 100);
+    if (strcmp(jw_system_activity_text(&activity, 6099, "Scanning"), "Saved"))
+        return fail("feedback expired before six seconds");
+    if (strcmp(jw_system_activity_text(&activity, 6100, "Scanning"), activity.scrape))
+        return fail("feedback did not restore progress at six seconds");
+    jw_system_notice_set(&activity.feedback, "Saved", 6200);
+    if (strcmp(jw_system_activity_text(&activity, 12199, "Scanning"), "Saved"))
+        return fail("repeated feedback did not restart its timer");
+    activity.feedback.text[0] = '\0';  /* leave the originating page */
+    snprintf(activity.scrape, sizeof(activity.scrape), "Scraping paused: quota");
+    if (strcmp(jw_system_activity_text(&activity, 90000, "Scanning"), activity.scrape))
+        return fail("paused activity expired or disappeared with page feedback");
+    activity.scrape[0] = '\0';
+    jw_system_notice_set(&activity.completion, "Scrape finished", 90000);
+    if (strcmp(jw_system_activity_text(&activity, 90001, "Scanning"), "Scrape finished") ||
+        strcmp(jw_system_activity_text(&activity, 96000, "Scanning"), "Scanning"))
+        return fail("completion summary did not expire back to scan activity");
+    activity.scan_running = false;
+    if (jw_system_activity_text(&activity, 96000, "Scanning")[0])
+        return fail("idle strip did not reclaim its space");
+    jw_system_notice_set(&activity.feedback, "Saved", UINT32_MAX - 100);
+    if (!jw_system_notice_remaining(&activity.feedback, 100) ||
+        jw_system_notice_remaining(&activity.feedback, 6000))
+        return fail("feedback expiry failed across clock wrap");
+    return 0;
+}
+
+/* Render at device size with a software renderer. Sentinel pixels catch text,
+   sliders, swatches or highlights escaping the allocated page rectangle. */
+static int check_layout_viewport(void) {
+    SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
+    SDL_setenv("CAT_WINDOW_WIDTH", "960", 1);
+    SDL_setenv("CAT_WINDOW_HEIGHT", "720", 1);
+    char font[4096];
+    const char *fonts = getenv("CAT_FONTS_DIR");
+    snprintf(font, sizeof(font), "%s/fonts/Nunito/Nunito-Bold.ttf", fonts ? fonts : "res");
+    cat_config config = { .start_hidden = true, .defer_input_init = true,
+                          .disable_background = true, .disable_font_bump = true,
+                          .font_path = font };
+    if (cat_init(&config) != CAT_OK) return fail("could not initialize render check");
+    SDL_Renderer *renderer = cat_get_renderer();
+    uint32_t *pixels = malloc(960 * 720 * sizeof(*pixels));
+    if (!pixels) return fail("pixel allocation failed");
+    jw_settings_ui ui = {0};
+    ui.open = true;
+    ui.screen = JW_SETTINGS_LAYOUT;
+    ui.user_theme_index = -1;
+    cat_list_state_init(&ui.layout_list, JW_LAYOUT_ROW_COUNT);
+    ui.layout_list.cursor = JW_LAYOUT_HOME_TABS;
+    for (int bump = 2; bump <= 5; bump += 3) {
+        if (cat_set_font_bump(bump) != CAT_OK) return fail("font bump failed");
+        /* Expanded/shrunk/restored: hints and activity taking or releasing space. */
+        const int heights[] = { 620, 500, 450, 620 };
+        for (unsigned i = 0; i < sizeof(heights) / sizeof(heights[0]); ++i) {
+            SDL_SetRenderDrawColor(renderer, 13, 29, 47, 255);
+            SDL_RenderClear(renderer);
+            jw_settings_ui_render(&ui, 12, 60, 936, heights[i]);
+            if (ui.layout_list.cursor != JW_LAYOUT_HOME_TABS ||
+                ui.layout_list.cursor < ui.layout_list.scroll_offset ||
+                ui.layout_list.cursor >= ui.layout_list.scroll_offset + ui.layout_list.visible_rows)
+                return fail("viewport resize lost the selected Home Tabs row");
+            int row_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+            int header_h = TTF_FontHeight(cat_get_font(CAT_FONT_LARGE)) + cat_scale(10);
+            if (ui.layout_list.visible_rows * row_h > heights[i] - header_h)
+                return fail("visible rows exceed the available content height");
+            if (SDL_RenderIsClipEnabled(renderer)) return fail("page leaked its clip");
+            if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, pixels,
+                                     960 * sizeof(*pixels)) != 0)
+                return fail("could not inspect rendered pixels");
+            ap_color text = cat_get_theme()->highlighted_text;
+            uint32_t ink = 0xff000000u | (uint32_t)text.r << 16 |
+                           (uint32_t)text.g << 8 | text.b;
+            int selected_y = 60 + header_h +
+                (ui.layout_list.cursor - ui.layout_list.scroll_offset) * row_h;
+            bool label_visible = false;
+            for (int y = selected_y + 6; y < selected_y + row_h - 6; ++y)
+                for (int x = 48; x < 240; ++x)
+                    if (pixels[y * 960 + x] == ink) label_visible = true;
+            if (!label_visible) return fail("selected row label did not scroll with its highlight");
+            for (int y = 0; y < 720; ++y)
+                for (int x = 0; x < 960; ++x)
+                    if ((x < 12 || x >= 948 || y < 60 || y >= 60 + heights[i]) &&
+                        pixels[y * 960 + x] != 0xff0d1d2f)
+                        return fail("settings drew outside its viewport");
+            cat_list_state_move(&ui.layout_list, -1, JW_LAYOUT_ROW_COUNT);
+            cat_list_state_move(&ui.layout_list, 1, JW_LAYOUT_ROW_COUNT);
+        }
+    }
+    free(pixels);
+    cat_quit();
+    return 0;
 }
 
 int main(void) {
@@ -99,6 +201,7 @@ int main(void) {
 #endif
 
 
+    if (check_activity() || check_layout_viewport()) return 1;
     puts("PASS settings-status-test");
     return 0;
 }

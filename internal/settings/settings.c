@@ -1995,6 +1995,17 @@ static SDL_Rect jw__settings_boxes(int x, int y, int w, int h,
 static const cat_list_state *jw__settings_focus_list;
 static float jw__settings_focus_cache[JW__SETTINGS_FOCUS_CACHE_MAX];
 static int jw__settings_focus_count;
+static int jw__settings_row_y[JW__SETTINGS_FOCUS_CACHE_MAX];
+static bool jw__settings_row_visible[JW__SETTINGS_FOCUS_CACHE_MAX];
+
+/* Use the same animated coordinates as the focus layer, including partial rows
+   at the viewport edges. The caller's clip remains active until the page ends. */
+static bool jw__settings_row_position(const cat_list_state *list, int row, int *y) {
+    if (list != jw__settings_focus_list || row < 0 ||
+        row >= jw__settings_focus_count || !jw__settings_row_visible[row]) return false;
+    *y = jw__settings_row_y[row];
+    return true;
+}
 
 static float jw__settings_row_focus(const cat_list_state *list, int row) {
     if (list == jw__settings_focus_list && row >= 0 &&
@@ -2005,7 +2016,7 @@ static float jw__settings_row_focus(const cat_list_state *list, int row) {
 }
 
 static void jw__begin_settings_rows(const cat_list_state *list,
-                                    int x, int y, int w,
+                                    int x, int y, int w, int h,
                                     int item_count, int item_h);
 
 static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
@@ -2023,7 +2034,8 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
     if (value) value = T(value);
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int iy = y + row * item_h;
+    int iy;
+    if (!jw__settings_row_position(list, row, &iy)) return;
     float focus = jw__settings_row_focus(list, row);
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (item_h - pill_h) / 2;
@@ -2166,7 +2178,8 @@ static void jw__render_nav_row(const cat_list_state *list, int x, int y,
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
-    int iy = y + row * item_h;
+    int iy;
+    if (!jw__settings_row_position(list, row, &iy)) return;
     float focus = jw__settings_row_focus(list, row);
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
     int pill_y = iy + (item_h - pill_h) / 2;
@@ -2187,7 +2200,9 @@ static void jw__render_color_swatch(int x, int list_y, int w, int row, ap_color 
     int swatch_w = cat_scale(48);
     int swatch_h = cat_scale(14);
     int sx = x + w - cat_scale(20) - swatch_w;
-    int sy = list_y + row * item_h + (item_h - swatch_h) / 2;
+    int row_y;
+    if (!jw__settings_row_position(jw__settings_focus_list, row, &row_y)) return;
+    int sy = row_y + (item_h - swatch_h) / 2;
     cat_draw_pill(sx, sy, swatch_w, swatch_h, c);
 }
 
@@ -2215,31 +2230,57 @@ static void jw__draw_settings_list(int x, int y, int w, int h, int item_count,
 static void jw__cache_settings_focus(int idx, int x, int y, int w, int h,
                                      float focus, void *user) {
     (void)x; (void)y; (void)w; (void)h; (void)user;
-    if (idx >= 0 && idx < jw__settings_focus_count)
+    if (idx >= 0 && idx < jw__settings_focus_count) {
         jw__settings_focus_cache[idx] = focus;
+        jw__settings_row_y[idx] = y;
+        jw__settings_row_visible[idx] = true;
+    }
 }
 
 static void jw__begin_settings_rows_with_focus(
                                     const cat_list_state *list,
-                                    int x, int y, int w,
+                                    int x, int y, int w, int h,
                                     int item_count, int item_h,
                                     cat_list_focus_draw_fn draw_focus) {
     if (!list || item_count <= 0 || item_h <= 0) return;
     if (item_count > JW__SETTINGS_FOCUS_CACHE_MAX)
         item_count = JW__SETTINGS_FOCUS_CACHE_MAX;
     memset(jw__settings_focus_cache, 0, sizeof(jw__settings_focus_cache));
+    memset(jw__settings_row_visible, 0, sizeof(jw__settings_row_visible));
     jw__settings_focus_list = list;
     jw__settings_focus_count = item_count;
-    cat_draw_list_pane_layered(x, y, w, item_count * item_h,
+    cat_list_state *motion = (cat_list_state *)list;
+    int visible = h / item_h;
+    if (visible < 1) visible = 1;
+    if (visible > item_count) visible = item_count;
+    /* Leave spare pixels below the list instead of a sliced next-row label.
+       Animated rows still clip naturally while the list is moving. */
+    if (h > visible * item_h) h = visible * item_h;
+    if (motion->visible_rows != visible) {
+        motion->visible_rows = visible;
+        int max_scroll = item_count - visible;
+        if (motion->scroll_offset > max_scroll) motion->scroll_offset = max_scroll;
+        cat_list_state_jump(motion, motion->cursor, item_count);
+    }
+    SDL_Renderer *renderer = cat_get_renderer();
+    SDL_Rect clip = { x, y, w, h > 0 ? h : 0 };
+    if (SDL_RenderIsClipEnabled(renderer)) {
+        SDL_Rect previous;
+        SDL_RenderGetClipRect(renderer, &previous);
+        SDL_IntersectRect(&previous, &clip, &clip);
+    }
+    SDL_RenderSetClipRect(renderer, &clip);
+    if (h <= 0) return;
+    cat_draw_list_pane_layered(x, y, w, h,
                                item_count, list, item_h,
                                draw_focus,
                                jw__cache_settings_focus, NULL);
 }
 
 static void jw__begin_settings_rows(const cat_list_state *list,
-                                    int x, int y, int w,
+                                    int x, int y, int w, int h,
                                     int item_count, int item_h) {
-    jw__begin_settings_rows_with_focus(list, x, y, w, item_count, item_h,
+    jw__begin_settings_rows_with_focus(list, x, y, w, h, item_count, item_h,
                                        jw__draw_settings_focus);
 }
 
@@ -2348,7 +2389,7 @@ static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w,
     jw__draw_header("Appearance", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->appearance_list, x, ly, w,
+    jw__begin_settings_rows(&ui->appearance_list, x, ly, w, y + h - ly,
                             JW_APPEAR_ROW_COUNT, item_h);
     /* Layout switching is gated to Tabs, so this row instead cycles the curated
        color schemes (Aurora/Ember/…); "Custom" once colors are hand-edited. */
@@ -2367,7 +2408,7 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
     jw__draw_header("Colors", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->colors_list, x, ly, w,
+    jw__begin_settings_rows(&ui->colors_list, x, ly, w, y + h - ly,
                             JW_COLOR_ROW_COUNT, item_h);
 
     /* A function-local table, so T() is legal here and no JW_UI marker is
@@ -2394,7 +2435,7 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
     jw__draw_header("Layout", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->layout_list, x, ly, w,
+    jw__begin_settings_rows(&ui->layout_list, x, ly, w, y + h - ly,
                             JW_LAYOUT_ROW_COUNT, item_h);
     jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_HOME_STYLE,
                         "Home Layout",
@@ -2487,7 +2528,7 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
     jw__draw_header("Status Bar", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->statusbar_list, x, ly, w,
+    jw__begin_settings_rows(&ui->statusbar_list, x, ly, w, y + h - ly,
                             JW_STATUSBAR_ROW_COUNT, item_h);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_HINTS,
                         "Button Hints", jw__vis_label(ui->show_hints), true);
@@ -2513,7 +2554,8 @@ static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int
     label = T(label);   /* value_str is "%d%%" -- a number needs no lookup */
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    int iy = y_base + row * item_h;
+    int iy;
+    if (!jw__settings_row_position(&ui->display_list, row, &iy)) return;
     float focus = jw__settings_row_focus(&ui->display_list, row);
     int pill_h = item_h - cat_scale(6);
     int pill_y = iy + cat_scale(3);
@@ -2589,7 +2631,7 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     SDL_Rect content = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL);
     int y_base = content.y;
     int item_h = jw__display_row_h_fit(content.h);
-    jw__begin_settings_rows_with_focus(&ui->display_list, x, y_base, w,
+    jw__begin_settings_rows_with_focus(&ui->display_list, x, y_base, w, y + h - y_base,
                                        JW_DISPLAY_ROW_COUNT, item_h,
                                        jw__draw_display_focus);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
@@ -2657,7 +2699,7 @@ static void jw__render_lighting(const jw_settings_ui *ui, int x, int y, int w, i
     jw__draw_header("Lighting", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->lighting_list, x, ly, w,
+    jw__begin_settings_rows(&ui->lighting_list, x, ly, w, y + h - ly,
                             JW_LIGHTING_ROW_COUNT, item_h);
     int mode = (ui->led_mode >= 0 && ui->led_mode < JW_LED_MODE_COUNT) ? ui->led_mode : 0;
     char bright[8], speed[8];
@@ -4010,7 +4052,7 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
     jw__draw_header("Game Art", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->scraping_list, x, ly, w,
+    jw__begin_settings_rows(&ui->scraping_list, x, ly, w, y + h - ly,
                             JW_SCRAPING_ROW_COUNT, item_h);
 
     char download_value[64];
@@ -4064,7 +4106,8 @@ static bool jw__render_account_row(const cat_list_state *list, int x, int y,
     ap_theme *theme = cat_get_theme();
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
-    int iy = y + row * item_h;
+    int iy;
+    if (!jw__settings_row_position(list, row, &iy)) return false;
     float focus = jw__settings_row_focus(list, row);
     bool settled = focus >= 0.999f;
     int pill_h = TTF_FontHeight(body) + cat_scale(6);
@@ -4102,7 +4145,7 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
     jw__draw_header("Accounts", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->accounts_list, x, ly, w,
+    jw__begin_settings_rows(&ui->accounts_list, x, ly, w, y + h - ly,
                             JW_ACCOUNTS_ROW_COUNT, item_h);
 
     /* Per-row marquee state (one Accounts screen is live at a time). */
@@ -4556,7 +4599,7 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
     jw__draw_header("Controls & Feedback", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->controls_list, x, ly, w,
+    jw__begin_settings_rows(&ui->controls_list, x, ly, w, y + h - ly,
                             JW_CONTROLS_ROW_COUNT, item_h);
 
     jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RUMBLE,
@@ -4719,7 +4762,7 @@ static void jw__render_input_shortcuts(const jw_settings_ui *ui,
 
     int ly = content.y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->shortcuts_list, x, ly, w,
+    jw__begin_settings_rows(&ui->shortcuts_list, x, ly, w, y + h - ly,
                             JW_SHORTCUT_ROW_COUNT, item_h);
 
     char value[48];
@@ -4877,7 +4920,7 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
     jw__draw_header("General", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->behavior_list, x, ly, w,
+    jw__begin_settings_rows(&ui->behavior_list, x, ly, w, y + h - ly,
                             jw__behavior_rows(ui), item_h);
 
     int sleep_idx = (ui->auto_sleep_index >= 0 && ui->auto_sleep_index < JW_AUTO_SLEEP_COUNT)
@@ -5233,7 +5276,7 @@ static void jw__render_update(const jw_settings_ui *ui, int x, int y, int w, int
 
     int ly = dy + cat_scale(2);
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->update_list, x, ly, w,
+    jw__begin_settings_rows(&ui->update_list, x, ly, w, y + h - ly,
                             JW_UPDATE_ROW_COUNT, item_h);
     char download_value[48];
     char install_value[64];
@@ -5471,6 +5514,14 @@ static void jw__render_timezone_picker(const jw_settings_ui *ui,
 void jw_settings_ui_render(const jw_settings_ui *ui,
                             int x, int y, int w, int h) {
     if (!ui || !ui->open) return;
+    SDL_Renderer *renderer = cat_get_renderer();
+    SDL_bool had_clip = SDL_RenderIsClipEnabled(renderer);
+    SDL_Rect previous, clip = { x, y, w, h > 0 ? h : 0 };
+    if (had_clip) {
+        SDL_RenderGetClipRect(renderer, &previous);
+        SDL_IntersectRect(&previous, &clip, &clip);
+    }
+    SDL_RenderSetClipRect(renderer, &clip);
     switch (ui->screen) {
         case JW_SETTINGS_HOME:       jw__render_home(ui, x, y, w, h);       break;
         case JW_SETTINGS_APPEARANCE: jw__render_appearance(ui, x, y, w, h); break;
@@ -5502,6 +5553,7 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_PLAYTIME:   jw__render_playtime(ui, x, y, w, h);                break;
         case JW_SETTINGS_SERVICES:   jw__render_services(ui, x, y, w, h);                break;
     }
+    SDL_RenderSetClipRect(renderer, had_clip ? &previous : NULL);
 }
 
 void jw_settings_apply_persisted_overrides(const char *db_path) {
