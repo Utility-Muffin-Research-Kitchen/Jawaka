@@ -1300,12 +1300,15 @@ static int jw_cat__build_contributor_stamps(jw_cat_stamp *stamp,
         }
         const cJSON *system = NULL;
         cJSON_ArrayForEach(system, systems) {
-            if (strcmp(jw_cat__json_text(system, "wordmark_provider"), out->provider)) continue;
-            if (jw_cat__stamp_add_file(out, pak_dir, "pak.json") != 0 ||
-                jw_cat__stamp_add_file(out, pak_dir,
-                                       jw_cat__json_text(system, "wordmark")) != 0) {
-                cJSON_Delete(systems_doc);
-                return -1;
+            const char *slots[] = {"wordmark", "grid_icon"};
+            const char *providers[] = {"wordmark_provider", "grid_icon_provider"};
+            for (int slot = 0; slot < 2; slot++) {
+                if (strcmp(jw_cat__json_text(system, providers[slot]), out->provider)) continue;
+                if (jw_cat__stamp_add_file(out, pak_dir, "pak.json") != 0 ||
+                    jw_cat__stamp_add_file(out, pak_dir, jw_cat__json_text(system, slots[slot])) != 0) {
+                    cJSON_Delete(systems_doc);
+                    return -1;
+                }
             }
         }
         qsort(out->files, out->file_count, sizeof(*out->files),

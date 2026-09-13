@@ -234,10 +234,14 @@ typedef struct {
 /* Coverflow runtime state (jw_games_cf, jw_cf_cube, and the jw_coverflow bundle)
    lives in internal/launcher/coverflow.h — the CF module owns those types. */
 
+#define JW_SYSTEM_ICON_MAX_CANDIDATES 9
+
 typedef struct {
     bool done;
     char code[64];
     char path[PATH_MAX];     /* empty when every candidate is known missing */
+    uint64_t failed[JW_SYSTEM_ICON_MAX_CANDIDATES];
+    int failed_count;      /* Grid rejects failed paths until art refresh */
 } jw_system_icon_memo;
 
 /* ─── Launcher state ──────────────────────────────────────────────────────── */
@@ -275,6 +279,7 @@ typedef struct {
     jw_system_icon_memo system_icon_memos[JW_MAX_SYSTEMS];
     jw_ra_catalog     *system_catalog;
     unsigned           wordmark_revision;
+    char               grid_art_identity[PATH_MAX * 2];
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
@@ -3387,6 +3392,17 @@ static bool jw__cover_thumb_path(const char *cover_abs, char *out, size_t out_si
     return n > 0 && n < (int)out_size;
 }
 
+/* Immutable catalog identity also separates same-path/same-mtime artwork
+   replacements in the derived thumbnail cache. */
+static bool jw__catalog_thumb_path(const jw_launcher_state *state, const char *path,
+                                    char *out, size_t out_size) {
+    char key[PATH_MAX * 2];
+    snprintf(key, sizeof(key), "%s|%s", path,
+             state->system_catalog && state->system_catalog->info_dir
+                 ? state->system_catalog->info_dir : "");
+    return jw__cover_thumb_path(key, out, out_size);
+}
+
 /* ---- Background cover decoder ----------------------------------------------
    The worker, its priority slot, pre-warm ring, handbacks, and failed-decode
    bookkeeping live in internal/launcher/cover_loader.c. The launcher supplies
@@ -4085,7 +4101,6 @@ static void jw__render_focus(jw_launcher_state *state) {
  * consumers probe differently and each keeps its own semantics. */
 
 #define JW_SYSTEM_ICON_PHOTO_THEME "Jawaka-Coverflow"
-#define JW_SYSTEM_ICON_MAX_CANDIDATES 6
 
 typedef struct {
     char paths[JW_SYSTEM_ICON_MAX_CANDIDATES][PATH_MAX];
@@ -4193,6 +4208,19 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
             n = snprintf(path, sizeof(path), "%s/Roms/%s/icon.png",
                          state->sdcard_root, rom_dir);
             if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+        }
+    }
+
+    /* Grid-specific companion art precedes the generic pak icon pack. */
+    const cat_stylesheet *style = cat_get_stylesheet();
+    if (state && state->system_catalog && style &&
+        style->launcher.layout == CAT_LAUNCHER_GRID && system_code[0] != '_') {
+        const jw_ra_system *system = jw_ra_catalog_match_system_folder(state->system_catalog, system_code);
+        if (!jw_ra_catalog_resolve_system_grid_icon_path(state->system_catalog, system, path, sizeof(path))) {
+            int width, height;
+            if (jw_user_theme_png_dims(path, &width, &height) &&
+                width <= JW_USER_THEME_ICON_MAX_PX && height <= JW_USER_THEME_ICON_MAX_PX)
+                jw__push_icon_candidate(out, path);
         }
     }
 
@@ -6220,18 +6248,71 @@ static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
     SDL_FreeSurface(rgba);
 }
 
-/* Grid tile art. Systems go through the memoized path resolver and the same
-   whole-page loader the other layouts use for their system icons, so a page
-   that has been visited once is complete on the frame it appears. The Apps
-   tile is the shared _apps identity asset. */
+/* Grid reuses the system path memo, but advances it after a confirmed decode
+   failure. Pending work keeps its priority. Cover Flow retains its resolver. */
+static const char *jw__grid_system_icon_path(jw_launcher_state *state, int idx) {
+    if (idx < 0 || idx >= state->system_count) return NULL;
+    char identity[sizeof(state->grid_art_identity)];
+    snprintf(identity, sizeof(identity), "%u|%d|%s|%s|%s",
+             state->wordmark_revision, state->settings.system_icon_pack_index,
+             state->settings.user_theme_dir,
+             cat_get_active_theme_name() ? cat_get_active_theme_name() : "",
+             state->system_catalog && state->system_catalog->info_dir
+                 ? state->system_catalog->info_dir : "");
+    if (strcmp(identity, state->grid_art_identity)) {
+        if (state->grid_art_identity[0]) {
+            jw_cover_loader_shutdown(jw__covers());
+            jw_cover_loader_forget_failures(jw__covers());
+            cat_cache_clear();
+        }
+        jw__system_icon_memo_clear(state);
+        jw__copy_path(state->grid_art_identity, sizeof(state->grid_art_identity), identity);
+    }
+    const char *code = state->systems[idx].name;
+    jw_system_icon_memo *memo = &state->system_icon_memos[idx];
+    if (strcmp(memo->code, code)) {
+        memset(memo, 0, sizeof(*memo));
+        jw__copy_path(memo->code, sizeof(memo->code), code);
+    }
+    if (!memo->done) {
+        jw_system_icon_candidates candidates;
+        jw__build_system_icon_candidates(state, code, &candidates);
+        memo->path[0] = '\0';
+        for (int i = 0; i < candidates.count; i++) {
+            uint64_t hash = jw__img_path_hash(candidates.paths[i]);
+            bool failed = false;
+            for (int j = 0; j < memo->failed_count; j++)
+                if (memo->failed[j] == hash) failed = true;
+            if (!failed && jw__readable_path(candidates.paths[i])) {
+                jw__copy_path(memo->path, sizeof(memo->path), candidates.paths[i]);
+                break;
+            }
+        }
+        memo->done = true;
+    }
+    return memo->path[0] ? memo->path : NULL;
+}
+
 static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
     jw_launcher_state *state = (jw_launcher_state *)ctx;
     *tw = 0; *th = 0;
     if (idx < 0 || idx >= state->flat_count) return NULL;
     const jw_flat_item *it = &state->flat_items[idx];
     if (it->kind == JW_FLAT_SYSTEM) {
-        const char *path = jw__cf_system_icon_path(state, it->system_idx);
-        return jw__load_page_image(path, JW_GRID_TILE_MAX, tw, th);
+        for (int attempt = 0; attempt < JW_SYSTEM_ICON_MAX_CANDIDATES; attempt++) {
+            const char *path = jw__grid_system_icon_path(state, it->system_idx);
+            if (!path) return NULL;
+            char thumb[PATH_MAX];
+            const char *tp = jw__catalog_thumb_path(state, path, thumb, sizeof(thumb)) ? thumb : NULL;
+            bool failed = false;
+            SDL_Texture *texture = jw__load_page_image_status(path, JW_GRID_TILE_MAX, tw, th, tp, &failed);
+            if (texture || !failed) return texture;
+            jw_system_icon_memo *memo = &state->system_icon_memos[it->system_idx];
+            if (memo->failed_count < JW_SYSTEM_ICON_MAX_CANDIDATES)
+                memo->failed[memo->failed_count++] = jw__img_path_hash(path);
+            memo->done = false;
+        }
+        return NULL;
     }
     if (it->kind == JW_FLAT_APPS)
         return jw__load_system_icon(state, "_apps", tw, th);
@@ -6478,11 +6559,8 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
         if (memo.failed[i]) continue;
         /* CAT-1's immutable generation is part of the thumbnail identity. A PNG
            replaced with the same mtime/size still gets a fresh derived image. */
-        char thumb[PATH_MAX], key[PATH_MAX * 2];
-        snprintf(key, sizeof(key), "%s|%s", memo.paths[i],
-                 state->system_catalog && state->system_catalog->info_dir
-                     ? state->system_catalog->info_dir : "");
-        const char *tp = jw__cover_thumb_path(key, thumb, sizeof(thumb)) ? thumb : NULL;
+        char thumb[PATH_MAX];
+        const char *tp = jw__catalog_thumb_path(state, memo.paths[i], thumb, sizeof(thumb)) ? thumb : NULL;
         SDL_Texture *texture = jw__load_page_image_status(memo.paths[i], JW_WORDMARK_MAX,
                                                          tw, th, tp, &memo.failed[i]);
         if (texture || !memo.failed[i]) return texture;
@@ -6768,11 +6846,11 @@ static void jw__grid_prewarm_icons(jw_launcher_state *state) {
     for (int i = first; i <= last; ++i) {
         const jw_flat_item *it = &state->flat_items[i];
         if (it->kind != JW_FLAT_SYSTEM) continue;
-        const char *path = jw__cf_system_icon_path(state, it->system_idx);
+        const char *path = jw__grid_system_icon_path(state, it->system_idx);
         if (!path || !path[0]) continue;
         if (cat_cache_get(path, NULL, NULL)) continue;          /* already decoded */
         char thumb[PATH_MAX];
-        const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
+        const char *tp = jw__catalog_thumb_path(state, path, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(path, tp)) continue;  /* already built */
         jw_cover_loader_enqueue(jw__covers(), path, tp, JW_GRID_TILE_MAX);
     }

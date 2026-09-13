@@ -31,6 +31,73 @@ static void wm_expect(jw_launcher_state *state, int width) {
         abort();
     }
 }
+static void grid_expect(jw_launcher_state *state, int width) {
+    int w = 0, h = 0; SDL_Texture *texture = NULL;
+    for (int i = 0; i < 200; i++) {
+        texture = jw__grid_icon(state, 0, &w, &h);
+        if (texture) break;
+        SDL_Delay(10);
+    }
+    if ((width && (!texture || w != width)) || (!width && texture)) {
+        fprintf(stderr, "grid: wanted %d got %d\n", width, w); abort();
+    }
+}
+static void grid_corrupt(const char *path) {
+    unsigned char header[24]; FILE *f = fopen(path, "rb"); assert(f);
+    assert(fread(header, 1, 24, f) == 24); fclose(f);
+    f = fopen(path, "wb"); assert(f); assert(fwrite(header, 1, 24, f) == 24); fclose(f);
+}
+static void grid_test(jw_launcher_state *state, jw_ra_system *system,
+                       jw_ra_catalog *catalog, const char *root) {
+    cat_stylesheet *style = (cat_stylesheet *)cat_get_stylesheet();
+    style->launcher.layout = CAT_LAUNCHER_GRID;
+    state->system_count = 1; state->flat_count = 1;
+    snprintf(state->systems[0].name, sizeof(state->systems[0].name), "TEST");
+    state->flat_items[0] = (jw_flat_item){JW_FLAT_SYSTEM, 0};
+    state->settings.system_icon_pack_index = JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC;
+    snprintf(state->settings.user_themes.items[0].dir, 128, "A");
+    snprintf(state->settings.user_theme_dir, 128, "A");
+    char theme[PATH_MAX], rom[PATH_MAX], grid[PATH_MAX], flat[PATH_MAX], photo[PATH_MAX], bundle[PATH_MAX], dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s/Themes/A/grid/icons", root); wm_dirs(dir);
+    snprintf(dir, sizeof(dir), "%s/res/system_icons", root); wm_dirs(dir);
+    snprintf(theme, sizeof(theme), "%s/Themes/A/grid/icons/TEST.png", root);
+    snprintf(rom, sizeof(rom), "%s/Roms/TEST/icon.png", root);
+    snprintf(grid, sizeof(grid), "%s/Apps/mlp1/Test.pak/art/grid.png", root);
+    snprintf(flat, sizeof(flat), "%s/Apps/mlp1/Test.pak/art/flat.png", root);
+    snprintf(photo, sizeof(photo), "%s/Apps/mlp1/Test.pak/art/photo.png", root);
+    snprintf(bundle, sizeof(bundle), "%s/res/system_icons/TEST.png", root);
+    wm_png(theme,64); wm_png(rom,32); wm_png(grid,128); wm_png(flat,160); wm_png(photo,192); wm_png(bundle,256);
+    system->grid_icon = "art/grid.png"; system->grid_icon_provider = "mlp1/Test.pak";
+    system->provider = "mlp1/Test.pak"; system->icon_flat = "art/flat.png"; system->icon_photographic = "art/photo.png";
+    int w,h; assert(jw__load_cached_image(bundle,&w,&h));
+    assert(!jw__grid_icon(state,0,&w,&h)); /* cold theme must stay pending */
+    jw__grid_prewarm_icons(state); grid_expect(state,64); /* theme > ROM > pak */
+    unlink(theme); state->wordmark_revision++; grid_expect(state,32);
+    wm_file(rom,"bad PNG"); catalog->info_dir = "grid-corrupt-rom/info"; state->wordmark_revision++; grid_expect(state,128);
+    grid_corrupt(grid); catalog->info_dir = "grid-corrupt-pak/info"; state->wordmark_revision++; grid_expect(state,192);
+    grid_corrupt(photo); catalog->info_dir = "grid-corrupt-photo/info"; state->wordmark_revision++; grid_expect(state,160);
+    grid_corrupt(flat); catalog->info_dir = "grid-corrupt-flat/info"; state->wordmark_revision++; grid_expect(state,256);
+    wm_png(grid,128); catalog->info_dir = "grid-repaired/info"; state->wordmark_revision++; grid_expect(state,128);
+    struct stat st; assert(!stat(grid,&st)); wm_png(grid,224);
+    struct utimbuf same = {.actime=st.st_atime,.modtime=st.st_mtime}; assert(!utime(grid,&same));
+    catalog->info_dir = "grid-two/info"; grid_expect(state,224); /* generation alone invalidates */
+    system->grid_icon_provider = NULL; catalog->info_dir = "grid-three/info"; grid_expect(state,256);
+    system->provider = NULL; system->grid_icon_provider = "mlp1/Test.pak";
+    wm_png(grid,1025); catalog->info_dir = "grid-four/info"; grid_expect(state,256); /* over cap */
+    wm_png(grid,1024); catalog->info_dir = "grid-five/info"; grid_expect(state,320); /* 320px decode */
+    assert(system->provider == NULL); /* base-owned extension decorates independently */
+    snprintf(dir,sizeof(dir),"%s/Themes/B/grid/icons",root); wm_dirs(dir);
+    snprintf(theme,sizeof(theme),"%s/Themes/B/grid/icons/TEST.png",root); wm_png(theme,96);
+    snprintf(state->settings.user_themes.items[0].dir,128,"B");
+    snprintf(state->settings.user_theme_dir,128,"B"); grid_expect(state,96); /* same index, new theme */
+    style->launcher.layout = CAT_LAUNCHER_COVERFLOW;
+    jw_system_icon_candidates candidates; jw__build_system_icon_candidates(state,"TEST",&candidates);
+    for (int i=0;i<candidates.count;i++) assert(strcmp(candidates.paths[i],grid));
+    style->launcher.layout = CAT_LAUNCHER_GRID;
+    unlink(theme); unlink(rom); unlink(grid); unlink(bundle);
+    catalog->info_dir = "grid-six/info"; grid_expect(state,0);
+    puts("PASS grid-icon UI: priorities, pending/failure, independent provider, generation replacement/removal, dimensions, theme switch, unchanged Cover Flow");
+}
 int main(void) {
     char root[] = "/tmp/jw-wordmark-XXXXXX"; assert(mkdtemp(root));
     char path[PATH_MAX], font[PATH_MAX];
@@ -103,6 +170,8 @@ int main(void) {
         SDL_Delay(10);
     }
     assert(texture && !failed && w == 512);
+    jw_cover_loader_shutdown(jw__covers());
+    grid_test(state, &system, &catalog, root);
     jw_cover_loader_shutdown(jw__covers());
     state->system_catalog = NULL; free(state); cat_quit();
     puts("PASS wordmark-test: precedence, pending/failure, theme switch, replacement, removal, decode cap");

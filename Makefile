@@ -607,6 +607,7 @@ content-art-test: | $(BUILD)/bin
 		internal/catalog/manifest.c internal/retroarch/catalog.c $(EFFECTIVE_CATALOG_SRCS) \
 		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/content-art-test
+	$(BUILD)/bin/content-art-test "$(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-content/art/grid-fixtures.json"
 
 catalog-merge-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -DJW_MERGE_FIXTURE=\"$(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-content/merge/fixtures.json\" -o $(BUILD)/bin/catalog-merge-test \

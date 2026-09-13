@@ -69,6 +69,8 @@ typedef struct {
     char *icon_photographic;
     char *wordmark;
     char *wordmark_provider;
+    char *grid_icon;
+    char *grid_icon_provider;
     char *provider;
     char *source_id;
 } jw_ra_system;
@@ -154,6 +156,10 @@ int jw_ra_catalog_resolve_core_path(const jw_ra_catalog *catalog,
 
 /* The merged info directory belonging to this exact catalog snapshot. */
 int jw_ra_catalog_resolve_system_wordmark_path(const jw_ra_catalog *catalog,
+                                               const jw_ra_system *system,
+                                               char *out, size_t out_size);
+
+int jw_ra_catalog_resolve_system_grid_icon_path(const jw_ra_catalog *catalog,
                                                const jw_ra_system *system,
                                                char *out, size_t out_size);
 

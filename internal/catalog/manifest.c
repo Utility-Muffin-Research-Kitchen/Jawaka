@@ -688,7 +688,7 @@ static const char *jw_content__validate_extension(const cJSON *extension) {
 int jw_content_art_validate(const cJSON *document, const char *pak_dir,
                             const cJSON **out, char *reason, size_t reason_size) {
     static const char *const block_keys[] = {"schema", "systems"};
-    static const char *const row_keys[] = {"id", "wordmark"};
+    static const char *const row_keys[] = {"id", "wordmark", "grid_icon"};
     const char *error = NULL;
     if (out) *out = NULL;
     jw_content__reason(reason, reason_size, "");
@@ -702,8 +702,9 @@ int jw_content_art_validate(const cJSON *document, const char *pak_dir,
     else if (!jw_content__object_keys(block, block_keys, 2))
         error = "unknown-content-art-field";
     const cJSON *schema = jw_content__item(block, "schema");
-    if (!error && (!cJSON_IsNumber(schema) || schema->valuedouble != 1))
+    if (!error && (!cJSON_IsNumber(schema) || (schema->valuedouble != 1 && schema->valuedouble != 2)))
         error = "unknown-content-art-schema";
+    bool v2 = !error && schema->valuedouble == 2;
     const cJSON *rows = jw_content__item(block, "systems");
     if (!error && (!cJSON_IsArray(rows) || cJSON_GetArraySize(rows) < 1 ||
                    cJSON_GetArraySize(rows) > 32))
@@ -712,7 +713,7 @@ int jw_content_art_validate(const cJSON *document, const char *pak_dir,
     cJSON_ArrayForEach(row, rows) {
         if (error) break;
         if (!cJSON_IsObject(row)) { error = "malformed-content-art-system"; break; }
-        if (!jw_content__object_keys(row, row_keys, 2)) {
+        if (!jw_content__object_keys(row, row_keys, v2 ? 3 : 2)) {
             error = "unknown-content-art-field"; break;
         }
         const cJSON *id = jw_content__item(row, "id");
@@ -725,30 +726,47 @@ int jw_content_art_validate(const cJSON *document, const char *pak_dir,
                 error = "duplicate-content-art-system";
         }
         if (error) break;
-        const cJSON *path = jw_content__item(row, "wordmark");
-        if (!cJSON_IsString(path) || !path->valuestring[0] || strlen(path->valuestring) > 4096) {
-            error = "malformed-content-art-wordmark"; break;
+        if (v2 && !jw_content__item(row, "wordmark") && !jw_content__item(row, "grid_icon")) {
+            error = "missing-content-art-image"; break;
         }
-        const char *path_error = jw_content__path_reason(path, pak_dir, false);
-        if (path_error) {
-            snprintf(reason, reason_size, "content-art-%s", path_error);
-            return -1;
+        for (int slot = 1; slot <= (v2 ? 2 : 1) && !error; slot++) {
+            const cJSON *path = jw_content__item(row, row_keys[slot]);
+            if (!path && v2) continue;
+            if (!cJSON_IsString(path) || !path->valuestring[0] || strlen(path->valuestring) > 4096) {
+                error = slot == 1 ? "malformed-content-art-wordmark" : "malformed-content-art-grid-icon";
+                break;
+            }
+            const char *path_error = jw_content__path_reason(path, pak_dir, false);
+            if (path_error) {
+                snprintf(reason, reason_size, "content-art-%s", path_error);
+                return -1;
+            }
+            char full[PATH_MAX];
+            if (snprintf(full, sizeof(full), "%s/%s", pak_dir, path->valuestring) >= (int)sizeof(full)) {
+                error = "content-art-missing-file"; break;
+            }
+            FILE *file = fopen(full, "rb");
+            if (!file) { error = "unreadable-content-art-image"; break; }
+            unsigned char header[24];
+            size_t got = fread(header, 1, sizeof(header), file);
+            bool read_error = ferror(file);
+            fclose(file);
+            size_t len = strlen(path->valuestring);
+            if (read_error) error = "unreadable-content-art-image";
+            else if (len < 4 || strcasecmp(path->valuestring + len - 4, ".png") ||
+                     got < 8 || memcmp(header, "\x89PNG\r\n\x1a\n", 8))
+                error = "unsupported-content-art-image";
+            else if (slot == 2) {
+                if (got != 24 || memcmp(header + 8, "\0\0\0\rIHDR", 8))
+                    error = "unsupported-content-art-image";
+                else for (int offset = 16; offset <= 20; offset += 4) {
+                    unsigned dim = ((unsigned)header[offset] << 24) |
+                        ((unsigned)header[offset + 1] << 16) |
+                        ((unsigned)header[offset + 2] << 8) | header[offset + 3];
+                    if (dim == 0 || dim > 1024) error = "invalid-content-art-grid-dimensions";
+                }
+            }
         }
-        char full[PATH_MAX];
-        if (snprintf(full, sizeof(full), "%s/%s", pak_dir, path->valuestring) >= (int)sizeof(full)) {
-            error = "content-art-missing-file"; break;
-        }
-        FILE *file = fopen(full, "rb");
-        if (!file) { error = "unreadable-content-art-image"; break; }
-        unsigned char signature[8];
-        size_t got = fread(signature, 1, sizeof(signature), file);
-        bool read_error = ferror(file);
-        fclose(file);
-        size_t len = strlen(path->valuestring);
-        if (read_error) error = "unreadable-content-art-image";
-        else if (len < 4 || strcasecmp(path->valuestring + len - 4, ".png") ||
-                 got != 8 || memcmp(signature, "\x89PNG\r\n\x1a\n", 8))
-            error = "unsupported-content-art-image";
     }
     if (error) { jw_content__reason(reason, reason_size, error); return -1; }
     *out = block;

@@ -629,6 +629,26 @@ static void test_content_scrape_policy(void) {
         generation, sizeof(generation), reason, sizeof(reason));
     check(rc == 0 && strcmp(first_generation, generation), "same-path PNG bytes republish");
     snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    cJSON_ReplaceItemInObjectCaseSensitive(contributor, "content_art", cJSON_Parse(
+        "{\"schema\":2,\"systems\":[{\"id\":\"SCUMMVM\",\"wordmark\":\"mark.png\",\"grid_icon\":\"grid.png\"}]}"));
+    path_of(path, sizeof(path), "%s/grid.png", pak_dir);
+    write_text(path, "grid-one");
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0, "grid icon publishes from accepted contributor");
+    path_of(path, sizeof(path), "%s/%s/systems.json", catalog_dir, generation);
+    systems = read_text(path);
+    check(systems && strstr(systems, "\"grid_icon\":\"grid.png\"") &&
+          strstr(systems, "\"grid_icon_provider\":\"mlp1/ScummVM.pak\""), "grid path and independent provider serialized");
+    path_of(path, sizeof(path), "%s/%s/stamp.json", catalog_dir, generation);
+    stamp = read_text(path);
+    check(stamp && strstr(stamp, "\"rel\":\"grid.png\""), "grid PNG fingerprinted");
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    path_of(path, sizeof(path), "%s/grid.png", pak_dir); write_text(path, "grid-two");
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(first_generation, generation), "same-path grid bytes republish");
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
     char moved[PATH_MAX]; path_of(moved, sizeof(moved), "%s/relocated.pak", sandbox);
     check(rename(pak_dir, moved) == 0, "move provider install root");
     cJSON_ReplaceItemInObjectCaseSensitive(contributor, "pak_dir", cJSON_CreateString(moved));
@@ -641,7 +661,7 @@ static void test_content_scrape_policy(void) {
     check(rc == 0 && strcmp(first_generation, generation), "provider removal republishes");
     path_of(path, sizeof(path), "%s/%s/systems.json", catalog_dir, generation);
     systems = read_text(path);
-    check(systems && !strstr(systems, "wordmark"), "removed provider leaves no art fields");
+    check(systems && !strstr(systems, "wordmark") && !strstr(systems, "grid_icon"), "removed provider leaves no art fields");
 
     cJSON_Delete(diagnostics);
     cJSON_Delete(contributors);

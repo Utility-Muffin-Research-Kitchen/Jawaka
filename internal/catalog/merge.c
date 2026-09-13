@@ -704,22 +704,29 @@ int jw_catalog_apply_content_art(cJSON *systems, const cJSON *cores,
                 if (record(diagnostics, provider, "ineligible-content-art-system", strdup(id))) return -1;
                 continue;
             }
-            int claims = 0;
-            const cJSON *other = NULL;
-            cJSON_ArrayForEach(other, contributors) {
-                if (!art_eligible(system, cores, other)) continue;
-                const cJSON *claim = NULL;
-                cJSON_ArrayForEach(claim, item(item(other, "content_art"), "systems"))
-                    if (!strcmp(text(claim, "id"), id)) claims++;
+            const char *slots[] = {"wordmark", "grid_icon"};
+            const char *providers[] = {"wordmark_provider", "grid_icon_provider"};
+            for (int slot = 0; slot < 2; slot++) {
+                if (!text(entry, slots[slot])[0]) continue;
+                int claims = 0;
+                const cJSON *other = NULL;
+                cJSON_ArrayForEach(other, contributors) {
+                    if (!art_eligible(system, cores, other)) continue;
+                    const cJSON *claim = NULL;
+                    cJSON_ArrayForEach(claim, item(item(other, "content_art"), "systems"))
+                        if (!strcmp(text(claim, "id"), id) && text(claim, slots[slot])[0]) claims++;
+                }
+                if (claims > 1) {
+                    char detail[64];
+                    snprintf(detail, sizeof(detail), "%s%s", id, slot ? ":grid_icon" : "");
+                    if (record(diagnostics, provider, "conflicting-content-art-system", strdup(detail))) return -1;
+                    continue;
+                }
+                cJSON_DeleteItemFromObjectCaseSensitive(system, slots[slot]);
+                cJSON_DeleteItemFromObjectCaseSensitive(system, providers[slot]);
+                if (!cJSON_AddStringToObject(system, slots[slot], text(entry, slots[slot])) ||
+                    !cJSON_AddStringToObject(system, providers[slot], provider)) return -1;
             }
-            if (claims > 1) {
-                if (record(diagnostics, provider, "conflicting-content-art-system", strdup(id))) return -1;
-                continue;
-            }
-            cJSON_DeleteItemFromObjectCaseSensitive(system, "wordmark");
-            cJSON_DeleteItemFromObjectCaseSensitive(system, "wordmark_provider");
-            if (!cJSON_AddStringToObject(system, "wordmark", text(entry, "wordmark")) ||
-                !cJSON_AddStringToObject(system, "wordmark_provider", provider)) return -1;
         }
     }
     return sort_diagnostics(diagnostics);
