@@ -5391,8 +5391,10 @@ static void jw__standalone_display_name(const char *core_id,
 
 /* A wrapper that dies before the emulator appears reports within seconds; a
    session long enough to be real play is the user's own quit and stays
-   silent. Only an actual exit status is surfaced (a signal already has the
-   supervisor's crash handling). */
+   silent. Only an actual exit status is surfaced: a signal already has the
+   supervisor's crash handling, and a shell wrapper reports a signal that ended
+   its game as 128+N (a quick quit from the in-game menu is 143), which is not
+   a failed launch. */
 #define JW_STANDALONE_LAUNCH_FAILURE_MAX_RUNTIME_S 15
 
 static void jw__standalone_session_finish(jw_daemon_state *state, pid_t pid, int status) {
@@ -5417,7 +5419,7 @@ static void jw__standalone_session_finish(jw_daemon_state *state, pid_t pid, int
         jw_log_info("standalone emulator session ended pid=%d runtime_s=%ld status=%d system=%s rom=%s",
                     (int)pid, runtime_s, WEXITSTATUS(status),
                     session->system, session->rom_path);
-        if (WEXITSTATUS(status) != 0 &&
+        if (WEXITSTATUS(status) != 0 && WEXITSTATUS(status) < 128 &&
             runtime_s < JW_STANDALONE_LAUNCH_FAILURE_MAX_RUNTIME_S) {
             state->launch_status_pending = true;
             jw__standalone_display_name(session->core_id, session->core_path,
@@ -8792,38 +8794,29 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
    which lives on a FAT card and can go unwritable (a bad cluster chain, a full
    card, or the FAT32 4 GiB per-file ceiling). A shell wrapper inheriting that
    fd dies on its first log write under set -e -- the Leaf 0.11 ports failure --
-   so a game child is never handed a descriptor that cannot take a byte: each
-   of fd 1 and fd 2 is probed with a real byte and, on failure, reopened onto
-   /dev/null for the child alone. The daemon keeps its own descriptors. */
-static void jw__child_sanitize_stdio(void) {
-    bool broken[2] = { false, false };
-    for (int fd = STDOUT_FILENO; fd <= STDERR_FILENO; fd++) {
-        /* A real byte, not a zero-length write: a 0-byte write can succeed
-           without touching the device and would not detect EIO/EFBIG. */
-        if (write(fd, "\n", 1) >= 0) {
-            continue;
-        }
-        broken[fd - STDOUT_FILENO] = true;
+   so before forking a game the daemon proves its own descriptors take a byte
+   and repoints any that do not: at internal storage on MLP1, /dev/null
+   otherwise. Every child forked afterwards inherits a working descriptor, and
+   the substitution is logged where it can be read. This runs in the parent:
+   the child of a threaded daemon must not touch stdio between fork and exec. */
+static void jw__heal_stdio_before_game(void) {
+#ifdef PLATFORM_MLP1
+    const char *fallback_dir = JW_STORAGE_MLP1_LOG_DIR;
+#else
+    const char *fallback_dir = NULL;
+#endif
+    switch (jw_log_heal_unwritable_stdio(fallback_dir, "jawakad")) {
+    case 1:
+        jw_log_warn("game launch: session log fd was unwritable; daemon and game output "
+                    "continue in %s/jawakad.log", fallback_dir);
+        break;
+    case 2:
+        jw_log_warn("game launch: session log fd was unwritable and no fallback log could "
+                    "be opened; game output is discarded");
+        break;
+    default:
+        break;
     }
-    if (!broken[0] && !broken[1]) {
-        return;
-    }
-    int devnull = open("/dev/null", O_WRONLY);
-    if (devnull < 0) {
-        return;
-    }
-    if (broken[0]) {
-        dup2(devnull, STDOUT_FILENO);
-    }
-    if (broken[1]) {
-        dup2(devnull, STDERR_FILENO);
-    }
-    if (devnull > STDERR_FILENO) {
-        close(devnull);
-    }
-    jw_log_warn("game child stdio: unwritable session log fd substituted with /dev/null (%s%s)",
-                broken[0] ? "stdout" : "",
-                broken[1] ? (broken[0] ? " stderr" : "stderr") : "");
 }
 
 static int jw__spawn_app(jw_daemon_state *state) {
@@ -8922,6 +8915,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
         return -1;
     }
 
+    jw__heal_stdio_before_game();
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
@@ -8936,7 +8930,6 @@ static int jw__spawn_app(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
-        jw__child_sanitize_stdio();
         if (app_is_retroarch || app_is_pico8) {
             /* Both sides call setpgid so neither the fork/exec race nor a slow
                parent can leave RetroArch outside the group the daemon signals.
@@ -9235,6 +9228,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         return -1;
     }
 
+    jw__heal_stdio_before_game();
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
@@ -9260,7 +9254,6 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     }
 
     if (pid == 0) {
-        jw__child_sanitize_stdio();
         if (use_roster) {
             close(sync_pipe[1]);
             close(err_pipe[0]);
@@ -9784,6 +9777,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         goto fail;
     }
 
+    jw__heal_stdio_before_game();
     long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
     if (pid < 0) {
@@ -9797,7 +9791,6 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
 
     if (pid == 0) {
-        jw__child_sanitize_stdio();
         if (use_roster) {
             close(sync_pipe[1]);
             close(err_pipe[0]);

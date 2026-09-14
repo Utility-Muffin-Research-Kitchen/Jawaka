@@ -72,6 +72,10 @@ msgstr ""
 msgid "%s first"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "%s launcher exited (status %s)"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "%s · %d of %d"
 msgstr ""
