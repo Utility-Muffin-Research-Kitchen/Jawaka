@@ -79,10 +79,18 @@ bool jw_user_theme_label_path(const jw_user_theme_catalog *cat, int idx,
 /* Per-view wallpaper first, then the theme-wide one. png/jpg/jpeg. */
 /* <root>/<dir>/<view>/wordmarks/<CODE>.png -- the system's logo, drawn at the
    bottom of the games view. Authored white on transparency: Leaf tints it to the
-   list's text colour so the logo belongs to the interface. */
+   list's text colour so the logo belongs to the interface.
+   <CODE>.color.png beside it is a full-color logo (RGBA, its own colours),
+   drawn untinted and preferred over <CODE>.png when both exist. Either is
+   refused above 1024 px per edge. The same pair works per system in the ROM
+   folder as Roms/<folder>/wordmark.color.png and wordmark.png, which win over
+   the theme's. */
 bool jw_user_theme_wordmark_path(const jw_user_theme_catalog *cat, int idx,
                                  const char *view, const char *system_code,
                                  char *out, size_t out_size);
+bool jw_user_theme_wordmark_color_path(const jw_user_theme_catalog *cat, int idx,
+                                       const char *view, const char *system_code,
+                                       char *out, size_t out_size);
 
 bool jw_user_theme_wallpaper_path(const jw_user_theme_catalog *cat, int idx,
                                   const char *view, char *out, size_t out_size);

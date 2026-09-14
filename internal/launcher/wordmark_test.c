@@ -19,15 +19,16 @@ static void wm_png(const char *path, int width) {
     assert(surface); SDL_FillRect(surface, NULL, 0xffffffff);
     assert(!IMG_SavePNG(surface, path)); SDL_FreeSurface(surface);
 }
-static void wm_expect(jw_launcher_state *state, int width) {
-    int w = 0, h = 0; SDL_Texture *texture = NULL;
+static void wm_expect(jw_launcher_state *state, int width, bool color) {
+    int w = 0, h = 0; SDL_Texture *texture = NULL; bool got_color = false;
     for (int i = 0; i < 150; i++) {
-        texture = jw__gg_wordmark(state, &w, &h);
+        texture = jw__gg_wordmark(state, &w, &h, &got_color);
         if (texture) break;
         SDL_Delay(10);
     }
-    if ((width && (!texture || w != width)) || (!width && texture)) {
-        fprintf(stderr, "wordmark: wanted width %d, got %d (texture %p)\n", width, w, (void *)texture);
+    if ((width && (!texture || w != width || got_color != color)) || (!width && texture)) {
+        fprintf(stderr, "wordmark: wanted width %d color %d, got %d color %d (texture %p)\n",
+                width, color, w, got_color, (void *)texture);
         abort();
     }
 }
@@ -156,42 +157,58 @@ int main(void) {
         snprintf(path, sizeof(path), "%s/%s", root, dirs[i]); wm_dirs(path);
     }
     char rom[PATH_MAX], theme[PATH_MAX], provider[PATH_MAX], bundled[PATH_MAX];
+    char rom_color[PATH_MAX], theme_color[PATH_MAX], provider_color[PATH_MAX], bundled_color[PATH_MAX];
     snprintf(rom, sizeof(rom), "%s/Roms/TEST/wordmark.png", root);
+    snprintf(rom_color, sizeof(rom_color), "%s/Roms/TEST/wordmark.color.png", root);
     snprintf(theme, sizeof(theme), "%s/Themes/A/grid/wordmarks/TEST.png", root);
+    snprintf(theme_color, sizeof(theme_color), "%s/Themes/A/grid/wordmarks/TEST.color.png", root);
     snprintf(provider, sizeof(provider), "%s/Apps/mlp1/Test.pak/art/mark.png", root);
+    snprintf(provider_color, sizeof(provider_color), "%s/Apps/mlp1/Test.pak/art/mark.color.png", root);
     snprintf(bundled, sizeof(bundled), "%s/res/grid_wordmarks/TEST.png", root);
-    wm_png(rom, 32); wm_png(theme, 64); wm_png(provider, 128); wm_png(bundled, 256);
+    snprintf(bundled_color, sizeof(bundled_color), "%s/res/grid_wordmarks/TEST.color.png", root);
+    wm_png(rom_color, 40); wm_png(rom, 32); wm_png(theme_color, 72); wm_png(theme, 64);
+    wm_png(provider_color, 136); wm_png(provider, 128); wm_png(bundled_color, 264); wm_png(bundled, 256);
     snprintf(path, sizeof(path), "%s/Apps", root); setenv("APPS_PATH", path, 1);
-    jw_ra_system system = {.id = "TEST", .name = "Test system", .wordmark = "art/mark.png", .wordmark_provider = "mlp1/Test.pak"};
+    jw_ra_system system = {.id = "TEST", .name = "Test system", .wordmark = "art/mark.png", .wordmark_provider = "mlp1/Test.pak",
+                           .wordmark_color = "art/mark.color.png", .wordmark_color_provider = "mlp1/Test.pak"};
     jw_ra_catalog catalog = {.sdcard_root = root, .systems = &system, .system_count = 1};
     state->system_catalog = &catalog;
     art_refresh(state, &catalog, "gen-one/info");
     /* A cold higher-priority candidate stays pending even with lower art ready. */
-    int w, h; assert(!jw__gg_wordmark(state, &w, &h));
-    wm_expect(state, 32);
-    unlink(rom); art_refresh(state, &catalog, "gen-no-rom/info"); wm_expect(state, 64);
+    int w, h; bool color; assert(!jw__gg_wordmark(state, &w, &h, &color));
+    /* Each source offers its full-color mark first, then the tinted one. */
+    wm_expect(state, 40, true);
+    /* Over-cap art is refused before decode, from the ROM folder and the pak alike. */
+    wm_png(rom_color, 1025); art_refresh(state, &catalog, "gen-cap/info"); wm_expect(state, 32, false);
+    unlink(rom_color); unlink(rom); art_refresh(state, &catalog, "gen-no-rom/info"); wm_expect(state, 72, true);
+    unlink(theme_color); art_refresh(state, &catalog, "gen-no-theme-color/info"); wm_expect(state, 64, false);
     /* Same index, different folder: theme identity must invalidate the memo. */
     snprintf(path, sizeof(path), "%s/Themes/B/grid/wordmarks/TEST.png", root); wm_png(path, 96);
     snprintf(state->settings.user_themes.items[0].dir, 128, "B");
-    snprintf(state->settings.user_theme_dir, 128, "B"); wm_expect(state, 96);
-    /* A malformed highest-priority PNG must advance after an async failure. */
+    snprintf(state->settings.user_theme_dir, 128, "B"); wm_expect(state, 96, false);
+    /* A highest-priority PNG with a sound header but a bad body advances after
+       its async decode failure. */
     snprintf(state->settings.user_themes.items[0].dir, 128, "A");
     snprintf(state->settings.user_theme_dir, 128, "A");
-    wm_file(theme, "bad PNG"); art_refresh(state, &catalog, "gen-two/info"); wm_expect(state, 128);
+    grid_corrupt(theme); wm_png(provider_color, 1025);
+    art_refresh(state, &catalog, "gen-two/info"); wm_expect(state, 128, false);
+    wm_png(provider_color, 136); art_refresh(state, &catalog, "gen-color/info"); wm_expect(state, 136, true);
+    system.wordmark_color_provider = NULL; art_refresh(state, &catalog, "gen-no-color/info"); wm_expect(state, 128, false);
     assert(system.provider == NULL); /* artwork doesn't assign system ownership */
     /* Same-path, same-mtime provider replacement changes only catalog identity. */
     struct stat st; assert(!stat(provider, &st));
     wm_png(provider, 192); struct utimbuf times = {.actime = st.st_atime, .modtime = st.st_mtime};
-    assert(!utime(provider, &times)); art_refresh(state, &catalog, "gen-three/info"); wm_expect(state, 192);
+    assert(!utime(provider, &times)); art_refresh(state, &catalog, "gen-three/info"); wm_expect(state, 192, false);
     /* An ordinary reload of the same generation keeps the memo and texture. */
     unsigned epoch = state->art_epoch; jw__adopt_art_catalog(state, &catalog);
-    assert(state->art_epoch == epoch && cat_cache_get(provider, NULL, NULL)); wm_expect(state, 192);
+    assert(state->art_epoch == epoch && cat_cache_get(provider, NULL, NULL)); wm_expect(state, 192, false);
     /* Removed provider, then undecodable bundle: the text branch receives NULL. */
-    system.wordmark_provider = NULL; art_refresh(state, &catalog, "gen-no-provider/info"); wm_expect(state, 256);
-    wm_file(bundled, "bad PNG"); art_refresh(state, &catalog, "gen-four/info"); wm_expect(state, 0);
+    system.wordmark_provider = NULL; art_refresh(state, &catalog, "gen-no-provider/info"); wm_expect(state, 264, true);
+    unlink(bundled_color); art_refresh(state, &catalog, "gen-no-bundled-color/info"); wm_expect(state, 256, false);
+    wm_file(bundled, "bad PNG"); art_refresh(state, &catalog, "gen-four/info"); wm_expect(state, 0, false);
     /* Reinstall after failures and a 1024px mark: decode cap remains 512px. */
     system.wordmark_provider = "mlp1/Test.pak"; wm_png(provider, 1024);
-    art_refresh(state, &catalog, "gen-five/info"); wm_expect(state, 512);
+    art_refresh(state, &catalog, "gen-five/info"); wm_expect(state, 512, false);
     jw_cover_loader_shutdown(jw__covers());
     cat_cache_clear();
     /* A full/unwritable thumbnail directory still returns the decoded surface. */
@@ -206,6 +223,6 @@ int main(void) {
     grid_test(state, &system, &catalog, root);
     jw_cover_loader_shutdown(jw__covers());
     state->system_catalog = NULL; free(state); cat_quit();
-    puts("PASS wordmark-test: precedence, pending/failure, theme switch, replacement, removal, decode cap");
+    puts("PASS wordmark-test: color/tinted precedence, dimension cap, pending/failure, theme switch, replacement, same-generation reload, removal, decode cap");
     return 0;
 }

@@ -221,17 +221,23 @@ int jw_user_themes_find(const jw_user_theme_catalog *cat, const char *dir) {
     return -1;
 }
 
-static bool jw__ut_asset(const jw_user_theme_catalog *cat, int idx, const char *view,
-                         const char *kind, const char *system_code,
-                         char *out, size_t out_size) {
+static bool jw__ut_asset_ext(const jw_user_theme_catalog *cat, int idx, const char *view,
+                             const char *kind, const char *system_code, const char *ext,
+                             char *out, size_t out_size) {
     if (out && out_size) out[0] = '\0';
     if (!cat || idx < 0 || idx >= cat->count || !view || !system_code || !system_code[0])
         return false;
     /* _default is Leaf's safety net, not a tile: never themable. */
     if (strcmp(system_code, "_default") == 0) return false;
-    int r = snprintf(out, out_size, "%s/%s/%s/%s/%s.png",
-                     cat->root, cat->items[idx].dir, view, kind, system_code);
+    int r = snprintf(out, out_size, "%s/%s/%s/%s/%s%s",
+                     cat->root, cat->items[idx].dir, view, kind, system_code, ext);
     return r > 0 && (size_t)r < out_size;
+}
+
+static bool jw__ut_asset(const jw_user_theme_catalog *cat, int idx, const char *view,
+                         const char *kind, const char *system_code,
+                         char *out, size_t out_size) {
+    return jw__ut_asset_ext(cat, idx, view, kind, system_code, ".png", out, out_size);
 }
 
 bool jw_user_theme_icon_path(const jw_user_theme_catalog *cat, int idx,
@@ -250,6 +256,13 @@ bool jw_user_theme_wordmark_path(const jw_user_theme_catalog *cat, int idx,
                                  const char *view, const char *system_code,
                                  char *out, size_t out_size) {
     return jw__ut_asset(cat, idx, view, "wordmarks", system_code, out, out_size);
+}
+
+bool jw_user_theme_wordmark_color_path(const jw_user_theme_catalog *cat, int idx,
+                                       const char *view, const char *system_code,
+                                       char *out, size_t out_size) {
+    return jw__ut_asset_ext(cat, idx, view, "wordmarks", system_code, ".color.png",
+                            out, out_size);
 }
 
 bool jw_user_theme_wallpaper_path(const jw_user_theme_catalog *cat, int idx,

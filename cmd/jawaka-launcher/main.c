@@ -6562,18 +6562,38 @@ static void jw__gg_playtime(int secs, char *out, size_t n) {
     else             snprintf(out, n, T("%dh %dm"), secs / 3600, (secs % 3600) / 60);
 }
 
-/* Wordmark candidates retain precedence while a cold image is pending. A
-   failed decode advances to the next candidate; missing all four leaves text. */
-static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) {
-    *tw = 0; *th = 0;
+/* A wordmark is refused before it can reach the decoder unless its IHDR says
+   1..1024 px per edge. The decode itself goes to 512 px, so this bound is what
+   caps decode memory, whichever source the file came from. */
+static bool jw__gg_wordmark_ok(const char *path) {
+    int w = 0, h = 0;
+    return path[0] && jw_user_theme_png_dims(path, &w, &h) &&
+           w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX;
+}
+
+/* The system's logo for the games view, in display order: the ROM folder, the
+   selected user theme, the accepted pak catalog, then Leaf's own set -- each as
+   a full-color .color.png first (drawn untinted), then the white mark tinted to
+   the list's ink. Even slots are the color variants. Candidates retain
+   precedence while a cold image is pending; missing, over-cap and undecodable
+   files advance. Missing all eight leaves the system name as text.
+
+   Resolved once per system, theme and catalog identity, so the frame costs one
+   cached lookup. The user theme is identified by its folder, not by its catalog
+   index: the index is only stable until a folder on the card is added, removed
+   or renamed. */
+#define JW_GG_WORDMARK_CANDIDATES 8
+static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th,
+                                    bool *color) {
+    *tw = 0; *th = 0; *color = false;
     const char *code = state->game_system;
     if (!code[0]) return NULL;
     const char *theme = cat_get_active_theme_name();
     const char *theme_dir = state->settings.user_theme_dir;
     static struct {
         char code[64], theme[256], theme_dir[128];
-        char paths[4][PATH_MAX];
-        bool failed[4], valid;
+        char paths[JW_GG_WORDMARK_CANDIDATES][PATH_MAX];
+        bool failed[JW_GG_WORDMARK_CANDIDATES], valid;
         unsigned epoch;
     } memo;
     /* Keyed on the catalog identity epoch; jw__adopt_art_catalog already
@@ -6590,32 +6610,42 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
         char folder[128];
         const char *rom_dir = jw__system_rom_folder(state, code, folder, sizeof(folder));
         if (rom_dir && state->sdcard_root[0]) {
-            int n = snprintf(memo.paths[0], PATH_MAX, "%s/Roms/%s/wordmark.png",
+            int n = snprintf(memo.paths[0], PATH_MAX, "%s/Roms/%s/wordmark.color.png",
                              state->sdcard_root, rom_dir);
             if (n < 0 || n >= PATH_MAX) memo.paths[0][0] = '\0';
+            n = snprintf(memo.paths[1], PATH_MAX, "%s/Roms/%s/wordmark.png",
+                         state->sdcard_root, rom_dir);
+            if (n < 0 || n >= PATH_MAX) memo.paths[1][0] = '\0';
         }
         int ti = jw_settings_user_theme_index(&state->settings);
-        if (ti >= 0)
-            jw_user_theme_wordmark_path(jw_settings_user_themes(&state->settings), ti,
-                                        "grid", code, memo.paths[1], PATH_MAX);
+        if (ti >= 0) {
+            const jw_user_theme_catalog *themes = jw_settings_user_themes(&state->settings);
+            jw_user_theme_wordmark_color_path(themes, ti, "grid", code, memo.paths[2], PATH_MAX);
+            jw_user_theme_wordmark_path(themes, ti, "grid", code, memo.paths[3], PATH_MAX);
+        }
         const jw_ra_system *system = jw_ra_catalog_match_system_folder(state->system_catalog, code);
-        if (jw_ra_catalog_resolve_system_wordmark_path(state->system_catalog, system,
-                                                       memo.paths[2], PATH_MAX))
-            memo.paths[2][0] = '\0';
+        jw_ra_catalog_resolve_system_wordmark_color_path(state->system_catalog, system,
+                                                         memo.paths[4], PATH_MAX);
+        jw_ra_catalog_resolve_system_wordmark_path(state->system_catalog, system,
+                                                   memo.paths[5], PATH_MAX);
         const char *builtin = cat_get_active_theme_dir();
         if (builtin && builtin[0]) {
-            int n = snprintf(memo.paths[3], PATH_MAX, "%s/../grid_wordmarks/%s.png", builtin, code);
-            if (n < 0 || n >= PATH_MAX) memo.paths[3][0] = '\0';
+            int n = snprintf(memo.paths[6], PATH_MAX, "%s/../grid_wordmarks/%s.color.png",
+                             builtin, code);
+            if (n < 0 || n >= PATH_MAX) memo.paths[6][0] = '\0';
+            n = snprintf(memo.paths[7], PATH_MAX, "%s/../grid_wordmarks/%s.png", builtin, code);
+            if (n < 0 || n >= PATH_MAX) memo.paths[7][0] = '\0';
         }
-        for (int i = 0; i < 4; i++)
-            memo.failed[i] = !jw__grid_file_exists(memo.paths[i]);
+        for (int i = 0; i < JW_GG_WORDMARK_CANDIDATES; i++)
+            memo.failed[i] = !jw__gg_wordmark_ok(memo.paths[i]);
     }
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < JW_GG_WORDMARK_CANDIDATES; i++) {
         if (memo.failed[i]) continue;
         /* CAT-1's immutable generation is part of the thumbnail identity. A PNG
            replaced with the same mtime/size still gets a fresh derived image. */
         SDL_Texture *texture = jw__load_catalog_page_image(state, memo.paths[i], JW_WORDMARK_MAX,
                                                            tw, th, &memo.failed[i]);
+        if (texture) *color = (i % 2) == 0;
         if (texture || !memo.failed[i]) return texture;
     }
     return NULL;
@@ -6718,7 +6748,8 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     jw__cover_prewarm(state, state->games, state->game_count, state->game_list.cursor);
 
     int wmw = 0, wmh = 0;
-    SDL_Texture *wm = jw__gg_wordmark(state, &wmw, &wmh);
+    bool wm_color = false;
+    SDL_Texture *wm = jw__gg_wordmark(state, &wmw, &wmh, &wm_color);
 
     /* Between the stock cluster and the home grid's 70%: big enough to read at
        arm's length, small enough not to crowd the cover. The columns start below
@@ -6730,7 +6761,7 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     jw_grid_games_draw(&state->game_list, state->game_count,
                        jw__gg_name, jw__gg_art, state,
                        meta, meta_n, synopsis,
-                       wm, wmw, wmh,
+                       wm, wmw, wmh, wm_color,
                        state->game_system_display, top_bar, &style);
 
     /* Status cluster last so it floats over everything, at the same reduced size
@@ -6872,7 +6903,7 @@ static void jw__render_grid_apps(jw_launcher_state *state) {
     jw_grid_games_draw(&state->app_list, state->app_count,
                        jw__ga_name, jw__ga_art, state,
                        meta, meta_n, synopsis,
-                       NULL, 0, 0,
+                       NULL, 0, 0, false,
                        T("Apps"), top_bar, &style);
 
     cat_draw_color saved_hint = theme->hint;
