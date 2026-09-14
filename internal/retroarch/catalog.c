@@ -330,6 +330,8 @@ static void jw_ra_system_free(jw_ra_system *system) {
     free(system->wordmark_provider);
     free(system->grid_icon);
     free(system->grid_icon_provider);
+    free(system->wordmark_color);
+    free(system->wordmark_color_provider);
     free(system->provider);
     free(system->source_id);
 }
@@ -413,6 +415,21 @@ static bool jw_ra_art_provider(const char *provider) {
     return true;
 }
 
+/* One optional art slot: a pak-relative path plus its own provider. Either
+   half malformed drops the slot, never the system. */
+static void jw_ra_load_art(const cJSON *row, const char *field,
+                           char **path, char **provider) {
+    char provider_field[64];
+    snprintf(provider_field, sizeof(provider_field), "%s_provider", field);
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(row, field);
+    const cJSON *owner = cJSON_GetObjectItemCaseSensitive(row, provider_field);
+    if (cJSON_IsString(value) && jw_ra_art_relative(value->valuestring) &&
+        cJSON_IsString(owner) && jw_ra_art_provider(owner->valuestring)) {
+        *path = jw_ra_strdup(value->valuestring);
+        *provider = jw_ra_strdup(owner->valuestring);
+    }
+}
+
 static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
     memset(out, 0, sizeof(*out));
     out->id = jw_ra_json_string(row, "id");
@@ -435,21 +452,10 @@ static int jw_ra_load_system(cJSON *row, jw_ra_system *out) {
     }
     out->source_id = out->provider ? jw_ra_strdup("primary") : NULL;
 
-    const cJSON *wordmark = cJSON_GetObjectItemCaseSensitive(row, "wordmark");
-    const cJSON *wordmark_provider = cJSON_GetObjectItemCaseSensitive(row, "wordmark_provider");
-    if (cJSON_IsString(wordmark) && jw_ra_art_relative(wordmark->valuestring) &&
-        cJSON_IsString(wordmark_provider) && jw_ra_art_provider(wordmark_provider->valuestring)) {
-        out->wordmark = jw_ra_strdup(wordmark->valuestring);
-        out->wordmark_provider = jw_ra_strdup(wordmark_provider->valuestring);
-    }
-
-    const cJSON *grid_icon = cJSON_GetObjectItemCaseSensitive(row, "grid_icon");
-    const cJSON *grid_icon_provider = cJSON_GetObjectItemCaseSensitive(row, "grid_icon_provider");
-    if (cJSON_IsString(grid_icon) && jw_ra_art_relative(grid_icon->valuestring) &&
-        cJSON_IsString(grid_icon_provider) && jw_ra_art_provider(grid_icon_provider->valuestring)) {
-        out->grid_icon = jw_ra_strdup(grid_icon->valuestring);
-        out->grid_icon_provider = jw_ra_strdup(grid_icon_provider->valuestring);
-    }
+    jw_ra_load_art(row, "wordmark", &out->wordmark, &out->wordmark_provider);
+    jw_ra_load_art(row, "grid_icon", &out->grid_icon, &out->grid_icon_provider);
+    jw_ra_load_art(row, "wordmark_color", &out->wordmark_color,
+                   &out->wordmark_color_provider);
 
     /* Only the id is required. A system may have no default_core (discovered
        but not launchable on this device) — that's a launch-time concern, not a
@@ -1095,7 +1101,8 @@ int jw_ra_catalog_resolve_system_icon_path(const jw_ra_catalog *catalog,
 static int jw_ra_catalog_resolve_art_path(const jw_ra_catalog *catalog,
                                           const char *path, const char *provider,
                                           char *out, size_t out_size) {
-    if (!jw_ra_art_relative(path) ||
+    if (out && out_size) out[0] = '\0';
+    if (!out || !out_size || !jw_ra_art_relative(path) ||
         !jw_ra_art_provider(provider)) return -1;
     /* CONTENT-1 is primary-only. Use the same live Apps root as pak icons,
        with the artwork provider instead of changing system ownership. */
@@ -1104,27 +1111,42 @@ static int jw_ra_catalog_resolve_art_path(const jw_ra_catalog *catalog,
     if (jw_ra_catalog_resolve_system_icon_path(catalog, &art, false, out, out_size)) return -1;
     char root[PATH_MAX], real_root[PATH_MAX], real_file[PATH_MAX];
     art.icon_flat = ".";
-    if (jw_ra_catalog_resolve_system_icon_path(catalog, &art, false, root, sizeof(root)) ||
-        !realpath(root, real_root) || !realpath(out, real_file)) return -1;
-    size_t len = strlen(real_root);
     struct stat st;
-    return strncmp(real_file, real_root, len) == 0 && real_file[len] == '/' &&
-           stat(real_file, &st) == 0 && S_ISREG(st.st_mode) ? 0 : -1;
+    bool contained = !jw_ra_catalog_resolve_system_icon_path(catalog, &art, false,
+                                                            root, sizeof(root)) &&
+                     realpath(root, real_root) && realpath(out, real_file);
+    size_t len = contained ? strlen(real_root) : 0;
+    if (!contained || strncmp(real_file, real_root, len) || real_file[len] != '/' ||
+        stat(real_file, &st) || !S_ISREG(st.st_mode)) {
+        out[0] = '\0';
+        return -1;
+    }
+    return 0;
 }
+
 int jw_ra_catalog_resolve_system_wordmark_path(const jw_ra_catalog *catalog,
                                                const jw_ra_system *system,
                                                char *out, size_t out_size) {
-    return system ? jw_ra_catalog_resolve_art_path(catalog, system->wordmark,
-                         system->wordmark_provider, out, out_size) : -1;
+    return jw_ra_catalog_resolve_art_path(catalog, system ? system->wordmark : NULL,
+                                          system ? system->wordmark_provider : NULL,
+                                          out, out_size);
 }
 
 int jw_ra_catalog_resolve_system_grid_icon_path(const jw_ra_catalog *catalog,
                                                const jw_ra_system *system,
                                                char *out, size_t out_size) {
-    return system ? jw_ra_catalog_resolve_art_path(catalog, system->grid_icon,
-                         system->grid_icon_provider, out, out_size) : -1;
+    return jw_ra_catalog_resolve_art_path(catalog, system ? system->grid_icon : NULL,
+                                          system ? system->grid_icon_provider : NULL,
+                                          out, out_size);
 }
 
+int jw_ra_catalog_resolve_system_wordmark_color_path(const jw_ra_catalog *catalog,
+                                                     const jw_ra_system *system,
+                                                     char *out, size_t out_size) {
+    return jw_ra_catalog_resolve_art_path(catalog, system ? system->wordmark_color : NULL,
+                                          system ? system->wordmark_color_provider : NULL,
+                                          out, out_size);
+}
 
 int jw_ra_catalog_info_dir(const jw_ra_catalog *catalog,
                            char *out,

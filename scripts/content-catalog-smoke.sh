@@ -173,7 +173,9 @@ manifest["content_art"] = {"schema": 1, "systems": [
     {"id": "CONTENTTEST", "wordmark": "art/mark.png"}]}
 manifest_path.write_text(json.dumps(manifest))
 image = pak / "art/mark.png"
-image.write_bytes(bytes.fromhex("89504e470d0a1a0a") + b"one")
+# Every art slot needs a PNG IHDR within 1..1024 px; the body is never decoded here.
+header = bytes.fromhex("89504e470d0a1a0a0000000d494844520000020000000200")
+image.write_bytes(header + b"one")
 
 def rescan():
     output = subprocess.check_output([scan, sd, db], text=True)
@@ -190,9 +192,14 @@ assert system["wordmark_provider"] == system["provider"] == "mac/ContentTest.pak
 stamp = json.loads((first / "stamp.json").read_text())
 files = stamp["contributors"][0]["files"]
 assert {"pak.json", "art/mark.png"} <= {f["rel"] for f in files}
-image.write_bytes(bytes.fromhex("89504e470d0a1a0a") + b"two")
+image.write_bytes(header + b"two")
 second, system = rescan()
 assert second != first
+image.write_bytes(bytes.fromhex("89504e470d0a1a0a0000000d494844520000040100000200"))
+_, system = rescan()
+assert "wordmark" not in system
+entries = json.loads((catalog / "diagnostics.json").read_text())["entries"]
+assert any(e["reason"] == "invalid-content-art-wordmark-dimensions" for e in entries)
 image.write_bytes(b"invalid PNG")
 _, system = rescan()
 assert "wordmark" not in system
@@ -202,31 +209,39 @@ manifest["content_art"]["systems"][0]["wordmark"] = "art/mark.png\0hidden"
 manifest_path.write_text(json.dumps(manifest))
 _, system = rescan()
 assert "wordmark" not in system
-# Add v2 grid art, then prove byte replacement and whole-block fail-soft behavior.
+# Add v2 grid and color art, then prove byte replacement and whole-block fail-soft behavior.
 manifest["content_art"] = {"schema": 2, "systems": [
-    {"id": "CONTENTTEST", "wordmark": "art/mark.png", "grid_icon": "art/grid.png"}]}
-image.write_bytes(bytes.fromhex("89504e470d0a1a0a") + b"wordmark")
+    {"id": "CONTENTTEST", "wordmark": "art/mark.png", "grid_icon": "art/grid.png",
+     "wordmark_color": "art/color.png"}]}
+image.write_bytes(header + b"wordmark")
 grid = image.with_name("grid.png")
-header = bytes.fromhex("89504e470d0a1a0a0000000d494844520000020000000200")
 grid.write_bytes(header + b"first")
+color = image.with_name("color.png")
+color.write_bytes(header + b"first")
 manifest_path.write_text(json.dumps(manifest))
 first, system = rescan()
 assert system["grid_icon"] == "art/grid.png"
-assert system["grid_icon_provider"] == system["wordmark_provider"] == "mac/ContentTest.pak"
+assert system["wordmark_color"] == "art/color.png"
+assert system["grid_icon_provider"] == system["wordmark_provider"] == \
+    system["wordmark_color_provider"] == "mac/ContentTest.pak"
 files = json.loads((first / "stamp.json").read_text())["contributors"][0]["files"]
-assert {"pak.json", "art/grid.png", "art/mark.png"} <= {f["rel"] for f in files}
+assert {"pak.json", "art/grid.png", "art/mark.png", "art/color.png"} <= {f["rel"] for f in files}
 grid.write_bytes(header + b"other")
 second, system = rescan()
 assert second != first
+color.write_bytes(header + b"other")
+third, system = rescan()
+assert third != second
 grid.write_bytes(b"bad")
 _, system = rescan()
-assert "grid_icon" not in system and "wordmark" not in system
+assert "grid_icon" not in system and "wordmark" not in system and "wordmark_color" not in system
 manifest["content_art"]["systems"][0].pop("wordmark")
+manifest["content_art"]["systems"][0].pop("wordmark_color")
 grid.write_bytes(header)
 manifest_path.write_text(json.dumps(manifest))
 _, system = rescan()
 assert system["grid_icon_provider"] == "mac/ContentTest.pak" and "wordmark" not in system
-print("ok: wordmark/grid provenance, replacement, grid-only and fail-soft discovery")
+print("ok: wordmark/color/grid provenance, replacement, dimension cap, grid-only and fail-soft discovery")
 PYART
 
 rm -rf "$SD/Apps/mac/ContentTest.pak"

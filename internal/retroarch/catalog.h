@@ -71,6 +71,8 @@ typedef struct {
     char *wordmark_provider;
     char *grid_icon;
     char *grid_icon_provider;
+    char *wordmark_color;
+    char *wordmark_color_provider;
     char *provider;
     char *source_id;
 } jw_ra_system;
@@ -154,7 +156,9 @@ int jw_ra_catalog_resolve_core_path(const jw_ra_catalog *catalog,
                                     char *out,
                                     size_t out_size);
 
-/* The merged info directory belonging to this exact catalog snapshot. */
+/* CONTENT-ART slots resolved against their own provider's live Apps root.
+   The resolved file must be a regular file inside that pak (symlinks are
+   followed, then contained). Returns 0, or -1 with out[0] cleared. */
 int jw_ra_catalog_resolve_system_wordmark_path(const jw_ra_catalog *catalog,
                                                const jw_ra_system *system,
                                                char *out, size_t out_size);
@@ -163,6 +167,11 @@ int jw_ra_catalog_resolve_system_grid_icon_path(const jw_ra_catalog *catalog,
                                                const jw_ra_system *system,
                                                char *out, size_t out_size);
 
+int jw_ra_catalog_resolve_system_wordmark_color_path(const jw_ra_catalog *catalog,
+                                                     const jw_ra_system *system,
+                                                     char *out, size_t out_size);
+
+/* The merged info directory belonging to this exact catalog snapshot. */
 int jw_ra_catalog_info_dir(const jw_ra_catalog *catalog,
                            char *out,
                            size_t out_size);

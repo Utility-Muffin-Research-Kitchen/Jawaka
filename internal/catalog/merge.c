@@ -704,9 +704,10 @@ int jw_catalog_apply_content_art(cJSON *systems, const cJSON *cores,
                 if (record(diagnostics, provider, "ineligible-content-art-system", strdup(id))) return -1;
                 continue;
             }
-            const char *slots[] = {"wordmark", "grid_icon"};
-            const char *providers[] = {"wordmark_provider", "grid_icon_provider"};
-            for (int slot = 0; slot < 2; slot++) {
+            const char *slots[] = {"wordmark", "grid_icon", "wordmark_color"};
+            const char *providers[] = {"wordmark_provider", "grid_icon_provider",
+                                       "wordmark_color_provider"};
+            for (int slot = 0; slot < 3; slot++) {
                 if (!text(entry, slots[slot])[0]) continue;
                 int claims = 0;
                 const cJSON *other = NULL;
@@ -718,7 +719,8 @@ int jw_catalog_apply_content_art(cJSON *systems, const cJSON *cores,
                 }
                 if (claims > 1) {
                     char detail[64];
-                    snprintf(detail, sizeof(detail), "%s%s", id, slot ? ":grid_icon" : "");
+                    snprintf(detail, sizeof(detail), "%s%s%s", id, slot ? ":" : "",
+                             slot ? slots[slot] : "");
                     if (record(diagnostics, provider, "conflicting-content-art-system", strdup(detail))) return -1;
                     continue;
                 }

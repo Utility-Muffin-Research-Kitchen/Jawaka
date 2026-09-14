@@ -688,7 +688,10 @@ static const char *jw_content__validate_extension(const cJSON *extension) {
 int jw_content_art_validate(const cJSON *document, const char *pak_dir,
                             const cJSON **out, char *reason, size_t reason_size) {
     static const char *const block_keys[] = {"schema", "systems"};
-    static const char *const row_keys[] = {"id", "wordmark", "grid_icon"};
+    /* Image slots in the contract's validation order; v1 has only the wordmark. */
+    static const char *const row_keys[] = {"id", "wordmark", "wordmark_color", "grid_icon"};
+    static const char *const malformed[] = {"", "malformed-content-art-wordmark",
+        "malformed-content-art-wordmark-color", "malformed-content-art-grid-icon"};
     const char *error = NULL;
     if (out) *out = NULL;
     jw_content__reason(reason, reason_size, "");
@@ -713,7 +716,7 @@ int jw_content_art_validate(const cJSON *document, const char *pak_dir,
     cJSON_ArrayForEach(row, rows) {
         if (error) break;
         if (!cJSON_IsObject(row)) { error = "malformed-content-art-system"; break; }
-        if (!jw_content__object_keys(row, row_keys, v2 ? 3 : 2)) {
+        if (!jw_content__object_keys(row, row_keys, v2 ? 4 : 2)) {
             error = "unknown-content-art-field"; break;
         }
         const cJSON *id = jw_content__item(row, "id");
@@ -726,14 +729,15 @@ int jw_content_art_validate(const cJSON *document, const char *pak_dir,
                 error = "duplicate-content-art-system";
         }
         if (error) break;
-        if (v2 && !jw_content__item(row, "wordmark") && !jw_content__item(row, "grid_icon")) {
+        if (v2 && !jw_content__item(row, "wordmark") && !jw_content__item(row, "grid_icon") &&
+            !jw_content__item(row, "wordmark_color")) {
             error = "missing-content-art-image"; break;
         }
-        for (int slot = 1; slot <= (v2 ? 2 : 1) && !error; slot++) {
+        for (int slot = 1; slot <= (v2 ? 3 : 1) && !error; slot++) {
             const cJSON *path = jw_content__item(row, row_keys[slot]);
             if (!path && v2) continue;
             if (!cJSON_IsString(path) || !path->valuestring[0] || strlen(path->valuestring) > 4096) {
-                error = slot == 1 ? "malformed-content-art-wordmark" : "malformed-content-art-grid-icon";
+                error = malformed[slot];
                 break;
             }
             const char *path_error = jw_content__path_reason(path, pak_dir, false);
@@ -756,15 +760,17 @@ int jw_content_art_validate(const cJSON *document, const char *pak_dir,
             else if (len < 4 || strcasecmp(path->valuestring + len - 4, ".png") ||
                      got < 8 || memcmp(header, "\x89PNG\r\n\x1a\n", 8))
                 error = "unsupported-content-art-image";
-            else if (slot == 2) {
-                if (got != 24 || memcmp(header + 8, "\0\0\0\rIHDR", 8))
-                    error = "unsupported-content-art-image";
-                else for (int offset = 16; offset <= 20; offset += 4) {
-                    unsigned dim = ((unsigned)header[offset] << 24) |
-                        ((unsigned)header[offset + 1] << 16) |
-                        ((unsigned)header[offset + 2] << 8) | header[offset + 3];
-                    if (dim == 0 || dim > 1024) error = "invalid-content-art-grid-dimensions";
-                }
+            /* Every image slot carries the same 1..1024 IHDR bound; the launcher
+               decodes before downscaling, so this is what caps decode memory. */
+            else if (got != 24 || memcmp(header + 8, "\0\0\0\rIHDR", 8))
+                error = "unsupported-content-art-image";
+            else for (int offset = 16; offset <= 20; offset += 4) {
+                unsigned dim = ((unsigned)header[offset] << 24) |
+                    ((unsigned)header[offset + 1] << 16) |
+                    ((unsigned)header[offset + 2] << 8) | header[offset + 3];
+                if (dim == 0 || dim > 1024)
+                    error = slot == 3 ? "invalid-content-art-grid-dimensions"
+                                      : "invalid-content-art-wordmark-dimensions";
             }
         }
     }

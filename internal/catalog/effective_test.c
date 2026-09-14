@@ -630,9 +630,11 @@ static void test_content_scrape_policy(void) {
     check(rc == 0 && strcmp(first_generation, generation), "same-path PNG bytes republish");
     snprintf(first_generation, sizeof(first_generation), "%s", generation);
     cJSON_ReplaceItemInObjectCaseSensitive(contributor, "content_art", cJSON_Parse(
-        "{\"schema\":2,\"systems\":[{\"id\":\"SCUMMVM\",\"wordmark\":\"mark.png\",\"grid_icon\":\"grid.png\"}]}"));
+        "{\"schema\":2,\"systems\":[{\"id\":\"SCUMMVM\",\"wordmark\":\"mark.png\",\"grid_icon\":\"grid.png\",\"wordmark_color\":\"color.png\"}]}"));
     path_of(path, sizeof(path), "%s/grid.png", pak_dir);
     write_text(path, "grid-one");
+    path_of(path, sizeof(path), "%s/color.png", pak_dir);
+    write_text(path, "color-one");
     rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
         generation, sizeof(generation), reason, sizeof(reason));
     check(rc == 0, "grid icon publishes from accepted contributor");
@@ -640,9 +642,17 @@ static void test_content_scrape_policy(void) {
     systems = read_text(path);
     check(systems && strstr(systems, "\"grid_icon\":\"grid.png\"") &&
           strstr(systems, "\"grid_icon_provider\":\"mlp1/ScummVM.pak\""), "grid path and independent provider serialized");
+    check(systems && strstr(systems, "\"wordmark_color\":\"color.png\"") &&
+          strstr(systems, "\"wordmark_color_provider\":\"mlp1/ScummVM.pak\""), "color wordmark and provider serialized");
     path_of(path, sizeof(path), "%s/%s/stamp.json", catalog_dir, generation);
     stamp = read_text(path);
-    check(stamp && strstr(stamp, "\"rel\":\"grid.png\""), "grid PNG fingerprinted");
+    check(stamp && strstr(stamp, "\"rel\":\"grid.png\"") && strstr(stamp, "\"rel\":\"color.png\""),
+          "grid and color PNGs fingerprinted");
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    path_of(path, sizeof(path), "%s/color.png", pak_dir); write_text(path, "color-two");
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(first_generation, generation), "same-path color bytes republish");
     snprintf(first_generation, sizeof(first_generation), "%s", generation);
     path_of(path, sizeof(path), "%s/grid.png", pak_dir); write_text(path, "grid-two");
     rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
