@@ -4124,9 +4124,10 @@ static void jw__render_focus(jw_launcher_state *state) {
  *   5. <themes_dir>/../system_icons/<SYSTEM>.png  shared flat baseline
  *   6. <themes_dir>/../system_icons/_default.png  final fallback
  *
- * Grid moves the user's icon pack ahead of pak art: the selected user theme,
- * icon.png, the built-in pack (4), the pak's CONTENT-ART-2 grid_icon (tiles
- * only), pak art (2-3), then 5 and 6. Every other layout keeps the order above.
+ * Grid system tiles move the user's icon pack ahead of pak art: the selected
+ * user theme, icon.png, the built-in pack (4), the pak's CONTENT-ART-2
+ * grid_icon, pak art (2-3), then 5 and 6. Every other layout and icon site
+ * (Grid Search included) keeps the order above.
  *
  * Step 5 stays in the list for every pack on purpose: the photographic pack has
  * no asset for some aliases and pseudo-systems (_apps, for one), and those must
@@ -4230,10 +4231,11 @@ static void jw__push_pak_icon_candidates(const jw_launcher_state *state,
     }
 }
 
-/* `grid_tile` is only set by the memoized Grid tile resolver: the pak's
-   CONTENT-ART-2 grid_icon is tile art, so Search and the other small icon
-   sites never see it, and its containment check and IHDR read stay off their
-   per-redraw path. */
+/* `grid_tile` is only set by the memoized Grid tile resolver. Both the Grid
+   tile order and the pak's CONTENT-ART-2 grid_icon belong to those tiles, so
+   Search and the other icon sites keep their existing order even in Grid, and
+   the grid_icon containment check and IHDR read stay off their per-redraw
+   path. */
 static void jw__build_system_icon_candidates(const jw_launcher_state *state,
                                              const char *system_code,
                                              bool grid_tile,
@@ -4288,8 +4290,9 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
     const char *theme_name = cat_get_active_theme_name();
     bool have_theme_dir = theme_dir && theme_dir[0];
 
-    /* Outside Grid, pak art precedes the built-in pack as it always has. */
-    if (!grid) {
+    /* Outside Grid tiles, pak art precedes the built-in pack as it always has. */
+    bool tile_order = grid && grid_tile;
+    if (!tile_order) {
         jw__push_pak_icon_candidates(state, system_code, pack, theme_name, out);
         if (!have_theme_dir) {
             return;   /* no resolved theme root: nothing bundled to point at */
@@ -4323,10 +4326,10 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
         if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
     }
 
-    /* In Grid the user's chosen icon pack wins over pak art: then the pak's
-       own grid tile, then its generic icons. */
-    if (grid) {
-        if (grid_tile && state && state->system_catalog && system_code[0] != '_') {
+    /* On a Grid tile the user's chosen icon pack wins over pak art: then the
+       pak's own grid tile, then its generic icons. */
+    if (tile_order) {
+        if (state && state->system_catalog && system_code[0] != '_') {
             const jw_ra_system *system =
                 jw_ra_catalog_match_system_folder(state->system_catalog, system_code);
             int width, height;

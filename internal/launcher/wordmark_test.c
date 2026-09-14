@@ -107,8 +107,8 @@ static void grid_test(jw_launcher_state *state, jw_ra_system *system,
     snprintf(theme,sizeof(theme),"%s/Themes/B/grid/icons/TEST.png",root); wm_png(theme,96);
     snprintf(state->settings.user_themes.items[0].dir,128,"B");
     snprintf(state->settings.user_theme_dir,128,"B"); grid_expect(state,96); /* same index, new theme */
-    /* Candidate order by consumer: pak grid art only for Grid tiles, the built-in
-       pack ahead of pak art only in Grid, and Cover Flow exactly as before. */
+    /* Candidate order by consumer: pak grid art and the built-in pack ahead of
+       pak art only for Grid tiles; Grid Search and Cover Flow as before. */
     system->provider = "mlp1/Test.pak";
     jw_system_icon_candidates candidates;
     int at_grid, at_photo, at_pack;
@@ -118,7 +118,7 @@ static void grid_test(jw_launcher_state *state, jw_ra_system *system,
     assert(at_pack >= 0 && at_pack < at_grid && at_grid < at_photo);
     jw__build_system_icon_candidates(state,"TEST",false,&candidates); /* Grid Search */
     ICON_AT(grid,at_grid); ICON_AT(photo,at_photo); ICON_AT(pack,at_pack);
-    assert(at_grid < 0 && at_pack >= 0 && at_pack < at_photo);
+    assert(at_grid < 0 && at_photo >= 0 && at_photo < at_pack);
     style->launcher.layout = CAT_LAUNCHER_COVERFLOW;
     jw__build_system_icon_candidates(state,"TEST",true,&candidates);
     ICON_AT(grid,at_grid); ICON_AT(photo,at_photo); ICON_AT(pack,at_pack);
