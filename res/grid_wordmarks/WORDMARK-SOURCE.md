@@ -11,7 +11,7 @@ This white RGBA export has a maximum edge of 1024 pixels. Jawaka tints it to
 the current text color. Your build uses this checked-in copy and does not fetch
 the private repository. The source revision records provenance only.
 
-## Source and licence
+## Source and license
 
 Source: Darklanlan's vector reconstruction of NEC's 1982 PC-9800 series logo,
 [Wikimedia Commons file page](https://commons.wikimedia.org/wiki/File:PC9800_logo_1982.svg),

@@ -13,8 +13,8 @@ requirement or runtime network dependency in these files.
 | ATOMISWAVE | Sammy, [Atomiswave vector](https://commons.wikimedia.org/wiki/File:Atomiswave_logo.svg), from Arcade Otaku, uploaded by Pancho507 | Wordmark retains the lettering; grid card retains the full colored symbol. The small TM suffix uses outlined Lexend glyphs to remove the upstream font dependency. |
 | FDS | Nintendo, [Family Computer Disk System vector](https://commons.wikimedia.org/wiki/File:Family_Computer_Disk_System_logo.svg) | White lettering, retaining the family/disk-system identity and Japanese subtitle. |
 | NAOMI | Sega, [Worldvectorlogo vector](https://worldvectorlogo.com/logo/naomi); [Commons identity reference](https://commons.wikimedia.org/wiki/File:Sega_NAOMI_logo.png) | Tightened canvas; white wordmark, original black/red grid treatment. |
-| AMIGA, COLECO, GW, VB, VECTREX | The documented sources in [grid icon attribution](../user_themes/Sample/grid/icons/GRID-ICON-SOURCE.md) | White artwork; ColecoVision isolates colored letter faces to preserve their counters and remove the outline. |
-| EASYRPG | EasyRPG Team, [official vector](https://easyrpg.org/downloads/logos/logo_with_text_dark_right.svg), [branding licence](https://blog.easyrpg.org/2023/04/) | Retains the lettering in white; removes the emblem and gloss for the narrow slot. CC BY-SA 4.0, including this adaptation. |
+| AMIGA, COLECO, GW, VB, VECTREX | The documented sources in [grid icon attribution](https://github.com/Utility-Muffin-Research-Kitchen/Jawaka/blob/main/res/user_themes/Sample/grid/icons/GRID-ICON-SOURCE.md) | White artwork; ColecoVision isolates colored letter faces to preserve their counters and remove the outline. |
+| EASYRPG | EasyRPG Team, [official vector](https://easyrpg.org/downloads/logos/logo_with_text_dark_right.svg), [branding license](https://blog.easyrpg.org/2023/04/) | Retains the lettering in white; removes the emblem and gloss for the narrow slot. CC BY-SA 4.0, including this adaptation. |
 | ARCADE, PORTS | Original UMRK lettering, outlined Lexend Bold | White lettering. UMRK composition is CC0 1.0; font is SIL OFL 1.1, retained in Lexend-OFL.txt. |
 | MAME2003, MAME2010 | MAME team, official black web-logo SVG retained in Dan Patrick's source collection | Same MAME letterform as the existing family; adds distinct outlined Lexend year labels. |
 | DOS, LYNX, NEOGEO, NGP, NGPC, PCECD, SATURN, WS, WSC | Dan Patrick's logo collection; the makers' MS-DOS, Atari Lynx, Neo Geo/Pocket/Color, NEC PC Engine CD, Sega Saturn and Bandai WonderSwan/Color logos | Monochrome vectors, with horizontal variants selected for Saturn and WonderSwan. Color and CD identifiers are retained. |
@@ -30,7 +30,7 @@ Dan Patrick's originals and source collection are mirrored in
 hash inputs are recorded in `SOURCE-RECORDS.json`. The original collection
 is [archived here](https://archive.org/details/console-logos-professionally-redrawn-plus-official-versions).
 The mirror attributes the logos to their respective makers; it does not grant
-a blanket software licence over them. The unmodified source README is retained.
+a blanket software license over them. The unmodified source README is retained.
 The Commons references for these simple maker logos are:
 [MS-DOS](https://commons.wikimedia.org/wiki/File:MS-DOS_logo.svg),
 [Atari Lynx](https://commons.wikimedia.org/wiki/File:Atari_Lynx_logo.svg),

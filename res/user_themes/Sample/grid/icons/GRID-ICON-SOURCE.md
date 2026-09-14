@@ -12,9 +12,9 @@ They add a white canvas and contain no image-model output.
   The unchanged full-color vector is `originals/scummvm_logo.svg` in
   [scummvm-media](https://github.com/scummvm/scummvm-media/tree/3685fcd62e09277e114eb0ef99091a9c55335f00),
   revision `3685fcd62e09277e114eb0ef99091a9c55335f00`. The card adaptation is
-  also CC BY-SA 3.0. See the [upstream credit and branding licence statement](https://github.com/scummvm/scummvm-media/blob/3685fcd62e09277e114eb0ef99091a9c55335f00/originals/notes.txt).
+  also CC BY-SA 3.0. See the [upstream credit and branding license statement](https://github.com/scummvm/scummvm-media/blob/3685fcd62e09277e114eb0ef99091a9c55335f00/originals/notes.txt).
 - **EASYRPG:** EasyRPG Team, [official logo download](https://easyrpg.org/downloads/logos/logo_with_text_dark_right.svg),
-  downloaded 2026-09-13; source timestamp 2021-10-29. Its [branding licence](https://blog.easyrpg.org/2023/04/)
+  downloaded 2026-09-13; source timestamp 2021-10-29. Its [branding license](https://blog.easyrpg.org/2023/04/)
   is [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The card
   adaptation retains the logo and is also CC BY-SA 4.0.
 - **AMIGA:** Commodore International logo from the Amiga Basic manual,
@@ -39,13 +39,13 @@ They add a white canvas and contain no image-model output.
   [Commons source](https://commons.wikimedia.org/wiki/File:PC9800_logo_1982.svg),
   2016-06-29, designated PD-textlogo. Reuses the pilot derivative's P, C,
   hyphen, 9 and 8 paths, omitting the final 00 and Japanese suffix; dark ink
-  replaces white. See [the PC-98 wordmark credits](../../../../grid_wordmarks/WORDMARK-SOURCE.md) for the original derivation.
+  replaces white. See [the PC-98 wordmark credits](https://github.com/Utility-Muffin-Research-Kitchen/Jawaka/blob/main/res/grid_wordmarks/WORDMARK-SOURCE.md) for the original derivation.
 - **PICO8:** Original UMRK geometric PICO-8 lettering, [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
   Reuses the pilot master with dark ink. It contains no official rainbow
   emblem, traced logo or tagline. PICO-8 is Lexaloffle's name.
 - **ARCADE, PORTS:** Original UMRK label compositions using outlined Lexend
   Bold glyphs, dedicated to CC0 1.0. Font copyright 2018 The Lexend Project
-  Authors, SIL OFL 1.1; see [the included font licence](../../../../grid_wordmarks/Lexend-OFL.txt). The source font is
+  Authors, SIL OFL 1.1; see [the Lexend font license](https://github.com/Utility-Muffin-Research-Kitchen/Jawaka/blob/main/res/grid_wordmarks/Lexend-OFL.txt). The source font is
   Catastrophe's `res/fonts/Lexend/Lexend-Bold.ttf`; the paths are embedded, so
   consumers need no font installation.
 
@@ -72,7 +72,7 @@ remain their respective owners' trademarks; these credits do not imply endorseme
 
 Source revision: `851b8c712ccc12551fdb809f88a56de7925e07de`. These replace the Genesis,
 Dreamcast, NES, non-CD and unversioned placeholders. Attribution and exact
-source records are in [the wordmark inventory](../../../../grid_wordmarks/INVENTORY-SOURCE.md).
+source records are in [the wordmark inventory](https://github.com/Utility-Muffin-Research-Kitchen/Jawaka/blob/main/res/grid_wordmarks/INVENTORY-SOURCE.md).
 Each card is centered on white; 32X, Atomiswave, Naomi and FDS retain color.
 PCECD uses the PC Engine CD-ROM² logo. The MAME cards add outlined Lexend year
 labels. Atomiswave's small TM suffix also uses outlined Lexend glyphs.
