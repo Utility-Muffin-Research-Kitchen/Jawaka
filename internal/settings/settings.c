@@ -4216,6 +4216,8 @@ static const jw__about_credit kAboutCredits[] = {
     { "cJSON",                                  "MIT" },
     { "System icons (libretro Systematic)",     "CC BY-SA 4.0" },
     { "Coverflow console art (Evan Amos)",       "Public Domain" },
+    { "Grid system wordmarks",                  "Per file: PD, CC0, CC BY-SA 4.0" },
+    { "Sample theme logo cards",                "Per file: PD, CC0, CC BY-SA 3.0/4.0" },
     { "Fonts: Space Grotesk, Inter, Rounded M+, Nunito, Baloo 2, Fredoka, "
       "Lexend, IBM Plex Sans, Noto Sans, Source Han Sans", "SIL OFL 1.1" },
     { "Keyboard icons (Nerd Fonts)",            "MIT" },
