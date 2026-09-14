@@ -479,9 +479,6 @@ msgstr "封面流"
 msgid "Current"
 msgstr "当前"
 
-msgid "Cursor Movement"
-msgstr "光标移动"
-
 msgid "Custom"
 msgstr "自定义"
 
@@ -1039,9 +1036,6 @@ msgstr "还原"
 
 msgid "Rounded"
 msgstr "圆角"
-
-msgid "Rumble"
-msgstr "震动"
 
 msgid "Run / Stop"
 msgstr "运行 / 停止"
@@ -2010,3 +2004,9 @@ msgstr "主 SD 卡"
 #, fuzzy
 msgid "second SD card"
 msgstr "副 SD 卡"
+
+# Rumble split into UI Rumble and Game Rumble (Controls & Feedback). MACHINE
+# SEED, marked fuzzy per the i18n plan; clear after AlexL's review pass.
+#, fuzzy
+msgid "UI Rumble"
+msgstr "界面震动"

@@ -278,6 +278,25 @@ int  jw_db_set_settings(const char *db_path, const char *const *keys,
                         const char *const *values, int count);
 int  jw_db_get_theme_name(const char *db_path, char *out, size_t out_size);
 
+/* Rumble is two switches and one strength: UI rumble (every interface buzz,
+   cursor ticks included; default off), game rumble (the motor handed to
+   emulators; default on), and a 0-100 strength shared by both (default 65).
+   Both the daemon and Settings read them here so they cannot disagree.
+
+   The first load after the old master-switch settings rewrites them once:
+   master off turns both switches off, otherwise UI rumble takes the old
+   Cursor Movement value and game rumble keeps its own. Returns 0 when the
+   database was read; *out holds defaults either way. */
+typedef struct {
+    int ui;        /* 0/1 */
+    int game;      /* 0/1 */
+    int strength;  /* 0-100 */
+} jw_rumble_settings;
+
+#define JW_RUMBLE_DEFAULT_STRENGTH 65
+
+int  jw_db_load_rumble_settings(const char *db_path, jw_rumble_settings *out);
+
 /* Pak Rat store ownership. apps remains scan truth; pakrat_installs records
    packages installed/updated through the store and intentionally survives
    library rescans. install_path is the Apps-namespace path, e.g.

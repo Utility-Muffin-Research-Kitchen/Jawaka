@@ -294,9 +294,8 @@ typedef struct {
     bool     recording_enabled_cached;
     /* Rumble/haptics settings, TTL-cached like the screenshot flag (read on the
        input tick, so avoid a sqlite open per event). */
-    bool     rumble_enabled_cached;
+    bool     rumble_ui_cached;           /* every interface buzz, cursor ticks included */
     int      rumble_strength_cached;     /* 0-100 %  */
-    bool     rumble_nav_cached;          /* per-move navigation tick (opt-in) */
     bool     rumble_game_cached;         /* hand the motor to emulators in-game */
     uint64_t rumble_checked_ms;
     pid_t menu_pid;           /* resident warm-standby in-game menu while RetroArch is alive */
@@ -1395,35 +1394,23 @@ static void jw__rumble_refresh_cache(jw_daemon_state *state, uint64_t now_ms) {
     if (state->rumble_checked_ms != 0 &&
         now_ms - state->rumble_checked_ms < (uint64_t)JW_RUMBLE_CACHE_TTL_MS)
         return;
-    char v[8] = "";
-    state->rumble_enabled_cached =
-        !(jw_db_get_setting(state->db_path, "rumble_enabled", v, sizeof(v)) == 0 &&
-          strcmp(v, "0") == 0);                    /* default ON when unset */
-    v[0] = '\0';
-    state->rumble_strength_cached =
-        (jw_db_get_setting(state->db_path, "rumble_strength", v, sizeof(v)) == 0 && v[0])
-            ? atoi(v) : 65;                          /* default ~Medium */
-    v[0] = '\0';
-    state->rumble_nav_cached =
-        (jw_db_get_setting(state->db_path, "rumble_nav", v, sizeof(v)) == 0 &&
-         strcmp(v, "1") == 0);                       /* default OFF */
-    v[0] = '\0';
-    state->rumble_game_cached =
-        !(jw_db_get_setting(state->db_path, "rumble_game", v, sizeof(v)) == 0 &&
-          strcmp(v, "0") == 0);                      /* default ON when unset */
+    jw_rumble_settings rs;
+    (void)jw_db_load_rumble_settings(state->db_path, &rs);  /* defaults on failure */
+    state->rumble_ui_cached       = rs.ui != 0;
+    state->rumble_strength_cached = rs.strength;
+    state->rumble_game_cached     = rs.game != 0;
     state->rumble_checked_ms = now_ms;
 }
 
 /* Map a named UI event to a pattern and queue it, honouring the cached
-   settings. nav = single (opt-in), select = single, commit = double,
-   blocked = triple. */
+   settings. nav = single, select = single, commit = double, blocked = triple;
+   UI rumble gates all four. */
 static void jw__rumble_event(jw_daemon_state *state, const char *event) {
     if (!g_rumble_ready || !event) return;
     jw__rumble_refresh_cache(state, (uint64_t)jw__monotonic_ms());
-    if (!state->rumble_enabled_cached) return;
+    if (!state->rumble_ui_cached) return;
     int bursts, tick_ms = JW_RUMBLE_TICK_MS;
     if (strcmp(event, "nav") == 0) {
-        if (!state->rumble_nav_cached) return;
         bursts  = 1;
         tick_ms = JW_RUMBLE_NAV_TICK_MS;   /* short enough to survive held repeat */
     } else if (strcmp(event, "select") == 0) {
@@ -1476,7 +1463,7 @@ static void jw__rumble_resolve_game_env(jw_daemon_state *state,
     memset(out, 0, sizeof(*out));
     if (!g_rumble_ready || !state) return;
     jw__rumble_refresh_cache(state, (uint64_t)jw__monotonic_ms());
-    if (!state->rumble_enabled_cached || !state->rumble_game_cached) return;
+    if (!state->rumble_game_cached) return;
     long max = jw__rumble_duty_for(state->rumble_strength_cached);
     if (max <= 0) return;
     /* Game rumble is SUSTAINED, so it uses the lower sustained floor -- holding it

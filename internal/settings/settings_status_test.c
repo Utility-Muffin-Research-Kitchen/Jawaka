@@ -169,14 +169,14 @@ int main(void) {
     if (ui.system_icon_pack_index != JW_SYSTEM_ICON_PACK_COUNT - 1 || !theme_changed)
         return fail("System Icons did not cycle backwards");
 
-    /* Controls & Feedback keeps all eight rows off MLP1: the capture toggles
+    /* Controls & Feedback keeps all seven rows off MLP1: the capture toggles
        stay on the parent page because there is no In-game Shortcuts child to
-       move them into. On MLP1 this is five, and the shortcut page's own logic
+       move them into. On MLP1 this is four, and the shortcut page's own logic
        is covered by input-shortcuts-test -- the UI cannot be built in MLP1
        shape on this host, because Catastrophe's MLP1 paths need <linux/input.h>
        and poll(). */
 #ifndef PLATFORM_MLP1
-    if (JW_CONTROLS_ROW_COUNT != 8)
+    if (JW_CONTROLS_ROW_COUNT != 7)
         return fail("non-MLP1 Controls page changed row count");
     if (JW_CONTROLS_REC_KEEP != JW_CONTROLS_ROW_COUNT - 1)
         return fail("non-MLP1 Controls rows are no longer contiguous");
@@ -188,9 +188,9 @@ int main(void) {
     status[0] = '\0';
     /* cat_list_state_move wraps rather than clamps, so the last row leads back
        to the first. The point of the check is that the page's row count is the
-       eight-row one, not that the cursor stops. */
+       seven-row one, not that the cursor stops. */
     jw_settings_ui_handle_button(&ui, CAT_BTN_DOWN, status, sizeof(status), NULL);
-    if (ui.controls_list.cursor != JW_CONTROLS_RUMBLE)
+    if (ui.controls_list.cursor != JW_CONTROLS_UI_RUMBLE)
         return fail("Controls cursor did not wrap from the last row to the first");
     jw_settings_ui_handle_button(&ui, CAT_BTN_UP, status, sizeof(status), NULL);
     if (ui.controls_list.cursor != JW_CONTROLS_REC_KEEP)

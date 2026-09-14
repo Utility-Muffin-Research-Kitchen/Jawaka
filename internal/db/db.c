@@ -1694,6 +1694,47 @@ int jw_db_set_settings(const char *db_path, const char *const *keys,
     return rc;
 }
 
+int jw_db_load_rumble_settings(const char *db_path, jw_rumble_settings *out) {
+    if (!out) return -1;
+    out->ui = 0;
+    out->game = 1;
+    out->strength = JW_RUMBLE_DEFAULT_STRENGTH;
+    if (!db_path) return -1;
+
+    char ui[8], game[8], strength[16], master[8], nav[8];
+    jw_db_setting_query q[] = {
+        { "rumble_ui",       ui,       sizeof(ui),       0 },
+        { "rumble_game",     game,     sizeof(game),     0 },
+        { "rumble_strength", strength, sizeof(strength), 0 },
+        { "rumble_enabled",  master,   sizeof(master),   0 },
+        { "rumble_nav",      nav,      sizeof(nav),      0 },
+    };
+    if (jw_db_get_settings(db_path, q, (int)(sizeof(q) / sizeof(q[0]))) != 0)
+        return -1;
+
+    if (q[2].found && strength[0]) {
+        int s = atoi(strength);
+        out->strength = s < 0 ? 0 : (s > 100 ? 100 : s);
+    }
+    int master_off = q[3].found && strcmp(master, "0") == 0;
+
+    if (q[0].found && ui[0]) {
+        out->ui = strcmp(ui, "0") != 0;
+        out->game = !(q[1].found && strcmp(game, "0") == 0);
+        return 0;
+    }
+
+    /* First load since the master switch went away. Write the result so the
+       old keys are consulted exactly once: a later Game Rumble change must not
+       be overridden by a master switch the user can no longer see. */
+    out->ui = !master_off && q[4].found && strcmp(nav, "1") == 0;
+    out->game = !master_off && !(q[1].found && strcmp(game, "0") == 0);
+    const char *keys[] = { "rumble_ui", "rumble_game" };
+    const char *values[] = { out->ui ? "1" : "0", out->game ? "1" : "0" };
+    (void)jw_db_set_settings(db_path, keys, values, 2);
+    return 0;
+}
+
 int jw_db_get_theme_name(const char *db_path, char *out, size_t out_size) {
     return jw_db_get_setting(db_path, "theme_name", out, out_size);
 }
