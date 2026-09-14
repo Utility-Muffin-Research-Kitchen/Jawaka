@@ -62,23 +62,26 @@ static void grid_test(jw_launcher_state *state, jw_ra_system *system,
     state->settings.system_icon_pack_index = JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC;
     snprintf(state->settings.user_themes.items[0].dir, 128, "A");
     snprintf(state->settings.user_theme_dir, 128, "A");
-    char theme[PATH_MAX], rom[PATH_MAX], grid[PATH_MAX], flat[PATH_MAX], photo[PATH_MAX], bundle[PATH_MAX], dir[PATH_MAX];
+    char theme[PATH_MAX], rom[PATH_MAX], grid[PATH_MAX], flat[PATH_MAX], photo[PATH_MAX], bundle[PATH_MAX], pack[PATH_MAX], dir[PATH_MAX];
     snprintf(dir, sizeof(dir), "%s/Themes/A/grid/icons", root); wm_dirs(dir);
     snprintf(dir, sizeof(dir), "%s/res/system_icons", root); wm_dirs(dir);
+    snprintf(dir, sizeof(dir), "%s/res/themes/Jawaka-Coverflow/system_icons", root); wm_dirs(dir);
+    snprintf(pack, sizeof(pack), "%s/TEST.png", dir);
     snprintf(theme, sizeof(theme), "%s/Themes/A/grid/icons/TEST.png", root);
     snprintf(rom, sizeof(rom), "%s/Roms/TEST/icon.png", root);
     snprintf(grid, sizeof(grid), "%s/Apps/mlp1/Test.pak/art/grid.png", root);
     snprintf(flat, sizeof(flat), "%s/Apps/mlp1/Test.pak/art/flat.png", root);
     snprintf(photo, sizeof(photo), "%s/Apps/mlp1/Test.pak/art/photo.png", root);
     snprintf(bundle, sizeof(bundle), "%s/res/system_icons/TEST.png", root);
-    wm_png(theme,64); wm_png(rom,32); wm_png(grid,128); wm_png(flat,160); wm_png(photo,192); wm_png(bundle,256);
+    wm_png(theme,64); wm_png(rom,32); wm_png(grid,128); wm_png(flat,160); wm_png(photo,192); wm_png(bundle,256); wm_png(pack,288);
     system->grid_icon = "art/grid.png"; system->grid_icon_provider = "mlp1/Test.pak";
     system->provider = "mlp1/Test.pak"; system->icon_flat = "art/flat.png"; system->icon_photographic = "art/photo.png";
     int w,h; assert(jw__load_cached_image(bundle,&w,&h));
     assert(!jw__grid_icon(state,0,&w,&h)); /* cold theme must stay pending */
-    jw__grid_prewarm_icons(state); grid_expect(state,64); /* theme > ROM > pak */
+    jw__grid_prewarm_icons(state); grid_expect(state,64); /* theme > ROM > built-in pack > pak */
     unlink(theme); art_refresh(state,catalog,"grid-no-theme/info"); grid_expect(state,32);
-    wm_file(rom,"bad PNG"); art_refresh(state,catalog,"grid-corrupt-rom/info"); grid_expect(state,128);
+    wm_file(rom,"bad PNG"); art_refresh(state,catalog,"grid-corrupt-rom/info"); grid_expect(state,288);
+    grid_corrupt(pack); art_refresh(state,catalog,"grid-corrupt-pack/info"); grid_expect(state,128);
     grid_corrupt(grid); art_refresh(state,catalog,"grid-corrupt-pak/info"); grid_expect(state,192);
     grid_corrupt(photo); art_refresh(state,catalog,"grid-corrupt-photo/info"); grid_expect(state,160);
     grid_corrupt(flat); art_refresh(state,catalog,"grid-corrupt-flat/info"); grid_expect(state,256);
@@ -103,11 +106,26 @@ static void grid_test(jw_launcher_state *state, jw_ra_system *system,
     snprintf(theme,sizeof(theme),"%s/Themes/B/grid/icons/TEST.png",root); wm_png(theme,96);
     snprintf(state->settings.user_themes.items[0].dir,128,"B");
     snprintf(state->settings.user_theme_dir,128,"B"); grid_expect(state,96); /* same index, new theme */
+    /* Candidate order by consumer: pak grid art only for Grid tiles, the built-in
+       pack ahead of pak art only in Grid, and Cover Flow exactly as before. */
+    system->provider = "mlp1/Test.pak";
+    jw_system_icon_candidates candidates;
+    int at_grid, at_photo, at_pack;
+    #define ICON_AT(path, out) do { out = -1; for (int i=0;i<candidates.count;i++) if (!strcmp(candidates.paths[i],path)) out = i; } while (0)
+    jw__build_system_icon_candidates(state,"TEST",true,&candidates);
+    ICON_AT(grid,at_grid); ICON_AT(photo,at_photo); ICON_AT(pack,at_pack);
+    assert(at_pack >= 0 && at_pack < at_grid && at_grid < at_photo);
+    jw__build_system_icon_candidates(state,"TEST",false,&candidates); /* Grid Search */
+    ICON_AT(grid,at_grid); ICON_AT(photo,at_photo); ICON_AT(pack,at_pack);
+    assert(at_grid < 0 && at_pack >= 0 && at_pack < at_photo);
     style->launcher.layout = CAT_LAUNCHER_COVERFLOW;
-    jw_system_icon_candidates candidates; jw__build_system_icon_candidates(state,"TEST",&candidates);
-    for (int i=0;i<candidates.count;i++) assert(strcmp(candidates.paths[i],grid));
+    jw__build_system_icon_candidates(state,"TEST",true,&candidates);
+    ICON_AT(grid,at_grid); ICON_AT(photo,at_photo); ICON_AT(pack,at_pack);
+    assert(at_grid < 0 && at_photo >= 0 && at_photo < at_pack);
+    #undef ICON_AT
     style->launcher.layout = CAT_LAUNCHER_GRID;
-    unlink(theme); unlink(rom); unlink(grid); unlink(bundle);
+    system->provider = NULL;
+    unlink(theme); unlink(rom); unlink(grid); unlink(bundle); unlink(pack);
     art_refresh(state,catalog,"grid-six/info"); grid_expect(state,0);
     puts("PASS grid-icon UI: priorities, pending/failure, independent provider, generation replacement/removal, dimensions, theme switch, same-generation reload, unchanged Cover Flow");
 }

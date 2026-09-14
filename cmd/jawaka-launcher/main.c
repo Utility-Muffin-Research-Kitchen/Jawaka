@@ -4124,6 +4124,10 @@ static void jw__render_focus(jw_launcher_state *state) {
  *   5. <themes_dir>/../system_icons/<SYSTEM>.png  shared flat baseline
  *   6. <themes_dir>/../system_icons/_default.png  final fallback
  *
+ * Grid moves the user's icon pack ahead of pak art: the selected user theme,
+ * icon.png, the built-in pack (4), the pak's CONTENT-ART-2 grid_icon (tiles
+ * only), pak art (2-3), then 5 and 6. Every other layout keeps the order above.
+ *
  * Step 5 stays in the list for every pack on purpose: the photographic pack has
  * no asset for some aliases and pseudo-systems (_apps, for one), and those must
  * fall back to a real flat icon rather than vanish.
@@ -4132,8 +4136,9 @@ static void jw__render_focus(jw_launcher_state *state) {
  * which holds for the four bundled themes. A theme loaded from another
  * Catastrophe search root simply falls through to the flat pack.
  *
- * This builds strings only — no access(), no decode, no cache lookup. The two
- * consumers probe differently and each keeps its own semantics. */
+ * This builds strings only — no decode, no cache lookup; the only file reads
+ * are the IHDR checks on user-theme and pak grid art. The consumers probe
+ * differently and each keeps its own semantics. */
 
 #define JW_SYSTEM_ICON_PHOTO_THEME "Jawaka-Coverflow"
 
@@ -4198,8 +4203,40 @@ static const char *jw__system_rom_folder(const jw_launcher_state *state,
     return NULL;
 }
 
+/* (2-3) content-pak art. AUTO follows the active theme's pack; an absent
+   photographic asset deliberately falls through to the mandatory flat asset.
+   Both paths are resolved live from the catalog's provider. */
+static void jw__push_pak_icon_candidates(const jw_launcher_state *state,
+                                         const char *system_code, int pack,
+                                         const char *theme_name,
+                                         jw_system_icon_candidates *out) {
+    if (!state || !state->system_catalog || system_code[0] == '_') return;
+    const jw_ra_system *system = jw_ra_catalog_match_system_folder(
+        state->system_catalog, system_code);
+    if (!system) return;
+    bool selected_photo =
+        pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC ||
+        (pack == JW_SYSTEM_ICON_PACK_AUTO && theme_name &&
+         strcmp(theme_name, JW_SYSTEM_ICON_PHOTO_THEME) == 0);
+    char path[PATH_MAX];
+    if (selected_photo &&
+        jw_ra_catalog_resolve_system_icon_path(
+            state->system_catalog, system, true, path, sizeof(path)) == 0) {
+        jw__push_icon_candidate(out, path);
+    }
+    if (jw_ra_catalog_resolve_system_icon_path(
+            state->system_catalog, system, false, path, sizeof(path)) == 0) {
+        jw__push_icon_candidate(out, path);
+    }
+}
+
+/* `grid_tile` is only set by the memoized Grid tile resolver: the pak's
+   CONTENT-ART-2 grid_icon is tile art, so Search and the other small icon
+   sites never see it, and its containment check and IHDR read stay off their
+   per-redraw path. */
 static void jw__build_system_icon_candidates(const jw_launcher_state *state,
                                              const char *system_code,
+                                             bool grid_tile,
                                              jw_system_icon_candidates *out) {
     out->count = 0;
     if (!system_code || !system_code[0]) {
@@ -4214,16 +4251,17 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
 
     char path[PATH_MAX];
     int n;
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    bool grid = ss && ss->launcher.layout == CAT_LAUNCHER_GRID;
 
     /* (0) the selected user theme, for the view this layout draws. Wins over
        everything, falls through for any system it does not supply, and never
        for _default (Leaf's safety net, not a tile). Over-cap PNGs are refused
        here so a 4000 px photo never reaches the decoder. */
     if (state) {
-        const cat_stylesheet *ss0 = cat_get_stylesheet();
         const char *view = NULL;
-        if (ss0 && ss0->launcher.layout == CAT_LAUNCHER_GRID)           view = "grid";
-        else if (ss0 && ss0->launcher.layout == CAT_LAUNCHER_COVERFLOW) view = "coverflow";
+        if (grid)                                                     view = "grid";
+        else if (ss && ss->launcher.layout == CAT_LAUNCHER_COVERFLOW) view = "coverflow";
         int ti = jw_settings_user_theme_index(&state->settings);
         if (view && ti >= 0 &&
             jw_user_theme_icon_path(jw_settings_user_themes(&state->settings), ti,
@@ -4246,56 +4284,21 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
         }
     }
 
-    /* Grid-specific companion art precedes the generic pak icon pack. */
-    const cat_stylesheet *style = cat_get_stylesheet();
-    if (state && state->system_catalog && style &&
-        style->launcher.layout == CAT_LAUNCHER_GRID && system_code[0] != '_') {
-        const jw_ra_system *system = jw_ra_catalog_match_system_folder(state->system_catalog, system_code);
-        if (!jw_ra_catalog_resolve_system_grid_icon_path(state->system_catalog, system, path, sizeof(path))) {
-            int width, height;
-            if (jw_user_theme_png_dims(path, &width, &height) &&
-                width <= JW_USER_THEME_ICON_MAX_PX && height <= JW_USER_THEME_ICON_MAX_PX)
-                jw__push_icon_candidate(out, path);
-        }
-    }
-
     const char *theme_dir  = cat_get_active_theme_dir();
     const char *theme_name = cat_get_active_theme_name();
+    bool have_theme_dir = theme_dir && theme_dir[0];
 
-    /* (2-3) content-pak art. AUTO follows the active theme's pack; an absent
-       photographic asset deliberately falls through to the mandatory flat
-       asset. Both paths are resolved live from the catalog's provider. */
-    if (state && state->system_catalog && system_code[0] != '_') {
-        const jw_ra_system *system = jw_ra_catalog_match_system_folder(
-            state->system_catalog, system_code);
-        bool selected_photo =
-            pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC ||
-            (pack == JW_SYSTEM_ICON_PACK_AUTO && theme_name &&
-             strcmp(theme_name, JW_SYSTEM_ICON_PHOTO_THEME) == 0);
-        if (system) {
-            if (selected_photo &&
-                jw_ra_catalog_resolve_system_icon_path(
-                    state->system_catalog, system, true,
-                    path, sizeof(path)) == 0) {
-                jw__push_icon_candidate(out, path);
-            }
-            if (jw_ra_catalog_resolve_system_icon_path(
-                    state->system_catalog, system, false,
-                    path, sizeof(path)) == 0) {
-                jw__push_icon_candidate(out, path);
-            }
+    /* Outside Grid, pak art precedes the built-in pack as it always has. */
+    if (!grid) {
+        jw__push_pak_icon_candidates(state, system_code, pack, theme_name, out);
+        if (!have_theme_dir) {
+            return;   /* no resolved theme root: nothing bundled to point at */
         }
-    }
-
-    if (!theme_dir || !theme_dir[0]) {
-        return;   /* no resolved theme root: nothing bundled to point at */
     }
 
     /* (4) the selected built-in pack. Only AUTO consults the active theme; an
        explicit choice must not follow the layout or theme name. */
-    if (pack == JW_SYSTEM_ICON_PACK_AUTO) {
-        const cat_stylesheet *ss = cat_get_stylesheet();
-        bool grid = ss && ss->launcher.layout == CAT_LAUNCHER_GRID;
+    if (have_theme_dir && pack == JW_SYSTEM_ICON_PACK_AUTO) {
         const char *icon_dir = "system_icons";
         if (grid && ss->launcher.grid_icon_dir[0])
             icon_dir = ss->launcher.grid_icon_dir;
@@ -4314,10 +4317,29 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
                          theme_dir, JW_SYSTEM_ICON_PHOTO_THEME, system_code);
             if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
         }
-    } else if (pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC) {
+    } else if (have_theme_dir && pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC) {
         n = snprintf(path, sizeof(path), "%s/%s/system_icons/%s.png",
                      theme_dir, JW_SYSTEM_ICON_PHOTO_THEME, system_code);
         if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+    }
+
+    /* In Grid the user's chosen icon pack wins over pak art: then the pak's
+       own grid tile, then its generic icons. */
+    if (grid) {
+        if (grid_tile && state && state->system_catalog && system_code[0] != '_') {
+            const jw_ra_system *system =
+                jw_ra_catalog_match_system_folder(state->system_catalog, system_code);
+            int width, height;
+            if (!jw_ra_catalog_resolve_system_grid_icon_path(state->system_catalog, system,
+                                                             path, sizeof(path)) &&
+                jw_user_theme_png_dims(path, &width, &height) &&
+                width <= JW_USER_THEME_ICON_MAX_PX && height <= JW_USER_THEME_ICON_MAX_PX)
+                jw__push_icon_candidate(out, path);
+        }
+        jw__push_pak_icon_candidates(state, system_code, pack, theme_name, out);
+        if (!have_theme_dir) {
+            return;
+        }
     }
 
     /* (5) shared flat baseline next to the active theme root */
@@ -4343,7 +4365,7 @@ static bool jw__resolve_system_icon_path(const jw_launcher_state *state,
     }
 
     jw_system_icon_candidates cands;
-    jw__build_system_icon_candidates(state, system_code, &cands);
+    jw__build_system_icon_candidates(state, system_code, false, &cands);
     for (int i = 0; i < cands.count; ++i) {
         if (jw__readable_path(cands.paths[i])) {
             return jw__copy_path(out, out_size, cands.paths[i]);
@@ -4389,7 +4411,7 @@ static SDL_Texture *jw__load_system_icon(const jw_launcher_state *state,
                                          const char *system_code,
                                          int *out_w, int *out_h) {
     jw_system_icon_candidates cands;
-    jw__build_system_icon_candidates(state, system_code, &cands);
+    jw__build_system_icon_candidates(state, system_code, false, &cands);
     for (int i = 0; i < cands.count; ++i) {
         SDL_Texture *t = jw__load_cached_image(cands.paths[i], out_w, out_h);
         if (t) return t;
@@ -6315,7 +6337,7 @@ static const char *jw__grid_system_icon_path(jw_launcher_state *state, int idx) 
     }
     if (!memo->done) {
         jw_system_icon_candidates candidates;
-        jw__build_system_icon_candidates(state, code, &candidates);
+        jw__build_system_icon_candidates(state, code, true, &candidates);
         memo->path[0] = '\0';
         for (int i = 0; i < candidates.count; i++) {
             uint64_t hash = jw__img_path_hash(candidates.paths[i]);
