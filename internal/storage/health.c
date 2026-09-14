@@ -1,5 +1,7 @@
 #include "internal/storage/health.h"
 
+#include <fcntl.h>
+
 #include "internal/core/log.h"
 
 #include <ctype.h>
@@ -30,6 +32,7 @@ void jw_storage_probe_env_default(jw_storage_probe_env *env) {
     env->by_uuid_dir = "/dev/disk/by-uuid";
     env->by_label_dir = "/dev/disk/by-label";
     env->sys_dev_block = "/sys/dev/block";
+    env->dev_dir = "/dev";
 #ifdef PLATFORM_MLP1
     /* Both MLP1 card roots are fixed mount points with empty rootfs stubs
        underneath, so an unmounted root must never pass as a writable card. */
@@ -752,6 +755,107 @@ void jw_storage_health_probe(const jw_storage_probe_env *env,
             }
         }
     }
+}
+
+/* ── Unmounted held card ─────────────────────────────────────────────── */
+
+/* Boot-sector signature only: enough to offer a check, which the repair
+   runner revalidates with blkid before touching the card. */
+static bool jw__block_fs_type(const char *path, char *out, size_t out_size) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    unsigned char sector[512];
+    ssize_t n = pread(fd, sector, sizeof(sector), 0);
+    close(fd);
+    if (n != (ssize_t)sizeof(sector) || sector[510] != 0x55 || sector[511] != 0xAA) {
+        return false;
+    }
+    if (memcmp(sector + 3, "EXFAT   ", 8) == 0) {
+        snprintf(out, out_size, "%s", "exfat");
+        return true;
+    }
+    if (memcmp(sector + 82, "FAT32   ", 8) == 0 || memcmp(sector + 54, "FAT16   ", 8) == 0 ||
+        memcmp(sector + 54, "FAT12   ", 8) == 0) {
+        snprintf(out, out_size, "%s", "vfat");
+        return true;
+    }
+    return false;
+}
+
+bool jw_storage_health_probe_unmounted_hold(const jw_storage_probe_env *env,
+                                            jw_storage_health *out) {
+    if (!env || !out || out->mounted || !env->repair_dir || !env->by_uuid_dir) {
+        return false;
+    }
+    char holds[JW_STORAGE_PATH_MAX];
+    if (snprintf(holds, sizeof(holds), "%s/holds", env->repair_dir) >= (int)sizeof(holds)) {
+        return false;
+    }
+    DIR *dir = opendir(holds);
+    if (!dir) {
+        return false;
+    }
+    jw_storage_mount_table *table = malloc(sizeof(*table));
+    if (!table || jw_storage_mount_table_read(env->mountinfo_path, table) != 0) {
+        free(table);
+        closedir(dir);
+        return false;
+    }
+    bool found = false;
+    struct dirent *entry;
+    while (!found && (entry = readdir(dir)) != NULL) {
+        if (!jw_storage_uuid_valid(entry->d_name)) {
+            continue;
+        }
+        char link_path[JW_STORAGE_PATH_MAX];
+        char target[JW_STORAGE_PATH_MAX];
+        if (snprintf(link_path, sizeof(link_path), "%s/%s", env->by_uuid_dir,
+                     entry->d_name) >= (int)sizeof(link_path)) {
+            continue;
+        }
+        ssize_t n = readlink(link_path, target, sizeof(target) - 1);
+        if (n <= 0) {
+            continue;
+        }
+        target[n] = '\0';
+        const char *name = jw__basename(target);
+        char device[JW_STORAGE_DEVICE_MAX];
+        char open_path[JW_STORAGE_PATH_MAX];
+        if (!name[0] ||
+            snprintf(device, sizeof(device), "/dev/%s", name) >= (int)sizeof(device) ||
+            snprintf(open_path, sizeof(open_path), "%s/%s",
+                     env->dev_dir ? env->dev_dir : "/dev", name) >= (int)sizeof(open_path)) {
+            continue;
+        }
+        bool mounted = false;
+        for (int i = 0; i < table->count && !mounted; i++) {
+            mounted = strcmp(table->entries[i].device, device) == 0;
+        }
+        char fs_type[JW_STORAGE_FS_TYPE_MAX];
+        if (mounted || !jw__block_fs_type(open_path, fs_type, sizeof(fs_type))) {
+            continue;
+        }
+        if (snprintf(out->uuid, sizeof(out->uuid), "%s", entry->d_name) >=
+            (int)sizeof(out->uuid)) {
+            out->uuid[0] = '\0';
+            continue;
+        }
+        snprintf(out->device, sizeof(out->device), "%s", device);
+        snprintf(out->fs_type, sizeof(out->fs_type), "%s", fs_type);
+        (void)jw_storage_device_label(env, device, out->label, sizeof(out->label));
+        out->repair = jw_storage_repair_hold_for_uuid(env, out->uuid,
+                                                      out->repair_request_id,
+                                                      sizeof(out->repair_request_id));
+        found = out->repair != JW_STORAGE_REPAIR_NONE;
+        if (!found) {
+            out->device[0] = out->uuid[0] = out->fs_type[0] = out->label[0] = '\0';
+        }
+    }
+    free(table);
+    closedir(dir);
+    return found;
 }
 
 const char *jw_storage_access_name(jw_storage_access access) {

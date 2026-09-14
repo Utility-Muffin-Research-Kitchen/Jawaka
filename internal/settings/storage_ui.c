@@ -37,11 +37,12 @@ void jw_storage_ui_card_name(const jw_ipc_storage_status_info *card,
 }
 
 const char *jw_storage_ui_card_state(const jw_ipc_storage_status_info *card) {
+    if (card && strcmp(card->repair, "failed") == 0) {
+        /* Also when unmounted: hotplug refuses to mount a held card. */
+        return T("Needs repair");
+    }
     if (!card || !card->mounted) {
         return T("Not mounted");
-    }
-    if (strcmp(card->repair, "failed") == 0) {
-        return T("Needs repair");
     }
     if (strcmp(card->repair, "pending") == 0 || strcmp(card->repair, "running") == 0) {
         return T("Repair pending");
@@ -321,7 +322,7 @@ void jw_storage_ui_manage_cards(const char *socket_path, char *status,
         actions[action_count] = (cat_list_item)CAT_LIST_ITEM(T("Repair SD card"), "repair");
         action_ids[action_count++] = ACTION_REPAIR;
     }
-    if (card->mounted && strcmp(card->repair, "failed") == 0) {
+    if (strcmp(card->repair, "failed") == 0) {
         actions[action_count] = (cat_list_item)CAT_LIST_ITEM(T("Check SD card"), "check");
         action_ids[action_count++] = ACTION_CHECK;
     }

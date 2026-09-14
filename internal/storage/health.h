@@ -74,6 +74,7 @@ typedef struct {
     const char *by_uuid_dir;      /* default /dev/disk/by-uuid */
     const char *by_label_dir;     /* default /dev/disk/by-label */
     const char *sys_dev_block;    /* default /sys/dev/block */
+    const char *dev_dir;          /* default /dev; fixtures point it at image files */
     const char *repair_dir;       /* NULL: no repair state on this platform */
     bool require_mounted_roots;   /* a card root that is not a mount is missing */
     bool skip_statvfs;            /* fixtures: trust the mount table alone */
@@ -166,6 +167,13 @@ bool jw_storage_repair_last_result(const jw_storage_probe_env *env,
 void jw_storage_health_probe(const jw_storage_probe_env *env,
                              const char *source_id, const char *root,
                              const char *kernel_log, jw_storage_health *out);
+
+/* Fill identity into an unmounted probe result from an inserted card that is
+   held for repair (hotplug refuses to mount it), so a check can still be
+   requested. Only a FAT or exFAT volume that is not mounted anywhere counts.
+   Returns false, leaving out unchanged, when there is none. */
+bool jw_storage_health_probe_unmounted_hold(const jw_storage_probe_env *env,
+                                            jw_storage_health *out);
 
 const char *jw_storage_access_name(jw_storage_access access);
 const char *jw_storage_cause_name(jw_storage_cause cause);

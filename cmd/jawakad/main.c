@@ -11251,6 +11251,12 @@ static void jw__storage_health_refresh(jw_daemon_state *state) {
         jw_storage_health probe;
         bool newly = false;
         jw_storage_health_probe(&env, roots[i].source_id, roots[i].root, NULL, &probe);
+        /* Hotplug refuses to mount a held second card. Keep its identity so
+           Check SD card stays available after a repair on a computer. */
+        if (!probe.mounted &&
+            strcmp(roots[i].source_id, JW_PLATFORM_STORAGE_SECONDARY_ID) == 0) {
+            (void)jw_storage_health_probe_unmounted_hold(&env, &probe);
+        }
         changed |= jw_storage_health_monitor_update(&state->storage_monitor, i, &probe,
                                                     &newly);
         jw_storage_health_slot *slot = &state->storage_monitor.slots[i];
@@ -11398,14 +11404,27 @@ static int jw__storage_run_repair_tool(char *const argv[], char *out, size_t out
         }
     }
     close(pipefd[0]);
+    /* EOF can arrive before the tool has exited. Keep waiting within the same
+       deadline: killing it here turned committed requests into failures. */
     int status = 0;
-    pid_t waited = waitpid(pid, &status, WNOHANG);
-    if (waited == 0) {
-        (void)kill(pid, SIGKILL);
-        (void)waitpid(pid, &status, 0);
-        return -1;
+    for (;;) {
+        pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) {
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+        if (waited < 0 && errno != EINTR) {
+            return -1;
+        }
+        if (jw__monotonic_ms() >= deadline) {
+            break;
+        }
+        usleep(10000);
     }
-    return waited == pid && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    (void)kill(pid, SIGKILL);
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        /* retry */
+    }
+    return -1;
 }
 #endif
 
@@ -11421,7 +11440,10 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
         return jw__reply_error(client, "invalid repair mode");
     }
     const jw_storage_health_slot *slot = jw__storage_slot(state, source);
-    if (!slot || !slot->health.mounted) {
+    /* An unmounted card qualifies only as a held card with a known identity. */
+    if (!slot || (!slot->health.mounted &&
+                  (slot->health.repair == JW_STORAGE_REPAIR_NONE ||
+                   !slot->health.uuid[0] || !slot->health.device[0]))) {
         return jw__reply_error(client, "not-found");
     }
     const jw_storage_health *h = &slot->health;

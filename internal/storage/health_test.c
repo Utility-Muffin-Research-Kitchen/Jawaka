@@ -309,6 +309,63 @@ static void test_path_check(void) {
            JW_STORAGE_WRITE_UNKNOWN);
 }
 
+static void test_unmounted_hold(void) {
+    /* The second card (mmcblk3) is inserted, held, and refused by hotplug. */
+    static const char *launcher_only =
+        "18 1 179:6 / / rw,relatime - ext4 /dev/root rw\n"
+        "34 18 179:96 / /media/sdcard1 rw - vfat /dev/mmcblk1 rw,errors=remount-ro\n";
+    jw_storage_probe_env env;
+    fixture_env(&env, launcher_only);
+    static char dev_dir[1024];
+    char path[1024];
+    char holds[1024];
+    snprintf(dev_dir, sizeof(dev_dir), "%s/dev", g_tmp);
+    mkdir_p(dev_dir);
+    env.dev_dir = dev_dir;
+    unsigned char sector[512];
+    memset(sector, 0, sizeof(sector));
+    memcpy(sector + 82, "FAT32   ", 8);
+    sector[510] = 0x55;
+    sector[511] = 0xAA;
+    for (int i = 0; i < 2; i++) {
+        snprintf(path, sizeof(path), "%s/%s", dev_dir, i == 0 ? "mmcblk1" : "mmcblk3");
+        FILE *fp = fopen(path, "wb");
+        assert(fp && fwrite(sector, 1, sizeof(sector), fp) == sizeof(sector));
+        fclose(fp);
+    }
+    snprintf(holds, sizeof(holds), "%s/holds", env.repair_dir);
+    mkdir_p(holds);
+    snprintf(path, sizeof(path), "%s/22A4-0814", holds);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/04B1-0820", holds);
+    unlink(path);
+
+    jw_storage_health h;
+    jw_storage_health_probe(&env, "secondary_sd", "/mnt/sdcard", NULL, &h);
+    assert(!h.mounted && !h.uuid[0]);
+    assert(!jw_storage_health_probe_unmounted_hold(&env, &h) && !h.uuid[0]);
+
+    write_file(path, "state=failed\nrequest_id=r-5\n");
+    assert(jw_storage_health_probe_unmounted_hold(&env, &h));
+    assert(!h.mounted && h.repair == JW_STORAGE_REPAIR_FAILED);
+    assert(strcmp(h.device, "/dev/mmcblk3") == 0 && strcmp(h.uuid, "04B1-0820") == 0);
+    assert(strcmp(h.fs_type, "vfat") == 0 && strcmp(h.repair_request_id, "r-5") == 0);
+
+    /* Not a FAT or exFAT volume: no identity to offer. */
+    snprintf(path, sizeof(path), "%s/mmcblk3", dev_dir);
+    write_file(path, "not a boot sector");
+    jw_storage_health_probe(&env, "secondary_sd", "/mnt/sdcard", NULL, &h);
+    assert(!jw_storage_health_probe_unmounted_hold(&env, &h) && !h.uuid[0]);
+
+    /* A held card that is mounted belongs to the normal probe. */
+    snprintf(path, sizeof(path), "%s/04B1-0820", holds);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/22A4-0814", holds);
+    write_file(path, "state=failed\nrequest_id=r-6\n");
+    assert(!jw_storage_health_probe_unmounted_hold(&env, &h));
+    unlink(path);
+}
+
 static void test_refresh_request(void) {
     assert(!jw_storage_take_refresh_request());
     jw_storage_report_write_error("/x", 28 /* ENOSPC */);
@@ -329,6 +386,7 @@ int main(void) {
     test_probe_and_monitor();
     test_repair_state();
     test_path_check();
+    test_unmounted_hold();
     test_refresh_request();
 
     char cmd[1024];
