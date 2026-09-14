@@ -1,4 +1,5 @@
 #include "cmd/jawaka-osd/osd_backend.h"
+#include "cmd/jawaka-osd/osd_text.h"
 #include "cmd/jawaka-osd/osd_view.h"
 
 #include "xdg-shell-client-protocol.h"
@@ -90,10 +91,6 @@ static int jw__create_shm_file(size_t size) {
         return -1;
     }
     return fd;
-}
-
-static uint32_t jw__argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
-    return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
 /* WL_SHM_FORMAT_ARGB8888 is premultiplied: the compositor expects the colour
@@ -264,70 +261,33 @@ static void jw__draw_glyph(uint32_t *pixels, int width, int height,
     }
 }
 
-static const char *jw__glyph(char c) {
-    switch (c) {
-        case ':': return "00000001000010000000001000010000000";
-        case '?': return "01110100010000100010001000000000100";
-        case '0': return "01110100011001110101110011000101110";
-        case '1': return "00100011000010000100001000010001110";
-        case '2': return "01110100010000100110010001000011111";
-        case '3': return "11110000010000101110000010000111110";
-        case '4': return "00010001100101010010111110001000010";
-        case '5': return "11111100001111000001000011000101110";
-        case '6': return "00110010001000011110100011000101110";
-        case '7': return "11111000010001000100010000100001000";
-        case '8': return "01110100011000101110100011000101110";
-        case '9': return "01110100011000101111000010001001100";
-        case 'A': return "01110100011000111111100011000110001";
-        case 'C': return "01111100001000010000100001000001111";
-        case 'D': return "11110100011000110001100011000111110";
-        case 'E': return "11111100001000011110100001000011111";
-        case 'F': return "11111100001000011110100001000010000";
-        case 'G': return "01110100011000110111100011000101110";
-        case 'H': return "10001100011000111111100011000110001";
-        case 'I': return "11111001000010000100001000010011111";
-        case 'K': return "10001100101010011000101001001010001";
-        case 'L': return "10000100001000010000100001000011111";
-        case 'M': return "10001110111010110101100011000110001";
-        case 'N': return "10001110011010110011100011000110001";
-        case 'O': return "01110100011000110001100011000101110";
-        case 'P': return "11110100011000111110100001000010000";
-        case 'R': return "11110100011000111110101001001010001";
-        case 'S': return "11111100001000011111000010000111111";
-        case 'T': return "11111001000010000100001000010000100";
-        case 'U': return "10001100011000110001100011000101110";
-        case 'V': return "10001100011000110001100010101000100";
-        case 'W': return "10001100011000110001101011010101010";
-        case 'Y': return "10001100010101000100001000010000100";
-        default: return NULL;
-    }
-}
-
-static void jw__draw_text(uint32_t *pixels, int width, int height,
-                          const char *text, int x, int y, int scale,
-                          uint32_t color) {
-    for (const char *p = text; p && *p; p++, x += 6 * scale) {
-        const char *glyph = jw__glyph(*p);
-        if (!glyph) continue;
-        for (int row = 0; row < 7; row++) {
-            for (int col = 0; col < 5; col++) {
-                if (glyph[row * 5 + col] == '1') {
-                    jw__fill_rect(pixels, width, height,
-                                  x + col * scale, y + row * scale,
-                                  scale, scale, color);
-                }
-            }
+/* Composite SDL_ttf output into the shm buffer. The rendered surface is
+   straight alpha; the buffer is premultiplied. Clipped to the banner box so
+   text can never land outside the surface it belongs to. */
+static void jw__blit_text(uint32_t *pixels, int width, int height,
+                          SDL_Surface *text, int x, int y, const jw_osd_rect *clip) {
+    if (!pixels || !text || !clip || SDL_LockSurface(text) != 0) return;
+    for (int row = 0; row < text->h; row++) {
+        int py = y + row;
+        if (py < 0 || py >= height || py < clip->y || py >= clip->y + clip->h) continue;
+        const uint8_t *line = (const uint8_t *)text->pixels + row * text->pitch;
+        for (int col = 0; col < text->w; col++) {
+            int px = x + col;
+            if (px < 0 || px >= width || px < clip->x || px >= clip->x + clip->w) continue;
+            uint32_t p;
+            memcpy(&p, line + col * 4, sizeof(p));
+            uint8_t a = (uint8_t)(p >> 24);
+            if (!a) continue;
+            jw__blend(&pixels[py * width + px],
+                      jw__premul(a, (uint8_t)(p >> 16), (uint8_t)(p >> 8), (uint8_t)p), 255);
         }
     }
+    SDL_UnlockSurface(text);
 }
 
-static int jw__text_width(const char *text, int scale) {
-    size_t length = text ? strlen(text) : 0;
-    return length == 0 ? 0 : (int)length * 6 * scale - scale;
+static uint32_t jw__opaque(uint32_t rgb) {
+    return jw__premul(255, (uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
 }
-
-
-
 
 static void jw__draw_sun(uint32_t *pixels, int width, int height,
                          int cx, int cy, uint32_t color) {
@@ -352,9 +312,9 @@ static void jw__draw_speaker(uint32_t *pixels, int width, int height,
 
 static void jw__toast_rect(int *out_x, int *out_y, int *out_w, int *out_h);
 
-static void jw__draw_osd(void) {
+static int jw__draw_osd(jw_osd_rect *out_rect) {
     uint32_t *pixels = (uint32_t *)s_osd.pixels;
-    if (!pixels) return;
+    if (!pixels || !out_rect) return -1;
 
     /* Start from nothing every time. The buffer is only zeroed when it is
        created, and these draws composite rather than overwrite, so a surface
@@ -364,36 +324,33 @@ static void jw__draw_osd(void) {
        the other mode's pixels behind. */
     memset(pixels, 0, s_osd.buffer_size);
 
-    uint32_t bg = jw__argb(220, 18, 20, 24);
-    uint32_t fill = jw__argb(255, 250, 210, 92);
-    uint32_t knob = jw__argb(255, 255, 240, 150);
-
     if (s_osd.view.kind == JW_OSD_VIEW_STAGE) {
-        /* The game-launch toast keeps its own look deliberately: it is a
-           message, not a level, and it is read rather than glanced at. */
-        int toast_w = 520;
-        int toast_h = 96;
-        if (toast_w > s_osd.width - 48) {
-            toast_w = s_osd.width - 48;
+        /* The launcher's launch-notice pill: opaque, a thin border and small
+           text, bottom-centred against the full output. */
+        jw_osd_banner banner;
+        if (jw_osd_banner_render(s_osd.view.stage, s_osd.view.pending_items,
+                                 s_osd.width, s_osd.height, &banner) != 0) {
+            return -1;
         }
-        int x = (s_osd.width - toast_w) / 2;
-        int y = s_osd.height - toast_h - 48;
-        jw__fill_rect(pixels, s_osd.width, s_osd.height, x, y, toast_w, toast_h, bg);
-        char title[64];
-        char action[32];
-        jw_osd_game_launch_text(s_osd.view.stage, s_osd.view.pending_items,
-                                title, sizeof(title), action, sizeof(action));
-        int title_scale = jw__text_width(title, 4) <= toast_w - 24 ? 4 : 3;
-        int title_y = action[0] ? y + 14 : y + 34;
-        jw__draw_text(pixels, s_osd.width, s_osd.height, title,
-                      x + (toast_w - jw__text_width(title, title_scale)) / 2,
-                      title_y, title_scale, knob);
-        if (action[0]) {
-            jw__draw_text(pixels, s_osd.width, s_osd.height, action,
-                          x + (toast_w - jw__text_width(action, 4)) / 2,
-                          y + 55, 4, fill);
+        const jw_osd_rect box = banner.layout.box;
+        int border = banner.metrics.border;
+        jw__fill_round_rect(pixels, s_osd.width, s_osd.height,
+                            box.x, box.y, box.w, box.h, banner.metrics.radius,
+                            jw__opaque(JW_OSD_BANNER_MUTED));
+        jw__fill_round_rect(pixels, s_osd.width, s_osd.height,
+                            box.x + border, box.y + border,
+                            box.w - 2 * border, box.h - 2 * border,
+                            banner.metrics.inner_radius,
+                            jw__opaque(JW_OSD_BANNER_BACKGROUND));
+        jw__blit_text(pixels, s_osd.width, s_osd.height, banner.title,
+                      banner.layout.title_x, banner.layout.title_y, &box);
+        if (banner.action) {
+            jw__blit_text(pixels, s_osd.width, s_osd.height, banner.action,
+                          banner.layout.action_x, banner.layout.action_y, &box);
         }
-        return;
+        jw_osd_banner_free(&banner);
+        *out_rect = box;
+        return 0;
     }
 
     /* ---- volume and brightness ----------------------------------------------
@@ -402,6 +359,7 @@ static void jw__draw_osd(void) {
        digit is something to read rather than glance at. */
     int x, y, pill_w, pill_h;
     jw__toast_rect(&x, &y, &pill_w, &pill_h);
+    *out_rect = (jw_osd_rect){ x, y, pill_w, pill_h };
     int radius = pill_h / 2;
 
     jw__fill_round_rect(pixels, s_osd.width, s_osd.height,
@@ -444,27 +402,18 @@ static void jw__draw_osd(void) {
     jw__fill_round_rect(pixels, s_osd.width, s_osd.height,
                         line_x, y + (pill_h - on_h) / 2, on_w, on_h, on_h / 2,
                         jw__premul(255, 255, 255, 255));
+    return 0;
 }
 
-/* The damage region must be the region actually drawn. These two used to be
-   written out separately, so moving the level overlay to the top-left left the
-   damage rect pointing at the bottom and the compositor never picked the new
-   one up. Both the draw and the damage call this now. */
+/* The level pill's rectangle. The draw reports it back as the damaged region,
+   so the two cannot drift apart again the way they did when the overlay moved
+   to the top-left and the damage rect kept pointing at the bottom. */
 static void jw__toast_rect(int *out_x, int *out_y, int *out_w, int *out_h) {
-    int x, y, w, h;
-    if (s_osd.view.kind == JW_OSD_VIEW_STAGE) {
-        w = 520;
-        h = 96;
-        if (w > s_osd.width - 48) w = s_osd.width - 48;
-        x = (s_osd.width - w) / 2;
-        y = s_osd.height - h - 48;
-    } else {
-        h = JW_OSD_PILL_H;
-        w = s_osd.width * JW_OSD_PILL_PCT / 100;
-        if (w > s_osd.width - JW_OSD_INSET * 2) w = s_osd.width - JW_OSD_INSET * 2;
-        x = JW_OSD_INSET;
-        y = JW_OSD_INSET;
-    }
+    int h = JW_OSD_PILL_H;
+    int w = s_osd.width * JW_OSD_PILL_PCT / 100;
+    if (w > s_osd.width - JW_OSD_INSET * 2) w = s_osd.width - JW_OSD_INSET * 2;
+    int x = JW_OSD_INSET;
+    int y = JW_OSD_INSET;
     if (out_x) *out_x = x;
     if (out_y) *out_y = y;
     if (out_w) *out_w = w;
@@ -474,6 +423,7 @@ static void jw__toast_rect(int *out_x, int *out_y, int *out_w, int *out_h) {
 /* Which mode the last damage rectangle described. -1 means "nothing on screen
    yet", which forces a full-surface damage on the next show. */
 static int s_damaged_mode = -1;
+static jw_osd_rect s_damaged_rect;
 
 static void jw__destroy_surface(void) {
     if (s_osd.buffer) {
@@ -654,27 +604,24 @@ static int jw__show_surface(void) {
         return -1;
     }
 
-    jw__draw_osd();
+    jw_osd_rect rect;
+    if (jw__draw_osd(&rect) != 0) {
+        return -1;
+    }
     wl_surface_attach(s_osd.surface, s_osd.buffer, 0, 0);
-    int x = 0;
-    int y = 0;
-    int w = 0;
-    int h = 0;
-    jw__toast_rect(&x, &y, &w, &h);
 
     /* Damage is the region where the new buffer differs from what the surface
        already shows -- clearing shared memory does not tell the compositor
-       anything. The level pill sits top-left and the launch toast bottom-centre,
-       so on a change of mode the pixels the old one occupied also changed, and
-       reporting only the new rectangle can leave the old one on screen until an
-       unrelated repaint. Report the whole surface across a transition and keep
-       the tight rectangle for repeated updates within one mode. */
-    if (s_damaged_mode != (int)s_osd.view.kind) {
-        wl_surface_damage_buffer(s_osd.surface, 0, 0, s_osd.width, s_osd.height);
-        s_damaged_mode = (int)s_osd.view.kind;
-    } else {
-        wl_surface_damage_buffer(s_osd.surface, x, y, w, h);
-    }
+       anything. The level pill sits top-left and the banner bottom-centre, and
+       a banner changes size with its text, so any change of mode or bounds
+       (a width that only shrinks included) reports the whole surface. Only a
+       redraw into the same rectangle keeps the tight region. */
+    jw_osd_rect damage = jw_osd_damage_rect(s_damaged_mode == (int)s_osd.view.kind,
+                                            s_damaged_rect, rect,
+                                            s_osd.width, s_osd.height);
+    wl_surface_damage_buffer(s_osd.surface, damage.x, damage.y, damage.w, damage.h);
+    s_damaged_mode = (int)s_osd.view.kind;
+    s_damaged_rect = rect;
     wl_surface_commit(s_osd.surface);
     wl_display_flush(s_osd.display);
     s_osd.visible = true;
@@ -693,6 +640,9 @@ int jw_osd_backend_init(void) {
     s_osd.width = jw__env_int("CAT_WINDOW_WIDTH", 960);
     s_osd.height = jw__env_int("CAT_WINDOW_HEIGHT", 720);
     jw_osd_view_reset(&s_osd.view);
+    /* Fonts open once, before the OSD reports ready. Without one the level
+       toasts still work and every banner show fails visibly to the daemon. */
+    (void)jw_osd_text_init(s_osd.width);
 
     s_osd.display = wl_display_connect(NULL);
     if (!s_osd.display) {
@@ -758,6 +708,7 @@ void jw_osd_backend_tick(uint64_t now_ms) {
 void jw_osd_backend_shutdown(void) {
     jw_osd_view_reset(&s_osd.view);
     jw__destroy_surface();
+    jw_osd_text_shutdown();
     if (s_osd.wm_base) {
         xdg_wm_base_destroy(s_osd.wm_base);
         s_osd.wm_base = NULL;

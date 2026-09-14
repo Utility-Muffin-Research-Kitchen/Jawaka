@@ -329,6 +329,13 @@ typedef struct {
     long long pico8_quit_request_ms;
     bool retroarch_resume_on_menu_exit;
     pid_t osd_pid;
+    int osd_ready_fd;           /* readiness pipe from the OSD, -1 when none */
+    bool osd_ready;             /* fonts, backend and socket are all up */
+    long long osd_spawned_ms;
+    /* The appearance the running OSD opened its font with. */
+    char osd_language[16];
+    char osd_font_path[256];
+    char osd_font_bump[16];
     bool direct_drm_active;
     bool direct_drm_weston_stopped;
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
@@ -7292,6 +7299,50 @@ static bool jw__env_is_truthy(const char *name) {
            strcmp(value, "false") != 0 && strcmp(value, "no") != 0;
 }
 
+static void jw__osd_ready_reset(jw_daemon_state *state) {
+    if (state->osd_ready_fd >= 0) {
+        close(state->osd_ready_fd);
+    }
+    state->osd_ready_fd = -1;
+    state->osd_ready = false;
+}
+
+/* Ready means the OSD has opened its fonts, initialised its backend and is
+   listening: it writes one byte on the readiness pipe only once all three
+   hold. A pid or a socket path alone proves none of that. Waits at most
+   timeout_ms, which callers keep inside their own show budget. */
+static bool jw__osd_wait_ready(jw_daemon_state *state, int timeout_ms) {
+    if (state->osd_ready) {
+        return true;
+    }
+    if (state->osd_pid <= 0 || state->osd_ready_fd < 0) {
+        return false;
+    }
+    struct pollfd pfd = { .fd = state->osd_ready_fd, .events = POLLIN };
+    int rc;
+    do {
+        rc = poll(&pfd, 1, timeout_ms > 0 ? timeout_ms : 0);
+    } while (rc < 0 && errno == EINTR);
+    if (rc <= 0) {
+        return false;
+    }
+    char byte = 0;
+    ssize_t n;
+    do {
+        n = read(state->osd_ready_fd, &byte, 1);
+    } while (n < 0 && errno == EINTR);
+    close(state->osd_ready_fd);
+    state->osd_ready_fd = -1;
+    if (n != 1) {
+        jw_log_warn("jawaka-osd pid=%d exited before it was ready", (int)state->osd_pid);
+        return false;
+    }
+    state->osd_ready = true;
+    jw_log_info("jawaka-osd ready pid=%d spawn_to_ready_ms=%lld", (int)state->osd_pid,
+                jw__monotonic_ms() - state->osd_spawned_ms);
+    return true;
+}
+
 static void jw__stop_osd_child(jw_daemon_state *state) {
     if (!state || state->osd_pid <= 0) {
         return;
@@ -7299,6 +7350,7 @@ static void jw__stop_osd_child(jw_daemon_state *state) {
 
     /* Whatever the OSD shows goes with it, including a PICO-8 exit prompt. */
     jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+    jw__osd_ready_reset(state);
     pid_t pid = state->osd_pid;
     kill(pid, SIGTERM);
     for (int attempt = 0; attempt < 10; attempt++) {
@@ -7337,20 +7389,50 @@ static int jw__spawn_osd(jw_daemon_state *state) {
     jw_appearance_env appearance;
     jw_appearance_resolve(state->db_path, &appearance);
 
+    /* Close-on-exec on both ends so no other child inherits them; the OSD
+       child clears it on the write end just before its own exec. */
+    int ready_pipe[2] = { -1, -1 };
+    char ready_env[16] = "";
+    if (pipe(ready_pipe) == 0) {
+        (void)fcntl(ready_pipe[0], F_SETFD, FD_CLOEXEC);
+        (void)fcntl(ready_pipe[1], F_SETFD, FD_CLOEXEC);
+        snprintf(ready_env, sizeof(ready_env), "%d", ready_pipe[1]);
+    } else {
+        jw_log_warn("osd readiness pipe failed: %s", strerror(errno));
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_warn("osd fork failed: %s", strerror(errno));
+        if (ready_pipe[0] >= 0) close(ready_pipe[0]);
+        if (ready_pipe[1] >= 0) close(ready_pipe[1]);
         return -1;
     }
     if (pid == 0) {
         jw_appearance_apply_env(&appearance);
+        if (ready_pipe[1] >= 0 && fcntl(ready_pipe[1], F_SETFD, 0) == 0) {
+            setenv("JAWAKA_OSD_READY_FD", ready_env, 1);
+        } else {
+            unsetenv("JAWAKA_OSD_READY_FD");
+        }
         char *const argv[] = { (char *)path, NULL };
         execv(path, argv);
         perror("execv");
         _exit(127);
     }
 
+    if (ready_pipe[1] >= 0) {
+        close(ready_pipe[1]);
+    }
     state->osd_pid = pid;
+    state->osd_ready_fd = ready_pipe[0];
+    /* Without a pipe there is no signal to wait for; fall back to the socket. */
+    state->osd_ready = ready_pipe[0] < 0;
+    state->osd_spawned_ms = jw__monotonic_ms();
+    snprintf(state->osd_language, sizeof(state->osd_language), "%s", appearance.language);
+    snprintf(state->osd_font_path, sizeof(state->osd_font_path), "%s",
+             appearance.font_path ? appearance.font_path : "");
+    snprintf(state->osd_font_bump, sizeof(state->osd_font_bump), "%s", appearance.font_bump);
     jw_log_info("spawned jawaka-osd pid=%d", (int)pid);
     return 0;
 }
@@ -7358,6 +7440,10 @@ static int jw__spawn_osd(jw_daemon_state *state) {
 static void jw__handle_osd_exit(jw_daemon_state *state) {
     if (!state || state->osd_pid <= 0) {
         return;
+    }
+    /* Notice readiness without a request so spawn-to-ready is logged. */
+    if (!state->osd_ready && state->osd_ready_fd >= 0) {
+        (void)jw__osd_wait_ready(state, 0);
     }
 
     int status = 0;
@@ -7369,6 +7455,7 @@ static void jw__handle_osd_exit(jw_daemon_state *state) {
     state->osd_pid = -1;
     /* A restarted OSD shows nothing, so no old deadline may confirm an exit. */
     jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+    jw__osd_ready_reset(state);
     if (WIFEXITED(status)) {
         jw_log_info("jawaka-osd exited status=%d", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
@@ -7432,10 +7519,20 @@ static int jw__osd_request(void *ctx, const char *json, int timeout_ms, bool sho
         }
         jw__spawn_osd(state);
     }
+    /* Readiness shares the request's budget rather than extending it. */
+    long long started_ms = jw__monotonic_ms();
+    if (!jw__osd_wait_ready(state, timeout_ms)) {
+        jw_log_warn("osd: not ready within %dms", timeout_ms);
+        return -1;
+    }
+    int remaining_ms = timeout_ms - (int)(jw__monotonic_ms() - started_ms);
+    if (remaining_ms < 1) {
+        return -1;
+    }
     char *response = NULL;
     size_t response_len = 0;
     int rc = jw_ipc_request_timeout(state->osd_socket_path, json, strlen(json),
-                                    &response, &response_len, timeout_ms);
+                                    &response, &response_len, remaining_ms);
     if (rc == 0) {
         cJSON *reply = response ? cJSON_Parse(response) : NULL;
         cJSON *type = reply ? cJSON_GetObjectItemCaseSensitive(reply, "type") : NULL;
@@ -7456,13 +7553,56 @@ static void jw__osd_sleep_ms(void *ctx, int ms) {
     usleep((useconds_t)ms * 1000u);
 }
 
+/* A PICO-8 prompt may be on screen and even its hide went unanswered. The OSD
+   is wedged or badly late; ending it takes its surface down, and the ordinary
+   child-exit supervision starts a fresh one. */
+static void jw__osd_discard(void *ctx) {
+    jw_daemon_state *state = (jw_daemon_state *)ctx;
+    if (!state || state->osd_pid <= 0) {
+        return;
+    }
+    jw_log_warn("osd: prompt removal unconfirmed; ending jawaka-osd pid=%d",
+                (int)state->osd_pid);
+    jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+    if (kill(state->osd_pid, SIGKILL) != 0 && errno != ESRCH) {
+        jw_log_warn("osd: could not end pid=%d: %s", (int)state->osd_pid, strerror(errno));
+    }
+}
+
 static jw_osd_client jw__osd_client(jw_daemon_state *state) {
     return (jw_osd_client){
         .ctx = state,
         .request = jw__osd_request,
         .now_ms = jw__osd_now_ms,
         .sleep_ms = jw__osd_sleep_ms,
+        .discard_osd = jw__osd_discard,
     };
+}
+
+/* An OSD process opens its font once, so a new language, font family or font
+   size needs a new process. Restart it through the ordinary child-exit
+   supervision, which respawns with the resolved appearance and never runs two
+   OSD processes at once. Nothing to do when none is running: the next spawn
+   resolves the appearance anyway. */
+static void jw__osd_refresh_appearance(jw_daemon_state *state, const char *why) {
+    if (!state || state->osd_pid <= 0 || !jw__osd_enabled(state) ||
+        state->direct_drm_active || state->shutdown_requested || g_shutdown_requested) {
+        return;
+    }
+    jw_appearance_env appearance;
+    jw_appearance_resolve(state->db_path, &appearance);
+    const char *font_path = appearance.font_path ? appearance.font_path : "";
+    if (strcmp(appearance.language, state->osd_language) == 0 &&
+        strcmp(font_path, state->osd_font_path) == 0 &&
+        strcmp(appearance.font_bump, state->osd_font_bump) == 0) {
+        return;
+    }
+    jw_log_info("osd: appearance changed (%s); restarting jawaka-osd pid=%d",
+                why ? why : "refresh", (int)state->osd_pid);
+    jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+    if (kill(state->osd_pid, SIGTERM) != 0 && errno != ESRCH) {
+        jw_log_warn("osd: could not restart pid=%d: %s", (int)state->osd_pid, strerror(errno));
+    }
 }
 
 /* Every OSD request below replaces or removes whatever the OSD shows, so each
@@ -12673,6 +12813,18 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_ok(client, "rumble", NULL);
     }
 
+    if (strcmp(type->valuestring, "refresh-osd-appearance") == 0) {
+        /* Settings persisted a font family or size. Internal: no arguments,
+           and the reply carries nothing the caller waits for. */
+        bool valid = cJSON_GetArraySize(root) == 1;
+        cJSON_Delete(root);
+        if (!valid) {
+            return jw__reply_error(client, "invalid refresh-osd-appearance request");
+        }
+        jw__osd_refresh_appearance(state, "settings");
+        return jw__reply_ok(client, "refresh-osd-appearance", NULL);
+    }
+
     if (strcmp(type->valuestring, "set-language") == 0) {
         cJSON *lang_json = cJSON_GetObjectItemCaseSensitive(root, "language");
         if (!cJSON_IsString(lang_json) || !lang_json->valuestring ||
@@ -12709,6 +12861,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
             return jw__reply_error(client, "could not save language");
         }
         jw_log_info("set-language %s; restarting launcher", lang_buf);
+        jw__osd_refresh_appearance(state, "set-language");
 
         /* Everything the new language needs is resolved in the parent at spawn
            time -- jw__spawn_child re-runs jw_appearance_resolve on every spawn,
@@ -15207,6 +15360,7 @@ int main(int argc, char *argv[]) {
     state.child_group_kill_logged_ms = 0;
     state.menu_pid = -1;
     state.osd_pid = -1;
+    state.osd_ready_fd = -1;
     state.cached_brightness_percent = -1;
     state.cached_volume_percent = -1;
     state.ledd_pid = -1;

@@ -1,14 +1,35 @@
 #include "cmd/jawaka-osd/osd_backend.h"
+#include "cmd/jawaka-osd/osd_text.h"
 #include "cmd/jawaka-osd/osd_view.h"
 
 #include <SDL.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+
+/* Host preview of the OSD. Level toasts keep their fixed 480 x 96 window.
+   Banners are laid out against the full output (CAT_WINDOW_WIDTH x
+   CAT_WINDOW_HEIGHT, 960 x 720 by default) and the window is sized to the
+   banner box, so text, shortening and actions match the device; placement
+   and damage only show on the Wayland backend. */
+
+#define JW_OSD_LEVEL_W 480
+#define JW_OSD_LEVEL_H 96
 
 static SDL_Window *s_window;
 static SDL_Renderer *s_renderer;
 static jw_osd_view s_view;
+static int s_output_w = 960;
+static int s_output_h = 720;
+
+static int jw__env_dimension(const char *name, int fallback) {
+    const char *value = getenv(name);
+    char *end = NULL;
+    long parsed = value && value[0] ? strtol(value, &end, 10) : 0;
+    return (end && *end == '\0' && parsed > 0 && parsed <= 4096) ? (int)parsed : fallback;
+}
 
 static void jw__draw_rect(int x, int y, int w, int h, Uint8 r, Uint8 g, Uint8 b, Uint8 a) {
     SDL_Rect rect = { x, y, w, h };
@@ -16,88 +37,66 @@ static void jw__draw_rect(int x, int y, int w, int h, Uint8 r, Uint8 g, Uint8 b,
     SDL_RenderFillRect(s_renderer, &rect);
 }
 
-static const char *jw__glyph(char c) {
-    switch (c) {
-        case ':': return "00000001000010000000001000010000000";
-        case '?': return "01110100010000100010001000000000100";
-        case '0': return "01110100011001110101110011000101110";
-        case '1': return "00100011000010000100001000010001110";
-        case '2': return "01110100010000100110010001000011111";
-        case '3': return "11110000010000101110000010000111110";
-        case '4': return "00010001100101010010111110001000010";
-        case '5': return "11111100001111000001000011000101110";
-        case '6': return "00110010001000011110100011000101110";
-        case '7': return "11111000010001000100010000100001000";
-        case '8': return "01110100011000101110100011000101110";
-        case '9': return "01110100011000101111000010001001100";
-        case 'A': return "01110100011000111111100011000110001";
-        case 'C': return "01111100001000010000100001000001111";
-        case 'D': return "11110100011000110001100011000111110";
-        case 'E': return "11111100001000011110100001000011111";
-        case 'F': return "11111100001000011110100001000010000";
-        case 'G': return "01110100011000010111100011000101110";
-        case 'H': return "10001100011000111111100011000110001";
-        case 'I': return "11111001000010000100001000010011111";
-        case 'K': return "10001100101010011000101001001010001";
-        case 'L': return "10000100001000010000100001000011111";
-        case 'M': return "10001110111010110101100011000110001";
-        case 'N': return "10001110011010110011100011000110001";
-        case 'O': return "01110100011000110001100011000101110";
-        case 'P': return "11110100011000111110100001000010000";
-        case 'R': return "11110100011000111110101001001010001";
-        case 'S': return "11111100001000011111000010000111111";
-        case 'T': return "11111001000010000100001000010000100";
-        case 'U': return "10001100011000110001100011000101110";
-        case 'V': return "10001100011000110001100010101000100";
-        case 'W': return "10001100011000110001101011010101010";
-        case 'Y': return "10001100010101000100001000010000100";
-        default: return NULL;
+static void jw__fill_round_rect(int x, int y, int w, int h, int radius, Uint32 rgb) {
+    if (w <= 0 || h <= 0) return;
+    if (radius * 2 > w) radius = w / 2;
+    if (radius * 2 > h) radius = h / 2;
+    if (radius < 0) radius = 0;
+    SDL_SetRenderDrawColor(s_renderer, (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, 255);
+    for (int row = 0; row < h; row++) {
+        double dy = row < radius ? radius - row - 0.5
+                  : row >= h - radius ? row - (h - radius) + 0.5 : -1.0;
+        int inset = dy < 0.0 ? 0
+                  : radius - (int)(sqrt((double)radius * radius - dy * dy) + 0.5);
+        SDL_RenderDrawLine(s_renderer, x + inset, y + row, x + w - 1 - inset, y + row);
     }
 }
 
-static void jw__draw_text(const char *text, int x, int y, int scale,
-                          Uint8 r, Uint8 g, Uint8 b, Uint8 a) {
-    for (const char *p = text; p && *p; p++, x += 6 * scale) {
-        const char *glyph = jw__glyph(*p);
-        if (!glyph) continue;
-        for (int row = 0; row < 7; row++) {
-            for (int col = 0; col < 5; col++) {
-                if (glyph[row * 5 + col] == '1') {
-                    jw__draw_rect(x + col * scale, y + row * scale,
-                                  scale, scale, r, g, b, a);
-                }
-            }
-        }
-    }
+static void jw__copy_surface(SDL_Surface *surface, int x, int y) {
+    if (!surface) return;
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(s_renderer, surface);
+    if (!texture) return;
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+    SDL_Rect dst = { x, y, surface->w, surface->h };
+    SDL_RenderCopy(s_renderer, texture, NULL, &dst);
+    SDL_DestroyTexture(texture);
 }
 
-static int jw__text_width(const char *text, int scale) {
-    size_t length = text ? strlen(text) : 0;
-    return length == 0 ? 0 : (int)length * 6 * scale - scale;
+static int jw__draw_banner(void) {
+    jw_osd_banner banner;
+    if (jw_osd_banner_render(s_view.stage, s_view.pending_items,
+                             s_output_w, s_output_h, &banner) != 0) {
+        return -1;
+    }
+    const jw_osd_rect box = banner.layout.box;
+    SDL_SetWindowSize(s_window, box.w, box.h);
+    SDL_RenderSetViewport(s_renderer, NULL);
+    SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(s_renderer);
+    int border = banner.metrics.border;
+    jw__fill_round_rect(0, 0, box.w, box.h, banner.metrics.radius, JW_OSD_BANNER_MUTED);
+    jw__fill_round_rect(border, border, box.w - 2 * border, box.h - 2 * border,
+                        banner.metrics.inner_radius, JW_OSD_BANNER_BACKGROUND);
+    jw__copy_surface(banner.title, banner.layout.title_x - box.x,
+                     banner.layout.title_y - box.y);
+    jw__copy_surface(banner.action, banner.layout.action_x - box.x,
+                     banner.layout.action_y - box.y);
+    SDL_RenderPresent(s_renderer);
+    jw_osd_banner_free(&banner);
+    return 0;
 }
 
 static int jw__draw(void) {
+    if (s_view.kind == JW_OSD_VIEW_STAGE) {
+        return jw__draw_banner();
+    }
+    SDL_SetWindowSize(s_window, JW_OSD_LEVEL_W, JW_OSD_LEVEL_H);
+    SDL_RenderSetViewport(s_renderer, NULL);
     SDL_SetRenderDrawBlendMode(s_renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 0);
     SDL_RenderClear(s_renderer);
 
-    jw__draw_rect(0, 0, 480, 96, 18, 20, 24, 230);
-    if (s_view.kind == JW_OSD_VIEW_STAGE) {
-        char title[64];
-        char action[32];
-        jw_osd_game_launch_text(s_view.stage, s_view.pending_items,
-                                title, sizeof(title), action, sizeof(action));
-        int title_scale = jw__text_width(title, 4) <= 456 ? 4 : 3;
-        int title_y = action[0] ? 16 : 34;
-        jw__draw_text(title, (480 - jw__text_width(title, title_scale)) / 2,
-                      title_y, title_scale, 255, 240, 150, 255);
-        if (action[0]) {
-            jw__draw_text(action, (480 - jw__text_width(action, 4)) / 2,
-                          56, 4, 250, 210, 92, 255);
-        }
-        SDL_RenderPresent(s_renderer);
-        return 0;
-    }
+    jw__draw_rect(0, 0, JW_OSD_LEVEL_W, JW_OSD_LEVEL_H, 18, 20, 24, 230);
     jw__draw_rect(24, 43, 432, 10, 72, 76, 84, 255);
 
     int fill = (432 * s_view.percent) / 100;
@@ -140,7 +139,7 @@ int jw_osd_backend_init(void) {
     s_window = SDL_CreateWindow("Jawaka OSD",
                                 SDL_WINDOWPOS_CENTERED,
                                 SDL_WINDOWPOS_CENTERED,
-                                480, 96, flags);
+                                JW_OSD_LEVEL_W, JW_OSD_LEVEL_H, flags);
     if (!s_window) {
         SDL_Quit();
         return -1;
@@ -155,6 +154,9 @@ int jw_osd_backend_init(void) {
     }
     SDL_SetRenderDrawBlendMode(s_renderer, SDL_BLENDMODE_BLEND);
     jw_osd_view_reset(&s_view);
+    s_output_w = jw__env_dimension("CAT_WINDOW_WIDTH", 960);
+    s_output_h = jw__env_dimension("CAT_WINDOW_HEIGHT", 720);
+    (void)jw_osd_text_init(s_output_w);
     return 0;
 }
 
@@ -183,6 +185,7 @@ void jw_osd_backend_tick(uint64_t now_ms) {
 
 void jw_osd_backend_shutdown(void) {
     jw_osd_view_reset(&s_view);
+    jw_osd_text_shutdown();
     if (s_renderer) {
         SDL_DestroyRenderer(s_renderer);
         s_renderer = NULL;

@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 typedef enum {
     JW_OSD_GAME_CHECKING = 0,
@@ -28,9 +29,15 @@ typedef enum {
     ((stage) == JW_OSD_GAME_SETTINGS_NOT_SAVED || (stage) == JW_OSD_GAME_STORAGE_READ_ONLY || (stage) == JW_OSD_PICO8_EXIT_CONFIRM || (stage) == JW_OSD_PICO8_IMPORT_FAILED)
 #define JW_OSD_GAME_TRANSIENT_MS 4000u
 
+/* `expires_ms` is optional: a CLOCK_MONOTONIC millisecond deadline after
+   which the banner must not be submitted, because the daemon has already
+   given up on the request. 0 when absent. */
 bool jw_osd_game_launch_parse(const cJSON *root,
                               jw_osd_game_stage *stage,
-                              int *pending_items);
+                              int *pending_items,
+                              uint64_t *expires_ms);
+/* Translated through the loaded Leaf table. Both outputs stay valid UTF-8
+   when a buffer is too small. */
 void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
                              char *title, size_t title_size,
                              char *action, size_t action_size);

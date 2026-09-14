@@ -16,4 +16,5 @@ jobs:
       - run: make pico8-test
       - run: make osd-game-launch-test
       - run: make osd-view-test
+      - run: make osd-layout-test
       - run: make osd-client-test

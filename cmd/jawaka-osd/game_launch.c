@@ -1,4 +1,6 @@
 #include "cmd/jawaka-osd/game_launch.h"
+#include "cmd/jawaka-osd/osd_utf8.h"
+#include "internal/i18n/i18n.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -20,9 +22,23 @@ const char *jw_osd_game_stage_name(jw_osd_game_stage stage) {
 
 bool jw_osd_game_launch_parse(const cJSON *root,
                               jw_osd_game_stage *stage,
-                              int *pending_items) {
-    if (!cJSON_IsObject(root) || !stage || !pending_items) {
+                              int *pending_items,
+                              uint64_t *expires_ms) {
+    if (!cJSON_IsObject(root) || !stage || !pending_items || !expires_ms) {
         return false;
+    }
+    const cJSON *expires = cJSON_GetObjectItemCaseSensitive(root, "expires_ms");
+    int fields = 2;
+    *expires_ms = 0;
+    if (expires) {
+        /* Monotonic milliseconds stay far below 2^53, where doubles are exact. */
+        if (!cJSON_IsNumber(expires) || expires->valuedouble < 1.0 ||
+            expires->valuedouble > 9007199254740992.0 ||
+            expires->valuedouble != (double)(uint64_t)expires->valuedouble) {
+            return false;
+        }
+        *expires_ms = (uint64_t)expires->valuedouble;
+        fields++;
     }
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
     const cJSON *stage_item = cJSON_GetObjectItemCaseSensitive(root, "stage");
@@ -57,17 +73,44 @@ bool jw_osd_game_launch_parse(const cJSON *root,
         if (!cJSON_IsNumber(pending) || pending->valuedouble < 0.0 ||
             pending->valuedouble > (double)INT_MAX ||
             pending->valuedouble != (double)pending->valueint ||
-            cJSON_GetArraySize(root) != 3) {
+            cJSON_GetArraySize(root) != fields + 1) {
             return false;
         }
         *pending_items = pending->valueint;
         return true;
     }
-    if (pending || cJSON_GetArraySize(root) != 2) {
+    if (pending || cJSON_GetArraySize(root) != fields) {
         return false;
     }
     *pending_items = 0;
     return true;
+}
+
+/* Shortening into a fixed buffer must not split a character. */
+static void jw__copy(char *out, size_t size, const char *text) {
+    size_t len = strlen(text);
+    if (len >= size) len = jw_osd_utf8_boundary(text, size - 1);
+    memcpy(out, text, len);
+    out[len] = '\0';
+}
+
+/* A shipped table cannot change a conversion (i18n-compile.py refuses it), but
+   a live .tsv override is not compiled. Anything other than exactly one %d
+   would make snprintf read an argument that is not there. */
+static bool jw__count_format_ok(const char *format) {
+    int conversions = 0;
+    for (const char *p = format; p && *p; p++) {
+        if (*p != '%') continue;
+        if (p[1] == '%') {
+            p++;
+        } else if (p[1] == 'd') {
+            conversions++;
+            p++;
+        } else {
+            return false;
+        }
+    }
+    return conversions == 1;
 }
 
 void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
@@ -80,41 +123,45 @@ void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
     }
     switch (stage) {
         case JW_OSD_PICO8_IMPORT:
-            snprintf(title, title_size, "ADDING SPLORE FAVORITES");
-            snprintf(action, action_size, "PLEASE WAIT");
+            jw__copy(title, title_size, T("Adding Splore favorites"));
+            jw__copy(action, action_size, T("Please wait"));
             break;
         case JW_OSD_PICO8_IMPORT_FAILED:
-            snprintf(title, title_size, "SPLORE IMPORT INCOMPLETE");
-            snprintf(action, action_size, "TRY SPLORE AGAIN");
+            jw__copy(title, title_size, T("Splore import incomplete"));
+            jw__copy(action, action_size, T("Try Splore again"));
             break;
         case JW_OSD_PICO8_EXIT_CONFIRM:
-            snprintf(title, title_size, "RETURN TO LEAF?");
-            snprintf(action, action_size, "PRESS MENU AGAIN");
+            jw__copy(title, title_size, T("Return to Leaf?"));
+            jw__copy(action, action_size, T("Press Menu again"));
             break;
         case JW_OSD_GAME_CHECKING:
-            snprintf(title, title_size, "SYNCTHING: CHECKING SAVES");
+            jw__copy(title, title_size, T("Syncthing: Checking saves"));
             break;
-        case JW_OSD_GAME_SYNCING:
+        case JW_OSD_GAME_SYNCING: {
             if (pending_items < 0) pending_items = 0;
-            snprintf(title, title_size, pending_items == 1
-                         ? "SYNCTHING: SYNCING %d ITEM"
-                         : "SYNCTHING: SYNCING %d ITEMS",
-                     pending_items);
-            snprintf(action, action_size, "MENU: START NOW");
+            /* Singular and plural are separate keys, translated whole. */
+            const char *english = pending_items == 1
+                ? "Syncthing: Syncing %d item" : "Syncthing: Syncing %d items";
+            const char *format = pending_items == 1
+                ? T("Syncthing: Syncing %d item") : T("Syncthing: Syncing %d items");
+            if (!jw__count_format_ok(format)) format = english;
+            int n = snprintf(title, title_size, format, pending_items);
+            if (n > 0 && (size_t)n >= title_size) {
+                title[jw_osd_utf8_boundary(title, title_size - 1)] = '\0';
+            }
+            jw__copy(action, action_size, T("Menu: Start now"));
             break;
+        }
         case JW_OSD_GAME_STOPPING:
-            snprintf(title, title_size, "SYNCTHING: STOPPING");
+            jw__copy(title, title_size, T("Syncthing: Stopping"));
             break;
         case JW_OSD_GAME_SETTINGS_NOT_SAVED:
-            /* Only the glyphs the OSD's bitmap font actually has. */
-            snprintf(title, title_size, "RETROARCH SETTINGS");
-            snprintf(action, action_size, "NOT SAVED");
+            jw__copy(title, title_size, T("RetroArch settings not saved"));
             break;
         case JW_OSD_GAME_STORAGE_READ_ONLY:
-            /* The card flipped read-only during play. The bitmap font has no
-               hyphen and no B, J, Q, X or Z; check new text against it. */
-            snprintf(title, title_size, "SD CARD IS READ ONLY");
-            snprintf(action, action_size, "NEW SAVES MAY FAIL");
+            /* The card flipped read-only during play. */
+            jw__copy(title, title_size, T("Your SD card is read-only"));
+            jw__copy(action, action_size, T("New saves may fail"));
             break;
     }
 }

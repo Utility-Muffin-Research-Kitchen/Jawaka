@@ -2,9 +2,11 @@
 
 #include "cJSON.h"
 #include "internal/core/log.h"
+#include "internal/i18n/i18n.h"
 #include "internal/ipc/ipc.h"
 #include "internal/platform/paths.h"
 
+#include <errno.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -12,8 +14,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 static volatile sig_atomic_t g_stop;
+
+/* Test hooks for the daemon's late-reply handling: delay a banner before it
+   is submitted, or after submission before the reply. Unset in normal use. */
+static int s_test_show_delay_ms;
+static int s_test_reply_delay_ms;
+
+static int jw__env_delay_ms(const char *name) {
+    const char *value = getenv(name);
+    if (!value || !value[0]) return 0;
+    char *end = NULL;
+    long ms = strtol(value, &end, 10);
+    return (end && *end == '\0' && ms > 0 && ms <= 10000) ? (int)ms : 0;
+}
 
 static void jw__handle_signal(int signo) {
     (void)signo;
@@ -94,14 +110,23 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
     if (strcmp(type->valuestring, "show-game-launch") == 0) {
         jw_osd_game_stage stage;
         int pending_items = 0;
-        if (!jw_osd_game_launch_parse(root, &stage, &pending_items)) {
+        uint64_t expires_ms = 0;
+        if (!jw_osd_game_launch_parse(root, &stage, &pending_items, &expires_ms)) {
             cJSON_Delete(root);
             return jw__reply_error(client, "invalid game launch status");
+        }
+        cJSON_Delete(root);
+        if (s_test_show_delay_ms) usleep((useconds_t)s_test_show_delay_ms * 1000u);
+        /* The daemon has already stopped waiting and disarmed: a prompt shown
+           now would ask for a press that can no longer do anything. */
+        if (expires_ms && jw__now_ms() >= expires_ms) {
+            jw_log_warn("osd: dropped expired %s banner", jw_osd_game_stage_name(stage));
+            return jw__reply_error(client, "expired");
         }
         /* The daemon arms the PICO-8 exit confirmation only on ok, so a
            backend that could not submit the banner must say so. */
         int rc = jw_osd_backend_show_game_launch(stage, pending_items, jw__now_ms());
-        cJSON_Delete(root);
+        if (s_test_reply_delay_ms) usleep((useconds_t)s_test_reply_delay_ms * 1000u);
         return rc == 0 ? jw__reply_ok(client, "show-game-launch")
                        : jw__reply_error(client, "could not show game launch status");
     }
@@ -126,7 +151,24 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
     return jw__reply_error(client, "unknown type");
 }
 
+/* Readiness is one byte on the pipe the daemon passed down, written only once
+   fonts, the backend and the socket are all up. */
+static void jw__announce_ready(void) {
+    const char *value = getenv("JAWAKA_OSD_READY_FD");
+    if (!value || !value[0]) return;
+    char *end = NULL;
+    long fd = strtol(value, &end, 10);
+    unsetenv("JAWAKA_OSD_READY_FD");
+    if (!end || *end != '\0' || fd < 3 || fd > 65535) return;
+    ssize_t n;
+    do {
+        n = write((int)fd, "R", 1);
+    } while (n < 0 && errno == EINTR);
+    close((int)fd);
+}
+
 int main(void) {
+    uint64_t started_ms = jw__now_ms();
     signal(SIGINT, jw__handle_signal);
     signal(SIGTERM, jw__handle_signal);
     signal(SIGPIPE, SIG_IGN);
@@ -136,6 +178,12 @@ int main(void) {
         jw_log_error("osd: could not resolve socket path");
         return 1;
     }
+
+    s_test_show_delay_ms = jw__env_delay_ms("JAWAKA_OSD_TEST_SHOW_DELAY_MS");
+    s_test_reply_delay_ms = jw__env_delay_ms("JAWAKA_OSD_TEST_REPLY_DELAY_MS");
+    const char *language = getenv("UMRK_LANGUAGE");
+    if (!language || !language[0]) language = getenv("JAWAKA_LANGUAGE");
+    (void)jw_i18n_load(language);
 
     if (jw_osd_backend_init() != 0) {
         jw_log_error("osd: backend init failed");
@@ -151,7 +199,9 @@ int main(void) {
         return 1;
     }
 
-    jw_log_info("osd: listening on %s", socket_path);
+    jw__announce_ready();
+    jw_log_info("osd: listening on %s language=%s ready_ms=%llu", socket_path,
+                jw_i18n_language(), (unsigned long long)(jw__now_ms() - started_ms));
     while (!g_stop) {
         jw_osd_backend_tick(jw__now_ms());
 
@@ -176,6 +226,7 @@ int main(void) {
 
     jw_ipc_server_close(server);
     jw_osd_backend_shutdown();
+    jw_i18n_shutdown();
     free(socket_path);
     return 0;
 }

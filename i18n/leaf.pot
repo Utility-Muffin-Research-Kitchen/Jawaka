@@ -360,6 +360,10 @@ msgstr ""
 msgid "Active: %s  Temp: %d C"
 msgstr ""
 
+#: cmd/jawaka-osd/game_launch.c
+msgid "Adding Splore favorites"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Adjust"
 msgstr ""
@@ -1248,6 +1252,10 @@ msgstr ""
 msgid "Menu"
 msgstr ""
 
+#: cmd/jawaka-osd/game_launch.c
+msgid "Menu: Start now"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Missing"
 msgstr ""
@@ -1306,6 +1314,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Network: %s"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "New saves may fail"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1552,6 +1564,10 @@ msgstr ""
 msgid "Playtime"
 msgstr ""
 
+#: cmd/jawaka-osd/game_launch.c
+msgid "Please wait"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Ports"
 msgstr ""
@@ -1566,6 +1582,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Press MENU to exit"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Press Menu again"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1792,8 +1812,16 @@ msgstr ""
 msgid "RetroArch reset canceled"
 msgstr ""
 
+#: cmd/jawaka-osd/game_launch.c
+msgid "RetroArch settings not saved"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Return to Launcher"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Return to Leaf?"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2152,6 +2180,10 @@ msgstr ""
 msgid "Split Over 10MB"
 msgstr ""
 
+#: cmd/jawaka-osd/game_launch.c
+msgid "Splore import incomplete"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Square"
 msgstr ""
@@ -2250,6 +2282,22 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Sydney"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Syncthing: Checking saves"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Syncthing: Stopping"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Syncthing: Syncing %d item"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Syncthing: Syncing %d items"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -2468,6 +2516,10 @@ msgstr ""
 msgid "Total"
 msgstr ""
 
+#: cmd/jawaka-osd/game_launch.c
+msgid "Try Splore again"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "TurboGrafx-16"
 msgstr ""
@@ -2680,7 +2732,7 @@ msgstr ""
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr ""
 
-#: internal/settings/storage_ui.c
+#: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
 msgstr ""
 
