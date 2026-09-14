@@ -1,20 +1,14 @@
 #include "cmd/jawaka-osd/osd_backend.h"
+#include "cmd/jawaka-osd/osd_view.h"
 
 #include <SDL.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
-#define JW_OSD_HIDE_AFTER_MS 1200u
-
 static SDL_Window *s_window;
 static SDL_Renderer *s_renderer;
-static int s_percent = 50;
-static uint64_t s_hide_at;
-static bool s_visible;
-static int s_mode;
-static jw_osd_game_stage s_game_stage;
-static int s_pending_items;
+static jw_osd_view s_view;
 
 static void jw__draw_rect(int x, int y, int w, int h, Uint8 r, Uint8 g, Uint8 b, Uint8 a) {
     SDL_Rect rect = { x, y, w, h };
@@ -82,16 +76,16 @@ static int jw__text_width(const char *text, int scale) {
     return length == 0 ? 0 : (int)length * 6 * scale - scale;
 }
 
-static void jw__draw(void) {
+static int jw__draw(void) {
     SDL_SetRenderDrawBlendMode(s_renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(s_renderer, 0, 0, 0, 0);
     SDL_RenderClear(s_renderer);
 
     jw__draw_rect(0, 0, 480, 96, 18, 20, 24, 230);
-    if (s_mode == 2) {
+    if (s_view.kind == JW_OSD_VIEW_STAGE) {
         char title[64];
         char action[32];
-        jw_osd_game_launch_text(s_game_stage, s_pending_items,
+        jw_osd_game_launch_text(s_view.stage, s_view.pending_items,
                                 title, sizeof(title), action, sizeof(action));
         int title_scale = jw__text_width(title, 4) <= 456 ? 4 : 3;
         int title_y = action[0] ? 16 : 34;
@@ -102,15 +96,36 @@ static void jw__draw(void) {
                           56, 4, 250, 210, 92, 255);
         }
         SDL_RenderPresent(s_renderer);
-        return;
+        return 0;
     }
     jw__draw_rect(24, 43, 432, 10, 72, 76, 84, 255);
 
-    int fill = (432 * s_percent) / 100;
+    int fill = (432 * s_view.percent) / 100;
     jw__draw_rect(24, 43, fill, 10, 250, 210, 92, 255);
     jw__draw_rect(20 + fill, 35, 18, 26, 255, 240, 150, 255);
 
     SDL_RenderPresent(s_renderer);
+    return 0;
+}
+
+/* A failed draw leaves nothing to restore later: the view is dropped with it. */
+static int jw__apply(jw_osd_view_effect effect) {
+    switch (effect) {
+        case JW_OSD_VIEW_KEEP:
+            return 0;
+        case JW_OSD_VIEW_HIDE:
+            SDL_HideWindow(s_window);
+            return 0;
+        case JW_OSD_VIEW_DRAW:
+            if (!s_window || !s_renderer) break;
+            SDL_ShowWindow(s_window);
+            SDL_RaiseWindow(s_window);
+            if (jw__draw() == 0) return 0;
+            break;
+    }
+    jw_osd_view_reset(&s_view);
+    if (s_window) SDL_HideWindow(s_window);
+    return -1;
 }
 
 int jw_osd_backend_init(void) {
@@ -139,59 +154,35 @@ int jw_osd_backend_init(void) {
         return -1;
     }
     SDL_SetRenderDrawBlendMode(s_renderer, SDL_BLENDMODE_BLEND);
+    jw_osd_view_reset(&s_view);
     return 0;
 }
 
-void jw_osd_backend_show_brightness(int percent, uint64_t now_ms) {
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    s_percent = percent;
-    s_mode = 0;
-    s_hide_at = now_ms + JW_OSD_HIDE_AFTER_MS;
-    s_visible = true;
-    SDL_ShowWindow(s_window);
-    SDL_RaiseWindow(s_window);
-    jw__draw();
+int jw_osd_backend_show_brightness(int percent, uint64_t now_ms) {
+    return jw__apply(jw_osd_view_level(&s_view, JW_OSD_VIEW_BRIGHTNESS, percent, now_ms));
 }
 
-void jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
-    /* SDL backend reuses the same toast for now */
-    jw_osd_backend_show_brightness(percent, now_ms);
-    s_mode = 1;
+int jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
+    return jw__apply(jw_osd_view_level(&s_view, JW_OSD_VIEW_VOLUME, percent, now_ms));
 }
 
-void jw_osd_backend_show_game_launch(jw_osd_game_stage stage,
-                                     int pending_items, uint64_t now_ms) {
-    s_mode = 2;
-    s_game_stage = stage;
-    s_pending_items = pending_items < 0 ? 0 : pending_items;
-    s_hide_at = JW_OSD_GAME_STAGE_IS_TRANSIENT(stage)
-                    ? now_ms + JW_OSD_GAME_TRANSIENT_MS
-                    : UINT64_MAX;
-    s_visible = true;
-    SDL_ShowWindow(s_window);
-    SDL_RaiseWindow(s_window);
-    jw__draw();
+int jw_osd_backend_show_game_launch(jw_osd_game_stage stage,
+                                    int pending_items, uint64_t now_ms) {
+    return jw__apply(jw_osd_view_stage(&s_view, stage, pending_items, now_ms));
 }
 
 void jw_osd_backend_hide_game_launch(void) {
-    if (s_visible && s_mode == 2) {
-        SDL_HideWindow(s_window);
-        s_visible = false;
-    }
+    (void)jw__apply(jw_osd_view_hide_stage(&s_view));
 }
 
 void jw_osd_backend_tick(uint64_t now_ms) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) { }
-
-    if (s_visible && s_hide_at != UINT64_MAX && now_ms >= s_hide_at) {
-        SDL_HideWindow(s_window);
-        s_visible = false;
-    }
+    (void)jw__apply(jw_osd_view_tick(&s_view, now_ms));
 }
 
 void jw_osd_backend_shutdown(void) {
+    jw_osd_view_reset(&s_view);
     if (s_renderer) {
         SDL_DestroyRenderer(s_renderer);
         s_renderer = NULL;

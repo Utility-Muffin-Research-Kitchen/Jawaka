@@ -73,9 +73,10 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
             cJSON_Delete(root);
             return jw__reply_error(client, "missing brightness percent");
         }
-        jw_osd_backend_show_brightness(percent->valueint, jw__now_ms());
+        int rc = jw_osd_backend_show_brightness(percent->valueint, jw__now_ms());
         cJSON_Delete(root);
-        return jw__reply_ok(client, "show-brightness");
+        return rc == 0 ? jw__reply_ok(client, "show-brightness")
+                       : jw__reply_error(client, "could not show brightness");
     }
 
     if (strcmp(type->valuestring, "show-volume") == 0) {
@@ -84,9 +85,10 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
             cJSON_Delete(root);
             return jw__reply_error(client, "missing volume percent");
         }
-        jw_osd_backend_show_volume(percent->valueint, jw__now_ms());
+        int rc = jw_osd_backend_show_volume(percent->valueint, jw__now_ms());
         cJSON_Delete(root);
-        return jw__reply_ok(client, "show-volume");
+        return rc == 0 ? jw__reply_ok(client, "show-volume")
+                       : jw__reply_error(client, "could not show volume");
     }
 
     if (strcmp(type->valuestring, "show-game-launch") == 0) {
@@ -96,9 +98,12 @@ static int jw__handle_message(jw_ipc_client *client, const char *body) {
             cJSON_Delete(root);
             return jw__reply_error(client, "invalid game launch status");
         }
-        jw_osd_backend_show_game_launch(stage, pending_items, jw__now_ms());
+        /* The daemon arms the PICO-8 exit confirmation only on ok, so a
+           backend that could not submit the banner must say so. */
+        int rc = jw_osd_backend_show_game_launch(stage, pending_items, jw__now_ms());
         cJSON_Delete(root);
-        return jw__reply_ok(client, "show-game-launch");
+        return rc == 0 ? jw__reply_ok(client, "show-game-launch")
+                       : jw__reply_error(client, "could not show game launch status");
     }
 
     if (strcmp(type->valuestring, "hide-game-launch") == 0) {
