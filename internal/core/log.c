@@ -18,10 +18,11 @@ static bool jw__log_fd_read_only(int fd) {
     return fstatvfs(fd, &vfs) == 0 && (vfs.f_flag & ST_RDONLY) != 0;
 }
 
-int jw_log_redirect_if_read_only(const char *fallback_dir, const char *name) {
-    if (!fallback_dir || !fallback_dir[0] || !name || !name[0] ||
-        !jw__log_fd_read_only(STDERR_FILENO)) {
-        return 0;
+/* Opens <fallback_dir>/<name>.log for append, capped at 2 MB with one
+   rotation. Returns the descriptor, or -1 when the fallback is unusable. */
+static int jw__log_open_fallback(const char *fallback_dir, const char *name) {
+    if (!fallback_dir || !fallback_dir[0] || !name || !name[0]) {
+        return -1;
     }
     char path[512];
     char rotated[520];
@@ -42,9 +43,71 @@ int jw_log_redirect_if_read_only(const char *fallback_dir, const char *name) {
         close(fd);
         return -1;
     }
+    return fd;
+}
+
+int jw_log_redirect_if_read_only(const char *fallback_dir, const char *name) {
+    if (!fallback_dir || !fallback_dir[0] || !name || !name[0] ||
+        !jw__log_fd_read_only(STDERR_FILENO)) {
+        return 0;
+    }
+    int fd = jw__log_open_fallback(fallback_dir, name);
+    if (fd < 0) {
+        return -1;
+    }
     fflush(stdout);
     fflush(stderr);
     int rc = (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) ? -1 : 1;
+    close(fd);
+    clearerr(stdout);
+    clearerr(stderr);
+    return rc;
+}
+
+/* A real byte, not a zero-length write: a 0-byte write can succeed without
+   touching the device and would not detect EIO/EFBIG. */
+static bool jw__log_fd_takes_byte(int fd) {
+    ssize_t n;
+    do {
+        n = write(fd, "\n", 1);
+    } while (n < 0 && errno == EINTR);
+    return n == 1;
+}
+
+int jw_log_heal_unwritable_stdio(const char *fallback_dir, const char *name) {
+    fflush(stdout);
+    fflush(stderr);
+    bool broken_out = !jw__log_fd_takes_byte(STDOUT_FILENO);
+    bool broken_err = !jw__log_fd_takes_byte(STDERR_FILENO);
+    if (!broken_out && !broken_err) {
+        return 0;
+    }
+
+    int rc = 1;
+    int fd = jw__log_open_fallback(fallback_dir, name);
+    if (fd >= 0 && !jw__log_fd_takes_byte(fd)) {
+        close(fd);
+        fd = -1;
+    }
+    if (fd < 0) {
+        fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        rc = 2;
+    }
+    /* A closed stdout or stderr leaves its slot free, and open() hands out the
+       lowest free descriptor; move the target above stdio so the dup2 below
+       cannot be undone by the close. */
+    if (fd >= 0 && fd <= STDERR_FILENO) {
+        int moved = fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+        close(fd);
+        fd = moved;
+    }
+    if (fd < 0) {
+        return -1;
+    }
+    if ((broken_out && dup2(fd, STDOUT_FILENO) < 0) ||
+        (broken_err && dup2(fd, STDERR_FILENO) < 0)) {
+        rc = -1;
+    }
     close(fd);
     clearerr(stdout);
     clearerr(stderr);

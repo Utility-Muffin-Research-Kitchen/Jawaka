@@ -25,6 +25,7 @@
 #include "internal/launcher/standalone_policy.h"
 #include "internal/launcher/system_names.h"
 #include "internal/launcher/system_activity.h"
+#include "internal/launcher/launch_notice.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/cat_services.h"
 #include "internal/platform/device.h"
@@ -410,6 +411,9 @@ typedef struct {
     char               socket_path[PATH_MAX];
     char               status[256];
     jw_system_activity system_activity;
+    /* A refused or failed launch. Separate from system_activity.feedback: menu
+       navigation clears that, and a user retrying a launch does navigate. */
+    jw_system_notice   launch_notice;
     bool               scan_ready;
     bool               scan_running;
     bool               library_populated;
@@ -555,15 +559,35 @@ static void jw__load_visible_tabs(jw_launcher_state *state, const char *db_path)
     state->visible_tab_count = n;
 }
 
+/* The launch notice's single draw point lives in jw__present(), so every view
+   that presents gets it. g_present_state is jw__present's state handle (it has
+   no argument); set once in main() after state is initialised. Catastrophe's
+   blocking modals (cat_confirmation, the on-screen keyboards) present on their
+   own and do not draw the notice; its lifetime keeps counting under them. */
+static jw_launcher_state *g_present_state = NULL;
+/* Height of the system-activity strip this frame drew, or 0. The notice sits
+   above it; reset in jw__present() after the frame, so no view inherits it. */
+static int g_activity_strip_h = 0;
+static void jw__draw_launch_notice(const jw_launcher_state *state);
+static void jw__launch_notice_tick(jw_launcher_state *state);
+
 /* Present wrapper used everywhere instead of cat_present(). Normally a straight
    passthrough; while the screenshot flash is compositing, g_defer_present lets a
    render pass draw without presenting so the flash can lay a translucent white
    overlay over the finished scene and present once itself. */
 static bool g_defer_present = false;
 static void jw__present(void) {
+    /* Keep the notice out of tab-slide snapshots. Live frames include the
+       deferred screenshot-flash scene and the hosted Info pages, whose own
+       loops also need to wake at expiry. */
+    if (g_present_state && SDL_GetRenderTarget(cat_get_renderer()) == NULL) {
+        jw__launch_notice_tick(g_present_state);
+        jw__draw_launch_notice(g_present_state);
+    }
     if (!g_defer_present) {
         cat_present();
     }
+    g_activity_strip_h = 0;
 }
 
 static bool jw__tab_is_visible(const jw_launcher_state *state, jw_tab tab) {
@@ -923,12 +947,49 @@ static int jw__system_activity_height(const jw_launcher_state *state) {
 
 static void jw__draw_system_activity(const jw_launcher_state *state) {
     int h = jw__system_activity_height(state);
+    g_activity_strip_h = h;
     if (!h) return;
     int margin = CAT_S(12);
     int bottom = cat_get_screen_height() - jw__footer_height(state) - margin;
     cat_draw_text_ellipsized(cat_get_font(CAT_FONT_SMALL),
         jw__system_activity_text(state), margin + CAT_S(12), bottom - h + CAT_S(4),
         cat_get_theme()->hint, cat_get_screen_width() - 2 * (margin + CAT_S(12)));
+}
+
+/* Draw the launch notice as an opaque pill above the footer and the system-
+   activity strip. Called only from jw__present(); opaque, because a theme
+   background image is not. */
+static void jw__draw_launch_notice(const jw_launcher_state *state) {
+    if (!state) return;
+    const char *text = jw_launch_notice_text(&state->launch_notice, SDL_GetTicks());
+    if (!text[0]) return;
+
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    int sw = cat_get_screen_width();
+    int sh = cat_get_screen_height();
+    int margin = CAT_S(12);
+    int pad_x = CAT_S(12);
+    int pad_y = CAT_S(4);
+    int font_h = TTF_FontHeight(small);
+    int pill_h = font_h + pad_y * 2;
+    int max_pill_w = sw * 90 / 100;
+    int max_text_w = max_pill_w - pad_x * 2;
+    if (max_text_w < 1) max_text_w = 1;
+    int text_w = cat_measure_text_ellipsized(small, text, max_text_w);
+    int pill_w = text_w + pad_x * 2;
+    if (pill_w > max_pill_w) pill_w = max_pill_w;
+    int pill_x = (sw - pill_w) / 2;
+    int pill_y = sh - jw__footer_height(state) - g_activity_strip_h - margin - pill_h;
+    if (pill_y < 0) pill_y = 0;
+    /* 1 px hint border: the outer rounded rect shows as a ring around the
+       opaque surface drawn one pixel inside it. */
+    cat_draw_rounded_rect(pill_x, pill_y, pill_w, pill_h, CAT_S(8), theme->hint);
+    cat_draw_rounded_rect(pill_x + 1, pill_y + 1, pill_w - 2, pill_h - 2,
+                          CAT_S(7), theme->background);
+    cat_draw_text_ellipsized(small, text, pill_x + pad_x,
+                             pill_y + (pill_h - font_h) / 2,
+                             theme->text, max_text_w);
 }
 
 static void jw__system_activity_tick(jw_launcher_state *state) {
@@ -1169,6 +1230,27 @@ static void jw__set_launching_status(jw_launcher_state *state,
 
     snprintf(state->status, sizeof(state->status), "Launching %.*s...",
              (int)max_name_len, display);
+}
+
+/* A launch the user asked for did not happen. It lives in its own slot, not in
+   state->status (list views already draw that), and not in system-activity
+   feedback (menu navigation clears that). */
+static void jw__launch_notice(jw_launcher_state *state, const char *text) {
+    if (!state || !text || !text[0]) return;
+    jw_launch_notice_show(&state->launch_notice, text, SDL_GetTicks());
+    cat_request_frame();
+}
+
+/* Called before every live presentation, including hosted pages that do not
+   return to the main loop, so the pill clears without input. */
+static void jw__launch_notice_tick(jw_launcher_state *state) {
+    uint32_t now = SDL_GetTicks();
+    uint32_t remaining = jw_launch_notice_remaining(&state->launch_notice, now);
+    if (remaining) {
+        cat_request_frame_in(remaining);
+    } else if (jw_launch_notice_expire(&state->launch_notice, now)) {
+        cat_request_frame();
+    }
 }
 
 /* ─── Flat list helpers ───────────────────────────────────────────────────── */
@@ -9063,19 +9145,50 @@ static void jw__apply_resume(const char *db_path, jw_launcher_state *state,
         jw__grid_reveal_cursor(state);
 }
 
+/* The daemon refuses a launch whose selected Saturn BIOS is gone, unreadable or
+   the wrong size, and answers with the stable English text from
+   internal/launcher/bios.c. Translate it here and say where to fix it: nothing
+   was changed, and nothing silently fell back to HLE. */
+static void jw__bios_localize_launch_status(char *buf, size_t size) {
+    for (int status = 0; status <= (int)JW_BIOS_FILE_WRONG_SIZE; status++) {
+        const char *text = jw_bios_file_status_text((jw_bios_file_status)status);
+        if (strcmp(buf, text) != 0) {
+            continue;
+        }
+        /* Compose in a temp: `text` points into `buf`, so formatting back into
+           it would read and write the same storage. */
+        char localized[256];
+        snprintf(localized, sizeof(localized), "%s %s", T(text),
+                 T("Pick another Saturn BIOS from the options menu."));
+        snprintf(buf, size, "%s", localized);
+        return;
+    }
+}
+
 static int jw__launch_app_request(const char *socket_path, const char *name,
                                   const char *pak_dir, jw_launcher_state *state,
                                   bool *running) {
     if (!pak_dir || !pak_dir[0]) {
-        snprintf(state->status, sizeof(state->status), "%s", "No app selected");
+        jw__launch_notice(state, "No app selected");
         return -1;
     }
 
+    /* A new attempt clears the previous refusal: a retry restarts the notice's
+       lifetime, and a launch that succeeds leaves no notice behind. */
+    jw_launch_notice_begin(&state->launch_notice);
+    char previous_status[sizeof(state->status)];
+    snprintf(previous_status, sizeof(previous_status), "%s", state->status);
     jw__set_launching_status(state, name, "app");
     cat_request_frame();
     jw__render_launcher(state);
 
-    if (jw_ipc_launch_app(socket_path, pak_dir, state->status, sizeof(state->status)) != 0) {
+    /* The reply goes to the notice, not the passive line: a launch that never
+       happened must not leave "Launching..." on the list views. */
+    char reply[sizeof(state->status)] = "";
+    if (jw_ipc_launch_app(socket_path, pak_dir, reply, sizeof(reply)) != 0) {
+        jw__bios_localize_launch_status(reply, sizeof(reply));
+        snprintf(state->status, sizeof(state->status), "%s", previous_status);
+        jw__launch_notice(state, reply);
         jw__haptic(state, "blocked");   /* refused: the launcher is still here */
         return -1;
     }
@@ -9089,33 +9202,19 @@ static int jw__launch_app_request(const char *socket_path, const char *name,
 static int jw__launch_app_at(const char *socket_path, jw_launcher_state *state,
                              int cursor, bool *running) {
     if (state->app_count <= 0 || cursor < 0 || cursor >= state->app_count) {
-        snprintf(state->status, sizeof(state->status), "%s", "No app selected");
+        jw__launch_notice(state, "No app selected");
         return -1;
     }
 
     const jw_app_entry *app = &state->apps[cursor];
     if (!app->pak_dir[0]) {
-        snprintf(state->status, sizeof(state->status),
+        char notice[256];
+        snprintf(notice, sizeof(notice),
                  "%.200s is a layout sample, not a real app", app->name);
+        jw__launch_notice(state, notice);
         return -1;
     }
     return jw__launch_app_request(socket_path, app->name, app->pak_dir, state, running);
-}
-
-/* The daemon refuses a launch whose selected Saturn BIOS is gone, unreadable or
-   the wrong size, and answers with the stable English text from
-   internal/launcher/bios.c. Translate it here and say where to fix it: nothing
-   was changed, and nothing silently fell back to HLE. */
-static void jw__bios_localize_launch_status(jw_launcher_state *state) {
-    for (int status = 0; status <= (int)JW_BIOS_FILE_WRONG_SIZE; status++) {
-        const char *text = jw_bios_file_status_text((jw_bios_file_status)status);
-        if (strcmp(state->status, text) != 0) {
-            continue;
-        }
-        snprintf(state->status, sizeof(state->status), "%s %s", T(text),
-                 T("Pick another Saturn BIOS from the options menu."));
-        return;
-    }
 }
 
 /* Saves and states for this game land on its own card. If that card cannot
@@ -9163,25 +9262,35 @@ static int jw__launch_game_entry_with_mode(const char *socket_path,
                                            bool switcher_resume,
                                            bool *running) {
     if (!game) {
-        snprintf(state->status, sizeof(state->status), "%s", "No game selected");
+        jw__launch_notice(state, "No game selected");
         return -1;
     }
     if (!jw__confirm_storage_for_launch(state, game->rom_path)) {
-        snprintf(state->status, sizeof(state->status), "%s", T("Launch canceled"));
+        jw__launch_notice(state, T("Launch canceled"));
         return -1;
     }
 
+    /* A new attempt clears the previous refusal: a retry restarts the notice's
+       lifetime, and a launch that succeeds leaves no notice behind. */
+    jw_launch_notice_begin(&state->launch_notice);
+    char previous_status[sizeof(state->status)];
+    snprintf(previous_status, sizeof(previous_status), "%s", state->status);
     jw__set_launching_status(state, game->name, "game");
     cat_request_frame();
     jw__render_launcher(state);
 
+    /* The reply goes to the notice, not the passive line: a launch that never
+       happened must not leave "Launching..." on the list views. */
+    char reply[sizeof(state->status)] = "";
     int rc = switcher_resume
         ? jw_ipc_launch_game_switcher(socket_path, game->system, game->rom_path,
-                                      state->status, sizeof(state->status))
+                                      reply, sizeof(reply))
         : jw_ipc_launch_game(socket_path, game->system, game->rom_path,
-                             state->status, sizeof(state->status));
+                             reply, sizeof(reply));
     if (rc != 0) {
-        jw__bios_localize_launch_status(state);
+        jw__bios_localize_launch_status(reply, sizeof(reply));
+        snprintf(state->status, sizeof(state->status), "%s", previous_status);
+        jw__launch_notice(state, reply);
         /* The launcher stays up on a refusal, so this is the one outcome worth
            reporting by touch. */
         jw__haptic(state, "blocked");
@@ -9207,7 +9316,7 @@ static int jw__launch_game_entry(const char *socket_path, jw_launcher_state *sta
 static int jw__launch_selected_game(const char *socket_path, jw_launcher_state *state,
                                     bool *running) {
     if (state->game_count <= 0 || state->game_list.cursor >= state->game_count) {
-        snprintf(state->status, sizeof(state->status), "%s", "No game selected");
+        jw__launch_notice(state, "No game selected");
         return -1;
     }
     return jw__launch_game_entry(socket_path, state,
@@ -9223,7 +9332,7 @@ static int jw__launch_selected_search_result(const char *socket_path,
                                              jw_launcher_state *state,
                                              bool *running) {
     if (state->search_count <= 0 || state->search_list.cursor >= state->search_count) {
-        snprintf(state->status, sizeof(state->status), "%s", "No result selected");
+        jw__launch_notice(state, "No result selected");
         return -1;
     }
 
@@ -9233,16 +9342,24 @@ static int jw__launch_selected_search_result(const char *socket_path,
     }
 
     if (!jw__confirm_storage_for_launch(state, result->rom_path)) {
-        snprintf(state->status, sizeof(state->status), "%s", T("Launch canceled"));
+        jw__launch_notice(state, T("Launch canceled"));
         return -1;
     }
+    /* A search result launches on the same terms as a browser row: the attempt
+       clears the previous refusal and its reply lands in the notice. */
+    jw_launch_notice_begin(&state->launch_notice);
+    char previous_status[sizeof(state->status)];
+    snprintf(previous_status, sizeof(previous_status), "%s", state->status);
     jw__set_launching_status(state, result->name, "game");
     cat_request_frame();
     jw__render_launcher(state);
 
+    char reply[sizeof(state->status)] = "";
     if (jw_ipc_launch_game(socket_path, result->system, result->rom_path,
-                           state->status, sizeof(state->status)) != 0) {
-        jw__bios_localize_launch_status(state);
+                           reply, sizeof(reply)) != 0) {
+        jw__bios_localize_launch_status(reply, sizeof(reply));
+        snprintf(state->status, sizeof(state->status), "%s", previous_status);
+        jw__launch_notice(state, reply);
         jw__haptic(state, "blocked");   /* refused: the launcher is still here */
         return -1;
     }
@@ -12187,6 +12304,9 @@ int main(void) {
 
     jw_launcher_state state;
     memset(&state, 0, sizeof(state));
+    /* jw__present() draws the launch notice from this handle; nothing renders
+       before the state is fully set up below. */
+    g_present_state = &state;
     state.library_generation = -1;
     state.storage_generation_seen = -1;
     /* A resume breadcrumb (left by the last game/app launch, cleared on reboot)
@@ -12303,6 +12423,24 @@ int main(void) {
        AFTER jw__rebuild_for_layout, which re-inits state->list to cursor 0. */
     if (have_resume)
         jw__apply_resume(db_path, &state, &resume);
+
+    /* jawakad surfaced a standalone launch that died before the emulator
+       appeared (env set by the daemon on respawn, same channel as
+       JAWAKA_OPEN_SWITCHER). Post it as the launch notice, which every view
+       draws through jw__present, instead of coming back as a silent black
+       flash. */
+    {
+        const char *status_name = getenv("JAWAKA_LAUNCH_STATUS_NAME");
+        const char *status_code = getenv("JAWAKA_LAUNCH_STATUS_CODE");
+        if (status_name && status_name[0] && status_code && status_code[0]) {
+            char notice[256];
+            snprintf(notice, sizeof(notice), T("%s launcher exited (status %s)"),
+                     status_name, status_code);
+            jw__launch_notice(&state, notice);
+        }
+        unsetenv("JAWAKA_LAUNCH_STATUS_NAME");
+        unsetenv("JAWAKA_LAUNCH_STATUS_CODE");
+    }
 
     /* A standalone Menu+Select asked jawakad to reopen us straight into the
        switcher carousel, seeded on the just-exited game (env set by the daemon
