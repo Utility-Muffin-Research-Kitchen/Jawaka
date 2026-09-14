@@ -118,83 +118,129 @@ static const char *gg_fit(gg_fit_slot *slot, TTF_Font *f, const char *src,
     return slot->out;
 }
 
-/* Wrap on spaces to a pixel width; returns how many lines were produced. */
-/* Length of the UTF-8 character starting at this lead byte. A byte that is not
-   a lead byte counts as one, so malformed input still advances. */
-static size_t gg_utf8_clen(unsigned char c) {
-    if (c < 0x80) return 1;
-    if ((c & 0xE0) == 0xC0) return 2;
-    if ((c & 0xF0) == 0xE0) return 3;
-    if ((c & 0xF8) == 0xF0) return 4;
-    return 1;
+/* Step past one UTF-8 character. Continuation bytes are skipped one at a time
+   rather than trusting the lead byte's length, so a truncated sequence at the
+   end of the string can never step over its terminator. */
+static const char *gg_utf8_next(const char *s) {
+    if (!*s) return s;
+    s++;
+    while ((*s & 0xC0) == 0x80) s++;
+    return s;
 }
 
-/* Greedy wrap over characters rather than space-delimited words.
-   The previous version looked only for ASCII spaces and copied at most 127
-   bytes of a "word", so Chinese -- one space-free run -- was cut at an arbitrary
-   byte boundary into invalid UTF-8, an over-wide word was accepted whole and
-   clipped by the panel instead of wrapped, and bytes past the 127th were skipped
-   entirely when a space followed.
-   Breaking at the last space is still preferred; a run with no space in it
-   breaks on a character boundary instead of overflowing or being truncated.
-   Wrapping costs one real TTF_SizeUTF8 per step, so the caller memoises the
-   result and this runs once per selection rather than once per frame. */
+/* Greedy wrap: break at spaces, and inside a run only when the run is itself
+   wider than the panel (a space-free script, or one very long token), always
+   on a character boundary.
+   Cost is what matters here, because this runs on every cursor move. Shaping
+   a string costs in proportion to its length, so measuring the growing line
+   once per word shapes each character many times over. Instead each word is
+   measured once on its own and the line's width is the running sum. Only a
+   word that the sum says will not fit gets the real line measured, and that
+   measurement replaces the sum so rounding cannot drift. Each finished line
+   is measured once as a whole and gives back its last pieces if kerning or
+   font fallback made it wider than the sum said. No line can overflow, and a
+   synopsis costs one short measurement per word plus about two per line. */
+typedef struct {
+    const char *at;             /* where the piece starts in the source text */
+    size_t      cl;             /* line length before the piece was added */
+} gg_piece;
+
 static int gg_wrap(TTF_Font *f, const char *text, int maxw,
                    char lines[][256], int max_lines) {
     if (!text || !text[0] || max_lines <= 0) return 0;
 
-    int n = 0;
-    char cur[256];
+    enum { GG_LINE = 256 };
+    char cur[GG_LINE];
+    gg_piece piece[GG_LINE];
     size_t cl = 0;
-    size_t brk = 0;              /* bytes of cur just past the last space; 0 = none */
+    int cw = 0, pieces = 0, n = 0;
+    /* A lone space measures oddly (no ink, so no extent); take its advance
+       from between two glyphs instead. */
+    int xx_w = cat_measure_text(f, "xx");
+    int space_w = cat_measure_text(f, "x x") - xx_w;
+    /* What measuring in pieces over-counts per piece: the extent a glyph
+       reaches past its advance, counted once per piece instead of once per
+       line. Taking it off keeps the sum close enough that the real line is
+       rarely measured before it is actually full. */
+    int piece_bias = 2 * cat_measure_text(f, "x") - xx_w;
+    if (piece_bias < 0) piece_bias = 0;
+    const char *p = text;
     cur[0] = '\0';
 
-    for (const char *p = text; *p && n < max_lines; ) {
-        size_t clen = gg_utf8_clen((unsigned char)*p);
-        size_t avail = strlen(p);
-        if (clen > avail) clen = avail;
+    while (n < max_lines && (*p || cl > 0)) {
+        if (!*p) goto commit;
+        if (*p == ' ' && cl == 0) { p++; continue; }   /* a line never opens on a space */
 
-        if (cl + clen + 1 >= sizeof(cur)) {        /* line buffer is full */
-            gg_copy(lines[n++], 256, cur);
-            cl = 0; brk = 0; cur[0] = '\0';
-            continue;
-        }
+        {
+            const char *w = p;
+            while (*w && *w != ' ') w = gg_utf8_next(w);
+            size_t wlen = (size_t)(w - p);
+            const char *run_end = w;
 
-        memcpy(cur + cl, p, clen);
-        cur[cl + clen] = '\0';
-
-        if (cl > 0 && cat_measure_text(f, cur) > maxw) {
-            char tail[256];
-            if (brk > 0) {
-                size_t tl = (cl + clen) - brk;
-                memcpy(tail, cur + brk, tl);
-                tail[tl] = '\0';
-                size_t cut = brk;
-                while (cut > 0 && cur[cut - 1] == ' ') cut--;   /* drop the space */
-                cur[cut] = '\0';
-            } else {
-                memcpy(tail, p, clen);
-                tail[clen] = '\0';
+            if (cl + wlen < GG_LINE) {
+                memcpy(cur + cl, p, wlen);
+                cur[cl + wlen] = '\0';
+                int est = cw + cat_measure_text(f, cur + cl) - (cl > 0 ? piece_bias : 0);
+                if (est > maxw && cl > 0) est = cat_measure_text(f, cur);
+                if (est <= maxw) {
+                    piece[pieces].at = p; piece[pieces].cl = cl; pieces++;
+                    cl += wlen; cw = est;
+                    p = w;
+                    goto spaces;
+                }
                 cur[cl] = '\0';
             }
-            gg_copy(lines[n++], 256, cur);
+            if (cl > 0) goto commit;                    /* try it on a fresh line */
 
-            const char *t = tail;                  /* a line never opens on a space */
-            while (*t == ' ') t++;
-            gg_copy(cur, sizeof(cur), t);
-            cl = strlen(cur);
-            brk = 0;
-        } else {
-            cl += clen;
+            /* A run wider than the panel: walk its characters. The first one on
+               a line is always taken, so even a panel narrower than a glyph
+               makes progress. */
+            while (p < run_end) {
+                const char *nx = gg_utf8_next(p);
+                size_t clen = (size_t)(nx - p);
+                if (cl + clen >= GG_LINE) {
+                    if (cl == 0) p = nx;                /* malformed; drop it */
+                    break;
+                }
+                memcpy(cur + cl, p, clen);
+                cur[cl + clen] = '\0';
+                int est = cw + cat_measure_text(f, cur + cl) - (cl > 0 ? piece_bias : 0);
+                if (est > maxw && cl > 0) est = cat_measure_text(f, cur);
+                if (est > maxw && cl > 0) {
+                    cur[cl] = '\0';
+                    break;
+                }
+                piece[pieces].at = p; piece[pieces].cl = cl; pieces++;
+                cl += clen; cw = est;
+                p = nx;
+            }
+            if (p < run_end) goto commit;               /* the rest goes on the next line */
         }
 
-        if (clen == 1 && *p == ' ') brk = cl;
-        p += clen;
-    }
+    spaces:
+        while (*p == ' ') {                             /* spaces may hang past the edge */
+            if (cl + 1 < GG_LINE) { cur[cl++] = ' '; cw += space_w; }
+            p++;
+        }
+        cur[cl] = '\0';
+        continue;
 
-    if (cur[0] && n < max_lines) gg_copy(lines[n++], 256, cur);
+    commit:
+        while (cl > 0 && cur[cl - 1] == ' ') cur[--cl] = '\0';
+        while (pieces > 1 && cat_measure_text(f, cur) > maxw) {
+            pieces--;                                   /* hand the last piece back */
+            p = piece[pieces].at;
+            cl = piece[pieces].cl;
+            cur[cl] = '\0';
+            while (cl > 0 && cur[cl - 1] == ' ') cur[--cl] = '\0';
+        }
+        if (cl > 0) gg_copy(lines[n++], GG_LINE, cur);
+        cl = 0; cw = 0; pieces = 0;
+        cur[0] = '\0';
+    }
     return n;
 }
+
 
 /* Rows go through Catastrophe's layered list pane, the same widget the tabbed
    browser uses: the highlight is its own layer that eases between rows while the
