@@ -564,11 +564,12 @@ static void jw__load_visible_tabs(jw_launcher_state *state, const char *db_path)
    no argument); set once in main() after state is initialised. Catastrophe's
    blocking modals (cat_confirmation, the on-screen keyboards) present on their
    own and do not draw the notice; its lifetime keeps counting under them. */
-static const jw_launcher_state *g_present_state = NULL;
+static jw_launcher_state *g_present_state = NULL;
 /* Height of the system-activity strip this frame drew, or 0. The notice sits
    above it; reset in jw__present() after the frame, so no view inherits it. */
 static int g_activity_strip_h = 0;
 static void jw__draw_launch_notice(const jw_launcher_state *state);
+static void jw__launch_notice_tick(jw_launcher_state *state);
 
 /* Present wrapper used everywhere instead of cat_present(). Normally a straight
    passthrough; while the screenshot flash is compositing, g_defer_present lets a
@@ -576,9 +577,13 @@ static void jw__draw_launch_notice(const jw_launcher_state *state);
    overlay over the finished scene and present once itself. */
 static bool g_defer_present = false;
 static void jw__present(void) {
-    /* Before the defer check: the screenshot flash renders the scene with its
-       present held, so the notice is part of the flashed scene exactly once. */
-    jw__draw_launch_notice(g_present_state);
+    /* Keep the notice out of tab-slide snapshots. Live frames include the
+       deferred screenshot-flash scene and the hosted Info pages, whose own
+       loops also need to wake at expiry. */
+    if (g_present_state && SDL_GetRenderTarget(cat_get_renderer()) == NULL) {
+        jw__launch_notice_tick(g_present_state);
+        jw__draw_launch_notice(g_present_state);
+    }
     if (!g_defer_present) {
         cat_present();
     }
@@ -1236,8 +1241,8 @@ static void jw__launch_notice(jw_launcher_state *state, const char *text) {
     cat_request_frame();
 }
 
-/* Unlike jw__system_activity_tick, this runs in every view and wakes for the
-   notice's expiry even with the menu closed, so the pill clears without input. */
+/* Called before every live presentation, including hosted pages that do not
+   return to the main loop, so the pill clears without input. */
 static void jw__launch_notice_tick(jw_launcher_state *state) {
     uint32_t now = SDL_GetTicks();
     uint32_t remaining = jw_launch_notice_remaining(&state->launch_notice, now);
@@ -12628,7 +12633,6 @@ int main(void) {
         jw__poll_scrape_status(&state);
         jw__poll_storage_health(socket_path, db_path, &state, &running);
         jw__system_activity_tick(&state);
-        jw__launch_notice_tick(&state);
 
         /* 1080p120 auto-revert: when the daemon has armed a revert (after a
            deliberate switch to a 120Hz TV mode), show the blocking keep-or-revert

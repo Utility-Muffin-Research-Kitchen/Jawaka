@@ -1024,6 +1024,12 @@ launch-notice-test: | $(BUILD)/bin
 		internal/launcher/launch_notice_test.c
 	$(BUILD)/bin/launch-notice-test
 
+.PHONY: launch-notice-ui-test
+launch-notice-ui-test: | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/launch-notice-ui-test \
+		internal/launcher/launch_notice_ui_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/launch-notice-ui-test
+
 .PHONY: scrape-art-test
 scrape-art-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -Ithird_party/stb -Ithird_party/miniz -Ithird_party/md5 \
@@ -1373,6 +1379,7 @@ help:
 	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
 	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
 	@echo "  make launch-notice-test      Validate launch-notice set/expiry policy"
+	@echo "  make launch-notice-ui-test   Validate notice rendering and expiry wakes"
 	@echo "  make art-path-test         Validate box-art lookup order and extension casing"
 	@echo "  make scrape-art-test       Validate missing-art checks against JPEG and fallback art"
 	@echo "  make cover-failure-test    Validate launcher handling of undecodable cover art"
