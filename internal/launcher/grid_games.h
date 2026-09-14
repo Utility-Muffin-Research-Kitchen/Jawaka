@@ -48,13 +48,14 @@ typedef SDL_Texture *(*jw_grid_games_art_fn)(void *ctx, int idx, int *w, int *h)
 
    Draw the whole view. `meta` may be empty, in which case the cover takes the
    space the info would have used. `wordmark` may be NULL, and then
-   `system_name` is drawn in its place. */
+   `system_name` is drawn in its place. A `wm_color` wordmark is full-color art
+   and is drawn as authored; otherwise it is tinted to the list's ink. */
 void jw_grid_games_draw(const cat_list_state *ls, int count,
                         jw_grid_games_name_fn name_fn,
                         jw_grid_games_art_fn art_fn, void *ctx,
                         const jw_grid_games_meta *meta, int meta_count,
                         const char *synopsis,
-                        SDL_Texture *wordmark, int wm_w, int wm_h,
+                        SDL_Texture *wordmark, int wm_w, int wm_h, bool wm_color,
                         const char *system_name, int top_bar,
                         const jw_grid_games_style *style);
 

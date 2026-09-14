@@ -1298,6 +1298,20 @@ static int jw_cat__build_contributor_stamps(jw_cat_stamp *stamp,
             cJSON_Delete(systems_doc);
             return -1;
         }
+        const cJSON *system = NULL;
+        cJSON_ArrayForEach(system, systems) {
+            const char *slots[] = {"wordmark", "grid_icon", "wordmark_color"};
+            const char *providers[] = {"wordmark_provider", "grid_icon_provider",
+                                       "wordmark_color_provider"};
+            for (int slot = 0; slot < 3; slot++) {
+                if (strcmp(jw_cat__json_text(system, providers[slot]), out->provider)) continue;
+                if (jw_cat__stamp_add_file(out, pak_dir, "pak.json") != 0 ||
+                    jw_cat__stamp_add_file(out, pak_dir, jw_cat__json_text(system, slots[slot])) != 0) {
+                    cJSON_Delete(systems_doc);
+                    return -1;
+                }
+            }
+        }
         qsort(out->files, out->file_count, sizeof(*out->files),
               jw_cat__file_stamp_cmp);
     }
@@ -1373,7 +1387,9 @@ static int jw_cat__merge_outputs(const char *systems_path,
         cJSON_Delete(cores_doc);
         return -1;
     }
-    if (jw_cat__apply_content_scrape(merged_systems, contributors) != 0) {
+    if (jw_cat__apply_content_scrape(merged_systems, contributors) != 0 ||
+        jw_catalog_apply_content_art(merged_systems, merged_cores,
+                                      contributors, diagnostics) != 0) {
         cJSON_Delete(merged_systems);
         cJSON_Delete(merged_cores);
         cJSON_Delete(diagnostics);

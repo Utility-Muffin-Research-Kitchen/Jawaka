@@ -234,11 +234,24 @@ typedef struct {
 /* Coverflow runtime state (jw_games_cf, jw_cf_cube, and the jw_coverflow bundle)
    lives in internal/launcher/coverflow.h — the CF module owns those types. */
 
+#define JW_SYSTEM_ICON_MAX_CANDIDATES 9
+
 typedef struct {
     bool done;
     char code[64];
     char path[PATH_MAX];     /* empty when every candidate is known missing */
+    uint64_t failed[JW_SYSTEM_ICON_MAX_CANDIDATES];
+    int failed_count;      /* Grid rejects failed paths until art refresh */
 } jw_system_icon_memo;
+
+/* What the Grid tile memo was resolved against. */
+typedef struct {
+    bool     valid;
+    unsigned epoch;
+    int      pack;
+    char     user_theme_dir[128];   /* matches jw_settings_ui.user_theme_dir */
+    char     theme_name[256];
+} jw_grid_art_identity;
 
 /* ─── Launcher state ──────────────────────────────────────────────────────── */
 
@@ -274,6 +287,13 @@ typedef struct {
     jw_system_entry    systems[JW_MAX_SYSTEMS];
     jw_system_icon_memo system_icon_memos[JW_MAX_SYSTEMS];
     jw_ra_catalog     *system_catalog;
+    /* Artwork memos key on the adopted catalog's identity (its generation's
+       info_dir), bumped into art_epoch only when that identity really moves. */
+    unsigned           art_epoch;
+    bool               art_catalog_adopted;
+    bool               art_catalog_present;
+    char               art_catalog_identity[PATH_MAX];
+    jw_grid_art_identity grid_art_identity;
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
@@ -1236,6 +1256,27 @@ static void jw__grid_reveal_cursor(jw_launcher_state *state) {
     g->anim_active   = false;
 }
 
+static jw_cover_loader *jw__covers(void);
+
+/* A provider replacing bytes at the same path publishes a new generation, so
+   the catalog's info_dir is the artwork identity. Only a real change (or the
+   catalog appearing/disappearing) retires in-flight surfaces and drops the
+   texture cache; reloading the same generation after an ordinary settings
+   write keeps everything warm. Call before the new catalog is adopted. */
+static void jw__adopt_art_catalog(jw_launcher_state *state, const jw_ra_catalog *catalog) {
+    const char *identity = catalog && catalog->info_dir ? catalog->info_dir : "";
+    if (state->art_catalog_adopted && state->art_catalog_present == (catalog != NULL) &&
+        strcmp(state->art_catalog_identity, identity) == 0)
+        return;
+    jw_cover_loader_shutdown(jw__covers());
+    jw_cover_loader_forget_failures(jw__covers());
+    cat_cache_clear();
+    snprintf(state->art_catalog_identity, sizeof(state->art_catalog_identity), "%s", identity);
+    state->art_catalog_present = catalog != NULL;
+    state->art_catalog_adopted = true;
+    state->art_epoch++;
+}
+
 static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *state) {
     if (!db_path || !state) {
         return -1;
@@ -1278,6 +1319,7 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     char catalog_error[160];
     jw_ra_catalog *catalog =
         jw_ra_catalog_load(state->sdcard_root, catalog_error, sizeof(catalog_error));
+    jw__adopt_art_catalog(state, catalog);
     jw_ra_catalog_free(state->system_catalog);
     state->system_catalog = catalog;
     jw__resolve_system_names(db_path, state);
@@ -3378,6 +3420,15 @@ static bool jw__cover_thumb_path(const char *cover_abs, char *out, size_t out_si
     return n > 0 && n < (int)out_size;
 }
 
+/* Immutable catalog identity also separates same-path/same-mtime artwork
+   replacements in the derived thumbnail cache. */
+static bool jw__catalog_thumb_path(const jw_launcher_state *state, const char *path,
+                                    char *out, size_t out_size) {
+    char key[PATH_MAX * 2];
+    snprintf(key, sizeof(key), "%s|%s", path, state->art_catalog_identity);
+    return jw__cover_thumb_path(key, out, out_size);
+}
+
 /* ---- Background cover decoder ----------------------------------------------
    The worker, its priority slot, pre-warm ring, handbacks, and failed-decode
    bookkeeping live in internal/launcher/cover_loader.c. The launcher supplies
@@ -3591,8 +3642,11 @@ static SDL_Texture *jw__load_coverflow_image(const char *path, int *out_w, int *
    tile at a time. The ring drains steadily instead, and each thumbnail it
    lands is picked up inline on the next frame -- or, when the thumbnail could
    not be written, the surface itself. */
-static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
-                                        int *out_w, int *out_h) {
+static SDL_Texture *jw__load_page_image_status(const char *path, int max_dim,
+                                               int *out_w, int *out_h,
+                                               const char *thumb_override,
+                                               bool *failed) {
+    if (failed) *failed = false;
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
     if (!path || !path[0]) return NULL;
@@ -3606,7 +3660,8 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
     }
 
     char thumb[PATH_MAX];
-    const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
+    const char *tp = thumb_override ? thumb_override :
+        (jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL);
     if (tp && cat_thumbnail_is_cached(path, tp)) {
         SDL_Surface *surf = IMG_Load(tp);
         if (surf) {                        /* a corrupt one falls through to rebuild */
@@ -3634,6 +3689,7 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
         /* Undecodable: draw the placeholder. The enqueue only runs a spaced
            retry; an exhausted failure is skipped without a decode. */
         jw_cover_loader_enqueue(jw__covers(), path, tp, max_dim);
+        if (failed) *failed = true;
         return NULL;
     }
     if (status == JW_COVER_READY) {
@@ -3648,11 +3704,41 @@ static SDL_Texture *jw__load_page_image(const char *path, int max_dim,
             if (out_h) *out_h = h;
             return tex;
         }
+        if (failed) *failed = true;
+        return NULL;
     }
 
+    if (!jw_cover_loader_ensure(jw__covers())) {
+        SDL_Surface *surface = cat_decode_thumbnail_surface(path, tp, max_dim);
+        SDL_Texture *texture = surface ? cat_texture_from_surface(surface) : NULL;
+        if (texture) {
+            if (out_w) *out_w = surface->w;
+            if (out_h) *out_h = surface->h;
+            cat_cache_put(path, texture, surface->w, surface->h);
+        } else {
+            jw_cover_loader_record_failure(jw__covers(), path);
+            if (failed) *failed = true;
+        }
+        SDL_FreeSurface(surface);
+        return texture;
+    }
     jw_cover_loader_enqueue(jw__covers(), path, tp, max_dim);
     cat_request_frame_in(40);
     return NULL;
+}
+
+/* Page image whose thumbnail is keyed by the catalog identity. The texture
+   cache answers a warm draw before the salted key is ever built. */
+static SDL_Texture *jw__load_catalog_page_image(const jw_launcher_state *state,
+                                                const char *path, int max_dim,
+                                                int *out_w, int *out_h, bool *failed) {
+    if (failed) *failed = false;
+    SDL_Texture *cached = path && path[0] ? cat_cache_get(path, out_w, out_h) : NULL;
+    if (cached) return cached;
+    char thumb[PATH_MAX];
+    const char *tp = jw__catalog_thumb_path(state, path ? path : "", thumb, sizeof(thumb))
+                         ? thumb : NULL;
+    return jw__load_page_image_status(path, max_dim, out_w, out_h, tp, failed);
 }
 
 /* The wallpaper covers the whole panel, so it is the one image that must not
@@ -4038,6 +4124,11 @@ static void jw__render_focus(jw_launcher_state *state) {
  *   5. <themes_dir>/../system_icons/<SYSTEM>.png  shared flat baseline
  *   6. <themes_dir>/../system_icons/_default.png  final fallback
  *
+ * Grid system tiles move the user's icon pack ahead of pak art: the selected
+ * user theme, icon.png, the built-in pack (4), the pak's CONTENT-ART-2
+ * grid_icon, pak art (2-3), then 5 and 6. Every other layout and icon site
+ * (Grid Search included) keeps the order above.
+ *
  * Step 5 stays in the list for every pack on purpose: the photographic pack has
  * no asset for some aliases and pseudo-systems (_apps, for one), and those must
  * fall back to a real flat icon rather than vanish.
@@ -4046,11 +4137,11 @@ static void jw__render_focus(jw_launcher_state *state) {
  * which holds for the four bundled themes. A theme loaded from another
  * Catastrophe search root simply falls through to the flat pack.
  *
- * This builds strings only — no access(), no decode, no cache lookup. The two
- * consumers probe differently and each keeps its own semantics. */
+ * This builds strings only — no decode, no cache lookup; the only file reads
+ * are the IHDR checks on user-theme and pak grid art. The consumers probe
+ * differently and each keeps its own semantics. */
 
 #define JW_SYSTEM_ICON_PHOTO_THEME "Jawaka-Coverflow"
-#define JW_SYSTEM_ICON_MAX_CANDIDATES 6
 
 typedef struct {
     char paths[JW_SYSTEM_ICON_MAX_CANDIDATES][PATH_MAX];
@@ -4113,8 +4204,41 @@ static const char *jw__system_rom_folder(const jw_launcher_state *state,
     return NULL;
 }
 
+/* (2-3) content-pak art. AUTO follows the active theme's pack; an absent
+   photographic asset deliberately falls through to the mandatory flat asset.
+   Both paths are resolved live from the catalog's provider. */
+static void jw__push_pak_icon_candidates(const jw_launcher_state *state,
+                                         const char *system_code, int pack,
+                                         const char *theme_name,
+                                         jw_system_icon_candidates *out) {
+    if (!state || !state->system_catalog || system_code[0] == '_') return;
+    const jw_ra_system *system = jw_ra_catalog_match_system_folder(
+        state->system_catalog, system_code);
+    if (!system) return;
+    bool selected_photo =
+        pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC ||
+        (pack == JW_SYSTEM_ICON_PACK_AUTO && theme_name &&
+         strcmp(theme_name, JW_SYSTEM_ICON_PHOTO_THEME) == 0);
+    char path[PATH_MAX];
+    if (selected_photo &&
+        jw_ra_catalog_resolve_system_icon_path(
+            state->system_catalog, system, true, path, sizeof(path)) == 0) {
+        jw__push_icon_candidate(out, path);
+    }
+    if (jw_ra_catalog_resolve_system_icon_path(
+            state->system_catalog, system, false, path, sizeof(path)) == 0) {
+        jw__push_icon_candidate(out, path);
+    }
+}
+
+/* `grid_tile` is only set by the memoized Grid tile resolver. Both the Grid
+   tile order and the pak's CONTENT-ART-2 grid_icon belong to those tiles, so
+   Search and the other icon sites keep their existing order even in Grid, and
+   the grid_icon containment check and IHDR read stay off their per-redraw
+   path. */
 static void jw__build_system_icon_candidates(const jw_launcher_state *state,
                                              const char *system_code,
+                                             bool grid_tile,
                                              jw_system_icon_candidates *out) {
     out->count = 0;
     if (!system_code || !system_code[0]) {
@@ -4129,16 +4253,17 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
 
     char path[PATH_MAX];
     int n;
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    bool grid = ss && ss->launcher.layout == CAT_LAUNCHER_GRID;
 
     /* (0) the selected user theme, for the view this layout draws. Wins over
        everything, falls through for any system it does not supply, and never
        for _default (Leaf's safety net, not a tile). Over-cap PNGs are refused
        here so a 4000 px photo never reaches the decoder. */
     if (state) {
-        const cat_stylesheet *ss0 = cat_get_stylesheet();
         const char *view = NULL;
-        if (ss0 && ss0->launcher.layout == CAT_LAUNCHER_GRID)           view = "grid";
-        else if (ss0 && ss0->launcher.layout == CAT_LAUNCHER_COVERFLOW) view = "coverflow";
+        if (grid)                                                     view = "grid";
+        else if (ss && ss->launcher.layout == CAT_LAUNCHER_COVERFLOW) view = "coverflow";
         int ti = jw_settings_user_theme_index(&state->settings);
         if (view && ti >= 0 &&
             jw_user_theme_icon_path(jw_settings_user_themes(&state->settings), ti,
@@ -4163,41 +4288,20 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
 
     const char *theme_dir  = cat_get_active_theme_dir();
     const char *theme_name = cat_get_active_theme_name();
+    bool have_theme_dir = theme_dir && theme_dir[0];
 
-    /* (2-3) content-pak art. AUTO follows the active theme's pack; an absent
-       photographic asset deliberately falls through to the mandatory flat
-       asset. Both paths are resolved live from the catalog's provider. */
-    if (state && state->system_catalog && system_code[0] != '_') {
-        const jw_ra_system *system = jw_ra_catalog_match_system_folder(
-            state->system_catalog, system_code);
-        bool selected_photo =
-            pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC ||
-            (pack == JW_SYSTEM_ICON_PACK_AUTO && theme_name &&
-             strcmp(theme_name, JW_SYSTEM_ICON_PHOTO_THEME) == 0);
-        if (system) {
-            if (selected_photo &&
-                jw_ra_catalog_resolve_system_icon_path(
-                    state->system_catalog, system, true,
-                    path, sizeof(path)) == 0) {
-                jw__push_icon_candidate(out, path);
-            }
-            if (jw_ra_catalog_resolve_system_icon_path(
-                    state->system_catalog, system, false,
-                    path, sizeof(path)) == 0) {
-                jw__push_icon_candidate(out, path);
-            }
+    /* Outside Grid tiles, pak art precedes the built-in pack as it always has. */
+    bool tile_order = grid && grid_tile;
+    if (!tile_order) {
+        jw__push_pak_icon_candidates(state, system_code, pack, theme_name, out);
+        if (!have_theme_dir) {
+            return;   /* no resolved theme root: nothing bundled to point at */
         }
-    }
-
-    if (!theme_dir || !theme_dir[0]) {
-        return;   /* no resolved theme root: nothing bundled to point at */
     }
 
     /* (4) the selected built-in pack. Only AUTO consults the active theme; an
        explicit choice must not follow the layout or theme name. */
-    if (pack == JW_SYSTEM_ICON_PACK_AUTO) {
-        const cat_stylesheet *ss = cat_get_stylesheet();
-        bool grid = ss && ss->launcher.layout == CAT_LAUNCHER_GRID;
+    if (have_theme_dir && pack == JW_SYSTEM_ICON_PACK_AUTO) {
         const char *icon_dir = "system_icons";
         if (grid && ss->launcher.grid_icon_dir[0])
             icon_dir = ss->launcher.grid_icon_dir;
@@ -4216,10 +4320,35 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
                          theme_dir, JW_SYSTEM_ICON_PHOTO_THEME, system_code);
             if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
         }
-    } else if (pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC) {
+    } else if (have_theme_dir && pack == JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC) {
         n = snprintf(path, sizeof(path), "%s/%s/system_icons/%s.png",
                      theme_dir, JW_SYSTEM_ICON_PHOTO_THEME, system_code);
         if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+    } else if (have_theme_dir && pack == JW_SYSTEM_ICON_PACK_FLAT && tile_order) {
+        /* An explicit Flat choice is a pack too: its art is the shared flat
+           set, so on a Grid tile it must precede pak art like the others. */
+        n = snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
+                     theme_dir, system_code);
+        if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+    }
+
+    /* On a Grid tile the user's chosen icon pack wins over pak art: then the
+       pak's own grid tile, then its generic icons. */
+    if (tile_order) {
+        if (state && state->system_catalog && system_code[0] != '_') {
+            const jw_ra_system *system =
+                jw_ra_catalog_match_system_folder(state->system_catalog, system_code);
+            int width, height;
+            if (!jw_ra_catalog_resolve_system_grid_icon_path(state->system_catalog, system,
+                                                             path, sizeof(path)) &&
+                jw_user_theme_png_dims(path, &width, &height) &&
+                width <= JW_USER_THEME_ICON_MAX_PX && height <= JW_USER_THEME_ICON_MAX_PX)
+                jw__push_icon_candidate(out, path);
+        }
+        jw__push_pak_icon_candidates(state, system_code, pack, theme_name, out);
+        if (!have_theme_dir) {
+            return;
+        }
     }
 
     /* (5) shared flat baseline next to the active theme root */
@@ -4245,7 +4374,7 @@ static bool jw__resolve_system_icon_path(const jw_launcher_state *state,
     }
 
     jw_system_icon_candidates cands;
-    jw__build_system_icon_candidates(state, system_code, &cands);
+    jw__build_system_icon_candidates(state, system_code, false, &cands);
     for (int i = 0; i < cands.count; ++i) {
         if (jw__readable_path(cands.paths[i])) {
             return jw__copy_path(out, out_size, cands.paths[i]);
@@ -4291,7 +4420,7 @@ static SDL_Texture *jw__load_system_icon(const jw_launcher_state *state,
                                          const char *system_code,
                                          int *out_w, int *out_h) {
     jw_system_icon_candidates cands;
-    jw__build_system_icon_candidates(state, system_code, &cands);
+    jw__build_system_icon_candidates(state, system_code, false, &cands);
     for (int i = 0; i < cands.count; ++i) {
         SDL_Texture *t = jw__load_cached_image(cands.paths[i], out_w, out_h);
         if (t) return t;
@@ -6185,18 +6314,74 @@ static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
     SDL_FreeSurface(rgba);
 }
 
-/* Grid tile art. Systems go through the memoized path resolver and the same
-   whole-page loader the other layouts use for their system icons, so a page
-   that has been visited once is complete on the frame it appears. The Apps
-   tile is the shared _apps identity asset. */
+/* Grid reuses the system path memo, but advances it after a confirmed decode
+   failure. Pending work keeps its priority. Cover Flow retains its resolver. */
+static const char *jw__grid_system_icon_path(jw_launcher_state *state, int idx) {
+    if (idx < 0 || idx >= state->system_count) return NULL;
+    /* Field compares, not a formatted key: this runs for every tile on every
+       frame. Texture caches are already handled by jw__adopt_art_catalog. */
+    jw_grid_art_identity *id = &state->grid_art_identity;
+    const char *theme_name = cat_get_active_theme_name();
+    if (!theme_name) theme_name = "";
+    if (!id->valid || id->epoch != state->art_epoch ||
+        id->pack != state->settings.system_icon_pack_index ||
+        strcmp(id->user_theme_dir, state->settings.user_theme_dir) ||
+        strcmp(id->theme_name, theme_name)) {
+        jw__system_icon_memo_clear(state);
+        id->valid = true;
+        id->epoch = state->art_epoch;
+        id->pack = state->settings.system_icon_pack_index;
+        snprintf(id->user_theme_dir, sizeof(id->user_theme_dir), "%s",
+                 state->settings.user_theme_dir);
+        snprintf(id->theme_name, sizeof(id->theme_name), "%s", theme_name);
+    }
+    const char *code = state->systems[idx].name;
+    jw_system_icon_memo *memo = &state->system_icon_memos[idx];
+    if (strcmp(memo->code, code)) {
+        memset(memo, 0, sizeof(*memo));
+        size_t i = 0;
+        for (; i + 1 < sizeof(memo->code) && code[i]; ++i)
+            memo->code[i] = code[i];
+        memo->code[i] = '\0';
+    }
+    if (!memo->done) {
+        jw_system_icon_candidates candidates;
+        jw__build_system_icon_candidates(state, code, true, &candidates);
+        memo->path[0] = '\0';
+        for (int i = 0; i < candidates.count; i++) {
+            uint64_t hash = jw__img_path_hash(candidates.paths[i]);
+            bool failed = false;
+            for (int j = 0; j < memo->failed_count; j++)
+                if (memo->failed[j] == hash) failed = true;
+            if (!failed && jw__readable_path(candidates.paths[i])) {
+                jw__copy_path(memo->path, sizeof(memo->path), candidates.paths[i]);
+                break;
+            }
+        }
+        memo->done = true;
+    }
+    return memo->path[0] ? memo->path : NULL;
+}
+
 static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
     jw_launcher_state *state = (jw_launcher_state *)ctx;
     *tw = 0; *th = 0;
     if (idx < 0 || idx >= state->flat_count) return NULL;
     const jw_flat_item *it = &state->flat_items[idx];
     if (it->kind == JW_FLAT_SYSTEM) {
-        const char *path = jw__cf_system_icon_path(state, it->system_idx);
-        return jw__load_page_image(path, JW_GRID_TILE_MAX, tw, th);
+        for (int attempt = 0; attempt < JW_SYSTEM_ICON_MAX_CANDIDATES; attempt++) {
+            const char *path = jw__grid_system_icon_path(state, it->system_idx);
+            if (!path) return NULL;
+            bool failed = false;
+            SDL_Texture *texture = jw__load_catalog_page_image(state, path, JW_GRID_TILE_MAX,
+                                                               tw, th, &failed);
+            if (texture || !failed) return texture;
+            jw_system_icon_memo *memo = &state->system_icon_memos[it->system_idx];
+            if (memo->failed_count < JW_SYSTEM_ICON_MAX_CANDIDATES)
+                memo->failed[memo->failed_count++] = jw__img_path_hash(path);
+            memo->done = false;
+        }
+        return NULL;
     }
     if (it->kind == JW_FLAT_APPS)
         return jw__load_system_icon(state, "_apps", tw, th);
@@ -6386,68 +6571,93 @@ static void jw__gg_playtime(int secs, char *out, size_t n) {
     else             snprintf(out, n, T("%dh %dm"), secs / 3600, (secs % 3600) / 60);
 }
 
-/* The system's logo for the games view. Same three-candidate shape as the tile
-   art -- the user's own file in the ROM folder, the selected theme, then Leaf's
-   own set -- and memoized per system so the frame costs one cached lookup. */
-static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) {
-    *tw = 0; *th = 0;
+/* A wordmark is refused before it can reach the decoder unless its IHDR says
+   1..1024 px per edge. The decode itself goes to 512 px, so this bound is what
+   caps decode memory, whichever source the file came from. */
+static bool jw__gg_wordmark_ok(const char *path) {
+    int w = 0, h = 0;
+    return path[0] && jw_user_theme_png_dims(path, &w, &h) &&
+           w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX;
+}
+
+/* The system's logo for the games view, in display order: the ROM folder, the
+   selected user theme, the accepted pak catalog, then Leaf's own set -- each as
+   a full-color .color.png first (drawn untinted), then the white mark tinted to
+   the list's ink. Even slots are the color variants. Candidates retain
+   precedence while a cold image is pending; missing, over-cap and undecodable
+   files advance. Missing all eight leaves the system name as text.
+
+   Resolved once per system, theme and catalog identity, so the frame costs one
+   cached lookup. The user theme is identified by its folder, not by its catalog
+   index: the index is only stable until a folder on the card is added, removed
+   or renamed. */
+#define JW_GG_WORDMARK_CANDIDATES 8
+static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th,
+                                    bool *color) {
+    *tw = 0; *th = 0; *color = false;
     const char *code = state->game_system;
-    if (!code || !code[0]) return NULL;
-
-    /* Keyed by the theme as well as the system. Keyed by code alone, switching
-       theme and reopening the same system kept the previous theme's resolved
-       path -- and clearing the texture cache would only reload the wrong file.
-
-       The user theme is identified by its folder, not by its catalog index: the
-       catalog is rescanned whenever the Layout page is entered, so an index is
-       only stable until a folder is added, removed or renamed on the card. A
-       rename that reshuffles the list can hand a different theme the index the
-       memo was keyed by, which is invisible to a key built from the index. */
-    const char *theme_dir  = state->settings.user_theme_dir;
-    const char *theme_name = cat_get_active_theme_name();
-    static char cached_code[64];
-    static char cached_theme[256];   /* matches the theme-name source width */
-    static char cached_theme_dir[128];  /* matches jw_settings_ui.user_theme_dir */
-    static bool cached_valid;
-    static char cached_path[PATH_MAX];
-    if (!cached_valid ||
-        strncmp(cached_code, code, sizeof(cached_code) - 1) != 0 ||
-        strncmp(cached_theme_dir, theme_dir,
-                sizeof(cached_theme_dir) - 1) != 0 ||
-        strncmp(cached_theme, theme_name ? theme_name : "",
-                sizeof(cached_theme) - 1) != 0) {
-        snprintf(cached_code, sizeof(cached_code), "%s", code);
-        snprintf(cached_theme, sizeof(cached_theme), "%s", theme_name ? theme_name : "");
-        snprintf(cached_theme_dir, sizeof(cached_theme_dir), "%s", theme_dir);
-        cached_valid = true;
-        cached_path[0] = '\0';
-        char cand[PATH_MAX];
-        int n;
+    if (!code[0]) return NULL;
+    const char *theme = cat_get_active_theme_name();
+    const char *theme_dir = state->settings.user_theme_dir;
+    static struct {
+        char code[64], theme[256], theme_dir[128];
+        char paths[JW_GG_WORDMARK_CANDIDATES][PATH_MAX];
+        bool failed[JW_GG_WORDMARK_CANDIDATES], valid;
+        unsigned epoch;
+    } memo;
+    /* Keyed on the catalog identity epoch; jw__adopt_art_catalog already
+       dropped the textures when that identity moved. */
+    if (!memo.valid || memo.epoch != state->art_epoch ||
+        strcmp(memo.code, code) || strcmp(memo.theme, theme ? theme : "") ||
+        strcmp(memo.theme_dir, theme_dir)) {
+        memset(&memo, 0, sizeof(memo));
+        memo.valid = true;
+        memo.epoch = state->art_epoch;
+        snprintf(memo.code, sizeof(memo.code), "%s", code);
+        snprintf(memo.theme, sizeof(memo.theme), "%s", theme ? theme : "");
+        snprintf(memo.theme_dir, sizeof(memo.theme_dir), "%s", theme_dir);
         char folder[128];
         const char *rom_dir = jw__system_rom_folder(state, code, folder, sizeof(folder));
         if (rom_dir && state->sdcard_root[0]) {
-            n = snprintf(cand, sizeof(cand), "%s/Roms/%s/wordmark.png",
+            int n = snprintf(memo.paths[0], PATH_MAX, "%s/Roms/%s/wordmark.color.png",
+                             state->sdcard_root, rom_dir);
+            if (n < 0 || n >= PATH_MAX) memo.paths[0][0] = '\0';
+            n = snprintf(memo.paths[1], PATH_MAX, "%s/Roms/%s/wordmark.png",
                          state->sdcard_root, rom_dir);
-            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
-                snprintf(cached_path, sizeof(cached_path), "%s", cand);
+            if (n < 0 || n >= PATH_MAX) memo.paths[1][0] = '\0';
         }
         int ti = jw_settings_user_theme_index(&state->settings);
-        if (!cached_path[0] && ti >= 0 &&
-            jw_user_theme_wordmark_path(jw_settings_user_themes(&state->settings), ti,
-                                        "grid", code, cand, sizeof(cand)) &&
-            jw__grid_file_exists(cand))
-            snprintf(cached_path, sizeof(cached_path), "%s", cand);
-        if (!cached_path[0]) {
-            const char *theme_dir = cat_get_active_theme_dir();
-            if (theme_dir && theme_dir[0]) {
-                n = snprintf(cand, sizeof(cand), "%s/../grid_wordmarks/%s.png", theme_dir, code);
-                if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
-                    snprintf(cached_path, sizeof(cached_path), "%s", cand);
-            }
+        if (ti >= 0) {
+            const jw_user_theme_catalog *themes = jw_settings_user_themes(&state->settings);
+            jw_user_theme_wordmark_color_path(themes, ti, "grid", code, memo.paths[2], PATH_MAX);
+            jw_user_theme_wordmark_path(themes, ti, "grid", code, memo.paths[3], PATH_MAX);
         }
+        const jw_ra_system *system = jw_ra_catalog_match_system_folder(state->system_catalog, code);
+        jw_ra_catalog_resolve_system_wordmark_color_path(state->system_catalog, system,
+                                                         memo.paths[4], PATH_MAX);
+        jw_ra_catalog_resolve_system_wordmark_path(state->system_catalog, system,
+                                                   memo.paths[5], PATH_MAX);
+        const char *builtin = cat_get_active_theme_dir();
+        if (builtin && builtin[0]) {
+            int n = snprintf(memo.paths[6], PATH_MAX, "%s/../grid_wordmarks/%s.color.png",
+                             builtin, code);
+            if (n < 0 || n >= PATH_MAX) memo.paths[6][0] = '\0';
+            n = snprintf(memo.paths[7], PATH_MAX, "%s/../grid_wordmarks/%s.png", builtin, code);
+            if (n < 0 || n >= PATH_MAX) memo.paths[7][0] = '\0';
+        }
+        for (int i = 0; i < JW_GG_WORDMARK_CANDIDATES; i++)
+            memo.failed[i] = !jw__gg_wordmark_ok(memo.paths[i]);
     }
-    if (!cached_path[0]) return NULL;
-    return jw__load_page_image(cached_path, JW_WORDMARK_MAX, tw, th);
+    for (int i = 0; i < JW_GG_WORDMARK_CANDIDATES; i++) {
+        if (memo.failed[i]) continue;
+        /* CAT-1's immutable generation is part of the thumbnail identity. A PNG
+           replaced with the same mtime/size still gets a fresh derived image. */
+        SDL_Texture *texture = jw__load_catalog_page_image(state, memo.paths[i], JW_WORDMARK_MAX,
+                                                           tw, th, &memo.failed[i]);
+        if (texture) *color = (i % 2) == 0;
+        if (texture || !memo.failed[i]) return texture;
+    }
+    return NULL;
 }
 
 /* Grid View's colours come from the selected theme's theme.json, scoped to this
@@ -6547,7 +6757,8 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     jw__cover_prewarm(state, state->games, state->game_count, state->game_list.cursor);
 
     int wmw = 0, wmh = 0;
-    SDL_Texture *wm = jw__gg_wordmark(state, &wmw, &wmh);
+    bool wm_color = false;
+    SDL_Texture *wm = jw__gg_wordmark(state, &wmw, &wmh, &wm_color);
 
     /* Between the stock cluster and the home grid's 70%: big enough to read at
        arm's length, small enough not to crowd the cover. The columns start below
@@ -6559,7 +6770,7 @@ static void jw__render_grid_games(jw_launcher_state *state) {
     jw_grid_games_draw(&state->game_list, state->game_count,
                        jw__gg_name, jw__gg_art, state,
                        meta, meta_n, synopsis,
-                       wm, wmw, wmh,
+                       wm, wmw, wmh, wm_color,
                        state->game_system_display, top_bar, &style);
 
     /* Status cluster last so it floats over everything, at the same reduced size
@@ -6701,7 +6912,7 @@ static void jw__render_grid_apps(jw_launcher_state *state) {
     jw_grid_games_draw(&state->app_list, state->app_count,
                        jw__ga_name, jw__ga_art, state,
                        meta, meta_n, synopsis,
-                       NULL, 0, 0,
+                       NULL, 0, 0, false,
                        T("Apps"), top_bar, &style);
 
     cat_draw_color saved_hint = theme->hint;
@@ -6715,7 +6926,7 @@ static void jw__render_grid_apps(jw_launcher_state *state) {
 }
 
 /* Build the thumbnails for this page and the next before the cursor gets there,
-   so scrolling arrives on art that jw__load_page_image can pick up inline. Only
+   so scrolling arrives on art that jw__load_page_image_status can pick up inline. Only
    ever queues what is genuinely missing; a warm page enqueues nothing. */
 static void jw__grid_prewarm_icons(jw_launcher_state *state) {
     if (state->flat_count <= 0) return;
@@ -6728,11 +6939,11 @@ static void jw__grid_prewarm_icons(jw_launcher_state *state) {
     for (int i = first; i <= last; ++i) {
         const jw_flat_item *it = &state->flat_items[i];
         if (it->kind != JW_FLAT_SYSTEM) continue;
-        const char *path = jw__cf_system_icon_path(state, it->system_idx);
+        const char *path = jw__grid_system_icon_path(state, it->system_idx);
         if (!path || !path[0]) continue;
         if (cat_cache_get(path, NULL, NULL)) continue;          /* already decoded */
         char thumb[PATH_MAX];
-        const char *tp = jw__cover_thumb_path(path, thumb, sizeof(thumb)) ? thumb : NULL;
+        const char *tp = jw__catalog_thumb_path(state, path, thumb, sizeof(thumb)) ? thumb : NULL;
         if (tp && cat_thumbnail_is_cached(path, tp)) continue;  /* already built */
         jw_cover_loader_enqueue(jw__covers(), path, tp, JW_GRID_TILE_MAX);
     }

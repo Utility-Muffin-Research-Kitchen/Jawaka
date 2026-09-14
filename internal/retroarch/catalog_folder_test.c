@@ -85,6 +85,114 @@ int main(void) {
     }
     jw_ra_catalog_free(catalog);
 
+    const char *art_fields[] = {
+        "\"wordmark\":\"mark.png\",\"wordmark_provider\":\"mlp1/Art.pak\"",
+        "\"wordmark\":\"mark.png\",\"wordmark_provider\":\"../Art.pak\"",
+        "\"wordmark\":\"../mark.png\",\"wordmark_provider\":\"mlp1/Art.pak\"",
+        "\"wordmark\":\"mark.png\"",
+        "\"wordmark\":false,\"wordmark_provider\":\"mlp1/Art.pak\""
+    };
+    for (size_t i = 0; i < sizeof(art_fields)/sizeof(art_fields[0]); i++) {
+        char json[2048];
+        snprintf(json, sizeof(json), "{\"platform\":\"mac\",\"systems\":[{\"id\":\"GBA\",%s}]}", art_fields[i]);
+        if (write_text(systems, json) || !(catalog = jw_ra_catalog_load(root, error, sizeof(error))))
+            return fail("optional malformed art rejected a system");
+        if ((i == 0) != (catalog->systems[0].wordmark != NULL) || catalog->systems[0].provider)
+            return fail("art validation or system ownership changed");
+        if (i == 0) {
+            char apps[PATH_MAX], lane[PATH_MAX], pak[PATH_MAX], image[PATH_MAX], resolved[PATH_MAX];
+            snprintf(apps, sizeof(apps), "%s/Apps", root); mkdir(apps, 0700);
+            snprintf(lane, sizeof(lane), "%s/mlp1", apps); mkdir(lane, 0700);
+            snprintf(pak, sizeof(pak), "%s/Art.pak", lane); mkdir(pak, 0700);
+            snprintf(image, sizeof(image), "%s/mark.png", pak); write_text(image, "image");
+            setenv("APPS_PATH", apps, 1);
+            if (jw_ra_catalog_resolve_system_wordmark_path(catalog, &catalog->systems[0], resolved, sizeof(resolved)) || strcmp(image, resolved))
+                return fail("wordmark didn't use live provider root");
+            unlink(image);
+            if (symlink(systems, image)) return fail("symlink fixture failed");
+            if (!jw_ra_catalog_resolve_system_wordmark_path(catalog, &catalog->systems[0], resolved, sizeof(resolved)))
+                return fail("wordmark followed escaping symlink");
+            unlink(image);
+            unsetenv("APPS_PATH");
+        }
+        jw_ra_catalog_free(catalog);
+    }
+
+    {
+    /* wordmark_color is its own slot: same validation, same containment, and a
+       failed resolve leaves no stale path behind. */
+    const char *art_fields[] = {
+        "\"wordmark_color\":\"mark.png\",\"wordmark_color_provider\":\"mlp1/Art.pak\"",
+        "\"wordmark_color\":\"mark.png\",\"wordmark_color_provider\":\"../Art.pak\"",
+        "\"wordmark_color\":\"../mark.png\",\"wordmark_color_provider\":\"mlp1/Art.pak\"",
+        "\"wordmark_color\":\"mark.png\",\"wordmark_provider\":\"mlp1/Art.pak\"",
+        "\"wordmark_color\":false,\"wordmark_color_provider\":\"mlp1/Art.pak\""
+    };
+    for (size_t i = 0; i < sizeof(art_fields)/sizeof(art_fields[0]); i++) {
+        char json[2048];
+        snprintf(json, sizeof(json), "{\"platform\":\"mac\",\"systems\":[{\"id\":\"GBA\",%s}]}", art_fields[i]);
+        if (write_text(systems, json) || !(catalog = jw_ra_catalog_load(root, error, sizeof(error))))
+            return fail("optional malformed art rejected a system");
+        if ((i == 0) != (catalog->systems[0].wordmark_color != NULL) || catalog->systems[0].provider ||
+            catalog->systems[0].wordmark)
+            return fail("color wordmark validation or slot independence changed");
+        if (i == 0) {
+            char apps[PATH_MAX], lane[PATH_MAX], pak[PATH_MAX], image[PATH_MAX], resolved[PATH_MAX];
+            snprintf(apps, sizeof(apps), "%s/Apps", root); mkdir(apps, 0700);
+            snprintf(lane, sizeof(lane), "%s/mlp1", apps); mkdir(lane, 0700);
+            snprintf(pak, sizeof(pak), "%s/Art.pak", lane); mkdir(pak, 0700);
+            snprintf(image, sizeof(image), "%s/mark.png", pak); write_text(image, "image");
+            setenv("APPS_PATH", apps, 1);
+            if (jw_ra_catalog_resolve_system_wordmark_color_path(catalog, &catalog->systems[0], resolved, sizeof(resolved)) || strcmp(image, resolved))
+                return fail("wordmark_color didn't use live provider root");
+            unlink(image);
+            if (symlink(systems, image)) return fail("symlink fixture failed");
+            if (!jw_ra_catalog_resolve_system_wordmark_color_path(catalog, &catalog->systems[0], resolved, sizeof(resolved)) || resolved[0])
+                return fail("wordmark_color followed escaping symlink or kept its path");
+            unlink(image);
+            if (!jw_ra_catalog_resolve_system_wordmark_color_path(catalog, &catalog->systems[0], resolved, sizeof(resolved)) || resolved[0])
+                return fail("missing wordmark_color resolved or kept its path");
+            unsetenv("APPS_PATH");
+        }
+        jw_ra_catalog_free(catalog);
+    }
+    }
+
+    {
+    const char *art_fields[] = {
+        "\"grid_icon\":\"mark.png\",\"grid_icon_provider\":\"mlp1/Art.pak\"",
+        "\"grid_icon\":\"mark.png\",\"grid_icon_provider\":\"../Art.pak\"",
+        "\"grid_icon\":\"../mark.png\",\"grid_icon_provider\":\"mlp1/Art.pak\"",
+        "\"grid_icon\":\"mark.png\"",
+        "\"grid_icon\":false,\"grid_icon_provider\":\"mlp1/Art.pak\""
+    };
+    for (size_t i = 0; i < sizeof(art_fields)/sizeof(art_fields[0]); i++) {
+        char json[2048];
+        snprintf(json, sizeof(json), "{\"platform\":\"mac\",\"systems\":[{\"id\":\"GBA\",%s}]}", art_fields[i]);
+        if (write_text(systems, json) || !(catalog = jw_ra_catalog_load(root, error, sizeof(error))))
+            return fail("optional malformed art rejected a system");
+        if ((i == 0) != (catalog->systems[0].grid_icon != NULL) || catalog->systems[0].provider)
+            return fail("art validation or system ownership changed");
+        if (i == 0) {
+            char apps[PATH_MAX], lane[PATH_MAX], pak[PATH_MAX], image[PATH_MAX], resolved[PATH_MAX];
+            snprintf(apps, sizeof(apps), "%s/Apps", root); mkdir(apps, 0700);
+            snprintf(lane, sizeof(lane), "%s/mlp1", apps); mkdir(lane, 0700);
+            snprintf(pak, sizeof(pak), "%s/Art.pak", lane); mkdir(pak, 0700);
+            snprintf(image, sizeof(image), "%s/mark.png", pak); write_text(image, "image");
+            setenv("APPS_PATH", apps, 1);
+            if (jw_ra_catalog_resolve_system_grid_icon_path(catalog, &catalog->systems[0], resolved, sizeof(resolved)) || strcmp(image, resolved))
+                return fail("grid_icon didn't use live provider root");
+            unlink(image);
+            if (symlink(systems, image)) return fail("symlink fixture failed");
+            if (!jw_ra_catalog_resolve_system_grid_icon_path(catalog, &catalog->systems[0], resolved, sizeof(resolved)))
+                return fail("grid_icon followed escaping symlink");
+            unlink(image);
+            unsetenv("APPS_PATH");
+        }
+        jw_ra_catalog_free(catalog);
+    }
+    }
+
     if (write_text(systems,
                    "{\"platform\":\"mac\",\"systems\":["
                    "{\"id\":\"SCUMMVM\",\"extensions\":[\"scummvm\",\"svm\"],"

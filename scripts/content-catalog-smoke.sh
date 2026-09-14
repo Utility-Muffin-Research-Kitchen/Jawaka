@@ -160,6 +160,90 @@ assert rows[1][1:] == [core, standalone, str(catalog / sys.argv[5] / "info"), fl
 PY
 echo "ok: pak-relative core/standalone paths resolve live; generation swap moves info"
 
+# CONTENT-ART-1 is compiled during discovery; a bad optional block must leave
+# the contributed system and both launchable cores available in the same scan.
+python3 - "$SCAN" "$SD" "$DB" "$STATE_DIR/catalog" <<'PYART'
+import json, pathlib, subprocess, sys
+scan, sd, db, catalog = sys.argv[1:]
+catalog = pathlib.Path(catalog)
+pak = pathlib.Path(sd, "Apps/mac/ContentTest.pak")
+manifest_path = pak / "pak.json"
+manifest = json.loads(manifest_path.read_text())
+manifest["content_art"] = {"schema": 1, "systems": [
+    {"id": "CONTENTTEST", "wordmark": "art/mark.png"}]}
+manifest_path.write_text(json.dumps(manifest))
+image = pak / "art/mark.png"
+# Every art slot needs a PNG IHDR within 1..1024 px; the body is never decoded here.
+header = bytes.fromhex("89504e470d0a1a0a0000000d494844520000020000000200")
+image.write_bytes(header + b"one")
+
+def rescan():
+    output = subprocess.check_output([scan, sd, db], text=True)
+    assert "game\tCONTENTTEST\tgame\t" in output, output
+    generation = catalog / (catalog / "current").read_text().strip()
+    systems = json.loads((generation / "systems.json").read_text())["systems"]
+    cores = json.loads((generation / "cores.json").read_text())["cores"]
+    assert {"contenttest", "contentpath"} <= {c["id"] for c in cores}
+    return generation, next(s for s in systems if s["id"] == "CONTENTTEST")
+
+first, system = rescan()
+assert system["wordmark"] == "art/mark.png"
+assert system["wordmark_provider"] == system["provider"] == "mac/ContentTest.pak"
+stamp = json.loads((first / "stamp.json").read_text())
+files = stamp["contributors"][0]["files"]
+assert {"pak.json", "art/mark.png"} <= {f["rel"] for f in files}
+image.write_bytes(header + b"two")
+second, system = rescan()
+assert second != first
+image.write_bytes(bytes.fromhex("89504e470d0a1a0a0000000d494844520000040100000200"))
+_, system = rescan()
+assert "wordmark" not in system
+entries = json.loads((catalog / "diagnostics.json").read_text())["entries"]
+assert any(e["reason"] == "invalid-content-art-wordmark-dimensions" for e in entries)
+image.write_bytes(b"invalid PNG")
+_, system = rescan()
+assert "wordmark" not in system
+entries = json.loads((catalog / "diagnostics.json").read_text())["entries"]
+assert any(e["reason"] == "unsupported-content-art-image" for e in entries)
+manifest["content_art"]["systems"][0]["wordmark"] = "art/mark.png\0hidden"
+manifest_path.write_text(json.dumps(manifest))
+_, system = rescan()
+assert "wordmark" not in system
+# Add v2 grid and color art, then prove byte replacement and whole-block fail-soft behavior.
+manifest["content_art"] = {"schema": 2, "systems": [
+    {"id": "CONTENTTEST", "wordmark": "art/mark.png", "grid_icon": "art/grid.png",
+     "wordmark_color": "art/color.png"}]}
+image.write_bytes(header + b"wordmark")
+grid = image.with_name("grid.png")
+grid.write_bytes(header + b"first")
+color = image.with_name("color.png")
+color.write_bytes(header + b"first")
+manifest_path.write_text(json.dumps(manifest))
+first, system = rescan()
+assert system["grid_icon"] == "art/grid.png"
+assert system["wordmark_color"] == "art/color.png"
+assert system["grid_icon_provider"] == system["wordmark_provider"] == \
+    system["wordmark_color_provider"] == "mac/ContentTest.pak"
+files = json.loads((first / "stamp.json").read_text())["contributors"][0]["files"]
+assert {"pak.json", "art/grid.png", "art/mark.png", "art/color.png"} <= {f["rel"] for f in files}
+grid.write_bytes(header + b"other")
+second, system = rescan()
+assert second != first
+color.write_bytes(header + b"other")
+third, system = rescan()
+assert third != second
+grid.write_bytes(b"bad")
+_, system = rescan()
+assert "grid_icon" not in system and "wordmark" not in system and "wordmark_color" not in system
+manifest["content_art"]["systems"][0].pop("wordmark")
+manifest["content_art"]["systems"][0].pop("wordmark_color")
+grid.write_bytes(header)
+manifest_path.write_text(json.dumps(manifest))
+_, system = rescan()
+assert system["grid_icon_provider"] == "mac/ContentTest.pak" and "wordmark" not in system
+print("ok: wordmark/color/grid provenance, replacement, dimension cap, grid-only and fail-soft discovery")
+PYART
+
 rm -rf "$SD/Apps/mac/ContentTest.pak"
 SECOND="$TMP_ROOT/second.txt"
 "$SCAN" "$SD" "$DB" > "$SECOND"

@@ -278,7 +278,7 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
                         jw_grid_games_art_fn art_fn, void *ctx,
                         const jw_grid_games_meta *meta, int meta_count,
                         const char *synopsis,
-                        SDL_Texture *wordmark, int wm_w, int wm_h,
+                        SDL_Texture *wordmark, int wm_w, int wm_h, bool wm_color,
                         const char *system_name, int top_bar,
                         const jw_grid_games_style *st) {
     if (!ls || !st) return;
@@ -560,9 +560,11 @@ void jw_grid_games_draw(const cat_list_state *ls, int count,
         SDL_Rect dst = { rx + (rw - dw) / 2, wy + (wm_slot - dh) / 2, dw, dh };
         /* Tinted to the list's own ink. The art is authored white for exactly
            this, so the logo reads as part of the interface rather than as a
-           sticker, and it stays legible when the underlay flips polarity. */
+           sticker, and it stays legible when the underlay flips polarity. A
+           .color wordmark carries its own colors and is drawn untinted. */
         SDL_SetTextureBlendMode(wordmark, SDL_BLENDMODE_BLEND);
-        SDL_SetTextureColorMod(wordmark, ink.r, ink.g, ink.b);
+        if (wm_color) SDL_SetTextureColorMod(wordmark, 255, 255, 255);
+        else          SDL_SetTextureColorMod(wordmark, ink.r, ink.g, ink.b);
         SDL_SetTextureAlphaMod(wordmark, 255);
         SDL_RenderCopy(cat_get_renderer(), wordmark, NULL, &dst);
     } else if (system_name && system_name[0]) {

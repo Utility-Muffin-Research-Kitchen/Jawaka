@@ -591,14 +591,26 @@ service-manifest-test: | $(BUILD)/bin
 	$(BUILD)/bin/service-manifest-test
 
 content-manifest-test: | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/content-manifest-test \
+	$(CC) $(CFLAGS_COMMON) \
+		-DJW_CONTENT_FIXTURES_ROOT=\"$(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-content/manifests\" \
+		-DJW_CONTENT_SCRAPE_FIXTURE_PATH=\"$(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-content/scrape/fixtures.json\" \
+		-o $(BUILD)/bin/content-manifest-test \
 		internal/catalog/manifest_test.c internal/catalog/manifest.c \
 		internal/retroarch/catalog.c $(EFFECTIVE_CATALOG_SRCS) \
 		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/content-manifest-test
 
+.PHONY: content-art-test
+content-art-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -DJW_ART_FIXTURE=\"$(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-content/art/fixtures.json\" \
+		-o $(BUILD)/bin/content-art-test internal/catalog/art_test.c \
+		internal/catalog/manifest.c internal/retroarch/catalog.c $(EFFECTIVE_CATALOG_SRCS) \
+		internal/platform/platform_id_mock.c third_party/cjson/cJSON.c
+	$(BUILD)/bin/content-art-test
+	$(BUILD)/bin/content-art-test "$(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-content/art/grid-fixtures.json"
+
 catalog-merge-test: | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/catalog-merge-test \
+	$(CC) $(CFLAGS_COMMON) -DJW_MERGE_FIXTURE=\"$(WORKSPACE_ROOT)/leaf-contracts/contracts/leaf-content/merge/fixtures.json\" -o $(BUILD)/bin/catalog-merge-test \
 		internal/catalog/merge_test.c internal/catalog/merge.c \
 		internal/catalog/json.c internal/update/sha256.c third_party/cjson/cJSON.c
 	$(BUILD)/bin/catalog-merge-test
@@ -829,6 +841,12 @@ pinyin-search-test: | $(BUILD)/bin
 		internal/db/pinyin_search_test.c internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
 		$(LDLIBS_COMMON)
 	$(BUILD)/bin/pinyin-search-test
+
+.PHONY: wordmark-test
+wordmark-test: | $(BUILD)/bin check-catastrophe check-sdl
+	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/wordmark-test \
+		internal/launcher/wordmark_test.c $(sort $(UI_SRCS)) $(LDLIBS_UI)
+	CAT_FONTS_DIR="$(CATASTROPHE_DIR)/res" $(BUILD)/bin/wordmark-test
 
 settings-status-test: | $(BUILD)/bin check-catastrophe check-sdl
 	$(CC) $(CFLAGS_UI) -o $(BUILD)/bin/settings-status-test \

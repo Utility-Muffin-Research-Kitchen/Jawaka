@@ -1431,6 +1431,17 @@ static int jw__content_enumerate_dir(const jw_storage_source *source,
             break;
         }
 
+        const cJSON *content_art = NULL;
+        int art_status = jw_content_art_validate(
+            manifest.document, pak_dir, &content_art, reason, sizeof(reason));
+        if (art_status < 0 && jw__content_diagnostic(diagnostics, provider, reason,
+                "optional content art metadata ignored") != 0) {
+            jw_content_manifest_destroy(&manifest);
+            free(manifest_text);
+            rc = -1;
+            break;
+        }
+
         cJSON *row = cJSON_CreateObject();
         cJSON *pak_version = cJSON_GetObjectItemCaseSensitive(manifest.document,
                                                               "pak_version");
@@ -1450,6 +1461,17 @@ static int jw__content_enumerate_dir(const jw_storage_source *source,
         if (scrape_status > 0) {
             cJSON *copy = cJSON_Duplicate(content_scrape, true);
             if (!copy || !cJSON_AddItemToObject(row, "content_scrape", copy)) {
+                cJSON_Delete(copy);
+                cJSON_Delete(row);
+                jw_content_manifest_destroy(&manifest);
+                free(manifest_text);
+                rc = -1;
+                break;
+            }
+        }
+        if (art_status > 0) {
+            cJSON *copy = cJSON_Duplicate(content_art, true);
+            if (!copy || !cJSON_AddItemToObject(row, "content_art", copy)) {
                 cJSON_Delete(copy);
                 cJSON_Delete(row);
                 jw_content_manifest_destroy(&manifest);

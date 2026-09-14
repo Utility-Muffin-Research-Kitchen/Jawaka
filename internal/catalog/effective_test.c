@@ -605,6 +605,74 @@ static void test_content_scrape_policy(void) {
     check(strcmp(first_generation, generation) != 0,
           "pak.json change moves the generation");
 
+    cJSON *contributor = cJSON_GetArrayItem(contributors, 0);
+    cJSON_AddItemToObject(contributor, "content_art", cJSON_Parse(
+        "{\"schema\":1,\"systems\":[{\"id\":\"SCUMMVM\",\"wordmark\":\"mark.png\"}]}"));
+    path_of(path, sizeof(path), "%s/mark.png", pak_dir);
+    write_text(path, "\x89PNG\r\n\x1a\none");
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0, "wordmark publishes");
+    path_of(path, sizeof(path), "%s/%s/systems.json", catalog_dir, generation);
+    systems = read_text(path);
+    check(systems && strstr(systems, "\"wordmark\":\"mark.png\"") &&
+          strstr(systems, "\"wordmark_provider\":\"mlp1/ScummVM.pak\""),
+          "wordmark path and separate provenance serialized");
+    check(systems && !strstr(systems, sandbox), "no live mount path in systems output");
+    path_of(path, sizeof(path), "%s/%s/stamp.json", catalog_dir, generation);
+    stamp = read_text(path);
+    check(stamp && strstr(stamp, "\"rel\":\"mark.png\""), "PNG fingerprinted");
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    path_of(path, sizeof(path), "%s/mark.png", pak_dir);
+    write_text(path, "\x89PNG\r\n\x1a\ntwo");
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(first_generation, generation), "same-path PNG bytes republish");
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    cJSON_ReplaceItemInObjectCaseSensitive(contributor, "content_art", cJSON_Parse(
+        "{\"schema\":2,\"systems\":[{\"id\":\"SCUMMVM\",\"wordmark\":\"mark.png\",\"grid_icon\":\"grid.png\",\"wordmark_color\":\"color.png\"}]}"));
+    path_of(path, sizeof(path), "%s/grid.png", pak_dir);
+    write_text(path, "grid-one");
+    path_of(path, sizeof(path), "%s/color.png", pak_dir);
+    write_text(path, "color-one");
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0, "grid icon publishes from accepted contributor");
+    path_of(path, sizeof(path), "%s/%s/systems.json", catalog_dir, generation);
+    systems = read_text(path);
+    check(systems && strstr(systems, "\"grid_icon\":\"grid.png\"") &&
+          strstr(systems, "\"grid_icon_provider\":\"mlp1/ScummVM.pak\""), "grid path and independent provider serialized");
+    check(systems && strstr(systems, "\"wordmark_color\":\"color.png\"") &&
+          strstr(systems, "\"wordmark_color_provider\":\"mlp1/ScummVM.pak\""), "color wordmark and provider serialized");
+    path_of(path, sizeof(path), "%s/%s/stamp.json", catalog_dir, generation);
+    stamp = read_text(path);
+    check(stamp && strstr(stamp, "\"rel\":\"grid.png\"") && strstr(stamp, "\"rel\":\"color.png\""),
+          "grid and color PNGs fingerprinted");
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    path_of(path, sizeof(path), "%s/color.png", pak_dir); write_text(path, "color-two");
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(first_generation, generation), "same-path color bytes republish");
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    path_of(path, sizeof(path), "%s/grid.png", pak_dir); write_text(path, "grid-two");
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(first_generation, generation), "same-path grid bytes republish");
+    snprintf(first_generation, sizeof(first_generation), "%s", generation);
+    char moved[PATH_MAX]; path_of(moved, sizeof(moved), "%s/relocated.pak", sandbox);
+    check(rename(pak_dir, moved) == 0, "move provider install root");
+    cJSON_ReplaceItemInObjectCaseSensitive(contributor, "pak_dir", cJSON_CreateString(moved));
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && !strcmp(first_generation, generation), "root relocation preserves generation");
+    cJSON_DeleteItemFromArray(contributors, 0);
+    rc = jw_catalog_refresh_with_contributors(sandbox, defaults_dir, contributors, diagnostics,
+        generation, sizeof(generation), reason, sizeof(reason));
+    check(rc == 0 && strcmp(first_generation, generation), "provider removal republishes");
+    path_of(path, sizeof(path), "%s/%s/systems.json", catalog_dir, generation);
+    systems = read_text(path);
+    check(systems && !strstr(systems, "wordmark") && !strstr(systems, "grid_icon"), "removed provider leaves no art fields");
+
     cJSON_Delete(diagnostics);
     cJSON_Delete(contributors);
 }
