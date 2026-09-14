@@ -16,6 +16,7 @@ typedef enum {
     JW_SCRAPE_IDLE = 0,
     JW_SCRAPE_RUNNING,
     JW_SCRAPE_PAUSED_QUOTA,   /* daily quota exhausted; queue retained */
+    JW_SCRAPE_PAUSED_STORAGE, /* artwork card or library DB not writable; queue retained */
 } jw_scrape_state;
 
 typedef struct {
@@ -128,6 +129,12 @@ int jw_scrape_missing_counts(jw_scrape_missing_row *out, int max,
                              int *out_count, int *out_total_missing);
 
 void jw_scrape_status(jw_scrape_status_info *out);
+
+/* Re-evaluate a storage pause. The daemon calls this when storage health
+   changes; the batch resumes only when every dependency it stopped on is
+   writable again and no repair hold remains. The queue lives in memory only:
+   a reboot, including a repair reboot, starts with an empty queue. */
+void jw_scrape_storage_recheck(void);
 void jw_scrape_queue_snapshot(jw_scrape_queue_info *out, int offset, int limit);
 
 /* Clear terminal rows (done/not-found/error/cancelled), preserving queued and

@@ -1352,8 +1352,8 @@ msgstr "未知"
 msgid "Unmount"
 msgstr "卸载"
 
-msgid "Unmount Secondary SD"
-msgstr "卸载副 SD 卡"
+msgid "SD Cards"
+msgstr "SD 卡"
 
 msgid "Unmount canceled"
 msgstr "已取消卸载"

@@ -402,6 +402,7 @@ typedef struct {
     int                led_brightness;      /* 0..JW_LED_BRIGHTNESS_MAX */
     int                led_speed;           /* 0..JW_LED_SPEED_MAX */
     char               secondary_sd_status[32];
+    char               storage_alert[48];   /* status bar text while a card is read-only */
     jw_wifi_status_t   wifi;                /* last-read Wi-Fi status (Network page) */
     unsigned           wifi_next_poll_ms;   /* throttle for the live Network poll */
     jw_wifi_network_t  wifi_networks[JW_WIFI_MAX_NETWORKS];  /* latest scan results */

@@ -1573,9 +1573,13 @@ int jw_db_set_game_image(const char *db_path, const char *rom_path,
     int step_rc = sqlite3_step(stmt);
     int rc;
     if (step_rc == SQLITE_DONE) {
-        rc = (sqlite3_changes(db) == 0) ? 1 : 0;
+        rc = (sqlite3_changes(db) == 0) ? JW_DB_RC_NO_ROW : 0;
     } else if (step_rc == SQLITE_BUSY || step_rc == SQLITE_LOCKED) {
-        rc = -2; /* transient lock: caller may retry (vs -1 hard failure). */
+        rc = JW_DB_RC_BUSY; /* transient lock: caller may retry (vs -1 hard failure). */
+    } else if ((sqlite3_extended_errcode(db) & 0xff) == SQLITE_READONLY) {
+        rc = JW_DB_RC_READONLY;
+    } else if ((sqlite3_extended_errcode(db) & 0xff) == SQLITE_IOERR) {
+        rc = JW_DB_RC_IOERR;
     } else {
         rc = -1;
     }

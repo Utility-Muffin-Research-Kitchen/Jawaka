@@ -775,6 +775,10 @@ int jw_ipc_library_status_full(const char *socket_path, jw_ipc_library_status_in
         if (cJSON_IsString(error)) {
             ipc__copy_string(out->scan_error, sizeof(out->scan_error), error->valuestring);
         }
+        const cJSON *storage_generation =
+            cJSON_GetObjectItemCaseSensitive(resp, "storage_health_generation");
+        out->storage_health_generation = cJSON_IsNumber(storage_generation)
+            ? storage_generation->valueint : -1;
     }
     cJSON_Delete(resp);
     return 0;
@@ -827,6 +831,47 @@ int jw_ipc_get_storage_status(const char *socket_path, const char *source,
         out->mounted = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "mounted"));
         out->busy = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "busy"));
         out->can_unmount = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "can_unmount"));
+#define IPC__STORAGE_STRING(field, key) \
+        v = cJSON_GetObjectItemCaseSensitive(resp, key); \
+        if (cJSON_IsString(v)) ipc__copy_string(out->field, sizeof(out->field), v->valuestring)
+        IPC__STORAGE_STRING(access, "access");
+        IPC__STORAGE_STRING(cause, "cause");
+        IPC__STORAGE_STRING(repair, "repair");
+        IPC__STORAGE_STRING(fs_type, "fs_type");
+        IPC__STORAGE_STRING(uuid, "uuid");
+        IPC__STORAGE_STRING(volume_label, "volume_label");
+        IPC__STORAGE_STRING(kernel_message, "kernel_message");
+        IPC__STORAGE_STRING(repair_unavailable_reason, "repair_unavailable_reason");
+        IPC__STORAGE_STRING(repair_mode, "repair_mode");
+        out->dirty_at_boot = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "dirty_at_boot"));
+        out->block_write_protected =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "block_write_protected"));
+        out->repair_supported =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "repair_supported"));
+        out->warning_pending =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "warning_pending"));
+        out->external_power =
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "external_power"));
+        v = cJSON_GetObjectItemCaseSensitive(resp, "health_generation");
+        out->health_generation = cJSON_IsNumber(v) ? v->valueint : -1;
+        const cJSON *last = cJSON_GetObjectItemCaseSensitive(resp, "last_repair");
+        if (cJSON_IsObject(last)) {
+            const cJSON *saved_resp = resp;
+            resp = (cJSON *)last;
+            out->last_repair_valid = true;
+            IPC__STORAGE_STRING(last_repair_request_id, "request_id");
+            IPC__STORAGE_STRING(last_repair_outcome, "outcome");
+            IPC__STORAGE_STRING(last_repair_mount_state, "mount_state");
+            IPC__STORAGE_STRING(last_repair_mode, "mode");
+            out->last_repair_acknowledged =
+                cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "acknowledged"));
+            out->last_repair_changes_complete =
+                cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "changes_complete"));
+            v = cJSON_GetObjectItemCaseSensitive(resp, "reported_changes");
+            out->last_repair_reported_changes = cJSON_IsNumber(v) ? v->valueint : 0;
+            resp = (cJSON *)saved_resp;
+        }
+#undef IPC__STORAGE_STRING
     }
     if (status) {
         const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
@@ -839,6 +884,49 @@ int jw_ipc_get_storage_status(const char *socket_path, const char *source,
 
     cJSON_Delete(resp);
     return 0;
+}
+
+static int ipc__storage_simple_request(const char *socket_path, cJSON *req,
+                                       char *status, int status_len) {
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status) snprintf(status, (size_t)status_len, "%s", "daemon unavailable");
+        return -1;
+    }
+    int rc = ipc__type_is(resp, "ok") ? 0 : -1;
+    if (status) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        if (!cJSON_IsString(message)) {
+            message = cJSON_GetObjectItemCaseSensitive(resp, "error");
+        }
+        snprintf(status, (size_t)status_len, "%s",
+                 cJSON_IsString(message) && message->valuestring ? message->valuestring : "");
+    }
+    cJSON_Delete(resp);
+    return rc;
+}
+
+int jw_ipc_storage_warning_ack(const char *socket_path, const char *source) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "storage-warning-ack");
+    cJSON_AddStringToObject(req, "source", source && source[0] ? source : "launcher_sd");
+    return ipc__storage_simple_request(socket_path, req, NULL, 0);
+}
+
+int jw_ipc_storage_repair_request(const char *socket_path, const char *source,
+                                  const char *mode, char *status, int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "storage-repair-request");
+    cJSON_AddStringToObject(req, "source", source && source[0] ? source : "launcher_sd");
+    cJSON_AddStringToObject(req, "mode", mode && mode[0] ? mode : "repair");
+    return ipc__storage_simple_request(socket_path, req, status, status_len);
+}
+
+int jw_ipc_storage_repair_result_ack(const char *socket_path, const char *request_id) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "storage-repair-result-ack");
+    cJSON_AddStringToObject(req, "request_id", request_id ? request_id : "");
+    return ipc__storage_simple_request(socket_path, req, NULL, 0);
 }
 
 int jw_ipc_safe_unmount_storage(const char *socket_path, const char *source,

@@ -6,8 +6,11 @@
 #include "internal/db/db.h"
 #include "internal/discovery/art_path.h"
 #include "internal/retroarch/catalog.h"
+#include "internal/storage/health.h"
 #include "internal/storage/sources.h"
 
+#include <errno.h>
+#include <sys/stat.h>
 #include <libgen.h>
 #include <limits.h>
 #include <pthread.h>
@@ -39,6 +42,12 @@ typedef struct {
     char lookup_extension[17];
     char effective_title[256];
     char rom_path[512];
+    /* Requeued after a storage failure: a second storage failure while the
+       card reports writable is a real error, not another pause. */
+    bool storage_requeued;
+    /* Artwork already promoted before the DB update failed; the retry
+       reconciles the file instead of downloading it again. */
+    bool art_saved;
 } jw__scrape_item;
 
 typedef struct {
@@ -82,6 +91,9 @@ static struct {
     int  permits;                   /* concurrent allowance: 1..MAX_WORKERS,
                                        follows the account's maxthreads */
     bool paused_quota;              /* daily quota exhausted; queue retained */
+    bool paused_storage;            /* a required card or the DB is not writable */
+    char storage_block_path[PATH_MAX]; /* dependency that paused the batch */
+    bool db_readonly_logged;        /* one log line per read-only DB episode */
 
     int requests_today;
     int max_requests;
@@ -554,7 +566,62 @@ static bool jw__error_is_thread_limit(const char *msg) {
 typedef enum {
     JW__SCRAPE_ITEM_DONE = 0,
     JW__SCRAPE_ITEM_PAUSED_QUOTA,
+    JW__SCRAPE_ITEM_PAUSED_STORAGE,
 } jw__scrape_item_result;
+
+static const char *jw__storage_pause_message(const char *reason, bool db) {
+    if (reason && strcmp(reason, "storage-repair-hold") == 0) {
+        return db ? "Paused: the library card is waiting for repair"
+                  : "Paused: the artwork card is waiting for repair";
+    }
+    if (reason && strcmp(reason, "storage-missing") == 0) {
+        return db ? "Paused: the library card is not available"
+                  : "Paused: the artwork card is not available";
+    }
+    return db ? "Paused: the library card is read-only"
+              : "Paused: the artwork card is read-only";
+}
+
+/* Enter (or stay in) a whole-batch storage pause. Active downloads are
+   interrupted so they return to the queue instead of failing one by one.
+   Caller holds jw__w.mu. */
+static void jw__enter_storage_pause_locked(const char *blocked_path,
+                                           const char *message) {
+    if (!jw__w.paused_storage) {
+        jw_log_warn("scrape: pausing batch; %s (%s)", message,
+                    blocked_path ? blocked_path : "?");
+    }
+    jw__w.paused_storage = true;
+    snprintf(jw__w.storage_block_path, sizeof(jw__w.storage_block_path), "%s",
+             blocked_path ? blocked_path : "");
+    snprintf(jw__w.message, sizeof(jw__w.message), "%s", message);
+    for (int i = 0; i < JW__SCRAPE_MAX_WORKERS; i++) {
+        if (jw__w.active[i].used) {
+            atomic_store(&jw__w.active[i].interrupt, 1);
+        }
+    }
+}
+
+/* Both the artwork destination and the library DB must be writable: a
+   writable second card is no use when the DB on the launcher card is not. */
+static bool jw__storage_ready_for_item(const char *dest_abs) {
+    char reason[JW_STORAGE_REASON_MAX];
+    if (!jw_storage_path_writable(jw__w.db_path, reason, sizeof(reason))) {
+        pthread_mutex_lock(&jw__w.mu);
+        jw__enter_storage_pause_locked(jw__w.db_path,
+                                       jw__storage_pause_message(reason, true));
+        pthread_mutex_unlock(&jw__w.mu);
+        return false;
+    }
+    if (dest_abs && !jw_storage_path_writable(dest_abs, reason, sizeof(reason))) {
+        pthread_mutex_lock(&jw__w.mu);
+        jw__enter_storage_pause_locked(dest_abs,
+                                       jw__storage_pause_message(reason, false));
+        pthread_mutex_unlock(&jw__w.mu);
+        return false;
+    }
+    return true;
+}
 
 static void jw__apply_thread_allowance(int max_threads) {
     if (max_threads <= 0)
@@ -571,14 +638,14 @@ static void jw__apply_thread_allowance(int max_threads) {
     pthread_mutex_unlock(&jw__w.mu);
 }
 
-static int jw__queue_prepend_locked(const jw__scrape_item *item) {
+static int jw__queue_prepend_locked(const jw__scrape_item *item,
+                                    const char *message) {
     if (jw__w.count >= JW__SCRAPE_QUEUE_MAX)
         return -1;
     jw__w.head = (jw__w.head + JW__SCRAPE_QUEUE_MAX - 1) % JW__SCRAPE_QUEUE_MAX;
     jw__w.queue[jw__w.head] = *item;
     jw__w.count++;
-    jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_QUEUED,
-                       "Paused by ScreenScraper quota");
+    jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_QUEUED, message);
     return 0;
 }
 
@@ -609,7 +676,67 @@ static void jw__scrape_progress(void *userdata, jw_ss_phase phase) {
     }
 }
 
-static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
+/* Record promoted artwork in the DB. Returns DONE, or PAUSED_STORAGE when
+   the DB turned out to be read-only (the artwork stays and is reconciled on
+   the retry). meta may be NULL on a reconcile pass. */
+static jw__scrape_item_result jw__record_saved_art(jw__scrape_item *item,
+                                                   const char *image_db,
+                                                   const jw_ss_result *result) {
+    int db_rc = jw_db_set_game_image(jw__w.db_path, item->rom_path, image_db);
+    /* SQLITE_BUSY: the DB is briefly locked by another writer; retry a few
+       times before giving up. */
+    for (int attempt = 0; db_rc == JW_DB_RC_BUSY && attempt < 3; attempt++) {
+        usleep(75 * 1000);
+        db_rc = jw_db_set_game_image(jw__w.db_path, item->rom_path, image_db);
+    }
+    if (db_rc == JW_DB_RC_READONLY) {
+        jw_storage_report_write_error(jw__w.db_path, EROFS);
+        pthread_mutex_lock(&jw__w.mu);
+        if (!jw__w.db_readonly_logged) {
+            jw_log_warn("scrape: image saved but the library database is read-only; "
+                        "keeping %s queued", item->rom_path);
+            jw__w.db_readonly_logged = true;
+        }
+        item->art_saved = true;
+        jw__enter_storage_pause_locked(jw__w.db_path,
+                                       jw__storage_pause_message("storage-read-only", true));
+        pthread_mutex_unlock(&jw__w.mu);
+        return JW__SCRAPE_ITEM_PAUSED_STORAGE;
+    }
+    if (db_rc == 0) {
+        pthread_mutex_lock(&jw__w.mu);
+        jw__w.db_readonly_logged = false;
+        pthread_mutex_unlock(&jw__w.mu);
+    } else if (db_rc == JW_DB_RC_NO_ROW) {
+        jw_log_info("scrape: image saved but no game row for %s", item->rom_path);
+    } else if (db_rc == JW_DB_RC_IOERR) {
+        jw_storage_report_write_error(jw__w.db_path, EIO);
+        jw_log_warn("scrape: image saved but the library database reported an I/O error "
+                    "for %s", item->rom_path);
+    } else {
+        jw_log_warn("scrape: image saved but the library update failed for %s (rc=%d)",
+                    item->rom_path, db_rc);
+    }
+    if (result) {
+        /* The facts came back in the same response as the artwork, so store them
+           while we have them. Best effort: a game with art and no metadata is a
+           normal state, and the view renders only what exists. */
+        jw_game_meta meta;
+        memset(&meta, 0, sizeof(meta));
+        snprintf(meta.genre,     sizeof(meta.genre),     "%s", result->genre);
+        snprintf(meta.developer, sizeof(meta.developer), "%s", result->developer);
+        snprintf(meta.publisher, sizeof(meta.publisher), "%s", result->publisher);
+        snprintf(meta.players,   sizeof(meta.players),   "%s", result->players);
+        snprintf(meta.rating,    sizeof(meta.rating),    "%s", result->rating);
+        snprintf(meta.year,      sizeof(meta.year),      "%s", result->year);
+        snprintf(meta.synopsis,  sizeof(meta.synopsis),  "%s", result->synopsis);
+        jw_db_set_game_meta(jw__w.db_path, item->rom_path, &meta);
+    }
+    jw_db_increment_setting(jw__w.db_path, "library.generation");
+    return JW__SCRAPE_ITEM_DONE;
+}
+
+static jw__scrape_item_result jw__process_item(jw__scrape_item *item,
                                                atomic_int *interrupt) {
     char rom_abs[PATH_MAX], rom_name[256];
     char dest_abs[PATH_MAX], image_db[512];
@@ -627,6 +754,21 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
         return JW__SCRAPE_ITEM_DONE;
     }
     jw__row_set_output(item->row_id, dest_abs);
+
+    if (!jw__storage_ready_for_item(dest_abs)) {
+        return JW__SCRAPE_ITEM_PAUSED_STORAGE;
+    }
+    if (item->art_saved && access(dest_abs, F_OK) == 0) {
+        jw__scrape_item_result reconciled = jw__record_saved_art(item, image_db, NULL);
+        if (reconciled != JW__SCRAPE_ITEM_DONE) {
+            return reconciled;
+        }
+        pthread_mutex_lock(&jw__w.mu);
+        jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_DONE, "Artwork saved");
+        pthread_mutex_unlock(&jw__w.mu);
+        return JW__SCRAPE_ITEM_DONE;
+    }
+    item->art_saved = false;
 
     const int *system_ids = item->platform_ids;
     size_t system_count = item->platform_id_count;
@@ -687,35 +829,12 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
     }
     jw__prefs_free(&prefs);
 
+    int write_errno = rc != 0 ? jw_ss_last_errno() : 0;
     if (rc == 0) {
-        int db_rc = jw_db_set_game_image(jw__w.db_path, item->rom_path,
-                                         image_db);
-        /* -2 = SQLITE_BUSY: the DB is briefly locked by another writer; retry
-           a few times before giving up. */
-        for (int attempt = 0; db_rc == -2 && attempt < 3; attempt++) {
-            usleep(75 * 1000);
-            db_rc = jw_db_set_game_image(jw__w.db_path, item->rom_path,
-                                         image_db);
+        jw__scrape_item_result recorded = jw__record_saved_art(item, image_db, &result);
+        if (recorded != JW__SCRAPE_ITEM_DONE) {
+            return recorded;
         }
-        if (db_rc != 0) {
-            jw_log_info("scrape: image saved but no game row for %s (rc=%d)",
-                        item->rom_path, db_rc);
-        }
-        /* The facts came back in the same response as the artwork, so store them
-           while we have them. Best effort: a game with art and no metadata is a
-           normal state, and the view renders only what exists. */
-        jw_game_meta meta;
-        memset(&meta, 0, sizeof(meta));
-        snprintf(meta.genre,     sizeof(meta.genre),     "%s", result.genre);
-        snprintf(meta.developer, sizeof(meta.developer), "%s", result.developer);
-        snprintf(meta.publisher, sizeof(meta.publisher), "%s", result.publisher);
-        snprintf(meta.players,   sizeof(meta.players),   "%s", result.players);
-        snprintf(meta.rating,    sizeof(meta.rating),    "%s", result.rating);
-        snprintf(meta.year,      sizeof(meta.year),      "%s", result.year);
-        snprintf(meta.synopsis,  sizeof(meta.synopsis),  "%s", result.synopsis);
-        jw_db_set_game_meta(jw__w.db_path, item->rom_path, &meta);
-
-        jw_db_increment_setting(jw__w.db_path, "library.generation");
 
         pthread_mutex_lock(&jw__w.mu);
         jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_DONE, "Artwork saved");
@@ -748,7 +867,26 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
         return JW__SCRAPE_ITEM_DONE;
     }
 
+    if (write_errno != 0) {
+        jw_storage_report_write_error(dest_abs, write_errno);
+    }
+    /* A storage failure (or an interrupt because another worker saw one)
+       returns the item to the queue without a terminal error row. */
     pthread_mutex_lock(&jw__w.mu);
+    /* On a FAT card that has just flipped, opening an existing file answers
+       EIO while creating one answers EROFS; EIO counts once the gate agrees. */
+    bool storage_failure = jw_storage_errno_is_storage_failure(write_errno) ||
+                           (write_errno == EIO &&
+                            !jw_storage_path_writable(dest_abs, NULL, 0));
+    if ((storage_failure || (rc == JW_SS_SEARCH_CANCELLED && jw__w.paused_storage)) &&
+        !(storage_failure && item->storage_requeued && !jw__w.paused_storage)) {
+        if (storage_failure) {
+            jw__enter_storage_pause_locked(dest_abs,
+                                           jw__storage_pause_message("storage-read-only", false));
+        }
+        pthread_mutex_unlock(&jw__w.mu);
+        return JW__SCRAPE_ITEM_PAUSED_STORAGE;
+    }
     if (search_status == JW_SS_SEARCH_NOT_FOUND) {
         jw__row_set_locked(item->row_id, JW_SCRAPE_ROW_NOT_FOUND,
                            "No matching artwork found");
@@ -760,6 +898,14 @@ static jw__scrape_item_result jw__process_item(const jw__scrape_item *item,
                            "Cancelled");
     } else {
         const char *msg = jw_ss_last_error();
+        char errno_msg[256];
+        if (write_errno != 0 && msg) {
+            /* Keep the real cause visible: a full card and a permission
+               problem are not a read-only card. */
+            snprintf(errno_msg, sizeof(errno_msg), "%.180s: %.60s", msg,
+                     strerror(write_errno));
+            msg = errno_msg;
+        }
         if (msg) {
             snprintf(jw__w.message, sizeof(jw__w.message), "%s", msg);
             if (jw__error_is_quota(msg)) {
@@ -784,7 +930,7 @@ static void *jw__worker_main(void *arg) {
     pthread_mutex_lock(&jw__w.mu);
     for (;;) {
         while (!jw__w.shutdown &&
-               (jw__w.count == 0 || jw__w.paused_quota ||
+               (jw__w.count == 0 || jw__w.paused_quota || jw__w.paused_storage ||
                 jw__w.active_count >= jw__w.permits)) {
             pthread_cond_wait(&jw__w.cv, &jw__w.mu);
         }
@@ -819,10 +965,19 @@ static void *jw__worker_main(void *arg) {
 
         pthread_mutex_lock(&jw__w.mu);
         if (result == JW__SCRAPE_ITEM_PAUSED_QUOTA &&
-            jw__queue_prepend_locked(&slot->item) != 0) {
+            jw__queue_prepend_locked(&slot->item,
+                                     "Paused by ScreenScraper quota") != 0) {
             jw__row_set_locked(slot->item.row_id, JW_SCRAPE_ROW_ERROR,
                                "Could not keep quota-paused item queued");
             result = JW__SCRAPE_ITEM_DONE;
+        }
+        if (result == JW__SCRAPE_ITEM_PAUSED_STORAGE) {
+            slot->item.storage_requeued = true;
+            if (jw__queue_prepend_locked(&slot->item,
+                                         "Paused: SD card is not writable") != 0) {
+                jw__row_set_locked(slot->item.row_id, JW_SCRAPE_ROW_ERROR,
+                                   "Could not keep storage-paused item queued");
+            }
         }
         slot->used = false;
         jw__w.active_count--;
@@ -865,6 +1020,8 @@ int jw_scrape_worker_start(const char *db_path, const char *sdcard_root) {
     jw__w.count = 0;
     jw__w.active_count = 0;
     jw__w.paused_quota = false;
+    jw__w.paused_storage = false;
+    jw__w.storage_block_path[0] = '\0';
     jw__clear_finished_batch_locked();
     jw__w.shutdown = false;
     jw__w.permits = 1;
@@ -967,6 +1124,13 @@ static void jw__rom_physical_folder(const jw_storage_source *source,
    accepted format) or where a scrape would write it. Checked on disk so art
    that landed without a rescan still counts. Shared by the enqueue and the
    missing-count paths; runs on the calling thread, like the image-dir lookup. */
+/* An SD repair can truncate damaged artwork to 0 bytes. The file is still
+   there, but it is missing art as far as "scrape missing" is concerned. */
+static bool jw__art_file_has_content(const char *path) {
+    struct stat st;
+    return path && stat(path, &st) == 0 && st.st_size > 0;
+}
+
 static bool jw__game_art_exists(const jw_storage_source_list *sources,
                                 jw_art_index *art_index,
                                 const char *system, const char *rom_path) {
@@ -993,17 +1157,25 @@ static bool jw__game_art_exists(const jw_storage_source_list *sources,
     jw_art_stem_for_rom(sys, rom_name, stem, sizeof(stem));
     if (jw_art_find_for_rom(art_index, source, sys ? sys->image_root : NULL, folder, stem,
                             art_abs, sizeof(art_abs),
-                            art_rel, sizeof(art_rel)) == 0) {
+                            art_rel, sizeof(art_rel)) == 0 &&
+        jw__art_file_has_content(art_abs)) {
         return true;
     }
 
     /* The scrape destination keeps only the last extension off the stem. */
-    char base[256], image_dir[64], dir[PATH_MAX], name[PATH_MAX];
+    char base[256], image_dir[64], dir[PATH_MAX], name[PATH_MAX], found[PATH_MAX];
     jw__art_base(rom_name, base, sizeof(base));
     jw__image_dir_for_system(system, image_dir, sizeof(image_dir));
-    return snprintf(dir, sizeof(dir), "%s/%s",
-                    source->images_path, image_dir) < (int)sizeof(dir) &&
-           jw_art_find(art_index, dir, base, name, sizeof(name)) == 0;
+    if (snprintf(dir, sizeof(dir), "%s/%s",
+                 source->images_path, image_dir) >= (int)sizeof(dir) ||
+        jw_art_find(art_index, dir, base, name, sizeof(name)) != 0) {
+        return false;
+    }
+    if (name[0] == '/') {
+        return jw__art_file_has_content(name);
+    }
+    return snprintf(found, sizeof(found), "%s/%s", dir, name) < (int)sizeof(found) &&
+           jw__art_file_has_content(found);
 }
 
 /* Count a system's games that still need art (and its total). Returns 0 on
@@ -1176,6 +1348,25 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
         return -1;
     }
 
+    /* Check the library DB and this card's artwork root before enqueueing.
+       Work is still queued, but held as a storage pause from the start rather
+       than failing item by item. The per-item check covers the second card. */
+    char images_root[PATH_MAX];
+    char storage_reason[JW_STORAGE_REASON_MAX] = "";
+    const char *storage_blocked = NULL;
+    bool storage_db = false;
+    if (snprintf(images_root, sizeof(images_root), "%s/Images", jw__w.sdcard_root) >=
+        (int)sizeof(images_root)) {
+        images_root[0] = '\0';
+    }
+    if (!jw_storage_path_writable(jw__w.db_path, storage_reason, sizeof(storage_reason))) {
+        storage_blocked = jw__w.db_path;
+        storage_db = true;
+    } else if (!jw_storage_path_writable(images_root, storage_reason,
+                                         sizeof(storage_reason))) {
+        storage_blocked = images_root;
+    }
+
     jw_storage_source_list sources;
     bool have_sources =
         missing_only &&
@@ -1216,6 +1407,10 @@ int jw_scrape_enqueue_system_full(const char *system, bool missing_only,
             out->already_queued++;
         }
     }
+    if (storage_blocked && out->enqueued > 0) {
+        jw__enter_storage_pause_locked(storage_blocked,
+                                       jw__storage_pause_message(storage_reason, storage_db));
+    }
     if (out->enqueued > 0) pthread_cond_broadcast(&jw__w.cv);
     pthread_mutex_unlock(&jw__w.mu);
     jw_art_index_free(art_index);
@@ -1231,10 +1426,40 @@ int jw_scrape_enqueue_system(const char *system, bool missing_only,
     return rc < 0 ? rc : result.enqueued;
 }
 
+void jw_scrape_storage_recheck(void) {
+    char blocked[PATH_MAX];
+    char db_path[PATH_MAX];
+    pthread_mutex_lock(&jw__w.mu);
+    if (!jw__w.paused_storage) {
+        pthread_mutex_unlock(&jw__w.mu);
+        return;
+    }
+    snprintf(blocked, sizeof(blocked), "%s", jw__w.storage_block_path);
+    snprintf(db_path, sizeof(db_path), "%s", jw__w.db_path);
+    pthread_mutex_unlock(&jw__w.mu);
+
+    /* Checked without the lock: each check reads the mount table. */
+    if (!jw_storage_path_writable(db_path, NULL, 0) ||
+        (blocked[0] && !jw_storage_path_writable(blocked, NULL, 0))) {
+        return;
+    }
+    pthread_mutex_lock(&jw__w.mu);
+    if (jw__w.paused_storage && strcmp(blocked, jw__w.storage_block_path) == 0) {
+        jw__w.paused_storage = false;
+        jw__w.storage_block_path[0] = '\0';
+        jw__w.message[0] = '\0';
+        jw_log_info("scrape: storage writable again; resuming batch");
+        pthread_cond_broadcast(&jw__w.cv);
+    }
+    pthread_mutex_unlock(&jw__w.mu);
+}
+
 void jw_scrape_status(jw_scrape_status_info *out) {
     memset(out, 0, sizeof(*out));
     pthread_mutex_lock(&jw__w.mu);
-    if (jw__w.paused_quota) {
+    if (jw__w.paused_storage) {
+        out->state = JW_SCRAPE_PAUSED_STORAGE;
+    } else if (jw__w.paused_quota) {
         out->state = JW_SCRAPE_PAUSED_QUOTA;
     } else if (jw__w.count > 0 || jw__w.active_count > 0) {
         out->state = JW_SCRAPE_RUNNING;
@@ -1274,7 +1499,9 @@ void jw_scrape_queue_snapshot(jw_scrape_queue_info *out, int offset, int limit) 
     }
 
     pthread_mutex_lock(&jw__w.mu);
-    if (jw__w.paused_quota) {
+    if (jw__w.paused_storage) {
+        out->state = JW_SCRAPE_PAUSED_STORAGE;
+    } else if (jw__w.paused_quota) {
         out->state = JW_SCRAPE_PAUSED_QUOTA;
     } else if (jw__w.count > 0 || jw__w.active_count > 0) {
         out->state = JW_SCRAPE_RUNNING;
@@ -1358,6 +1585,8 @@ static int jw__cancel(const char *system, const char *rom_path,
     if (!system && !rom_path) {
         /* Cancel-all is also the "stop showing the pause banner" gesture. */
         jw__w.paused_quota = false;
+        jw__w.paused_storage = false;
+        jw__w.storage_block_path[0] = '\0';
     }
     pthread_cond_broadcast(&jw__w.cv);
     pthread_mutex_unlock(&jw__w.mu);

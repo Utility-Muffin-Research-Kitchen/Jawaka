@@ -134,5 +134,8 @@ int jw_ss_validate_user(const jw_ss_client *client, jw_ss_user *out);
 /* Last error message for the calling thread, or NULL. Never contains
    passwords or the dev secret. */
 const char *jw_ss_last_error(void);
+/* errno captured at the failing open/write/flush/fsync/close/rename of the
+   last jw_ss_download_media on this thread, or 0. */
+int jw_ss_last_errno(void);
 
 #endif /* JW_SCRAPE_SS_CLIENT_H */

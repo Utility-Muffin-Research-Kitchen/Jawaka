@@ -144,6 +144,24 @@ typedef struct {
     bool can_unmount;
 } jw_platform_storage_status;
 
+#define JW_PLATFORM_STORAGE_LAUNCHER_ID "launcher_sd"
+#define JW_PLATFORM_STORAGE_SECONDARY_ID "secondary_sd"
+
+/* A card root the platform can report health for. */
+typedef struct {
+    char source_id[32];
+    char label[64];
+    char root[JW_PLATFORM_MAX_PATH];
+} jw_platform_storage_root;
+
+/* Repair capability for one observed card. Unsupported platforms, filesystems
+   and missing tools report false with a stable reason key. */
+typedef struct {
+    bool supported;
+    char unavailable_reason[64];
+    char mode[16];   /* "reboot" when supported */
+} jw_platform_storage_repair_capability;
+
 typedef enum {
     JW_PLATFORM_PERF_DOMAIN_CPU = 0,
     JW_PLATFORM_PERF_DOMAIN_GPU,
@@ -256,6 +274,14 @@ void jw_platform_get_storage_status(jw_platform_context *ctx, const char *source
                                     jw_platform_storage_status *out);
 void jw_platform_safe_unmount_storage(jw_platform_context *ctx, const char *source_id,
                                       jw_platform_result *out);
+/* launcher_sd first, then secondary_sd where the platform has one. */
+int  jw_platform_storage_roots(jw_platform_context *ctx, jw_platform_storage_root *out,
+                               int max);
+void jw_platform_get_storage_repair_capability(jw_platform_context *ctx,
+                                           const char *fs_type,
+                                           const char *uuid,
+                                           bool block_write_protected,
+                                           jw_platform_storage_repair_capability *out);
 
 const char *jw_led_mode_name(jw_led_mode mode);     /* "FOREVER"/"BREATH"/"RAINBOW" */
 bool        jw_led_mode_parse(const char *name, jw_led_mode *out);

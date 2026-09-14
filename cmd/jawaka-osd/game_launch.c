@@ -10,6 +10,7 @@ const char *jw_osd_game_stage_name(jw_osd_game_stage stage) {
         case JW_OSD_GAME_SYNCING:  return "syncing";
         case JW_OSD_GAME_STOPPING: return "stopping";
         case JW_OSD_GAME_SETTINGS_NOT_SAVED: return "settings-not-saved";
+        case JW_OSD_GAME_STORAGE_READ_ONLY: return "storage-read-only";
         case JW_OSD_PICO8_EXIT_CONFIRM: return "pico8-exit";
         case JW_OSD_PICO8_IMPORT: return "pico8-import";
         case JW_OSD_PICO8_IMPORT_FAILED: return "pico8-import-failed";
@@ -40,6 +41,8 @@ bool jw_osd_game_launch_parse(const cJSON *root,
         *stage = JW_OSD_GAME_STOPPING;
     } else if (strcmp(stage_item->valuestring, "settings-not-saved") == 0) {
         *stage = JW_OSD_GAME_SETTINGS_NOT_SAVED;
+    } else if (strcmp(stage_item->valuestring, "storage-read-only") == 0) {
+        *stage = JW_OSD_GAME_STORAGE_READ_ONLY;
     } else if (strcmp(stage_item->valuestring, "pico8-exit") == 0) {
         *stage = JW_OSD_PICO8_EXIT_CONFIRM;
     } else if (strcmp(stage_item->valuestring, "pico8-import") == 0) {
@@ -106,6 +109,12 @@ void jw_osd_game_launch_text(jw_osd_game_stage stage, int pending_items,
             /* Only the glyphs the OSD's bitmap font actually has. */
             snprintf(title, title_size, "RETROARCH SETTINGS");
             snprintf(action, action_size, "NOT SAVED");
+            break;
+        case JW_OSD_GAME_STORAGE_READ_ONLY:
+            /* The card flipped read-only during play. The bitmap font has no
+               hyphen and no B, J, Q, X or Z; check new text against it. */
+            snprintf(title, title_size, "SD CARD IS READ ONLY");
+            snprintf(action, action_size, "NEW SAVES MAY FAIL");
             break;
     }
 }
