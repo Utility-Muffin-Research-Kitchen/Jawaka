@@ -12304,6 +12304,21 @@ int main(void) {
     if (have_resume)
         jw__apply_resume(db_path, &state, &resume);
 
+    /* jawakad surfaced a standalone launch that died before the emulator
+       appeared (env set by the daemon on respawn, same channel as
+       JAWAKA_OPEN_SWITCHER). Show it in the status line on the first frame
+       instead of coming back as a silent black flash. */
+    {
+        const char *status_name = getenv("JAWAKA_LAUNCH_STATUS_NAME");
+        const char *status_code = getenv("JAWAKA_LAUNCH_STATUS_CODE");
+        if (status_name && status_name[0] && status_code && status_code[0]) {
+            snprintf(state.status, sizeof(state.status),
+                     T("%s launcher exited (status %s)"), status_name, status_code);
+        }
+        unsetenv("JAWAKA_LAUNCH_STATUS_NAME");
+        unsetenv("JAWAKA_LAUNCH_STATUS_CODE");
+    }
+
     /* A standalone Menu+Select asked jawakad to reopen us straight into the
        switcher carousel, seeded on the just-exited game (env set by the daemon
        on respawn). Open it after the library/layout/resume are settled but

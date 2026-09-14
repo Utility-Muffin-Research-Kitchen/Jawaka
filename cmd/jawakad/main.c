@@ -348,6 +348,13 @@ typedef struct {
     bool launcher_open_switcher;
     char launcher_switcher_system[64];
     char launcher_switcher_rom[PATH_MAX];
+    /* A standalone session that ended non-zero within seconds of starting is
+       the "wrapper died before the emulator appeared" signature -- the Leaf
+       0.11 black flash. The respawned launcher surfaces it in the status line
+       instead of coming back silently. */
+    bool launch_status_pending;
+    char launch_status_name[64];
+    int launch_status_code;
     bool post_launch_resume_pending;
     int post_launch_resume_attempts;
     long long post_launch_resume_next_ms;
@@ -5315,6 +5322,10 @@ static void jw__standalone_session_start(jw_daemon_state *state, pid_t pid,
         return;
     }
 
+    state->launch_status_pending = false;
+    state->launch_status_name[0] = '\0';
+    state->launch_status_code = 0;
+
     jw_retroarch_session *session = &state->retroarch_session;
     jw__retroarch_session_clear(session);
     session->active = true;
@@ -5341,6 +5352,51 @@ static void jw__standalone_session_start(jw_daemon_state *state, pid_t pid,
                 session->rom_path);
 }
 
+/* The name the launcher status line uses for a standalone launcher: the core
+   id with the _standalone suffix dropped and underscores spaced, or the
+   emulator directory name when the id is empty. */
+static void jw__standalone_display_name(const char *core_id,
+                                        const char *launcher_path,
+                                        char *out, size_t out_size) {
+    const char *source = (core_id && core_id[0]) ? core_id : NULL;
+    char derived[64];
+    if (!source && launcher_path && launcher_path[0]) {
+        /* ".../emulators/ports/launch.sh" -> "ports" */
+        const char *emulators = strstr(launcher_path, "/emulators/");
+        if (emulators) {
+            const char *start = emulators + strlen("/emulators/");
+            const char *end = strchr(start, '/');
+            size_t len = end ? (size_t)(end - start) : strlen(start);
+            if (len > 0 && len < sizeof(derived)) {
+                snprintf(derived, sizeof(derived), "%.*s", (int)len, start);
+                source = derived;
+            }
+        }
+    }
+    if (!source) {
+        snprintf(out, out_size, "%s", "emulator");
+        return;
+    }
+    snprintf(out, out_size, "%s", source);
+    char *suffix = strstr(out, "_standalone");
+    if (suffix) {
+        *suffix = '\0';
+    }
+    for (char *p = out; *p; p++) {
+        if (*p == '_') {
+            *p = ' ';
+        }
+    }
+}
+
+/* A wrapper that dies before the emulator appears reports within seconds; a
+   session long enough to be real play is the user's own quit and stays
+   silent. Only an actual exit status is surfaced: a signal already has the
+   supervisor's crash handling, and a shell wrapper reports a signal that ended
+   its game as 128+N (a quick quit from the in-game menu is 143), which is not
+   a failed launch. */
+#define JW_STANDALONE_LAUNCH_FAILURE_MAX_RUNTIME_S 15
+
 static void jw__standalone_session_finish(jw_daemon_state *state, pid_t pid, int status) {
     if (!state) {
         return;
@@ -5363,6 +5419,17 @@ static void jw__standalone_session_finish(jw_daemon_state *state, pid_t pid, int
         jw_log_info("standalone emulator session ended pid=%d runtime_s=%ld status=%d system=%s rom=%s",
                     (int)pid, runtime_s, WEXITSTATUS(status),
                     session->system, session->rom_path);
+        if (WEXITSTATUS(status) != 0 && WEXITSTATUS(status) < 128 &&
+            runtime_s < JW_STANDALONE_LAUNCH_FAILURE_MAX_RUNTIME_S) {
+            state->launch_status_pending = true;
+            jw__standalone_display_name(session->core_id, session->core_path,
+                                        state->launch_status_name,
+                                        sizeof(state->launch_status_name));
+            state->launch_status_code = WEXITSTATUS(status);
+            jw_log_info("standalone launcher surfaced: %s exited (status %d) after %ld s",
+                        state->launch_status_name, state->launch_status_code,
+                        runtime_s);
+        }
     } else if (WIFSIGNALED(status)) {
         jw_log_warn("standalone emulator session terminated pid=%d runtime_s=%ld signal=%d system=%s rom=%s",
                     (int)pid, runtime_s, WTERMSIG(status),
@@ -8723,6 +8790,35 @@ static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now) {
     return 0;
 }
 
+/* LOG-SAFE: this daemon's stdout and stderr are the supervisor's session log,
+   which lives on a FAT card and can go unwritable (a bad cluster chain, a full
+   card, or the FAT32 4 GiB per-file ceiling). A shell wrapper inheriting that
+   fd dies on its first log write under set -e -- the Leaf 0.11 ports failure --
+   so before forking a game the daemon proves its own descriptors take a byte
+   and repoints any that do not: at internal storage on MLP1, /dev/null
+   otherwise. Every child forked afterwards inherits a working descriptor, and
+   the substitution is logged where it can be read. This runs in the parent:
+   the child of a threaded daemon must not touch stdio between fork and exec. */
+static void jw__heal_stdio_before_game(void) {
+#ifdef PLATFORM_MLP1
+    const char *fallback_dir = JW_STORAGE_MLP1_LOG_DIR;
+#else
+    const char *fallback_dir = NULL;
+#endif
+    switch (jw_log_heal_unwritable_stdio(fallback_dir, "jawakad")) {
+    case 1:
+        jw_log_warn("game launch: session log fd was unwritable; daemon and game output "
+                    "continue in %s/jawakad.log", fallback_dir);
+        break;
+    case 2:
+        jw_log_warn("game launch: session log fd was unwritable and no fallback log could "
+                    "be opened; game output is discarded");
+        break;
+    default:
+        break;
+    }
+}
+
 static int jw__spawn_app(jw_daemon_state *state) {
     if (!state || !state->pending_app) {
         return -1;
@@ -8819,6 +8915,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
         return -1;
     }
 
+    jw__heal_stdio_before_game();
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
@@ -9131,6 +9228,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         return -1;
     }
 
+    jw__heal_stdio_before_game();
     pid_t pid = fork();
     if (pid < 0) {
         jw_log_error("fork failed: %s", strerror(errno));
@@ -9679,6 +9777,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
         goto fail;
     }
 
+    jw__heal_stdio_before_game();
     long long fork_start_ms = jw__monotonic_ms();
     pid_t pid = fork();
     if (pid < 0) {
@@ -14664,6 +14763,17 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
     }
 
     if (exited_kind == JW_CHILD_RETROARCH || exited_kind == JW_CHILD_EMULATOR) {
+        /* A standalone launch that died before the emulator appeared must not
+           come back as a silent black flash: hand the respawned launcher the
+           name and status the same way JAWAKA_OPEN_SWITCHER is handed over
+           (execv keeps environ, the launcher reads it on its first frame). */
+        if (exited_kind == JW_CHILD_EMULATOR && state->launch_status_pending) {
+            char code[16];
+            snprintf(code, sizeof(code), "%d", state->launch_status_code);
+            setenv("JAWAKA_LAUNCH_STATUS_NAME", state->launch_status_name, 1);
+            setenv("JAWAKA_LAUNCH_STATUS_CODE", code, 1);
+            state->launch_status_pending = false;
+        }
         if (state->launcher_open_switcher) {
             /* A standalone Menu+Select asked us to reopen the launcher straight
                into the switcher, seeded on the just-exited game. The launcher
@@ -14680,6 +14790,8 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         } else {
             jw__spawn_child(state, JW_CHILD_LAUNCHER);
         }
+        unsetenv("JAWAKA_LAUNCH_STATUS_NAME");
+        unsetenv("JAWAKA_LAUNCH_STATUS_CODE");
         return;
     }
 
