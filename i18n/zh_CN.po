@@ -2005,8 +2005,6 @@ msgstr "主 SD 卡"
 msgid "second SD card"
 msgstr "副 SD 卡"
 
-# Rumble split into UI Rumble and Game Rumble (Controls & Feedback). MACHINE
-# SEED, marked fuzzy per the i18n plan; clear after AlexL's review pass.
-#, fuzzy
+# Rumble split into UI Rumble and Game Rumble (Controls & Feedback).
 msgid "UI Rumble"
 msgstr "界面震动"
