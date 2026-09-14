@@ -397,3 +397,62 @@ void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
     }
     jw_platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED, "led not supported");
 }
+
+int jw_platform_storage_roots(jw_platform_context *ctx, jw_platform_storage_root *out,
+                              int max) {
+    if (!ctx || !out || max <= 0) {
+        return 0;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->storage_roots) {
+        return backend->storage_roots(ctx, out, max);
+    }
+
+    /* Generic: the launcher root, then the second configured card root. */
+    int count = 0;
+    memset(&out[0], 0, sizeof(out[0]));
+    snprintf(out[0].source_id, sizeof(out[0].source_id), "%s",
+             JW_PLATFORM_STORAGE_LAUNCHER_ID);
+    snprintf(out[0].label, sizeof(out[0].label), "%s", "Launcher SD");
+    snprintf(out[0].root, sizeof(out[0].root), "%s", ctx->sdcard_root);
+    count++;
+
+    const char *paths = getenv("SDCARD_PATHS");
+    if (count < max && paths && paths[0]) {
+        char copy[JW_PLATFORM_MAX_PATH * 2];
+        snprintf(copy, sizeof(copy), "%s", paths);
+        char *save = NULL;
+        for (char *token = strtok_r(copy, ":", &save); token;
+             token = strtok_r(NULL, ":", &save)) {
+            if (!token[0] || strcmp(token, ctx->sdcard_root) == 0) {
+                continue;
+            }
+            memset(&out[count], 0, sizeof(out[count]));
+            snprintf(out[count].source_id, sizeof(out[count].source_id), "%s",
+                     JW_PLATFORM_STORAGE_SECONDARY_ID);
+            snprintf(out[count].label, sizeof(out[count].label), "%s", "Secondary SD");
+            snprintf(out[count].root, sizeof(out[count].root), "%s", token);
+            count++;
+            break;
+        }
+    }
+    return count;
+}
+
+void jw_platform_get_storage_repair_capability(jw_platform_context *ctx,
+                                           const char *fs_type,
+                                           const char *uuid,
+                                           bool block_write_protected,
+                                           jw_platform_storage_repair_capability *out) {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    snprintf(out->unavailable_reason, sizeof(out->unavailable_reason), "%s",
+             "unsupported-platform");
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (ctx && backend && backend->storage_repair_capability) {
+        backend->storage_repair_capability(ctx, fs_type, uuid,
+                                           block_write_protected, out);
+    }
+}

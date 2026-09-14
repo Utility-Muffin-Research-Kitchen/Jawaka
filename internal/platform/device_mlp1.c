@@ -2,6 +2,7 @@
 #include "internal/platform/device_backend.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/core/log.h"
+#include "internal/storage/health.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -141,6 +142,9 @@
 #define JW_MLP1_WIFI_PROC "/proc/net/wireless"
 #define JW_MLP1_SECONDARY_SOURCE_ID "secondary_sd"
 #define JW_MLP1_SECONDARY_LABEL "Secondary SD"
+#define JW_MLP1_LAUNCHER_SOURCE_ID "launcher_sd"
+#define JW_MLP1_LAUNCHER_LABEL "Launcher SD"
+#define JW_MLP1_FSCK_FAT "/usr/sbin/fsck.fat"
 #define JW_MLP1_STORAGE_DEBOUNCE_MS 750
 
 /* The stock loong_light daemon owns the AW20036 LED ring. It reads this JSON
@@ -354,11 +358,15 @@ static bool jw__mlp1_mount_has_option(const char *wanted_mount,
    shell emits getcwd failures and, on the observed firmware path, the remount
    never takes effect). Execute the rootfs mount binary directly from `/` and
    keep the wait bounded so a damaged card cannot wedge the daemon on wake. */
-static int jw__mlp1_remount_exec_bounded(const char *mount) {
+static int jw__mlp1_remount_exec_bounded(const char *mount, bool keep_read_only) {
+    /* A card the kernel flipped read-only after a filesystem error, or one
+       held for repair, must never come back writable through an exec repair. */
     char *const argv[] = {
         (char *)"mount",
         (char *)"-o",
-        (char *)"remount,rw,exec,nosuid,nodev,noatime,nodiratime",
+        keep_read_only
+            ? (char *)"remount,ro,exec,nosuid,nodev,noatime,nodiratime"
+            : (char *)"remount,rw,exec,nosuid,nodev,noatime,nodiratime",
         (char *)mount,
         NULL,
     };
@@ -399,18 +407,32 @@ static int jw__mlp1_remount_exec_bounded(const char *mount) {
     return -1;
 }
 
+/* Repair hold recorded on internal storage for the card behind device. */
+static bool jw__mlp1_device_repair_held(const char *device) {
+    jw_storage_probe_env env;
+    jw_storage_probe_env_default(&env);
+    char uuid[JW_STORAGE_UUID_MAX];
+    return device && device[0] &&
+           jw_storage_device_uuid(&env, device, uuid, sizeof(uuid)) &&
+           jw_storage_repair_hold_for_uuid(&env, uuid, NULL, 0) !=
+               JW_STORAGE_REPAIR_NONE;
+}
+
 static int jw__mlp1_remount_exec(const char *mount) {
+    char device[256] = "";
     if (!mount ||
         (strcmp(mount, "/mnt/sdcard") != 0 &&
          strcmp(mount, "/media/sdcard1") != 0) ||
-        !jw__mlp1_mount_lookup(mount, NULL, 0)) {
+        !jw__mlp1_mount_lookup(mount, device, sizeof(device))) {
         return -1;
     }
 
     if (!jw__mlp1_mount_has_option(mount, "noexec")) {
         return 0;
     }
-    if (jw__mlp1_remount_exec_bounded(mount) != 0) {
+    bool keep_read_only = jw__mlp1_mount_has_option(mount, "ro") ||
+                          jw__mlp1_device_repair_held(device);
+    if (jw__mlp1_remount_exec_bounded(mount, keep_read_only) != 0) {
         return -1;
     }
     return jw__mlp1_mount_has_option(mount, "noexec") ? -1 : 0;
@@ -494,6 +516,11 @@ static int jw__mlp1_mount_secondary_if_needed(jw_platform_context *ctx) {
 
     if (jw__mlp1_mount_lookup(mount, NULL, 0)) {
         return jw__mlp1_remount_exec(mount);
+    }
+    if (jw__mlp1_device_repair_held(device)) {
+        /* The boot repair runner owns this card until it is verified. */
+        jw_log_warn("storage hotplug: %s is held for repair; not mounting", device);
+        return -1;
     }
 
     snprintf(command, sizeof(command),
@@ -3450,6 +3477,20 @@ static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
     }
 
     memset(out, 0, sizeof(*out));
+    if (source_id && strcmp(source_id, JW_MLP1_LAUNCHER_SOURCE_ID) == 0) {
+        snprintf(out->source_id, sizeof(out->source_id), "%s", source_id);
+        snprintf(out->label, sizeof(out->label), "%s", JW_MLP1_LAUNCHER_LABEL);
+        snprintf(out->mount_path, sizeof(out->mount_path), "%s",
+                 ctx && ctx->sdcard_root[0] ? ctx->sdcard_root : "/mnt/sdcard");
+        out->mounted = jw__mlp1_mount_lookup(out->mount_path, out->device_path,
+                                             sizeof(out->device_path));
+        out->present = out->mounted;
+        out->busy = out->mounted;   /* Leaf runs from this card */
+        out->can_unmount = false;
+        snprintf(out->message, sizeof(out->message), "%s",
+                 out->mounted ? "Mounted" : "Not mounted");
+        return;
+    }
     snprintf(out->source_id, sizeof(out->source_id), "%s",
              source_id && source_id[0] ? source_id : JW_MLP1_SECONDARY_SOURCE_ID);
     snprintf(out->label, sizeof(out->label), "%s", JW_MLP1_SECONDARY_LABEL);
@@ -3468,6 +3509,54 @@ static void jw__mlp1_get_storage_status(jw_platform_context *ctx,
     out->can_unmount = out->mounted && !out->busy;
     snprintf(out->message, sizeof(out->message), "%s",
              out->busy ? "Busy" : (out->mounted ? "Mounted" : "Not mounted"));
+}
+
+static int jw__mlp1_storage_roots(jw_platform_context *ctx,
+                                  jw_platform_storage_root *out, int max) {
+    if (!out || max <= 0) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out) * (size_t)max);
+    snprintf(out[0].source_id, sizeof(out[0].source_id), "%s", JW_MLP1_LAUNCHER_SOURCE_ID);
+    snprintf(out[0].label, sizeof(out[0].label), "%s", JW_MLP1_LAUNCHER_LABEL);
+    snprintf(out[0].root, sizeof(out[0].root), "%s",
+             ctx && ctx->sdcard_root[0] ? ctx->sdcard_root : "/mnt/sdcard");
+    if (max < 2) {
+        return 1;
+    }
+    snprintf(out[1].source_id, sizeof(out[1].source_id), "%s", JW_MLP1_SECONDARY_SOURCE_ID);
+    snprintf(out[1].label, sizeof(out[1].label), "%s", JW_MLP1_SECONDARY_LABEL);
+    jw__mlp1_secondary_mount(ctx, out[1].root, sizeof(out[1].root));
+    return 2;
+}
+
+/* Reboot repair uses the stock rootfs fsck.fat through the switcher's runner.
+   exFAT stays unavailable until its own fixture acceptance passes. */
+static void jw__mlp1_storage_repair_capability(jw_platform_context *ctx,
+                                               const char *fs_type,
+                                               const char *uuid,
+                                               bool block_write_protected,
+                                               jw_platform_storage_repair_capability *out) {
+    (void)ctx;
+    const char *reason = NULL;
+    if (!fs_type || !fs_type[0]) {
+        reason = "not-mounted";
+    } else if (strcmp(fs_type, "vfat") != 0 && strcmp(fs_type, "msdos") != 0) {
+        reason = strcmp(fs_type, "exfat") == 0 ? "exfat-not-validated"
+                                               : "unsupported-filesystem";
+    } else if (!jw_storage_uuid_valid(uuid)) {
+        reason = "unknown-identity";
+    } else if (block_write_protected) {
+        reason = "write-protected";
+    } else if (access(JW_MLP1_FSCK_FAT, X_OK) != 0) {
+        reason = "tool-missing";
+    } else if (access(JW_STORAGE_MLP1_REPAIR_TOOL, X_OK) != 0) {
+        reason = "repair-runner-missing";
+    }
+    out->supported = reason == NULL;
+    snprintf(out->unavailable_reason, sizeof(out->unavailable_reason), "%s",
+             reason ? reason : "");
+    snprintf(out->mode, sizeof(out->mode), "%s", reason ? "" : "reboot");
 }
 
 static void jw__mlp1_safe_unmount_storage(jw_platform_context *ctx,
@@ -3662,6 +3751,8 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .apply_performance = jw__mlp1_apply_performance,
         .storage_tick = jw__mlp1_storage_tick,
         .get_storage_status = jw__mlp1_get_storage_status,
+        .storage_roots = jw__mlp1_storage_roots,
+        .storage_repair_capability = jw__mlp1_storage_repair_capability,
         .safe_unmount_storage = jw__mlp1_safe_unmount_storage,
         .set_led = jw__mlp1_set_led,
     };

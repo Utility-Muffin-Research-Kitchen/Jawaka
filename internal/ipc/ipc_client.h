@@ -56,14 +56,38 @@ typedef struct {
 } jw_ipc_performance_status_info;
 
 typedef struct {
-    bool present;
-    bool mounted;
-    bool busy;
-    bool can_unmount;
     char source[32];
     char label[64];
     char mount_path[512];
     char message[256];
+    bool present;
+    bool mounted;
+    bool busy;
+    bool can_unmount;
+    /* Health (storage-status v2). Empty strings when an older daemon answers. */
+    char access[16];              /* "read-write" | "read-only" | "unknown" */
+    char cause[24];               /* "filesystem-error" | "write-protected" | "unknown" */
+    char repair[16];              /* "none" | "pending" | "running" | "failed" */
+    char fs_type[32];
+    char uuid[64];
+    char volume_label[64];
+    char kernel_message[256];
+    bool dirty_at_boot;
+    bool block_write_protected;
+    bool repair_supported;
+    char repair_unavailable_reason[64];
+    char repair_mode[16];
+    bool warning_pending;         /* a newly observed read-only state not yet acknowledged */
+    int health_generation;
+    bool external_power;
+    bool last_repair_valid;
+    bool last_repair_acknowledged;
+    char last_repair_request_id[64];
+    char last_repair_outcome[32];
+    char last_repair_mount_state[32];
+    char last_repair_mode[16];
+    bool last_repair_changes_complete;
+    int last_repair_reported_changes;
 } jw_ipc_storage_status_info;
 
 typedef struct {
@@ -73,6 +97,7 @@ typedef struct {
     bool library_populated;
     char scan_reason[96];
     char scan_error[160];
+    int storage_health_generation;   /* -1 when the daemon does not report it */
 } jw_ipc_library_status_info;
 
 typedef struct {
@@ -206,6 +231,14 @@ int jw_ipc_get_storage_status(const char *socket_path, const char *source,
                               char *status, int status_len);
 int jw_ipc_safe_unmount_storage(const char *socket_path, const char *source,
                                 char *status, int status_len);
+/* Acknowledge the read-only warning for the card currently behind source. */
+int jw_ipc_storage_warning_ack(const char *socket_path, const char *source);
+/* Commit a reboot repair (mode "repair") or offline check (mode "check") for
+   source and restart the device. status receives the daemon's refusal text. */
+int jw_ipc_storage_repair_request(const char *socket_path, const char *source,
+                                  const char *mode, char *status, int status_len);
+/* Mark a repair result as seen so it is shown once. */
+int jw_ipc_storage_repair_result_ack(const char *socket_path, const char *request_id);
 
 /* Ask jawakad to show the menu overlay. Returns 0 on success, -1 on failure. */
 int jw_ipc_open_menu(const char *socket_path);
@@ -429,7 +462,7 @@ int jw_ipc_scrape_validate(const char *socket_path, const char *username,
                            jw_ipc_scrape_validate_info *out);
 
 typedef struct {
-    char state[16];           /* "idle" | "running" | "paused-quota" */
+    char state[16];           /* "idle" | "running" | "paused-quota" | "paused-storage" */
     int  total;
     int  done;
     int  found;
@@ -468,7 +501,7 @@ typedef struct {
 } jw_ipc_scrape_queue_row;
 
 typedef struct {
-    char state[16];           /* "idle" | "running" | "paused-quota" */
+    char state[16];           /* "idle" | "running" | "paused-quota" | "paused-storage" */
     int total;
     int done;
     int found;

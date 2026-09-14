@@ -4,6 +4,10 @@
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
+#: internal/settings/storage_ui.c
+msgid " Some damaged files were changed."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "%d %s games"
 msgstr ""
@@ -524,12 +528,20 @@ msgstr ""
 msgid "Cancelled"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "Card:"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Central Europe"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Check Releases"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Check SD card"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -554,6 +566,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Clock"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Close the game or app first, then try again."
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -586,6 +602,14 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Confirm"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Connect your device to power and try again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Connect your device to power to repair this card."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -992,12 +1016,32 @@ msgstr ""
 msgid "Launch"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Launch canceled"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Layout"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Leaf"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Leaf couldn't confirm your SD card can be written."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Leaf couldn't identify this card safely. Check the card on a computer instead."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Leaf couldn't identify this card."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -1102,6 +1146,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Nearby"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Needs repair"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1332,6 +1380,10 @@ msgstr ""
 msgid "Play"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Play anyway"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "PlayStation"
 msgstr ""
@@ -1390,6 +1442,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Re-enter PIN"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Read-only"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1484,6 +1540,18 @@ msgstr ""
 msgid "Repair"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "Repair SD card"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Repair isn't installed on this device."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Repair pending"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Replace"
 msgstr ""
@@ -1524,8 +1592,24 @@ msgstr ""
 msgid "Restart"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "Restart and check"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Restart and repair"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Restart now to finish installing?"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Restarting to check your SD card"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Restarting to repair your SD card"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1570,6 +1654,26 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Run / Stop"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "SD Cards"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "SD card is read-only"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "SD card is read-only: %s"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "SD card status unavailable"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "SD read-only"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1662,6 +1766,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape finished: %d found"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Scrape missing artwork"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2048,6 +2156,26 @@ msgstr ""
 msgid "That folder name is too long to open."
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "The card passed the check but couldn't be made writable. Restart your device, then try Check SD card."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "The repair couldn't be started. Check the card on a computer instead."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "The repair did not finish. The log may include changes that were attempted."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "The repair log on your device has the details."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "The repair log on your device lists the files that were changed. The list may not be complete."
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "The saved shader could not be removed."
 msgstr ""
@@ -2062,6 +2190,18 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "This RetroArch build does not support Leaf's shader picker."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "This card is working normally."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "This card isn't mounted."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "This card's file system can't be repaired on this device."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -2084,6 +2224,10 @@ msgstr ""
 msgid "Time Zone"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "To repair it, turn off your device and check the card on a computer."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Total"
 msgstr ""
@@ -2102,6 +2246,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Turn On"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Turn off your device and check the card on a computer."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2158,10 +2306,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Unmount"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "Unmount Secondary SD"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2252,6 +2396,78 @@ msgstr ""
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "Your SD card is read-only"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card is read-only after a file system error. You can't save new files or changes to this card. This can happen after an unexpected shutdown."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your SD card is read-only. Nothing new can be saved to it."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card is read-only. The cause couldn't be determined. You can't save new files or changes to this card."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card is write-protected"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your SD card isn't available."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card needs repair"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your card is still read-only. Check the card on a computer, then choose Check SD card in Settings."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your card passed the file system check."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your device can't write to this card, so it can't be repaired here."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your device can't write to this card. If you use an adapter with a lock switch, check that it isn't set to lock."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your device will restart to check and repair this card. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first if you need to recover them. Keep your device connected to power until the check finishes."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your device will restart to check this card. If the check passes, the card can be written to again. Keep your device connected to power until the check finishes."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your device's internal storage can't record the repair. Check the card on a computer instead."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your other SD card is still read-only, so your library can't update yet."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your saves and save states may not be kept while this SD card is read-only."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Your saves and save states may not be kept while this SD card is waiting for repair."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "audio output failed"
 msgstr ""
@@ -2276,6 +2492,10 @@ msgstr ""
 msgid "empty"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "exFAT cards can't be repaired on this device yet."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "font is fixed while a CJK language is selected"
 msgstr ""
@@ -2286,6 +2506,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "just now"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "launcher SD card"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -2314,6 +2538,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "refresh rate unavailable on this platform"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "second SD card"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

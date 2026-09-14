@@ -17,6 +17,7 @@ typedef enum {
        the Syncthing stages it hides itself after a few seconds; nothing is
        waiting on it. */
     JW_OSD_GAME_SETTINGS_NOT_SAVED,
+    JW_OSD_GAME_STORAGE_READ_ONLY,
     JW_OSD_PICO8_EXIT_CONFIRM,
     JW_OSD_PICO8_IMPORT,
     JW_OSD_PICO8_IMPORT_FAILED,
@@ -24,7 +25,7 @@ typedef enum {
 
 /* Stages that dismiss themselves instead of waiting for hide-game-launch. */
 #define JW_OSD_GAME_STAGE_IS_TRANSIENT(stage) \
-    ((stage) == JW_OSD_GAME_SETTINGS_NOT_SAVED || (stage) == JW_OSD_PICO8_EXIT_CONFIRM || (stage) == JW_OSD_PICO8_IMPORT_FAILED)
+    ((stage) == JW_OSD_GAME_SETTINGS_NOT_SAVED || (stage) == JW_OSD_GAME_STORAGE_READ_ONLY || (stage) == JW_OSD_PICO8_EXIT_CONFIRM || (stage) == JW_OSD_PICO8_IMPORT_FAILED)
 #define JW_OSD_GAME_TRANSIENT_MS 4000u
 
 bool jw_osd_game_launch_parse(const cJSON *root,

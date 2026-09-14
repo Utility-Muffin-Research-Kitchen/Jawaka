@@ -28,6 +28,11 @@ typedef struct {
                                jw_platform_storage_status *out);
     void (*safe_unmount_storage)(jw_platform_context *ctx, const char *source_id,
                                  jw_platform_result *out);
+    int  (*storage_roots)(jw_platform_context *ctx, jw_platform_storage_root *out,
+                          int max);
+    void (*storage_repair_capability)(jw_platform_context *ctx, const char *fs_type,
+                                      const char *uuid, bool block_write_protected,
+                                      jw_platform_storage_repair_capability *out);
     void (*set_led)(jw_platform_context *ctx, const jw_led_config *cfg,
                     jw_platform_result *out);
 } jw_platform_backend;

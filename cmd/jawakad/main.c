@@ -3,6 +3,7 @@
 #include "internal/db/db.h"
 #include "internal/db/relocation.h"
 #include "internal/discovery/discovery.h"
+#include "internal/storage/health.h"
 #include "internal/focus/focus.h"
 #include "internal/ipc/ctl1.h"
 #include "internal/ipc/ipc.h"
@@ -84,6 +85,9 @@
 #define JW_RETROARCH_AUDIO_REINIT_TIMEOUT_MS 10000LL
 #define JW_RETROARCH_QUIT_GRACE_MS 700LL
 #define JW_RETROARCH_KILL_GRACE_MS 700LL
+/* A quit the menu asked for that RetroArch never honors, seen when a savestate
+   write stalls on a read-only card: it then ignores SIGTERM as well. */
+#define JW_RETROARCH_STUCK_QUIT_MS 15000LL
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT (-1)
 #define JW_RESIDENT_SWITCH_MAX_DEFAULT_LABEL "unlimited"
 #define JW_PERF_SETTING_KEY "platform.performance.game_profile"
@@ -444,6 +448,15 @@ typedef struct {
     /* Set when a safe-unmount already applied the storage-change policy, so
        the storage tick it provokes does not stop the same services again. */
     bool services_storage_stop_done;
+    long long retroarch_quit_deadline_ms;   /* 0 = no quit outstanding */
+    /* SD card health: read-only detection, warning acknowledgement, and the
+       reboot repair request. Refreshed on the main loop at most every 2 s. */
+    jw_storage_health_monitor storage_monitor;
+    long long storage_next_probe_ms;
+    bool storage_db_read_only;       /* library DB was not writable at startup */
+    bool storage_scan_deferred;      /* a scan waits for the DB to be writable */
+    bool storage_repair_rescan_done; /* post-repair rescan considered this run */
+    bool storage_log_redirected;
 } jw_daemon_state;
 
 static void jw__scan_title_list_free(jw_scan_title_list *list) {
@@ -2919,7 +2932,8 @@ static int jw__reply_scrape_status(jw_ipc_client *client, cJSON *request) {
     cJSON_AddStringToObject(root, "type", "scrape-status");
     const char *state_name =
         info.state == JW_SCRAPE_RUNNING ? "running" :
-        info.state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" : "idle";
+        info.state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" :
+        info.state == JW_SCRAPE_PAUSED_STORAGE ? "paused-storage" : "idle";
     cJSON_AddStringToObject(root, "state", state_name);
     cJSON_AddNumberToObject(root, "total", info.total);
     cJSON_AddNumberToObject(root, "done", info.done);
@@ -2983,7 +2997,8 @@ static int jw__reply_scrape_queue(jw_ipc_client *client, cJSON *request) {
     cJSON_AddStringToObject(root, "type", "scrape-queue");
     const char *state_name =
         info->state == JW_SCRAPE_RUNNING ? "running" :
-        info->state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" : "idle";
+        info->state == JW_SCRAPE_PAUSED_QUOTA ? "paused-quota" :
+        info->state == JW_SCRAPE_PAUSED_STORAGE ? "paused-storage" : "idle";
     cJSON_AddStringToObject(root, "state", state_name);
     cJSON_AddNumberToObject(root, "total", info->total);
     cJSON_AddNumberToObject(root, "done", info->done);
@@ -4276,6 +4291,16 @@ static int jw__start_scan_job_with_titles(jw_daemon_state *state,
     if (!state || !state->scan_job.initialized) {
         return -1;
     }
+    /* Discovery writes the library DB. On a read-only card it would only
+       produce write failures; defer until storage health sees it writable. */
+    if (state->db_path && !jw_storage_path_writable(state->db_path, NULL, 0)) {
+        if (!state->storage_scan_deferred) {
+            jw_log_warn("scan-library deferred reason=%s: library database is not writable",
+                        reason && reason[0] ? reason : "requested");
+        }
+        state->storage_scan_deferred = true;
+        return 1;
+    }
 
     jw_scan_job *job = &state->scan_job;
     pthread_mutex_lock(&job->mu);
@@ -4460,6 +4485,8 @@ static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *clien
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "library-status");
     cJSON_AddNumberToObject(root, "generation", state ? state->library_generation : 0);
+    cJSON_AddNumberToObject(root, "storage_health_generation",
+                            state ? (double)state->storage_monitor.generation : 0);
     if (state && state->scan_job.initialized) {
         bool running = false;
         bool pending = false;
@@ -4482,6 +4509,9 @@ static int jw__reply_library_status(jw_daemon_state *state, jw_ipc_client *clien
     return jw__reply_json(client, root);
 }
 
+static void jw__storage_status_add_health(jw_daemon_state *state, cJSON *root,
+                                          const char *source_id);
+
 static int jw__reply_storage_status(jw_daemon_state *state, jw_ipc_client *client,
                                     const char *source_id) {
     jw_platform_storage_status status;
@@ -4498,6 +4528,7 @@ static int jw__reply_storage_status(jw_daemon_state *state, jw_ipc_client *clien
     cJSON_AddBoolToObject(root, "busy", status.busy);
     cJSON_AddBoolToObject(root, "can_unmount", status.can_unmount);
     cJSON_AddStringToObject(root, "message", status.message);
+    jw__storage_status_add_health(state, root, status.source_id);
     return jw__reply_json(client, root);
 }
 
@@ -10675,6 +10706,8 @@ static jw_ra_result jw__set_disk_slot_delta(const jw_ra_client *ra, int delta) {
     return jw_ra_set_disk_slot(ra, next);
 }
 
+static void jw__osd_storage_read_only(jw_daemon_state *state);
+
 static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *client,
                                        cJSON *root) {
     cJSON *action_json = cJSON_GetObjectItemCaseSensitive(root, "action");
@@ -10687,6 +10720,19 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
     }
 
     const char *action = action_json->valuestring;
+    /* RetroArch writes savestates asynchronously and, on a read-only card,
+       stalls at "Saving state 0%" with nothing to tell the player why. Refuse
+       an explicit save up front; Save & Quit skips the save and still quits. */
+    char states_reason[JW_STORAGE_REASON_MAX] = "";
+    bool states_writable = !state->active_game.states_path[0] ||
+                           jw_storage_path_writable(state->active_game.states_path,
+                                                    states_reason, sizeof(states_reason));
+    if (!states_writable && strcmp(action, "save-state") == 0) {
+        jw_log_warn("retroarch-action save-state refused: %s (%s)", states_reason,
+                    state->active_game.states_path);
+        jw__osd_storage_read_only(state);
+        return jw__reply_error(client, "SD card is read-only");
+    }
     cJSON *value_json = cJSON_GetObjectItemCaseSensitive(root, "value");
     bool has_value = cJSON_IsNumber(value_json);
     int value = has_value ? value_json->valueint : 0;
@@ -10734,7 +10780,10 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
            jw__request_switch_game. */
         jw_ra_info info;
         memset(&info, 0, sizeof(info));
-        if (state->retroarch_session.core_config_folder[0] &&
+        if (!states_writable) {
+            jw_log_warn("save-and-quit: states are not writable (%s); quitting without save",
+                        states_reason);
+        } else if (state->retroarch_session.core_config_folder[0] &&
             jw_ra_get_info(&ra, &info) == JW_RA_OK && info.savestate_supported) {
             char reply[JW_RA_REPLY_MAX];
             jw_ra_result sv = jw_ra_save_state_slot(
@@ -10815,9 +10864,33 @@ static int jw__handle_retroarch_action(jw_daemon_state *state, jw_ipc_client *cl
         result = jw__set_disk_slot_delta(&ra, +1);
     }
 
+    if (result == JW_RA_OK &&
+        (strcmp(action, "quit") == 0 || strcmp(action, "save-and-quit") == 0)) {
+        state->retroarch_quit_deadline_ms = jw__monotonic_ms() + JW_RETROARCH_STUCK_QUIT_MS;
+    }
+
     jw_log_info("retroarch-action requested action=%s result=%s",
                 action, jw_ra_result_string(result));
     return jw__reply_retroarch_result(client, action, result);
+}
+
+/* The player chose to quit and RetroArch is still here long after. Never leave
+   them stranded in a game that will not close. */
+static void jw__tick_retroarch_stuck_quit(jw_daemon_state *state) {
+    if (!state || state->retroarch_quit_deadline_ms <= 0) {
+        return;
+    }
+    if (!jw__has_retroarch_session(state)) {
+        state->retroarch_quit_deadline_ms = 0;
+        return;
+    }
+    if (jw__monotonic_ms() < state->retroarch_quit_deadline_ms) {
+        return;
+    }
+    state->retroarch_quit_deadline_ms = 0;
+    jw_log_warn("retroarch: quit requested %llds ago but RetroArch is still running; forcing it closed",
+                JW_RETROARCH_STUCK_QUIT_MS / 1000);
+    (void)jw__signal_tracked_game_group(state, SIGKILL);
 }
 
 /* Shader operations for the in-game picker.
@@ -10993,6 +11066,476 @@ static int jw__reply_suspend_status(jw_daemon_state *state, jw_ipc_client *clien
         state->suspend_policy.pending == JW_SUSPEND_PENDING_EXPLICIT ? "explicit" :
         state->suspend_policy.pending == JW_SUSPEND_PENDING_AUTO ? "automatic" : "none");
     return jw__reply_json(client, reply);
+}
+
+/* ── SD card health ───────────────────────────────────────────────── */
+
+#define JW_STORAGE_PROBE_INTERVAL_MS 2000
+#define JW_STORAGE_TOOL_TIMEOUT_MS 30000
+
+static const jw_storage_health_slot *jw__storage_slot(const jw_daemon_state *state,
+                                                      const char *source_id) {
+    if (!state || !source_id) {
+        return NULL;
+    }
+    for (int i = 0; i < state->storage_monitor.count; i++) {
+        const jw_storage_health_slot *slot = &state->storage_monitor.slots[i];
+        if (slot->valid && strcmp(slot->health.source_id, source_id) == 0) {
+            return slot;
+        }
+    }
+    return NULL;
+}
+
+/* Acknowledgement belongs to a card and a boot, not to a mount path: the two
+   MLP1 paths swap between boots and a replaced card must warn again. */
+static void jw__storage_ack_key(const jw_storage_health *health, char *out, size_t out_size) {
+    char boot_id[64] = "unknown";
+    FILE *fp = fopen("/proc/sys/kernel/random/boot_id", "r");
+    if (fp) {
+        if (fgets(boot_id, sizeof(boot_id), fp)) {
+            boot_id[strcspn(boot_id, "\r\n")] = '\0';
+        }
+        fclose(fp);
+    }
+    if (health->uuid[0]) {
+        snprintf(out, out_size, "%s uuid:%s", boot_id, health->uuid);
+    } else {
+        snprintf(out, out_size, "%s dev:%u:%u", boot_id, health->major, health->minor);
+    }
+}
+
+static bool jw__storage_warning_acked(const jw_daemon_state *state,
+                                      const jw_storage_health *health) {
+    char path[PATH_MAX];
+    char key[160];
+    char line[192];
+    snprintf(path, sizeof(path), "%s/storage-warning-acks", state->runtime_dir);
+    jw__storage_ack_key(health, key, sizeof(key));
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return false;
+    }
+    bool found = false;
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strcmp(line, key) == 0) {
+            found = true;
+            break;
+        }
+    }
+    fclose(fp);
+    return found;
+}
+
+static int jw__storage_warning_ack_write(const jw_daemon_state *state,
+                                         const jw_storage_health *health) {
+    char path[PATH_MAX];
+    char key[160];
+    snprintf(path, sizeof(path), "%s/storage-warning-acks", state->runtime_dir);
+    jw__storage_ack_key(health, key, sizeof(key));
+    FILE *fp = fopen(path, "a");
+    if (!fp) {
+        return -1;
+    }
+    int rc = fprintf(fp, "%s\n", key) < 0 ? -1 : 0;
+    if (fclose(fp) != 0) {
+        rc = -1;
+    }
+    return rc;
+}
+
+static bool jw__storage_external_power(jw_daemon_state *state) {
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+    return status.charging == 1;
+}
+
+static bool jw__storage_child_in_front(const jw_daemon_state *state) {
+    return state->child_pid > 0 &&
+           (state->child_kind == JW_CHILD_RETROARCH ||
+            state->child_kind == JW_CHILD_EMULATOR ||
+            state->child_kind == JW_CHILD_APP);
+}
+
+static void jw__storage_status_add_health(jw_daemon_state *state, cJSON *root,
+                                          const char *source_id) {
+    if (!state || !root) {
+        return;
+    }
+    cJSON_AddNumberToObject(root, "health_generation",
+                            (double)state->storage_monitor.generation);
+    const jw_storage_health_slot *slot = jw__storage_slot(state, source_id);
+    if (!slot) {
+        cJSON_AddStringToObject(root, "access", "unknown");
+        cJSON_AddStringToObject(root, "cause", "unknown");
+        cJSON_AddStringToObject(root, "repair", "none");
+        cJSON_AddBoolToObject(root, "repair_supported", false);
+        cJSON_AddStringToObject(root, "repair_unavailable_reason", "unavailable");
+        return;
+    }
+    const jw_storage_health *h = &slot->health;
+    cJSON_AddStringToObject(root, "access", jw_storage_access_name(h->access));
+    cJSON_AddStringToObject(root, "cause", jw_storage_cause_name(h->cause));
+    cJSON_AddStringToObject(root, "repair", jw_storage_repair_name(h->repair));
+    cJSON_AddStringToObject(root, "fs_type", h->fs_type);
+    cJSON_AddStringToObject(root, "uuid", h->uuid);
+    cJSON_AddStringToObject(root, "volume_label", h->label);
+    if (h->kernel_message[0]) {
+        cJSON_AddStringToObject(root, "kernel_message", h->kernel_message);
+    }
+    cJSON_AddBoolToObject(root, "dirty_at_boot", h->dirty_at_boot);
+    cJSON_AddBoolToObject(root, "block_write_protected", h->block_write_protected);
+
+    jw_platform_storage_repair_capability capability;
+    jw_platform_get_storage_repair_capability(&state->platform, h->fs_type, h->uuid,
+                                          h->block_write_protected, &capability);
+    cJSON_AddBoolToObject(root, "repair_supported", capability.supported);
+    cJSON_AddStringToObject(root, "repair_unavailable_reason",
+                            capability.unavailable_reason);
+    cJSON_AddStringToObject(root, "repair_mode", capability.mode);
+    cJSON_AddBoolToObject(root, "warning_pending",
+                          h->mounted && h->access == JW_STORAGE_ACCESS_READ_ONLY &&
+                              !jw__storage_warning_acked(state, h));
+    cJSON_AddBoolToObject(root, "external_power", jw__storage_external_power(state));
+
+    jw_storage_probe_env env;
+    jw_storage_probe_env_default(&env);
+    jw_storage_repair_result result;
+    if (jw_storage_repair_last_result(&env, &result)) {
+        cJSON *last = cJSON_AddObjectToObject(root, "last_repair");
+        if (last) {
+            cJSON_AddStringToObject(last, "request_id", result.request_id);
+            cJSON_AddStringToObject(last, "outcome", result.outcome);
+            cJSON_AddStringToObject(last, "mount_state", result.mount_state);
+            cJSON_AddStringToObject(last, "mode", result.mode);
+            cJSON_AddBoolToObject(last, "changes_complete", result.changes_complete);
+            cJSON_AddNumberToObject(last, "reported_changes", result.reported_change_count);
+            cJSON_AddBoolToObject(last, "acknowledged", result.acknowledged);
+        }
+    }
+}
+
+/* The card flipped read-only while a game or app is in front: one banner.
+   Emulators are third-party; nothing here can promise they handle it. */
+static void jw__osd_storage_read_only(jw_daemon_state *state) {
+    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD") ||
+        state->shutdown_requested || g_shutdown_requested) {
+        return;
+    }
+    if (state->osd_pid <= 0) {
+        jw__spawn_osd(state);
+    }
+    const char *request =
+        "{\"type\":\"show-game-launch\",\"stage\":\"storage-read-only\"}";
+    char *response = NULL;
+    size_t response_len = 0;
+    if (jw_ipc_request_timeout(state->osd_socket_path, request, strlen(request),
+                               &response, &response_len, 100) != 0) {
+        jw_log_warn("storage: read-only OSD request failed");
+    }
+    free(response);
+}
+
+static void jw__storage_health_refresh(jw_daemon_state *state) {
+    jw_platform_storage_root roots[JW_STORAGE_MAX_SOURCES];
+    int count = jw_platform_storage_roots(&state->platform, roots, JW_STORAGE_MAX_SOURCES);
+    jw_storage_probe_env env;
+    jw_storage_probe_env_default(&env);
+    char *kernel_log = NULL;
+    bool kernel_read = false;
+    bool changed = false;
+    bool newly_read_only = false;
+
+    for (int i = 0; i < count; i++) {
+        jw_storage_health probe;
+        bool newly = false;
+        jw_storage_health_probe(&env, roots[i].source_id, roots[i].root, NULL, &probe);
+        /* Hotplug refuses to mount a held second card. Keep its identity so
+           Check SD card stays available after a repair on a computer. */
+        if (!probe.mounted &&
+            strcmp(roots[i].source_id, JW_PLATFORM_STORAGE_SECONDARY_ID) == 0) {
+            (void)jw_storage_health_probe_unmounted_hold(&env, &probe);
+        }
+        changed |= jw_storage_health_monitor_update(&state->storage_monitor, i, &probe,
+                                                    &newly);
+        jw_storage_health_slot *slot = &state->storage_monitor.slots[i];
+        /* Kernel evidence only at startup and on a new read-only observation;
+           it explains the state, it never decides it. */
+        if (probe.mounted && (newly || !slot->kernel_checked)) {
+            if (!kernel_read) {
+                kernel_log = jw_storage_kernel_log_read();
+                kernel_read = true;
+            }
+            if (kernel_log) {
+                bool ignored = false;
+                jw_storage_health_probe(&env, roots[i].source_id, roots[i].root,
+                                        kernel_log, &probe);
+                changed |= jw_storage_health_monitor_update(&state->storage_monitor, i,
+                                                            &probe, &ignored);
+            }
+            slot->kernel_checked = true;
+        }
+        newly_read_only |= newly;
+    }
+    free(kernel_log);
+
+#ifdef PLATFORM_MLP1
+    if (!state->storage_log_redirected &&
+        jw_log_redirect_if_read_only(JW_STORAGE_MLP1_LOG_DIR, "jawakad") == 1) {
+        state->storage_log_redirected = true;
+        jw_log_warn("storage: session log card is read-only; daemon output continues in "
+                    JW_STORAGE_MLP1_LOG_DIR "/jawakad.log (children started earlier "
+                    "keep their old log)");
+    }
+#endif
+    if (!changed) {
+        return;
+    }
+    jw_scrape_storage_recheck();
+    if (newly_read_only && jw__storage_child_in_front(state)) {
+        jw__osd_storage_read_only(state);
+    }
+    if (state->storage_scan_deferred && state->db &&
+        jw_storage_path_writable(state->db_path, NULL, 0)) {
+        state->storage_scan_deferred = false;
+        if (jw__start_scan_job(state, "after storage became writable") < 0) {
+            jw_log_warn("storage: deferred library rescan could not start");
+        }
+    }
+}
+
+static void jw__tick_storage_health(jw_daemon_state *state) {
+    long long now = jw__monotonic_ms();
+    bool requested = jw_storage_take_refresh_request();
+    if (!requested && now < state->storage_next_probe_ms) {
+        return;
+    }
+    state->storage_next_probe_ms = now + JW_STORAGE_PROBE_INTERVAL_MS;
+    jw__storage_health_refresh(state);
+
+    if (!state->storage_repair_rescan_done) {
+        /* A verified repair can change file names and sizes; rescan once. The
+           scan itself defers while another card keeps the DB read-only. */
+        state->storage_repair_rescan_done = true;
+        jw_storage_probe_env env;
+        jw_storage_probe_env_default(&env);
+        jw_storage_repair_result result;
+        if (jw_storage_repair_last_result(&env, &result) && !result.acknowledged &&
+            (strcmp(result.outcome, "repaired") == 0 ||
+             strcmp(result.outcome, "clean") == 0) &&
+            strcmp(result.mount_state, "read-write") == 0 &&
+            jw__start_scan_job(state, "after SD card repair") < 0) {
+            jw_log_warn("storage: post-repair library rescan could not start");
+        }
+    }
+}
+
+static int jw__handle_storage_warning_ack(jw_daemon_state *state, jw_ipc_client *client,
+                                          cJSON *root) {
+    cJSON *source_json = cJSON_GetObjectItemCaseSensitive(root, "source");
+    const char *source = cJSON_IsString(source_json) && source_json->valuestring
+        ? source_json->valuestring : JW_PLATFORM_STORAGE_LAUNCHER_ID;
+    const jw_storage_health_slot *slot = jw__storage_slot(state, source);
+    if (!slot || !slot->health.mounted) {
+        return jw__reply_error(client, "storage source unavailable");
+    }
+    if (jw__storage_warning_ack_write(state, &slot->health) != 0) {
+        return jw__reply_error(client, "could not record acknowledgement");
+    }
+    state->storage_monitor.generation++;
+    return jw__reply_ok(client, "storage-warning-ack", NULL);
+}
+
+#ifdef PLATFORM_MLP1
+/* Run the switcher's repair tool with a bounded wait. Output (first bytes of
+   stdout+stderr) is returned for the refusal message. */
+static int jw__storage_run_repair_tool(char *const argv[], char *out, size_t out_size) {
+    int pipefd[2];
+    if (out && out_size) {
+        out[0] = '\0';
+    }
+    if (pipe(pipefd) != 0) {
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        if (chdir("/") != 0) {
+            _exit(126);
+        }
+        (void)dup2(pipefd[1], STDOUT_FILENO);
+        (void)dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execv(JW_STORAGE_MLP1_REPAIR_TOOL, argv);
+        _exit(127);
+    }
+    close(pipefd[1]);
+    size_t used = 0;
+    long long deadline = jw__monotonic_ms() + JW_STORAGE_TOOL_TIMEOUT_MS;
+    for (;;) {
+        struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
+        long long left = deadline - jw__monotonic_ms();
+        if (left <= 0) {
+            break;
+        }
+        int ready = poll(&pfd, 1, (int)(left > 1000 ? 1000 : left));
+        if (ready < 0 && errno != EINTR) {
+            break;
+        }
+        if (ready <= 0) {
+            continue;
+        }
+        char buf[256];
+        ssize_t n = read(pipefd[0], buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        if (out && used + 1 < out_size) {
+            size_t take = (size_t)n < out_size - 1 - used ? (size_t)n : out_size - 1 - used;
+            memcpy(out + used, buf, take);
+            used += take;
+            out[used] = '\0';
+        }
+    }
+    close(pipefd[0]);
+    /* EOF can arrive before the tool has exited. Keep waiting within the same
+       deadline: killing it here turned committed requests into failures. */
+    int status = 0;
+    for (;;) {
+        pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) {
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+        if (waited < 0 && errno != EINTR) {
+            return -1;
+        }
+        if (jw__monotonic_ms() >= deadline) {
+            break;
+        }
+        usleep(10000);
+    }
+    (void)kill(pid, SIGKILL);
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        /* retry */
+    }
+    return -1;
+}
+#endif
+
+static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_client *client,
+                                             cJSON *root) {
+    cJSON *source_json = cJSON_GetObjectItemCaseSensitive(root, "source");
+    cJSON *mode_json = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    const char *source = cJSON_IsString(source_json) && source_json->valuestring
+        ? source_json->valuestring : JW_PLATFORM_STORAGE_LAUNCHER_ID;
+    const char *mode = cJSON_IsString(mode_json) && mode_json->valuestring
+        ? mode_json->valuestring : "repair";
+    if (strcmp(mode, "repair") != 0 && strcmp(mode, "check") != 0) {
+        return jw__reply_error(client, "invalid repair mode");
+    }
+    const jw_storage_health_slot *slot = jw__storage_slot(state, source);
+    /* An unmounted card qualifies only as a held card with a known identity. */
+    if (!slot || (!slot->health.mounted &&
+                  (slot->health.repair == JW_STORAGE_REPAIR_NONE ||
+                   !slot->health.uuid[0] || !slot->health.device[0]))) {
+        return jw__reply_error(client, "not-found");
+    }
+    const jw_storage_health *h = &slot->health;
+    jw_platform_storage_repair_capability capability;
+    jw_platform_get_storage_repair_capability(&state->platform, h->fs_type, h->uuid,
+                                          h->block_write_protected, &capability);
+    if (!capability.supported) {
+        return jw__reply_error(client, capability.unavailable_reason);
+    }
+    if (state->active_game.active || jw__storage_child_in_front(state)) {
+        return jw__reply_error(client, "busy");
+    }
+    if (!jw__storage_external_power(state)) {
+        return jw__reply_error(client, "power-required");
+    }
+#ifdef PLATFORM_MLP1
+    char fs_type[JW_STORAGE_FS_TYPE_MAX];
+    char uuid[JW_STORAGE_UUID_MAX];
+    char device[JW_STORAGE_DEVICE_MAX];
+    char source_copy[JW_STORAGE_SOURCE_ID_MAX];
+    char mode_copy[16];
+    snprintf(fs_type, sizeof(fs_type), "%s", h->fs_type);
+    snprintf(uuid, sizeof(uuid), "%s", h->uuid);
+    snprintf(device, sizeof(device), "%s", h->device);
+    snprintf(source_copy, sizeof(source_copy), "%s", source);
+    snprintf(mode_copy, sizeof(mode_copy), "%s", mode);
+    char *argv[] = {
+        (char *)"umrk-storage-repair", (char *)"request",
+        (char *)"--uuid", uuid, (char *)"--source", source_copy,
+        (char *)"--fs-type", fs_type, (char *)"--device", device,
+        (char *)"--mode", mode_copy, NULL,
+    };
+    char output[256];
+    int rc = jw__storage_run_repair_tool(argv, output, sizeof(output));
+    output[strcspn(output, "\r\n")] = '\0';
+    if (rc != 0) {
+        jw_log_warn("storage: %s request for %s (%s) refused rc=%d: %s", mode, source, uuid,
+                    rc, output[0] ? output : "no output");
+        return jw__reply_error(client, output[0] ? output : "failed");
+    }
+    jw_log_warn("storage: %s request committed for %s uuid=%s; restarting", mode, source, uuid);
+    state->storage_monitor.generation++;
+    jw__request_power_transition(state, JW_PLATFORM_ACTION_REBOOT);
+    return jw__reply_ok(client, "storage-repair-request", NULL);
+#else
+    return jw__reply_error(client, "unsupported-platform");
+#endif
+}
+
+static int jw__handle_storage_repair_result_ack(jw_daemon_state *state, jw_ipc_client *client,
+                                                cJSON *root) {
+    cJSON *id_json = cJSON_GetObjectItemCaseSensitive(root, "request_id");
+    const char *id = cJSON_IsString(id_json) && id_json->valuestring ? id_json->valuestring : "";
+    size_t id_len = strlen(id);
+    if (id_len == 0 || id_len >= JW_STORAGE_REQUEST_ID_MAX) {
+        return jw__reply_error(client, "invalid request id");
+    }
+    for (const char *p = id; *p; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_' && *p != '.') {
+            return jw__reply_error(client, "invalid request id");
+        }
+    }
+    jw_storage_probe_env env;
+    jw_storage_probe_env_default(&env);
+    if (!env.repair_dir) {
+        return jw__reply_error(client, "unsupported-platform");
+    }
+    char dir[PATH_MAX];
+    char path[PATH_MAX];
+    if (snprintf(dir, sizeof(dir), "%s/acks", env.repair_dir) >= (int)sizeof(dir) ||
+        snprintf(path, sizeof(path), "%s/%s", dir, id) >= (int)sizeof(path)) {
+        return jw__reply_error(client, "invalid request id");
+    }
+    (void)mkdir(dir, 0755);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        return jw__reply_error(client, "could not record acknowledgement");
+    }
+    int rc = fsync(fd);
+    close(fd);
+    int dir_fd = open(dir, O_RDONLY | O_CLOEXEC);
+    if (dir_fd >= 0) {
+        if (fsync(dir_fd) != 0) {
+            rc = -1;
+        }
+        close(dir_fd);
+    }
+    if (rc != 0) {
+        return jw__reply_error(client, "could not record acknowledgement");
+    }
+    state->storage_monitor.generation++;
+    return jw__reply_ok(client, "storage-repair-result-ack", NULL);
 }
 
 static int jw__handle_suspend_inhibit(jw_daemon_state *state,
@@ -11992,6 +12535,24 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
 
     if (strcmp(type->valuestring, "storage-action") == 0) {
         int rc = jw__handle_storage_action(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "storage-warning-ack") == 0) {
+        int rc = jw__handle_storage_warning_ack(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "storage-repair-request") == 0) {
+        int rc = jw__handle_storage_repair_request(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "storage-repair-result-ack") == 0) {
+        int rc = jw__handle_storage_repair_result_ack(state, client, root);
         cJSON_Delete(root);
         return rc;
     }
@@ -14438,10 +14999,45 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-    if (jw_db_open(state.db_path, &state.db) != 0 || jw_db_apply_schema(state.db) != 0) {
-        jw_log_error("could not open or initialize sqlite database: %s", state.db_path);
-        jw__cleanup(&state);
-        return 1;
+    /* Storage health before the DB: a launcher card that is already read-only
+       must still reach the warning and repair UI, without migrations, discovery
+       writes or a restart loop. */
+    jw__storage_health_refresh(&state);
+    {
+        char reason[JW_STORAGE_REASON_MAX];
+        state.storage_db_read_only =
+            !jw_storage_path_writable(state.db_path, reason, sizeof(reason));
+        if (state.storage_db_read_only) {
+            jw_log_warn("storage: library database is not writable (%s); starting read-only",
+                        reason);
+        }
+    }
+    bool db_opened = jw_db_open(state.db_path, &state.db) == 0;
+    if (db_opened && jw_db_apply_schema(state.db) != 0) {
+        if (!state.storage_db_read_only) {
+            jw_log_error("could not open or initialize sqlite database: %s", state.db_path);
+            jw__cleanup(&state);
+            return 1;
+        }
+        jw_log_warn("storage: library schema could not be checked on a read-only card; "
+                    "continuing without migrations");
+    } else if (!db_opened) {
+        if (!state.storage_db_read_only) {
+            jw_log_error("could not open or initialize sqlite database: %s", state.db_path);
+            jw__cleanup(&state);
+            return 1;
+        }
+        if (state.db) {
+            jw_db_close(state.db);
+            state.db = NULL;
+        }
+        if (jw_db_open(":memory:", &state.db) != 0 || jw_db_apply_schema(state.db) != 0) {
+            jw_log_error("could not open a fallback library database");
+            jw__cleanup(&state);
+            return 1;
+        }
+        jw_log_warn("storage: library database unreadable on a read-only card; "
+                    "showing an empty library");
     }
     jw__load_library_generation(&state);
     jw__perf_load_global(&state);
@@ -14689,6 +15285,7 @@ int main(int argc, char *argv[]) {
         jw__handle_child_exit(&state);
         jw__tick_post_launch_resume(&state);
         jw__tick_retroarch_warning(&state);
+        jw__tick_retroarch_stuck_quit(&state);
         jw__tick_in_game_menu_prewarm(&state);
         jw__handle_menu_exit(&state);
         jw__tick_advanced_shader(&state);
@@ -14720,6 +15317,7 @@ int main(int argc, char *argv[]) {
         jw__tick_suspend_inhibitors(&state);
         jw__tick_auto_sleep(&state);
         jw__tick_hdmi(&state);
+        jw__tick_storage_health(&state);
         if (jw_platform_storage_tick(&state.platform)) {
             if (state.services) {
                 /* Only a source going AWAY is a stop_on_storage_change event.

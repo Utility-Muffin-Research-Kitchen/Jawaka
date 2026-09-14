@@ -1,4 +1,5 @@
 #include "internal/settings/settings.h"
+#include "internal/settings/storage_ui.h"
 
 #include "internal/db/db.h"
 #include "internal/ipc/ipc_client.h"
@@ -644,13 +645,26 @@ static void jw__refresh_secondary_sd_status(jw_settings_ui *ui) {
         return;
     }
 
-    jw_ipc_storage_status_info storage;
-    if (jw_ipc_get_storage_status(ui->socket_path, "secondary_sd",
-                                  &storage, NULL, 0) != 0) {
-        return;
+    /* The row summarizes both cards: a card that needs attention wins over the
+       second card's plain mount state. */
+    jw_ipc_storage_status_info cards[JW_STORAGE_UI_SOURCE_COUNT];
+    const char *summary = NULL;
+    for (int i = 0; i < JW_STORAGE_UI_SOURCE_COUNT; i++) {
+        if (jw_ipc_get_storage_status(ui->socket_path, jw_storage_ui_sources[i],
+                                      &cards[i], NULL, 0) != 0) {
+            continue;
+        }
+        if (jw_storage_ui_needs_repair(&cards[i]) || jw_storage_ui_is_read_only(&cards[i])) {
+            summary = jw_storage_ui_card_state(&cards[i]);
+            break;
+        }
+        if (i == 1) {
+            summary = cards[i].busy ? T("Busy") : (cards[i].mounted ? T("Mounted") : T("Not mounted"));
+        }
     }
-    snprintf(ui->secondary_sd_status, sizeof(ui->secondary_sd_status), "%s",
-             storage.busy ? T("Busy") : (storage.mounted ? T("Mounted") : T("Not mounted")));
+    if (summary) {
+        snprintf(ui->secondary_sd_status, sizeof(ui->secondary_sd_status), "%s", summary);
+    }
 }
 
 static void jw__refresh_adb(jw_settings_ui *ui) {
@@ -1856,6 +1870,8 @@ void jw_settings_status_bar_opts(const jw_settings_ui *ui, cat_status_bar_opts *
     out->bt_state = ui->show_bluetooth ? ui->bt_state_cached : 0;
     out->show_volume = ui->show_volume;
     out->volume_percent = ui->show_volume ? ui->volume_percent : -1;
+    /* A read-only card is not a status the user can toggle off. */
+    out->alert_text = ui->storage_alert[0] ? ui->storage_alert : NULL;
 }
 
 bool jw_settings_show_volume(const jw_settings_ui *ui) {
@@ -3704,7 +3720,9 @@ static void jw__scrape_queue_settings_value(jw_settings_ui *ui,
     const jw_ipc_scrape_queue_info *q = ui->scrape_queue_cache;
     if (!q) return;
     int failed = q->failed + q->not_found;
-    if (strcmp(q->state, "paused-quota") == 0) {
+    if (strcmp(q->state, "paused-storage") == 0) {
+        snprintf(buf, buf_size, "%s", "Storage paused");
+    } else if (strcmp(q->state, "paused-quota") == 0) {
         snprintf(buf, buf_size, "%s", "Quota paused");
     } else if (q->active > 0 || q->queued > 0) {
         snprintf(buf, buf_size, T("%d/%d done"), q->done, q->total);
@@ -3797,7 +3815,8 @@ static void jw__scrape_queue_summary(const jw_ipc_scrape_queue_info *q,
     if (q->row_count > 0 && q->row_count < q->total) {
         snprintf(shown, sizeof(shown), " | showing first %d", q->row_count);
     }
-    const char *prefix = strcmp(q->state, "paused-quota") == 0 ? "Quota paused, " : "";
+    const char *prefix = strcmp(q->state, "paused-quota") == 0 ? "Quota paused, " :
+                         strcmp(q->state, "paused-storage") == 0 ? "Storage paused, " : "";
     snprintf(buf, buf_size, "%s%d/%d done, %d failed, %d busy%s%s%s%s",
              prefix, q->done, q->total, failed, q->active + q->queued,
              api, threads, eta_part, shown);
@@ -4957,7 +4976,7 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_RESET_RETROARCH,
                         "Reset RetroArch Config", "Defaults", true);
     jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_UNMOUNT_SECONDARY,
-                        "Unmount Secondary SD",
+                        "SD Cards",
                         ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
                         true);
 
@@ -8245,8 +8264,15 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     if (button == CAT_BTN_A)
                         jw__reset_retroarch_config(ui, status_buf, status_size);
                 } else if (ui->behavior_list.cursor == JW_BEHAVIOR_UNMOUNT_SECONDARY) {
-                    if (button == CAT_BTN_A)
-                        jw__safe_unmount_secondary_sd(ui, status_buf, status_size);
+                    if (button == CAT_BTN_A) {
+                        bool unmount = false;
+                        jw_storage_ui_manage_cards(ui->socket_path, status_buf,
+                                                   status_size, &unmount);
+                        if (unmount)
+                            jw__safe_unmount_secondary_sd(ui, status_buf, status_size);
+                        else
+                            jw__refresh_secondary_sd_status(ui);
+                    }
                 }
                 break;
             }

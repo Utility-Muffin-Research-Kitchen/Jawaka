@@ -16,6 +16,7 @@ typedef struct {
     jw_system_notice feedback;
     jw_system_notice completion;
     char scrape[256];
+    char storage[256];   /* persistent while a card is read-only */
     bool scan_running;
 } jw_system_activity;
 
@@ -37,6 +38,7 @@ static inline const char *jw_system_activity_text(const jw_system_activity *acti
                                                   uint32_t now, const char *scan) {
     if (jw_system_notice_remaining(&activity->feedback, now)) return activity->feedback.text;
     if (activity->scrape[0]) return activity->scrape;
+    if (activity->storage[0]) return activity->storage;
     if (jw_system_notice_remaining(&activity->completion, now)) return activity->completion.text;
     return activity->scan_running ? scan : "";
 }

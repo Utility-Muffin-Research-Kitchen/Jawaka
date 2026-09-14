@@ -8,6 +8,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,10 +36,19 @@ bool jw_ss_is_debug(void) {
 
 /* ── Error helpers (thread-local, like the rest of the daemon workers) ── */
 
+static _Thread_local int jw__ss_errno;
 static _Thread_local char jw__ss_error[256];
 
 static void jw__ss_clear_error(void) {
     jw__ss_error[0] = '\0';
+}
+
+static void jw__ss_clear_errno(void) {
+    jw__ss_errno = 0;
+}
+
+int jw_ss_last_errno(void) {
+    return jw__ss_errno;
 }
 
 static void jw__ss_set_error(const char *fmt, ...) {
@@ -851,21 +861,35 @@ static unsigned char *jw__downscale_rgba(const unsigned char *src,
     return dst;
 }
 
+/* Capture errno at the first failing step, before cleanup can overwrite it:
+   the caller tells a read-only card apart from a full one or a bad path. */
 static int jw__write_file_synced(const char *path, const void *data, size_t size) {
     FILE *f = fopen(path, "wb");
-    if (!f)
+    if (!f) {
+        jw__ss_errno = errno ? errno : EIO;
         return -1;
+    }
+    int first_errno = 0;
     size_t written = fwrite(data, 1, size, f);
     int write_ok = (written == size);
+    if (!write_ok) first_errno = errno ? errno : EIO;
     int flush_ok = (fflush(f) == 0);
+    if (!flush_ok && !first_errno) first_errno = errno ? errno : EIO;
     int sync_ok = flush_ok && (fsync(fileno(f)) == 0);
+    if (flush_ok && !sync_ok && !first_errno) first_errno = errno ? errno : EIO;
     int close_ok = (fclose(f) == 0);
-    return (write_ok && flush_ok && sync_ok && close_ok) ? 0 : -1;
+    if (!close_ok && !first_errno) first_errno = errno ? errno : EIO;
+    if (write_ok && flush_ok && sync_ok && close_ok) {
+        return 0;
+    }
+    jw__ss_errno = first_errno;
+    return -1;
 }
 
 int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
                          const char *dest_path, int max_dim) {
     jw__ss_clear_error();
+    jw__ss_clear_errno();
 
     jw__curl_buffer buf;
     char content_type[128];
@@ -976,6 +1000,7 @@ int jw_ss_download_media(const jw_ss_client *client, const char *media_url,
     }
 
     if (rename(tmp_path, dest_path) != 0) {
+        jw__ss_errno = errno ? errno : EIO;
         unlink(tmp_path);
         jw__ss_set_error("Failed to finalize media file");
         return -1;

@@ -39,6 +39,10 @@ const char *jw_ss_last_error(void) {
     return "stub scraper";
 }
 
+int jw_ss_last_errno(void) {
+    return 0;
+}
+
 jw_ss_search_status jw_ss_search_rom_platforms(
     const jw_ss_client *client,
     const char *rom_name,
@@ -303,6 +307,13 @@ int main(void) {
     expect_missing("GBA", 1, 4);
     expect_missing("FC", 0, 1);
     expect_missing("MD", 0, 1);
+
+    /* An SD repair truncates damaged art to 0 bytes: that game needs art again. */
+    snprintf(path, sizeof(path), "%s/Images/GBA/Canon.jpeg", sd);
+    write_file(path, "");
+    expect_missing("GBA", 2, 4);
+    write_file(path, "jpeg");
+    expect_missing("GBA", 1, 4);
 
     jw_scrape_missing_row rows[16];
     int row_count = 0, total_missing = -1;

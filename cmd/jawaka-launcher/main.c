@@ -34,6 +34,8 @@
 #include "internal/retroarch/catalog.h"
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
+#include "internal/settings/storage_ui.h"
+#include "internal/storage/health.h"
 #include "internal/store/pakrat_state.h"
 #include "internal/store/pakrat_state_logic.h"
 #include "internal/store/pakrat_txn.h"
@@ -412,6 +414,7 @@ typedef struct {
     bool               scan_running;
     bool               library_populated;
     int                library_generation;
+    int                storage_generation_seen;   /* last SD health generation handled */
     /* 5-Game Mode (focus mode): when active, the launcher renders only the
        curated focus screen and swallows normal navigation. Populated at startup
        from the JAWAKA_FOCUS_* env the daemon sets on each launcher spawn (so it
@@ -1543,6 +1546,7 @@ typedef struct {
     atomic_int  scan_running;
     atomic_int  pending_rescan;
     atomic_int  library_populated;
+    atomic_int  storage_generation; /* daemon storage health generation (-1 = unknown) */
     atomic_int  volume;       /* sample mailboxes, JW_STATUS_SAMPLE_NONE = empty */
     atomic_int  wifi;         /* 0..3 strength, -1 = wifi unavailable */
     atomic_int  bt;           /* 0=off, 1=on, 2=connected */
@@ -1599,6 +1603,7 @@ static void *jw__status_poll_worker(void *arg) {
             atomic_store(&P->scan_running, lib.scan_running ? 1 : 0);
             atomic_store(&P->pending_rescan, lib.pending_rescan ? 1 : 0);
             atomic_store(&P->library_populated, lib.library_populated ? 1 : 0);
+            atomic_store(&P->storage_generation, lib.storage_health_generation);
         }
         /* Scrape progress (same fast cadence; art pops in live while the
            daemon worker downloads, so the status line should track it). */
@@ -1658,6 +1663,7 @@ static void jw__status_poller_fallback_poll(jw_settings_ui *s, int mask) {
             atomic_store(&P->scan_running, lib.scan_running ? 1 : 0);
             atomic_store(&P->pending_rescan, lib.pending_rescan ? 1 : 0);
             atomic_store(&P->library_populated, lib.library_populated ? 1 : 0);
+            atomic_store(&P->storage_generation, lib.storage_health_generation);
         }
         P->fb_last_fast = now;
     }
@@ -1757,6 +1763,7 @@ static void jw__status_poller_start(const char *socket_path, jw_settings_ui *set
     atomic_store(&P->scan_running, 0);
     atomic_store(&P->pending_rescan, 0);
     atomic_store(&P->library_populated, 0);
+    atomic_store(&P->storage_generation, -1);
     atomic_store(&P->volume, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->wifi, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->bt, JW_STATUS_SAMPLE_NONE);
@@ -1866,12 +1873,16 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
     s = P->scrape;
     pthread_mutex_unlock(&P->scrape_mu);
 
+    bool paused_storage = strcmp(s.state, "paused-storage") == 0;
     bool active = strcmp(s.state, "running") == 0 ||
-                  strcmp(s.state, "paused-quota") == 0;
+                  strcmp(s.state, "paused-quota") == 0 || paused_storage;
     jw_system_activity *activity = &state->system_activity;
     if (active) {
         activity->completion.text[0] = '\0';
-        if (strcmp(s.state, "paused-quota") == 0) {
+        if (paused_storage) {
+            snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
+                     s.message[0] ? s.message : T("SD card is read-only"));
+        } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(activity->scrape, sizeof(activity->scrape), T("Scraping paused: %.200s"),
                      s.message[0] ? s.message : T("daily quota exceeded"));
         } else if (s.current_system[0]) {
@@ -1893,7 +1904,11 @@ static void jw__poll_scrape_status(jw_launcher_state *state) {
             char *dot = strrchr(item, '.');
             if (dot && dot != item) *dot = '\0';
         }
-        if (strcmp(s.state, "paused-quota") == 0) {
+        if (paused_storage) {
+            snprintf(state->status, sizeof(state->status),
+                     "Scraping paused: %.200s",
+                     s.message[0] ? s.message : "SD card is read-only");
+        } else if (strcmp(s.state, "paused-quota") == 0) {
             snprintf(state->status, sizeof(state->status),
                      "Scraping paused: %.200s",
                      s.message[0] ? s.message : "daily quota exceeded");
@@ -8535,6 +8550,20 @@ typedef struct {
     char error_message[256];
 } jw_pakrat_ui_job;
 
+/* User text for a stable storage-gate reason key. */
+static const char *jw__storage_reason_text(const char *reason) {
+    if (reason && strcmp(reason, "storage-read-only") == 0) {
+        return T("Your SD card is read-only. Nothing new can be saved to it.");
+    }
+    if (reason && strcmp(reason, "storage-repair-hold") == 0) {
+        return T("Your SD card is waiting for repair. Nothing new can be saved to it.");
+    }
+    if (reason && strcmp(reason, "storage-missing") == 0) {
+        return T("Your SD card isn't available.");
+    }
+    return T("Leaf couldn't confirm your SD card can be written.");
+}
+
 static int jw__pakrat_ui_worker(void *userdata) {
     jw_pakrat_ui_job *job = (jw_pakrat_ui_job *)userdata;
     if (!job) {
@@ -8545,6 +8574,23 @@ static int jw__pakrat_ui_worker(void *userdata) {
     }
     if (job->action == JW_PAKRAT_UI_REMOVE_RETAINED) {
         return jw_pakrat_remove_retained_data(&job->ctx, job->store_id);
+    }
+    /* Install and repair write the pak, its state and the library DB. Refuse
+       up front on a read-only or held card rather than failing part-way. */
+    {
+        char apps_dir[PATH_MAX];
+        char reason[JW_STORAGE_REASON_MAX];
+        if (snprintf(apps_dir, sizeof(apps_dir), "%s/Apps", job->ctx.sdcard_root) >=
+                (int)sizeof(apps_dir) ||
+            !jw_storage_path_writable(apps_dir, reason, sizeof(reason)) ||
+            !jw_storage_path_writable(job->ctx.db_path, reason, sizeof(reason))) {
+            jw_log_warn("pakrat: %s refused: %s", job->store_id, reason);
+            if (job->ctx.error_message && job->ctx.error_message_size > 0) {
+                snprintf(job->ctx.error_message, job->ctx.error_message_size, "%s",
+                         jw__storage_reason_text(reason));
+            }
+            return -1;
+        }
     }
     if (job->repair_exact) {
         return jw_pakrat_repair_app_version(
@@ -9072,6 +9118,45 @@ static void jw__bios_localize_launch_status(jw_launcher_state *state) {
     }
 }
 
+/* Saves and states for this game land on its own card. If that card cannot
+   be written, say so before launching and let the user choose. Advisory: the
+   emulator still owns its own write failures. */
+static bool jw__confirm_storage_for_launch(jw_launcher_state *state,
+                                           const char *rom_path) {
+    jw_storage_source_list sources;
+    char rom_abs[PATH_MAX];
+    if (!rom_path || jw_storage_sources_resolve(state->sdcard_root, &sources) != 0 ||
+        jw_storage_resolve_path(&sources, rom_path, rom_abs, sizeof(rom_abs)) != 0) {
+        return true;
+    }
+    const jw_storage_source *source = jw_storage_sources_find_for_path(&sources, rom_abs);
+    if (!source) {
+        source = jw_storage_sources_primary(&sources);
+    }
+    if (!source) {
+        return true;
+    }
+    char reason[JW_STORAGE_REASON_MAX] = "";
+    if (jw_storage_path_writable(source->saves_path, reason, sizeof(reason)) &&
+        jw_storage_path_writable(source->states_path, reason, sizeof(reason))) {
+        return true;
+    }
+    jw_log_warn("launch: saves or states for %s are not writable (%s)", rom_path, reason);
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Play anyway", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = strcmp(reason, "storage-repair-hold") == 0
+            ? T("Your saves and save states may not be kept while this SD card is waiting for repair.")
+            : T("Your saves and save states may not be kept while this SD card is read-only."),
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
 static int jw__launch_game_entry_with_mode(const char *socket_path,
                                            jw_launcher_state *state,
                                            const jw_game_entry *game,
@@ -9079,6 +9164,10 @@ static int jw__launch_game_entry_with_mode(const char *socket_path,
                                            bool *running) {
     if (!game) {
         snprintf(state->status, sizeof(state->status), "%s", "No game selected");
+        return -1;
+    }
+    if (!jw__confirm_storage_for_launch(state, game->rom_path)) {
+        snprintf(state->status, sizeof(state->status), "%s", T("Launch canceled"));
         return -1;
     }
 
@@ -9143,6 +9232,10 @@ static int jw__launch_selected_search_result(const char *socket_path,
         return jw__launch_app_request(socket_path, result->name, result->pak_dir, state, running);
     }
 
+    if (!jw__confirm_storage_for_launch(state, result->rom_path)) {
+        snprintf(state->status, sizeof(state->status), "%s", T("Launch canceled"));
+        return -1;
+    }
     jw__set_launching_status(state, result->name, "game");
     cat_request_frame();
     jw__render_launcher(state);
@@ -11921,6 +12014,86 @@ static void jw__term_handler(int sig) {
     g_term_requested = 1;
 }
 
+/* SD card health, handled on the render thread only when the daemon's storage
+   generation moves: refresh the persistent activity line, show the one-per-boot
+   read-only warning, and show a finished repair's result once. */
+static void jw__poll_storage_health(const char *socket_path, const char *db_path,
+                                    jw_launcher_state *state, bool *running) {
+    int generation = atomic_load(&jw__status_poller.storage_generation);
+    if (!socket_path || !state || generation < 0 ||
+        generation == state->storage_generation_seen) {
+        return;
+    }
+    state->storage_generation_seen = generation;
+
+    jw_ipc_storage_status_info cards[JW_STORAGE_UI_SOURCE_COUNT];
+    bool have[JW_STORAGE_UI_SOURCE_COUNT] = { false, false };
+    char read_only_name[128] = "";
+    bool library_writable = true;
+    for (int i = 0; i < JW_STORAGE_UI_SOURCE_COUNT; i++) {
+        have[i] = jw_ipc_get_storage_status(socket_path, jw_storage_ui_sources[i],
+                                            &cards[i], NULL, 0) == 0 &&
+                  cards[i].access[0];
+        if (have[i] && jw_storage_ui_is_read_only(&cards[i])) {
+            if (!read_only_name[0]) {
+                jw_storage_ui_card_name(&cards[i], read_only_name, sizeof(read_only_name));
+            }
+            if (i == 0) {
+                library_writable = false;   /* the library DB lives on the launcher card */
+            }
+        }
+    }
+    if (read_only_name[0]) {
+        snprintf(state->system_activity.storage, sizeof(state->system_activity.storage),
+                 T("SD card is read-only: %s"), read_only_name);
+        snprintf(state->settings.storage_alert, sizeof(state->settings.storage_alert), "%s",
+                 T("SD read-only"));
+    } else {
+        state->system_activity.storage[0] = '\0';
+        state->settings.storage_alert[0] = '\0';
+    }
+    cat_request_frame();
+
+    /* A kiosk has no way to act on a warning; the activity line still shows. */
+    if (state->focus_active) {
+        return;
+    }
+    for (int i = 0; i < JW_STORAGE_UI_SOURCE_COUNT; i++) {
+        if (have[i] && cards[i].warning_pending &&
+            jw_storage_ui_show_warning(socket_path, &cards[i])) {
+            snprintf(state->status, sizeof(state->status), "%s",
+                     T("Restarting to repair your SD card"));
+            cat_request_frame();
+            return;
+        }
+    }
+    for (int i = 0; i < JW_STORAGE_UI_SOURCE_COUNT; i++) {
+        if (!have[i] || !cards[i].last_repair_valid || cards[i].last_repair_acknowledged) {
+            continue;
+        }
+        if (jw_storage_ui_show_repair_result(socket_path, &cards[i], library_writable) ==
+            JW_STORAGE_UI_RESULT_SCRAPE_MISSING) {
+            if (!jw__screenscraper_account_configured(db_path) &&
+                !jw__confirm_anonymous_batch_scrape(true)) {
+                break;
+            }
+            int enqueued = 0;
+            char status[256] = "";
+            if (jw_ipc_scrape_start(socket_path, "all", NULL, NULL, true, &enqueued,
+                                    status, sizeof(status)) != 0) {
+                snprintf(state->status, sizeof(state->status), "Scrape failed: %.180s",
+                         status[0] ? status : "daemon unavailable");
+            } else if (enqueued > 0) {
+                snprintf(state->status, sizeof(state->status), "Scraping %d games", enqueued);
+            } else {
+                snprintf(state->status, sizeof(state->status), "%s", "Nothing to scrape");
+            }
+        }
+        break;   /* one result, reported on both cards' status */
+    }
+    (void)running;
+}
+
 int main(void) {
     /* jawakad uses SIGTERM to replace this frontend with a ready game. SDL's
        handler turns it into a Back press instead of terminating the child. */
@@ -12015,6 +12188,7 @@ int main(void) {
     jw_launcher_state state;
     memset(&state, 0, sizeof(state));
     state.library_generation = -1;
+    state.storage_generation_seen = -1;
     /* A resume breadcrumb (left by the last game/app launch, cleared on reboot)
        restores the exact position; otherwise honor the persisted Startup Tab
        (Settings > Behavior > Startup Tab), default Games. Index mirrors jw_tab. */
@@ -12319,6 +12493,7 @@ int main(void) {
         jw__status_poller_sync(&state.settings);
         jw__poll_library_generation(socket_path, db_path, &state);
         jw__poll_scrape_status(&state);
+        jw__poll_storage_health(socket_path, db_path, &state, &running);
         jw__system_activity_tick(&state);
 
         /* 1080p120 auto-revert: when the daemon has armed a revert (after a

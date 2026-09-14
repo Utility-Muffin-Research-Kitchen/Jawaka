@@ -251,7 +251,13 @@ typedef struct {
 
 /* Set a game's image_path by rom_path (scrape worker: art landed outside a
    scan). Returns 0 on success, 1 when no game row matched, -2 on a transient
-   lock (SQLITE_BUSY/LOCKED, caller may retry), -1 on any other error. */
+   lock (SQLITE_BUSY/LOCKED, caller may retry), -3 when the database is
+   read-only (SQLITE_READONLY or its extended codes), -4 on SQLITE_IOERR, -1 on
+   any other error. An I/O error alone does not prove read-only storage. */
+#define JW_DB_RC_NO_ROW 1
+#define JW_DB_RC_BUSY (-2)
+#define JW_DB_RC_READONLY (-3)
+#define JW_DB_RC_IOERR (-4)
 int  jw_db_set_game_image(const char *db_path, const char *rom_path,
                           const char *image_path);
 
