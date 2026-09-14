@@ -116,6 +116,14 @@ static void grid_test(jw_launcher_state *state, jw_ra_system *system,
     jw__build_system_icon_candidates(state,"TEST",true,&candidates);
     ICON_AT(grid,at_grid); ICON_AT(photo,at_photo); ICON_AT(pack,at_pack);
     assert(at_pack >= 0 && at_pack < at_grid && at_grid < at_photo);
+    int at_flat_pack; /* an explicit Flat pack precedes pak art on a Grid tile too */
+    state->settings.system_icon_pack_index = JW_SYSTEM_ICON_PACK_FLAT;
+    char flat_pack[PATH_MAX];
+    snprintf(flat_pack, sizeof(flat_pack), "%s/../system_icons/TEST.png", cat_get_active_theme_dir());
+    jw__build_system_icon_candidates(state,"TEST",true,&candidates);
+    ICON_AT(grid,at_grid); ICON_AT(flat_pack,at_flat_pack);
+    assert(at_flat_pack >= 0 && at_flat_pack < at_grid);
+    state->settings.system_icon_pack_index = JW_SYSTEM_ICON_PACK_PHOTOGRAPHIC;
     jw__build_system_icon_candidates(state,"TEST",false,&candidates); /* Grid Search */
     ICON_AT(grid,at_grid); ICON_AT(photo,at_photo); ICON_AT(pack,at_pack);
     assert(at_grid < 0 && at_photo >= 0 && at_photo < at_pack);

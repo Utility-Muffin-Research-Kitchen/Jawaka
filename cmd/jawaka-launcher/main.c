@@ -4324,6 +4324,12 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
         n = snprintf(path, sizeof(path), "%s/%s/system_icons/%s.png",
                      theme_dir, JW_SYSTEM_ICON_PHOTO_THEME, system_code);
         if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
+    } else if (have_theme_dir && pack == JW_SYSTEM_ICON_PACK_FLAT && tile_order) {
+        /* An explicit Flat choice is a pack too: its art is the shared flat
+           set, so on a Grid tile it must precede pak art like the others. */
+        n = snprintf(path, sizeof(path), "%s/../system_icons/%s.png",
+                     theme_dir, system_code);
+        if (n > 0 && (size_t)n < sizeof(path)) jw__push_icon_candidate(out, path);
     }
 
     /* On a Grid tile the user's chosen icon pack wins over pak art: then the
