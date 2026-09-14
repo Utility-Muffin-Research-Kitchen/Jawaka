@@ -1592,6 +1592,14 @@ msgstr ""
 msgid "Restart"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "Restart and check"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Restart and repair"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Restart now to finish installing?"
 msgstr ""
@@ -1758,6 +1766,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape finished: %d found"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Scrape missing artwork"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

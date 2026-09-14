@@ -57,7 +57,7 @@ const char *jw_storage_ui_card_state(const jw_ipc_storage_status_info *card) {
 
 static void jw__storage_ui_message(const char *message) {
     cat_footer_item footer[] = {
-        { .button = CAT_BTN_A, .label = "OK", .is_confirm = true },
+        { .button = CAT_BTN_A, .label = T("OK"), .is_confirm = true },
     };
     cat_message_opts opts = {
         .message = message,
@@ -146,8 +146,8 @@ bool jw_storage_ui_request_repair(const char *socket_path,
     const char *message = check
         ? T("Your device will restart to check this card. If the check passes, the card can be written to again. Keep your device connected to power until the check finishes.")
         : T("Your device will restart to check and repair this card. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first if you need to recover them. Keep your device connected to power until the check finishes.");
-    if (!jw__storage_ui_confirm(message, "Cancel",
-                                check ? "Restart and check" : "Restart and repair")) {
+    if (!jw__storage_ui_confirm(message, T("Cancel"),
+                                check ? T("Restart and check") : T("Restart and repair"))) {
         return false;
     }
     char status[256] = "";
@@ -199,7 +199,7 @@ bool jw_storage_ui_show_warning(const char *socket_path,
 
     bool repair = false;
     if (offer_repair) {
-        repair = jw__storage_ui_confirm(message, "Later", "Repair SD card");
+        repair = jw__storage_ui_confirm(message, T("Later"), T("Repair SD card"));
     } else {
         jw__storage_ui_message(message);
     }
@@ -237,7 +237,7 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
             snprintf(message + used, sizeof(message) - used, "\n\n%s",
                      T("Your other SD card is still read-only, so your library can't update yet."));
             jw__storage_ui_message(message);
-        } else if (jw__storage_ui_confirm(message, "OK", "Scrape missing artwork")) {
+        } else if (jw__storage_ui_confirm(message, T("OK"), T("Scrape missing artwork"))) {
             action = JW_STORAGE_UI_RESULT_SCRAPE_MISSING;
         }
     } else {
@@ -298,8 +298,8 @@ void jw_storage_ui_manage_cards(const char *socket_path, char *status,
     }
 
     cat_footer_item footer[] = {
-        { .button = CAT_BTN_B, .label = "Back", .is_confirm = false },
-        { .button = CAT_BTN_A, .label = "Choose", .is_confirm = true },
+        { .button = CAT_BTN_B, .label = T("Back"), .is_confirm = false },
+        { .button = CAT_BTN_A, .label = T("Choose"), .is_confirm = true },
     };
     cat_list_opts opts = cat_list_default_opts(T("SD Cards"), items, card_count);
     opts.footer = footer;
