@@ -244,6 +244,15 @@ typedef struct {
     int failed_count;      /* Grid rejects failed paths until art refresh */
 } jw_system_icon_memo;
 
+/* What the Grid tile memo was resolved against. */
+typedef struct {
+    bool     valid;
+    unsigned epoch;
+    int      pack;
+    char     user_theme_dir[128];   /* matches jw_settings_ui.user_theme_dir */
+    char     theme_name[256];
+} jw_grid_art_identity;
+
 /* ─── Launcher state ──────────────────────────────────────────────────────── */
 
 /* Failsafe unlock chord: all five buttons pressed within the window, then held
@@ -278,8 +287,13 @@ typedef struct {
     jw_system_entry    systems[JW_MAX_SYSTEMS];
     jw_system_icon_memo system_icon_memos[JW_MAX_SYSTEMS];
     jw_ra_catalog     *system_catalog;
-    unsigned           wordmark_revision;
-    char               grid_art_identity[PATH_MAX * 2];
+    /* Artwork memos key on the adopted catalog's identity (its generation's
+       info_dir), bumped into art_epoch only when that identity really moves. */
+    unsigned           art_epoch;
+    bool               art_catalog_adopted;
+    bool               art_catalog_present;
+    char               art_catalog_identity[PATH_MAX];
+    jw_grid_art_identity grid_art_identity;
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
@@ -1244,6 +1258,25 @@ static void jw__grid_reveal_cursor(jw_launcher_state *state) {
 
 static jw_cover_loader *jw__covers(void);
 
+/* A provider replacing bytes at the same path publishes a new generation, so
+   the catalog's info_dir is the artwork identity. Only a real change (or the
+   catalog appearing/disappearing) retires in-flight surfaces and drops the
+   texture cache; reloading the same generation after an ordinary settings
+   write keeps everything warm. Call before the new catalog is adopted. */
+static void jw__adopt_art_catalog(jw_launcher_state *state, const jw_ra_catalog *catalog) {
+    const char *identity = catalog && catalog->info_dir ? catalog->info_dir : "";
+    if (state->art_catalog_adopted && state->art_catalog_present == (catalog != NULL) &&
+        strcmp(state->art_catalog_identity, identity) == 0)
+        return;
+    jw_cover_loader_shutdown(jw__covers());
+    jw_cover_loader_forget_failures(jw__covers());
+    cat_cache_clear();
+    snprintf(state->art_catalog_identity, sizeof(state->art_catalog_identity), "%s", identity);
+    state->art_catalog_present = catalog != NULL;
+    state->art_catalog_adopted = true;
+    state->art_epoch++;
+}
+
 static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *state) {
     if (!db_path || !state) {
         return -1;
@@ -1286,12 +1319,7 @@ static int jw__reload_library_from_db(const char *db_path, jw_launcher_state *st
     char catalog_error[160];
     jw_ra_catalog *catalog =
         jw_ra_catalog_load(state->sdcard_root, catalog_error, sizeof(catalog_error));
-    /* A provider may replace bytes at the same path. Retire in-flight surfaces
-       before adopting the new catalog, then invalidate texture and path memos. */
-    jw_cover_loader_shutdown(jw__covers());
-    jw_cover_loader_forget_failures(jw__covers());
-    cat_cache_clear();
-    state->wordmark_revision++;
+    jw__adopt_art_catalog(state, catalog);
     jw_ra_catalog_free(state->system_catalog);
     state->system_catalog = catalog;
     jw__resolve_system_names(db_path, state);
@@ -3397,9 +3425,7 @@ static bool jw__cover_thumb_path(const char *cover_abs, char *out, size_t out_si
 static bool jw__catalog_thumb_path(const jw_launcher_state *state, const char *path,
                                     char *out, size_t out_size) {
     char key[PATH_MAX * 2];
-    snprintf(key, sizeof(key), "%s|%s", path,
-             state->system_catalog && state->system_catalog->info_dir
-                 ? state->system_catalog->info_dir : "");
+    snprintf(key, sizeof(key), "%s|%s", path, state->art_catalog_identity);
     return jw__cover_thumb_path(key, out, out_size);
 }
 
@@ -3699,6 +3725,20 @@ static SDL_Texture *jw__load_page_image_status(const char *path, int max_dim,
     jw_cover_loader_enqueue(jw__covers(), path, tp, max_dim);
     cat_request_frame_in(40);
     return NULL;
+}
+
+/* Page image whose thumbnail is keyed by the catalog identity. The texture
+   cache answers a warm draw before the salted key is ever built. */
+static SDL_Texture *jw__load_catalog_page_image(const jw_launcher_state *state,
+                                                const char *path, int max_dim,
+                                                int *out_w, int *out_h, bool *failed) {
+    if (failed) *failed = false;
+    SDL_Texture *cached = path && path[0] ? cat_cache_get(path, out_w, out_h) : NULL;
+    if (cached) return cached;
+    char thumb[PATH_MAX];
+    const char *tp = jw__catalog_thumb_path(state, path ? path : "", thumb, sizeof(thumb))
+                         ? thumb : NULL;
+    return jw__load_page_image_status(path, max_dim, out_w, out_h, tp, failed);
 }
 
 /* The wallpaper covers the whole panel, so it is the one image that must not
@@ -6247,21 +6287,22 @@ static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
    failure. Pending work keeps its priority. Cover Flow retains its resolver. */
 static const char *jw__grid_system_icon_path(jw_launcher_state *state, int idx) {
     if (idx < 0 || idx >= state->system_count) return NULL;
-    char identity[sizeof(state->grid_art_identity)];
-    snprintf(identity, sizeof(identity), "%u|%d|%s|%s|%s",
-             state->wordmark_revision, state->settings.system_icon_pack_index,
-             state->settings.user_theme_dir,
-             cat_get_active_theme_name() ? cat_get_active_theme_name() : "",
-             state->system_catalog && state->system_catalog->info_dir
-                 ? state->system_catalog->info_dir : "");
-    if (strcmp(identity, state->grid_art_identity)) {
-        if (state->grid_art_identity[0]) {
-            jw_cover_loader_shutdown(jw__covers());
-            jw_cover_loader_forget_failures(jw__covers());
-            cat_cache_clear();
-        }
+    /* Field compares, not a formatted key: this runs for every tile on every
+       frame. Texture caches are already handled by jw__adopt_art_catalog. */
+    jw_grid_art_identity *id = &state->grid_art_identity;
+    const char *theme_name = cat_get_active_theme_name();
+    if (!theme_name) theme_name = "";
+    if (!id->valid || id->epoch != state->art_epoch ||
+        id->pack != state->settings.system_icon_pack_index ||
+        strcmp(id->user_theme_dir, state->settings.user_theme_dir) ||
+        strcmp(id->theme_name, theme_name)) {
         jw__system_icon_memo_clear(state);
-        jw__copy_path(state->grid_art_identity, sizeof(state->grid_art_identity), identity);
+        id->valid = true;
+        id->epoch = state->art_epoch;
+        id->pack = state->settings.system_icon_pack_index;
+        snprintf(id->user_theme_dir, sizeof(id->user_theme_dir), "%s",
+                 state->settings.user_theme_dir);
+        snprintf(id->theme_name, sizeof(id->theme_name), "%s", theme_name);
     }
     const char *code = state->systems[idx].name;
     jw_system_icon_memo *memo = &state->system_icon_memos[idx];
@@ -6300,10 +6341,9 @@ static SDL_Texture *jw__grid_icon(void *ctx, int idx, int *tw, int *th) {
         for (int attempt = 0; attempt < JW_SYSTEM_ICON_MAX_CANDIDATES; attempt++) {
             const char *path = jw__grid_system_icon_path(state, it->system_idx);
             if (!path) return NULL;
-            char thumb[PATH_MAX];
-            const char *tp = jw__catalog_thumb_path(state, path, thumb, sizeof(thumb)) ? thumb : NULL;
             bool failed = false;
-            SDL_Texture *texture = jw__load_page_image_status(path, JW_GRID_TILE_MAX, tw, th, tp, &failed);
+            SDL_Texture *texture = jw__load_catalog_page_image(state, path, JW_GRID_TILE_MAX,
+                                                               tw, th, &failed);
             if (texture || !failed) return texture;
             jw_system_icon_memo *memo = &state->system_icon_memos[it->system_idx];
             if (memo->failed_count < JW_SYSTEM_ICON_MAX_CANDIDATES)
@@ -6512,21 +6552,16 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
         char code[64], theme[256], theme_dir[128];
         char paths[4][PATH_MAX];
         bool failed[4], valid;
-        unsigned revision;
+        unsigned epoch;
     } memo;
-    if (!memo.valid || memo.revision != state->wordmark_revision ||
+    /* Keyed on the catalog identity epoch; jw__adopt_art_catalog already
+       dropped the textures when that identity moved. */
+    if (!memo.valid || memo.epoch != state->art_epoch ||
         strcmp(memo.code, code) || strcmp(memo.theme, theme ? theme : "") ||
         strcmp(memo.theme_dir, theme_dir)) {
-        bool invalidate = memo.valid && (memo.revision != state->wordmark_revision ||
-            strcmp(memo.theme, theme ? theme : "") || strcmp(memo.theme_dir, theme_dir));
-        if (invalidate) {
-            jw_cover_loader_shutdown(jw__covers());
-            jw_cover_loader_forget_failures(jw__covers());
-            cat_cache_clear();
-        }
         memset(&memo, 0, sizeof(memo));
         memo.valid = true;
-        memo.revision = state->wordmark_revision;
+        memo.epoch = state->art_epoch;
         snprintf(memo.code, sizeof(memo.code), "%s", code);
         snprintf(memo.theme, sizeof(memo.theme), "%s", theme ? theme : "");
         snprintf(memo.theme_dir, sizeof(memo.theme_dir), "%s", theme_dir);
@@ -6557,10 +6592,8 @@ static SDL_Texture *jw__gg_wordmark(jw_launcher_state *state, int *tw, int *th) 
         if (memo.failed[i]) continue;
         /* CAT-1's immutable generation is part of the thumbnail identity. A PNG
            replaced with the same mtime/size still gets a fresh derived image. */
-        char thumb[PATH_MAX];
-        const char *tp = jw__catalog_thumb_path(state, memo.paths[i], thumb, sizeof(thumb)) ? thumb : NULL;
-        SDL_Texture *texture = jw__load_page_image_status(memo.paths[i], JW_WORDMARK_MAX,
-                                                         tw, th, tp, &memo.failed[i]);
+        SDL_Texture *texture = jw__load_catalog_page_image(state, memo.paths[i], JW_WORDMARK_MAX,
+                                                           tw, th, &memo.failed[i]);
         if (texture || !memo.failed[i]) return texture;
     }
     return NULL;
@@ -6831,7 +6864,7 @@ static void jw__render_grid_apps(jw_launcher_state *state) {
 }
 
 /* Build the thumbnails for this page and the next before the cursor gets there,
-   so scrolling arrives on art that jw__load_page_image can pick up inline. Only
+   so scrolling arrives on art that jw__load_page_image_status can pick up inline. Only
    ever queues what is genuinely missing; a warm page enqueues nothing. */
 static void jw__grid_prewarm_icons(jw_launcher_state *state) {
     if (state->flat_count <= 0) return;

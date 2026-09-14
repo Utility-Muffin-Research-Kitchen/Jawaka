@@ -31,6 +31,11 @@ static void wm_expect(jw_launcher_state *state, int width) {
         abort();
     }
 }
+/* A new generation is the only thing that re-resolves artwork memos. */
+static void art_refresh(jw_launcher_state *state, jw_ra_catalog *catalog, const char *info_dir) {
+    catalog->info_dir = (char *)info_dir;
+    jw__adopt_art_catalog(state, catalog);
+}
 static void grid_expect(jw_launcher_state *state, int width) {
     int w = 0, h = 0; SDL_Texture *texture = NULL;
     for (int i = 0; i < 200; i++) {
@@ -72,19 +77,27 @@ static void grid_test(jw_launcher_state *state, jw_ra_system *system,
     int w,h; assert(jw__load_cached_image(bundle,&w,&h));
     assert(!jw__grid_icon(state,0,&w,&h)); /* cold theme must stay pending */
     jw__grid_prewarm_icons(state); grid_expect(state,64); /* theme > ROM > pak */
-    unlink(theme); state->wordmark_revision++; grid_expect(state,32);
-    wm_file(rom,"bad PNG"); catalog->info_dir = "grid-corrupt-rom/info"; state->wordmark_revision++; grid_expect(state,128);
-    grid_corrupt(grid); catalog->info_dir = "grid-corrupt-pak/info"; state->wordmark_revision++; grid_expect(state,192);
-    grid_corrupt(photo); catalog->info_dir = "grid-corrupt-photo/info"; state->wordmark_revision++; grid_expect(state,160);
-    grid_corrupt(flat); catalog->info_dir = "grid-corrupt-flat/info"; state->wordmark_revision++; grid_expect(state,256);
-    wm_png(grid,128); catalog->info_dir = "grid-repaired/info"; state->wordmark_revision++; grid_expect(state,128);
+    unlink(theme); art_refresh(state,catalog,"grid-no-theme/info"); grid_expect(state,32);
+    wm_file(rom,"bad PNG"); art_refresh(state,catalog,"grid-corrupt-rom/info"); grid_expect(state,128);
+    grid_corrupt(grid); art_refresh(state,catalog,"grid-corrupt-pak/info"); grid_expect(state,192);
+    grid_corrupt(photo); art_refresh(state,catalog,"grid-corrupt-photo/info"); grid_expect(state,160);
+    grid_corrupt(flat); art_refresh(state,catalog,"grid-corrupt-flat/info"); grid_expect(state,256);
+    wm_png(grid,128); art_refresh(state,catalog,"grid-repaired/info"); grid_expect(state,128);
     struct stat st; assert(!stat(grid,&st)); wm_png(grid,224);
     struct utimbuf same = {.actime=st.st_atime,.modtime=st.st_mtime}; assert(!utime(grid,&same));
-    catalog->info_dir = "grid-two/info"; grid_expect(state,224); /* generation alone invalidates */
-    system->grid_icon_provider = NULL; catalog->info_dir = "grid-three/info"; grid_expect(state,256);
+    art_refresh(state,catalog,"grid-two/info"); grid_expect(state,224); /* generation alone invalidates */
+    system->grid_icon_provider = NULL; art_refresh(state,catalog,"grid-three/info"); grid_expect(state,256);
     system->provider = NULL; system->grid_icon_provider = "mlp1/Test.pak";
-    wm_png(grid,1025); catalog->info_dir = "grid-four/info"; grid_expect(state,256); /* over cap */
-    wm_png(grid,1024); catalog->info_dir = "grid-five/info"; grid_expect(state,320); /* 320px decode */
+    wm_png(grid,1025); art_refresh(state,catalog,"grid-four/info"); grid_expect(state,256); /* over cap */
+    wm_png(grid,1024); art_refresh(state,catalog,"grid-five/info"); grid_expect(state,320); /* 320px decode */
+    /* Reloading the same generation (an ordinary settings write) keeps the
+       warm texture and memo; only a new identity or a lost catalog drops them. */
+    unsigned epoch = state->art_epoch;
+    jw__adopt_art_catalog(state, catalog);
+    assert(state->art_epoch == epoch && cat_cache_get(grid, NULL, NULL));
+    jw__adopt_art_catalog(state, NULL);
+    assert(state->art_epoch == epoch + 1 && !cat_cache_get(grid, NULL, NULL));
+    art_refresh(state,catalog,"grid-five/info"); grid_expect(state,320);
     assert(system->provider == NULL); /* base-owned extension decorates independently */
     snprintf(dir,sizeof(dir),"%s/Themes/B/grid/icons",root); wm_dirs(dir);
     snprintf(theme,sizeof(theme),"%s/Themes/B/grid/icons/TEST.png",root); wm_png(theme,96);
@@ -95,8 +108,8 @@ static void grid_test(jw_launcher_state *state, jw_ra_system *system,
     for (int i=0;i<candidates.count;i++) assert(strcmp(candidates.paths[i],grid));
     style->launcher.layout = CAT_LAUNCHER_GRID;
     unlink(theme); unlink(rom); unlink(grid); unlink(bundle);
-    catalog->info_dir = "grid-six/info"; grid_expect(state,0);
-    puts("PASS grid-icon UI: priorities, pending/failure, independent provider, generation replacement/removal, dimensions, theme switch, unchanged Cover Flow");
+    art_refresh(state,catalog,"grid-six/info"); grid_expect(state,0);
+    puts("PASS grid-icon UI: priorities, pending/failure, independent provider, generation replacement/removal, dimensions, theme switch, same-generation reload, unchanged Cover Flow");
 }
 int main(void) {
     char root[] = "/tmp/jw-wordmark-XXXXXX"; assert(mkdtemp(root));
@@ -132,12 +145,13 @@ int main(void) {
     wm_png(rom, 32); wm_png(theme, 64); wm_png(provider, 128); wm_png(bundled, 256);
     snprintf(path, sizeof(path), "%s/Apps", root); setenv("APPS_PATH", path, 1);
     jw_ra_system system = {.id = "TEST", .name = "Test system", .wordmark = "art/mark.png", .wordmark_provider = "mlp1/Test.pak"};
-    jw_ra_catalog catalog = {.sdcard_root = root, .systems = &system, .system_count = 1, .info_dir = "gen-one/info"};
+    jw_ra_catalog catalog = {.sdcard_root = root, .systems = &system, .system_count = 1};
     state->system_catalog = &catalog;
+    art_refresh(state, &catalog, "gen-one/info");
     /* A cold higher-priority candidate stays pending even with lower art ready. */
     int w, h; assert(!jw__gg_wordmark(state, &w, &h));
     wm_expect(state, 32);
-    unlink(rom); state->wordmark_revision++; wm_expect(state, 64);
+    unlink(rom); art_refresh(state, &catalog, "gen-no-rom/info"); wm_expect(state, 64);
     /* Same index, different folder: theme identity must invalidate the memo. */
     snprintf(path, sizeof(path), "%s/Themes/B/grid/wordmarks/TEST.png", root); wm_png(path, 96);
     snprintf(state->settings.user_themes.items[0].dir, 128, "B");
@@ -145,21 +159,21 @@ int main(void) {
     /* A malformed highest-priority PNG must advance after an async failure. */
     snprintf(state->settings.user_themes.items[0].dir, 128, "A");
     snprintf(state->settings.user_theme_dir, 128, "A");
-    wm_file(theme, "bad PNG"); catalog.info_dir = "gen-two/info";
-    state->wordmark_revision++; wm_expect(state, 128);
+    wm_file(theme, "bad PNG"); art_refresh(state, &catalog, "gen-two/info"); wm_expect(state, 128);
     assert(system.provider == NULL); /* artwork doesn't assign system ownership */
     /* Same-path, same-mtime provider replacement changes only catalog identity. */
     struct stat st; assert(!stat(provider, &st));
     wm_png(provider, 192); struct utimbuf times = {.actime = st.st_atime, .modtime = st.st_mtime};
-    assert(!utime(provider, &times)); catalog.info_dir = "gen-three/info";
-    state->wordmark_revision++; wm_expect(state, 192);
+    assert(!utime(provider, &times)); art_refresh(state, &catalog, "gen-three/info"); wm_expect(state, 192);
+    /* An ordinary reload of the same generation keeps the memo and texture. */
+    unsigned epoch = state->art_epoch; jw__adopt_art_catalog(state, &catalog);
+    assert(state->art_epoch == epoch && cat_cache_get(provider, NULL, NULL)); wm_expect(state, 192);
     /* Removed provider, then undecodable bundle: the text branch receives NULL. */
-    system.wordmark_provider = NULL; state->wordmark_revision++; wm_expect(state, 256);
-    wm_file(bundled, "bad PNG"); catalog.info_dir = "gen-four/info";
-    state->wordmark_revision++; wm_expect(state, 0);
+    system.wordmark_provider = NULL; art_refresh(state, &catalog, "gen-no-provider/info"); wm_expect(state, 256);
+    wm_file(bundled, "bad PNG"); art_refresh(state, &catalog, "gen-four/info"); wm_expect(state, 0);
     /* Reinstall after failures and a 1024px mark: decode cap remains 512px. */
     system.wordmark_provider = "mlp1/Test.pak"; wm_png(provider, 1024);
-    catalog.info_dir = "gen-five/info"; state->wordmark_revision++; wm_expect(state, 512);
+    art_refresh(state, &catalog, "gen-five/info"); wm_expect(state, 512);
     jw_cover_loader_shutdown(jw__covers());
     cat_cache_clear();
     /* A full/unwritable thumbnail directory still returns the decoded surface. */
