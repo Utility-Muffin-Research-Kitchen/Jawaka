@@ -848,10 +848,6 @@ msgstr ""
 msgid "Enable USB ADB and restore it at boot?"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Enabled"
-msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Enter PIN to exit"
 msgstr ""
@@ -1318,6 +1314,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Network: %s"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Never"
 msgstr ""
 
 #: cmd/jawaka-osd/game_launch.c
@@ -2530,14 +2530,6 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "TurboGrafx-CD"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "Turn Off"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "Turn On"
 msgstr ""
 
 #: internal/settings/storage_ui.c

@@ -542,9 +542,6 @@ msgstr "启用"
 msgid "Enable USB ADB and restore it at boot?"
 msgstr "要启用 USB ADB 并设为开机自启吗？"
 
-msgid "Enabled"
-msgstr "已启用"
-
 msgid "Error"
 msgstr "错误"
 
@@ -1297,12 +1294,6 @@ msgstr ""
 
 msgid "TurboGrafx-CD"
 msgstr ""
-
-msgid "Turn Off"
-msgstr "关闭"
-
-msgid "Turn On"
-msgstr "开启"
 
 msgid "Type to search"
 msgstr "输入以搜索"
@@ -2217,3 +2208,6 @@ msgstr "Splore 导入未完成"
 #, fuzzy
 msgid "Try Splore again"
 msgstr "请再次打开 Splore"
+
+msgid "Never"
+msgstr "从不"

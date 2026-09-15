@@ -426,10 +426,12 @@ static void jw__home_tab_order_move(int *order, int from, int to) {
 /* Auto-sleep options for Settings > Behavior. The label index is persisted as
    "auto_sleep_seconds" (the value, not the index) so the daemon reads seconds
    directly with no shared table. */
-static const char *kAutoSleepLabels[]  = { "Off", "15 sec", "30 sec", "45 sec", "1 min", "2 min", "5 min", "10 min" };
+/* "Never" rather than "Off": the row sets a delay, so the first choice is a
+   delay that never arrives, not a feature being switched off. */
+static const char *kAutoSleepLabels[]  = { "Never", "15 sec", "30 sec", "45 sec", "1 min", "2 min", "5 min", "10 min" };
 static const int   kAutoSleepSeconds[] = {     0,       15,       30,       45,      60,     120,     300,      600 };
 #define JW_AUTO_SLEEP_COUNT   ((int)(sizeof(kAutoSleepLabels) / sizeof(kAutoSleepLabels[0])))
-#define JW_AUTO_SLEEP_DEFAULT 0   /* Off by default (index into the tables above).
+#define JW_AUTO_SLEEP_DEFAULT 0   /* Never, by default (index into the tables above).
                                      Deep-suspend wake is not yet reliable, so
                                      auto-sleep stays opt-in until that is solid. */
 
@@ -2026,16 +2028,72 @@ static void jw__begin_settings_rows(const cat_list_state *list,
                                     int x, int y, int w, int h,
                                     int item_count, int item_h);
 
+/* Width a switch needs, so a caller can right-align the word beside it. */
+static int jw__row_switch_width(int body_h) {
+    return (body_h * 5 / 8) * 19 / 10;
+}
+
+/* The switch a binary row draws: an outer cap for the border, an interior that
+   fills when on, and a knob that slides. `value_c` carries the row's focus
+   color, `backdrop` the surface behind it, so the switch reads whether the row
+   is selected or not. A dimmed switch (a radio that is unavailable) is drawn
+   the same way in the muted color and never moves.
+
+   Shared because the Network and Bluetooth pages draw their own rows: the
+   switch has to be identical there, not merely similar. */
+static void jw__draw_row_switch(int right_edge, int ty, int body_h, bool on,
+                                ap_color value_c, ap_color backdrop) {
+    int tr_h = body_h * 5 / 8;
+    int tr_w = tr_h * 19 / 10;
+    int tx   = right_edge - tr_w;
+    int tr_y = ty + (body_h - tr_h) / 2;
+
+    int bw = cat_scale(4);
+    cat_draw_rounded_rect(tx, tr_y, tr_w, tr_h, tr_h / 2, value_c);
+    cat_draw_rounded_rect(tx + bw, tr_y + bw, tr_w - bw * 2, tr_h - bw * 2,
+                          (tr_h - bw * 2) / 2, on ? value_c : backdrop);
+
+    int inset  = bw + cat_scale(3);          /* gap inside the border */
+    int knob_d = tr_h - inset * 2;
+    if (knob_d < cat_scale(6)) knob_d = cat_scale(6);   /* stays a dot */
+    int knob_x = on ? tx + tr_w - inset - knob_d : tx + inset;
+    cat_draw_rounded_rect(knob_x, tr_y + inset, knob_d, knob_d,
+                          knob_d / 2, on ? backdrop : value_c);
+}
+
+/* Word plus switch, right-aligned in a hand-drawn row (Network, Bluetooth).
+   The settings list rows get this from jw__render_list_row_impl; these pages
+   draw their own rows, so they call this to land on the same geometry.
+   `switch_c` is separate from `text_c` so an unavailable radio can dim the
+   switch while its word keeps the row's normal color. */
+static void jw__draw_row_value_switch(int ix, int iw, int ty, TTF_Font *body,
+                                      const char *value, bool on,
+                                      ap_color text_c, ap_color switch_c,
+                                      float focus) {
+    ap_theme *theme = cat_get_theme();
+    int body_h = TTF_FontHeight(body);
+    int tr_w = jw__row_switch_width(body_h);
+    int gap = cat_scale(10);
+    int right_edge = ix + iw - cat_scale(16);
+    int vw = cat_measure_text(body, value);
+    int vx = right_edge - tr_w - gap - vw;
+    if (vx < ix + iw / 2) vx = ix + iw / 2;
+    cat_draw_text(body, value, vx, ty, text_c);
+    ap_color backdrop = cat_draw_color_lerp(theme->background, theme->highlight, focus);
+    jw__draw_row_switch(right_edge, ty, body_h, on, switch_c, backdrop);
+}
+
 static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
                                      int w, int row, const char *label,
                                      const char *value, bool cycler, int item_h,
-                                     const ap_color *value_override, bool toggle) {
+                                     const ap_color *value_override, int toggle_state) {
     /* Both strings are translated here, not at the 45 call sites. T() falls back
        to its argument, so values that are data rather than UI text -- a game
        count, a timezone, a Bluetooth device name -- miss the table and pass
        through unchanged. That is what makes wrapping the helper safe rather than
        having to classify every call site. */
-    bool toggle_on = toggle && value && value[1] == 'n';   /* "On" vs "Off" */
+    bool toggle = toggle_state >= 0;
+    bool toggle_on = toggle_state > 0;
 
     label = T(label);
     if (value) value = T(value);
@@ -2065,13 +2123,11 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
             /* A switch says "this is the whole choice" in a way arrows cannot:
                two states, and which one you are in, without reading. The word
                stays -- the switch shows the state, the word names it. */
-            int tr_h = body_h * 5 / 8;
-            int tr_w = tr_h * 19 / 10;
+            int tr_w = jw__row_switch_width(body_h);
             int gap  = cat_scale(10);
-            int tx   = x + w - cat_scale(16) - tr_w;
-            int vx   = tx - gap - vw;
+            int right_edge = x + w - cat_scale(16);
+            int vx   = right_edge - tr_w - gap - vw;
             if (vx < x + w / 2) { vx = x + w / 2; }
-            int tr_y = ty + (body_h - tr_h) / 2;
 
             cat_draw_text(body, value, vx, ty, value_c);
 
@@ -2079,21 +2135,7 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
                against the track whether the row is selected or not. */
             ap_color backdrop =
                 cat_draw_color_lerp(theme->background, theme->highlight, focus);
-
-            /* Outer cap is the border; the interior fills it when on and drops
-               back to the backdrop when off, leaving just the ring. */
-            int bw = cat_scale(4);
-            cat_draw_rounded_rect(tx, tr_y, tr_w, tr_h, tr_h / 2, value_c);
-            cat_draw_rounded_rect(tx + bw, tr_y + bw, tr_w - bw * 2, tr_h - bw * 2,
-                                  (tr_h - bw * 2) / 2,
-                                  toggle_on ? value_c : backdrop);
-
-            int inset  = bw + cat_scale(3);          /* gap inside the border */
-            int knob_d = tr_h - inset * 2;
-            if (knob_d < cat_scale(6)) knob_d = cat_scale(6);   /* stays a dot */
-            int knob_x = toggle_on ? tx + tr_w - inset - knob_d : tx + inset;
-            cat_draw_rounded_rect(knob_x, tr_y + inset, knob_d, knob_d,
-                                  knob_d / 2, toggle_on ? backdrop : value_c);
+            jw__draw_row_switch(right_edge, ty, body_h, toggle_on, value_c, backdrop);
         } else if (cycler) {
             /* Solid triangles flank the value, matching the tab-switcher
                affordance: ◀ value ▶. Triangles are sized to the text cap and
@@ -2121,7 +2163,7 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
 static void jw__render_list_row_h(const cat_list_state *list, int x, int y,
                                   int w, int row, const char *label,
                                   const char *value, bool cycler, int item_h) {
-    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, NULL, false);
+    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, NULL, -1);
 }
 
 /* The canonical settings list row: medium font + cat_scale(12) padding. */
@@ -2144,7 +2186,17 @@ static void jw__render_toggle_row(const cat_list_state *list, int x, int y,
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
     bool binary = value && (strcmp(value, "On") == 0 || strcmp(value, "Off") == 0);
     jw__render_list_row_impl(list, x, y, w, row, label, value, true, item_h,
-                             NULL, binary);
+                             NULL, binary ? (strcmp(value, "On") == 0) : -1);
+}
+
+/* A binary row whose words are not "On"/"Off": the caller states which way the
+   switch points, so the row keeps its own vocabulary (Visible / Hidden). */
+static void jw__render_switch_row(const cat_list_state *list, int x, int y,
+                                  int w, int row, const char *label,
+                                  const char *value, bool on) {
+    int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
+    jw__render_list_row_impl(list, x, y, w, row, label, value, true, item_h,
+                             NULL, on ? 1 : 0);
 }
 
 /* Canonical row with a value-color override (unselected rows only). */
@@ -2152,7 +2204,7 @@ static void jw__render_list_row_vc(const cat_list_state *list, int x, int y,
                                    int w, int row, const char *label,
                                    const char *value, bool cycler, ap_color value_c) {
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, &value_c, false);
+    jw__render_list_row_impl(list, x, y, w, row, label, value, cycler, item_h, &value_c, -1);
 }
 
 /* Row pitch for the Display & Sound page. Every row here positions itself as
@@ -2537,20 +2589,20 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
     jw__begin_settings_rows(&ui->statusbar_list, x, ly, w, y + h - ly,
                             JW_STATUSBAR_ROW_COUNT, item_h);
-    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_HINTS,
-                        "Button Hints", jw__vis_label(ui->show_hints), true);
+    jw__render_switch_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_HINTS,
+                          "Button Hints", jw__vis_label(ui->show_hints), ui->show_hints);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_CLOCK,
                         "Clock", kClockStyleLabels[ui->clock_style_index], true);
     jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BATTERY,
                         "Battery",
                         kBatteryModeLabels[jw__battery_mode(ui->show_battery, ui->show_battery_level)],
                         true);
-    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_WIFI,
-                        "Wi-Fi", jw__vis_label(ui->show_wifi), true);
-    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BLUETOOTH,
-                        "Bluetooth", jw__vis_label(ui->show_bluetooth), true);
-    jw__render_list_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_VOLUME,
-                        "Volume", jw__vis_label(ui->show_volume), true);
+    jw__render_switch_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_WIFI,
+                          "Wi-Fi", jw__vis_label(ui->show_wifi), ui->show_wifi);
+    jw__render_switch_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_BLUETOOTH,
+                          "Bluetooth", jw__vis_label(ui->show_bluetooth), ui->show_bluetooth);
+    jw__render_switch_row(&ui->statusbar_list, x, ly, w, JW_STATUSBAR_VOLUME,
+                          "Volume", jw__vis_label(ui->show_volume), ui->show_volume);
 }
 
 /* One labelled slider row (Brightness / Volume) on the Display & Sound page.
@@ -2912,31 +2964,50 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     if (idx == JW_NETWORK_ROW_WIFI) {
-        /* The on/off toggle row. */
+        /* The on/off switch row. The switch shows the state, so the word is the
+           state too ("On"/"Off"), not the old "Turn On" action verb: a verb
+           beside a switch contradicts it. What A did is narrated by the message
+           line under the list ("Turning Wi-Fi on..."), which already existed.
+           A radio the platform does not have keeps a dimmed switch, off. */
         cat_draw_text(body, T("Wi-Fi"), ix + cat_scale(12), ty, label_c);
-        /* Action verb (what A will do), not a bare state word — "Turn On" when
-           the radio is off, "Turn Off" when it's on, so the button is unambiguous. */
-        const char *action = ctx->wifi_available
-            ? (ctx->radio_on ? T("Turn Off") : T("Turn On"))
+        const char *value = ctx->wifi_available
+            ? (ctx->radio_on ? T("On") : T("Off"))
             : T("Unavailable");
-        int vw = cat_measure_text(body, action);
-        cat_draw_text(body, action, ix + iw - vw - cat_scale(16), ty, value_c);
+        ap_color sw_c = ctx->wifi_available ? value_c : theme->disabled;
+        jw__draw_row_value_switch(ix, iw, ty, body, value,
+                                  ctx->wifi_available && ctx->radio_on,
+                                  value_c, sw_c, focus);
         return;
     }
 
     if (idx == JW_NETWORK_ROW_ADB) {
+        /* Plain on and off get the switch. "Repair" (the setting is on but ADB
+           is not actually running) is the one state that asks for an action, so
+           it stays a word: a switch would say "on" about something that is not.
+           Unavailable and Unsupported keep a dimmed switch, off. */
         const char *value = ctx->adb_supported ? T("Unavailable") : T("Unsupported");
+        bool repair = false, on = false, has_switch = true;
         if (ctx->adb_supported && ctx->adb_enabled == 1) {
-            value = T("Enabled");
+            value = T("On");
+            on = true;
         } else if (ctx->adb_supported && ctx->adb_intent_enabled == 1) {
             value = T("Repair");
+            repair = true;
+            has_switch = false;
         } else if (ctx->adb_supported && ctx->adb_enabled == 0) {
-            value = T("Enable");
+            value = T("Off");
         }
 
         cat_draw_text(body, T("ADB"), ix + cat_scale(12), ty, label_c);
-        int vw = cat_measure_text(body, value);
-        cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+        if (!has_switch) {
+            int vw = cat_measure_text(body, value);
+            cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+            return;
+        }
+        bool usable = ctx->adb_supported && ctx->adb_enabled >= 0;
+        (void)repair;
+        jw__draw_row_value_switch(ix, iw, ty, body, value, on, value_c,
+                                  usable ? value_c : theme->disabled, focus);
         return;
     }
 
@@ -3135,13 +3206,14 @@ static void jw__draw_bt_item(int idx, int ix, int iy, int iw, int ih,
                                             theme->highlighted_text, focus);
 
     if (idx == JW_BLUETOOTH_ROW_POWER) {
-        const char *value = T("Unavailable");
-        if (ui && ui->bt_status.available) {
-            value = ui->bt_radio_on ? T("Turn Off") : T("Turn On");
-        }
+        /* Same switch and same wording as the Wi-Fi row; the two radios read
+           alike. The message line under the rows narrates what A did. */
+        bool available = ui && ui->bt_status.available;
+        bool on = available && ui->bt_radio_on;
+        const char *value = available ? (on ? T("On") : T("Off")) : T("Unavailable");
         cat_draw_text(body, T("Bluetooth"), ix + cat_scale(12), ty, label_c);
-        int vw = cat_measure_text(body, value);
-        cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+        jw__draw_row_value_switch(ix, iw, ty, body, value, on, value_c,
+                                  available ? value_c : theme->disabled, focus);
         return;
     }
 
