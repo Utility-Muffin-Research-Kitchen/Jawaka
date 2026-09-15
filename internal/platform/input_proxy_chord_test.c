@@ -556,6 +556,39 @@ int main(void) {
     feed(BTN_MODE, 0);
     expect("movement after threshold suppresses tap", g_taps == 0);
 
+    /* MLP1 at rest: calibrated deadzone 600, kernel flat 1152, Y=-1008.
+       Menu must tolerate the device's neutral range even when calibration
+       uses a smaller deadzone for gameplay. Exercise noise before/during
+       Menu and deliberate movement just outside either larger threshold. */
+    for (int axis = ABS_X; axis <= ABS_Y; axis++) {
+        for (int calibration_zone = 600; calibration_zone <= 1600; calibration_zone += 1000) {
+            for (int sign = -1; sign <= 1; sign += 2) {
+                tap_only(true);
+                g_data.cal = (jw_stick_calibration){.loaded=true,
+                    .x_zero=100, .y_zero=-100, .deadzone=calibration_zone,
+                    .x_min=-27000, .x_max=28000, .y_min=-25000, .y_max=26000,
+                    .out_min=-32768, .out_max=32767};
+                int center = axis == ABS_X ? 100 : -100;
+                int neutral = calibration_zone > 1152 ? calibration_zone : 1152;
+                g_data.abs_deadzone[axis] = 1152;
+                feed_abs(axis, center + sign * 1008);
+                feed(BTN_MODE, 1);
+                feed_abs(axis, center - sign * neutral);
+                advance(150); feed(BTN_MODE, 0); advance(80);
+                const emitted tap[] = {{BTN_MODE, 1}, {BTN_MODE, 0}};
+                n = drain(got, 16);
+                expect_seq("resting stick noise still forwards Menu", got, n, tap, 2);
+
+                feed(BTN_MODE, 1);
+                feed_abs(axis, center + sign * (neutral + 1));
+                feed_abs(axis, center);
+                advance(3000); feed(BTN_MODE, 0); advance(80);
+                expect("real movement cancels tap and escape after returning to center",
+                       g_taps == 1 && g_thresholds == 0 && drain(got, 16) == 0);
+            }
+        }
+    }
+
     for (int after_term = 0; after_term < 2; after_term++) {
         for (int reset = 0; reset < 3; reset++) {
             tap_only(true); feed(BTN_MODE, 1);

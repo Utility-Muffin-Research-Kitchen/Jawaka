@@ -536,7 +536,9 @@ static bool jw__axis_active(const jw_mlp1_input_proxy_data *data, int code) {
         deadzone = 0;
     } else if (data->cal.loaded && (code == ABS_X || code == ABS_Y)) {
         center = code == ABS_X ? data->cal.x_zero : data->cal.y_zero;
-        deadzone = data->cal.deadzone;
+        /* Menu gestures must tolerate the device's resting stick noise even
+         * when gameplay calibration uses a smaller deadzone. */
+        if (data->cal.deadzone > deadzone) deadzone = data->cal.deadzone;
     }
     int64_t delta = (int64_t)data->abs_value[code] - center;
     return delta > deadzone || delta < -deadzone;
