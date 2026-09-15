@@ -12,9 +12,8 @@ name: Input shortcuts
 # shortcut-dispatch-check is a shallow direct-call guard over the dispatch
 # functions; it does not follow the call graph. See the script header.
 #
-# Not covered here: input-proxy-chord-test, which includes input_proxy_mlp1.c
-# and needs <linux/input.h> plus uinput, so it cross-builds and runs on a
-# device (`make mlp1-adb-chord-test`). There is no runner for that.
+# The proxy test uses pipes and a private file sink. Linux CI covers its
+# event state machine; the MLP1 spike covers actual evdev/uinput and SDL.
 
 on:
   pull_request:
@@ -33,6 +32,8 @@ jobs:
       - run: make retroarch-config-test
       - run: make shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test
       - run: make shortcut-dispatch-check
+      - run: make menu-escape-test jawaka-input-proxy-chord-test
+      - run: build/bin/input-proxy-chord-test
 
   # Split out because it is the only job here that needs a dependency: the
   # smoke runs a real jawakad, which links libcurl. Keeping it separate means

@@ -57,4 +57,16 @@ bool jw_standalone_policy_requires_direct_drm(const jw_standalone_policy *policy
 bool jw_standalone_policy_uses_calibrated_virtual_input(
     const jw_standalone_policy *policy);
 
+typedef enum {
+    JW_STANDALONE_MENU_RELEASE = 0,
+    JW_STANDALONE_MENU_FORWARD,
+    JW_STANDALONE_MENU_QUIT,
+    JW_STANDALONE_MENU_EXTERNAL_HANDLED,
+} jw_standalone_menu_route;
+
+/* Native PICO-8 and LIFE-1 run before this provider gate. External "handled"
+   means no synthetic tap; it cannot consume the ungrabbed physical event. */
+jw_standalone_menu_route jw_standalone_policy_menu(
+    const jw_standalone_policy *policy, bool supports_menu, bool external);
+
 #endif

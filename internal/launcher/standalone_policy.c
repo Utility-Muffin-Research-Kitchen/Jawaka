@@ -121,3 +121,11 @@ bool jw_standalone_policy_uses_calibrated_virtual_input(
     return policy && (policy->provider_bound ||
                       policy->release != JW_STANDALONE_RELEASE_NONE);
 }
+
+jw_standalone_menu_route jw_standalone_policy_menu(
+        const jw_standalone_policy *policy, bool supports_menu, bool external) {
+    if (!policy || !policy->provider_bound) return JW_STANDALONE_MENU_RELEASE;
+    if (!supports_menu) return JW_STANDALONE_MENU_QUIT;
+    return external ? JW_STANDALONE_MENU_EXTERNAL_HANDLED
+                    : JW_STANDALONE_MENU_FORWARD;
+}

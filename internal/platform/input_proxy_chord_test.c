@@ -8,8 +8,8 @@
  * would make the API worse to make it testable, and the chord logic is exactly
  * the part that has to be right.
  *
- * No real device is touched: the physical fd stays -1 and the "virtual pad" is
- * a temp file, so every emitted event is readable back and asserted. That is
+ * No real device is touched: the physical input is a nonblocking pipe and the
+ * "virtual pad" is a temp file, so every emitted event is readable back and asserted. That is
  * what lets this drive cases the hardware cannot produce -- notably autorepeat.
  * This pad emits no repeats (measured 2026-08-30: no EV_REP, and zero value==2
  * over six buttons held to 8s), but a repeat must not strand a button if a
@@ -18,7 +18,16 @@
 
 #define _GNU_SOURCE
 
+#include <stdarg.h>
+#include <sys/ioctl.h>
+#include <time.h>
+static int test_ioctl(int fd, unsigned long request, ...);
+static int test_clock_gettime(clockid_t clock, struct timespec *ts);
+#define ioctl test_ioctl
+#define clock_gettime test_clock_gettime
 #include "internal/platform/input_proxy_mlp1.c"
+#undef clock_gettime
+#undef ioctl
 
 #include <stdio.h>
 
@@ -32,6 +41,53 @@
 static jw_input_proxy g_proxy;
 static jw_mlp1_input_proxy_data g_data;
 static char g_sink_path[64];
+
+static uint64_t g_now;
+static int g_source[2] = {-1, -1};
+static bool g_claim_tap;
+static int g_taps, g_brightness, g_thresholds, g_ends;
+static uint64_t g_last_hold;
+
+static int test_clock_gettime(clockid_t clock, struct timespec *ts) {
+    (void)clock;
+    ts->tv_sec = g_now / 1000;
+    ts->tv_nsec = (g_now % 1000) * 1000000;
+    return 0;
+}
+
+/* Kernel-state reads on our fake physical pad. Writes still go to the real
+   temp-file sink. No device is opened or grabbed by this harness. */
+static int test_ioctl(int fd, unsigned long request, ...) {
+    (void)fd;
+    va_list ap;
+    va_start(ap, request);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    if (request == EVIOCGKEY(sizeof(g_data.physical_keys))) {
+        memcpy(arg, g_data.physical_keys, sizeof(g_data.physical_keys));
+        return 0;
+    }
+    for (int code = 0; code < ABS_CNT; code++) {
+        if (request == (unsigned long)EVIOCGABS(code)) {
+            struct input_absinfo *info = arg;
+            memset(info, 0, sizeof(*info));
+            info->value = g_data.abs_value[code];
+            return 0;
+        }
+    }
+    errno = EINVAL;
+    return -1;
+}
+
+static bool test_tap(void *unused) { (void)unused; g_taps++; return g_claim_tap; }
+static void test_brightness(void *unused, int delta) {
+    (void)unused; (void)delta; g_brightness++;
+}
+static void test_escape(void *unused, uint64_t hold, bool threshold) {
+    (void)unused;
+    if (threshold) g_thresholds++; else g_ends++;
+    g_last_hold = hold;
+}
 
 /* Which buttons the dispatcher claims, and what it was asked about. */
 static bool g_claim[JW_INPUT_SHORTCUT_BUTTON_COUNT];
@@ -52,6 +108,13 @@ static void reset_proxy(bool watch_only) {
        still zeroed, and fd 0 would close stdin. */
     if (g_have_sink && g_data.uinput_fd >= 0) close(g_data.uinput_fd);
     g_have_sink = false;
+    if (g_source[0] >= 0) close(g_source[0]);
+    if (g_source[1] >= 0) close(g_source[1]);
+    if (pipe2(g_source, O_NONBLOCK | O_CLOEXEC) != 0) exit(2);
+    g_now = 10000;
+    g_claim_tap = false;
+    g_taps = g_brightness = g_thresholds = g_ends = 0;
+    g_last_hold = 0;
     memset(&g_proxy, 0, sizeof(g_proxy));
     memset(&g_data, 0, sizeof(g_data));
     memset(g_claim, 0, sizeof(g_claim));
@@ -68,11 +131,16 @@ static void reset_proxy(bool watch_only) {
     /* Watch-only is "no virtual pad", which is exactly uinput_fd < 0. */
     g_data.uinput_fd = watch_only ? -1 : fd;
     if (watch_only) close(fd); else g_have_sink = true;
-    g_data.input_fd = -1;
+    g_data.input_fd = g_source[0];
+    g_data.input_evdev_clock = true;
+    g_data.physical_state_valid = true;
     g_data.power_fd = -1;
     g_proxy.backend_data = &g_data;
     g_proxy.enabled = true;
     g_proxy.shortcut = test_dispatch;
+    g_proxy.menu_tap = test_tap;
+    g_proxy.brightness_delta = test_brightness;
+    g_proxy.menu_escape = test_escape;
 }
 
 /* Feed one evdev event through the state machine. */
@@ -82,7 +150,35 @@ static void feed(uint16_t code, int32_t value) {
     ev.type = EV_KEY;
     ev.code = code;
     ev.value = value;
-    jw__handle_key(&g_proxy, &ev);
+    ev.input_event_sec = g_now / 1000;
+    ev.input_event_usec = (g_now % 1000) * 1000;
+    jw__handle_input(&g_proxy, &ev);
+}
+
+static void feed_abs(uint16_t code, int32_t value) {
+    struct input_event ev = {0};
+    ev.type = EV_ABS; ev.code = code; ev.value = value;
+    g_data.abs_present[code] = true;
+    jw__handle_input(&g_proxy, &ev);
+}
+
+static void tap_only(bool supports_menu) {
+    reset_proxy(false);
+    jw_input_proxy_configure_menu(&g_proxy, (jw_input_menu_config){true, true, 3000});
+    g_claim_tap = !supports_menu;
+}
+
+static void advance(uint64_t ms) {
+    g_now += ms;
+    jw_input_proxy_tick(&g_proxy);
+}
+
+static void queue_key(uint16_t code, int value, uint64_t ms) {
+    struct input_event ev = {0};
+    ev.type = EV_KEY; ev.code = code; ev.value = value;
+    ev.input_event_sec = ms / 1000;
+    ev.input_event_usec = (ms % 1000) * 1000;
+    if (write(g_source[1], &ev, sizeof(ev)) != sizeof(ev)) exit(2);
 }
 
 /* Everything written to the virtual pad since the last drain, EV_KEY only.
@@ -378,6 +474,163 @@ int main(void) {
     feed(BTN_SELECT, 0);
     feed(BTN_MODE, 0);
     expect("watch-only does not dispatch", g_dispatch_calls == 0);
+
+    for (int supports = 0; supports < 2; supports++) {
+        tap_only(supports);
+        feed(BTN_MODE, 1);
+        feed(BTN_MODE, 2);
+        expect("tap withheld through physical hold", drain(got, 16) == 0);
+        advance(150);
+        feed(BTN_MODE, 0);
+        expect("one solitary action", g_taps == 1);
+        advance(80);
+        n = drain(got, 16);
+        const emitted tap[] = {{BTN_MODE, 1}, {BTN_MODE, 0}};
+        expect_seq("logical tap only when supported", got, n, tap, supports ? 2 : 0);
+        expect("release reported before threshold", g_ends == 1 && g_thresholds == 0);
+
+        tap_only(supports);
+        feed(BTN_MODE, 1); feed(BTN_NORTH, 1); feed(BTN_MODE, 0); feed(BTN_NORTH, 0);
+        const emitted x[] = {{BTN_NORTH, 1}, {BTN_NORTH, 0}};
+        n = drain(got, 16);
+        expect_seq("declined chord forwards X only", got, n, x, 2);
+        expect("declined chord never taps", g_taps == 0);
+
+        tap_only(supports);
+        feed(BTN_MODE, 1); advance(900); feed(KEY_VOLUMEUP, 1);
+        advance(6000); feed(KEY_VOLUMEUP, 0); feed(BTN_MODE, 0);
+        expect("brightness without guide or escape", drain(got, 16) == 0 &&
+               g_brightness == 1 && g_taps == 0 && g_thresholds == 0);
+
+        tap_only(supports);
+        g_claim[JW_INPUT_SHORTCUT_BUTTON_SELECT] = true;
+        feed(BTN_MODE, 1); feed(BTN_SELECT, 1); feed(BTN_SELECT, 2);
+        feed(BTN_SELECT, 0); feed(BTN_MODE, 0);
+        expect("claimed shortcut unchanged", drain(got, 16) == 0 &&
+               g_dispatch_calls == 1 && g_taps == 0);
+
+        tap_only(supports);
+        feed(BTN_MODE, 1); advance(2999);
+        expect("not before threshold", g_thresholds == 0);
+        advance(1); advance(2500);
+        expect("one threshold per hold", g_thresholds == 1 && g_last_hold != 0);
+        feed(BTN_MODE, 0); advance(100);
+        expect("escape release never taps", g_ends == 1 && g_taps == 0 && drain(got, 16) == 0);
+    }
+
+    /* Physical controls already held, or first moved during Menu, disqualify
+       the whole press. Returning to neutral must never re-arm it. */
+    for (int phase = 0; phase < 3; phase++) {
+        for (int control = 0; control < 4; control++) {
+            tap_only(true);
+            g_data.cal = (jw_stick_calibration){.loaded=true, .x_zero=100, .y_zero=0,
+                .x_min=-1000, .x_max=1100, .y_min=-1000, .y_max=1000,
+                .deadzone=10, .out_min=-32768, .out_max=32767};
+            g_data.abs_value[ABS_X] = 100;
+            if (phase > 0) feed(BTN_MODE, 1);
+            if (phase == 2) advance(3000);
+            if (control == 0) feed(BTN_EAST, 1);
+            if (control == 1) feed_abs(ABS_HAT0X, 1);
+            if (control == 2) feed_abs(ABS_X, 111);
+            if (control == 3) feed(KEY_VOLUMEDOWN, 1);
+            if (phase == 0) feed(BTN_MODE, 1);
+            if (control == 0) feed(BTN_EAST, 0);
+            if (control == 1) feed_abs(ABS_HAT0X, 0);
+            if (control == 2) feed_abs(ABS_X, 100);
+            if (control == 3) feed(KEY_VOLUMEDOWN, 0);
+            advance(6000); feed(BTN_MODE, 0);
+            expect("other control cancels escape and tap",
+                   g_thresholds == (phase == 2 ? 1 : 0) && g_taps == 0);
+            n = drain(got, 16);
+            for (int i = 0; i < n; i++) expect("cancelled gesture has no guide", got[i].code != BTN_MODE);
+        }
+    }
+    tap_only(true);
+    g_data.cal.loaded = true; g_data.cal.x_zero = 100; g_data.cal.deadzone = 10;
+    g_data.cal.x_min = -1000; g_data.cal.x_max = 1100;
+    g_data.cal.out_min = -32768; g_data.cal.out_max = 32767;
+    feed_abs(ABS_X, 109); feed(BTN_MODE, 1); feed_abs(ABS_X, 90); advance(3000);
+    expect("calibrated center noise permits hold", g_thresholds == 1);
+    feed_abs(ABS_X, 111);
+    expect("movement after threshold ends hold", g_ends == 1);
+    feed(BTN_MODE, 0);
+    expect("movement after threshold suppresses tap", g_taps == 0);
+
+    for (int after_term = 0; after_term < 2; after_term++) {
+        for (int reset = 0; reset < 3; reset++) {
+            tap_only(true); feed(BTN_MODE, 1);
+            if (after_term) advance(3000);
+            if (reset == 0) jw_input_proxy_flush(&g_proxy);
+            if (reset == 1) jw_input_proxy_set_swallow(&g_proxy, true);
+            if (reset == 2) jw_input_proxy_cancel_menu(&g_proxy); /* Power */
+            expect("reset ends hold", g_ends == 1);
+            feed(BTN_MODE, 0); jw_input_proxy_set_swallow(&g_proxy, false);
+            expect("reset retains session policy", g_proxy.menu_config.tap_only &&
+                   g_proxy.menu_config.escape_enabled && g_proxy.menu_config.escape_ms == 3000);
+            feed(BTN_MODE, 1); feed(BTN_NORTH, 1); feed(BTN_NORTH, 0); feed(BTN_MODE, 0);
+            n = drain(got, 16);
+            const emitted x[] = {{BTN_NORTH, 1}, {BTN_NORTH, 0}};
+            expect_seq("chord after reset still hides Menu", got, n, x, 2);
+            feed(BTN_MODE, 1); advance(10); feed(BTN_MODE, 0); advance(80);
+            const emitted tap[] = {{BTN_MODE, 1}, {BTN_MODE, 0}};
+            n = drain(got, 16);
+            expect_seq("tap after reset still works", got, n, tap, 2);
+        }
+    }
+
+    tap_only(true);
+    queue_key(BTN_MODE, 1, 1000); queue_key(BTN_MODE, 0, 4500);
+    jw_input_proxy_tick(&g_proxy);
+    expect("queued completed hold never signals or taps", g_thresholds == 0 && g_taps == 0);
+    tap_only(true); feed(BTN_MODE, 1); advance(3000);
+    queue_key(BTN_MODE, 0, g_now + 100);
+    advance(2500);
+    expect("queued release ends old hold before daemon deadline", g_ends == 1 && g_taps == 0);
+    feed(BTN_MODE, 1); advance(2999);
+    expect("fresh hold has a fresh threshold", g_thresholds == 1);
+    advance(1); expect("fresh hold reaches threshold", g_thresholds == 2);
+
+    tap_only(true);
+    g_data.power_grabbed = true; g_data.power_evdev_clock = true;
+    int power_pipe[2];
+    if (pipe2(power_pipe, O_NONBLOCK | O_CLOEXEC) != 0) exit(2);
+    g_data.power_fd = power_pipe[0];
+    struct input_event pev = {0};
+    pev.type = EV_KEY; pev.code = KEY_POWER; pev.value = 1;
+    pev.input_event_sec = 2;
+    if (write(power_pipe[1], &pev, sizeof(pev)) != sizeof(pev)) exit(2);
+    pev.value = 0; pev.input_event_sec = 3;
+    if (write(power_pipe[1], &pev, sizeof(pev)) != sizeof(pev)) exit(2);
+    queue_key(BTN_MODE, 1, 1000); queue_key(BTN_MODE, 0, 3500);
+    jw_input_proxy_tick(&g_proxy);
+    expect("queued Power chord cannot become a Menu tap", g_thresholds == 0 && g_taps == 0);
+    /* A later, separate Power press must not retroactively consume a tap. */
+    queue_key(BTN_MODE, 1, 4000); queue_key(BTN_MODE, 0, 4100);
+    pev.value = 1; pev.input_event_sec = 5;
+    if (write(power_pipe[1], &pev, sizeof(pev)) != sizeof(pev)) exit(2);
+    pev.value = 0; pev.input_event_sec = 6;
+    if (write(power_pipe[1], &pev, sizeof(pev)) != sizeof(pev)) exit(2);
+    jw_input_proxy_tick(&g_proxy); advance(80);
+    expect("separate queued Power does not consume earlier tap", g_taps == 1);
+    n = drain(got, 16);
+    const emitted before_power[] = {{BTN_MODE, 1}, {BTN_MODE, 0}};
+    expect_seq("tap before separate Power reaches child", got, n, before_power, 2);
+    close(power_pipe[0]); close(power_pipe[1]); g_data.power_fd = -1;
+
+    tap_only(true); feed(BTN_MODE, 1); advance(3000);
+    struct input_event lost = {.type = EV_SYN, .code = SYN_DROPPED};
+    jw__handle_input(&g_proxy, &lost);
+    expect("lost events end pending escape", g_ends == 1 && !g_data.menu_held);
+    lost.code = SYN_REPORT; jw__handle_input(&g_proxy, &lost);
+    feed(BTN_MODE, 0); advance(6000);
+    expect("lost gesture cannot tap or re-arm", g_taps == 0 && g_thresholds == 1);
+    expect("lost events retain session configuration", g_proxy.menu_config.tap_only);
+
+    /* Teardown clears configuration even if initialization failed without a backend. */
+    jw_input_proxy empty = {.menu_config = {.tap_only = true, .escape_enabled = true}};
+    jw_input_proxy_shutdown(&empty);
+    expect("teardown clears session configuration", !empty.menu_config.tap_only &&
+           !empty.menu_config.escape_enabled);
 
     if (g_failures) {
         fprintf(stderr, "input-proxy-chord-test: %d failure(s)\n", g_failures);

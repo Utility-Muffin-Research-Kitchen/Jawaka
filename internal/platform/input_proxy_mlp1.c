@@ -48,6 +48,17 @@ typedef struct {
     bool menu_held;
     bool menu_forwarded;
     bool chord_active;
+    /* Physical state is independent of forwarded/consumed state. */
+    unsigned char physical_keys[(KEY_MAX + 8) / 8];
+    int abs_value[ABS_CNT];
+    int abs_deadzone[ABS_CNT];
+    bool physical_state_valid;
+    bool input_evdev_clock;
+    bool input_dropped;
+    bool power_held;
+    uint64_t menu_hold_id;
+    uint64_t menu_down_ms;
+    bool menu_escape_reported;
     /* Codes a claimed Menu chord ate the press of. Every later event for a
        marked code is swallowed until its release, which clears the bit.
        A bitset rather than one remembered code: several chord buttons can be
@@ -235,27 +246,29 @@ static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd) {
 
 /* Record where each ABS axis rests, for jw_input_proxy_release_buttons. A hat
    rests at 0; a stick rests at the midpoint of its range. */
-static void jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
+static bool jw__capture_abs_neutrals(jw_mlp1_input_proxy_data *data) {
     unsigned char abs_bits[(ABS_MAX + 8) / 8];
     memset(abs_bits, 0, sizeof(abs_bits));
     if (ioctl(data->input_fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)), abs_bits) < 0) {
-        return;
+        return false;
     }
     for (int code = 0; code <= ABS_MAX; code++) {
         if (!jw__bit_is_set(abs_bits, code)) {
             continue;
         }
         data->abs_present[code] = true;
-        if (code >= ABS_HAT0X && code <= ABS_HAT3Y) {
-            data->abs_neutral[code] = 0;
-            continue;
-        }
         struct input_absinfo absinfo;
         memset(&absinfo, 0, sizeof(absinfo));
         if (ioctl(data->input_fd, EVIOCGABS(code), &absinfo) == 0) {
-            data->abs_neutral[code] = (absinfo.minimum + absinfo.maximum) / 2;
+            data->abs_neutral[code] = code >= ABS_HAT0X && code <= ABS_HAT3Y
+                ? 0 : (absinfo.minimum + absinfo.maximum) / 2;
+            data->abs_deadzone[code] = absinfo.flat;
+            data->abs_value[code] = absinfo.value;
+        } else {
+            return false;
         }
     }
+    return true;
 }
 
 static int jw__create_virtual_gamepad(int input_fd) {
@@ -515,6 +528,84 @@ static bool jw__volume_key(uint16_t code) {
     return code == KEY_VOLUMEUP || code == KEY_VOLUMEDOWN;
 }
 
+static bool jw__axis_active(const jw_mlp1_input_proxy_data *data, int code) {
+    int64_t center = data->abs_neutral[code];
+    int64_t deadzone = data->abs_deadzone[code];
+    if (code >= ABS_HAT0X && code <= ABS_HAT3Y) {
+        center = 0;
+        deadzone = 0;
+    } else if (data->cal.loaded && (code == ABS_X || code == ABS_Y)) {
+        center = code == ABS_X ? data->cal.x_zero : data->cal.y_zero;
+        deadzone = data->cal.deadzone;
+    }
+    int64_t delta = (int64_t)data->abs_value[code] - center;
+    return delta > deadzone || delta < -deadzone;
+}
+
+static bool jw__menu_alone(const jw_mlp1_input_proxy_data *data) {
+    if (!data->physical_state_valid || data->power_held) return false;
+    for (int code = 0; code <= KEY_MAX; code++) {
+        if (code != BTN_MODE && jw__bit_is_set(data->physical_keys, code))
+            return false;
+    }
+    for (int code = 0; code < ABS_CNT; code++) {
+        if (data->abs_present[code] && jw__axis_active(data, code)) return false;
+    }
+    return true;
+}
+
+static void jw__read_physical_state(jw_mlp1_input_proxy_data *data) {
+    data->physical_state_valid =
+        ioctl(data->input_fd, EVIOCGKEY(sizeof(data->physical_keys)),
+              data->physical_keys) >= 0;
+    for (int code = 0; code < ABS_CNT; code++) {
+        if (!data->abs_present[code]) continue;
+        struct input_absinfo info;
+        if (ioctl(data->input_fd, EVIOCGABS(code), &info) < 0) {
+            data->physical_state_valid = false;
+        } else {
+            data->abs_value[code] = info.value;
+        }
+    }
+    if (data->power_fd >= 0) {
+        unsigned char keys[(KEY_MAX + 8) / 8] = {0};
+        if (ioctl(data->power_fd, EVIOCGKEY(sizeof(keys)), keys) < 0)
+            data->physical_state_valid = false;
+        else
+            data->power_held = jw__bit_is_set(keys, KEY_POWER);
+    }
+}
+
+static void jw__menu_end(jw_input_proxy *proxy) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    if (data->menu_held && proxy->menu_config.escape_enabled && proxy->menu_escape)
+        proxy->menu_escape(proxy->userdata, data->menu_hold_id, false);
+}
+
+void jw_input_proxy_cancel_menu(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->backend_data || !proxy->menu_config.tap_only) return;
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    if (data->menu_held && !data->chord_active) {
+        jw__menu_end(proxy);
+        data->chord_active = true;
+    }
+}
+
+/* Never infer a live hold from an event's read time. A lost input clock or
+   state disables escape until the device can be read reliably again. */
+static void jw__menu_deadline(jw_input_proxy *proxy, uint64_t now) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    if (proxy->menu_config.escape_enabled && data->input_evdev_clock &&
+        !data->swallow && data->menu_held && !data->chord_active &&
+        !data->menu_escape_reported && jw__menu_alone(data) &&
+        now >= data->menu_down_ms &&
+        now - data->menu_down_ms >= proxy->menu_config.escape_ms) {
+        data->menu_escape_reported = true;
+        if (proxy->menu_escape)
+            proxy->menu_escape(proxy->userdata, data->menu_hold_id, true);
+    }
+}
+
 static void jw__handle_volume_key(jw_input_proxy *proxy, uint16_t code, int32_t value) {
     if (value <= 0 || !proxy->volume_delta) {
         return;
@@ -545,6 +636,7 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
 
     if (ev->code == BTN_MODE) {
+        if (proxy->menu_config.tap_only && ev->value == 2) return;
         if (ev->value > 0 && !data->menu_held) {
             data->menu_held = true;
             /* The virtual modifier can still be down from a chord whose
@@ -555,9 +647,24 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
             data->menu_forwarded = data->menu_up_pending;
             data->menu_up_pending = false;
             data->chord_active = false;
+            if (proxy->menu_config.tap_only) {
+                data->menu_hold_id++;
+                data->menu_down_ms = (uint64_t)ev->input_event_sec * 1000u +
+                                     (uint64_t)ev->input_event_usec / 1000u;
+                data->menu_escape_reported = false;
+                jw__release_deferred_menu_tap(data, true);
+                if (!jw__menu_alone(data))
+                    jw_input_proxy_cancel_menu(proxy);
+            }
             return;
         }
         if (ev->value == 0 && data->menu_held) {
+            uint64_t released_ms = (uint64_t)ev->input_event_sec * 1000u +
+                                   (uint64_t)ev->input_event_usec / 1000u;
+            if (proxy->menu_config.escape_enabled && data->input_evdev_clock &&
+                released_ms >= data->menu_down_ms &&
+                released_ms - data->menu_down_ms >= proxy->menu_config.escape_ms)
+                data->menu_escape_reported = true; /* queued completed hold: no tap */
             if (data->menu_forwarded) {
                 /* Physical Menu up while an action it forwarded is still down.
                    Sending the modifier release now would unmask libretro input
@@ -571,17 +678,23 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                 } else {
                     jw__forward_event(data, ev);
                 }
-            } else if (!data->chord_active) {
+            } else if (!data->chord_active && !data->menu_escape_reported) {
                 bool handled = proxy->menu_tap && proxy->menu_tap(proxy->userdata);
                 if (!handled) {
                     jw__emit_deferred_menu_tap(data);
                 }
             }
+            jw__menu_end(proxy);
             data->menu_held = false;
             data->menu_forwarded = false;
             data->chord_active = false;
             return;
         }
+        if (proxy->menu_config.tap_only) return; /* includes orphan releases */
+    }
+
+    if (ev->value > 0) {
+        jw_input_proxy_cancel_menu(proxy);
     }
 
     /* Menu + a bindable button: the user's configured Leaf action.
@@ -636,7 +749,8 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
         return;
     }
 
-    if (data->menu_held && !data->menu_forwarded && ev->value > 0) {
+    if (!proxy->menu_config.tap_only &&
+        data->menu_held && !data->menu_forwarded && ev->value > 0) {
         jw__flush_menu_press(data);
     }
     jw__forward_event(data, ev);
@@ -931,8 +1045,23 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
              "%s", data->physical_path);
     snprintf(proxy->device_name, sizeof(proxy->device_name), "%s", JW_MLP1_INPUT_NAME);
 
+    int input_clock = CLOCK_MONOTONIC;
+    data->input_evdev_clock =
+        ioctl(data->input_fd, EVIOCSCLOCKID, &input_clock) == 0;
+    if (!watch_only && !data->input_evdev_clock) {
+        jw_log_warn("input proxy: monotonic gamepad clock unavailable: %s", strerror(errno));
+        close(data->input_fd);
+        free(data);
+        return -1;
+    }
+
     if (!watch_only) {
-        jw__capture_abs_neutrals(data);
+        if (!jw__capture_abs_neutrals(data)) {
+            jw_log_warn("input proxy: could not read axis state");
+            close(data->input_fd);
+            free(data);
+            return -1;
+        }
         data->uinput_fd = jw__create_virtual_gamepad(data->input_fd);
         if (data->uinput_fd < 0) {
             jw_log_warn("input proxy: could not create virtual gamepad: %s", strerror(errno));
@@ -964,6 +1093,8 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
     data->power_fd = jw__open_power_key();
     if (data->power_fd >= 0 && ioctl(data->power_fd, EVIOCGRAB, 1) == 0) {
         data->power_grabbed = true;
+    }
+    if (data->power_fd >= 0) {
         /* Stamp edges with kernel event time in the clock jawakad measures hold
            durations in, so a press/release that queues during a stalled daemon
            tick still reports its true duration (long-press vs tap). */
@@ -981,6 +1112,12 @@ static int jw__input_proxy_init_impl(jw_input_proxy *proxy,
 
     proxy->backend_data = data;
     proxy->enabled = true;
+    if (!watch_only && !data->power_evdev_clock) {
+        jw_log_warn("input proxy: monotonic power input unavailable");
+        jw_input_proxy_shutdown(proxy);
+        return -1;
+    }
+    jw__read_physical_state(data);
     /* Safe to start before the caller assigns proxy->rumble: nothing has opened
        the pad yet, so no effect can arrive until well after that write. */
     jw__ff_thread_start(proxy, data);
@@ -1058,87 +1195,102 @@ int jw_input_proxy_poll_fd(const jw_input_proxy *proxy) {
     return data->input_fd;
 }
 
-void jw_input_proxy_tick(jw_input_proxy *proxy) {
-    if (!proxy || !proxy->enabled || !proxy->backend_data) {
+static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
+        jw__reset_chord_state(proxy);
+        data->physical_state_valid = false;
+        data->input_dropped = true;
         return;
     }
+    if (data->input_dropped) {
+        if (ev->type == EV_SYN && ev->code == SYN_REPORT) {
+            jw__read_physical_state(data);
+            data->input_dropped = false;
+        }
+        return;
+    }
+    if (ev->type == EV_KEY && ev->code <= KEY_MAX) {
+        if (ev->value > 0) jw__bit_set(data->physical_keys, ev->code);
+        else jw__bit_clear(data->physical_keys, ev->code);
+    } else if (ev->type == EV_ABS && ev->code < ABS_CNT) {
+        data->abs_value[ev->code] = ev->value;
+        if (jw__axis_active(data, ev->code)) jw_input_proxy_cancel_menu(proxy);
+    }
 
-    jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    if (ev->type == EV_KEY ||
+        (ev->type == EV_ABS &&
+         (ev->code == ABS_HAT0X || ev->code == ABS_HAT0Y) && ev->value != 0))
+        data->last_activity_ms = jw__monotonic_ms();
+    if (data->swallow) return;
+    if (ev->type == EV_KEY) jw__handle_key(proxy, ev);
+    else if (ev->type == EV_ABS && (ev->code == ABS_X || ev->code == ABS_Y))
+        jw__forward_stick_abs(data, ev);
+    else jw__forward_event(data, ev);
+}
+
+static void jw__handle_power(jw_input_proxy *proxy, const struct input_event *ev) {
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
+        jw_input_proxy_cancel_menu(proxy);
+        jw__read_physical_state(data);
+    }
+    if (ev->type != EV_KEY || ev->code != KEY_POWER ||
+        (ev->value != 0 && ev->value != 1)) return;
+    data->power_held = ev->value == 1;
+    jw_input_proxy_cancel_menu(proxy);
+    if (data->power_edge_count == JW_MLP1_POWER_EDGE_MAX) {
+        data->power_edge_head = (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
+        data->power_edge_count--;
+    }
+    int tail = (data->power_edge_head + data->power_edge_count) % JW_MLP1_POWER_EDGE_MAX;
+    data->power_edges[tail].down = data->power_held;
+    data->power_edges[tail].ms = data->power_evdev_clock
+        ? (uint64_t)ev->input_event_sec * 1000u + (uint64_t)ev->input_event_usec / 1000u
+        : jw__monotonic_ms();
+    data->power_edge_count++;
+}
+
+static bool jw__read_input_edge(jw_input_proxy *proxy, int fd, struct input_event *ev) {
+    if (fd < 0) return false;
+    ssize_t got;
+    do { got = read(fd, ev, sizeof(*ev)); } while (got < 0 && errno == EINTR);
+    if (got == (ssize_t)sizeof(*ev)) return true;
+    if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return false;
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    data->physical_state_valid = false;
+    jw_input_proxy_cancel_menu(proxy);
+    return false;
+}
+
+void jw_input_proxy_tick(jw_input_proxy *proxy) {
+    if (!proxy || !proxy->enabled || !proxy->backend_data) return;
+    jw_mlp1_input_proxy_data *data = proxy->backend_data;
     jw__release_deferred_menu_tap(data, false);
 
-    while (1) {
-        struct input_event ev;
-        ssize_t n = read(data->input_fd, &ev, sizeof(ev));
-        if (n < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                jw_log_warn("input proxy: read failed: %s", strerror(errno));
-            }
-            jw__release_deferred_menu_tap(data, false);
-            break;   /* gamepad drained — fall through to the power-key handling */
-        }
-        if (n != (ssize_t)sizeof(ev)) {
-            jw__release_deferred_menu_tap(data, false);
-            break;
-        }
-
-        if (data->swallow) {
-            /* Screen-off stage: a press should wake the screen (reset idle) but not
-               also fire a navigation action, so stamp activity and discard. */
-            if (ev.type == EV_KEY ||
-                (ev.type == EV_ABS &&
-                 (ev.code == ABS_HAT0X || ev.code == ABS_HAT0Y) && ev.value != 0)) {
-                data->last_activity_ms = jw__monotonic_ms();
-            }
-            continue;
-        }
-        if (ev.type == EV_KEY) {
-            data->last_activity_ms = jw__monotonic_ms();   /* auto-sleep idle reset */
-            jw__handle_key(proxy, &ev);
+    /* Merge the two monotonic streams before routing taps or testing deadlines.
+       Draining Power first would suppress a completed Menu tap followed by a
+       separate Power press; draining it last could leak a queued Menu+Power tap. */
+    struct input_event input, power;
+    bool have_input = false, have_power = false;
+    for (;;) {
+        if (!have_input) have_input = jw__read_input_edge(proxy, data->input_fd, &input);
+        if (!have_power) have_power = jw__read_input_edge(proxy, data->power_fd, &power);
+        if (!have_input && !have_power) break;
+        bool power_first = !have_input || (have_power &&
+            (power.input_event_sec < input.input_event_sec ||
+             (power.input_event_sec == input.input_event_sec &&
+              power.input_event_usec <= input.input_event_usec)));
+        if (power_first) {
+            jw__handle_power(proxy, &power);
+            have_power = false;
         } else {
-            /* The d-pad is an EV_ABS hat (ABS_HAT0X/Y) — count it as activity so
-               menu navigation resets the idle timer. The analog stick (ABS_X/Y)
-               is deliberately NOT counted, so stick drift can't block sleep. */
-            if (ev.type == EV_ABS &&
-                (ev.code == ABS_HAT0X || ev.code == ABS_HAT0Y) && ev.value != 0) {
-                data->last_activity_ms = jw__monotonic_ms();
-            }
-            /* Analog stick axes get calibration-normalized (or measured); every
-               other ABS/event forwards verbatim. */
-            if (ev.type == EV_ABS && (ev.code == ABS_X || ev.code == ABS_Y)) {
-                jw__forward_stick_abs(data, &ev);
-            } else {
-                jw__forward_event(data, &ev);
-            }
+            jw__handle_input(proxy, &input);
+            have_input = false;
         }
     }
-    /* Power key (we hold it exclusively): queue press/release edges for jawakad,
-       which decides sleep vs wake from screen state — wake on press, sleep on
-       release. We don't act here. (value 2 = autorepeat, ignored.) Edges keep
-       their kernel timestamps so a hold whose press AND release queued behind a
-       stalled daemon tick still measures as a long press, not a 0ms tap. */
-    if (data->power_grabbed && data->power_fd >= 0) {
-        struct input_event pev;
-        while (read(data->power_fd, &pev, sizeof(pev)) == (ssize_t)sizeof(pev)) {
-            if (pev.type != EV_KEY || pev.code != KEY_POWER ||
-                (pev.value != 0 && pev.value != 1)) {
-                continue;
-            }
-            if (data->power_edge_count == JW_MLP1_POWER_EDGE_MAX) {
-                /* Full (the daemon is badly stalled): drop the oldest edge. */
-                data->power_edge_head =
-                    (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
-                data->power_edge_count--;
-            }
-            int tail = (data->power_edge_head + data->power_edge_count) %
-                       JW_MLP1_POWER_EDGE_MAX;
-            data->power_edges[tail].down = pev.value == 1;
-            data->power_edges[tail].ms = data->power_evdev_clock
-                ? (uint64_t)pev.input_event_sec * 1000u +
-                  (uint64_t)pev.input_event_usec / 1000u
-                : jw__monotonic_ms();
-            data->power_edge_count++;
-        }
-    }
+    jw__release_deferred_menu_tap(data, false);
+    jw__menu_deadline(proxy, jw__monotonic_ms());
 }
 
 uint64_t jw_input_proxy_idle_ms(const jw_input_proxy *proxy) {
@@ -1264,6 +1416,9 @@ static void jw__reset_chord_state(jw_input_proxy *proxy) {
     jw_mlp1_input_proxy_data *data =
         (jw_mlp1_input_proxy_data *)proxy->backend_data;
 
+    jw__menu_end(proxy);
+    data->menu_escape_reported = false;
+
     /* Forwarded buttons and axes, plus any deferred Menu-up they were holding
        back. No-op in watch-only mode, where nothing was forwarded. */
     jw_input_proxy_release_buttons(proxy);
@@ -1312,10 +1467,20 @@ void jw_input_proxy_flush(jw_input_proxy *proxy) {
        includes the ones that would clear a consumed chord and free a deferred
        Menu-up. Reset for the same reason screen-off does. */
     jw__reset_chord_state(proxy);
+    jw__read_physical_state(data);
+}
+
+void jw_input_proxy_configure_menu(jw_input_proxy *proxy,
+                                  jw_input_menu_config config) {
+    if (!proxy) return;
+    jw_input_proxy_flush(proxy);
+    proxy->menu_config = config;
 }
 
 void jw_input_proxy_shutdown(jw_input_proxy *proxy) {
-    if (!proxy || !proxy->backend_data) {
+    if (!proxy) return;
+    if (!proxy->backend_data) {
+        memset(proxy, 0, sizeof(*proxy));
         return;
     }
 
