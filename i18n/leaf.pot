@@ -644,10 +644,6 @@ msgstr ""
 msgid "Current"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Cursor Movement"
-msgstr ""
-
 #: cmd/jawaka-menu/main.c
 msgid "Custom"
 msgstr ""
@@ -1652,10 +1648,6 @@ msgstr ""
 msgid "Rounded"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Rumble"
-msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Run / Stop"
 msgstr ""
@@ -2258,6 +2250,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Type to search"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "UI Rumble"
 msgstr ""
 
 #: internal/settings/settings.c

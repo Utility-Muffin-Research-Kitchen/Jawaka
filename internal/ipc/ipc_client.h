@@ -244,7 +244,7 @@ int jw_ipc_storage_repair_result_ack(const char *socket_path, const char *reques
 int jw_ipc_open_menu(const char *socket_path);
 
 /* Fire a haptic rumble by naming a semantic UI event. The daemon owns the
- * vocabulary (single/double/triple tick) and gating (rumble_enabled, rumble_nav).
+ * vocabulary (single/double/triple tick) and the UI rumble gate.
  * event: "nav" | "select" | "commit" | "blocked". Fire-and-forget; the daemon
  * queues the burst and replies immediately. Returns 0 on success, -1 on failure. */
 int jw_ipc_rumble(const char *socket_path, const char *event);

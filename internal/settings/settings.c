@@ -688,23 +688,14 @@ static void jw__refresh_adb(jw_settings_ui *ui) {
     }
 }
 
-/* Load the rumble/haptics settings straight from the DB (the daemon reads the
-   same keys; defaults match the init defaults). */
+/* Load the rumble settings through the same helper the daemon uses, so the two
+   agree and the one-time move off the old master switch happens in one place. */
 static void jw__refresh_rumble(jw_settings_ui *ui) {
-    char v[16] = "";
-    if (jw_db_get_setting(ui->db_path, "rumble_enabled", v, sizeof(v)) == 0 && v[0])
-        ui->rumble_enabled = (strcmp(v, "0") != 0);
-    v[0] = '\0';
-    if (jw_db_get_setting(ui->db_path, "rumble_strength", v, sizeof(v)) == 0 && v[0]) {
-        int s = atoi(v);
-        ui->rumble_strength = s < 0 ? 0 : (s > 100 ? 100 : s);
-    }
-    v[0] = '\0';
-    if (jw_db_get_setting(ui->db_path, "rumble_nav", v, sizeof(v)) == 0 && v[0])
-        ui->rumble_nav = (strcmp(v, "1") == 0);
-    v[0] = '\0';
-    if (jw_db_get_setting(ui->db_path, "rumble_game", v, sizeof(v)) == 0 && v[0])
-        ui->rumble_game = (strcmp(v, "0") != 0);
+    jw_rumble_settings rs;
+    (void)jw_db_load_rumble_settings(ui->db_path, &rs);
+    ui->rumble_ui       = rs.ui != 0;
+    ui->rumble_game     = rs.game != 0;
+    ui->rumble_strength = rs.strength;
 }
 
 static void jw__refresh_boot_splash(jw_settings_ui *ui) {
@@ -1263,11 +1254,12 @@ static void jw__persist(const jw_settings_ui *ui, const char *key, const char *v
     if (ui->db_path[0])
         jw_db_set_setting(ui->db_path, key, val);
     /* Haptic: a setting changed. Skip keys with their own live feedback
-       (strength = slider preview, enable = confirmation buzz). Gated in the
-       daemon by rumble_enabled, so nothing buzzes when haptics are off. */
+       (strength = slider preview, the two switches = confirmation buzz). Gated
+       in the daemon by UI rumble, so nothing buzzes when it is off. */
     if (ui->socket_path[0] &&
         strcmp(key, "rumble_strength") != 0 &&
-        strcmp(key, "rumble_enabled") != 0)
+        strcmp(key, "rumble_ui") != 0 &&
+        strcmp(key, "rumble_game") != 0)
         jw_ipc_rumble(ui->socket_path, "select");
 }
 
@@ -1505,10 +1497,9 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     /* The .mkv holds lossless audio and is the only re-convertible source, so
        discarding it should be a deliberate choice. */
     ui->recording_keep_src  = true;
-    ui->rumble_enabled = true;    /* haptics default on */
-    ui->rumble_strength = 65;     /* ~Medium */
-    ui->rumble_nav = false;       /* per-move tick opt-in */
+    ui->rumble_ui = false;        /* interface buzzes opt-in */
     ui->rumble_game = true;       /* in-game rumble default on */
+    ui->rumble_strength = JW_RUMBLE_DEFAULT_STRENGTH;
     {
         cat_launcher_layout lay = cat_get_stylesheet()->launcher.layout;
         ui->layout_mode = (lay == CAT_LAUNCHER_GRID) ? 2
@@ -4623,21 +4614,17 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
     jw__begin_settings_rows(&ui->controls_list, x, ly, w, y + h - ly,
                             JW_CONTROLS_ROW_COUNT, item_h);
 
-    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_RUMBLE,
-                          "Rumble", ui->rumble_enabled ? "On" : "Off");
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_UI_RUMBLE,
+                          "UI Rumble", ui->rumble_ui ? "On" : "Off");
 
+    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_GAME,
+                          "Game Rumble", ui->rumble_game ? "On" : "Off");
+
+    bool any_rumble = ui->rumble_ui || ui->rumble_game;
     char strength[16];
     snprintf(strength, sizeof(strength), "%d%%", ui->rumble_strength);
     jw__render_list_row(&ui->controls_list, x, ly, w, JW_CONTROLS_STRENGTH,
-                        "Strength", ui->rumble_enabled ? strength : "-", true);
-
-    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_NAV,
-                          "Cursor Movement",
-                          ui->rumble_enabled ? (ui->rumble_nav ? "On" : "Off") : "-");
-
-    jw__render_toggle_row(&ui->controls_list, x, ly, w, JW_CONTROLS_GAME,
-                          "Game Rumble",
-                          ui->rumble_enabled ? (ui->rumble_game ? "On" : "Off") : "-");
+                        "Strength", any_rumble ? strength : "-", true);
 
 #ifdef PLATFORM_MLP1
     jw__render_nav_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SHORTCUTS,
@@ -8003,15 +7990,15 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
-                if (ui->controls_list.cursor == JW_CONTROLS_RUMBLE) {
+                if (ui->controls_list.cursor == JW_CONTROLS_UI_RUMBLE) {
                     (void)dir;
-                    ui->rumble_enabled = !ui->rumble_enabled;
-                    jw__persist_bool(ui, "rumble_enabled", ui->rumble_enabled);
-                    /* Confirmation buzz when switching haptics on. */
-                    if (ui->rumble_enabled)
+                    ui->rumble_ui = !ui->rumble_ui;
+                    jw__persist_bool(ui, "rumble_ui", ui->rumble_ui);
+                    /* Confirmation buzz when switching it on. */
+                    if (ui->rumble_ui)
                         jw_ipc_rumble_preview(ui->socket_path, ui->rumble_strength);
                 } else if (ui->controls_list.cursor == JW_CONTROLS_STRENGTH) {
-                    if (!ui->rumble_enabled) break;
+                    if (!ui->rumble_ui && !ui->rumble_game) break;
                     int s = ui->rumble_strength + dir * 5;
                     if (s < 0) s = 0;
                     if (s > 100) s = 100;
@@ -8021,18 +8008,15 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         /* Live preview: feel the exact new strength as you slide. */
                         jw_ipc_rumble_preview(ui->socket_path, s);
                     }
-                } else if (ui->controls_list.cursor == JW_CONTROLS_NAV) {
-                    if (!ui->rumble_enabled) break;
-                    (void)dir;
-                    ui->rumble_nav = !ui->rumble_nav;
-                    jw__persist_bool(ui, "rumble_nav", ui->rumble_nav);
                 } else if (ui->controls_list.cursor == JW_CONTROLS_GAME) {
-                    if (!ui->rumble_enabled) break;
                     (void)dir;
                     ui->rumble_game = !ui->rumble_game;
                     /* Read by the daemon at game launch, so it takes effect on
                        the next launch -- no need to touch a running game. */
                     jw__persist_bool(ui, "rumble_game", ui->rumble_game);
+                    /* Confirmation buzz when switching it on. */
+                    if (ui->rumble_game)
+                        jw_ipc_rumble_preview(ui->socket_path, ui->rumble_strength);
 #ifdef PLATFORM_MLP1
                 } else if (ui->controls_list.cursor == JW_CONTROLS_SHORTCUTS) {
                     (void)dir;

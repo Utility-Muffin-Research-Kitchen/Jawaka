@@ -182,19 +182,18 @@ typedef enum {
    this page ends at a single entry point to it. Everywhere else the page keeps
    all eight rows and there is no child page: the shortcut bindings are an MLP1
    input-proxy feature and mean nothing on the other backends. */
-#define JW_CONTROLS_RUMBLE      0   /* master on/off */
-#define JW_CONTROLS_STRENGTH    1   /* 0-100 %, left/right adjust */
-#define JW_CONTROLS_NAV         2   /* per-move navigation tick (opt-in) */
-#define JW_CONTROLS_GAME        3   /* hand the motor to emulators in-game */
+#define JW_CONTROLS_UI_RUMBLE   0   /* every interface buzz, cursor ticks included */
+#define JW_CONTROLS_GAME        1   /* hand the motor to emulators in-game */
+#define JW_CONTROLS_STRENGTH    2   /* 0-100 %, left/right adjust, shared by both */
 #ifdef PLATFORM_MLP1
-#define JW_CONTROLS_SHORTCUTS   4   /* -> JW_SETTINGS_INPUT_SHORTCUTS */
-#define JW_CONTROLS_ROW_COUNT   5
+#define JW_CONTROLS_SHORTCUTS   3   /* -> JW_SETTINGS_INPUT_SHORTCUTS */
+#define JW_CONTROLS_ROW_COUNT   4
 #else
-#define JW_CONTROLS_SCREENSHOTS 4   /* Menu+L1 screenshot hotkey on/off */
-#define JW_CONTROLS_RECORDING   5   /* Menu+R1 game recording hotkey on/off */
-#define JW_CONTROLS_REC_SPLIT   6   /* split oversized clips into postable parts */
-#define JW_CONTROLS_REC_KEEP    7   /* keep the lossless .mkv after converting */
-#define JW_CONTROLS_ROW_COUNT   8
+#define JW_CONTROLS_SCREENSHOTS 3   /* Menu+L1 screenshot hotkey on/off */
+#define JW_CONTROLS_RECORDING   4   /* Menu+R1 game recording hotkey on/off */
+#define JW_CONTROLS_REC_SPLIT   5   /* split oversized clips into postable parts */
+#define JW_CONTROLS_REC_KEEP    6   /* keep the lossless .mkv after converting */
+#define JW_CONTROLS_ROW_COUNT   7
 #endif
 
 #ifdef PLATFORM_MLP1
@@ -369,10 +368,9 @@ typedef struct {
     bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
     bool               recording_split;     /* cut clips over 10MB into postable parts */
     bool               recording_keep_src;  /* keep the lossless .mkv once the MP4 exists */
-    bool               rumble_enabled;    /* Controls & Feedback: haptics master (daemon reads DB) */
-    int                rumble_strength;   /* 0-100 % */
-    bool               rumble_nav;        /* per-move navigation tick */
+    bool               rumble_ui;         /* Controls & Feedback: interface buzzes (daemon reads DB) */
     bool               rumble_game;       /* in-game emulator rumble */
+    int                rumble_strength;   /* 0-100 %, shared by both */
     /* Services screen (app-services-v1). A snapshot of CTL-1 service-list,
        fetched on entry and after each action; the screen is offered only
        when at least one valid service, retained desired-state record, or
