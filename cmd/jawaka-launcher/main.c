@@ -2574,7 +2574,9 @@ static jw_pakrat_theme_action jw__pakrat_theme_action(const jw_launcher_state *s
    text rather than handed to the footer. */
 static const char *jw__pakrat_theme_status_label(const jw_launcher_state *state,
                                                  const jw_pakrat_app_state *app) {
-    if (app->package.withdrawn || app->theme_name_reserved) {
+    /* theme_slots_full is only set when installing would add a folder, so a
+       full Themes/ never marks an installed theme or a replaceable folder. */
+    if (app->package.withdrawn || app->theme_name_reserved || app->theme_slots_full) {
         return T("Unavailable");
     }
     switch (app->status) {
@@ -3104,8 +3106,14 @@ static int jw__pakrat_theme_detail_walk(const jw__pakrat_detail_ctx *c,
             case 1: snprintf(line, sizeof(line), T("License: %s"),
                              jw__pakrat_license_label(app->package.license)); break;
             case 2: snprintf(line, sizeof(line), T("Version: %s"), app->package.version); break;
-            case 3: snprintf(line, sizeof(line), T("Installed version: %s"),
-                             app->installed_version[0] ? app->installed_version : "-"); break;
+            case 3:
+                /* Nothing Pak Rat installed, including a hand-made folder. */
+                if (!app->installed_version[0]) {
+                    continue;
+                }
+                snprintf(line, sizeof(line), T("Installed version: %s"),
+                         app->installed_version);
+                break;
             default: snprintf(line, sizeof(line), T("Folder: Themes/%s"),
                               app->package.install_name); break;
         }
