@@ -2163,3 +2163,57 @@ msgstr "版本 %s 需要 Leaf %s 或更高版本。"
 
 msgid "Version: %s"
 msgstr "版本：%s"
+
+# In-game OSD banners (Syncthing, settings, SD card, PICO-8). MACHINE SEED,
+# marked fuzzy until a reviewer confirms them; untranslated they render English.
+#, fuzzy
+msgid "Syncthing: Checking saves"
+msgstr "Syncthing：正在检查存档"
+
+#, fuzzy
+msgid "Syncthing: Syncing %d item"
+msgstr "Syncthing：正在同步 %d 项"
+
+#, fuzzy
+msgid "Syncthing: Syncing %d items"
+msgstr "Syncthing：正在同步 %d 项"
+
+#, fuzzy
+msgid "Syncthing: Stopping"
+msgstr "Syncthing：正在停止"
+
+#, fuzzy
+msgid "Menu: Start now"
+msgstr "菜单键：立即开始"
+
+#, fuzzy
+msgid "RetroArch settings not saved"
+msgstr "RetroArch 设置未保存"
+
+#, fuzzy
+msgid "New saves may fail"
+msgstr "新存档可能无法保存"
+
+#, fuzzy
+msgid "Return to Leaf?"
+msgstr "返回 Leaf？"
+
+#, fuzzy
+msgid "Press Menu again"
+msgstr "再次按菜单键"
+
+#, fuzzy
+msgid "Adding Splore favorites"
+msgstr "正在添加 Splore 收藏"
+
+#, fuzzy
+msgid "Please wait"
+msgstr "请稍候"
+
+#, fuzzy
+msgid "Splore import incomplete"
+msgstr "Splore 导入未完成"
+
+#, fuzzy
+msgid "Try Splore again"
+msgstr "请再次打开 Splore"

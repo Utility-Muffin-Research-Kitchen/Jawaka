@@ -61,11 +61,25 @@ jw_osd_pico8_menu jw_osd_client_pico8_menu(const jw_osd_client *client,
         (void)jw_osd_client_hide(client, exit_deadline_ms);
         return JW_OSD_PICO8_MENU_CONFIRMED;
     }
-    /* Never keep a hidden confirmation armed if the OSD cannot show it. */
-    if (client->request(client->ctx,
-                        "{\"type\":\"show-game-launch\",\"stage\":\"pico8-exit\"}",
-                        JW_OSD_CLIENT_BANNER_TIMEOUT_MS, true) != 0) {
+    /* The OSD refuses to submit the prompt once the daemon has stopped
+       waiting for it, so a request delayed before submission never appears. */
+    char request[128];
+    snprintf(request, sizeof(request),
+             "{\"type\":\"show-game-launch\",\"stage\":\"pico8-exit\","
+             "\"expires_ms\":%lld}",
+             client->now_ms(client->ctx) + JW_OSD_CLIENT_BANNER_TIMEOUT_MS);
+    if (client->request(client->ctx, request, JW_OSD_CLIENT_BANNER_TIMEOUT_MS,
+                        true) != 0) {
+        /* Never keep a hidden confirmation armed if the OSD cannot show it. */
         jw_osd_client_prompt_lost(exit_deadline_ms);
+        /* A late or missing reply does not mean the prompt stayed off screen:
+           it may have been submitted just after the timeout. Take it down, and
+           when even that cannot be confirmed, end the OSD process. */
+        if (client->request(client->ctx, "{\"type\":\"hide-game-launch\"}",
+                            JW_OSD_CLIENT_BANNER_TIMEOUT_MS, false) != 0 &&
+            client->discard_osd) {
+            client->discard_osd(client->ctx);
+        }
         return JW_OSD_PICO8_MENU_UNAVAILABLE;
     }
     return JW_OSD_PICO8_MENU_ARMED;

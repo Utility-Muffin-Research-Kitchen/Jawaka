@@ -706,6 +706,13 @@ int jw_ipc_rumble(const char *socket_path, const char *event) {
     return ipc__notify(socket_path, req);
 }
 
+int jw_ipc_refresh_osd_appearance(const char *socket_path) {
+    if (!socket_path || !socket_path[0]) return -1;
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "refresh-osd-appearance");
+    return ipc__notify(socket_path, req);
+}
+
 int jw_ipc_rumble_preview(const char *socket_path, int strength) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "rumble");

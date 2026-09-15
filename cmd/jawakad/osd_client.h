@@ -21,6 +21,9 @@ typedef struct {
     int (*request)(void *ctx, const char *json, int timeout_ms, bool show);
     long long (*now_ms)(void *ctx);
     void (*sleep_ms)(void *ctx, int ms);   /* optional */
+    /* Last resort when a prompt may be on screen and could not be removed:
+       end the OSD process so its surface goes with it. Optional. */
+    void (*discard_osd)(void *ctx);
 } jw_osd_client;
 
 typedef enum {

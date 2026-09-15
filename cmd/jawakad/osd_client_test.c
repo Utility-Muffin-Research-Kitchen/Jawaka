@@ -18,6 +18,7 @@ typedef struct {
     bool last_show;
     int shows_of_prompt;
     int hides;
+    int discards;
 } fake_osd;
 
 static int fake_request(void *ctx, const char *json, int timeout_ms, bool show) {
@@ -32,15 +33,22 @@ static int fake_request(void *ctx, const char *json, int timeout_ms, bool show) 
 }
 
 static long long fake_now(void *ctx) { return ((fake_osd *)ctx)->now; }
+static void fake_discard(void *ctx) { ((fake_osd *)ctx)->discards++; }
 
 static jw_osd_client client_for(fake_osd *osd) {
-    return (jw_osd_client){ .ctx = osd, .request = fake_request, .now_ms = fake_now };
+    return (jw_osd_client){ .ctx = osd, .request = fake_request, .now_ms = fake_now,
+                            .discard_osd = fake_discard };
 }
 
 static void arm(const jw_osd_client *client, fake_osd *osd, long long *deadline) {
     assert(jw_osd_client_pico8_menu(client, deadline) == JW_OSD_PICO8_MENU_ARMED);
     assert(*deadline == osd->now + JW_PICO8_EXIT_CONFIRM_MS);
-    assert(strcmp(osd->last, "{\"type\":\"show-game-launch\",\"stage\":\"pico8-exit\"}") == 0);
+    /* The OSD must not submit the prompt after the daemon stops waiting. */
+    char want[128];
+    snprintf(want, sizeof(want),
+             "{\"type\":\"show-game-launch\",\"stage\":\"pico8-exit\",\"expires_ms\":%lld}",
+             osd->now + JW_OSD_CLIENT_BANNER_TIMEOUT_MS);
+    assert(strcmp(osd->last, want) == 0);
     assert(osd->last_timeout == JW_OSD_CLIENT_BANNER_TIMEOUT_MS && osd->last_show);
 }
 
@@ -72,8 +80,33 @@ static void show_failure_disarms(void) {
     long long deadline = 0;
     assert(jw_osd_client_pico8_menu(&client, &deadline) == JW_OSD_PICO8_MENU_UNAVAILABLE);
     assert(deadline == 0);
+    /* An error reply still gets a hide, which succeeds: nothing to discard. */
+    assert(osd.hides == 1 && osd.discards == 0);
     osd.now = 60;
     arm(&client, &osd, &deadline);   /* the next press shows, never confirms */
+}
+
+/* The reply was late: the prompt may have been submitted anyway. */
+static void late_prompt_is_removed(void) {
+    fake_osd osd = { .now = 10, .results = { -1, 0 }, .result_count = 2 };
+    jw_osd_client client = client_for(&osd);
+    long long deadline = 0;
+    assert(jw_osd_client_pico8_menu(&client, &deadline) == JW_OSD_PICO8_MENU_UNAVAILABLE);
+    assert(deadline == 0 && osd.hides == 1 && osd.discards == 0);
+    assert(!osd.last_show && osd.last_timeout == JW_OSD_CLIENT_BANNER_TIMEOUT_MS);
+
+    /* The hide cannot be confirmed either: end the OSD so the prompt goes. */
+    osd = (fake_osd){ .now = 10, .results = { -1, -1 }, .result_count = 2 };
+    assert(jw_osd_client_pico8_menu(&client, &deadline) == JW_OSD_PICO8_MENU_UNAVAILABLE);
+    assert(deadline == 0 && osd.hides == 1 && osd.discards == 1);
+
+    /* Without a discard hook it still stays disarmed. */
+    client.discard_osd = NULL;
+    osd = (fake_osd){ .now = 10, .results = { -1, -1 }, .result_count = 2 };
+    assert(jw_osd_client_pico8_menu(&client, &deadline) == JW_OSD_PICO8_MENU_UNAVAILABLE);
+    assert(deadline == 0 && osd.discards == 0);
+    osd.now = 20;
+    assert(jw_osd_client_pico8_menu(&client, &deadline) == JW_OSD_PICO8_MENU_ARMED);
 }
 
 typedef enum { REPLACE_VOLUME, REPLACE_BRIGHTNESS, REPLACE_STAGE, REPLACE_WARNING,
@@ -147,6 +180,7 @@ int main(void) {
     confirm_inside_window();
     expiry_boundary_rearms();
     show_failure_disarms();
+    late_prompt_is_removed();
     for (int how = REPLACE_VOLUME; how <= REPLACE_OSD_EXIT; how++) {
         replacement_disarms((replacement)how, false);
         replacement_disarms((replacement)how, true);

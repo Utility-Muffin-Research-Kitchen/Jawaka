@@ -437,6 +437,9 @@ int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
    no getter, because the launcher reads the setting itself at startup. */
 int jw_ipc_set_language(const char *socket_path, const char *lang,
                         char *status, int status_len);
+/* A font family or size was persisted. The daemon restarts the OSD when its
+   banner font no longer matches; fire-and-forget like the haptics. */
+int jw_ipc_refresh_osd_appearance(const char *socket_path);
 /* HDMI output: status (connected/current mode/supported) + set (0 off/1 4:3/2 stretch). */
 int jw_ipc_get_hdmi_status(const char *socket_path, int *out_connected,
                            int *out_mode, bool *out_supported);

@@ -6718,6 +6718,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     if (cat_reload_fonts(path) == CAT_OK) {
                         ui->font_family_index = next;
                         jw__persist_int(ui, "font_family_index", next);
+                        (void)jw_ipc_refresh_osd_appearance(ui->socket_path);
                         /* Font metrics changed -> the launcher must recompute its
                            cached list row height (cat_box_fit_rows only ever clamps
                            the row count DOWN, so a smaller font won't re-grow it
@@ -6742,6 +6743,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                                                  jw_i18n_language()));
                     cat_set_font_bump(kJawakaFontSizeValues[next]);
                     jw__persist_int(ui, "font_size_index", next);
+                    (void)jw_ipc_refresh_osd_appearance(ui->socket_path);
                     /* Recompute cached list row height (see the font-family note
                        above) — without this, shrinking the font leaves the list
                        rows stretched tall until a relaunch. */
