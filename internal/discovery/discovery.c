@@ -434,29 +434,16 @@ static int jw__metadata_platform_path(const char *sdcard_root,
                     sdcard_root, jw_platform_compiled_id()) < (int)out_size ? 0 : -1;
 }
 
-static int jw__metadata_path_core_exists(const char *sdcard_root,
+static int jw__metadata_path_core_exists(const jw_ra_catalog *catalog,
+                                         const char *sdcard_root,
                                          const jw_ra_core *core) {
-    if (!jw__metadata_core_is_packaged_path(core)) {
-        return 0;
-    }
-
+    if (!jw__metadata_core_is_packaged_path(core)) return 0;
+    char platform_path[PATH_MAX];
     char candidate[PATH_MAX];
-    if (core->path[0] == '/') {
-        if (snprintf(candidate, sizeof(candidate), "%s", core->path) >=
-            (int)sizeof(candidate)) {
-            return 0;
-        }
-    } else {
-        char platform_path[PATH_MAX];
-        if (jw__metadata_platform_path(sdcard_root, platform_path,
-                                       sizeof(platform_path)) != 0 ||
-            snprintf(candidate, sizeof(candidate), "%s/%s",
-                     platform_path, core->path) >= (int)sizeof(candidate)) {
-            return 0;
-        }
-    }
-
-    return access(candidate, X_OK) == 0;
+    if (jw__metadata_platform_path(sdcard_root, platform_path, sizeof(platform_path)))
+        return 0;
+    return jw_ra_catalog_resolve_core_path(catalog, core, NULL, platform_path,
+                                           true, candidate, sizeof(candidate)) == 0;
 }
 
 static int jw__metadata_system_has_packaged_launch_target(const jw_ra_catalog *catalog,
@@ -471,13 +458,13 @@ static int jw__metadata_system_has_packaged_launch_target(const jw_ra_catalog *c
     }
 
     const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
-    if (jw__metadata_path_core_exists(sdcard_root, core)) {
+    if (jw__metadata_path_core_exists(catalog, sdcard_root, core)) {
         return 1;
     }
 
     for (size_t i = 0; i < system->alternate_cores.count; i++) {
         core = jw_ra_catalog_find_core(catalog, system->alternate_cores.items[i]);
-        if (jw__metadata_path_core_exists(sdcard_root, core)) {
+        if (jw__metadata_path_core_exists(catalog, sdcard_root, core)) {
             return 1;
         }
     }
