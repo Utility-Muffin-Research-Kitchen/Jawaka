@@ -6665,41 +6665,11 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     int next = cur + dir;
                     if (next < -1) next = n - 1;
                     if (next >= n) next = -1;
-                    if (next == cur) break;
-                    ui->user_theme_index = next;
-                    snprintf(ui->user_theme_dir, sizeof(ui->user_theme_dir), "%s",
-                             next >= 0 ? ui->user_themes.items[next].dir : "");
-                    jw__persist(ui, "user_theme", ui->user_theme_dir);
-                    if (next >= 0 && status_buf && status_size > 0) {
-                        /* Validate on selection, not on every frame, and say it
-                           here: a rejected icon that silently does not appear is
-                           worse than an ugly one, since the creator cannot tell why. */
-                        int present = 0, flagged = 0;
-                        int rejected = jw_user_theme_validate(&ui->user_themes, next,
-                                                              &present, &flagged);
-                        const char *name = ui->user_themes.items[next].name;
-                        if (rejected && flagged)
-                            snprintf(status_buf, status_size,
-                                     T("%s: %d icons over %dpx skipped, %d off-size"),
-                                     name, rejected, JW_USER_THEME_ICON_MAX_PX, flagged);
-                        else if (rejected)
-                            snprintf(status_buf, status_size,
-                                     T("%s: %d icons over %dpx skipped"),
-                                     name, rejected, JW_USER_THEME_ICON_MAX_PX);
-                        else if (flagged)
-                            snprintf(status_buf, status_size,
-                                     T("%s: %d icons not %dx%d (contain-fit)"),
-                                     name, flagged, JW_USER_THEME_ICON_TARGET_PX,
-                                     JW_USER_THEME_ICON_TARGET_PX);
-                        else if (present)
-                            snprintf(status_buf, status_size, T("%s: %d icons ok"),
-                                     name, present);
-                    } else if (status_buf && status_size > 0) {
-                        status_buf[0] = '\0';
-                    }
                     /* The launcher rebuilds for the layout on this flag: memoized
                        icon paths clear and the wallpaper re-resolves. */
-                    if (theme_changed) *theme_changed = true;
+                    if (jw_settings_ui_select_user_theme(ui, next, status_buf, status_size) &&
+                        theme_changed)
+                        *theme_changed = true;
                 } else if (row == JW_LAYOUT_GRID_SIZE) {
                     if (ui->layout_mode != 2) break;   /* row is greyed off-Grid */
                     int cur = (ui->grid_density_index >= 0 &&
@@ -8353,6 +8323,48 @@ int jw_settings_user_theme_index(const jw_settings_ui *ui) {
     if (!ui) return -1;
     return (ui->user_theme_index >= 0 && ui->user_theme_index < ui->user_themes.count)
                ? ui->user_theme_index : -1;
+}
+
+bool jw_settings_ui_select_user_theme(jw_settings_ui *ui, int next,
+                                      char *status_buf, size_t status_size) {
+    if (!ui) return false;
+    int n = ui->user_themes.count;
+    if (next < -1 || next >= n) return false;
+    int cur = (ui->user_theme_index >= 0 && ui->user_theme_index < n)
+              ? ui->user_theme_index : -1;
+    if (next == cur) return false;
+    ui->user_theme_index = next;
+    snprintf(ui->user_theme_dir, sizeof(ui->user_theme_dir), "%s",
+             next >= 0 ? ui->user_themes.items[next].dir : "");
+    jw__persist(ui, "user_theme", ui->user_theme_dir);
+    if (next >= 0 && status_buf && status_size > 0) {
+        /* Validate on selection, not on every frame, and say it
+           here: a rejected icon that silently does not appear is
+           worse than an ugly one, since the creator cannot tell why. */
+        int present = 0, flagged = 0;
+        int rejected = jw_user_theme_validate(&ui->user_themes, next,
+                                              &present, &flagged);
+        const char *name = ui->user_themes.items[next].name;
+        if (rejected && flagged)
+            snprintf(status_buf, status_size,
+                     T("%s: %d icons over %dpx skipped, %d off-size"),
+                     name, rejected, JW_USER_THEME_ICON_MAX_PX, flagged);
+        else if (rejected)
+            snprintf(status_buf, status_size,
+                     T("%s: %d icons over %dpx skipped"),
+                     name, rejected, JW_USER_THEME_ICON_MAX_PX);
+        else if (flagged)
+            snprintf(status_buf, status_size,
+                     T("%s: %d icons not %dx%d (contain-fit)"),
+                     name, flagged, JW_USER_THEME_ICON_TARGET_PX,
+                     JW_USER_THEME_ICON_TARGET_PX);
+        else if (present)
+            snprintf(status_buf, status_size, T("%s: %d icons ok"),
+                     name, present);
+    } else if (status_buf && status_size > 0) {
+        status_buf[0] = '\0';
+    }
+    return true;
 }
 
 bool jw_settings_grid_density(const jw_settings_ui *ui, int *cols, int *rows) {

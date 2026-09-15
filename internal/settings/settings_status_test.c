@@ -7,7 +7,10 @@
 #include "internal/launcher/system_activity.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int fail(const char *message) {
     fprintf(stderr, "settings-status-test: %s\n", message);
@@ -46,6 +49,60 @@ static int check_activity(void) {
     if (!jw_system_notice_remaining(&activity.feedback, 100) ||
         jw_system_notice_remaining(&activity.feedback, 6000))
         return fail("feedback expiry failed across clock wrap");
+    return 0;
+}
+
+static int write_theme(const char *root, const char *dir, const char *name) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/Themes", root);
+    mkdir(path, 0755);
+    snprintf(path, sizeof(path), "%s/Themes/%s", root, dir);
+    if (mkdir(path, 0755) != 0) return -1;
+    snprintf(path, sizeof(path), "%s/Themes/%s/theme.json", root, dir);
+    FILE *fp = fopen(path, "w");
+    if (!fp) return -1;
+    fprintf(fp, "{ \"name\": \"%s\" }\n", name);
+    return fclose(fp);
+}
+
+/* The Layout > Theme row and Pak Rat's Apply share one selection path, so a
+   store Apply is exactly a Settings pick: same persisted key, same rebuild. */
+static int check_theme_selection(void) {
+    char root[] = "/tmp/settings-status-test.XXXXXX";
+    if (!mkdtemp(root)) return fail("could not create a themes root");
+    if (write_theme(root, "aurora", "Aurora") || write_theme(root, "neon-nights", "Neon Nights"))
+        return fail("could not write test themes");
+    jw_settings_ui ui = {0};
+    ui.user_theme_index = -1;
+    jw_settings_ui_set_themes_root(&ui, root);
+    if (ui.user_themes.count != 2) return fail("test themes were not scanned");
+
+    int neon = jw_user_themes_find(&ui.user_themes, "neon-nights");
+    char status[128] = "stale";
+    if (!jw_settings_ui_select_user_theme(&ui, neon, status, sizeof(status)) ||
+        strcmp(ui.user_theme_dir, "neon-nights") != 0 ||
+        jw_settings_user_theme_index(&ui) != neon)
+        return fail("selecting a theme did not select it");
+    if (jw_settings_ui_select_user_theme(&ui, neon, status, sizeof(status)))
+        return fail("reselecting the current theme reported a change");
+    if (jw_settings_ui_select_user_theme(&ui, 2, NULL, 0) ||
+        jw_settings_ui_select_user_theme(&ui, -2, NULL, 0) ||
+        strcmp(ui.user_theme_dir, "neon-nights") != 0)
+        return fail("an out-of-range selection changed the theme");
+
+    /* The Layout row cycles through the same function and raises the flag. */
+    ui.open = true;
+    ui.screen = JW_SETTINGS_LAYOUT;
+    ui.layout_list.cursor = JW_LAYOUT_THEME;
+    bool theme_changed = false;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status), &theme_changed);
+    if (!theme_changed || ui.user_theme_dir[0] || jw_settings_user_theme_index(&ui) != -1)
+        return fail("cycling past the last theme did not select None");
+    if (status[0]) return fail("selecting None kept a theme's status");
+
+    char cmd[PATH_MAX + 16];
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", root);
+    if (system(cmd) != 0) return fail("could not remove the themes root");
     return 0;
 }
 
@@ -201,7 +258,7 @@ int main(void) {
 #endif
 
 
-    if (check_activity() || check_layout_viewport()) return 1;
+    if (check_activity() || check_theme_selection() || check_layout_viewport()) return 1;
     puts("PASS settings-status-test");
     return 0;
 }
