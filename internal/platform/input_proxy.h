@@ -14,6 +14,19 @@ typedef void (*jw_input_brightness_delta_cb)(void *userdata, int delta_percent);
 typedef void (*jw_input_volume_delta_cb)(void *userdata, int delta_percent);
 typedef bool (*jw_input_menu_tap_cb)(void *userdata);
 
+/* Per-session policy, retained by flush/screen-off. No gesture state lives here. */
+typedef struct {
+    bool tap_only;
+    bool escape_enabled;
+    uint32_t escape_ms;
+} jw_input_menu_config;
+
+/* A threshold is reported only after all queued input has drained. false ends
+   that hold on release, cancellation, flush or shutdown. hold_id identifies
+   this press within the proxy's lifetime; the daemon also binds it to a session. */
+typedef void (*jw_input_menu_escape_cb)(void *userdata, uint64_t hold_id,
+                                       bool threshold);
+
 /* A Menu chord whose second button is one the shortcut model can name.
  *
  * The proxy does not know which action a button means -- that mapping is the
@@ -24,9 +37,9 @@ typedef bool (*jw_input_menu_tap_cb)(void *userdata);
  * Return true when the chord was consumed: the proxy then swallows the press,
  * every repeat, and the matching release, and suppresses the Menu tap, so
  * neither half of the chord reaches the running game. Return false to decline
- * -- the feature is off, or the foreground cannot perform the action -- and
- * the proxy flushes the deferred Menu-down and forwards the button as an
- * ordinary Menu chord for RetroArch to interpret.
+ * -- the feature is off, or the foreground cannot perform the action. In
+ * tap-only mode the proxy forwards only the other button and suppresses the
+ * eventual tap; otherwise it forwards the ordinary Menu chord to RetroArch.
  *
  * These are Leaf-level chords rather than RetroArch hotkeys because RetroArch
  * only withholds its modifier from the core after input_hotkey_block_delay
@@ -55,6 +68,8 @@ typedef struct {
     jw_input_brightness_delta_cb brightness_delta;
     jw_input_volume_delta_cb volume_delta;
     jw_input_menu_tap_cb menu_tap;
+    jw_input_menu_config menu_config;
+    jw_input_menu_escape_cb menu_escape;
     jw_input_shortcut_dispatch_cb shortcut;
     jw_input_rumble_cb rumble;
     void *userdata;
@@ -86,6 +101,11 @@ int  jw_input_proxy_retroarch_joypad_index(const jw_input_proxy *proxy);
 int  jw_input_proxy_poll_fd(const jw_input_proxy *proxy);
 void jw_input_proxy_tick(jw_input_proxy *proxy);
 void jw_input_proxy_shutdown(jw_input_proxy *proxy);
+/* Resets in-flight input before installing new session policy. */
+void jw_input_proxy_configure_menu(jw_input_proxy *proxy,
+                                  jw_input_menu_config config);
+/* Power and daemon transitions cancel a hold without changing session policy. */
+void jw_input_proxy_cancel_menu(jw_input_proxy *proxy);
 
 /* Milliseconds since the last physical button input (for auto-sleep idle
  * tracking). Counts EV_KEY only — stick drift (EV_ABS) doesn't reset it. */

@@ -41,6 +41,15 @@ void jw_input_proxy_tick(jw_input_proxy *proxy) {
     (void)proxy;
 }
 
+void jw_input_proxy_configure_menu(jw_input_proxy *proxy,
+                                  jw_input_menu_config config) {
+    if (proxy) proxy->menu_config = config;
+}
+
+void jw_input_proxy_cancel_menu(jw_input_proxy *proxy) {
+    (void)proxy;
+}
+
 uint64_t jw_input_proxy_idle_ms(const jw_input_proxy *proxy) {
     (void)proxy;
     return 0;   /* mock: never idle (auto-sleep is a no-op off-device) */

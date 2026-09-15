@@ -13,6 +13,7 @@
 #include "internal/launcher/bios.h"
 #include "internal/launcher/core_selection.h"
 #include "internal/launcher/standalone_policy.h"
+#include "internal/launcher/menu_escape.h"
 #include "internal/launcher/pico8.h"
 #include "cmd/jawakad/osd_client.h"
 #include "internal/platform/external_input_monitor.h"
@@ -269,6 +270,9 @@ typedef struct {
     jw_daemon_ipc_connection ipc_connections[JW_DAEMON_IPC_CONNECTION_MAX];
     jw_platform_context platform;
     jw_input_proxy input_proxy;
+    jw_input_menu_config session_menu_config;
+    uint64_t menu_session_generation;
+    jw_menu_escape menu_escape;
     /* Which button performs which Leaf action, resolved once and held in
        memory. The input path reads this and only this -- see
        jw__on_shortcut_chord() for why it must never reach SQLite.
@@ -653,6 +657,8 @@ static void jw__request_power_transition(jw_daemon_state *state,
         return;
     }
     state->power_transition_requested = true;
+    jw_input_proxy_cancel_menu(&state->input_proxy);
+    jw_menu_escape_cancel(&state->menu_escape);
     state->power_transition_action = action;
     state->shutdown_requested = true;
 }
@@ -4713,6 +4719,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
 static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                                          const jw_launch_target *target);
 static int jw__spawn_pending_game(jw_daemon_state *state);
+static void jw__set_session_menu(jw_daemon_state *state, bool provider_bound);
 static int jw__spawn_authorized_pending_game(jw_daemon_state *state);
 static int jw__usable_subscription(jw_daemon_state *state,
                                    const char *service_id);
@@ -5382,6 +5389,7 @@ static void jw__standalone_session_finish(jw_daemon_state *state, pid_t pid, int
         return;
     }
     state->standalone_quit_request_ms = 0;
+    jw__set_session_menu(state, false);
 
     jw_retroarch_session *session = &state->retroarch_session;
     if (!session->active) {
@@ -7999,6 +8007,32 @@ static void jw__input_brightness_delta(void *userdata, int delta_percent) {
     }
 }
 
+static bool jw__standalone_quit(jw_daemon_state *state, bool escalate) {
+    pid_t pid = state->retroarch_session.pid;
+    long long now = jw__monotonic_ms();
+    if (state->standalone_quit_request_ms == 0) {
+        jw_log_info("menu tap: quitting standalone emulator pid=%d", (int)pid);
+        int rc = state->child_pid == pid
+                     ? jw__signal_tracked_game_group(state, SIGTERM)
+                     : kill(pid, SIGTERM);
+        if (rc != 0 && errno != ESRCH) {
+            jw_log_warn("standalone quit: SIGTERM failed pid=%d: %s",
+                        (int)pid, strerror(errno));
+        }
+        state->standalone_quit_request_ms = now;
+    } else if (escalate && now - state->standalone_quit_request_ms >= 2000) {
+        jw_log_warn("standalone emulator ignored quit; forcing pid=%d", (int)pid);
+        int rc = state->child_pid == pid
+                     ? jw__signal_tracked_game_group(state, SIGKILL)
+                     : kill(pid, SIGKILL);
+        if (rc != 0 && errno != ESRCH) {
+            jw_log_warn("standalone quit: SIGKILL failed pid=%d: %s",
+                        (int)pid, strerror(errno));
+        }
+    }
+    return true;
+}
+
 static bool jw__input_menu_tap(void *userdata) {
     jw_daemon_state *state = (jw_daemon_state *)userdata;
 
@@ -8042,6 +8076,12 @@ static bool jw__input_menu_tap(void *userdata) {
        Standalone emulators without a menu hook keep Menu as the exit key. */
     if (jw__has_standalone_session(state)) {
         pid_t pid = state->retroarch_session.pid;
+        switch (jw_standalone_policy_menu(&state->retroarch_session.standalone_policy,
+                                          state->retroarch_session.supports_menu, false)) {
+            case JW_STANDALONE_MENU_FORWARD: return false;
+            case JW_STANDALONE_MENU_QUIT: return jw__standalone_quit(state, false);
+            default: break;
+        }
         if (jw__standalone_session_is_ppsspp(state)) {
             state->standalone_quit_request_ms = 0;
             jw_log_info("menu tap: opening PPSSPP pause menu pid=%d", (int)pid);
@@ -8077,52 +8117,7 @@ static bool jw__input_menu_tap(void *userdata) {
             return false;
         }
 
-        /* A content pak's path core has no Leaf-owned menu, so Menu ends it,
-           and ending it loses anything the player has not saved. Ask first,
-           with the prompt native PICO-8 uses: the first tap shows "Return to
-           Leaf?" and only a second tap inside its window quits. The prompt is
-           armed only while it is on screen. If the OSD cannot show it, quit
-           as before rather than turn Menu into a dead button. */
-        if (state->retroarch_session.standalone_policy.provider_bound) {
-            jw_osd_client client = jw__osd_client(state);
-            jw_osd_pico8_menu confirm =
-                jw_osd_client_pico8_menu(&client, &state->pico8_exit_confirm_until_ms);
-            if (confirm == JW_OSD_PICO8_MENU_ARMED) {
-                jw_log_info("menu tap: asking before quitting content-pak core id=%s pid=%d",
-                            state->retroarch_session.core_id, (int)pid);
-                return true;
-            }
-            if (confirm == JW_OSD_PICO8_MENU_CONFIRMED) {
-                jw_log_info("menu tap: quit confirmed for content-pak core id=%s pid=%d",
-                            state->retroarch_session.core_id, (int)pid);
-            } else {
-                jw_log_warn("menu tap: exit prompt unavailable; quitting content-pak core id=%s pid=%d",
-                            state->retroarch_session.core_id, (int)pid);
-            }
-        }
-
-        long long now = jw__monotonic_ms();
-        if (state->standalone_quit_request_ms == 0) {
-            jw_log_info("menu tap: quitting standalone emulator pid=%d", (int)pid);
-            int rc = state->child_pid == pid
-                         ? jw__signal_tracked_game_group(state, SIGTERM)
-                         : kill(pid, SIGTERM);
-            if (rc != 0 && errno != ESRCH) {
-                jw_log_warn("standalone quit: SIGTERM failed pid=%d: %s",
-                            (int)pid, strerror(errno));
-            }
-            state->standalone_quit_request_ms = now;
-        } else if (now - state->standalone_quit_request_ms >= 2000) {
-            jw_log_warn("standalone emulator ignored quit; forcing pid=%d", (int)pid);
-            int rc = state->child_pid == pid
-                         ? jw__signal_tracked_game_group(state, SIGKILL)
-                         : kill(pid, SIGKILL);
-            if (rc != 0 && errno != ESRCH) {
-                jw_log_warn("standalone quit: SIGKILL failed pid=%d: %s",
-                            (int)pid, strerror(errno));
-            }
-        }
-        return true;
+        return jw__standalone_quit(state, true);
     }
 
     if (!jw__has_retroarch_session(state)) {
@@ -8172,6 +8167,86 @@ static bool jw__input_menu_tap(void *userdata) {
     }
 
     return true;
+}
+
+/* External Guide is ungrabbed. "Handled" prevents virtual synthesis only;
+   the child still receives the raw external press and release. */
+static bool jw__external_menu_tap(void *userdata) {
+    jw_daemon_state *state = userdata;
+    if (jw__game_coordination_start_now(state, "start-now-menu")) return true;
+    if (jw__has_standalone_session(state) &&
+        strcmp(state->retroarch_session.core_id, JW_PICO8_CORE) != 0) {
+        switch (jw_standalone_policy_menu(&state->retroarch_session.standalone_policy,
+                                          state->retroarch_session.supports_menu, true)) {
+            case JW_STANDALONE_MENU_EXTERNAL_HANDLED: return true;
+            case JW_STANDALONE_MENU_QUIT: return jw__standalone_quit(state, true);
+            default: break;
+        }
+    }
+    return jw__input_menu_tap(userdata);
+}
+
+static bool jw__content_menu_running(jw_daemon_state *state) {
+    if (!jw__has_standalone_session(state) || state->shutdown_requested ||
+        state->child_pid != state->retroarch_session.pid ||
+        !state->session_menu_config.escape_enabled) return false;
+    /* Do not signal surviving group members after the originating child exits,
+       even when it exited between the loop's reap check and this input tick. */
+    siginfo_t info = {0};
+    return waitid(P_PID, state->child_pid, &info, WEXITED | WNOHANG | WNOWAIT) == 0 &&
+           info.si_pid == 0;
+}
+
+static void jw__input_menu_escape(void *userdata, uint64_t hold, bool threshold) {
+    jw_daemon_state *state = userdata;
+    if (!threshold) {
+        jw_menu_escape_end(&state->menu_escape, hold);
+        return;
+    }
+    jw_menu_escape_cancel(&state->menu_escape);
+    if (!jw__content_menu_running(state)) return;
+    if (jw__signal_tracked_game_group(state, SIGTERM) == 0) {
+        jw_menu_escape_sent(&state->menu_escape, state->menu_session_generation,
+                             hold, (uint64_t)jw__monotonic_ms());
+        jw_log_info("Menu escape: SIGTERM session=%llu hold=%llu pid=%d time_ms=%llu",
+                    (unsigned long long)state->menu_session_generation,
+                    (unsigned long long)hold, (int)state->child_pid,
+                    (unsigned long long)state->menu_escape.term_ms);
+    } else if (errno != ESRCH) {
+        jw_log_warn("Menu escape: SIGTERM failed: %s", strerror(errno));
+    }
+}
+
+static void jw__tick_menu_escape(jw_daemon_state *state) {
+    if (!state->menu_escape.pending) return;
+    uint64_t now = (uint64_t)jw__monotonic_ms();
+    if (jw_menu_escape_kill(&state->menu_escape, state->menu_session_generation,
+                            jw__content_menu_running(state),
+                            now)) {
+        jw_log_warn("Menu escape: SIGKILL session=%llu pid=%d time_ms=%llu",
+                    (unsigned long long)state->menu_session_generation,
+                    (int)state->child_pid, (unsigned long long)now);
+        if (jw__signal_tracked_game_group(state, SIGKILL) != 0 && errno != ESRCH)
+            jw_log_warn("Menu escape: SIGKILL failed: %s", strerror(errno));
+    }
+}
+
+/* MLP1 spike: observed Menu+Volume intervals up to 1887 ms. Three seconds
+   leaves over one second of margin; see the content-pak path-core plan. */
+#define JW_CONTENT_MENU_ESCAPE_MS 3000u
+
+static void jw__set_session_menu(jw_daemon_state *state, bool provider_bound) {
+    if (!state) return;
+    bool reset = provider_bound || state->session_menu_config.tap_only;
+    jw_menu_escape_cancel(&state->menu_escape);
+    state->menu_session_generation++;
+    state->session_menu_config = (jw_input_menu_config){
+        .tap_only = provider_bound,
+        .escape_enabled = provider_bound,
+        .escape_ms = provider_bound ? JW_CONTENT_MENU_ESCAPE_MS : 0,
+    };
+    if (reset)
+        jw_input_proxy_configure_menu(&state->input_proxy, state->session_menu_config);
 }
 
 /* Menu + Select chord (input proxy): open the reversible in-game switcher
@@ -8783,6 +8858,9 @@ static void jw__start_input_proxy(jw_daemon_state *state) {
     if (jw_input_proxy_init(&state->input_proxy, jw__input_brightness_delta,
                             jw__input_volume_delta, jw__input_menu_tap,
                             state) == 0) {
+        state->input_proxy.menu_escape = jw__input_menu_escape;
+        if (state->session_menu_config.tap_only)
+            jw_input_proxy_configure_menu(&state->input_proxy, state->session_menu_config);
         state->input_proxy.shortcut = jw__on_shortcut_chord;
         state->input_proxy.rumble = jw__rumble_ff;
         jw__publish_retroarch_input_env(state);
@@ -8986,6 +9064,7 @@ static int jw__input_isolation_parent_finish(jw_daemon_state *state,
 }
 
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
+    jw__set_session_menu(state, false);
     const char *name = jw__child_name(kind);
     if (!state || !name || kind == JW_CHILD_RETROARCH ||
         kind == JW_CHILD_EMULATOR || jw__child_kind_is_app(kind)) {
@@ -9577,6 +9656,8 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         return -1;
     }
 
+    jw__set_session_menu(state, target->standalone_policy.provider_bound &&
+                                !target->native_pico8);
     jw__heal_stdio_before_game();
     pid_t pid = fork();
     if (pid < 0) {
@@ -9599,6 +9680,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
         state->pending_launch_override_unverified = false;
+        jw__set_session_menu(state, false);
         return -1;
     }
 
@@ -9686,6 +9768,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
             state->pending_launch = false;
             state->pending_launch_resume_switcher = false;
             state->pending_launch_override_unverified = false;
+            jw__set_session_menu(state, false);
             return -1;
         }
     }
@@ -9699,6 +9782,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         state->pending_launch = false;
         state->pending_launch_resume_switcher = false;
         state->pending_launch_override_unverified = false;
+        jw__set_session_menu(state, false);
         return -1;
     }
     state->child_pid = pid;
@@ -10672,6 +10756,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
     {
         jw_power_edge edge;
         while (jw_input_proxy_take_power_edge(&state->input_proxy, &edge)) {
+            jw_input_proxy_cancel_menu(&state->input_proxy);
             if (edge.down) {
                 state->power_held = true;
                 state->power_down_ms = (long long)edge.ms;
@@ -14967,6 +15052,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
         state->pico8_exit_confirm_until_ms = 0;
     }
     state->pico8_quit_request_ms = 0;
+    jw__set_session_menu(state, false);
     state->child_pid = -1;
     state->child_pgid = -1;
     state->child_kind = JW_CHILD_NONE;
@@ -15669,7 +15755,7 @@ int main(int argc, char *argv[]) {
     jw__load_shortcuts(&state);
     jw__start_input_proxy(&state);
     if (jw_external_input_monitor_init(&state.external_input,
-                                       jw__input_menu_tap, &state) != 0) {
+                                       jw__external_menu_tap, &state) != 0) {
         jw_log_warn("external input monitor: init failed; wireless controllers will be UI-only");
     }
 
@@ -15773,6 +15859,7 @@ int main(int argc, char *argv[]) {
         jw__handle_osd_exit(&state);
         jw__handle_ledd_exit(&state);
         jw_input_proxy_tick(&state.input_proxy);
+        jw__tick_menu_escape(&state);
         jw_external_input_monitor_tick(&state.external_input,
                                        &state.input_proxy,
                                        (uint64_t)jw__monotonic_ms());

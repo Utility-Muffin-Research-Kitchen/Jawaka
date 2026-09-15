@@ -1097,6 +1097,18 @@ standalone-policy-test: | $(BUILD)/bin
 		internal/launcher/standalone_policy.c
 	$(BUILD)/bin/standalone-policy-test
 
+.PHONY: menu-escape-test
+menu-escape-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/menu-escape-test \
+		internal/launcher/menu_escape_test.c internal/launcher/standalone_policy.c
+	$(BUILD)/bin/menu-escape-test
+
+# Qualification tool only; intentionally absent from all/package targets.
+.PHONY: content-menu-fixture
+content-menu-fixture: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) $(SDL_CFLAGS) -o $(BUILD)/bin/content-menu-fixture \
+		scripts/content-menu-fixture.c $(SDL_LDFLAGS)
+
 core-selection-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/core-selection-test \
 		internal/launcher/core_selection_test.c \
