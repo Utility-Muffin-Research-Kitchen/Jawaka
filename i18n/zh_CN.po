@@ -1747,261 +1747,197 @@ msgid "%dh %dm"
 msgstr "%d小时%d分钟"
 
 # SD card read-only warning and repair (storage health, SD Cards settings,
-# launch confirmation, scraper pause, repair result). MACHINE SEED, marked
-# fuzzy per the i18n plan; clear the fuzzy flags after AlexL's review pass.
-#, fuzzy
+# launch confirmation, scraper pause, repair result). Reviewed by AlexL; fuzzy
+# cleared.
 msgid " Some damaged files were changed."
 msgstr " 部分受损文件已被更改。"
 
-#, fuzzy
 msgid "Card:"
 msgstr "卡："
 
-#, fuzzy
 msgid "Check SD card"
 msgstr "检查 SD 卡"
 
-#, fuzzy
 msgid "Close the game or app first, then try again."
 msgstr "请先退出游戏或应用，然后再试一次。"
 
-#, fuzzy
 msgid "Connect your device to power and try again."
 msgstr "请将设备连接电源后重试。"
 
-#, fuzzy
 msgid "Connect your device to power to repair this card."
 msgstr "要修复此卡，请先将设备连接电源。"
 
-#, fuzzy
 msgid "Launch canceled"
 msgstr "已取消启动"
 
-#, fuzzy
 msgid "Leaf couldn't confirm your SD card can be written."
 msgstr "Leaf 无法确认 SD 卡是否可写。"
 
-#, fuzzy
 msgid "Leaf couldn't identify this card safely. Check the card on a computer instead."
 msgstr "Leaf 无法安全识别此卡，请改为在电脑上检查此卡。"
 
-#, fuzzy
 msgid "Leaf couldn't identify this card."
 msgstr "Leaf 无法识别此卡。"
 
-#, fuzzy
 msgid "Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer."
 msgstr "Leaf 无法安全检查此卡，因此未做任何更改。请在电脑上检查此卡。"
 
-#, fuzzy
 msgid "Library scan failed"
 msgstr "游戏库扫描失败"
 
-#, fuzzy
 msgid "Library scan requested"
 msgstr "已请求扫描游戏库"
 
-#, fuzzy
 msgid "Library updating..."
 msgstr "正在更新游戏库…"
 
-#, fuzzy
 msgid "Needs repair"
 msgstr "需要修复"
 
-#, fuzzy
 msgid "Play anyway"
 msgstr "仍要启动"
 
-#, fuzzy
 msgid "Read-only"
 msgstr "只读"
 
-#, fuzzy
 msgid "Repair SD card"
 msgstr "修复 SD 卡"
 
-#, fuzzy
 msgid "Repair isn't installed on this device."
 msgstr "此设备未安装修复程序。"
 
-#, fuzzy
 msgid "Repair pending"
 msgstr "待修复"
 
-#, fuzzy
 msgid "Restart and check"
 msgstr "重启并检查"
 
-#, fuzzy
 msgid "Restart and repair"
 msgstr "重启并修复"
 
-#, fuzzy
 msgid "Restarting to check your SD card"
 msgstr "正在重启以检查 SD 卡"
 
-#, fuzzy
 msgid "Restarting to repair your SD card"
 msgstr "正在重启以修复 SD 卡"
 
-#, fuzzy
 msgid "SD card is read-only"
 msgstr "SD 卡为只读"
 
-#, fuzzy
 msgid "SD card is read-only: %s"
 msgstr "SD 卡为只读：%s"
 
-#, fuzzy
 msgid "SD card status unavailable"
 msgstr "无法获取 SD 卡状态"
 
-#, fuzzy
 msgid "SD read-only"
 msgstr "SD 只读"
 
-#, fuzzy
 msgid "Scrape missing artwork"
 msgstr "刮削缺失封面"
 
-#, fuzzy
 msgid "Scraping %s · %d/%d"
 msgstr "正在刮削 %s · %d/%d"
 
-#, fuzzy
 msgid "Scraping paused: %.200s"
 msgstr "刮削已暂停：%.200s"
 
-#, fuzzy
 msgid "Scraping: %d/%d"
 msgstr "正在刮削：%d/%d"
 
-#, fuzzy
 msgid "The card passed the check but couldn't be made writable. Restart your device, then try Check SD card."
 msgstr "此卡通过了检查，但无法恢复写入。请重启设备，然后再试“检查 SD 卡”。"
 
-#, fuzzy
 msgid "The repair couldn't be started. Check the card on a computer instead."
 msgstr "无法启动修复。请改为在电脑上检查此卡。"
 
-#, fuzzy
 msgid "The repair did not finish. The log may include changes that were attempted."
 msgstr "修复未完成。日志中可能包含已尝试的更改。"
 
-#, fuzzy
 msgid "The repair log on your device has the details."
 msgstr "设备上的修复日志中有详细信息。"
 
-#, fuzzy
 msgid "The repair log on your device lists the files that were changed. The list may not be complete."
 msgstr "设备上的修复日志列出了已更改的文件。列表可能不完整。"
 
-#, fuzzy
 msgid "This card is working normally."
 msgstr "此卡工作正常。"
 
-#, fuzzy
 msgid "This card isn't mounted."
 msgstr "此卡未挂载。"
 
-#, fuzzy
 msgid "This card's file system can't be repaired on this device."
 msgstr "此卡的文件系统无法在此设备上修复。"
 
-#, fuzzy
 msgid "To repair it, turn off your device and check the card on a computer."
 msgstr "要修复此卡，请关闭设备并在电脑上检查此卡。"
 
-#, fuzzy
 msgid "Turn off your device and check the card on a computer."
 msgstr "请关闭设备并在电脑上检查此卡。"
 
-#, fuzzy
 msgid "Your SD card is read-only"
 msgstr "SD 卡为只读"
 
-#, fuzzy
 msgid "Your SD card is read-only after a file system error. You can't save new files or changes to this card. This can happen after an unexpected shutdown."
 msgstr "SD 卡在出现文件系统错误后变为只读。无法在此卡上保存新文件或更改。意外关机后可能出现这种情况。"
 
-#, fuzzy
 msgid "Your SD card is read-only. Nothing new can be saved to it."
 msgstr "SD 卡为只读，无法保存任何新内容。"
 
-#, fuzzy
 msgid "Your SD card is read-only. The cause couldn't be determined. You can't save new files or changes to this card."
 msgstr "SD 卡为只读，原因无法确定。无法在此卡上保存新文件或更改。"
 
-#, fuzzy
 msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
 msgstr "SD 卡正在等待修复，无法保存任何新内容。"
 
-#, fuzzy
 msgid "Your SD card is write-protected"
 msgstr "SD 卡已启用写保护"
 
-#, fuzzy
 msgid "Your SD card isn't available."
 msgstr "SD 卡不可用。"
 
-#, fuzzy
 msgid "Your SD card needs repair"
 msgstr "SD 卡需要修复"
 
-#, fuzzy
 msgid "Your card is still read-only. Check the card on a computer, then choose Check SD card in Settings."
 msgstr "此卡仍为只读。请在电脑上检查此卡，然后在设置中选择“检查 SD 卡”。"
 
-#, fuzzy
 msgid "Your card passed the file system check."
 msgstr "此卡通过了文件系统检查。"
 
-#, fuzzy
 msgid "Your device can't write to this card, so it can't be repaired here."
 msgstr "设备无法写入此卡，因此无法在此修复。"
 
-#, fuzzy
 msgid "Your device can't write to this card. If you use an adapter with a lock switch, check that it isn't set to lock."
 msgstr "设备无法写入此卡。如果使用了带锁定开关的卡套，请检查开关是否处于锁定状态。"
 
-#, fuzzy
 msgid "Your device will restart to check and repair this card. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first if you need to recover them. Keep your device connected to power until the check finishes."
 msgstr "设备将重启以检查并修复此卡。受损文件可能被截断、重命名，或以新名称恢复。如需找回重要文件，请先在电脑上备份。检查完成前，请保持设备连接电源。"
 
-#, fuzzy
 msgid "Your device will restart to check this card. If the check passes, the card can be written to again. Keep your device connected to power until the check finishes."
 msgstr "设备将重启以检查此卡。检查通过后，此卡即可恢复写入。检查完成前，请保持设备连接电源。"
 
-#, fuzzy
 msgid "Your device's internal storage can't record the repair. Check the card on a computer instead."
 msgstr "设备的内部存储无法记录修复过程。请改为在电脑上检查此卡。"
 
-#, fuzzy
 msgid "Your other SD card is still read-only, so your library can't update yet."
 msgstr "另一张 SD 卡仍为只读，游戏库暂时无法更新。"
 
-#, fuzzy
 msgid "Your saves and save states may not be kept while this SD card is read-only."
 msgstr "此 SD 卡为只读期间，存档和即时存档可能无法保留。"
 
-#, fuzzy
 msgid "Your saves and save states may not be kept while this SD card is waiting for repair."
 msgstr "此 SD 卡等待修复期间，存档和即时存档可能无法保留。"
 
-#, fuzzy
 msgid "daily quota exceeded"
 msgstr "已达每日配额"
 
-#, fuzzy
 msgid "exFAT cards can't be repaired on this device yet."
 msgstr "此设备暂不支持修复 exFAT 卡。"
 
-#, fuzzy
 msgid "launcher SD card"
 msgstr "主 SD 卡"
 
-#, fuzzy
 msgid "second SD card"
 msgstr "副 SD 卡"
 
