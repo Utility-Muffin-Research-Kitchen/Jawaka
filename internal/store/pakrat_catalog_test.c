@@ -188,6 +188,175 @@ static const char *catalog_content_shared_platform =
     "}]"
     "}";
 
+/* ---- The themes[] lane --------------------------------------------------- */
+
+#define THEME_ARTIFACT(version, sha) \
+    "\"artifact\":{" \
+      "\"url\":\"https://example.invalid/neon-nights-" version ".zip\"," \
+      "\"name\":\"neon-nights-" version ".zip\"," \
+      "\"archive\":\"zip\"," \
+      "\"size\":100," \
+      "\"installed_size\":200," \
+      "\"sha256\":\"" sha "\"" \
+    "}"
+
+#define THEME_ENTRY(extra) \
+    "{" \
+      "\"id\":\"neon-nights\"," \
+      "\"name\":\"Neon Nights\"," \
+      "\"author\":\"Example\"," \
+      "\"owner_github_id\":1234567," \
+      "\"summary\":\"Pink and cyan\"," \
+      "\"description\":\"Pink and cyan on black.\"," \
+      "\"license\":\"CC-BY-4.0\"," \
+      "\"preview\":{\"url\":\"https://example.invalid/neon.preview.png\"," \
+        "\"sha256\":\"" SHA_FLOOR "\",\"size\":123}," \
+      "\"version\":\"1.2.0\"," \
+      "\"min_leaf_version\":\"0.12.0\"," \
+      "\"install_name\":\"neon-nights\"," \
+      THEME_ARTIFACT("1.2.0", SHA_NEW) "," \
+      "\"versions\":[" \
+        "{\"version\":\"1.2.0\",\"min_leaf_version\":\"0.12.0\"," \
+          THEME_ARTIFACT("1.2.0", SHA_NEW) "}," \
+        "{\"version\":\"1.1.0\",\"min_leaf_version\":\"0.12.0\"," \
+          THEME_ARTIFACT("1.1.0", SHA_FLOOR) "}" \
+      "]" \
+      extra \
+    "}"
+
+static const char *catalog_theme =
+    "{\"schema\":1,\"product\":\"pak-rat\",\"apps\":[],"
+    "\"themes\":[" THEME_ENTRY("") "]}";
+
+static const char *catalog_theme_withdrawn =
+    "{\"schema\":1,\"product\":\"pak-rat\",\"apps\":[],"
+    "\"themes\":[" THEME_ENTRY(",\"withdrawn\":true") "]}";
+
+static int parse_theme(const char *json, const char *platform, const char *leaf,
+                       jw_pakrat_catalog_selection *out, int *count) {
+    return jw_pakrat_catalog_parse_and_select(json, platform, leaf, 0, out, 4,
+                                              count);
+}
+
+/* A theme document with one substitution applied, for the refusal cases. */
+static int parse_theme_edit(const char *from, const char *to) {
+    char edited[8192];
+    const char *at = strstr(catalog_theme, from);
+    assert(at);
+    int n = snprintf(edited, sizeof(edited), "%.*s%s%s", (int)(at - catalog_theme),
+                     catalog_theme, to, at + strlen(from));
+    assert(n > 0 && n < (int)sizeof(edited));
+    jw_pakrat_catalog_selection out[4];
+    int count = 0;
+    return parse_theme(edited, "mlp1", "0.12.0", out, &count);
+}
+
+static void test_themes_lane(void) {
+    jw_pakrat_catalog_selection out[4];
+    int count = 0;
+
+    /* One entry, every platform: no packages[], no platform filter. */
+    for (int i = 0; i < 2; i++) {
+        const char *platform = i == 0 ? "mlp1" : "tg5040";
+        assert(parse_theme(catalog_theme, platform, "0.12.0", out, &count) == 0);
+        assert(count == 1);
+        const jw_pakrat_catalog_package *pkg = &out[0].package;
+        assert(out[0].lane == JW_PAKRAT_LANE_THEMES);
+        assert(pkg->kind == JW_PAKRAT_KIND_THEME);
+        assert(strcmp(pkg->version, "1.2.0") == 0);
+        assert(strcmp(pkg->install_name, "neon-nights") == 0);
+        assert(strcmp(pkg->install_path, "Themes/neon-nights") == 0);
+        assert(jw_pakrat_install_path_kind(pkg->install_path) == JW_PAKRAT_KIND_THEME);
+        assert(strcmp(pkg->platform, JW_PAKRAT_THEME_PLATFORM) == 0);
+        assert(strcmp(pkg->runtime_manifest_path, "theme.json") == 0);
+        assert(strcmp(pkg->author, "Example") == 0);
+        assert(strcmp(pkg->license, "CC-BY-4.0") == 0);
+        assert(strcmp(pkg->description, "Pink and cyan on black.") == 0);
+        assert(strcmp(pkg->preview_url, "https://example.invalid/neon.preview.png") == 0);
+        assert(strcmp(pkg->preview_sha256, SHA_FLOOR) == 0);
+        assert(pkg->preview_size == 123);
+        assert(pkg->owner_github_id == 1234567);
+        assert(!pkg->withdrawn);
+    }
+
+    /* Every theme version is gated; below the gate there is nothing to offer. */
+    assert(parse_theme(catalog_theme, "mlp1", "0.11.0", out, &count) == 0);
+    assert(count == 0);
+
+    /* Withdrawn is carried, not filtered: an installed copy must still show. */
+    assert(parse_theme(catalog_theme_withdrawn, "mlp1", "0.12.0", out, &count) == 0);
+    assert(count == 1 && out[0].package.withdrawn);
+
+    jw_pakrat_catalog_package exact;
+    assert(jw_pakrat_catalog_find_exact(catalog_theme, "mlp1", "neon-nights",
+                                        "1.1.0", &exact) == 0);
+    assert(exact.kind == JW_PAKRAT_KIND_THEME);
+    assert(strcmp(exact.artifact_sha256, SHA_FLOOR) == 0);
+    assert(jw_pakrat_catalog_find_exact(catalog_theme, "mlp1", "neon-nights",
+                                        "1.3.0", &exact) == 1);
+
+    /* Refusals: the catalog fails closed like every other lane. */
+    assert(parse_theme_edit("\"install_name\":\"neon-nights\"",
+                            "\"install_name\":\"neon-nights.pak\"") == -1);
+    assert(parse_theme_edit("\"id\":\"neon-nights\"", "\"id\":\"Neon-Nights\"") == -1);
+    assert(parse_theme_edit("\"author\":\"Example\",", "") == -1);
+    assert(parse_theme_edit("\"license\":\"CC-BY-4.0\",", "") == -1);
+    assert(parse_theme_edit("\"size\":123}", "\"size\":0}") == -1);
+    assert(parse_theme_edit("\"owner_github_id\":1234567", "\"owner_github_id\":\"x\"") == -1);
+    assert(parse_theme_edit("\"min_leaf_version\":\"0.12.0\",\"install_name\"",
+                            "\"install_name\"") == -1);
+    {
+        const char *not_array =
+            "{\"schema\":1,\"product\":\"pak-rat\",\"apps\":[],\"themes\":{}}";
+        assert(parse_theme(not_array, "mlp1", "0.12.0", out, &count) == -1);
+        const char *absent = "{\"schema\":1,\"product\":\"pak-rat\",\"apps\":[]}";
+        assert(parse_theme(absent, "mlp1", "0.12.0", out, &count) == 0 && count == 0);
+    }
+
+    /* Ids are unique across apps[], content[] and themes[]. */
+    {
+        char doc[16384];
+        snprintf(doc, sizeof(doc),
+                 "{\"schema\":1,\"product\":\"pak-rat\",\"apps\":[],"
+                 "\"themes\":[" THEME_ENTRY("") "," THEME_ENTRY("") "]}");
+        assert(parse_theme(doc, "mlp1", "0.12.0", out, &count) == -1);
+
+        snprintf(doc, sizeof(doc),
+                 "{\"schema\":1,\"product\":\"pak-rat\","
+                 "\"apps\":[{\"id\":\"neon-nights\",\"name\":\"N\",\"summary\":\"N\","
+                 "\"version\":\"1.0.0\",\"packages\":[{\"platform\":\"mlp1\","
+                 "\"version\":\"1.0.0\",\"install_name\":\"N.pak\","
+                 CONTENT_ARTIFACT("https://example.invalid/N.zip", SHA_FLOOR) "}]}],"
+                 "\"themes\":[" THEME_ENTRY("") "]}");
+        assert(parse_theme(doc, "mlp1", "0.12.0", out, &count) == -1);
+
+        snprintf(doc, sizeof(doc),
+                 "{\"schema\":1,\"product\":\"pak-rat\",\"apps\":[],"
+                 "\"content\":[{\"id\":\"neon-nights\",\"name\":\"N\",\"summary\":\"N\","
+                 "\"version\":\"1.0.0\",\"packages\":[{\"platform\":\"mlp1\","
+                 "\"version\":\"1.0.0\",\"min_leaf_version\":\"0.11.0\","
+                 "\"install_name\":\"N.pak\","
+                 CONTENT_ARTIFACT("https://example.invalid/N.zip", SHA_FLOOR) "}]}],"
+                 "\"themes\":[" THEME_ENTRY("") "]}");
+        assert(parse_theme(doc, "mlp1", "0.12.0", out, &count) == -1);
+    }
+
+    /* An app cannot sit on a platform called Themes: its install_path would
+       resolve into the themes root. */
+    {
+        char doc[8192];
+        assert(snprintf(doc, sizeof(doc), "%s", catalog_legacy) < (int)sizeof(doc));
+        char *platform = strstr(doc, "\"platform\":\"mlp1\"");
+        assert(platform);
+        char rebuilt[8192];
+        snprintf(rebuilt, sizeof(rebuilt), "%.*s\"platform\":\"Themes\"%s",
+                 (int)(platform - doc), doc, platform + strlen("\"platform\":\"mlp1\""));
+        int apps = 0;
+        assert(jw_pakrat_catalog_parse_and_select(rebuilt, "Themes", "", 0, out, 4,
+                                                  &apps) == -1);
+    }
+}
+
 static int parse(const char *json, const char *leaf, int dev,
                  jw_pakrat_catalog_selection *selection) {
     int count = 0;
@@ -356,6 +525,8 @@ int main(void) {
         assert(count == 1);
         assert(one[0].lane == JW_PAKRAT_LANE_APPS);
     }
+
+    test_themes_lane();
 
     puts("PASS pakrat-catalog-test");
     return 0;
