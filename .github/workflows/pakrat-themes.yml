@@ -1,0 +1,32 @@
+name: Pak Rat themes
+
+# Store themes are held to THEME-1 on the device before anything is promoted,
+# and that check has to agree with the store's reference validator reason for
+# reason. The contract is pinned; bump the ref with the contract.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  themes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Jawaka
+        uses: actions/checkout@v4
+        with:
+          path: Jawaka
+
+      - name: Check out the pinned theme contract
+        uses: actions/checkout@v4
+        with:
+          repository: Utility-Muffin-Research-Kitchen/leaf-contracts
+          ref: 52996b2a4d11d7c8d42e4488a6ef6cd39285c582
+          path: leaf-contracts
+
+      - name: Verify THEME-1 validation against the contract fixtures
+        run: make -C Jawaka WORKSPACE_ROOT="$GITHUB_WORKSPACE" theme-package-test
