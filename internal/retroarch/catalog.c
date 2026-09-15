@@ -1242,6 +1242,8 @@ static int jw_ra_add_core_choice(const jw_ra_core *core, bool is_default,
              core->config_folder ? core->config_folder : "");
     snprintf(choice->path, sizeof(choice->path), "%s",
              core->path ? core->path : "");
+    snprintf(choice->provider, sizeof(choice->provider), "%s",
+             core->provider ? core->provider : "");
     choice->supports_menu = core->supports_menu;
     choice->supports_savestate = core->supports_savestate;
     choice->supports_disk_control = core->supports_disk_control;

@@ -8859,8 +8859,10 @@ static void jw__action_refresh_core_choices(const char *db_path,
         size_t kept = 0;
         for (size_t i = 0; i < state->action_core_count; i++) {
             jw_ra_core_choice *choice = &state->action_core_choices[i];
+            jw_standalone_policy policy = jw_standalone_policy_resolve(
+                choice->id, choice->path, choice->provider);
             if (!jw_standalone_policy_supports_content(
-                    choice->id, choice->path, state->action_game.rom_path)) {
+                    &policy, state->action_game.rom_path)) {
                 continue;
             }
             if (kept != i) {
@@ -8953,7 +8955,13 @@ static void jw__action_refresh_bios(jw_launcher_state *state) {
     memset(&state->action_bios_resolution, 0, sizeof(state->action_bios_resolution));
 
     const char *effective = state->action_core_effective;
-    if (!effective[0] || !jw_standalone_policy_is_yabasanshiro(effective, NULL)) {
+    int effective_idx = jw__action_find_core(state, effective);
+    jw_standalone_policy policy = jw_standalone_policy_resolve(
+        effective, NULL,
+        effective_idx >= 0 ? state->action_core_choices[effective_idx].provider
+                           : NULL);
+    if (!effective[0] ||
+        policy.release != JW_STANDALONE_RELEASE_YABASANSHIRO) {
         return;
     }
     state->action_bios_supported = true;
