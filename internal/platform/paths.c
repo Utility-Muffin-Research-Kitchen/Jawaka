@@ -1767,6 +1767,10 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
     return path;
 }
 
+char *jw_retroarch_cores_dir(void) {
+    return jw__default_cores_dir();
+}
+
 char *jw_retroarch_core_path_for_system(const char *system) {
     return jw_retroarch_core_path_for_system_choice(system, NULL, NULL, 0,
                                                      NULL, 0, NULL, 0,

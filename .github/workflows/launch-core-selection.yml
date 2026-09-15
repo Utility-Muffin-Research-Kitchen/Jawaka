@@ -1,0 +1,29 @@
+name: Launch core selection
+
+# Which core a library launch uses when the player has not picked one:
+#
+#   1. core-selection-test covers the order with stub availability: a usable
+#      saved choice, then default_core, and alternate_cores (in declared
+#      order, whatever their type) only when the default is unavailable. It
+#      also covers game-over-system masking and all candidates unavailable.
+#   2. standalone-policy-test covers the release content restrictions that
+#      make a path core unavailable for some formats.
+#
+# scripts/phase3-core-choice-smoke.sh repeats the order against real per-core
+# availability on a fixture card; run it locally when changing the resolver.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make core-selection-test
+      - run: make standalone-policy-test

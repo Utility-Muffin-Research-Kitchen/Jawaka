@@ -203,6 +203,7 @@ DAEMON_SRCS := \
 	internal/launcher/active_game.c \
 	internal/launcher/bios.c \
 	internal/launcher/standalone_policy.c \
+	internal/launcher/core_selection.c \
 	internal/launcher/pico8.c \
 	$(PLATFORM_COMMON_SRC) \
 	internal/platform/device.c \
@@ -361,6 +362,8 @@ PAKRAT_SMOKE_SRCS := \
 CATALOG_SMOKE_SRCS := \
 	cmd/jawaka-catalog-smoke/main.c \
 	$(PLATFORM_ID_SRC) \
+	internal/launcher/core_selection.c \
+	internal/launcher/standalone_policy.c \
 	internal/retroarch/catalog.c \
 	$(EFFECTIVE_CATALOG_SRCS) \
 	third_party/cjson/cJSON.c
@@ -477,7 +480,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test theme-package-test user-themes-test storage-sources-test storage-health-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test log-heal-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test rumble-settings-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test launch-notice-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-theme-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test theme-package-test user-themes-test storage-sources-test storage-health-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test log-heal-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke launch-core-pin-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test rumble-settings-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test core-selection-test launch-notice-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-theme-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -853,6 +856,12 @@ life1-game-check-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game
 	UMRK_LIFE1_SMOKE_SCENARIO=game-check-malformed scripts/life1-game-check-ipc-smoke.sh
 	UMRK_LIFE1_SMOKE_SCENARIO=game-check-unsafe-card scripts/life1-game-check-ipc-smoke.sh
 
+launch-core-pin-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
+	UMRK_CORE_PIN_TARGET=path UMRK_CORE_PIN_PHASE=vanish scripts/launch-core-pin-ipc-smoke.sh
+	UMRK_CORE_PIN_TARGET=retroarch UMRK_CORE_PIN_PHASE=vanish scripts/launch-core-pin-ipc-smoke.sh
+	UMRK_CORE_PIN_TARGET=path UMRK_CORE_PIN_PHASE=cancel-fresh scripts/launch-core-pin-ipc-smoke.sh
+	UMRK_CORE_PIN_TARGET=retroarch UMRK_CORE_PIN_PHASE=cancel-fresh scripts/launch-core-pin-ipc-smoke.sh
+
 life1-game-unmanaged-ipc-smoke: $(BUILD)/bin/life1-fixture-service $(BUILD)/bin/game-writer-fixture
 	UMRK_LIFE1_SMOKE_SCENARIO=game-disabled scripts/life1-game-ipc-smoke.sh
 	UMRK_LIFE1_SMOKE_SCENARIO=game-no-pak scripts/life1-game-ipc-smoke.sh
@@ -1054,6 +1063,12 @@ standalone-policy-test: | $(BUILD)/bin
 		internal/launcher/standalone_policy_test.c \
 		internal/launcher/standalone_policy.c
 	$(BUILD)/bin/standalone-policy-test
+
+core-selection-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/core-selection-test \
+		internal/launcher/core_selection_test.c \
+		internal/launcher/core_selection.c
+	$(BUILD)/bin/core-selection-test
 
 # Pure header over the shared system-notice primitive: set/expiry/only-a-new-
 # launch-attempt-clears. Link-free, so no product sources are dragged in.
@@ -1419,6 +1434,8 @@ help:
 	@echo "  make jawaka-pakrat-smoke     Build local Pak Rat install/uninstall smoke helper"
 	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
 	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
+	@echo "  make core-selection-test  Validate saved/default/alternate launch core order"
+	@echo "  make launch-core-pin-ipc-smoke  Verify a pending launch never changes its selected core"
 	@echo "  make launch-notice-test      Validate launch-notice set/expiry policy"
 	@echo "  make launch-notice-ui-test   Validate notice rendering and expiry wakes"
 	@echo "  make art-path-test         Validate box-art lookup order and extension casing"

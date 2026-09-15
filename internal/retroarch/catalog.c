@@ -1178,6 +1178,15 @@ static bool jw_ra_path_core_executable_exists(const jw_ra_catalog *catalog,
                                            true, path, sizeof(path)) == 0;
 }
 
+bool jw_ra_catalog_core_available(const jw_ra_catalog *catalog,
+                                  const jw_ra_core *core,
+                                  const char *core_dir,
+                                  const char *platform_dir) {
+    return (jw_ra_core_is_packaged_retroarch(core) &&
+            jw_ra_core_file_exists(catalog, core, core_dir, platform_dir)) ||
+           jw_ra_path_core_executable_exists(catalog, platform_dir, core);
+}
+
 static const jw_ra_system *jw_ra_catalog_find_system_any(const jw_ra_catalog *catalog,
                                                          const char *system_id) {
     const jw_ra_system *system = jw_ra_catalog_find_system(catalog, system_id);
@@ -1273,18 +1282,15 @@ int jw_ra_catalog_list_system_cores(const jw_ra_catalog *catalog,
     }
 
     const jw_ra_core *core = jw_ra_catalog_find_core(catalog, system->default_core);
-    if ((jw_ra_core_is_packaged_retroarch(core) &&
-         jw_ra_core_file_exists(catalog, core, core_dir, platform_dir)) ||
-        jw_ra_path_core_executable_exists(catalog, platform_dir, core)) {
+    if (jw_ra_catalog_core_available(catalog, core, core_dir, platform_dir)) {
         jw_ra_add_core_choice(core, true, out, max_count, out_count);
     }
 
     for (size_t i = 0; i < system->alternate_cores.count; i++) {
         const jw_ra_core *alternate =
             jw_ra_catalog_find_core(catalog, system->alternate_cores.items[i]);
-        if (!((jw_ra_core_is_packaged_retroarch(alternate) &&
-               jw_ra_core_file_exists(catalog, alternate, core_dir, platform_dir)) ||
-              jw_ra_path_core_executable_exists(catalog, platform_dir, alternate))) {
+        if (!jw_ra_catalog_core_available(catalog, alternate, core_dir,
+                                          platform_dir)) {
             continue;
         }
         jw_ra_add_core_choice(alternate, false, out, max_count, out_count);

@@ -29,6 +29,8 @@ bool jw_retroarch_shader_path_is_restorable(const char *candidate,
                                             const char *runtime_config_path,
                                             char *resolved, size_t resolved_size,
                                             char *relative, size_t relative_size);
+/* Release RetroArch cores directory (CORES_PATH or probed). Caller frees. */
+char *jw_retroarch_cores_dir(void);
 char *jw_retroarch_core_path_for_system(const char *system);
 char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                const char *preferred_core_id,
