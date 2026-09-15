@@ -181,6 +181,21 @@ cat >"$DEFAULTS_DIR/cores.json" <<'JSON'
       "supports_disk_control": false,
       "needs_swap": false,
       "status": "packaged"
+    },
+    {
+      "id": "ghost_ra",
+      "display_name": "Ghost RetroArch Core",
+      "type": "retroarch",
+      "libretro_name": "ghost_ra",
+      "file_name": "ghost_ra_libretro.dylib",
+      "config_folder": "Ghost",
+      "info_name": "ghost_ra_libretro.info",
+      "path": null,
+      "supports_menu": true,
+      "supports_savestate": true,
+      "supports_disk_control": false,
+      "needs_swap": false,
+      "status": "packaged"
     }
   ]
 }
@@ -204,7 +219,7 @@ cat >"$DEFAULTS_DIR/systems.json" <<'JSON'
       "playlist_extensions": [],
       "m3u_generation": "none",
       "default_core": "mupen64plus_standalone",
-      "alternate_cores": ["mupen64plus_next"],
+      "alternate_cores": ["mupen64plus_next", "ghost_ra"],
       "rom_root": "Roms/N64",
       "image_root": "Images/N64",
       "bios_notes": []
@@ -298,6 +313,60 @@ cat >"$DEFAULTS_DIR/systems.json" <<'JSON'
       "rom_root": "Roms/SATURN",
       "image_root": "Images/SATURN",
       "bios_notes": []
+    },
+    {
+      "id": "MIXPATH",
+      "name": "Missing RetroArch default, path first",
+      "patterns": ["MIXPATH"],
+      "extensions": ["n64", "v64", "z64"],
+      "archive_extensions": [],
+      "archive_inner_extensions": [],
+      "archive_mode": "pass_through",
+      "file_names": [],
+      "ignore_file_names": [],
+      "playlist_extensions": [],
+      "m3u_generation": "none",
+      "default_core": "ghost_ra",
+      "alternate_cores": ["mupen64plus_standalone", "mupen64plus_next"],
+      "rom_root": "Roms/MIXPATH",
+      "image_root": "Images/MIXPATH",
+      "bios_notes": []
+    },
+    {
+      "id": "MIXRA",
+      "name": "Missing RetroArch default, RetroArch first",
+      "patterns": ["MIXRA"],
+      "extensions": ["n64", "v64", "z64"],
+      "archive_extensions": [],
+      "archive_inner_extensions": [],
+      "archive_mode": "pass_through",
+      "file_names": [],
+      "ignore_file_names": [],
+      "playlist_extensions": [],
+      "m3u_generation": "none",
+      "default_core": "ghost_ra",
+      "alternate_cores": ["mupen64plus_next", "mupen64plus_standalone"],
+      "rom_root": "Roms/MIXRA",
+      "image_root": "Images/MIXRA",
+      "bios_notes": []
+    },
+    {
+      "id": "SATSTANDALONE",
+      "name": "Saturn with a standalone default",
+      "patterns": ["SATSTANDALONE"],
+      "extensions": ["chd", "cue"],
+      "archive_extensions": ["zip"],
+      "archive_inner_extensions": ["chd", "cue"],
+      "archive_mode": "pass_through",
+      "file_names": [],
+      "ignore_file_names": [],
+      "playlist_extensions": ["m3u"],
+      "m3u_generation": "manual",
+      "default_core": "yabasanshiro_standalone",
+      "alternate_cores": ["yabasanshiro"],
+      "rom_root": "Roms/SATSTANDALONE",
+      "image_root": "Images/SATSTANDALONE",
+      "bios_notes": []
     }
   ]
 }
@@ -366,6 +435,67 @@ grep -F $'choice\t0\tdrastic\tpath\tdefault\tDraStic\temulators/drastic/launch.s
 grep -F $'choice\t1\tfun_drastic\tpath\talternate\tFun DraStic\temulators/fun-drastic/launch.sh\tshared-drm' "$TMP_ROOT/nds.tsv" >/dev/null
 grep -F $'preferred\tfun_drastic\tpath\talternate\temulators/fun-drastic/launch.sh' "$TMP_ROOT/nds.tsv" >/dev/null
 
+# Launch resolution: the exact core a library launch selects, with real
+# per-core availability on this fixture card. Empty choices mean no saved
+# choice at that scope.
+: >"$TMP_ROOT/launch.tsv"
+expect_launch() {
+    local label="$1" system="$2" rom="$3" game_choice="$4" system_choice="$5"
+    local expected="$6" actual
+    actual="$(UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
+        "$SMOKE" --launch "$SD_ROOT" "$system" "$CORES_DIR" "$PLATFORM_ROOT" \
+        "$rom" "$game_choice" "$system_choice")"
+    printf '%s\t%s\n' "$label" "$actual" >>"$TMP_ROOT/launch.tsv"
+    if [ "$actual" != "$expected" ]; then
+        cat "$TMP_ROOT/launch.tsv" >&2
+        echo "launch resolution '$label': got '$actual', expected '$expected'" >&2
+        exit 1
+    fi
+}
+
+expect_launch "RetroArch default beats installed path alternate" \
+    SATURN "Roms/SATURN/Astal.chd" "" "" \
+    $'launch\tyabasanshiro\tretroarch\tdefault'
+expect_launch "path default" \
+    N64 "Roms/N64/smoke.z64" "" "" \
+    $'launch\tmupen64plus_standalone\tpath\tdefault'
+expect_launch "RetroArch default of a mixed system" \
+    N64ALT "Roms/N64/smoke.z64" "" "" \
+    $'launch\tmupen64plus_next\tretroarch\tdefault'
+expect_launch "missing RetroArch default, path alternate first" \
+    MIXPATH "Roms/MIXPATH/smoke.z64" "" "" \
+    $'launch\tmupen64plus_standalone\tpath\talternate'
+expect_launch "missing RetroArch default, RetroArch alternate first" \
+    MIXRA "Roms/MIXRA/smoke.z64" "" "" \
+    $'launch\tmupen64plus_next\tretroarch\talternate'
+expect_launch "saved standalone choice" \
+    SATURN "Roms/SATURN/Astal.chd" "" yabasanshiro_standalone \
+    $'launch\tyabasanshiro_standalone\tpath\tsaved'
+expect_launch "saved choice for an available allowed core" \
+    GBA "Roms/GBA/smoke.gba" "" gpsp \
+    $'launch\tgpsp\tretroarch\tsaved'
+expect_launch "game choice takes precedence over system choice" \
+    GBA "Roms/GBA/smoke.gba" gpsp mgba \
+    $'launch\tgpsp\tretroarch\tsaved'
+expect_launch "invalid game choice masks available system choice" \
+    GBA "Roms/GBA/smoke.gba" bogus gpsp \
+    $'launch\tmgba\tretroarch\tdefault'
+expect_launch "disallowed saved choice" \
+    GBA "Roms/GBA/smoke.gba" "" flycast \
+    $'launch\tmgba\tretroarch\tdefault'
+expect_launch "unavailable saved RetroArch choice, available path default" \
+    N64 "Roms/N64/smoke.z64" "" ghost_ra \
+    $'launch\tmupen64plus_standalone\tpath\tdefault'
+expect_launch "path default accepts its content" \
+    SATSTANDALONE "Roms/SATSTANDALONE/Astal.chd" "" "" \
+    $'launch\tyabasanshiro_standalone\tpath\tdefault'
+expect_launch "path default rejecting ZIP falls through to RetroArch" \
+    SATSTANDALONE "Roms/SATSTANDALONE/Rampage.zip" "" "" \
+    $'launch\tyabasanshiro\tretroarch\talternate'
+expect_launch "saved standalone rejecting M3U falls through to default" \
+    SATURN "Roms/SATURN/Enemy Zero.m3u" "" yabasanshiro_standalone \
+    $'launch\tyabasanshiro\tretroarch\tdefault'
+
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$OVERRIDE_SMOKE" "$SD_ROOT" GBA "$CORES_DIR" "$PLATFORM_ROOT" \
     "$TMP_ROOT/library.db" "Roms/GBA/smoke.gba" gpsp >"$TMP_ROOT/gba-override.tsv"
@@ -385,6 +515,18 @@ if grep -F 'mupen64plus_standalone' "$TMP_ROOT/n64-noexec.tsv" >/dev/null; then
     echo "non-executable path core appeared in core choices" >&2
     exit 1
 fi
+
+expect_launch "non-executable path default, RetroArch alternate" \
+    N64 "Roms/N64/smoke.z64" "" "" \
+    $'launch\tmupen64plus_next\tretroarch\talternate'
+expect_launch "saved non-executable path core falls through" \
+    N64ALT "Roms/N64/smoke.z64" "" mupen64plus_standalone \
+    $'launch\tmupen64plus_next\tretroarch\tdefault'
+mv "$CORES_DIR/mupen64plus_next_libretro.dylib" "$TMP_ROOT/mupen64plus_next_libretro.dylib"
+expect_launch "all catalog candidates unavailable" \
+    MIXPATH "Roms/MIXPATH/smoke.z64" "" "" \
+    $'launch\tnone'
+mv "$TMP_ROOT/mupen64plus_next_libretro.dylib" "$CORES_DIR/mupen64plus_next_libretro.dylib"
 
 chmod 644 "$PLATFORM_ROOT/emulators/flycast/launch.sh"
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
@@ -436,6 +578,7 @@ cat "$TMP_ROOT/dc.tsv"
 cat "$TMP_ROOT/dc-noexec.tsv"
 cat "$TMP_ROOT/gba.tsv"
 cat "$TMP_ROOT/gba-override.tsv"
+cat "$TMP_ROOT/launch.tsv"
 cat "$TMP_ROOT/saturn.tsv"
 cat "$TMP_ROOT/saturn-noexec.tsv"
 cat "$TMP_ROOT/nds.tsv"

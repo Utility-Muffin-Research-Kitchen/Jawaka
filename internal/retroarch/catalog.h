@@ -144,6 +144,14 @@ bool jw_ra_core_is_packaged_retroarch(const jw_ra_core *core);
 /* RetroArch uses library_name verbatim as a FAT32 directory component. */
 bool jw_ra_core_folder_is_safe(const char *folder);
 
+/* One exact catalog core is launchable right now: a packaged RetroArch core
+   whose file exists, or a packaged path core whose launcher is executable.
+   Checks only this core, never a default or alternate in its place. */
+bool jw_ra_catalog_core_available(const jw_ra_catalog *catalog,
+                                  const jw_ra_core *core,
+                                  const char *core_dir,
+                                  const char *platform_dir);
+
 /* Resolve one core against its live owner. Release cores use core_dir (or
    platform_dir for type:path); content cores use APPS_PATH/provider and keep
    only pak-relative paths in catalog data. require_executable applies to

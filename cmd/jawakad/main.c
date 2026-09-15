@@ -11,6 +11,7 @@
 #include "internal/ipc/life1.h"
 #include "internal/launcher/active_game.h"
 #include "internal/launcher/bios.h"
+#include "internal/launcher/core_selection.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/launcher/pico8.h"
 #include "internal/platform/external_input_monitor.h"
@@ -160,6 +161,9 @@ typedef struct {
     char path[PATH_MAX];
     char core_id[64];
     char core_config_folder[256];
+    /* RetroArch targets: the merged info directory of the catalog snapshot
+       the core was selected from. */
+    char info_dir[PATH_MAX];
     bool requires_direct_drm;
     bool native_pico8;
     char diagnostic[256];
@@ -341,6 +345,12 @@ typedef struct {
     char pending_launch_system[64];
     char pending_launch_rom_path[PATH_MAX];
     char pending_launch_core_id[64];
+    /* This launch's one core selection, made when the request is accepted and
+       reused through coordination, continuation and spawn. An owned copy with
+       no catalog pointers. Kept while the launch is pending or blocked for an
+       override; dropped when it is cancelled, fails, starts or is replaced. */
+    jw_launch_target pending_launch_target;
+    bool pending_launch_target_valid;
     bool pending_launch_resume_switcher;
     /* Standalone emulator asked (via Menu+Select marker) to reopen the launcher
        straight into the switcher carousel, seeded on the just-exited game. */
@@ -4713,7 +4723,8 @@ static int jw__signal_tracked_game_group(jw_daemon_state *state, int signal) {
 static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind);
 static int jw__spawn_in_game_menu(jw_daemon_state *state, bool show_now);
 static int jw__spawn_osd(jw_daemon_state *state);
-static int jw__spawn_retroarch(jw_daemon_state *state);
+static int jw__spawn_retroarch(jw_daemon_state *state,
+                               const jw_launch_target *target);
 static int jw__spawn_standalone_emulator(jw_daemon_state *state,
                                          const jw_launch_target *target);
 static int jw__spawn_pending_game(jw_daemon_state *state);
@@ -6133,12 +6144,79 @@ static bool jw__try_path_core(const jw_daemon_state *state,
     return true;
 }
 
-static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
-                                                 const char *system,
-                                                 const char *rom_path,
-                                                 jw_launch_target *target) {
-    if (!state || !target || !system || !system[0]) {
+/* One packaged RetroArch core, exactly: its own file must exist. The target
+   keeps the resolved file, configuration folder and info directory from this
+   catalog snapshot, so the launch never asks another resolver. */
+static bool jw__try_retroarch_core(const jw_ra_catalog *catalog,
+                                   const jw_ra_core *core,
+                                   const char *cores_dir,
+                                   jw_launch_target *target) {
+    char core_path[PATH_MAX];
+    if (!target || !cores_dir || !cores_dir[0] ||
+        !jw_ra_core_is_packaged_retroarch(core) ||
+        jw_ra_catalog_resolve_core_path(catalog, core, cores_dir, NULL, false,
+                                        core_path, sizeof(core_path)) != 0) {
         return false;
+    }
+
+    memset(target, 0, sizeof(*target));
+    target->kind = JW_LAUNCH_TARGET_RETROARCH;
+    snprintf(target->path, sizeof(target->path), "%s", core_path);
+    snprintf(target->core_id, sizeof(target->core_id), "%s", core->id);
+    if (jw_ra_core_folder_is_safe(core->config_folder) &&
+        strlen(core->config_folder) < sizeof(target->core_config_folder)) {
+        snprintf(target->core_config_folder, sizeof(target->core_config_folder),
+                 "%s", core->config_folder);
+    }
+    (void)jw_ra_catalog_info_dir(catalog, target->info_dir,
+                                 sizeof(target->info_dir));
+    return true;
+}
+
+typedef struct {
+    jw_daemon_state *state;
+    const jw_ra_catalog *catalog;
+    const char *rom_path;
+    const char *cores_dir;
+    /* Explicit PICO-8 fallback: only RetroArch candidates may launch. */
+    bool retroarch_only;
+    jw_launch_target *target;
+} jw__launch_candidates;
+
+/* Availability of one candidate for jw_core_select(). A successful check
+   fills the target, and selection stops at the first success, so the target
+   always describes the selected core. */
+static bool jw__launch_candidate_available(void *userdata, const char *core_id) {
+    jw__launch_candidates *candidates = (jw__launch_candidates *)userdata;
+    const jw_ra_core *core = jw_ra_catalog_find_core(candidates->catalog, core_id);
+    if (!core) {
+        return false;
+    }
+    if (jw__core_is_packaged_path(core)) {
+        return !candidates->retroarch_only &&
+               jw__try_path_core(candidates->state, candidates->catalog, core,
+                                 candidates->rom_path, candidates->target);
+    }
+    return jw__try_retroarch_core(candidates->catalog, core,
+                                  candidates->cores_dir, candidates->target);
+}
+
+typedef enum {
+    JW__CATALOG_LAUNCH_SELECTED = 0,
+    /* The catalog describes this system and none of its cores can launch. */
+    JW__CATALOG_LAUNCH_UNAVAILABLE,
+    /* No catalog, or the system is not in it. */
+    JW__CATALOG_LAUNCH_NO_METADATA,
+} jw__catalog_launch_result;
+
+static jw__catalog_launch_result jw__resolve_catalog_launch_target(
+        jw_daemon_state *state,
+        const char *system,
+        const char *rom_path,
+        bool retroarch_only,
+        jw_launch_target *target) {
+    if (!state || !target || !system || !system[0]) {
+        return JW__CATALOG_LAUNCH_NO_METADATA;
     }
 
     jw_game_entry game;
@@ -6146,17 +6224,21 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
     bool have_game = jw__lookup_launch_game(state, rom_path, &game) == 0;
     const char *system_key = jw__launch_system_key(system, have_game ? &game : NULL);
 
-    char preferred[64];
-    preferred[0] = '\0';
-    if (have_game && game.id > 0 && state->db_path) {
-        (void)jw_db_get_game_setting(state->db_path, game.id,
-                                     JW_CONTENT_SETTING_CORE_ID,
-                                     preferred, sizeof(preferred));
+    char game_choice[64];
+    char system_choice[64];
+    game_choice[0] = '\0';
+    system_choice[0] = '\0';
+    if (have_game && game.id > 0 && state->db_path &&
+        jw_db_get_game_setting(state->db_path, game.id,
+                               JW_CONTENT_SETTING_CORE_ID,
+                               game_choice, sizeof(game_choice)) != 0) {
+        game_choice[0] = '\0';
     }
-    if (!preferred[0] && state->db_path && system_key && system_key[0]) {
-        (void)jw_db_get_system_setting(state->db_path, system_key,
-                                       JW_CONTENT_SETTING_CORE_ID,
-                                       preferred, sizeof(preferred));
+    if (state->db_path && system_key && system_key[0] &&
+        jw_db_get_system_setting(state->db_path, system_key,
+                                 JW_CONTENT_SETTING_CORE_ID,
+                                 system_choice, sizeof(system_choice)) != 0) {
+        system_choice[0] = '\0';
     }
 
     char error[256];
@@ -6164,43 +6246,59 @@ static bool jw__resolve_standalone_launch_target(jw_daemon_state *state,
                                                      error, sizeof(error));
     if (!catalog) {
         if (error[0]) {
-            jw_log_warn("standalone launch metadata unavailable: %s", error);
+            jw_log_warn("launch metadata unavailable: %s", error);
         }
-        return false;
+        return JW__CATALOG_LAUNCH_NO_METADATA;
     }
-
     const jw_ra_system *ra_system = jw__catalog_find_launch_system(catalog, system_key);
     if (!ra_system) {
-        return false;
+        return JW__CATALOG_LAUNCH_NO_METADATA;
     }
 
-    if (preferred[0] && jw__catalog_system_allows_core(ra_system, preferred)) {
-        const jw_ra_core *core = jw_ra_catalog_find_core(catalog, preferred);
-        if (jw__try_path_core(state, catalog, core, rom_path, target)) {
-            return true;
-        }
-        if (core && core->type && strcmp(core->type, "retroarch") == 0 &&
-            core->status && strcmp(core->status, "packaged") == 0) {
-            return false;
-        }
+    char *cores_dir = jw_retroarch_cores_dir();
+    jw__launch_candidates candidates = {
+        .state = state,
+        .catalog = catalog,
+        .rom_path = rom_path,
+        .cores_dir = cores_dir,
+        .retroarch_only = retroarch_only,
+        .target = target,
+    };
+    const char *saved = jw_core_selection_saved_choice(game_choice, system_choice);
+    jw_core_selection selection = jw_core_select(
+        saved, ra_system->default_core,
+        (const char *const *)ra_system->alternate_cores.items,
+        ra_system->alternate_cores.count,
+        jw__launch_candidate_available, &candidates);
+    free(cores_dir);
+
+    const char *default_core = ra_system->default_core ? ra_system->default_core : "(none)";
+    if (!selection.core_id) {
+        memset(target, 0, sizeof(*target));
+        snprintf(target->diagnostic, sizeof(target->diagnostic),
+                 "no available core for %.64s (default %.64s)",
+                 system_key, default_core);
+        jw_log_warn("launch resolver: no available core system=%s rom=%s default=%s saved=%s%s",
+                    system_key, rom_path ? rom_path : "(none)", default_core,
+                    saved ? saved : "(none)",
+                    retroarch_only ? " retroarch-only" : "");
+        return JW__CATALOG_LAUNCH_UNAVAILABLE;
     }
 
-    const jw_ra_core *core = jw_ra_catalog_find_core(catalog, ra_system->default_core);
-    if (jw__try_path_core(state, catalog, core, rom_path, target)) {
-        return true;
+    if (saved && selection.origin != JW_CORE_SELECTION_SAVED) {
+        jw_log_warn("launch resolver: saved core %s is unavailable or not allowed for %s; saved choice kept",
+                    saved, system_key);
     }
-
-    for (size_t i = 0; i < ra_system->alternate_cores.count; i++) {
-        core = jw_ra_catalog_find_core(catalog, ra_system->alternate_cores.items[i]);
-        /* Native PICO-8 is opt-in: installing the hybrid pak must not replace
-           FAKE-08 just because path cores are considered before libretro. */
-        if (core && core->id && strcmp(core->id, JW_PICO8_CORE) == 0) continue;
-        if (jw__try_path_core(state, catalog, core, rom_path, target)) {
-            return true;
-        }
+    if (selection.origin == JW_CORE_SELECTION_ALTERNATE) {
+        snprintf(target->diagnostic, sizeof(target->diagnostic),
+                 "default core %.64s unavailable; using alternate %.64s",
+                 default_core, selection.core_id);
     }
-
-    return false;
+    jw_log_info("launch resolver: system=%s rom=%s core=%s kind=%s origin=%s",
+                system_key, rom_path ? rom_path : "(none)", selection.core_id,
+                target->kind == JW_LAUNCH_TARGET_STANDALONE ? "standalone" : "retroarch",
+                jw_core_selection_origin_name(selection.origin));
+    return JW__CATALOG_LAUNCH_SELECTED;
 }
 
 /* ── Saturn BIOS selection ──────────────────────────────────────────────────
@@ -6291,6 +6389,7 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
         return -1;
     }
     memset(target, 0, sizeof(*target));
+    bool retroarch_only = false;
 
     if (requested_core_id && requested_core_id[0]) {
         jw_game_entry game;
@@ -6316,7 +6415,10 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
             jw_log_warn("requested launch core is not allowed: system=%s core=%s",
                         system_key ? system_key : "(none)", requested_core_id);
             if (system_key && strcmp(system_key, "PICO8") == 0 &&
-                strcmp(requested_core_id, JW_PICO8_CORE) == 0) goto retroarch_fallback;
+                strcmp(requested_core_id, JW_PICO8_CORE) == 0) {
+                retroarch_only = true;
+                goto catalog_selection;
+            }
             return -1;
         }
 
@@ -6326,17 +6428,29 @@ static int jw__resolve_launch_target(jw_daemon_state *state,
             jw_log_warn("requested launch core is unavailable for content or is not an executable packaged path: core=%s rom=%s",
                         requested_core_id, rom_path ? rom_path : "(none)");
             if (system_key && strcmp(system_key, "PICO8") == 0 &&
-                strcmp(requested_core_id, JW_PICO8_CORE) == 0) goto retroarch_fallback;
+                strcmp(requested_core_id, JW_PICO8_CORE) == 0) {
+                retroarch_only = true;
+                goto catalog_selection;
+            }
             return -1;
         }
         return 0;
     }
 
-    if (jw__resolve_standalone_launch_target(state, system, rom_path, target)) {
+catalog_selection:
+    switch (jw__resolve_catalog_launch_target(state, system, rom_path,
+                                              retroarch_only, target)) {
+    case JW__CATALOG_LAUNCH_SELECTED:
         return 0;
+    case JW__CATALOG_LAUNCH_UNAVAILABLE:
+        return -1;
+    case JW__CATALOG_LAUNCH_NO_METADATA:
+        break;
     }
 
-retroarch_fallback:;
+    /* Compatibility route for launches without usable catalog metadata only.
+       A catalog system whose cores are all unavailable fails above: a path
+       this resolver can construct is not proof that a catalog core exists. */
     char core_id[64];
     char core_config_folder[256];
     char diagnostic[256];
@@ -6344,7 +6458,8 @@ retroarch_fallback:;
                                               core_id, sizeof(core_id),
                                               core_config_folder,
                                               sizeof(core_config_folder),
-                                              NULL, 0,
+                                              target->info_dir,
+                                              sizeof(target->info_dir),
                                               diagnostic, sizeof(diagnostic));
     if (!core) {
         if (diagnostic[0]) {
@@ -6362,6 +6477,69 @@ retroarch_fallback:;
         snprintf(target->diagnostic, sizeof(target->diagnostic), "%s", diagnostic);
     }
     free(core);
+    return 0;
+}
+
+static void jw__pending_launch_forget_target(jw_daemon_state *state) {
+    if (!state) {
+        return;
+    }
+    memset(&state->pending_launch_target, 0, sizeof(state->pending_launch_target));
+    state->pending_launch_target_valid = false;
+}
+
+static void jw__pending_launch_keep_target(jw_daemon_state *state,
+                                           const jw_launch_target *target) {
+    state->pending_launch_target = *target;
+    state->pending_launch_target_valid = true;
+}
+
+/* Whether the selected core is still where selection found it. Only that one
+   file is checked; this never looks at any other candidate. */
+static bool jw__launch_target_still_present(const jw_launch_target *target,
+                                            const char **why) {
+    struct stat st;
+    if (stat(target->path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        *why = "is missing";
+        return false;
+    }
+    if (target->kind == JW_LAUNCH_TARGET_STANDALONE &&
+        access(target->path, X_OK) != 0) {
+        *why = "is not executable";
+        return false;
+    }
+    return true;
+}
+
+/* This launch's core. The selection stored when the request was accepted is
+   revalidated, never replaced: if the selected core disappeared, the launch
+   fails and no alternate is tried. A pending launch with no stored selection
+   resolves one here and keeps it for the rest of the launch. */
+static int jw__pending_launch_target(jw_daemon_state *state,
+                                     jw_launch_target *out) {
+    if (!state || !out) {
+        return -1;
+    }
+    if (!state->pending_launch_target_valid) {
+        if (jw__resolve_launch_target(state, state->pending_launch_system,
+                                      state->pending_launch_rom_path,
+                                      state->pending_launch_core_id, out) != 0) {
+            return -1;
+        }
+        jw__pending_launch_keep_target(state, out);
+        return 0;
+    }
+
+    const char *why = NULL;
+    if (!jw__launch_target_still_present(&state->pending_launch_target, &why)) {
+        jw_log_error("launch failed: selected core %s %s (%s); no other core is tried",
+                     state->pending_launch_target.core_id[0]
+                         ? state->pending_launch_target.core_id : "(unknown)",
+                     why, state->pending_launch_target.path);
+        jw__pending_launch_forget_target(state);
+        return -1;
+    }
+    *out = state->pending_launch_target;
     return 0;
 }
 
@@ -6566,9 +6744,12 @@ static int jw__perf_apply_launch_game(jw_daemon_state *state, const char *system
                                   system, reason);
 }
 
+/* On success, out_target (optional) receives the core this request selected.
+   The caller stores it so the rest of the launch uses the same core. */
 static int jw__validate_launch_request(jw_daemon_state *state, const char *system,
                                        const char *rom_path,
                                        const char *requested_core_id,
+                                       jw_launch_target *out_target,
                                        const char **out_error) {
     if (!state || !system || !system[0] || !rom_path || !rom_path[0]) {
         if (out_error) *out_error = "missing launch payload";
@@ -6643,6 +6824,9 @@ static int jw__validate_launch_request(jw_daemon_state *state, const char *syste
         if (out_error) *out_error = bios_error;
         return -1;
     }
+    if (out_target) {
+        *out_target = target;
+    }
     return 0;
 }
 
@@ -6651,8 +6835,10 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
                                    const char *requested_core_id,
                                    bool switcher_resume,
                                    const char **out_error) {
+    jw_launch_target selected;
     if (jw__validate_launch_request(state, system, rom_path,
-                                    requested_core_id, out_error) != 0) {
+                                    requested_core_id, &selected,
+                                    out_error) != 0) {
         return -1;
     }
     /* Choosing another title supersedes a previously cancelled blocked
@@ -6680,6 +6866,7 @@ static int jw__request_launch_game(jw_daemon_state *state, const char *system,
     snprintf(state->pending_launch_rom_path, sizeof(state->pending_launch_rom_path), "%s", rom_path);
     snprintf(state->pending_launch_core_id, sizeof(state->pending_launch_core_id),
              "%s", requested_core_id ? requested_core_id : "");
+    jw__pending_launch_keep_target(state, &selected);
     state->pending_launch_resume_switcher = switcher_resume;
     state->pending_launch = true;
 
@@ -6827,7 +7014,9 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         if (out_error) *out_error = "no active RetroArch session";
         return -1;
     }
-    if (jw__validate_launch_request(state, system, rom_path, NULL, out_error) != 0) {
+    jw_launch_target selected;
+    if (jw__validate_launch_request(state, system, rom_path, NULL, &selected,
+                                    out_error) != 0) {
         return -1;
     }
     jw_game_entry target_game;
@@ -6918,10 +7107,10 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
                      state->sdcard_root ? state->sdcard_root : "");
         }
 
-        jw_launch_target target;
-        bool target_is_retroarch =
-            jw__resolve_launch_target(state, system, rom_path, NULL, &target) == 0 &&
-            target.kind == JW_LAUNCH_TARGET_RETROARCH;
+        /* The core this switch selected at validation; resident and cold
+           switches both use it. */
+        const jw_launch_target target = selected;
+        bool target_is_retroarch = target.kind == JW_LAUNCH_TARGET_RETROARCH;
         if (target_is_retroarch) {
             snprintf(target_core_id, sizeof(target_core_id), "%s", target.core_id);
             snprintf(target_core_folder, sizeof(target_core_folder), "%s",
@@ -7044,6 +7233,10 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     state->pending_launch_game_id = target_game.id;
     snprintf(state->pending_launch_rom_path, sizeof(state->pending_launch_rom_path),
              "%s", rom_path);
+    /* A switch never carries an explicit core; don't inherit the previous
+       launch's request. */
+    state->pending_launch_core_id[0] = '\0';
+    jw__pending_launch_keep_target(state, &selected);
     state->pending_launch_resume_switcher = true;
     state->pending_launch = true;
 
@@ -7052,6 +7245,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
     if (q != JW_RA_OK) {
         jw_log_error("switch-game: quit failed result=%s", jw_ra_result_string(q));
         state->pending_launch = false;
+        jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
         if (out_error) *out_error = "RetroArch quit failed";
         return -1;
@@ -7061,6 +7255,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         jw_log_error("switch-game: RetroArch did not exit after forced kill pid=%d",
                      (int)old_retroarch_pid);
         state->pending_launch = false;
+        jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
         if (out_error) *out_error = "RetroArch exit failed";
         return -1;
@@ -9363,23 +9558,23 @@ static int jw__spawn_authorized_pending_game(jw_daemon_state *state) {
     }
 
     jw_launch_target target;
-    if (jw__resolve_launch_target(state, state->pending_launch_system,
-                                  state->pending_launch_rom_path,
-                                  state->pending_launch_core_id,
-                                  &target) != 0) {
-        jw_log_error("could not resolve launch target for system=%s rom=%s",
+    if (jw__pending_launch_target(state, &target) != 0) {
+        jw_log_error("could not use launch target for system=%s rom=%s",
                      state->pending_launch_system,
                      state->pending_launch_rom_path);
         state->pending_launch = false;
+        jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
         state->pending_launch_override_unverified = false;
         return -1;
     }
 
-    if (target.kind == JW_LAUNCH_TARGET_STANDALONE) {
-        return jw__spawn_standalone_emulator(state, &target);
-    }
-    return jw__spawn_retroarch(state);
+    int rc = target.kind == JW_LAUNCH_TARGET_STANDALONE
+                 ? jw__spawn_standalone_emulator(state, &target)
+                 : jw__spawn_retroarch(state, &target);
+    /* Started or failed, this launch is over. */
+    jw__pending_launch_forget_target(state);
+    return rc;
 }
 
 /* Defined below with the rest of the LIFE-1 coordination machinery; the
@@ -9497,8 +9692,10 @@ static jw__rop_gate_result jw__raofflineproxy_route(
     return JW__ROP_GATE_BLOCKED;
 }
 
-static int jw__spawn_retroarch(jw_daemon_state *state) {
-    if (!state || !state->pending_launch) {
+static int jw__spawn_retroarch(jw_daemon_state *state,
+                               const jw_launch_target *target) {
+    if (!state || !state->pending_launch || !target ||
+        target->kind != JW_LAUNCH_TARGET_RETROARCH) {
         return -1;
     }
     long long launch_start_ms = jw__monotonic_ms();
@@ -9525,21 +9722,19 @@ static int jw__spawn_retroarch(jw_daemon_state *state) {
     }
 
     char *retroarch = jw_retroarch_bin_path();
+    /* The resolved target is this launch's only core selection. No second
+       resolver runs here, so a core file that disappeared since selection
+       fails the launch below instead of being replaced by another core. */
     char core_id[64];
     char core_config_folder[256];
     char info_dir[PATH_MAX];
-    char core_diagnostic[256];
     char launch_warning[256];
     launch_warning[0] = '\0';
-    char *core = jw__resolve_launch_core_path(state,
-                                              state->pending_launch_system,
-                                              state->pending_launch_rom_path,
-                                              core_id, sizeof(core_id),
-                                              core_config_folder,
-                                              sizeof(core_config_folder),
-                                              info_dir, sizeof(info_dir),
-                                              core_diagnostic,
-                                              sizeof(core_diagnostic));
+    snprintf(core_id, sizeof(core_id), "%s", target->core_id);
+    snprintf(core_config_folder, sizeof(core_config_folder), "%s",
+             target->core_config_folder);
+    snprintf(info_dir, sizeof(info_dir), "%s", target->info_dir);
+    char *core = strdup(target->path);
     char *runtime_config = NULL;
     char *ra_home = NULL;
 
@@ -12792,6 +12987,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         state->pending_launch_skip_check = false;
         state->game_launch_blocked_requires_verified_stop = false;
         state->pending_launch = false;
+        jw__pending_launch_forget_target(state);
         state->game_launch_blocked_service_id[0] = '\0';
         state->game_launch_blocked_reason[0] = '\0';
         cJSON_Delete(root);
@@ -13288,6 +13484,7 @@ static void jw__game_coordination_abort(jw_daemon_state *state,
     state->pending_launch_resume_switcher = false;
     state->pending_launch_override_unverified = false;
     state->pending_launch_skip_check = false;
+    jw__pending_launch_forget_target(state);
     state->active_game_writer_started = false;
     if (launch_id[0]) {
         jw__broadcast_game_event(state, launch_id,
@@ -13324,7 +13521,13 @@ static void jw__game_coordination_block(jw_daemon_state *state,
         strcmp(blocked_reason, "unsafe-card-binding") == 0 ||
         strcmp(blocked_reason, "sync-wait-expired") == 0 ||
         strcmp(blocked_reason, "check-stop-unverified") == 0;
+    /* A blocked launch waits for Play Anyway, which continues this same
+       launch, so its core selection survives the abort. */
+    jw_launch_target blocked_target = state->pending_launch_target;
+    bool blocked_target_valid = state->pending_launch_target_valid;
     jw__game_coordination_abort(state, blocked_reason);
+    state->pending_launch_target = blocked_target;
+    state->pending_launch_target_valid = blocked_target_valid;
     state->game_launch_blocked = true;
     state->game_launch_blocked_resume_switcher = resume_switcher;
     state->game_launch_blocked_requires_verified_stop =
@@ -13479,6 +13682,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
         jw_log_warn("life1: refusing new game while launch state is %s",
                     state->active_game.uncertain ? "uncertain" : "active");
         state->pending_launch = false;
+        jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
         state->pending_launch_override_unverified = false;
         return -1;
@@ -13492,11 +13696,9 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
     if (jw__resolve_library_game(state, state->pending_launch_game_id,
                                  &game, &sources, &source,
                                  rom_abs, sizeof(rom_abs)) != 0 || !source ||
-        jw__resolve_launch_target(state, state->pending_launch_system,
-                                  state->pending_launch_rom_path,
-                                  state->pending_launch_core_id,
-                                  &target) != 0) {
+        jw__pending_launch_target(state, &target) != 0) {
         state->pending_launch = false;
+        jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
         state->pending_launch_override_unverified = false;
         return -1;
@@ -13514,6 +13716,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
         snprintf(record.states_path, sizeof(record.states_path), "%s",
                  source->states_path) >= (int)sizeof(record.states_path)) {
         state->pending_launch = false;
+        jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
         state->pending_launch_override_unverified = false;
         return -1;
@@ -13523,6 +13726,7 @@ static int jw__spawn_pending_game(jw_daemon_state *state) {
                                 persist_reason, sizeof(persist_reason))) {
         jw_log_error("life1: active launch commit failed (%s)", persist_reason);
         state->pending_launch = false;
+        jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
         state->pending_launch_override_unverified = false;
         return -1;
