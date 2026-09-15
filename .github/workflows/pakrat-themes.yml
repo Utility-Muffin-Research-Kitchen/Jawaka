@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Utility-Muffin-Research-Kitchen/leaf-contracts
-          ref: 52996b2a4d11d7c8d42e4488a6ef6cd39285c582
+          ref: a0a2a06e2eb6e80d02daec7a02aaba58d3687ce6
           path: leaf-contracts
 
       - name: Verify THEME-1 validation against the contract fixtures
