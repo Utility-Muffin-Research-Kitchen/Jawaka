@@ -3841,7 +3841,15 @@ static SDL_Texture *jw__load_catalog_page_image(const jw_launcher_state *state,
 /* The wallpaper covers the whole panel, so it is the one image that must not
    go through the cover thumbnailer: a 384px thumbnail stretched to fill 960x720
    is visibly blocky. Decode it at full size and let the texture cache hold it.
-   Drawn every frame, it stays at the head of the LRU, so this costs one decode. */
+   Drawn every frame, it stays at the head of the LRU, so this costs one decode.
+
+   Full size is also why it is capped: the header is read first, and a file over
+   JW_USER_THEME_WALLPAPER_MAX_PX per edge (or with no readable header) is never
+   decoded. A refusal or a failed decode is remembered by path, so it costs a
+   string compare per frame rather than a file read, until the next layout
+   rebuild re-resolves the wallpaper. */
+static char s_wallpaper_refused[PATH_MAX];
+
 static SDL_Texture *jw__load_wallpaper(const char *path, int *out_w, int *out_h) {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
@@ -3854,14 +3862,26 @@ static SDL_Texture *jw__load_wallpaper(const char *path, int *out_w, int *out_h)
         if (out_h) *out_h = h;
         return cached;
     }
+    if (strcmp(path, s_wallpaper_refused) == 0) return NULL;
+    if (!jw_user_theme_wallpaper_ok(path)) {
+        jw_log_warn("wallpaper %s: over %dpx or unreadable; not drawn", path,
+                    JW_USER_THEME_WALLPAPER_MAX_PX);
+        snprintf(s_wallpaper_refused, sizeof(s_wallpaper_refused), "%s", path);
+        return NULL;
+    }
 
     SDL_Surface *surf = IMG_Load(path);
-    if (!surf) return NULL;
-    SDL_Texture *tex = cat_texture_from_surface(surf);
-    w = surf->w;
-    h = surf->h;
-    SDL_FreeSurface(surf);
-    if (!tex) return NULL;
+    SDL_Texture *tex = surf ? cat_texture_from_surface(surf) : NULL;
+    if (surf) {
+        w = surf->w;
+        h = surf->h;
+        SDL_FreeSurface(surf);
+    }
+    if (!tex) {
+        /* A file that will not decode is not retried every frame either. */
+        snprintf(s_wallpaper_refused, sizeof(s_wallpaper_refused), "%s", path);
+        return NULL;
+    }
 
     cat_cache_put(path, tex, w, h);
     if (out_w) *out_w = w;
@@ -6373,6 +6393,9 @@ static bool jw__grid_region_light(SDL_Surface *rgba, int x0, int x1, int y0, int
 }
 
 static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
+    /* Re-resolved on every layout rebuild, so a wallpaper fixed on the card
+       gets another chance then. */
+    s_wallpaper_refused[0] = '\0';
     state->grid_wallpaper[0] = '\0';
     state->grid_status_dark  = false;   /* default: light icons on a dark stage */
     state->grid_count_dark   = false;
@@ -6381,6 +6404,14 @@ static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
     const jw_user_theme_catalog *cat = jw_settings_user_themes(&state->settings);
     if (!jw_user_theme_wallpaper_path(cat, ti, "grid", state->grid_wallpaper,
                                       sizeof(state->grid_wallpaper))) {
+        state->grid_wallpaper[0] = '\0';
+        return;
+    }
+    /* Checked here, once per layout rebuild, so an over-cap wallpaper is never
+       decoded for sampling either. */
+    if (!jw_user_theme_wallpaper_ok(state->grid_wallpaper)) {
+        jw_log_warn("wallpaper %s: over %dpx or unreadable; not drawn",
+                    state->grid_wallpaper, JW_USER_THEME_WALLPAPER_MAX_PX);
         state->grid_wallpaper[0] = '\0';
         return;
     }
@@ -6494,6 +6525,15 @@ static bool jw__grid_file_exists(const char *path) {
     return path && path[0] && access(path, R_OK) == 0;
 }
 
+/* A label from the card (a ROM folder or a user theme) must be a PNG within
+   the tile art cap before it can reach the decoder, as icons and wordmarks
+   already are. Read once per tile per rebuild, never per frame. */
+static bool jw__grid_label_ok(const char *path) {
+    int w = 0, h = 0;
+    return path && path[0] && jw_user_theme_png_dims(path, &w, &h) &&
+           w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX;
+}
+
 /* Memo copy: a label path that does not fit the memo is dropped, not
    truncated -- a truncated path is never a real file. memcpy rather than a
    %s format so gcc's truncation analysis has nothing to flag. */
@@ -6520,14 +6560,14 @@ static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
         const char *rom_dir = code[0] != '_' ? jw__system_rom_folder(state, code, folder, sizeof(folder)) : NULL;
         if (rom_dir && state->sdcard_root[0]) {
             n = snprintf(cand, sizeof(cand), "%s/Roms/%s/label.png", state->sdcard_root, rom_dir);
-            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_label_ok(cand))
                 jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
         }
         int ti = jw_settings_user_theme_index(&state->settings);
         if (!state->grid_label_path[idx][0] && ti >= 0 &&
             jw_user_theme_label_path(jw_settings_user_themes(&state->settings), ti,
                                      "grid", code, cand, sizeof(cand)) &&
-            jw__grid_file_exists(cand))
+            jw__grid_label_ok(cand))
             jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
         if (!state->grid_label_path[idx][0]) {
             const cat_stylesheet *ss = cat_get_stylesheet();
@@ -8627,9 +8667,11 @@ typedef struct {
     char store_id[128];
     char target_version[64];
     jw_pakrat_ui_action action;
+    jw_pakrat_kind kind;
     int allow_adopt;   /* install may replace a manually-installed pak */
     int repair_exact;
     char error_message[256];
+    jw_pakrat_outcome outcome;
 } jw_pakrat_ui_job;
 
 /* User text for a stable storage-gate reason key. */
@@ -8646,6 +8688,41 @@ static const char *jw__storage_reason_text(const char *reason) {
     return T("Leaf couldn't confirm your SD card can be written.");
 }
 
+static void jw__grid_apply_theme_layout(jw_launcher_state *state);
+
+/* Pak Rat changed Themes/ from its worker thread; this is the render thread
+   catching up. An update rewrites a theme's art at the same paths, so every
+   decoded texture, failed decode, negative lookup and path memo that could
+   name one is dropped (art_epoch keys the memos) and the themes are rescanned.
+   Only what a theme decides is rebuilt, so the user stays where they are in
+   the store. The selection is kept by folder name: an updated theme stays
+   applied, and a removed one falls back to None, which the uninstall already
+   persisted. */
+static void jw__apply_pakrat_theme_outcome(jw_launcher_state *state,
+                                           const jw_pakrat_outcome *outcome) {
+    if (!state || !outcome || !outcome->themes_changed) {
+        return;
+    }
+    if (outcome->theme_selection_cleared &&
+        strcmp(state->settings.user_theme_dir, outcome->theme_dir) == 0) {
+        state->settings.user_theme_dir[0] = '\0';
+    }
+    jw_settings_ui_set_themes_root(&state->settings, state->sdcard_root);
+    jw_cover_loader_shutdown(jw__covers());
+    jw_cover_loader_forget_failures(jw__covers());
+    cat_cache_clear();
+    memset(jw__img_miss, 0, sizeof(jw__img_miss));
+    s_wallpaper_refused[0] = '\0';
+    state->art_epoch++;
+    jw__system_icon_memo_clear(state);
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_GRID) {
+        memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
+        memset(state->grid_label_path, 0, sizeof(state->grid_label_path));
+        jw__grid_apply_theme_layout(state);
+        jw__grid_reveal_cursor(state);
+    }
+}
+
 static int jw__pakrat_ui_worker(void *userdata) {
     jw_pakrat_ui_job *job = (jw_pakrat_ui_job *)userdata;
     if (!job) {
@@ -8658,11 +8735,13 @@ static int jw__pakrat_ui_worker(void *userdata) {
         return jw_pakrat_remove_retained_data(&job->ctx, job->store_id);
     }
     /* Install and repair write the pak, its state and the library DB. Refuse
-       up front on a read-only or held card rather than failing part-way. */
+       up front on a read-only or held card rather than failing part-way. A
+       theme writes to the card root's Themes/, which may not exist yet. */
     {
         char apps_dir[PATH_MAX];
         char reason[JW_STORAGE_REASON_MAX];
-        if (snprintf(apps_dir, sizeof(apps_dir), "%s/Apps", job->ctx.sdcard_root) >=
+        if (snprintf(apps_dir, sizeof(apps_dir), "%s%s", job->ctx.sdcard_root,
+                     job->kind == JW_PAKRAT_KIND_THEME ? "" : "/Apps") >=
                 (int)sizeof(apps_dir) ||
             !jw_storage_path_writable(apps_dir, reason, sizeof(reason)) ||
             !jw_storage_path_writable(job->ctx.db_path, reason, sizeof(reason))) {
@@ -8968,6 +9047,8 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     job.repair_exact = app.action_uses_history;
     job.ctx.error_message = job.error_message;
     job.ctx.error_message_size = sizeof(job.error_message);
+    job.ctx.outcome = &job.outcome;
+    job.kind = app.package.kind;
     snprintf(job.store_id, sizeof(job.store_id), "%s", app.package.id);
     snprintf(job.target_version, sizeof(job.target_version), "%s",
              app.action_version);
@@ -9008,6 +9089,7 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     if (uninstall_info_loaded) {
         jw_pakrat_free_uninstall_info(&uninstall_info);
     }
+    jw__apply_pakrat_theme_outcome(state, &job.outcome);
     int reload_rc = jw__reload_library_from_db(db_path, state);
     if (reload_rc != 0) {
         jw__load_pakrat_store(state);
@@ -9857,6 +9939,26 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
     (void)running;
 }
 
+/* The parts of Grid View a user theme decides: density and wallpaper. */
+static void jw__grid_apply_theme_layout(jw_launcher_state *state) {
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    /* Density: the user's explicit pick, else the selected theme's
+       recommendation, else the stylesheet. Applied to a copy so the
+       stylesheet stays what the theme authored. */
+    cat_stylesheet_launcher eff = ss->launcher;
+    int dc = 0, dr = 0;
+    if (jw_settings_grid_density(&state->settings, &dc, &dr)) {
+        eff.grid_cols = dc;
+        eff.grid_rows = dr;
+    }
+    /* Status band: the stock cluster is drawn at grid_status_scale_pct and
+       sits high, so the band is the scaled pill plus a small pad each side. */
+    int band = CAT_S(6) * 2 + CAT_DS(CAT__PILL_SIZE) * eff.grid_status_scale_pct / 100;
+    jw_grid_layout(&state->grid, &eff,
+                   cat_get_screen_width(), cat_get_screen_height(), band);
+    jw__grid_resolve_wallpaper(state);
+}
+
 /* Rebuild layout-dependent state. Call after the active stylesheet's
  * launcher.layout may have changed (theme switch) or at first startup. */
 static void jw__rebuild_for_layout(jw_launcher_state *state) {
@@ -9882,21 +9984,7 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         jw__build_grid_list(state);
         jw_grid_reset(&state->grid);
         memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
-        /* Density: the user's explicit pick, else the selected theme's
-           recommendation, else the stylesheet. Applied to a copy so the
-           stylesheet stays what the theme authored. */
-        cat_stylesheet_launcher eff = ss->launcher;
-        int dc = 0, dr = 0;
-        if (jw_settings_grid_density(&state->settings, &dc, &dr)) {
-            eff.grid_cols = dc;
-            eff.grid_rows = dr;
-        }
-        /* Status band: the stock cluster is drawn at grid_status_scale_pct and
-           sits high, so the band is the scaled pill plus a small pad each side. */
-        int band = CAT_S(6) * 2 + CAT_DS(CAT__PILL_SIZE) * eff.grid_status_scale_pct / 100;
-        jw_grid_layout(&state->grid, &eff,
-                       cat_get_screen_width(), cat_get_screen_height(), band);
-        jw__grid_resolve_wallpaper(state);
+        jw__grid_apply_theme_layout(state);
     } else {
         state->flat_count = 0;
     }

@@ -22,6 +22,10 @@
    between is accepted and flagged, never rejected. */
 #define JW_USER_THEME_ICON_TARGET_PX 512
 #define JW_USER_THEME_ICON_MAX_PX    1024
+/* A wallpaper is decoded at full size into one texture, so it gets a cap of
+   its own: 2048 px per edge, THEME-1's limit, enforced here too because a
+   hand-made theme never passes an install check. */
+#define JW_USER_THEME_WALLPAPER_MAX_PX 2048
 
 typedef enum {
     JW_USER_THEME_STATUS_AUTO = 0,   /* derive light/dark from the wallpaper */
@@ -97,6 +101,13 @@ bool jw_user_theme_wallpaper_path(const jw_user_theme_catalog *cat, int idx,
 
 /* Read a PNG's IHDR dimensions without decoding it. False if not a PNG. */
 bool jw_user_theme_png_dims(const char *path, int *w, int *h);
+/* A JPEG's frame-header dimensions, walking markers without decoding. */
+bool jw_user_theme_jpeg_dims(const char *path, int *w, int *h);
+/* PNG or JPEG, told apart by their bytes rather than the extension. */
+bool jw_user_theme_image_dims(const char *path, int *w, int *h);
+/* True when a wallpaper's header says PNG or JPEG within
+   JW_USER_THEME_WALLPAPER_MAX_PX per edge. Call before decoding it. */
+bool jw_user_theme_wallpaper_ok(const char *path);
 
 /* Validate one theme's grid tiles against the guidelines by scanning its
    grid/icons folder. `present` is how many PNGs it holds, `flagged` how many
