@@ -29,11 +29,14 @@ static bool jw_catalog_smoke_available(void *userdata, const char *core_id) {
         return true;
     }
     char path[PATH_MAX];
-    return jw_ra_catalog_resolve_core_path(launch->catalog, core, NULL,
-                                           launch->platform_dir, true, path,
-                                           sizeof(path)) == 0 &&
-           jw_standalone_policy_supports_content(core->id, path,
-                                                 launch->rom_path);
+    if (jw_ra_catalog_resolve_core_path(launch->catalog, core, NULL,
+                                        launch->platform_dir, true, path,
+                                        sizeof(path)) != 0) {
+        return false;
+    }
+    jw_standalone_policy policy =
+        jw_standalone_policy_resolve(core->id, path, core->provider);
+    return jw_standalone_policy_supports_content(&policy, launch->rom_path);
 }
 
 /* --launch: which exact core a library launch resolves to. Empty choice

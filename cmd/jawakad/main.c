@@ -140,6 +140,11 @@ typedef struct {
     char source_root[PATH_MAX];
     char core_path[PATH_MAX];
     char core_id[64];
+    /* Standalone sessions only: the launch target's resolved policy and the
+       catalog core's menu capability. Routing reads these, never core_id or
+       core_path. Zero (release NONE, not provider-bound) for RetroArch. */
+    jw_standalone_policy standalone_policy;
+    bool supports_menu;
     char core_config_folder[256];
     char config_path[PATH_MAX];
     /* RAOfflineProxy transient launch bridge: proxied sessions carry the
@@ -164,6 +169,10 @@ typedef struct {
     /* RetroArch targets: the merged info directory of the catalog snapshot
        the core was selected from. */
     char info_dir[PATH_MAX];
+    /* Standalone targets only, resolved once from the catalog core by
+       jw__try_path_core() before any eligibility check. */
+    jw_standalone_policy standalone_policy;
+    bool supports_menu;
     bool requires_direct_drm;
     bool native_pico8;
     char diagnostic[256];
@@ -651,90 +660,57 @@ static bool jw__has_standalone_session(const jw_daemon_state *state) {
            state->child_kind == JW_CHILD_EMULATOR;
 }
 
-static bool jw__standalone_session_is_ppsspp(const jw_daemon_state *state) {
-    if (!jw__has_standalone_session(state)) {
-        return false;
-    }
+/* Release identity comes only from the policy resolved at launch, which is
+   NONE for every provider-bound core. Never re-match core_id or core_path. */
+static bool jw__standalone_session_is(const jw_daemon_state *state,
+                                      jw_standalone_release release) {
+    return jw__has_standalone_session(state) &&
+           state->retroarch_session.standalone_policy.release == release;
+}
 
-    const jw_retroarch_session *session = &state->retroarch_session;
-    return jw_standalone_policy_is_ppsspp(session->core_id,
-                                          session->core_path);
+static bool jw__standalone_session_is_ppsspp(const jw_daemon_state *state) {
+    return jw__standalone_session_is(state, JW_STANDALONE_RELEASE_PPSSPP);
 }
 
 static bool jw__standalone_session_is_drastic(const jw_daemon_state *state) {
-    if (!jw__has_standalone_session(state)) {
-        return false;
-    }
-
-    const jw_retroarch_session *session = &state->retroarch_session;
-    return jw_standalone_policy_is_drastic(session->core_id,
-                                           session->core_path);
+    return jw__standalone_session_is(state, JW_STANDALONE_RELEASE_DRASTIC);
 }
 
 static bool jw__standalone_session_is_mupen64plus(const jw_daemon_state *state) {
-    if (!jw__has_standalone_session(state)) {
-        return false;
-    }
-
-    const jw_retroarch_session *session = &state->retroarch_session;
-    return strcmp(session->core_id, "mupen64plus_standalone") == 0 ||
-           strcmp(session->core_id, "mupen64plus") == 0 ||
-           strstr(session->core_path, "/mupen64plus/") != NULL ||
-           strstr(session->core_path, "/Mupen64Plus") != NULL;
+    return jw__standalone_session_is(state, JW_STANDALONE_RELEASE_MUPEN64PLUS);
 }
 
 static bool jw__standalone_session_is_flycast(const jw_daemon_state *state) {
-    if (!jw__has_standalone_session(state)) {
-        return false;
-    }
-
-    const jw_retroarch_session *session = &state->retroarch_session;
-    return jw_standalone_policy_is_flycast(session->core_id,
-                                            session->core_path);
+    return jw__standalone_session_is(state, JW_STANDALONE_RELEASE_FLYCAST);
 }
 
 static bool jw__standalone_session_is_fun_drastic(const jw_daemon_state *state) {
-    if (!jw__has_standalone_session(state)) {
-        return false;
-    }
-
-    const jw_retroarch_session *session = &state->retroarch_session;
-    return jw_standalone_policy_is_fun_drastic(session->core_id,
-                                               session->core_path);
+    return jw__standalone_session_is(state, JW_STANDALONE_RELEASE_FUN_DRASTIC);
 }
 
 static bool jw__standalone_session_is_yabasanshiro(const jw_daemon_state *state) {
-    if (!jw__has_standalone_session(state)) {
-        return false;
-    }
+    return jw__standalone_session_is(state, JW_STANDALONE_RELEASE_YABASANSHIRO);
+}
 
-    const jw_retroarch_session *session = &state->retroarch_session;
-    return jw_standalone_policy_is_yabasanshiro(session->core_id,
-                                                 session->core_path);
+static bool jw__standalone_target_is(const jw_launch_target *target,
+                                     jw_standalone_release release) {
+    return target && target->kind == JW_LAUNCH_TARGET_STANDALONE &&
+           target->standalone_policy.release == release;
 }
 
 static bool jw__standalone_target_is_mupen64plus(const jw_launch_target *target) {
-    if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
-        return false;
-    }
-    return jw_standalone_policy_is_mupen64plus(target->core_id, target->path);
+    return jw__standalone_target_is(target, JW_STANDALONE_RELEASE_MUPEN64PLUS);
 }
 
 static bool jw__env_is_disabled(const char *name);
 static bool jw__env_is_truthy(const char *name);
 
 static bool jw__standalone_target_is_yabasanshiro(const jw_launch_target *target) {
-    if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
-        return false;
-    }
-    return jw_standalone_policy_is_yabasanshiro(target->core_id, target->path);
+    return jw__standalone_target_is(target, JW_STANDALONE_RELEASE_YABASANSHIRO);
 }
 
 static bool jw__standalone_target_is_ports(const jw_launch_target *target) {
-    if (!target || target->kind != JW_LAUNCH_TARGET_STANDALONE) {
-        return false;
-    }
-    return jw_standalone_policy_is_ports(target->core_id, target->path);
+    return jw__standalone_target_is(target, JW_STANDALONE_RELEASE_PORTS);
 }
 
 static bool jw__file_contains_text(const char *path, const char *needle,
@@ -804,7 +780,7 @@ static bool jw__standalone_target_requests_direct_drm(
         return false;
     }
     if (jw_standalone_policy_requires_direct_drm(
-            target->core_id, target->path, target->requires_direct_drm)) {
+            &target->standalone_policy, target->requires_direct_drm)) {
         return true;
     }
     if (jw__env_is_truthy("JAWAKA_DIRECT_DRM")) {
@@ -827,7 +803,7 @@ static bool jw__standalone_target_uses_calibrated_virtual_input(
         const jw_launch_target *target) {
     return target && target->kind == JW_LAUNCH_TARGET_STANDALONE &&
            (target->native_pico8 || jw_standalone_policy_uses_calibrated_virtual_input(
-               target->core_id, target->path));
+               &target->standalone_policy));
 }
 
 static long long jw__monotonic_ms(void) {
@@ -4978,10 +4954,7 @@ static void jw__consume_standalone_switcher_marker(jw_daemon_state *state, pid_t
        false. Check the still-intact session's core directly instead. */
     const jw_retroarch_session *session = &state->retroarch_session;
     bool session_is_mupen64plus = session->active &&
-        (strcmp(session->core_id, "mupen64plus_standalone") == 0 ||
-         strcmp(session->core_id, "mupen64plus") == 0 ||
-         strstr(session->core_path, "/mupen64plus/") != NULL ||
-         strstr(session->core_path, "/Mupen64Plus") != NULL);
+        session->standalone_policy.release == JW_STANDALONE_RELEASE_MUPEN64PLUS;
     if (!session_is_mupen64plus || session->pid != exited_pid) {
         return;
     }
@@ -5314,9 +5287,8 @@ static void jw__standalone_session_start(jw_daemon_state *state, pid_t pid,
                                          const char *system, const char *rom_path,
                                          const char *db_rom_path,
                                          const char *source_root,
-                                         const char *launcher_path,
-                                         const char *core_id) {
-    if (!state || pid <= 0) {
+                                         const jw_launch_target *target) {
+    if (!state || pid <= 0 || !target) {
         return;
     }
 
@@ -5336,9 +5308,10 @@ static void jw__standalone_session_start(jw_daemon_state *state, pid_t pid,
              db_rom_path ? db_rom_path : "");
     snprintf(session->source_root, sizeof(session->source_root), "%s",
              source_root ? source_root : "");
-    snprintf(session->core_path, sizeof(session->core_path), "%s",
-             launcher_path ? launcher_path : "");
-    snprintf(session->core_id, sizeof(session->core_id), "%s", core_id ? core_id : "");
+    snprintf(session->core_path, sizeof(session->core_path), "%s", target->path);
+    snprintf(session->core_id, sizeof(session->core_id), "%s", target->core_id);
+    session->standalone_policy = target->standalone_policy;
+    session->supports_menu = target->supports_menu;
 
     state->menu_visible = false;
     state->menu_standby_attempts = 0;
@@ -6110,15 +6083,22 @@ static bool jw__try_path_core(const jw_daemon_state *state,
                               const jw_ra_core *core,
                               const char *rom_path,
                               jw_launch_target *target) {
-    if (!target || !jw__core_is_packaged_path(core) ||
-        !jw_standalone_policy_supports_content(
-            core->id, core->path, rom_path)) {
+    if (!target || !jw__core_is_packaged_path(core)) {
         return false;
     }
 
     char exec_path[PATH_MAX];
     if (jw__resolve_path_core_executable(state, catalog, core,
                                          exec_path, sizeof(exec_path)) != 0) {
+        return false;
+    }
+
+    /* Resolve release identity once, from catalog provenance and the
+       executable path, before any eligibility check; everything downstream
+       reads this result. */
+    jw_standalone_policy policy =
+        jw_standalone_policy_resolve(core->id, exec_path, core->provider);
+    if (!jw_standalone_policy_supports_content(&policy, rom_path)) {
         return false;
     }
 
@@ -6140,6 +6120,8 @@ static bool jw__try_path_core(const jw_daemon_state *state,
     target->kind = JW_LAUNCH_TARGET_STANDALONE;
     snprintf(target->path, sizeof(target->path), "%s", exec_path);
     snprintf(target->core_id, sizeof(target->core_id), "%s", core->id ? core->id : "");
+    target->standalone_policy = policy;
+    target->supports_menu = core->supports_menu;
     target->requires_direct_drm = core->requires_direct_drm;
     return true;
 }
@@ -9548,7 +9530,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw__standalone_session_start(state, pid, state->pending_launch_game_id,
                                  state->pending_launch_system, rom_abs,
                                  state->pending_launch_rom_path, source_root,
-                                 target->path, target->core_id);
+                                 target);
     return 0;
 }
 

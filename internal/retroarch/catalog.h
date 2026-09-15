@@ -93,6 +93,9 @@ typedef struct {
     char file_name[256];
     char config_folder[256];
     char path[256];
+    /* Empty for a release-owned core. Apps-relative providers are at most
+       133 bytes ("<platform>/<Name>.pak"). */
+    char provider[136];
     bool supports_menu;
     bool supports_savestate;
     bool supports_disk_control;
