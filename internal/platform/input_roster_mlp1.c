@@ -39,12 +39,12 @@ static bool jw__bit_is_set(const unsigned long *bits, unsigned int bit,
 
 /* A device is a gamepad when it exposes any button in the gamepad block
    (BTN_GAMEPAD/SOUTH..BTN_THUMBR) or the d-pad hats-as-buttons range. */
-static bool jw__is_gamepad_capable(int fd) {
+static int jw__is_gamepad_capable(int fd) {
     unsigned long key_bits[(KEY_MAX + 8 * sizeof(unsigned long)) /
                            (8 * sizeof(unsigned long))] = {0};
     size_t byte_count = sizeof(key_bits);
     if (ioctl(fd, EVIOCGBIT(EV_KEY, byte_count), key_bits) < 0) {
-        return false;
+        return -1;
     }
     size_t word_count = byte_count / sizeof(unsigned long);
     for (unsigned int bit = BTN_GAMEPAD; bit <= BTN_THUMBR; bit++) {
@@ -68,7 +68,7 @@ bool jw_input_device_is_gamepad(const char *path) {
     if (fd < 0) {
         return false;
     }
-    bool gamepad = jw__is_gamepad_capable(fd);
+    bool gamepad = jw__is_gamepad_capable(fd) > 0;
     close(fd);
     return gamepad;
 }
@@ -101,7 +101,8 @@ static int jw__fill_entry(const char *path, jw_input_roster_entry *entry,
     if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 && name[0]) {
         snprintf(entry->name, sizeof(entry->name), "%s", name);
     } else {
-        snprintf(entry->name, sizeof(entry->name), "(unknown)");
+        close(fd);
+        return -1;
     }
 
     struct input_id id;
@@ -109,6 +110,9 @@ static int jw__fill_entry(const char *path, jw_input_roster_entry *entry,
     if (ioctl(fd, EVIOCGID, &id) == 0) {
         entry->vendor = id.vendor;
         entry->product = id.product;
+    } else {
+        close(fd);
+        return -1;
     }
     close(fd);
     return 0;
@@ -156,7 +160,7 @@ int jw_input_roster_build(const jw_input_proxy *proxy, jw_input_roster *roster,
     /* Virtual must be gamepad-capable (contract step 3). */
     {
         int fd = open(proxy->virtual_event_path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0 || !jw__is_gamepad_capable(fd)) {
+        if (fd < 0 || jw__is_gamepad_capable(fd) <= 0) {
             if (fd >= 0) {
                 close(fd);
             }
@@ -173,7 +177,10 @@ int jw_input_roster_build(const jw_input_proxy *proxy, jw_input_roster *roster,
         char path[64];
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         if (access(path, F_OK) != 0) {
-            continue;
+            if (errno == ENOENT) continue;
+            jw__roster_set_error(error, error_size, JW_INPUT_ROSTER_ERR_SCAN,
+                                 "could not inspect input device");
+            return -1;
         }
         /* The physical Loong is never exposed; the virtual one is appended as
            the last roster entry below. */
@@ -183,11 +190,13 @@ int jw_input_roster_build(const jw_input_proxy *proxy, jw_input_roster *roster,
         }
 
         int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0) {
-            continue;
+        int gamepad = fd < 0 ? -1 : jw__is_gamepad_capable(fd);
+        if (fd >= 0) close(fd);
+        if (gamepad < 0) {
+            jw__roster_set_error(error, error_size, JW_INPUT_ROSTER_ERR_SCAN,
+                                 "could not read input device capabilities");
+            return -1;
         }
-        bool gamepad = jw__is_gamepad_capable(fd);
-        close(fd);
         if (!gamepad) {
             /* Power keys, CEC, headphone jack: not player candidates, but the
                child still needs a normal-looking /dev/input. */
@@ -213,7 +222,9 @@ int jw_input_roster_build(const jw_input_proxy *proxy, jw_input_roster *roster,
         jw_input_roster_entry *entry =
             &roster->controllers[roster->external_count];
         if (jw__fill_entry(path, entry, false) != 0) {
-            continue;
+            jw__roster_set_error(error, error_size, JW_INPUT_ROSTER_ERR_SCAN,
+                                 "external controller changed during scan");
+            return -1;
         }
         roster->external_count++;
     }

@@ -716,6 +716,10 @@ msgstr ""
 msgid "Continue"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Controller setup failed. Restart Leaf and try again."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Controls & Feedback"
 msgstr ""

@@ -378,6 +378,7 @@ typedef struct {
        the "wrapper died before the emulator appeared" signature -- the Leaf
        0.11 black flash. The respawned launcher surfaces it in the status line
        instead of coming back silently. */
+    bool launch_input_failed; /* surfaced by the next launcher */
     bool launch_status_pending;
     char launch_status_name[64];
     int launch_status_code;
@@ -8836,6 +8837,7 @@ static int jw__launch_prepare_input_roster(jw_daemon_state *state,
     }
     if (jw_input_roster_build(&state->input_proxy, roster,
                               error, error_size) != 0) {
+        state->launch_input_failed = true;
         return -1;
     }
     jw_input_roster_log(roster, tag);
@@ -8929,6 +8931,11 @@ static int jw__input_isolation_parent_wait_exec(int err_read_fd,
         got = read(err_read_fd, error,
                    error_size > 0 ? error_size - 1 : 0);
     } while (got < 0 && errno == EINTR);
+    if (got < 0) {
+        snprintf(error, error_size, "%s: child handshake read failed",
+                 JW_INPUT_ROSTER_ERR_NAMESPACE);
+        return -1;
+    }
     if (got > 0) {
         error[got] = '\0';
         return -1;
@@ -8968,6 +8975,7 @@ static int jw__input_isolation_parent_finish(jw_daemon_state *state,
             jw_input_namespace_cleanup_dir(state->child_input_ns_dir);
             state->child_input_ns_dir[0] = '\0';
         }
+        state->launch_input_failed = true;
         jw_log_info("input namespace: setup failed; child pid=%d stopped",
                     (int)child_pid);
         return -1;
@@ -9018,6 +9026,10 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
 
     if (pid == 0) {
         jw_appearance_apply_env(&appearance);
+        if (kind == JW_CHILD_LAUNCHER && state->launch_input_failed)
+            setenv("JAWAKA_LAUNCH_INPUT_FAILED", "1", 1);
+        else
+            unsetenv("JAWAKA_LAUNCH_INPUT_FAILED");
         /* 5-Game Mode: while active, every launcher spawn (incl. return-from-game)
            re-enters the focus screen. Pass the chosen set + style so the launcher
            renders focus mode instead of the normal tab UI. */
@@ -9041,6 +9053,7 @@ static int jw__spawn_child(jw_daemon_state *state, jw_child_kind kind) {
         _exit(127);
     }
 
+    if (kind == JW_CHILD_LAUNCHER) state->launch_input_failed = false;
     state->child_pid = pid;
     state->child_kind = kind;
     jw_log_info("spawned %s pid=%d", name, (int)pid);
@@ -9243,6 +9256,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
     int err_pipe[2] = { -1, -1 };
     if (use_roster &&
         (jw__pipe_cloexec(sync_pipe) != 0 || jw__pipe_cloexec(err_pipe) != 0)) {
+        state->launch_input_failed = true;
         jw_log_error("%s app launch blocked: %s: control pipe creation failed",
                      app_is_pico8 ? "PICO-8" : "RetroArch", JW_INPUT_ROSTER_ERR_NAMESPACE);
         state->pending_app = false;
@@ -9553,6 +9567,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     int err_pipe[2] = { -1, -1 };
     if (use_roster &&
         (jw__pipe_cloexec(sync_pipe) != 0 || jw__pipe_cloexec(err_pipe) != 0)) {
+        state->launch_input_failed = true;
         jw_log_error("standalone launch blocked: %s: control pipe creation failed",
                      JW_INPUT_ROSTER_ERR_NAMESPACE);
         jw__rumble_publish_ff(NULL);
@@ -10106,6 +10121,7 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
     int err_pipe[2] = { -1, -1 };
     if (use_roster &&
         (jw__pipe_cloexec(sync_pipe) != 0 || jw__pipe_cloexec(err_pipe) != 0)) {
+        state->launch_input_failed = true;
         jw_log_error("RetroArch launch blocked: %s: control pipe creation failed",
                      JW_INPUT_ROSTER_ERR_NAMESPACE);
         goto fail;
