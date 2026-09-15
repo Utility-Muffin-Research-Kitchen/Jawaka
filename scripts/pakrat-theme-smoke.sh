@@ -2,8 +2,8 @@
 # Pak Rat themes smoke: a local feed with a themes[] lane, driven through the
 # real installer. Covers install, update in place, uninstall while selected,
 # adoption consent for a hand-made folder, bundled-name refusal, a package
-# THEME-1 refuses, a bad checksum, the 32-folder cap, a withdrawn theme, and
-# crash recovery across an update.
+# THEME-1 refuses, a corrupt archive, a bad checksum, the 32-folder cap, a
+# withdrawn theme, the store preview cache, and crash recovery across an update.
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,7 +69,8 @@ def theme_zip(path, theme_id, version, shade, extra=None):
         for name in sorted(files):
             archive.writestr(f"{theme_id}/{name}", files[name])
 
-def entry(base, theme_id, versions, withdrawn=False, sha_override=None):
+def entry(base, theme_id, versions, withdrawn=False, sha_override=None,
+          preview_sha_override=None):
     history = []
     for version in versions:
         name = f"{theme_id}-{version}.zip"
@@ -79,9 +80,11 @@ def entry(base, theme_id, versions, withdrawn=False, sha_override=None):
             "size": len(data), "installed_size": len(data) * 4,
             "sha256": sha_override or hashlib.sha256(data).hexdigest()}})
     newest = history[0]
+    preview = open(os.path.join(feed, "artifacts", "preview.png"), "rb").read()
     return {"id": theme_id, "name": theme_id.title(), "author": "Leaf Smoke",
             "owner_github_id": 1, "summary": "Smoke theme", "license": "CC0-1.0",
-            "preview": {"url": f"{base}artifacts/preview.png", "sha256": "0" * 64, "size": 1},
+            "preview": {"url": f"{base}artifacts/preview.png", "size": len(preview),
+                        "sha256": preview_sha_override or hashlib.sha256(preview).hexdigest()},
             "version": newest["version"], "min_leaf_version": "0.12.0",
             "install_name": theme_id, "artifact": newest["artifact"],
             "versions": history, "withdrawn": withdrawn}
@@ -89,12 +92,18 @@ def entry(base, theme_id, versions, withdrawn=False, sha_override=None):
 command, feed = sys.argv[1], sys.argv[2]
 if command == "archives":
     art = os.path.join(feed, "artifacts")
-    theme_zip(os.path.join(art, "neon-nights-1.0.0.zip"), "neon-nights", "1.0.0", 64)
+    with open(os.path.join(art, "preview.png"), "wb") as out:
+        out.write(png(960, 720, 90))
+    # 1.0.0 carries a label 1.1.0 dropped, so an update must remove it.
+    theme_zip(os.path.join(art, "neon-nights-1.0.0.zip"), "neon-nights", "1.0.0", 64,
+              {"grid/labels/FC.png": png(256, 64, 255)})
     theme_zip(os.path.join(art, "neon-nights-1.1.0.zip"), "neon-nights", "1.1.0", 200)
     theme_zip(os.path.join(art, "sample-1.0.0.zip"), "sample", "1.0.0", 64)
     theme_zip(os.path.join(art, "readme-theme-1.0.0.zip"), "readme-theme", "1.0.0", 64,
               {"README.md": b"not on the allowlist\n"})
     theme_zip(os.path.join(art, "bad-sha-1.0.0.zip"), "bad-sha", "1.0.0", 64)
+    with open(os.path.join(art, "corrupt-theme-1.0.0.zip"), "wb") as out:
+        out.write(b"PK\x03\x04 this is not a zip archive" * 16)
     theme_zip(os.path.join(art, "gone-theme-1.0.0.zip"), "gone-theme", "1.0.0", 64)
     theme_zip(os.path.join(art, "late-theme-1.0.0.zip"), "late-theme", "1.0.0", 64)
 else:
@@ -102,7 +111,9 @@ else:
     neon = ["1.1.0", "1.0.0"] if mode == "new" else ["1.0.0"]
     themes = [entry(base, "neon-nights", neon), entry(base, "sample", ["1.0.0"]),
               entry(base, "readme-theme", ["1.0.0"]),
-              entry(base, "bad-sha", ["1.0.0"], sha_override="f" * 64),
+              entry(base, "bad-sha", ["1.0.0"], sha_override="f" * 64,
+                    preview_sha_override="e" * 64),
+              entry(base, "corrupt-theme", ["1.0.0"]),
               entry(base, "gone-theme", ["1.0.0"], withdrawn=True),
               entry(base, "late-theme", ["1.0.0"])]
     with open(os.path.join(feed, "storefront.json"), "w") as out:
@@ -195,6 +206,7 @@ expect_line "$TMP_ROOT/install.out" "outcome: kind=theme refusal=none themes_cha
 [ "$(theme_version)" = "1.0.0" ] || fail "install: theme.json version $(theme_version)"
 [ -f "$THEME_DIR/.pakrat-commit" ] || fail "install: commit marker missing"
 [ -f "$THEME_DIR/grid/icons/FC.png" ] || fail "install: art missing"
+[ -f "$THEME_DIR/grid/labels/FC.png" ] || fail "install: label missing"
 [ "$(sql "SELECT kind||'|'||platform||'|'||install_path||'|'||version FROM pakrat_installs WHERE store_id='$THEME_ID';")" = \
   "theme|any|Themes/neon-nights|1.0.0" ] || fail "install: ownership row wrong"
 [ -z "$(ls -A "$STATE_DIR/store/staging" 2>/dev/null)" ] || fail "install: staging left behind"
@@ -210,6 +222,7 @@ run_expect 0 "$TMP_ROOT/update.out" run_smoke install "$THEME_ID"
 expect_line "$TMP_ROOT/update.out" "themes_changed=1 theme_updated=1"
 [ "$(theme_version)" = "1.1.0" ] || fail "update: theme.json version $(theme_version)"
 [ "$(cksum <"$THEME_DIR/grid/icons/FC.png")" != "$old_icon_sum" ] || fail "update: art did not change"
+[ ! -e "$THEME_DIR/grid/labels/FC.png" ] || fail "update: a file the new version dropped remains"
 [ ! -e "$SD_ROOT/Themes/.pakrat-rollback-$THEME_ID" ] || fail "update: rollback left behind"
 
 scenario "uninstall while selected clears the selection"
@@ -246,7 +259,35 @@ expect_line "$TMP_ROOT/invalid.out" "reasons=theme-unknown-file"
 scenario "a checksum mismatch is refused"
 run_expect 1 "$TMP_ROOT/sha.out" run_smoke install bad-sha
 expect_line "$TMP_ROOT/sha.out" "artifact SHA-256 mismatch"
+expect_line "$TMP_ROOT/sha.out" "refusal=checksum"
 [ ! -e "$SD_ROOT/Themes/bad-sha" ] || fail "sha: folder created"
+
+scenario "a corrupt archive is refused as an invalid theme"
+run_expect 1 "$TMP_ROOT/corrupt.out" run_smoke install corrupt-theme
+expect_line "$TMP_ROOT/corrupt.out" "refusal=invalid-theme"
+expect_line "$TMP_ROOT/corrupt.out" "reasons=theme-malformed-archive"
+[ ! -e "$SD_ROOT/Themes/corrupt-theme" ] || fail "corrupt: folder created"
+
+scenario "store previews are verified and cached by checksum"
+PREVIEW_SHA="$(shasum -a 256 "$FEED_ROOT/artifacts/preview.png" | cut -d' ' -f1)"
+PREVIEW_PATH="$STATE_DIR/store/previews/$PREVIEW_SHA.png"
+preview_requests() {
+    grep -c 'GET /artifacts/preview.png' "$TMP_ROOT/http.log" || true
+}
+run_expect 0 "$TMP_ROOT/preview.out" run_smoke preview "$THEME_ID"
+expect_line "$TMP_ROOT/preview.out" "preview: $PREVIEW_PATH"
+cmp -s "$PREVIEW_PATH" "$FEED_ROOT/artifacts/preview.png" || fail "preview: cached bytes differ"
+before="$(preview_requests)"
+[ "$before" -ge 1 ] || fail "preview: the server never saw the download"
+run_expect 0 "$TMP_ROOT/preview-cached.out" run_smoke preview "$THEME_ID"
+[ "$(preview_requests)" = "$before" ] || fail "preview: a cached preview was downloaded again"
+printf 'damaged' >"$PREVIEW_PATH"
+run_expect 0 "$TMP_ROOT/preview-repaired.out" run_smoke preview "$THEME_ID"
+cmp -s "$PREVIEW_PATH" "$FEED_ROOT/artifacts/preview.png" || fail "preview: damaged cache was trusted"
+run_expect 1 "$TMP_ROOT/preview-bad.out" run_smoke preview bad-sha
+expect_line "$TMP_ROOT/preview-bad.out" "preview: refused"
+[ ! -e "$STATE_DIR/store/previews/$(printf 'e%.0s' $(seq 64)).png" ] || fail "preview: bad checksum cached"
+[ -z "$(find "$STATE_DIR/store/previews" -name '*.download*')" ] || fail "preview: download left behind"
 
 scenario "a withdrawn theme cannot be installed"
 run_expect 1 "$TMP_ROOT/withdrawn.out" run_smoke install gone-theme

@@ -26,11 +26,13 @@ static void jw__usage(const char *argv0) {
         "       %s [options] rescan\n"
         "       %s [options] recover\n"
         "       %s [options] list\n"
+        "       %s [options] preview <store-id>\n"
         "\n"
         "  install replaces only paks Pak Rat owns; adopt also takes over a pak\n"
         "  already present on disk from a manual install.\n"
         "  recover runs only install-transition recovery (no library rescan),\n"
         "  exactly as jawakad does at startup before the first scan.\n"
+        "  preview fetches a theme's store preview into the cache the launcher uses.\n"
         "\n"
         "options:\n"
         "  --platform <id>        target platform namespace (default: PLATFORM or mac)\n"
@@ -40,7 +42,7 @@ static void jw__usage(const char *argv0) {
         "  --platform-root <path> active platform manifest root (default: <root>/.system/leaf/platforms/<platform>)\n"
         "  --runtime-dir <path>   runtime lock root (default: JAWAKA_RUNTIME_DIR or socket parent)\n"
         "  --socket <path>        optional jawakad socket to notify after install/uninstall\n",
-        argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0);
+        argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 static const char *jw__env_or_null(const char *name) {
@@ -129,7 +131,8 @@ static int jw__parse_args(int argc, char **argv, pakrat_smoke_opts *opts) {
         strcmp(opts->action, "install-target") == 0 ||
         strcmp(opts->action, "adopt") == 0 ||
         strcmp(opts->action, "repair") == 0 ||
-        strcmp(opts->action, "uninstall") == 0) {
+        strcmp(opts->action, "uninstall") == 0 ||
+        strcmp(opts->action, "preview") == 0) {
         if (i >= argc || !argv[i][0]) {
             return -1;
         }
@@ -269,6 +272,38 @@ static int jw__print_list(const jw_pakrat_context *ctx) {
     return 0;
 }
 
+/* The launcher's preview fetch, driven from the catalog listing it reads. */
+static int jw__print_preview(const jw_pakrat_context *ctx, const char *store_id) {
+    enum { JW_SMOKE_MAX_STATES = 128 };
+    jw_pakrat_app_state *states = calloc(JW_SMOKE_MAX_STATES, sizeof(*states));
+    int count = 0;
+    if (!states ||
+        jw_pakrat_list_app_states(ctx, states, JW_SMOKE_MAX_STATES, &count) != 0) {
+        fprintf(stderr, "failed to load Pak Rat app states\n");
+        free(states);
+        return -1;
+    }
+    int rc = -1;
+    for (int i = 0; i < count; i++) {
+        const jw_pakrat_catalog_package *pkg = &states[i].package;
+        if (strcmp(pkg->id, store_id) != 0) {
+            continue;
+        }
+        char path[PATH_MAX];
+        rc = jw_pakrat_fetch_preview(ctx->state_dir, pkg->preview_url,
+                                     pkg->preview_sha256, pkg->preview_size,
+                                     path, sizeof(path));
+        if (rc == 0) {
+            printf("preview: %s\n", path);
+        } else {
+            printf("preview: refused\n");
+        }
+        break;
+    }
+    free(states);
+    return rc;
+}
+
 static const char *jw__refusal_name(jw_pakrat_refusal refusal) {
     switch (refusal) {
     case JW_PAKRAT_REFUSED_NONE: return "none";
@@ -278,6 +313,7 @@ static const char *jw__refusal_name(jw_pakrat_refusal refusal) {
     case JW_PAKRAT_REFUSED_THEME_LIMIT: return "theme-limit";
     case JW_PAKRAT_REFUSED_INVALID_THEME: return "invalid-theme";
     case JW_PAKRAT_REFUSED_THEME_NOT_LISTED: return "theme-not-listed";
+    case JW_PAKRAT_REFUSED_CHECKSUM: return "checksum";
     }
     return "unknown";
 }
@@ -344,6 +380,8 @@ int main(int argc, char **argv) {
         rc = jw_pakrat_recover_installs(&recovery);
     } else if (strcmp(opts.action, "list") == 0) {
         rc = jw__print_list(&opts.ctx);
+    } else if (strcmp(opts.action, "preview") == 0) {
+        rc = jw__print_preview(&opts.ctx, opts.store_id);
     } else {
         jw__usage(argv[0]);
         rc = -1;

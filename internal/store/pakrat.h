@@ -19,6 +19,7 @@ typedef enum {
     JW_PAKRAT_REFUSED_THEME_LIMIT,     /* Themes/ already holds JW_USER_THEME_MAX folders */
     JW_PAKRAT_REFUSED_INVALID_THEME,   /* the archive failed THEME-1: theme_reasons */
     JW_PAKRAT_REFUSED_THEME_NOT_LISTED,/* the launcher's own scan did not list it */
+    JW_PAKRAT_REFUSED_CHECKSUM,        /* the download's size or SHA-256 is not the catalog's */
 } jw_pakrat_refusal;
 
 /* What a finished action means for the rest of the launcher. Pak Rat runs on
@@ -81,5 +82,24 @@ void jw_pakrat_free_uninstall_info(jw_pakrat_uninstall_info *info);
 /* Separate destructive action; never runs as an implicit part of uninstall. */
 int jw_pakrat_remove_retained_data(const jw_pakrat_context *ctx,
                                    const char *store_id);
+
+/* A theme's store preview is a catalog-hashed image, so the same bounds apply
+   as to an artifact: the advertised size, exactly, and the advertised SHA-256.
+   It is decoded whole on a 1 GB device, hence the byte and pixel caps. */
+#define JW_PAKRAT_PREVIEW_MAX_BYTES (4LL * 1024LL * 1024LL)
+#define JW_PAKRAT_PREVIEW_MAX_PX    2048
+/* Previews kept on the card; the least recently used go first. */
+#define JW_PAKRAT_PREVIEW_CACHE_MAX 64
+
+/* Fetch a theme preview into <state_dir>/store/previews/<sha256>.<png|jpg>,
+   or reuse the cached copy. A file only takes that name once its size and
+   SHA-256 match and its header says PNG or JPEG within
+   JW_PAKRAT_PREVIEW_MAX_PX per edge, so a cached name is always safe to decode.
+   HTTP is allowed only when the catalog is a developer override, as for
+   artifacts. Blocking network and file I/O: call it from a worker thread.
+   Returns 0 with the path, -1 when the preview is unavailable or refused. */
+int jw_pakrat_fetch_preview(const char *state_dir, const char *url,
+                            const char *sha256, long long size,
+                            char *out_path, size_t out_size);
 
 #endif

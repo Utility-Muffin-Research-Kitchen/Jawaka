@@ -18,6 +18,7 @@
 #include "miniz.h"
 
 #include <curl/curl.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #ifdef JW_ENABLE_FAULT_INJECTION
@@ -30,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -931,13 +933,18 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     struct stat artifact_st;
     if (stat(artifact_path, &artifact_st) != 0 ||
         (long long)artifact_st.st_size != pkg.artifact_size) {
+        jw__set_refusal(ctx, JW_PAKRAT_REFUSED_CHECKSUM);
         fprintf(stderr, "artifact size mismatch\n");
         goto cleanup;
     }
     char sha[65] = "";
     char sha_err[256];
-    if (jw_sha256_file_hex(artifact_path, sha, sha_err, sizeof(sha_err)) != 0 ||
-        strcmp(sha, pkg.artifact_sha256) != 0) {
+    if (jw_sha256_file_hex(artifact_path, sha, sha_err, sizeof(sha_err)) != 0) {
+        fprintf(stderr, "artifact SHA-256 unreadable: %s\n", sha_err);
+        goto cleanup;
+    }
+    if (strcmp(sha, pkg.artifact_sha256) != 0) {
+        jw__set_refusal(ctx, JW_PAKRAT_REFUSED_CHECKSUM);
         fprintf(stderr, "artifact SHA-256 mismatch\n");
         goto cleanup;
     }
@@ -1585,4 +1592,176 @@ int jw_pakrat_remove_retained_data(const jw_pakrat_context *ctx,
     rc = jw_pakrat_txn_remove_retained(ctx, &metadata);
     jw_pakrat_txn_metadata_destroy(&metadata);
     return rc;
+}
+
+static bool jw__preview_sha_valid(const char *sha256) {
+    if (!sha256 || strlen(sha256) != 64) {
+        return false;
+    }
+    for (const char *p = sha256; *p; p++) {
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* A cached preview is named <sha256>.png or <sha256>.jpg; anything else in the
+   folder is a download that never finished. */
+static bool jw__preview_cache_name(const char *name) {
+    size_t len = strlen(name);
+    if (len != 68 || (strcmp(name + 64, ".png") != 0 &&
+                      strcmp(name + 64, ".jpg") != 0)) {
+        return false;
+    }
+    char sha[65];
+    memcpy(sha, name, 64);
+    sha[64] = '\0';
+    return jw__preview_sha_valid(sha);
+}
+
+/* A cached copy is trusted only while it still hashes to its name. */
+static bool jw__preview_cached_ok(const char *path, const char *sha256,
+                                  long long size) {
+    struct stat st;
+    char sha[65] = "";
+    char err[256];
+    int w = 0, h = 0;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
+           (long long)st.st_size == size &&
+           jw_sha256_file_hex(path, sha, err, sizeof(err)) == 0 &&
+           strcmp(sha, sha256) == 0 &&
+           jw_user_theme_image_dims(path, &w, &h);
+}
+
+/* Keep the newest JW_PAKRAT_PREVIEW_CACHE_MAX previews, and drop unfinished
+   downloads a launcher exit left behind. Best effort: a failure only means the
+   folder stays larger than it should. */
+typedef struct {
+    char name[72];
+    time_t mtime;
+} jw__preview_entry;
+
+static int jw__preview_newest_first(const void *a, const void *b) {
+    time_t ta = ((const jw__preview_entry *)a)->mtime;
+    time_t tb = ((const jw__preview_entry *)b)->mtime;
+    return ta < tb ? 1 : ta > tb ? -1 : 0;
+}
+
+static void jw__preview_prune(const char *dir, const char *keep) {
+    DIR *d = opendir(dir);
+    if (!d) {
+        return;
+    }
+    jw__preview_entry *entries = NULL;
+    size_t count = 0, capacity = 0;
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        char path[PATH_MAX];
+        struct stat st;
+        if (entry->d_name[0] == '.' || strcmp(entry->d_name, keep) == 0 ||
+            jw__pakrat_join2(path, sizeof(path), dir, entry->d_name) != 0 ||
+            stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+            continue;
+        }
+        if (!jw__preview_cache_name(entry->d_name)) {
+            (void)unlink(path);
+            continue;
+        }
+        if (count == capacity) {
+            size_t grown = capacity ? capacity * 2 : JW_PAKRAT_PREVIEW_CACHE_MAX;
+            jw__preview_entry *next = realloc(entries, grown * sizeof(*entries));
+            if (!next) {
+                break;
+            }
+            entries = next;
+            capacity = grown;
+        }
+        snprintf(entries[count].name, sizeof(entries[count].name), "%s",
+                 entry->d_name);
+        entries[count].mtime = st.st_mtime;
+        count++;
+    }
+    closedir(d);
+    /* `keep` is the preview just stored, and counts against the cap. */
+    if (count > (size_t)JW_PAKRAT_PREVIEW_CACHE_MAX - 1) {
+        qsort(entries, count, sizeof(*entries), jw__preview_newest_first);
+        for (size_t i = JW_PAKRAT_PREVIEW_CACHE_MAX - 1; i < count; i++) {
+            char path[PATH_MAX];
+            if (jw__pakrat_join2(path, sizeof(path), dir, entries[i].name) == 0) {
+                (void)unlink(path);
+            }
+        }
+    }
+    free(entries);
+}
+
+int jw_pakrat_fetch_preview(const char *state_dir, const char *url,
+                            const char *sha256, long long size,
+                            char *out_path, size_t out_size) {
+    if (out_path && out_size > 0) {
+        out_path[0] = '\0';
+    }
+    char base[1024] = "";
+    int is_dev = 0;
+    if (!state_dir || !state_dir[0] || !url || !url[0] || !out_path ||
+        out_size == 0 || !jw__preview_sha_valid(sha256) || size <= 0 ||
+        size > JW_PAKRAT_PREVIEW_MAX_BYTES ||
+        jw_pakrat_catalog_base_url(state_dir, base, sizeof(base), &is_dev) != 0 ||
+        !jw_pakrat_catalog_url_allowed(url, is_dev)) {
+        return -1;
+    }
+    char dir[PATH_MAX];
+    if (jw__pakrat_join3(dir, sizeof(dir), state_dir, "store", "previews") != 0 ||
+        jw__pakrat_mkdir_p(dir, 0755) != 0) {
+        return -1;
+    }
+
+    static const char *const exts[] = { ".png", ".jpg" };
+    char path[PATH_MAX];
+    for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+        if (snprintf(path, sizeof(path), "%s/%s%s", dir, sha256, exts[i]) >=
+            (int)sizeof(path)) {
+            return -1;
+        }
+        if (!jw__pakrat_path_exists(path)) {
+            continue;
+        }
+        if (jw__preview_cached_ok(path, sha256, size)) {
+            (void)utimes(path, NULL);   /* most recently used */
+            return jw__pakrat_copy(out_path, out_size, path);
+        }
+        (void)unlink(path);
+    }
+
+    char download[PATH_MAX];
+    if (snprintf(download, sizeof(download), "%s/%s.download", dir, sha256) >=
+            (int)sizeof(download) ||
+        jw__download_file(url, download, size, is_dev) != 0) {
+        return -1;
+    }
+    struct stat st;
+    char sha[65] = "";
+    char err[256];
+    int w = 0, h = 0;
+    bool ok = stat(download, &st) == 0 && (long long)st.st_size == size &&
+              jw_sha256_file_hex(download, sha, err, sizeof(err)) == 0 &&
+              strcmp(sha, sha256) == 0 &&
+              jw_user_theme_image_dims(download, &w, &h) && w > 0 && h > 0 &&
+              w <= JW_PAKRAT_PREVIEW_MAX_PX && h <= JW_PAKRAT_PREVIEW_MAX_PX;
+    /* image_dims told PNG from JPEG by their bytes; the name records which. */
+    int png_w = 0, png_h = 0;
+    const char *ext = jw_user_theme_png_dims(download, &png_w, &png_h)
+                          ? ".png" : ".jpg";
+    if (!ok ||
+        snprintf(path, sizeof(path), "%s/%s%s", dir, sha256, ext) >=
+            (int)sizeof(path) ||
+        rename(download, path) != 0) {
+        fprintf(stderr, "Pak Rat preview refused: url=%s (%s)\n", url,
+                ok ? "could not store it" : "size, checksum or image header");
+        (void)unlink(download);
+        return -1;
+    }
+    jw__preview_prune(dir, strrchr(path, '/') + 1);
+    return jw__pakrat_copy(out_path, out_size, path);
 }
