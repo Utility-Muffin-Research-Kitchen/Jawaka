@@ -52,9 +52,9 @@ static void expect_provider_bound_generic(const char *label,
     expect(full, policy.release == JW_STANDALONE_RELEASE_NONE, true);
     snprintf(full, sizeof(full), "%s: no direct DRM by name", label);
     expect(full, jw_standalone_policy_requires_direct_drm(&policy, false), false);
-    snprintf(full, sizeof(full), "%s: no calibrated input by name", label);
+    snprintf(full, sizeof(full), "%s: calibrated input by provider", label);
     expect(full, jw_standalone_policy_uses_calibrated_virtual_input(&policy),
-           false);
+           true);
     snprintf(full, sizeof(full), "%s: ZIP not rejected by name", label);
     expect(full, jw_standalone_policy_supports_content(
                      &policy, "/sd/Roms/SATURN/Rampage.zip"),
@@ -286,6 +286,8 @@ int main(void) {
     }
     expect_provider_bound_generic("content-pak PORTS content path",
                                   "spoof_core", "/sd/Roms/PORTS/game.sh");
+    expect_provider_bound_generic("content-pak unrelated identity",
+                                  "fixture_core", "/sd/Apps/mlp1/Fixture.pak/run");
 
     {
         jw_standalone_policy policy = jw_standalone_policy_resolve(

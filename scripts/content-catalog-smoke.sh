@@ -136,6 +136,24 @@ assert (generation / "info/contenttest_libretro.info").read_text() == \
 PY
 echo "ok: install is visible in the same scan; pure/hybrid classification is correct"
 
+# A system whose only core is pak-relative must be discoverable too. A
+# RetroArch companion previously hid the discovery path's release-root bug.
+python3 - "$SD/Apps/mac/ContentTest.pak/pak.json" <<'PYPATH'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); manifest = json.loads(p.read_text())
+p.with_suffix('.backup').write_text(p.read_text())
+manifest['provides']['systems'][0]['default_core'] = 'contentpath'
+manifest['provides']['systems'][0]['alternate_cores'] = []
+manifest['provides']['cores'] = [c for c in manifest['provides']['cores'] if c['type'] == 'path']
+p.write_text(json.dumps(manifest))
+PYPATH
+"$SCAN" "$SD" "$DB" > "$TMP_ROOT/path-only.txt"
+grep -q $'^game\tCONTENTTEST\tgame\t' "$TMP_ROOT/path-only.txt" \
+    || { echo "FAIL: provider-bound path-only system was not indexed" >&2; exit 1; }
+mv "$SD/Apps/mac/ContentTest.pak/pak.backup" "$SD/Apps/mac/ContentTest.pak/pak.json"
+"$SCAN" "$SD" "$DB" > "$TMP_ROOT/path-restored.txt"
+echo "ok: provider-bound path-only system is discoverable"
+
 # P1-7: declared bytes are stamp inputs even when the merged JSON is unchanged.
 printf '%s\n' PNG-CHANGED > "$SD/Apps/mac/ContentTest.pak/art/icon.png"
 "$SCAN" "$SD" "$DB" > "$TMP_ROOT/fingerprint.txt"

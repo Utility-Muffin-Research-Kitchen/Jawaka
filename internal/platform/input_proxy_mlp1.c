@@ -215,7 +215,10 @@ static int jw__uinput_copy_capabilities(int input_fd, int uinput_fd) {
             }
             struct input_absinfo absinfo;
             memset(&absinfo, 0, sizeof(absinfo));
-            if (ioctl(input_fd, EVIOCGABS(code), &absinfo) == 0) {
+            if (ioctl(input_fd, EVIOCGABS(code), &absinfo) < 0) {
+                return -1;
+            }
+            {
                 struct uinput_abs_setup setup;
                 memset(&setup, 0, sizeof(setup));
                 setup.code = (uint16_t)code;
@@ -283,15 +286,17 @@ static int jw__create_virtual_gamepad(int input_fd) {
     struct input_id id;
     memset(&id, 0, sizeof(id));
     if (ioctl(input_fd, EVIOCGID, &id) != 0) {
-        id.bustype = BUS_VIRTUAL;
-        id.vendor = 0x9903;
-        id.product = 0x9913;
-        id.version = 0x0102;
+        close(ufd);
+        return -1;
     }
 
     struct uinput_setup setup;
     memset(&setup, 0, sizeof(setup));
-    snprintf(setup.name, sizeof(setup.name), "%s", JW_MLP1_INPUT_NAME);
+    if (ioctl(input_fd, EVIOCGNAME(sizeof(setup.name)), setup.name) < 0 ||
+        !setup.name[0]) {
+        close(ufd);
+        return -1;
+    }
     setup.id = id;
     setup.ff_effects_max = have_ff ? JW_MLP1_FF_EFFECTS_MAX : 0;
     if (ioctl(ufd, UI_DEV_SETUP, &setup) < 0 ||

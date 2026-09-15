@@ -1515,3 +1515,8 @@ pico8-test: | $(BUILD)/bin
 		internal/storage/sources.c internal/db/db.c internal/db/relocation.c \
 		$(LDLIBS_COMMON)
 	$(BUILD)/bin/pico8-test
+
+.PHONY: jawaka-input-roster-test
+jawaka-input-roster-test: $(BUILD)/bin/jawaka-input-roster-test
+$(BUILD)/bin/jawaka-input-roster-test: internal/platform/input_roster_test.c internal/platform/input_roster_mlp1.c internal/core/log.c | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $@ internal/platform/input_roster_test.c internal/core/log.c

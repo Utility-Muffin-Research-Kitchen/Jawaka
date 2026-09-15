@@ -13419,12 +13419,15 @@ int main(void) {
     {
         const char *status_name = getenv("JAWAKA_LAUNCH_STATUS_NAME");
         const char *status_code = getenv("JAWAKA_LAUNCH_STATUS_CODE");
-        if (status_name && status_name[0] && status_code && status_code[0]) {
+        if (getenv("JAWAKA_LAUNCH_INPUT_FAILED")) {
+            jw__launch_notice(&state, T("Controller setup failed. Restart Leaf and try again."));
+        } else if (status_name && status_name[0] && status_code && status_code[0]) {
             char notice[256];
             snprintf(notice, sizeof(notice), T("%s launcher exited (status %s)"),
                      status_name, status_code);
             jw__launch_notice(&state, notice);
         }
+        unsetenv("JAWAKA_LAUNCH_INPUT_FAILED");
         unsetenv("JAWAKA_LAUNCH_STATUS_NAME");
         unsetenv("JAWAKA_LAUNCH_STATUS_CODE");
     }
