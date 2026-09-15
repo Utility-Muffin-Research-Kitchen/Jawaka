@@ -14,6 +14,7 @@
 #include "internal/launcher/core_selection.h"
 #include "internal/launcher/standalone_policy.h"
 #include "internal/launcher/pico8.h"
+#include "cmd/jawakad/osd_client.h"
 #include "internal/platform/external_input_monitor.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
@@ -7296,6 +7297,8 @@ static void jw__stop_osd_child(jw_daemon_state *state) {
         return;
     }
 
+    /* Whatever the OSD shows goes with it, including a PICO-8 exit prompt. */
+    jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
     pid_t pid = state->osd_pid;
     kill(pid, SIGTERM);
     for (int attempt = 0; attempt < 10; attempt++) {
@@ -7364,6 +7367,8 @@ static void jw__handle_osd_exit(jw_daemon_state *state) {
     }
 
     state->osd_pid = -1;
+    /* A restarted OSD shows nothing, so no old deadline may confirm an exit. */
+    jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
     if (WIFEXITED(status)) {
         jw_log_info("jawaka-osd exited status=%d", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
@@ -7405,65 +7410,32 @@ static void jw__handle_ledd_exit(jw_daemon_state *state) {
     }
 }
 
-static int jw__osd_show_brightness(jw_daemon_state *state, int percent) {
-    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
-        return -1;
-    }
-
-    if (state->osd_pid <= 0) {
-        jw__spawn_osd(state);
-    }
-
-    char request[128];
-    snprintf(request, sizeof(request),
-             "{\"type\":\"show-brightness\",\"percent\":%d}", percent);
-
-    for (int attempt = 0; attempt < 2; attempt++) {
-        char *response = NULL;
-        size_t response_len = 0;
-        if (jw_ipc_request(state->osd_socket_path, request, strlen(request),
-                           &response, &response_len) == 0) {
-            free(response);
-            return 0;
-        }
-        free(response);
-        if (attempt == 0) {
-            usleep(100000);
-        }
-    }
-    jw_log_warn("osd brightness request failed");
-    return -1;
+static bool jw__osd_enabled(const jw_daemon_state *state) {
+    return state && state->osd_socket_path && !jw__env_is_disabled("JAWAKA_OSD");
 }
 
-static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
-                               int pending_items) {
-    if (!state || !stage || !state->osd_socket_path ||
-        jw__env_is_disabled("JAWAKA_OSD")) {
+static int jw__osd_request(void *ctx, const char *json, int timeout_ms, bool show) {
+    jw_daemon_state *state = (jw_daemon_state *)ctx;
+    if (!jw__osd_enabled(state) || !json) {
         return -1;
     }
     if (state->osd_pid <= 0) {
+        /* No OSD process shows nothing, so a hide has nothing to remove. */
+        if (!show) {
+            return 0;
+        }
+        /* Mid-shutdown there is nobody left to read a banner and the screen is
+           about to go; starting an OSD process now would only leave a stray
+           child behind. */
+        if (state->shutdown_requested || g_shutdown_requested) {
+            return -1;
+        }
         jw__spawn_osd(state);
     }
-
-    char request[128];
-    if (stage && strcmp(stage, "syncing") == 0) {
-        snprintf(request, sizeof(request),
-                 "{\"type\":\"show-game-launch\",\"stage\":\"syncing\","
-                 "\"pending_items\":%d}", pending_items < 0 ? 0 : pending_items);
-    } else {
-        snprintf(request, sizeof(request),
-                 "{\"type\":\"show-game-launch\",\"stage\":\"%s\"}",
-                 stage);
-    }
-    jw_log_info("life1: launch status stage=%s pending_items=%d",
-                stage, pending_items < 0 ? 0 : pending_items);
     char *response = NULL;
     size_t response_len = 0;
-    /* A visual hint must never extend a service's LIFE-1 acknowledgement
-     * budget. The OSD is best-effort and already supervised separately. */
-    int rc = jw_ipc_request_timeout(state->osd_socket_path, request,
-                                    strlen(request), &response, &response_len,
-                                    100);
+    int rc = jw_ipc_request_timeout(state->osd_socket_path, json, strlen(json),
+                                    &response, &response_len, timeout_ms);
     if (rc == 0) {
         cJSON *reply = response ? cJSON_Parse(response) : NULL;
         cJSON *type = reply ? cJSON_GetObjectItemCaseSensitive(reply, "type") : NULL;
@@ -7471,6 +7443,64 @@ static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
         cJSON_Delete(reply);
     }
     free(response);
+    return rc;
+}
+
+static long long jw__osd_now_ms(void *ctx) {
+    (void)ctx;
+    return jw__monotonic_ms();
+}
+
+static void jw__osd_sleep_ms(void *ctx, int ms) {
+    (void)ctx;
+    usleep((useconds_t)ms * 1000u);
+}
+
+static jw_osd_client jw__osd_client(jw_daemon_state *state) {
+    return (jw_osd_client){
+        .ctx = state,
+        .request = jw__osd_request,
+        .now_ms = jw__osd_now_ms,
+        .sleep_ms = jw__osd_sleep_ms,
+    };
+}
+
+/* Every OSD request below replaces or removes whatever the OSD shows, so each
+   one disarms the PICO-8 exit confirmation before it is sent -- including
+   when the OSD is disabled or the request times out. */
+static int jw__osd_show_brightness(jw_daemon_state *state, int percent) {
+    if (!state) {
+        return -1;
+    }
+    if (!jw__osd_enabled(state)) {
+        jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+        return -1;
+    }
+    jw_osd_client client = jw__osd_client(state);
+    if (jw_osd_client_show_level(&client, &state->pico8_exit_confirm_until_ms,
+                                 "show-brightness", percent, 30000) != 0) {
+        jw_log_warn("osd brightness request failed");
+        return -1;
+    }
+    return 0;
+}
+
+static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
+                               int pending_items) {
+    if (!state || !stage) {
+        return -1;
+    }
+    if (!jw__osd_enabled(state)) {
+        jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+        return -1;
+    }
+    jw_log_info("life1: launch status stage=%s pending_items=%d",
+                stage, pending_items < 0 ? 0 : pending_items);
+    /* A visual hint must never extend a service's LIFE-1 acknowledgement
+     * budget. The OSD is best-effort and already supervised separately. */
+    jw_osd_client client = jw__osd_client(state);
+    int rc = jw_osd_client_show_stage(&client, &state->pico8_exit_confirm_until_ms,
+                                      stage, pending_items);
     if (rc != 0) {
         jw_log_warn("life1: launch OSD request failed stage=%s",
                     stage);
@@ -7483,41 +7513,26 @@ static int jw__osd_game_launch(jw_daemon_state *state, const char *stage,
    rather than only in the log, which is the silent-loss behavior Leaf#48
    reported. Best-effort and self-dismissing: nothing waits on this. */
 static void jw__osd_settings_not_saved(jw_daemon_state *state) {
-    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
+    if (!state) {
         return;
     }
-    if (state->osd_pid <= 0) {
-        /* Mid-shutdown there is nobody left to read a banner and the screen is
-           about to go; starting an OSD process now would only leave a stray
-           child behind. The log still records the failure. */
-        if (state->shutdown_requested || g_shutdown_requested) {
-            return;
-        }
-        jw__spawn_osd(state);
+    if (!jw__osd_enabled(state)) {
+        jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+        return;
     }
-    const char *request =
-        "{\"type\":\"show-game-launch\",\"stage\":\"settings-not-saved\"}";
-    char *response = NULL;
-    size_t response_len = 0;
-    if (jw_ipc_request_timeout(state->osd_socket_path, request, strlen(request),
-                               &response, &response_len, 100) != 0) {
+    jw_osd_client client = jw__osd_client(state);
+    if (jw_osd_client_show_stage(&client, &state->pico8_exit_confirm_until_ms,
+                                 "settings-not-saved", 0) != 0) {
         jw_log_warn("retroarch app: settings-not-saved OSD request failed");
     }
-    free(response);
 }
 
 static void jw__osd_game_launch_hide(jw_daemon_state *state) {
-    if (!state || !state->osd_socket_path || state->osd_pid <= 0 ||
-        jw__env_is_disabled("JAWAKA_OSD")) {
+    if (!state) {
         return;
     }
-    const char *request = "{\"type\":\"hide-game-launch\"}";
-    char *response = NULL;
-    size_t response_len = 0;
-    (void)jw_ipc_request_timeout(state->osd_socket_path, request,
-                                 strlen(request), &response, &response_len,
-                                 100);
-    free(response);
+    jw_osd_client client = jw__osd_client(state);
+    (void)jw_osd_client_hide(&client, &state->pico8_exit_confirm_until_ms);
 }
 
 static void jw__persist_brightness(jw_daemon_state *state, int percent) {
@@ -7768,33 +7783,20 @@ static void jw__apply_persisted_led(jw_daemon_state *state) {
 }
 
 static int jw__osd_show_volume(jw_daemon_state *state, int percent) {
-    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD")) {
+    if (!state) {
         return -1;
     }
-
-    if (state->osd_pid <= 0) {
-        jw__spawn_osd(state);
+    if (!jw__osd_enabled(state)) {
+        jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+        return -1;
     }
-
-    char request[128];
-    snprintf(request, sizeof(request),
-             "{\"type\":\"show-volume\",\"percent\":%d}", percent);
-
-    for (int attempt = 0; attempt < 2; attempt++) {
-        char *response = NULL;
-        size_t response_len = 0;
-        if (jw_ipc_request(state->osd_socket_path, request, strlen(request),
-                           &response, &response_len) == 0) {
-            free(response);
-            return 0;
-        }
-        free(response);
-        if (attempt == 0) {
-            usleep(100000);
-        }
+    jw_osd_client client = jw__osd_client(state);
+    if (jw_osd_client_show_level(&client, &state->pico8_exit_confirm_until_ms,
+                                 "show-volume", percent, 30000) != 0) {
+        jw_log_warn("osd volume request failed");
+        return -1;
     }
-    jw_log_warn("osd volume request failed");
-    return -1;
+    return 0;
 }
 
 static void jw__input_volume_delta(void *userdata, int delta_percent) {
@@ -7870,13 +7872,11 @@ static bool jw__input_menu_tap(void *userdata) {
         (state->child_kind == JW_CHILD_PICO8_APP ||
          (jw__has_standalone_session(state) &&
           strcmp(state->retroarch_session.core_id, JW_PICO8_CORE) == 0))) {
-        if (!jw_pico8_exit_confirmed(&state->pico8_exit_confirm_until_ms,
-                                     jw__monotonic_ms())) {
-            /* Never arm a hidden confirmation if the OSD cannot show it. */
-            if (jw__osd_game_launch(state, "pico8-exit", 0) != 0)
-                state->pico8_exit_confirm_until_ms = 0;
-        } else {
-            jw__osd_game_launch_hide(state);
+        /* The confirmation is armed only while its prompt is shown; a prompt
+           the OSD could not show leaves it disarmed. */
+        jw_osd_client client = jw__osd_client(state);
+        if (jw_osd_client_pico8_menu(&client, &state->pico8_exit_confirm_until_ms) ==
+            JW_OSD_PICO8_MENU_CONFIRMED) {
             /* SDL turns SIGTERM into its normal quit event. Signal the native
                leader so it can save config and CARTDATA, then let the existing
                group barrier supervise any remaining downloader children. */
@@ -11482,22 +11482,18 @@ static void jw__storage_status_add_health(jw_daemon_state *state, cJSON *root,
 /* The card flipped read-only while a game or app is in front: one banner.
    Emulators are third-party; nothing here can promise they handle it. */
 static void jw__osd_storage_read_only(jw_daemon_state *state) {
-    if (!state || !state->osd_socket_path || jw__env_is_disabled("JAWAKA_OSD") ||
-        state->shutdown_requested || g_shutdown_requested) {
+    if (!state) {
         return;
     }
-    if (state->osd_pid <= 0) {
-        jw__spawn_osd(state);
+    if (!jw__osd_enabled(state) || state->shutdown_requested || g_shutdown_requested) {
+        jw_osd_client_prompt_lost(&state->pico8_exit_confirm_until_ms);
+        return;
     }
-    const char *request =
-        "{\"type\":\"show-game-launch\",\"stage\":\"storage-read-only\"}";
-    char *response = NULL;
-    size_t response_len = 0;
-    if (jw_ipc_request_timeout(state->osd_socket_path, request, strlen(request),
-                               &response, &response_len, 100) != 0) {
+    jw_osd_client client = jw__osd_client(state);
+    if (jw_osd_client_show_stage(&client, &state->pico8_exit_confirm_until_ms,
+                                 "storage-read-only", 0) != 0) {
         jw_log_warn("storage: read-only OSD request failed");
     }
-    free(response);
 }
 
 static void jw__storage_health_refresh(jw_daemon_state *state) {

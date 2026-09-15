@@ -1,4 +1,5 @@
 #include "cmd/jawaka-osd/osd_backend.h"
+#include "cmd/jawaka-osd/osd_view.h"
 
 #include "xdg-shell-client-protocol.h"
 
@@ -29,8 +30,6 @@
 #include <unistd.h>
 #include <wayland-client.h>
 
-#define JW_OSD_HIDE_AFTER_MS 1200u
-
 /* Volume and brightness: a rounded pill inset from the top-left corner. */
 #define JW_OSD_PILL_PCT        50   /* share of screen width */
 #define JW_OSD_PILL_H          60
@@ -57,11 +56,7 @@ typedef struct {
     size_t buffer_size;
     int width;
     int height;
-    int percent;
-    int mode;  /* 0 = brightness, 1 = volume, 2 = game launch */
-    jw_osd_game_stage game_stage;
-    int pending_items;
-    uint64_t hide_at;
+    jw_osd_view view;
     bool visible;
     bool configured;
 } jw_wayland_osd;
@@ -373,7 +368,7 @@ static void jw__draw_osd(void) {
     uint32_t fill = jw__argb(255, 250, 210, 92);
     uint32_t knob = jw__argb(255, 255, 240, 150);
 
-    if (s_osd.mode == 2) {
+    if (s_osd.view.kind == JW_OSD_VIEW_STAGE) {
         /* The game-launch toast keeps its own look deliberately: it is a
            message, not a level, and it is read rather than glanced at. */
         int toast_w = 520;
@@ -386,7 +381,7 @@ static void jw__draw_osd(void) {
         jw__fill_rect(pixels, s_osd.width, s_osd.height, x, y, toast_w, toast_h, bg);
         char title[64];
         char action[32];
-        jw_osd_game_launch_text(s_osd.game_stage, s_osd.pending_items,
+        jw_osd_game_launch_text(s_osd.view.stage, s_osd.view.pending_items,
                                 title, sizeof(title), action, sizeof(action));
         int title_scale = jw__text_width(title, 4) <= toast_w - 24 ? 4 : 3;
         int title_y = action[0] ? y + 14 : y + 34;
@@ -417,12 +412,13 @@ static void jw__draw_osd(void) {
     int gx  = x + JW_OSD_GLYPH_PAD + JW_OSD_GLYPH_PAD / 2;
     int gy  = y + (pill_h - box) / 2;
 
-    jw_osd_glyph *glyph = (s_osd.mode == 1) ? &s_glyph_volume : &s_glyph_brightness;
-    jw__glyph_load(glyph, (s_osd.mode == 1) ? "osd-volume" : "osd-brightness");
+    bool volume = s_osd.view.kind == JW_OSD_VIEW_VOLUME;
+    jw_osd_glyph *glyph = volume ? &s_glyph_volume : &s_glyph_brightness;
+    jw__glyph_load(glyph, volume ? "osd-volume" : "osd-brightness");
     if (glyph->pixels) {
         jw__draw_glyph(pixels, s_osd.width, s_osd.height, glyph, gx, gy, box,
                        255, 255, 255);
-    } else if (s_osd.mode == 1) {
+    } else if (volume) {
         jw__draw_speaker(pixels, s_osd.width, s_osd.height,
                          gx + box / 2, gy + box / 2, jw__premul(255, 255, 255, 255));
     } else {
@@ -438,7 +434,7 @@ static void jw__draw_osd(void) {
 
     int on_h  = JW_OSD_LINE_ON;
     int off_h = JW_OSD_LINE_OFF;
-    int on_w  = (line_w * s_osd.percent) / 100;
+    int on_w  = (line_w * s_osd.view.percent) / 100;
     if (on_w < on_h) on_w = on_h;          /* never shorter than its own cap */
 
     /* Rest of the line first, full width, so the filled part caps over it. */
@@ -456,7 +452,7 @@ static void jw__draw_osd(void) {
    one up. Both the draw and the damage call this now. */
 static void jw__toast_rect(int *out_x, int *out_y, int *out_w, int *out_h) {
     int x, y, w, h;
-    if (s_osd.mode == 2) {
+    if (s_osd.view.kind == JW_OSD_VIEW_STAGE) {
         w = 520;
         h = 96;
         if (w > s_osd.width - 48) w = s_osd.width - 48;
@@ -673,9 +669,9 @@ static int jw__show_surface(void) {
        reporting only the new rectangle can leave the old one on screen until an
        unrelated repaint. Report the whole surface across a transition and keep
        the tight rectangle for repeated updates within one mode. */
-    if (s_damaged_mode != s_osd.mode) {
+    if (s_damaged_mode != (int)s_osd.view.kind) {
         wl_surface_damage_buffer(s_osd.surface, 0, 0, s_osd.width, s_osd.height);
-        s_damaged_mode = s_osd.mode;
+        s_damaged_mode = (int)s_osd.view.kind;
     } else {
         wl_surface_damage_buffer(s_osd.surface, x, y, w, h);
     }
@@ -696,7 +692,7 @@ int jw_osd_backend_init(void) {
     memset(&s_osd, 0, sizeof(s_osd));
     s_osd.width = jw__env_int("CAT_WINDOW_WIDTH", 960);
     s_osd.height = jw__env_int("CAT_WINDOW_HEIGHT", 720);
-    s_osd.percent = 50;
+    jw_osd_view_reset(&s_osd.view);
 
     s_osd.display = wl_display_connect(NULL);
     if (!s_osd.display) {
@@ -713,39 +709,42 @@ int jw_osd_backend_init(void) {
     return 0;
 }
 
-void jw_osd_backend_show_brightness(int percent, uint64_t now_ms) {
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    s_osd.percent = percent;
-    s_osd.mode = 0;
-    s_osd.hide_at = now_ms + JW_OSD_HIDE_AFTER_MS;
-    jw__show_surface();
+/* A show the backend could not submit leaves nothing to restore later, and
+   the OSD reports the failure instead of replying ok. */
+static int jw__apply(jw_osd_view_effect effect) {
+    switch (effect) {
+        case JW_OSD_VIEW_KEEP:
+            return 0;
+        case JW_OSD_VIEW_HIDE:
+            jw__hide_surface();
+            return 0;
+        case JW_OSD_VIEW_DRAW:
+            if (jw__show_surface() == 0) return 0;
+            break;
+    }
+    jw_log_warn("osd: could not show the surface");
+    jw_osd_view_reset(&s_osd.view);
+    jw__hide_surface();
+    return -1;
 }
 
-void jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    s_osd.percent = percent;
-    s_osd.mode = 1;
-    s_osd.hide_at = now_ms + JW_OSD_HIDE_AFTER_MS;
-    jw__show_surface();
+int jw_osd_backend_show_brightness(int percent, uint64_t now_ms) {
+    return jw__apply(jw_osd_view_level(&s_osd.view, JW_OSD_VIEW_BRIGHTNESS,
+                                       percent, now_ms));
 }
 
-void jw_osd_backend_show_game_launch(jw_osd_game_stage stage,
-                                     int pending_items, uint64_t now_ms) {
-    s_osd.mode = 2;
-    s_osd.game_stage = stage;
-    s_osd.pending_items = pending_items < 0 ? 0 : pending_items;
-    s_osd.hide_at = JW_OSD_GAME_STAGE_IS_TRANSIENT(stage)
-                        ? now_ms + JW_OSD_GAME_TRANSIENT_MS
-                        : UINT64_MAX;
-    jw__show_surface();
+int jw_osd_backend_show_volume(int percent, uint64_t now_ms) {
+    return jw__apply(jw_osd_view_level(&s_osd.view, JW_OSD_VIEW_VOLUME,
+                                       percent, now_ms));
+}
+
+int jw_osd_backend_show_game_launch(jw_osd_game_stage stage,
+                                    int pending_items, uint64_t now_ms) {
+    return jw__apply(jw_osd_view_stage(&s_osd.view, stage, pending_items, now_ms));
 }
 
 void jw_osd_backend_hide_game_launch(void) {
-    if (s_osd.visible && s_osd.mode == 2) {
-        jw__hide_surface();
-    }
+    (void)jw__apply(jw_osd_view_hide_stage(&s_osd.view));
 }
 
 void jw_osd_backend_tick(uint64_t now_ms) {
@@ -753,13 +752,11 @@ void jw_osd_backend_tick(uint64_t now_ms) {
         wl_display_dispatch_pending(s_osd.display);
         wl_display_flush(s_osd.display);
     }
-    if (s_osd.visible && s_osd.hide_at != UINT64_MAX &&
-        now_ms >= s_osd.hide_at) {
-        jw__hide_surface();
-    }
+    (void)jw__apply(jw_osd_view_tick(&s_osd.view, now_ms));
 }
 
 void jw_osd_backend_shutdown(void) {
+    jw_osd_view_reset(&s_osd.view);
     jw__destroy_surface();
     if (s_osd.wm_base) {
         xdg_wm_base_destroy(s_osd.wm_base);

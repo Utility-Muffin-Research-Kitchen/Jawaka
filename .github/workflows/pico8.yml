@@ -15,3 +15,5 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       - run: make pico8-test
       - run: make osd-game-launch-test
+      - run: make osd-view-test
+      - run: make osd-client-test
