@@ -8076,6 +8076,30 @@ static bool jw__input_menu_tap(void *userdata) {
             return false;
         }
 
+        /* A content pak's path core has no Leaf-owned menu, so Menu ends it,
+           and ending it loses anything the player has not saved. Ask first,
+           with the prompt native PICO-8 uses: the first tap shows "Return to
+           Leaf?" and only a second tap inside its window quits. The prompt is
+           armed only while it is on screen. If the OSD cannot show it, quit
+           as before rather than turn Menu into a dead button. */
+        if (state->retroarch_session.standalone_policy.provider_bound) {
+            jw_osd_client client = jw__osd_client(state);
+            jw_osd_pico8_menu confirm =
+                jw_osd_client_pico8_menu(&client, &state->pico8_exit_confirm_until_ms);
+            if (confirm == JW_OSD_PICO8_MENU_ARMED) {
+                jw_log_info("menu tap: asking before quitting content-pak core id=%s pid=%d",
+                            state->retroarch_session.core_id, (int)pid);
+                return true;
+            }
+            if (confirm == JW_OSD_PICO8_MENU_CONFIRMED) {
+                jw_log_info("menu tap: quit confirmed for content-pak core id=%s pid=%d",
+                            state->retroarch_session.core_id, (int)pid);
+            } else {
+                jw_log_warn("menu tap: exit prompt unavailable; quitting content-pak core id=%s pid=%d",
+                            state->retroarch_session.core_id, (int)pid);
+            }
+        }
+
         long long now = jw__monotonic_ms();
         if (state->standalone_quit_request_ms == 0) {
             jw_log_info("menu tap: quitting standalone emulator pid=%d", (int)pid);
