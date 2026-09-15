@@ -78,6 +78,13 @@ int jw_pakrat_txn_inspect_manifest(const char *pak_dir,
                                    jw_pakrat_txn_metadata *out,
                                    char *reason, size_t reason_size);
 
+/* A theme has no pak.json and no service: its metadata is its identity and
+   display name, with nothing to revoke or retain. */
+int jw_pakrat_txn_theme_metadata(const char *store_id,
+                                 const char *install_path,
+                                 const char *display_name,
+                                 jw_pakrat_txn_metadata *out);
+
 int jw_pakrat_txn_metadata_upsert_db(sqlite3 *db,
                                      const jw_pakrat_txn_metadata *metadata);
 int jw_pakrat_txn_metadata_get(const char *db_path, const char *store_id,
@@ -99,7 +106,9 @@ int jw_pakrat_txn_clear_service_control_db(sqlite3 *db,
                                            const char *service_id);
 
 /* Complete an already-durable uninstall intent. The caller must hold TXN-1's
-   mutation lock and have proven service quiescence. */
+   mutation lock and have proven service quiescence. For a theme, the final
+   commit also sets the "user_theme" setting to None when it names the removed
+   folder, and reports that through ctx->outcome. */
 int jw_pakrat_txn_complete_uninstall(const jw_pakrat_context *ctx,
                                      const jw_pakrat_pending_uninstall *pending);
 

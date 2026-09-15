@@ -543,6 +543,12 @@ bool jw_settings_ui_handle_button(jw_settings_ui *ui, cat_button button,
 void jw_settings_ui_set_themes_root(jw_settings_ui *ui, const char *sdcard_root);
 const jw_user_theme_catalog *jw_settings_user_themes(const jw_settings_ui *ui);
 int  jw_settings_user_theme_index(const jw_settings_ui *ui);   /* -1 = None */
+/* Select user theme `index` (-1 = None) the way Layout > Theme does: persist
+   it and, when status_buf is given, report the new theme's icon check there.
+   Returns true when the selection changed, which is the caller's cue to
+   rebuild for the layout (the Layout row raises theme_changed for it). */
+bool jw_settings_ui_select_user_theme(jw_settings_ui *ui, int index,
+                                      char *status_buf, size_t status_size);
 /* Effective grid density: the user's explicit choice wins, then the selected
    theme's recommendation, else 0/0 meaning "use the stylesheet". Returns true
    when cols/rows were set by either source. */

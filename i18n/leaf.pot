@@ -44,6 +44,14 @@ msgstr ""
 msgid "%d of %d"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "%d theme"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%d themes"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "%d/%d done"
 msgstr ""
@@ -68,12 +76,56 @@ msgstr ""
 msgid "%ldm ago"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "%s can't be installed because Leaf could not read it as a theme.\n\nNothing was changed."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s can't be installed because it is not a valid theme.\n\n%s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s can't be installed because the download did not match the catalog.\n\nNothing was changed. Try again later."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s can't be installed right now"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s can't be installed.\n\nA theme that comes with Leaf already uses the folder name %s."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s can't be installed.\n\nThe Themes folder already has %d themes, the most Leaf can list. Uninstall or remove a theme to make room."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "%s first"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "%s is already your theme"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s is installed.\n\nApply it now?"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s is no longer available in Pak Rat.\n\nA copy that is already installed keeps working."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s is not installed by Pak Rat"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "%s launcher exited (status %s)"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "%s was uninstalled.\n\nIt was your current theme, so Leaf switched to no theme."
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -240,6 +292,18 @@ msgstr ""
 msgid "A broader preset may apply after you reload the game."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "A theme folder named %s is already on your SD card.\n\nReplace it with %s from Pak Rat so it can be updated? The files in that folder will be replaced."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "A theme folder with this name is already on your SD card. Installing replaces it after you confirm."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "A theme that comes with Leaf already uses this folder name, so this one can't be installed."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "A: Choose   B: Back"
 msgstr ""
@@ -320,6 +384,10 @@ msgstr ""
 msgid "All Systems"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "All rights reserved, redistribution permitted"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Already used by %s"
 msgstr ""
@@ -328,11 +396,23 @@ msgstr ""
 msgid "Amiga"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "An image in the theme is not a supported PNG or JPEG, or is too large."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Appearance"
 msgstr ""
 
-#: cmd/jawaka-menu/main.c
+#: cmd/jawaka-launcher/main.c
+msgid "Applied"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Applied %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Apply"
 msgstr ""
 
@@ -380,6 +460,10 @@ msgstr ""
 msgid "Audio Output"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Author: %s"
+msgstr ""
+
 #: internal/platform/platform_common.c
 msgid "Auto"
 msgstr ""
@@ -392,7 +476,7 @@ msgstr ""
 msgid "Automatic"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Available"
 msgstr ""
 
@@ -510,6 +594,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Button Text"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "By %s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -634,6 +722,14 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Could not save"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't install %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Couldn't uninstall %s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -794,6 +890,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Folder"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Folder: Themes/%s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -960,8 +1060,28 @@ msgstr ""
 msgid "Info"
 msgstr ""
 
-#: internal/settings/settings.c
+#: cmd/jawaka-launcher/main.c
 msgid "Install"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Install cancelled: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installed"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installed %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installed version: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Installing theme"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1029,6 +1149,10 @@ msgid "Leaf"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Leaf can't find %s in the Themes folder"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Leaf couldn't confirm your SD card can be written."
 msgstr ""
 
@@ -1072,6 +1196,10 @@ msgstr ""
 msgid "Library updating..."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "License: %s"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Lighting"
 msgstr ""
@@ -1089,6 +1217,10 @@ msgid "Load State"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "Loading preview"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "Lock"
 msgstr ""
 
@@ -1102,6 +1234,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Main SD Card"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Manual"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1225,6 +1361,10 @@ msgid "No playtime recorded yet."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
+msgid "No preview"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
 msgid "No recent games yet — play something and it'll show up here"
 msgstr ""
 
@@ -1260,6 +1400,10 @@ msgstr ""
 msgid "No states"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "No themes in Pak Rat yet"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "None"
 msgstr ""
@@ -1282,6 +1426,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Not mounted"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Not now"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1338,6 +1486,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Pak Rat Themes"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1506,6 +1658,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Reinstall"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Reinstalled %s"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2152,6 +2308,10 @@ msgstr ""
 msgid "That folder name is too long to open."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "The Themes folder already has %d themes, the most Leaf can list. Remove one to install this theme."
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "The card passed the check but couldn't be made writable. Restart your device, then try Check SD card."
 msgstr ""
@@ -2176,12 +2336,84 @@ msgstr ""
 msgid "The saved shader could not be removed."
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "The theme contains files a theme is not allowed to have."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme did not pass Leaf's checks."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme has artwork for a system name that is not valid."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme has more than one wallpaper in the same folder."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme has no preview image."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme is too large."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme uses a folder name reserved for themes that come with Leaf."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's id is not valid or does not match its folder."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's layout or color settings are not valid."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's license is not one Leaf accepts."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's name, author, version or description is not valid."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's required Leaf version is missing or not valid."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's theme.json has settings this version of Leaf does not know."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's theme.json is missing or can't be read."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's zip file contains unsafe file names or links."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's zip file is damaged or uses an unsupported format."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "The theme's zip file must hold exactly one folder."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Theme"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Theme colors"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Themes"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
@@ -2208,12 +2440,20 @@ msgstr ""
 msgid "This game"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "This is your current theme."
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "This shader could not compile or link on this video driver. Previous shader restored."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "This theme is no longer available in Pak Rat. Your installed copy keeps working."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2300,6 +2540,30 @@ msgstr ""
 msgid "Uninstall"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstall %s?\n\nThis deletes Themes/%s from your SD card."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstall %s?\n\nThis deletes Themes/%s from your SD card. It is your current theme, so Leaf will switch to no theme."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstall cancelled: %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalled %s. Switched to no theme."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Uninstalling theme"
+msgstr ""
+
 #: internal/platform/platform_common.c
 msgid "Unknown"
 msgstr ""
@@ -2332,12 +2596,24 @@ msgstr ""
 msgid "Up/Down"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Update"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Update Channel"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Update status unavailable"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updated %s to version %s"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Updating theme"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2354,6 +2630,14 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Vectrex"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version %s needs Leaf %s or newer."
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Version: %s"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -2546,6 +2830,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "space"
+msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "status|Update"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c

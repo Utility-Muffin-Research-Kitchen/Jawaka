@@ -40,6 +40,7 @@
 #include "internal/store/pakrat_state.h"
 #include "internal/store/pakrat_state_logic.h"
 #include "internal/store/pakrat_txn.h"
+#include "internal/store/theme_package.h"
 
 #include <SDL2/SDL.h>
 #include <stdatomic.h>
@@ -300,8 +301,17 @@ typedef struct {
     int                system_count;
     jw_app_entry       apps[JW_MAX_APPS];
     int                app_count;
-    jw_pakrat_app_state pakrat_apps[JW_MAX_PAKRAT_APPS];
+    /* The store listing: apps and themes together, ~7.5 KB a record, so ~1 MB
+       at JW_MAX_PAKRAT_APPS. It is on the heap only while Pak Rat is open --
+       jw__load_pakrat_store allocates it, jw__close_pakrat_store frees it. */
+    jw_pakrat_app_state *pakrat_apps;
     int                pakrat_app_count;
+    /* The section on show (apps or themes) and the listing rows it holds;
+       pakrat_list's cursor indexes pakrat_view, never pakrat_apps. */
+    jw_pakrat_kind     pakrat_section;
+    int                pakrat_view[JW_MAX_PAKRAT_APPS];
+    int                pakrat_view_count;
+    int                pakrat_section_cursor[2];   /* [0] apps, [1] themes */
     int                pakrat_load_rc;
     char               pakrat_message[160];
     bool               pakrat_open;
@@ -624,6 +634,12 @@ static void jw__draw_app_detail(const jw_launcher_state *state,
 static void jw__load_pakrat_store(jw_launcher_state *state);
 static int jw__draw_menu_tab_bar(const jw_launcher_state *state);
 static int jw__pakrat_visible_rows(const jw_launcher_state *state);
+/* Image helpers the Pak Rat theme preview draws with, defined with the cover
+   loader further down. */
+static SDL_Texture *jw__load_image_sized(const char *path, int max_dim,
+                                         int *out_w, int *out_h);
+static void jw__draw_image_fit(SDL_Texture *tex, int tex_w, int tex_h,
+                               int x, int y, int w, int h);
 
 /* Defined after the image helpers; used by the tabbed renderer above them. */
 static void jw__render_favorites(const jw_launcher_state *state,
@@ -2073,12 +2089,219 @@ static int jw__pakrat_context_from_state(const jw_launcher_state *state,
     return 0;
 }
 
+/* ---- Pak Rat theme previews -------------------------------------------------
+   A preview is a download and a checksum, so it never happens on the render
+   thread. The page asks every frame and is answered from memory: one slot per
+   preview checksum says whether the file is on its way, verified on the card,
+   or unavailable. A single worker fetches the newest request -- the theme under
+   the cursor -- through jw_pakrat_fetch_preview, which owns the download bounds,
+   the verification and the cache. The verified file then decodes through the
+   cover loader like any other art.
+
+   The worker is never joined. The launcher leaves by _Exit, and waiting for a
+   download to hit its network timeouts would hold up a game launch; a file that
+   does not finish never takes a cache name. It starts only once a listing has
+   loaded, so libcurl's global init has already run on the render thread. */
+#define JW_PAKRAT_PREVIEW_SLOTS 32
+/* Decode size for the store's preview panes: the detail page draws it at most
+   this wide, and a 960x720 source decoded smaller costs less to upload. */
+#define JW_PAKRAT_PREVIEW_DRAW_MAX 720
+
+typedef enum {
+    JW_PAKRAT_PREVIEW_PENDING = 0,
+    JW_PAKRAT_PREVIEW_READY,
+    JW_PAKRAT_PREVIEW_FAILED,
+} jw_pakrat_preview_status;
+
+typedef struct {
+    char sha256[80];                    /* "" = free */
+    jw_pakrat_preview_status status;
+    char path[PATH_MAX];                /* READY: the verified file */
+} jw_pakrat_preview_slot;
+
+typedef struct {
+    pthread_t       thread;
+    pthread_mutex_t lock;
+    pthread_cond_t  cond;
+    bool            started;
+    bool            start_failed;
+    char            state_dir[PATH_MAX];
+    /* Newest wins: a request not yet started is replaced, and its slot freed
+       so the page asks again if the user comes back to it. */
+    bool            has_req;
+    char            req_url[1024];
+    char            req_sha256[80];
+    long long       req_size;
+    char            inflight_sha256[80];
+    jw_pakrat_preview_slot slots[JW_PAKRAT_PREVIEW_SLOTS];
+    int             slot_next;          /* ring eviction cursor */
+} jw_pakrat_previews;
+
+static jw_pakrat_previews jw__pakrat_previews;
+
+static jw_pakrat_preview_slot *jw__pakrat_preview_slot(jw_pakrat_previews *P,
+                                                       const char *sha256) {
+    for (int i = 0; i < JW_PAKRAT_PREVIEW_SLOTS; i++) {
+        if (P->slots[i].sha256[0] && strcmp(P->slots[i].sha256, sha256) == 0) {
+            return &P->slots[i];
+        }
+    }
+    return NULL;
+}
+
+static void *jw__pakrat_preview_worker(void *userdata) {
+    jw_pakrat_previews *P = (jw_pakrat_previews *)userdata;
+    pthread_mutex_lock(&P->lock);
+    for (;;) {
+        while (!P->has_req) {
+            pthread_cond_wait(&P->cond, &P->lock);
+        }
+        char url[sizeof(P->req_url)];
+        char sha256[sizeof(P->req_sha256)];
+        long long size = P->req_size;
+        snprintf(url, sizeof(url), "%s", P->req_url);
+        snprintf(sha256, sizeof(sha256), "%s", P->req_sha256);
+        snprintf(P->inflight_sha256, sizeof(P->inflight_sha256), "%s", sha256);
+        P->has_req = false;
+        pthread_mutex_unlock(&P->lock);
+
+        char path[PATH_MAX];
+        int rc = jw_pakrat_fetch_preview(P->state_dir, url, sha256, size,
+                                         path, sizeof(path));
+
+        pthread_mutex_lock(&P->lock);
+        P->inflight_sha256[0] = '\0';
+        jw_pakrat_preview_slot *slot = jw__pakrat_preview_slot(P, sha256);
+        if (slot) {   /* evicted meanwhile: the page will ask again */
+            slot->status = rc == 0 ? JW_PAKRAT_PREVIEW_READY
+                                   : JW_PAKRAT_PREVIEW_FAILED;
+            snprintf(slot->path, sizeof(slot->path), "%s", rc == 0 ? path : "");
+        }
+    }
+    return NULL;
+}
+
+/* Render-thread lookup. Memory only: READY fills `path` with a file that is
+   safe to decode; PENDING queues the fetch and asks for another frame. */
+static jw_pakrat_preview_status jw__pakrat_preview(const jw_launcher_state *state,
+                                                   const jw_pakrat_catalog_package *pkg,
+                                                   char *path, size_t path_size) {
+    jw_pakrat_previews *P = &jw__pakrat_previews;
+    path[0] = '\0';
+    if (!pkg->preview_url[0] || !pkg->preview_sha256[0] || pkg->preview_size <= 0 ||
+        P->start_failed) {
+        return JW_PAKRAT_PREVIEW_FAILED;
+    }
+    if (!P->started) {
+        if (!state->state_dir[0]) {
+            return JW_PAKRAT_PREVIEW_FAILED;
+        }
+        snprintf(P->state_dir, sizeof(P->state_dir), "%s", state->state_dir);
+        pthread_mutex_init(&P->lock, NULL);
+        pthread_cond_init(&P->cond, NULL);
+        if (pthread_create(&P->thread, NULL, jw__pakrat_preview_worker, P) != 0) {
+            P->start_failed = true;
+            return JW_PAKRAT_PREVIEW_FAILED;
+        }
+        pthread_detach(P->thread);
+        P->started = true;
+    }
+
+    pthread_mutex_lock(&P->lock);
+    jw_pakrat_preview_slot *slot = jw__pakrat_preview_slot(P, pkg->preview_sha256);
+    if (slot && slot->status != JW_PAKRAT_PREVIEW_PENDING) {
+        jw_pakrat_preview_status status = slot->status;
+        snprintf(path, path_size, "%s", slot->path);
+        pthread_mutex_unlock(&P->lock);
+        return status;
+    }
+    if (!slot) {
+        slot = &P->slots[P->slot_next];
+        P->slot_next = (P->slot_next + 1) % JW_PAKRAT_PREVIEW_SLOTS;
+        snprintf(slot->sha256, sizeof(slot->sha256), "%s", pkg->preview_sha256);
+        slot->status = JW_PAKRAT_PREVIEW_PENDING;
+        slot->path[0] = '\0';
+    }
+    bool queued = strcmp(P->inflight_sha256, pkg->preview_sha256) == 0 ||
+                  (P->has_req && strcmp(P->req_sha256, pkg->preview_sha256) == 0);
+    if (!queued) {
+        if (P->has_req) {
+            jw_pakrat_preview_slot *dropped = jw__pakrat_preview_slot(P, P->req_sha256);
+            if (dropped && dropped->status == JW_PAKRAT_PREVIEW_PENDING) {
+                dropped->sha256[0] = '\0';
+            }
+        }
+        snprintf(P->req_url, sizeof(P->req_url), "%s", pkg->preview_url);
+        snprintf(P->req_sha256, sizeof(P->req_sha256), "%s", pkg->preview_sha256);
+        P->req_size = pkg->preview_size;
+        P->has_req = true;
+        pthread_cond_signal(&P->cond);
+    }
+    pthread_mutex_unlock(&P->lock);
+    cat_request_frame_in(100);
+    return JW_PAKRAT_PREVIEW_PENDING;
+}
+
+/* A refresh retries previews that failed, say while Wi-Fi was off. */
+static void jw__pakrat_previews_forget_failures(void) {
+    jw_pakrat_previews *P = &jw__pakrat_previews;
+    if (!P->started) {
+        return;
+    }
+    pthread_mutex_lock(&P->lock);
+    for (int i = 0; i < JW_PAKRAT_PREVIEW_SLOTS; i++) {
+        if (P->slots[i].status == JW_PAKRAT_PREVIEW_FAILED) {
+            P->slots[i].sha256[0] = '\0';
+        }
+    }
+    pthread_mutex_unlock(&P->lock);
+}
+
+static const jw_pakrat_app_state *jw__pakrat_selected(const jw_launcher_state *state) {
+    if (!state || !state->pakrat_apps || state->pakrat_list.cursor < 0 ||
+        state->pakrat_list.cursor >= state->pakrat_view_count) {
+        return NULL;
+    }
+    return &state->pakrat_apps[state->pakrat_view[state->pakrat_list.cursor]];
+}
+
+/* Rebuild the rows of the section on show and, once the listing loaded, the
+   header's count for that section. */
+static void jw__pakrat_build_view(jw_launcher_state *state) {
+    state->pakrat_view_count = jw_pakrat_store_section(
+        state->pakrat_apps, state->pakrat_app_count, state->pakrat_section,
+        state->pakrat_view, JW_MAX_PAKRAT_APPS);
+    if (state->pakrat_load_rc != 0) {
+        return;
+    }
+    int count = state->pakrat_view_count;
+    if (state->pakrat_section == JW_PAKRAT_KIND_THEME) {
+        snprintf(state->pakrat_message, sizeof(state->pakrat_message),
+                 count == 1 ? T("%d theme") : T("%d themes"), count);
+    } else {
+        snprintf(state->pakrat_message, sizeof(state->pakrat_message),
+                 "%d Pak Rat app%s", count, count == 1 ? "" : "s");
+    }
+}
+
+/* Put the cursor back on store_id after a reload, or on the same row when the
+   package is gone from the section. */
+static void jw__pakrat_jump_to(jw_launcher_state *state, const char *store_id,
+                               int fallback_row) {
+    int row = jw_pakrat_store_section_find(state->pakrat_apps, state->pakrat_view,
+                                           state->pakrat_view_count, store_id);
+    cat_list_state_jump(&state->pakrat_list, row >= 0 ? row : fallback_row,
+                        state->pakrat_view_count);
+}
+
 static void jw__load_pakrat_store(jw_launcher_state *state) {
     if (!state) {
         return;
     }
     state->pakrat_app_count = 0;
+    state->pakrat_view_count = 0;
     state->pakrat_message[0] = '\0';
+    jw__pakrat_previews_forget_failures();
 
     jw_pakrat_context ctx;
     if (jw__pakrat_context_from_state(state, &ctx) != 0) {
@@ -2087,6 +2310,15 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
                  "%s", "Pak Rat runtime paths unavailable");
         return;
     }
+    if (!state->pakrat_apps) {
+        state->pakrat_apps = calloc(JW_MAX_PAKRAT_APPS, sizeof(*state->pakrat_apps));
+        if (!state->pakrat_apps) {
+            state->pakrat_load_rc = -1;
+            snprintf(state->pakrat_message, sizeof(state->pakrat_message),
+                     "%s", "Pak Rat catalog unavailable");
+            return;
+        }
+    }
 
     int count = 0;
     int rc = jw_pakrat_list_app_states(&ctx, state->pakrat_apps,
@@ -2094,8 +2326,9 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
     state->pakrat_load_rc = rc;
     if (rc == 0) {
         state->pakrat_app_count = count;
-        snprintf(state->pakrat_message, sizeof(state->pakrat_message),
-                 "%d Pak Rat app%s", count, count == 1 ? "" : "s");
+        /* Apply and "Applied" read the launcher's theme scan, so bring it up
+           to date the way entering Layout does: one opendir, a few small reads. */
+        jw_settings_ui_set_themes_root(&state->settings, state->sdcard_root);
     } else if (rc > 0) {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
                  "%s", "Pak Rat catalog not configured");
@@ -2106,6 +2339,31 @@ static void jw__load_pakrat_store(jw_launcher_state *state) {
         snprintf(state->pakrat_message, sizeof(state->pakrat_message),
                  "%s", "Pak Rat catalog unavailable");
     }
+    jw__pakrat_build_view(state);
+}
+
+/* Leaving Pak Rat, from any of its exits. */
+static void jw__close_pakrat_store(jw_launcher_state *state) {
+    state->pakrat_open = false;
+    state->pakrat_detail_open = false;
+    free(state->pakrat_apps);
+    state->pakrat_apps = NULL;
+    state->pakrat_app_count = 0;
+    state->pakrat_view_count = 0;
+}
+
+/* Y on the store list swaps between the apps and themes sections, each keeping
+   its own cursor. */
+static void jw__pakrat_switch_section(jw_launcher_state *state) {
+    bool themes = state->pakrat_section == JW_PAKRAT_KIND_THEME;
+    state->pakrat_section_cursor[themes ? 1 : 0] = state->pakrat_list.cursor;
+    state->pakrat_section = themes ? JW_PAKRAT_KIND_APP : JW_PAKRAT_KIND_THEME;
+    jw__pakrat_build_view(state);
+    cat_list_state_jump(&state->pakrat_list,
+                        state->pakrat_section_cursor[themes ? 0 : 1],
+                        state->pakrat_view_count);
+    snprintf(state->status, sizeof(state->status), "%s", state->pakrat_message);
+    cat_ui_feedback_emit(CAT_UI_MOVED);
 }
 
 static void jw__switch_tab(jw_launcher_state *state, int direction, const char *db_path) {
@@ -2145,7 +2403,7 @@ static void jw__switch_tab(jw_launcher_state *state, int direction, const char *
 
 typedef struct { const jw_system_entry *systems; } jw__games_ctx;
 typedef struct { const jw_app_entry   *apps;    } jw__apps_ctx;
-typedef struct { const jw_pakrat_app_state *apps; } jw__pakrat_ctx;
+typedef struct { const jw_launcher_state *st; } jw__pakrat_ctx;
 typedef struct { const jw_game_entry  *games; const jw_launcher_state *st; } jw__roms_ctx;
 typedef struct { const jw_search_result *results; } jw__search_ctx;
 
@@ -2290,6 +2548,171 @@ static bool jw__pakrat_can_uninstall(const jw_pakrat_app_state *app) {
     return app && !app->managed && app->installed_owned;
 }
 
+/* Theme facts the store reads from the launcher's own theme scan, in memory:
+   whether the installed folder is listed (so Apply can select it) and whether
+   it is the selected theme. */
+static bool jw__pakrat_theme_listed(const jw_launcher_state *state,
+                                    const jw_pakrat_app_state *app) {
+    return jw_user_themes_find(jw_settings_user_themes(&state->settings),
+                               app->package.install_name) >= 0;
+}
+
+static bool jw__pakrat_theme_applied(const jw_launcher_state *state,
+                                     const jw_pakrat_app_state *app) {
+    return app->installed_owned &&
+           jw_settings_user_theme_index(&state->settings) >= 0 &&
+           strcmp(state->settings.user_theme_dir, app->package.install_name) == 0;
+}
+
+static jw_pakrat_theme_action jw__pakrat_theme_action(const jw_launcher_state *state,
+                                                      const jw_pakrat_app_state *app) {
+    return jw_pakrat_theme_primary_action(app, jw__pakrat_theme_listed(state, app),
+                                          jw__pakrat_theme_applied(state, app));
+}
+
+/* Row and detail status for a theme. Translated here, since it is drawn as
+   text rather than handed to the footer. */
+static const char *jw__pakrat_theme_status_label(const jw_launcher_state *state,
+                                                 const jw_pakrat_app_state *app) {
+    /* theme_slots_full is only set when installing would add a folder, so a
+       full Themes/ never marks an installed theme or a replaceable folder. */
+    if (app->package.withdrawn || app->theme_name_reserved || app->theme_slots_full) {
+        return T("Unavailable");
+    }
+    switch (app->status) {
+        case JW_PAKRAT_APP_AVAILABLE:        return T("Available");
+        case JW_PAKRAT_APP_UPDATE_AVAILABLE: return T("status|Update");
+        case JW_PAKRAT_APP_UNMANAGED:        return T("Manual");
+        case JW_PAKRAT_APP_INSTALLED:
+        case JW_PAKRAT_APP_STALE:
+        default:
+            return jw__pakrat_theme_applied(state, app) ? T("Applied") : T("Installed");
+    }
+}
+
+/* The theme's A label, untranslated: the footer translates its labels. */
+static const char *jw__pakrat_theme_action_label(const jw_launcher_state *state,
+                                                 const jw_pakrat_app_state *app) {
+    switch (jw__pakrat_theme_action(state, app)) {
+        case JW_PAKRAT_THEME_ACTION_INSTALL:
+        case JW_PAKRAT_THEME_ACTION_ADOPT:     return JW_UI("Install");
+        case JW_PAKRAT_THEME_ACTION_UPDATE:    return JW_UI("Update");
+        case JW_PAKRAT_THEME_ACTION_REINSTALL: return JW_UI("Reinstall");
+        case JW_PAKRAT_THEME_ACTION_APPLY:     return JW_UI("Apply");
+        case JW_PAKRAT_THEME_ACTION_APPLIED:   return JW_UI("Applied");
+        case JW_PAKRAT_THEME_ACTION_NONE:
+        default:                               return JW_UI("Unavailable");
+    }
+}
+
+/* THEME-1 names the rule a package broke; the user needs to know what that
+   means for them. Reasons that read the same to a user share a sentence. */
+static const char *jw__pakrat_theme_reason_text(jw_theme_reason reason) {
+    switch (reason) {
+        case JW_THEME_ARCHIVE_TOO_LARGE:
+        case JW_THEME_TOO_MANY_ENTRIES:
+        case JW_THEME_UNCOMPRESSED_TOO_LARGE:
+        case JW_THEME_COMPRESSION_RATIO:
+            return T("The theme is too large.");
+        case JW_THEME_MALFORMED_ARCHIVE:
+        case JW_THEME_UNSUPPORTED_COMPRESSION:
+            return T("The theme's zip file is damaged or uses an unsupported format.");
+        case JW_THEME_ENTRY_NAME_ENCODING:
+        case JW_THEME_ABSOLUTE_PATH:
+        case JW_THEME_BACKSLASH_PATH:
+        case JW_THEME_PATH_TRAVERSAL:
+        case JW_THEME_SYMLINK:
+        case JW_THEME_SPECIAL_FILE:
+        case JW_THEME_DUPLICATE_ENTRY:
+            return T("The theme's zip file contains unsafe file names or links.");
+        case JW_THEME_HIDDEN_FILE:
+        case JW_THEME_UNKNOWN_FILE:
+            return T("The theme contains files a theme is not allowed to have.");
+        case JW_THEME_NOT_SINGLE_FOLDER:
+            return T("The theme's zip file must hold exactly one folder.");
+        case JW_THEME_SYSTEM_ID_INVALID:
+        case JW_THEME_RESERVED_SYSTEM_ID:
+            return T("The theme has artwork for a system name that is not valid.");
+        case JW_THEME_MULTIPLE_WALLPAPERS:
+            return T("The theme has more than one wallpaper in the same folder.");
+        case JW_THEME_MISSING_MANIFEST:
+        case JW_THEME_MANIFEST_TOO_LARGE:
+        case JW_THEME_MALFORMED_MANIFEST:
+            return T("The theme's theme.json is missing or can't be read.");
+        case JW_THEME_MISSING_PREVIEW:
+            return T("The theme has no preview image.");
+        case JW_THEME_ID_MISMATCH:
+        case JW_THEME_ID_INVALID:
+            return T("The theme's id is not valid or does not match its folder.");
+        case JW_THEME_RESERVED_NAME:
+            return T("The theme uses a folder name reserved for themes that come with Leaf.");
+        case JW_THEME_UNSUPPORTED_IMAGE:
+        case JW_THEME_IMAGE_DIMENSIONS:
+            return T("An image in the theme is not a supported PNG or JPEG, or is too large.");
+        case JW_THEME_UNKNOWN_SCHEMA:
+        case JW_THEME_UNKNOWN_FIELD:
+            return T("The theme's theme.json has settings this version of Leaf does not know.");
+        case JW_THEME_NAME_INVALID:
+        case JW_THEME_AUTHOR_INVALID:
+        case JW_THEME_VERSION_INVALID:
+        case JW_THEME_DESCRIPTION_INVALID:
+            return T("The theme's name, author, version or description is not valid.");
+        case JW_THEME_MIN_LEAF_VERSION:
+            return T("The theme's required Leaf version is missing or not valid.");
+        case JW_THEME_UNKNOWN_LICENSE:
+            return T("The theme's license is not one Leaf accepts.");
+        case JW_THEME_GRID_INVALID:
+        case JW_THEME_COLOR_INVALID:
+        case JW_THEME_COLOR_LEVEL_INVALID:
+        case JW_THEME_STATUS_STYLE_INVALID:
+            return T("The theme's layout or color settings are not valid.");
+        case JW_THEME_REASON_COUNT:
+            break;
+    }
+    return T("The theme did not pass Leaf's checks.");
+}
+
+/* Catalog license ids as people write them. The Creative Commons names are
+   proper nouns and stay as they are. */
+static const char *jw__pakrat_license_label(const char *license) {
+    if (strcmp(license, "CC-BY-4.0") == 0)    return "CC BY 4.0";
+    if (strcmp(license, "CC-BY-SA-4.0") == 0) return "CC BY-SA 4.0";
+    if (strcmp(license, "CC0-1.0") == 0)      return "CC0 1.0";
+    if (strcmp(license, "redistribution-permitted") == 0)
+        return T("All rights reserved, redistribution permitted");
+    return license;
+}
+
+/* A theme's store preview, contain-fit in the box, over a placeholder panel
+   that stays while the file is fetched or decoded, and says so when there is
+   no preview to show. */
+static void jw__draw_pakrat_preview(const jw_launcher_state *state,
+                                    const jw_pakrat_app_state *app,
+                                    int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    cat_draw_rounded_rect(x, y, w, h, CAT_S(8), cat_hex_to_color("#ffffff10"));
+    char path[PATH_MAX];
+    jw_pakrat_preview_status status = jw__pakrat_preview(state, &app->package,
+                                                         path, sizeof(path));
+    if (status == JW_PAKRAT_PREVIEW_READY) {
+        int tex_w = 0, tex_h = 0;
+        SDL_Texture *tex = jw__load_image_sized(path, JW_PAKRAT_PREVIEW_DRAW_MAX,
+                                                &tex_w, &tex_h);
+        jw__draw_image_fit(tex, tex_w, tex_h, x, y, w, h);
+        return;
+    }
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+    const char *label = status == JW_PAKRAT_PREVIEW_FAILED ? T("No preview")
+                                                           : T("Loading preview");
+    int label_w = cat_measure_text(small, label);
+    if (label_w > w - CAT_S(16)) label_w = w - CAT_S(16);
+    cat_draw_text_ellipsized(small, label, x + (w - label_w) / 2,
+                             y + (h - TTF_FontHeight(small)) / 2,
+                             cat_get_theme()->hint, w - CAT_S(16));
+}
+
 static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
                                  float focus, void *user) {
     jw__pakrat_ctx *ctx = (jw__pakrat_ctx *)user;
@@ -2297,8 +2720,11 @@ static void jw__draw_pakrat_item(int idx, int ix, int iy, int iw, int ih,
     TTF_Font *body      = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small     = cat_get_font(CAT_FONT_SMALL);
 
-    const jw_pakrat_app_state *app = &ctx->apps[idx];
-    const char *status = jw__pakrat_status_label(app->status);
+    const jw_pakrat_app_state *app =
+        &ctx->st->pakrat_apps[ctx->st->pakrat_view[idx]];
+    const char *status = app->package.kind == JW_PAKRAT_KIND_THEME
+        ? jw__pakrat_theme_status_label(ctx->st, app)
+        : jw__pakrat_status_label(app->status);
 
     int pill_h = TTF_FontHeight(body) + CAT_S(6);
     int pill_y = iy + (ih - pill_h) / 2;
@@ -2527,6 +2953,43 @@ static void jw__draw_pakrat_detail(const jw_launcher_state *state,
     SDL_RenderSetClipRect(cat_get_renderer(), NULL);
 }
 
+/* List-page pane for a theme: the preview first, since a theme is chosen by
+   how it looks, then its author and summary. The full description and the
+   rest of the metadata are on the detail page. */
+static void jw__draw_pakrat_theme_pane(const jw_launcher_state *state,
+                                       const jw_pakrat_app_state *app,
+                                       int x, int y, int w, int h) {
+    ap_theme *theme = cat_get_theme();
+    TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
+    TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
+
+    cat_draw_rounded_rect(x, y, w, h, CAT_S(8), cat_hex_to_color("#ffffff10"));
+    int pad = CAT_S(18);
+    int preview_w = w - pad * 2;
+    int preview_h = preview_w * 3 / 4;          /* THEME-1 previews are 4:3 */
+    if (preview_h > h * 60 / 100) {
+        preview_h = h * 60 / 100;
+        preview_w = preview_h * 4 / 3;
+    }
+    jw__draw_pakrat_preview(state, app, x + (w - preview_w) / 2, y + pad,
+                            preview_w, preview_h);
+
+    SDL_Rect clip = { x, y, w, h };
+    SDL_RenderSetClipRect(cat_get_renderer(), &clip);
+    int cy = y + pad + preview_h + CAT_S(12);
+    if (app->package.author[0]) {
+        char line[192];
+        snprintf(line, sizeof(line), T("By %s"), app->package.author);
+        cat_draw_text_ellipsized(small, line, x + pad, cy, theme->hint, w - pad * 2);
+        cy += TTF_FontHeight(small) + CAT_S(8);
+    }
+    if (app->package.summary[0]) {
+        cat_draw_text_wrapped(body, app->package.summary, x + pad, cy, w - pad * 2,
+                              theme->text, CAT_ALIGN_LEFT);
+    }
+    SDL_RenderSetClipRect(cat_get_renderer(), NULL);
+}
+
 static int jw__pakrat_title_h(void) {
     return CAT_S(12) + TTF_FontHeight(cat_get_font(CAT_FONT_LARGE)) + CAT_S(10);
 }
@@ -2567,10 +3030,100 @@ static int jw__draw_pakrat_header(const jw_launcher_state *state, const char *ti
 }
 
 typedef struct {
+    const jw_launcher_state *state;
     const jw_pakrat_app_state *app;
     TTF_Font *body;
     TTF_Font *small;
 } jw__pakrat_detail_ctx;
+
+/* A theme's detail body, measured and drawn by the same walk so the scroll
+   view's bounds cannot drift from what is drawn: status, preview, what the
+   store can tell the user about this theme, the description, then the facts. */
+static int jw__pakrat_theme_detail_walk(const jw__pakrat_detail_ctx *c,
+                                        int x, int y, int w, bool draw) {
+    const jw_pakrat_app_state *app = c->app;
+    ap_theme *theme = cat_get_theme();
+    int cy = y;
+    char line[768];
+
+    if (draw) {
+        cat_draw_text(c->small, jw__pakrat_theme_status_label(c->state, app), x, cy,
+                      app->package.withdrawn ? theme->highlight : theme->hint);
+    }
+    cy += TTF_FontHeight(c->small) + CAT_S(14);
+
+    int preview_w = w < CAT_S(560) ? w : CAT_S(560);
+    int preview_h = preview_w * 3 / 4;
+    if (draw) {
+        jw__draw_pakrat_preview(c->state, app, x, cy, preview_w, preview_h);
+    }
+    cy += preview_h + CAT_S(18);
+
+    /* One note at most: the thing that decides what A does. */
+    const char *note = NULL;
+    bool warn = true;
+    if (app->package.withdrawn) {
+        note = T("This theme is no longer available in Pak Rat. Your installed copy keeps working.");
+    } else if (app->theme_name_reserved) {
+        note = T("A theme that comes with Leaf already uses this folder name, so this one can't be installed.");
+    } else if (app->theme_slots_full) {
+        snprintf(line, sizeof(line),
+                 T("The Themes folder already has %d themes, the most Leaf can list. Remove one to install this theme."),
+                 JW_USER_THEME_MAX);
+        note = line;
+    } else if (app->status == JW_PAKRAT_APP_UNMANAGED) {
+        note = T("A theme folder with this name is already on your SD card. Installing replaces it after you confirm.");
+    } else if (jw__pakrat_theme_applied(c->state, app)) {
+        note = T("This is your current theme.");
+        warn = false;
+    } else if (app->gated_version[0] && app->gated_min_leaf_version[0]) {
+        snprintf(line, sizeof(line), T("Version %s needs Leaf %s or newer."),
+                 app->gated_version, app->gated_min_leaf_version);
+        note = line;
+    }
+    if (note) {
+        if (draw) {
+            cat_draw_text_wrapped(c->body, note, x, cy, w,
+                                  warn ? theme->highlight : theme->text, CAT_ALIGN_LEFT);
+        }
+        cy += cat_measure_wrapped_text_height(c->body, note, w) + CAT_S(18);
+    }
+
+    const char *about = app->package.description[0] ? app->package.description
+                                                    : app->package.summary;
+    if (about[0]) {
+        if (draw) {
+            cat_draw_text_wrapped(c->body, about, x, cy, w, theme->text, CAT_ALIGN_LEFT);
+        }
+        cy += cat_measure_wrapped_text_height(c->body, about, w) + CAT_S(18);
+    }
+
+    int row_h = TTF_FontHeight(c->small) + CAT_S(8);
+    for (int row = 0; row < 5; row++) {
+        switch (row) {
+            case 0: snprintf(line, sizeof(line), T("Author: %s"),
+                             app->package.author[0] ? app->package.author : "-"); break;
+            case 1: snprintf(line, sizeof(line), T("License: %s"),
+                             jw__pakrat_license_label(app->package.license)); break;
+            case 2: snprintf(line, sizeof(line), T("Version: %s"), app->package.version); break;
+            case 3:
+                /* Nothing Pak Rat installed, including a hand-made folder. */
+                if (!app->installed_version[0]) {
+                    continue;
+                }
+                snprintf(line, sizeof(line), T("Installed version: %s"),
+                         app->installed_version);
+                break;
+            default: snprintf(line, sizeof(line), T("Folder: Themes/%s"),
+                              app->package.install_name); break;
+        }
+        if (draw) {
+            cat_draw_text_ellipsized(c->small, line, x, cy, theme->hint, w);
+        }
+        cy += row_h;
+    }
+    return cy - y;
+}
 
 /* Natural height of the drilled-in detail content (status + full description +
    the version/path rows). Mirrors the layout jw__draw_pakrat_detail_content
@@ -2619,6 +3172,10 @@ static int jw__pakrat_detail_content_h(const jw_pakrat_app_state *app,
 static void jw__draw_pakrat_detail_content(int x, int y, int w, void *user) {
     const jw__pakrat_detail_ctx *c = (const jw__pakrat_detail_ctx *)user;
     const jw_pakrat_app_state *app = c->app;
+    if (app->package.kind == JW_PAKRAT_KIND_THEME) {
+        (void)jw__pakrat_theme_detail_walk(c, x, y, w, true);
+        return;
+    }
     ap_theme *theme = cat_get_theme();
     int cy = y;
 
@@ -2704,9 +3261,11 @@ static void jw__render_pakrat_detail_page(const jw_launcher_state *state,
 
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
-    int content_h = jw__pakrat_detail_content_h(app, body, small, w);
+    jw__pakrat_detail_ctx ctx = { state, app, body, small };
+    int content_h = app->package.kind == JW_PAKRAT_KIND_THEME
+        ? jw__pakrat_theme_detail_walk(&ctx, x, top, w, false)
+        : jw__pakrat_detail_content_h(app, body, small, w);
 
-    jw__pakrat_detail_ctx ctx = { app, body, small };
     cat_draw_scroll_view(x, top, w, h, content_h,
                          (cat_scroll_state *)&state->pakrat_detail_scroll,
                          jw__draw_pakrat_detail_content, &ctx);
@@ -2718,25 +3277,25 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
     TTF_Font *body  = cat_get_font(CAT_FONT_MEDIUM);
     int margin = CAT_S(12);
 
-    const jw_pakrat_app_state *selected = NULL;
-    if (state->pakrat_app_count > 0 &&
-        state->pakrat_list.cursor >= 0 &&
-        state->pakrat_list.cursor < state->pakrat_app_count) {
-        selected = &state->pakrat_apps[state->pakrat_list.cursor];
-    }
+    bool themes = state->pakrat_section == JW_PAKRAT_KIND_THEME;
+    const jw_pakrat_app_state *selected = jw__pakrat_selected(state);
     bool detail = state->pakrat_detail_open && selected != NULL;
 
     if (detail) {
         jw__render_pakrat_detail_page(state, selected);
     } else {
-        int header_h = jw__draw_pakrat_header(state, "Pak Rat");
+        int header_h = jw__draw_pakrat_header(state,
+                                              themes ? T("Pak Rat Themes") : "Pak Rat");
 
         SDL_Rect list, image;
         int item_h;
-        jw__browse_boxes(state, header_h, state->pakrat_app_count,
+        jw__browse_boxes(state, header_h, state->pakrat_view_count,
                          &state->pakrat_list, &list, &image, &item_h);
 
-        if (selected) {
+        if (selected && themes) {
+            jw__draw_pakrat_theme_pane(state, selected,
+                                       image.x, image.y, image.w, image.h);
+        } else if (selected) {
             jw__draw_pakrat_detail(state, selected,
                                    image.x, image.y, image.w, image.h);
         } else {
@@ -2744,17 +3303,19 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
                 cat_hex_to_color("#ffffff18"));
         }
 
-        if (state->pakrat_app_count == 0) {
-            const char *msg = state->pakrat_message[0]
-                ? state->pakrat_message
-                : "No Pak Rat apps found";
+        if (state->pakrat_view_count == 0) {
+            const char *msg = themes
+                ? (state->pakrat_load_rc == 0 ? T("No themes in Pak Rat yet")
+                                              : state->pakrat_message)
+                : (state->pakrat_message[0] ? state->pakrat_message
+                                            : "No Pak Rat apps found");
             cat_draw_text_wrapped(body, msg,
                 list.x + CAT_S(8), list.y + CAT_S(8),
                 list.w - margin * 2, theme->hint, CAT_ALIGN_LEFT);
         } else {
-            jw__pakrat_ctx ctx = { state->pakrat_apps };
+            jw__pakrat_ctx ctx = { state };
             jw__draw_browse_list(list.x, list.y, list.w, list.h,
-                state->pakrat_app_count, &state->pakrat_list, item_h,
+                state->pakrat_view_count, &state->pakrat_list, item_h,
                 jw__draw_pakrat_item, &ctx);
         }
     }
@@ -2768,9 +3329,17 @@ static void jw__render_pakrat_store(const jw_launcher_state *state) {
         }
         footer[footer_count++] = (cat_footer_item){ CAT_BTN_B, "Back", true, JW_HINT("B") };
         footer[footer_count++] = (cat_footer_item){
-            CAT_BTN_A, jw__pakrat_primary_action_label(selected), true, JW_HINT("A")
+            CAT_BTN_A,
+            selected->package.kind == JW_PAKRAT_KIND_THEME
+                ? jw__pakrat_theme_action_label(state, selected)
+                : jw__pakrat_primary_action_label(selected),
+            true, JW_HINT("A")
         };
     } else {
+        /* The other section's name: Y goes there. */
+        footer[footer_count++] = (cat_footer_item){
+            CAT_BTN_Y, themes ? JW_UI("Apps") : JW_UI("Themes"), false, JW_HINT("Y")
+        };
         footer[footer_count++] = (cat_footer_item){ CAT_BTN_B, "Back", true, JW_HINT("B") };
         footer[footer_count++] = (cat_footer_item){
             CAT_BTN_A, "Details", selected != NULL, JW_HINT("A")
@@ -3841,7 +4410,15 @@ static SDL_Texture *jw__load_catalog_page_image(const jw_launcher_state *state,
 /* The wallpaper covers the whole panel, so it is the one image that must not
    go through the cover thumbnailer: a 384px thumbnail stretched to fill 960x720
    is visibly blocky. Decode it at full size and let the texture cache hold it.
-   Drawn every frame, it stays at the head of the LRU, so this costs one decode. */
+   Drawn every frame, it stays at the head of the LRU, so this costs one decode.
+
+   Full size is also why it is capped: the header is read first, and a file over
+   JW_USER_THEME_WALLPAPER_MAX_PX per edge (or with no readable header) is never
+   decoded. A refusal or a failed decode is remembered by path, so it costs a
+   string compare per frame rather than a file read, until the next layout
+   rebuild re-resolves the wallpaper. */
+static char s_wallpaper_refused[PATH_MAX];
+
 static SDL_Texture *jw__load_wallpaper(const char *path, int *out_w, int *out_h) {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
@@ -3854,14 +4431,26 @@ static SDL_Texture *jw__load_wallpaper(const char *path, int *out_w, int *out_h)
         if (out_h) *out_h = h;
         return cached;
     }
+    if (strcmp(path, s_wallpaper_refused) == 0) return NULL;
+    if (!jw_user_theme_wallpaper_ok(path)) {
+        jw_log_warn("wallpaper %s: over %dpx or unreadable; not drawn", path,
+                    JW_USER_THEME_WALLPAPER_MAX_PX);
+        snprintf(s_wallpaper_refused, sizeof(s_wallpaper_refused), "%s", path);
+        return NULL;
+    }
 
     SDL_Surface *surf = IMG_Load(path);
-    if (!surf) return NULL;
-    SDL_Texture *tex = cat_texture_from_surface(surf);
-    w = surf->w;
-    h = surf->h;
-    SDL_FreeSurface(surf);
-    if (!tex) return NULL;
+    SDL_Texture *tex = surf ? cat_texture_from_surface(surf) : NULL;
+    if (surf) {
+        w = surf->w;
+        h = surf->h;
+        SDL_FreeSurface(surf);
+    }
+    if (!tex) {
+        /* A file that will not decode is not retried every frame either. */
+        snprintf(s_wallpaper_refused, sizeof(s_wallpaper_refused), "%s", path);
+        return NULL;
+    }
 
     cat_cache_put(path, tex, w, h);
     if (out_w) *out_w = w;
@@ -6322,7 +6911,7 @@ static void jw__open_pakrat_store(jw_launcher_state *state) {
 
     jw__load_pakrat_store(state);
     cat_list_state_init(&state->pakrat_list, jw__pakrat_visible_rows(state));
-    cat_list_state_jump(&state->pakrat_list, old_cursor, state->pakrat_app_count);
+    cat_list_state_jump(&state->pakrat_list, old_cursor, state->pakrat_view_count);
     snprintf(state->status, sizeof(state->status), "%s",
              state->pakrat_message[0] ? state->pakrat_message : "Pak Rat");
 }
@@ -6373,6 +6962,9 @@ static bool jw__grid_region_light(SDL_Surface *rgba, int x0, int x1, int y0, int
 }
 
 static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
+    /* Re-resolved on every layout rebuild, so a wallpaper fixed on the card
+       gets another chance then. */
+    s_wallpaper_refused[0] = '\0';
     state->grid_wallpaper[0] = '\0';
     state->grid_status_dark  = false;   /* default: light icons on a dark stage */
     state->grid_count_dark   = false;
@@ -6381,6 +6973,14 @@ static void jw__grid_resolve_wallpaper(jw_launcher_state *state) {
     const jw_user_theme_catalog *cat = jw_settings_user_themes(&state->settings);
     if (!jw_user_theme_wallpaper_path(cat, ti, "grid", state->grid_wallpaper,
                                       sizeof(state->grid_wallpaper))) {
+        state->grid_wallpaper[0] = '\0';
+        return;
+    }
+    /* Checked here, once per layout rebuild, so an over-cap wallpaper is never
+       decoded for sampling either. */
+    if (!jw_user_theme_wallpaper_ok(state->grid_wallpaper)) {
+        jw_log_warn("wallpaper %s: over %dpx or unreadable; not drawn",
+                    state->grid_wallpaper, JW_USER_THEME_WALLPAPER_MAX_PX);
         state->grid_wallpaper[0] = '\0';
         return;
     }
@@ -6494,6 +7094,15 @@ static bool jw__grid_file_exists(const char *path) {
     return path && path[0] && access(path, R_OK) == 0;
 }
 
+/* A label from the card (a ROM folder or a user theme) must be a PNG within
+   the tile art cap before it can reach the decoder, as icons and wordmarks
+   already are. Read once per tile per rebuild, never per frame. */
+static bool jw__grid_label_ok(const char *path) {
+    int w = 0, h = 0;
+    return path && path[0] && jw_user_theme_png_dims(path, &w, &h) &&
+           w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX;
+}
+
 /* Memo copy: a label path that does not fit the memo is dropped, not
    truncated -- a truncated path is never a real file. memcpy rather than a
    %s format so gcc's truncation analysis has nothing to flag. */
@@ -6520,14 +7129,14 @@ static SDL_Texture *jw__grid_label(void *ctx, int idx, int *tw, int *th) {
         const char *rom_dir = code[0] != '_' ? jw__system_rom_folder(state, code, folder, sizeof(folder)) : NULL;
         if (rom_dir && state->sdcard_root[0]) {
             n = snprintf(cand, sizeof(cand), "%s/Roms/%s/label.png", state->sdcard_root, rom_dir);
-            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_file_exists(cand))
+            if (n > 0 && (size_t)n < sizeof(cand) && jw__grid_label_ok(cand))
                 jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
         }
         int ti = jw_settings_user_theme_index(&state->settings);
         if (!state->grid_label_path[idx][0] && ti >= 0 &&
             jw_user_theme_label_path(jw_settings_user_themes(&state->settings), ti,
                                      "grid", code, cand, sizeof(cand)) &&
-            jw__grid_file_exists(cand))
+            jw__grid_label_ok(cand))
             jw__grid_memo_path(state->grid_label_path[idx], sizeof(state->grid_label_path[idx]), cand);
         if (!state->grid_label_path[idx][0]) {
             const cat_stylesheet *ss = cat_get_stylesheet();
@@ -8627,9 +9236,11 @@ typedef struct {
     char store_id[128];
     char target_version[64];
     jw_pakrat_ui_action action;
+    jw_pakrat_kind kind;
     int allow_adopt;   /* install may replace a manually-installed pak */
     int repair_exact;
     char error_message[256];
+    jw_pakrat_outcome outcome;
 } jw_pakrat_ui_job;
 
 /* User text for a stable storage-gate reason key. */
@@ -8646,6 +9257,41 @@ static const char *jw__storage_reason_text(const char *reason) {
     return T("Leaf couldn't confirm your SD card can be written.");
 }
 
+static void jw__grid_apply_theme_layout(jw_launcher_state *state);
+
+/* Pak Rat changed Themes/ from its worker thread; this is the render thread
+   catching up. An update rewrites a theme's art at the same paths, so every
+   decoded texture, failed decode, negative lookup and path memo that could
+   name one is dropped (art_epoch keys the memos) and the themes are rescanned.
+   Only what a theme decides is rebuilt, so the user stays where they are in
+   the store. The selection is kept by folder name: an updated theme stays
+   applied, and a removed one falls back to None, which the uninstall already
+   persisted. */
+static void jw__apply_pakrat_theme_outcome(jw_launcher_state *state,
+                                           const jw_pakrat_outcome *outcome) {
+    if (!state || !outcome || !outcome->themes_changed) {
+        return;
+    }
+    if (outcome->theme_selection_cleared &&
+        strcmp(state->settings.user_theme_dir, outcome->theme_dir) == 0) {
+        state->settings.user_theme_dir[0] = '\0';
+    }
+    jw_settings_ui_set_themes_root(&state->settings, state->sdcard_root);
+    jw_cover_loader_shutdown(jw__covers());
+    jw_cover_loader_forget_failures(jw__covers());
+    cat_cache_clear();
+    memset(jw__img_miss, 0, sizeof(jw__img_miss));
+    s_wallpaper_refused[0] = '\0';
+    state->art_epoch++;
+    jw__system_icon_memo_clear(state);
+    if (cat_get_stylesheet()->launcher.layout == CAT_LAUNCHER_GRID) {
+        memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
+        memset(state->grid_label_path, 0, sizeof(state->grid_label_path));
+        jw__grid_apply_theme_layout(state);
+        jw__grid_reveal_cursor(state);
+    }
+}
+
 static int jw__pakrat_ui_worker(void *userdata) {
     jw_pakrat_ui_job *job = (jw_pakrat_ui_job *)userdata;
     if (!job) {
@@ -8658,11 +9304,13 @@ static int jw__pakrat_ui_worker(void *userdata) {
         return jw_pakrat_remove_retained_data(&job->ctx, job->store_id);
     }
     /* Install and repair write the pak, its state and the library DB. Refuse
-       up front on a read-only or held card rather than failing part-way. */
+       up front on a read-only or held card rather than failing part-way. A
+       theme writes to the card root's Themes/, which may not exist yet. */
     {
         char apps_dir[PATH_MAX];
         char reason[JW_STORAGE_REASON_MAX];
-        if (snprintf(apps_dir, sizeof(apps_dir), "%s/Apps", job->ctx.sdcard_root) >=
+        if (snprintf(apps_dir, sizeof(apps_dir), "%s%s", job->ctx.sdcard_root,
+                     job->kind == JW_PAKRAT_KIND_THEME ? "" : "/Apps") >=
                 (int)sizeof(apps_dir) ||
             !jw_storage_path_writable(apps_dir, reason, sizeof(reason)) ||
             !jw_storage_path_writable(job->ctx.db_path, reason, sizeof(reason))) {
@@ -8826,14 +9474,26 @@ static bool jw__confirm_pakrat_adopt(const jw_pakrat_app_state *app) {
     if (!app) {
         return false;
     }
+    bool theme = app->package.kind == JW_PAKRAT_KIND_THEME;
     char message[512];
-    snprintf(message, sizeof(message),
-             "%.180s is already installed manually.\n\nReplace it with the Pak Rat "
-             "version so it can be updated? User data is preserved.",
-             app->package.name[0] ? app->package.name : app->package.id);
+    if (theme) {
+        /* A hand-made theme has no user data to preserve: its files are the
+           theme, and they are what gets replaced. */
+        snprintf(message, sizeof(message),
+                 T("A theme folder named %s is already on your SD card.\n\n"
+                   "Replace it with %s from Pak Rat so it can be updated? "
+                   "The files in that folder will be replaced."),
+                 app->package.install_name,
+                 app->package.name[0] ? app->package.name : app->package.id);
+    } else {
+        snprintf(message, sizeof(message),
+                 "%.180s is already installed manually.\n\nReplace it with the Pak Rat "
+                 "version so it can be updated? User data is preserved.",
+                 app->package.name[0] ? app->package.name : app->package.id);
+    }
     cat_footer_item footer[] = {
-        { .button = CAT_BTN_B, .label = "Cancel",  .is_confirm = false },
-        { .button = CAT_BTN_A, .label = "Replace", .is_confirm = true },
+        { .button = CAT_BTN_B, .label = theme ? T("Cancel") : "Cancel",  .is_confirm = false },
+        { .button = CAT_BTN_A, .label = theme ? T("Replace") : "Replace", .is_confirm = true },
     };
     cat_message_opts opts = {
         .message = message,
@@ -8887,16 +9547,327 @@ static void jw__set_pakrat_message(jw_launcher_state *state, const char *fmt, ..
     snprintf(state->status, sizeof(state->status), "%s", state->pakrat_message);
 }
 
+static void jw__rebuild_for_layout(jw_launcher_state *state);
+
+/* A one-button notice for something the user has to read, not just glimpse in
+   the header. */
+static void jw__pakrat_notice(const char *message) {
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_A, .label = T("OK"), .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 1,
+    };
+    cat_confirm_result result;
+    (void)cat_confirmation(&opts, &result);
+}
+
+/* Why a theme was not installed, in words. NEEDS_ADOPTION is not a notice: it
+   is the adoption question, asked by the caller. */
+static void jw__pakrat_theme_refusal_notice(const jw_pakrat_app_state *app,
+                                            jw_pakrat_refusal refusal,
+                                            uint64_t theme_reasons) {
+    const char *name = app->package.name[0] ? app->package.name : app->package.id;
+    char message[1024];
+    switch (refusal) {
+        case JW_PAKRAT_REFUSED_RESERVED_NAME:
+            snprintf(message, sizeof(message),
+                     T("%s can't be installed.\n\nA theme that comes with Leaf "
+                       "already uses the folder name %s."),
+                     name, app->package.install_name);
+            break;
+        case JW_PAKRAT_REFUSED_THEME_LIMIT:
+            snprintf(message, sizeof(message),
+                     T("%s can't be installed.\n\nThe Themes folder already has "
+                       "%d themes, the most Leaf can list. Uninstall or remove a "
+                       "theme to make room."),
+                     name, JW_USER_THEME_MAX);
+            break;
+        case JW_PAKRAT_REFUSED_WITHDRAWN:
+            snprintf(message, sizeof(message),
+                     T("%s is no longer available in Pak Rat.\n\nA copy that is "
+                       "already installed keeps working."),
+                     name);
+            break;
+        case JW_PAKRAT_REFUSED_INVALID_THEME: {
+            jw_theme_package_result result;
+            memset(&result, 0, sizeof(result));
+            result.reasons = theme_reasons;
+            int first = jw_theme_package_first_reason(&result);
+            snprintf(message, sizeof(message),
+                     T("%s can't be installed because it is not a valid "
+                       "theme.\n\n%s"),
+                     name,
+                     jw__pakrat_theme_reason_text(first >= 0 ? (jw_theme_reason)first
+                                                             : JW_THEME_REASON_COUNT));
+            break;
+        }
+        case JW_PAKRAT_REFUSED_CHECKSUM:
+            snprintf(message, sizeof(message),
+                     T("%s can't be installed because the download did not "
+                       "match the catalog.\n\nNothing was changed. Try again later."),
+                     name);
+            break;
+        case JW_PAKRAT_REFUSED_THEME_NOT_LISTED:
+            snprintf(message, sizeof(message),
+                     T("%s can't be installed because Leaf could not read it as "
+                       "a theme.\n\nNothing was changed."),
+                     name);
+            break;
+        case JW_PAKRAT_REFUSED_NEEDS_ADOPTION:
+        case JW_PAKRAT_REFUSED_NONE:
+        default:
+            return;
+    }
+    jw__pakrat_notice(message);
+}
+
+static bool jw__confirm_pakrat_theme_uninstall(const jw_launcher_state *state,
+                                               const jw_pakrat_app_state *app) {
+    const char *name = app->package.name[0] ? app->package.name : app->package.id;
+    char message[768];
+    if (jw__pakrat_theme_applied(state, app)) {
+        snprintf(message, sizeof(message),
+                 T("Uninstall %s?\n\nThis deletes Themes/%s from your SD card. "
+                   "It is your current theme, so Leaf will switch to no theme."),
+                 name, app->package.install_name);
+    } else {
+        snprintf(message, sizeof(message),
+                 T("Uninstall %s?\n\nThis deletes Themes/%s from your SD card."),
+                 name, app->package.install_name);
+    }
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = T("Cancel"),    .is_confirm = false },
+        { .button = CAT_BTN_A, .label = T("Uninstall"), .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+/* Apply is the selection Settings > Appearance > Layout > Theme makes, followed
+   by the rebuild the launcher runs when that row changes. */
+static void jw__pakrat_apply_theme(jw_launcher_state *state,
+                                   const jw_pakrat_app_state *app) {
+    const char *name = app->package.name[0] ? app->package.name : app->package.id;
+    jw_settings_ui *ui = &state->settings;
+    int index = jw_user_themes_find(jw_settings_user_themes(ui),
+                                    app->package.install_name);
+    if (index < 0) {
+        /* A folder the last scan did not see: rescan once, as Layout does. */
+        jw_settings_ui_set_themes_root(ui, state->sdcard_root);
+        index = jw_user_themes_find(jw_settings_user_themes(ui),
+                                    app->package.install_name);
+    }
+    if (index < 0) {
+        jw__set_pakrat_message(state, T("Leaf can't find %s in the Themes folder"), name);
+        return;
+    }
+    if (jw_settings_ui_select_user_theme(ui, index, NULL, 0)) {
+        jw__rebuild_for_layout(state);
+    }
+    jw__set_pakrat_message(state, T("Applied %s"), name);
+    cat_request_frame();
+}
+
+static bool jw__confirm_pakrat_apply(const jw_pakrat_app_state *app) {
+    char message[512];
+    snprintf(message, sizeof(message), T("%s is installed.\n\nApply it now?"),
+             app->package.name[0] ? app->package.name : app->package.id);
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = T("Not now"), .is_confirm = false },
+        { .button = CAT_BTN_A, .label = T("Apply"),   .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
+}
+
+/* Themes reuse the app job, worker and progress screen; what differs is what A
+   means (Apply once installed), the words for every refusal, and what a
+   finished action does to the look of the launcher. A theme has no retained
+   data and adds nothing to the library, so neither step applies. */
+static void jw__run_pakrat_theme_action(jw_launcher_state *state,
+                                        const jw_pakrat_app_state *selected,
+                                        jw_pakrat_ui_action action) {
+    jw_pakrat_app_state app = *selected;   /* the listing is reloaded below */
+    const char *name = app.package.name[0] ? app.package.name : app.package.id;
+    jw_pakrat_theme_action theme_action = jw__pakrat_theme_action(state, &app);
+    bool adopt = false;
+
+    if (action == JW_PAKRAT_UI_UNINSTALL) {
+        if (!jw__pakrat_can_uninstall(&app)) {
+            jw__set_pakrat_message(state, T("%s is not installed by Pak Rat"), name);
+            return;
+        }
+        if (!jw__confirm_pakrat_theme_uninstall(state, &app)) {
+            jw__set_pakrat_message(state, T("Uninstall cancelled: %s"), name);
+            return;
+        }
+    } else {
+        switch (theme_action) {
+            case JW_PAKRAT_THEME_ACTION_APPLY:
+                jw__pakrat_apply_theme(state, &app);
+                return;
+            case JW_PAKRAT_THEME_ACTION_APPLIED:
+                jw__set_pakrat_message(state, T("%s is already your theme"), name);
+                return;
+            case JW_PAKRAT_THEME_ACTION_NONE: {
+                jw_pakrat_refusal refusal = jw_pakrat_theme_install_precheck(&app);
+                if (refusal != JW_PAKRAT_REFUSED_NONE) {
+                    jw__pakrat_theme_refusal_notice(&app, refusal, 0);
+                } else if (app.gated_version[0] && app.gated_min_leaf_version[0]) {
+                    jw__set_pakrat_message(state, T("Version %s needs Leaf %s or newer."),
+                                           app.gated_version, app.gated_min_leaf_version);
+                } else {
+                    jw__set_pakrat_message(state, T("%s can't be installed right now"), name);
+                }
+                return;
+            }
+            case JW_PAKRAT_THEME_ACTION_ADOPT:
+                if (!jw__confirm_pakrat_adopt(&app)) {
+                    jw__set_pakrat_message(state, T("Install cancelled: %s"), name);
+                    return;
+                }
+                adopt = true;
+                break;
+            default: {
+                /* Say why before downloading anything the installer would refuse. */
+                jw_pakrat_refusal refusal = jw_pakrat_theme_install_precheck(&app);
+                if (refusal != JW_PAKRAT_REFUSED_NONE) {
+                    jw__pakrat_theme_refusal_notice(&app, refusal, 0);
+                    jw__set_pakrat_message(state, T("Couldn't install %s"), name);
+                    return;
+                }
+                break;
+            }
+        }
+    }
+
+    jw_pakrat_ui_job job;
+    memset(&job, 0, sizeof(job));
+    if (jw__pakrat_context_from_state(state, &job.ctx) != 0) {
+        jw__set_pakrat_message(state, "%s", "Pak Rat runtime paths unavailable");
+        return;
+    }
+    job.action = action;
+    job.kind = JW_PAKRAT_KIND_THEME;
+    job.allow_adopt = adopt ? 1 : 0;
+    job.repair_exact = app.action_uses_history;
+    job.ctx.error_message = job.error_message;
+    job.ctx.error_message_size = sizeof(job.error_message);
+    job.ctx.outcome = &job.outcome;
+    snprintf(job.store_id, sizeof(job.store_id), "%s", app.package.id);
+    snprintf(job.target_version, sizeof(job.target_version), "%s",
+             app.action_version);
+
+    char detail[320];
+    snprintf(detail, sizeof(detail), "%.240s", name);
+    char *dynamic_message = detail;
+    cat_process_opts opts = {
+        .message = action == JW_PAKRAT_UI_UNINSTALL
+                       ? T("Uninstalling theme")
+                       : theme_action == JW_PAKRAT_THEME_ACTION_UPDATE
+                             ? T("Updating theme")
+                             : T("Installing theme"),
+        .show_progress = false,
+        .progress = NULL,
+        .interrupt_signal = NULL,
+        .interrupt_button = CAT_BTN_NONE,
+        .dynamic_message = &dynamic_message,
+        .message_lines = 1,
+    };
+    int old_cursor = state->pakrat_list.cursor;
+    int rc = cat_process_message(&opts, jw__pakrat_ui_worker, &job);
+    bool cancelled = false;
+    /* The folder appeared after the listing was read: ask now, as for a folder
+       the listing already knew about. */
+    if (rc != 0 && action == JW_PAKRAT_UI_INSTALL && !adopt &&
+        job.outcome.refusal == JW_PAKRAT_REFUSED_NEEDS_ADOPTION) {
+        if (jw__confirm_pakrat_adopt(&app)) {
+            adopt = true;
+            job.allow_adopt = 1;
+            job.error_message[0] = '\0';
+            rc = cat_process_message(&opts, jw__pakrat_ui_worker, &job);
+        } else {
+            cancelled = true;
+        }
+    }
+
+    jw__apply_pakrat_theme_outcome(state, &job.outcome);
+    jw__load_pakrat_store(state);
+    jw__pakrat_jump_to(state, app.package.id, old_cursor);
+
+    if (cancelled) {
+        jw__set_pakrat_message(state, T("Install cancelled: %s"), name);
+    } else if (rc != 0) {
+        bool explained = job.outcome.refusal != JW_PAKRAT_REFUSED_NONE &&
+                         job.outcome.refusal != JW_PAKRAT_REFUSED_NEEDS_ADOPTION;
+        if (explained) {
+            jw__pakrat_theme_refusal_notice(&app, job.outcome.refusal,
+                                            job.outcome.theme_reasons);
+        }
+        if (job.error_message[0] && !explained) {
+            jw__set_pakrat_message(state, "%s", job.error_message);
+        } else {
+            jw__set_pakrat_message(state,
+                                   action == JW_PAKRAT_UI_UNINSTALL
+                                       ? T("Couldn't uninstall %s")
+                                       : T("Couldn't install %s"),
+                                   name);
+        }
+    } else if (action == JW_PAKRAT_UI_UNINSTALL) {
+        if (job.outcome.theme_selection_cleared) {
+            char message[512];
+            snprintf(message, sizeof(message),
+                     T("%s was uninstalled.\n\nIt was your current theme, so Leaf "
+                       "switched to no theme."),
+                     name);
+            jw__pakrat_notice(message);
+            jw__set_pakrat_message(state, T("Uninstalled %s. Switched to no theme."), name);
+        } else {
+            jw__set_pakrat_message(state, T("Uninstalled %s"), name);
+        }
+    } else if (theme_action == JW_PAKRAT_THEME_ACTION_UPDATE) {
+        jw__set_pakrat_message(state, T("Updated %s to version %s"), name,
+                               app.package.version);
+    } else if (theme_action == JW_PAKRAT_THEME_ACTION_REINSTALL) {
+        jw__set_pakrat_message(state, T("Reinstalled %s"), name);
+    } else {
+        jw__set_pakrat_message(state, T("Installed %s"), name);
+        const jw_pakrat_app_state *installed = jw__pakrat_selected(state);
+        if (installed && strcmp(installed->package.id, app.package.id) == 0 &&
+            jw__pakrat_theme_action(state, installed) == JW_PAKRAT_THEME_ACTION_APPLY &&
+            jw__confirm_pakrat_apply(installed)) {
+            jw__pakrat_apply_theme(state, installed);
+        }
+    }
+    cat_request_frame();
+}
+
 static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
                                   jw_pakrat_ui_action action) {
-    if (!state || state->pakrat_app_count <= 0 ||
-        state->pakrat_list.cursor < 0 ||
-        state->pakrat_list.cursor >= state->pakrat_app_count) {
+    const jw_pakrat_app_state *selected = jw__pakrat_selected(state);
+    if (!selected) {
         jw__set_pakrat_message(state, "%s", "No Pak Rat app selected");
         return;
     }
+    if (selected->package.kind == JW_PAKRAT_KIND_THEME) {
+        jw__run_pakrat_theme_action(state, selected, action);
+        return;
+    }
 
-    jw_pakrat_app_state app = state->pakrat_apps[state->pakrat_list.cursor];
+    jw_pakrat_app_state app = *selected;
     const char *name = app.package.name[0] ? app.package.name : app.package.id;
     if (app.managed) {
         jw__set_pakrat_message(state, "%.120s is release-managed", name);
@@ -8968,6 +9939,8 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     job.repair_exact = app.action_uses_history;
     job.ctx.error_message = job.error_message;
     job.ctx.error_message_size = sizeof(job.error_message);
+    job.ctx.outcome = &job.outcome;
+    job.kind = app.package.kind;
     snprintf(job.store_id, sizeof(job.store_id), "%s", app.package.id);
     snprintf(job.target_version, sizeof(job.target_version), "%s",
              app.action_version);
@@ -9008,11 +9981,12 @@ static void jw__run_pakrat_action(const char *db_path, jw_launcher_state *state,
     if (uninstall_info_loaded) {
         jw_pakrat_free_uninstall_info(&uninstall_info);
     }
+    jw__apply_pakrat_theme_outcome(state, &job.outcome);
     int reload_rc = jw__reload_library_from_db(db_path, state);
     if (reload_rc != 0) {
         jw__load_pakrat_store(state);
     }
-    cat_list_state_jump(&state->pakrat_list, old_cursor, state->pakrat_app_count);
+    jw__pakrat_jump_to(state, app.package.id, old_cursor);
 
     if (rc == 0 && retained_rc == 0) {
         jw__set_pakrat_message(state,
@@ -9857,6 +10831,26 @@ static void jw__activate_flat(const char *socket_path, const char *db_path,
     (void)running;
 }
 
+/* The parts of Grid View a user theme decides: density and wallpaper. */
+static void jw__grid_apply_theme_layout(jw_launcher_state *state) {
+    const cat_stylesheet *ss = cat_get_stylesheet();
+    /* Density: the user's explicit pick, else the selected theme's
+       recommendation, else the stylesheet. Applied to a copy so the
+       stylesheet stays what the theme authored. */
+    cat_stylesheet_launcher eff = ss->launcher;
+    int dc = 0, dr = 0;
+    if (jw_settings_grid_density(&state->settings, &dc, &dr)) {
+        eff.grid_cols = dc;
+        eff.grid_rows = dr;
+    }
+    /* Status band: the stock cluster is drawn at grid_status_scale_pct and
+       sits high, so the band is the scaled pill plus a small pad each side. */
+    int band = CAT_S(6) * 2 + CAT_DS(CAT__PILL_SIZE) * eff.grid_status_scale_pct / 100;
+    jw_grid_layout(&state->grid, &eff,
+                   cat_get_screen_width(), cat_get_screen_height(), band);
+    jw__grid_resolve_wallpaper(state);
+}
+
 /* Rebuild layout-dependent state. Call after the active stylesheet's
  * launcher.layout may have changed (theme switch) or at first startup. */
 static void jw__rebuild_for_layout(jw_launcher_state *state) {
@@ -9882,21 +10876,7 @@ static void jw__rebuild_for_layout(jw_launcher_state *state) {
         jw__build_grid_list(state);
         jw_grid_reset(&state->grid);
         memset(state->grid_label_done, 0, sizeof(state->grid_label_done));
-        /* Density: the user's explicit pick, else the selected theme's
-           recommendation, else the stylesheet. Applied to a copy so the
-           stylesheet stays what the theme authored. */
-        cat_stylesheet_launcher eff = ss->launcher;
-        int dc = 0, dr = 0;
-        if (jw_settings_grid_density(&state->settings, &dc, &dr)) {
-            eff.grid_cols = dc;
-            eff.grid_rows = dr;
-        }
-        /* Status band: the stock cluster is drawn at grid_status_scale_pct and
-           sits high, so the band is the scaled pill plus a small pad each side. */
-        int band = CAT_S(6) * 2 + CAT_DS(CAT__PILL_SIZE) * eff.grid_status_scale_pct / 100;
-        jw_grid_layout(&state->grid, &eff,
-                       cat_get_screen_width(), cat_get_screen_height(), band);
-        jw__grid_resolve_wallpaper(state);
+        jw__grid_apply_theme_layout(state);
     } else {
         state->flat_count = 0;
     }
@@ -10488,13 +11468,9 @@ static void jw__handle_pakrat_input(const char *socket_path, const char *db_path
                 cat_scroll_state_move(&state->pakrat_detail_scroll, +line_h * 4);
                 break;
             case CAT_BTN_A:
-                if (state->pakrat_app_count > 0 &&
-                    state->pakrat_list.cursor >= 0 &&
-                    state->pakrat_list.cursor < state->pakrat_app_count &&
-                    jw_pakrat_primary_action_opens(
-                        &state->pakrat_apps[state->pakrat_list.cursor])) {
-                    const jw_pakrat_app_state *app =
-                        &state->pakrat_apps[state->pakrat_list.cursor];
+                if (jw__pakrat_selected(state) &&
+                    jw_pakrat_primary_action_opens(jw__pakrat_selected(state))) {
+                    const jw_pakrat_app_state *app = jw__pakrat_selected(state);
                     jw__launch_app_request(
                         socket_path,
                         app->app_name[0] ? app->app_name : app->package.name,
@@ -10508,9 +11484,11 @@ static void jw__handle_pakrat_input(const char *socket_path, const char *db_path
                 break;
             case CAT_BTN_X: {
                 int old_cursor = state->pakrat_list.cursor;
+                const jw_pakrat_app_state *was = jw__pakrat_selected(state);
+                char store_id[sizeof(was->package.id)];
+                snprintf(store_id, sizeof(store_id), "%s", was ? was->package.id : "");
                 jw__load_pakrat_store(state);
-                cat_list_state_jump(&state->pakrat_list, old_cursor,
-                                    state->pakrat_app_count);
+                jw__pakrat_jump_to(state, store_id, old_cursor);
                 snprintf(state->status, sizeof(state->status), "%s",
                          state->pakrat_message[0]
                             ? state->pakrat_message
@@ -10523,15 +11501,13 @@ static void jw__handle_pakrat_input(const char *socket_path, const char *db_path
                 break;
             case CAT_BTN_L1:
             case CAT_BTN_R1:
-                state->pakrat_detail_open = false;
-                state->pakrat_open = false;
+                jw__close_pakrat_store(state);
                 state->menu_open = true;
                 state->status[0] = '\0';
                 jw__switch_system_tab(state, button == CAT_BTN_L1 ? -1 : 1);
                 break;
             case CAT_BTN_MENU:
-                state->pakrat_detail_open = false;
-                state->pakrat_open = false;
+                jw__close_pakrat_store(state);
                 state->menu_open = false;
                 state->status[0] = '\0';
                 break;
@@ -10543,28 +11519,29 @@ static void jw__handle_pakrat_input(const char *socket_path, const char *db_path
 
     switch (button) {
         case CAT_BTN_UP:
-            cat_list_state_move(&state->pakrat_list, -1, state->pakrat_app_count);
+            cat_list_state_move(&state->pakrat_list, -1, state->pakrat_view_count);
             break;
         case CAT_BTN_DOWN:
-            cat_list_state_move(&state->pakrat_list, +1, state->pakrat_app_count);
+            cat_list_state_move(&state->pakrat_list, +1, state->pakrat_view_count);
             break;
         case CAT_BTN_LEFT:
-            cat_list_state_page(&state->pakrat_list, -1, state->pakrat_app_count);
+            cat_list_state_page(&state->pakrat_list, -1, state->pakrat_view_count);
             break;
         case CAT_BTN_RIGHT:
-            cat_list_state_page(&state->pakrat_list, +1, state->pakrat_app_count);
+            cat_list_state_page(&state->pakrat_list, +1, state->pakrat_view_count);
+            break;
+        case CAT_BTN_Y:
+            jw__pakrat_switch_section(state);
             break;
         case CAT_BTN_L1:
         case CAT_BTN_R1:
-            state->pakrat_open = false;
+            jw__close_pakrat_store(state);
             state->menu_open = true;
             state->status[0] = '\0';
             jw__switch_system_tab(state, button == CAT_BTN_L1 ? -1 : 1);
             break;
         case CAT_BTN_A:
-            if (state->pakrat_app_count > 0 &&
-                state->pakrat_list.cursor >= 0 &&
-                state->pakrat_list.cursor < state->pakrat_app_count) {
+            if (jw__pakrat_selected(state)) {
                 state->pakrat_detail_open = true;
                 cat_scroll_state_init(&state->pakrat_detail_scroll);
                 state->status[0] = '\0';
@@ -10572,9 +11549,11 @@ static void jw__handle_pakrat_input(const char *socket_path, const char *db_path
             break;
         case CAT_BTN_X: {
             int old_cursor = state->pakrat_list.cursor;
+            const jw_pakrat_app_state *was = jw__pakrat_selected(state);
+            char store_id[sizeof(was->package.id)];
+            snprintf(store_id, sizeof(store_id), "%s", was ? was->package.id : "");
             jw__load_pakrat_store(state);
-            cat_list_state_jump(&state->pakrat_list, old_cursor,
-                                state->pakrat_app_count);
+            jw__pakrat_jump_to(state, store_id, old_cursor);
             snprintf(state->status, sizeof(state->status), "%s",
                      state->pakrat_message[0]
                         ? state->pakrat_message
@@ -10582,7 +11561,7 @@ static void jw__handle_pakrat_input(const char *socket_path, const char *db_path
             break;
         }
         case CAT_BTN_B: {
-            state->pakrat_open = false;
+            jw__close_pakrat_store(state);
             state->menu_open = true;
             state->menu_tab = JW_SMTAB_ACTIONS;
             int n = 0;
@@ -10593,7 +11572,7 @@ static void jw__handle_pakrat_input(const char *socket_path, const char *db_path
             break;
         }
         case CAT_BTN_MENU:
-            state->pakrat_open = false;
+            jw__close_pakrat_store(state);
             state->menu_open = false;
             state->status[0] = '\0';
             break;
@@ -12708,6 +13687,7 @@ int main(void) {
     jw__status_poller_shutdown();
     jw_cover_loader_shutdown(jw__covers());
     jw__close_game_browser(&state);
+    jw__close_pakrat_store(&state);
     /* Hand-off exit. The launcher only ever exits to be respawned (into the menu /
        an app / a game) or for shutdown, so the OS reclaims everything — memory, the
        cover-art texture cache, the Wayland surface — the instant we exit. Running

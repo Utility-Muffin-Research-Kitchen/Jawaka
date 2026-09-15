@@ -1,5 +1,6 @@
 #include "internal/launcher/user_themes.h"
 #include "internal/core/log.h"
+#include "internal/launcher/image_header.h"
 #include "cJSON.h"
 
 #include <dirent.h>
@@ -56,6 +57,10 @@ static bool jw__ut_parse_color(const char *str, uint32_t *out) {
 static void jw__ut_copy(char *dst, size_t n, const char *src) {
     if (!dst || n == 0) return;
     size_t len = src ? strnlen(src, n - 1) : 0;
+    /* A cut that lands on a UTF-8 continuation byte would leave half a
+       character for the renderer: drop the whole character instead. */
+    if (src && src[len])
+        while (len > 0 && ((unsigned char)src[len] & 0xC0) == 0x80) len--;
     memmove(dst, src, len);
     dst[len] = '\0';
 }
@@ -227,8 +232,9 @@ static bool jw__ut_asset_ext(const jw_user_theme_catalog *cat, int idx, const ch
     if (out && out_size) out[0] = '\0';
     if (!cat || idx < 0 || idx >= cat->count || !view || !system_code || !system_code[0])
         return false;
-    /* _default is Leaf's safety net, not a tile: never themable. */
-    if (strcmp(system_code, "_default") == 0) return false;
+    /* _default is Leaf's safety net, not a tile: never themable, in any case
+       (FAT32 would open _DEFAULT.png for it). */
+    if (strcasecmp(system_code, "_default") == 0) return false;
     int r = snprintf(out, out_size, "%s/%s/%s/%s/%s%s",
                      cat->root, cat->items[idx].dir, view, kind, system_code, ext);
     return r > 0 && (size_t)r < out_size;
@@ -293,6 +299,30 @@ bool jw_user_theme_png_dims(const char *path, int *w, int *h) {
     if (w) *w = (int)pw;
     if (h) *h = (int)ph;
     return true;
+}
+
+bool jw_user_theme_jpeg_dims(const char *path, int *w, int *h) {
+    if (w) *w = 0;
+    if (h) *h = 0;
+    FILE *fp = path && path[0] ? fopen(path, "rb") : NULL;
+    if (!fp) return false;
+    unsigned jw = 0, jh = 0;
+    bool ok = jw_image_jpeg_dims(fp, false, &jw, &jh) && jw <= 65535u && jh <= 65535u;
+    fclose(fp);
+    if (!ok) return false;
+    if (w) *w = (int)jw;
+    if (h) *h = (int)jh;
+    return true;
+}
+
+bool jw_user_theme_image_dims(const char *path, int *w, int *h) {
+    return jw_user_theme_png_dims(path, w, h) || jw_user_theme_jpeg_dims(path, w, h);
+}
+
+bool jw_user_theme_wallpaper_ok(const char *path) {
+    int w = 0, h = 0;
+    return jw_user_theme_image_dims(path, &w, &h) &&
+           w <= JW_USER_THEME_WALLPAPER_MAX_PX && h <= JW_USER_THEME_WALLPAPER_MAX_PX;
 }
 
 int jw_user_theme_validate(const jw_user_theme_catalog *cat, int idx,

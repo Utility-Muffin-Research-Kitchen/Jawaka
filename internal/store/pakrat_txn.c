@@ -1,6 +1,7 @@
 #include "internal/store/pakrat_txn.h"
 
 #include "internal/storage/sources.h"
+#include "internal/store/pakrat_kind.h"
 #include "internal/store/pakrat_recovery.h"
 #include "cJSON.h"
 
@@ -164,6 +165,8 @@ static char *jw__txn_read_file(const char *path) {
     return data;
 }
 
+/* "<platform>/<Name>.pak" for an app, "Themes/<id>" for a theme: exactly one
+   separator either way, and never the legacy "Apps/" spelling. */
 bool jw_pakrat_txn_target_path_valid(const char *path) {
     if (!path || !path[0] || strncmp(path, "Apps/", 5) == 0 ||
         strlen(path) > JW_PAKRAT_TXN_TARGET_MAX ||
@@ -287,6 +290,32 @@ int jw_pakrat_txn_inspect_manifest(const char *pak_dir,
     }
     cJSON_Delete(root);
     free(text);
+    return 0;
+}
+
+int jw_pakrat_txn_theme_metadata(const char *store_id,
+                                 const char *install_path,
+                                 const char *display_name,
+                                 jw_pakrat_txn_metadata *out) {
+    if (!out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!store_id || !jw__pakrat_safe_name(store_id) ||
+        strlen(store_id) > JW_SVC_ID_MAX ||
+        jw_pakrat_install_path_kind(install_path) != JW_PAKRAT_KIND_THEME ||
+        !jw_pakrat_txn_target_path_valid(install_path) ||
+        jw__txn_copy(out->store_id, sizeof(out->store_id), store_id) != 0 ||
+        jw__txn_copy(out->package_id, sizeof(out->package_id), store_id) != 0 ||
+        jw__txn_copy(out->install_path, sizeof(out->install_path),
+                     install_path) != 0 ||
+        jw__txn_copy(out->display_name, sizeof(out->display_name),
+                     display_name && display_name[0] ? display_name
+                                                     : store_id) != 0 ||
+        !(out->state_root = jw__txn_strdup(""))) {
+        jw_pakrat_txn_metadata_destroy(out);
+        return -1;
+    }
     return 0;
 }
 
@@ -995,6 +1024,29 @@ int jw_pakrat_txn_complete_uninstall(const jw_pakrat_context *ctx,
     sqlite3_finalize(stmt);
     stmt = NULL;
 
+    /* A selection naming a folder that no longer exists would come back to
+       life the day a folder of that name reappears. Clear it in the same
+       commit that forgets the theme. */
+    int selection_cleared = 0;
+    if (rc == 0 && jw_pakrat_install_path_kind(pending->metadata.install_path) ==
+                       JW_PAKRAT_KIND_THEME) {
+        static const char *clear_selection =
+            "UPDATE settings SET value='' WHERE key='user_theme' AND value=?1;";
+        const char *folder = pending->metadata.install_path +
+                             sizeof(JW_PAKRAT_THEME_PATH_PREFIX) - 1;
+        if (sqlite3_prepare_v2(db, clear_selection, -1, &stmt, NULL) != SQLITE_OK ||
+            sqlite3_bind_text(stmt, 1, folder, -1, SQLITE_TRANSIENT) != SQLITE_OK ||
+            sqlite3_step(stmt) != SQLITE_DONE) {
+            fprintf(stderr, "pakrat uninstall: step 'final-db-selection' failed: %s\n",
+                    sqlite3_errmsg(db));
+            rc = -1;
+        } else {
+            selection_cleared = sqlite3_changes(db) > 0;
+        }
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
     /* The uninstall is complete when neither record survives, whoever removed
        them. Verifying the state is what makes concurrent completion safe
        instead of merely tolerated. */
@@ -1032,6 +1084,9 @@ int jw_pakrat_txn_complete_uninstall(const jw_pakrat_context *ctx,
     }
     if (rc == 0) {
         jw__txn_fault_crash("uninstall-after-final-db");
+        if (ctx->outcome && selection_cleared) {
+            ctx->outcome->theme_selection_cleared = 1;
+        }
     }
     jw_db_close(db);
     return rc;

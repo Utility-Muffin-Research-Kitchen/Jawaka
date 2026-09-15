@@ -5,6 +5,7 @@
 #include "internal/store/pakrat_txn.h"
 
 #include "internal/store/pakrat_recovery.h"
+#include "internal/store/pakrat_themes.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -481,6 +482,245 @@ static void seed_uninstall_fixture(txn_fixture *f,
     sqlite3_close(control);
 }
 
+/* ---- Themes ---------------------------------------------------------------- */
+
+#define THEME_SHA "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+#define THEME_TOKEN "fedcba9876543210fedcba9876543210"
+
+static void write_theme(const char *dir, const char *id, const char *version) {
+    char manifest[PATH_MAX];
+    char json[512];
+    join_path(manifest, sizeof(manifest), dir, "theme.json");
+    snprintf(json, sizeof(json),
+             "{\"schema\":1,\"id\":\"%s\",\"name\":\"Neon Nights\","
+             "\"author\":\"Leaf\",\"version\":\"%s\","
+             "\"min_leaf_version\":\"0.12.0\",\"license\":\"CC0-1.0\"}\n",
+             id, version);
+    write_file(manifest, json, 0644);
+}
+
+static void write_theme_marker(const char *dir, const char *id,
+                               const char *version, const char *token) {
+    jw_pakrat_commit_marker marker;
+    memset(&marker, 0, sizeof(marker));
+    snprintf(marker.store_id, sizeof(marker.store_id), "%s", id);
+    snprintf(marker.version, sizeof(marker.version), "%s", version);
+    snprintf(marker.artifact_sha256, sizeof(marker.artifact_sha256), "%s", THEME_SHA);
+    snprintf(marker.token, sizeof(marker.token), "%s", token);
+    CHECK(jw__pakrat_write_commit_marker(dir, &marker) == 0);
+}
+
+static void recovery_context_for(const txn_fixture *f, jw_pakrat_recovery_context *out) {
+    memset(out, 0, sizeof(*out));
+    snprintf(out->platform, sizeof(out->platform), "mac");
+    snprintf(out->sdcard_root, sizeof(out->sdcard_root), "%s", f->primary);
+    snprintf(out->state_dir, sizeof(out->state_dir), "%s", f->state);
+    snprintf(out->db_path, sizeof(out->db_path), "%s", f->db);
+}
+
+/* The install root is chosen by kind, and the kind travels in install_path. */
+static void test_theme_install_roots(void) {
+    char out[PATH_MAX];
+    CHECK(jw__pakrat_target_path("/sd", "mlp1/App.pak", out, sizeof(out)) == 0 &&
+          strcmp(out, "/sd/Apps/mlp1/App.pak") == 0);
+    CHECK(jw__pakrat_target_path("/sd", "Apps/mlp1/App.pak", out, sizeof(out)) == 0 &&
+          strcmp(out, "/sd/Apps/mlp1/App.pak") == 0);
+    CHECK(jw__pakrat_target_path("/sd", "Themes/neon-nights", out, sizeof(out)) == 0 &&
+          strcmp(out, "/sd/Themes/neon-nights") == 0);
+    CHECK(jw__pakrat_target_path("/sd", "Apps/Themes/x", out, sizeof(out)) == 0 &&
+          strcmp(out, "/sd/Apps/Themes/x") == 0);
+    CHECK(jw__pakrat_target_path("/sd", "Themes/..", out, sizeof(out)) != 0);
+    CHECK(jw__pakrat_target_path("/sd", "Themes/a/b", out, sizeof(out)) != 0);
+    CHECK(jw__pakrat_target_path("/sd", "Themes/", out, sizeof(out)) != 0);
+    CHECK(jw_pakrat_install_path_kind("Themes/neon-nights") == JW_PAKRAT_KIND_THEME);
+    CHECK(jw_pakrat_install_path_kind("mlp1/Themes.pak") == JW_PAKRAT_KIND_APP);
+    CHECK(jw_pakrat_install_path_kind("Apps/Themes/x") == JW_PAKRAT_KIND_APP);
+    CHECK(strcmp(jw_pakrat_install_path_display_prefix("Themes/neon-nights"), "") == 0);
+    CHECK(strcmp(jw_pakrat_install_path_display_prefix("mlp1/App.pak"), "Apps/") == 0);
+    CHECK(jw_pakrat_txn_target_path_valid("Themes/neon-nights"));
+    CHECK(!jw_pakrat_txn_target_path_valid("Themes/a/b"));
+    CHECK(jw__pakrat_target_sibling_path("/sd/Themes/neon-nights", "neon-nights",
+                                         "stage", out, sizeof(out)) == 0 &&
+          strcmp(out, "/sd/Themes/.pakrat-stage-neon-nights") == 0);
+
+    jw_pakrat_txn_metadata metadata;
+    CHECK(jw_pakrat_txn_theme_metadata("neon-nights", "Themes/neon-nights",
+                                       "Neon Nights", &metadata) == 0);
+    CHECK(!metadata.has_service && metadata.revoke_count == 0 &&
+          metadata.retained_count == 0 &&
+          strcmp(metadata.display_name, "Neon Nights") == 0);
+    jw_pakrat_txn_metadata_destroy(&metadata);
+    CHECK(jw_pakrat_txn_theme_metadata("neon-nights", "mac/Neon.pak", "Neon",
+                                       &metadata) == -1);
+}
+
+/* Uninstalling the selected theme sets the selection to None in the same
+   commit; uninstalling another theme leaves the selection alone. */
+static void test_theme_uninstall_selection(void) {
+    for (int selected = 0; selected <= 1; selected++) {
+        txn_fixture f;
+        fixture_setup(&f);
+        char target[PATH_MAX];
+        join_path(target, sizeof(target), f.primary, "Themes/neon-nights");
+        write_theme(target, "neon-nights", "1.0.0");
+
+        jw_pakrat_txn_metadata metadata;
+        CHECK(jw_pakrat_txn_theme_metadata("neon-nights", "Themes/neon-nights",
+                                           "Neon Nights", &metadata) == 0);
+        sqlite3 *db = NULL;
+        CHECK(jw_db_open(f.db, &db) == 0 && jw_db_apply_schema(db) == 0 &&
+              jw_pakrat_txn_metadata_upsert_db(db, &metadata) == 0);
+        jw_db_close(db);
+        CHECK(jw_db_pakrat_upsert_install(f.db, "neon-nights", "1.0.0",
+                                          JW_PAKRAT_THEME_PLATFORM,
+                                          "Themes/neon-nights", THEME_SHA, NULL,
+                                          NULL) == 0);
+        jw_pakrat_install row;
+        CHECK(jw_db_pakrat_get_install(f.db, "neon-nights", &row) == 0 &&
+              strcmp(row.kind, "theme") == 0);
+        CHECK(jw_db_set_setting(f.db, "user_theme",
+                                selected ? "neon-nights" : "aurora") == 0);
+
+        CHECK(jw_pakrat_txn_pending_persist(f.db, "primary", &metadata) == 0);
+        jw_pakrat_pending_uninstall pending;
+        jw_pakrat_outcome outcome;
+        memset(&outcome, 0, sizeof(outcome));
+        f.ctx.outcome = &outcome;
+        CHECK(jw_pakrat_txn_pending_get(f.db, "neon-nights", &pending) == 0);
+        CHECK(jw_pakrat_txn_complete_uninstall(&f.ctx, &pending) == 0);
+        jw_pakrat_pending_uninstall_destroy(&pending);
+
+        char value[128];
+        CHECK(jw_db_get_setting(f.db, "user_theme", value, sizeof(value)) == 0);
+        CHECK(strcmp(value, selected ? "" : "aurora") == 0);
+        CHECK(outcome.theme_selection_cleared == selected);
+        CHECK(!jw__pakrat_path_exists(target));
+        CHECK(scalar_path(f.db, "SELECT COUNT(*) FROM pakrat_installs;") == 0);
+        jw_pakrat_txn_metadata_destroy(&metadata);
+        fixture_teardown(&f);
+    }
+}
+
+/* Crash recovery reads a theme's identity from theme.json, and the orphan
+   sweep reaches Themes/ -- without ever touching a user's own folder. */
+static void test_theme_recovery(void) {
+    txn_fixture f;
+    fixture_setup(&f);
+    jw_pakrat_recovery_context recovery;
+    recovery_context_for(&f, &recovery);
+
+    /* Committed: the record, marker and theme.json agree. */
+    char target[PATH_MAX];
+    join_path(target, sizeof(target), f.primary, "Themes/neon-nights");
+    write_theme(target, "neon-nights", "1.1.0");
+    write_theme_marker(target, "neon-nights", "1.1.0", THEME_TOKEN);
+    CHECK(jw_db_pakrat_upsert_install(f.db, "neon-nights", "1.1.0",
+                                      JW_PAKRAT_THEME_PLATFORM, "Themes/neon-nights",
+                                      THEME_SHA, NULL, THEME_TOKEN) == 0);
+    jw_pakrat_install row;
+    CHECK(jw_db_pakrat_get_install(f.db, "neon-nights", &row) == 0);
+    CHECK(jw__pakrat_reconcile_transition(&recovery, row.store_id,
+                                          row.install_path, &row) == 0);
+    CHECK(jw__pakrat_path_exists(target));
+
+    /* An update promoted but never recorded: the running version comes back. */
+    char rollback[PATH_MAX];
+    CHECK(jw__pakrat_target_sibling_path(target, "neon-nights", "rollback", rollback,
+                                         sizeof(rollback)) == 0);
+    CHECK(rename(target, rollback) == 0);
+    write_theme(target, "neon-nights", "1.2.0");
+    write_theme_marker(target, "neon-nights", "1.2.0",
+                       "00000000000000000000000000000000");
+    CHECK(jw__pakrat_reconcile_transition(&recovery, row.store_id,
+                                          row.install_path, &row) == 0);
+    char id[128], version[64];
+    CHECK(jw__pakrat_read_theme_identity(target, id, sizeof(id), version,
+                                         sizeof(version)) == 0 &&
+          strcmp(version, "1.1.0") == 0);
+    CHECK(!jw__pakrat_path_exists(rollback));
+
+    /* An interrupted first install has a marker and no row: swept. A user's
+       copy of an installed theme carries the same marker under another name:
+       kept. So is every hand-made folder. */
+    char fresh[PATH_MAX], copy[PATH_MAX], hand[PATH_MAX], stage[PATH_MAX];
+    join_path(fresh, sizeof(fresh), f.primary, "Themes/fresh-theme");
+    join_path(copy, sizeof(copy), f.primary, "Themes/my-copy");
+    join_path(hand, sizeof(hand), f.primary, "Themes/Hand Made");
+    join_path(stage, sizeof(stage), f.primary, "Themes/.pakrat-stage-gone");
+    write_theme(fresh, "fresh-theme", "1.0.0");
+    write_theme_marker(fresh, "fresh-theme", "1.0.0", THEME_TOKEN);
+    write_theme(copy, "fresh-theme", "1.0.0");
+    write_theme_marker(copy, "fresh-theme", "1.0.0", THEME_TOKEN);
+    write_theme(hand, "hand-made", "0.1.0");
+    write_theme(stage, "gone", "1.0.0");
+    CHECK(jw_pakrat_recover_installs(&recovery) == 0);
+    CHECK(!jw__pakrat_path_exists(fresh));
+    CHECK(jw__pakrat_path_exists(copy));
+    CHECK(jw__pakrat_path_exists(hand));
+    CHECK(!jw__pakrat_path_exists(stage));
+    CHECK(jw__pakrat_path_exists(target));
+    fixture_teardown(&f);
+}
+
+/* Bundled theme names are refused, case-insensitively, from THEME-1's list and
+   from the running release's bundled-themes.txt. Themes/ holds at most
+   JW_USER_THEME_MAX folders the launcher will list. */
+static void test_theme_policy(void) {
+    txn_fixture f;
+    fixture_setup(&f);
+    char platform_root[PATH_MAX];
+    join_path(platform_root, sizeof(platform_root), f.primary,
+              ".system/leaf/platforms/mac");
+    CHECK(jw__pakrat_mkdir_p(platform_root, 0755) == 0);
+
+    char list[PATH_MAX];
+    CHECK(jw_pakrat_bundled_themes_path(platform_root, f.state, list,
+                                        sizeof(list)) == 1);
+    CHECK(jw_pakrat_theme_name_reserved(platform_root, f.state, "sample") == 1);
+    CHECK(jw_pakrat_theme_name_reserved(platform_root, f.state, "SAMPLE") == 1);
+    CHECK(jw_pakrat_theme_name_reserved(platform_root, f.state, "aurora") == 0);
+
+    char release[PATH_MAX], bundled[PATH_MAX], expected[PATH_MAX];
+    join_path(release, sizeof(release), f.state, "release.json");
+    write_file(release,
+               "{\"schema\":1,\"version\":\"0.12.0\",\"release_id\":\"leaf-test\"}\n",
+               0644);
+    join_path(expected, sizeof(expected), f.primary,
+              ".system/leaf/releases/leaf-test/bundled-themes.txt");
+    CHECK(jw_pakrat_bundled_themes_path(platform_root, f.state, list,
+                                        sizeof(list)) == 0 &&
+          strcmp(list, expected) == 0);
+    /* The release's own list is optional: absent means THEME-1's names only. */
+    CHECK(jw_pakrat_theme_name_reserved(platform_root, f.state, "aurora") == 0);
+    snprintf(bundled, sizeof(bundled), "%s", expected);
+    write_file(bundled, "# shipped with Leaf\nSample\r\nAurora\n\n", 0644);
+    CHECK(jw_pakrat_theme_name_reserved(platform_root, f.state, "aurora") == 1);
+    CHECK(jw_pakrat_theme_name_reserved(platform_root, f.state, "AURORA") == 1);
+    CHECK(jw_pakrat_theme_name_reserved(platform_root, f.state, "neon-nights") == 0);
+    CHECK(jw_pakrat_theme_name_listed(bundled, "# shipped with Leaf") == 0);
+
+    CHECK(jw_pakrat_theme_folder_count(f.primary) == 0);
+    char path[PATH_MAX];
+    for (int i = 0; i < 31; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "Themes/theme-%02d", i);
+        join_path(path, sizeof(path), f.primary, name);
+        CHECK(jw__pakrat_mkdir_p(path, 0755) == 0);
+    }
+    join_path(path, sizeof(path), f.primary, "Themes/.pakrat-stage-neon-nights");
+    CHECK(jw__pakrat_mkdir_p(path, 0755) == 0);
+    join_path(path, sizeof(path), f.primary, "Themes/notes.txt");
+    write_file(path, "not a theme\n", 0644);
+    CHECK(jw_pakrat_theme_folder_count(f.primary) == 31);
+    CHECK(!jw_pakrat_theme_slots_full(31, false));
+    join_path(path, sizeof(path), f.primary, "Themes/theme-31");
+    CHECK(jw__pakrat_mkdir_p(path, 0755) == 0);
+    CHECK(jw_pakrat_theme_folder_count(f.primary) == 32);
+    CHECK(jw_pakrat_theme_slots_full(32, false));
+    CHECK(!jw_pakrat_theme_slots_full(32, true));
+    fixture_teardown(&f);
+}
+
 /* Absolute path to this test binary, captured before anything can chdir. */
 static char g_self[PATH_MAX];
 
@@ -742,6 +982,10 @@ int main(int argc, char **argv) {
     test_pending_intent_idempotence();
     test_uninstall_completion_faults();
     test_content_only_recovery();
+    test_theme_install_roots();
+    test_theme_uninstall_selection();
+    test_theme_recovery();
+    test_theme_policy();
     if (failures == 0) {
         puts("PASS pakrat-txn-test");
         return 0;

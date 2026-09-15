@@ -5,6 +5,7 @@
 #include "internal/store/pakrat_recovery.h"
 
 #include "internal/storage/sources.h"
+#include "internal/store/pakrat_kind.h"
 #include "cJSON.h"
 
 #include <dirent.h>
@@ -25,6 +26,8 @@
 #define JW_PAKRAT_COMMIT_MARKER ".pakrat-commit"
 #define JW_PAKRAT_MANIFEST_MAX_BYTES (1024L * 1024L)
 #define JW_PAKRAT_COMMIT_MAX_BYTES 4096L
+/* The launcher reads at most 64 KiB of theme.json (THEME-1). */
+#define JW_PAKRAT_THEME_MANIFEST_MAX_BYTES (64L * 1024L)
 
 /* TXN-1 pending uninstall is an irreversible, confirmed forward operation.
    P1 recovery must never restore or adopt that target while the uninstall
@@ -236,6 +239,16 @@ int jw__pakrat_target_path(const char *sdcard_root, const char *install_path,
         out_size == 0) {
         return -1;
     }
+    if (jw_pakrat_install_path_kind(install_path) == JW_PAKRAT_KIND_THEME) {
+        /* Themes/<id>: exactly one folder directly under the themes root. */
+        const char *name =
+            install_path + sizeof(JW_PAKRAT_THEME_PATH_PREFIX) - 1;
+        if (!jw__pakrat_safe_name(name)) {
+            return -1;
+        }
+        return jw__pakrat_join3(out, out_size, sdcard_root,
+                                JW_PAKRAT_THEMES_DIR, name);
+    }
     const char *path = install_path;
     if (strncmp(path, "Apps/", 5) == 0) {
         path += 5;
@@ -243,7 +256,8 @@ int jw__pakrat_target_path(const char *sdcard_root, const char *install_path,
     if (!jw__pakrat_safe_rel_path(path)) {
         return -1;
     }
-    return jw__pakrat_join3(out, out_size, sdcard_root, "Apps", path);
+    return jw__pakrat_join3(out, out_size, sdcard_root, JW_PAKRAT_APPS_DIR,
+                            path);
 }
 
 int jw__pakrat_target_sibling_path(const char *target, const char *store_id,
@@ -638,11 +652,95 @@ int jw__pakrat_read_manifest(const char *pak_dir, const char *manifest_rel,
     return fields_ok ? 0 : -1;
 }
 
+int jw__pakrat_read_theme_identity(const char *theme_dir, char *id,
+                                   size_t id_size, char *version,
+                                   size_t version_size) {
+    if (!theme_dir || !id || id_size == 0 || !version || version_size == 0) {
+        return -1;
+    }
+    id[0] = '\0';
+    version[0] = '\0';
+    char path[PATH_MAX];
+    if (jw__pakrat_join2(path, sizeof(path), theme_dir,
+                         JW_PAKRAT_THEME_MANIFEST) != 0) {
+        return -1;
+    }
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+        st.st_size > JW_PAKRAT_THEME_MANIFEST_MAX_BYTES) {
+        return -1;
+    }
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    size_t size = (size_t)st.st_size;
+    char *json = malloc(size + 1u);
+    size_t got = json ? fread(json, 1, size, fp) : 0;
+    int close_failed = fclose(fp) != 0;
+    if (!json || got != size || close_failed) {
+        free(json);
+        return -1;
+    }
+    json[size] = '\0';
+    cJSON *root = cJSON_ParseWithOpts(json, NULL, true);
+    free(json);
+    int rc = cJSON_IsObject(root) &&
+                     jw__pakrat_manifest_string(root, "id", id, id_size) == 0 &&
+                     jw__pakrat_manifest_string(root, "version", version,
+                                                version_size) == 0 &&
+                     id[0] && version[0]
+                 ? 0
+                 : -1;
+    cJSON_Delete(root);
+    return rc;
+}
+
 /* The promoted tree at |target| counts as committed only when its identity and
    commit marker match the durable install record exactly. Returns a static
-   reason string for the rollback log when they do not. */
+   reason string for the rollback log when they do not. A theme's identity is
+   its theme.json, and it has no platform or entry point. */
+static const char *jw__uncommitted_theme_reason(const char *target,
+                                                const jw_pakrat_install *install) {
+    char id[128];
+    char version[64];
+    if (jw__pakrat_read_theme_identity(target, id, sizeof(id), version,
+                                       sizeof(version)) != 0) {
+        return "manifest-unreadable";
+    }
+    jw_pakrat_commit_marker marker;
+    if (jw__pakrat_read_commit_marker(target, &marker) != 0) {
+        return "commit-marker-unreadable";
+    }
+    if (!install) {
+        return "no-record";
+    }
+    if (strcmp(marker.store_id, install->store_id) != 0 ||
+        strcmp(id, install->store_id) != 0) {
+        return "store-id-mismatch";
+    }
+    if (strcmp(marker.version, version) != 0 ||
+        strcmp(marker.version, install->version) != 0) {
+        return "version-mismatch";
+    }
+    if (strcmp(marker.artifact_sha256, install->artifact_sha256) != 0) {
+        return "artifact-mismatch";
+    }
+    if (!install->commit_token[0]) {
+        return "record-token-missing";
+    }
+    if (strcmp(marker.token, install->commit_token) != 0) {
+        return "token-mismatch";
+    }
+    return NULL;
+}
+
 static const char *jw__uncommitted_promote_reason(const char *target,
+                                                  const char *install_path,
                                                   const jw_pakrat_install *install) {
+    if (jw_pakrat_install_path_kind(install_path) == JW_PAKRAT_KIND_THEME) {
+        return jw__uncommitted_theme_reason(target, install);
+    }
     jw__pakrat_manifest manifest;
     if (jw__pakrat_read_manifest(target, "pak.json", &manifest) != 0 ||
         !manifest.pak_version[0]) {
@@ -695,6 +793,19 @@ static int jw__validate_restored_tree(const jw_pakrat_recovery_context *ctx,
     if (!install) {
         return 0;
     }
+    if (jw_pakrat_install_path_kind(install->install_path) ==
+        JW_PAKRAT_KIND_THEME) {
+        char id[128];
+        char version[64];
+        if (jw__pakrat_read_theme_identity(target, id, sizeof(id), version,
+                                           sizeof(version)) != 0 ||
+            strcmp(id, install->store_id) != 0 ||
+            strcmp(version, install->version) != 0) {
+            fprintf(stderr, "restored Pak Rat theme does not match install record: %s\n",
+                    install->store_id);
+            return -1;
+        }
+    } else {
     jw__pakrat_manifest manifest;
     if (jw__pakrat_read_manifest(target, "pak.json", &manifest) != 0 ||
         !manifest.pak_version[0] || !manifest.platform[0] ||
@@ -713,6 +824,7 @@ static int jw__validate_restored_tree(const jw_pakrat_recovery_context *ctx,
                 install->store_id);
         return -1;
     }
+    }
     if (install->commit_token[0]) {
         jw_pakrat_commit_marker marker;
         if (jw__pakrat_read_commit_marker(target, &marker) != 0 ||
@@ -730,7 +842,7 @@ static int jw__validate_restored_tree(const jw_pakrat_recovery_context *ctx,
     return 0;
 }
 
-/* Returns 0 when the selected source and Apps parent are positively mounted,
+/* Returns 0 when the selected source and install parent are positively mounted,
    1 when recovery must defer without mutation, and -1 for invalid arguments.
    jw_storage_sources_resolve supplies the same decoded mountinfo membership
    used by normal storage discovery; on MLP1 `available` requires an exact
@@ -798,7 +910,7 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
     if (source_ready != 0) {
         if (source_ready > 0) {
             fprintf(stderr,
-                    "Pak Rat recovery deferred: Apps source is not mounted for %s\n",
+                    "Pak Rat recovery deferred: install source is not mounted for %s\n",
                     install_path);
         }
         return source_ready;
@@ -825,14 +937,15 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
         }
         jw__pakrat_clear_origin_marker(target, store_id);
         jw__pakrat_log(ctx->state_dir,
-                       "install-recover restored store_id=%s target=Apps/%s",
-                       store_id, install_path);
+                       "install-recover restored store_id=%s target=%s%s",
+                       store_id, jw_pakrat_install_path_display_prefix(install_path),
+                       install_path);
         if (jw__validate_restored_tree(ctx, install, target) != 0) {
             return -1;
         }
     } else if (target_exists && rollback_exists) {
         const char *rollback_reason =
-            jw__uncommitted_promote_reason(target, install);
+            jw__uncommitted_promote_reason(target, install_path, install);
         if (!rollback_reason) {
             if (jw__pakrat_remove_tree(target_rollback) != 0) {
                 fprintf(stderr, "could not remove stale Pak Rat rollback path: %s\n",
@@ -841,8 +954,10 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
             }
             jw__pakrat_clear_origin_marker(target, store_id);
             jw__pakrat_log(ctx->state_dir,
-                           "install-recover cleaned rollback store_id=%s target=Apps/%s",
-                           store_id, install_path);
+                           "install-recover cleaned rollback store_id=%s target=%s%s",
+                           store_id,
+                           jw_pakrat_install_path_display_prefix(install_path),
+                           install_path);
         } else {
             /* The install-record update is the commit point: this promote
                never committed, so prefer the tree that was already running. */
@@ -855,28 +970,33 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
             }
             jw__pakrat_clear_origin_marker(target, store_id);
             jw__pakrat_log(ctx->state_dir,
-                           "install-recover rolled back uncommitted promote store_id=%s target=Apps/%s reason=%s",
-                           store_id, install_path, rollback_reason);
+                           "install-recover rolled back uncommitted promote store_id=%s target=%s%s reason=%s",
+                           store_id,
+                           jw_pakrat_install_path_display_prefix(install_path),
+                           install_path, rollback_reason);
             if (jw__validate_restored_tree(ctx, install, target) != 0) {
                 return -1;
             }
         }
     } else if (target_exists && !rollback_exists && install) {
         if (install->commit_token[0]) {
-            const char *reason = jw__uncommitted_promote_reason(target, install);
+            const char *reason =
+                jw__uncommitted_promote_reason(target, install_path, install);
             if (reason) {
                 jw__pakrat_log(
                     ctx->state_dir,
-                    "install-recover inconsistent committed tree store_id=%s target=Apps/%s reason=%s",
-                    store_id, install_path, reason);
+                    "install-recover inconsistent committed tree store_id=%s target=%s%s reason=%s",
+                    store_id, jw_pakrat_install_path_display_prefix(install_path),
+                    install_path, reason);
                 return JW_PAKRAT_RECOVERY_REPAIR_REQUIRED;
             }
         } else {
             if (jw__validate_restored_tree(ctx, install, target) != 0) {
                 jw__pakrat_log(
                     ctx->state_dir,
-                    "install-recover inconsistent legacy tree store_id=%s target=Apps/%s",
-                    store_id, install_path);
+                    "install-recover inconsistent legacy tree store_id=%s target=%s%s",
+                    store_id, jw_pakrat_install_path_display_prefix(install_path),
+                    install_path);
                 return JW_PAKRAT_RECOVERY_REPAIR_REQUIRED;
             }
         }
@@ -889,18 +1009,31 @@ int jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
     return 0;
 }
 
-/* Sweep one Apps dir for transition siblings whose store id has no install
-   row. Recovery iterates install rows, so an interrupted first install (no
-   row yet) is only reachable here. Conservative: exact prefixes only. */
+/* Sweep one install dir -- Apps/<platform> or Themes -- for transition
+   siblings whose store id has no install row. Recovery iterates install rows,
+   so an interrupted first install (no row yet) is only reachable here.
+   Conservative: exact prefixes only. */
 static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ctx,
                                             const jw_pakrat_install *installs,
                                             int install_count,
                                             const char *source_id,
+                                            jw_pakrat_kind kind,
                                             const char *platform_dir) {
     char apps_dir[PATH_MAX];
-    if (!jw__pakrat_safe_name(platform_dir) ||
-        jw__pakrat_join3(apps_dir, sizeof(apps_dir), ctx->sdcard_root, "Apps",
-                         platform_dir) != 0) {
+    /* Card-relative name of the swept dir, for the log. */
+    char shown[128];
+    bool themes = kind == JW_PAKRAT_KIND_THEME;
+    if (themes) {
+        if (jw__pakrat_join2(apps_dir, sizeof(apps_dir), ctx->sdcard_root,
+                             JW_PAKRAT_THEMES_DIR) != 0 ||
+            jw__pakrat_copy(shown, sizeof(shown), JW_PAKRAT_THEMES_DIR) != 0) {
+            return -1;
+        }
+    } else if (!jw__pakrat_safe_name(platform_dir) ||
+               jw__pakrat_join3(apps_dir, sizeof(apps_dir), ctx->sdcard_root,
+                                JW_PAKRAT_APPS_DIR, platform_dir) != 0 ||
+               snprintf(shown, sizeof(shown), JW_PAKRAT_APPS_DIR "/%s",
+                        platform_dir) >= (int)sizeof(shown)) {
         return -1;
     }
     int source_ready = jw__pakrat_recovery_source_ready(ctx, apps_dir);
@@ -924,8 +1057,10 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
         }
         if (entry->d_name[0] != '.') {
             size_t name_len = strlen(entry->d_name);
-            if (name_len >= 4u &&
-                strcmp(entry->d_name + name_len - 4u, ".pak") == 0) {
+            /* A store theme's folder is its id; every other folder in Themes/
+               is the user's, even one carrying a copied commit marker. */
+            if (themes || (name_len >= 4u &&
+                           strcmp(entry->d_name + name_len - 4u, ".pak") == 0)) {
                 char package[PATH_MAX];
                 jw_pakrat_commit_marker marker;
                 if (jw__pakrat_join2(package, sizeof(package), apps_dir,
@@ -933,7 +1068,8 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                     rc = -1;
                     break;
                 }
-                if (jw__pakrat_read_commit_marker(package, &marker) == 0) {
+                if (jw__pakrat_read_commit_marker(package, &marker) == 0 &&
+                    (!themes || strcmp(marker.store_id, entry->d_name) == 0)) {
                     int pending = jw__pakrat_pending_uninstall_exists(
                         ctx->db_path, marker.store_id);
                     if (pending < 0) {
@@ -989,8 +1125,8 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                         }
                         jw__pakrat_log(
                             ctx->state_dir,
-                            "install-recover removed uncommitted first install store_id=%s target=Apps/%s/%s",
-                            marker.store_id, platform_dir, entry->d_name);
+                            "install-recover removed uncommitted first install store_id=%s target=%s/%s",
+                            marker.store_id, shown, entry->d_name);
                     }
                 }
             }
@@ -1085,8 +1221,8 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                 break;
             }
             jw__pakrat_log(ctx->state_dir,
-                           "install-recover swept orphan origin store_id=%s path=Apps/%s/%s",
-                           store_id, platform_dir, entry->d_name);
+                           "install-recover swept orphan origin store_id=%s path=%s/%s",
+                           store_id, shown, entry->d_name);
             continue;
         }
 
@@ -1097,10 +1233,17 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
         if (is_rollback) {
             char install_path[PATH_MAX];
             char target[PATH_MAX];
+            char target_rollback[PATH_MAX];
+            /* The mapping must lead back into the dir being swept: a theme's
+               rollback is never restored into Apps/, nor an app's into Themes/. */
             if (jw__pakrat_read_origin_marker(apps_dir, store_id, install_path,
                                               sizeof(install_path)) == 0 &&
                 jw__pakrat_target_path(ctx->sdcard_root, install_path,
-                                       target, sizeof(target)) == 0) {
+                                       target, sizeof(target)) == 0 &&
+                jw__pakrat_target_sibling_path(target, store_id, "rollback",
+                                               target_rollback,
+                                               sizeof(target_rollback)) == 0 &&
+                strcmp(target_rollback, orphan) == 0) {
                 if (!jw__pakrat_path_exists(target)) {
                     if (rename(orphan, target) != 0) {
                         fprintf(stderr,
@@ -1111,8 +1254,10 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                     }
                     jw__pakrat_clear_origin_marker(target, store_id);
                     jw__pakrat_log(ctx->state_dir,
-                                   "install-recover restored unrecorded rollback store_id=%s target=Apps/%s",
-                                   store_id, install_path);
+                                   "install-recover restored unrecorded rollback store_id=%s target=%s%s",
+                                   store_id,
+                                   jw_pakrat_install_path_display_prefix(install_path),
+                                   install_path);
                     continue;
                 }
                 jw__pakrat_clear_origin_marker(target, store_id);
@@ -1121,8 +1266,8 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
                    sibling, so deleting it could destroy an app. Leave it and
                    surface it instead. */
                 jw__pakrat_log(ctx->state_dir,
-                               "install-recover retained unidentifiable rollback store_id=%s path=Apps/%s/%s",
-                               store_id, platform_dir, entry->d_name);
+                               "install-recover retained unidentifiable rollback store_id=%s path=%s/%s",
+                               store_id, shown, entry->d_name);
                 continue;
             }
         }
@@ -1134,8 +1279,8 @@ static int jw__sweep_orphan_transition_dirs(const jw_pakrat_recovery_context *ct
             break;
         }
         jw__pakrat_log(ctx->state_dir,
-                       "install-recover swept orphan store_id=%s path=Apps/%s/%s",
-                       store_id, platform_dir, entry->d_name);
+                       "install-recover swept orphan store_id=%s path=%s/%s",
+                       store_id, shown, entry->d_name);
     }
     closedir(dir);
     return rc;
@@ -1147,12 +1292,10 @@ int jw_pakrat_recover_installs(const jw_pakrat_recovery_context *ctx) {
     if (!ctx || !ctx->sdcard_root[0] || !ctx->db_path[0]) {
         return -1;
     }
-    char apps_root[PATH_MAX];
-    if (jw__pakrat_join2(apps_root, sizeof(apps_root), ctx->sdcard_root,
-                         "Apps") != 0) {
-        return -1;
-    }
-    int root_ready = jw__pakrat_recovery_source_ready(ctx, apps_root);
+    /* The card root, not Apps/: a card holding only store themes has no Apps
+       folder, and each install root is checked again where it is used. The
+       message is matched by the device recovery matrix; keep its wording. */
+    int root_ready = jw__pakrat_recovery_source_ready(ctx, ctx->sdcard_root);
     if (root_ready > 0) {
         fprintf(stderr,
                 "Pak Rat recovery deferred: owning Apps source is not mounted\n");
@@ -1223,11 +1366,16 @@ int jw_pakrat_recover_installs(const jw_pakrat_recovery_context *ctx) {
             (ctx->platform[0] &&
              jw__sweep_orphan_transition_dirs(
                  &source_ctx, installs, install_count, source->id,
-                 ctx->platform) != 0) ||
+                 JW_PAKRAT_KIND_APP, ctx->platform) != 0) ||
             (ctx->platform[0] && strcmp(ctx->platform, "shared") != 0 &&
              jw__sweep_orphan_transition_dirs(
                  &source_ctx, installs, install_count, source->id,
-                 "shared") != 0)) {
+                 JW_PAKRAT_KIND_APP, "shared") != 0) ||
+            /* Themes live on the primary card only. */
+            (source->primary &&
+             jw__sweep_orphan_transition_dirs(
+                 &source_ctx, installs, install_count, source->id,
+                 JW_PAKRAT_KIND_THEME, NULL) != 0)) {
             goto done;
         }
     }

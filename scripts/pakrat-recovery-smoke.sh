@@ -516,7 +516,7 @@ done
 begin_scenario "during-syncfs (flush fails, in-process rollback)"
 install_old
 write_catalog new
-expect_install_failure "during-syncfs" "Pak Rat Apps filesystem sync failed"
+expect_install_failure "during-syncfs" "Pak Rat install filesystem sync failed"
 expect_state "$OLD_VERSION" "$OLD_VERSION" "during-syncfs"
 run_smoke recover
 expect_state "$OLD_VERSION" "$OLD_VERSION" "during-syncfs post-recover"
