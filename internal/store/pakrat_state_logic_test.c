@@ -63,6 +63,17 @@ int main(void) {
     expect_content("0.2.0", "0.2.0", 1, 0, JW_PAKRAT_APP_INSTALLED, 1);
     expect_content("0.2.0", "0.2.0", 0, 0, JW_PAKRAT_APP_STALE, 1);
 
+    /* A theme has no Apps listing, so a missing listing is never damage. */
+    {
+        int action = -1;
+        assert(jw_pakrat_resolve_owned_theme_state("1.0.0", "1.0.0", &action) ==
+               JW_PAKRAT_APP_INSTALLED && action == 1);
+        assert(jw_pakrat_resolve_owned_theme_state("1.1.0", "1.0.0", &action) ==
+               JW_PAKRAT_APP_UPDATE_AVAILABLE && action == 1);
+        assert(jw_pakrat_resolve_owned_theme_state("1.0.0", "1.1.0", &action) ==
+               JW_PAKRAT_APP_INSTALLED && action == 0);
+    }
+
     puts("PASS pakrat-state-logic-test");
     return 0;
 }

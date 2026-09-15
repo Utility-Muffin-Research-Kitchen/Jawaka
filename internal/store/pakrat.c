@@ -3,11 +3,14 @@
 #include "internal/db/db.h"
 #include "internal/discovery/discovery.h"
 #include "internal/ipc/ipc.h"
+#include "internal/launcher/user_themes.h"
 #include "internal/platform/leaf_version.h"
 #include "internal/store/catalog_source.h"
 #include "internal/store/managed_apps.h"
 #include "internal/store/pakrat_recovery.h"
+#include "internal/store/pakrat_themes.h"
 #include "internal/store/pakrat_txn.h"
+#include "internal/store/theme_package.h"
 #include "internal/storage/sources.h"
 #include "internal/update/sha256.h"
 #include "internal/store/pakrat_state.h"
@@ -448,6 +451,39 @@ static int jw__validate_runtime_manifest(const jw_pakrat_catalog_package *pkg,
                : -1;
 }
 
+/* The promoted theme is the one the catalog selected: THEME-1 already held the
+   archive to the catalog's id and version, so this re-reads only identity at
+   the live path. */
+static int jw__validate_theme_identity(const jw_pakrat_catalog_package *pkg,
+                                       const char *theme_dir) {
+    char id[128];
+    char version[64];
+    return jw__pakrat_read_theme_identity(theme_dir, id, sizeof(id), version,
+                                          sizeof(version)) == 0 &&
+                   strcmp(id, pkg->id) == 0 && strcmp(version, pkg->version) == 0
+               ? 0
+               : -1;
+}
+
+/* The folder a theme action changed, for the launcher. A name that does not
+   fit is left empty rather than cut: a truncated folder name is no folder. */
+static void jw__set_theme_dir(const jw_pakrat_context *ctx, const char *folder) {
+    if (!ctx || !ctx->outcome || !folder) {
+        return;
+    }
+    size_t len = strlen(folder);
+    if (len < sizeof(ctx->outcome->theme_dir)) {
+        memcpy(ctx->outcome->theme_dir, folder, len + 1);
+    }
+}
+
+static void jw__set_refusal(const jw_pakrat_context *ctx,
+                            jw_pakrat_refusal refusal) {
+    if (ctx && ctx->outcome) {
+        ctx->outcome->refusal = refusal;
+    }
+}
+
 static int jw__notify_daemon_scan(const jw_pakrat_context *ctx) {
     if (!ctx || !ctx->socket_path[0] || !jw__pakrat_path_exists(ctx->socket_path)) {
         return 1;
@@ -601,6 +637,43 @@ static int jw__begin_install_commit(const jw_pakrat_context *ctx,
     return 0;
 }
 
+/* A theme's commit step. The library scan an app needs says nothing about
+   themes; what matters is that the launcher's own reader, with its folder cap
+   and its theme.json parser, lists the promoted folder. Scanned before the
+   write lock is taken: it only reads a few small files. */
+static int jw__begin_theme_commit(const jw_pakrat_context *ctx,
+                                  const char *card_root,
+                                  const char *folder,
+                                  sqlite3 **out_db) {
+    *out_db = NULL;
+    jw_user_theme_catalog *themes = calloc(1, sizeof(*themes));
+    if (!themes) {
+        return -1;
+    }
+    jw_user_themes_scan(themes, card_root);
+    int listed = jw_user_themes_find(themes, folder) >= 0;
+    free(themes);
+    if (!listed) {
+        jw__set_refusal(ctx, JW_PAKRAT_REFUSED_THEME_NOT_LISTED);
+        jw__pakrat_error(ctx, "The launcher does not list the installed theme %s",
+                         folder);
+        return -1;
+    }
+    sqlite3 *db = NULL;
+    if (jw_db_open(ctx->db_path, &db) != 0 || !db ||
+        jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+    sqlite3_busy_timeout(db, JW_PAKRAT_COMMIT_BUSY_TIMEOUT_MS);
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+    *out_db = db;
+    return 0;
+}
+
 static void jw__rollback_install_commit(sqlite3 **db) {
     if (!db || !*db) {
         return;
@@ -617,6 +690,9 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                                   int allow_adopt) {
     if (ctx && ctx->error_message && ctx->error_message_size > 0) {
         ctx->error_message[0] = '\0';
+    }
+    if (ctx && ctx->outcome) {
+        memset(ctx->outcome, 0, sizeof(*ctx->outcome));
     }
     int expected_parsed[3];
     if (jw__validate_context(ctx) != 0 || !store_id || !store_id[0] ||
@@ -700,13 +776,47 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         goto cleanup;
     }
 
+    bool theme = pkg.kind == JW_PAKRAT_KIND_THEME;
+    if (ctx->outcome) {
+        ctx->outcome->kind = pkg.kind;
+    }
     if (!jw__pakrat_safe_name(pkg.install_name) ||
-        !jw__has_suffix(pkg.install_name, ".pak") ||
-        strcmp(pkg.runtime_manifest_path, "pak.json") != 0 ||
+        (theme ? jw__has_suffix(pkg.install_name, ".pak") ||
+                     strcmp(pkg.install_name, store_id) != 0 ||
+                     strcmp(pkg.runtime_manifest_path,
+                            JW_PAKRAT_THEME_MANIFEST) != 0 ||
+                     jw_pakrat_install_path_kind(pkg.install_path) !=
+                         JW_PAKRAT_KIND_THEME
+               : !jw__has_suffix(pkg.install_name, ".pak") ||
+                     strcmp(pkg.runtime_manifest_path, "pak.json") != 0 ||
+                     jw_pakrat_install_path_kind(pkg.install_path) !=
+                         JW_PAKRAT_KIND_APP) ||
         !jw__pakrat_safe_name(pkg.artifact_name) ||
         !jw_pakrat_catalog_url_allowed(pkg.artifact_url, is_dev)) {
         fprintf(stderr, "catalog package failed safety checks\n");
         goto cleanup;
+    }
+    if (theme) {
+        jw__set_theme_dir(ctx, pkg.install_name);
+        /* Withdrawn: installed copies keep working, nothing new is installed. */
+        if (pkg.withdrawn) {
+            jw__set_refusal(ctx, JW_PAKRAT_REFUSED_WITHDRAWN);
+            jw__pakrat_error(ctx, "%s is no longer available in Pak Rat",
+                             pkg.name);
+            goto cleanup;
+        }
+        int reserved = jw_pakrat_theme_name_reserved(
+            ctx->platform_root, ctx->state_dir, pkg.install_name);
+        if (reserved != 0) {
+            if (reserved > 0) {
+                jw__set_refusal(ctx, JW_PAKRAT_REFUSED_RESERVED_NAME);
+            }
+            jw__pakrat_error(ctx, reserved > 0
+                                      ? "Theme folder %s belongs to a theme Leaf ships"
+                                      : "Could not read the bundled theme list for %s",
+                             pkg.install_name);
+            goto cleanup;
+        }
     }
 
     int blocked = jw_pakrat_managed_app_path_blocked_from_platform(
@@ -754,6 +864,11 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
         jw__pakrat_error(ctx, "Installed package source is unavailable");
         goto cleanup;
     }
+    /* The launcher discovers user themes on the primary card only. */
+    if (theme && target_source != primary_source) {
+        jw__pakrat_error(ctx, "Installed theme is not on the primary card");
+        goto cleanup;
+    }
 
     char target[PATH_MAX];
     if (jw__pakrat_target_path(target_source->root, pkg.install_path,
@@ -764,13 +879,29 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                                        target_rollback, sizeof(target_rollback)) != 0) {
         goto cleanup;
     }
-    if (jw__pakrat_path_exists(target) && install_row != 0 && !allow_adopt) {
+    bool target_existed = jw__pakrat_path_exists(target);
+    if (target_existed && install_row != 0 && !allow_adopt) {
+        jw__set_refusal(ctx, JW_PAKRAT_REFUSED_NEEDS_ADOPTION);
         fprintf(stderr, "target exists without Pak Rat ownership; adoption requires consent\n");
         goto cleanup;
     }
     if (install_row == 0 && strcmp(existing.install_path, pkg.install_path) != 0) {
         fprintf(stderr, "installed record uses another path; move is deferred\n");
         goto cleanup;
+    }
+    if (theme) {
+        int folders = jw_pakrat_theme_folder_count(target_source->root);
+        if (folders < 0) {
+            jw__pakrat_error(ctx, "Could not read the Themes folder");
+            goto cleanup;
+        }
+        if (jw_pakrat_theme_slots_full(folders, target_existed)) {
+            jw__set_refusal(ctx, JW_PAKRAT_REFUSED_THEME_LIMIT);
+            jw__pakrat_error(ctx,
+                             "The Themes folder already holds %d themes, the most Leaf lists",
+                             JW_USER_THEME_MAX);
+            goto cleanup;
+        }
     }
 
     char downloads_dir[PATH_MAX];
@@ -786,8 +917,10 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     }
 
     jw__pakrat_log(ctx->state_dir,
-                   "download-start store_id=%s version=%s target=Apps/%s artifact_url=%s artifact_sha256=%s artifact_size=%lld",
-                   store_id, pkg.version, pkg.install_path,
+                   "download-start store_id=%s version=%s target=%s%s artifact_url=%s artifact_sha256=%s artifact_size=%lld",
+                   store_id, pkg.version,
+                   jw_pakrat_install_path_display_prefix(pkg.install_path),
+                   pkg.install_path,
                    pkg.artifact_url, pkg.artifact_sha256, pkg.artifact_size);
     printf("download: %s\n", pkg.artifact_url);
     if (jw__download_file(pkg.artifact_url, artifact_path, pkg.artifact_size,
@@ -810,24 +943,63 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     }
 
     char extracted_pak[PATH_MAX];
+    char metadata_reason[JW_SVC_REASON_BUF] = {0};
     if (jw__pakrat_join2(app_stage_dir, sizeof(app_stage_dir), staging_dir,
-                         store_id) != 0 ||
-        jw__extract_zip_single_pak(artifact_path, app_stage_dir,
-                                   pkg.install_name, extracted_pak,
-                                   sizeof(extracted_pak)) != 0 ||
-        jw__validate_runtime_manifest(&pkg, extracted_pak) != 0) {
-        fprintf(stderr, "artifact extraction/validation failed\n");
+                         store_id) != 0) {
         goto cleanup;
     }
-    char metadata_reason[JW_SVC_REASON_BUF] = {0};
-    if (jw_pakrat_txn_inspect_manifest(
-            extracted_pak, pkg.runtime_manifest_path,
-            primary_source->userdata_path, store_id, pkg.install_path,
-            &candidate_metadata, metadata_reason,
-            sizeof(metadata_reason)) != 0) {
-        jw__pakrat_error(ctx, "Package manifest is not transaction-safe: %s",
-                         metadata_reason[0] ? metadata_reason : "invalid");
-        goto cleanup;
+    if (theme) {
+        /* THEME-1 on the downloaded archive, before anything is staged next to
+           the live folder. Only allowlisted files are ever extracted. */
+        jw_theme_package_result package;
+        if (jw__pakrat_remove_tree(app_stage_dir) != 0 ||
+            jw__pakrat_mkdir_p(app_stage_dir, 0755) != 0 ||
+            jw_theme_package_validate_zip(artifact_path, app_stage_dir,
+                                          &package) != 0) {
+            fprintf(stderr, "artifact extraction/validation failed\n");
+            goto cleanup;
+        }
+        int first = jw_theme_package_first_reason(&package);
+        if (first >= 0) {
+            jw__set_refusal(ctx, JW_PAKRAT_REFUSED_INVALID_THEME);
+            if (ctx->outcome) {
+                ctx->outcome->theme_reasons = package.reasons;
+            }
+            jw__pakrat_error(ctx, "Theme package is not valid: %s",
+                             jw_theme_package_reason_slug((jw_theme_reason)first));
+            goto cleanup;
+        }
+        if (strcmp(package.id, store_id) != 0 ||
+            strcmp(package.root, pkg.install_name) != 0 ||
+            strcmp(package.version, pkg.version) != 0 ||
+            strcmp(package.min_leaf_version, pkg.min_leaf_version) != 0) {
+            jw__pakrat_error(ctx, "Theme package does not match the catalog entry");
+            goto cleanup;
+        }
+        if (jw__pakrat_join2(extracted_pak, sizeof(extracted_pak),
+                             app_stage_dir, package.root) != 0 ||
+            jw_pakrat_txn_theme_metadata(store_id, pkg.install_path,
+                                         package.name,
+                                         &candidate_metadata) != 0) {
+            goto cleanup;
+        }
+    } else {
+        if (jw__extract_zip_single_pak(artifact_path, app_stage_dir,
+                                       pkg.install_name, extracted_pak,
+                                       sizeof(extracted_pak)) != 0 ||
+            jw__validate_runtime_manifest(&pkg, extracted_pak) != 0) {
+            fprintf(stderr, "artifact extraction/validation failed\n");
+            goto cleanup;
+        }
+        if (jw_pakrat_txn_inspect_manifest(
+                extracted_pak, pkg.runtime_manifest_path,
+                primary_source->userdata_path, store_id, pkg.install_path,
+                &candidate_metadata, metadata_reason,
+                sizeof(metadata_reason)) != 0) {
+            jw__pakrat_error(ctx, "Package manifest is not transaction-safe: %s",
+                             metadata_reason[0] ? metadata_reason : "invalid");
+            goto cleanup;
+        }
     }
     candidate_metadata_loaded = 1;
 
@@ -836,11 +1008,15 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
             ctx->db_path, store_id, &installed_metadata);
         if (metadata_rc == 1) {
             metadata_reason[0] = '\0';
-            if (jw_pakrat_txn_inspect_manifest(
-                    target, pkg.runtime_manifest_path,
-                    primary_source->userdata_path, store_id,
-                    existing.install_path, &installed_metadata,
-                    metadata_reason, sizeof(metadata_reason)) != 0 ||
+            if ((theme ? jw_pakrat_txn_theme_metadata(
+                             store_id, existing.install_path,
+                             candidate_metadata.display_name,
+                             &installed_metadata)
+                       : jw_pakrat_txn_inspect_manifest(
+                             target, pkg.runtime_manifest_path,
+                             primary_source->userdata_path, store_id,
+                             existing.install_path, &installed_metadata,
+                             metadata_reason, sizeof(metadata_reason))) != 0 ||
                 jw__cache_metadata(ctx->db_path, &installed_metadata) != 0) {
                 jw__pakrat_error(
                     ctx, "Installed package metadata cannot be validated: %s",
@@ -997,20 +1173,24 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
                 !candidate_metadata.has_service
             ? installed_metadata.service_id
             : NULL;
-    if (jw__validate_runtime_manifest(&pkg, target) != 0 ||
+    memset(&scan_result, 0, sizeof(scan_result));
+    if ((theme ? jw__validate_theme_identity(&pkg, target)
+               : jw__validate_runtime_manifest(&pkg, target)) != 0 ||
         jw__pakrat_read_commit_marker(target, &promoted_marker) != 0 ||
         strcmp(promoted_marker.store_id, store_id) != 0 ||
         strcmp(promoted_marker.version, pkg.version) != 0 ||
         strcmp(promoted_marker.artifact_sha256, sha) != 0 ||
         strcmp(promoted_marker.token, commit_token) != 0 ||
-        jw__begin_install_commit(ctx, clear_service_id, &commit_db,
-                                 &scan_result) != 0) {
+        (theme ? jw__begin_theme_commit(ctx, target_source->root,
+                                        pkg.install_name, &commit_db)
+               : jw__begin_install_commit(ctx, clear_service_id, &commit_db,
+                                          &scan_result)) != 0) {
         goto cleanup;
     }
     jw__fault_crash("before-syncfs");
     if (jw__fault_requested("during-syncfs") ||
         jw__pakrat_sync_filesystem(target) != 0) {
-        fprintf(stderr, "Pak Rat Apps filesystem sync failed\n");
+        fprintf(stderr, "Pak Rat install filesystem sync failed\n");
         goto cleanup;
     }
     jw__fault_crash("after-syncfs");
@@ -1037,9 +1217,15 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
     commit_db = NULL;
     committed = 1;
     rc = 0;
-    printf("rescan: games=%d systems=%d apps=%d\n",
-           scan_result.game_count, scan_result.system_count,
-           scan_result.app_count);
+    if (theme && ctx->outcome) {
+        ctx->outcome->themes_changed = 1;
+        ctx->outcome->theme_updated = target_existed ? 1 : 0;
+    }
+    if (!theme) {
+        printf("rescan: games=%d systems=%d apps=%d\n",
+               scan_result.game_count, scan_result.system_count,
+               scan_result.app_count);
+    }
     jw__fault_crash("after-record");
     jw__fault_crash("before-cleanup");
     if (moved_live) {
@@ -1078,20 +1264,27 @@ static int jw__pakrat_install_app(const jw_pakrat_context *ctx,
      * A failure here does not fail the install. The package is committed and
      * authoritative by this point; the library is merely out of date, and the
      * daemon notification below plus the next scan will settle it. */
-    if (jw_pakrat_rescan(ctx) != 0) {
-        fprintf(stderr,
-                "install: package committed, but the post-install library "
-                "refresh failed; the catalog will settle on the next scan\n");
-        jw__pakrat_log(ctx->state_dir,
-                       "install-refresh-deferred store_id=%s", store_id);
+    if (!theme) {
+        /* A theme adds nothing to the library, so neither refresh applies;
+           the launcher rescans its themes from ctx->outcome. */
+        if (jw_pakrat_rescan(ctx) != 0) {
+            fprintf(stderr,
+                    "install: package committed, but the post-install library "
+                    "refresh failed; the catalog will settle on the next scan\n");
+            jw__pakrat_log(ctx->state_dir,
+                           "install-refresh-deferred store_id=%s", store_id);
+        }
+        (void)jw__notify_daemon_scan(ctx);
     }
-    (void)jw__notify_daemon_scan(ctx);
 
-    printf("installed: %s %s -> Apps/%s\n", store_id, pkg.version,
+    printf("installed: %s %s -> %s%s\n", store_id, pkg.version,
+           jw_pakrat_install_path_display_prefix(pkg.install_path),
            pkg.install_path);
     jw__pakrat_log(ctx->state_dir,
-                   "install-complete store_id=%s version=%s target=Apps/%s",
-                   store_id, pkg.version, pkg.install_path);
+                   "install-complete store_id=%s version=%s target=%s%s",
+                   store_id, pkg.version,
+                   jw_pakrat_install_path_display_prefix(pkg.install_path),
+                   pkg.install_path);
 
 cleanup:
     if (commit_db) {
@@ -1200,12 +1393,18 @@ static int jw__load_owned_metadata(const jw_pakrat_context *ctx,
         &sources, install->source_id[0] ? install->source_id : "primary");
     char target[PATH_MAX];
     char reason[JW_SVC_REASON_BUF] = {0};
+    bool theme = jw_pakrat_install_path_kind(install->install_path) ==
+                 JW_PAKRAT_KIND_THEME;
     if (!primary || !primary->available || !source || !source->available ||
         jw__pakrat_target_path(source->root, install->install_path,
                                target, sizeof(target)) != 0 ||
-        jw_pakrat_txn_inspect_manifest(
-            target, "pak.json", primary->userdata_path, install->store_id,
-            install->install_path, out, reason, sizeof(reason)) != 0 ||
+        (theme ? jw_pakrat_txn_theme_metadata(install->store_id,
+                                              install->install_path,
+                                              install->store_id, out)
+               : jw_pakrat_txn_inspect_manifest(
+                     target, "pak.json", primary->userdata_path,
+                     install->store_id, install->install_path, out, reason,
+                     sizeof(reason))) != 0 ||
         jw__cache_metadata(ctx->db_path, out) != 0) {
         jw__pakrat_error(ctx, "Installed package metadata cannot be cached: %s",
                          reason[0] ? reason : "validation failed");
@@ -1219,6 +1418,9 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
     if (ctx && ctx->error_message && ctx->error_message_size > 0) {
         ctx->error_message[0] = '\0';
     }
+    if (ctx && ctx->outcome) {
+        memset(ctx->outcome, 0, sizeof(*ctx->outcome));
+    }
     if (jw__validate_context(ctx) != 0 || !store_id || !store_id[0]) {
         return -1;
     }
@@ -1231,6 +1433,15 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
     }
     if (rc < 0) {
         return -1;
+    }
+    jw_pakrat_kind kind = jw_pakrat_install_path_kind(row.install_path);
+    if (strcmp(row.kind, jw_pakrat_kind_name(kind)) != 0) {
+        jw__pakrat_error(ctx, "Pak Rat ownership record is inconsistent: %s",
+                         store_id);
+        return -1;
+    }
+    if (ctx->outcome) {
+        ctx->outcome->kind = kind;
     }
 
     int blocked = jw_pakrat_managed_app_path_blocked_from_platform(
@@ -1299,6 +1510,16 @@ int jw_pakrat_uninstall_app(const jw_pakrat_context *ctx, const char *store_id) 
     if (mutation_started) {
         jw_pakrat_mutation_lock_release(&lock);
         mutation_started = false;
+    }
+    if (kind == JW_PAKRAT_KIND_THEME) {
+        if (ctx->outcome) {
+            ctx->outcome->themes_changed = 1;
+        }
+        jw__set_theme_dir(ctx, row.install_path +
+                                   sizeof(JW_PAKRAT_THEME_PATH_PREFIX) - 1);
+        printf("uninstalled theme: %s\n", store_id);
+        result = 0;
+        goto uninstall_done;
     }
     if (jw_pakrat_rescan(ctx) != 0) {
         jw__pakrat_error(ctx, "Package was removed, but library refresh failed");

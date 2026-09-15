@@ -59,6 +59,22 @@ int main(void) {
                    "'pakrat_pending_uninstalls')") != 2) {
         fail(db, "fresh pakrat transaction schema");
     }
+    /* The install root travels in install_path; kind is derived from it. */
+    if (scalar(db, "SELECT COUNT(*) FROM pragma_table_info('pakrat_installs') "
+                   "WHERE name='kind' AND \"notnull\"=1") != 1 ||
+        jw_db_pakrat_upsert_install_db(
+            db, "neon-nights", "1.0.0", "any", "primary", "Themes/neon-nights",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            NULL, NULL) != 0 ||
+        jw_db_pakrat_upsert_install_db(
+            db, "org.umrk.app", "1.0.0", "mlp1", "primary", "mlp1/App.pak",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            NULL, NULL) != 0 ||
+        scalar(db, "SELECT COUNT(*) FROM pakrat_installs WHERE "
+                   "(store_id='neon-nights' AND kind='theme') OR "
+                   "(store_id='org.umrk.app' AND kind='app')") != 2) {
+        fail(db, "fresh pakrat kind column");
+    }
     sqlite3_close(db);
     unlink(fresh);
 
@@ -99,7 +115,7 @@ int main(void) {
                    "AND pak_version='1.0.0'") != 1 ||
         scalar(db, "SELECT COUNT(*) FROM pakrat_installs "
                    "WHERE store_id='org.umrk.legacy' AND commit_token IS NULL "
-                   "AND source_id='primary'") != 1 ||
+                   "AND source_id='primary' AND kind='app'") != 1 ||
         jw_db_scan_begin(db) != 0 ||
         jw_db_insert_app(db, "Apps/mlp1/Existing.pak", "Existing", "",
                          "mlp1", "1.0.1", "0.0.1", "0.7.0") != 0 ||

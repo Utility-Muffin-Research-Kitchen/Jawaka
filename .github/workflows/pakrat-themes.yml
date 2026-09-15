@@ -21,6 +21,9 @@ jobs:
         with:
           path: Jawaka
 
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev libcurl4-openssl-dev sqlite3
+
       - name: Check out the pinned theme contract
         uses: actions/checkout@v4
         with:
@@ -30,3 +33,9 @@ jobs:
 
       - name: Verify THEME-1 validation against the contract fixtures
         run: make -C Jawaka WORKSPACE_ROOT="$GITHUB_WORKSPACE" theme-package-test
+
+      - name: Verify the themes lane, install roots, ownership and recovery
+        run: make -C Jawaka pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test schema-v6-test
+
+      - name: Install, update and uninstall themes through the real installer
+        run: make -C Jawaka pakrat-theme-smoke

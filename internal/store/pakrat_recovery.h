@@ -29,8 +29,9 @@ bool jw__pakrat_safe_rel_path(const char *path);
    when state_dir is empty or the log cannot be opened. */
 void jw__pakrat_log(const char *state_dir, const char *fmt, ...);
 
-/* Resolves an Apps-namespace install_path ("mlp1/X.pak" or "Apps/mlp1/X.pak")
-   to its absolute target under sdcard_root. */
+/* Resolves an install_path to its absolute target under sdcard_root: an
+   Apps-namespace path ("mlp1/X.pak" or "Apps/mlp1/X.pak") to Apps/, a theme's
+   "Themes/<id>" to Themes/<id> (pakrat_kind.h). */
 int  jw__pakrat_target_path(const char *sdcard_root, const char *install_path,
                             char *out, size_t out_size);
 /* Sibling transition path next to target: <parent>/.pakrat-<kind>-<store_id>.
@@ -89,6 +90,13 @@ typedef struct {
 int  jw__pakrat_read_manifest(const char *pak_dir, const char *manifest_rel,
                               jw__pakrat_manifest *out);
 
+/* A store theme's identity: theme.json "id" and "version" (loosely read; the
+   package was held to THEME-1 before it was ever promoted). Returns 0 when
+   both are present strings. */
+int  jw__pakrat_read_theme_identity(const char *theme_dir, char *id,
+                                    size_t id_size, char *version,
+                                    size_t version_size);
+
 /* ── Install-transition recovery ─────────────────────────────────────────── */
 
 typedef struct {
@@ -122,8 +130,8 @@ int  jw__pakrat_reconcile_transition(const jw_pakrat_recovery_context *ctx,
 
 /* Recovery entry point, called before package discovery on every daemon start
    and from the Pak Rat rescan path. Reconciles every recorded install, then
-   sweeps the platform and shared Apps dirs for .pakrat-stage-* and
-   .pakrat-rollback-* trees with no install row (an interrupted first install
+   sweeps the platform and shared Apps dirs, and the primary card's Themes
+   dir, for .pakrat-stage-* and .pakrat-rollback-* trees with no install row (an interrupted first install
    leaves no row). A REPAIR_REQUIRED result is stable and must not be retried
    on a timer; an explicit repair or ownership change is required. */
 int  jw_pakrat_recover_installs(const jw_pakrat_recovery_context *ctx);

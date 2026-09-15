@@ -42,3 +42,11 @@ jw_pakrat_app_status jw_pakrat_resolve_owned_state(
     }
     return JW_PAKRAT_APP_INSTALLED;
 }
+
+jw_pakrat_app_status jw_pakrat_resolve_owned_theme_state(
+    const char *selected_version,
+    const char *installed_version,
+    int *out_primary_action_allowed) {
+    return jw_pakrat_resolve_owned_state(selected_version, installed_version,
+                                         1, 0, out_primary_action_allowed);
+}

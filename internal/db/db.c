@@ -134,7 +134,8 @@ static const char *kSchemaSql =
     "    install_path    TEXT NOT NULL,\n"
     "    artifact_sha256 TEXT NOT NULL,\n"
     "    installed_at    TEXT NOT NULL,\n"
-    "    commit_token    TEXT\n"
+    "    commit_token    TEXT,\n"
+    "    kind            TEXT NOT NULL DEFAULT 'app' CHECK (kind IN ('app','theme'))\n"
     ");\n"
     "\n"
     "CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx\n"
@@ -272,7 +273,8 @@ static int jw__ensure_pakrat_commit_token(sqlite3 *db) {
             "platform TEXT NOT NULL,source_id TEXT NOT NULL DEFAULT 'primary',"
             "install_path TEXT NOT NULL,"
             "artifact_sha256 TEXT NOT NULL,installed_at TEXT NOT NULL,"
-            "commit_token TEXT);"
+            "commit_token TEXT,"
+            "kind TEXT NOT NULL DEFAULT 'app' CHECK(kind IN ('app','theme')));"
             "CREATE INDEX IF NOT EXISTS pakrat_installs_install_path_idx "
             "ON pakrat_installs(install_path);") != 0) {
         return -1;
@@ -286,6 +288,11 @@ static int jw__ensure_pakrat_commit_token(sqlite3 *db) {
         {"source_id",
          "ALTER TABLE pakrat_installs ADD COLUMN source_id TEXT NOT NULL "
          "DEFAULT 'primary';"},
+        /* Pak Rat themes. Every row written before this column existed is an
+           app or content pak, which is what the default says. */
+        {"kind",
+         "ALTER TABLE pakrat_installs ADD COLUMN kind TEXT NOT NULL "
+         "DEFAULT 'app' CHECK(kind IN ('app','theme'));"},
     };
     for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
         int present = 0;
@@ -1770,10 +1777,14 @@ int jw_db_pakrat_upsert_install_db(sqlite3 *db, const char *store_id,
         !jw__pakrat_commit_token_valid(commit_token)) {
         return -1;
     }
+    /* The kind is the install root, which install_path names (pakrat_kind.h):
+       deriving it here keeps the two from ever disagreeing. */
+    const char *kind =
+        strncmp(install_path, "Themes/", 7) == 0 ? "theme" : "app";
     static const char *sql =
         "INSERT INTO pakrat_installs "
-        "(store_id, version, platform, source_id, install_path, artifact_sha256, installed_at, commit_token) "
-        "VALUES (?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now')), ?) "
+        "(store_id, version, platform, source_id, install_path, artifact_sha256, installed_at, commit_token, kind) "
+        "VALUES (?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now')), ?, ?) "
         "ON CONFLICT(store_id) DO UPDATE SET "
         "version = excluded.version, "
         "platform = excluded.platform, "
@@ -1781,7 +1792,8 @@ int jw_db_pakrat_upsert_install_db(sqlite3 *db, const char *store_id,
         "install_path = excluded.install_path, "
         "artifact_sha256 = excluded.artifact_sha256, "
         "installed_at = excluded.installed_at, "
-        "commit_token = excluded.commit_token;";
+        "commit_token = excluded.commit_token, "
+        "kind = excluded.kind;";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         return -1;
@@ -1799,6 +1811,7 @@ int jw_db_pakrat_upsert_install_db(sqlite3 *db, const char *store_id,
     } else {
         sqlite3_bind_null(stmt, 8);
     }
+    sqlite3_bind_text(stmt, 9, kind, -1, SQLITE_STATIC);
 
     int rc = sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
     sqlite3_finalize(stmt);
@@ -1878,13 +1891,14 @@ static void jw__pakrat_fill_install(sqlite3_stmt *stmt, jw_pakrat_install *out) 
     out->app_present = sqlite3_column_int(stmt, 8);
     jw__pakrat_copy_column(stmt, 9, out->app_name, sizeof(out->app_name));
     jw__pakrat_copy_column(stmt, 10, out->app_pak_dir, sizeof(out->app_pak_dir));
+    jw__pakrat_copy_column(stmt, 11, out->kind, sizeof(out->kind));
 }
 
 static const char *kPakratInstallJoinSql =
     "SELECT p.store_id, p.version, p.platform, p.source_id, p.install_path, "
     "p.artifact_sha256, p.installed_at, p.commit_token, "
     "CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS app_present, "
-    "COALESCE(a.name, ''), COALESCE(a.pak_dir, '') "
+    "COALESCE(a.name, ''), COALESCE(a.pak_dir, ''), p.kind "
     "FROM pakrat_installs p "
     "LEFT JOIN apps a ON a.pak_dir = p.install_path "
     "    OR a.pak_dir = ('Apps/' || p.install_path) ";

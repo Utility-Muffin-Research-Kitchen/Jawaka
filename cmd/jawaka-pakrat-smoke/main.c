@@ -1,6 +1,9 @@
 #include "internal/store/pakrat.h"
 #include "internal/store/pakrat_recovery.h"
 #include "internal/store/pakrat_state.h"
+#include "internal/store/theme_package.h"
+
+#include <stdbool.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -214,34 +217,42 @@ static int jw__parse_args(int argc, char **argv, pakrat_smoke_opts *opts) {
 }
 
 static int jw__print_list(const jw_pakrat_context *ctx) {
-    jw_pakrat_app_state states[128];
+    enum { JW_SMOKE_MAX_STATES = 128 };
+    jw_pakrat_app_state *states = calloc(JW_SMOKE_MAX_STATES, sizeof(*states));
+    if (!states) {
+        return -1;
+    }
     int count = 0;
-    int rc = jw_pakrat_list_app_states(ctx, states,
-                                       (int)(sizeof(states) / sizeof(states[0])),
+    int rc = jw_pakrat_list_app_states(ctx, states, JW_SMOKE_MAX_STATES,
                                        &count);
     if (rc > 0) {
         printf("Pak Rat catalog URL is not configured\n");
+        free(states);
         return 0;
     }
     if (rc == JW_PAKRAT_CATALOG_REQUIRES_NEWER_LEAF) {
         fprintf(stderr, "Pak Rat catalog requires a newer Leaf\n");
+        free(states);
         return -1;
     }
     if (rc < 0) {
         fprintf(stderr, "failed to load Pak Rat app states\n");
+        free(states);
         return -1;
     }
 
     for (int i = 0; i < count; i++) {
         const jw_pakrat_app_state *state = &states[i];
-        printf("%s\t%s\t%s\tinstalled=%s\tmanaged=%d\tpath=Apps/%s"
+        printf("%s\t%s\t%s\tinstalled=%s\tmanaged=%d\tpath=%s%s"
                "\taction=%d\ttarget=%s\thistory=%d\tmissing_history=%d"
-               "\tgated=%s\tmin_leaf=%s\n",
+               "\tgated=%s\tmin_leaf=%s\tkind=%s\twithdrawn=%d"
+               "\tslots_full=%d\n",
                jw_pakrat_app_status_name(state->status),
                state->package.id,
                state->package.version,
                state->installed_version[0] ? state->installed_version : "-",
                state->managed,
+               jw_pakrat_install_path_display_prefix(state->package.install_path),
                state->package.install_path,
                state->primary_action_allowed,
                state->action_version[0] ? state->action_version : "-",
@@ -250,9 +261,45 @@ static int jw__print_list(const jw_pakrat_context *ctx) {
                state->gated_version[0] ? state->gated_version : "-",
                state->gated_min_leaf_version[0]
                    ? state->gated_min_leaf_version
-                   : "-");
+                   : "-",
+               jw_pakrat_kind_name(state->package.kind),
+               state->package.withdrawn, state->theme_slots_full);
     }
+    free(states);
     return 0;
+}
+
+static const char *jw__refusal_name(jw_pakrat_refusal refusal) {
+    switch (refusal) {
+    case JW_PAKRAT_REFUSED_NONE: return "none";
+    case JW_PAKRAT_REFUSED_NEEDS_ADOPTION: return "needs-adoption";
+    case JW_PAKRAT_REFUSED_WITHDRAWN: return "withdrawn";
+    case JW_PAKRAT_REFUSED_RESERVED_NAME: return "reserved-name";
+    case JW_PAKRAT_REFUSED_THEME_LIMIT: return "theme-limit";
+    case JW_PAKRAT_REFUSED_INVALID_THEME: return "invalid-theme";
+    case JW_PAKRAT_REFUSED_THEME_NOT_LISTED: return "theme-not-listed";
+    }
+    return "unknown";
+}
+
+/* One line a smoke script can assert on: what the launcher would act on. */
+static void jw__print_outcome(const jw_pakrat_outcome *outcome,
+                              const char *error) {
+    printf("outcome: kind=%s refusal=%s themes_changed=%d theme_updated=%d "
+           "selection_cleared=%d theme_dir=%s reasons=",
+           jw_pakrat_kind_name(outcome->kind),
+           jw__refusal_name(outcome->refusal), outcome->themes_changed,
+           outcome->theme_updated, outcome->theme_selection_cleared,
+           outcome->theme_dir[0] ? outcome->theme_dir : "-");
+    bool any = false;
+    for (int i = 0; i < JW_THEME_REASON_COUNT; i++) {
+        if (outcome->theme_reasons & (1ULL << i)) {
+            printf("%s%s", any ? "," : "",
+                   jw_theme_package_reason_slug((jw_theme_reason)i));
+            any = true;
+        }
+    }
+    printf("%s error=%s\n", any ? "" : "-", error[0] ? error : "-");
 }
 
 int main(int argc, char **argv) {
@@ -262,6 +309,12 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    jw_pakrat_outcome outcome;
+    char error[512] = "";
+    memset(&outcome, 0, sizeof(outcome));
+    opts.ctx.outcome = &outcome;
+    opts.ctx.error_message = error;
+    opts.ctx.error_message_size = sizeof(error);
     int rc = -1;
     if (strcmp(opts.action, "install") == 0) {
         rc = jw_pakrat_install_app(&opts.ctx, opts.store_id, 0);
@@ -294,6 +347,13 @@ int main(int argc, char **argv) {
     } else {
         jw__usage(argv[0]);
         rc = -1;
+    }
+    if (strcmp(opts.action, "install") == 0 ||
+        strcmp(opts.action, "install-target") == 0 ||
+        strcmp(opts.action, "adopt") == 0 ||
+        strcmp(opts.action, "repair") == 0 ||
+        strcmp(opts.action, "uninstall") == 0) {
+        jw__print_outcome(&outcome, error);
     }
     return rc == 0 ? 0 : 1;
 }

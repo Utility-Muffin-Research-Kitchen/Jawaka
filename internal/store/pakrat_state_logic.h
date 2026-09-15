@@ -23,4 +23,11 @@ jw_pakrat_app_status jw_pakrat_resolve_owned_state(
     int content_only,
     int *out_primary_action_allowed);
 
+/* A theme has no Apps listing to go missing from, so it is never Stale:
+   installed, or an update is available. */
+jw_pakrat_app_status jw_pakrat_resolve_owned_theme_state(
+    const char *selected_version,
+    const char *installed_version,
+    int *out_primary_action_allowed);
+
 #endif

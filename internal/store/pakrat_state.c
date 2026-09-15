@@ -4,7 +4,9 @@
 #include "internal/platform/leaf_version.h"
 #include "internal/store/catalog_source.h"
 #include "internal/store/managed_apps.h"
+#include "internal/store/pakrat_recovery.h"
 #include "internal/store/pakrat_state_logic.h"
+#include "internal/store/pakrat_themes.h"
 #include "internal/storage/sources.h"
 
 #include "cJSON.h"
@@ -52,19 +54,18 @@ static int jw__path_exists(const char *path) {
     return path && stat(path, &st) == 0;
 }
 
-/* Resolve a catalog install_path ("[Apps/]<rel>") to the on-disk pak path, so a
-   manually-present (unmanaged) pak can be told apart from a merely-available
-   one. Mirrors jw__target_path_for_install in pakrat.c. */
+/* Resolve a catalog install_path to the on-disk path under its kind's root, so
+   a manually-present (unmanaged) pak or theme folder can be told apart from a
+   merely-available one. The same resolution the installer uses. */
 static int jw__install_target_path(const jw_pakrat_context *ctx,
                                    const char *install_path,
                                    char *out, size_t out_size) {
-    const char *p = install_path;
-    if (strncmp(p, "Apps/", 5) == 0) {
-        p += 5;
-    }
-    int n = snprintf(out, out_size, "%s/Apps/%s", ctx->sdcard_root, p);
-    return (n > 0 && (size_t)n < out_size) ? 0 : -1;
+    return jw__pakrat_target_path(ctx->sdcard_root, install_path, out, out_size);
 }
+
+/* Room for the storefront's selections without putting them on the stack:
+   this runs on a launcher worker thread, and a package record is kilobytes. */
+#define JW_PAKRAT_MAX_SELECTIONS 128
 
 static void jw__configure_curl_ca(CURL *curl) {
     static const char *ca_files[] = {
@@ -251,27 +252,31 @@ int jw_pakrat_find_catalog_package(const jw_pakrat_context *ctx,
     }
 
     jw_installed_release release;
-    jw_pakrat_catalog_selection selections[128];
+    jw_pakrat_catalog_selection *selections =
+        calloc(JW_PAKRAT_MAX_SELECTIONS, sizeof(*selections));
+    if (!selections) {
+        free(storefront.data);
+        return -1;
+    }
     int count = 0;
     int parse_rc = jw_pakrat_catalog_parse_and_select(
         storefront.data, ctx->platform,
         jw__installed_leaf_version(ctx, &release), is_dev,
-        selections, (int)(sizeof(selections) / sizeof(selections[0])), &count);
+        selections, JW_PAKRAT_MAX_SELECTIONS, &count);
     free(storefront.data);
-    if (parse_rc != 0) {
-        return parse_rc;
-    }
-
-    for (int i = 0; i < count; i++) {
+    int rc = parse_rc != 0 ? parse_rc : 1;
+    for (int i = 0; parse_rc == 0 && i < count; i++) {
         if (strcmp(selections[i].package.id, store_id) == 0) {
             *out = selections[i].package;
             if (out_is_dev_override) {
                 *out_is_dev_override = is_dev;
             }
-            return 0;
+            rc = 0;
+            break;
         }
     }
-    return 1;
+    free(selections);
+    return rc;
 }
 
 int jw_pakrat_find_catalog_package_version(
@@ -438,15 +443,17 @@ static void jw__fill_content_facts(const jw_pakrat_context *ctx,
     char manifest_path[PATH_MAX];
     char launch_path[PATH_MAX];
 
+    /* A theme contributes no content and has nothing to open. */
     if (!install->install_path[0] ||
+        jw_pakrat_install_path_kind(install->install_path) == JW_PAKRAT_KIND_THEME ||
         jw_storage_sources_resolve(ctx->sdcard_root, &sources) != 0) {
         return;
     }
     source = jw_storage_sources_find_by_id(
         &sources, install->source_id[0] ? install->source_id : "primary");
     if (!source || !source->available ||
-        snprintf(pak_dir, sizeof(pak_dir), "%s/Apps/%s", source->root,
-                 install->install_path) >= (int)sizeof(pak_dir) ||
+        jw__pakrat_target_path(source->root, install->install_path, pak_dir,
+                               sizeof(pak_dir)) != 0 ||
         snprintf(manifest_path, sizeof(manifest_path), "%s/pak.json",
                  pak_dir) >= (int)sizeof(manifest_path)) {
         return;
@@ -505,27 +512,37 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
     }
 
     jw_installed_release release;
-    jw_pakrat_catalog_selection selections[128];
+    jw_pakrat_catalog_selection *selections =
+        calloc(JW_PAKRAT_MAX_SELECTIONS, sizeof(*selections));
+    if (!selections) {
+        free(storefront.data);
+        return -1;
+    }
     int package_count = 0;
     int parse_rc = jw_pakrat_catalog_parse_and_select(
         storefront.data, ctx->platform,
         jw__installed_leaf_version(ctx, &release), is_dev,
-        selections, (int)(sizeof(selections) / sizeof(selections[0])),
-        &package_count);
+        selections, JW_PAKRAT_MAX_SELECTIONS, &package_count);
     if (parse_rc != 0) {
+        free(selections);
         free(storefront.data);
         return parse_rc;
     }
 
     jw_pakrat_managed_apps managed;
     if (jw_pakrat_load_managed_apps(ctx->platform_root, &managed) != 0) {
+        free(selections);
         free(storefront.data);
         return -1;
     }
     int db_available = jw__path_exists(ctx->db_path);
+    /* Read once per listing: one opendir, not one per theme. */
+    int theme_folders = -1;
+    int rc = 0;
 
     for (int i = 0; i < package_count && *out_count < max_count; i++) {
         jw_pakrat_app_state *state = &out[*out_count];
+        memset(state, 0, sizeof(*state));
         state->package = selections[i].package;
         state->lane = selections[i].lane;
         state->status = JW_PAKRAT_APP_AVAILABLE;
@@ -540,6 +557,18 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
         state->managed =
             jw_pakrat_managed_app_path_blocked(&managed,
                                                state->package.install_path) > 0;
+        bool theme = state->package.kind == JW_PAKRAT_KIND_THEME;
+        if (theme) {
+            /* A folder a Leaf release replaces on every install is release
+               managed in exactly the sense an app is. */
+            int reserved = jw_pakrat_theme_name_reserved(
+                ctx->platform_root, ctx->state_dir,
+                state->package.install_name);
+            state->theme_name_reserved = reserved != 0;
+            if (reserved != 0) {
+                state->managed = 1;
+            }
+        }
 
         jw_pakrat_install install;
         int install_rc = db_available ?
@@ -547,10 +576,42 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
                                      &install) :
             1;
         if (install_rc < 0) {
-            free(storefront.data);
-            return -1;
+            rc = -1;
+            break;
         }
-        if (install_rc == 0) {
+        /* A withdrawn theme is hidden from browsing. One already installed
+           stays listed so the store can say it is no longer available. */
+        if (theme && state->package.withdrawn && install_rc != 0) {
+            continue;
+        }
+        if (install_rc == 0 && theme) {
+            state->installed_owned = 1;
+            jw__copy(state->installed_version, sizeof(state->installed_version),
+                     install.version);
+            jw__copy(state->installed_at, sizeof(state->installed_at),
+                     install.installed_at);
+            char target[PATH_MAX];
+            state->app_present =
+                jw__install_target_path(ctx, install.install_path, target,
+                                        sizeof(target)) == 0 &&
+                jw__path_exists(target);
+            state->status = jw_pakrat_resolve_owned_theme_state(
+                state->package.version, install.version,
+                &state->primary_action_allowed);
+            if (state->status == JW_PAKRAT_APP_INSTALLED) {
+                /* Reinstall is the same version the catalog selects. */
+                state->primary_action_allowed =
+                    strcmp(state->package.version, install.version) == 0;
+                if (!state->primary_action_allowed) {
+                    state->action_version[0] = '\0';
+                }
+            }
+            if (state->package.withdrawn) {
+                state->primary_action_allowed = 0;
+                state->action_version[0] = '\0';
+            }
+            jw__hide_obsolete_gate(state);
+        } else if (install_rc == 0) {
             state->installed_owned = 1;
             state->app_present = install.app_present;
             jw__copy(state->installed_version, sizeof(state->installed_version),
@@ -587,8 +648,8 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
                               state->package.id, install.version, &exact)
                         : 1;
                 if (exact_rc < 0) {
-                    free(storefront.data);
-                    return exact_rc;
+                    rc = exact_rc;
+                    break;
                 }
                 if (exact_rc == 0) {
                     state->primary_action_allowed = 1;
@@ -612,12 +673,23 @@ int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
                 jw__path_exists(target)) {
                 state->status = JW_PAKRAT_APP_UNMANAGED;
                 state->app_present = 1;
+            } else if (theme) {
+                if (theme_folders < 0) {
+                    theme_folders = jw_pakrat_theme_folder_count(ctx->sdcard_root);
+                }
+                state->theme_slots_full =
+                    theme_folders >= 0 &&
+                    jw_pakrat_theme_slots_full(theme_folders, false);
             }
         }
 
         (*out_count)++;
     }
 
+    free(selections);
     free(storefront.data);
+    if (rc != 0) {
+        return rc;
+    }
     return package_count <= max_count ? 0 : -1;
 }

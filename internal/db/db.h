@@ -74,6 +74,7 @@ typedef struct {
     int  app_present;
     char app_name[256];
     char app_pak_dir[512];
+    char kind[8];          /* "app" or "theme"; always agrees with install_path */
 } jw_pakrat_install;
 
 typedef struct {
@@ -299,8 +300,9 @@ int  jw_db_load_rumble_settings(const char *db_path, jw_rumble_settings *out);
 
 /* Pak Rat store ownership. apps remains scan truth; pakrat_installs records
    packages installed/updated through the store and intentionally survives
-   library rescans. install_path is the Apps-namespace path, e.g.
-   "mlp1/SDLReader.pak" or "shared/RetroArch.pak". */
+   library rescans. install_path is the Apps-namespace path for an app, e.g.
+   "mlp1/SDLReader.pak" or "shared/RetroArch.pak", and "Themes/<id>" for a
+   theme; the row's kind column is derived from it. */
 int  jw_db_pakrat_upsert_install(const char *db_path, const char *store_id,
                                  const char *version, const char *platform,
                                  const char *install_path,

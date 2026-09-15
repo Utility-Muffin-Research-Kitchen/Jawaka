@@ -39,6 +39,11 @@ typedef struct {
     int open_allowed;       /* installed pak has an executable launch.sh */
     char provides_summary[128];  /* e.g. "SCUMMVM" or "SNES +1 core" */
     char content_diagnostic[192];/* newest diagnostics.json entry for this pak */
+    /* Themes (package.kind == JW_PAKRAT_KIND_THEME). app_present says the
+       folder exists; a theme is never Stale and never opens. A withdrawn theme
+       is listed only while it is installed, with no install action. */
+    int theme_name_reserved;     /* a bundled theme owns the folder; also sets managed */
+    int theme_slots_full;        /* not installed, and Themes/ has no room for it */
 } jw_pakrat_app_state;
 
 const char *jw_pakrat_app_status_name(jw_pakrat_app_status status);
@@ -61,7 +66,8 @@ int jw_pakrat_find_catalog_package_version(
     int *out_is_dev_override);
 
 /* Builds the read-only app-store state the UI needs: catalog package data joined
-   to Pak Rat ownership rows and scanned app presence. Returns 0 on success, 1
+   to Pak Rat ownership rows and scanned app presence, for apps, content paks
+   and themes alike (package.kind tells them apart). Returns 0 on success, 1
    when no catalog is configured, JW_PAKRAT_CATALOG_REQUIRES_NEWER_LEAF when
    the schema is too new, and -1 on other errors. */
 int jw_pakrat_list_app_states(const jw_pakrat_context *ctx,
