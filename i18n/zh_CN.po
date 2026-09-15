@@ -2008,3 +2008,222 @@ msgstr "副 SD 卡"
 # Rumble split into UI Rumble and Game Rumble (Controls & Feedback).
 msgid "UI Rumble"
 msgstr "界面震动"
+
+# Pak Rat themes: the Themes section, theme details, Apply, and the notices
+# for refusals, updates and uninstalling the current theme. Theme follows the
+# glossary (主题); Pak Rat, Leaf, Themes/ folder names and PNG/JPEG stay English.
+msgid "%d theme"
+msgstr "%d 个主题"
+
+msgid "%d themes"
+msgstr "%d 个主题"
+
+msgid "%s can't be installed because Leaf could not read it as a theme.\n\nNothing was changed."
+msgstr "无法安装 %s：Leaf 无法将其识别为主题。\n\n未做任何更改。"
+
+msgid "%s can't be installed because it is not a valid theme.\n\n%s"
+msgstr "无法安装 %s：它不是有效的主题。\n\n%s"
+
+msgid "%s can't be installed because the download did not match the catalog.\n\nNothing was changed. Try again later."
+msgstr "无法安装 %s：下载的文件与目录不符。\n\n未做任何更改。请稍后再试。"
+
+msgid "%s can't be installed right now"
+msgstr "暂时无法安装 %s"
+
+msgid "%s can't be installed.\n\nA theme that comes with Leaf already uses the folder name %s."
+msgstr "无法安装 %s。\n\nLeaf 自带的主题已使用文件夹名 %s。"
+
+msgid "%s can't be installed.\n\nThe Themes folder already has %d themes, the most Leaf can list. Uninstall or remove a theme to make room."
+msgstr "无法安装 %s。\n\nThemes 文件夹中已有 %d 个主题，已达 Leaf 可显示的上限。请卸载或删除一个主题以腾出空间。"
+
+msgid "%s is already your theme"
+msgstr "%s 已是当前主题"
+
+msgid "%s is installed.\n\nApply it now?"
+msgstr "%s 已安装。\n\n现在应用吗？"
+
+msgid "%s is no longer available in Pak Rat.\n\nA copy that is already installed keeps working."
+msgstr "%s 已不再在 Pak Rat 中提供。\n\n已安装的副本仍可继续使用。"
+
+msgid "%s is not installed by Pak Rat"
+msgstr "%s 不是由 Pak Rat 安装的"
+
+msgid "%s was uninstalled.\n\nIt was your current theme, so Leaf switched to no theme."
+msgstr "%s 已卸载。\n\n它是当前主题，因此 Leaf 已切换为无主题。"
+
+msgid "A theme folder named %s is already on your SD card.\n\nReplace it with %s from Pak Rat so it can be updated? The files in that folder will be replaced."
+msgstr "SD 卡上已有名为 %s 的主题文件夹。\n\n要用 Pak Rat 中的 %s 替换它，以便日后更新吗？该文件夹中的文件将被替换。"
+
+msgid "A theme folder with this name is already on your SD card. Installing replaces it after you confirm."
+msgstr "SD 卡上已有同名的主题文件夹。确认后，安装将替换它。"
+
+msgid "A theme that comes with Leaf already uses this folder name, so this one can't be installed."
+msgstr "Leaf 自带的主题已使用此文件夹名，因此无法安装此主题。"
+
+msgid "All rights reserved, redistribution permitted"
+msgstr "保留所有权利，允许再分发"
+
+msgid "An image in the theme is not a supported PNG or JPEG, or is too large."
+msgstr "主题中的某张图片不是受支持的 PNG 或 JPEG，或尺寸过大。"
+
+msgid "Applied"
+msgstr "已应用"
+
+msgid "Applied %s"
+msgstr "已应用 %s"
+
+msgid "Author: %s"
+msgstr "作者：%s"
+
+msgid "By %s"
+msgstr "作者：%s"
+
+msgid "Couldn't install %s"
+msgstr "无法安装 %s"
+
+msgid "Couldn't uninstall %s"
+msgstr "无法卸载 %s"
+
+msgid "Folder: Themes/%s"
+msgstr "文件夹：Themes/%s"
+
+msgid "Install cancelled: %s"
+msgstr "已取消安装：%s"
+
+msgid "Installed"
+msgstr "已安装"
+
+msgid "Installed %s"
+msgstr "已安装 %s"
+
+msgid "Installed version: %s"
+msgstr "已安装版本：%s"
+
+msgid "Installing theme"
+msgstr "正在安装主题"
+
+msgid "Leaf can't find %s in the Themes folder"
+msgstr "Leaf 在 Themes 文件夹中找不到 %s"
+
+msgid "License: %s"
+msgstr "许可协议：%s"
+
+msgid "Loading preview"
+msgstr "正在加载预览"
+
+msgid "Manual"
+msgstr "手动安装"
+
+msgid "No preview"
+msgstr "无预览"
+
+msgid "No themes in Pak Rat yet"
+msgstr "Pak Rat 中暂无主题"
+
+msgid "Not now"
+msgstr "暂不"
+
+msgid "Pak Rat Themes"
+msgstr "Pak Rat 主题"
+
+msgid "Reinstalled %s"
+msgstr "已重新安装 %s"
+
+msgid "The Themes folder already has %d themes, the most Leaf can list. Remove one to install this theme."
+msgstr "Themes 文件夹中已有 %d 个主题，已达 Leaf 可显示的上限。请删除一个主题后再安装此主题。"
+
+msgid "The theme contains files a theme is not allowed to have."
+msgstr "主题中包含主题不允许包含的文件。"
+
+msgid "The theme did not pass Leaf's checks."
+msgstr "主题未通过 Leaf 的检查。"
+
+msgid "The theme has artwork for a system name that is not valid."
+msgstr "主题中有图片对应的系统名称无效。"
+
+msgid "The theme has more than one wallpaper in the same folder."
+msgstr "主题的同一文件夹中有多张壁纸。"
+
+msgid "The theme has no preview image."
+msgstr "主题缺少预览图。"
+
+msgid "The theme is too large."
+msgstr "主题过大。"
+
+msgid "The theme uses a folder name reserved for themes that come with Leaf."
+msgstr "主题使用了为 Leaf 自带主题保留的文件夹名。"
+
+msgid "The theme's id is not valid or does not match its folder."
+msgstr "主题的 id 无效，或与其文件夹名不符。"
+
+msgid "The theme's layout or color settings are not valid."
+msgstr "主题的布局或颜色设置无效。"
+
+msgid "The theme's license is not one Leaf accepts."
+msgstr "主题的许可协议不在 Leaf 接受的范围内。"
+
+msgid "The theme's name, author, version or description is not valid."
+msgstr "主题的名称、作者、版本或简介无效。"
+
+msgid "The theme's required Leaf version is missing or not valid."
+msgstr "主题所需的 Leaf 版本缺失或无效。"
+
+msgid "The theme's theme.json has settings this version of Leaf does not know."
+msgstr "主题的 theme.json 中有此版本 Leaf 无法识别的设置。"
+
+msgid "The theme's theme.json is missing or can't be read."
+msgstr "主题的 theme.json 缺失或无法读取。"
+
+msgid "The theme's zip file contains unsafe file names or links."
+msgstr "主题的 zip 文件包含不安全的文件名或链接。"
+
+msgid "The theme's zip file is damaged or uses an unsupported format."
+msgstr "主题的 zip 文件已损坏，或使用了不受支持的格式。"
+
+msgid "The theme's zip file must hold exactly one folder."
+msgstr "主题的 zip 文件中必须只有一个文件夹。"
+
+msgid "Themes"
+msgstr "主题"
+
+msgid "This is your current theme."
+msgstr "这是当前主题。"
+
+msgid "This theme is no longer available in Pak Rat. Your installed copy keeps working."
+msgstr "此主题已不再在 Pak Rat 中提供。已安装的副本仍可继续使用。"
+
+msgid "Uninstall %s?\n\nThis deletes Themes/%s from your SD card."
+msgstr "卸载 %s？\n\n这将从 SD 卡中删除 Themes/%s。"
+
+msgid "Uninstall %s?\n\nThis deletes Themes/%s from your SD card. It is your current theme, so Leaf will switch to no theme."
+msgstr "卸载 %s？\n\n这将从 SD 卡中删除 Themes/%s。它是当前主题，因此 Leaf 将切换为无主题。"
+
+msgid "Uninstall cancelled: %s"
+msgstr "已取消卸载：%s"
+
+msgid "Uninstalled %s"
+msgstr "已卸载 %s"
+
+msgid "Uninstalled %s. Switched to no theme."
+msgstr "已卸载 %s，已切换为无主题。"
+
+msgid "Uninstalling theme"
+msgstr "正在卸载主题"
+
+msgid "Update"
+msgstr "更新"
+
+msgid "status|Update"
+msgstr "有更新"
+
+msgid "Updated %s to version %s"
+msgstr "已将 %s 更新到版本 %s"
+
+msgid "Updating theme"
+msgstr "正在更新主题"
+
+msgid "Version %s needs Leaf %s or newer."
+msgstr "版本 %s 需要 Leaf %s 或更高版本。"
+
+msgid "Version: %s"
+msgstr "版本：%s"
