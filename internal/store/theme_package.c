@@ -957,7 +957,8 @@ static int jw__tp_classify(const char *rel, size_t n, bool is_dir, jw__tp_entry 
     for (size_t i = 0; is_default && i < 8; i++)
         is_default = jw__tp_ascii_lower(stem[i]) == "_default"[i];
     if (is_default) return JW_THEME_RESERVED_SYSTEM_ID;
-    bool apps_tile = icons && jw__tp_eq(stem, stem_len, "_apps");
+    /* The Apps tile: an icon in both views and a label in Grid, never a wordmark. */
+    bool apps_tile = (icons || labels) && jw__tp_eq(stem, stem_len, "_apps");
     if (!apps_tile && (stem_len < 2 || stem_len > 32 ||
                        !jw__tp_ascii_match(stem, stem_len, jw__tp_sys_char, jw__tp_sys_char, 2, 32)))
         return JW_THEME_SYSTEM_ID_INVALID;
