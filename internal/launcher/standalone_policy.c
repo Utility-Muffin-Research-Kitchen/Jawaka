@@ -118,5 +118,6 @@ bool jw_standalone_policy_requires_direct_drm(
 
 bool jw_standalone_policy_uses_calibrated_virtual_input(
         const jw_standalone_policy *policy) {
-    return policy && policy->release != JW_STANDALONE_RELEASE_NONE;
+    return policy && (policy->provider_bound ||
+                      policy->release != JW_STANDALONE_RELEASE_NONE);
 }

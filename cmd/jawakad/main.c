@@ -8595,6 +8595,12 @@ static bool jw__on_screenshot_hotkey(void *userdata) {
     if (!state || !state->db_path) {
         return false;
     }
+    /* Content-pak standalones own their display. The launcher scanout capture
+       cannot promise their frame; let the ordinary button reach the child. */
+    if (jw__has_standalone_session(state) &&
+        state->retroarch_session.standalone_policy.provider_bound) {
+        return false;
+    }
 
     uint64_t now = jw__screenshot_now_ms();
 
@@ -9446,7 +9452,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     sdl_devices[0] = '\0';
     bool use_roster = false;
     if (jw__standalone_target_uses_calibrated_virtual_input(target)) {
-        /* Mupen64Plus, Flycast, PPSSPP, DraStic, and PortMaster ports need
+        /* Provider-bound cores and the supported release standalones use
            the same calibrated virtual gamepad path as RetroArch. Keep the
            full grab-and-forward proxy active so Joe's calibration is applied
            before SDL sees the axes, and launch inside the frozen controller
