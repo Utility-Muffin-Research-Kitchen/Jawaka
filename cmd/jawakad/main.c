@@ -12991,7 +12991,14 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
             cJSON_Delete(root);
             return jw__reply_error(client, "could not save language");
         }
-        jw_log_info("set-language %s; restarting launcher", lang_buf);
+        /* A launcher that can swap its own string table and font asks to stay
+           running, so the user keeps their place in Settings. The daemon still
+           owns persistence and the OSD refresh either way; only the SIGTERM is
+           conditional. Every other caller keeps the restart. */
+        const cJSON *keep = cJSON_GetObjectItemCaseSensitive(root, "keep_running");
+        bool keep_running = cJSON_IsTrue(keep);
+        jw_log_info("set-language %s; %s", lang_buf,
+                    keep_running ? "launcher reloads in place" : "restarting launcher");
         jw__osd_refresh_appearance(state, "set-language");
 
         /* Everything the new language needs is resolved in the parent at spawn
@@ -13001,7 +13008,8 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
 
            SIGTERM rather than SIGKILL so the launcher can save its breadcrumb;
            the ordinary child-exit path respawns it. */
-        if (state->child_pid > 0 && state->child_kind == JW_CHILD_LAUNCHER) {
+        if (!keep_running && state->child_pid > 0 &&
+            state->child_kind == JW_CHILD_LAUNCHER) {
             kill(state->child_pid, SIGTERM);
         }
 

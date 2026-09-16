@@ -2561,6 +2561,11 @@ int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
 
 int jw_ipc_set_language(const char *socket_path, const char *lang,
                         char *status, int status_len) {
+    return jw_ipc_set_language_ex(socket_path, lang, false, status, status_len);
+}
+
+int jw_ipc_set_language_ex(const char *socket_path, const char *lang,
+                           bool keep_running, char *status, int status_len) {
     if (!lang || !lang[0]) {
         if (status && status_len > 0)
             snprintf(status, (size_t)status_len, "%s", "no language given");
@@ -2570,6 +2575,7 @@ int jw_ipc_set_language(const char *socket_path, const char *lang,
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "set-language");
     cJSON_AddStringToObject(req, "language", lang);
+    if (keep_running) cJSON_AddBoolToObject(req, "keep_running", true);
 
     cJSON *resp = NULL;
     if (ipc__request(socket_path, req, &resp) != 0) {

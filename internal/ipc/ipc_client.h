@@ -435,6 +435,12 @@ int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
 /* UI language. The daemon persists it and restarts the launcher, which comes
    back with the matching font and string table -- there is no live switch, and
    no getter, because the launcher reads the setting itself at startup. */
+/* `keep_running` asks the daemon to persist the language without restarting the
+   launcher, so a caller that can reload its own string table and font stays put
+   (Settings does this, and falls back to the restart when a reload fails). */
+int jw_ipc_set_language_ex(const char *socket_path, const char *lang,
+                           bool keep_running, char *status, int status_len);
+
 int jw_ipc_set_language(const char *socket_path, const char *lang,
                         char *status, int status_len);
 /* A font family or size was persisted. The daemon restarts the OSD when its

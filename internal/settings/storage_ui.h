@@ -25,6 +25,8 @@ bool jw_storage_ui_needs_repair(const jw_ipc_storage_status_info *card);
 void jw_storage_ui_card_name(const jw_ipc_storage_status_info *card,
                              char *out, size_t out_size);
 /* Short translated state for a Settings row. */
+const char *jw_storage_ui_card_state_key(const jw_ipc_storage_status_info *card);
+
 const char *jw_storage_ui_card_state(const jw_ipc_storage_status_info *card);
 
 /* The one-per-boot warning for a newly read-only card. Acknowledges it, and

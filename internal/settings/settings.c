@@ -656,12 +656,15 @@ static void jw__refresh_secondary_sd_status(jw_settings_ui *ui) {
                                       &cards[i], NULL, 0) != 0) {
             continue;
         }
+        /* Stored untranslated and translated when the row draws: this string
+           outlives a language change, and jw__render_list_row translates every
+           value it is given. */
         if (jw_storage_ui_needs_repair(&cards[i]) || jw_storage_ui_is_read_only(&cards[i])) {
-            summary = jw_storage_ui_card_state(&cards[i]);
+            summary = jw_storage_ui_card_state_key(&cards[i]);
             break;
         }
         if (i == 1) {
-            summary = cards[i].busy ? T("Busy") : (cards[i].mounted ? T("Mounted") : T("Not mounted"));
+            summary = cards[i].busy ? "Busy" : (cards[i].mounted ? "Mounted" : "Not mounted");
         }
     }
     if (summary) {
@@ -4982,10 +4985,59 @@ static void jw__apply_shortcut(jw_settings_ui *ui,
 static const char *jw__language_label(const char *code) {
     if (!code || !code[0] || strcmp(code, "en") == 0) return "English";
     if (strcmp(code, "zh_CN") == 0) return "中文";
+    if (strcmp(code, "fr_FR") == 0) return "Français";
     if (strcmp(code, "zh_TW") == 0) return "繁體中文";
     if (strcmp(code, "ja") == 0)    return "日本語";
     if (strcmp(code, "ko") == 0)    return "한국어";
     return code;
+}
+
+static int jw__confirmation(cat_message_opts *opts, cat_confirm_result *result);
+
+/* Swap the running language without a restart: the string table, then the font,
+   since Chinese, Japanese and Korean need a different face than the themed Latin
+   one. cat_reload_fonts clears the rendered-text cache, so nothing keeps drawing
+   the old language. Returns false if either half fails, and the caller then asks
+   the daemon for the restart that always worked. */
+static bool jw__apply_language_in_place(jw_settings_ui *ui, const char *code) {
+    if (!ui || !code || !code[0]) return false;
+    bool english = strcmp(code, "en") == 0;
+    /* "en" has no table: the keys are the English strings, so unloading is the
+       switch. Every other code must actually load one. */
+    if (!jw_i18n_load(code) && !english) return false;
+
+    int fidx = jw_appearance_font_family_index_from_db(ui->db_path);
+    const char *font = jw_appearance_font_path_for_language(fidx, code);
+    if (!font || !font[0]) return false;
+    ap_theme *theme = cat_get_theme();
+    snprintf(theme->font_path, sizeof(theme->font_path), "%s", font);
+    return cat_reload_fonts(theme->font_path) == CAT_OK;
+}
+
+/* What the Language row is showing: the browsed choice if there is one, else
+   the language actually running. */
+static const char *jw__language_pending(const jw_settings_ui *ui) {
+    return (ui && ui->language_pending[0]) ? ui->language_pending : ui->language;
+}
+
+/* Applying a language restarts the launcher, so it is confirmed first. The
+   prompt is drawn in the language still running, which is the one the user can
+   read right now; the endonym names the destination. */
+static bool jw__confirm_language(const char *code) {
+    char message[160];
+    snprintf(message, sizeof(message), T("Switch Leaf to %s?\n\nLeaf restarts to apply it."),
+             jw__language_label(code));
+    cat_footer_item footer[] = {
+        { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
+        { .button = CAT_BTN_A, .label = "Switch", .is_confirm = true },
+    };
+    cat_message_opts opts = {
+        .message = message,
+        .footer = footer,
+        .footer_count = 2,
+    };
+    cat_confirm_result result;
+    return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
 /* The Language row exists only when there is something to switch to. A picker
@@ -5041,7 +5093,7 @@ static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, i
 
     if (ui->language_count > 1) {
         jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_LANGUAGE,
-                            "Language", jw__language_label(ui->language), true);
+                            "Language", jw__language_label(jw__language_pending(ui)), true);
     }
 }
 
@@ -8221,22 +8273,54 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
                 if (ui->behavior_list.cursor == JW_BEHAVIOR_LANGUAGE) {
                     if (ui->language_count <= 1) break;
+                    const char *shown = jw__language_pending(ui);
                     int cur = 0;
                     for (int i = 0; i < ui->language_count; i++) {
-                        if (strcmp(ui->languages[i], ui->language) == 0) { cur = i; break; }
+                        if (strcmp(ui->languages[i], shown) == 0) { cur = i; break; }
                     }
-                    int next = (cur + dir + ui->language_count) % ui->language_count;
-                    if (next == cur) break;
 
-                    /* The daemon persists this and restarts us; it does not come
-                       back here. Do not persist locally as well -- a second write
-                       would race the respawn, and jw__persist is the only writer
-                       by contract anyway. */
+                    /* Left and Right browse. Applying restarts the launcher and
+                       drops the user out of Settings, so it waits for A and a
+                       confirmation: a user reading the list should be able to
+                       pass over every language without being thrown out at the
+                       first one. */
+                    if (button != CAT_BTN_A) {
+                        int next = (cur + dir + ui->language_count) % ui->language_count;
+                        snprintf(ui->language_pending, sizeof(ui->language_pending),
+                                 "%s", ui->languages[next]);
+                        break;
+                    }
+                    if (strcmp(shown, ui->language) == 0) break;   /* nothing to apply */
+                    if (!jw__confirm_language(shown)) {
+                        /* Back to what is actually running, so the row never
+                           shows a language the user declined. */
+                        ui->language_pending[0] = '\0';
+                        break;
+                    }
+
+                    /* The daemon owns persistence either way; jw__persist is the
+                       only writer by contract, so nothing is written here.
+
+                       Ask it to keep us running and swap the language in place,
+                       so the user stays on this page instead of being dropped on
+                       the home screen by a respawn. If the swap fails, ask again
+                       without keep_running: the daemon then restarts the launcher,
+                       which is how this always worked. */
                     char status[128] = "";
-                    if (jw_ipc_set_language(ui->socket_path, ui->languages[next],
-                                            status, sizeof(status)) == 0) {
-                        snprintf(ui->language, sizeof(ui->language), "%s",
-                                 ui->languages[next]);
+                    char code[16];
+                    snprintf(code, sizeof(code), "%s", shown);
+                    if (jw_ipc_set_language_ex(ui->socket_path, code, true,
+                                               status, sizeof(status)) == 0) {
+                        if (jw__apply_language_in_place(ui, code)) {
+                            snprintf(ui->language, sizeof(ui->language), "%s", code);
+                            ui->language_pending[0] = '\0';
+                        } else {
+                            jw_ipc_set_language(ui->socket_path, code,
+                                                status, sizeof(status));
+                            snprintf(ui->language, sizeof(ui->language), "%s", code);
+                        }
+                    } else {
+                        ui->language_pending[0] = '\0';
                     }
                     if (status_buf && status_size > 0) {
                         snprintf(status_buf, (size_t)status_size, "%s",
@@ -8305,6 +8389,9 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 break;
             }
             case CAT_BTN_B:
+                /* A browsed language that was never applied does not follow the
+                   user out of the page: the row reads what is running again. */
+                ui->language_pending[0] = '\0';
                 ui->screen = JW_SETTINGS_HOME;
                 break;
             default: break;

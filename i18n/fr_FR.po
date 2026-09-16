@@ -1,0 +1,1696 @@
+# French -- contributed by RobinC (Discord), 2026-09-16.
+# Machine translation checked by a human. Entries for strings that no longer
+# exist in the code were dropped on import; the rest is RobinC's file as sent.
+
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Recently Played"
+msgstr "Récemment joués"
+
+msgid "Pick 5 Games"
+msgstr "Choisissez 5 jeux"
+
+msgid "About"
+msgstr "À propos"
+
+msgid "Return to Launcher"
+msgstr "Retour au Launcher"
+
+msgid "No games available"
+msgstr "Aucun jeu disponible"
+
+msgid "Press MENU to exit"
+msgstr "Appuyez sur MENU pour quitter"
+
+msgid "Reboot?"
+msgstr "Redémarrer ?"
+
+msgid "Shut Down?"
+msgstr "Éteindre ?"
+
+msgid "Enter PIN to exit"
+msgstr "Saisissez votre PIN pour quitter"
+
+msgid "Exit 5-Game Mode?"
+msgstr "Quitter le mode 5-Jeux ?"
+
+msgid "Digit"
+msgstr "Chiffre"
+
+msgid "Slot"
+msgstr "Port"
+
+msgid "Reconnect Bluetooth"
+msgstr "Reconnecter le Bluetooth"
+
+msgid "No lock"
+msgstr "Aucun verrouillage"
+
+msgid "Theme colors"
+msgstr "Couleurs du thème"
+
+msgid "Black & white"
+msgstr "Noir et blanc"
+
+msgid "Arrange"
+msgstr "Organiser"
+
+msgid "Lock"
+msgstr "Verrouiller"
+
+msgid "Style"
+msgstr "Style"
+
+msgid "Re-enter PIN"
+msgstr "Saisir à nouveau le code PIN"
+
+msgid "Set a PIN"
+msgstr "Définir un code PIN"
+
+msgid "PIN"
+msgstr "Code PIN"
+
+msgid "PINs did not match - try again"
+msgstr "Les codes PIN ne correspondent pas - réessayez"
+
+msgid "Wrong PIN, try again"
+msgstr "Code PIN incorrect, réessayez"
+
+msgid "Up/Down"
+msgstr "Haut/Bas"
+
+msgid "Left/Right"
+msgstr "Gauche/Droite"
+
+msgid "B: Back   A: Next"
+msgstr "B : Retour   A : Suivant"
+
+msgid "D-pad: Value/Position   B: Back   A: Next"
+msgstr "Croix directionnelle : Valeur/Position   B : Retour   A : Suivant"
+
+msgid "X: Grab   Y: Remove   B: Back   A: Next"
+msgstr "X : Saisir   Y : Supprimer   B : Retour   A : Suivant"
+
+msgid "X: Drop   D-pad: Move"
+msgstr "X : Déposer   Croix directionnelle : Déplacer"
+
+msgid "B: Back      A: Start"
+msgstr "B : Retour      A : Démarrer"
+
+msgid "B: Back      A: Confirm"
+msgstr "B : Retour      A : Confirmer"
+
+msgid "Confirm"
+msgstr "Confirmer"
+
+msgid "Shut Down"
+msgstr "Éteindre"
+
+msgid "%d %s games"
+msgstr "%d %s jeux"
+
+msgid "%d Hz"
+msgstr "%d Hz"
+
+msgid "%d apps"
+msgstr "%d apps"
+
+msgid "%d done"
+msgstr "%d done"
+
+msgid "%d done, %d failed"
+msgstr "%d done, %d failed"
+
+msgid "%d favorites"
+msgstr "%d favorites"
+
+msgid "%d games"
+msgstr "%d jeux"
+
+msgid "%d games, %d systems, %d apps"
+msgstr "%d jeux, %d plateformes, %d applis"
+
+msgid "%d of %d"
+msgstr "%d of %d"
+
+msgid "%d/%d done"
+msgstr "%d/%d effectué"
+
+msgid "%ldd ago"
+msgstr "il y a %ld j"
+
+msgid "%ldh ago"
+msgstr "il y a %ld h"
+
+msgid "%ldm ago"
+msgstr "il y a %ld min"
+
+msgid "%s first"
+msgstr "%s en premier"
+
+msgid "%s · %d of %d"
+msgstr "%s · %d / %d"
+
+msgid "%s · %s · %d of %d"
+msgstr "%s · %s · %d / %d"
+
+msgid ", %d not found"
+msgstr ", %d not found"
+
+msgid "-"
+msgstr "-"
+
+msgid "1 min"
+msgstr "1 min"
+
+msgid "1.06 GHz"
+msgstr "1.06 GHz"
+
+msgid "1.10 GHz"
+msgstr "1.10 GHz"
+
+msgid "1.42 GHz"
+msgstr "1.42 GHz"
+
+msgid "1.61 GHz"
+msgstr "1.61 GHz"
+
+msgid "1.80 GHz"
+msgstr "1.80 GHz"
+
+msgid "1.99 GHz"
+msgstr "1.99G Hz"
+
+msgid "10 min"
+msgstr "10 min"
+
+msgid "100/120 Hz only"
+msgstr "100/120 Hz uniquement"
+
+msgid "12 Hour"
+msgstr "12 heures"
+
+msgid "15 sec"
+msgstr "15 s"
+
+msgid "2 min"
+msgstr "2 min"
+
+msgid "200 MHz"
+msgstr "200 MHz"
+
+msgid "24 Hour"
+msgstr "24 heures"
+
+msgid "30 sec"
+msgstr "30 s"
+
+msgid "300 MHz"
+msgstr "300 MHz"
+
+msgid "324 MHz"
+msgstr "324 MHz"
+
+msgid "400 MHz"
+msgstr "400MHz"
+
+msgid "45 sec"
+msgstr "45 s"
+
+msgid "4:3"
+msgstr "4:3"
+
+msgid "5 min"
+msgstr "5 min"
+
+msgid "528 MHz"
+msgstr "528 MHZ"
+
+msgid "600 MHz"
+msgstr "600 MHZ"
+
+msgid "700 MHz"
+msgstr "700 MHZ"
+
+msgid "780 MHz"
+msgstr "780 MHZ"
+
+msgid "800 MHz"
+msgstr "800 MHZ"
+
+msgid "816 MHz"
+msgstr "816 MHZ"
+
+msgid "A: On/Off   X: Grab to reorder"
+msgstr "A : Activé/Désactivé   X : Saisir pour réorganiser"
+
+msgid "ADB"
+msgstr "ADB"
+
+msgid "ADB disable canceled"
+msgstr "Désactivation de l’ADB annulée"
+
+msgid "ADB enable canceled"
+msgstr "Activation de l’ADB annulée"
+
+msgid "ADB unavailable on this platform"
+msgstr "ADB indisponible sur cette plateforme"
+
+msgid "AM/PM"
+msgstr "AM/PM"
+
+msgid "Accent"
+msgstr "Couleur d’accentuation"
+
+msgid "Accounts"
+msgstr "Comptes"
+
+msgid "Actions"
+msgstr "Actions"
+
+msgid "Active"
+msgstr "Actif"
+
+msgid "Active: %s"
+msgstr "Actif : %s"
+
+msgid "Active: %s  Temp: %d C"
+msgstr "Actif : %s  Temp. : %d °C"
+
+msgid "Adjust"
+msgstr "Ajuster"
+
+msgid "All"
+msgstr "Tous"
+
+msgid "All Systems"
+msgstr "Toutes les plateformes"
+
+msgid "Amiga"
+msgstr "Amiga"
+
+msgid "Appearance"
+msgstr "Apparence"
+
+msgid "Apply"
+msgstr "Appliquer"
+
+msgid "Apps"
+msgstr "Applications"
+
+msgid "Arcade"
+msgstr "Arcade"
+
+msgid "Artwork Priority"
+msgstr "Priorité des illustrations"
+
+msgid "Atari 2600"
+msgstr "Atari 2600"
+
+msgid "Atari 5200"
+msgstr "Atari 5200"
+
+msgid "Atari 7800"
+msgstr "Atari 7800"
+
+msgid "Atari Jaguar"
+msgstr "Atari Jaguar"
+
+msgid "Atari Lynx"
+msgstr "Atari Lynx"
+
+msgid "Atomiswave"
+msgstr "Atomiswave"
+
+msgid "Audio Output"
+msgstr "Sortie audio"
+
+msgid "Auto"
+msgstr "Automatique"
+
+msgid "Auto Sleep"
+msgstr "Mise en veille automatique"
+
+msgid "Available"
+msgstr "Disponible"
+
+msgid "Back"
+msgstr "Retour"
+
+msgid "Background"
+msgstr "Arrière-plan"
+
+msgid "Balanced"
+msgstr "Équilibré"
+
+msgid "Battery"
+msgstr "Batterie"
+
+msgid "Battery Saver"
+msgstr "Économie d’énergie"
+
+msgid "Beta builds are tester previews and may be unstable or lose data. Switch to the Beta update channel?"
+msgstr "La version bêta peut être instable ou entraîner une perte de données. Êtes-vous sûr de vouloir passer au canal de mise à jour bêta ?"
+
+msgid "Black Frame Insertion"
+msgstr "Insertion d’images noires"
+
+msgid "Black Frame Insertion needs 100 or 120 Hz"
+msgstr "L’insertion d’images noires nécessite 100 ou 120 Hz"
+
+msgid "Black Frame Insertion off"
+msgstr "Insertion d’images noires désactivée"
+
+msgid "Bluetooth"
+msgstr "Bluetooth"
+
+msgid "Bluetooth Name"
+msgstr "Nom Bluetooth"
+
+msgid "Board"
+msgstr "Carte mère"
+
+msgid "Boot Splash"
+msgstr "Écran de démarrage"
+
+msgid "Both"
+msgstr "Icône et pourcentage"
+
+msgid "Box art"
+msgstr "Jaquette"
+
+msgid "Brazil (East)"
+msgstr "Brésil (Est)"
+
+msgid "Breath"
+msgstr "Respiration"
+
+msgid "Brightness"
+msgstr "Luminosité"
+
+msgid "Browse"
+msgstr "Parcourir"
+
+msgid "Busy"
+msgstr "Occupé"
+
+msgid "Button Background"
+msgstr "Arrière-plan des boutons"
+
+msgid "Button Hints"
+msgstr "Indications des boutons"
+
+msgid "Button Text"
+msgstr "Texte des boutons"
+
+msgid "By system"
+msgstr "Par plateforme"
+
+msgid "CPU"
+msgstr "CPU"
+
+msgid "CPU temp"
+msgstr "Température du CPU"
+
+msgid "Cancel"
+msgstr "Annuler"
+
+msgid "Cancelled"
+msgstr "Annulé"
+
+msgid "Central Europe"
+msgstr "Europe centrale"
+
+msgid "Check Releases"
+msgstr "Vérifier les versions"
+
+msgid "China"
+msgstr "Chine"
+
+msgid "Choose"
+msgstr "Choisir"
+
+msgid "Clear"
+msgstr "Effacer"
+
+msgid "Clear Done"
+msgstr "Effacer les éléments terminés"
+
+msgid "Clock"
+msgstr "Horloge"
+
+msgid "ColecoVision"
+msgstr "ColecoVision"
+
+msgid "Color"
+msgstr "Couleur"
+
+msgid "Color Scheme"
+msgstr "Jeu de couleurs"
+
+msgid "Colors"
+msgstr "Couleurs"
+
+msgid "Comet"
+msgstr "Comète"
+
+msgid "Command: %s"
+msgstr "Command : %s"
+
+msgid "Commodore 64"
+msgstr "Commodore 64"
+
+msgid "Connected"
+msgstr "Connecté"
+
+msgid "Continue"
+msgstr "Continuer"
+
+msgid "Controls & Feedback"
+msgstr "Commandes et retours"
+
+msgid "Core"
+msgstr "Cœur"
+
+msgid "Coverflow"
+msgstr "Coverflow"
+
+msgid "Current"
+msgstr "Actuel"
+
+msgid "Custom"
+msgstr "Personnalisé"
+
+msgid "DMC"
+msgstr "DMC"
+
+msgid "Default"
+msgstr "Par défaut"
+
+msgid "Defaults"
+msgstr "Paramètres par défaut"
+
+msgid "Details"
+msgstr "Détails"
+
+msgid "Device"
+msgstr "Appareil"
+
+msgid "Disable"
+msgstr "Désactiver"
+
+msgid "Disable USB ADB and remove Leaf's boot restore marker?"
+msgstr "Désactiver l’ADB USB et supprimer le marqueur de restauration du démarrage de Leaf ?"
+
+msgid "Disconnected"
+msgstr "Déconnecté"
+
+msgid "Disk %d/%d"
+msgstr "Disk %d/%d"
+
+msgid "Display & Sound"
+msgstr "Affichage et son"
+
+msgid "Display Name"
+msgstr "Nom d’affichage"
+
+msgid "Done"
+msgstr "Terminé"
+
+msgid "Download"
+msgstr "Télécharger"
+
+msgid "Downloading"
+msgstr "Téléchargement"
+
+msgid "Dreamcast"
+msgstr "Dreamcast"
+
+msgid "Drop"
+msgstr "Déposer"
+
+msgid "Eastern Europe"
+msgstr "Europe de l’Est"
+
+msgid "Empty"
+msgstr "Vide"
+
+msgid "Enable"
+msgstr "Activer"
+
+msgid "Enable USB ADB and restore it at boot?"
+msgstr "Activer l’ADB USB et le restaurer au démarrage ?"
+
+msgid "Error"
+msgstr "Erreur"
+
+msgid "Exit to Stock"
+msgstr "Retour à l'OS Système"
+
+msgid "Extra Large"
+msgstr "Très grand"
+
+msgid "Failed"
+msgstr "Échec"
+
+msgid "Famicom Disk System"
+msgstr "Famicom Disk System"
+
+msgid "Favorite"
+msgstr "Favori"
+
+msgid "Favorites"
+msgstr "Favoris"
+
+msgid "Filter"
+msgstr "Filtrer"
+
+msgid "Font"
+msgstr "Police"
+
+msgid "Font Size"
+msgstr "Taille de police"
+
+msgid "Forget"
+msgstr "Oublier"
+
+msgid "Fountain"
+msgstr "Fontaine"
+
+msgid "Frontend"
+msgstr "Interface"
+
+msgid "GPU"
+msgstr "GPU"
+
+msgid "Game"
+msgstr "Jeu"
+
+msgid "Game Art"
+msgstr "Illustrations"
+
+msgid "Game Boy"
+msgstr "Game Boy"
+
+msgid "Game Boy Advance"
+msgstr "Game Boy Advance"
+
+msgid "Game Boy Color"
+msgstr "Game Boy Color"
+
+msgid "Game Gear"
+msgstr "Game Gear"
+
+msgid "Game Performance"
+msgstr "Performances de jeu"
+
+msgid "Game Rumble"
+msgstr "Vibrations du jeu"
+
+msgid "Games"
+msgstr "Jeux"
+
+msgid "Games played"
+msgstr "Jeux joués"
+
+msgid "General"
+msgstr "Général"
+
+msgid "Glide"
+msgstr "Glissement"
+
+msgid "Good"
+msgstr "Bon"
+
+msgid "HDMI Output"
+msgstr "Sortie HDMI"
+
+msgid "HDMI output change failed"
+msgstr "Échec du changement de sortie HDMI"
+
+msgid "HDMI output unavailable on this platform"
+msgstr "Sortie HDMI indisponible sur cette plateforme"
+
+msgid "Hashing"
+msgstr "Vérification"
+
+msgid "Headset"
+msgstr "Casque"
+
+msgid "Hiccup"
+msgstr "Saccade"
+
+msgid "Hidden"
+msgstr "Masqué"
+
+msgid "Home Layout"
+msgstr "Disposition de l’accueil"
+
+msgid "Home Tabs"
+msgstr "Onglets de l’accueil"
+
+msgid "IP: %s"
+msgstr "IP : %s"
+
+msgid "IPv4"
+msgstr "IPv4"
+
+msgid "IPv6"
+msgstr "IPv6"
+
+msgid "Icon"
+msgstr "Icône"
+
+msgid "India"
+msgstr "Inde"
+
+msgid "Info"
+msgstr "Informations"
+
+msgid "Install"
+msgstr "Installer"
+
+msgid "Intellivision"
+msgstr "Intellivision"
+
+msgid "Japan / Korea"
+msgstr "Japon / Corée"
+
+msgid "Keep"
+msgstr "Conserver"
+
+msgid "Keep Original"
+msgstr "Conserver l’original"
+
+msgid "Keep data"
+msgstr "Conserver les données"
+
+msgid "Kernel"
+msgstr "Noyau"
+
+msgid "Language"
+msgstr "Langue"
+
+msgid "Large"
+msgstr "Grand"
+
+msgid "Last played"
+msgstr "Dernière partie"
+
+msgid "Last update: %s"
+msgstr "Dernière mise à jour : %s"
+
+msgid "Later"
+msgstr "Plus tard"
+
+msgid "Latest"
+msgstr "Dernier"
+
+msgid "Launch"
+msgstr "Lancer"
+
+msgid "Layout"
+msgstr "Disposition"
+
+msgid "Leaf"
+msgstr "Leaf"
+
+msgid "Library"
+msgstr "Bibliothèque"
+
+msgid "Lighting"
+msgstr "Contrôle de la LED"
+
+msgid "List Style"
+msgstr "Style de liste"
+
+msgid "Load"
+msgstr "Charger"
+
+msgid "Load State"
+msgstr "Charger une sauvegarde d’état"
+
+msgid "MS-DOS"
+msgstr "MS-DOS"
+
+msgid "MSX"
+msgstr "MSX"
+
+msgid "Memory free"
+msgstr "Mémoire disponible"
+
+msgid "Menu"
+msgstr "Menu"
+
+msgid "Missing"
+msgstr "Manquant"
+
+msgid "Missing Only"
+msgstr "Manquants uniquement"
+
+msgid "Mode"
+msgstr "Mode"
+
+msgid "Most played"
+msgstr "Les plus joués"
+
+msgid "Mounted"
+msgstr "Monté"
+
+msgid "Move"
+msgstr "Déplacer"
+
+msgid "Moving"
+msgstr "Déplacement"
+
+msgid "NEC PC-98"
+msgstr "NEC PC-98"
+
+msgid "Nearby"
+msgstr "À proximité"
+
+msgid "Neo Geo"
+msgstr "Neo Geo"
+
+msgid "Neo Geo Pocket"
+msgstr "Neo Geo Pocket"
+
+msgid "Neo Geo Pocket Color"
+msgstr "Neo Geo Pocket Color"
+
+msgid "Network"
+msgstr "Réseau"
+
+msgid "Network: %s"
+msgstr "Réseau : %s"
+
+msgid "Nintendo 64"
+msgstr "Nintendo 64"
+
+msgid "Nintendo DS"
+msgstr "Nintendo DS"
+
+msgid "Nintendo Entertainment System"
+msgstr "Nintendo Entertainment System"
+
+msgid "No apps found"
+msgstr "Aucune application trouvée"
+
+msgid "No favorites yet — open a game and press Y to add one"
+msgstr "Pas encore de favoris - Ouvrez un jeu et appuyez sur Y pour l'ajouter."
+
+msgid "No favorites yet — press Y on a game to add one"
+msgstr "Pas encore de favoris - Appuyez sur Y sur un jeu pour l’ajouter."
+
+msgid "No games found"
+msgstr "Aucun jeu trouvé"
+
+msgid "No playtime recorded yet."
+msgstr "Aucun temps de jeu enregistré pour le moment."
+
+msgid "No recent games yet — play something and it'll show up here"
+msgstr "Les jeux auxquels vous avez joué récemment apparaîtront ici."
+
+msgid "No results"
+msgstr "Aucun résultat"
+
+msgid "No save in this slot"
+msgstr "Aucune sauvegarde dans cet emplacement"
+
+msgid "No saves"
+msgstr "Aucune sauvegarde"
+
+msgid "No saves to load"
+msgstr "Aucune sauvegarde à charger"
+
+msgid "No saves yet"
+msgstr "Aucune sauvegarde pour le moment"
+
+msgid "No services installed"
+msgstr "Aucun service installé"
+
+msgid "No states"
+msgstr "Aucune sauvegarde d’état"
+
+msgid "None"
+msgstr "Aucun"
+
+msgid "Not Found"
+msgstr "Introuvable"
+
+msgid "Not connected"
+msgstr "Non connecté"
+
+msgid "Not found in the ScreenScraper.fr database."
+msgstr "Introuvable dans la base de données ScreenScraper.fr."
+
+msgid "Not mounted"
+msgstr "Non montée"
+
+msgid "OK"
+msgstr "OK"
+
+msgid "OS"
+msgstr "OS"
+
+msgid "Off"
+msgstr "Désactivé"
+
+msgid "On"
+msgstr "Activé"
+
+msgid "On (%d fps)"
+msgstr "Activé (%d fps)"
+
+msgid "Open"
+msgstr "Ouvrir"
+
+msgid "Open-source components"
+msgstr "Composants open source"
+
+msgid "Options"
+msgstr "Options"
+
+msgid "Output"
+msgstr "Output"
+
+msgid "Paired"
+msgstr "Appairé"
+
+msgid "Pak Rat"
+msgstr "Pak Rat"
+
+msgid "Path: Apps/%s"
+msgstr "Chemin : Apps/%s"
+
+msgid "Percent"
+msgstr "Pourcentage"
+
+msgid "Performance"
+msgstr "Performances"
+
+msgid "Performance unavailable"
+msgstr "Paramètres de performances indisponibles"
+
+msgid "Pick"
+msgstr "Sélectionner"
+
+msgid "Pick Update"
+msgstr "Sélectionner la mise à jour"
+
+msgid "Play"
+msgstr "Jouer"
+
+msgid "PlayStation"
+msgstr "PlayStation"
+
+msgid "PlayStation Portable"
+msgstr "PlayStation Portable"
+
+msgid "Playing test sound…"
+msgstr "Lecture du son de test..."
+
+msgid "Playtime"
+msgstr "Temps de jeu"
+
+msgid "Ports"
+msgstr "Ports"
+
+msgid "Power"
+msgstr "Alimentation"
+
+msgid "Power Off"
+msgstr "Éteindre"
+
+msgid "Profile"
+msgstr "Profil"
+
+msgid "Queued"
+msgstr "En attente"
+
+msgid "Quit"
+msgstr "Quitter"
+
+msgid "RAM"
+msgstr "RAM"
+
+msgid "Rainbow"
+msgstr "Arc-en-ciel"
+
+msgid "Reboot"
+msgstr "Redémarrer"
+
+msgid "Reboot failed"
+msgstr "Échec du redémarrage"
+
+msgid "Recents"
+msgstr "Jeux récents"
+
+msgid "Recording"
+msgstr "Enregistrement"
+
+msgid "Refresh"
+msgstr "Actualiser"
+
+msgid "Refresh Rate"
+msgstr "Taux de rafraîchissement"
+
+msgid "Region Priority"
+msgstr "Priorité de région"
+
+msgid "Reinstall"
+msgstr "Réinstaller"
+
+msgid "Release"
+msgstr "Version"
+
+msgid "Release-managed path"
+msgstr "Chemin géré par la version"
+
+msgid "Releases"
+msgstr "Versions"
+
+msgid "Remove"
+msgstr "Supprimer"
+
+msgid "Removing retained Pak Rat data"
+msgstr "Suppression des données résiduelles de Pak Rat"
+
+msgid "Reorder"
+msgstr "Réorganiser"
+
+msgid "Repair"
+msgstr "Réparer"
+
+msgid "Replace"
+msgstr "Remplacer"
+
+msgid "Replace All"
+msgstr "Tout remplacer"
+
+msgid "Rescan"
+msgstr "Rescanner"
+
+msgid "Rescan Library"
+msgstr "Rescanner la bibliothèque"
+
+msgid "Reset"
+msgstr "Réinitialiser"
+
+msgid "Reset Game Overrides"
+msgstr "Réinitialiser les paramètres spécifiques au jeu"
+
+msgid "Reset Override"
+msgstr "Réinitialiser le paramètre spécifique"
+
+msgid "Reset RetroArch Config"
+msgstr "Réinitialiser la configuration de RetroArch"
+
+msgid "Reset shared RetroArch config to packaged defaults?"
+msgstr "Rétablir la configuration RetroArch partagée aux paramètres par défaut du paquet ?"
+
+msgid "Restart"
+msgstr "Redémarrer"
+
+msgid "Restart now to finish installing?"
+msgstr "Redémarrer maintenant pour terminer l’installation ?"
+
+msgid "Resume"
+msgstr "Reprendre"
+
+msgid "RetroAchievements"
+msgstr "RetroAchievements"
+
+msgid "RetroArch Settings"
+msgstr "Paramètres de RetroArch"
+
+msgid "RetroArch reset canceled"
+msgstr "Réinitialisation de RetroArch annulée"
+
+msgid "Revert"
+msgstr "Rétablir"
+
+msgid "Rounded"
+msgstr "Arrondi"
+
+msgid "Run / Stop"
+msgstr "Exécuter / Arrêter"
+
+msgid "SG-1000"
+msgstr "SG-1000"
+
+msgid "Safely unmount the secondary SD card?"
+msgstr "Démonter en toute sécurité la carte SD secondaire ?"
+
+msgid "Save & Quit"
+msgstr "Enregistrer et quitter"
+
+msgid "Save State"
+msgstr "Sauvegarder l’état"
+
+msgid "Saving"
+msgstr "Enregistrement"
+
+msgid "Scan"
+msgstr "Analyser"
+
+msgid "Scan failed"
+msgstr "Échec de l’analyse"
+
+msgid "Scanning"
+msgstr "Analyse en cours"
+
+msgid "Scanning library..."
+msgstr "Analyse de la bibliothèque…"
+
+msgid "Scrape"
+msgstr "Récupérer les données"
+
+msgid "Scrape Artwork"
+msgstr "Récupérer les illustrations"
+
+msgid "Scrape Queue"
+msgstr "File de récupération"
+
+msgid "Scrape Queue - %s"
+msgstr "File de récupération - %s"
+
+msgid "Scrape Result"
+msgstr "Résultat de la récupération"
+
+msgid "Scrape finished: %d found"
+msgstr "Récupération terminée : %d trouvés"
+
+msgid "ScreenScraper.fr"
+msgstr "ScreenScraper.fr"
+
+msgid "Screenshots"
+msgstr "Captures d’écran"
+
+msgid "Search"
+msgstr "Rechercher"
+
+msgid "Search This System"
+msgstr "Rechercher dans ce système"
+
+msgid "Searching"
+msgstr "Recherche en cours"
+
+msgid "Secondary Text"
+msgstr "Texte secondaire"
+
+msgid "Sega 32X"
+msgstr "Sega 32X"
+
+msgid "Sega CD"
+msgstr "Sega CD"
+
+msgid "Sega Genesis"
+msgstr "Sega Genesis"
+
+msgid "Sega Master System"
+msgstr "Sega Master System"
+
+msgid "Sega Naomi"
+msgstr "Sega Naomi"
+
+msgid "Sega Saturn"
+msgstr "Sega Saturn"
+
+msgid "Select"
+msgstr "Sélectionner"
+
+msgid "Selection"
+msgstr "Sélection"
+
+msgid "Services"
+msgstr "Services"
+
+msgid "Set your local time zone"
+msgstr "Définir votre fuseau horaire local"
+
+msgid "Settings"
+msgstr "Paramètres"
+
+msgid "Show/Hide"
+msgstr "Afficher/Masquer"
+
+msgid "Signal: %s"
+msgstr "Signal : %s"
+
+msgid "Sleep"
+msgstr "Veille"
+
+msgid "Sleep failed"
+msgstr "Échec de la mise en veille"
+
+msgid "Sleeping…"
+msgstr "Veille…"
+
+msgid "Slot %d"
+msgstr "Emplacement %d"
+
+msgid "Slot Auto"
+msgstr "Emplacement automatique"
+
+msgid "Small"
+msgstr "Petit"
+
+msgid "Snap"
+msgstr "Commutation directe"
+
+msgid "SoC"
+msgstr "SoC"
+
+msgid "Soft"
+msgstr "Doux"
+
+msgid "Source Han Sans"
+msgstr "Source Han Sans"
+
+msgid "Speaker"
+msgstr "Haut-parleur"
+
+msgid "Speed"
+msgstr "Vitesse"
+
+msgid "Split Over 10MB"
+msgstr "Diviser au-delà de 10 Mo"
+
+msgid "Square"
+msgstr "Carré"
+
+msgid "Stable"
+msgstr "Stable"
+
+msgid "Start"
+msgstr "Démarrer"
+
+msgid "Start 5-Game Mode"
+msgstr "Activer le mode 5-Jeux"
+
+msgid "Start 5-Game Mode?"
+msgstr "Activer le mode 5-Jeux ?"
+
+msgid "Start with Leaf"
+msgstr "Démarrer avec Leaf"
+
+msgid "Startup Tab"
+msgstr "Onglet de démarrage"
+
+msgid "Static"
+msgstr "Statique"
+
+msgid "Status Bar"
+msgstr "Barre d’état"
+
+msgid "Status: %s"
+msgstr "État : %s"
+
+msgid "Stop"
+msgstr "Arrêter"
+
+msgid "Stop All"
+msgstr "Tout arrêter"
+
+msgid "Stopped test sound"
+msgstr "Son de test arrêté"
+
+msgid "Storage free"
+msgstr "Espace de stockage disponible"
+
+msgid "Strength"
+msgstr "Intensité"
+
+msgid "Stretch"
+msgstr "Étirer"
+
+msgid "Strong"
+msgstr "Fort"
+
+msgid "Super Famicom"
+msgstr "Super Famicom"
+
+msgid "Super Game Boy"
+msgstr "Super Game Boy"
+
+msgid "Super Nintendo"
+msgstr "Super Nintendo"
+
+msgid "Sweep"
+msgstr "Balayage"
+
+msgid "Switch"
+msgstr "Changer"
+
+msgid "Switcher"
+msgstr "Sélecteur de jeux"
+
+msgid "Sydney"
+msgstr "Sydney"
+
+msgid "System"
+msgstr "Système"
+
+msgid "platform|System"
+msgstr "Plateforme"
+
+msgid "System Update"
+msgstr "Mise à jour du système"
+
+msgid "Systems"
+msgstr "Retour à la liste des plateformes"
+
+msgid "count|Systems"
+msgstr "Nombre de plateformes"
+
+msgid "Tab"
+msgstr "Onglet"
+
+msgid "Tab Switching"
+msgstr "Changement d’onglet"
+
+msgid "Tabs"
+msgstr "Onglets"
+
+msgid "Test Sound"
+msgstr "Tester le son"
+
+msgid "Text"
+msgstr "Texte"
+
+msgid "Time Zone"
+msgstr "Fuseau horaire"
+
+msgid "Total"
+msgstr "Total"
+
+msgid "TurboGrafx-16"
+msgstr "TurboGrafx-16"
+
+msgid "TurboGrafx-CD"
+msgstr "TurboGrafx-CD"
+
+msgid "Type to search"
+msgstr "Saisissez pour rechercher"
+
+msgid "UK / Ireland"
+msgstr "Royaume-Uni / Irlande"
+
+msgid "US Alaska"
+msgstr "Alaska (États-Unis)"
+
+msgid "US Arizona"
+msgstr "Arizona (États-Unis)"
+
+msgid "US Central"
+msgstr "Centre des États-Unis"
+
+msgid "US Eastern"
+msgstr "Est des États-Unis"
+
+msgid "US Hawaii"
+msgstr "Hawaï (États-Unis)"
+
+msgid "US Mountain"
+msgstr "Région montagneuse des États-Unis"
+
+msgid "US Pacific"
+msgstr "Pacifique (États-Unis)"
+
+msgid "UTC"
+msgstr "UTC"
+
+msgid "Unavailable"
+msgstr "Indisponible"
+
+msgid "Uninstall"
+msgstr "Désinstaller"
+
+msgid "Unknown"
+msgstr "Inconnu"
+
+msgid "Unmount"
+msgstr "Démonter"
+
+msgid "Unmount canceled"
+msgstr "Démontage annulé"
+
+msgid "Unmount failed"
+msgstr "Échec du démontage"
+
+msgid "Unpair"
+msgstr "Dissocier"
+
+msgid "Unsupported"
+msgstr "Non pris en charge"
+
+msgid "Update Channel"
+msgstr "Canal de mise à jour"
+
+msgid "Update status unavailable"
+msgstr "État de la mise à jour indisponible"
+
+msgid "Uptime"
+msgstr "Durée de fonctionnement"
+
+msgid "Vectrex"
+msgstr "Vectrex"
+
+msgid "Virtual Boy"
+msgstr "Virtual Boy"
+
+msgid "Visible"
+msgstr "Visible"
+
+msgid "Volume"
+msgstr "Volume"
+
+msgid "Weak"
+msgstr "Faible"
+
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+
+msgid "WonderSwan"
+msgstr "WonderSwan"
+
+msgid "WonderSwan Color"
+msgstr "WonderSwan Color"
+
+msgid "audio output failed"
+msgstr "échec de la sortie audio"
+
+msgid "boot splash unavailable on this platform"
+msgstr "écran de démarrage indisponible sur cette plateforme"
+
+msgid "brightness failed"
+msgstr "échec du réglage de la luminosité"
+
+msgid "empty"
+msgstr "vide"
+
+msgid "font is fixed while a CJK language is selected"
+msgstr "la police est fixe lorsqu’une langue CJK est sélectionnée"
+
+msgid "font load failed"
+msgstr "échec du chargement de la police"
+
+msgid "just now"
+msgstr "à l’instant"
+
+msgid "newest"
+msgstr "plus récent"
+
+msgid "oldest"
+msgstr "plus ancien"
+
+msgid "overwrites"
+msgstr "écrase"
+
+msgid "performance unavailable"
+msgstr "performances indisponibles"
+
+msgid "refresh rate change failed"
+msgstr "échec du changement du taux de rafraîchissement"
+
+msgid "refresh rate unavailable on this platform"
+msgstr "taux de rafraîchissement indisponible sur cette plateforme"
+
+msgid "space"
+msgstr "espace"
+
+msgid "unsaved · %d of %d"
+msgstr "Non sauvegardé · %d / %d"
+
+msgid "unsaved · %s · %d of %d"
+msgstr "Non sauvegardé · %s · %d / %d"
+
+msgid "volume failed"
+msgstr "échec du réglage du volume"
+
+msgid "—"
+msgstr "—"
+
+msgid "System Icons"
+msgstr "Icônes système"
+
+msgid "Automatic"
+msgstr "Automatique"
+
+msgid "Flat"
+msgstr "Plat"
+
+msgid "Photographic"
+msgstr "Photographique"
+
+# In-game shortcut bindings.
+# "Game Switcher" follows the existing "Switcher" -> Game Switch; "Screenshot"
+# follows "Screenshots" -> Capture d'écran; "Disabled" pairs with "Enabled" -> Activé.
+msgid "Disabled"
+msgstr "Désactivé"
+
+msgid "Game Switcher"
+msgstr "Sélecteur de jeux"
+
+msgid "Screenshot"
+msgstr "Capture d’écran"
+
+# In-game Shortcuts page.
+# Saving follows the existing "Save & Quit" -> Sauvegarder et quitter / "Saving" -> Sauvegarde.
+# Keyboard-Shortcut is the usual term for a shortcut key binding.
+msgid "In-game Shortcuts"
+msgstr "Raccourcis en jeu"
+
+msgid "Screenshot Shortcut"
+msgstr "Raccourci de capture d’écran"
+
+msgid "Recording Shortcut"
+msgstr "Raccourci d’enregistrement"
+
+# Now one printf string, so the action name can sit where Chinese wants it:
+# "<action> 已占用" reads as "<action> already has it", rather than the
+# English order the old two-fragment concatenation forced.
+msgid "Already used by %s"
+msgstr "Déjà utilisé par %s"
+
+msgid "Could not save"
+msgstr "Impossible d’enregistrer"
+
+# In-game Shortcuts help line.
+msgid "Hold Menu, then press the button.   X: Disable"
+msgstr "Maintenez Menu, puis appuyez sur le bouton.   X : Désactiver"
+
+# Shown when the binding persisted but the daemon push failed.
+msgid "Saved; active after restart"
+msgstr "Enregistré ; actif après redémarrage"
+
+# Shortcut picker.
+# Follows the file's own entries: "Choose" -> 选择, "Back" -> 返回.
+msgid "A: Choose   B: Back"
+msgstr "A : Choisir   B : Retour"
+
+# Header fallback when the action name is unavailable; "Shortcut" alone.
+msgid "Shortcut"
+msgstr "Raccourci"
+
+# In-game shader picker. Reviewed by dapass5 in PR #117 review; fuzzy cleared.
+msgid "Advanced RetroArch menu"
+msgstr "Menu avancé de RetroArch"
+
+msgid "All RetroArch"
+msgstr "Tous les jeux RetroArch"
+
+msgid "All RetroArch requires a Leaf build with Fugazi's conflict resolver."
+msgstr "Tous les jeux RetroArch nécessitent une version de Leaf avec le résolveur de conflits de Fugazi."
+
+msgid "Remove the saved preset at the selected scope and turn shaders off."
+msgstr "Supprimer le préréglage enregistré à la portée sélectionnée et désactiver les shaders."
+
+msgid "Edit the current shader in RetroArch."
+msgstr "Modifier le shader actuel dans RetroArch."
+
+msgid "Leaf's in-game picker supports GLSL presets (.glslp)."
+msgstr "Le sélecteur en jeu de Leaf prend en charge les préréglages GLSL (.glslp)."
+
+msgid "Leaf's shader files are incomplete. Update or reinstall Leaf."
+msgstr "Les fichiers de shaders de Leaf sont incomplets. Mettez à jour ou réinstallez Leaf."
+
+msgid "No saved shader exists at that scope."
+msgstr "Aucun shader enregistré n’existe à cette portée."
+
+msgid "Save your edits in RetroArch before you leave."
+msgstr "Enregistrez vos modifications dans RetroArch avant de quitter."
+
+msgid "Recommended shaders are unavailable. Update or reinstall Leaf."
+msgstr "Les shaders recommandés sont indisponibles. Mettez à jour ou réinstallez Leaf."
+
+msgid "RetroArch did not confirm the shader. Reopen Shader or restart the game."
+msgstr "RetroArch n’a pas confirmé le shader. Rouvrez Shader ou redémarrez le jeu."
+
+msgid "RetroArch is not available. Shader unchanged."
+msgstr "RetroArch n’est pas disponible. Shader inchangé."
+
+msgid "Save globally"
+msgstr "Enregistrer globalement"
+
+msgid "Save current shader…"
+msgstr "Enregistrement du shader actuel…"
+
+msgid "Choose where RetroArch should load this shader automatically."
+msgstr "Choisissez où RetroArch doit charger automatiquement ce shader."
+
+msgid "A broader preset may apply after you reload the game."
+msgstr "Un préréglage de portée plus large peut s’appliquer après avoir rechargé le jeu."
+
+msgid "Scope"
+msgstr "Portée"
+
+msgid "Shader"
+msgstr "Shader"
+
+msgid "Shader failed and the previous shader could not be restored. Reopen the game."
+msgstr "Échec du shader et impossible de restaurer le shader précédent. Rouvrez le jeu."
+
+msgid "Shader is active for this session, but could not be saved for %s."
+msgstr "Le shader est actif pour cette session, mais n’a pas pu être enregistré pour %s."
+
+msgid "Shader operation failed."
+msgstr "Échec de l’opération sur le shader."
+
+msgid "Shader scope"
+msgstr "Portée du shader"
+
+msgid "The saved shader could not be removed."
+msgstr "Impossible de supprimer le shader enregistré."
+
+msgid "This RetroArch build does not support Leaf's shader picker."
+msgstr "Cette version de RetroArch ne prend pas en charge le sélecteur de shaders de Leaf."
+
+msgid "This folder"
+msgstr "Ce dossier"
+
+msgid "This game"
+msgstr "Ce jeu"
+
+msgid "This replaces the shader for every RetroArch game and can replace Fugazi. Continue?"
+msgstr "Cela remplace le shader de tous les jeux RetroArch et peut remplacer Fugazi. Continuer ?"
+
+msgid "This shader could not compile or link on this video driver. Previous shader restored."
+msgstr "Ce shader n’a pas pu être compilé ou lié avec ce pilote vidéo. Le shader précédent a été restauré."
+
+msgid "Use Advanced to edit it in RetroArch."
+msgstr "Utilisez Avancé pour le modifier dans RetroArch."
+
+msgid "that scope"
+msgstr "cette portée"
+
+# Saturn BIOS selection (Core actions menu). BIOS stays English per the glossary.
+msgid "512 KiB candidate"
+msgstr "Fichier candidat de 512 KiB"
+
+msgid "BIOS file ready"
+msgstr "Fichier BIOS prêt"
+
+msgid "Browse BIOS folder"
+msgstr "Parcourir le dossier BIOS"
+
+msgid "Folder"
+msgstr "Dossier"
+
+msgid "HLE"
+msgstr "HLE"
+
+msgid "HLE, no BIOS file"
+msgstr "HLE, aucun fichier BIOS"
+
+msgid "Main SD Card"
+msgstr "Carte SD principale"
+
+msgid "Next page"
+msgstr "Page suivante"
+
+msgid "No BIOS file"
+msgstr "Aucun fichier BIOS"
+
+msgid "No BIOS file selected"
+msgstr "Aucun fichier BIOS sélectionné"
+
+msgid "Pick another Saturn BIOS from the options menu."
+msgstr "Sélectionnez un autre BIOS Saturn dans le menu des options."
+
+msgid "Previous page"
+msgstr "Page précédente"
+
+msgid "Reading folder..."
+msgstr "Lecture du dossier…"
+
+msgid "Refresh this folder"
+msgstr "Actualiser ce dossier"
+
+msgid "Saturn BIOS"
+msgstr "BIOS Saturn"
+
+msgid "Saturn BIOS update failed"
+msgstr "Échec de la mise à jour du BIOS Saturn"
+
+msgid "Second SD Card"
+msgstr "Carte SD secondaire"
+
+msgid "Selected BIOS card is not mounted"
+msgstr "La carte contenant le BIOS sélectionné n’est pas montée"
+
+msgid "Selected BIOS file cannot be read"
+msgstr "Impossible de lire le fichier BIOS sélectionné"
+
+msgid "Selected BIOS file is missing"
+msgstr "Le fichier BIOS sélectionné est introuvable"
+
+msgid "Selected BIOS file is not a 512 KiB image"
+msgstr "Le fichier BIOS sélectionné n’est pas une image de 512 KiB"
+
+msgid "Selected BIOS file is not a file"
+msgstr "Le BIOS sélectionné n’est pas un fichier"
+
+msgid "Selected BIOS file is unavailable"
+msgstr "Le fichier BIOS sélectionné est indisponible"
+
+msgid "Selected BIOS file left the BIOS folder"
+msgstr "Le fichier BIOS sélectionné n’est plus dans le dossier BIOS"
+
+msgid "Selected BIOS path is not usable"
+msgstr "Le chemin du BIOS sélectionné n’est pas utilisable"
+
+msgid "Size is not proof that a file is a Saturn BIOS."
+msgstr "La taille ne prouve pas qu’un fichier est un BIOS Saturn."
+
+msgid "That BIOS file cannot be saved as a selection."
+msgstr "Impossible d’enregistrer ce fichier BIOS comme sélection."
+
+msgid "That card is not mounted right now."
+msgstr "Cette carte n’est actuellement pas montée."
+
+msgid "That file name is too long to select."
+msgstr "Ce nom de fichier est trop long pour être sélectionné."
+
+msgid "That folder could not be read."
+msgstr "Impossible de lire ce dossier."
+
+msgid "That folder name is too long to open."
+msgstr "Le nom de ce dossier est trop long pour être ouvert."
+
+msgid "Up one level"
+msgstr "Niveau supérieur"
+
+msgid "Use the system setting"
+msgstr "Utiliser le paramètre système"
+
+msgid "Now"
+msgstr "Maintenant"
+
+msgid "Not enough memory to open the BIOS picker"
+msgstr "Mémoire insuffisante pour ouvrir le sélecteur de BIOS"
+
+msgid "Switch Leaf to %s?\n\nLeaf restarts to apply it."
+msgstr "Basculer Leaf en %s ?\n\nLeaf redémarre pour l'appliquer."
