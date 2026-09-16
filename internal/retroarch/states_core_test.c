@@ -36,7 +36,45 @@ static bool has_slot(const jw_ra_slot_info *slots, int count, int want) {
     return false;
 }
 
+static void test_slot_path_builder(void) {
+    char out[PATH_MAX];
+    if (!jw_ra_slot_state_path_for_core("/cards/b/States", "PCSX-ReARMed",
+                                        "/cards/b/Roms/PS/Spyro the Dragon (USA).chd",
+                                        99, false, out, sizeof(out))) {
+        fail("slot path builder rejected a valid slot 99 request");
+    }
+    expect_path("slot99", out,
+                "/cards/b/States/PCSX-ReARMed/Spyro the Dragon (USA).state99");
+    if (!jw_ra_slot_state_path_for_core("/cards/b/States", "PCSX-ReARMed",
+                                        "/cards/b/Roms/PS/Spyro the Dragon (USA).chd",
+                                        99, true, out, sizeof(out))) {
+        fail("slot path builder rejected a thumbnail request");
+    }
+    expect_path("slot99 thumb", out,
+                "/cards/b/States/PCSX-ReARMed/Spyro the Dragon (USA).state99.png");
+    /* Only the last extension goes, as RetroArch strips it. */
+    if (!jw_ra_slot_state_path_for_core("/s", "Gambatte", "/r/Game.v1.zip", 0,
+                                        false, out, sizeof(out))) {
+        fail("slot path builder rejected slot 0");
+    }
+    expect_path("slot0", out, "/s/Gambatte/Game.v1.state");
+    if (jw_ra_slot_state_path_for_core("/s", "../Other", "/r/Game.zip", 99,
+                                       false, out, sizeof(out)) ||
+        jw_ra_slot_state_path_for_core("/s", "", "/r/Game.zip", 99,
+                                       false, out, sizeof(out)) ||
+        jw_ra_slot_state_path_for_core("/s", "Gambatte", "", 99,
+                                       false, out, sizeof(out))) {
+        fail("slot path builder accepted an unsafe namespace or empty ROM");
+    }
+    char tiny[16];
+    if (jw_ra_slot_state_path_for_core("/s", "Gambatte", "/r/Game.zip", 99,
+                                       false, tiny, sizeof(tiny))) {
+        fail("slot path builder accepted a truncated path");
+    }
+}
+
 int main(void) {
+    test_slot_path_builder();
     char root[] = "/tmp/jawaka-states-core.XXXXXX";
     int fd = mkstemp(root);
     if (fd < 0) {

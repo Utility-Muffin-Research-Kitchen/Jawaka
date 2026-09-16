@@ -231,6 +231,36 @@ static void test_repress_caps_the_window(void) {
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
 }
 
+static void test_abort(void) {
+    jw_power_hold_save s;
+    jw_power_hold_save_init(&s);
+    assert(!jw_power_hold_save_active(&s));
+    jw_power_hold_save_abort(&s, JW_POWER_HOLD_SAVE_OUTCOME_CHILD_EXITED);
+    assert(s.phase == JW_POWER_HOLD_SAVE_IDLE);
+
+    armed(&s);
+    assert(jw_power_hold_save_active(&s));
+    jw_power_hold_save_abort(&s, JW_POWER_HOLD_SAVE_OUTCOME_CHILD_EXITED);
+    assert(!jw_power_hold_save_active(&s));
+    assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_CHILD_EXITED);
+    /* A second abort does not rewrite the first outcome. */
+    jw_power_hold_save_abort(&s, JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED);
+    assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_CHILD_EXITED);
+
+    released(&s, PRESS + 2500);
+    assert(jw_power_hold_save_active(&s));
+    /* Abort can never claim success. */
+    jw_power_hold_save_abort(&s, JW_POWER_HOLD_SAVE_OUTCOME_SAVED);
+    assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED);
+    assert(strcmp(jw_power_hold_save_outcome_name(s.outcome), "interrupted") == 0);
+
+    released(&s, PRESS + 2500);
+    assert(jw_power_hold_save_admit(&s, &ps_state, PRESS + 2500, NULL));
+    assert(jw_power_hold_save_active(&s));
+    jw_power_hold_save_abort(&s, JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED);
+    assert(jw_power_hold_save_tick(&s, PRESS + 2600) == JW_POWER_HOLD_SAVE_SHUT_DOWN);
+}
+
 int main(void) {
     test_constants();
     test_ineligible_and_suspend();
@@ -240,5 +270,6 @@ int main(void) {
     test_admission();
     test_timeout();
     test_repress_caps_the_window();
+    test_abort();
     return 0;
 }

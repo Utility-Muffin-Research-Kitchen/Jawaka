@@ -51,7 +51,8 @@ typedef enum {
     JW_POWER_HOLD_SAVE_OUTCOME_STORAGE_ERROR,
     JW_POWER_HOLD_SAVE_OUTCOME_TIMEOUT,
     JW_POWER_HOLD_SAVE_OUTCOME_CHILD_EXITED,
-    JW_POWER_HOLD_SAVE_OUTCOME_DURABILITY_UNCERTAIN
+    JW_POWER_HOLD_SAVE_OUTCOME_DURABILITY_UNCERTAIN,
+    JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED   /* shutdown signal overrode the save */
 } jw_power_hold_save_outcome;
 
 typedef enum {
@@ -114,6 +115,14 @@ bool jw_power_hold_save_admit(jw_power_hold_save *s,
 
 /* Current bound on waiting, honoring a re-press; 0 when no window is open. */
 long long jw_power_hold_save_effective_deadline_ms(const jw_power_hold_save *s);
+
+/* True while an attempt defers shutdown teardown. */
+bool jw_power_hold_save_active(const jw_power_hold_save *s);
+
+/* End any active attempt with `outcome` (child exit, shutdown signal).
+   Ignored when nothing is active. */
+void jw_power_hold_save_abort(jw_power_hold_save *s,
+                              jw_power_hold_save_outcome outcome);
 
 /* Report how the admitted save ended. Ignored unless SAVING. */
 void jw_power_hold_save_finish(jw_power_hold_save *s,

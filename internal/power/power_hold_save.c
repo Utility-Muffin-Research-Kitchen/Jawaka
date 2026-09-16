@@ -193,6 +193,24 @@ bool jw_power_hold_save_admit(jw_power_hold_save *s,
     return true;
 }
 
+bool jw_power_hold_save_active(const jw_power_hold_save *s) {
+    return s && (s->phase == JW_POWER_HOLD_SAVE_AWAIT_RELEASE ||
+                 s->phase == JW_POWER_HOLD_SAVE_RELEASED ||
+                 s->phase == JW_POWER_HOLD_SAVE_SAVING);
+}
+
+void jw_power_hold_save_abort(jw_power_hold_save *s,
+                              jw_power_hold_save_outcome outcome) {
+    if (!jw_power_hold_save_active(s)) {
+        return;
+    }
+    if (outcome == JW_POWER_HOLD_SAVE_OUTCOME_NONE ||
+        outcome == JW_POWER_HOLD_SAVE_OUTCOME_SAVED) {
+        outcome = JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED;
+    }
+    (void)jw__phs_latch(s, outcome);
+}
+
 void jw_power_hold_save_finish(jw_power_hold_save *s,
                                jw_power_hold_save_outcome outcome) {
     if (!s || s->phase != JW_POWER_HOLD_SAVE_SAVING) {
@@ -215,6 +233,7 @@ const char *jw_power_hold_save_outcome_name(jw_power_hold_save_outcome outcome) 
     case JW_POWER_HOLD_SAVE_OUTCOME_TIMEOUT:              return "timeout";
     case JW_POWER_HOLD_SAVE_OUTCOME_CHILD_EXITED:         return "child-exited";
     case JW_POWER_HOLD_SAVE_OUTCOME_DURABILITY_UNCERTAIN: return "durability-uncertain";
+    case JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED:          return "interrupted";
     }
     return "none";
 }

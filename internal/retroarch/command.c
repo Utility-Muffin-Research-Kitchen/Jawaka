@@ -68,6 +68,7 @@ static bool jw_ra__exact_supported(const char *command) {
         "GET_DISK_SLOT",
         "GET_INFO",
         "GET_PERF_INFO",
+        "GET_STATE_SAVE_INFO",
         "GET_STATE_SLOT",
         "GET_STATUS",
         "LOAD_STATE",
@@ -1082,4 +1083,242 @@ jw_ra_result jw_ra_load_content_current_core(const jw_ra_client *client,
         return JW_RA_OK;
     }
     return JW_RA_UNSUPPORTED;
+}
+
+/* ------------------------------------------------ power-hold synchronous save */
+
+static int jw_ra__connected_udp(const jw_ra_client *client) {
+    struct sockaddr_storage addr;
+    socklen_t addr_len = 0;
+    if (jw_ra__resolve(client, &addr, &addr_len) != JW_RA_OK) {
+        return -1;
+    }
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    /* connect() makes the kernel drop datagrams from any other source. */
+    if (connect(fd, (struct sockaddr *)&addr, addr_len) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+jw_ra_result jw_ra_parse_state_save_info_reply(const char *reply,
+                                               jw_ra_state_save_info *info) {
+    static const char prefix[] = "GET_STATE_SAVE_INFO ";
+    char line[128];
+    int version = 0;
+    unsigned long long bytes = 0;
+    int compressed = -1;
+    char tail = 0;
+
+    if (!reply || !info) {
+        return JW_RA_PARSE_ERROR;
+    }
+    memset(info, 0, sizeof(*info));
+    snprintf(line, sizeof(line), "%s", reply);
+    jw_ra__trim_line(line);
+    if (strncmp(line, prefix, sizeof(prefix) - 1u) != 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+    const char *p = line + sizeof(prefix) - 1u;
+    if (sscanf(p, "%d", &version) != 1 || version != JW_RA_SYNC_SAVE_PROTOCOL) {
+        return JW_RA_UNSUPPORTED;
+    }
+    if (strcmp(p, "1 NO") == 0) {
+        return JW_RA_OK;
+    }
+    if (p[0] == '-' || strchr(p, '-') ||
+        sscanf(p, "%d %llu %d %c", &version, &bytes, &compressed, &tail) != 3 ||
+        bytes == 0 || (compressed != 0 && compressed != 1)) {
+        return JW_RA_PARSE_ERROR;
+    }
+    info->supported = true;
+    info->compressed = compressed == 1;
+    info->bytes = bytes;
+    return JW_RA_OK;
+}
+
+jw_ra_result jw_ra_get_state_save_info(const jw_ra_client *client,
+                                       jw_ra_state_save_info *info) {
+    static const char command[] = "GET_STATE_SAVE_INFO";
+    if (!info) {
+        return JW_RA_PARSE_ERROR;
+    }
+    memset(info, 0, sizeof(*info));
+    int fd = jw_ra__connected_udp(client);
+    if (fd < 0) {
+        return JW_RA_SOCKET_ERROR;
+    }
+    if (send(fd, command, sizeof(command) - 1u, 0) != (ssize_t)(sizeof(command) - 1u)) {
+        close(fd);
+        return JW_RA_SOCKET_ERROR;
+    }
+    unsigned timeout_ms = client && client->timeout_ms ? client->timeout_ms
+                                                       : JW_RA_DEFAULT_TIMEOUT_MS;
+    long deadline = jw_ra__now_ms() + (long)timeout_ms;
+    for (;;) {
+        char reply[JW_RA_REPLY_MAX];
+        long remaining = deadline - jw_ra__now_ms();
+        if (remaining <= 0) {
+            close(fd);
+            return JW_RA_TIMEOUT;
+        }
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(fd, &read_fds);
+        struct timeval tv = { (time_t)(remaining / 1000L),
+                              (suseconds_t)((remaining % 1000L) * 1000L) };
+        int ready = select(fd + 1, &read_fds, NULL, NULL, &tv);
+        if (ready < 0 && errno == EINTR) {
+            continue;
+        }
+        if (ready <= 0) {
+            close(fd);
+            return ready == 0 ? JW_RA_TIMEOUT : JW_RA_SOCKET_ERROR;
+        }
+        ssize_t nread = recv(fd, reply, sizeof(reply) - 1u, 0);
+        if (nread < 0) {
+            close(fd);
+            return JW_RA_SOCKET_ERROR;
+        }
+        reply[nread] = '\0';
+        jw_ra_result result = jw_ra_parse_state_save_info_reply(reply, info);
+        if (result == JW_RA_PARSE_ERROR &&
+            strncmp(reply, "GET_STATE_SAVE_INFO", 19) != 0) {
+            continue;  /* an unrelated late reply; same deadline */
+        }
+        close(fd);
+        return result;
+    }
+}
+
+jw_ra_result jw_ra_parse_sync_save_reply(const char *reply, const char *request_id,
+                                         jw_ra_sync_save_reply *out) {
+    static const char prefix[] = "SAVE_STATE_SYNC ";
+    if (!reply || !request_id || !request_id[0] || !out) {
+        return JW_RA_PARSE_ERROR;
+    }
+    memset(out, 0, sizeof(*out));
+    if (strncmp(reply, prefix, sizeof(prefix) - 1u) != 0) {
+        return JW_RA_TIMEOUT;  /* not ours at all */
+    }
+    const char *p = reply + sizeof(prefix) - 1u;
+    size_t id_len = strlen(request_id);
+    if (strncmp(p, request_id, id_len) != 0 || p[id_len] != ' ') {
+        return JW_RA_TIMEOUT;  /* another request, or the id-less BAD_ARGS */
+    }
+    p += id_len + 1u;
+
+    if (strncmp(p, "ERROR ", 6) == 0) {
+        const char *code = p + 6;
+        size_t n = strlen(code);
+        while (n > 0 && (code[n - 1] == '\n' || code[n - 1] == '\r')) {
+            n--;
+        }
+        if (n == 0 || n >= sizeof(out->error)) {
+            return JW_RA_PARSE_ERROR;
+        }
+        for (size_t i = 0; i < n; i++) {
+            if (!(isupper((unsigned char)code[i]) || code[i] == '_')) {
+                return JW_RA_PARSE_ERROR;
+            }
+        }
+        memcpy(out->error, code, n);
+        out->error[n] = '\0';
+        return JW_RA_OK;
+    }
+
+    if (strncmp(p, "TMP_READY ", 10) != 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+    p += 10;
+    char *end = NULL;
+    if (!isdigit((unsigned char)*p)) {
+        return JW_RA_PARSE_ERROR;
+    }
+    errno = 0;
+    unsigned long long bytes = strtoull(p, &end, 10);
+    if (errno != 0 || !end || *end != ' ' || bytes == 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+    const char *path = end + 1;
+    size_t n = strlen(path);
+    while (n > 0 && (path[n - 1] == '\n' || path[n - 1] == '\r')) {
+        n--;
+    }
+    if (n == 0 || path[0] != '/' || n >= sizeof(out->tmp_path)) {
+        return JW_RA_PARSE_ERROR;
+    }
+    memcpy(out->tmp_path, path, n);
+    out->tmp_path[n] = '\0';
+    out->bytes = bytes;
+    out->ready = true;
+    return JW_RA_OK;
+}
+
+void jw_ra_sync_save_init(jw_ra_sync_save *save) {
+    if (save) {
+        save->fd = -1;
+        save->request_id[0] = '\0';
+    }
+}
+
+jw_ra_result jw_ra_sync_save_send(const jw_ra_client *client, jw_ra_sync_save *save,
+                                  int slot, unsigned long long max_bytes,
+                                  long long start_by_ms) {
+    if (!save || slot < 0 || max_bytes == 0 || start_by_ms <= 0) {
+        return JW_RA_PARSE_ERROR;
+    }
+    jw_ra_sync_save_close(save);
+    save->fd = jw_ra__connected_udp(client);
+    if (save->fd < 0) {
+        return JW_RA_SOCKET_ERROR;
+    }
+    jw_ra__make_request_id(save->request_id, sizeof(save->request_id));
+    char command[160];
+    int len = snprintf(command, sizeof(command), "SAVE_STATE_SYNC %s %d %llu %lld",
+                       save->request_id, slot, max_bytes, start_by_ms);
+    if (len <= 0 || (size_t)len >= sizeof(command) ||
+        send(save->fd, command, (size_t)len, 0) != (ssize_t)len) {
+        jw_ra_sync_save_close(save);
+        return JW_RA_SOCKET_ERROR;
+    }
+    return JW_RA_OK;
+}
+
+jw_ra_result jw_ra_sync_save_poll(jw_ra_sync_save *save, jw_ra_sync_save_reply *reply) {
+    if (!save || save->fd < 0 || !reply) {
+        return JW_RA_SOCKET_ERROR;
+    }
+    /* Drain what is queued; never wait. */
+    for (;;) {
+        char buf[JW_RA_SYNC_SAVE_PATH_MAX + 128u];
+        ssize_t nread = recv(save->fd, buf, sizeof(buf) - 1u, MSG_DONTWAIT);
+        if (nread < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return JW_RA_TIMEOUT;
+            }
+            /* ECONNREFUSED: RetroArch is gone. */
+            return JW_RA_SOCKET_ERROR;
+        }
+        buf[nread] = '\0';
+        jw_ra_result result = jw_ra_parse_sync_save_reply(buf, save->request_id, reply);
+        if (result == JW_RA_TIMEOUT) {
+            continue;
+        }
+        return result;
+    }
+}
+
+void jw_ra_sync_save_close(jw_ra_sync_save *save) {
+    if (save && save->fd >= 0) {
+        close(save->fd);
+        save->fd = -1;
+    }
 }

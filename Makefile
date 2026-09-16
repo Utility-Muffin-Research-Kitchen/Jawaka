@@ -222,6 +222,8 @@ DAEMON_SRCS := \
 	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
 	internal/platform/raofflineproxy.c \
+	internal/power/power_hold_save.c \
+	internal/power/power_hold_save_io.c \
 	internal/power/suspend_inhibit.c \
 	internal/retroarch/catalog.c \
 	$(EFFECTIVE_CATALOG_SRCS) \
@@ -1196,6 +1198,9 @@ power-hold-save-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/power-hold-save-test \
 		internal/power/power_hold_save_test.c internal/power/power_hold_save.c
 	$(BUILD)/bin/power-hold-save-test
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/power-hold-save-io-test \
+		internal/power/power_hold_save_io_test.c internal/power/power_hold_save_io.c
+	$(BUILD)/bin/power-hold-save-io-test
 
 suspend-inhibit-ipc-smoke:
 	scripts/suspend-inhibit-ipc-smoke.sh
