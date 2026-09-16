@@ -75,6 +75,7 @@ static void transient_never_restored(void) {
     jw_osd_game_stage transient[] = {
         JW_OSD_GAME_SETTINGS_NOT_SAVED, JW_OSD_GAME_STORAGE_READ_ONLY,
         JW_OSD_PICO8_EXIT_CONFIRM, JW_OSD_PICO8_IMPORT_FAILED,
+        JW_OSD_POWER_SAVE_SAVED, JW_OSD_POWER_SAVE_FAILED,
     };
     for (size_t i = 0; i < sizeof(transient) / sizeof(transient[0]); i++) {
         jw_osd_view view;

@@ -10754,6 +10754,34 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
 #define JW_POWER_HOLD_SAVE_PROBE_TIMEOUT_MS 300u
 #define JW_PHS_MIB 1048576ull
 
+/* Settings poll, never on the hold path: a no-wait read, and anything but "1"
+   (missing, invalid, locked, unreadable) is Off. */
+static void jw__power_hold_save_refresh_setting(jw_daemon_state *state) {
+    bool enabled = false;
+    char value[8];
+    if (state->db_path &&
+        jw_db_read_setting_nowait(state->db_path, "save_state_on_power_hold",
+                                  value, sizeof(value)) == 0) {
+        enabled = strcmp(value, "1") == 0;
+    }
+    if (enabled != state->power_hold_save_enabled) {
+        jw_log_info("power-hold save: setting %s", enabled ? "on" : "off");
+    }
+    state->power_hold_save_enabled = enabled;
+}
+
+/* One banner at a time; best-effort and bounded by the OSD client timeout. */
+static void jw__power_hold_save_notice(jw_daemon_state *state, const char *stage) {
+    if (!jw__osd_enabled(state)) {
+        return;
+    }
+    jw_osd_client client = jw__osd_client(state);
+    if (jw_osd_client_show_stage(&client, &state->pico8_exit_confirm_until_ms,
+                                 stage, 0) != 0) {
+        jw_log_warn("power-hold save: %s OSD request failed", stage);
+    }
+}
+
 static const char *jw__power_hold_save_how(const jw_daemon_state *state) {
     return state->power_hold_save.release_ms > 0 ? "released" : "held";
 }
@@ -10768,6 +10796,11 @@ static void jw__power_hold_save_report(jw_daemon_state *state) {
     long long elapsed = state->power_hold_save_started_ms > 0
         ? jw__monotonic_ms() - state->power_hold_save_started_ms : 0;
     const char *name = jw_power_hold_save_outcome_name(s->outcome);
+    /* A signal is not the player's shutdown; nobody is waiting on a banner. */
+    if (s->outcome != JW_POWER_HOLD_SAVE_OUTCOME_INTERRUPTED) {
+        jw__power_hold_save_notice(state, s->outcome == JW_POWER_HOLD_SAVE_OUTCOME_SAVED
+                                              ? "power-save-saved" : "power-save-failed");
+    }
     if (s->outcome == JW_POWER_HOLD_SAVE_OUTCOME_SAVED) {
         jw_log_info("power-hold save: saved elapsed_ms=%lld key=%s bytes=%llu path=%s",
                     elapsed, jw__power_hold_save_how(state),
@@ -10858,6 +10891,7 @@ static void jw__power_long_press(jw_daemon_state *state, long long press_ms,
         JW_POWER_HOLD_SAVE_WAIT) {
         jw_log_info("power-hold save: waiting for release (release by +%dms)",
                     JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS);
+        jw__power_hold_save_notice(state, "power-save-release");
     } else {
         jw__power_hold_save_report(state);
     }
@@ -10903,6 +10937,7 @@ static void jw__power_hold_save_start(jw_daemon_state *state, long long now) {
         return;
     }
     state->power_hold_save_tmp_owned = true;
+    jw__power_hold_save_notice(state, "power-save-saving");
     jw_log_info("power-hold save: saving bytes<=%llu estimate_ms=%lld window_ms=%lld",
                 state->power_hold_save_bytes, estimate, deadline - now);
 }
@@ -11004,7 +11039,12 @@ static void jw__power_hold_save_cleanup_tmp(jw_daemon_state *state) {
 static void jw__tick_auto_sleep(jw_daemon_state *state) {
     long long now = jw__monotonic_ms();
 
-    if (now >= state->autosleep_setting_next_ms) {
+    /* Settings polls touch the database (Auto Sleep with its 2 s busy wait), so
+       they run only between presses and never once shutdown has begun: the
+       hold path reads cached values. A skipped poll simply runs on release. */
+    if (now >= state->autosleep_setting_next_ms && !state->power_held &&
+        !state->shutdown_requested) {
+        jw__power_hold_save_refresh_setting(state);
         state->autosleep_timeout_s = jw__autosleep_read_timeout_s(state);
         state->autosleep_setting_next_ms = now + JW_AUTOSLEEP_SETTING_POLL_MS;
         jw__autosleep_sync_platform(state);

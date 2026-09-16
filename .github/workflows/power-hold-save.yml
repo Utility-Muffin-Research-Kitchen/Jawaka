@@ -13,4 +13,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: make power-hold-save-test
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      - run: make power-hold-save-test states-core-test retroarch-command-test

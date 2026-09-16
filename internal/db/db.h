@@ -271,6 +271,12 @@ int  jw_db_get_setting(const char *db_path, const char *key,
                         char *out, size_t out_size);
 int  jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,
                         int count);
+/* Narrow read for time-sensitive daemon paths: a read-only connection with no
+   busy wait and no schema work. Returns 0 with the value, 1 when the key or
+   the settings table is absent, and -1 when the database is missing, locked,
+   or unreadable -- the caller picks its own safe default. */
+int  jw_db_read_setting_nowait(const char *db_path, const char *key,
+                               char *out, size_t out_size);
 int  jw_db_set_setting(const char *db_path, const char *key, const char *value);
 /* Write multiple key/value settings in a single open + transaction. Far cheaper
    than N jw_db_set_setting() calls, each of which re-opens the DB and re-applies

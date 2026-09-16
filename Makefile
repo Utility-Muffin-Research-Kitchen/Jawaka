@@ -1201,6 +1201,10 @@ power-hold-save-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/power-hold-save-io-test \
 		internal/power/power_hold_save_io_test.c internal/power/power_hold_save_io.c
 	$(BUILD)/bin/power-hold-save-io-test
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/setting-nowait-test \
+		internal/db/setting_nowait_test.c internal/db/db.c internal/db/relocation.c \
+		internal/storage/sources.c $(LDLIBS_COMMON)
+	$(BUILD)/bin/setting-nowait-test
 
 suspend-inhibit-ipc-smoke:
 	scripts/suspend-inhibit-ipc-smoke.sh

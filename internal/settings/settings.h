@@ -167,15 +167,18 @@ typedef enum {
 
 /* Behavior page */
 #define JW_BEHAVIOR_AUTO_SLEEP  0
-#define JW_BEHAVIOR_PERFORMANCE 1
-#define JW_BEHAVIOR_TIMEZONE    2   /* opens the Time Zone picker screen */
-#define JW_BEHAVIOR_BOOT_SPLASH 3
-#define JW_BEHAVIOR_RESET_RETROARCH   4   /* maintenance, moved from Library */
-#define JW_BEHAVIOR_UNMOUNT_SECONDARY 5
-/* Appended, never inserted: this row is hidden when no translation is installed,
-   and appending means the other rows keep their indices in both states. */
-#define JW_BEHAVIOR_LANGUAGE    6
-#define JW_BEHAVIOR_ROW_COUNT   7
+/* Save the RetroArch game on a power-button shutdown. Shown everywhere, usable
+   on MLP1 only: other platforms need their own button qualification. */
+#define JW_BEHAVIOR_POWER_HOLD_SAVE 1
+#define JW_BEHAVIOR_PERFORMANCE 2
+#define JW_BEHAVIOR_TIMEZONE    3   /* opens the Time Zone picker screen */
+#define JW_BEHAVIOR_BOOT_SPLASH 4
+#define JW_BEHAVIOR_RESET_RETROARCH   5   /* maintenance, moved from Library */
+#define JW_BEHAVIOR_UNMOUNT_SECONDARY 6
+/* Kept last: this row is hidden when no translation is installed, so the other
+   rows keep their indices in both states. */
+#define JW_BEHAVIOR_LANGUAGE    7
+#define JW_BEHAVIOR_ROW_COUNT   8
 
 /* Controls & Feedback page.
    On MLP1 the four capture rows move to the In-game Shortcuts child page, so
@@ -368,6 +371,8 @@ typedef struct {
     int                auto_sleep_index;    /* idle-sleep timeout (index into kAutoSleep*) */
     bool               boot_splash_enabled; /* Leaf boot transition/artwork on next boot */
     bool               boot_splash_supported;
+    bool               power_hold_save_enabled;   /* "save_state_on_power_hold"; Off by default */
+    bool               power_hold_save_supported; /* platform qualified the power button */
     bool               screenshots_enabled; /* Menu+L1 screenshot hotkey (daemon reads the DB key) */
     bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
     bool               recording_split;     /* cut clips over 10MB into postable parts */

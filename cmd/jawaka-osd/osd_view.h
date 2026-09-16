@@ -17,7 +17,8 @@
    moment, and a hidden PICO-8 exit prompt must never come back. */
 #define JW_OSD_GAME_STAGE_IS_PROGRESS(stage) \
     ((stage) == JW_OSD_GAME_CHECKING || (stage) == JW_OSD_GAME_SYNCING || \
-     (stage) == JW_OSD_GAME_STOPPING || (stage) == JW_OSD_PICO8_IMPORT)
+     (stage) == JW_OSD_GAME_STOPPING || (stage) == JW_OSD_PICO8_IMPORT || \
+     (stage) == JW_OSD_POWER_SAVE_RELEASE || (stage) == JW_OSD_POWER_SAVE_SAVING)
 
 typedef enum {
     JW_OSD_VIEW_NONE = 0,

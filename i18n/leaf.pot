@@ -960,6 +960,14 @@ msgstr ""
 msgid "Game Switcher"
 msgstr ""
 
+#: cmd/jawaka-osd/game_launch.c
+msgid "Game not saved"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Game saved"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Games"
 msgstr ""
@@ -1026,6 +1034,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Hold Menu, then press the button.   X: Disable"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hold power to shut down, then release to save"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1272,7 +1284,7 @@ msgstr ""
 msgid "Most played"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/storage_ui.c
 msgid "Mounted"
 msgstr ""
 
@@ -1584,6 +1596,18 @@ msgstr ""
 msgid "Power Off"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Power off will not save your game"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Powering off"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Preparing to save"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Press MENU to exit"
 msgstr ""
@@ -1690,6 +1714,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Release"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Release the power button"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1880,6 +1908,10 @@ msgstr ""
 msgid "Save & Quit"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Save Before Power Off"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Save State"
 msgstr ""
@@ -1902,6 +1934,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Saving"
+msgstr ""
+
+#: cmd/jawaka-osd/game_launch.c
+msgid "Saving game"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

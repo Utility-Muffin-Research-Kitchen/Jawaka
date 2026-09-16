@@ -83,6 +83,19 @@ static void parser(void) {
                  JW_OSD_GAME_SETTINGS_NOT_SAVED, 0, 0);
     expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"storage-read-only\"}",
                  JW_OSD_GAME_STORAGE_READ_ONLY, 0, 0);
+    expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"power-save-release\"}",
+                 JW_OSD_POWER_SAVE_RELEASE, 0, 0);
+    expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"power-save-saving\"}",
+                 JW_OSD_POWER_SAVE_SAVING, 0, 0);
+    expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"power-save-saved\"}",
+                 JW_OSD_POWER_SAVE_SAVED, 0, 0);
+    expect_valid("{\"type\":\"show-game-launch\",\"stage\":\"power-save-failed\"}",
+                 JW_OSD_POWER_SAVE_FAILED, 0, 0);
+    assert(!JW_OSD_GAME_STAGE_IS_TRANSIENT(JW_OSD_POWER_SAVE_RELEASE));
+    assert(!JW_OSD_GAME_STAGE_IS_TRANSIENT(JW_OSD_POWER_SAVE_SAVING));
+    assert(JW_OSD_GAME_STAGE_IS_TRANSIENT(JW_OSD_POWER_SAVE_SAVED));
+    assert(JW_OSD_GAME_STAGE_IS_TRANSIENT(JW_OSD_POWER_SAVE_FAILED));
+    expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"power-save-saving\",\"pending_items\":0}");
 
     expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"unknown\"}");
     expect_invalid("{\"type\":\"show-game-launch\",\"stage\":\"starting\"}");
@@ -111,6 +124,10 @@ static void english_wording(void) {
     expect_text(JW_OSD_PICO8_EXIT_CONFIRM, 0, "Return to Leaf?", "Press Menu again");
     expect_text(JW_OSD_PICO8_IMPORT, 0, "Adding Splore favorites", "Please wait");
     expect_text(JW_OSD_PICO8_IMPORT_FAILED, 0, "Splore import incomplete", "Try Splore again");
+    expect_text(JW_OSD_POWER_SAVE_RELEASE, 0, "Preparing to save", "Release the power button");
+    expect_text(JW_OSD_POWER_SAVE_SAVING, 0, "Saving game", "");
+    expect_text(JW_OSD_POWER_SAVE_SAVED, 0, "Game saved", "Powering off");
+    expect_text(JW_OSD_POWER_SAVE_FAILED, 0, "Game not saved", "Powering off");
 }
 
 static void write_table(const char *root, const char *lang, const char *body) {

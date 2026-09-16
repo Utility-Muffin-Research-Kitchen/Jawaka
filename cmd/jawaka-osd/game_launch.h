@@ -22,11 +22,19 @@ typedef enum {
     JW_OSD_PICO8_EXIT_CONFIRM,
     JW_OSD_PICO8_IMPORT,
     JW_OSD_PICO8_IMPORT_FAILED,
+    /* Save before power-button shutdown. Release and saving stay up until the
+       daemon replaces them; the outcome dismisses itself (the device is
+       powering off anyway). */
+    JW_OSD_POWER_SAVE_RELEASE,
+    JW_OSD_POWER_SAVE_SAVING,
+    JW_OSD_POWER_SAVE_SAVED,
+    JW_OSD_POWER_SAVE_FAILED,
 } jw_osd_game_stage;
 
 /* Stages that dismiss themselves instead of waiting for hide-game-launch. */
 #define JW_OSD_GAME_STAGE_IS_TRANSIENT(stage) \
-    ((stage) == JW_OSD_GAME_SETTINGS_NOT_SAVED || (stage) == JW_OSD_GAME_STORAGE_READ_ONLY || (stage) == JW_OSD_PICO8_EXIT_CONFIRM || (stage) == JW_OSD_PICO8_IMPORT_FAILED)
+    ((stage) == JW_OSD_GAME_SETTINGS_NOT_SAVED || (stage) == JW_OSD_GAME_STORAGE_READ_ONLY || (stage) == JW_OSD_PICO8_EXIT_CONFIRM || (stage) == JW_OSD_PICO8_IMPORT_FAILED || \
+     (stage) == JW_OSD_POWER_SAVE_SAVED || (stage) == JW_OSD_POWER_SAVE_FAILED)
 #define JW_OSD_GAME_TRANSIENT_MS 4000u
 
 /* `expires_ms` is optional: a CLOCK_MONOTONIC millisecond deadline after

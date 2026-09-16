@@ -1694,3 +1694,39 @@ msgstr "Mémoire insuffisante pour ouvrir le sélecteur de BIOS"
 
 msgid "Switch Leaf to %s?\n\nLeaf restarts to apply it."
 msgstr "Basculer Leaf en %s ?\n\nLeaf redémarre pour l'appliquer."
+
+#, fuzzy
+msgid "Save Before Power Off"
+msgstr "Sauvegarder avant l’arrêt"
+
+#, fuzzy
+msgid "Hold power to shut down, then release to save"
+msgstr "Maintenez le bouton d’alimentation, puis relâchez-le pour sauvegarder"
+
+#, fuzzy
+msgid "Power off will not save your game"
+msgstr "L’arrêt ne sauvegardera pas votre partie"
+
+#, fuzzy
+msgid "Preparing to save"
+msgstr "Préparation de la sauvegarde"
+
+#, fuzzy
+msgid "Release the power button"
+msgstr "Relâchez le bouton d’alimentation"
+
+#, fuzzy
+msgid "Saving game"
+msgstr "Sauvegarde de la partie"
+
+#, fuzzy
+msgid "Game saved"
+msgstr "Partie sauvegardée"
+
+#, fuzzy
+msgid "Game not saved"
+msgstr "Partie non sauvegardée"
+
+#, fuzzy
+msgid "Powering off"
+msgstr "Arrêt en cours"
