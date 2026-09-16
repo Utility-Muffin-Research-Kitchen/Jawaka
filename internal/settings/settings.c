@@ -656,12 +656,15 @@ static void jw__refresh_secondary_sd_status(jw_settings_ui *ui) {
                                       &cards[i], NULL, 0) != 0) {
             continue;
         }
+        /* Stored untranslated and translated when the row draws: this string
+           outlives a language change, and jw__render_list_row translates every
+           value it is given. */
         if (jw_storage_ui_needs_repair(&cards[i]) || jw_storage_ui_is_read_only(&cards[i])) {
-            summary = jw_storage_ui_card_state(&cards[i]);
+            summary = jw_storage_ui_card_state_key(&cards[i]);
             break;
         }
         if (i == 1) {
-            summary = cards[i].busy ? T("Busy") : (cards[i].mounted ? T("Mounted") : T("Not mounted"));
+            summary = cards[i].busy ? "Busy" : (cards[i].mounted ? "Mounted" : "Not mounted");
         }
     }
     if (summary) {

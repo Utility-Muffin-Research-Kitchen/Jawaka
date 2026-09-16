@@ -36,6 +36,21 @@ void jw_storage_ui_card_name(const jw_ipc_storage_status_info *card,
     }
 }
 
+/* The same states as jw_storage_ui_card_state, untranslated. A caller that
+   stores the result for later drawing must store this: a translated string
+   kept in a buffer keeps its old language after a language change, which is
+   exactly what the SD Cards row did. The literals are deliberately the same
+   as the ones below, whose T() calls are what put them in the string table. */
+const char *jw_storage_ui_card_state_key(const jw_ipc_storage_status_info *card) {
+    if (card && strcmp(card->repair, "failed") == 0) return "Needs repair";
+    if (!card || !card->mounted) return "Not mounted";
+    if (strcmp(card->repair, "pending") == 0 || strcmp(card->repair, "running") == 0)
+        return "Repair pending";
+    if (strcmp(card->access, "read-only") == 0) return "Read-only";
+    if (strcmp(card->access, "unknown") == 0) return "Unknown";
+    return card->busy && strcmp(card->source, "secondary_sd") == 0 ? "Busy" : "Mounted";
+}
+
 const char *jw_storage_ui_card_state(const jw_ipc_storage_status_info *card) {
     if (card && strcmp(card->repair, "failed") == 0) {
         /* Also when unmounted: hotplug refuses to mount a held card. */
