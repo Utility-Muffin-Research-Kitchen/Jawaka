@@ -105,8 +105,8 @@ static void test_estimates(void) {
     assert(jw_power_hold_save_serialize_allowance_ms(NULL) == 0);
     /* 100 + 5 MiB * 70 + 150 */
     assert(jw_power_hold_save_estimate_ms(&ps_state) == 600);
-    /* 400 + 9 MiB * 70 + 150 */
-    assert(jw_power_hold_save_estimate_ms(&saturn_state) == 1180);
+    /* 500 + 9 MiB * 70 + 150 */
+    assert(jw_power_hold_save_estimate_ms(&saturn_state) == 1280);
     jw_power_hold_save_request exact = { "snes9x", 2 * MIB };
     assert(jw_power_hold_save_estimate_ms(&exact) == 50 + 2 * 70 + 150);
 
@@ -227,7 +227,7 @@ static void test_repress_caps_the_window(void) {
     released(&s, release);
     jw_power_hold_save_key_edge(&s, true, release + 100);
     long long held_cap = release + 100 + JW_POWER_HOLD_SAVE_RELEASE_BOUNDARY_MS;
-    assert(!jw_power_hold_save_admit(&s, &saturn_state, held_cap - 1179, NULL));
+    assert(!jw_power_hold_save_admit(&s, &saturn_state, held_cap - 1279, NULL));
     assert(s.outcome == JW_POWER_HOLD_SAVE_OUTCOME_BUDGET_INSUFFICIENT);
 }
 

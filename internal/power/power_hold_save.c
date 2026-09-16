@@ -10,13 +10,16 @@ typedef struct {
 } jw__phs_core_allowance;
 
 /* Measured on MLP1 with the asynchronous command path: reply/close times were
-   GB 15-35 ms, SNES 17-32 ms, PS 25-49 ms, Saturn 250-320 ms. Allowances sit
-   above the worst run. Unlisted cores stay unadmitted until measured. */
+   GB 15-35 ms, SNES 17-32 ms, PS 25-49 ms, Saturn 250-320 ms. The synchronous
+   SAVE_STATE_SYNC path (serialize + write + fsync, secondary card) took
+   386-432 ms for PS 4.3 MiB and 915-966 ms for Saturn 8.6 MiB, so Saturn gets
+   extra headroom over its flush estimate. Unlisted cores stay unadmitted
+   until measured. */
 static const jw__phs_core_allowance jw__phs_core_allowances[] = {
     { "gambatte",     50 },
     { "snes9x",       50 },
     { "pcsx_rearmed", 100 },
-    { "yabasanshiro", 400 },
+    { "yabasanshiro", 500 },
 };
 
 void jw_power_hold_save_init(jw_power_hold_save *s) {
