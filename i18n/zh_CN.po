@@ -2211,3 +2211,6 @@ msgstr "请再次打开 Splore"
 
 msgid "Never"
 msgstr "从不"
+
+msgid "Switch Leaf to %s?\n\nLeaf restarts to apply it."
+msgstr "切换 Leaf 到 %s？\n\nLeaf 将重启以应用。"

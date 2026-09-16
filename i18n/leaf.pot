@@ -2280,6 +2280,10 @@ msgstr ""
 msgid "Switch"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "Switch Leaf to %s?\n\nLeaf restarts to apply it."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Switcher"
 msgstr ""

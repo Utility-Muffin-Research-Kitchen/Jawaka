@@ -335,6 +335,10 @@ typedef struct {
     char               language[16];
     char               languages[8][16];
     int                language_count;
+    /* What the row is showing. Left and Right browse this; only A applies it,
+       behind a confirmation, because applying restarts the launcher and takes
+       the user out of Settings. Empty means "same as `language`". */
+    char               language_pending[16];
     int                ss_requests_today;   /* quota snapshot from validation */
     int                ss_max_requests;     /* quota snapshot from validation; 0 unknown */
     /* Scrape priority editors: permutations of the scrape catalogs as catalog
