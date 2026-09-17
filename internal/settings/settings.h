@@ -51,19 +51,19 @@ typedef enum {
     JW_SETTINGS_HOME = 0,
     JW_SETTINGS_APPEARANCE,
     JW_SETTINGS_COLORS,
-    JW_SETTINGS_LAYOUT,
+    JW_SETTINGS_HOME_SCREEN, /* home layout + what the home tabs show */
     JW_SETTINGS_STATUS_BAR,
     JW_SETTINGS_DISPLAY,
-    JW_SETTINGS_NETWORK,
+    JW_SETTINGS_WIFI,
     JW_SETTINGS_BLUETOOTH,
     JW_SETTINGS_LIGHTING,
     JW_SETTINGS_ACCOUNTS,
-    JW_SETTINGS_SCRAPING,
+    JW_SETTINGS_GAMES,
     JW_SETTINGS_SCRAPE_PRIORITY,   /* artwork or region editor, see scrape_edit_is_region */
     JW_SETTINGS_SCRAPE_QUEUE,      /* live scrape-job queue (native page, not the modal) */
     JW_SETTINGS_SCRAPE_QUEUE_DETAIL, /* one job's result (native page, was cat_detail_screen) */
     JW_SETTINGS_SCRAPE_DOWNLOAD,   /* pick All Systems / a system to scrape missing art */
-    JW_SETTINGS_BEHAVIOR,
+    JW_SETTINGS_SYSTEM,      /* System: language, clock, power, storage */
     JW_SETTINGS_CONTROLS,    /* Controls & Feedback: rumble/haptics */
 #ifdef PLATFORM_MLP1
     /* Guarded rather than merely unreachable elsewhere, so every switch over
@@ -83,12 +83,18 @@ typedef enum {
 
 /* ─── Row indices per sub-page ─────────────────────────────────────────── */
 
-/* Appearance sub-menu */
-#define JW_APPEAR_THEME    0
-#define JW_APPEAR_COLORS   1
-#define JW_APPEAR_LAYOUT   2
-#define JW_APPEAR_STATUSBAR 3
-#define JW_APPEAR_ROW_COUNT 4
+/* Appearance page — how the interface itself looks. The two child pages it
+   keeps (Colors, Status Bar) are lists of their own; everything that fits in a
+   single row lives here directly, so a font or theme change is two levels deep
+   rather than three. Home-screen structure is the Home Screen page instead. */
+#define JW_APPEAR_SCHEME     0   /* curated color scheme cycler */
+#define JW_APPEAR_COLORS     1   /* -> the per-role color editor */
+#define JW_APPEAR_THEME      2   /* user theme from <sdcard>/Themes, or None */
+#define JW_APPEAR_FONT       3
+#define JW_APPEAR_FONT_SIZE  4
+#define JW_APPEAR_LIST_STYLE 5
+#define JW_APPEAR_STATUSBAR  6   /* -> the status-bar visibility page */
+#define JW_APPEAR_ROW_COUNT  7
 
 /* Colors page — ordered by visual impact (most visible first). */
 #define JW_COLOR_ACCENT      0
@@ -100,19 +106,18 @@ typedef enum {
 #define JW_COLOR_BTN_BG     6
 #define JW_COLOR_ROW_COUNT   7
 
-/* Layout page */
-#define JW_LAYOUT_HOME_STYLE   0   /* Tabs / Coverflow / Grid home layout */
-#define JW_LAYOUT_THEME        1   /* user theme from <sdcard>/Themes, or None */
-#define JW_LAYOUT_SYSTEM_ICONS 2   /* which built-in system-icon pack to draw; the
-                                      fallback whenever a user theme has no icon */
-#define JW_LAYOUT_GRID_SIZE    3   /* Grid density: Automatic follows the theme */
-#define JW_LAYOUT_PILL_SHAPE   4
-#define JW_LAYOUT_FONT_FAMILY  5
-#define JW_LAYOUT_FONT_SIZE    6
-#define JW_LAYOUT_TAB_SWITCH   7
-#define JW_LAYOUT_STARTUP_TAB  8   /* which tab the launcher opens on */
-#define JW_LAYOUT_HOME_TABS    9   /* opens the Home Tabs hide/reorder editor */
-#define JW_LAYOUT_ROW_COUNT    10
+/* Home Screen page — what the launcher's home screen is and what it shows.
+   Split out of the old Layout page, whose other half (theme, font, row style)
+   is now the Appearance page: those two never belonged in one list, and
+   together they were the only Settings page long enough to scroll. */
+#define JW_HOMESCREEN_LAYOUT       0   /* Tabs / Coverflow / Grid home layout */
+#define JW_HOMESCREEN_GRID_SIZE    1   /* Grid density: Automatic follows the theme */
+#define JW_HOMESCREEN_SYSTEM_ICONS 2   /* which built-in system-icon pack to draw; the
+                                          fallback whenever a user theme has no icon */
+#define JW_HOMESCREEN_TAB_SWITCH   3
+#define JW_HOMESCREEN_STARTUP_TAB  4   /* which tab the launcher opens on */
+#define JW_HOMESCREEN_TABS         5   /* opens the Home Tabs hide/reorder editor */
+#define JW_HOMESCREEN_ROW_COUNT    6
 
 /* Grid density picker. 0 follows the theme (theme.json "grid" recommendation,
    else the stylesheet); the rest pin a density. Persisted as an index. */
@@ -137,6 +142,14 @@ typedef enum {
 #define JW_DISPLAY_TEST_SOUND   6
 #define JW_DISPLAY_ROW_COUNT    7
 
+/* Wi-Fi page. Bluetooth is its own top-level category rather than a row here:
+   the two radios are what people look for by name, and a Bluetooth row sitting
+   between the Wi-Fi toggle and the list of scanned Wi-Fi networks read as part
+   of the Wi-Fi page rather than a way out of it. */
+#define JW_WIFI_ROW_RADIO  0
+#define JW_WIFI_ROW_ADB    1   /* ADB over this connection */
+#define JW_WIFI_FIXED_ROWS 2
+
 /* Bluetooth page */
 #define JW_BLUETOOTH_ROW_POWER 0
 #define JW_BLUETOOTH_ROW_NAME  1
@@ -156,26 +169,36 @@ typedef enum {
 #define JW_ACCOUNTS_RETROACHIEVEMENTS 1
 #define JW_ACCOUNTS_ROW_COUNT         2
 
-/* Scraping page */
-#define JW_SCRAPING_DOWNLOAD  0
-#define JW_SCRAPING_QUEUE     1
-#define JW_SCRAPING_ARTWORK   2
-#define JW_SCRAPING_REGION    3
-#define JW_SCRAPING_ROW_COUNT 4
+/* Games page (was Game Art). Artwork first because scraping is what the page is
+   opened for; the two settings that describe how games run, and the accounts
+   that serve games, follow. */
+#define JW_GAMES_SCRAPE_DOWNLOAD 0
+#define JW_GAMES_SCRAPE_QUEUE    1
+#define JW_GAMES_ARTWORK         2
+#define JW_GAMES_REGION          3
+#define JW_GAMES_PERFORMANCE     4   /* was General > Game Performance */
+#define JW_GAMES_RESET_RETROARCH 5   /* was General > Reset RetroArch Config */
+#define JW_GAMES_ACCOUNTS        6   /* -> Accounts, was a top-level category */
+#define JW_GAMES_ROW_COUNT       7
 /* Capacity for the priority editors (catalogs are 10 entries each today). */
 #define JW_SCRAPE_PRIO_SLOTS  16
 
-/* Behavior page */
-#define JW_BEHAVIOR_AUTO_SLEEP  0
-#define JW_BEHAVIOR_PERFORMANCE 1
-#define JW_BEHAVIOR_TIMEZONE    2   /* opens the Time Zone picker screen */
-#define JW_BEHAVIOR_BOOT_SPLASH 3
-#define JW_BEHAVIOR_RESET_RETROARCH   4   /* maintenance, moved from Library */
-#define JW_BEHAVIOR_UNMOUNT_SECONDARY 5
-/* Appended, never inserted: this row is hidden when no translation is installed,
-   and appending means the other rows keep their indices in both states. */
-#define JW_BEHAVIOR_LANGUAGE    6
-#define JW_BEHAVIOR_ROW_COUNT   7
+/* System page (was General). Two of its rows are conditional -- Language exists
+   only when a translation is installed, Services only when one is present -- so
+   the page is described by what each row IS rather than by a fixed index, and
+   jw_settings_system_rows() builds the visible order. That keeps the rows in a
+   sensible reading order instead of forcing every optional row to the bottom to
+   protect the indices of the rows above it. */
+typedef enum {
+    JW_SYSTEM_ROW_LANGUAGE = 0,   /* conditional: a translation is installed */
+    JW_SYSTEM_ROW_TIMEZONE,       /* opens the Time Zone picker screen */
+    JW_SYSTEM_ROW_AUTO_SLEEP,
+    JW_SYSTEM_ROW_BOOT_SPLASH,
+    JW_SYSTEM_ROW_SD_CARDS,
+    JW_SYSTEM_ROW_SERVICES,       /* conditional: -> Services, was a category */
+    JW_SYSTEM_ROW_KIND_COUNT
+} jw_system_row_kind;
+#define JW_SYSTEM_ROW_MAX JW_SYSTEM_ROW_KIND_COUNT
 
 /* Controls & Feedback page.
    On MLP1 the four capture rows move to the In-game Shortcuts child page, so
@@ -246,14 +269,14 @@ typedef struct {
     cat_list_state     home_list;
     cat_list_state     appearance_list;
     cat_list_state     colors_list;
-    cat_list_state     layout_list;
+    cat_list_state     home_screen_list;
     cat_list_state     statusbar_list;
     cat_list_state     display_list;
-    cat_list_state     network_list;
+    cat_list_state     wifi_list;
     cat_list_state     bluetooth_list;
     cat_list_state     lighting_list;
     cat_list_state     accounts_list;
-    cat_list_state     scraping_list;
+    cat_list_state     games_list;
     cat_list_state     scrape_edit_list;
     cat_list_state     scrape_queue_list;   /* cursor/scroll for the live queue page */
     int                scrape_queue_filter; /* 0=ALL 1=BUSY 2=DONE 3=FAIL */
@@ -270,7 +293,7 @@ typedef struct {
     int                scrape_download_total_games;
     bool               scrape_missing_have_cache;
     bool               scrape_download_replace;      /* Y toggles missing-only vs replace-all */
-    cat_list_state     behavior_list;
+    cat_list_state     system_list;
     cat_list_state     controls_list;    /* Controls & Feedback page */
 #ifdef PLATFORM_MLP1
     cat_list_state     shortcuts_list;   /* In-game Shortcuts page */
@@ -391,7 +414,7 @@ typedef struct {
     int                  services_count;
     char                 services_msg[128];  /* transient action feedback */
     unsigned             services_next_poll_ms;
-    int                game_perf_profile;   /* Settings > Behavior game profile */
+    int                game_perf_profile;   /* Settings > Games game profile */
     bool               performance_supported;
     int                brightness_percent;
     int                volume_percent;

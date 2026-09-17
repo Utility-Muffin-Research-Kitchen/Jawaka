@@ -257,7 +257,7 @@ static const char *const kGridDensityLabels[JW_GRID_DENSITY_COUNT] = {
 static const int kGridDensityCols[JW_GRID_DENSITY_COUNT] = { 0, 2, 3, 4 };
 static const int kGridDensityRows[JW_GRID_DENSITY_COUNT] = { 0, 2, 2, 3 };
 
-/* Curated time-zone list for Settings > Behavior > Time Zone. Each entry maps a
+/* Curated time-zone list for Settings > System > Time Zone. Each entry maps a
    friendly label to an IANA zone id, exported as the TZ environment variable. The
    clock uses localtime(), which honors TZ, so picking a zone corrects the clock
    instantly and flows to launched apps. zoneinfo for every entry ships in the
@@ -352,7 +352,7 @@ static int jw__load_setting_values(const char *db_path,
     return 0;
 }
 
-/* Startup-tab options for Settings > Behavior. Order and index MIRROR the
+/* Startup-tab options for Settings > Home Screen. Order and index MIRROR the
    launcher's jw_tab enum so the persisted "startup_tab_index" maps 1:1 to the
    tab the launcher opens on boot. */
 static const char *kStartupTabLabels[] = {
@@ -443,7 +443,7 @@ static void jw__home_tab_order_move(int *order, int from, int to) {
     order[to] = v;
 }
 
-/* Auto-sleep options for Settings > Behavior. The label index is persisted as
+/* Auto-sleep options for Settings > System. The label index is persisted as
    "auto_sleep_seconds" (the value, not the index) so the daemon reads seconds
    directly with no shared table. */
 /* "Never" rather than "Off": the row sets a delay, so the first choice is a
@@ -513,30 +513,39 @@ static int jw__game_perf_index_for_profile(jw_platform_perf_profile profile) {
 }
 
 /* Top-level Settings categories, grouped by theme: look & feel, connectivity,
-   games & content, system. The A handler maps each row to its screen by row
-   index (a positional `idx == N` chain), so this label order and those checks
-   must stay in lockstep — reordering here means renumbering there. */
-static const char *kHomeCategoryLabels[] = {
-    "Appearance",
-    "Display & Sound",
-    "Lighting",
-    "Network",
-    "Bluetooth",
-    "Game Art",
-    "Accounts",
-    "General",
-    "Controls & Feedback",
-    "Services",
+   games & content, system. Every category here is a screen, and the enum below
+   names which — so the A handler is a table lookup rather than a positional
+   `idx == N` chain, and this list can be reordered without renumbering
+   anything. The categories that used to sit here and no longer do (Accounts,
+   Services) are a row inside the category they belong to. Wi-Fi and Bluetooth
+   stay separate and are named for the radios themselves, which is what people
+   look for: folding Bluetooth into a "Network" page put it between the Wi-Fi
+   toggle and the list of scanned Wi-Fi networks, where it read as part of that
+   page rather than a way out of it. That costs one row of scrolling here at the
+   largest font size only, which is the cheaper of the two. */
+typedef struct {
+    const char        *label;
+    jw_settings_screen screen;
+} jw_home_category;
+
+static const jw_home_category kHomeCategories[] = {
+    { "Appearance",          JW_SETTINGS_APPEARANCE  },
+    { "Home Screen",         JW_SETTINGS_HOME_SCREEN },
+    { "Display & Sound",     JW_SETTINGS_DISPLAY     },
+    { "Lighting",            JW_SETTINGS_LIGHTING    },
+    { "Wi-Fi",               JW_SETTINGS_WIFI        },
+    { "Bluetooth",           JW_SETTINGS_BLUETOOTH   },
+    { "Games",               JW_SETTINGS_GAMES       },
+    { "Controls & Feedback", JW_SETTINGS_CONTROLS    },
+    { "System",              JW_SETTINGS_SYSTEM      },
 };
 /* System Update and About are not listed here — they live in the System menu
    (the Menu-button popup), hosted there via jw_settings_ui_open(). */
-#define JW_SETTINGS_CATEGORY_COUNT 10
+#define JW_SETTINGS_CATEGORY_COUNT \
+    ((int)(sizeof(kHomeCategories) / sizeof(kHomeCategories[0])))
 
 /* Visible rows in the Network page's scanned-network list (scrolls beyond). */
 #define JW_WIFI_LIST_ROWS 6
-#define JW_NETWORK_ROW_WIFI 0
-#define JW_NETWORK_ROW_ADB  1
-#define JW_NETWORK_FIXED_ROWS 2
 /* Re-trigger a background scan at most this often while the page is open. */
 #define JW_WIFI_SCAN_INTERVAL_MS 6000
 #define JW_BT_POLL_INTERVAL_MS 2000
@@ -1349,6 +1358,11 @@ static void jw__persist_color(const jw_settings_ui *ui, const char *key, ap_colo
 /* Refresh the CTL-1 service-list snapshot. Returns the number of services
  * known to the daemon (0 = none, -1 = the query failed / daemon has no
  * supervisor). The Services screen is offered only when this is > 0. */
+/* Defined with the System page renderer. The count is dynamic because the
+   Language and Services rows each exist only when there is something behind
+   them. */
+static int jw__system_row_count(const jw_settings_ui *ui);
+
 static int jw__refresh_services(jw_settings_ui *ui) {
     if (!ui || !ui->socket_path[0]) {
         return -1;
@@ -1369,16 +1383,16 @@ static int jw__refresh_services(jw_settings_ui *ui) {
         ui->services_list.cursor = 0;
         ui->services_list.scroll_offset = 0;
         if (ui->screen == JW_SETTINGS_SERVICES) {
-            ui->screen = JW_SETTINGS_HOME;
-            /* The disappearing Services row was the final Home category.
-             * Clamp both list coordinates before the next render/input pass
-             * sees the now-shorter list. */
-            int home_count = JW_SETTINGS_CATEGORY_COUNT - 1;
-            if (ui->home_list.cursor >= home_count) {
-                ui->home_list.cursor = home_count - 1;
+            /* Fall back to the page Services hangs off. Its own Services row has
+             * just disappeared with it, so clamp both list coordinates before
+             * the next render/input pass sees the now-shorter list. */
+            ui->screen = JW_SETTINGS_SYSTEM;
+            int rows = jw__system_row_count(ui);
+            if (ui->system_list.cursor >= rows) {
+                ui->system_list.cursor = rows > 0 ? rows - 1 : 0;
             }
-            if (ui->home_list.scroll_offset > ui->home_list.cursor) {
-                ui->home_list.scroll_offset = ui->home_list.cursor;
+            if (ui->system_list.scroll_offset > ui->system_list.cursor) {
+                ui->system_list.scroll_offset = ui->system_list.cursor;
             }
         }
     } else if (ui->services_list.cursor >= visible) {
@@ -1398,16 +1412,11 @@ static bool jw__services_available(jw_settings_ui *ui) {
     return jw__refresh_services(ui) > 0;
 }
 
-/* Defined with the General page renderer. The count is dynamic because the
-   Language row exists only when a translation is installed. */
-static int jw__behavior_rows(const jw_settings_ui *ui);
-
 static int jw__home_category_count(const jw_settings_ui *ui) {
-    /* Services is the final category and is genuinely absent on a clean
-       system, per SVC-1. The snapshot is refreshed whenever Settings is
-       entered and when leaving the Services screen. */
-    return JW_SETTINGS_CATEGORY_COUNT -
-           ((!ui || ui->services_count <= 0) ? 1 : 0);
+    /* Every top-level category is always present now: Services is a row on the
+       System page, and SVC-1's hiding rule applies to that row instead. */
+    (void)ui;
+    return JW_SETTINGS_CATEGORY_COUNT;
 }
 
 bool jw_settings_ui_wants_services_poll(const jw_settings_ui *ui) {
@@ -1456,14 +1465,14 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     cat_list_state_init(&ui->home_list,       JW_SETTINGS_CATEGORY_COUNT);
     cat_list_state_init(&ui->appearance_list,  JW_APPEAR_ROW_COUNT);
     cat_list_state_init(&ui->colors_list,      JW_COLOR_ROW_COUNT);
-    cat_list_state_init(&ui->layout_list,      JW_LAYOUT_ROW_COUNT);
+    cat_list_state_init(&ui->home_screen_list,      JW_HOMESCREEN_ROW_COUNT);
     cat_list_state_init(&ui->statusbar_list,   JW_STATUSBAR_ROW_COUNT);
     cat_list_state_init(&ui->display_list,     JW_SETTINGS_DISPLAY_COUNT);
-    cat_list_state_init(&ui->network_list,     JW_WIFI_LIST_ROWS);
+    cat_list_state_init(&ui->wifi_list,     JW_WIFI_LIST_ROWS);
     cat_list_state_init(&ui->bluetooth_list,   JW_BLUETOOTH_LIST_ROWS);
     cat_list_state_init(&ui->lighting_list,    JW_LIGHTING_ROW_COUNT);
     cat_list_state_init(&ui->accounts_list,    JW_ACCOUNTS_ROW_COUNT);
-    cat_list_state_init(&ui->scraping_list,    JW_SCRAPING_ROW_COUNT);
+    cat_list_state_init(&ui->games_list,    JW_GAMES_ROW_COUNT);
     cat_list_state_init(&ui->scrape_edit_list, 8);
     cat_list_state_init(&ui->scrape_download_list, 8);
     /* en is always offered; the rest are whatever tables are installed. Resolved
@@ -1481,7 +1490,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     }
     snprintf(ui->language, sizeof(ui->language), "%s", jw_i18n_language());
 
-    cat_list_state_init(&ui->behavior_list,    jw__behavior_rows(ui));
+    cat_list_state_init(&ui->system_list,    jw__system_row_count(ui));
     cat_list_state_init(&ui->controls_list,     JW_CONTROLS_ROW_COUNT);
 #ifdef PLATFORM_MLP1
     cat_list_state_init(&ui->shortcuts_list,    JW_SHORTCUT_ROW_COUNT);
@@ -2452,7 +2461,7 @@ static void jw__draw_home_item(int idx, int ix, int iy, int iw, int ih,
     ap_color tc = cat_draw_color_lerp(theme->text,
                                        theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
-    cat_draw_text_ellipsized(body, T(kHomeCategoryLabels[idx]), ix + cat_scale(12), ty,
+    cat_draw_text_ellipsized(body, T(kHomeCategories[idx].label), ix + cat_scale(12), ty,
                              tc, iw - cat_scale(24));
 }
 
@@ -2482,10 +2491,29 @@ static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w,
     const char *scheme_name =
         (ui->color_scheme_index >= 0 && ui->color_scheme_index < JW_COLOR_SCHEME_COUNT)
         ? kColorSchemes[ui->color_scheme_index].name : "Custom";
-    jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_THEME,
+    jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_SCHEME,
                         "Color Scheme", scheme_name, true);
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_COLORS, "Colors");
-    jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_LAYOUT, "Layout");
+    /* Theme sits above the built-in styling below it so the fallback
+       relationship reads top-down: a user theme's art wins where it exists, and
+       the rest of this page fills in the interface around it. */
+    bool themed = ui->user_theme_index >= 0 &&
+                  ui->user_theme_index < ui->user_themes.count;
+    jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_THEME, "Theme",
+                        themed ? ui->user_themes.items[ui->user_theme_index].name
+                               : "None",
+                        true);
+    /* The themed families have no CJK glyphs, so a CJK language pins the face.
+       Showing that in the row beats an option that looks available and is not. */
+    bool font_locked = jw_i18n_language_is_cjk(jw_i18n_language());
+    jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_FONT, "Font",
+                        font_locked ? "Source Han Sans"
+                                    : kJawakaFontFamilyLabels[ui->font_family_index],
+                        !font_locked);
+    jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_FONT_SIZE,
+                        "Font Size", kFontSizeLabels[ui->font_size_index], true);
+    jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_LIST_STYLE,
+                        "List Style", kPillShapeLabels[ui->pill_shape_index], true);
     jw__render_nav_row(&ui->appearance_list, x, ly, w, JW_APPEAR_STATUSBAR, "Status Bar");
 }
 
@@ -2517,28 +2545,39 @@ static void jw__render_colors(const jw_settings_ui *ui, int x, int y, int w, int
     }
 }
 
-static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("Layout", x, y, w);
+/* The value a row shows when its setting does not apply right now (an em dash).
+   Held in a variable rather than written at the call site on purpose: a literal
+   there would be swept into the translation table, and a punctuation glyph is
+   not a string anyone should be asked to translate. */
+static const char *const kValueNotApplicable = "\xe2\x80\x94";
+
+static void jw__render_home_screen(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Home Screen", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->layout_list, x, ly, w, y + h - ly,
-                            JW_LAYOUT_ROW_COUNT, item_h);
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_HOME_STYLE,
+    jw__begin_settings_rows(&ui->home_screen_list, x, ly, w, y + h - ly,
+                            JW_HOMESCREEN_ROW_COUNT, item_h);
+    jw__render_list_row(&ui->home_screen_list, x, ly, w, JW_HOMESCREEN_LAYOUT,
                         "Home Layout",
                         ui->layout_mode == 2 ? "Grid"
                         : ui->layout_mode == 1 ? "Coverflow" : "Tabs", true);
-    /* Theme sits above System Icons so the fallback relationship reads
-       top-down: the theme's art wins where it exists, System Icons fills the
-       rest. That is also why the pack row says so rather than being greyed --
+    /* Off Grid the row is dimmed AND its value reads as a dash: a greyed row
+       still showing "Automatic" looks like a density that is in force, when the
+       home layout it describes is not even drawn. The stored choice is kept and
+       comes back the moment Home Layout returns to Grid. */
+    bool grid_home = (ui->layout_mode == 2);
+    int dens = (ui->grid_density_index >= 0 && ui->grid_density_index < JW_GRID_DENSITY_COUNT)
+               ? ui->grid_density_index : 0;
+    jw__render_list_row(&ui->home_screen_list, x, ly, w, JW_HOMESCREEN_GRID_SIZE,
+                        "Grid Size",
+                        grid_home ? kGridDensityLabels[dens] : kValueNotApplicable,
+                        grid_home);
+    /* A user theme's own art wins where it exists and System Icons fills the
+       rest, which is why the pack row says so rather than being greyed --
        coverage is dynamic (a new Roms folder changes it) and deciding it would
        put file probes on the render path. */
     bool themed = ui->user_theme_index >= 0 &&
                   ui->user_theme_index < ui->user_themes.count;
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_THEME,
-                        "Theme",
-                        themed ? ui->user_themes.items[ui->user_theme_index].name
-                               : "None",
-                        true);
     int pack = (ui->system_icon_pack_index >= 0 &&
                 ui->system_icon_pack_index < JW_SYSTEM_ICON_PACK_COUNT)
                ? ui->system_icon_pack_index : JW_SYSTEM_ICON_PACK_AUTO;
@@ -2548,32 +2587,16 @@ static void jw__render_layout(const jw_settings_ui *ui, int x, int y, int w, int
                  T(kSystemIconPackLabels[pack]));
     else
         snprintf(pack_val, sizeof(pack_val), "%s", T(kSystemIconPackLabels[pack]));
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_SYSTEM_ICONS,
+    jw__render_list_row(&ui->home_screen_list, x, ly, w, JW_HOMESCREEN_SYSTEM_ICONS,
                         "System Icons", pack_val, true);
-    int dens = (ui->grid_density_index >= 0 && ui->grid_density_index < JW_GRID_DENSITY_COUNT)
-               ? ui->grid_density_index : 0;
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_GRID_SIZE,
-                        "Grid Size", kGridDensityLabels[dens], ui->layout_mode == 2);
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_PILL_SHAPE,
-                        "List Style", kPillShapeLabels[ui->pill_shape_index], true);
-    /* The themed families have no CJK glyphs, so a CJK language pins the face.
-       Showing that in the row beats an option that looks available and is not. */
-    bool font_locked = jw_i18n_language_is_cjk(jw_i18n_language());
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_FAMILY,
-                        "Font",
-                        font_locked ? "Source Han Sans"
-                                    : kJawakaFontFamilyLabels[ui->font_family_index],
-                        !font_locked);
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_FONT_SIZE,
-                        "Font Size", kFontSizeLabels[ui->font_size_index], true);
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_TAB_SWITCH,
+    jw__render_list_row(&ui->home_screen_list, x, ly, w, JW_HOMESCREEN_TAB_SWITCH,
                         "Tab Switching", kTabSwitchLabels[ui->tab_glide ? 1 : 0], true);
 
     int tab = (ui->startup_tab_index >= 0 && ui->startup_tab_index < JW_STARTUP_TAB_COUNT)
               ? ui->startup_tab_index : JW_STARTUP_TAB_DEFAULT;
-    jw__render_list_row(&ui->layout_list, x, ly, w, JW_LAYOUT_STARTUP_TAB,
+    jw__render_list_row(&ui->home_screen_list, x, ly, w, JW_HOMESCREEN_STARTUP_TAB,
                         "Startup Tab", kStartupTabLabels[tab], true);
-    jw__render_nav_row(&ui->layout_list, x, ly, w, JW_LAYOUT_HOME_TABS,
+    jw__render_nav_row(&ui->home_screen_list, x, ly, w, JW_HOMESCREEN_TABS,
                        "Home Tabs");
 }
 
@@ -2822,28 +2845,28 @@ static void jw__refresh_wifi(jw_settings_ui *ui) {
 }
 
 bool jw_settings_ui_wants_wifi_poll(const jw_settings_ui *ui) {
-    return ui && ui->open && ui->screen == JW_SETTINGS_NETWORK;
+    return ui && ui->open && ui->screen == JW_SETTINGS_WIFI;
 }
 
 /* Re-read the cached scan results into the ui (deduped/sorted by the module). */
 static void jw__refresh_wifi_scan(jw_settings_ui *ui) {
     if (!jw_wifi_available()) {
         ui->wifi_network_count = 0;
-        if (ui->network_list.cursor >= JW_NETWORK_FIXED_ROWS) {
-            ui->network_list.cursor = JW_NETWORK_ROW_WIFI;
+        if (ui->wifi_list.cursor >= JW_WIFI_FIXED_ROWS) {
+            ui->wifi_list.cursor = JW_WIFI_ROW_RADIO;
         }
         return;
     }
     int n = jw_wifi_scan_results(ui->wifi.ssid, ui->wifi_networks,
                                  JW_WIFI_MAX_NETWORKS);
     ui->wifi_network_count = (n > 0) ? n : 0;
-    int row_count = JW_NETWORK_FIXED_ROWS +
+    int row_count = JW_WIFI_FIXED_ROWS +
                     (ui->wifi_radio_on ? ui->wifi_network_count : 0);
-    if (row_count < JW_NETWORK_FIXED_ROWS) {
-        row_count = JW_NETWORK_FIXED_ROWS;
+    if (row_count < JW_WIFI_FIXED_ROWS) {
+        row_count = JW_WIFI_FIXED_ROWS;
     }
-    if (ui->network_list.cursor >= row_count) {
-        ui->network_list.cursor = row_count - 1;
+    if (ui->wifi_list.cursor >= row_count) {
+        ui->wifi_list.cursor = row_count - 1;
     }
 }
 
@@ -2913,8 +2936,8 @@ void jw_settings_ui_refresh_wifi(jw_settings_ui *ui) {
         /* Radio off — nothing to poll or scan; clear stale state. */
         memset(&ui->wifi, 0, sizeof(ui->wifi));
         ui->wifi_network_count = 0;
-        if (ui->network_list.cursor >= JW_NETWORK_FIXED_ROWS) {
-            ui->network_list.cursor = JW_NETWORK_ROW_WIFI;
+        if (ui->wifi_list.cursor >= JW_WIFI_FIXED_ROWS) {
+            ui->wifi_list.cursor = JW_WIFI_ROW_RADIO;
         }
         ui->wifi_next_poll_ms = now + 2000;
         return;
@@ -2990,7 +3013,7 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
                                             theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
-    if (idx == JW_NETWORK_ROW_WIFI) {
+    if (idx == JW_WIFI_ROW_RADIO) {
         /* The on/off switch row. The switch shows the state, so the word is the
            state too ("On"/"Off"), not the old "Turn On" action verb: a verb
            beside a switch contradicts it. What A did is narrated by the message
@@ -3007,7 +3030,7 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
         return;
     }
 
-    if (idx == JW_NETWORK_ROW_ADB) {
+    if (idx == JW_WIFI_ROW_ADB) {
         /* Plain on and off get the switch. "Repair" (the setting is on but ADB
            is not actually running) is the one state that asks for an action, so
            it stays a word: a switch would say "on" about something that is not.
@@ -3038,7 +3061,7 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
         return;
     }
 
-    const jw_wifi_network_t *net = &ctx->nets[idx - JW_NETWORK_FIXED_ROWS];
+    const jw_wifi_network_t *net = &ctx->nets[idx - JW_WIFI_FIXED_ROWS];
 
     /* Left: SSID, with a leading "* " on the connected network. */
     char label[80];
@@ -3061,7 +3084,7 @@ static void jw__draw_wifi_item(int idx, int ix, int iy, int iw, int ih,
 static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, int h) {
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
-    jw__draw_header("Network", x, y, w);
+    jw__draw_header("Wi-Fi", x, y, w);
     int item_h = TTF_FontHeight(body) + cat_scale(12);
 
     const jw_wifi_status_t *wifi = &ui->wifi;
@@ -3129,7 +3152,7 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     }
 
     /* ── List: fixed controls first, then scanned networks ── */
-    int count = JW_NETWORK_FIXED_ROWS +
+    int count = JW_WIFI_FIXED_ROWS +
                 ((wifi_available && ui->wifi_radio_on) ? ui->wifi_network_count : 0);
     jw__wifi_list_ctx ctx = {
         ui->wifi_networks,
@@ -3142,13 +3165,13 @@ static void jw__render_network(const jw_settings_ui *ui, int x, int y, int w, in
     cat_box lb = { content.x, dy, content.w, (content.y + content.h) - dy, 0, 0, 0, 0 };
     int vis = 0;
     SDL_Rect lr = cat_box_fit_rows(&lb, item_h, count, &vis, &item_h);
-    ((cat_list_state *)&ui->network_list)->visible_rows = vis;
+    ((cat_list_state *)&ui->wifi_list)->visible_rows = vis;
     jw__draw_settings_list(lr.x, lr.y, lr.w, lr.h, count,
-                           &ui->network_list, item_h,
+                           &ui->wifi_list, item_h,
                            jw__draw_wifi_item, &ctx);
     if (wifi_available && ui->wifi_radio_on && ui->wifi_network_count == 0) {
         cat_draw_text(small, T("Scanning…"), x + cat_scale(12),
-                      dy + item_h * JW_NETWORK_FIXED_ROWS, theme->hint);
+                      dy + item_h * JW_WIFI_FIXED_ROWS, theme->hint);
     }
 }
 
@@ -4157,12 +4180,12 @@ static void jw__render_scrape_queue(const jw_settings_ui *ui,
     if (jw__scrape_queue_active(q)) cat_request_frame();
 }
 
-static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("Game Art", x, y, w);
+static void jw__render_games(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("Games", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->scraping_list, x, ly, w, y + h - ly,
-                            JW_SCRAPING_ROW_COUNT, item_h);
+    jw__begin_settings_rows(&ui->games_list, x, ly, w, y + h - ly,
+                            JW_GAMES_ROW_COUNT, item_h);
 
     char download_value[64];
     if (ui->scrape_missing_have_cache) {
@@ -4171,13 +4194,13 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
     } else {
         download_value[0] = '\0';
     }
-    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_DOWNLOAD,
+    jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_SCRAPE_DOWNLOAD,
                         "Scrape Artwork", download_value, false);
 
     char queue_value[64];
     jw__scrape_queue_settings_value((jw_settings_ui *)ui, queue_value,
                                     sizeof(queue_value));
-    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_QUEUE,
+    jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_SCRAPE_QUEUE,
                         "Scrape Queue", queue_value, false);
 
     char artwork_value[64];
@@ -4187,7 +4210,7 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
     } else {
         snprintf(artwork_value, sizeof(artwork_value), "None selected");
     }
-    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_ARTWORK,
+    jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_ARTWORK,
                         "Artwork Priority", artwork_value, false);
 
     char region_value[64];
@@ -4197,8 +4220,23 @@ static void jw__render_scraping(const jw_settings_ui *ui, int x, int y, int w, i
     } else {
         snprintf(region_value, sizeof(region_value), "None selected");
     }
-    jw__render_list_row(&ui->scraping_list, x, ly, w, JW_SCRAPING_REGION,
+    jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_REGION,
                         "Region Priority", region_value, false);
+
+    int perf_idx = (ui->game_perf_profile >= 0 &&
+                    ui->game_perf_profile < JW_GAME_PERF_PROFILE_COUNT)
+                 ? ui->game_perf_profile
+                 : JW_GAME_PERF_PROFILE_DEFAULT;
+    const char *perf = ui->performance_supported
+                     ? jw_platform_perf_profile_label(kGamePerfProfiles[perf_idx])
+                     : "Unavailable";
+    jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_PERFORMANCE,
+                        "Game Performance", perf, ui->performance_supported);
+
+    jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_RESET_RETROARCH,
+                        "Reset RetroArch Config", "Defaults", true);
+
+    jw__render_nav_row(&ui->games_list, x, ly, w, JW_GAMES_ACCOUNTS, "Accounts");
 }
 
 /* Account row: like jw__render_list_row, but the status value marquees while the
@@ -5065,60 +5103,87 @@ static bool jw__confirm_language(const char *code) {
     return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
-/* The Language row exists only when there is something to switch to. A picker
-   offering one option reads as broken, and hiding it means a translator makes
-   the row appear simply by dropping a .tsv on the card. */
-static int jw__behavior_rows(const jw_settings_ui *ui) {
-    return ui->language_count > 1 ? JW_BEHAVIOR_ROW_COUNT
-                                  : JW_BEHAVIOR_ROW_COUNT - 1;
+/* The visible System rows, in display order. Two are conditional: the Language
+   row exists only when there is something to switch to (a picker offering one
+   option reads as broken, and hiding it means a translator makes the row appear
+   simply by dropping a .tsv on the card), and the Services row only when a
+   service is installed. Both render and input walk this same map, so a row is
+   described by what it IS and no index shifts when one disappears. */
+static int jw__system_rows(const jw_settings_ui *ui, jw_system_row_kind *out) {
+    int n = 0;
+    if (ui->language_count > 1) out[n++] = JW_SYSTEM_ROW_LANGUAGE;
+    out[n++] = JW_SYSTEM_ROW_TIMEZONE;
+    out[n++] = JW_SYSTEM_ROW_AUTO_SLEEP;
+    out[n++] = JW_SYSTEM_ROW_BOOT_SPLASH;
+    out[n++] = JW_SYSTEM_ROW_SD_CARDS;
+    if (ui->services_count > 0) out[n++] = JW_SYSTEM_ROW_SERVICES;
+    return n;
 }
 
-static void jw__render_behavior(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("General", x, y, w);
+static int jw__system_row_count(const jw_settings_ui *ui) {
+    jw_system_row_kind rows[JW_SYSTEM_ROW_MAX];
+    return jw__system_rows(ui, rows);
+}
+
+/* Which row the cursor is on, as a kind. Returns JW_SYSTEM_ROW_KIND_COUNT when
+   the cursor is out of range, which no caller then matches. */
+static jw_system_row_kind jw__system_row_at(const jw_settings_ui *ui, int cursor) {
+    jw_system_row_kind rows[JW_SYSTEM_ROW_MAX];
+    int n = jw__system_rows(ui, rows);
+    if (cursor < 0 || cursor >= n) return JW_SYSTEM_ROW_KIND_COUNT;
+    return rows[cursor];
+}
+
+static void jw__render_system(const jw_settings_ui *ui, int x, int y, int w, int h) {
+    jw__draw_header("System", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
-    jw__begin_settings_rows(&ui->behavior_list, x, ly, w, y + h - ly,
-                            jw__behavior_rows(ui), item_h);
+    jw_system_row_kind rows[JW_SYSTEM_ROW_MAX];
+    int count = jw__system_rows(ui, rows);
+    jw__begin_settings_rows(&ui->system_list, x, ly, w, y + h - ly, count, item_h);
 
-    int sleep_idx = (ui->auto_sleep_index >= 0 && ui->auto_sleep_index < JW_AUTO_SLEEP_COUNT)
-                    ? ui->auto_sleep_index : JW_AUTO_SLEEP_DEFAULT;
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_AUTO_SLEEP,
-                        "Auto Sleep", kAutoSleepLabels[sleep_idx], true);
-
-    int perf_idx = (ui->game_perf_profile >= 0 &&
-                    ui->game_perf_profile < JW_GAME_PERF_PROFILE_COUNT)
-                 ? ui->game_perf_profile
-                 : JW_GAME_PERF_PROFILE_DEFAULT;
-    const char *perf = ui->performance_supported
-                     ? jw_platform_perf_profile_label(kGamePerfProfiles[perf_idx])
-                     : "Unavailable";
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_PERFORMANCE,
-                        "Game Performance", perf, ui->performance_supported);
-
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_TIMEZONE,
-                        "Time Zone", jw__timezone_label(ui->timezone), true);
-
-    const char *splash = ui->boot_splash_supported
-                         ? (ui->boot_splash_enabled ? "On" : "Off")
-                         : "Unavailable";
-    if (ui->boot_splash_supported) {
-        jw__render_toggle_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
-                              "Boot Splash", splash);
-    } else {
-        jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_BOOT_SPLASH,
-                            "Boot Splash", splash, false);
-    }
-
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_RESET_RETROARCH,
-                        "Reset RetroArch Config", "Defaults", true);
-    jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_UNMOUNT_SECONDARY,
-                        "SD Cards",
-                        ui->secondary_sd_status[0] ? ui->secondary_sd_status : "Unavailable",
-                        true);
-
-    if (ui->language_count > 1) {
-        jw__render_list_row(&ui->behavior_list, x, ly, w, JW_BEHAVIOR_LANGUAGE,
-                            "Language", jw__language_label(jw__language_pending(ui)), true);
+    for (int row = 0; row < count; row++) {
+        switch (rows[row]) {
+        case JW_SYSTEM_ROW_LANGUAGE:
+            jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                "Language", jw__language_label(jw__language_pending(ui)),
+                                true);
+            break;
+        case JW_SYSTEM_ROW_TIMEZONE:
+            jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                "Time Zone", jw__timezone_label(ui->timezone), true);
+            break;
+        case JW_SYSTEM_ROW_AUTO_SLEEP: {
+            int idx = (ui->auto_sleep_index >= 0 && ui->auto_sleep_index < JW_AUTO_SLEEP_COUNT)
+                      ? ui->auto_sleep_index : JW_AUTO_SLEEP_DEFAULT;
+            jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                "Auto Sleep", kAutoSleepLabels[idx], true);
+            break;
+        }
+        case JW_SYSTEM_ROW_BOOT_SPLASH: {
+            const char *splash = ui->boot_splash_supported
+                                 ? (ui->boot_splash_enabled ? "On" : "Off")
+                                 : "Unavailable";
+            if (ui->boot_splash_supported) {
+                jw__render_toggle_row(&ui->system_list, x, ly, w, row,
+                                      "Boot Splash", splash);
+            } else {
+                jw__render_list_row(&ui->system_list, x, ly, w, row,
+                                    "Boot Splash", splash, false);
+            }
+            break;
+        }
+        case JW_SYSTEM_ROW_SD_CARDS:
+            jw__render_list_row(&ui->system_list, x, ly, w, row, "SD Cards",
+                                ui->secondary_sd_status[0] ? ui->secondary_sd_status
+                                                           : "Unavailable",
+                                true);
+            break;
+        case JW_SYSTEM_ROW_SERVICES:
+            jw__render_nav_row(&ui->system_list, x, ly, w, row, "Services");
+            break;
+        case JW_SYSTEM_ROW_KIND_COUNT: break;
+        }
     }
 }
 
@@ -5690,19 +5755,19 @@ void jw_settings_ui_render(const jw_settings_ui *ui,
         case JW_SETTINGS_HOME:       jw__render_home(ui, x, y, w, h);       break;
         case JW_SETTINGS_APPEARANCE: jw__render_appearance(ui, x, y, w, h); break;
         case JW_SETTINGS_COLORS:     jw__render_colors(ui, x, y, w, h);     break;
-        case JW_SETTINGS_LAYOUT:     jw__render_layout(ui, x, y, w, h);     break;
+        case JW_SETTINGS_HOME_SCREEN: jw__render_home_screen(ui, x, y, w, h);     break;
         case JW_SETTINGS_STATUS_BAR: jw__render_statusbar(ui, x, y, w, h);  break;
         case JW_SETTINGS_DISPLAY:    jw__render_display(ui, x, y, w, h);    break;
-        case JW_SETTINGS_NETWORK:    jw__render_network(ui, x, y, w, h);    break;
+        case JW_SETTINGS_WIFI:    jw__render_network(ui, x, y, w, h);    break;
         case JW_SETTINGS_BLUETOOTH:  jw__render_bluetooth(ui, x, y, w, h);  break;
         case JW_SETTINGS_LIGHTING:   jw__render_lighting(ui, x, y, w, h);   break;
         case JW_SETTINGS_ACCOUNTS:   jw__render_accounts(ui, x, y, w, h);                break;
-        case JW_SETTINGS_SCRAPING:   jw__render_scraping(ui, x, y, w, h);                break;
+        case JW_SETTINGS_GAMES:   jw__render_games(ui, x, y, w, h);                   break;
         case JW_SETTINGS_SCRAPE_PRIORITY: jw__render_scrape_priority(ui, x, y, w, h);    break;
         case JW_SETTINGS_SCRAPE_QUEUE:    jw__render_scrape_queue(ui, x, y, w, h);       break;
         case JW_SETTINGS_SCRAPE_QUEUE_DETAIL: jw__render_scrape_queue_detail(ui, x, y, w, h); break;
         case JW_SETTINGS_SCRAPE_DOWNLOAD: jw__render_scrape_download(ui, x, y, w, h);     break;
-        case JW_SETTINGS_BEHAVIOR:   jw__render_behavior(ui, x, y, w, h);                 break;
+        case JW_SETTINGS_SYSTEM:   jw__render_system(ui, x, y, w, h);                 break;
         case JW_SETTINGS_CONTROLS:   jw__render_controls(ui, x, y, w, h);                 break;
 #ifdef PLATFORM_MLP1
         case JW_SETTINGS_INPUT_SHORTCUTS: jw__render_input_shortcuts(ui, x, y, w, h);   break;
@@ -6607,6 +6672,120 @@ static void jw__cycle_update_channel(jw_settings_ui *ui, char *status_buf,
     jw__update_check_releases(ui, status_buf, status_size);
 }
 
+/* ─── Screen entry ─────────────────────────────────────────────────────── */
+
+/* Open a settings screen and do whatever that screen needs before its first
+   frame: reset its cursor, and re-sync anything it shows that can change while
+   Settings is closed. One function rather than per-call-site setup, because a
+   screen is now reachable from more than one place -- Bluetooth from Network,
+   Accounts from Games, Services from System -- and entry work that lived at the
+   call site would have to be copied to each of them. Returns false when the
+   screen declines to open, which only Services does. */
+static bool jw__enter_screen(jw_settings_ui *ui, jw_settings_screen screen,
+                             char *status_buf, size_t status_size) {
+    unsigned now = SDL_GetTicks();
+    switch (screen) {
+    case JW_SETTINGS_APPEARANCE:
+        ui->appearance_list.cursor = 0;
+        ui->appearance_list.scroll_offset = 0;
+        /* Rescan so a theme folder dropped onto the card appears without a
+           relaunch; one opendir plus a few small reads. */
+        if (ui->user_themes.root[0] || ui->user_theme_dir[0]) {
+            char root[PATH_MAX];
+            snprintf(root, sizeof(root), "%s", ui->user_themes.root);
+            char *slash = strrchr(root, '/');
+            if (slash) {
+                *slash = '\0';
+                jw_settings_ui_set_themes_root(ui, root);
+            }
+        }
+        break;
+    case JW_SETTINGS_HOME_SCREEN:
+        ui->home_screen_list.cursor = 0;
+        ui->home_screen_list.scroll_offset = 0;
+        break;
+    case JW_SETTINGS_DISPLAY:
+        /* Re-sync to live values so an OSD/hardware change made outside
+           settings isn't stale before we adjust. */
+        jw__refresh_brightness(ui);
+        jw__refresh_volume(ui);
+        jw__refresh_audio_status(ui);
+        jw__refresh_refresh_rate(ui);
+        jw__refresh_hdmi(ui);
+        break;
+    case JW_SETTINGS_LIGHTING:
+        jw__refresh_led(ui);
+        break;
+    case JW_SETTINGS_WIFI:
+        ui->wifi_list.cursor = 0;
+        ui->wifi_list.scroll_offset = 0;
+        ui->wifi_msg[0] = '\0';
+        jw__wifi_attempt_clear(ui);
+        jw__refresh_adb(ui);
+        ui->wifi_radio_on = jw_wifi_available() && jw_wifi_radio_is_on();
+        jw__refresh_wifi(ui);          /* show status immediately */
+        if (ui->wifi_radio_on) {
+            jw_wifi_scan_start();      /* kick a scan */
+            jw__refresh_wifi_scan(ui); /* show any cached results now */
+        } else {
+            ui->wifi_network_count = 0;
+        }
+        ui->wifi_next_poll_ms = now + 2000;            /* then live every ~2s */
+        ui->wifi_next_scan_ms = now + JW_WIFI_SCAN_INTERVAL_MS;
+        break;
+    case JW_SETTINGS_BLUETOOTH:
+        ui->bluetooth_list.cursor = 0;
+        ui->bluetooth_list.scroll_offset = 0;
+        ui->bt_msg[0] = '\0';
+        ui->bt_op = JW_BT_OP_NONE;
+        ui->bt_op_manual = false;
+        ui->bt_next_poll_ms = now + JW_BT_ENTRY_DEFER_MS;
+        ui->bt_next_scan_ms = now + JW_BT_ENTRY_DEFER_MS;
+        cat_request_frame_in(JW_BT_ENTRY_DEFER_MS);
+        break;
+    case JW_SETTINGS_GAMES:
+        ui->games_list.cursor = 0;
+        ui->games_list.scroll_offset = 0;
+        jw__refresh_performance(ui);   /* Game Performance row lives here now */
+        break;
+    case JW_SETTINGS_SYSTEM:
+        ui->system_list.cursor = 0;
+        ui->system_list.scroll_offset = 0;
+        jw__refresh_boot_splash(ui);
+        jw__refresh_secondary_sd_status(ui);
+        /* Decides whether the Services row exists at all, so it has to run
+           before the page is first drawn. */
+        (void)jw__services_available(ui);
+        break;
+    case JW_SETTINGS_CONTROLS:
+        jw__refresh_rumble(ui);
+        break;
+    case JW_SETTINGS_SERVICES:
+        /* CTL-1 omits invalid-only discoveries, so a reported row is a valid
+           service, retained history, or an actionable stale generation. A clean
+           system has no row here. */
+        if (!jw__services_available(ui)) {
+            if (status_buf && status_size > 0)
+                snprintf(status_buf, status_size, "%s", T("No services installed"));
+            return false;
+        }
+        ui->services_list.cursor = 0;
+        ui->services_list.scroll_offset = 0;
+        ui->services_msg[0] = '\0';
+        ui->services_next_poll_ms = now + JW_SERVICES_POLL_INTERVAL_MS;
+        break;
+    case JW_SETTINGS_HOME_TABS:
+        ui->home_tabs_grabbed = false;
+        ui->home_tabs_list.cursor = 0;
+        ui->home_tabs_list.scroll_offset = 0;
+        break;
+    default:
+        break;
+    }
+    ui->screen = screen;
+    return true;
+}
+
 /* ─── Input dispatch ───────────────────────────────────────────────────── */
 
 static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button button,
@@ -6631,85 +6810,9 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             case CAT_BTN_RIGHT: cat_list_state_jump(&ui->home_list, category_count - 1, category_count); break;
             case CAT_BTN_A: {
                 int idx = ui->home_list.cursor;
-                if (idx == 0) ui->screen = JW_SETTINGS_APPEARANCE;
-                else if (idx == 1) {
-                    ui->screen = JW_SETTINGS_DISPLAY;
-                    /* Re-sync to live values so an OSD/hardware change made
-                       outside settings isn't stale before we adjust. */
-                    jw__refresh_brightness(ui);
-                    jw__refresh_volume(ui);
-                    jw__refresh_audio_status(ui);
-                    jw__refresh_refresh_rate(ui);
-                    jw__refresh_hdmi(ui);
-                }
-                else if (idx == 3) {
-                    ui->screen = JW_SETTINGS_NETWORK;
-                    ui->network_list.cursor = 0;
-                    ui->network_list.scroll_offset = 0;
-                    ui->wifi_msg[0] = '\0';
-                    jw__wifi_attempt_clear(ui);
-                    jw__refresh_adb(ui);
-                    ui->wifi_radio_on = jw_wifi_available() && jw_wifi_radio_is_on();
-                    jw__refresh_wifi(ui);          /* show status immediately */
-                    if (ui->wifi_radio_on) {
-                        jw_wifi_scan_start();      /* kick a scan */
-                        jw__refresh_wifi_scan(ui); /* show any cached results now */
-                    } else {
-                        ui->wifi_network_count = 0;
-                    }
-                    unsigned now = SDL_GetTicks();
-                    ui->wifi_next_poll_ms = now + 2000;            /* then live every ~2s */
-                    ui->wifi_next_scan_ms = now + JW_WIFI_SCAN_INTERVAL_MS;
-                }
-                else if (idx == 4) {
-                    ui->screen = JW_SETTINGS_BLUETOOTH;
-                    ui->bluetooth_list.cursor = 0;
-                    ui->bluetooth_list.scroll_offset = 0;
-                    ui->bt_msg[0] = '\0';
-                    ui->bt_op = JW_BT_OP_NONE;
-                    ui->bt_op_manual = false;
-                    unsigned now = SDL_GetTicks();
-                    ui->bt_next_poll_ms = now + JW_BT_ENTRY_DEFER_MS;
-                    ui->bt_next_scan_ms = now + JW_BT_ENTRY_DEFER_MS;
-                    cat_request_frame_in(JW_BT_ENTRY_DEFER_MS);
-                }
-                else if (idx == 2) {
-                    ui->screen = JW_SETTINGS_LIGHTING;
-                    jw__refresh_led(ui);
-                }
-                else if (idx == 5) {
-                    ui->screen = JW_SETTINGS_SCRAPING;
-                    ui->scraping_list.cursor = 0;
-                    ui->scraping_list.scroll_offset = 0;
-                }
-                else if (idx == 6) ui->screen = JW_SETTINGS_ACCOUNTS;
-                else if (idx == 7) {
-                    ui->screen = JW_SETTINGS_BEHAVIOR;
-                    jw__refresh_boot_splash(ui);
-                    jw__refresh_performance(ui);
-                    jw__refresh_secondary_sd_status(ui);   /* Unmount SD row lives here now */
-                }
-                else if (idx == 8) {
-                    ui->screen = JW_SETTINGS_CONTROLS;
-                    jw__refresh_rumble(ui);
-                }
-                else if (idx == 9) {
-                    /* CTL-1 omits invalid-only discoveries, so a reported row
-                       is a valid service, retained history, or an actionable
-                       stale generation. A clean system has no row here. */
-                    if (jw__services_available(ui)) {
-                        ui->screen = JW_SETTINGS_SERVICES;
-                        ui->services_list.cursor = 0;
-                        ui->services_list.scroll_offset = 0;
-                        ui->services_msg[0] = '\0';
-                        ui->services_next_poll_ms =
-                            SDL_GetTicks() + JW_SERVICES_POLL_INTERVAL_MS;
-                    } else {
-                        if (status_buf && status_size > 0)
-                            snprintf(status_buf, status_size, "%s",
-                                     T("No services installed"));
-                    }
-                }
+                if (idx >= 0 && idx < category_count)
+                    (void)jw__enter_screen(ui, kHomeCategories[idx].screen,
+                                           status_buf, status_size);
                 break;
             }
             case CAT_BTN_B:
@@ -6726,28 +6829,88 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             case CAT_BTN_UP:   cat_list_state_move(&ui->appearance_list, -1, JW_APPEAR_ROW_COUNT); break;
             case CAT_BTN_DOWN: cat_list_state_move(&ui->appearance_list, +1, JW_APPEAR_ROW_COUNT); break;
             case CAT_BTN_LEFT:
-                if (ui->appearance_list.cursor == JW_APPEAR_THEME)
-                    jw__cycle_color_scheme(ui, -1, theme_changed);
-                break;
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
                 int row = ui->appearance_list.cursor;
-                if (row == JW_APPEAR_THEME)
-                    jw__cycle_color_scheme(ui, +1, theme_changed);
-                else if (row == JW_APPEAR_COLORS)   ui->screen = JW_SETTINGS_COLORS;
-                else if (row == JW_APPEAR_LAYOUT) {
-                    ui->screen = JW_SETTINGS_LAYOUT;
-                    /* Rescan so a theme folder dropped onto the card appears
-                       without a relaunch; one opendir plus a few small reads. */
-                    if (ui->user_themes.root[0] || ui->user_theme_dir[0]) {
-                        char root[PATH_MAX];
-                        snprintf(root, sizeof(root), "%s", ui->user_themes.root);
-                        char *slash = strrchr(root, '/');
-                        if (slash) { *slash = '\0';
-                            jw_settings_ui_set_themes_root(ui, root); }
+                /* Left only cycles; it must not follow a nav row, or a left
+                   press on Colors would leave the page sideways. */
+                bool nav = (row == JW_APPEAR_COLORS || row == JW_APPEAR_STATUSBAR);
+                if (nav && button == CAT_BTN_LEFT) break;
+                if (row == JW_APPEAR_SCHEME) {
+                    jw__cycle_color_scheme(ui, dir, theme_changed);
+                } else if (row == JW_APPEAR_COLORS) {
+                    ui->screen = JW_SETTINGS_COLORS;
+                } else if (row == JW_APPEAR_STATUSBAR) {
+                    ui->screen = JW_SETTINGS_STATUS_BAR;
+                } else if (row == JW_APPEAR_THEME) {
+                    int n = ui->user_themes.count;
+                    /* Cycle None, then every theme; -1 is None. */
+                    int cur = (ui->user_theme_index >= 0 && ui->user_theme_index < n)
+                              ? ui->user_theme_index : -1;
+                    int next = cur + dir;
+                    if (next < -1) next = n - 1;
+                    if (next >= n) next = -1;
+                    /* The launcher rebuilds for the layout on this flag: memoized
+                       icon paths clear and the wallpaper re-resolves. */
+                    if (jw_settings_ui_select_user_theme(ui, next, status_buf, status_size) &&
+                        theme_changed)
+                        *theme_changed = true;
+                } else if (row == JW_APPEAR_FONT) {
+                    /* None of the themed families carry CJK, so applying one here
+                       would turn the whole UI into tofu. Say so rather than
+                       silently doing nothing -- an unresponsive row reads as a
+                       bug, and the user cannot see why it is inert. */
+                    if (jw_i18n_language_is_cjk(jw_i18n_language())) {
+                        if (status_buf && status_size > 0) {
+                            snprintf(status_buf, status_size, "%s",
+                                     T("font is fixed while a CJK language is selected"));
+                        }
+                        break;
                     }
+                    int next = (ui->font_family_index + dir + JW_APPEARANCE_FONT_FAMILY_COUNT) %
+                               JW_APPEARANCE_FONT_FAMILY_COUNT;
+                    const char *path = jw_appearance_font_path_for_index(next);
+                    if (cat_reload_fonts(path) == CAT_OK) {
+                        ui->font_family_index = next;
+                        jw__persist_int(ui, "font_family_index", next);
+                        (void)jw_ipc_refresh_osd_appearance(ui->socket_path);
+                        /* Font metrics changed -> the launcher must recompute its
+                           cached list row height (cat_box_fit_rows only ever clamps
+                           the row count DOWN, so a smaller font won't re-grow it
+                           without a rebuild). Reuse the theme-changed signal that
+                           drives jw__rebuild_for_layout. NOTE: this also resets the
+                           home cursor to row 0 (same as a color-scheme change);
+                           revisit with a position-preserving refit if breadcrumbs
+                           get more serious. */
+                        if (theme_changed) *theme_changed = true;
+                    } else if (status_buf && status_size > 0) {
+                        snprintf(status_buf, status_size, "%s", T("font load failed"));
+                    }
+                } else if (row == JW_APPEAR_FONT_SIZE) {
+                    int next = (ui->font_size_index + dir + JW_SETTINGS_FONT_SIZE_COUNT) % JW_SETTINGS_FONT_SIZE_COUNT;
+                    ui->font_size_index = next;
+                    /* Re-assert the selected family before the bump reload — otherwise
+                       cat_set_font_bump reloads via theme.font_path, which can be empty,
+                       and falls back to res/font.ttf (clobbering the chosen font). */
+                    ap_theme *ft = cat_get_theme();
+                    snprintf(ft->font_path, sizeof(ft->font_path), "%s",
+                             jw_appearance_font_path_for_language(ui->font_family_index,
+                                                                 jw_i18n_language()));
+                    cat_set_font_bump(kJawakaFontSizeValues[next]);
+                    jw__persist_int(ui, "font_size_index", next);
+                    (void)jw_ipc_refresh_osd_appearance(ui->socket_path);
+                    /* Recompute cached list row height (see the font-family note
+                       above) — without this, shrinking the font leaves the list
+                       rows stretched tall until a relaunch. */
+                    if (theme_changed) *theme_changed = true;
+                } else if (row == JW_APPEAR_LIST_STYLE) {
+                    int next = (ui->pill_shape_index + dir + JW_SETTINGS_PILL_SHAPE_COUNT) % JW_SETTINGS_PILL_SHAPE_COUNT;
+                    ui->pill_shape_index = next;
+                    cat_get_theme()->pill_radius_ratio = kJawakaPillRadiusValues[next];
+                    cat_get_theme()->pill_corner_mask  = kJawakaPillCornerMasks[next];
+                    jw__persist_int(ui, "pill_shape_index", next);
                 }
-                else if (row == JW_APPEAR_STATUSBAR) ui->screen = JW_SETTINGS_STATUS_BAR;
                 break;
             }
             case CAT_BTN_B:
@@ -6799,34 +6962,21 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
         }
         break;
 
-    /* ── Layout ──────────────────────────────────────────────────────── */
-    case JW_SETTINGS_LAYOUT:
+    /* ── Home Screen ─────────────────────────────────────────────────── */
+    case JW_SETTINGS_HOME_SCREEN:
         switch (button) {
-            case CAT_BTN_UP:   cat_list_state_move(&ui->layout_list, -1, JW_LAYOUT_ROW_COUNT); break;
-            case CAT_BTN_DOWN: cat_list_state_move(&ui->layout_list, +1, JW_LAYOUT_ROW_COUNT); break;
+            case CAT_BTN_UP:   cat_list_state_move(&ui->home_screen_list, -1, JW_HOMESCREEN_ROW_COUNT); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->home_screen_list, +1, JW_HOMESCREEN_ROW_COUNT); break;
             case CAT_BTN_LEFT:
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
-                int row = ui->layout_list.cursor;
-                if (row == JW_LAYOUT_HOME_STYLE) {
+                int row = ui->home_screen_list.cursor;
+                if (row == JW_HOMESCREEN_LAYOUT) {
                     int next = (ui->layout_mode + dir + 3) % 3;
                     if (next != ui->layout_mode)
                         jw__apply_layout(ui, next, theme_changed);
-                } else if (row == JW_LAYOUT_THEME) {
-                    int n = ui->user_themes.count;
-                    /* Cycle None, then every theme; -1 is None. */
-                    int cur = (ui->user_theme_index >= 0 && ui->user_theme_index < n)
-                              ? ui->user_theme_index : -1;
-                    int next = cur + dir;
-                    if (next < -1) next = n - 1;
-                    if (next >= n) next = -1;
-                    /* The launcher rebuilds for the layout on this flag: memoized
-                       icon paths clear and the wallpaper re-resolves. */
-                    if (jw_settings_ui_select_user_theme(ui, next, status_buf, status_size) &&
-                        theme_changed)
-                        *theme_changed = true;
-                } else if (row == JW_LAYOUT_GRID_SIZE) {
+                } else if (row == JW_HOMESCREEN_GRID_SIZE) {
                     if (ui->layout_mode != 2) break;   /* row is greyed off-Grid */
                     int cur = (ui->grid_density_index >= 0 &&
                                ui->grid_density_index < JW_GRID_DENSITY_COUNT)
@@ -6837,7 +6987,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                        earlier pinned density instead of leaving it in the DB. */
                     jw__persist_int(ui, "grid_density_index", next);
                     if (theme_changed) *theme_changed = true;
-                } else if (row == JW_LAYOUT_SYSTEM_ICONS) {
+                } else if (row == JW_HOMESCREEN_SYSTEM_ICONS) {
                     int cur = (ui->system_icon_pack_index >= 0 &&
                                ui->system_icon_pack_index < JW_SYSTEM_ICON_PACK_COUNT)
                               ? ui->system_icon_pack_index : JW_SYSTEM_ICON_PACK_AUTO;
@@ -6850,65 +7000,11 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                        call jw__rebuild_for_layout(), which clears the memoized
                        system-icon paths so the new pack shows immediately. */
                     if (theme_changed) *theme_changed = true;
-                } else if (row == JW_LAYOUT_PILL_SHAPE) {
-                    int next = (ui->pill_shape_index + dir + JW_SETTINGS_PILL_SHAPE_COUNT) % JW_SETTINGS_PILL_SHAPE_COUNT;
-                    ui->pill_shape_index = next;
-                    cat_get_theme()->pill_radius_ratio = kJawakaPillRadiusValues[next];
-                    cat_get_theme()->pill_corner_mask  = kJawakaPillCornerMasks[next];
-                    jw__persist_int(ui, "pill_shape_index", next);
-                } else if (row == JW_LAYOUT_FONT_FAMILY) {
-                    /* None of the themed families carry CJK, so applying one here
-                       would turn the whole UI into tofu. Say so rather than
-                       silently doing nothing -- an unresponsive row reads as a
-                       bug, and the user cannot see why it is inert. */
-                    if (jw_i18n_language_is_cjk(jw_i18n_language())) {
-                        if (status_buf && status_size > 0) {
-                            snprintf(status_buf, status_size, "%s",
-                                     T("font is fixed while a CJK language is selected"));
-                        }
-                        break;
-                    }
-                    int next = (ui->font_family_index + dir + JW_APPEARANCE_FONT_FAMILY_COUNT) %
-                               JW_APPEARANCE_FONT_FAMILY_COUNT;
-                    const char *path = jw_appearance_font_path_for_index(next);
-                    if (cat_reload_fonts(path) == CAT_OK) {
-                        ui->font_family_index = next;
-                        jw__persist_int(ui, "font_family_index", next);
-                        (void)jw_ipc_refresh_osd_appearance(ui->socket_path);
-                        /* Font metrics changed -> the launcher must recompute its
-                           cached list row height (cat_box_fit_rows only ever clamps
-                           the row count DOWN, so a smaller font won't re-grow it
-                           without a rebuild). Reuse the theme-changed signal that
-                           drives jw__rebuild_for_layout. NOTE: this also resets the
-                           home cursor to row 0 (same as a color-scheme change);
-                           revisit with a position-preserving refit if breadcrumbs
-                           get more serious. */
-                        if (theme_changed) *theme_changed = true;
-                    } else if (status_buf && status_size > 0) {
-                        snprintf(status_buf, status_size, "%s", T("font load failed"));
-                    }
-                } else if (row == JW_LAYOUT_FONT_SIZE) {
-                    int next = (ui->font_size_index + dir + JW_SETTINGS_FONT_SIZE_COUNT) % JW_SETTINGS_FONT_SIZE_COUNT;
-                    ui->font_size_index = next;
-                    /* Re-assert the selected family before the bump reload — otherwise
-                       cat_set_font_bump reloads via theme.font_path, which can be empty,
-                       and falls back to res/font.ttf (clobbering the chosen font). */
-                    ap_theme *ft = cat_get_theme();
-                    snprintf(ft->font_path, sizeof(ft->font_path), "%s",
-                             jw_appearance_font_path_for_language(ui->font_family_index,
-                                                                 jw_i18n_language()));
-                    cat_set_font_bump(kJawakaFontSizeValues[next]);
-                    jw__persist_int(ui, "font_size_index", next);
-                    (void)jw_ipc_refresh_osd_appearance(ui->socket_path);
-                    /* Recompute cached list row height (see the font-family note
-                       above) — without this, shrinking the font leaves the list
-                       rows stretched tall until a relaunch. */
-                    if (theme_changed) *theme_changed = true;
-                } else if (row == JW_LAYOUT_TAB_SWITCH) {
+                } else if (row == JW_HOMESCREEN_TAB_SWITCH) {
                     int next = (ui->tab_glide + dir + JW_TAB_SWITCH_COUNT) % JW_TAB_SWITCH_COUNT;
                     ui->tab_glide = next;
                     jw__persist_int(ui, "tab_glide", next);
-                } else if (row == JW_LAYOUT_STARTUP_TAB) {
+                } else if (row == JW_HOMESCREEN_STARTUP_TAB) {
                     /* Cycle only over the currently-visible tabs (Home Tabs can
                        hide some), so Startup Tab can never point at a hidden tab.
                        Find where the current startup tab sits in the visible set,
@@ -6924,18 +7020,15 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     if (vis == 0) break;
                     ui->startup_tab_index = shown[(pos + dir + vis) % vis];
                     jw__persist_int(ui, "startup_tab_index", ui->startup_tab_index);
-                } else if (row == JW_LAYOUT_HOME_TABS) {
-                    if (button == CAT_BTN_A || button == CAT_BTN_RIGHT) {
-                        ui->home_tabs_grabbed = false;
-                        ui->home_tabs_list.cursor = 0;
-                        ui->home_tabs_list.scroll_offset = 0;
-                        ui->screen = JW_SETTINGS_HOME_TABS;
-                    }
+                } else if (row == JW_HOMESCREEN_TABS) {
+                    if (button == CAT_BTN_A || button == CAT_BTN_RIGHT)
+                        (void)jw__enter_screen(ui, JW_SETTINGS_HOME_TABS,
+                                               status_buf, status_size);
                 }
                 break;
             }
             case CAT_BTN_B:
-                ui->screen = JW_SETTINGS_APPEARANCE;
+                ui->screen = JW_SETTINGS_HOME;
                 break;
             default: break;
         }
@@ -7074,21 +7167,21 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
         break;
 
     /* ── Network (Wi-Fi scan/connect + ADB access) ───────────────────── */
-    case JW_SETTINGS_NETWORK: {
+    case JW_SETTINGS_WIFI: {
         bool wifi_available = jw_wifi_available();
-        int row_count = JW_NETWORK_FIXED_ROWS +
+        int row_count = JW_WIFI_FIXED_ROWS +
                         ((wifi_available && ui->wifi_radio_on) ? ui->wifi_network_count : 0);
         switch (button) {
             case CAT_BTN_UP:
-                cat_list_state_move(&ui->network_list, -1, row_count);
+                cat_list_state_move(&ui->wifi_list, -1, row_count);
                 break;
             case CAT_BTN_DOWN:
-                cat_list_state_move(&ui->network_list, +1, row_count);
+                cat_list_state_move(&ui->wifi_list, +1, row_count);
                 break;
             case CAT_BTN_A: {
                 /* Row 0: toggle the radio. (Blocks briefly; turning OFF will drop
                    an ADB-over-Wi-Fi session — expected.) */
-                if (ui->network_list.cursor == JW_NETWORK_ROW_WIFI) {
+                if (ui->wifi_list.cursor == JW_WIFI_ROW_RADIO) {
                     if (!wifi_available) {
                         jw__wifi_msg(ui, "Wi-Fi unavailable on this platform");
                         if (status_buf && status_size > 0) {
@@ -7103,12 +7196,12 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     jw__wifi_attempt_clear(ui);
                     jw_wifi_set_radio(turning_on);
                     ui->wifi_radio_on = jw_wifi_radio_is_on();
-                    ui->network_list.cursor = 0;
+                    ui->wifi_list.cursor = 0;
                     ui->wifi_next_poll_ms = SDL_GetTicks();
                     break;
                 }
 
-                if (ui->network_list.cursor == JW_NETWORK_ROW_ADB) {
+                if (ui->wifi_list.cursor == JW_WIFI_ROW_ADB) {
                     if (!ui->adb_supported || ui->adb_enabled < 0) {
                         jw__wifi_msg(ui, "ADB unavailable on this platform");
                         if (status_buf && status_size > 0) {
@@ -7125,7 +7218,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
 
                 /* Later rows: connect the selected network (open/saved direct; a
                    secured network with no saved profile prompts for the key). */
-                int ni = ui->network_list.cursor - JW_NETWORK_FIXED_ROWS;
+                int ni = ui->wifi_list.cursor - JW_WIFI_FIXED_ROWS;
                 if (!ui->wifi_radio_on || ni < 0 || ni >= ui->wifi_network_count) {
                     break;
                 }
@@ -7178,7 +7271,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             }
             case CAT_BTN_Y: {
                 /* Forget the selected network's saved profile (scan rows only). */
-                int ni = ui->network_list.cursor - JW_NETWORK_FIXED_ROWS;
+                int ni = ui->wifi_list.cursor - JW_WIFI_FIXED_ROWS;
                 if (ui->wifi_radio_on && ni >= 0 && ni < ui->wifi_network_count) {
                     const jw_wifi_network_t *net = &ui->wifi_networks[ni];
                     if (net->saved) {
@@ -7356,7 +7449,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->bt_op = JW_BT_OP_NONE;
                     ui->bt_op_manual = false;
                 }
-                ui->screen = JW_SETTINGS_HOME;
+                ui->screen = JW_SETTINGS_WIFI;
                 break;
             default:
                 break;
@@ -7560,7 +7653,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 }
                 break;
             case CAT_BTN_B:
-                ui->screen = JW_SETTINGS_HOME;
+                ui->screen = JW_SETTINGS_GAMES;
                 break;
             default:
                 break;
@@ -7568,16 +7661,51 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
         break;
 
     /* ── Scraping ────────────────────────────────────────────────────── */
-    case JW_SETTINGS_SCRAPING:
+    case JW_SETTINGS_GAMES:
         switch (button) {
             case CAT_BTN_UP:
-                cat_list_state_move(&ui->scraping_list, -1, JW_SCRAPING_ROW_COUNT);
+                cat_list_state_move(&ui->games_list, -1, JW_GAMES_ROW_COUNT);
                 break;
             case CAT_BTN_DOWN:
-                cat_list_state_move(&ui->scraping_list, +1, JW_SCRAPING_ROW_COUNT);
+                cat_list_state_move(&ui->games_list, +1, JW_GAMES_ROW_COUNT);
                 break;
-            case CAT_BTN_A:
-                if (ui->scraping_list.cursor == JW_SCRAPING_QUEUE) {
+            case CAT_BTN_LEFT:
+            case CAT_BTN_RIGHT:
+            case CAT_BTN_A: {
+                /* Only Game Performance cycles; every other row here opens
+                   something, so Left and Right must not act on them. */
+                int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
+                int row = ui->games_list.cursor;
+                if (row == JW_GAMES_PERFORMANCE) {
+                    if (!ui->performance_supported) {
+                        if (status_buf && status_size > 0) {
+                            snprintf(status_buf, (size_t)status_size, "%s",
+                                     T("performance unavailable"));
+                        }
+                        break;
+                    }
+                    int next = (ui->game_perf_profile + dir + JW_GAME_PERF_PROFILE_COUNT)
+                               % JW_GAME_PERF_PROFILE_COUNT;
+                    jw_platform_perf_profile profile = kGamePerfProfiles[next];
+                    char status[128] = "";
+                    if (jw_ipc_set_performance_profile(
+                            ui->socket_path, "global",
+                            jw_platform_perf_profile_name(profile),
+                            status, sizeof(status)) == 0) {
+                        ui->game_perf_profile = next;
+                        jw__persist(ui, "platform.performance.game_profile",
+                                    jw_platform_perf_profile_name(profile));
+                        if (status_buf && status_size > 0) {
+                            snprintf(status_buf, (size_t)status_size, "%s", status);
+                        }
+                    } else if (status_buf && status_size > 0) {
+                        snprintf(status_buf, (size_t)status_size, "%s",
+                                 status[0] ? status : "performance failed");
+                    }
+                    break;
+                }
+                if (button != CAT_BTN_A) break;
+                if (ui->games_list.cursor == JW_GAMES_SCRAPE_QUEUE) {
                     ui->screen = JW_SETTINGS_SCRAPE_QUEUE;
                     ui->scrape_queue_list.cursor = 0;
                     ui->scrape_queue_list.scroll_offset = 0;
@@ -7585,7 +7713,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->scrape_queue_next_poll_ms = 0;   /* force an immediate poll */
                     break;
                 }
-                if (ui->scraping_list.cursor == JW_SCRAPING_DOWNLOAD) {
+                if (ui->games_list.cursor == JW_GAMES_SCRAPE_DOWNLOAD) {
                     ui->scrape_download_list.cursor = 0;
                     ui->scrape_download_list.scroll_offset = 0;
                     ui->scrape_download_replace = false;   /* default: missing-only */
@@ -7601,13 +7729,23 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->screen = JW_SETTINGS_SCRAPE_DOWNLOAD;
                     break;
                 }
+                if (ui->games_list.cursor == JW_GAMES_RESET_RETROARCH) {
+                    jw__reset_retroarch_config(ui, status_buf, status_size);
+                    break;
+                }
+                if (ui->games_list.cursor == JW_GAMES_ACCOUNTS) {
+                    (void)jw__enter_screen(ui, JW_SETTINGS_ACCOUNTS,
+                                           status_buf, status_size);
+                    break;
+                }
                 ui->scrape_edit_is_region =
-                    ui->scraping_list.cursor == JW_SCRAPING_REGION;
+                    ui->games_list.cursor == JW_GAMES_REGION;
                 ui->scrape_edit_grabbed = false;
                 ui->scrape_edit_list.cursor = 0;
                 ui->scrape_edit_list.scroll_offset = 0;
                 ui->screen = JW_SETTINGS_SCRAPE_PRIORITY;
                 break;
+            }
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_HOME;
                 break;
@@ -7689,7 +7827,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 }
                 break;
             case CAT_BTN_B:
-                ui->screen = JW_SETTINGS_SCRAPING;
+                ui->screen = JW_SETTINGS_GAMES;
                 break;
             default:
                 break;
@@ -7753,7 +7891,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 }
                 break;
             case CAT_BTN_B:
-                ui->screen = JW_SETTINGS_SCRAPING;
+                ui->screen = JW_SETTINGS_GAMES;
                 break;
             default:
                 break;
@@ -7832,7 +7970,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 if (ui->scrape_edit_grabbed) {
                     ui->scrape_edit_grabbed = false;
                 } else {
-                    ui->screen = JW_SETTINGS_SCRAPING;
+                    ui->screen = JW_SETTINGS_GAMES;
                 }
                 break;
             default:
@@ -7897,7 +8035,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 if (ui->home_tabs_grabbed)
                     ui->home_tabs_grabbed = false;
                 else
-                    ui->screen = JW_SETTINGS_LAYOUT;
+                    ui->screen = JW_SETTINGS_HOME_SCREEN;
                 break;
             default:
                 break;
@@ -8098,7 +8236,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             }
             case CAT_BTN_B:
                 (void)jw__refresh_services(ui);
-                ui->screen = JW_SETTINGS_HOME;
+                ui->screen = JW_SETTINGS_SYSTEM;
                 break;
             default:
                 break;
@@ -8292,15 +8430,17 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
 #endif
 
     /* ── Behavior ────────────────────────────────────────────────────── */
-    case JW_SETTINGS_BEHAVIOR:
+    case JW_SETTINGS_SYSTEM:
         switch (button) {
-            case CAT_BTN_UP:   cat_list_state_move(&ui->behavior_list, -1, jw__behavior_rows(ui)); break;
-            case CAT_BTN_DOWN: cat_list_state_move(&ui->behavior_list, +1, jw__behavior_rows(ui)); break;
+            case CAT_BTN_UP:   cat_list_state_move(&ui->system_list, -1, jw__system_row_count(ui)); break;
+            case CAT_BTN_DOWN: cat_list_state_move(&ui->system_list, +1, jw__system_row_count(ui)); break;
             case CAT_BTN_LEFT:
             case CAT_BTN_RIGHT:
             case CAT_BTN_A: {
                 int dir = (button == CAT_BTN_LEFT) ? -1 : 1;
-                if (ui->behavior_list.cursor == JW_BEHAVIOR_LANGUAGE) {
+                jw_system_row_kind kind =
+                    jw__system_row_at(ui, ui->system_list.cursor);
+                if (kind == JW_SYSTEM_ROW_LANGUAGE) {
                     if (ui->language_count <= 1) break;
                     const char *shown = jw__language_pending(ui);
                     int cur = 0;
@@ -8355,43 +8495,17 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         snprintf(status_buf, (size_t)status_size, "%s",
                                  status[0] ? status : "language change failed");
                     }
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_AUTO_SLEEP) {
+                } else if (kind == JW_SYSTEM_ROW_AUTO_SLEEP) {
                     int next = (ui->auto_sleep_index + dir + JW_AUTO_SLEEP_COUNT)
                                % JW_AUTO_SLEEP_COUNT;
                     ui->auto_sleep_index = next;
                     /* Persist the seconds value (the daemon reads it directly). */
                     jw__persist_int(ui, "auto_sleep_seconds", kAutoSleepSeconds[next]);
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_BOOT_SPLASH) {
+                } else if (kind == JW_SYSTEM_ROW_BOOT_SPLASH) {
                     (void)dir;
                     jw__set_boot_splash(ui, !ui->boot_splash_enabled,
                                         status_buf, status_size);
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_PERFORMANCE) {
-                    if (!ui->performance_supported) {
-                        if (status_buf && status_size > 0) {
-                            snprintf(status_buf, (size_t)status_size, "%s",
-                                     T("performance unavailable"));
-                        }
-                        break;
-                    }
-                    int next = (ui->game_perf_profile + dir + JW_GAME_PERF_PROFILE_COUNT)
-                               % JW_GAME_PERF_PROFILE_COUNT;
-                    jw_platform_perf_profile profile = kGamePerfProfiles[next];
-                    char status[128] = "";
-                    if (jw_ipc_set_performance_profile(
-                            ui->socket_path, "global",
-                            jw_platform_perf_profile_name(profile),
-                            status, sizeof(status)) == 0) {
-                        ui->game_perf_profile = next;
-                        jw__persist(ui, "platform.performance.game_profile",
-                                    jw_platform_perf_profile_name(profile));
-                        if (status_buf && status_size > 0) {
-                            snprintf(status_buf, (size_t)status_size, "%s", status);
-                        }
-                    } else if (status_buf && status_size > 0) {
-                        snprintf(status_buf, (size_t)status_size, "%s",
-                                 status[0] ? status : "performance failed");
-                    }
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_TIMEZONE) {
+                } else if (kind == JW_SYSTEM_ROW_TIMEZONE) {
                     /* Open the picker (A / Right); a long list isn't a cycler. */
                     if (button == CAT_BTN_A || button == CAT_BTN_RIGHT) {
                         int cur = jw__timezone_index_of(ui->timezone);
@@ -8401,10 +8515,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         ui->timezone_picker_list.scroll_offset = off > 0 ? off : 0;
                         ui->screen = JW_SETTINGS_TIMEZONE_PICKER;
                     }
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_RESET_RETROARCH) {
-                    if (button == CAT_BTN_A)
-                        jw__reset_retroarch_config(ui, status_buf, status_size);
-                } else if (ui->behavior_list.cursor == JW_BEHAVIOR_UNMOUNT_SECONDARY) {
+                } else if (kind == JW_SYSTEM_ROW_SD_CARDS) {
                     if (button == CAT_BTN_A) {
                         bool unmount = false;
                         jw_storage_ui_manage_cards(ui->socket_path, status_buf,
@@ -8414,6 +8525,10 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         else
                             jw__refresh_secondary_sd_status(ui);
                     }
+                } else if (kind == JW_SYSTEM_ROW_SERVICES) {
+                    if (button == CAT_BTN_A || button == CAT_BTN_RIGHT)
+                        (void)jw__enter_screen(ui, JW_SETTINGS_SERVICES,
+                                               status_buf, status_size);
                 }
                 break;
             }
@@ -8447,11 +8562,11 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                         snprintf(status_buf, (size_t)status_size, "Time zone: %s",
                                  kTimeZones[idx].label);
                 }
-                ui->screen = JW_SETTINGS_BEHAVIOR;
+                ui->screen = JW_SETTINGS_SYSTEM;
                 break;
             }
             case CAT_BTN_B:
-                ui->screen = JW_SETTINGS_BEHAVIOR;
+                ui->screen = JW_SETTINGS_SYSTEM;
                 break;
             default: break;
         }

@@ -928,10 +928,6 @@ msgstr ""
 msgid "Game"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Game Art"
-msgstr ""
-
 #: internal/launcher/system_names.c
 msgid "Game Boy"
 msgstr ""
@@ -966,10 +962,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Games played"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "General"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1030,6 +1022,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Home Layout"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Home Screen"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1142,10 +1138,6 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Launch canceled"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "Layout"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1272,7 +1264,7 @@ msgstr ""
 msgid "Most played"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/storage_ui.c
 msgid "Mounted"
 msgstr ""
 
@@ -1306,10 +1298,6 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Neo Geo Pocket Color"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "Network"
 msgstr ""
 
 #: internal/settings/settings.c

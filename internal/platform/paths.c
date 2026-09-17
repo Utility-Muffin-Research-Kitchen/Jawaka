@@ -2608,7 +2608,7 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
     jw__retroarch_cfg_player_indices(fp, player_joypad_indices);
 
     /* RetroAchievements: jawakad exports the credentials stored under
-       Settings > Accounts; RetroArch validates them with the service at
+       Settings > Games > Accounts; RetroArch validates them with the service at
        launch. Absent env = don't touch whatever the user set up inside
        RetroArch itself. The session config lives in the runtime dir, so the
        password never lands in the persistent shared config. */
