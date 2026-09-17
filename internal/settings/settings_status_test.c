@@ -4,7 +4,11 @@
 #include "catastrophe_widgets.h"
 
 #include "internal/settings/settings.h"
+#include "internal/settings/timezones.h"
+#include "internal/i18n/i18n.h"
 #include "internal/launcher/system_activity.h"
+
+#include "internal/db/db.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -107,6 +111,226 @@ static int check_theme_selection(void) {
     return 0;
 }
 
+/* ─── Time Zone picker ──────────────────────────────────────────────────── */
+
+static int tz_row(const char *tz) {
+    for (int i = 0; i < kJawakaTimeZoneCount; ++i)
+        if (strcmp(kJawakaTimeZones[i].tz, tz) == 0) return i;
+    return -1;
+}
+
+/* The picker's offset column ("UTC", "UTC+0", "UTC-9:30") as seconds. */
+#define JW_TZ_OFFSET_BAD 999999L
+static long offset_seconds(const char *off) {
+    if (!off || strncmp(off, "UTC", 3) != 0) return JW_TZ_OFFSET_BAD;
+    if (!off[3]) return 0;
+    int h = 0, m = 0;
+    if (sscanf(off + 4, "%d:%d", &h, &m) < 1) return JW_TZ_OFFSET_BAD;
+    long seconds = h * 3600L + m * 60L;
+    return off[3] == '-' ? -seconds : seconds;
+}
+
+/* The rows this issue exists for, plus the fractional-offset regions that are
+   the reason a whole-hour-only list is not enough. Leaf #72 asked for New
+   Zealand; a picker that gained the row and lost Chatham or Auckland to a
+   later edit is the regression worth catching by name. */
+static int check_timezone_catalog(void) {
+    static const char *kRequired[] = {
+        "Pacific/Auckland", "Pacific/Chatham",
+        "Pacific/Marquesas", "America/St_Johns", "Asia/Kabul",
+        "Asia/Kathmandu", "Asia/Yangon", "Australia/Eucla", "Australia/Adelaide",
+        "Australia/Darwin", "Australia/Lord_Howe",
+        /* The list this change grew out of must not lose its old rows either:
+           an existing selection has to survive the upgrade. */
+        "Pacific/Honolulu", "America/Anchorage", "America/Los_Angeles",
+        "America/Denver", "America/Phoenix", "America/Chicago",
+        "America/New_York", "America/Sao_Paulo", "UTC", "Europe/London",
+        "Europe/Paris", "Europe/Athens", "Asia/Kolkata", "Asia/Shanghai",
+        "Asia/Tokyo", "Australia/Sydney",
+    };
+    for (unsigned i = 0; i < sizeof(kRequired) / sizeof(kRequired[0]); ++i)
+        if (tz_row(kRequired[i]) < 0) {
+            fprintf(stderr, "settings-status-test: %s is missing from the picker\n",
+                    kRequired[i]);
+            return 1;
+        }
+
+    /* Ordered by standard offset. Rows are found by id, so a reorder is safe
+       for saved settings, but an unordered picker is unusable at this length. */
+    long previous = -13 * 3600;
+    for (int i = 0; i < kJawakaTimeZoneCount; ++i) {
+        long seconds = offset_seconds(kJawakaTimeZones[i].off);
+        if (seconds == JW_TZ_OFFSET_BAD) {
+            fprintf(stderr, "settings-status-test: unreadable offset \"%s\"\n",
+                    kJawakaTimeZones[i].off);
+            return 1;
+        }
+        if (seconds < previous) {
+            fprintf(stderr, "settings-status-test: %s (%s) is out of offset order\n",
+                    kJawakaTimeZones[i].tz, kJawakaTimeZones[i].off);
+            return 1;
+        }
+        previous = seconds;
+    }
+
+    /* Every whole hour from -12 to +14 is reachable, and reachable by naming a
+       place rather than an offset. The picker used to carry a parallel set of
+       "UTC+N (fixed)" rows; they duplicated the offset column and, worse, opted
+       the user out of the daylight-saving handling that is the reason to pick a
+       region at all. Coverage is the part worth keeping. */
+    for (int hour = -12; hour <= 14; ++hour) {
+        bool found = false;
+        for (int i = 0; i < kJawakaTimeZoneCount && !found; ++i)
+            found = (offset_seconds(kJawakaTimeZones[i].off) == hour * 3600L);
+        if (!found) {
+            fprintf(stderr, "settings-status-test: no row offers UTC%+d\n", hour);
+            return 1;
+        }
+    }
+
+    /* Labels name places. Baker Island is the single exception allowed to carry
+       an Etc/GMT id, because UTC-12 has no inhabited territory and therefore no
+       IANA place id; its sign is reversed from the offset it produces, which is
+       how the etcetera file defines it and is exactly the trap worth pinning. */
+    for (int i = 0; i < kJawakaTimeZoneCount; ++i) {
+        const char *tz = kJawakaTimeZones[i].tz;
+        if (strncmp(tz, "Etc/", 4) != 0) continue;
+        if (strcmp(kJawakaTimeZones[i].label, "Baker Island") != 0 ||
+            strcmp(tz, "Etc/GMT+12") != 0 ||
+            offset_seconds(kJawakaTimeZones[i].off) != -12 * 3600L) {
+            fprintf(stderr, "settings-status-test: unexpected fixed-offset row "
+                            "\"%s\" (%s)\n", kJawakaTimeZones[i].label, tz);
+            return 1;
+        }
+    }
+    for (int i = 0; i < kJawakaTimeZoneCount; ++i)
+        if (strstr(kJawakaTimeZones[i].label, "(fixed)"))
+            return fail("a fixed-offset row came back into the picker");
+
+    /* Labels are drawn into a 48-byte buffer that also carries the "* " current
+       marker, and they share a row with the offset column. */
+    for (int i = 0; i < kJawakaTimeZoneCount; ++i) {
+        if (strlen(kJawakaTimeZones[i].label) + 3 > 48)
+            return fail("a picker label does not fit the row buffer");
+        for (const char *c = kJawakaTimeZones[i].label; *c; ++c)
+            if ((unsigned char)*c > 127)
+                return fail("a picker label left ASCII (the font subset has no glyph)");
+    }
+    return 0;
+}
+
+/* Lookup is by id, not row index, which is what lets the table grow without a
+   database migration. */
+static int check_timezone_lookup(void) {
+    if (strcmp(jw_timezone_label("Pacific/Auckland"), "New Zealand") != 0)
+        return fail("Auckland did not resolve to its label");
+    if (strcmp(jw_timezone_label(""), "System default") != 0)
+        return fail("no selection did not read as the system default");
+    if (strcmp(jw_timezone_label("Africa/Nairobi"), "Africa/Nairobi") != 0)
+        return fail("an unknown saved id was not shown verbatim");
+    if (jw_timezone_index_of("Pacific/Chatham") != tz_row("Pacific/Chatham"))
+        return fail("Chatham's row lookup disagreed with the table");
+    /* Row 0 is UTC-12. Opening the picker there with nothing saved would read
+       as a default, so both the empty and the unknown case land on UTC. */
+    if (jw_timezone_index_of("") != tz_row("UTC") ||
+        jw_timezone_index_of("Africa/Nairobi") != tz_row("UTC"))
+        return fail("the no-selection cursor did not fall back to UTC");
+    if (tz_row("UTC") == 0)
+        return fail("UTC is row 0, so the fallback check proves nothing");
+    return 0;
+}
+
+/* The real button path: open the picker from the System row, move, select,
+   and confirm what reaches the database. */
+static int check_timezone_selection(void) {
+    char db[] = "/tmp/settings-status-tz.XXXXXX";
+    int fd = mkstemp(db);
+    if (fd < 0) return fail("could not create a settings db");
+    close(fd);
+    unlink(db);   /* jw_db_set_setting creates it; an empty file is not a db */
+
+    jw_settings_ui ui = {0};
+    char status[128] = "";
+    ui.open = true;
+    snprintf(ui.db_path, sizeof(ui.db_path), "%s", db);
+    cat_list_state_init(&ui.timezone_picker_list, 7);
+
+    /* Nothing saved: the picker opens on UTC. Time Zone is the first System row
+       when there is no Language row, which a zeroed ui has; if that stops being
+       true, A below opens something else and this fails by name. */
+    ui.screen = JW_SETTINGS_SYSTEM;
+    ui.system_list.cursor = 0;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+    if (ui.screen != JW_SETTINGS_TIMEZONE_PICKER)
+        return fail("A on the first System row did not open the Time Zone picker");
+    if (ui.timezone_picker_list.cursor != tz_row("UTC"))
+        return fail("an unset picker did not open on UTC");
+
+    /* B leaves without saving: merely looking is not a change. */
+    jw_settings_ui_handle_button(&ui, CAT_BTN_DOWN, status, sizeof(status), NULL);
+    jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
+    if (ui.screen != JW_SETTINGS_SYSTEM) return fail("B did not leave the picker");
+    if (ui.timezone[0]) return fail("canceling the picker saved a zone");
+    char saved[64] = "";
+    if (jw_db_get_setting(db, "timezone", saved, sizeof(saved)) == 0 && saved[0])
+        return fail("canceling the picker wrote to the database");
+
+    /* Select New Zealand through A, then read it back out of the database. */
+    static const char *kPicks[] = { "Pacific/Auckland", "Pacific/Chatham",
+                                    "Pacific/Kiritimati", "Etc/GMT+12",
+                                    "Europe/Paris" };
+    for (unsigned i = 0; i < sizeof(kPicks) / sizeof(kPicks[0]); ++i) {
+        ui.screen = JW_SETTINGS_TIMEZONE_PICKER;
+        ui.timezone_picker_list.cursor = tz_row(kPicks[i]);
+        status[0] = '\0';
+        jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+        if (ui.screen != JW_SETTINGS_SYSTEM)
+            return fail("selecting a zone did not return to System");
+        if (strcmp(ui.timezone, kPicks[i]) != 0)
+            return fail("the selected zone did not reach the settings state");
+        saved[0] = '\0';
+        if (jw_db_get_setting(db, "timezone", saved, sizeof(saved)) != 0 ||
+            strcmp(saved, kPicks[i]) != 0) {
+            fprintf(stderr, "settings-status-test: picked %s, database holds \"%s\"\n",
+                    kPicks[i], saved);
+            return 1;
+        }
+        /* The id is persisted, never the displayed offset: "UTC+12" handed to
+           libc means the opposite of what the row promises. */
+        if (strncmp(saved, "UTC", 3) == 0 && strcmp(saved, "UTC") != 0)
+            return fail("a display string was persisted instead of a zone id");
+        if (!status[0]) return fail("selecting a zone reported nothing");
+
+        /* Reopening lands on the saved row, and it is inside the viewport --
+           the case that matters now the list runs past one screen. */
+        jw_settings_ui_handle_button(&ui, CAT_BTN_A, status, sizeof(status), NULL);
+        if (ui.screen != JW_SETTINGS_TIMEZONE_PICKER)
+            return fail("reopening the picker failed");
+        int cur = ui.timezone_picker_list.cursor;
+        int top = ui.timezone_picker_list.scroll_offset;
+        if (cur != tz_row(kPicks[i]))
+            return fail("reopening did not land on the saved zone");
+        if (cur < top || cur >= top + ui.timezone_picker_list.visible_rows) {
+            fprintf(stderr, "settings-status-test: %s sits at row %d, outside rows "
+                            "%d..%d\n", kPicks[i], cur, top,
+                    top + ui.timezone_picker_list.visible_rows - 1);
+            return 1;
+        }
+        jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
+    }
+
+    /* Up from the first row wraps to the last, so the far end of a list this
+       long is reachable without holding Down through fifty rows. */
+    ui.screen = JW_SETTINGS_TIMEZONE_PICKER;
+    ui.timezone_picker_list.cursor = 0;
+    jw_settings_ui_handle_button(&ui, CAT_BTN_UP, status, sizeof(status), NULL);
+    if (ui.timezone_picker_list.cursor != kJawakaTimeZoneCount - 1)
+        return fail("Up from the first row did not reach the last");
+
+    unlink(db);
+    return 0;
+}
+
 /* Render at device size with a software renderer. Sentinel pixels catch text,
    sliders, swatches or highlights escaping the allocated page rectangle. */
 static int check_layout_viewport(void) {
@@ -166,6 +390,57 @@ static int check_layout_viewport(void) {
                         return fail("settings drew outside its viewport");
             cat_list_state_move(&ui.home_screen_list, -1, JW_HOMESCREEN_ROW_COUNT);
             cat_list_state_move(&ui.home_screen_list, 1, JW_HOMESCREEN_ROW_COUNT);
+        }
+    }
+
+    /* The Time Zone picker at the same sizes. It is now the longest list in
+       Settings by a wide margin, and its subheader is the one line of copy that
+       explains what the offset column means -- a subheader clipped to
+       "Offsets are standard ti..." would leave the column unexplained, which is
+       what the sentence exists to prevent. The last row is the interesting
+       scroll position: that is where a list this long overruns its pane. */
+    jw_settings_ui tz = {0};
+    tz.open = true;
+    tz.screen = JW_SETTINGS_TIMEZONE_PICKER;
+    tz.user_theme_index = -1;
+    cat_list_state_init(&tz.timezone_picker_list, 7);
+    snprintf(tz.timezone, sizeof(tz.timezone), "%s", "Pacific/Auckland");
+    for (int bump = 2; bump <= 5; bump += 3) {
+        if (cat_set_font_bump(bump) != CAT_OK) return fail("font bump failed");
+        const int heights[] = { 620, 450 };
+        for (unsigned i = 0; i < sizeof(heights) / sizeof(heights[0]); ++i) {
+            for (int pass = 0; pass < 2; ++pass) {
+                /* First at the saved row, then at the very end of the list. */
+                cat_list_state_jump(&tz.timezone_picker_list,
+                                    pass ? kJawakaTimeZoneCount - 1
+                                         : jw_timezone_index_of(tz.timezone),
+                                    kJawakaTimeZoneCount);
+                SDL_SetRenderDrawColor(renderer, 13, 29, 47, 255);
+                SDL_RenderClear(renderer);
+                jw_settings_ui_render(&tz, 12, 60, 936, heights[i]);
+                if (SDL_RenderIsClipEnabled(renderer)) return fail("the picker leaked its clip");
+                int cur = tz.timezone_picker_list.cursor;
+                int top = tz.timezone_picker_list.scroll_offset;
+                if (cur < top || cur >= top + tz.timezone_picker_list.visible_rows)
+                    return fail("the picker scrolled its cursor out of view");
+                if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, pixels,
+                                         960 * sizeof(*pixels)) != 0)
+                    return fail("could not inspect the rendered picker");
+                for (int y = 0; y < 720; ++y)
+                    for (int x = 0; x < 960; ++x)
+                        if ((x < 12 || x >= 948 || y < 60 || y >= 60 + heights[i]) &&
+                            pixels[y * 960 + x] != 0xff0d1d2f)
+                            return fail("the picker drew outside its viewport");
+            }
+        }
+        /* The subheader has to fit the pane, not just stay inside the window:
+           cat_draw_text_ellipsized would silently cut it otherwise. Measured
+           against the same width the renderer passes. */
+        const char *sub = T("Offsets are standard time; regions adjust for DST");
+        if (cat_measure_text(cat_get_font(CAT_FONT_SMALL), sub) > 936 - cat_scale(24)) {
+            fprintf(stderr, "settings-status-test: the picker subheader is clipped at "
+                            "font bump %d\n", bump);
+            return 1;
         }
     }
     free(pixels);
@@ -360,6 +635,8 @@ int main(void) {
             return fail("the last visible tab was switched off");
     }
 
+    if (check_timezone_catalog() || check_timezone_lookup() ||
+        check_timezone_selection()) return 1;
     if (check_activity() || check_theme_selection() || check_layout_viewport()) return 1;
     puts("PASS settings-status-test");
     return 0;

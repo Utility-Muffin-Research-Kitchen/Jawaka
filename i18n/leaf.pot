@@ -352,12 +352,20 @@ msgstr ""
 msgid "Adding Splore favorites"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Adelaide"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Adjust"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Advanced RetroArch menu"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Afghanistan"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -382,6 +390,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Already used by %s"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "American Samoa"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -444,6 +456,10 @@ msgstr ""
 msgid "Atari Lynx"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Atlantic Canada"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Atomiswave"
 msgstr ""
@@ -496,8 +512,20 @@ msgstr ""
 msgid "Background"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Baker Island"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Balanced"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Bangkok"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Bangladesh"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -552,7 +580,7 @@ msgstr ""
 msgid "Box art"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "Brazil (East)"
 msgstr ""
 
@@ -612,12 +640,20 @@ msgstr ""
 msgid "Cancelled"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Cape Verde"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "Card:"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "Central Europe"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Chatham Islands"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -628,7 +664,7 @@ msgstr ""
 msgid "Check SD card"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "China"
 msgstr ""
 
@@ -744,6 +780,10 @@ msgstr ""
 msgid "DMC"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Darwin"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Default"
 msgstr ""
@@ -812,7 +852,11 @@ msgstr ""
 msgid "Drop"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
+msgid "Dubai"
+msgstr ""
+
+#: internal/settings/timezones.c
 msgid "Eastern Europe"
 msgstr ""
 
@@ -838,6 +882,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Error"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Eucla"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -866,6 +914,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Favorites"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Fernando de Noronha"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1044,7 +1096,7 @@ msgstr ""
 msgid "Icon"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "India"
 msgstr ""
 
@@ -1080,7 +1132,7 @@ msgstr ""
 msgid "Intellivision"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "Japan / Korea"
 msgstr ""
 
@@ -1192,6 +1244,10 @@ msgstr ""
 msgid "Lighting"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Line Islands"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "List Style"
 msgstr ""
@@ -1212,6 +1268,10 @@ msgstr ""
 msgid "Lock"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Lord Howe Island"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "MS-DOS"
 msgstr ""
@@ -1226,6 +1286,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Manual"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Marquesas Islands"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1252,6 +1316,10 @@ msgstr ""
 msgid "Mode"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Moscow"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Most played"
 msgstr ""
@@ -1266,6 +1334,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Moving"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Myanmar"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1292,6 +1364,10 @@ msgstr ""
 msgid "Neo Geo Pocket Color"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Nepal"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Network: %s"
 msgstr ""
@@ -1300,8 +1376,16 @@ msgstr ""
 msgid "Never"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "New Zealand"
+msgstr ""
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "New saves may fail"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Newfoundland"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1445,6 +1529,10 @@ msgid "Off"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Offsets are standard time; regions adjust for DST"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "On"
 msgstr ""
 
@@ -1486,6 +1574,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat Themes"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Pakistan"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2056,10 +2148,6 @@ msgstr ""
 msgid "Set a PIN"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Set your local time zone"
-msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Settings"
 msgstr ""
@@ -2142,6 +2230,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Soft"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Solomon Islands"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2264,7 +2356,7 @@ msgstr ""
 msgid "Switcher"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "Sydney"
 msgstr ""
 
@@ -2496,6 +2588,10 @@ msgstr ""
 msgid "To repair it, turn off your device and check the card on a computer."
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Tonga"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Total"
 msgstr ""
@@ -2524,39 +2620,39 @@ msgstr ""
 msgid "UI Rumble"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "UK / Ireland"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Alaska"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Arizona"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Central"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Eastern"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Hawaii"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Mountain"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Pacific"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "UTC"
 msgstr ""
 

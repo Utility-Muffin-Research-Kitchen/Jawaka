@@ -1531,6 +1531,10 @@ msgid "Off"
 msgstr "关闭"
 
 #: internal/settings/settings.c
+msgid "Offsets are standard time; regions adjust for DST"
+msgstr "偏移为标准时间；各地区会自动调整夏令时"
+
+#: internal/settings/settings.c
 msgid "On"
 msgstr "开启"
 
@@ -2147,10 +2151,6 @@ msgstr "服务"
 #: cmd/jawaka-launcher/main.c
 msgid "Set a PIN"
 msgstr "设置PIN"
-
-#: internal/settings/settings.c
-msgid "Set your local time zone"
-msgstr "设置您所在的时区"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Settings"

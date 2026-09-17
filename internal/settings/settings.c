@@ -10,6 +10,7 @@
 #include "internal/platform/platform_id.h"
 #include "internal/scrape/scrape_catalog.h"
 #include "internal/settings/appearance.h"
+#include "internal/settings/timezones.h"
 #include "internal/i18n/i18n.h"
 #include "cJSON.h"
 
@@ -278,51 +279,15 @@ static const char *jw__grid_density_label(int index, char *buf, size_t n) {
     return buf;
 }
 
-/* Curated time-zone list for Settings > System > Time Zone. Each entry maps a
-   friendly label to an IANA zone id, exported as the TZ environment variable. The
-   clock uses localtime(), which honors TZ, so picking a zone corrects the clock
-   instantly and flows to launched apps. zoneinfo for every entry ships in the
-   rootfs (/usr/share/zoneinfo), so no data needs bundling. ASCII labels only
-   (the launcher font subset has no extended-Latin glyphs). */
-/* Ordered by UTC (standard-time) offset, the convention OS time-zone pickers use.
-   `off` is the displayed base offset (DST shifts it at runtime); ASCII only. */
-typedef struct { const char *label; const char *tz; const char *off; } jw__timezone_entry;
-static const jw__timezone_entry kTimeZones[] = {
-    { "US Hawaii",          "Pacific/Honolulu",    "UTC-10"   },
-    { "US Alaska",          "America/Anchorage",   "UTC-9"    },
-    { "US Pacific",         "America/Los_Angeles", "UTC-8"    },
-    { "US Mountain",        "America/Denver",      "UTC-7"    },
-    { "US Arizona",         "America/Phoenix",     "UTC-7"    },
-    { "US Central",         "America/Chicago",     "UTC-6"    },
-    { "US Eastern",         "America/New_York",    "UTC-5"    },
-    { "Brazil (East)",      "America/Sao_Paulo",   "UTC-3"    },
-    { "UTC",                "UTC",                 "UTC"      },
-    { "UK / Ireland",       "Europe/London",       "UTC+0"    },
-    { "Central Europe",     "Europe/Paris",        "UTC+1"    },
-    { "Eastern Europe",     "Europe/Athens",       "UTC+2"    },
-    { "India",              "Asia/Kolkata",        "UTC+5:30" },
-    { "China",              "Asia/Shanghai",       "UTC+8"    },
-    { "Japan / Korea",      "Asia/Tokyo",          "UTC+9"    },
-    { "Sydney",             "Australia/Sydney",    "UTC+10"   },
-};
-#define JW_TIMEZONE_COUNT ((int)(sizeof(kTimeZones) / sizeof(kTimeZones[0])))
-/* Rows visible at once in the picker pane (the list scrolls past this). Matches
-   the System Update picker, which uses the same two-line item height + pane. */
+/* The time-zone catalog itself lives in internal/settings/timezones.c so the
+   focused tests and the on-device libc probe can check the shipped table
+   rather than a copy of it. Picking a zone sets TZ, which localtime() honors,
+   so the clock corrects instantly and the choice flows to launched apps. */
+#define JW_TIMEZONE_COUNT (kJawakaTimeZoneCount)
+/* Rows the picker starts out assuming it can show; the render pass replaces
+   this with what actually fits. Matches the System Update picker, which uses
+   the same two-line item height + pane. */
 #define JW_TIMEZONE_VISIBLE_ROWS 7
-
-static const char *jw__timezone_label(const char *tz) {
-    if (!tz || !tz[0]) return "System default";
-    for (int i = 0; i < JW_TIMEZONE_COUNT; ++i)
-        if (strcmp(kTimeZones[i].tz, tz) == 0) return kTimeZones[i].label;
-    return tz;   /* unknown id: show the raw zone */
-}
-
-static int jw__timezone_index_of(const char *tz) {
-    if (tz && tz[0])
-        for (int i = 0; i < JW_TIMEZONE_COUNT; ++i)
-            if (strcmp(kTimeZones[i].tz, tz) == 0) return i;
-    return 0;
-}
 
 /* Set TZ and refresh libc's timezone state so the very next localtime() (the
    status-bar clock) reflects the new zone without a restart. Empty tz leaves the
@@ -5174,7 +5139,7 @@ static void jw__render_system(const jw_settings_ui *ui, int x, int y, int w, int
             break;
         case JW_SYSTEM_ROW_TIMEZONE:
             jw__render_list_row(&ui->system_list, x, ly, w, row,
-                                "Time Zone", jw__timezone_label(ui->timezone), true);
+                                "Time Zone", jw_timezone_label(ui->timezone), true);
             break;
         case JW_SYSTEM_ROW_AUTO_SLEEP: {
             int idx = (ui->auto_sleep_index >= 0 && ui->auto_sleep_index < JW_AUTO_SLEEP_COUNT)
@@ -5728,14 +5693,14 @@ static void jw__draw_timezone_item(int idx, int ix, int iy, int iw, int ih,
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
     const char *cur = ui ? ui->timezone : "";
-    bool is_current = (cur[0] && strcmp(cur, kTimeZones[idx].tz) == 0);
+    bool is_current = (cur[0] && strcmp(cur, kJawakaTimeZones[idx].tz) == 0);
     char label[48];
     snprintf(label, sizeof(label), "%s%s", is_current ? "* " : "",
-             T(kTimeZones[idx].label));
+             T(kJawakaTimeZones[idx].label));
     cat_draw_text_ellipsized(body, label, ix + cat_scale(12), ty, label_c, iw / 2);
 
-    int vw = cat_measure_text(body, kTimeZones[idx].off);
-    cat_draw_text(body, kTimeZones[idx].off, ix + iw - vw - cat_scale(16), ty, value_c);
+    int vw = cat_measure_text(body, kJawakaTimeZones[idx].off);
+    cat_draw_text(body, kJawakaTimeZones[idx].off, ix + iw - vw - cat_scale(16), ty, value_c);
 }
 
 static void jw__render_timezone_picker(const jw_settings_ui *ui,
@@ -5747,7 +5712,8 @@ static void jw__render_timezone_picker(const jw_settings_ui *ui,
     int sub_h = jw__subheader_line_h(small) + cat_scale(6);
     SDL_Rect sub;
     SDL_Rect c = jw__settings_boxes(x, y, w, h, true, sub_h, NULL, &sub);
-    cat_draw_text_ellipsized(small, T("Set your local time zone"), sub.x + cat_scale(12),
+    cat_draw_text_ellipsized(small, T("Offsets are standard time; regions adjust for DST"),
+                             sub.x + cat_scale(12),
                              sub.y, theme->hint, sub.w - cat_scale(24));
 
     int item_h = TTF_FontHeight(body) + cat_scale(12);
@@ -8531,11 +8497,16 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 } else if (kind == JW_SYSTEM_ROW_TIMEZONE) {
                     /* Open the picker (A / Right); a long list isn't a cycler. */
                     if (button == CAT_BTN_A || button == CAT_BTN_RIGHT) {
-                        int cur = jw__timezone_index_of(ui->timezone);
-                        ui->timezone_picker_list.cursor = cur;
-                        /* Scroll so the current zone is on screen when it opens. */
-                        int off = cur - (JW_TIMEZONE_VISIBLE_ROWS - 1);
-                        ui->timezone_picker_list.scroll_offset = off > 0 ? off : 0;
+                        /* jump() scrolls against the row count the last render
+                           actually fit, so the selected zone is on screen even
+                           near the end of a list this long. Computing the
+                           offset by hand against a fixed row count is what
+                           strands a late selection off-screen. With nothing
+                           saved this lands on UTC, not row 0 -- row 0 is
+                           UTC-12, and opening there would read as a default. */
+                        cat_list_state_jump(&ui->timezone_picker_list,
+                                            jw_timezone_index_of(ui->timezone),
+                                            JW_TIMEZONE_COUNT);
                         ui->screen = JW_SETTINGS_TIMEZONE_PICKER;
                     }
                 } else if (kind == JW_SYSTEM_ROW_SD_CARDS) {
@@ -8578,12 +8549,12 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 int idx = ui->timezone_picker_list.cursor;
                 if (idx >= 0 && idx < JW_TIMEZONE_COUNT) {
                     snprintf(ui->timezone, sizeof(ui->timezone), "%s",
-                             kTimeZones[idx].tz);
+                             kJawakaTimeZones[idx].tz);
                     jw__persist(ui, "timezone", ui->timezone);
                     jw__apply_timezone(ui->timezone);   /* clock updates immediately */
                     if (status_buf && status_size > 0)
                         snprintf(status_buf, (size_t)status_size, "Time zone: %s",
-                                 kTimeZones[idx].label);
+                                 kJawakaTimeZones[idx].label);
                 }
                 ui->screen = JW_SETTINGS_SYSTEM;
                 break;
