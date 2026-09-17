@@ -1033,7 +1033,7 @@ static void jw__ingame_shader_refresh(const char *socket_path,
                 (strcmp(path, picker.current_path) == 0 ||
                  (referenced[0] && strcmp(path, referenced) == 0))) {
                 snprintf(state->shader_label, sizeof(state->shader_label), "%s",
-                         catalog.rows[i].display_name);
+                         T(catalog.rows[i].display_name));
                 found = true;
                 break;
             }
@@ -1906,7 +1906,10 @@ static const char *jw__shader_item_label(const jw_ingame_shader_view *view,
                                          int index) {
     if (index == 0) return T("Off");
     const jw_shader_catalog_row *row = jw__shader_item_row(view, index);
-    if (row) return row->display_name;
+    /* Catalog text is data from shaders/manifest.json, not a literal in this
+       repo, so it is translated here at draw the way a row label would be. The
+       keys reach the .pot through internal/retroarch/shader_strings.c. */
+    if (row) return T(row->display_name);
     if (index == jw__shader_custom_index(view)) return T("Save current shader…");
     return T("Advanced RetroArch menu");
 }
@@ -2092,9 +2095,9 @@ static void jw__render_ingame_shader(const jw_ingame_state *state,
     const char *description = NULL;
     const char *constraint = NULL;
     if (selected) {
-        description = selected->description;
+        description = T(selected->description);
         if (selected->constraint_count > 0) {
-            constraint = selected->constraints[0];
+            constraint = T(selected->constraints[0]);
             /* The active-system filter already enforces simple "GBA only"
                constraints. Prefer the safety/performance caveat the device
                matrix asks the user to see when one is present. */

@@ -425,6 +425,7 @@ UI_SRCS := \
 	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/retroarch/shader_catalog.c \
 	internal/retroarch/shader_picker.c \
+	internal/retroarch/shader_strings.c \
 	internal/retroarch/states.c \
 	internal/storage/health.c \
 	internal/storage/sources.c \
@@ -518,12 +519,14 @@ jawaka-i18n-test: $(BUILD)/bin/jawaka-i18n-test
 # Regenerate the canonical key list from the sources. Commit the result --
 # CI diffs it, so a UI-string change without a regenerated .pot fails there.
 i18n-pot:
-	python3 tools/i18n-extract.py
+	python3 tools/gen-shader-strings.py
+	python3 tools/i18n-extract.py --po $(wildcard i18n/*.po)
 
 # What CI runs: the committed .pot must match the code, and any committed
 # translation must parse, carry no orphan keys, and keep its printf
 # conversions compatible (i18n-compile.py enforces that last one).
 i18n-check:
+	python3 tools/gen-shader-strings.py --check
 	python3 tools/i18n-extract.py --check --po $(wildcard i18n/*.po)
 	@for po in $(wildcard i18n/*.po); do \
 		python3 tools/i18n-compile.py $$po -o /tmp/i18n-check.jwi || exit 1; \
