@@ -425,6 +425,7 @@ UI_SRCS := \
 	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/retroarch/shader_catalog.c \
 	internal/retroarch/shader_picker.c \
+	internal/retroarch/shader_strings.c \
 	internal/retroarch/states.c \
 	internal/storage/health.c \
 	internal/storage/sources.c \
@@ -524,6 +525,7 @@ i18n-pot:
 # translation must parse, carry no orphan keys, and keep its printf
 # conversions compatible (i18n-compile.py enforces that last one).
 i18n-check:
+	python3 tools/gen-shader-strings.py --check
 	python3 tools/i18n-extract.py --check --po $(wildcard i18n/*.po)
 	@for po in $(wildcard i18n/*.po); do \
 		python3 tools/i18n-compile.py $$po -o /tmp/i18n-check.jwi || exit 1; \
