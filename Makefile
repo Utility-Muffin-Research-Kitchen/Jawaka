@@ -519,7 +519,8 @@ jawaka-i18n-test: $(BUILD)/bin/jawaka-i18n-test
 # Regenerate the canonical key list from the sources. Commit the result --
 # CI diffs it, so a UI-string change without a regenerated .pot fails there.
 i18n-pot:
-	python3 tools/i18n-extract.py
+	python3 tools/gen-shader-strings.py
+	python3 tools/i18n-extract.py --po $(wildcard i18n/*.po)
 
 # What CI runs: the committed .pot must match the code, and any committed
 # translation must parse, carry no orphan keys, and keep its printf
