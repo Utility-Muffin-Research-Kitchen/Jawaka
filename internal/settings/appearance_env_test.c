@@ -12,9 +12,17 @@
  *     earlier game launch is replaced, in both directions;
  *   - an empty/missing resolved language exports "en" (absence means English);
  *   - a CJK language drives the CJK font path.
+ *
+ * It also covers the TZ half of the same handoff. A launched app reads its
+ * local time from TZ, never from the settings database, so the zone a user
+ * picks reaches an app only if this export replaces whatever the daemon
+ * environment still holds from an earlier launch. Getting that wrong is
+ * invisible in the launcher, whose own clock is corrected in-process, and shows
+ * up only inside apps.
  */
 
 #include "internal/settings/appearance.h"
+#include "internal/settings/timezones.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +41,14 @@ static const char *env_or(const char *name, const char *fallback) {
 static int env_is(const char *name, const char *wanted) {
     const char *v = getenv(name);
     return v && strcmp(v, wanted) == 0;
+}
+
+/* These ids have to be real picker rows, or the export check below is
+   exercising a zone no user can actually choose. */
+static int in_picker(const char *tz) {
+    for (int i = 0; i < kJawakaTimeZoneCount; ++i)
+        if (strcmp(kJawakaTimeZones[i].tz, tz) == 0) return 1;
+    return 0;
 }
 
 static void fill_minimal(jw_appearance_env *env, const char *language) {
@@ -99,6 +115,39 @@ int main(void) {
     jw_appearance_apply_env(&env);
     if (!env_is("UMRK_LANGUAGE", "en") || !env_is("JAWAKA_LANGUAGE", "en"))
         return fail("empty language did not export en");
+
+    /* TZ: a saved zone must overwrite an inherited one, in both directions.
+       Europe/Paris standing in for the stale value an earlier launch left
+       behind, and back again, because a user switching away from New Zealand
+       has exactly the same problem in reverse. Chatham and the Line Islands
+       ride along: their fractional and far-east offsets are the ids most likely
+       to be mangled by a well-meaning "normalize the offset" change somewhere
+       in the path. */
+    static const char *kZones[] = { "Pacific/Auckland", "Europe/Paris",
+                                    "Pacific/Chatham", "Pacific/Kiritimati",
+                                    "Pacific/Auckland" };
+    for (unsigned i = 0; i < sizeof(kZones) / sizeof(kZones[0]); ++i) {
+        if (!in_picker(kZones[i]))
+            return fail("a zone used here is not actually in the picker");
+        fill_minimal(&env, "en");
+        snprintf(env.timezone, sizeof(env.timezone), "%s", kZones[i]);
+        if (jw_appearance_apply_env(&env) != 0)
+            return fail("apply_env failed with a timezone set");
+        if (!env_is("TZ", kZones[i])) {
+            fprintf(stderr, "appearance-env-test: exported TZ=%s, expected %s\n",
+                    env_or("TZ", "(unset)"), kZones[i]);
+            return 1;
+        }
+    }
+
+    /* No saved zone leaves the inherited one alone: an empty setting means
+       "follow the system", not "reset to UTC". */
+    setenv("TZ", "Europe/Paris", 1);
+    fill_minimal(&env, "en");
+    if (jw_appearance_apply_env(&env) != 0)
+        return fail("apply_env failed with no timezone");
+    if (!env_is("TZ", "Europe/Paris"))
+        return fail("an empty timezone setting overwrote the inherited TZ");
 
     puts("PASS appearance-env-test");
     return 0;

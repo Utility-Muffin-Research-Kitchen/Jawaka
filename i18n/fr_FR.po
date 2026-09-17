@@ -1506,6 +1506,10 @@ msgid "Off"
 msgstr "Désactivé"
 
 #: internal/settings/settings.c
+msgid "Offsets are standard time; regions adjust for DST"
+msgstr "Heure standard ; les régions suivent l'heure d'été"
+
+#: internal/settings/settings.c
 msgid "On"
 msgstr "Activé"
 
@@ -2125,10 +2129,6 @@ msgstr "Services"
 #: cmd/jawaka-launcher/main.c
 msgid "Set a PIN"
 msgstr "Définir un code PIN"
-
-#: internal/settings/settings.c
-msgid "Set your local time zone"
-msgstr "Définir votre fuseau horaire local"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Settings"
