@@ -358,10 +358,17 @@ typedef struct {
                                                to RetroArch's session config, which validates it */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     /* Home Tabs editor. home_tab_order holds all JW_HOME_TABS_COUNT tabs in
-       display order (each a jw_tab index); the first home_tab_visible entries are
-       shown, the rest are hidden. Serialized to the "home_tab_order" setting as a
-       CSV of the visible tab indices. */
+       display order (each a jw_tab index); home_tab_hidden says which of them the
+       launcher skips, so hiding a tab leaves it where it sits in the list rather
+       than sinking it to the bottom.
+
+       Serialized to the "home_tab_order" setting as a CSV in display order, a
+       hidden tab written as -(index + 1). Readers that predate hiding-in-place
+       (the launcher's own parser, and any older build) drop negative tokens,
+       which leaves exactly the visible tabs in order: the same value they always
+       read. */
     int                home_tab_order[JW_HOME_TABS_COUNT];
+    bool               home_tab_hidden[JW_HOME_TABS_COUNT];   /* by jw_tab index */
     int                home_tab_visible;    /* count of visible tabs (>= 1) */
     cat_list_state     home_tabs_list;
     bool               home_tabs_grabbed;   /* X grabbed the cursor row to reorder */
