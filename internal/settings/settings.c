@@ -5010,6 +5010,7 @@ static const char *jw__language_label(const char *code) {
     if (!code || !code[0] || strcmp(code, "en") == 0) return "English";
     if (strcmp(code, "zh_CN") == 0) return "中文";
     if (strcmp(code, "fr_FR") == 0) return "Français";
+    if (strcmp(code, "es_MX") == 0) return "Español (México)";
     if (strcmp(code, "zh_TW") == 0) return "繁體中文";
     if (strcmp(code, "ja") == 0)    return "日本語";
     if (strcmp(code, "ko") == 0)    return "한국어";
