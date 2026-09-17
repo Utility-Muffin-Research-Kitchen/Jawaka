@@ -768,10 +768,6 @@ msgstr "Continuer"
 msgid "Controller setup failed. Restart Leaf and try again."
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Controls & Feedback"
-msgstr "Commandes et retours"
-
 #: cmd/jawaka-launcher/main.c
 msgid "Core"
 msgstr "Cœur"
@@ -1087,6 +1083,18 @@ msgid "Home Tabs"
 msgstr "Onglets de l’accueil"
 
 #: internal/settings/settings.c
+msgid "Hotkey"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hotkeys"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hotkeys & Rumble"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "IP: %s"
 msgstr "IP : %s"
 
@@ -1101,13 +1109,6 @@ msgstr "IPv6"
 #: internal/settings/settings.c
 msgid "Icon"
 msgstr "Icône"
-
-# In-game Shortcuts page.
-# Saving follows the existing "Save & Quit" -> Sauvegarder et quitter / "Saving" -> Sauvegarde.
-# Keyboard-Shortcut is the usual term for a shortcut key binding.
-#: internal/settings/settings.c
-msgid "In-game Shortcuts"
-msgstr "Raccourcis en jeu"
 
 #: internal/settings/settings.c
 msgid "India"
@@ -1715,8 +1716,8 @@ msgid "Recording"
 msgstr "Enregistrement"
 
 #: internal/settings/settings.c
-msgid "Recording Shortcut"
-msgstr "Raccourci d’enregistrement"
+msgid "Recording Hotkey"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Refresh"
@@ -2038,8 +2039,8 @@ msgid "Screenshot"
 msgstr "Capture d’écran"
 
 #: internal/settings/settings.c
-msgid "Screenshot Shortcut"
-msgstr "Raccourci de capture d’écran"
+msgid "Screenshot Hotkey"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Screenshots"
@@ -2169,11 +2170,6 @@ msgstr "Échec de l’opération sur le shader."
 #: cmd/jawaka-menu/main.c
 msgid "Shader scope"
 msgstr "Portée du shader"
-
-# Header fallback when the action name is unavailable; "Shortcut" alone.
-#: internal/settings/settings.c
-msgid "Shortcut"
-msgstr "Raccourci"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
@@ -3027,6 +3023,25 @@ msgstr "échec du réglage du volume"
 #: internal/settings/settings.c
 msgid "—"
 msgstr "—"
+
+#~ msgid "Controls & Feedback"
+#~ msgstr "Commandes et retours"
+
+# In-game Shortcuts page.
+# Saving follows the existing "Save & Quit" -> Sauvegarder et quitter / "Saving" -> Sauvegarde.
+# Keyboard-Shortcut is the usual term for a shortcut key binding.
+#~ msgid "In-game Shortcuts"
+#~ msgstr "Raccourcis en jeu"
+
+#~ msgid "Recording Shortcut"
+#~ msgstr "Raccourci d’enregistrement"
+
+#~ msgid "Screenshot Shortcut"
+#~ msgstr "Raccourci de capture d’écran"
+
+# Header fallback when the action name is unavailable; "Shortcut" alone.
+#~ msgid "Shortcut"
+#~ msgstr "Raccourci"
 
 #~ msgid "Network"
 #~ msgstr "Réseau"

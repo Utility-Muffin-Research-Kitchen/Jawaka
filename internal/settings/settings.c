@@ -536,7 +536,7 @@ static const jw_home_category kHomeCategories[] = {
     { "Wi-Fi",               JW_SETTINGS_WIFI        },
     { "Bluetooth",           JW_SETTINGS_BLUETOOTH   },
     { "Games",               JW_SETTINGS_GAMES       },
-    { "Controls & Feedback", JW_SETTINGS_CONTROLS    },
+    { "Hotkeys & Rumble",    JW_SETTINGS_CONTROLS    },
     { "System",              JW_SETTINGS_SYSTEM      },
 };
 /* System Update and About are not listed here — they live in the System menu
@@ -4745,7 +4745,7 @@ static void jw__render_playtime(const jw_settings_ui *ui, int x, int y, int w, i
 }
 
 static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, int h) {
-    jw__draw_header("Controls & Feedback", x, y, w);
+    jw__draw_header("Hotkeys & Rumble", x, y, w);
     int ly = jw__settings_boxes(x, y, w, h, true, 0, NULL, NULL).y;
     int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
     jw__begin_settings_rows(&ui->controls_list, x, ly, w, y + h - ly,
@@ -4765,7 +4765,7 @@ static void jw__render_controls(const jw_settings_ui *ui, int x, int y, int w, i
 
 #ifdef PLATFORM_MLP1
     jw__render_nav_row(&ui->controls_list, x, ly, w, JW_CONTROLS_SHORTCUTS,
-                       "In-game Shortcuts");
+                       "Hotkeys");
 }
 
 /* "Menu + L1", or "Disabled". The modifier is fixed, so showing it on every
@@ -4863,7 +4863,7 @@ static void jw__render_shortcut_picker(const jw_settings_ui *ui,
                                        int x, int y, int w, int h) {
     const char *action_label =
         jw_input_shortcut_action_label(ui->shortcut_pick_action);
-    jw__draw_header(action_label ? action_label : "Shortcut", x, y, w);
+    jw__draw_header(action_label ? action_label : "Hotkey", x, y, w);
 
     ap_theme *theme = cat_get_theme();
     TTF_Font *small = cat_get_font(CAT_FONT_SMALL);
@@ -4891,7 +4891,7 @@ static void jw__render_shortcut_picker(const jw_settings_ui *ui,
 
 static void jw__render_input_shortcuts(const jw_settings_ui *ui,
                                        int x, int y, int w, int h) {
-    jw__draw_header("In-game Shortcuts", x, y, w);
+    jw__draw_header("Hotkeys", x, y, w);
 
     /* The modifier is fixed and never appears as a row, so the only place a
        user learns it is here. X is likewise undiscoverable otherwise: it is
@@ -4924,14 +4924,14 @@ static void jw__render_input_shortcuts(const jw_settings_ui *ui,
        not a binding that was quietly reset. */
     jw__shortcut_value(ui, JW_INPUT_SHORTCUT_SCREENSHOT, value, sizeof(value));
     jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_SHOT_BIND,
-                        "Screenshot Shortcut", value, true);
+                        "Screenshot Hotkey", value, true);
 
     jw__render_toggle_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_RECORDING,
                           "Recording", ui->recording_enabled ? "On" : "Off");
 
     jw__shortcut_value(ui, JW_INPUT_SHORTCUT_RECORDING, value, sizeof(value));
     jw__render_list_row(&ui->shortcuts_list, x, ly, w, JW_SHORTCUT_REC_BIND,
-                        "Recording Shortcut", value, true);
+                        "Recording Hotkey", value, true);
 
     /* Both dependants read "-" while recording is off, matching how the rumble
        rows dim when the master is off. */
@@ -8244,7 +8244,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
         break;
     }
 
-    /* ── Controls & Feedback ─────────────────────────────────────────── */
+    /* ── Hotkeys & Rumble ─────────────────────────────────────────── */
     case JW_SETTINGS_CONTROLS:
         switch (button) {
             case CAT_BTN_UP:   cat_list_state_move(&ui->controls_list, -1, JW_CONTROLS_ROW_COUNT); break;
@@ -8319,7 +8319,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
         break;
 
 #ifdef PLATFORM_MLP1
-    /* ── In-game Shortcuts (MLP1) ────────────────────────────────────── */
+    /* ── Hotkeys (MLP1) ────────────────────────────────────── */
     case JW_SETTINGS_INPUT_SHORTCUTS:
         switch (button) {
             case CAT_BTN_UP:

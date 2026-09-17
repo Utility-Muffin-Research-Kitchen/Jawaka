@@ -720,10 +720,6 @@ msgstr ""
 msgid "Controller setup failed. Restart Leaf and try again."
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Controls & Feedback"
-msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Core"
 msgstr ""
@@ -1033,6 +1029,18 @@ msgid "Home Tabs"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Hotkey"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hotkeys"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hotkeys & Rumble"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "IP: %s"
 msgstr ""
 
@@ -1046,10 +1054,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Icon"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "In-game Shortcuts"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1649,7 +1653,7 @@ msgid "Recording"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Recording Shortcut"
+msgid "Recording Hotkey"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1965,7 +1969,7 @@ msgid "Screenshot"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "Screenshot Shortcut"
+msgid "Screenshot Hotkey"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2090,10 +2094,6 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader scope"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "Shortcut"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

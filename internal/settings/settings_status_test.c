@@ -277,8 +277,8 @@ int main(void) {
     if (ui.system_icon_pack_index != JW_SYSTEM_ICON_PACK_COUNT - 1 || !theme_changed)
         return fail("System Icons did not cycle backwards");
 
-    /* Controls & Feedback keeps all seven rows off MLP1: the capture toggles
-       stay on the parent page because there is no In-game Shortcuts child to
+    /* Hotkeys & Rumble keeps all seven rows off MLP1: the capture toggles
+       stay on the parent page because there is no Hotkeys child to
        move them into. On MLP1 this is four, and the shortcut page's own logic
        is covered by input-shortcuts-test -- the UI cannot be built in MLP1
        shape on this host, because Catastrophe's MLP1 paths need <linux/input.h>

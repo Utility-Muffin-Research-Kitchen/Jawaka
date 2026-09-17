@@ -764,10 +764,6 @@ msgstr "Continuar"
 msgid "Controller setup failed. Restart Leaf and try again."
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Controls & Feedback"
-msgstr "Controles y respuesta"
-
 #: cmd/jawaka-launcher/main.c
 msgid "Core"
 msgstr "Núcleo"
@@ -1080,6 +1076,18 @@ msgid "Home Tabs"
 msgstr "Pestañas de inicio"
 
 #: internal/settings/settings.c
+msgid "Hotkey"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hotkeys"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hotkeys & Rumble"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "IP: %s"
 msgstr "IP: %s"
 
@@ -1094,11 +1102,6 @@ msgstr "IPv6"
 #: internal/settings/settings.c
 msgid "Icon"
 msgstr "Ícono"
-
-# In-game Shortcuts page.
-#: internal/settings/settings.c
-msgid "In-game Shortcuts"
-msgstr "Atajos en el juego"
 
 #: internal/settings/settings.c
 msgid "India"
@@ -1706,8 +1709,8 @@ msgid "Recording"
 msgstr "Grabando"
 
 #: internal/settings/settings.c
-msgid "Recording Shortcut"
-msgstr "Atajo de grabación"
+msgid "Recording Hotkey"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Refresh"
@@ -2029,8 +2032,8 @@ msgid "Screenshot"
 msgstr "Captura de pantalla"
 
 #: internal/settings/settings.c
-msgid "Screenshot Shortcut"
-msgstr "Atajo de captura de pantalla"
+msgid "Screenshot Hotkey"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Screenshots"
@@ -2157,11 +2160,6 @@ msgstr "Falló la operación del shader."
 #: cmd/jawaka-menu/main.c
 msgid "Shader scope"
 msgstr "Alcance del shader"
-
-# Header fallback when the action name is unavailable; "Shortcut" alone.
-#: internal/settings/settings.c
-msgid "Shortcut"
-msgstr "Atajo"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
@@ -3015,6 +3013,23 @@ msgstr "error en el ajuste de volumen"
 #: internal/settings/settings.c
 msgid "—"
 msgstr "—"
+
+#~ msgid "Controls & Feedback"
+#~ msgstr "Controles y respuesta"
+
+# In-game Shortcuts page.
+#~ msgid "In-game Shortcuts"
+#~ msgstr "Atajos en el juego"
+
+#~ msgid "Recording Shortcut"
+#~ msgstr "Atajo de grabación"
+
+#~ msgid "Screenshot Shortcut"
+#~ msgstr "Atajo de captura de pantalla"
+
+# Header fallback when the action name is unavailable; "Shortcut" alone.
+#~ msgid "Shortcut"
+#~ msgstr "Atajo"
 
 #~ msgid "Network"
 #~ msgstr "Red"

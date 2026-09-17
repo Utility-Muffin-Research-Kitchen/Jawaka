@@ -796,10 +796,6 @@ msgstr "继续"
 msgid "Controller setup failed. Restart Leaf and try again."
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Controls & Feedback"
-msgstr "控制与反馈"
-
 #: cmd/jawaka-launcher/main.c
 msgid "Core"
 msgstr "核心"
@@ -1113,6 +1109,18 @@ msgid "Home Tabs"
 msgstr "主页标签"
 
 #: internal/settings/settings.c
+msgid "Hotkey"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hotkeys"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Hotkeys & Rumble"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "IP: %s"
 msgstr "IP：%s"
 
@@ -1127,13 +1135,6 @@ msgstr ""
 #: internal/settings/settings.c
 msgid "Icon"
 msgstr "图标"
-
-# In-game Shortcuts page.
-# 保存 follows the existing "Save & Quit" -> 保存并退出 / "Saving" -> 保存中.
-# 快捷键 is the usual term for a shortcut key binding.
-#: internal/settings/settings.c
-msgid "In-game Shortcuts"
-msgstr "游戏内快捷键"
 
 #: internal/settings/settings.c
 msgid "India"
@@ -1740,8 +1741,8 @@ msgid "Recording"
 msgstr "录制"
 
 #: internal/settings/settings.c
-msgid "Recording Shortcut"
-msgstr "录制快捷键"
+msgid "Recording Hotkey"
+msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Refresh"
@@ -2060,8 +2061,8 @@ msgid "Screenshot"
 msgstr "截图"
 
 #: internal/settings/settings.c
-msgid "Screenshot Shortcut"
-msgstr "截图快捷键"
+msgid "Screenshot Hotkey"
+msgstr ""
 
 #: internal/settings/settings.c
 msgid "Screenshots"
@@ -2187,11 +2188,6 @@ msgstr "着色器操作失败。"
 #: cmd/jawaka-menu/main.c
 msgid "Shader scope"
 msgstr "着色器作用范围"
-
-# Header fallback when the action name is unavailable; "Shortcut" alone.
-#: internal/settings/settings.c
-msgid "Shortcut"
-msgstr "快捷键"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Show/Hide"
@@ -3063,6 +3059,25 @@ msgstr "音量调节失败"
 #: internal/settings/settings.c
 msgid "—"
 msgstr ""
+
+#~ msgid "Controls & Feedback"
+#~ msgstr "控制与反馈"
+
+# In-game Shortcuts page.
+# 保存 follows the existing "Save & Quit" -> 保存并退出 / "Saving" -> 保存中.
+# 快捷键 is the usual term for a shortcut key binding.
+#~ msgid "In-game Shortcuts"
+#~ msgstr "游戏内快捷键"
+
+#~ msgid "Recording Shortcut"
+#~ msgstr "录制快捷键"
+
+#~ msgid "Screenshot Shortcut"
+#~ msgstr "截图快捷键"
+
+# Header fallback when the action name is unavailable; "Shortcut" alone.
+#~ msgid "Shortcut"
+#~ msgstr "快捷键"
 
 #~ msgid "Network"
 #~ msgstr "网络"

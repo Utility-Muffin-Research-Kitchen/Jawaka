@@ -64,7 +64,8 @@ typedef enum {
     JW_SETTINGS_SCRAPE_QUEUE_DETAIL, /* one job's result (native page, was cat_detail_screen) */
     JW_SETTINGS_SCRAPE_DOWNLOAD,   /* pick All Systems / a system to scrape missing art */
     JW_SETTINGS_SYSTEM,      /* System: language, clock, power, storage */
-    JW_SETTINGS_CONTROLS,    /* Controls & Feedback: rumble/haptics */
+    JW_SETTINGS_CONTROLS,    /* Hotkeys & Rumble: rumble, and the way in to
+                                the Menu-chord bindings on MLP1 */
 #ifdef PLATFORM_MLP1
     /* Guarded rather than merely unreachable elsewhere, so every switch over
        this enum stops compiling on the platform that grows a new screen. */
@@ -200,11 +201,12 @@ typedef enum {
 } jw_system_row_kind;
 #define JW_SYSTEM_ROW_MAX JW_SYSTEM_ROW_KIND_COUNT
 
-/* Controls & Feedback page.
-   On MLP1 the four capture rows move to the In-game Shortcuts child page, so
-   this page ends at a single entry point to it. Everywhere else the page keeps
-   all eight rows and there is no child page: the shortcut bindings are an MLP1
-   input-proxy feature and mean nothing on the other backends. */
+/* Hotkeys & Rumble page.
+   On MLP1 the four capture rows move to the Hotkeys child page, so this page
+   ends at a single entry point to it. Everywhere else the page keeps all seven
+   rows and there is no child page: the chord bindings are an MLP1 input-proxy
+   feature and mean nothing on the other backends, which is also why the
+   category is named for both halves rather than only the hotkeys. */
 #define JW_CONTROLS_UI_RUMBLE   0   /* every interface buzz, cursor ticks included */
 #define JW_CONTROLS_GAME        1   /* hand the motor to emulators in-game */
 #define JW_CONTROLS_STRENGTH    2   /* 0-100 %, left/right adjust, shared by both */
@@ -220,10 +222,10 @@ typedef enum {
 #endif
 
 #ifdef PLATFORM_MLP1
-/* In-game Shortcuts page (MLP1 only). Each binding row sits under the feature
-   it belongs to, so "Screenshots off" and "Screenshot Shortcut disabled" read
-   as the two separate things they are: the toggle gates the feature, the
-   binding gates the chord. */
+/* Hotkeys page (MLP1 only). Each binding row sits under the feature it belongs
+   to, so "Screenshots off" and "Screenshot Hotkey disabled" read as the two
+   separate things they are: the toggle gates the feature, the binding gates the
+   chord. */
 #define JW_SHORTCUT_SWITCHER    0   /* Menu + <button> -> game switcher */
 #define JW_SHORTCUT_SCREENSHOTS 1   /* screenshot feature on/off */
 #define JW_SHORTCUT_SHOT_BIND   2   /* Menu + <button> -> screenshot */
@@ -294,9 +296,9 @@ typedef struct {
     bool               scrape_missing_have_cache;
     bool               scrape_download_replace;      /* Y toggles missing-only vs replace-all */
     cat_list_state     system_list;
-    cat_list_state     controls_list;    /* Controls & Feedback page */
+    cat_list_state     controls_list;    /* Hotkeys & Rumble page */
 #ifdef PLATFORM_MLP1
-    cat_list_state     shortcuts_list;   /* In-game Shortcuts page */
+    cat_list_state     shortcuts_list;   /* Hotkeys page */
     cat_list_state     shortcut_pick_list; /* button picker for one action */
     /* Which action the picker is editing. Set on entry; the picker reads no
        other row state, so leaving and re-entering always starts consistent. */
@@ -402,7 +404,7 @@ typedef struct {
     bool               recording_enabled;   /* Menu+R1 game recording hotkey (daemon reads the DB key) */
     bool               recording_split;     /* cut clips over 10MB into postable parts */
     bool               recording_keep_src;  /* keep the lossless .mkv once the MP4 exists */
-    bool               rumble_ui;         /* Controls & Feedback: interface buzzes (daemon reads DB) */
+    bool               rumble_ui;         /* Hotkeys & Rumble: interface buzzes (daemon reads DB) */
     bool               rumble_game;       /* in-game emulator rumble */
     int                rumble_strength;   /* 0-100 %, shared by both */
     /* Services screen (app-services-v1). A snapshot of CTL-1 service-list,
