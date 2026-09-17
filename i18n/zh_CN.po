@@ -267,10 +267,6 @@ msgstr "15 秒"
 msgid "2 min"
 msgstr "2 分钟"
 
-#: internal/settings/settings.c
-msgid "2 x 2"
-msgstr "2 x 2"
-
 #: cmd/jawaka-menu/main.c
 msgid "200 MHz"
 msgstr ""
@@ -278,10 +274,6 @@ msgstr ""
 #: internal/settings/settings.c
 msgid "24 Hour"
 msgstr "24小时制"
-
-#: internal/settings/settings.c
-msgid "3 x 2"
-msgstr "3 x 2"
 
 #: internal/settings/settings.c
 msgid "30 sec"
@@ -294,10 +286,6 @@ msgstr ""
 #: cmd/jawaka-menu/main.c
 msgid "324 MHz"
 msgstr ""
-
-#: internal/settings/settings.c
-msgid "4 x 3"
-msgstr "4 x 3"
 
 #: cmd/jawaka-menu/main.c
 msgid "400 MHz"
@@ -3059,6 +3047,15 @@ msgstr "音量调节失败"
 #: internal/settings/settings.c
 msgid "—"
 msgstr ""
+
+#~ msgid "2 x 2"
+#~ msgstr "2 x 2"
+
+#~ msgid "3 x 2"
+#~ msgstr "3 x 2"
+
+#~ msgid "4 x 3"
+#~ msgstr "4 x 3"
 
 #~ msgid "Controls & Feedback"
 #~ msgstr "控制与反馈"

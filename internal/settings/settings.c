@@ -251,11 +251,32 @@ static const char *const kSystemIconPackLabels[JW_SYSTEM_ICON_PACK_COUNT] = {
 
 /* Indexed by grid_density_index. Automatic follows the theme. The three pinned
    densities are the ones that divide a 4:3 panel cleanly with square tiles. */
-static const char *const kGridDensityLabels[JW_GRID_DENSITY_COUNT] = {
-    JW_UI("Automatic"), JW_UI("2 x 2"), JW_UI("3 x 2"), JW_UI("4 x 3"),
-};
-static const int kGridDensityCols[JW_GRID_DENSITY_COUNT] = { 0, 2, 3, 4 };
-static const int kGridDensityRows[JW_GRID_DENSITY_COUNT] = { 0, 2, 2, 3 };
+/* Grid densities, ordered by tile count. Index 0 is Automatic: the theme's own
+   recommendation if it has one, else 4 x 3 -- which is the shipped Jawaka-Grid
+   stylesheet's value and Catastrophe's default, so a theme that says nothing
+   lands there. The rest pin a shape.
+
+   The stored value is the INDEX, so this ladder only ever grows at the end --
+   inserting a step would silently move everyone who had picked a later one onto
+   a different density. That is why 4 x 2 is absent: it belongs between 3 x 2 and
+   4 x 3, and putting it there would repoint every saved 4 x 3.
+
+   Grid tiles draw art and an optional label PNG, never text, so there is no font
+   floor on how small a tile can get; 8 x 6 is the stylesheet's own ceiling
+   (cols 1-8, rows 1-6). What does degrade at the dense end is a theme's label
+   artwork, which is authored against one size and read at whatever the user
+   picks. */
+static const int kGridDensityCols[JW_GRID_DENSITY_COUNT] = { 0, 2, 3, 4, 5, 5, 6, 6, 8 };
+static const int kGridDensityRows[JW_GRID_DENSITY_COUNT] = { 0, 2, 2, 3, 3, 4, 4, 5, 6 };
+
+/* "4 x 3" is digits and a separator, the same in every language, so the shapes
+   are formatted rather than held as nine translatable strings. Only Automatic is
+   a word, and it stays a key. */
+static const char *jw__grid_density_label(int index, char *buf, size_t n) {
+    if (index <= 0 || index >= JW_GRID_DENSITY_COUNT) return T("Automatic");
+    snprintf(buf, n, "%d x %d", kGridDensityCols[index], kGridDensityRows[index]);
+    return buf;
+}
 
 /* Curated time-zone list for Settings > System > Time Zone. Each entry maps a
    friendly label to an IANA zone id, exported as the TZ environment variable. The
@@ -2568,9 +2589,11 @@ static void jw__render_home_screen(const jw_settings_ui *ui, int x, int y, int w
     bool grid_home = (ui->layout_mode == 2);
     int dens = (ui->grid_density_index >= 0 && ui->grid_density_index < JW_GRID_DENSITY_COUNT)
                ? ui->grid_density_index : 0;
+    char dens_val[16];
     jw__render_list_row(&ui->home_screen_list, x, ly, w, JW_HOMESCREEN_GRID_SIZE,
                         "Grid Size",
-                        grid_home ? kGridDensityLabels[dens] : kValueNotApplicable,
+                        grid_home ? jw__grid_density_label(dens, dens_val, sizeof(dens_val))
+                                  : kValueNotApplicable,
                         grid_home);
     /* A user theme's own art wins where it exists and System Icons fills the
        rest, which is why the pack row says so rather than being greyed --

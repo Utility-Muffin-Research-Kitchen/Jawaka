@@ -121,8 +121,10 @@ typedef enum {
 #define JW_HOMESCREEN_ROW_COUNT    6
 
 /* Grid density picker. 0 follows the theme (theme.json "grid" recommendation,
-   else the stylesheet); the rest pin a density. Persisted as an index. */
-#define JW_GRID_DENSITY_COUNT  4
+   else the stylesheet); the rest pin a density, ordered by tile count and only
+   ever appended to -- the stored value is the index. See the tables in
+   settings.c. */
+#define JW_GRID_DENSITY_COUNT  9
 
 /* Status Bar page */
 #define JW_STATUSBAR_HINTS   0
