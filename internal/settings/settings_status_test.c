@@ -173,9 +173,59 @@ static int check_layout_viewport(void) {
     return 0;
 }
 
+/* Every child page hands B back to the page that opens it. This is the check
+   that reorganizing Settings needs: moving a page under a new parent means
+   retargeting its B, and a stale target strands the user on an unrelated screen
+   with no sign anything is wrong. (Bluetooth did exactly that, landing on Wi-Fi
+   after it stopped being a row there.) */
+static int check_back_targets(void) {
+    static const struct {
+        jw_settings_screen screen;
+        jw_settings_screen parent;
+    } kBack[] = {
+        { JW_SETTINGS_COLORS,              JW_SETTINGS_APPEARANCE  },
+        { JW_SETTINGS_STATUS_BAR,          JW_SETTINGS_APPEARANCE  },
+        { JW_SETTINGS_APPEARANCE,          JW_SETTINGS_HOME        },
+        { JW_SETTINGS_HOME_SCREEN,         JW_SETTINGS_HOME        },
+        { JW_SETTINGS_HOME_TABS,           JW_SETTINGS_HOME_SCREEN },
+        { JW_SETTINGS_DISPLAY,             JW_SETTINGS_HOME        },
+        { JW_SETTINGS_LIGHTING,            JW_SETTINGS_HOME        },
+        { JW_SETTINGS_WIFI,                JW_SETTINGS_HOME        },
+        { JW_SETTINGS_BLUETOOTH,           JW_SETTINGS_HOME        },
+        { JW_SETTINGS_GAMES,               JW_SETTINGS_HOME        },
+        { JW_SETTINGS_ACCOUNTS,            JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_SCRAPE_PRIORITY,     JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_SCRAPE_QUEUE,        JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_SCRAPE_DOWNLOAD,     JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_SCRAPE_QUEUE_DETAIL, JW_SETTINGS_SCRAPE_QUEUE },
+        { JW_SETTINGS_CONTROLS,            JW_SETTINGS_HOME        },
+        { JW_SETTINGS_SYSTEM,              JW_SETTINGS_HOME        },
+        { JW_SETTINGS_TIMEZONE_PICKER,     JW_SETTINGS_SYSTEM      },
+        { JW_SETTINGS_SERVICES,            JW_SETTINGS_SYSTEM      },
+        { JW_SETTINGS_UPDATE,              JW_SETTINGS_HOME        },
+        { JW_SETTINGS_UPDATE_PICKER,       JW_SETTINGS_UPDATE      },
+    };
+    for (unsigned i = 0; i < sizeof(kBack) / sizeof(kBack[0]); ++i) {
+        jw_settings_ui ui = {0};
+        char status[64] = "";
+        ui.open = true;
+        ui.screen = kBack[i].screen;
+        jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
+        if (ui.screen != kBack[i].parent) {
+            fprintf(stderr, "settings-status-test: screen %d went back to %d, "
+                            "expected %d\n", (int)kBack[i].screen,
+                    (int)ui.screen, (int)kBack[i].parent);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(void) {
     jw_settings_ui ui = {0};
     char status[64] = "Saved scrape order";
+
+    if (check_back_targets()) return 1;
 
     ui.open = true;
     ui.screen = JW_SETTINGS_SCRAPE_PRIORITY;

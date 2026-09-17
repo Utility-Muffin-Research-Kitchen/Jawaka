@@ -7449,7 +7449,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->bt_op = JW_BT_OP_NONE;
                     ui->bt_op_manual = false;
                 }
-                ui->screen = JW_SETTINGS_WIFI;
+                ui->screen = JW_SETTINGS_HOME;
                 break;
             default:
                 break;
