@@ -90,10 +90,11 @@ static int check_theme_selection(void) {
         strcmp(ui.user_theme_dir, "neon-nights") != 0)
         return fail("an out-of-range selection changed the theme");
 
-    /* The Layout row cycles through the same function and raises the flag. */
+    /* The Appearance > Theme row cycles through the same function and raises
+       the flag. */
     ui.open = true;
-    ui.screen = JW_SETTINGS_LAYOUT;
-    ui.layout_list.cursor = JW_LAYOUT_THEME;
+    ui.screen = JW_SETTINGS_APPEARANCE;
+    ui.appearance_list.cursor = JW_APPEAR_THEME;
     bool theme_changed = false;
     jw_settings_ui_handle_button(&ui, CAT_BTN_RIGHT, status, sizeof(status), &theme_changed);
     if (!theme_changed || ui.user_theme_dir[0] || jw_settings_user_theme_index(&ui) != -1)
@@ -124,10 +125,10 @@ static int check_layout_viewport(void) {
     if (!pixels) return fail("pixel allocation failed");
     jw_settings_ui ui = {0};
     ui.open = true;
-    ui.screen = JW_SETTINGS_LAYOUT;
+    ui.screen = JW_SETTINGS_HOME_SCREEN;
     ui.user_theme_index = -1;
-    cat_list_state_init(&ui.layout_list, JW_LAYOUT_ROW_COUNT);
-    ui.layout_list.cursor = JW_LAYOUT_HOME_TABS;
+    cat_list_state_init(&ui.home_screen_list, JW_HOMESCREEN_ROW_COUNT);
+    ui.home_screen_list.cursor = JW_HOMESCREEN_TABS;
     for (int bump = 2; bump <= 5; bump += 3) {
         if (cat_set_font_bump(bump) != CAT_OK) return fail("font bump failed");
         /* Expanded/shrunk/restored: hints and activity taking or releasing space. */
@@ -136,13 +137,13 @@ static int check_layout_viewport(void) {
             SDL_SetRenderDrawColor(renderer, 13, 29, 47, 255);
             SDL_RenderClear(renderer);
             jw_settings_ui_render(&ui, 12, 60, 936, heights[i]);
-            if (ui.layout_list.cursor != JW_LAYOUT_HOME_TABS ||
-                ui.layout_list.cursor < ui.layout_list.scroll_offset ||
-                ui.layout_list.cursor >= ui.layout_list.scroll_offset + ui.layout_list.visible_rows)
+            if (ui.home_screen_list.cursor != JW_HOMESCREEN_TABS ||
+                ui.home_screen_list.cursor < ui.home_screen_list.scroll_offset ||
+                ui.home_screen_list.cursor >= ui.home_screen_list.scroll_offset + ui.home_screen_list.visible_rows)
                 return fail("viewport resize lost the selected Home Tabs row");
             int row_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) + cat_scale(12);
             int header_h = TTF_FontHeight(cat_get_font(CAT_FONT_LARGE)) + cat_scale(10);
-            if (ui.layout_list.visible_rows * row_h > heights[i] - header_h)
+            if (ui.home_screen_list.visible_rows * row_h > heights[i] - header_h)
                 return fail("visible rows exceed the available content height");
             if (SDL_RenderIsClipEnabled(renderer)) return fail("page leaked its clip");
             if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, pixels,
@@ -152,7 +153,7 @@ static int check_layout_viewport(void) {
             uint32_t ink = 0xff000000u | (uint32_t)text.r << 16 |
                            (uint32_t)text.g << 8 | text.b;
             int selected_y = 60 + header_h +
-                (ui.layout_list.cursor - ui.layout_list.scroll_offset) * row_h;
+                (ui.home_screen_list.cursor - ui.home_screen_list.scroll_offset) * row_h;
             bool label_visible = false;
             for (int y = selected_y + 6; y < selected_y + row_h - 6; ++y)
                 for (int x = 48; x < 240; ++x)
@@ -163,8 +164,8 @@ static int check_layout_viewport(void) {
                     if ((x < 12 || x >= 948 || y < 60 || y >= 60 + heights[i]) &&
                         pixels[y * 960 + x] != 0xff0d1d2f)
                         return fail("settings drew outside its viewport");
-            cat_list_state_move(&ui.layout_list, -1, JW_LAYOUT_ROW_COUNT);
-            cat_list_state_move(&ui.layout_list, 1, JW_LAYOUT_ROW_COUNT);
+            cat_list_state_move(&ui.home_screen_list, -1, JW_HOMESCREEN_ROW_COUNT);
+            cat_list_state_move(&ui.home_screen_list, 1, JW_HOMESCREEN_ROW_COUNT);
         }
     }
     free(pixels);
@@ -172,9 +173,59 @@ static int check_layout_viewport(void) {
     return 0;
 }
 
+/* Every child page hands B back to the page that opens it. This is the check
+   that reorganizing Settings needs: moving a page under a new parent means
+   retargeting its B, and a stale target strands the user on an unrelated screen
+   with no sign anything is wrong. (Bluetooth did exactly that, landing on Wi-Fi
+   after it stopped being a row there.) */
+static int check_back_targets(void) {
+    static const struct {
+        jw_settings_screen screen;
+        jw_settings_screen parent;
+    } kBack[] = {
+        { JW_SETTINGS_COLORS,              JW_SETTINGS_APPEARANCE  },
+        { JW_SETTINGS_STATUS_BAR,          JW_SETTINGS_APPEARANCE  },
+        { JW_SETTINGS_APPEARANCE,          JW_SETTINGS_HOME        },
+        { JW_SETTINGS_HOME_SCREEN,         JW_SETTINGS_HOME        },
+        { JW_SETTINGS_HOME_TABS,           JW_SETTINGS_HOME_SCREEN },
+        { JW_SETTINGS_DISPLAY,             JW_SETTINGS_HOME        },
+        { JW_SETTINGS_LIGHTING,            JW_SETTINGS_HOME        },
+        { JW_SETTINGS_WIFI,                JW_SETTINGS_HOME        },
+        { JW_SETTINGS_BLUETOOTH,           JW_SETTINGS_HOME        },
+        { JW_SETTINGS_GAMES,               JW_SETTINGS_HOME        },
+        { JW_SETTINGS_ACCOUNTS,            JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_SCRAPE_PRIORITY,     JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_SCRAPE_QUEUE,        JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_SCRAPE_DOWNLOAD,     JW_SETTINGS_GAMES       },
+        { JW_SETTINGS_SCRAPE_QUEUE_DETAIL, JW_SETTINGS_SCRAPE_QUEUE },
+        { JW_SETTINGS_CONTROLS,            JW_SETTINGS_HOME        },
+        { JW_SETTINGS_SYSTEM,              JW_SETTINGS_HOME        },
+        { JW_SETTINGS_TIMEZONE_PICKER,     JW_SETTINGS_SYSTEM      },
+        { JW_SETTINGS_SERVICES,            JW_SETTINGS_SYSTEM      },
+        { JW_SETTINGS_UPDATE,              JW_SETTINGS_HOME        },
+        { JW_SETTINGS_UPDATE_PICKER,       JW_SETTINGS_UPDATE      },
+    };
+    for (unsigned i = 0; i < sizeof(kBack) / sizeof(kBack[0]); ++i) {
+        jw_settings_ui ui = {0};
+        char status[64] = "";
+        ui.open = true;
+        ui.screen = kBack[i].screen;
+        jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
+        if (ui.screen != kBack[i].parent) {
+            fprintf(stderr, "settings-status-test: screen %d went back to %d, "
+                            "expected %d\n", (int)kBack[i].screen,
+                    (int)ui.screen, (int)kBack[i].parent);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(void) {
     jw_settings_ui ui = {0};
     char status[64] = "Saved scrape order";
+
+    if (check_back_targets()) return 1;
 
     ui.open = true;
     ui.screen = JW_SETTINGS_SCRAPE_PRIORITY;
@@ -185,7 +236,7 @@ int main(void) {
         return fail("canceling a scrape grab cleared status or changed page");
 
     jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
-    if (ui.screen != JW_SETTINGS_SCRAPING || status[0] != '\0')
+    if (ui.screen != JW_SETTINGS_GAMES || status[0] != '\0')
         return fail("leaving scrape priority did not clear status");
 
     memset(&ui, 0, sizeof(ui));
@@ -199,7 +250,7 @@ int main(void) {
         return fail("canceling a home-tab grab cleared status or changed page");
 
     jw_settings_ui_handle_button(&ui, CAT_BTN_B, status, sizeof(status), NULL);
-    if (ui.screen != JW_SETTINGS_LAYOUT || status[0] != '\0')
+    if (ui.screen != JW_SETTINGS_HOME_SCREEN || status[0] != '\0')
         return fail("leaving home tabs did not clear status");
 
     /* System Icons cycles the three packs and rides the theme-changed flag --
@@ -207,8 +258,8 @@ int main(void) {
        pack change with the flag down would keep drawing the old artwork. */
     memset(&ui, 0, sizeof(ui));
     ui.open = true;
-    ui.screen = JW_SETTINGS_LAYOUT;
-    ui.layout_list.cursor = JW_LAYOUT_SYSTEM_ICONS;
+    ui.screen = JW_SETTINGS_HOME_SCREEN;
+    ui.home_screen_list.cursor = JW_HOMESCREEN_SYSTEM_ICONS;
     ui.system_icon_pack_index = JW_SYSTEM_ICON_PACK_AUTO;
     for (int i = 1; i <= JW_SYSTEM_ICON_PACK_COUNT; i++) {
         bool theme_changed = false;
@@ -226,8 +277,8 @@ int main(void) {
     if (ui.system_icon_pack_index != JW_SYSTEM_ICON_PACK_COUNT - 1 || !theme_changed)
         return fail("System Icons did not cycle backwards");
 
-    /* Controls & Feedback keeps all seven rows off MLP1: the capture toggles
-       stay on the parent page because there is no In-game Shortcuts child to
+    /* Hotkeys & Rumble keeps all seven rows off MLP1: the capture toggles
+       stay on the parent page because there is no Hotkeys child to
        move them into. On MLP1 this is four, and the shortcut page's own logic
        is covered by input-shortcuts-test -- the UI cannot be built in MLP1
        shape on this host, because Catastrophe's MLP1 paths need <linux/input.h>

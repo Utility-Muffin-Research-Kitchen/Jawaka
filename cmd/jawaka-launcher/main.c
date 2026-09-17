@@ -1146,7 +1146,7 @@ static void jw__draw_footer(const jw_launcher_state *state,
    the menu, not a footer hint. */
 static void jw__draw_settings_footer(const jw_launcher_state *state) {
     jw_settings_screen scr = jw_settings_ui_screen(&state->settings);
-    if (scr == JW_SETTINGS_NETWORK) {
+    if (scr == JW_SETTINGS_WIFI) {
         cat_footer_item footer[] = {
             { CAT_BTN_X, "Rescan",  false, JW_HINT("X") },
             { CAT_BTN_Y, "Forget",  false, JW_HINT("Y") },
@@ -4796,7 +4796,7 @@ static void jw__render_focus(jw_launcher_state *state) {
 
 /* ─── System icon loader (shared across themes) ──────────────────────────── */
 
-/* Which artwork a system tile draws is a setting (Settings > Appearance > Layout
+/* Which artwork a system tile draws is a setting (Settings > Home Screen
  * > System Icons), not a consequence of the home layout. One builder owns the
  * whole candidate order so the two consumers below cannot drift apart:
  *
@@ -8798,7 +8798,7 @@ static void jw__action_refresh_rows(jw_launcher_state *state) {
             jw__action_add_row(state, JW_ACTION_ROW_BIOS);
         }
         jw__action_add_row(state, JW_ACTION_ROW_PERFORMANCE);
-        /* Per-system scraping moved to Settings > Game Art > Scrape Missing
+        /* Per-system scraping moved to Settings > Games > Scrape Missing
            Artwork; the system X menu no longer offers it. */
         jw__action_add_row(state, JW_ACTION_ROW_RESET);
     } else if (state->action_scope == JW_ACTION_GAME) {
@@ -9659,7 +9659,7 @@ static bool jw__confirm_pakrat_theme_uninstall(const jw_launcher_state *state,
     return cat_confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
-/* Apply is the selection Settings > Appearance > Layout > Theme makes, followed
+/* Apply is the selection Settings > Appearance > Theme makes, followed
    by the rebuild the launcher runs when that row changes. */
 static void jw__pakrat_apply_theme(jw_launcher_state *state,
                                    const jw_pakrat_app_state *app) {
@@ -13048,7 +13048,7 @@ static bool jw__surface_blocked_game_launch(
                      "Offline achievements unavailable.\n\nRAOfflineProxy is "
                      "enabled but not responding. You can play now without "
                      "offline achievements, or cancel and check the service "
-                     "in Settings > Services.");
+                     "in Settings > System > Services.");
         } else if (blocked->requires_verified_stop) {
             snprintf(message, sizeof(message),
                      "Sync needs attention.\n\nSyncthing could not be verified "
@@ -13298,7 +13298,7 @@ int main(void) {
     state.storage_generation_seen = -1;
     /* A resume breadcrumb (left by the last game/app launch, cleared on reboot)
        restores the exact position; otherwise honor the persisted Startup Tab
-       (Settings > Behavior > Startup Tab), default Games. Index mirrors jw_tab. */
+       (Settings > Home Screen > Startup Tab), default Games. Index mirrors jw_tab. */
     jw_resume resume;
     bool have_resume = jw__load_resume(&resume);
     /* Build the visible-tab set first (tabs can be hidden/reordered), so the

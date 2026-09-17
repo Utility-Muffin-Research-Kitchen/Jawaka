@@ -2545,7 +2545,7 @@ static void jw__refresh_platform_cache(jw_daemon_state *state) {
     jw__cache_platform_status(state, &status);
 }
 
-/* Stored RetroAchievements credentials (Settings > Accounts). Resolved from the
+/* Stored RetroAchievements credentials (Settings > Games > Accounts). Resolved from the
    DB in the daemon parent, then applied to the environment of the forked
    RetroArch child only — never the long-lived daemon — so the plaintext
    password is not inherited by the launcher, OSD, ledd, or app-store apps. */

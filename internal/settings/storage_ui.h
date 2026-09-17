@@ -47,7 +47,7 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
     const char *socket_path, const jw_ipc_storage_status_info *card,
     bool library_writable);
 
-/* Settings > General > SD Cards: choose a card, then an action. Sets
+/* Settings > System > SD Cards: choose a card, then an action. Sets
    *unmount_secondary when the user chose to unmount the second card, so the
    caller runs its existing safe-unmount flow. */
 void jw_storage_ui_manage_cards(const char *socket_path, char *status,
