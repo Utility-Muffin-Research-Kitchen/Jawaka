@@ -258,6 +258,57 @@ int main(void) {
 #endif
 
 
+    /* Home Tabs: switching a tab off leaves it where it sits. The list used to
+       be partitioned into shown-then-hidden, so hiding a row moved it under the
+       cursor; only X plus Up/Down reorders now, hidden rows included. */
+    {
+        jw_settings_ui tabs = {0};
+        tabs.open = true;
+        tabs.screen = JW_SETTINGS_HOME_TABS;
+        for (int i = 0; i < JW_HOME_TABS_COUNT; i++) tabs.home_tab_order[i] = i;
+        tabs.home_tab_visible = JW_HOME_TABS_COUNT;
+        tabs.home_tabs_list.cursor = 1;
+
+        jw_settings_ui_handle_button(&tabs, CAT_BTN_A, status, sizeof(status), NULL);
+        if (!tabs.home_tab_hidden[1] || tabs.home_tab_visible != JW_HOME_TABS_COUNT - 1)
+            return fail("A did not hide the tab under the cursor");
+        if (tabs.home_tabs_list.cursor != 1)
+            return fail("hiding a tab moved the cursor");
+        for (int i = 0; i < JW_HOME_TABS_COUNT; i++)
+            if (tabs.home_tab_order[i] != i)
+                return fail("hiding a tab reordered the list");
+
+        jw_settings_ui_handle_button(&tabs, CAT_BTN_A, status, sizeof(status), NULL);
+        if (tabs.home_tab_hidden[1] || tabs.home_tab_visible != JW_HOME_TABS_COUNT)
+            return fail("A did not show the tab again");
+
+        /* A hidden row moves like any other: where it sits is where it returns. */
+        tabs.home_tabs_list.cursor = 0;
+        jw_settings_ui_handle_button(&tabs, CAT_BTN_A, status, sizeof(status), NULL);
+        jw_settings_ui_handle_button(&tabs, CAT_BTN_X, status, sizeof(status), NULL);
+        if (!tabs.home_tabs_grabbed)
+            return fail("X did not grab a hidden row");
+        jw_settings_ui_handle_button(&tabs, CAT_BTN_DOWN, status, sizeof(status), NULL);
+        if (tabs.home_tab_order[0] != 1 || tabs.home_tab_order[1] != 0 ||
+            tabs.home_tabs_list.cursor != 1)
+            return fail("a grabbed hidden row did not move down");
+        jw_settings_ui_handle_button(&tabs, CAT_BTN_X, status, sizeof(status), NULL);
+
+        /* The last visible tab cannot be switched off. */
+        for (int i = 0; i < JW_HOME_TABS_COUNT; i++) {
+            tabs.home_tab_hidden[i] = i != 2;
+        }
+        tabs.home_tab_visible = 1;
+        for (int i = 0; i < JW_HOME_TABS_COUNT; i++) {
+            if (tabs.home_tab_order[i] != 2) continue;
+            tabs.home_tabs_list.cursor = i;
+            break;
+        }
+        jw_settings_ui_handle_button(&tabs, CAT_BTN_A, status, sizeof(status), NULL);
+        if (tabs.home_tab_hidden[2] || tabs.home_tab_visible != 1)
+            return fail("the last visible tab was switched off");
+    }
+
     if (check_activity() || check_theme_selection() || check_layout_viewport()) return 1;
     puts("PASS settings-status-test");
     return 0;

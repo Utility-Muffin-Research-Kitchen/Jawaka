@@ -361,14 +361,21 @@ static const char *kStartupTabLabels[] = {
 #define JW_STARTUP_TAB_COUNT ((int)(sizeof(kStartupTabLabels) / sizeof(kStartupTabLabels[0])))
 #define JW_STARTUP_TAB_DEFAULT 2   /* Games */
 
-/* Parse the "home_tab_order" CSV (visible jw_tab indices in display order) into
-   order[JW_HOME_TABS_COUNT] + *visible. Defensive: dedupe, drop out-of-range /
-   invalid tokens, then append any tabs not listed (hidden) after the visible
-   ones. An empty/missing/all-invalid CSV falls back to all tabs visible in
-   natural order. *visible is always >= 1. */
-static void jw__parse_home_tab_order(const char *csv, int *order, int *visible) {
+/* Parse the "home_tab_order" CSV into order[] (display order, every tab) plus
+   hidden[] (by jw_tab index) and *visible (count shown, always >= 1).
+
+   Two shapes are accepted. A hidden tab is written as -(index + 1), so a value
+   written by this build round-trips with every tab's position intact. An older
+   value listed the visible tabs only; the tabs it leaves out are hidden, and
+   they land after the ones it names, which is where that build showed them.
+
+   Defensive either way: dedupe, drop out-of-range tokens, and fall back to
+   every tab visible in natural order when nothing usable is left. */
+static void jw__parse_home_tab_order(const char *csv, int *order, bool *hidden,
+                                     int *visible) {
     bool used[JW_HOME_TABS_COUNT] = { false };
-    int vis = 0;
+    int pos = 0, vis = 0;
+    for (int i = 0; i < JW_HOME_TABS_COUNT; i++) hidden[i] = false;
 
     const char *p = (csv && csv[0]) ? csv : NULL;
     while (p && *p) {
@@ -378,35 +385,48 @@ static void jw__parse_home_tab_order(const char *csv, int *order, int *visible) 
         long v = strtol(p, &end, 10);
         if (end == p) { p++; continue; }   /* not a number: skip a char */
         p = end;
-        if (v >= 0 && v < JW_HOME_TABS_COUNT && !used[(int)v]) {
-            order[vis++] = (int)v;
-            used[(int)v] = true;
-        }
+        bool tab_hidden = v < 0;
+        long idx = tab_hidden ? -v - 1 : v;
+        if (idx < 0 || idx >= JW_HOME_TABS_COUNT || used[idx]) continue;
+        order[pos++] = (int)idx;
+        used[idx] = true;
+        hidden[idx] = tab_hidden;
+        if (!tab_hidden) vis++;
     }
 
-    /* Empty / all-invalid → default to every tab visible in natural order. */
-    if (vis == 0) {
-        for (int i = 0; i < JW_HOME_TABS_COUNT; i++) { order[i] = i; used[i] = true; }
-        vis = JW_HOME_TABS_COUNT;
-    } else {
-        /* Append the hidden tabs after the visible ones so the editor can list
-           and re-enable them. */
-        int tail = vis;
-        for (int i = 0; i < JW_HOME_TABS_COUNT; i++)
-            if (!used[i]) order[tail++] = i;
+    if (pos == 0 || vis == 0) {
+        /* Empty, all-invalid, or a value that hides everything: show them all
+           rather than leaving the home screen with no tabs. */
+        for (int i = 0; i < JW_HOME_TABS_COUNT; i++) {
+            order[i] = i;
+            hidden[i] = false;
+        }
+        *visible = JW_HOME_TABS_COUNT;
+        return;
+    }
+
+    /* Tabs the value never named are hidden, after the ones it did. */
+    for (int i = 0; i < JW_HOME_TABS_COUNT; i++) {
+        if (!used[i]) {
+            order[pos++] = i;
+            hidden[i] = true;
+        }
     }
     *visible = vis;
 }
 
-/* Serialize order[]/visible into a CSV of the visible jw_tab indices, e.g.
-   "2,1,3,0" or "2,1,3". */
-static void jw__home_tab_order_to_csv(const int *order, int visible,
+/* Serialize order[] + hidden[] into the CSV described above: every tab in
+   display order, hidden ones negated, e.g. "2,-2,3,0" for four tabs with the
+   second one hidden. */
+static void jw__home_tab_order_to_csv(const int *order, const bool *hidden,
                                       char *csv, size_t csv_size) {
     size_t len = 0;
     if (csv_size > 0) csv[0] = '\0';
-    for (int i = 0; i < visible && i < JW_HOME_TABS_COUNT; i++) {
-        int n = snprintf(csv + len, csv_size - len, "%s%d",
-                         i > 0 ? "," : "", order[i]);
+    for (int i = 0; i < JW_HOME_TABS_COUNT; i++) {
+        int tab = order[i];
+        if (tab < 0 || tab >= JW_HOME_TABS_COUNT) continue;
+        int value = hidden[tab] ? -(tab + 1) : tab;
+        int n = snprintf(csv + len, csv_size - len, "%s%d", i > 0 ? "," : "", value);
         if (n < 0 || (size_t)n >= csv_size - len) break;
         len += (size_t)n;
     }
@@ -1279,16 +1299,19 @@ static void jw__persist_int(const jw_settings_ui *ui, const char *key, int val) 
    persist that too (so the launcher never boots onto a hidden tab). */
 static void jw__home_tabs_persist(jw_settings_ui *ui) {
     char csv[JW_SETTINGS_VALUE_MAX] = "";
-    jw__home_tab_order_to_csv(ui->home_tab_order, ui->home_tab_visible,
+    jw__home_tab_order_to_csv(ui->home_tab_order, ui->home_tab_hidden,
                               csv, sizeof(csv));
     jw__persist(ui, "home_tab_order", csv);
 
-    bool startup_visible = false;
-    for (int i = 0; i < ui->home_tab_visible; i++)
-        if (ui->home_tab_order[i] == ui->startup_tab_index) { startup_visible = true; break; }
-    if (!startup_visible && ui->home_tab_visible > 0) {
-        ui->startup_tab_index = ui->home_tab_order[0];
-        jw__persist_int(ui, "startup_tab_index", ui->startup_tab_index);
+    bool startup_visible = !ui->home_tab_hidden[ui->startup_tab_index];
+    if (!startup_visible) {
+        for (int i = 0; i < JW_HOME_TABS_COUNT; i++) {
+            int tab = ui->home_tab_order[i];
+            if (ui->home_tab_hidden[tab]) continue;
+            ui->startup_tab_index = tab;
+            jw__persist_int(ui, "startup_tab_index", ui->startup_tab_index);
+            break;
+        }
     }
 }
 
@@ -1488,7 +1511,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->show_bluetooth    = true;
     ui->show_volume       = true;
     ui->startup_tab_index = JW_STARTUP_TAB_DEFAULT;
-    jw__parse_home_tab_order(NULL, ui->home_tab_order, &ui->home_tab_visible);
+    jw__parse_home_tab_order(NULL, ui->home_tab_order, ui->home_tab_hidden,
+                             &ui->home_tab_visible);
     ui->home_tabs_grabbed = false;
     ui->auto_sleep_index  = JW_AUTO_SLEEP_DEFAULT;
     ui->boot_splash_enabled = true;
@@ -1649,7 +1673,7 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             jw__parse_home_tab_order(
                 jw__setting_has(values, found, JW_SETTING_HOME_TAB_ORDER)
                     ? values[JW_SETTING_HOME_TAB_ORDER] : NULL,
-                ui->home_tab_order, &ui->home_tab_visible);
+                ui->home_tab_order, ui->home_tab_hidden, &ui->home_tab_visible);
 #ifdef PLATFORM_MLP1
             {
                 /* Resolve through the shared model so a hand-edited or
@@ -5131,7 +5155,7 @@ static void jw__draw_home_tab_item(int idx, int ix, int iy, int iw, int ih,
     int pill_y = iy + (ih - pill_h) / 2;
     bool grabbed_row = idx == ui->home_tabs_list.cursor && ui->home_tabs_grabbed;
 
-    bool is_visible = idx < ui->home_tab_visible;
+    bool is_visible = !ui->home_tab_hidden[tab];
     ap_color label_c = cat_draw_color_lerp(
         is_visible ? theme->text : theme->hint,
         theme->highlighted_text, focus);
@@ -5142,9 +5166,16 @@ static void jw__draw_home_tab_item(int idx, int ix, int iy, int iw, int ih,
     cat_draw_text_ellipsized(body, T(kStartupTabLabels[tab]), ix + cat_scale(12), ty,
                              label_c, iw * 2 / 3);
 
-    const char *value = grabbed_row ? T("Moving") : (is_visible ? T("On") : T("Off"));
-    int vw = cat_measure_text(body, value);
-    cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+    /* A grabbed row says "Moving" and drops the switch: the row is being moved,
+       not switched, and a switch there would invite the wrong button. */
+    if (grabbed_row) {
+        const char *value = T("Moving");
+        int vw = cat_measure_text(body, value);
+        cat_draw_text(body, value, ix + iw - vw - cat_scale(16), ty, value_c);
+        return;
+    }
+    jw__draw_row_value_switch(ix, iw, ty, body, is_visible ? T("On") : T("Off"),
+                              is_visible, value_c, value_c, focus);
 }
 
 static void jw__render_home_tabs(const jw_settings_ui *ui, int x, int y, int w, int h) {
@@ -6881,12 +6912,16 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                        hide some), so Startup Tab can never point at a hidden tab.
                        Find where the current startup tab sits in the visible set,
                        step by dir within it, and adopt that tab. */
-                    int vis = ui->home_tab_visible > 0 ? ui->home_tab_visible : 1;
-                    int pos = 0;
-                    for (int i = 0; i < vis; i++)
-                        if (ui->home_tab_order[i] == ui->startup_tab_index) { pos = i; break; }
-                    int next_pos = (pos + dir + vis) % vis;
-                    ui->startup_tab_index = ui->home_tab_order[next_pos];
+                    int shown[JW_HOME_TABS_COUNT];
+                    int vis = 0, pos = 0;
+                    for (int i = 0; i < JW_HOME_TABS_COUNT; i++) {
+                        int tab = ui->home_tab_order[i];
+                        if (ui->home_tab_hidden[tab]) continue;
+                        if (tab == ui->startup_tab_index) pos = vis;
+                        shown[vis++] = tab;
+                    }
+                    if (vis == 0) break;
+                    ui->startup_tab_index = shown[(pos + dir + vis) % vis];
                     jw__persist_int(ui, "startup_tab_index", ui->startup_tab_index);
                 } else if (row == JW_LAYOUT_HOME_TABS) {
                     if (button == CAT_BTN_A || button == CAT_BTN_RIGHT) {
@@ -7814,9 +7849,11 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             case CAT_BTN_DOWN: {
                 int dir = button == CAT_BTN_UP ? -1 : +1;
                 if (ui->home_tabs_grabbed) {
-                    /* Reorder within the visible zone only. */
+                    /* Any row moves, hidden ones included: a hidden tab keeps a
+                       real position now, and that position is where it comes
+                       back when it is switched on again. */
                     int target = cursor + dir;
-                    if (target >= 0 && target < ui->home_tab_visible) {
+                    if (target >= 0 && target < count) {
                         jw__home_tab_order_move(ui->home_tab_order, cursor, target);
                         cat_list_state_move(&ui->home_tabs_list, dir, count);
                         jw__home_tabs_persist(ui);
@@ -7831,25 +7868,19 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     ui->home_tabs_grabbed = false;
                     break;
                 }
-                if (cursor < ui->home_tab_visible) {
-                    /* Hiding: never drop the last visible tab (min-one guard). */
-                    if (ui->home_tab_visible <= 1) {
+                {
+                    /* Switch the row where it sits. The list only ever reorders
+                       when the user moves a row with X, so a tab does not jump
+                       out from under the cursor when it is switched off. */
+                    int tab = ui->home_tab_order[cursor];
+                    if (tab < 0 || tab >= JW_HOME_TABS_COUNT) break;
+                    if (!ui->home_tab_hidden[tab] && ui->home_tab_visible <= 1) {
                         snprintf(status_buf, status_size,
                                  "At least one tab must stay visible");
                         break;
                     }
-                    /* Sink to the top of the hidden zone. */
-                    jw__home_tab_order_move(ui->home_tab_order, cursor,
-                                            ui->home_tab_visible - 1);
-                    ui->home_tab_visible -= 1;
-                    cat_list_state_jump(&ui->home_tabs_list, ui->home_tab_visible, count);
-                } else {
-                    /* Showing: append to the visible zone. */
-                    jw__home_tab_order_move(ui->home_tab_order, cursor,
-                                            ui->home_tab_visible);
-                    ui->home_tab_visible += 1;
-                    cat_list_state_jump(&ui->home_tabs_list,
-                                        ui->home_tab_visible - 1, count);
+                    ui->home_tab_hidden[tab] = !ui->home_tab_hidden[tab];
+                    ui->home_tab_visible += ui->home_tab_hidden[tab] ? -1 : 1;
                 }
                 jw__home_tabs_persist(ui);
                 break;
@@ -7857,11 +7888,8 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
             case CAT_BTN_X:
                 if (ui->home_tabs_grabbed) {
                     ui->home_tabs_grabbed = false;
-                } else if (cursor < ui->home_tab_visible) {
-                    ui->home_tabs_grabbed = true;
                 } else {
-                    snprintf(status_buf, status_size,
-                             "Hidden tabs cannot be reordered");
+                    ui->home_tabs_grabbed = true;
                 }
                 break;
             case CAT_BTN_B:
