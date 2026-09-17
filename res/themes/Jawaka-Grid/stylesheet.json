@@ -39,8 +39,8 @@
   },
   "launcher": {
     "layout": "grid",
-    "grid_cols": 3,
-    "grid_rows": 2,
+    "grid_cols": 4,
+    "grid_rows": 3,
     "grid_margin": 45,
     "grid_gutter": 48,
     "grid_radius_pct": 18,

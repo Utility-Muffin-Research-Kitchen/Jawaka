@@ -237,10 +237,6 @@ msgstr "15 seg"
 msgid "2 min"
 msgstr "2 min"
 
-#: internal/settings/settings.c
-msgid "2 x 2"
-msgstr ""
-
 #: cmd/jawaka-menu/main.c
 msgid "200 MHz"
 msgstr "200 MHz"
@@ -248,10 +244,6 @@ msgstr "200 MHz"
 #: internal/settings/settings.c
 msgid "24 Hour"
 msgstr "24 Horas"
-
-#: internal/settings/settings.c
-msgid "3 x 2"
-msgstr ""
 
 #: internal/settings/settings.c
 msgid "30 sec"
@@ -264,10 +256,6 @@ msgstr "300 MHz"
 #: cmd/jawaka-menu/main.c
 msgid "324 MHz"
 msgstr "324 MHz"
-
-#: internal/settings/settings.c
-msgid "4 x 3"
-msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "400 MHz"
