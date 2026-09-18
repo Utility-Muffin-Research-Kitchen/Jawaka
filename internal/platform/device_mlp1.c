@@ -3596,6 +3596,16 @@ static int jw__mlp1_spawn_loong_power(void) {
                 snprintf(ld, sizeof(ld), "%s", "./");
             }
             setenv("LD_LIBRARY_PATH", ld, 1);
+            /* The supervisor resolves loong_power's low-battery "poweroff" to our
+               power handoff; a restarted daemon must keep that PATH entry. */
+            const char *handoff = getenv("UMRK_LOONG_POWER_HANDOFF_DIR");
+            if (handoff && handoff[0] == '/') {
+                const char *old_path = getenv("PATH");
+                char path[768];
+                snprintf(path, sizeof(path), "%s:%s", handoff,
+                         old_path && old_path[0] ? old_path : "/usr/bin:/usr/sbin");
+                setenv("PATH", path, 1);
+            }
             execl("/loong/loong_power", "loong_power", JW_MLP1_POWER_CFG, (char *)NULL);
             _exit(127);
         }
