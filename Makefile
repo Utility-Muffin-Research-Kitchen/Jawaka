@@ -604,6 +604,11 @@ storage-sources-test: | $(BUILD)/bin
 		internal/storage/sources_test.c internal/storage/sources.c
 	$(BUILD)/bin/storage-sources-test
 
+.PHONY: power-request-test
+power-request-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/power-request-test internal/platform/power_request_test.c
+	$(BUILD)/bin/power-request-test
+
 storage-health-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/storage-health-test \
 		internal/storage/health_test.c internal/storage/health.c internal/core/log.c

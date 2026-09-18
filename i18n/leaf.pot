@@ -1060,6 +1060,10 @@ msgstr ""
 msgid "Install cancelled: %s"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "Install the matching Leaf system update before checking this card on your device."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
 msgstr ""
@@ -2349,6 +2353,14 @@ msgid "The card passed the check but couldn't be made writable. Restart your dev
 msgstr ""
 
 #: internal/settings/storage_ui.c
+msgid "The check took too long. Your SD card is still protected. You can check it on a computer or restart to try again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "The last check or repair did not finish. Restart your device to check the card before saving is enabled again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
 msgid "The repair couldn't be started. Check the card on a computer instead."
 msgstr ""
 
@@ -2708,6 +2720,18 @@ msgstr ""
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "You can save files again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card check did not finish successfully."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card is protected"
+msgstr ""
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
 msgstr ""
@@ -2722,6 +2746,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card is read-only. The cause couldn't be determined. You can't save new files or changes to this card."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card is still protected. Turn off your device, repair the card on a computer, safely eject it, then insert it and turn your device on to check it again."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2741,10 +2769,6 @@ msgid "Your SD card needs repair"
 msgstr ""
 
 #: internal/settings/storage_ui.c
-msgid "Your card is still read-only. Check the card on a computer, then choose Check SD card in Settings."
-msgstr ""
-
-#: internal/settings/storage_ui.c
 msgid "Your card passed the file system check."
 msgstr ""
 
@@ -2761,7 +2785,7 @@ msgid "Your device will restart to check and repair this card. Damaged files may
 msgstr ""
 
 #: internal/settings/storage_ui.c
-msgid "Your device will restart to check this card. If the check passes, the card can be written to again. Keep your device connected to power until the check finishes."
+msgid "Your device will restart to check this card. If the check passes, you can save files again."
 msgstr ""
 
 #: internal/settings/storage_ui.c

@@ -1,3 +1,4 @@
+#include "internal/platform/power_request.h"
 #include "cJSON.h"
 #include "internal/core/log.h"
 #include "internal/db/db.h"
@@ -651,16 +652,28 @@ static void jw__scan_title_list_move(jw_scan_title_list *dest,
 
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
-static void jw__request_power_transition(jw_daemon_state *state,
+static bool jw__request_power_transition(jw_daemon_state *state,
                                          jw_platform_action action) {
     if (!state) {
-        return;
+        return false;
     }
+    if (state->power_transition_requested) return true;
+#ifdef PLATFORM_MLP1
+    /* Commit to this supervisor generation before cleanup or an IPC success.
+       Old supervisors cannot fall back to the former timed SysRq path. */
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, action, 0, &result);
+    if (result.code != JW_PLATFORM_RESULT_OK) {
+        jw_log_error("power handoff refused: %s", result.message);
+        return false;
+    }
+#endif
     state->power_transition_requested = true;
     jw_input_proxy_cancel_menu(&state->input_proxy);
     jw_menu_escape_cancel(&state->menu_escape);
     state->power_transition_action = action;
     state->shutdown_requested = true;
+    return true;
 }
 
 static bool jw__has_retroarch_session(const jw_daemon_state *state) {
@@ -11736,13 +11749,14 @@ static void jw__storage_status_add_health(jw_daemon_state *state, cJSON *root,
     jw_storage_probe_env env;
     jw_storage_probe_env_default(&env);
     jw_storage_repair_result result;
-    if (jw_storage_repair_last_result(&env, &result)) {
+    if (jw_storage_repair_last_result(&env, h->uuid, &result)) {
         cJSON *last = cJSON_AddObjectToObject(root, "last_repair");
         if (last) {
             cJSON_AddStringToObject(last, "request_id", result.request_id);
             cJSON_AddStringToObject(last, "outcome", result.outcome);
             cJSON_AddStringToObject(last, "mount_state", result.mount_state);
             cJSON_AddStringToObject(last, "mode", result.mode);
+            cJSON_AddStringToObject(last, "origin", result.origin);
             cJSON_AddBoolToObject(last, "changes_complete", result.changes_complete);
             cJSON_AddNumberToObject(last, "reported_changes", result.reported_change_count);
             cJSON_AddBoolToObject(last, "acknowledged", result.acknowledged);
@@ -11851,12 +11865,18 @@ static void jw__tick_storage_health(jw_daemon_state *state) {
         jw_storage_probe_env env;
         jw_storage_probe_env_default(&env);
         jw_storage_repair_result result;
-        if (jw_storage_repair_last_result(&env, &result) && !result.acknowledged &&
-            (strcmp(result.outcome, "repaired") == 0 ||
-             strcmp(result.outcome, "clean") == 0) &&
-            strcmp(result.mount_state, "read-write") == 0 &&
-            jw__start_scan_job(state, "after SD card repair") < 0) {
-            jw_log_warn("storage: post-repair library rescan could not start");
+        for (int i = 0; i < state->storage_monitor.count; i++) {
+            const jw_storage_health *health = &state->storage_monitor.slots[i].health;
+            if (jw_storage_repair_last_result(&env, health->uuid, &result) &&
+                !result.acknowledged && health->access == JW_STORAGE_ACCESS_READ_WRITE &&
+                health->repair == JW_STORAGE_REPAIR_NONE &&
+                (strcmp(result.outcome, "repaired") == 0 || strcmp(result.outcome, "clean") == 0) &&
+                strcmp(result.mount_state, "read-write") == 0) {
+                if (jw__start_scan_job(state, "after SD card check") < 0) {
+                    jw_log_warn("storage: post-check library rescan could not start");
+                }
+                break;
+            }
         }
     }
 }
@@ -11986,7 +12006,7 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
     if (state->active_game.active || jw__storage_child_in_front(state)) {
         return jw__reply_error(client, "busy");
     }
-    if (!jw__storage_external_power(state)) {
+    if (strcmp(mode, "repair") == 0 && !jw__storage_external_power(state)) {
         return jw__reply_error(client, "power-required");
     }
 #ifdef PLATFORM_MLP1
@@ -12016,7 +12036,9 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
     }
     jw_log_warn("storage: %s request committed for %s uuid=%s; restarting", mode, source, uuid);
     state->storage_monitor.generation++;
-    jw__request_power_transition(state, JW_PLATFORM_ACTION_REBOOT);
+    if (!jw__request_power_transition(state, JW_PLATFORM_ACTION_REBOOT)) {
+        return jw__reply_error(client, "power-handoff-missing");
+    }
     return jw__reply_ok(client, "storage-repair-request", NULL);
 #else
     return jw__reply_error(client, "unsupported-platform");
@@ -13481,14 +13503,11 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
                      inhibited ? "sleep pending: suspend inhibited" : "sleep resumed");
         } else if (action == JW_PLATFORM_ACTION_POWEROFF ||
                    action == JW_PLATFORM_ACTION_REBOOT) {
-            /* A power transition must not race the supervisor's shutdown stop.
-             * Record the action now so the reply reaches the caller, then let the
-             * main loop stop the frontend and every service. jw__cleanup schedules
-             * the kernel transition only after the DB/socket/runtime cleanup. */
-            jw__request_power_transition(state, action);
+            bool accepted = jw__request_power_transition(state, action);
             memset(&result, 0, sizeof(result));
-            result.code = JW_PLATFORM_RESULT_OK;
+            result.code = accepted ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED;
             snprintf(result.message, sizeof(result.message), "%s",
+                     !accepted ? "safe power handoff unavailable" :
                      action == JW_PLATFORM_ACTION_REBOOT ? "rebooting" : "powering off");
         } else if (action == JW_PLATFORM_ACTION_BLUETOOTH_ON ||
                    action == JW_PLATFORM_ACTION_BLUETOOTH_OFF) {
@@ -15460,6 +15479,8 @@ static void jw__cleanup(jw_daemon_state *state) {
     jw_pakrat_mutation_lock_release(&state->mutation_recovery_lock);
     jw_ipc_server_close(state->server);
     jw_db_close(state->db);
+    /* MLP1 queued its rootfs handoff before shutdown began. */
+#ifndef PLATFORM_MLP1
     if (state->power_transition_requested) {
         jw_platform_result result;
         jw_platform_perform_action(&state->platform,
@@ -15471,6 +15492,7 @@ static void jw__cleanup(jw_daemon_state *state) {
                                            : jw_platform_result_code_name(result.code));
         }
     }
+#endif
     jw_platform_shutdown(&state->platform);
     free(state->runtime_dir);
     free(state->sdcard_root);
@@ -16025,16 +16047,28 @@ int main(int argc, char *argv[]) {
        stranded ON with nothing left to clear it. */
     jw__rumble_quiesce();
 
+    bool shutdown_verified = true;
     /* SVC-1: stop every running service and verify each group absent before
        exiting. Per the contract's unverified-stop table, shutdown continues
        past a stuck service (recorded, never allowed to wedge the device). */
     if (state.services) {
         int stuck = jw_svc_supervisor_stop_all(state.services);
         if (stuck > 0) {
+            shutdown_verified = false;
             jw_log_warn("services: %d service(s) could not be verified stopped "
                         "during shutdown", stuck);
         }
     }
+
+    jw_log_info("jawakad exiting");
+    jw__cleanup(&state);
+#ifdef PLATFORM_MLP1
+    if (state.power_transition_requested && shutdown_verified && state.child_pid <= 0) {
+        if (jw_power_request_complete() != 0) return 1;
+    }
+#else
+    (void)shutdown_verified;
+#endif
 
     /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
        knows this was an intentional shutdown, not a crash. The marker lives in
@@ -16050,7 +16084,5 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    jw_log_info("jawakad exiting");
-    jw__cleanup(&state);
     return 0;
 }

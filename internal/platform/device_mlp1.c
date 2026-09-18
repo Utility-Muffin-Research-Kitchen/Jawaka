@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <sys/reboot.h>
+#include "internal/platform/power_request.h"
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -1091,56 +1091,6 @@ static void jw__loong_load(void) {
     }
 }
 
-
-/* Reboot or power off via the reboot(2) syscall directly.
-   The stock busybox reboot/poweroff applets signal PID 1, but in Leaf mode init
-   is blocked in rcS (the umrk-leaf-session supervisor holds the boot), so those
-   signals are never serviced and nothing happens. Magic SysRq is also disabled
-   by default (/proc/sys/kernel/sysrq = 0). reboot(2) goes straight to the kernel
-   and works regardless of init state (we run as root with CAP_SYS_BOOT).
-   Done in a forked child after a short delay so the IPC reply reaches the menu
-   before the system goes down. cmd is RB_AUTOBOOT or RB_POWER_OFF. */
-static int jw__mlp1_power_transition_async(int cmd) {
-    pid_t pid = fork();
-    if (pid < 0) {
-        return -1;
-    }
-    if (pid == 0) {
-        /* Double-fork: the grandchild reparents to init and is auto-reaped, so
-           the long-lived daemon leaves no zombie. The intermediate child exits
-           immediately and the original parent reaps only it (below). */
-        pid_t grandchild = fork();
-        if (grandchild == 0) {
-            usleep(250000);   /* let the IPC reply flush and the menu close */
-
-            /* Take the filesystems down cleanly before the abrupt reboot(2). The SD
-               is FAT32 and busy — our own binary executes from it and the library DB
-               is open — so `mount -o remount,ro` returns EBUSY. The kernel's
-               emergency remount-ro (magic SysRq 'u') forces every mounted fs
-               read-only regardless of open files, flushing the FAT and directory
-               entries so an immediate reboot/power-off can't corrupt the card.
-               Without this, repeated reboots have produced FAT32 corruption.
-               Sequence mirrors REISUB's tail: enable sysrq, Sync, Unmount(ro), Sync. */
-            (void)jw__write_text_file("/proc/sys/kernel/sysrq", "1\n");
-            sync();
-            (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
-            (void)jw__write_text_file("/proc/sysrq-trigger", "u\n");   /* remount-ro all */
-            (void)jw__write_text_file("/proc/sysrq-trigger", "s\n");   /* sync */
-            usleep(400000);   /* let the emergency remount-ro and flush settle */
-
-            reboot(cmd);
-            /* reboot(2) only returns on failure; fall back to a magic SysRq reboot. */
-            sleep(1);
-            (void)jw__write_text_file("/proc/sysrq-trigger",
-                                      cmd == RB_POWER_OFF ? "o\n" : "b\n");
-            _exit(0);
-        }
-        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);   /* reap the intermediate child only */
-    return 0;
-}
 
 static char *jw__read_text_file(const char *path, long max_bytes) {
     FILE *fp = fopen(path, "rb");
@@ -3034,8 +2984,8 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_POWEROFF) {
         jw_log_info("platform: poweroff requested");
-        if (jw__mlp1_power_transition_async(RB_POWER_OFF) != 0) {
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "poweroff failed");
+        if (jw_power_request_publish("poweroff") != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "safe power handoff unavailable");
             return;
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "powering off");
@@ -3044,8 +2994,8 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
 
     if (action == JW_PLATFORM_ACTION_REBOOT) {
         jw_log_info("platform: reboot requested");
-        if (jw__mlp1_power_transition_async(RB_AUTOBOOT) != 0) {
-            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "reboot failed");
+        if (jw_power_request_publish("reboot") != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED, "safe power handoff unavailable");
             return;
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, "rebooting");
@@ -3550,6 +3500,8 @@ static void jw__mlp1_storage_repair_capability(jw_platform_context *ctx,
         reason = "write-protected";
     } else if (access(JW_MLP1_FSCK_FAT, X_OK) != 0) {
         reason = "tool-missing";
+    } else if (!jw_power_request_available()) {
+        reason = "power-handoff-missing";
     } else if (access(JW_STORAGE_MLP1_REPAIR_TOOL, X_OK) != 0) {
         reason = "repair-runner-missing";
     }
