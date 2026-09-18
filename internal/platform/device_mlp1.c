@@ -1496,7 +1496,8 @@ static int jw__mlp1_drm_pick_crtc(int fd, uint32_t *crtc_id, uint32_t *gamma_siz
     res.count_crtcs = n;
     int rc = -1;
     if (ioctl(fd, JW__DRM_IOCTL_MODE_GETRESOURCES, &res) == 0) {
-        for (uint32_t i = 0; i < res.count_crtcs; i++) {
+        uint32_t got = res.count_crtcs < n ? res.count_crtcs : n;
+        for (uint32_t i = 0; i < got; i++) {
             struct jw__drm_mode_crtc c;
             memset(&c, 0, sizeof(c));
             c.crtc_id = ids[i];
@@ -3374,6 +3375,18 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
     }
 
     if (action == JW_PLATFORM_ACTION_SET_COLOR_TEMP) {
+        /* This LUT compensates for the internal panel's known warm cast; the
+           value has no meaning on an external TV, and single-head HDMI mode
+           drives a different CRTC than the panel, so applying it there would
+           just tint whatever the TV happens to be showing. Refuse while HDMI
+           is the active output -- the persisted value replays onto the panel
+           automatically once it reverts (see jw__apply_persisted_color_temp
+           call sites in jawakad). */
+        if (jw__mlp1_hdmi_tv_active()) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
+                                   "colour temperature unavailable while HDMI is active");
+            return;
+        }
         int kelvin = jw_platform_clamp_color_temp_k(value);
         if (jw__mlp1_set_color_temp(kelvin) != 0) {
             jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
