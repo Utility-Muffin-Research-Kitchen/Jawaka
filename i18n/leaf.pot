@@ -1517,6 +1517,10 @@ msgid "Network: %s"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Neutral"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Never"
 msgstr ""
 
@@ -1526,10 +1530,6 @@ msgstr ""
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "New saves may fail"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "Neutral"
 msgstr ""
 
 #: internal/settings/timezones.c
@@ -1730,6 +1730,10 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Pakistan"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Panel only"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3106,6 +3110,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "color temperature unavailable on this platform"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "colour temperature unavailable while HDMI is active"
 msgstr ""
 
 #: internal/settings/settings.c

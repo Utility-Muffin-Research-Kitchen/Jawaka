@@ -2783,20 +2783,26 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     /* Colour temperature. Slider from MIN_K..MAX_K; the value fed to the gamma
        curve, not a measured white point, so on this warm panel a target above
        NEUTRAL_K (6500) reads as "cooler". NEUTRAL_K shows as "Neutral" and is a
-       true LUT bypass. Greyed on platforms without the capability. */
+       true LUT bypass. Greyed on platforms without the capability, and also
+       while HDMI drives the active output -- the LUT corrects the internal
+       panel specifically and would just mistint whatever the TV is showing
+       (see the JW_PLATFORM_ACTION_SET_COLOR_TEMP guard in device_mlp1.c). */
+    bool ct_on_tv = ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0;
+    bool ct_enabled = ui->color_temp_supported && !ct_on_tv;
     int ct_span = JW_PLATFORM_COLOR_TEMP_MAX_K - JW_PLATFORM_COLOR_TEMP_MIN_K;
     int ct_fill = ((ui->color_temp_kelvin - JW_PLATFORM_COLOR_TEMP_MIN_K) * 100) / ct_span;
     char ct_val[16];
     if (!ui->color_temp_supported) {
         snprintf(ct_val, sizeof(ct_val), "%s", T("Unavailable"));
+    } else if (ct_on_tv) {
+        snprintf(ct_val, sizeof(ct_val), "%s", T("Panel only"));
     } else if (ui->color_temp_kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
         snprintf(ct_val, sizeof(ct_val), "%s", T("Neutral"));
     } else {
         snprintf(ct_val, sizeof(ct_val), T("%d K"), ui->color_temp_kelvin);
     }
     jw__draw_slider_row_ex(ui, x, y_base, w, JW_DISPLAY_COLOR_TEMP, "Color Temperature",
-                           ui->color_temp_supported ? ct_fill : 0, ct_val,
-                           ui->color_temp_supported, item_h);
+                           ct_enabled ? ct_fill : 0, ct_val, ct_enabled, item_h);
     /* Display refresh rate (kPanelRefreshHz). Cycler when the platform supports it. */
     char refresh_val[16];
     snprintf(refresh_val, sizeof(refresh_val), T("%d Hz"), ui->refresh_rate_hz);
@@ -6646,13 +6652,18 @@ static void jw__set_color_temp(jw_settings_ui *ui, int kelvin,
 
     kelvin = jw_platform_clamp_color_temp_k(kelvin);
     status_buf[0] = '\0';
-    if (jw_ipc_set_color_temp(ui->socket_path, kelvin, status_buf, (int)status_size) != 0 &&
-        !status_buf[0]) {
-        snprintf(status_buf, status_size, "%s", T("color temperature change failed"));
+    if (jw_ipc_set_color_temp(ui->socket_path, kelvin, status_buf, (int)status_size) != 0) {
+        if (!status_buf[0]) {
+            snprintf(status_buf, status_size, "%s", T("color temperature change failed"));
+        }
         return;
     }
     /* Applied live by the daemon (no restart); mirror + persist so the fresh
-       value survives a reboot, where jawakad replays it from the DB. */
+       value survives a reboot, where jawakad replays it from the DB. Unlike
+       HDMI/refresh-rate (which persist optimistically because switching them
+       restarts Weston and leaves no reliable way to confirm success), this
+       path only reaches here once the daemon has confirmed the gamma LUT
+       write actually succeeded. */
     ui->color_temp_kelvin = kelvin;
     jw__persist_int(ui, "color_temp_k", kelvin);
 }
@@ -7170,10 +7181,17 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                           status_buf, status_size);
                 else if (ui->display_list.cursor == JW_DISPLAY_COLOR_TEMP) {
                     /* Left = warmer (lower K), right = cooler, matching the
-                       Brightness row's left-lowers convention. */
-                    jw__set_color_temp(ui,
-                        ui->color_temp_kelvin + dir * JW_PLATFORM_COLOR_TEMP_STEP_K,
-                        status_buf, status_size);
+                       Brightness row's left-lowers convention. Greyed (and
+                       refused here without a round trip) while HDMI is the
+                       active output -- see jw__render_display. */
+                    if (ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0) {
+                        snprintf(status_buf, status_size, "%s",
+                                 T("colour temperature unavailable while HDMI is active"));
+                    } else {
+                        jw__set_color_temp(ui,
+                            ui->color_temp_kelvin + dir * JW_PLATFORM_COLOR_TEMP_STEP_K,
+                            status_buf, status_size);
+                    }
                 }
                 else if (ui->display_list.cursor == JW_DISPLAY_REFRESH_RATE) {
                     /* Cycle the refresh rate (left/right step, A advances). On a TV,

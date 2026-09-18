@@ -10761,6 +10761,13 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
         jw_platform_perform_action(&state->platform,
                                    JW_PLATFORM_ACTION_SET_HDMI_OUTPUT, 0, &res);
         jw_log_info("HDMI hotplug: disconnected -> reverting to panel");
+        /* Colour temperature was refused while HDMI was the active output
+           (see JW_PLATFORM_ACTION_SET_COLOR_TEMP in device_mlp1.c); replay
+           the persisted value now that the panel is live again, same as a
+           fresh boot would. */
+        if (res.code == JW_PLATFORM_RESULT_OK) {
+            jw__apply_persisted_color_temp(state);
+        }
     }
 }
 
@@ -13503,6 +13510,15 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
             jw_platform_perform_action(&state->platform, action, value, &result);
             if (result.code == JW_PLATFORM_RESULT_OK) {
                 jw__publish_audio_env(state);
+            }
+        } else if (action == JW_PLATFORM_ACTION_SET_HDMI_OUTPUT) {
+            jw_platform_perform_action(&state->platform, action, value, &result);
+            /* Mirrors the auto-revert-on-unplug path in jw__tick_hdmi: any
+               switch back to the panel (whether by hotplug or, here, the
+               user explicitly turning HDMI Output off) replays the colour
+               temperature that HDMI's active output refused. */
+            if (result.code == JW_PLATFORM_RESULT_OK && value == 0) {
+                jw__apply_persisted_color_temp(state);
             }
         } else if (action == JW_PLATFORM_ACTION_SLEEP) {
             bool inhibited = jw_suspend_inhibitor_count(&state->suspend_inhibitor) > 0;
