@@ -204,6 +204,18 @@ msgstr ""
 msgid "12 Hour"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "120Hz BFI measured 59.249 FPS and further reduces brightness."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "120Hz cadence counters can report periodic drops for nominal 59.94/60fps content."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "120Hz cadence counters can report periodic drops for nominal 60fps content."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "15 sec"
 msgstr ""
@@ -280,6 +292,10 @@ msgstr ""
 msgid "A broader preset may apply after you reload the game."
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "A lighter handheld LCD grid with softer cell edges."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "A theme folder named %s is already on your SD card.\n\nReplace it with %s from Pak Rat so it can be updated? The files in that folder will be replaced."
 msgstr ""
@@ -352,12 +368,44 @@ msgstr ""
 msgid "Adding Splore favorites"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "Adds a Pocket-style backing texture and low-cost pixel grid tuned for Game Boy Color art."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Adds a gray backing texture, low-cost pixel grid, and transparency response tuned for the original GBA screen."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Adds a lightweight aperture mask and softened scanlines without curvature."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Adds a subdued Pocket-style backing texture, pixel grid, and edge shadows for original Game Boy games."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Adds lightweight scanlines with reduced darkness for 8-bit, 16-bit, and PlayStation-era games."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Adds the fine RGB pixel grid of a handheld LCD panel."
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Adelaide"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Adjust"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Advanced RetroArch menu"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Afghanistan"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -384,6 +432,10 @@ msgstr ""
 msgid "Already used by %s"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "American Samoa"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Amiga"
 msgstr ""
@@ -406,6 +458,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Apply"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Approximates the softer color response of the Game Boy Color LCD."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -442,6 +498,10 @@ msgstr ""
 
 #: internal/launcher/system_names.c
 msgid "Atari Lynx"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Atlantic Canada"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -484,6 +544,10 @@ msgstr ""
 msgid "B: Back   A: Next"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "BFI further reduces brightness."
+msgstr ""
+
 #: internal/launcher/bios.c
 msgid "BIOS file ready"
 msgstr ""
@@ -496,8 +560,20 @@ msgstr ""
 msgid "Background"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Baker Island"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Balanced"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Bangkok"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Bangladesh"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -506,6 +582,10 @@ msgstr ""
 
 #: internal/platform/platform_common.c
 msgid "Battery Saver"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Best at integer or near-integer scaling; the upstream shader can look uneven at arbitrary scales."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -552,7 +632,7 @@ msgstr ""
 msgid "Box art"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "Brazil (East)"
 msgstr ""
 
@@ -604,6 +684,22 @@ msgstr ""
 msgid "CPU temp"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "CRT Curved"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "CRT Lite"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "CRT Sharp"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "CRT effects reduce brightness; the preset uses a milder mask and scanline strength than upstream defaults."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Cancel"
 msgstr ""
@@ -612,12 +708,24 @@ msgstr ""
 msgid "Cancelled"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Cape Verde"
+msgstr ""
+
 #: internal/settings/storage_ui.c
 msgid "Card:"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/retroarch/shader_strings.c
+msgid "Carries a Leaf local patch until upstream fixes its GLSL ES precision mismatch."
+msgstr ""
+
+#: internal/settings/timezones.c
 msgid "Central Europe"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Chatham Islands"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -628,7 +736,7 @@ msgstr ""
 msgid "Check SD card"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "China"
 msgstr ""
 
@@ -732,6 +840,10 @@ msgstr ""
 msgid "Current"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "Curvature crops slightly at the screen edges."
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "Custom"
 msgstr ""
@@ -744,12 +856,24 @@ msgstr ""
 msgid "DMC"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Darwin"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Default"
 msgstr ""
 
 #: internal/settings/settings.c
 msgid "Defaults"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Designed for handheld content."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Designed for handheld content; the grid is very fine at console resolutions."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -792,6 +916,10 @@ msgstr ""
 msgid "Display Name"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "Do not combine with BFI when using mGBA: the no-shader mGBA control falls to 38.499 FPS at 120Hz with BFI."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Done"
 msgstr ""
@@ -812,7 +940,11 @@ msgstr ""
 msgid "Drop"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
+msgid "Dubai"
+msgstr ""
+
+#: internal/settings/timezones.c
 msgid "Eastern Europe"
 msgstr ""
 
@@ -838,6 +970,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Error"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Eucla"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -866,6 +1002,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Favorites"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Fernando de Noronha"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -904,6 +1044,14 @@ msgstr ""
 msgid "Frontend"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "GBA Color"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "GBC Color"
+msgstr ""
+
 #: cmd/jawaka-menu/main.c
 msgid "GPU"
 msgstr ""
@@ -920,8 +1068,20 @@ msgstr ""
 msgid "Game Boy Advance"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "Game Boy Advance LCD"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Game Boy Color"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Game Boy Color LCD"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Game Boy LCD"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1044,7 +1204,7 @@ msgstr ""
 msgid "Icon"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "India"
 msgstr ""
 
@@ -1084,12 +1244,20 @@ msgstr ""
 msgid "Intellivision"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/retroarch/shader_strings.c
+msgid "It is a scaling filter, not a CRT or LCD simulation."
+msgstr ""
+
+#: internal/settings/timezones.c
 msgid "Japan / Korea"
 msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Keep"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Keep BFI off: PS1 at 120Hz with BFI measured 50.282 FPS."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1100,8 +1268,28 @@ msgstr ""
 msgid "Keep data"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "Keep mGBA BFI off: the no-shader core path already falls below full speed at 120Hz with BFI."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Keeps pixel art crisp at integer and non-integer scaling without adding a CRT effect."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Keeps rectangular pixels as sharp as possible at awkward non-integer scales while avoiding scrolling shimmer."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Kernel"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "LCD Grid"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "LCD Grid Fast"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1196,6 +1384,10 @@ msgstr ""
 msgid "Lighting"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Line Islands"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "List Style"
 msgstr ""
@@ -1216,6 +1408,10 @@ msgstr ""
 msgid "Lock"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Lord Howe Island"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "MS-DOS"
 msgstr ""
@@ -1230,6 +1426,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Manual"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Marquesas Islands"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -1256,6 +1456,10 @@ msgstr ""
 msgid "Mode"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Moscow"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Most played"
 msgstr ""
@@ -1270,6 +1474,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Moving"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Myanmar"
 msgstr ""
 
 #: internal/launcher/system_names.c
@@ -1296,6 +1504,10 @@ msgstr ""
 msgid "Neo Geo Pocket Color"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "Nepal"
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Network: %s"
 msgstr ""
@@ -1304,8 +1516,16 @@ msgstr ""
 msgid "Never"
 msgstr ""
 
+#: internal/settings/timezones.c
+msgid "New Zealand"
+msgstr ""
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "New saves may fail"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Newfoundland"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1392,6 +1612,10 @@ msgstr ""
 msgid "No saves yet"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "No screen curvature; use CRT Curved for that."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "No services installed"
 msgstr ""
@@ -1449,6 +1673,10 @@ msgid "Off"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Offsets are standard time; regions adjust for DST"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "On"
 msgstr ""
 
@@ -1490,6 +1718,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Pak Rat Themes"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Pakistan"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1566,6 +1798,10 @@ msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Power Off"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Prefer this over Sharp Pixels when non-integer scrolling visibly shimmers."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -1896,6 +2132,18 @@ msgstr ""
 msgid "Scan failed"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "Scanlines and an aperture mask with a flat screen and crisp scaling."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Scanlines and aperture mask with screen curvature, rounded corners and vignetting."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Scanlines reduce brightness, especially when combined with BFI."
+msgstr ""
+
 #: internal/settings/settings.c
 msgid "Scanning"
 msgstr ""
@@ -2060,10 +2308,6 @@ msgstr ""
 msgid "Set a PIN"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Set your local time zone"
-msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Settings"
 msgstr ""
@@ -2086,6 +2330,14 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Shader scope"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Sharp Pixels"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Sharp Shimmerless"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2146,6 +2398,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Soft"
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Solomon Islands"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2240,6 +2496,10 @@ msgstr ""
 msgid "Style"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "Subtle Scanlines"
+msgstr ""
+
 #: internal/launcher/system_names.c
 msgid "Super Famicom"
 msgstr ""
@@ -2268,7 +2528,7 @@ msgstr ""
 msgid "Switcher"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "Sydney"
 msgstr ""
 
@@ -2314,6 +2574,10 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "Tabs"
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Tames colors authored for the original Game Boy Advance LCD."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2378,6 +2642,10 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "The saved shader could not be removed."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "The texture and grid intentionally soften bright flat colors."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -2484,6 +2752,14 @@ msgstr ""
 msgid "This game"
 msgstr ""
 
+#: internal/retroarch/shader_strings.c
+msgid "This is a scaling filter, not a CRT simulation."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "This is a stronger display simulation than the simpler GBC Color preset."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "This is your current theme."
 msgstr ""
@@ -2506,6 +2782,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "To repair it, turn off your device and check the card on a computer."
+msgstr ""
+
+#: internal/settings/timezones.c
+msgid "Tonga"
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2536,39 +2816,39 @@ msgstr ""
 msgid "UI Rumble"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "UK / Ireland"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Alaska"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Arizona"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Central"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Eastern"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Hawaii"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Mountain"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "US Pacific"
 msgstr ""
 
-#: internal/settings/settings.c
+#: internal/settings/timezones.c
 msgid "UTC"
 msgstr ""
 
@@ -2662,6 +2942,22 @@ msgstr ""
 
 #: cmd/jawaka-menu/main.c
 msgid "Use Advanced to edit it in RetroArch."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Use only for GBA content."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Use only for Game Boy Color content."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Use only for original Game Boy Advance content."
+msgstr ""
+
+#: internal/retroarch/shader_strings.c
+msgid "Use only for original Game Boy content."
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c

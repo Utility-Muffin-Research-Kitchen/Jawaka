@@ -425,6 +425,7 @@ UI_SRCS := \
 	$(EFFECTIVE_CATALOG_SRCS) \
 	internal/retroarch/shader_catalog.c \
 	internal/retroarch/shader_picker.c \
+	internal/retroarch/shader_strings.c \
 	internal/retroarch/states.c \
 	internal/storage/health.c \
 	internal/storage/sources.c \
@@ -460,6 +461,7 @@ UI_SRCS := \
 	internal/i18n/i18n.c \
 	internal/settings/settings.c internal/settings/storage_ui.c \
 	internal/settings/theme_resolve.c \
+	internal/settings/timezones.c \
 	internal/services/manifest.c \
 	third_party/cjson/cJSON.c \
 	third_party/miniz/miniz.c \
@@ -487,7 +489,7 @@ else
 ALL_OUTPUTS := $(ALL_BINS)
 endif
 
-.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test theme-package-test user-themes-test storage-sources-test storage-health-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test log-heal-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test osd-view-test osd-client-test osd-layout-test osd-banner-ui-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke launch-core-pin-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test rumble-settings-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test core-selection-test launch-notice-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-theme-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
+.PHONY: all jawakad jawaka-launcher jawaka-menu jawaka-osd jawaka-retroarchctl jawaka-retroarch-runner jawaka-update-runner jawaka-platformctl jawaka-ledd jawaka-scan-smoke jawaka-scrape-smoke jawaka-pakrat-smoke jawaka-catalog-smoke jawaka-content-runtime-smoke jawaka-core-override-smoke jawaka-i18n-test i18n-pot i18n-check jawaka-update-smoke jawaka-inhibitctl leaf-version-test wifi-ssid-test input-shortcuts-test shortcut-dispatch-check shortcut-ipc-smoke jawaka-input-proxy-chord-test mlp1-adb-chord-test pakrat-catalog-test pakrat-state-logic-test pakrat-txn-test theme-package-test user-themes-test storage-sources-test storage-health-test source-paths-v2-smoke service-manifest-test content-manifest-test catalog-merge-test ownership-test lease-test stop-test reservation-test backoff-test dup-ids-test unverified-stop-test control-state-test legacy-ssh-migration-test log-redact-test log-heal-test launch-test supervisor-test service-fixtures service-fixture-test ctl1-test life1-test ipc-stream-test wire-fixture-test osd-game-launch-test osd-view-test osd-client-test osd-layout-test osd-banner-ui-test life1-subscriber-ipc-smoke life1-game-ipc-smoke life1-game-wait-ipc-smoke life1-game-check-ipc-smoke launch-core-pin-ipc-smoke life1-game-fallback-ipc-smoke life1-game-unmanaged-ipc-smoke life1-game-override-ipc-smoke life1-app-noevent-ipc-smoke active-game-recovery-ipc-smoke active-game-test writer-group-test service-client-test focus-test schema-v6-test rumble-settings-test relocation-test relocation-ipc-smoke package-quiesce-ipc-smoke power-transition-ipc-smoke imported-title-test pinyin-search-test imported-title-ipc-smoke settings-status-test states-core-test appearance-env-test jawaka-timezone-probe timezone-test mlp1-device-timezone-test legacy-migration-test shader-catalog-test shader-picker-test shader-menu-contract-test retroarch-command-test retroarch-config-test retroarch-recording-path-test retroarch-runner-stop-smoke retroarch-app-shutdown-ipc-smoke catalog-effective-test catalog-generation-smoke content-catalog-smoke catalog-folder-test standalone-policy-test core-selection-test launch-notice-test bios-test bios-launch-contract-check scrape-systems-test ss-client-test suspend-inhibit-test suspend-inhibit-ipc-smoke update-local-manifest-smoke pakrat-state-smoke pakrat-history-smoke pakrat-recovery-smoke pakrat-theme-smoke pakrat-service-mutation-smoke mockgen run-daemon run-daemon-interactive run-daemon-only run-launcher run-menu run-interactive clean help tg5040 tg5050 my355 mlp1 mlp1-pakrat-smoke mlp1-inhibit-smoke mlp1-adb-smoke mlp1-adb-service-fixture-smoke mlp1-adb-pakrat-recovery-smoke mlp1-adb-service-mutation-smoke mlp1-adb-life1-smoke mlp1-adb-input-capture mlp1-adb-ra-command-smoke phase3-fixture-scan-smoke phase3-core-choice-smoke check-catastrophe check-sdl FORCE
 
 all: $(ALL_OUTPUTS)
 
@@ -517,12 +519,14 @@ jawaka-i18n-test: $(BUILD)/bin/jawaka-i18n-test
 # Regenerate the canonical key list from the sources. Commit the result --
 # CI diffs it, so a UI-string change without a regenerated .pot fails there.
 i18n-pot:
-	python3 tools/i18n-extract.py
+	python3 tools/gen-shader-strings.py
+	python3 tools/i18n-extract.py --po $(wildcard i18n/*.po)
 
 # What CI runs: the committed .pot must match the code, and any committed
 # translation must parse, carry no orphan keys, and keep its printf
 # conversions compatible (i18n-compile.py enforces that last one).
 i18n-check:
+	python3 tools/gen-shader-strings.py --check
 	python3 tools/i18n-extract.py --check --po $(wildcard i18n/*.po)
 	@for po in $(wildcard i18n/*.po); do \
 		python3 tools/i18n-compile.py $$po -o /tmp/i18n-check.jwi || exit 1; \
@@ -953,10 +957,36 @@ settings-status-test: | $(BUILD)/bin check-catastrophe check-sdl
 appearance-env-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -D_GNU_SOURCE -o $(BUILD)/bin/appearance-env-test \
 		internal/settings/appearance_env_test.c internal/settings/appearance.c \
-		internal/settings/theme_resolve.c internal/i18n/i18n.c internal/core/log.c \
+		internal/settings/theme_resolve.c internal/settings/timezones.c \
+		internal/i18n/i18n.c internal/core/log.c \
 		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
 		$(BLUETOOTH_SRC) $(LDLIBS_COMMON)
 	$(BUILD)/bin/appearance-env-test
+
+# The time-zone table against the C library that will convert it. Build only,
+# so the same rule serves the cross-build that `make mlp1-device-timezone-test`
+# ships to a device.
+jawaka-timezone-probe: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -D_GNU_SOURCE -o $(BUILD)/bin/timezone-probe \
+		internal/settings/timezone_probe.c internal/settings/timezones.c \
+		$(LDLIBS_COMMON)
+
+# Host run. The device run is the one that counts: the host's zoneinfo is not
+# the device's, and this table is only as good as the data under it.
+timezone-test: jawaka-timezone-probe
+	$(BUILD)/bin/timezone-probe
+
+# Cross-build the probe and run it on an MLP1. It converts fixed UTC instants
+# and never touches the system clock, so it is safe with the launcher up.
+mlp1-device-timezone-test:
+	docker run --rm \
+		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
+		-v "$(WORKSPACE_ROOT)":/workspace \
+		-v "$(CURDIR)":/workspace/Jawaka \
+		-w /workspace/Jawaka \
+		"$(MLP1_TOOLCHAIN_IMAGE)" \
+		make -f ports/mlp1/Makefile timezone-probe
+	scripts/mlp1-timezone-probe.sh
 
 imported-title-ipc-smoke:
 	scripts/imported-title-ipc-smoke.sh
