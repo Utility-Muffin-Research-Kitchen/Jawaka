@@ -51,6 +51,7 @@ FUNNELS = [
     "jw__render_nav_row",
     "jw__draw_header",
     "jw__draw_slider_row",
+    "jw__draw_slider_row_ex",
     "jw__render_account_row",
     "jw__draw_info_title",
     "jw__about_push",

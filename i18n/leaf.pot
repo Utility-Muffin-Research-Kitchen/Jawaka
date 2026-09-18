@@ -16,6 +16,10 @@ msgstr ""
 msgid "%d Hz"
 msgstr ""
 
+#: internal/settings/settings.c
+msgid "%d K"
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "%d apps"
 msgstr ""
@@ -777,6 +781,10 @@ msgid "Color Scheme"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Color Temperature"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Colors"
 msgstr ""
 
@@ -1509,6 +1517,10 @@ msgid "Network: %s"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Neutral"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Never"
 msgstr ""
 
@@ -1718,6 +1730,10 @@ msgstr ""
 
 #: internal/settings/timezones.c
 msgid "Pakistan"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Panel only"
 msgstr ""
 
 #: cmd/jawaka-launcher/main.c
@@ -3086,6 +3102,18 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "brightness failed"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "color temperature change failed"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "color temperature unavailable on this platform"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "colour temperature unavailable while HDMI is active"
 msgstr ""
 
 #: internal/settings/settings.c

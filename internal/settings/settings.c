@@ -167,6 +167,7 @@ typedef enum {
     JW_SETTING_RA_PASS,
     JW_SETTING_TAB_GLIDE,
     JW_SETTING_REFRESH_RATE_HZ,
+    JW_SETTING_COLOR_TEMP_K,
     JW_SETTING_BFI_ENABLED,
     JW_SETTING_HDMI_OUTPUT_MODE,
     JW_SETTING_HOME_TAB_ORDER,
@@ -223,6 +224,7 @@ static const char *const kSettingKeys[JW_SETTING_COUNT] = {
     [JW_SETTING_RA_PASS] = "retroachievements_pass",
     [JW_SETTING_TAB_GLIDE] = "tab_glide",
     [JW_SETTING_REFRESH_RATE_HZ] = "refresh_rate_hz",
+    [JW_SETTING_COLOR_TEMP_K] = "color_temp_k",
     [JW_SETTING_BFI_ENABLED] = "bfi_enabled",
     [JW_SETTING_HDMI_OUTPUT_MODE] = "hdmi_output_mode",
     [JW_SETTING_HOME_TAB_ORDER] = "home_tab_order",
@@ -758,6 +760,27 @@ static void jw__refresh_refresh_rate(jw_settings_ui *ui) {
            the row quietly claim 60. Cycling off it then retires it for good. */
         if (hz > 0) {
             ui->refresh_rate_hz = hz;
+        }
+    }
+}
+
+static void jw__refresh_color_temp(jw_settings_ui *ui) {
+    if (!ui) {
+        return;
+    }
+    ui->color_temp_supported = false;
+    if (!ui->socket_path[0]) {
+        return;
+    }
+
+    int kelvin = -1;
+    bool supported = false;
+    if (jw_ipc_get_color_temp(ui->socket_path, &kelvin, &supported) == 0) {
+        ui->color_temp_supported = supported;
+        /* The daemon only knows a value once one has been applied this boot; a
+           negative reading means "not set yet", so keep the persisted mirror. */
+        if (kelvin > 0) {
+            ui->color_temp_kelvin = jw_platform_clamp_color_temp_k(kelvin);
         }
     }
 }
@@ -1534,6 +1557,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     ui->system_icon_pack_index = JW_SYSTEM_ICON_PACK_AUTO;
     ui->refresh_rate_hz   = 60;
     ui->refresh_rate_supported = false;
+    ui->color_temp_kelvin = JW_PLATFORM_COLOR_TEMP_NEUTRAL_K;
+    ui->color_temp_supported = false;
     ui->bfi_enabled       = false;
     ui->hdmi_output_mode  = 0;       /* off */
     ui->hdmi_connected    = -1;
@@ -1718,6 +1743,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             if (jw__setting_has(values, found, JW_SETTING_REFRESH_RATE_HZ)) {
                 int hz = atoi(values[JW_SETTING_REFRESH_RATE_HZ]);
                 if (jw__is_panel_refresh_hz(hz)) ui->refresh_rate_hz = hz;
+            }
+            if (jw__setting_has(values, found, JW_SETTING_COLOR_TEMP_K)) {
+                int k = atoi(values[JW_SETTING_COLOR_TEMP_K]);
+                if (k > 0) ui->color_temp_kelvin = jw_platform_clamp_color_temp_k(k);
             }
             if (jw__setting_has(values, found, JW_SETTING_BFI_ENABLED))
                 ui->bfi_enabled = (strcmp(values[JW_SETTING_BFI_ENABLED], "0") != 0);
@@ -2646,25 +2675,36 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
 /* One labelled slider row (Brightness / Volume) on the Display & Sound page.
    item_h is the page's fitted row pitch; every row on the page must be passed the
    same value or they overlap and gap, since each positions itself as row*item_h. */
-static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int w,
-                                int row, const char *label, int percent, int item_h) {
-    label = T(label);   /* value_str is "%d%%" -- a number needs no lookup */
+/* fill_percent drives the track bar (0..100); value_str is the right-aligned
+   readout. Passing value_str = NULL formats fill_percent as "%d%%" (the
+   Brightness / Volume case); a non-NULL string is drawn verbatim and is
+   translated by the caller if it needs to be. enabled = false greys the row
+   and the caller must also refuse input on it. */
+static void jw__draw_slider_row_ex(const jw_settings_ui *ui, int x, int y_base, int w,
+                                   int row, const char *label, int fill_percent,
+                                   const char *value_str, bool enabled, int item_h) {
+    label = T(label);
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int iy;
     if (!jw__settings_row_position(&ui->display_list, row, &iy)) return;
-    float focus = jw__settings_row_focus(&ui->display_list, row);
+    float focus = enabled ? jw__settings_row_focus(&ui->display_list, row) : 0.0f;
     int pill_h = item_h - cat_scale(6);
     int pill_y = iy + cat_scale(3);
-    ap_color label_c = cat_draw_color_lerp(theme->text,
-                                            theme->highlighted_text, focus);
-    ap_color value_c = cat_draw_color_lerp(theme->hint,
-                                            theme->highlighted_text, focus);
+    ap_color label_c = enabled
+        ? cat_draw_color_lerp(theme->text, theme->highlighted_text, focus)
+        : theme->hint;
+    ap_color value_c = enabled
+        ? cat_draw_color_lerp(theme->hint, theme->highlighted_text, focus)
+        : theme->hint;
     int fh = TTF_FontHeight(body);
     int ty = pill_y + (pill_h - fh) / 2;
 
-    char value_str[32];
-    snprintf(value_str, sizeof(value_str), "%d%%", percent);
+    char buf[32];
+    if (!value_str) {
+        snprintf(buf, sizeof(buf), "%d%%", fill_percent);
+        value_str = buf;
+    }
 
     /* The value column is sized for the widest reading, not this one, so the
        track does not shift as the number gains or loses a digit. */
@@ -2687,9 +2727,16 @@ static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int
 
     cat_draw_rounded_rect(track_x, track_y, track_w, track_h, radius,
                           cat_hex_to_color("#ffffff33"));
-    int fill_w = (track_w * percent) / 100;
+    if (fill_percent < 0) fill_percent = 0;
+    if (fill_percent > 100) fill_percent = 100;
+    int fill_w = (track_w * fill_percent) / 100;
     if (fill_w < track_h) fill_w = track_h;      /* never shorter than its own cap */
     cat_draw_rounded_rect(track_x, track_y, fill_w, track_h, radius, value_c);
+}
+
+static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int w,
+                                int row, const char *label, int percent, int item_h) {
+    jw__draw_slider_row_ex(ui, x, y_base, w, row, label, percent, NULL, true, item_h);
 }
 
 static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_base, int w,
@@ -2733,6 +2780,29 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
                                        jw__draw_display_focus);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
                         ui->brightness_percent, item_h);
+    /* Colour temperature. Slider from MIN_K..MAX_K; the value fed to the gamma
+       curve, not a measured white point, so on this warm panel a target above
+       NEUTRAL_K (6500) reads as "cooler". NEUTRAL_K shows as "Neutral" and is a
+       true LUT bypass. Greyed on platforms without the capability, and also
+       while HDMI drives the active output -- the LUT corrects the internal
+       panel specifically and would just mistint whatever the TV is showing
+       (see the JW_PLATFORM_ACTION_SET_COLOR_TEMP guard in device_mlp1.c). */
+    bool ct_on_tv = ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0;
+    bool ct_enabled = ui->color_temp_supported && !ct_on_tv;
+    int ct_span = JW_PLATFORM_COLOR_TEMP_MAX_K - JW_PLATFORM_COLOR_TEMP_MIN_K;
+    int ct_fill = ((ui->color_temp_kelvin - JW_PLATFORM_COLOR_TEMP_MIN_K) * 100) / ct_span;
+    char ct_val[16];
+    if (!ui->color_temp_supported) {
+        snprintf(ct_val, sizeof(ct_val), "%s", T("Unavailable"));
+    } else if (ct_on_tv) {
+        snprintf(ct_val, sizeof(ct_val), "%s", T("Panel only"));
+    } else if (ui->color_temp_kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+        snprintf(ct_val, sizeof(ct_val), "%s", T("Neutral"));
+    } else {
+        snprintf(ct_val, sizeof(ct_val), T("%d K"), ui->color_temp_kelvin);
+    }
+    jw__draw_slider_row_ex(ui, x, y_base, w, JW_DISPLAY_COLOR_TEMP, "Color Temperature",
+                           ct_enabled ? ct_fill : 0, ct_val, ct_enabled, item_h);
     /* Display refresh rate (kPanelRefreshHz). Cycler when the platform supports it. */
     char refresh_val[16];
     snprintf(refresh_val, sizeof(refresh_val), T("%d Hz"), ui->refresh_rate_hz);
@@ -6569,6 +6639,35 @@ static void jw__set_refresh_rate(jw_settings_ui *ui, int hz,
     jw__persist_int(ui, "refresh_rate_hz", hz);
 }
 
+static void jw__set_color_temp(jw_settings_ui *ui, int kelvin,
+                               char *status_buf, size_t status_size) {
+    if (!ui || !status_buf || status_size == 0) {
+        return;
+    }
+    if (!ui->color_temp_supported) {
+        snprintf(status_buf, status_size, "%s",
+                 T("color temperature unavailable on this platform"));
+        return;
+    }
+
+    kelvin = jw_platform_clamp_color_temp_k(kelvin);
+    status_buf[0] = '\0';
+    if (jw_ipc_set_color_temp(ui->socket_path, kelvin, status_buf, (int)status_size) != 0) {
+        if (!status_buf[0]) {
+            snprintf(status_buf, status_size, "%s", T("color temperature change failed"));
+        }
+        return;
+    }
+    /* Applied live by the daemon (no restart); mirror + persist so the fresh
+       value survives a reboot, where jawakad replays it from the DB. Unlike
+       HDMI/refresh-rate (which persist optimistically because switching them
+       restarts Weston and leaves no reliable way to confirm success), this
+       path only reaches here once the daemon has confirmed the gamma LUT
+       write actually succeeded. */
+    ui->color_temp_kelvin = kelvin;
+    jw__persist_int(ui, "color_temp_k", kelvin);
+}
+
 static void jw__set_hdmi_output(jw_settings_ui *ui, int mode,
                                 char *status_buf, size_t status_size) {
     if (!ui || !status_buf || status_size == 0) {
@@ -6700,6 +6799,7 @@ static bool jw__enter_screen(jw_settings_ui *ui, jw_settings_screen screen,
         jw__refresh_volume(ui);
         jw__refresh_audio_status(ui);
         jw__refresh_refresh_rate(ui);
+        jw__refresh_color_temp(ui);
         jw__refresh_hdmi(ui);
         break;
     case JW_SETTINGS_LIGHTING:
@@ -7079,6 +7179,20 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 if (ui->display_list.cursor == JW_DISPLAY_BRIGHTNESS)
                     jw__change_brightness(ui, dir * JW_PLATFORM_BRIGHTNESS_STEP_PERCENT,
                                           status_buf, status_size);
+                else if (ui->display_list.cursor == JW_DISPLAY_COLOR_TEMP) {
+                    /* Left = warmer (lower K), right = cooler, matching the
+                       Brightness row's left-lowers convention. Greyed (and
+                       refused here without a round trip) while HDMI is the
+                       active output -- see jw__render_display. */
+                    if (ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0) {
+                        snprintf(status_buf, status_size, "%s",
+                                 T("colour temperature unavailable while HDMI is active"));
+                    } else {
+                        jw__set_color_temp(ui,
+                            ui->color_temp_kelvin + dir * JW_PLATFORM_COLOR_TEMP_STEP_K,
+                            status_buf, status_size);
+                    }
+                }
                 else if (ui->display_list.cursor == JW_DISPLAY_REFRESH_RATE) {
                     /* Cycle the refresh rate (left/right step, A advances). On a TV,
                        HDMI has no 100Hz mode and both it and 60 render as 720p60, so
