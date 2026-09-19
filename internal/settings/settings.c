@@ -1431,6 +1431,19 @@ void jw_settings_ui_refresh_services(jw_settings_ui *ui) {
 
 /* ─── Lifecycle ────────────────────────────────────────────────────────── */
 
+static const char *jw__language_label(const char *code);
+
+/* Languages after English sort by the name the row shows, so the list is the
+   same on every card. It used to be raw readdir() order, which on FAT32 is
+   roughly the order files were written, with deleted slots reused -- not
+   alphabetical, not stable, and different between two identical installs. A
+   .tsv override also jumped ahead of the shipped tables. Byte order puts Latin
+   names before CJK ones, and within Latin it is alphabetical. */
+static int jw__language_cmp(const void *a, const void *b) {
+    return strcmp(jw__language_label((const char *)a),
+                  jw__language_label((const char *)b));
+}
+
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                           const char *initial_theme_name,
                           const char *socket_path) {
@@ -1473,6 +1486,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                      sizeof(ui->languages[0]), "%s", found[i]);
             ui->language_count++;
         }
+        /* English stays pinned at [0]; the rest are ordered by display name. */
+        if (ui->language_count > 2)
+            qsort(ui->languages[1], (size_t)(ui->language_count - 1),
+                  sizeof(ui->languages[0]), jw__language_cmp);
     }
     snprintf(ui->language, sizeof(ui->language), "%s", jw_i18n_language());
 
