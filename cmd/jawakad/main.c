@@ -653,7 +653,8 @@ static void jw__scan_title_list_move(jw_scan_title_list *dest,
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
 static bool jw__request_power_transition(jw_daemon_state *state,
-                                         jw_platform_action action) {
+                                         jw_platform_action action,
+                                         const char *reason) {
     if (!state) {
         return false;
     }
@@ -667,6 +668,12 @@ static bool jw__request_power_transition(jw_daemon_state *state,
         jw_log_error("power handoff refused: %s", result.message);
         return false;
     }
+    /* Informational only: the supervisor's screens and log. */
+    if (jw_power_request_reason(reason) != 0) {
+        jw_log_warn("power handoff: could not record reason %s", reason ? reason : "(none)");
+    }
+#else
+    (void)reason;
 #endif
     state->power_transition_requested = true;
     jw_input_proxy_cancel_menu(&state->input_proxy);
@@ -10789,7 +10796,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
                 state->power_sleep_armed = false;
                 jw_suspend_policy_long_press(&state->suspend_policy);
                 jw_log_info("power: long-press (%lldms) -> clean power off", held_ms);
-                jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF);
+                jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF, "power-button");
                 return;
             }
             if (state->power_sleep_armed) {
@@ -10817,7 +10824,7 @@ static void jw__tick_auto_sleep(jw_daemon_state *state) {
             state->power_sleep_armed = false;
             jw_suspend_policy_long_press(&state->suspend_policy);
             jw_log_info("power: long-press -> clean power off");
-            jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF);
+            jw__request_power_transition(state, JW_PLATFORM_ACTION_POWEROFF, "power-button");
             return;
         }
     }
@@ -11748,6 +11755,11 @@ static void jw__storage_status_add_health(jw_daemon_state *state, cJSON *root,
 
     jw_storage_probe_env env;
     jw_storage_probe_env_default(&env);
+    char hold_trigger[32];
+    if (h->repair != JW_STORAGE_REPAIR_NONE &&
+        jw_storage_repair_hold_trigger(&env, h->uuid, hold_trigger, sizeof(hold_trigger))) {
+        cJSON_AddStringToObject(root, "hold_trigger", hold_trigger);
+    }
     jw_storage_repair_result result;
     if (jw_storage_repair_last_result(&env, h->uuid, &result)) {
         cJSON *last = cJSON_AddObjectToObject(root, "last_repair");
@@ -11757,6 +11769,9 @@ static void jw__storage_status_add_health(jw_daemon_state *state, cJSON *root,
             cJSON_AddStringToObject(last, "mount_state", result.mount_state);
             cJSON_AddStringToObject(last, "mode", result.mode);
             cJSON_AddStringToObject(last, "origin", result.origin);
+            if (result.trigger[0]) {
+                cJSON_AddStringToObject(last, "trigger", result.trigger);
+            }
             cJSON_AddBoolToObject(last, "changes_complete", result.changes_complete);
             cJSON_AddNumberToObject(last, "reported_changes", result.reported_change_count);
             cJSON_AddBoolToObject(last, "acknowledged", result.acknowledged);
@@ -12036,7 +12051,7 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
     }
     jw_log_warn("storage: %s request committed for %s uuid=%s; restarting", mode, source, uuid);
     state->storage_monitor.generation++;
-    if (!jw__request_power_transition(state, JW_PLATFORM_ACTION_REBOOT)) {
+    if (!jw__request_power_transition(state, JW_PLATFORM_ACTION_REBOOT, "storage-check")) {
         return jw__reply_error(client, "power-handoff-missing");
     }
     return jw__reply_ok(client, "storage-repair-request", NULL);
@@ -13503,7 +13518,13 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
                      inhibited ? "sleep pending: suspend inhibited" : "sleep resumed");
         } else if (action == JW_PLATFORM_ACTION_POWEROFF ||
                    action == JW_PLATFORM_ACTION_REBOOT) {
-            bool accepted = jw__request_power_transition(state, action);
+            /* The loong_power handoff shim sends reason=low-battery. */
+            cJSON *reason_json = cJSON_GetObjectItemCaseSensitive(root, "reason");
+            const char *reason = cJSON_IsString(reason_json) &&
+                                         jw_power_request_reason_valid(reason_json->valuestring)
+                                     ? reason_json->valuestring
+                                     : "menu";
+            bool accepted = jw__request_power_transition(state, action, reason);
             memset(&result, 0, sizeof(result));
             result.code = accepted ? JW_PLATFORM_RESULT_OK : JW_PLATFORM_RESULT_FAILED;
             snprintf(result.message, sizeof(result.message), "%s",
@@ -15502,6 +15523,47 @@ static void jw__cleanup(jw_daemon_state *state) {
     free(state->state_dir);
 }
 
+#ifdef PLATFORM_MLP1
+/* /proc/<pid>/stat field 22: start time in clock ticks. With the pid it
+   identifies one process, so a recycled pid never reads as the game. */
+static unsigned long long jw__proc_start_ticks(pid_t pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[n] = '\0';
+    char *p = strrchr(buf, ')');
+    if (!p) return 0;
+    /* Fields after the command name start at field 3 (state). */
+    int field = 2;
+    for (p++; *p && field < 22; p++) {
+        if (*p == ' ') field++;
+    }
+    return field == 22 ? strtoull(p, NULL, 10) : 0;
+}
+
+/* SVC-1: shutdown could not prove every writer gone. Tell the rootfs
+   supervisor what to wait for instead of reporting completion. */
+static int jw__publish_power_incomplete(int stuck_services, const char *stuck_record,
+                                        pid_t game_pid) {
+    char record[2600];
+    int n = snprintf(record, sizeof(record), "reason=%s\n%s",
+                     stuck_services > 0 ? "unverified-service" : "game-child",
+                     stuck_record ? stuck_record : "");
+    if (n < 0 || (size_t)n >= sizeof(record)) return -1;
+    if (game_pid > 0) {
+        int m = snprintf(record + n, sizeof(record) - (size_t)n,
+                         "game pid=%d start=%llu\n", (int)game_pid,
+                         jw__proc_start_ticks(game_pid));
+        if (m < 0 || (size_t)m >= sizeof(record) - (size_t)n) return -1;
+    }
+    return jw_power_request_incomplete(record);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, jw__handle_signal);
     signal(SIGTERM, jw__handle_signal);
@@ -16048,6 +16110,8 @@ int main(int argc, char *argv[]) {
     jw__rumble_quiesce();
 
     bool shutdown_verified = true;
+    int stuck_services = 0;
+    char stuck_record[2048] = "";
     /* SVC-1: stop every running service and verify each group absent before
        exiting. Per the contract's unverified-stop table, an MLP1 power
        transition with a stuck service does not report completion: the rootfs
@@ -16058,6 +16122,9 @@ int main(int argc, char *argv[]) {
         int stuck = jw_svc_supervisor_stop_all(state.services);
         if (stuck > 0) {
             shutdown_verified = false;
+            stuck_services = stuck;
+            (void)jw_svc_supervisor_describe_unverified(state.services, stuck_record,
+                                                        sizeof(stuck_record));
             jw_log_warn("services: %d service(s) could not be verified stopped "
                         "during shutdown", stuck);
         }
@@ -16066,11 +16133,22 @@ int main(int argc, char *argv[]) {
     jw_log_info("jawakad exiting");
     jw__cleanup(&state);
 #ifdef PLATFORM_MLP1
-    if (state.power_transition_requested && shutdown_verified && state.child_pid <= 0) {
-        if (jw_power_request_complete() != 0) return 1;
+    if (state.power_transition_requested) {
+        if (shutdown_verified && state.child_pid <= 0) {
+            if (jw_power_request_complete() != 0) {
+                (void)jw_power_request_incomplete("reason=cleanup-failed\n");
+                return 1;
+            }
+        } else if (jw__publish_power_incomplete(stuck_services, stuck_record,
+                                                state.child_pid) != 0) {
+            jw_log_error("power handoff: could not record the unverified stop; "
+                         "the supervisor can only offer an override");
+        }
     }
 #else
     (void)shutdown_verified;
+    (void)stuck_services;
+    (void)stuck_record;
 #endif
 
     /* Write clean-exit marker so the Leaf boot supervisor's crash-loop guard
