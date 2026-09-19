@@ -128,10 +128,28 @@ const char *jw_appearance_font_path_for_index(int index) {
 
    The font picker must reflect this while a CJK language is active -- silently
    ignoring the user's choice is worse than showing them why it does not apply. */
+static bool jw__language_is_japanese(const char *lang) {
+    return lang && strncmp(lang, "ja", 2) == 0 && (lang[2] == '\0' || lang[2] == '_');
+}
+
 const char *jw_appearance_font_path_for_language(int index, const char *lang) {
+    if (jw__language_is_japanese(lang))
+        return JW_APPEARANCE_JA_FONT_PATH;
     if (jw_i18n_language_is_cjk(lang))
         return JW_APPEARANCE_CJK_FONT_PATH;
     return jw_appearance_font_path_for_index(index);
+}
+
+/* The UI face alone is not enough for Japanese: Catastrophe moves every CJK
+   string onto a separate CJK face, so without this override the translated
+   strings would still come out in Chinese forms and only the Latin text would
+   change. */
+const char *jw_appearance_cjk_font_path_for_language(const char *lang) {
+    return jw__language_is_japanese(lang) ? JW_APPEARANCE_JA_FONT_PATH : "";
+}
+
+const char *jw_appearance_cjk_font_label(const char *lang) {
+    return jw__language_is_japanese(lang) ? "Leaf Han Sans JP" : "Source Han Sans";
 }
 
 void jw_appearance_resolve(const char *db_path, jw_appearance_env *out) {
@@ -202,6 +220,10 @@ int jw_appearance_apply_env(const jw_appearance_env *env) {
     int rc = 0;
     rc |= setenv("CAT_THEME_NAME", env->theme_name, 1);
     rc |= setenv("CAT_FONT_PATH", env->font_path ? env->font_path : "", 1);
+    /* Always written, so a language change replaces whatever the daemon's
+       environment inherited from an earlier spawn. */
+    rc |= setenv("CAT_CJK_FONT_PATH",
+                 jw_appearance_cjk_font_path_for_language(env->language), 1);
     rc |= setenv("CAT_FONT_BUMP", env->font_bump, 1);
     rc |= setenv("CAT_PILL_RADIUS_RATIO", env->pill_radius_ratio, 1);
     rc |= setenv("CAT_PILL_CORNER_MASK", env->pill_corner_mask, 1);

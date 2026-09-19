@@ -237,26 +237,48 @@ def pot_keys(path: Path):
 def po_entries(path: Path):
     """(all keys, translated keys). A key with an empty msgstr is present but
     untranslated -- it must count for the orphan check and NOT for coverage,
-    or a fully-seeded file reads as 100% before anyone has reviewed a word."""
+    or a fully-seeded file reads as 100% before anyone has reviewed a word.
+
+    Continuation lines are joined: a .po wraps any long string as `msgstr ""`
+    followed by one quoted fragment per line, and it is still one string. This
+    used to read only the first line, so every wrapped translation looked empty
+    and was counted untranslated -- understating every language's coverage
+    (Mexican Spanish read 90% on a complete file) -- and a wrapped msgid was
+    never registered at all, so the orphan check could not see it.
+
+    Fuzzy entries count as present but not translated, matching i18n-compile.py,
+    which never ships them: coverage should describe what a player sees."""
     text = path.read_text(encoding="utf-8")
     all_keys, translated = set(), set()
-    ctx = None
-    entry_re = re.compile(
-        r'^(msgctxt|msgid|msgstr) "((?:[^"\\]|\\.)*)"', re.M)
-    last_key = None
-    for m in entry_re.finditer(text):
-        kind, val = m.group(1), c_unescape(m.group(2))
-        if kind == "msgctxt":
-            ctx = val
-        elif kind == "msgid":
-            last_key = (f"{ctx}|{val}" if ctx else val) if val else None
-            if last_key:
-                all_keys.add(last_key)
-            ctx = None
-        elif kind == "msgstr" and last_key:
-            if val:
-                translated.add(last_key)
-            last_key = None
+    for block in re.split(r"\n\s*\n", text):
+        fuzzy = False
+        cur = None
+        parts = {"msgctxt": [], "msgid": [], "msgstr": []}
+        for line in block.splitlines():
+            if line.startswith("#~"):
+                cur = None
+                continue
+            if line.startswith("#,") and "fuzzy" in line:
+                fuzzy = True
+                continue
+            if line.startswith("#"):
+                continue
+            m = re.match(r'^(msgctxt|msgid|msgstr) "((?:[^"\\]|\\.)*)"', line)
+            if m:
+                cur = m.group(1)
+                parts[cur].append(m.group(2))
+                continue
+            m = re.match(r'^"((?:[^"\\]|\\.)*)"', line)
+            if m and cur:
+                parts[cur].append(m.group(1))
+        val = c_unescape("".join(parts["msgid"]))
+        if not val:
+            continue                      # the header entry, or no entry at all
+        ctx = c_unescape("".join(parts["msgctxt"]))
+        key = f"{ctx}|{val}" if ctx else val
+        all_keys.add(key)
+        if "".join(parts["msgstr"]) and not fuzzy:
+            translated.add(key)
     return all_keys, translated
 
 

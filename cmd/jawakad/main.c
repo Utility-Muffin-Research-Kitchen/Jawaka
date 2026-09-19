@@ -21,6 +21,7 @@
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
 #include "internal/platform/input_proxy.h"
+#include "internal/i18n/i18n.h"
 #include "internal/platform/input_shortcuts.h"
 #include "internal/platform/input_roster.h"
 #include "internal/platform/paths.h"
@@ -338,7 +339,7 @@ typedef struct {
     bool osd_ready;             /* fonts, backend and socket are all up */
     long long osd_spawned_ms;
     /* The appearance the running OSD opened its font with. */
-    char osd_language[16];
+    char osd_language[JW_I18N_CODE_MAX];
     char osd_font_path[256];
     char osd_font_bump[16];
     bool direct_drm_active;
@@ -2793,7 +2794,7 @@ static void jw__publish_language_env(jw_daemon_state *state) {
         unsetenv("JAWAKA_LANGUAGE");
         return;
     }
-    char lang[32] = "";
+    char lang[JW_I18N_CODE_MAX] = "";
     if (jw_db_get_setting(state->db_path, "language", lang, sizeof(lang)) == 0 &&
         lang[0]) {
         /* UMRK_LANGUAGE is canonical; JAWAKA_LANGUAGE is its indefinite
@@ -12991,7 +12992,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
            of ../../something would read an arbitrary file as a string table. */
         const char *lang = lang_json->valuestring;
         size_t lang_len = strlen(lang);
-        if (lang_len >= 16) {
+        if (lang_len >= JW_I18N_CODE_MAX) {   /* same limit the scanner and launcher use */
             cJSON_Delete(root);
             return jw__reply_error(client, "language code too long");
         }
@@ -13005,7 +13006,7 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
             }
         }
 
-        char lang_buf[16];
+        char lang_buf[JW_I18N_CODE_MAX];
         snprintf(lang_buf, sizeof(lang_buf), "%s", lang);
 
         if (jw_db_set_setting(state->db_path, "language", lang_buf) != 0) {

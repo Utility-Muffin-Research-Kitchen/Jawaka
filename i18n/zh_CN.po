@@ -1321,6 +1321,12 @@ msgstr "安装"
 msgid "Install cancelled: %s"
 msgstr "已取消安装：%s"
 
+#: internal/settings/storage_ui.c
+msgid ""
+"Install the matching Leaf system update before checking this card on your "
+"device."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
 msgstr "已安装"
@@ -2523,10 +2529,6 @@ msgstr "柔和"
 msgid "Solomon Islands"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Source Han Sans"
-msgstr ""
-
 #: internal/platform/platform_common.c
 msgid "Speaker"
 msgstr "扬声器"
@@ -2753,6 +2755,18 @@ msgid ""
 "The card passed the check but couldn't be made writable. Restart your "
 "device, then try Check SD card."
 msgstr "此卡通过了检查，但无法恢复写入。请重启设备，然后再试“检查 SD 卡”。"
+
+#: internal/settings/storage_ui.c
+msgid ""
+"The check took too long. Your SD card is still protected. You can check it "
+"on a computer or restart to try again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid ""
+"The last check or repair did not finish. Restart your device to check the "
+"card before saving is enabled again."
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "The repair couldn't be started. Check the card on a computer instead."
@@ -3171,6 +3185,19 @@ msgstr "X: 放下   方向键: 移动"
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr "X: 抓取   Y: 移除   B: 返回   A: 下一步"
 
+#: internal/settings/storage_ui.c
+msgid "You can save files again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card check did not finish successfully."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+#, fuzzy
+msgid "Your SD card is protected"
+msgstr "SD 卡已启用写保护"
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
 msgstr "SD 卡为只读"
@@ -3193,6 +3220,13 @@ msgid ""
 "new files or changes to this card."
 msgstr "SD 卡为只读，原因无法确定。无法在此卡上保存新文件或更改。"
 
+#: internal/settings/storage_ui.c
+msgid ""
+"Your SD card is still protected. Turn off your device, repair the card on a "
+"computer, safely eject it, then insert it and turn your device on to check "
+"it again."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
 msgstr "SD 卡正在等待修复，无法保存任何新内容。"
@@ -3208,12 +3242,6 @@ msgstr "SD 卡不可用。"
 #: internal/settings/storage_ui.c
 msgid "Your SD card needs repair"
 msgstr "SD 卡需要修复"
-
-#: internal/settings/storage_ui.c
-msgid ""
-"Your card is still read-only. Check the card on a computer, then choose "
-"Check SD card in Settings."
-msgstr "此卡仍为只读。请在电脑上检查此卡，然后在设置中选择“检查 SD 卡”。"
 
 #: internal/settings/storage_ui.c
 msgid "Your card passed the file system check."
@@ -3241,10 +3269,10 @@ msgstr ""
 "找回重要文件，请先在电脑上备份。检查完成前，请保持设备连接电源。"
 
 #: internal/settings/storage_ui.c
+#, fuzzy
 msgid ""
-"Your device will restart to check this card. If the check passes, the card "
-"can be written to again. Keep your device connected to power until the check "
-"finishes."
+"Your device will restart to check this card. If the check passes, you can "
+"save files again."
 msgstr ""
 "设备将重启以检查此卡。检查通过后，此卡即可恢复写入。检查完成前，请保持设备连"
 "接电源。"
@@ -3374,6 +3402,11 @@ msgstr "音量调节失败"
 #: internal/settings/settings.c
 msgid "—"
 msgstr ""
+
+#~ msgid ""
+#~ "Your card is still read-only. Check the card on a computer, then choose "
+#~ "Check SD card in Settings."
+#~ msgstr "此卡仍为只读。请在电脑上检查此卡，然后在设置中选择“检查 SD 卡”。"
 
 #~ msgid "2 x 2"
 #~ msgstr "2 x 2"
