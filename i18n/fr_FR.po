@@ -2505,9 +2505,6 @@ msgstr "Doux"
 msgid "Solomon Islands"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Source Han Sans"
-msgstr "Source Han Sans"
 
 #: internal/platform/platform_common.c
 msgid "Speaker"

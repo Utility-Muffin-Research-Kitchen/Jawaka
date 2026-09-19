@@ -31,6 +31,9 @@ int jw_appearance_font_family_index_from_db(const char *db_path);
    stylesheet because this path is also baked into the child environment at
    fork() time, where reading a stylesheet is not available. */
 #define JW_APPEARANCE_CJK_FONT_PATH "fonts/SourceHanSansCN/SourceHanSansCN-Regular.otf"
+/* Japanese glyph forms for the same codepoints (compare 直 or 骨). It covers
+   every character the Chinese face does, so Chinese titles still render. */
+#define JW_APPEARANCE_JA_FONT_PATH  "fonts/LeafHanSansJP/LeafHanSansJP-Regular.otf"
 
 const char *jw_appearance_font_path_for_index(int index);
 
@@ -38,6 +41,14 @@ const char *jw_appearance_font_path_for_index(int index);
    Use this anywhere the UI font is chosen; the plain _for_index form is for
    the font picker itself, which must keep showing the themed families. */
 const char *jw_appearance_font_path_for_language(int index, const char *lang);
+
+/* The face Catastrophe substitutes for CJK strings, exported as
+   CAT_CJK_FONT_PATH. "" leaves the theme's cjk_font in charge; only Japanese
+   needs different glyph forms. */
+const char *jw_appearance_cjk_font_path_for_language(const char *lang);
+
+/* The name the Font row shows while a CJK language pins the face. */
+const char *jw_appearance_cjk_font_label(const char *lang);
 
 /* Pre-resolved appearance environment, holding the final CAT_* env values as
  * ready-to-export strings. Filled by jw_appearance_resolve() (which touches the

@@ -98,6 +98,25 @@ int main(void) {
     if (!env_is("UMRK_LANGUAGE", "zh_CN") || !env_is("JAWAKA_LANGUAGE", "zh_CN"))
         return fail("stale en was not replaced by zh_CN");
 
+    /* Japanese needs its own glyph forms in both slots: the UI face, and the
+       CJK override Catastrophe substitutes for every Han/kana string. Chinese
+       leaves the override empty so the theme's cjk_font applies. */
+    if (strcmp(jw_appearance_font_path_for_language(3, "ja_JP"),
+               JW_APPEARANCE_JA_FONT_PATH) != 0)
+        return fail("ja_JP did not select the Japanese UI face");
+    fill_minimal(&env, "ja_JP");
+    if (jw_appearance_apply_env(&env) != 0)
+        return fail("apply_env failed for ja_JP");
+    if (!env_is("CAT_CJK_FONT_PATH", JW_APPEARANCE_JA_FONT_PATH))
+        return fail("ja_JP did not export the Japanese CJK face");
+    fill_minimal(&env, "zh_CN");
+    jw_appearance_apply_env(&env);
+    if (!env_is("CAT_CJK_FONT_PATH", ""))
+        return fail("stale Japanese CJK face survived a switch to zh_CN");
+    if (strcmp(jw_appearance_font_path_for_language(3, "jam"),
+               JW_APPEARANCE_JA_FONT_PATH) == 0)
+        return fail("a code merely starting with ja chose the Japanese face");
+
     /* Missing settings: jw_appearance_resolve() must fully populate the env,
        defaulting the language to "en", and export must publish that. */
     unsetenv("UMRK_LANGUAGE");
