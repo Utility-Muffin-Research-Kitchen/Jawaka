@@ -2545,7 +2545,7 @@ static void jw__render_appearance(const jw_settings_ui *ui, int x, int y, int w,
        Showing that in the row beats an option that looks available and is not. */
     bool font_locked = jw_i18n_language_is_cjk(jw_i18n_language());
     jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_FONT, "Font",
-                        font_locked ? "Source Han Sans"
+                        font_locked ? jw_appearance_cjk_font_label(jw_i18n_language())
                                     : kJawakaFontFamilyLabels[ui->font_family_index],
                         !font_locked);
     jw__render_list_row(&ui->appearance_list, x, ly, w, JW_APPEAR_FONT_SIZE,
@@ -5118,6 +5118,9 @@ static bool jw__apply_language_in_place(jw_settings_ui *ui, const char *code) {
     int fidx = jw_appearance_font_family_index_from_db(ui->db_path);
     const char *font = jw_appearance_font_path_for_language(fidx, code);
     if (!font || !font[0]) return false;
+    /* Catastrophe reads this on every CJK lookup, so updating it here is the
+       whole switch for CJK strings. */
+    setenv("CAT_CJK_FONT_PATH", jw_appearance_cjk_font_path_for_language(code), 1);
     ap_theme *theme = cat_get_theme();
     snprintf(theme->font_path, sizeof(theme->font_path), "%s", font);
     return cat_reload_fonts(theme->font_path) == CAT_OK;
