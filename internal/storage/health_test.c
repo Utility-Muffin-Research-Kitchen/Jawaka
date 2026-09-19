@@ -229,26 +229,43 @@ static void test_repair_state(void) {
            JW_STORAGE_REPAIR_NONE);
 
     jw_storage_repair_result result;
-    assert(!jw_storage_repair_last_result(&env, &result));
+    assert(!jw_storage_repair_last_result(&env, "22A4-0814", &result));
     snprintf(path, sizeof(path), "%s/results", env.repair_dir);
     mkdir_p(path);
     snprintf(path, sizeof(path), "%s/last-result", env.repair_dir);
     write_file(path, "r-2\n");
     snprintf(path, sizeof(path), "%s/results/r-2.summary", env.repair_dir);
-    write_file(path, "request_id=r-2\noutcome=repaired\nmount_state=read-write\n"
+    write_file(path, "request_id=r-2\nuuid=22A4-0814\noutcome=repaired\nmount_state=read-write\n"
                      "mode=repair\nchanges_complete=false\nreported_changes=7\n");
-    assert(jw_storage_repair_last_result(&env, &result));
+    assert(jw_storage_repair_last_result(&env, "22A4-0814", &result));
     assert(strcmp(result.outcome, "repaired") == 0 && result.reported_change_count == 7);
     assert(!result.changes_complete && !result.acknowledged);
     snprintf(path, sizeof(path), "%s/acks", env.repair_dir);
     mkdir_p(path);
     snprintf(path, sizeof(path), "%s/acks/r-2", env.repair_dir);
     write_file(path, "");
-    assert(jw_storage_repair_last_result(&env, &result) && result.acknowledged);
+    assert(jw_storage_repair_last_result(&env, "22A4-0814", &result) && result.acknowledged);
+    assert(!jw_storage_repair_last_result(&env, "04B1-0820", &result));
+    assert(!jw_storage_repair_last_result(&env, "../etc", &result));
+    snprintf(path, sizeof(path), "%s/last-results", env.repair_dir);
+    mkdir_p(path);
+    snprintf(path, sizeof(path), "%s/last-results/04B1-0820", env.repair_dir);
+    write_file(path, "r-4\n");
+    snprintf(path, sizeof(path), "%s/results/r-4.summary", env.repair_dir);
+    write_file(path, "request_id=r-4\nuuid=04B1-0820\noutcome=clean\n"
+                     "mode=check\norigin=automatic-check\nmount_state=read-write\n");
+    assert(jw_storage_repair_last_result(&env, "04B1-0820", &result));
+    assert(strcmp(result.origin, "automatic-check") == 0);
+    assert(strcmp(result.request_id, "r-4") == 0);
+    assert(!result.acknowledged);
+    /* Never attach a corrupt per-card index to a different volume. */
+    snprintf(path, sizeof(path), "%s/last-results/04B1-0820", env.repair_dir);
+    write_file(path, "r-2\n");
+    assert(!jw_storage_repair_last_result(&env, "04B1-0820", &result));
     /* A summary for a different request is not this result. */
     snprintf(path, sizeof(path), "%s/results/r-2.summary", env.repair_dir);
     write_file(path, "request_id=r-3\noutcome=repaired\n");
-    assert(!jw_storage_repair_last_result(&env, &result));
+    assert(!jw_storage_repair_last_result(&env, "22A4-0814", &result));
 }
 
 static void test_path_check(void) {
