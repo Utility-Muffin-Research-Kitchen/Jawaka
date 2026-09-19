@@ -16049,8 +16049,11 @@ int main(int argc, char *argv[]) {
 
     bool shutdown_verified = true;
     /* SVC-1: stop every running service and verify each group absent before
-       exiting. Per the contract's unverified-stop table, shutdown continues
-       past a stuck service (recorded, never allowed to wedge the device). */
+       exiting. Per the contract's unverified-stop table, an MLP1 power
+       transition with a stuck service does not report completion: the rootfs
+       supervisor pauses, and continues on proven absence, a user override, or
+       its critical-battery rule. Exit-to-stock and other platforms continue
+       with the warning. */
     if (state.services) {
         int stuck = jw_svc_supervisor_stop_all(state.services);
         if (stuck > 0) {
