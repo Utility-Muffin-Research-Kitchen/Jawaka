@@ -208,15 +208,15 @@ int main(int argc, char **argv) {
     expect_true("null is not cjk", !jw_i18n_language_is_cjk(NULL));
     expect_true("empty is not cjk", !jw_i18n_language_is_cjk(""));
 
-    const char *langs[8];
-    size_t n = jw_i18n_available(langs, 8);
+    const char *langs[JW_I18N_MAX_LANGUAGES];
+    size_t n = jw_i18n_available(langs, JW_I18N_MAX_LANGUAGES);
     expect_true("finds the compiled table", n == 1 && strcmp(langs[0], "zh_CN") == 0);
 
     /* A dropped .tsv must not double-count a language the compiled table
        already offers -- the Settings row would show zh_CN twice. */
     snprintf(path, sizeof(path), "%s/i18n/zh_CN.tsv", userdata);
     write_file(path, "Settings\tX\n", 11);
-    n = jw_i18n_available(langs, 8);
+    n = jw_i18n_available(langs, JW_I18N_MAX_LANGUAGES);
     expect_true("tsv does not duplicate", n == 1);
     unlink(path);
 
@@ -224,9 +224,30 @@ int main(int argc, char **argv) {
        translator makes the row appear without a build. */
     snprintf(path, sizeof(path), "%s/i18n/ja.tsv", userdata);
     write_file(path, "Settings\t\xe8\xa8\xad\xe5\xae\x9a\n", 16);
-    n = jw_i18n_available(langs, 8);
+    n = jw_i18n_available(langs, JW_I18N_MAX_LANGUAGES);
     expect_true("tsv-only language offered", n == 2);
     unlink(path);
+
+    /* ── Capacity ─────────────────────────────────────────────────────── */
+    /* Exactly JW_I18N_MAX_LANGUAGES are offered and one more is refused, not
+       stored: the limit is the constant, not a number written out somewhere
+       else. The overflow is logged by the scanner. */
+    {
+        char cap_path[PATH_MAX];
+        for (int i = 0; i <= JW_I18N_MAX_LANGUAGES; i++) {   /* one past the limit */
+            snprintf(cap_path, sizeof(cap_path), "%s/i18n/x%02d.tsv", userdata, i);
+            write_file(cap_path, "Settings\tX\n", 11);
+        }
+        const char *many[JW_I18N_MAX_LANGUAGES];
+        size_t got = jw_i18n_available(many, JW_I18N_MAX_LANGUAGES);
+        expect_true("capacity is the constant", got == JW_I18N_MAX_LANGUAGES);
+        /* A caller asking for fewer than the limit is still honored. */
+        expect_true("smaller max honored", jw_i18n_available(many, 3) == 3);
+        for (int i = 0; i <= JW_I18N_MAX_LANGUAGES; i++) {
+            snprintf(cap_path, sizeof(cap_path), "%s/i18n/x%02d.tsv", userdata, i);
+            unlink(cap_path);
+        }
+    }
 
     /* ── Coverage recording ─────────────────────────────────────────── */
 

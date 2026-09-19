@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 
+#include "internal/i18n/i18n.h"
+
 #define JW_APPEARANCE_FONT_FAMILY_COUNT 9
 #define JW_APPEARANCE_FONT_FAMILY_DEFAULT 3   /* Nunito (index into kJawakaFontFamily*) */
 
@@ -66,8 +68,10 @@ typedef struct jw_appearance_env {
     char status_bt_state[8];      /* CAT_STATUS_BT_STATE: 0 off, 1 on, 2 connected */
     char timezone[64];            /* TZ override for launched apps; empty = inherit */
     /* Persisted language code, "en" when unset. Drives the font choice above and
-       is handed to the child so it loads the matching string table. */
-    char language[16];
+       is handed to the child so it loads the matching string table. Sized from
+       the same constant as every other language code, so it cannot truncate one
+       the scanner accepted. */
+    char language[JW_I18N_CODE_MAX];
 } jw_appearance_env;
 
 /* Parent-side: read the DB (and env) and resolve every appearance value into
