@@ -3090,7 +3090,7 @@ int main(int argc, char **argv) {
        T() in it silently returns English. (Found on device: the About page
        translated but this menu's footers did not.) */
     {
-        char lang[16];
+        char lang[JW_I18N_CODE_MAX];
         if (!db_path ||
             jw_db_get_setting(db_path, "language", lang, sizeof(lang)) != 0 ||
             !lang[0])

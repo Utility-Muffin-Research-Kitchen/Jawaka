@@ -1431,6 +1431,14 @@ void jw_settings_ui_refresh_services(jw_settings_ui *ui) {
 
 /* ─── Lifecycle ────────────────────────────────────────────────────────── */
 
+/* The Settings list must hold English plus every language the scanner can
+   return. Written as an assertion so a future change to one end fails the build
+   instead of quietly hiding the last language, which is what happened when the
+   scanner kept 8 and this list kept 7 after English. */
+_Static_assert(sizeof(((jw_settings_ui *)0)->languages) /
+               sizeof(((jw_settings_ui *)0)->languages[0]) == JW_I18N_MAX_LANGUAGES + 1,
+               "Settings language list must fit English plus JW_I18N_MAX_LANGUAGES");
+
 static const char *jw__language_label(const char *code);
 
 /* Languages after English sort by the name the row shows, so the list is the
@@ -1479,9 +1487,12 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     snprintf(ui->languages[0], sizeof(ui->languages[0]), "%s", "en");
     ui->language_count = 1;
     {
-        const char *found[8];
-        size_t n = jw_i18n_available(found, 8);
-        for (size_t i = 0; i < n && ui->language_count < 8; i++) {
+        /* Sized from the list itself, not restated: if the capacity ever
+           changes, this loop cannot fall out of step with the array. */
+        const int cap = (int)(sizeof(ui->languages) / sizeof(ui->languages[0]));
+        const char *found[JW_I18N_MAX_LANGUAGES];
+        size_t n = jw_i18n_available(found, JW_I18N_MAX_LANGUAGES);
+        for (size_t i = 0; i < n && ui->language_count < cap; i++) {
             snprintf(ui->languages[ui->language_count],
                      sizeof(ui->languages[0]), "%s", found[i]);
             ui->language_count++;
@@ -8512,7 +8523,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                        without keep_running: the daemon then restarts the launcher,
                        which is how this always worked. */
                     char status[128] = "";
-                    char code[16];
+                    char code[JW_I18N_CODE_MAX];
                     snprintf(code, sizeof(code), "%s", shown);
                     if (jw_ipc_set_language_ex(ui->socket_path, code, true,
                                                status, sizeof(status)) == 0) {

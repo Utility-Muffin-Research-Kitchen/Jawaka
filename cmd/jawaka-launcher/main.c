@@ -13236,7 +13236,7 @@ int main(void) {
        A missing or damaged table simply leaves lookups returning their English
        keys, so a failure here is not worth aborting startup over. */
     {
-        char lang[16];
+        char lang[JW_I18N_CODE_MAX];
         if (jw_db_get_setting(db_path, "language", lang, sizeof(lang)) != 0 || !lang[0])
             snprintf(lang, sizeof(lang), "%s", "en");
         jw_i18n_load(lang);

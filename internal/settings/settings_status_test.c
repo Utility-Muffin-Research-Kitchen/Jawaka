@@ -494,6 +494,43 @@ static int check_language_order(void) {
     return 0;
 }
 
+/* Every language the scanner returns reaches the Settings list, English
+   included. The scanner used to keep 8 while this list kept 7 after English, so
+   the last language vanished; filling the scanner to its limit is what catches
+   that class of mismatch. */
+static int check_language_capacity(void) {
+    char root[] = "/tmp/settings-lang-cap.XXXXXX";
+    if (!mkdtemp(root)) return fail("could not create a language root");
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s/i18n", root);
+    if (mkdir(dir, 0755) != 0) return fail("could not create i18n dir");
+    for (int i = 0; i < JW_I18N_MAX_LANGUAGES; i++) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/l%02d.tsv", dir, i);
+        FILE *fp = fopen(path, "w");
+        if (!fp) return fail("could not write a language table");
+        fputs("Hello\tHello\n", fp);
+        fclose(fp);
+    }
+    setenv("UMRK_INTERNAL_DATA_PATH", root, 1);
+    unsetenv("UMRK_PLATFORM_PATH");
+    jw_settings_ui ui;
+    memset(&ui, 0, sizeof(ui));
+    jw_settings_ui_init(&ui, "", "Jawaka-Tabs", "");
+    if (ui.language_count != JW_I18N_MAX_LANGUAGES + 1) {
+        fprintf(stderr, "settings-status-test: %d languages listed, expected %d "
+                "(English + %d)\n", ui.language_count, JW_I18N_MAX_LANGUAGES + 1,
+                JW_I18N_MAX_LANGUAGES);
+        return 1;
+    }
+    if (strcmp(ui.languages[0], "en") != 0) return fail("English is not first");
+    char cmd[PATH_MAX + 16];
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", root);
+    if (system(cmd) != 0) return fail("could not remove the language root");
+    unsetenv("UMRK_INTERNAL_DATA_PATH");
+    return 0;
+}
+
 /* Every child page hands B back to the page that opens it. This is the check
    that reorganizing Settings needs: moving a page under a new parent means
    retargeting its B, and a stale target strands the user on an unrelated screen
@@ -548,6 +585,7 @@ int main(void) {
 
     if (check_back_targets()) return 1;
     if (check_language_order()) return 1;
+    if (check_language_capacity()) return 1;
 
     ui.open = true;
     ui.screen = JW_SETTINGS_SCRAPE_PRIORITY;
