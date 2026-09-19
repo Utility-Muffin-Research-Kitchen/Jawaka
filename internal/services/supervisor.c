@@ -2738,6 +2738,38 @@ int jw_svc_supervisor_stop_all(jw_svc_supervisor *sup) {
     return unverified;
 }
 
+int jw_svc_supervisor_describe_unverified(const jw_svc_supervisor *sup,
+                                          char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!sup) {
+        return 0;
+    }
+    size_t used = 0;
+    int lines = 0;
+    for (int i = 0; i < sup->count; i++) {
+        const jw_svc_supervised *e = &sup->entries[i];
+        bool stale = e->state == JW_SVC_STATE_STALE_GENERATION;
+        bool stuck = e->state == JW_SVC_STATE_STOPPING && e->pgid > 0;
+        if (!stale && !stuck) {
+            continue;
+        }
+        int n = snprintf(out + used, out_size - used,
+                         "service=%s pgid=%d lease=%s/services/%s/generation.lease\n",
+                         e->service_id, stale ? 0 : (int)e->pgid,
+                         sup->runtime_dir, e->service_id);
+        if (n < 0 || (size_t)n >= out_size - used) {
+            out[used] = '\0';
+            continue;
+        }
+        used += (size_t)n;
+        lines++;
+    }
+    return lines;
+}
+
 int jw_svc_supervisor_game_launch_begin(jw_svc_supervisor *sup,
                                         char *out_stuck_id,
                                         size_t stuck_id_size) {

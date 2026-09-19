@@ -227,6 +227,18 @@ static void test_repair_state(void) {
            JW_STORAGE_REPAIR_FAILED);
     assert(jw_storage_repair_hold_for_uuid(&env, "../etc", NULL, 0) ==
            JW_STORAGE_REPAIR_NONE);
+    /* A paused-shutdown hold protects like any failed hold; the trigger only
+       selects wording, and must be a plain name. */
+    char trigger[32];
+    write_file(path, "state=unverified\nrequest_id=r-9\ntrigger=paused-shutdown\n");
+    assert(jw_storage_repair_hold_for_uuid(&env, "22A4-0814", NULL, 0) ==
+           JW_STORAGE_REPAIR_FAILED);
+    assert(jw_storage_repair_hold_trigger(&env, "22A4-0814", trigger, sizeof(trigger)));
+    assert(strcmp(trigger, "paused-shutdown") == 0);
+    write_file(path, "state=unverified\ntrigger=../x\n");
+    assert(!jw_storage_repair_hold_trigger(&env, "22A4-0814", trigger, sizeof(trigger)));
+    assert(trigger[0] == '\0');
+    assert(!jw_storage_repair_hold_trigger(&env, "04B1-0820", trigger, sizeof(trigger)));
 
     jw_storage_repair_result result;
     assert(!jw_storage_repair_last_result(&env, "22A4-0814", &result));
@@ -256,8 +268,13 @@ static void test_repair_state(void) {
                      "mode=check\norigin=automatic-check\nmount_state=read-write\n");
     assert(jw_storage_repair_last_result(&env, "04B1-0820", &result));
     assert(strcmp(result.origin, "automatic-check") == 0);
+    assert(result.trigger[0] == '\0');
     assert(strcmp(result.request_id, "r-4") == 0);
     assert(!result.acknowledged);
+    write_file(path, "request_id=r-4\nuuid=04B1-0820\noutcome=clean\n"
+                     "mode=check\norigin=automatic-check\ntrigger=paused-shutdown\n");
+    assert(jw_storage_repair_last_result(&env, "04B1-0820", &result));
+    assert(strcmp(result.trigger, "paused-shutdown") == 0);
     /* Never attach a corrupt per-card index to a different volume. */
     snprintf(path, sizeof(path), "%s/last-results/04B1-0820", env.repair_dir);
     write_file(path, "r-2\n");

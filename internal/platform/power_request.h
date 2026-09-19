@@ -65,4 +65,34 @@ static inline int jw_power_request_publish(const char *action) {
 static inline int jw_power_request_complete(void) {
     return jw_power_request_write("complete", "1\n");
 }
+
+/* Why the transition was requested. Informational for the supervisor's log and
+   screens; it never changes what the supervisor is allowed to do. */
+static inline bool jw_power_request_reason_valid(const char *reason) {
+    static const char *const allowed[] = {
+        "menu", "power-button", "low-battery", "storage-check", NULL,
+    };
+    if (!reason) return false;
+    for (int i = 0; allowed[i]; i++) {
+        if (strcmp(reason, allowed[i]) == 0) return true;
+    }
+    return false;
+}
+
+static inline int jw_power_request_reason(const char *reason) {
+    if (!jw_power_request_reason_valid(reason)) return -1;
+    char line[32];
+    snprintf(line, sizeof(line), "%s\n", reason);
+    return jw_power_request_write("reason", line);
+}
+
+/* Published instead of `complete` when shutdown could not prove every writer
+   gone (SVC-1 unverified-stop table). The first line is
+   reason=unverified-service|game-child|cleanup-failed, then one line per item:
+   "service=<id> pgid=<n> lease=<path>" or "game pid=<n> start=<ticks>". The
+   supervisor never signals these; it only checks whether they are gone. */
+static inline int jw_power_request_incomplete(const char *record) {
+    if (!record || strncmp(record, "reason=", 7) != 0) return -1;
+    return jw_power_request_write("incomplete", record);
+}
 #endif

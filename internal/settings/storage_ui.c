@@ -17,6 +17,12 @@ bool jw_storage_ui_is_read_only(const jw_ipc_storage_status_info *card) {
     return card && card->mounted && strcmp(card->access, "read-only") == 0;
 }
 
+/* Held only because a shutdown could not prove the card closed. Protection is
+   the same as any failed hold; only the wording differs. */
+static bool jw__storage_ui_paused_shutdown(const jw_ipc_storage_status_info *card) {
+    return card && strcmp(card->hold_trigger, "paused-shutdown") == 0;
+}
+
 bool jw_storage_ui_needs_repair(const jw_ipc_storage_status_info *card) {
     return card && (strcmp(card->repair, "failed") == 0 ||
                     strcmp(card->repair, "pending") == 0);
@@ -42,7 +48,8 @@ void jw_storage_ui_card_name(const jw_ipc_storage_status_info *card,
    exactly what the SD Cards row did. The literals are deliberately the same
    as the ones below, whose T() calls are what put them in the string table. */
 const char *jw_storage_ui_card_state_key(const jw_ipc_storage_status_info *card) {
-    if (card && strcmp(card->repair, "failed") == 0) return "Needs repair";
+    if (card && strcmp(card->repair, "failed") == 0)
+        return jw__storage_ui_paused_shutdown(card) ? "Needs check" : "Needs repair";
     if (!card || !card->mounted) return "Not mounted";
     if (strcmp(card->repair, "pending") == 0 || strcmp(card->repair, "running") == 0)
         return "Repair pending";
@@ -54,7 +61,7 @@ const char *jw_storage_ui_card_state_key(const jw_ipc_storage_status_info *card)
 const char *jw_storage_ui_card_state(const jw_ipc_storage_status_info *card) {
     if (card && strcmp(card->repair, "failed") == 0) {
         /* Also when unmounted: hotplug refuses to mount a held card. */
-        return T("Needs repair");
+        return jw__storage_ui_paused_shutdown(card) ? T("Needs check") : T("Needs repair");
     }
     if (!card || !card->mounted) {
         return T("Not mounted");
@@ -195,6 +202,11 @@ bool jw_storage_ui_show_warning(const char *socket_path,
                  T("Your SD card is write-protected"),
                  T("Your device can't write to this card. If you use an adapter with a lock switch, check that it isn't set to lock."),
                  T("Card:"), name);
+    } else if (jw__storage_ui_paused_shutdown(card) && jw_storage_ui_needs_repair(card)) {
+        snprintf(message, sizeof(message), "%s\n\n%s\n\n%s %s",
+                 T("Your SD card is protected"),
+                 T("Your SD card is protected because your last shutdown didn't finish saving. Restart your device to check it."),
+                 T("Card:"), name);
     } else if (jw_storage_ui_needs_repair(card)) {
         snprintf(message, sizeof(message), "%s\n\n%s\n\n%s %s",
                  T("Your SD card is protected"),
@@ -248,6 +260,15 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
                    strcmp(card->repair, "none") == 0;
     char message[1024];
     jw_storage_ui_result_action action = JW_STORAGE_UI_RESULT_DISMISSED;
+    if (success && strcmp(card->last_repair_trigger, "paused-shutdown") == 0) {
+        /* A precautionary check after a paused shutdown found nothing wrong.
+           The user never saw the card held, so there is nothing to report. */
+        if (jw_ipc_storage_repair_result_ack(socket_path, card->last_repair_request_id) != 0) {
+            jw_log_warn("storage: could not acknowledge repair result %s",
+                        card->last_repair_request_id);
+        }
+        return JW_STORAGE_UI_RESULT_DISMISSED;
+    }
     if (success) {
         snprintf(message, sizeof(message), "%s %s%s",
                  T("Your card passed the file system check."),
@@ -285,7 +306,10 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
         } else {
             hint = T("Your SD card is still protected. Turn off your device, repair the card on a computer, safely eject it, then insert it and turn your device on to check it again.");
         }
-        snprintf(message, sizeof(message), "%s\n\n%s",
+        snprintf(message, sizeof(message), "%s%s%s\n\n%s",
+                 strcmp(card->last_repair_trigger, "paused-shutdown") == 0
+                     ? T("Your last shutdown didn't finish saving.") : "",
+                 strcmp(card->last_repair_trigger, "paused-shutdown") == 0 ? " " : "",
                  strcmp(card->last_repair_mode, "check") == 0
                      ? T("Your SD card check did not finish successfully.")
                      : T("The repair did not finish. The log may include changes that were attempted."),
