@@ -5065,6 +5065,9 @@ static const char *jw__language_label(const char *code) {
     if (strcmp(code, "fr_FR") == 0) return "Français";
     if (strcmp(code, "es_MX") == 0) return "Español (México)";
     if (strcmp(code, "zh_TW") == 0) return "繁體中文";
+    /* Region-qualified like the others (ja_JP.po), so the Language row names
+       it; a bare "ja" is kept for any table dropped on the card that way. */
+    if (strcmp(code, "ja_JP") == 0) return "日本語";
     if (strcmp(code, "ja") == 0)    return "日本語";
     if (strcmp(code, "ko") == 0)    return "한국어";
     return code;
