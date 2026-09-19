@@ -3,6 +3,7 @@
 
 #include "catastrophe.h"
 #include "catastrophe_widgets.h"
+#include "internal/i18n/i18n.h"
 #include "internal/ipc/ipc_client.h"
 #include "internal/platform/bluetooth.h"
 #include "internal/platform/device.h"
@@ -359,13 +360,14 @@ typedef struct {
     /* UI language. `languages` is en plus whatever tables are installed, so the
        row cycles through real choices only; `language_count` of 1 means English
        alone, and the row is hidden. */
-    char               language[16];
-    char               languages[8][16];
+    char               language[JW_I18N_CODE_MAX];
+    /* English at [0], then every language the scanner can return. */
+    char               languages[JW_I18N_MAX_LANGUAGES + 1][JW_I18N_CODE_MAX];
     int                language_count;
     /* What the row is showing. Left and Right browse this; only A applies it,
        behind a confirmation, because applying restarts the launcher and takes
        the user out of Settings. Empty means "same as `language`". */
-    char               language_pending[16];
+    char               language_pending[JW_I18N_CODE_MAX];
     int                ss_requests_today;   /* quota snapshot from validation */
     int                ss_max_requests;     /* quota snapshot from validation; 0 unknown */
     /* Scrape priority editors: permutations of the scrape catalogs as catalog

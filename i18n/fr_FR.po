@@ -1295,6 +1295,12 @@ msgstr "Installer"
 msgid "Install cancelled: %s"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid ""
+"Install the matching Leaf system update before checking this card on your "
+"device."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
 msgstr ""
@@ -1571,6 +1577,10 @@ msgstr "NEC PC-98"
 #: internal/settings/settings.c
 msgid "Nearby"
 msgstr "À proximité"
+
+#: internal/settings/storage_ui.c
+msgid "Needs check"
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Needs repair"
@@ -2505,10 +2515,6 @@ msgstr "Doux"
 msgid "Solomon Islands"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Source Han Sans"
-msgstr "Source Han Sans"
-
 #: internal/platform/platform_common.c
 msgid "Speaker"
 msgstr "Haut-parleur"
@@ -2725,6 +2731,18 @@ msgstr ""
 msgid ""
 "The card passed the check but couldn't be made writable. Restart your "
 "device, then try Check SD card."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid ""
+"The check took too long. Your SD card is still protected. You can check it "
+"on a computer or restart to try again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid ""
+"The last check or repair did not finish. Restart your device to check the "
+"card before saving is enabled again."
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -3142,6 +3160,24 @@ msgstr "X : Déposer   Croix directionnelle : Déplacer"
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr "X : Saisir   Y : Supprimer   B : Retour   A : Suivant"
 
+#: internal/settings/storage_ui.c
+msgid "You can save files again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card check did not finish successfully."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card is protected"
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid ""
+"Your SD card is protected because your last shutdown didn't finish saving. "
+"Restart your device to check it."
+msgstr ""
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
 msgstr ""
@@ -3162,6 +3198,13 @@ msgid ""
 "new files or changes to this card."
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid ""
+"Your SD card is still protected. Turn off your device, repair the card on a "
+"computer, safely eject it, then insert it and turn your device on to check "
+"it again."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
 msgstr ""
@@ -3176,12 +3219,6 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card needs repair"
-msgstr ""
-
-#: internal/settings/storage_ui.c
-msgid ""
-"Your card is still read-only. Check the card on a computer, then choose "
-"Check SD card in Settings."
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -3208,15 +3245,18 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid ""
-"Your device will restart to check this card. If the check passes, the card "
-"can be written to again. Keep your device connected to power until the check "
-"finishes."
+"Your device will restart to check this card. If the check passes, you can "
+"save files again."
 msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid ""
 "Your device's internal storage can't record the repair. Check the card on a "
 "computer instead."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your last shutdown didn't finish saving."
 msgstr ""
 
 #: internal/settings/storage_ui.c
