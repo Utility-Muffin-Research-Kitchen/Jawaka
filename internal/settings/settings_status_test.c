@@ -448,6 +448,52 @@ static int check_layout_viewport(void) {
     return 0;
 }
 
+/* Languages after English come out in display-name order however the files were
+   written. The list used to be raw readdir() order, which on FAT32 tracks write
+   order: writing the files in scrambled order here is what makes this a test of
+   the sort rather than of the directory happening to agree with it. */
+static int check_language_order(void) {
+    char root[] = "/tmp/settings-lang-order.XXXXXX";
+    if (!mkdtemp(root)) return fail("could not create a language root");
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s/i18n", root);
+    if (mkdir(dir, 0755) != 0) return fail("could not create i18n dir");
+    const char *scrambled[] = { "zh_CN", "fr_FR", "ja_JP", "es_MX" };
+    for (unsigned i = 0; i < sizeof(scrambled) / sizeof(scrambled[0]); ++i) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/%s.tsv", dir, scrambled[i]);
+        FILE *fp = fopen(path, "w");
+        if (!fp) return fail("could not write a language table");
+        fputs("Hello\tHello\n", fp);
+        fclose(fp);
+    }
+    setenv("UMRK_INTERNAL_DATA_PATH", root, 1);
+    unsetenv("UMRK_PLATFORM_PATH");
+
+    jw_settings_ui ui;
+    memset(&ui, 0, sizeof(ui));
+    jw_settings_ui_init(&ui, "", "Jawaka-Tabs", "");
+    static const char *expect[] = { "en", "es_MX", "fr_FR", "zh_CN", "ja_JP" };
+    int want = (int)(sizeof(expect) / sizeof(expect[0]));
+    if (ui.language_count != want) {
+        fprintf(stderr, "settings-status-test: %d languages, expected %d\n",
+                ui.language_count, want);
+        return 1;
+    }
+    for (int i = 0; i < want; ++i) {
+        if (strcmp(ui.languages[i], expect[i]) != 0) {
+            fprintf(stderr, "settings-status-test: language %d is %s, expected %s\n",
+                    i, ui.languages[i], expect[i]);
+            return 1;
+        }
+    }
+    char cmd[PATH_MAX + 16];
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", root);
+    if (system(cmd) != 0) return fail("could not remove the language root");
+    unsetenv("UMRK_INTERNAL_DATA_PATH");
+    return 0;
+}
+
 /* Every child page hands B back to the page that opens it. This is the check
    that reorganizing Settings needs: moving a page under a new parent means
    retargeting its B, and a stale target strands the user on an unrelated screen
@@ -501,6 +547,7 @@ int main(void) {
     char status[64] = "Saved scrape order";
 
     if (check_back_targets()) return 1;
+    if (check_language_order()) return 1;
 
     ui.open = true;
     ui.screen = JW_SETTINGS_SCRAPE_PRIORITY;

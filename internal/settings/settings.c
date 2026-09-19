@@ -1431,6 +1431,19 @@ void jw_settings_ui_refresh_services(jw_settings_ui *ui) {
 
 /* ─── Lifecycle ────────────────────────────────────────────────────────── */
 
+static const char *jw__language_label(const char *code);
+
+/* Languages after English sort by the name the row shows, so the list is the
+   same on every card. It used to be raw readdir() order, which on FAT32 is
+   roughly the order files were written, with deleted slots reused -- not
+   alphabetical, not stable, and different between two identical installs. A
+   .tsv override also jumped ahead of the shipped tables. Byte order puts Latin
+   names before CJK ones, and within Latin it is alphabetical. */
+static int jw__language_cmp(const void *a, const void *b) {
+    return strcmp(jw__language_label((const char *)a),
+                  jw__language_label((const char *)b));
+}
+
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                           const char *initial_theme_name,
                           const char *socket_path) {
@@ -1473,6 +1486,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                      sizeof(ui->languages[0]), "%s", found[i]);
             ui->language_count++;
         }
+        /* English stays pinned at [0]; the rest are ordered by display name. */
+        if (ui->language_count > 2)
+            qsort(ui->languages[1], (size_t)(ui->language_count - 1),
+                  sizeof(ui->languages[0]), jw__language_cmp);
     }
     snprintf(ui->language, sizeof(ui->language), "%s", jw_i18n_language());
 
@@ -2135,8 +2152,32 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
         theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
+    /* The label gets whatever the value does not use, but never less than half
+       the row, which is all it used to get. A flat half-width cap truncated long
+       labels beside short values with most of the row empty -- a Spanish
+       "Restablecer config. de RetroArch" cut off next to a one-word value -- and
+       it bit English too. Keeping half as the floor means no row can lose room
+       it had before; it can only gain it when the value is short. The value's
+       own left clamp at x + w/2 is unchanged, so the two can never overlap. */
+    int label_max = w / 2 - cat_scale(20);
+    if (value) {
+        int body_h = TTF_FontHeight(body);
+        int vw = cat_measure_text(body, value);
+        int value_w = vw;
+        if (toggle) {
+            value_w = jw__row_switch_width(body_h) + cat_scale(10) + vw;
+        } else if (cycler) {
+            int tri_w = (body_h / 2) * 3 / 4;
+            value_w = tri_w + cat_scale(8) + vw + cat_scale(8) + tri_w;
+        }
+        int room = w - cat_scale(12) - value_w - cat_scale(16) - cat_scale(20);
+        if (room > label_max) label_max = room;
+    } else {
+        int room = w - cat_scale(12) - cat_scale(16);
+        if (room > label_max) label_max = room;
+    }
     cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
-                              w / 2 - cat_scale(20));
+                              label_max);
 
     if (value) {
         int body_h = TTF_FontHeight(body);
@@ -4221,8 +4262,11 @@ static void jw__render_games(const jw_settings_ui *ui, int x, int y, int w, int 
     jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_PERFORMANCE,
                         "Game Performance", perf, ui->performance_supported);
 
+    /* An action, not a cycler: Left/Right do nothing here, so no arrows. They
+       claimed a value could be changed, and cost the width a long translated
+       label needs (the Spanish one truncated behind them). */
     jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_RESET_RETROARCH,
-                        "Reset RetroArch Config", "Defaults", true);
+                        "Reset RetroArch Config", "Defaults", false);
 
     jw__render_nav_row(&ui->games_list, x, ly, w, JW_GAMES_ACCOUNTS, "Accounts");
 }
@@ -5038,6 +5082,9 @@ static const char *jw__language_label(const char *code) {
     if (strcmp(code, "fr_FR") == 0) return "Français";
     if (strcmp(code, "es_MX") == 0) return "Español (México)";
     if (strcmp(code, "zh_TW") == 0) return "繁體中文";
+    /* Region-qualified like the others (ja_JP.po), so the Language row names
+       it; a bare "ja" is kept for any table dropped on the card that way. */
+    if (strcmp(code, "ja_JP") == 0) return "日本語";
     if (strcmp(code, "ja") == 0)    return "日本語";
     if (strcmp(code, "ko") == 0)    return "한국어";
     return code;

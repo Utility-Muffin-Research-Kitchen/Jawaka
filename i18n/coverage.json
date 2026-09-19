@@ -3,16 +3,20 @@
   "total": 794,
   "languages": {
     "es_MX": {
-      "translated": 534,
-      "percent": 67
+      "translated": 794,
+      "percent": 100
     },
     "fr_FR": {
-      "translated": 533,
-      "percent": 67
+      "translated": 549,
+      "percent": 69
+    },
+    "ja_JP": {
+      "translated": 510,
+      "percent": 64
     },
     "zh_CN": {
-      "translated": 603,
-      "percent": 75
+      "translated": 626,
+      "percent": 78
     }
   }
 }
