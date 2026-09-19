@@ -2523,9 +2523,6 @@ msgstr "柔和"
 msgid "Solomon Islands"
 msgstr ""
 
-#: internal/settings/settings.c
-msgid "Source Han Sans"
-msgstr ""
 
 #: internal/platform/platform_common.c
 msgid "Speaker"
