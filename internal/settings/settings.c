@@ -2135,8 +2135,32 @@ static void jw__render_list_row_impl(const cat_list_state *list, int x, int y,
         theme->highlighted_text, focus);
     int ty = pill_y + (pill_h - TTF_FontHeight(body)) / 2;
 
+    /* The label gets whatever the value does not use, but never less than half
+       the row, which is all it used to get. A flat half-width cap truncated long
+       labels beside short values with most of the row empty -- a Spanish
+       "Restablecer config. de RetroArch" cut off next to a one-word value -- and
+       it bit English too. Keeping half as the floor means no row can lose room
+       it had before; it can only gain it when the value is short. The value's
+       own left clamp at x + w/2 is unchanged, so the two can never overlap. */
+    int label_max = w / 2 - cat_scale(20);
+    if (value) {
+        int body_h = TTF_FontHeight(body);
+        int vw = cat_measure_text(body, value);
+        int value_w = vw;
+        if (toggle) {
+            value_w = jw__row_switch_width(body_h) + cat_scale(10) + vw;
+        } else if (cycler) {
+            int tri_w = (body_h / 2) * 3 / 4;
+            value_w = tri_w + cat_scale(8) + vw + cat_scale(8) + tri_w;
+        }
+        int room = w - cat_scale(12) - value_w - cat_scale(16) - cat_scale(20);
+        if (room > label_max) label_max = room;
+    } else {
+        int room = w - cat_scale(12) - cat_scale(16);
+        if (room > label_max) label_max = room;
+    }
     cat_draw_text_ellipsized(body, label, x + cat_scale(12), ty, label_c,
-                              w / 2 - cat_scale(20));
+                              label_max);
 
     if (value) {
         int body_h = TTF_FontHeight(body);
@@ -4221,8 +4245,11 @@ static void jw__render_games(const jw_settings_ui *ui, int x, int y, int w, int 
     jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_PERFORMANCE,
                         "Game Performance", perf, ui->performance_supported);
 
+    /* An action, not a cycler: Left/Right do nothing here, so no arrows. They
+       claimed a value could be changed, and cost the width a long translated
+       label needs (the Spanish one truncated behind them). */
     jw__render_list_row(&ui->games_list, x, ly, w, JW_GAMES_RESET_RETROARCH,
-                        "Reset RetroArch Config", "Defaults", true);
+                        "Reset RetroArch Config", "Defaults", false);
 
     jw__render_nav_row(&ui->games_list, x, ly, w, JW_GAMES_ACCOUNTS, "Accounts");
 }
