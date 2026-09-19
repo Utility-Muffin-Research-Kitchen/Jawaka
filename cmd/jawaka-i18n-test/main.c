@@ -109,11 +109,23 @@ int main(int argc, char **argv) {
     /* ── Damaged input must degrade, never crash ─────────────────────── */
     snprintf(path, sizeof(path), "%s/i18n/zh_CN.jwi", platform);
 
-    char good[65536];
+    /* Sized from the file, not a fixed buffer. This read into a 64 KB stack
+       array, which would silently truncate a larger table and then write the
+       truncated copy back as the "restored" one -- Mexican Spanish is already
+       49 KB. Reading the real size keeps the test independent of how many
+       strings a language has. */
+    size_t good_len = 0;
+    char *good = NULL;
     FILE *fp = fopen(path, "rb");
-    size_t good_len = fp ? fread(good, 1, sizeof(good), fp) : 0;
+    if (fp && fseek(fp, 0, SEEK_END) == 0) {
+        long sz = ftell(fp);
+        rewind(fp);
+        if (sz > 0 && (good = malloc((size_t)sz)) != NULL)
+            good_len = fread(good, 1, (size_t)sz, fp);
+    }
     if (fp) fclose(fp);
-    expect_true("fixture readable", good_len > 24);
+    expect_true("fixture readable", good && good_len > 24);
+    if (!good) return 1;
 
     char tmp[PATH_MAX];
     snprintf(tmp, sizeof(tmp), "%s/i18n/zh_CN.jwi.bak", platform);
@@ -135,19 +147,27 @@ int main(int argc, char **argv) {
 
     /* A corrupt offset must be caught at load, not by reading out of bounds on
        some later lookup. Point the first entry's key at the far end of nowhere. */
-    memcpy(tmp, good, good_len);
-    tmp[24 + 4] = (char)0xFF; tmp[24 + 5] = (char)0xFF;
-    tmp[24 + 6] = (char)0xFF; tmp[24 + 7] = (char)0x7F;
-    write_file(path, tmp, good_len);
+    /* Its own buffer. This used to reuse `tmp` -- a PATH_MAX path buffer, 1 KB on
+       macOS -- as scratch space for a copy of the whole table. It fit the tiny
+       fixture the test was written against; a real compiled table overran it by
+       34 KB and fortified libc aborted the run, so none of the checks below had
+       been running. */
+    char *corrupt = malloc(good_len);
+    if (!corrupt) return 1;
+    memcpy(corrupt, good, good_len);
+    corrupt[24 + 4] = (char)0xFF; corrupt[24 + 5] = (char)0xFF;
+    corrupt[24 + 6] = (char)0xFF; corrupt[24 + 7] = (char)0x7F;
+    write_file(path, corrupt, good_len);
+    free(corrupt);
     expect_true("out-of-range offset rejected", !jw_i18n_load("zh_CN"));
 
     /* Restore, confirm we are back to a working table, and shut down clean. */
     snprintf(tmp, sizeof(tmp), "%s/i18n/zh_CN.jwi.bak", platform);
-    fp = fopen(tmp, "rb");
-    good_len = fp ? fread(good, 1, sizeof(good), fp) : 0;
-    if (fp) fclose(fp);
+    /* The backup holds exactly `good`, so restore from memory rather than
+       re-reading it into a buffer that might again be the wrong size. */
     write_file(path, good, good_len);
     unlink(tmp);
+    free(good);
     expect_true("restored table loads", jw_i18n_load("zh_CN"));
     expect_str("restored lookup", T("Settings"), "设置");
 
