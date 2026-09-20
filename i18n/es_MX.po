@@ -1349,6 +1349,12 @@ msgstr "Instalar"
 msgid "Install cancelled: %s"
 msgstr "Instalación cancelada: %s"
 
+#: internal/settings/storage_ui.c
+msgid ""
+"Install the matching Leaf system update before checking this card on your "
+"device."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Installed"
 msgstr "Instalado"
@@ -2572,7 +2578,6 @@ msgstr "Suave"
 msgid "Solomon Islands"
 msgstr "Islas Salomón"
 
-
 #: internal/platform/platform_common.c
 msgid "Speaker"
 msgstr "Altavoz"
@@ -2795,6 +2800,18 @@ msgid ""
 msgstr ""
 "La tarjeta pasó la comprobación pero no se pudo hacer escribible. Reinicia "
 "tu dispositivo e intenta Comprobar tarjeta SD."
+
+#: internal/settings/storage_ui.c
+msgid ""
+"The check took too long. Your SD card is still protected. You can check it "
+"on a computer or restart to try again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid ""
+"The last check or repair did not finish. Restart your device to check the "
+"card before saving is enabled again."
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "The repair couldn't be started. Check the card on a computer instead."
@@ -3236,6 +3253,19 @@ msgstr "X: Soltar   D-pad: Mover"
 msgid "X: Grab   Y: Remove   B: Back   A: Next"
 msgstr "X: Tomar   Y: Eliminar   B: Atrás   A: Siguiente"
 
+#: internal/settings/storage_ui.c
+msgid "You can save files again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Your SD card check did not finish successfully."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+#, fuzzy
+msgid "Your SD card is protected"
+msgstr "Tu tarjeta SD está protegida contra escritura"
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
 msgstr "Tu tarjeta SD es de solo lectura"
@@ -3262,6 +3292,13 @@ msgstr ""
 "Tu tarjeta SD es de solo lectura. No se pudo determinar la causa. No puedes "
 "guardar archivos nuevos ni cambios en esta tarjeta."
 
+#: internal/settings/storage_ui.c
+msgid ""
+"Your SD card is still protected. Turn off your device, repair the card on a "
+"computer, safely eject it, then insert it and turn your device on to check "
+"it again."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
 msgstr ""
@@ -3279,14 +3316,6 @@ msgstr "Tu tarjeta SD no está disponible."
 #: internal/settings/storage_ui.c
 msgid "Your SD card needs repair"
 msgstr "Tu tarjeta SD requiere reparación"
-
-#: internal/settings/storage_ui.c
-msgid ""
-"Your card is still read-only. Check the card on a computer, then choose "
-"Check SD card in Settings."
-msgstr ""
-"Tu tarjeta sigue siendo de solo lectura. Comprueba la tarjeta en una "
-"computadora y luego selecciona Comprobar tarjeta SD en Ajustes."
 
 #: internal/settings/storage_ui.c
 msgid "Your card passed the file system check."
@@ -3320,10 +3349,10 @@ msgstr ""
 "a la corriente hasta que finalice la comprobación."
 
 #: internal/settings/storage_ui.c
+#, fuzzy
 msgid ""
-"Your device will restart to check this card. If the check passes, the card "
-"can be written to again. Keep your device connected to power until the check "
-"finishes."
+"Your device will restart to check this card. If the check passes, you can "
+"save files again."
 msgstr ""
 "Tu dispositivo se reiniciará para comprobar esta tarjeta. Si pasa la "
 "comprobación, se podrá volver a escribir en ella. Mantén tu dispositivo "
@@ -3462,3 +3491,10 @@ msgstr "error en el ajuste de volumen"
 #: internal/settings/settings.c
 msgid "—"
 msgstr "—"
+
+#~ msgid ""
+#~ "Your card is still read-only. Check the card on a computer, then choose "
+#~ "Check SD card in Settings."
+#~ msgstr ""
+#~ "Tu tarjeta sigue siendo de solo lectura. Comprueba la tarjeta en una "
+#~ "computadora y luego selecciona Comprobar tarjeta SD en Ajustes."

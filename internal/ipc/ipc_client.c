@@ -870,6 +870,7 @@ int jw_ipc_get_storage_status(const char *socket_path, const char *source,
             IPC__STORAGE_STRING(last_repair_outcome, "outcome");
             IPC__STORAGE_STRING(last_repair_mount_state, "mount_state");
             IPC__STORAGE_STRING(last_repair_mode, "mode");
+            IPC__STORAGE_STRING(last_repair_origin, "origin");
             out->last_repair_acknowledged =
                 cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "acknowledged"));
             out->last_repair_changes_complete =

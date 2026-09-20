@@ -86,6 +86,7 @@ typedef struct {
     char last_repair_outcome[32];
     char last_repair_mount_state[32];
     char last_repair_mode[16];
+    char last_repair_origin[32];
     bool last_repair_changes_complete;
     int last_repair_reported_changes;
 } jw_ipc_storage_status_info;

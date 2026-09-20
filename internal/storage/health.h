@@ -89,6 +89,7 @@ typedef struct {
 
 typedef struct {
     char request_id[JW_STORAGE_REQUEST_ID_MAX];
+    char origin[32];
     char outcome[32];
     char mount_state[32];
     char mode[16];
@@ -158,8 +159,9 @@ jw_storage_repair jw_storage_repair_hold_for_uuid(const jw_storage_probe_env *en
                                                   const char *uuid,
                                                   char *request_id,
                                                   size_t request_id_size);
-/* The most recent completed repair result, if any. */
-bool jw_storage_repair_last_result(const jw_storage_probe_env *env,
+/* The most recent completed result for this UUID. Legacy global pointers are
+   accepted only when the summary names this exact UUID. */
+bool jw_storage_repair_last_result(const jw_storage_probe_env *env, const char *uuid,
                                    jw_storage_repair_result *out);
 
 /* Probe one configured card root. kernel_log may be NULL; the cause then
