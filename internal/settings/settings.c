@@ -7651,8 +7651,9 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     break;
                 }
 
-                /* RetroAchievements: stored for RetroArch, which validates at
-                   game launch. */
+                /* RetroAchievements: one checked account save bumps the shared
+                   account revision; RetroArch and authorized standalone
+                   emulators sign in on their next launch. */
                 char prompt[160];
                 cat_keyboard_result kb;
                 snprintf(prompt, sizeof(prompt),
@@ -7670,12 +7671,31 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     snprintf(status_buf, status_size, "Cancelled");
                     break;
                 }
+                /* Validate before any truncating copy: username 63 UTF-8 bytes,
+                   password 127. A rejected or failed save keeps the previous
+                   account and shows no success. */
+                jw_ra_credentials_check check =
+                    jw_ra_credentials_check_values(kb.text, pw.text);
+                if (check != JW_RA_CREDENTIALS_OK) {
+                    snprintf(status_buf, status_size, "%s",
+                             check == JW_RA_CREDENTIALS_TOO_LONG
+                                 ? "Too long - account unchanged"
+                                 : "Characters not allowed - account unchanged");
+                    break;
+                }
+                long long ra_revision = 0;
+                if (!ui->db_path[0] ||
+                    jw_db_save_ra_account(ui->db_path, kb.text, pw.text,
+                                          &ra_revision) != 0) {
+                    snprintf(status_buf, status_size,
+                             "Save failed - account unchanged");
+                    break;
+                }
                 snprintf(ui->ra_username, sizeof(ui->ra_username), "%.*s",
                          (int)sizeof(ui->ra_username) - 1, kb.text);
-                jw__persist(ui, "retroachievements_user", ui->ra_username);
-                jw__persist(ui, "retroachievements_pass", pw.text);
+                jw_ipc_rumble(ui->socket_path, "select");
                 snprintf(status_buf, status_size,
-                         "Saved - RetroArch signs in at game launch");
+                         "Saved - emulators sign in on next launch");
                 break;
             }
             case CAT_BTN_Y:
@@ -7696,9 +7716,17 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     snprintf(status_buf, status_size, "Signed out of ScreenScraper");
                 } else if (ui->accounts_list.cursor == JW_ACCOUNTS_RETROACHIEVEMENTS &&
                            ui->ra_username[0]) {
+                    /* Sign-out clears the credentials but retains and bumps the
+                       account revision in the same checked write, so no stale
+                       managed account can revive later. */
+                    long long ra_revision = 0;
+                    if (!ui->db_path[0] ||
+                        jw_db_clear_ra_account(ui->db_path, &ra_revision) != 0) {
+                        snprintf(status_buf, status_size,
+                                 "Sign-out failed - account unchanged");
+                        break;
+                    }
                     ui->ra_username[0] = '\0';
-                    jw__persist(ui, "retroachievements_user", "");
-                    jw__persist(ui, "retroachievements_pass", "");
                     snprintf(status_buf, status_size, "Signed out of RetroAchievements");
                 }
                 break;
