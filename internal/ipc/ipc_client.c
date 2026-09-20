@@ -859,6 +859,7 @@ int jw_ipc_get_storage_status(const char *socket_path, const char *source,
             cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "warning_pending"));
         out->external_power =
             cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "external_power"));
+        IPC__STORAGE_STRING(hold_trigger, "hold_trigger");
         v = cJSON_GetObjectItemCaseSensitive(resp, "health_generation");
         out->health_generation = cJSON_IsNumber(v) ? v->valueint : -1;
         const cJSON *last = cJSON_GetObjectItemCaseSensitive(resp, "last_repair");
@@ -871,6 +872,7 @@ int jw_ipc_get_storage_status(const char *socket_path, const char *source,
             IPC__STORAGE_STRING(last_repair_mount_state, "mount_state");
             IPC__STORAGE_STRING(last_repair_mode, "mode");
             IPC__STORAGE_STRING(last_repair_origin, "origin");
+            IPC__STORAGE_STRING(last_repair_trigger, "trigger");
             out->last_repair_acknowledged =
                 cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "acknowledged"));
             out->last_repair_changes_complete =

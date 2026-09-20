@@ -1644,6 +1644,11 @@ msgid "Nearby"
 msgstr "Cercano"
 
 #: internal/settings/storage_ui.c
+#, fuzzy
+msgid "Needs check"
+msgstr "Requiere reparación"
+
+#: internal/settings/storage_ui.c
 msgid "Needs repair"
 msgstr "Requiere reparación"
 
@@ -3266,6 +3271,12 @@ msgstr ""
 msgid "Your SD card is protected"
 msgstr "Tu tarjeta SD está protegida contra escritura"
 
+#: internal/settings/storage_ui.c
+msgid ""
+"Your SD card is protected because your last shutdown didn't finish saving. "
+"Restart your device to check it."
+msgstr ""
+
 #: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
 msgstr "Tu tarjeta SD es de solo lectura"
@@ -3365,6 +3376,10 @@ msgid ""
 msgstr ""
 "El almacenamiento interno de tu dispositivo no puede registrar la "
 "reparación. Comprueba la tarjeta en una computadora."
+
+#: internal/settings/storage_ui.c
+msgid "Your last shutdown didn't finish saving."
+msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid ""

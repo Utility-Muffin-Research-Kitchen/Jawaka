@@ -87,6 +87,8 @@ typedef struct {
     char last_repair_mount_state[32];
     char last_repair_mode[16];
     char last_repair_origin[32];
+    char last_repair_trigger[32];
+    char hold_trigger[32];        /* why a held card is held, e.g. paused-shutdown */
     bool last_repair_changes_complete;
     int last_repair_reported_changes;
 } jw_ipc_storage_status_info;

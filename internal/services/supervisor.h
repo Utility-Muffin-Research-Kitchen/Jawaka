@@ -372,6 +372,15 @@ bool jw_svc_supervisor_mutation_info(
  * services whose absence could NOT be verified (0 = clean shutdown). */
 int jw_svc_supervisor_stop_all(jw_svc_supervisor *sup);
 
+/* After jw_svc_supervisor_stop_all(): one line per service whose absence was
+ * not verified, "service=<id> pgid=<n> lease=<path>\n" (pgid 0 for a stale
+ * generation this daemon cannot signal). The generation lease stays locked
+ * while any group member lives, so an acquirable lease proves absence to a
+ * process outside Jawaka without signalling anything. Returns the number of
+ * lines written; a line that does not fit is omitted, never truncated. */
+int jw_svc_supervisor_describe_unverified(const jw_svc_supervisor *sup,
+                                          char *out, size_t out_size);
+
 /* Compatibility bulk hook at the SVC-1/LIFE-1 boundary. Stops every live
  * mode-stop generation and marks every stale non-ignore generation stuck.
  * Live notify exchanges and their fallbacks are selected by the daemon.
