@@ -11719,12 +11719,6 @@ static int jw__storage_warning_ack_write(const jw_daemon_state *state,
     return rc;
 }
 
-static bool jw__storage_external_power(jw_daemon_state *state) {
-    jw_platform_status status;
-    jw_platform_get_status(&state->platform, &status);
-    return status.charging == 1;
-}
-
 static bool jw__storage_child_in_front(const jw_daemon_state *state) {
     return state->child_pid > 0 &&
            (state->child_kind == JW_CHILD_RETROARCH ||
@@ -11771,7 +11765,10 @@ static void jw__storage_status_add_health(jw_daemon_state *state, cJSON *root,
     cJSON_AddBoolToObject(root, "warning_pending",
                           h->mounted && h->access == JW_STORAGE_ACCESS_READ_ONLY &&
                               !jw__storage_warning_acked(state, h));
-    cJSON_AddBoolToObject(root, "external_power", jw__storage_external_power(state));
+    jw_platform_status power;
+    jw_platform_get_status(&state->platform, &power);
+    cJSON_AddBoolToObject(root, "external_power", power.charging == 1);
+    jw__json_add_int_or_null(root, "battery_percent", power.battery_percent);
 
     jw_storage_probe_env env;
     jw_storage_probe_env_default(&env);
@@ -12017,12 +12014,18 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
                                              cJSON *root) {
     cJSON *source_json = cJSON_GetObjectItemCaseSensitive(root, "source");
     cJSON *mode_json = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    cJSON *battery_json = cJSON_GetObjectItemCaseSensitive(root, "allow_battery");
+    bool allow_battery = cJSON_IsTrue(battery_json);
     const char *source = cJSON_IsString(source_json) && source_json->valuestring
         ? source_json->valuestring : JW_PLATFORM_STORAGE_LAUNCHER_ID;
     const char *mode = cJSON_IsString(mode_json) && mode_json->valuestring
         ? mode_json->valuestring : "repair";
     if (strcmp(mode, "repair") != 0 && strcmp(mode, "check") != 0) {
         return jw__reply_error(client, "invalid repair mode");
+    }
+    if ((battery_json && !cJSON_IsBool(battery_json)) ||
+        (allow_battery && strcmp(mode, "repair") != 0)) {
+        return jw__reply_error(client, "invalid battery override");
     }
     const jw_storage_health_slot *slot = jw__storage_slot(state, source);
     /* An unmounted card qualifies only as a held card with a known identity. */
@@ -12041,8 +12044,13 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
     if (state->active_game.active || jw__storage_child_in_front(state)) {
         return jw__reply_error(client, "busy");
     }
-    if (strcmp(mode, "repair") == 0 && !jw__storage_external_power(state)) {
-        return jw__reply_error(client, "power-required");
+    if (strcmp(mode, "repair") == 0) {
+        jw_platform_status power;
+        jw_platform_get_status(&state->platform, &power);
+        if (power.charging != 1 &&
+            (!allow_battery || power.battery_percent < JW_STORAGE_REPAIR_MIN_BATTERY_PERCENT)) {
+            return jw__reply_error(client, "power-required");
+        }
     }
 #ifdef PLATFORM_MLP1
     char fs_type[JW_STORAGE_FS_TYPE_MAX];
@@ -12059,7 +12067,7 @@ static int jw__handle_storage_repair_request(jw_daemon_state *state, jw_ipc_clie
         (char *)"umrk-storage-repair", (char *)"request",
         (char *)"--uuid", uuid, (char *)"--source", source_copy,
         (char *)"--fs-type", fs_type, (char *)"--device", device,
-        (char *)"--mode", mode_copy, NULL,
+        (char *)"--mode", mode_copy, allow_battery ? (char *)"--allow-battery" : NULL, NULL,
     };
     char output[256];
     int rc = jw__storage_run_repair_tool(argv, output, sizeof(output));

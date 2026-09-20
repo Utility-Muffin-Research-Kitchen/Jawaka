@@ -853,11 +853,11 @@ msgid "Confirm"
 msgstr "確認"
 
 #: internal/settings/storage_ui.c
-msgid "Connect your device to power and try again."
+msgid "Connect to power or charge the battery to at least 30 percent and try again."
 msgstr ""
 
 #: internal/settings/storage_ui.c
-msgid "Connect your device to power to repair this card."
+msgid "Connect to power or charge the battery to at least 30 percent to repair this card."
 msgstr ""
 
 #: internal/settings/settings.c

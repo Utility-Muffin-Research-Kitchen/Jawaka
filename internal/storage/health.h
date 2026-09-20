@@ -25,6 +25,7 @@
 #define JW_STORAGE_KERNEL_MESSAGE_MAX 256
 #define JW_STORAGE_REQUEST_ID_MAX 64
 #define JW_STORAGE_REASON_MAX 64
+#define JW_STORAGE_REPAIR_MIN_BATTERY_PERCENT 30
 
 /* Internal-storage recovery root on MLP1. Deliberately separate from the
    SD-backed USERDATA_PATH and UMRK_INTERNAL_DATA_PATH: it must stay writable

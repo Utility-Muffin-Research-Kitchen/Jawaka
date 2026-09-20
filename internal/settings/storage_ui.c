@@ -4,6 +4,7 @@
 #include "internal/settings/storage_ui.h"
 #include "internal/core/log.h"
 #include "internal/i18n/i18n.h"
+#include "internal/storage/health.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -132,7 +133,7 @@ static const char *jw__storage_ui_unavailable_text(const char *reason) {
 /* User text for a daemon refusal of a repair request. */
 static const char *jw__storage_ui_refusal_text(const char *reason) {
     if (reason && strcmp(reason, "power-required") == 0) {
-        return T("Connect your device to power to repair this card.");
+        return T("Connect to power or charge the battery to at least 30 percent to repair this card.");
     }
     if (reason && strcmp(reason, "busy") == 0) {
         return T("Close the game or app first, then try again.");
@@ -165,20 +166,24 @@ bool jw_storage_ui_request_repair(const char *socket_path,
         jw__storage_ui_message(message);
         return false;
     }
-    if (!check && !card->external_power) {
-        jw__storage_ui_message(T("Connect your device to power to repair this card."));
+    bool on_battery = !check && !card->external_power;
+    if (on_battery && card->battery_percent < JW_STORAGE_REPAIR_MIN_BATTERY_PERCENT) {
+        jw__storage_ui_message(T("Connect to power or charge the battery to at least 30 percent to repair this card."));
         return false;
     }
     const char *message = check
         ? T("Your device will restart to check this card. If the check passes, you can save files again.")
+        : on_battery
+        ? T("Your device will restart to check and repair this card on battery power. If the battery drops below 30 percent before repair starts, it won't run. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first.")
         : T("Your device will restart to check and repair this card. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first if you need to recover them. Keep your device connected to power until the check finishes.");
     if (!jw__storage_ui_confirm(message, T("Cancel"),
-                                check ? T("Restart and check") : T("Restart and repair"))) {
+                                check ? T("Restart and check") :
+                                on_battery ? T("Repair on battery") : T("Restart and repair"))) {
         return false;
     }
     char status[256] = "";
     if (jw_ipc_storage_repair_request(socket_path, card->source, check ? "check" : "repair",
-                                      status, (int)sizeof(status)) != 0) {
+                                      on_battery, status, (int)sizeof(status)) != 0) {
         jw_log_warn("storage: %s request for %s refused: %s", check ? "check" : "repair",
                     card->source, status[0] ? status : "no reply");
         jw__storage_ui_message(jw__storage_ui_refusal_text(status));
@@ -297,7 +302,7 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
         if (strcmp(outcome, "timed-out") == 0) {
             hint = T("The check took too long. Your SD card is still protected. You can check it on a computer or restart to try again.");
         } else if (strcmp(outcome, "power-required") == 0) {
-            hint = T("Connect your device to power and try again.");
+            hint = T("Connect to power or charge the battery to at least 30 percent and try again.");
         } else if (strcmp(outcome, "busy") == 0 || strcmp(outcome, "not-found") == 0 ||
                    strcmp(outcome, "ambiguous") == 0 || strcmp(outcome, "unsupported") == 0) {
             hint = T("Leaf couldn't safely check this card, so nothing was changed. Check the card on a computer.");

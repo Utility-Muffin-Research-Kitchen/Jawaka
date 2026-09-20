@@ -891,12 +891,12 @@ msgid "Confirm"
 msgstr "确认"
 
 #: internal/settings/storage_ui.c
-msgid "Connect your device to power and try again."
-msgstr "请将设备连接电源后重试。"
+msgid "Connect to power or charge the battery to at least 30 percent and try again."
+msgstr "请连接电源，或将电量充至至少百分之三十后重试。"
 
 #: internal/settings/storage_ui.c
-msgid "Connect your device to power to repair this card."
-msgstr "要修复此卡，请先将设备连接电源。"
+msgid "Connect to power or charge the battery to at least 30 percent to repair this card."
+msgstr "要修复此卡，请连接电源，或将电量充至至少百分之三十。"
 
 #: internal/settings/settings.c
 msgid "Connected"
@@ -2066,6 +2066,10 @@ msgstr "修复"
 #: internal/settings/storage_ui.c
 msgid "Repair SD card"
 msgstr "修复 SD 卡"
+
+#: internal/settings/storage_ui.c
+msgid "Repair on battery"
+msgstr "使用电池修复"
 
 #: internal/settings/storage_ui.c
 msgid "Repair isn't installed on this device."
@@ -3278,6 +3282,10 @@ msgid ""
 msgstr ""
 "设备将重启以检查并修复此卡。受损文件可能被截断、重命名，或以新名称恢复。如需"
 "找回重要文件，请先在电脑上备份。检查完成前，请保持设备连接电源。"
+
+#: internal/settings/storage_ui.c
+msgid "Your device will restart to check and repair this card on battery power. If the battery drops below 30 percent before repair starts, it won't run. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first."
+msgstr "设备将重启，并使用电池供电检查和修复此卡。如果修复开始前电量降至百分之三十以下，修复将不会运行。受损文件可能被截断、重命名，或以新名称恢复。请先在电脑上备份重要文件。"
 
 #: internal/settings/storage_ui.c
 #, fuzzy

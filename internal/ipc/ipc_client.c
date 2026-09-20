@@ -807,6 +807,7 @@ int jw_ipc_get_storage_status(const char *socket_path, const char *source,
                               char *status, int status_len) {
     if (out) {
         memset(out, 0, sizeof(*out));
+        out->battery_percent = -1;
     }
 
     cJSON *req = cJSON_CreateObject();
@@ -859,6 +860,8 @@ int jw_ipc_get_storage_status(const char *socket_path, const char *source,
             cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "warning_pending"));
         out->external_power =
             cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "external_power"));
+        v = cJSON_GetObjectItemCaseSensitive(resp, "battery_percent");
+        if (cJSON_IsNumber(v)) out->battery_percent = v->valueint;
         IPC__STORAGE_STRING(hold_trigger, "hold_trigger");
         v = cJSON_GetObjectItemCaseSensitive(resp, "health_generation");
         out->health_generation = cJSON_IsNumber(v) ? v->valueint : -1;
@@ -924,11 +927,13 @@ int jw_ipc_storage_warning_ack(const char *socket_path, const char *source) {
 }
 
 int jw_ipc_storage_repair_request(const char *socket_path, const char *source,
-                                  const char *mode, char *status, int status_len) {
+                                  const char *mode, bool allow_battery,
+                                  char *status, int status_len) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "type", "storage-repair-request");
     cJSON_AddStringToObject(req, "source", source && source[0] ? source : "launcher_sd");
     cJSON_AddStringToObject(req, "mode", mode && mode[0] ? mode : "repair");
+    cJSON_AddBoolToObject(req, "allow_battery", allow_battery);
     return ipc__storage_simple_request(socket_path, req, status, status_len);
 }
 
