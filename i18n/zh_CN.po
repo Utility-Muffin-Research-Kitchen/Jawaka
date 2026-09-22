@@ -2317,10 +2317,6 @@ msgstr "刮削结果"
 msgid "Scrape finished: %d found"
 msgstr "刮削完成：找到 %d 个"
 
-#: internal/settings/storage_ui.c
-msgid "Scrape missing artwork"
-msgstr "刮削缺失封面"
-
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
 msgstr "正在刮削 %s · %d/%d"

@@ -2365,10 +2365,6 @@ msgstr "Resultado del scrapeo"
 msgid "Scrape finished: %d found"
 msgstr "Scrapeo finalizado: %d encontrados"
 
-#: internal/settings/storage_ui.c
-msgid "Scrape missing artwork"
-msgstr "Scrapear portadas faltantes"
-
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
 msgstr "Scrapeando %s · %d/%d"

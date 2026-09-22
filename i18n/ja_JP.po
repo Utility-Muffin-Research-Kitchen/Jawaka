@@ -2268,10 +2268,6 @@ msgstr "取得結果"
 msgid "Scrape finished: %d found"
 msgstr "取得完了: %d 件検出"
 
-#: internal/settings/storage_ui.c
-msgid "Scrape missing artwork"
-msgstr ""
-
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
 msgstr ""

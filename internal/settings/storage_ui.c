@@ -252,11 +252,11 @@ bool jw_storage_ui_show_warning(const char *socket_path,
                                                   jw_storage_ui_needs_repair(card) ? "check" : "repair");
 }
 
-jw_storage_ui_result_action jw_storage_ui_show_repair_result(
+void jw_storage_ui_show_repair_result(
     const char *socket_path, const jw_ipc_storage_status_info *card,
     bool library_writable) {
     if (!socket_path || !card || !card->last_repair_valid) {
-        return JW_STORAGE_UI_RESULT_DISMISSED;
+        return;
     }
     const char *outcome = card->last_repair_outcome;
     bool success = (strcmp(outcome, "repaired") == 0 || strcmp(outcome, "clean") == 0) &&
@@ -264,7 +264,6 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
                    card->mounted && strcmp(card->access, "read-write") == 0 &&
                    strcmp(card->repair, "none") == 0;
     char message[1024];
-    jw_storage_ui_result_action action = JW_STORAGE_UI_RESULT_DISMISSED;
     if (success && strcmp(card->last_repair_trigger, "paused-shutdown") == 0) {
         /* A precautionary check after a paused shutdown found nothing wrong.
            The user never saw the card held, so there is nothing to report. */
@@ -272,7 +271,7 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
             jw_log_warn("storage: could not acknowledge repair result %s",
                         card->last_repair_request_id);
         }
-        return JW_STORAGE_UI_RESULT_DISMISSED;
+        return;
     }
     if (success) {
         snprintf(message, sizeof(message), "%s %s%s",
@@ -291,12 +290,8 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
             size_t used = strlen(message);
             snprintf(message + used, sizeof(message) - used, "\n\n%s",
                      T("Your other SD card is still read-only, so your library can't update yet."));
-            jw__storage_ui_message(message);
-        } else if (strcmp(outcome, "repaired") != 0) {
-            jw__storage_ui_message(message);
-        } else if (jw__storage_ui_confirm(message, T("OK"), T("Scrape missing artwork"))) {
-            action = JW_STORAGE_UI_RESULT_SCRAPE_MISSING;
         }
+        jw__storage_ui_message(message);
     } else {
         const char *hint;
         if (strcmp(outcome, "timed-out") == 0) {
@@ -325,7 +320,6 @@ jw_storage_ui_result_action jw_storage_ui_show_repair_result(
         jw_log_warn("storage: could not acknowledge repair result %s",
                     card->last_repair_request_id);
     }
-    return action;
 }
 
 void jw_storage_ui_manage_cards(const char *socket_path, char *status,
