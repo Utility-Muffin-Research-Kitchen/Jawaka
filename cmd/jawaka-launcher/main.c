@@ -4942,7 +4942,9 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
     const cat_stylesheet *ss = cat_get_stylesheet();
     bool grid = ss && ss->launcher.layout == CAT_LAUNCHER_GRID;
 
-    /* (0) the selected user theme, for the view this layout draws. Wins over
+    /* (0) the selected user theme, for the view this layout draws: that view's
+       own folder, then the theme's shared icons/ folder, so one set can serve
+       both views while either can still override a system. Wins over
        everything, falls through for any system it does not supply, and never
        for _default (Leaf's safety net, not a tile). Over-cap PNGs are refused
        here so a 4000 px photo never reaches the decoder. */
@@ -4951,13 +4953,20 @@ static void jw__build_system_icon_candidates(const jw_launcher_state *state,
         if (grid)                                                     view = "grid";
         else if (ss && ss->launcher.layout == CAT_LAUNCHER_COVERFLOW) view = "coverflow";
         int ti = jw_settings_user_theme_index(&state->settings);
-        if (view && ti >= 0 &&
-            jw_user_theme_icon_path(jw_settings_user_themes(&state->settings), ti,
-                                    view, system_code, path, sizeof(path))) {
-            int w = 0, h = 0;
-            if (jw_user_theme_png_dims(path, &w, &h) &&
-                w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX)
-                jw__push_icon_candidate(out, path);
+        const jw_user_theme_catalog *themes = jw_settings_user_themes(&state->settings);
+        if (view && ti >= 0) {
+            bool found = false;
+            for (int pass = 0; pass < 2 && !found; pass++) {
+                bool have = pass == 0
+                    ? jw_user_theme_icon_path(themes, ti, view, system_code, path, sizeof(path))
+                    : jw_user_theme_shared_icon_path(themes, ti, system_code, path, sizeof(path));
+                int w = 0, h = 0;
+                if (have && jw_user_theme_png_dims(path, &w, &h) &&
+                    w <= JW_USER_THEME_ICON_MAX_PX && h <= JW_USER_THEME_ICON_MAX_PX) {
+                    jw__push_icon_candidate(out, path);
+                    found = true;
+                }
+            }
         }
     }
 
