@@ -863,11 +863,11 @@ msgid "Confirm"
 msgstr "Confirmer"
 
 #: internal/settings/storage_ui.c
-msgid "Connect your device to power and try again."
+msgid "Connect to power or charge the battery to at least 30 percent and try again."
 msgstr ""
 
 #: internal/settings/storage_ui.c
-msgid "Connect your device to power to repair this card."
+msgid "Connect to power or charge the battery to at least 30 percent to repair this card."
 msgstr ""
 
 #: internal/settings/settings.c
@@ -2289,10 +2289,6 @@ msgstr "Résultat de la récupération"
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape finished: %d found"
 msgstr "Récupération terminée : %d trouvés"
-
-#: internal/settings/storage_ui.c
-msgid "Scrape missing artwork"
-msgstr ""
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"

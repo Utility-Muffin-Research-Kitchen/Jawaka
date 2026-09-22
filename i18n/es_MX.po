@@ -916,12 +916,12 @@ msgid "Confirm"
 msgstr "Confirmar"
 
 #: internal/settings/storage_ui.c
-msgid "Connect your device to power and try again."
-msgstr "Conecta tu dispositivo a la corriente e intenta de nuevo."
+msgid "Connect to power or charge the battery to at least 30 percent and try again."
+msgstr "Conecta el dispositivo a la corriente o carga la batería al menos al 30 por ciento e inténtalo de nuevo."
 
 #: internal/settings/storage_ui.c
-msgid "Connect your device to power to repair this card."
-msgstr "Conecta tu dispositivo a la corriente para reparar esta tarjeta."
+msgid "Connect to power or charge the battery to at least 30 percent to repair this card."
+msgstr "Conecta el dispositivo a la corriente o carga la batería al menos al 30 por ciento para reparar esta tarjeta."
 
 #: internal/settings/settings.c
 msgid "Connected"
@@ -2111,6 +2111,10 @@ msgid "Repair SD card"
 msgstr "Reparar tarjeta SD"
 
 #: internal/settings/storage_ui.c
+msgid "Repair on battery"
+msgstr "Reparar con batería"
+
+#: internal/settings/storage_ui.c
 msgid "Repair isn't installed on this device."
 msgstr "Reparación no está instalada en este dispositivo."
 
@@ -2360,10 +2364,6 @@ msgstr "Resultado del scrapeo"
 #: cmd/jawaka-launcher/main.c
 msgid "Scrape finished: %d found"
 msgstr "Scrapeo finalizado: %d encontrados"
-
-#: internal/settings/storage_ui.c
-msgid "Scrape missing artwork"
-msgstr "Scrapear portadas faltantes"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Scraping %s · %d/%d"
@@ -3358,6 +3358,10 @@ msgstr ""
 "nombres. Haz una copia de seguridad de los archivos importantes en una "
 "computadora antes si necesitas recuperarlos. Mantén tu dispositivo conectado "
 "a la corriente hasta que finalice la comprobación."
+
+#: internal/settings/storage_ui.c
+msgid "Your device will restart to check and repair this card on battery power. If the battery drops below 30 percent before repair starts, it won't run. Damaged files may be shortened, renamed, or recovered under new names. Back up important files on a computer first."
+msgstr "Tu dispositivo se reiniciará para comprobar y reparar esta tarjeta con batería. Si la batería baja del 30 por ciento antes de que empiece la reparación, esta no se ejecutará. Los archivos dañados pueden acortarse, renombrarse o recuperarse con nuevos nombres. Haz primero una copia de seguridad de los archivos importantes en una computadora."
 
 #: internal/settings/storage_ui.c
 #, fuzzy

@@ -80,6 +80,7 @@ typedef struct {
     bool warning_pending;         /* a newly observed read-only state not yet acknowledged */
     int health_generation;
     bool external_power;
+    int battery_percent;          /* -1 if unknown */
     bool last_repair_valid;
     bool last_repair_acknowledged;
     char last_repair_request_id[64];
@@ -239,7 +240,8 @@ int jw_ipc_storage_warning_ack(const char *socket_path, const char *source);
 /* Commit a reboot repair (mode "repair") or offline check (mode "check") for
    source and restart the device. status receives the daemon's refusal text. */
 int jw_ipc_storage_repair_request(const char *socket_path, const char *source,
-                                  const char *mode, char *status, int status_len);
+                                  const char *mode, bool allow_battery,
+                                  char *status, int status_len);
 /* Mark a repair result as seen so it is shown once. */
 int jw_ipc_storage_repair_result_ack(const char *socket_path, const char *request_id);
 

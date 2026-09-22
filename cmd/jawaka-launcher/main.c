@@ -13184,24 +13184,7 @@ static void jw__poll_storage_health(const char *socket_path, const char *db_path
         if (!have[i] || !cards[i].last_repair_valid || cards[i].last_repair_acknowledged) {
             continue;
         }
-        if (jw_storage_ui_show_repair_result(socket_path, &cards[i], library_writable) ==
-            JW_STORAGE_UI_RESULT_SCRAPE_MISSING) {
-            if (!jw__screenscraper_account_configured(db_path) &&
-                !jw__confirm_anonymous_batch_scrape(true)) {
-                break;
-            }
-            int enqueued = 0;
-            char status[256] = "";
-            if (jw_ipc_scrape_start(socket_path, "all", NULL, NULL, true, &enqueued,
-                                    status, sizeof(status)) != 0) {
-                snprintf(state->status, sizeof(state->status), "Scrape failed: %.180s",
-                         status[0] ? status : "daemon unavailable");
-            } else if (enqueued > 0) {
-                snprintf(state->status, sizeof(state->status), "Scraping %d games", enqueued);
-            } else {
-                snprintf(state->status, sizeof(state->status), "%s", "Nothing to scrape");
-            }
-        }
+        jw_storage_ui_show_repair_result(socket_path, &cards[i], library_writable);
         break;   /* one result, reported on both cards' status */
     }
     (void)running;
