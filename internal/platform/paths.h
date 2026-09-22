@@ -147,4 +147,18 @@ void jw_retroarch_pin_core_device(const char *ra_home, const char *core_id,
                                   const char *core_config_folder,
                                   const char *rom_path);
 
+/* Install the per-core option profile a core needs before its first launch --
+ * today only FlyCast Fast UMRK, whose tuned settings must be on disk before the
+ * core initializes. Copies the release template under
+ * $UMRK_PLATFORM_PATH/defaults/retroarch/core-options/<folder>/<folder>.opt to
+ * the effective RetroArch config dir, and only while the core's .opt file is
+ * absent; an existing file is never rewritten. A versioned stamp beside
+ * ra_home records completion, so a deliberate later deletion stays deleted.
+ * Returns 0 when the file is in place or the core is not seeded, -1 on failure
+ * with a message in error. See paths.c for the ownership rules. */
+int jw_retroarch_seed_core_options(const char *ra_home, const char *sdcard_root,
+                                   const char *core_id,
+                                   const char *core_config_folder,
+                                   char *error, size_t error_size);
+
 #endif

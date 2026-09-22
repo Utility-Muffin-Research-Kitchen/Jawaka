@@ -35,7 +35,7 @@ static int write_cores(const char *path, const char *rows) {
 
 int main(void) {
     const char *safe[] = { "mGBA", "DOSBox-pure", "Game & Watch",
-                           "MAME 2010", "PCSX-ReARMed" };
+                           "MAME 2010", "PCSX-ReARMed", "FlyCast Fast UMRK" };
     for (size_t i = 0; i < sizeof(safe) / sizeof(safe[0]); i++) {
         if (!jw_ra_core_folder_is_safe(safe[i])) return fail("safe folder rejected");
     }
@@ -253,6 +253,23 @@ int main(void) {
         jw_ra_catalog_free(catalog);
         return fail("case-fold collision accepted");
     }
+
+    /* The shipped Dreamcast trio has to coexist: the Fast core's folder is a
+       different name from the standard "Flycast", and a case-insensitive
+       comparison must not collapse the two into a collision. */
+    const char *dreamcast_rows =
+        "{\"id\":\"flycast\",\"type\":\"retroarch\",\"status\":\"packaged\","
+        "\"file_name\":\"flycast_libretro.so\",\"config_folder\":\"Flycast\"},"
+        "{\"id\":\"flycast_fast_umrk\",\"type\":\"retroarch\","
+        "\"status\":\"packaged\","
+        "\"file_name\":\"flycast_fast_umrk_libretro.so\","
+        "\"config_folder\":\"FlyCast Fast UMRK\"}";
+    if (write_cores(cores, dreamcast_rows) != 0 ||
+        (catalog = jw_ra_catalog_load(root, error, sizeof(error))) == NULL) {
+        jw_ra_catalog_free(catalog);
+        return fail(error[0] ? error : "Dreamcast core folders collided");
+    }
+    jw_ra_catalog_free(catalog);
 
     printf("catalog-folder-test: ok\n");
     return 0;

@@ -221,6 +221,7 @@ DAEMON_SRCS := \
 	internal/platform/input_shortcuts.c \
 	$(LEAF_VERSION_SRC) \
 	internal/platform/paths.c \
+	internal/platform/perf_policy.c \
 	internal/platform/raofflineproxy.c \
 	internal/power/suspend_inhibit.c \
 	internal/retroarch/catalog.c \
@@ -1159,6 +1160,24 @@ core-selection-test: | $(BUILD)/bin
 		internal/launcher/core_selection.c
 	$(BUILD)/bin/core-selection-test
 
+# The AUTO governor-profile rule: which systems enter performance without a
+# user override. Dreamcast-family systems (DC, NAOMI, ATOMISWAVE) are the ones
+# every Flycast choice depends on, standalone and libretro alike.
+.PHONY: perf-policy-test
+perf-policy-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/perf-policy-test \
+		internal/platform/perf_policy_test.c \
+		internal/platform/perf_policy.c
+	$(BUILD)/bin/perf-policy-test
+
+# End-to-end governor policy against a real jawakad on the mock platform: every
+# Dreamcast-family choice enters performance before the child runs and restores
+# the frontend profile on exit, including a launch that fails after the profile
+# was applied.
+.PHONY: performance-dreamcast-ipc-smoke
+performance-dreamcast-ipc-smoke:
+	scripts/performance-dreamcast-ipc-smoke.sh
+
 # Pure header over the shared system-notice primitive: set/expiry/only-a-new-
 # launch-attempt-clears. Link-free, so no product sources are dragged in.
 launch-notice-test: | $(BUILD)/bin
@@ -1524,6 +1543,8 @@ help:
 	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
 	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
 	@echo "  make core-selection-test  Validate saved/default/alternate launch core order"
+	@echo "  make perf-policy-test     Validate the AUTO performance-profile rule per system"
+	@echo "  make performance-dreamcast-ipc-smoke  Verify DC-family launches enter and restore performance"
 	@echo "  make launch-core-pin-ipc-smoke  Verify a pending launch never changes its selected core"
 	@echo "  make launch-notice-test      Validate launch-notice set/expiry policy"
 	@echo "  make launch-notice-ui-test   Validate notice rendering and expiry wakes"

@@ -89,6 +89,38 @@ cat >"$DEFAULTS_DIR/cores.json" <<'JSON'
       "status": "packaged"
     },
     {
+      "id": "flycast_fast_umrk",
+      "display_name": "FlyCast Fast UMRK",
+      "type": "retroarch",
+      "libretro_name": "flycast_fast_umrk",
+      "file_name": "flycast_fast_umrk_libretro.dylib",
+      "config_folder": "FlyCast Fast UMRK",
+      "info_name": "flycast_fast_umrk_libretro.info",
+      "path": null,
+      "supports_menu": true,
+      "supports_savestate": true,
+      "supports_disk_control": true,
+      "needs_swap": false,
+      "requires_direct_drm": false,
+      "status": "packaged"
+    },
+    {
+      "id": "km_flycast_xtreme",
+      "display_name": "KM Flycast Xtreme",
+      "type": "retroarch",
+      "libretro_name": "km_flycast_xtreme",
+      "file_name": "km_flycast_xtreme_libretro.dylib",
+      "config_folder": "KM Flycast Xtreme",
+      "info_name": "km_flycast_xtreme_libretro.info",
+      "path": null,
+      "supports_menu": true,
+      "supports_savestate": true,
+      "supports_disk_control": false,
+      "needs_swap": false,
+      "requires_direct_drm": false,
+      "status": "missing"
+    },
+    {
       "id": "yabasanshiro_standalone",
       "display_name": "YabaSanshiro Standalone",
       "type": "path",
@@ -255,7 +287,7 @@ cat >"$DEFAULTS_DIR/systems.json" <<'JSON'
       "playlist_extensions": ["m3u"],
       "m3u_generation": "manual",
       "default_core": "flycast_standalone",
-      "alternate_cores": ["flycast"],
+      "alternate_cores": ["flycast", "flycast_fast_umrk", "km_flycast_xtreme"],
       "rom_root": "Roms/DC",
       "image_root": "Images/DC",
       "bios_notes": []
@@ -384,6 +416,7 @@ printf '#!/bin/sh\nexit 0\n' >"$PLATFORM_ROOT/emulators/fun-drastic/launch.sh"
 chmod 755 "$PLATFORM_ROOT/emulators/fun-drastic/launch.sh"
 : >"$CORES_DIR/mupen64plus_next_libretro.dylib"
 : >"$CORES_DIR/flycast_libretro.dylib"
+: >"$CORES_DIR/flycast_fast_umrk_libretro.dylib"
 : >"$CORES_DIR/yabasanshiro_libretro.dylib"
 : >"$CORES_DIR/mgba_libretro.so"
 : >"$CORES_DIR/gpsp_libretro.so"
@@ -418,9 +451,18 @@ grep -F $'count\t2' "$TMP_ROOT/n64alt.tsv" >/dev/null
 grep -F $'choice\t0\tmupen64plus_next\tretroarch\tdefault\tMupen64Plus Next\tmupen64plus_next_libretro.dylib' "$TMP_ROOT/n64alt.tsv" >/dev/null
 grep -F $'choice\t1\tmupen64plus_standalone\tpath\talternate\tMupen64Plus Standalone\temulators/mupen64plus/launch.sh' "$TMP_ROOT/n64alt.tsv" >/dev/null
 
-grep -F $'count\t2' "$TMP_ROOT/dc.tsv" >/dev/null
+# The shipped Dreamcast trio: standalone default, then the current libretro
+# Flycast, then FlyCast Fast UMRK. km_flycast_xtreme stays a missing reference
+# and must not become a fourth entry.
+grep -F $'count\t3' "$TMP_ROOT/dc.tsv" >/dev/null
 grep -F $'choice\t0\tflycast_standalone\tpath\tdefault\tFlycast Standalone\temulators/flycast/launch.sh\tdirect-drm' "$TMP_ROOT/dc.tsv" >/dev/null
 grep -F $'choice\t1\tflycast\tretroarch\talternate\tFlycast\tflycast_libretro.dylib\tshared-drm' "$TMP_ROOT/dc.tsv" >/dev/null
+grep -F $'choice\t2\tflycast_fast_umrk\tretroarch\talternate\tFlyCast Fast UMRK\tflycast_fast_umrk_libretro.dylib\tshared-drm' "$TMP_ROOT/dc.tsv" >/dev/null
+if grep -F 'km_flycast_xtreme' "$TMP_ROOT/dc.tsv" >/dev/null; then
+    cat "$TMP_ROOT/dc.tsv" >&2
+    echo "a missing catalog reference appeared in Dreamcast core choices" >&2
+    exit 1
+fi
 
 grep -F $'count\t2' "$TMP_ROOT/gba.tsv" >/dev/null
 grep -F $'choice\t0\tmgba\tretroarch\tdefault\tmGBA\tmgba_libretro.so' "$TMP_ROOT/gba.tsv" >/dev/null
@@ -471,6 +513,9 @@ expect_launch "missing RetroArch default, RetroArch alternate first" \
 expect_launch "saved standalone choice" \
     SATURN "Roms/SATURN/Astal.chd" "" yabasanshiro_standalone \
     $'launch\tyabasanshiro_standalone\tpath\tsaved'
+expect_launch "saved FlyCast Fast UMRK choice" \
+    DC "Roms/DC/smoke.chd" "" flycast_fast_umrk \
+    $'launch\tflycast_fast_umrk\tretroarch\tsaved'
 expect_launch "saved choice for an available allowed core" \
     GBA "Roms/GBA/smoke.gba" "" gpsp \
     $'launch\tgpsp\tretroarch\tsaved'
@@ -531,8 +576,9 @@ mv "$TMP_ROOT/mupen64plus_next_libretro.dylib" "$CORES_DIR/mupen64plus_next_libr
 chmod 644 "$PLATFORM_ROOT/emulators/flycast/launch.sh"
 UMRK_PLATFORM_PATH="$PLATFORM_ROOT" \
     "$SMOKE" "$SD_ROOT" DC "$CORES_DIR" "$PLATFORM_ROOT" >"$TMP_ROOT/dc-noexec.tsv"
-grep -F $'count\t1' "$TMP_ROOT/dc-noexec.tsv" >/dev/null
+grep -F $'count\t2' "$TMP_ROOT/dc-noexec.tsv" >/dev/null
 grep -F $'choice\t0\tflycast\tretroarch\talternate\tFlycast\tflycast_libretro.dylib\tshared-drm' "$TMP_ROOT/dc-noexec.tsv" >/dev/null
+grep -F $'choice\t1\tflycast_fast_umrk\tretroarch\talternate\tFlyCast Fast UMRK\tflycast_fast_umrk_libretro.dylib\tshared-drm' "$TMP_ROOT/dc-noexec.tsv" >/dev/null
 if grep -F 'flycast_standalone' "$TMP_ROOT/dc-noexec.tsv" >/dev/null; then
     cat "$TMP_ROOT/dc-noexec.tsv" >&2
     echo "non-executable Flycast path core appeared in core choices" >&2
