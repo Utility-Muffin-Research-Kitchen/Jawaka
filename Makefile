@@ -86,6 +86,10 @@ $(error ScreenScraper credentials are required; create .env.local or set SCREENS
 endif
 endif
 
+.PHONY: screenscraper-status
+screenscraper-status:
+	@printf '%s\n' '$(if $(filter 1,$(SCREENSCRAPER_AVAILABLE)),true,false)'
+
 SCRAPE_CREDENTIALS_HEADER := $(BUILD)/generated/screenscraper_credentials.h
 
 # Translation-coverage recorder: a DEV-BUILD TOOL, compiled out of every
