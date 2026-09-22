@@ -25,6 +25,7 @@
 #include "internal/platform/input_shortcuts.h"
 #include "internal/platform/input_roster.h"
 #include "internal/platform/paths.h"
+#include "internal/platform/perf_policy.h"
 #include "internal/platform/raofflineproxy.h"
 #include "internal/platform/wifi.h"
 #include "internal/power/suspend_inhibit.h"
@@ -2250,29 +2251,17 @@ static void jw__perf_request_for_profile(jw_platform_perf_profile profile,
     }
 }
 
-static bool jw__perf_system_prefers_performance(const char *system) {
-    if (!system || !system[0]) {
-        return false;
-    }
-    return strcasecmp(system, "N64") == 0 ||
-           strcasecmp(system, "PSP") == 0 ||
-           strcasecmp(system, "DC") == 0 ||
-           strcasecmp(system, "DREAMCAST") == 0 ||
-           strcasecmp(system, "SATURN") == 0 ||
-           strcasecmp(system, "NDS") == 0;
-}
-
 static jw_platform_perf_profile jw__perf_resolve_game_profile(
         const jw_daemon_state *state,
         jw_platform_perf_profile profile,
         const char *system) {
     (void)state;
-    if (profile != JW_PLATFORM_PERF_PROFILE_AUTO) {
-        return profile;
-    }
-    return jw__perf_system_prefers_performance(system)
-        ? JW_PLATFORM_PERF_PROFILE_PERFORMANCE
-        : JW_PLATFORM_PERF_PROFILE_BALANCED;
+    /* One owner for the whole rule (internal/platform/perf_policy.c): the AUTO
+       preference, and the Dreamcast-family contract that performance wins over
+       a session, game, system or global request for another profile. Every
+       Flycast choice on DC, NAOMI and ATOMISWAVE resolves through here, which
+       is why the rule is keyed on the system and not the core. */
+    return jw_platform_perf_game_profile(system, profile);
 }
 
 static jw_platform_perf_profile jw__perf_current_requested_profile(
@@ -7267,6 +7256,9 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         state->pending_launch = false;
         jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
+        /* The target's profile was applied before the switch attempt; the old
+           game is still running under the old system, so restore its mode. */
+        (void)jw__perf_apply_current_context(state, "switch-quit-failed");
         if (out_error) *out_error = "RetroArch quit failed";
         return -1;
     }
@@ -7277,6 +7269,7 @@ static int jw__request_switch_game(jw_daemon_state *state, const char *system,
         state->pending_launch = false;
         jw__pending_launch_forget_target(state);
         state->pending_launch_resume_switcher = false;
+        (void)jw__perf_apply_current_context(state, "switch-exit-failed");
         if (out_error) *out_error = "RetroArch exit failed";
         return -1;
     }
@@ -9844,6 +9837,15 @@ static int jw__spawn_authorized_pending_game(jw_daemon_state *state) {
     int rc = target.kind == JW_LAUNCH_TARGET_STANDALONE
                  ? jw__spawn_standalone_emulator(state, &target)
                  : jw__spawn_retroarch(state, &target);
+    if (rc != 0) {
+        /* Both spawns apply the game's governor profile before the child runs,
+           so a handoff that never starts a writer would otherwise leave the
+           device in the game's mode with the launcher (or a still-running
+           previous game) on screen. Restore what the current context actually
+           asks for: a live session keeps its own profile, everything else
+           returns to the frontend profile. */
+        (void)jw__perf_apply_current_context(state, "launch-failed");
+    }
     /* Started or failed, this launch is over. */
     jw__pending_launch_forget_target(state);
     return rc;
@@ -10205,6 +10207,23 @@ static int jw__spawn_retroarch(jw_daemon_state *state,
        (PS1 wants a DualShock, or nothing can rumble). Must happen before the
        fork: RetroArch reads the remap during startup. */
     jw_retroarch_pin_core_device(ra_home, core_id, core_config_folder, rom_abs);
+
+    /* Seed the tuned option profile for cores that ship one, before RetroArch
+       initializes the core. Failing here is deliberate: a launch without the
+       installed profile would silently run the new core on stock defaults, so
+       "the profile is not on disk" has to be a failure rather than a quiet
+       downgrade. Already-seeded installs (and every other core) return without
+       touching anything. */
+    {
+        char seed_error[256];
+        if (jw_retroarch_seed_core_options(ra_home, state->sdcard_root, core_id,
+                                           core_config_folder, seed_error,
+                                           sizeof(seed_error)) != 0) {
+            jw_log_error("could not install the core option profile for %s: %s",
+                         core_id, seed_error[0] ? seed_error : "unknown error");
+            goto fail;
+        }
+    }
 
     /* Stop any UI pulse before the handoff, then resolve the duty endpoints
        the game will drive the motor with (if game rumble is on). A bare

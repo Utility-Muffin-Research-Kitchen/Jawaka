@@ -4,6 +4,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* PATH_MAX has to be settled here, not left to each includer. jw_active_game is
+   passed across translation units (the daemon builds the record, active_game.c
+   validates and serializes it), and a struct whose array sizes depend on
+   whether <limits.h> happened to be included first has two layouts in one
+   process: on macOS, where PATH_MAX is 1024, the validator then reads the wrong
+   bytes and rejects every launch with "invalid-arguments". */
+#include <limits.h>
+
 #ifndef PATH_MAX
 #define JW_ACTIVE_GAME_PATH_MAX 4096
 #else
