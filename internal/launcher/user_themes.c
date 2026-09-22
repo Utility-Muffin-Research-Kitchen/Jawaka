@@ -207,6 +207,7 @@ int jw_user_themes_scan(jw_user_theme_catalog *cat, const char *sdcard_root) {
         if (jw__ut_join(sub, sizeof(sub), dir, "grid/icons"))      t->has_grid_icons      = jw__ut_has_any_image(sub);
         if (jw__ut_join(sub, sizeof(sub), dir, "grid/labels"))     t->has_grid_labels     = jw__ut_has_any_image(sub);
         if (jw__ut_join(sub, sizeof(sub), dir, "coverflow/icons")) t->has_coverflow_icons = jw__ut_has_any_image(sub);
+        if (jw__ut_join(sub, sizeof(sub), dir, "icons"))           t->has_shared_icons    = jw__ut_has_any_image(sub);
         char wp[PATH_MAX];
         t->has_wallpaper = jw__ut_wallpaper_in(dir, wp, sizeof(wp));
         if (!t->has_wallpaper && jw__ut_join(sub, sizeof(sub), dir, "grid"))
@@ -250,6 +251,18 @@ bool jw_user_theme_icon_path(const jw_user_theme_catalog *cat, int idx,
                              const char *view, const char *system_code,
                              char *out, size_t out_size) {
     return jw__ut_asset(cat, idx, view, "icons", system_code, out, out_size);
+}
+
+bool jw_user_theme_shared_icon_path(const jw_user_theme_catalog *cat, int idx,
+                                    const char *system_code,
+                                    char *out, size_t out_size) {
+    if (out && out_size) out[0] = '\0';
+    if (!cat || idx < 0 || idx >= cat->count || !system_code || !system_code[0])
+        return false;
+    if (strcasecmp(system_code, "_default") == 0) return false;
+    int r = snprintf(out, out_size, "%s/%s/icons/%s.png",
+                     cat->root, cat->items[idx].dir, system_code);
+    return r > 0 && (size_t)r < out_size;
 }
 
 bool jw_user_theme_label_path(const jw_user_theme_catalog *cat, int idx,
@@ -325,6 +338,24 @@ bool jw_user_theme_wallpaper_ok(const char *path) {
            w <= JW_USER_THEME_WALLPAPER_MAX_PX && h <= JW_USER_THEME_WALLPAPER_MAX_PX;
 }
 
+static void jw__ut_validate_icons_in(const char *dir, int *pr, int *fl, int *rejected) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *ext = strrchr(e->d_name, '.');
+        if (e->d_name[0] == '.' || !ext || strcasecmp(ext, ".png") != 0) continue;
+        char p[PATH_MAX];
+        if (!jw__ut_join(p, sizeof(p), dir, e->d_name) || !jw__ut_file_exists(p)) continue;
+        (*pr)++;
+        int w = 0, h = 0;
+        if (!jw_user_theme_png_dims(p, &w, &h)) { (*rejected)++; continue; }
+        if (w > JW_USER_THEME_ICON_MAX_PX || h > JW_USER_THEME_ICON_MAX_PX) { (*rejected)++; continue; }
+        if (w != h || w != JW_USER_THEME_ICON_TARGET_PX) (*fl)++;
+    }
+    closedir(d);
+}
+
 int jw_user_theme_validate(const jw_user_theme_catalog *cat, int idx,
                            int *present, int *flagged) {
     int rejected = 0, fl = 0, pr = 0;
@@ -332,25 +363,14 @@ int jw_user_theme_validate(const jw_user_theme_catalog *cat, int idx,
     if (flagged) *flagged = 0;
     if (!cat || idx < 0 || idx >= cat->count) return 0;
 
-    char dir[PATH_MAX];
-    if (snprintf(dir, sizeof(dir), "%s/%s/grid/icons", cat->root, cat->items[idx].dir)
-            >= (int)sizeof(dir))
-        return 0;
-    DIR *d = opendir(dir);
-    if (!d) return 0;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        const char *ext = strrchr(e->d_name, '.');
-        if (e->d_name[0] == '.' || !ext || strcasecmp(ext, ".png") != 0) continue;
-        char p[PATH_MAX];
-        if (!jw__ut_join(p, sizeof(p), dir, e->d_name) || !jw__ut_file_exists(p)) continue;
-        pr++;
-        int w = 0, h = 0;
-        if (!jw_user_theme_png_dims(p, &w, &h)) { rejected++; continue; }
-        if (w > JW_USER_THEME_ICON_MAX_PX || h > JW_USER_THEME_ICON_MAX_PX) { rejected++; continue; }
-        if (w != h || w != JW_USER_THEME_ICON_TARGET_PX) fl++;
+    static const char *const folders[] = { "grid/icons", "icons" };
+    for (size_t i = 0; i < sizeof(folders) / sizeof(folders[0]); i++) {
+        char dir[PATH_MAX];
+        if (snprintf(dir, sizeof(dir), "%s/%s/%s", cat->root, cat->items[idx].dir, folders[i])
+                >= (int)sizeof(dir))
+            continue;
+        jw__ut_validate_icons_in(dir, &pr, &fl, &rejected);
     }
-    closedir(d);
     if (present) *present = pr;
     if (flagged) *flagged = fl;
     return rejected;

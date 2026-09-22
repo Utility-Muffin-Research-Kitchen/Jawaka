@@ -898,8 +898,8 @@ static int jw__tp_classify(const char *rel, size_t n, bool is_dir, jw__tp_entry 
     if (is_dir) {
         while (n > 0 && rel[n - 1] == '/') n--;
         static const char *const dirs[] = {
-            "", "grid", "coverflow", "grid/icons", "grid/labels", "grid/wordmarks",
-            "coverflow/icons",
+            "", "icons", "grid", "coverflow", "grid/icons", "grid/labels",
+            "grid/wordmarks", "coverflow/icons",
         };
         for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
             if (jw__tp_eq(rel, n, dirs[i])) { entry->slot = JW_TP_SLOT_DIR; return -1; }
@@ -935,17 +935,19 @@ static int jw__tp_classify(const char *rel, size_t n, bool is_dir, jw__tp_entry 
         *wallpaper_view = 1;
         return -1;
     }
-    if (count != 3) return JW_THEME_UNKNOWN_FILE;
-    bool grid = jw__tp_eq(parts[0], lens[0], "grid");
-    bool coverflow = jw__tp_eq(parts[0], lens[0], "coverflow");
-    bool icons = jw__tp_eq(parts[1], lens[1], "icons");
-    bool wordmarks = jw__tp_eq(parts[1], lens[1], "wordmarks");
-    bool labels = jw__tp_eq(parts[1], lens[1], "labels");
-    if (!((grid && (icons || wordmarks || labels)) || (coverflow && icons)))
+    /* icons/<ID>.png at the root is the set both views share. */
+    bool shared = count == 2 && jw__tp_eq(parts[0], lens[0], "icons");
+    if (!shared && count != 3) return JW_THEME_UNKNOWN_FILE;
+    bool grid = !shared && jw__tp_eq(parts[0], lens[0], "grid");
+    bool coverflow = !shared && jw__tp_eq(parts[0], lens[0], "coverflow");
+    bool icons = shared || jw__tp_eq(parts[1], lens[1], "icons");
+    bool wordmarks = !shared && jw__tp_eq(parts[1], lens[1], "wordmarks");
+    bool labels = !shared && jw__tp_eq(parts[1], lens[1], "labels");
+    if (!(shared || (grid && (icons || wordmarks || labels)) || (coverflow && icons)))
         return JW_THEME_UNKNOWN_FILE;
 
-    const char *stem = parts[2];
-    size_t stem_len = lens[2];
+    const char *stem = shared ? parts[1] : parts[2];
+    size_t stem_len = shared ? lens[1] : lens[2];
     if (wordmarks && stem_len >= 10 && memcmp(stem + stem_len - 10, ".color.png", 10) == 0)
         stem_len -= 10;
     else if (stem_len >= 4 && memcmp(stem + stem_len - 4, ".png", 4) == 0)

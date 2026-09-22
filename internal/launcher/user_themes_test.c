@@ -90,6 +90,37 @@ int main(void) {
     CHECK(!jw_user_theme_label_path(cat, 0, "grid", "_DEFAULT", asset, sizeof(asset)));
     CHECK(!jw_user_theme_wordmark_path(cat, 0, "grid", "_Default", asset, sizeof(asset)));
 
+    /* icons/ at the root: one set both views read, found by the rescan and
+       counted by validation alongside grid/icons, which Grid also draws. */
+    CHECK(!cat->items[0].has_shared_icons);
+    CHECK(jw_user_theme_shared_icon_path(cat, 0, "FC", asset, sizeof(asset)));
+    snprintf(path, sizeof(path), "%s/Themes/long/icons/FC.png", root);
+    CHECK(strcmp(asset, path) == 0);
+    CHECK(jw_user_theme_shared_icon_path(cat, 0, "_apps", asset, sizeof(asset)));
+    CHECK(!jw_user_theme_shared_icon_path(cat, 0, "_DEFAULT", asset, sizeof(asset)));
+    CHECK(!jw_user_theme_shared_icon_path(cat, 0, "", asset, sizeof(asset)));
+    CHECK(!jw_user_theme_shared_icon_path(cat, 1, "FC", asset, sizeof(asset)));
+    snprintf(path, sizeof(path), "%s/Themes/long/icons", root);
+    mkdir(path, 0755);
+    snprintf(path, sizeof(path), "%s/Themes/long/grid", root);
+    mkdir(path, 0755);
+    snprintf(path, sizeof(path), "%s/Themes/long/grid/icons", root);
+    mkdir(path, 0755);
+    snprintf(path, sizeof(path), "%s/Themes/long/icons/FC.png", root);
+    write_png_header(path, 512, 512);
+    snprintf(path, sizeof(path), "%s/Themes/long/icons/MD.png", root);
+    write_png_header(path, 256, 256);            /* off-size: flagged */
+    snprintf(path, sizeof(path), "%s/Themes/long/icons/GBA.png", root);
+    write_png_header(path, 2048, 2048);          /* over the cap: rejected */
+    snprintf(path, sizeof(path), "%s/Themes/long/grid/icons/FC.png", root);
+    write_png_header(path, 512, 512);
+    CHECK(jw_user_themes_scan(cat, root) == 1);
+    CHECK(cat->items[0].has_shared_icons && cat->items[0].has_grid_icons);
+    CHECK(!cat->items[0].has_coverflow_icons);
+    int present = 0, flagged = 0;
+    CHECK(jw_user_theme_validate(cat, 0, &present, &flagged) == 1);
+    CHECK(present == 4 && flagged == 1);
+
     /* Wallpapers: PNG or JPEG by their bytes, at most 2048 px per edge. */
     snprintf(path, sizeof(path), "%s/ok.png", root);
     write_png_header(path, 2048, 2048);
