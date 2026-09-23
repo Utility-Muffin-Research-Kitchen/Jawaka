@@ -419,18 +419,16 @@ void jw_storage_ui_manage_cards(const char *socket_path, char *status,
     cat_list_item actions[3];
     int action_ids[3];
     int action_count = 0;
-    bool secondary = strcmp(card->source, "secondary_sd") == 0;
-    if (card->mounted && jw_storage_ui_is_read_only(card) &&
-        strcmp(card->repair, "pending") != 0) {
+    jw_storage_card_actions offered = jw_storage_advice_card_actions(card);
+    if (offered.repair) {
         actions[action_count] = (cat_list_item)CAT_LIST_ITEM(T("Repair SD card"), "repair");
         action_ids[action_count++] = ACTION_REPAIR;
     }
-    if (strcmp(card->repair, "failed") == 0 &&
-        jw_storage_repair_advice(card) != JW_STORAGE_ADVICE_REPAIR_FOUND_ERRORS) {
+    if (offered.check) {
         actions[action_count] = (cat_list_item)CAT_LIST_ITEM(T("Check SD card"), "check");
         action_ids[action_count++] = ACTION_CHECK;
     }
-    if (secondary && card->mounted) {
+    if (offered.unmount) {
         actions[action_count] = (cat_list_item)CAT_LIST_ITEM(T("Unmount"), "unmount");
         action_ids[action_count++] = ACTION_UNMOUNT;
     }

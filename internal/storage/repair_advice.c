@@ -82,6 +82,30 @@ const char *jw_storage_advice_next_mode(jw_storage_advice advice) {
     return NULL;
 }
 
+jw_storage_card_actions jw_storage_advice_card_actions(
+    const jw_ipc_storage_status_info *card) {
+    jw_storage_card_actions actions = { false, false, false };
+    if (!card) {
+        return actions;
+    }
+    jw_storage_advice advice = jw_storage_repair_advice(card);
+    bool pending = jw__advice_eq(card->repair, "pending");
+    bool failed = jw__advice_eq(card->repair, "failed");
+    const char *next = jw_storage_advice_next_mode(advice);
+    if (card->mounted) {
+        actions.repair = jw__advice_eq(card->access, "read-only") && !pending;
+    } else {
+        /* The daemon's rule for an unmounted card: held, with a known
+           identity. It re-checks the device itself before running. */
+        actions.repair = failed && card->uuid[0] && next &&
+                         strcmp(next, "repair") == 0;
+    }
+    actions.check = failed &&
+                    !(advice == JW_STORAGE_ADVICE_REPAIR_FOUND_ERRORS && actions.repair);
+    actions.unmount = card->mounted && jw__advice_eq(card->source, "secondary_sd");
+    return actions;
+}
+
 const char *jw_storage_advice_state_key(jw_storage_advice advice) {
     switch (advice) {
     case JW_STORAGE_ADVICE_REPAIR_FOUND_ERRORS:

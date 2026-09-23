@@ -39,4 +39,18 @@ bool jw_storage_advice_check_found_errors(const jw_ipc_storage_status_info *card
    keys; the caller translates. */
 const char *jw_storage_advice_state_key(jw_storage_advice advice);
 
+/* The actions Settings > SD Cards offers for one card. A held card can be
+   unmounted (hotplug refuses to mount it), and the daemon still accepts a
+   check or repair for it when its identity is known, so repair is not only
+   for mounted cards. A re-check is hidden only when a repair is actually on
+   offer: a card must never be left with no way forward. */
+typedef struct {
+    bool repair;
+    bool check;
+    bool unmount;
+} jw_storage_card_actions;
+
+jw_storage_card_actions jw_storage_advice_card_actions(
+    const jw_ipc_storage_status_info *card);
+
 #endif /* JW_STORAGE_REPAIR_ADVICE_H */

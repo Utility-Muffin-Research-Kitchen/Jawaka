@@ -136,6 +136,63 @@ int main(void) {
     expect(jw_storage_repair_advice(NULL) == JW_STORAGE_ADVICE_NONE, "no card -> nothing");
     expect(jw_storage_advice_state_key(JW_STORAGE_ADVICE_NONE) == NULL, "no state key");
 
+    /* Settings actions. The regression this guards: an unmounted held card
+       after a failed check had Check hidden and Repair gated on mounted, so
+       Settings offered nothing at all. */
+    jw_storage_card_actions a;
+    c = card("read-only", "failed");
+    last(&c, "check", "verify-failed");
+    c.mounted = false;
+    snprintf(c.uuid, sizeof(c.uuid), "5C8A-1EF4");
+    a = jw_storage_advice_card_actions(&c);
+    expect(a.repair && !a.check && !a.unmount,
+           "unmounted held card after a failed check offers repair");
+    c.uuid[0] = '\0';
+    a = jw_storage_advice_card_actions(&c);
+    expect(!a.repair && a.check,
+           "unidentified unmounted held card keeps check as its way forward");
+
+    c = card("read-only", "failed");
+    last(&c, "check", "verify-failed");
+    a = jw_storage_advice_card_actions(&c);
+    expect(a.repair && !a.check, "mounted card after a failed check offers repair only");
+
+    c = card("read-only", "failed");
+    last(&c, "repair", "interrupted");
+    a = jw_storage_advice_card_actions(&c);
+    expect(a.repair && a.check, "interrupted: repair and check, as before");
+
+    c = card("read-only", "failed");
+    snprintf(c.hold_trigger, sizeof(c.hold_trigger), "paused-shutdown");
+    c.mounted = false;
+    snprintf(c.uuid, sizeof(c.uuid), "5C8A-1EF4");
+    a = jw_storage_advice_card_actions(&c);
+    expect(!a.repair && a.check, "unmounted paused-shutdown hold: check first");
+
+    c = card("read-only", "pending");
+    a = jw_storage_advice_card_actions(&c);
+    expect(!a.repair && !a.check, "pending request: nothing to start");
+
+    c = card("read-write", "none");
+    snprintf(c.source, sizeof(c.source), "secondary_sd");
+    a = jw_storage_advice_card_actions(&c);
+    expect(!a.repair && !a.check && a.unmount, "healthy secondary: unmount only");
+
+    /* Every held card keeps at least one action. */
+    const char *const modes[] = { "check", "repair" };
+    const char *const outcomes[] = { "verify-failed", "timed-out", "interrupted", "failed" };
+    for (int mounted = 0; mounted < 2; mounted++)
+    for (int m = 0; m < 2; m++)
+    for (int o = 0; o < 4; o++)
+    for (int id = 0; id < 2; id++) {
+        c = card("read-only", "failed");
+        c.mounted = mounted;
+        last(&c, modes[m], outcomes[o]);
+        if (id) snprintf(c.uuid, sizeof(c.uuid), "5C8A-1EF4");
+        a = jw_storage_advice_card_actions(&c);
+        expect(a.repair || a.check, "held card left with no action");
+    }
+
     if (failures) {
         fprintf(stderr, "storage-repair-advice-test: %d FAILURE(S)\n", failures);
         return 1;
