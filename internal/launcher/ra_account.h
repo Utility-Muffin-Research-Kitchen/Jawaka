@@ -80,4 +80,32 @@ void jw_ra_account_apply_env(const jw_ra_account *account);
 void jw_ra_account_apply_retroarch_env(const jw_ra_account *account);
 void jw_ra_account_clear_retroarch_env(void);
 
+/* RAOfflineProxy service intent for bundled Flycast (proxy plan P2). A
+   private child-only variable, separate from the account snapshot: it names
+   whether the supervised proxy service may be used, never a URL, port or
+   credential, and never that the game is eligible or that health passed.
+   Flycast decides the session route itself after loading its real per-game
+   settings (P3). Missing or unknown values never opt into proxy routing. */
+#define JW_FLYCAST_RA_ROUTE_ENV           "UMRK_FLYCAST_RA_ROUTE"
+#define JW_FLYCAST_RA_ROUTE_SERVICE_LIVE  "service-live"
+#define JW_FLYCAST_RA_ROUTE_NATIVE        "native"
+#define JW_FLYCAST_RA_ROUTE_CAPABILITY_ID "umrk-flycast-ra-route-v1"
+
+/* Decide whether a resolved standalone target may receive
+   UMRK_FLYCAST_RA_ROUTE. Only the bundled Flycast target qualifies: it must
+   already be authorized for the account snapshot, and its installed payload
+   must also carry <platform_dir>/emulators/flycast/ra-route-v1 whose content
+   is JW_FLYCAST_RA_ROUTE_CAPABILITY_ID. A build with account import but no
+   routing support keeps its native path. DSperate and every other target are
+   refused whatever their account authorization says. */
+bool jw_flycast_ra_route_target_authorized(const char *launcher_path,
+                                           const char *core_id,
+                                           const jw_standalone_policy *policy,
+                                           const char *provider,
+                                           const char *platform_dir);
+
+/* The handoff value for an authorized target: "service-live" only when the
+   supervised service is live, "native" otherwise. */
+const char *jw_flycast_ra_route_value(bool service_live);
+
 #endif

@@ -1,9 +1,10 @@
 /* standalone-ra-account-v1 launch authorization tests: the exact target and
    capability checks that decide whether a standalone child receives the
    account snapshot. Covers the bundled-Flycast launcher/marker pair, the
-   DSperate provider/core/path/manifest/record matrix, the spoof cases that
-   must every time fall to refusal, and the child environment the producer
-   builds from a stored account (never CONFIGURED without a revision). */
+   DSperate provider/core/path/manifest/record matrix, the separate Flycast
+   proxy route record, the spoof cases that must every time fall to refusal,
+   and the child environment the producer builds from a stored account
+   (never CONFIGURED without a revision). */
 
 #include "internal/launcher/ra_account.h"
 
@@ -343,6 +344,138 @@ static void test_dsperate(void) {
     rename(saved, manifest);
 }
 
+/* UMRK_FLYCAST_RA_ROUTE authorization (proxy plan P2): the bundled Flycast
+   target only, and only when its payload carries both the account record and
+   the separate route record. */
+static bool flycast_route_authorized(void) {
+    char platform[PATH_MAX], launcher[PATH_MAX];
+    platform_dir(platform, sizeof(platform));
+    flycast_launcher(launcher, sizeof(launcher));
+    return jw_flycast_ra_route_target_authorized(launcher, "flycast_standalone",
+                                                 &FLYCAST_RELEASE, NULL,
+                                                 platform);
+}
+
+static void test_flycast_route(void) {
+    char platform[PATH_MAX], launcher[PATH_MAX], other[PATH_MAX];
+    platform_dir(platform, sizeof(platform));
+    flycast_launcher(launcher, sizeof(launcher));
+    snprintf(other, sizeof(other), "%s/apps/mlp1/Flycast.pak/launch.sh", root);
+    char route_record[PATH_MAX], account_record[PATH_MAX], saved[PATH_MAX];
+    snprintf(route_record, sizeof(route_record),
+             "%s/platform/emulators/flycast/ra-route-v1", root);
+    snprintf(account_record, sizeof(account_record),
+             "%s/platform/emulators/flycast/ra-account-v1", root);
+
+    write_file("platform/emulators/flycast/launch.sh", "#!/bin/sh\n");
+    write_file("platform/emulators/flycast/ra-account-v1",
+               "standalone-ra-account-v1\n");
+
+    /* An account-capable build without the route record keeps its native
+       path: account import alone is not routing support. */
+    expect(!jw_flycast_ra_route_target_authorized(launcher,
+                                                  "flycast_standalone",
+                                                  &FLYCAST_RELEASE, NULL,
+                                                  platform),
+           "route: account-only flycast build denied");
+
+    write_file("platform/emulators/flycast/ra-route-v1",
+               "umrk-flycast-ra-route-v1\n");
+    expect(jw_flycast_ra_route_target_authorized(launcher,
+                                                 "flycast_standalone",
+                                                 &FLYCAST_RELEASE, NULL,
+                                                 platform),
+           "route: bundled flycast with both records authorized");
+    write_file("platform/emulators/flycast/ra-route-v1",
+               "umrk-flycast-ra-route-v1");
+    expect(jw_flycast_ra_route_target_authorized(launcher,
+                                                 "flycast_standalone",
+                                                 &FLYCAST_RELEASE, NULL,
+                                                 platform),
+           "route: record without trailing newline authorized");
+
+    /* The route record never stands in for the account record. */
+    snprintf(saved, sizeof(saved), "%s.saved", account_record);
+    rename(account_record, saved);
+    expect(!jw_flycast_ra_route_target_authorized(launcher,
+                                                  "flycast_standalone",
+                                                  &FLYCAST_RELEASE, NULL,
+                                                  platform),
+           "route: missing account record denied");
+    rename(saved, account_record);
+
+    /* Stale, padded or foreign record content. */
+    static const char *const bad[] = {
+        "umrk-flycast-ra-route-v0\n", "umrk-flycast-ra-route-v1\n\n",
+        " umrk-flycast-ra-route-v1\n", "standalone-ra-account-v1\n", "",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        write_file("platform/emulators/flycast/ra-route-v1", bad[i]);
+        expect(!jw_flycast_ra_route_target_authorized(launcher,
+                                                      "flycast_standalone",
+                                                      &FLYCAST_RELEASE, NULL,
+                                                      platform),
+               "route: malformed route record denied");
+    }
+    write_file("platform/emulators/flycast/ra-route-v1",
+               "umrk-flycast-ra-route-v1\n");
+    check_record_shapes("platform/emulators/flycast/ra-route-v1",
+                        JW_FLYCAST_RA_ROUTE_CAPABILITY_ID, flycast_route_authorized,
+                        "flycast ra-route-v1");
+
+    /* A sideloaded launcher named like Flycast, carrying both records, and a
+       provider-bound core claiming the release identity. */
+    write_file("apps/mlp1/Flycast.pak/launch.sh", "#!/bin/sh\n");
+    write_file("apps/mlp1/Flycast.pak/ra-account-v1",
+               "standalone-ra-account-v1\n");
+    write_file("apps/mlp1/Flycast.pak/ra-route-v1",
+               "umrk-flycast-ra-route-v1\n");
+    expect(!jw_flycast_ra_route_target_authorized(other, "flycast",
+                                                  &FLYCAST_RELEASE, NULL,
+                                                  platform),
+           "route: flycast launcher outside the release payload denied");
+    expect(!jw_flycast_ra_route_target_authorized(launcher, "flycast",
+                                                  &PROVIDER_BOUND,
+                                                  "mlp1/Flycast.pak",
+                                                  platform),
+           "route: provider-bound flycast-named core denied");
+    expect(!jw_flycast_ra_route_target_authorized(launcher, "drastic",
+                                                  &DRASTIC_RELEASE, NULL,
+                                                  platform),
+           "route: other release standalone denied");
+
+    /* DSperate is account-authorized and must still never get the route. */
+    char dsperate[PATH_MAX];
+    dsperate_launcher(dsperate, sizeof(dsperate));
+    make_dsperate_pak(
+        "{ \"id\": \"org.umrk.dsperate\", \"platform\": \"mlp1\","
+        "  \"pak_version\": \"2.1.1\" }\n");
+    write_file("apps/mlp1/DSperate.pak/ra-route-v1",
+               "umrk-flycast-ra-route-v1\n");
+    expect(jw_ra_account_target_authorized(dsperate, "dsperate",
+                                           &PROVIDER_BOUND,
+                                           "mlp1/DSperate.pak", platform),
+           "route: dsperate fixture is account-authorized");
+    expect(!jw_flycast_ra_route_target_authorized(dsperate, "dsperate",
+                                                  &PROVIDER_BOUND,
+                                                  "mlp1/DSperate.pak",
+                                                  platform),
+           "route: account-authorized dsperate denied the flycast route");
+
+    expect(!jw_flycast_ra_route_target_authorized(NULL, "flycast_standalone",
+                                                  &FLYCAST_RELEASE, NULL,
+                                                  platform) &&
+               !jw_flycast_ra_route_target_authorized(launcher,
+                                                      "flycast_standalone",
+                                                      NULL, NULL, platform),
+           "route: missing inputs denied");
+
+    expect(strcmp(jw_flycast_ra_route_value(true), "service-live") == 0,
+           "route value: live service");
+    expect(strcmp(jw_flycast_ra_route_value(false), "native") == 0,
+           "route value: no live service");
+}
+
 static void test_env_contract_names(void) {
     expect(strcmp(jw_ra_account_state_name(JW_RA_ACCOUNT_CONFIGURED),
                   "configured") == 0, "state configured");
@@ -532,6 +665,7 @@ int main(void) {
 
     test_flycast();
     test_dsperate();
+    test_flycast_route();
     test_env_contract_names();
     test_env_guard();
     test_env_from_store();
