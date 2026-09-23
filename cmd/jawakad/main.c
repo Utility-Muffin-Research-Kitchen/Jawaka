@@ -4741,7 +4741,17 @@ static bool jw__reserve_game_process_group(pid_t pid) {
 }
 
 static int jw__game_child_set_own_group(void) {
-    return setpgid(0, 0);
+    /* The parent calls setpgid(pid, pid) concurrently. Darwin can refuse
+       this call with EPERM while the parent's is in flight, so accept the
+       group the parent made (the parent's own check, mirrored) and retry
+       briefly before failing closed. */
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (setpgid(0, 0) == 0 || getpgrp() == getpid()) {
+            return 0;
+        }
+        usleep(1000);
+    }
+    return -1;
 }
 
 static int jw__signal_tracked_game_group(jw_daemon_state *state, int signal) {
