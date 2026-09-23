@@ -1332,6 +1332,10 @@ msgstr ""
 msgid "Leaf can't find %s in the Themes folder"
 msgstr ""
 
+#: internal/settings/storage_ui.c
+msgid "Leaf checked this card and found file system errors, usually left by a shutdown that didn't finish saving. To keep your files safe, you can't save to this card until it's repaired."
+msgstr ""
+
 #: cmd/jawaka-launcher/main.c
 msgid "Leaf couldn't confirm your SD card can be written."
 msgstr ""
@@ -1342,6 +1346,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "Leaf couldn't identify this card."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "Leaf couldn't repair this card on your device. Turn off your device, repair the card on a computer, then check it here to save to it again."
 msgstr ""
 
 #: internal/settings/storage_ui.c
@@ -2622,6 +2630,10 @@ msgstr ""
 
 #: internal/settings/storage_ui.c
 msgid "The last check or repair did not finish. Restart your device to check the card before saving is enabled again."
+msgstr ""
+
+#: internal/settings/storage_ui.c
+msgid "The last check took too long and stopped. Restart your device to check the card again before saving is enabled."
 msgstr ""
 
 #: internal/settings/storage_ui.c

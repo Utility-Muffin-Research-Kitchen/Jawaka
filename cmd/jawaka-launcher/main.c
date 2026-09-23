@@ -36,6 +36,7 @@
 #include "internal/settings/settings.h"
 #include "internal/settings/theme_resolve.h"
 #include "internal/settings/storage_ui.h"
+#include "internal/storage/repair_advice.h"
 #include "internal/storage/health.h"
 #include "internal/store/pakrat_state.h"
 #include "internal/store/pakrat_state_logic.h"
@@ -13172,12 +13173,19 @@ static void jw__poll_storage_health(const char *socket_path, const char *db_path
         return;
     }
     for (int i = 0; i < JW_STORAGE_UI_SOURCE_COUNT; i++) {
-        if (have[i] && cards[i].warning_pending &&
-            jw_storage_ui_show_warning(socket_path, &cards[i])) {
+        if (!have[i] || !cards[i].warning_pending) {
+            continue;
+        }
+        if (jw_storage_ui_show_warning(socket_path, &cards[i])) {
             snprintf(state->status, sizeof(state->status), "%s",
                      T("Restarting to repair your SD card"));
             cat_request_frame();
             return;
+        }
+        /* The warning for a check that found errors already reported that
+           result and acknowledged it; don't show it again from this copy. */
+        if (jw_storage_advice_check_found_errors(&cards[i])) {
+            cards[i].last_repair_acknowledged = true;
         }
     }
     for (int i = 0; i < JW_STORAGE_UI_SOURCE_COUNT; i++) {
