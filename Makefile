@@ -86,6 +86,10 @@ $(error ScreenScraper credentials are required; create .env.local or set SCREENS
 endif
 endif
 
+.PHONY: screenscraper-status
+screenscraper-status:
+	@printf '%s\n' '$(if $(filter 1,$(SCREENSCRAPER_AVAILABLE)),true,false)'
+
 SCRAPE_CREDENTIALS_HEADER := $(BUILD)/generated/screenscraper_credentials.h
 
 # Translation-coverage recorder: a DEV-BUILD TOOL, compiled out of every
@@ -1458,6 +1462,7 @@ mlp1:
 		-e MLP1_BUILD_PROFILE="$(MLP1_BUILD_PROFILE)" \
 		-e SCREENSCRAPER_REQUIRED="$(SCREENSCRAPER_REQUIRED)" \
 		-e I18N_COVERAGE="$(I18N_COVERAGE)" \
+		-e SCREENSCRAPER_ENV_FILE \
 		-e SCREENSCRAPER_DEV_ID \
 		-e SCREENSCRAPER_DEV_PASSWORD \
 		-e SCREENSCRAPER_DEBUG_PASSWORD \
