@@ -189,6 +189,14 @@ start_daemon() {
     fail "library scan never finished"
 }
 
+wait_no_active_game() {
+    for _ in $(seq 1 500); do
+        [ ! -e "$RUNTIME/active-game.json" ] && return 0
+        sleep 0.02
+    done
+    fail "active launch never finished"
+}
+
 stop_daemon() {
     if [ -n "${DAEMON_PID:-}" ]; then
         kill "$DAEMON_PID" 2>/dev/null || true
@@ -286,6 +294,9 @@ echo "case3 provider-bound flycast spoof -> no route ok"
 launch_and_dump retroarch N64 "Roms/N64/Route Game.n64"
 expect_no_route retroarch
 echo "case4 retroarch/libretro -> no route ok"
+# Stopping the daemon mid-launch leaves an active-game record that the next
+# daemon recovers and blocks new games on; let the last launch finish first.
+wait_no_active_game
 stop_daemon
 
 # -- Daemon 2: service pak installed ---------------------------------------
