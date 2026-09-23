@@ -1,0 +1,31 @@
+name: RetroAchievements account and Flycast route
+
+# The standalone-ra-account-v1 producer and the bundled-Flycast proxy route
+# intent (UMRK_FLYCAST_RA_ROUTE):
+#
+#   1. ra-account-test covers the checked DB operations: save, clear, the
+#      revision, legacy initialization and malformed/overflow values.
+#   2. ra-account-launch-test covers which resolved targets may receive the
+#      account snapshot and, separately, the Flycast route intent.
+#   3. ra-account-env-ipc-smoke and flycast-ra-route-ipc-smoke boot a real
+#      jawakad and read the environment each launched child actually got:
+#      authorized, unauthorized and spoofed targets, supervisor states, and
+#      inherited values that must not survive.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libsqlite3-dev sqlite3
+      - run: make ra-account-test ra-account-launch-test
+      - run: make ra-account-env-ipc-smoke
+      - run: make flycast-ra-route-ipc-smoke
