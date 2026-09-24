@@ -2583,8 +2583,9 @@ static void jw__cheevos_resolve(jw_daemon_state *state, jw_cheevos_creds *creds)
    session config writer (jw_prepare_retroarch_config) reads JAWAKA_CHEEVOS_* via
    getenv to put cheevos_username/password into the per-launch config that
    RetroArch validates at launch. Any account state that is not a complete
-   configured pair clears the vars, leaving whatever the user configured
-   inside RetroArch untouched. Because the writer runs in the daemon parent,
+   configured pair clears the vars, and the session config then carries no
+   account (cheevos_* are protected keys, never merged in from the shared
+   config). Because the writer runs in the daemon parent,
    callers there must clear the env again right after the config is written
    so the plaintext password does not persist. */
 static void jw__cheevos_apply_env(const jw_cheevos_creds *creds) {

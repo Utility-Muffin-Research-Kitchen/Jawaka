@@ -74,8 +74,9 @@ void jw_ra_account_clear_env(void);
 void jw_ra_account_apply_env(const jw_ra_account *account);
 
 /* The RetroArch per-launch handoff: JAWAKA_CHEEVOS_USERNAME/PASSWORD are set
-   for a CONFIGURED account and unset for every other state, so the session
-   config falls back to whatever the user set inside RetroArch. */
+   for a CONFIGURED account and unset for every other state. cheevos_* are
+   protected keys that never merge in from the shared RetroArch config, so an
+   unset channel means the session config carries no account at all. */
 void jw_ra_account_apply_retroarch_env(const jw_ra_account *account);
 void jw_ra_account_clear_retroarch_env(void);
 
