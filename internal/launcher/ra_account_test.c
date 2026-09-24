@@ -41,6 +41,64 @@ static void write_file(const char *rel, const char *content) {
     fclose(f);
 }
 
+/* Byte-exact write: record fixtures may contain NUL. */
+static void write_bytes(const char *rel, const char *data, size_t len) {
+    write_file(rel, "");
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", root, rel);
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(data, 1, len, f) != len || fclose(f) != 0) exit(1);
+}
+
+/* A capability record must be a regular file whose full byte length is the
+   id, or the id plus one trailing '\n'. Replays every shape against one
+   record path and restores the valid record afterwards. */
+typedef bool (*authorized_fn)(void);
+
+static void check_record_shapes(const char *rel, const char *id,
+                                authorized_fn authorized, const char *label) {
+    char big[200];
+    size_t id_len = strlen(id);
+    memset(big, 'x', sizeof(big));
+    memcpy(big, id, id_len);
+    big[id_len] = '\n';
+    char nul_junk[64], nul_only[64], nl_nul[64], junk[64], nl_junk[64];
+    snprintf(junk, sizeof(junk), "%sjunk", id);
+    snprintf(nl_junk, sizeof(nl_junk), "%s\njunk", id);
+    memcpy(nul_junk, id, id_len); memcpy(nul_junk + id_len, "\0junk", 5);
+    memcpy(nul_only, id, id_len); nul_only[id_len] = '\0';
+    memcpy(nl_nul, id, id_len); memcpy(nl_nul + id_len, "\n\0", 2);
+    const struct { const char *data; size_t len; bool ok; const char *what; } cases[] = {
+        { id, id_len, true, "exact id" },
+        { big, id_len + 1, true, "id + newline" },
+        { nul_junk, id_len + 5, false, "id + NUL + junk" },
+        { nul_only, id_len + 1, false, "id + NUL" },
+        { nl_nul, id_len + 2, false, "id + newline + NUL" },
+        { junk, strlen(junk), false, "id + trailing garbage" },
+        { nl_junk, strlen(nl_junk), false, "id + newline + garbage" },
+        { "", 0, false, "empty" },
+        { big, sizeof(big), false, "id + newline + 175 bytes" },
+        { id, id_len - 1, false, "truncated id" },
+    };
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", root, rel);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char what[160];
+        write_bytes(rel, cases[i].data, cases[i].len);
+        snprintf(what, sizeof(what), "%s record '%s' %s", label, cases[i].what,
+                 cases[i].ok ? "authorized" : "denied");
+        expect(authorized() == cases[i].ok, what);
+    }
+    /* A directory with the record's name is not a record. */
+    unlink(path);
+    mkdir(path, 0755);
+    char what[160];
+    snprintf(what, sizeof(what), "%s record as a directory denied", label);
+    expect(!authorized(), what);
+    rmdir(path);
+    write_bytes(rel, big, id_len + 1);
+}
+
 /* mlp1/DSperate.pak lives under an apps root; run.sh must be executable. */
 static void make_dsperate_pak(const char *pak_json) {
     write_file("apps/mlp1/DSperate.pak/pak.json", pak_json);
@@ -73,6 +131,23 @@ static void flycast_launcher(char *out, size_t size) {
 }
 static void dsperate_launcher(char *out, size_t size) {
     snprintf(out, size, "%s/apps/mlp1/DSperate.pak/scripts/run.sh", root);
+}
+
+static bool flycast_authorized(void) {
+    char platform[PATH_MAX], launcher[PATH_MAX];
+    platform_dir(platform, sizeof(platform));
+    flycast_launcher(launcher, sizeof(launcher));
+    return jw_ra_account_target_authorized(launcher, "flycast_standalone",
+                                           &FLYCAST_RELEASE, NULL, platform);
+}
+
+static bool dsperate_authorized(void) {
+    char platform[PATH_MAX], launcher[PATH_MAX];
+    platform_dir(platform, sizeof(platform));
+    dsperate_launcher(launcher, sizeof(launcher));
+    return jw_ra_account_target_authorized(launcher, "dsperate",
+                                           &PROVIDER_BOUND,
+                                           "mlp1/DSperate.pak", platform);
 }
 
 static void test_flycast(void) {
@@ -121,6 +196,9 @@ static void test_flycast(void) {
            "stale capability record denied");
     write_file("platform/emulators/flycast/ra-account-v1",
                "standalone-ra-account-v1\n");
+    check_record_shapes("platform/emulators/flycast/ra-account-v1",
+                        "standalone-ra-account-v1", flycast_authorized,
+                        "flycast ra-account-v1");
 
     /* Other release standalones never qualify for the Flycast branch. */
     expect(!jw_ra_account_target_authorized(launcher, "drastic",
@@ -235,6 +313,9 @@ static void test_dsperate(void) {
     }
     write_file("apps/mlp1/DSperate.pak/ra-account-v1",
                "standalone-ra-account-v1\n");
+    check_record_shapes("apps/mlp1/DSperate.pak/ra-account-v1",
+                        "standalone-ra-account-v1", dsperate_authorized,
+                        "dsperate ra-account-v1");
     /* The record does not stand in for the version: 2.0.0 with it is still
        refused. */
     make_dsperate_pak(

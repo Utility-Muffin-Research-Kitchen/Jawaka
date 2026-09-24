@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 const char *jw_ra_account_state_name(jw_ra_account_state state) {
     switch (state) {
@@ -19,33 +20,45 @@ const char *jw_ra_account_state_name(jw_ra_account_state state) {
     return NULL;
 }
 
-/* Read a small capability file byte-exactly. Returns 0 and writes the content
-   (empty file allowed) into out; -1 when the file is missing, unreadable or
-   larger than out_size - 1. */
-static int jw__ra_read_file(const char *path, char *out, size_t out_size) {
+/* Read a small regular file byte-exactly. Returns the number of bytes read
+   (an empty file is 0) with out NUL-terminated after them; -1 when the path
+   is missing, not a regular file, unreadable, or holds more than
+   out_size - 1 bytes. The count, not strlen(out), is the content length:
+   the bytes may contain NUL. */
+static long jw__ra_read_file(const char *path, char *out, size_t out_size) {
     out[0] = '\0';
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
     size_t n = fread(out, 1, out_size - 1, f);
+    /* One more byte means the file is larger than the buffer: refuse it
+       rather than judge a prefix. */
+    int too_large = (n == out_size - 1) && fgetc(f) != EOF;
     int read_failed = ferror(f);
     fclose(f);
-    if (read_failed) return -1;
+    if (read_failed || too_large) {
+        out[0] = '\0';
+        return -1;
+    }
     out[n] = '\0';
-    return 0;
+    return (long)n;
 }
 
 /* The capability record is exactly the contract id, optionally followed by
-   one trailing newline. No versions, no flags: support is advertised by the
-   payload carrying the record at all, inside a target directory whose
-   ownership this function's caller already established. */
-static bool jw__ra_capability_matches(const char *content, const char *id) {
-    size_t len = strlen(content);
+   one trailing newline: its full byte length is strlen(id) or strlen(id) + 1
+   with a final '\n', and nothing else (no NUL, CR, spaces or trailing
+   bytes). No versions, no flags: support is advertised by the payload
+   carrying the record at all, inside a target directory whose ownership this
+   function's caller already established. */
+static bool jw__ra_capability_matches(const char *content, size_t len,
+                                      const char *id) {
     size_t id_len = strlen(id);
-    if (len > 0 && content[len - 1] == '\n') len--;
+    if (len == id_len + 1 && content[id_len] == '\n') len--;
     return len == id_len && memcmp(content, id, id_len) == 0;
 }
 
-/* <dir>/<name> exists and holds exactly id. */
+/* <dir>/<name> is a regular file holding exactly id. */
 static bool jw__ra_record_matches(const char *dir, const char *name,
                                   const char *id) {
     char path[1024];
@@ -53,8 +66,19 @@ static bool jw__ra_record_matches(const char *dir, const char *name,
     if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path)) {
         return false;
     }
-    return jw__ra_read_file(path, content, sizeof(content)) == 0 &&
-           jw__ra_capability_matches(content, id);
+    long len = jw__ra_read_file(path, content, sizeof(content));
+    return len >= 0 && jw__ra_capability_matches(content, (size_t)len, id);
+}
+
+/* <platform_dir>/emulators/flycast/<name> holds exactly id. */
+static bool jw__ra_flycast_record_matches(const char *platform_dir,
+                                          const char *name, const char *id) {
+    char dir[1024];
+    if (snprintf(dir, sizeof(dir), "%s/emulators/flycast", platform_dir) >=
+        (int)sizeof(dir)) {
+        return false;
+    }
+    return jw__ra_record_matches(dir, name, id);
 }
 
 /* DSperate's account adapter first shipped in pak 2.1.1. Older installed
@@ -71,7 +95,7 @@ static bool jw__ra_dsperate_manifest_capable(const char *pak_json_path) {
     char *raw = malloc(65536);
     if (!raw) return false;
     bool capable = false;
-    if (jw__ra_read_file(pak_json_path, raw, 65536) == 0) {
+    if (jw__ra_read_file(pak_json_path, raw, 65536) >= 0) {
         cJSON *root = cJSON_Parse(raw);
         if (root) {
             const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
@@ -119,19 +143,14 @@ bool jw_ra_account_target_authorized(const char *launcher_path,
     if (!policy->provider_bound &&
         policy->release == JW_STANDALONE_RELEASE_FLYCAST) {
         char expected[1024];
-        char marker[1024];
         if (snprintf(expected, sizeof(expected),
                      "%s/emulators/flycast/launch.sh", platform_dir) >=
                 (int)sizeof(expected) ||
-            strcmp(launcher_path, expected) != 0 ||
-            snprintf(marker, sizeof(marker),
-                     "%s/emulators/flycast/ra-account-v1", platform_dir) >=
-                (int)sizeof(marker)) {
+            strcmp(launcher_path, expected) != 0) {
             return false;
         }
-        char capability[64];
-        return jw__ra_read_file(marker, capability, sizeof(capability)) == 0 &&
-               jw__ra_capability_matches(capability, JW_RA_ACCOUNT_CONTRACT_ID);
+        return jw__ra_flycast_record_matches(platform_dir, "ra-account-v1",
+                                             JW_RA_ACCOUNT_CONTRACT_ID);
     }
 
     if (policy->provider_bound && provider &&
