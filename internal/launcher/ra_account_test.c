@@ -1,12 +1,14 @@
 /* standalone-ra-account-v1 launch authorization tests: the exact target and
    capability checks that decide whether a standalone child receives the
    account snapshot. Covers the bundled-Flycast launcher/marker pair, the
-   DSperate provider/core/path/manifest matrix, and the spoof cases that must
-   every time fall to refusal. */
+   DSperate provider/core/path/manifest matrix, the spoof cases that
+   must every time fall to refusal, and the child environment the producer
+   builds from a stored account (never CONFIGURED without a revision). */
 
 #include "internal/launcher/ra_account.h"
 
 #include <limits.h>
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -228,6 +230,171 @@ static void test_env_contract_names(void) {
            "out-of-range state has no name");
 }
 
+/* ------------------------------------------------------------------ */
+/* The child environment the producer builds                          */
+/* ------------------------------------------------------------------ */
+
+static const char *const ACCOUNT_VARS[] = {
+    JW_RA_ACCOUNT_ENV_VERSION, JW_RA_ACCOUNT_ENV_STATE,
+    JW_RA_ACCOUNT_ENV_USERNAME, JW_RA_ACCOUNT_ENV_PASSWORD,
+    JW_RA_ACCOUNT_ENV_REVISION,
+};
+
+/* Exactly the verdict: VERSION=1, STATE=state and no other account field. */
+static int env_is_verdict(const char *state) {
+    const char *v = getenv(JW_RA_ACCOUNT_ENV_VERSION);
+    const char *st = getenv(JW_RA_ACCOUNT_ENV_STATE);
+    return v && strcmp(v, "1") == 0 && st && strcmp(st, state) == 0 &&
+           !getenv(JW_RA_ACCOUNT_ENV_USERNAME) &&
+           !getenv(JW_RA_ACCOUNT_ENV_PASSWORD) &&
+           !getenv(JW_RA_ACCOUNT_ENV_REVISION);
+}
+
+static int env_is_absent(void) {
+    for (size_t i = 0; i < sizeof(ACCOUNT_VARS) / sizeof(ACCOUNT_VARS[0]); i++)
+        if (getenv(ACCOUNT_VARS[i])) return 0;
+    return !getenv("JAWAKA_CHEEVOS_USERNAME") &&
+           !getenv("JAWAKA_CHEEVOS_PASSWORD");
+}
+
+static void seed_stale_env(void) {
+    setenv(JW_RA_ACCOUNT_ENV_VERSION, "1", 1);
+    setenv(JW_RA_ACCOUNT_ENV_STATE, "configured", 1);
+    setenv(JW_RA_ACCOUNT_ENV_USERNAME, "stale-inherited", 1);
+    setenv(JW_RA_ACCOUNT_ENV_PASSWORD, "stale-inherited", 1);
+    setenv(JW_RA_ACCOUNT_ENV_REVISION, "99", 1);
+    setenv("JAWAKA_CHEEVOS_USERNAME", "stale-inherited", 1);
+    setenv("JAWAKA_CHEEVOS_PASSWORD", "stale-inherited", 1);
+}
+
+static jw_ra_account account(jw_ra_account_state state, const char *user,
+                             const char *pass, long long revision) {
+    jw_ra_account a;
+    memset(&a, 0, sizeof(a));
+    a.state = state;
+    snprintf(a.user, sizeof(a.user), "%s", user);
+    snprintf(a.pass, sizeof(a.pass), "%s", pass);
+    a.revision = revision;
+    return a;
+}
+
+static void test_env_guard(void) {
+    jw_ra_account a;
+
+    a = account(JW_RA_ACCOUNT_CONFIGURED, "player-one", "correct horse", 3);
+    seed_stale_env();
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(getenv(JW_RA_ACCOUNT_ENV_STATE) &&
+           strcmp(getenv(JW_RA_ACCOUNT_ENV_STATE), "configured") == 0 &&
+           strcmp(getenv(JW_RA_ACCOUNT_ENV_USERNAME), "player-one") == 0 &&
+           strcmp(getenv(JW_RA_ACCOUNT_ENV_PASSWORD), "correct horse") == 0 &&
+           strcmp(getenv(JW_RA_ACCOUNT_ENV_REVISION), "3") == 0 &&
+           !getenv("JAWAKA_CHEEVOS_USERNAME") &&
+           !getenv("JAWAKA_CHEEVOS_PASSWORD"),
+           "configured snapshot replaces inherited values exactly");
+
+    /* CONFIGURED is never emitted without an established counter. */
+    static const long long bad_revisions[] = {
+        0, -1, JW_RA_REVISION_MAX + 1,
+    };
+    for (size_t i = 0; i < sizeof(bad_revisions) / sizeof(bad_revisions[0]); i++) {
+        char what[96];
+        a = account(JW_RA_ACCOUNT_CONFIGURED, "player-one", "correct horse",
+                    bad_revisions[i]);
+        seed_stale_env();
+        jw_ra_account_prepare_standalone_env(&a, true);
+        snprintf(what, sizeof(what),
+                 "configured with revision %lld exports unreadable",
+                 bad_revisions[i]);
+        expect(env_is_verdict("unreadable"), what);
+    }
+
+    /* Producer-side validation: credentials that fail the contract rules
+       export the invalid verdict, never the values. */
+    a = account(JW_RA_ACCOUNT_CONFIGURED, "player\r\none", "correct horse", 3);
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(env_is_verdict("invalid"), "configured with CR/LF exports invalid");
+    a = account(JW_RA_ACCOUNT_CONFIGURED, "", "correct horse", 3);
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(env_is_verdict("invalid"), "configured with empty user exports invalid");
+
+    /* Sign-out needs its retained revision too. */
+    a = account(JW_RA_ACCOUNT_SIGNED_OUT, "", "", 0);
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(env_is_verdict("unreadable"), "signed-out with revision 0 exports unreadable");
+    a = account(JW_RA_ACCOUNT_SIGNED_OUT, "", "", 6);
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(getenv(JW_RA_ACCOUNT_ENV_REVISION) &&
+           strcmp(getenv(JW_RA_ACCOUNT_ENV_REVISION), "6") == 0 &&
+           !getenv(JW_RA_ACCOUNT_ENV_USERNAME),
+           "signed-out keeps its retained revision");
+
+    /* An unauthorized target gets total absence. */
+    a = account(JW_RA_ACCOUNT_CONFIGURED, "player-one", "correct horse", 3);
+    seed_stale_env();
+    jw_ra_account_prepare_standalone_env(&a, false);
+    expect(env_is_absent(), "unauthorized target receives nothing");
+
+    a = account((jw_ra_account_state)999, "", "", 0);
+    seed_stale_env();
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(env_is_absent(), "out-of-range state exports nothing");
+}
+
+static void db_exec(const char *db_path, const char *statement) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open(db_path, &db) != SQLITE_OK ||
+        sqlite3_exec(db, statement, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "ra-account-launch-test: fixture SQL failed\n");
+        exit(1);
+    }
+    sqlite3_close(db);
+}
+
+/* The daemon path end to end short of fork(): stored rows -> the one launch
+   resolve -> the child environment an authorized target receives. */
+static void test_env_from_store(void) {
+    char db[PATH_MAX];
+    jw_ra_account a;
+
+    /* A legacy pair whose revision cannot be written. */
+    snprintf(db, sizeof(db), "%s/ensure-fails.db", root);
+    if (jw_db_set_setting(db, "retroachievements_user", "player-one") != 0 ||
+        jw_db_set_setting(db, "retroachievements_pass", "correct horse") != 0) {
+        fprintf(stderr, "ra-account-launch-test: could not seed the store\n");
+        exit(1);
+    }
+    db_exec(db,
+            "CREATE TRIGGER ra_revision_write_fails BEFORE INSERT ON settings "
+            "WHEN NEW.key = 'retroachievements_revision' "
+            "BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
+    jw_db_resolve_ra_account_handoff(db, &a);
+    seed_stale_env();
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(env_is_verdict("unreadable"),
+           "store: failed legacy revision write hands off unreadable, no credentials");
+    jw_ra_account_apply_retroarch_env(&a);
+    expect(!getenv("JAWAKA_CHEEVOS_USERNAME") && !getenv("JAWAKA_CHEEVOS_PASSWORD"),
+           "store: failed legacy revision write gives RetroArch nothing");
+
+    /* The same pair once the write can happen: revision 1. */
+    db_exec(db, "DROP TRIGGER ra_revision_write_fails;");
+    jw_db_resolve_ra_account_handoff(db, &a);
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(getenv(JW_RA_ACCOUNT_ENV_REVISION) &&
+           strcmp(getenv(JW_RA_ACCOUNT_ENV_REVISION), "1") == 0 &&
+           strcmp(getenv(JW_RA_ACCOUNT_ENV_STATE), "configured") == 0,
+           "store: legacy pair hands off revision 1 once written");
+
+    /* A malformed existing revision row. */
+    if (jw_db_set_setting(db, "retroachievements_revision", "+7") != 0) exit(1);
+    jw_db_resolve_ra_account_handoff(db, &a);
+    jw_ra_account_prepare_standalone_env(&a, true);
+    expect(env_is_verdict("invalid"),
+           "store: malformed revision row hands off invalid, no credentials");
+    jw_ra_account_clear_env();
+}
+
 int main(void) {
     snprintf(root, sizeof(root), "/tmp/jawaka-ra-launch.XXXXXX");
     if (!mkdtemp(root)) {
@@ -238,6 +405,8 @@ int main(void) {
     test_flycast();
     test_dsperate();
     test_env_contract_names();
+    test_env_guard();
+    test_env_from_store();
 
     if (failures) {
         fprintf(stderr, "ra-account-launch-test: %d FAILURE(S)\n", failures);

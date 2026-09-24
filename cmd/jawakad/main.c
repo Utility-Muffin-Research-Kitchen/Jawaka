@@ -2570,26 +2570,13 @@ typedef jw_ra_account jw_cheevos_creds;
 
 /* Read the account from the DB. Opening SQLite happens in the parent before
    fork(); the resulting struct is applied child-side via jw__cheevos_apply_env
-   (RetroArch) or jw__ra_account_apply_env (authorized standalones). A legacy
-   saved pair without a revision is initialized exactly once here, in the
-   parent, with the same checked write discipline as an account save. */
+   (RetroArch) or jw_ra_account_prepare_standalone_env (authorized
+   standalones). A legacy saved pair without a revision is initialized
+   exactly once here, in the parent, with the same checked write discipline
+   as an account save; if that cannot happen the snapshot is unreadable (or
+   invalid for malformed rows), never configured with a guessed revision. */
 static void jw__cheevos_resolve(jw_daemon_state *state, jw_cheevos_creds *creds) {
-    creds->state = JW_RA_ACCOUNT_UNREADABLE;
-    creds->user[0] = '\0';
-    creds->pass[0] = '\0';
-    creds->revision = 0;
-    if (state && state->db_path) {
-        if (jw_db_resolve_ra_account(state->db_path, creds) != 0) {
-            return;
-        }
-        if (creds->state == JW_RA_ACCOUNT_CONFIGURED && creds->revision == 0) {
-            long long revision = 0;
-            if (jw_db_ensure_ra_account_revision(state->db_path,
-                                                 &revision) == 0) {
-                creds->revision = revision;
-            }
-        }
-    }
+    jw_db_resolve_ra_account_handoff(state ? state->db_path : NULL, creds);
 }
 
 /* Apply the credentials to the CURRENT process environment. The RetroArch
@@ -2597,61 +2584,24 @@ static void jw__cheevos_resolve(jw_daemon_state *state, jw_cheevos_creds *creds)
    getenv to put cheevos_username/password into the per-launch config that
    RetroArch validates at launch. Any account state that is not a complete
    configured pair clears the vars, leaving whatever the user configured
-   inside RetroArch untouched — the exact fallback the pre-contract bridge
-   had for empty or unreadable stored values. Because the writer
-   runs in the daemon parent, callers there must clear the env again right after
-   the config is written so the plaintext password does not persist. */
+   inside RetroArch untouched. Because the writer runs in the daemon parent,
+   callers there must clear the env again right after the config is written
+   so the plaintext password does not persist. */
 static void jw__cheevos_apply_env(const jw_cheevos_creds *creds) {
-    if (creds->state == JW_RA_ACCOUNT_CONFIGURED &&
-        creds->user[0] && creds->pass[0]) {
-        setenv("JAWAKA_CHEEVOS_USERNAME", creds->user, 1);
-        setenv("JAWAKA_CHEEVOS_PASSWORD", creds->pass, 1);
-    } else {
-        unsetenv("JAWAKA_CHEEVOS_USERNAME");
-        unsetenv("JAWAKA_CHEEVOS_PASSWORD");
-    }
+    jw_ra_account_apply_retroarch_env(creds);
 }
 
 /* Drop any cheevos credentials from the current process environment. Paired with
    jw__cheevos_apply_env around a config write in the parent. */
 static void jw__cheevos_clear_env(void) {
-    unsetenv("JAWAKA_CHEEVOS_USERNAME");
-    unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+    jw_ra_account_clear_retroarch_env();
 }
 
 /* Drop the standalone-ra-account-v1 snapshot from the current process
    environment. Every standalone and app child starts from a cleared set; only
    an authorized target gets a fresh snapshot applied right after. */
 static void jw__ra_account_clear_env(void) {
-    unsetenv(JW_RA_ACCOUNT_ENV_VERSION);
-    unsetenv(JW_RA_ACCOUNT_ENV_STATE);
-    unsetenv(JW_RA_ACCOUNT_ENV_USERNAME);
-    unsetenv(JW_RA_ACCOUNT_ENV_PASSWORD);
-    unsetenv(JW_RA_ACCOUNT_ENV_REVISION);
-}
-
-/* Apply the standalone-ra-account-v1 snapshot to the CURRENT (post-fork child)
-   environment under a fresh-cleared set, so an inherited value can never
-   survive into a launch the handoff does not describe. */
-static void jw__ra_account_apply_env(const jw_ra_account *account) {
-    jw__ra_account_clear_env();
-    const char *state_name = jw_ra_account_state_name(account->state);
-    if (!state_name) {
-        return;
-    }
-    setenv(JW_RA_ACCOUNT_ENV_VERSION, "1", 1);
-    setenv(JW_RA_ACCOUNT_ENV_STATE, state_name, 1);
-    if (account->state == JW_RA_ACCOUNT_CONFIGURED) {
-        char revision[32];
-        snprintf(revision, sizeof(revision), "%lld", account->revision);
-        setenv(JW_RA_ACCOUNT_ENV_USERNAME, account->user, 1);
-        setenv(JW_RA_ACCOUNT_ENV_PASSWORD, account->pass, 1);
-        setenv(JW_RA_ACCOUNT_ENV_REVISION, revision, 1);
-    } else if (account->state == JW_RA_ACCOUNT_SIGNED_OUT) {
-        char revision[32];
-        snprintf(revision, sizeof(revision), "%lld", account->revision);
-        setenv(JW_RA_ACCOUNT_ENV_REVISION, revision, 1);
-    }
+    jw_ra_account_clear_env();
 }
 
 /* True when the pak dir refers to the bundled RetroArch app — the one app whose
@@ -9790,11 +9740,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
            (JAWAKA_CHEEVOS_* is RetroArch's own per-launch config handoff) or
            a stale account snapshot; only an authorized target receives the
            fresh snapshot, applied over a cleared set. */
-        jw__cheevos_clear_env();
-        jw__ra_account_clear_env();
-        if (ra_account_authorized) {
-            jw__ra_account_apply_env(&ra_account);
-        }
+        jw_ra_account_prepare_standalone_env(&ra_account, ra_account_authorized);
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);

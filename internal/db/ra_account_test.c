@@ -5,9 +5,11 @@
 
 #include "internal/db/db.h"
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int failures;
@@ -363,6 +365,128 @@ static void test_credential_check(void) {
            JW_RA_CREDENTIALS_OK, "password at limit ok");
 }
 
+/* ------------------------------------------------------------------ */
+/* The launch resolve never fabricates a revision                     */
+/* ------------------------------------------------------------------ */
+
+static void sql(const char *db_path, const char *statement) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open(db_path, &db) != SQLITE_OK ||
+        sqlite3_exec(db, statement, NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stderr, "ra-account-test: fixture SQL failed: %s\n",
+                db ? sqlite3_errmsg(db) : "open");
+        exit(1);
+    }
+    sqlite3_close(db);
+}
+
+static int credentials_wiped(const jw_ra_account *acc) {
+    for (size_t i = 0; i < sizeof(acc->user); i++)
+        if (acc->user[i]) return 0;
+    for (size_t i = 0; i < sizeof(acc->pass); i++)
+        if (acc->pass[i]) return 0;
+    return acc->revision == 0;
+}
+
+static void test_handoff_never_fabricates_revision(void) {
+    jw_ra_account acc;
+
+    /* A legacy pair gets its revision in a checked write first. */
+    {
+        char db[64];
+        fresh_db(db, sizeof(db));
+        set(db, "retroachievements_user", "player-one");
+        set(db, "retroachievements_pass", "correct horse");
+        jw_db_resolve_ra_account_handoff(db, &acc);
+        expect(acc.state == JW_RA_ACCOUNT_CONFIGURED && acc.revision == 1 &&
+               strcmp(acc.user, "player-one") == 0,
+               "handoff: legacy pair is initialized to revision 1");
+        unlink(db);
+    }
+
+    /* The initialization write fails (the store refuses the revision row,
+       as a full or failing card does): unreadable, never configured with
+       revision 0. */
+    {
+        char db[64];
+        fresh_db(db, sizeof(db));
+        set(db, "retroachievements_user", "player-one");
+        set(db, "retroachievements_pass", "correct horse");
+        sql(db,
+            "CREATE TRIGGER ra_revision_write_fails BEFORE INSERT ON settings "
+            "WHEN NEW.key = 'retroachievements_revision' "
+            "BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
+        jw_db_resolve_ra_account_handoff(db, &acc);
+        expect(acc.state == JW_RA_ACCOUNT_UNREADABLE,
+               "handoff: failed revision write is unreadable");
+        expect(credentials_wiped(&acc),
+               "handoff: failed revision write carries no credentials");
+        /* Nothing was committed: the pair is still legacy for the next try. */
+        jw_ra_account raw;
+        expect(jw_db_resolve_ra_account(db, &raw) == 0 &&
+               raw.state == JW_RA_ACCOUNT_CONFIGURED && raw.revision == 0,
+               "handoff: failed initialization committed nothing");
+        unlink(db);
+    }
+
+    /* A read-only store (card flipped read-only) cannot take the write
+       either. Root ignores file modes, so this case needs a normal user. */
+    if (geteuid() != 0) {
+        char dir[] = "/tmp/jawaka-ra-ro.XXXXXX";
+        if (!mkdtemp(dir)) {
+            perror("mkdtemp");
+            exit(1);
+        }
+        char db[128];
+        snprintf(db, sizeof(db), "%s/library.db", dir);
+        set(db, "retroachievements_user", "player-one");
+        set(db, "retroachievements_pass", "correct horse");
+        chmod(db, 0444);
+        chmod(dir, 0555);
+        jw_db_resolve_ra_account_handoff(db, &acc);
+        expect(acc.state == JW_RA_ACCOUNT_UNREADABLE && credentials_wiped(&acc),
+               "handoff: read-only store with a legacy pair is unreadable");
+        chmod(dir, 0755);
+        chmod(db, 0644);
+        unlink(db);
+        rmdir(dir);
+    }
+
+    /* A malformed stored revision is invalid, whatever the pair says. */
+    static const char *const malformed[] = { "+7", "0", "-3", " 7", "7.0", "abc" };
+    for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); i++) {
+        char db[64];
+        char what[96];
+        fresh_db(db, sizeof(db));
+        set(db, "retroachievements_user", "player-one");
+        set(db, "retroachievements_pass", "correct horse");
+        set(db, "retroachievements_revision", malformed[i]);
+        jw_db_resolve_ra_account_handoff(db, &acc);
+        snprintf(what, sizeof(what),
+                 "handoff: malformed revision '%s' is invalid", malformed[i]);
+        expect(acc.state == JW_RA_ACCOUNT_INVALID && credentials_wiped(&acc),
+               what);
+        unlink(db);
+    }
+
+    /* An unreadable store: not a database at all. */
+    {
+        char db[64];
+        fresh_db(db, sizeof(db));
+        FILE *f = fopen(db, "wb");
+        if (!f) exit(1);
+        fputs("this is not an SQLite database, it is a text file\n", f);
+        fclose(f);
+        jw_db_resolve_ra_account_handoff(db, &acc);
+        expect(acc.state == JW_RA_ACCOUNT_UNREADABLE && credentials_wiped(&acc),
+               "handoff: corrupt store is unreadable");
+        unlink(db);
+    }
+    jw_db_resolve_ra_account_handoff(NULL, &acc);
+    expect(acc.state == JW_RA_ACCOUNT_UNREADABLE && credentials_wiped(&acc),
+           "handoff: no store path is unreadable");
+}
+
 int main(void) {
     test_save_clear_cycle();
     test_failed_save_preserves_prior();
@@ -371,6 +495,7 @@ int main(void) {
     test_revision_overflow_fails();
     test_coherent_snapshot();
     test_credential_check();
+    test_handoff_never_fabricates_revision();
 
     if (failures) {
         fprintf(stderr, "ra-account-test: %d FAILURE(S)\n", failures);

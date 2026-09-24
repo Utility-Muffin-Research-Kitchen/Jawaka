@@ -1165,7 +1165,9 @@ ra-account-launch-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ra-account-launch-test \
 		internal/launcher/ra_account_test.c internal/launcher/ra_account.c \
 		internal/launcher/standalone_policy.c \
-		internal/platform/leaf_version.c third_party/cjson/cJSON.c
+		internal/platform/leaf_version.c third_party/cjson/cJSON.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
+		$(LDLIBS_COMMON)
 	$(BUILD)/bin/ra-account-launch-test
 
 .PHONY: menu-escape-test

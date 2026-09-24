@@ -38,11 +38,11 @@ static int jw__ra_read_file(const char *path, char *out, size_t out_size) {
    one trailing newline. No versions, no flags: support is advertised by the
    payload carrying the record at all, inside a target directory whose
    ownership this function's caller already established. */
-static bool jw__ra_capability_matches(const char *content) {
-    static const char id[] = JW_RA_ACCOUNT_CONTRACT_ID;
+static bool jw__ra_capability_matches(const char *content, const char *id) {
     size_t len = strlen(content);
+    size_t id_len = strlen(id);
     if (len > 0 && content[len - 1] == '\n') len--;
-    return len == sizeof(id) - 1 && memcmp(content, id, sizeof(id) - 1) == 0;
+    return len == id_len && memcmp(content, id, id_len) == 0;
 }
 
 /* DSperate's account adapter first shipped in pak 2.1.1. Older installed
@@ -119,7 +119,7 @@ bool jw_ra_account_target_authorized(const char *launcher_path,
         }
         char capability[64];
         return jw__ra_read_file(marker, capability, sizeof(capability)) == 0 &&
-               jw__ra_capability_matches(capability);
+               jw__ra_capability_matches(capability, JW_RA_ACCOUNT_CONTRACT_ID);
     }
 
     if (policy->provider_bound && provider &&
@@ -135,4 +135,72 @@ bool jw_ra_account_target_authorized(const char *launcher_path,
     }
 
     return false;
+}
+
+void jw_ra_account_clear_env(void) {
+    unsetenv(JW_RA_ACCOUNT_ENV_VERSION);
+    unsetenv(JW_RA_ACCOUNT_ENV_STATE);
+    unsetenv(JW_RA_ACCOUNT_ENV_USERNAME);
+    unsetenv(JW_RA_ACCOUNT_ENV_PASSWORD);
+    unsetenv(JW_RA_ACCOUNT_ENV_REVISION);
+}
+
+static bool jw__ra_revision_in_range(long long revision) {
+    return revision >= 1 && revision <= JW_RA_REVISION_MAX;
+}
+
+void jw_ra_account_apply_env(const jw_ra_account *account) {
+    jw_ra_account_clear_env();
+    if (!account || !jw_ra_account_state_name(account->state)) {
+        return;
+    }
+    jw_ra_account_state state = account->state;
+    if (state == JW_RA_ACCOUNT_CONFIGURED) {
+        if (jw_ra_credentials_check_values(account->user, account->pass) !=
+            JW_RA_CREDENTIALS_OK) {
+            state = JW_RA_ACCOUNT_INVALID;
+        } else if (!jw__ra_revision_in_range(account->revision)) {
+            /* Never CONFIGURED without an established counter. */
+            state = JW_RA_ACCOUNT_UNREADABLE;
+        }
+    } else if (state == JW_RA_ACCOUNT_SIGNED_OUT &&
+               !jw__ra_revision_in_range(account->revision)) {
+        state = JW_RA_ACCOUNT_UNREADABLE;
+    }
+
+    setenv(JW_RA_ACCOUNT_ENV_VERSION, "1", 1);
+    setenv(JW_RA_ACCOUNT_ENV_STATE, jw_ra_account_state_name(state), 1);
+    if (state == JW_RA_ACCOUNT_CONFIGURED || state == JW_RA_ACCOUNT_SIGNED_OUT) {
+        char revision[32];
+        snprintf(revision, sizeof(revision), "%lld", account->revision);
+        if (state == JW_RA_ACCOUNT_CONFIGURED) {
+            setenv(JW_RA_ACCOUNT_ENV_USERNAME, account->user, 1);
+            setenv(JW_RA_ACCOUNT_ENV_PASSWORD, account->pass, 1);
+        }
+        setenv(JW_RA_ACCOUNT_ENV_REVISION, revision, 1);
+    }
+}
+
+void jw_ra_account_clear_retroarch_env(void) {
+    unsetenv("JAWAKA_CHEEVOS_USERNAME");
+    unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+}
+
+void jw_ra_account_apply_retroarch_env(const jw_ra_account *account) {
+    if (account && account->state == JW_RA_ACCOUNT_CONFIGURED &&
+        account->user[0] && account->pass[0]) {
+        setenv("JAWAKA_CHEEVOS_USERNAME", account->user, 1);
+        setenv("JAWAKA_CHEEVOS_PASSWORD", account->pass, 1);
+    } else {
+        jw_ra_account_clear_retroarch_env();
+    }
+}
+
+void jw_ra_account_prepare_standalone_env(const jw_ra_account *account,
+                                          bool authorized) {
+    jw_ra_account_clear_retroarch_env();
+    jw_ra_account_clear_env();
+    if (authorized) {
+        jw_ra_account_apply_env(account);
+    }
 }

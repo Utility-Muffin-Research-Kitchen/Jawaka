@@ -332,6 +332,19 @@ int  jw_db_clear_ra_account(const char *db_path, long long *revision_out);
 int  jw_db_ensure_ra_account_revision(const char *db_path,
                                       long long *revision_out);
 
+/* The one resolve every launch handoff uses (the standalone-ra-account-v1
+   snapshot and the RetroArch per-launch config): jw_db_resolve_ra_account plus
+   the one-time legacy revision initialization. It never returns CONFIGURED
+   without a revision in 1..JW_RA_REVISION_MAX, because the contract forbids
+   fabricating one:
+     - the store cannot be read, or the initialization cannot read or write
+       it                                                    -> UNREADABLE
+     - the stored rows are malformed, including a revision row that is
+       present but not a canonical positive integer          -> INVALID
+   Any result other than CONFIGURED carries no credentials. Always fills
+   *out; never fails. */
+void jw_db_resolve_ra_account_handoff(const char *db_path, jw_ra_account *out);
+
 typedef enum {
     JW_RA_CREDENTIALS_OK = 0,
     JW_RA_CREDENTIALS_INCOMPLETE,  /* missing or empty half of the pair */

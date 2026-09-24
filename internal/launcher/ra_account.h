@@ -37,7 +37,7 @@ const char *jw_ra_account_state_name(jw_ra_account_state state);
      enough, and a provider-bound core never takes this branch.
 
    - DSperate: a provider-bound core with provider "mlp1/DSperate.pak", core
-     id "dsperate", resolved launcher exactly <pak>/scripts/run.sh, and an
+     id "dsperate", resolved launcher exactly <pak>/scripts/run.sh, an
      installed <pak>/pak.json with id "org.umrk.dsperate" and
      pak_version >= 2.1.1. The published 2.0.0 build does not consume the
      contract, so it receives no credentials.
@@ -49,5 +49,31 @@ bool jw_ra_account_target_authorized(const char *launcher_path,
                                      const jw_standalone_policy *policy,
                                      const char *provider,
                                      const char *platform_dir);
+
+/* Child-side environment for a standalone emulator launch, called after
+   fork() and before exec(). Clears the RetroArch credential channel
+   (JAWAKA_CHEEVOS_*) and any inherited account snapshot, then applies
+   `account` only when `authorized`. An unauthorized target ends up with
+   total absence, the contract's unmanaged case. */
+void jw_ra_account_prepare_standalone_env(const jw_ra_account *account,
+                                          bool authorized);
+
+/* Drop the five UMRK_RA_ACCOUNT_* variables from the current environment. */
+void jw_ra_account_clear_env(void);
+
+/* Apply the snapshot over a cleared set. Producer-side validation runs here
+   too, so a caller bug can never put an out-of-contract snapshot on the
+   wire: CONFIGURED needs credentials that pass jw_ra_credentials_check_values
+   (else the verdict is "invalid") and a revision in 1..2^62 (else
+   "unreadable", since the counter could not be established); SIGNED_OUT
+   needs a revision in range (else "unreadable"). An out-of-range state
+   exports nothing. */
+void jw_ra_account_apply_env(const jw_ra_account *account);
+
+/* The RetroArch per-launch handoff: JAWAKA_CHEEVOS_USERNAME/PASSWORD are set
+   for a CONFIGURED account and unset for every other state, so the session
+   config falls back to whatever the user set inside RetroArch. */
+void jw_ra_account_apply_retroarch_env(const jw_ra_account *account);
+void jw_ra_account_clear_retroarch_env(void);
 
 #endif

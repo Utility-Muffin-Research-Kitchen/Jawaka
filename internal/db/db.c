@@ -2076,6 +2076,46 @@ out:
     return result;
 }
 
+/* Replace whatever *out holds with a credential-free verdict. */
+static void jw__ra_account_verdict(jw_ra_account *out,
+                                   jw_ra_account_state state) {
+    memset(out->user, 0, sizeof(out->user));
+    memset(out->pass, 0, sizeof(out->pass));
+    out->revision = 0;
+    out->state = state;
+}
+
+void jw_db_resolve_ra_account_handoff(const char *db_path, jw_ra_account *out) {
+    if (!out) return;
+    if (jw_db_resolve_ra_account(db_path, out) != 0) {
+        jw__ra_account_verdict(out, JW_RA_ACCOUNT_UNREADABLE);
+        return;
+    }
+    if (out->state != JW_RA_ACCOUNT_CONFIGURED || out->revision > 0) return;
+
+    /* A legacy pair: the counter must exist before the first handoff. */
+    long long revision = 0;
+    int ensured = jw_db_ensure_ra_account_revision(db_path, &revision);
+    if (ensured < 0) {
+        /* Could not read or write the counter: never guess one. */
+        jw__ra_account_verdict(out, JW_RA_ACCOUNT_UNREADABLE);
+        return;
+    }
+    if (ensured == 0 && revision >= 1 && revision <= JW_RA_REVISION_MAX) {
+        out->revision = revision;
+        return;
+    }
+    /* The rows changed between the two transactions (a sign-out, or a
+       revision row that is now malformed). Read them once more and hand out
+       only what that read supports. */
+    if (jw_db_resolve_ra_account(db_path, out) != 0) {
+        jw__ra_account_verdict(out, JW_RA_ACCOUNT_UNREADABLE);
+        return;
+    }
+    if (out->state == JW_RA_ACCOUNT_CONFIGURED && out->revision <= 0)
+        jw__ra_account_verdict(out, JW_RA_ACCOUNT_INVALID);
+}
+
 int jw_db_load_rumble_settings(const char *db_path, jw_rumble_settings *out) {
     if (!out) return -1;
     out->ui = 0;
