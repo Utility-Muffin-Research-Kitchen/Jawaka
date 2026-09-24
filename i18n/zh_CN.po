@@ -1279,11 +1279,11 @@ msgstr "主页标签"
 
 #: internal/settings/settings.c
 msgid "Hotkey"
-msgstr ""
+msgstr "快捷键"
 
 #: internal/settings/settings.c
 msgid "Hotkeys"
-msgstr ""
+msgstr "快捷键"
 
 #: internal/settings/settings.c
 msgid "Hotkeys & Rumble"
@@ -2005,7 +2005,7 @@ msgstr "录制"
 
 #: internal/settings/settings.c
 msgid "Recording Hotkey"
-msgstr ""
+msgstr "录制快捷键"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Refresh"
@@ -2339,7 +2339,7 @@ msgstr "截图"
 
 #: internal/settings/settings.c
 msgid "Screenshot Hotkey"
-msgstr ""
+msgstr "截图快捷键"
 
 #: internal/settings/settings.c
 msgid "Screenshots"
