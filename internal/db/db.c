@@ -2101,13 +2101,9 @@ void jw_db_resolve_ra_account_handoff(const char *db_path, jw_ra_account *out) {
         jw__ra_account_verdict(out, JW_RA_ACCOUNT_UNREADABLE);
         return;
     }
-    if (ensured == 0 && revision >= 1 && revision <= JW_RA_REVISION_MAX) {
-        out->revision = revision;
-        return;
-    }
-    /* The rows changed between the two transactions (a sign-out, or a
-       revision row that is now malformed). Read them once more and hand out
-       only what that read supports. */
+    /* A save can commit before or after revision initialization. Never attach
+       its counter to credentials from the earlier legacy read: read the whole
+       account again, even when initialization succeeded. */
     if (jw_db_resolve_ra_account(db_path, out) != 0) {
         jw__ra_account_verdict(out, JW_RA_ACCOUNT_UNREADABLE);
         return;

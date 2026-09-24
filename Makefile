@@ -655,7 +655,8 @@ rumble-settings-test: | $(BUILD)/bin
 	$(BUILD)/bin/rumble-settings-test
 
 ra-account-test: | $(BUILD)/bin
-	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ra-account-test \
+	$(CC) $(CFLAGS_COMMON) -Dsqlite3_close=jw_test_sqlite3_close \
+		-Dsqlite3_step=jw_test_sqlite3_step -o $(BUILD)/bin/ra-account-test \
 		internal/db/ra_account_test.c internal/db/db.c internal/db/relocation.c \
 		internal/storage/sources.c $(LDLIBS_COMMON)
 	$(BUILD)/bin/ra-account-test

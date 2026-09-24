@@ -3,6 +3,10 @@
    initialization, malformed and oversized stored values, and the
    credential-input validator. Runs entirely against temporary databases. */
 
+/* Only this test calls the real SQLite entrypoints; db.c is compiled with
+   wrappers so a second writer can commit at deterministic read boundaries. */
+#undef sqlite3_close
+#undef sqlite3_step
 #include "internal/db/db.h"
 
 #include <sqlite3.h>
@@ -19,6 +23,38 @@ static void expect(int ok, const char *what) {
         fprintf(stderr, "ra-account-test: %s\n", what);
         failures++;
     }
+}
+
+static const char *race_db;
+static int race_close_count;
+static int race_step;
+static int race_sign_out;
+static int race_writes;
+
+static void race_write(void) {
+    long long revision = 0;
+    race_writes++;
+    int rc = race_sign_out
+        ? jw_db_clear_ra_account(race_db, &revision)
+        : jw_db_save_ra_account(race_db, "player-two", "two", &revision);
+    expect(rc == 0, "interleaved writer commits");
+}
+
+int jw_test_sqlite3_close(sqlite3 *db) {
+    int rc = sqlite3_close(db);
+    if (rc == SQLITE_OK && race_close_count > 0 && --race_close_count == 0)
+        race_write();
+    return rc;
+}
+
+int jw_test_sqlite3_step(sqlite3_stmt *stmt) {
+    int rc = sqlite3_step(stmt);
+    if (race_step && rc == SQLITE_ROW &&
+        strcmp(sqlite3_sql(stmt), "SELECT value FROM settings WHERE key = ?;") == 0) {
+        race_step = 0;
+        race_write();
+    }
+    return rc;
 }
 
 /* A fresh database file per case, so no case sees another's keys. */
@@ -291,9 +327,8 @@ static void test_revision_overflow_fails(void) {
 /* Coherent snapshot reads                                            */
 /* ------------------------------------------------------------------ */
 
-/* Two connections in one process: start a read snapshot while a second
-   writer commits a save, then confirm the reader still sees the old account
-   through jw_db_get_settings' checked transaction. */
+/* A second connection saves after the first account key has been read.
+   WAL lets that writer commit while the reader still holds its snapshot. */
 static void test_coherent_snapshot(void) {
     char db[64];
     fresh_db(db, sizeof(db));
@@ -302,23 +337,51 @@ static void test_coherent_snapshot(void) {
     expect(jw_db_save_ra_account(db, "player-one", "one", &rev) == 0 &&
            rev == 1, "baseline save");
 
-    /* Upgrade the account, then read both keys together: a pair returned by
-       jw_db_get_settings must be from one snapshot, revision included. */
-    expect(jw_db_save_ra_account(db, "player-two", "two", &rev) == 0 &&
-           rev == 2, "upgrade save");
+    sqlite3 *connection = NULL;
+    expect(sqlite3_open(db, &connection) == SQLITE_OK, "open WAL fixture");
+    expect(sqlite3_exec(connection, "PRAGMA journal_mode=WAL", NULL, NULL, NULL)
+           == SQLITE_OK, "enable concurrent writer fixture");
+    sqlite3_close(connection);
+    race_db = db;
+    race_step = 1;
+    race_writes = 0;
+    jw_ra_account account;
+    jw_db_resolve_ra_account_handoff(db, &account);
+    expect(race_writes == 1, "writer ran between account key reads");
+    expect(account.state == JW_RA_ACCOUNT_CONFIGURED && account.revision == 1 &&
+           strcmp(account.user, "player-one") == 0 && strcmp(account.pass, "one") == 0,
+           "in-flight reader keeps the complete old snapshot");
+    jw_db_resolve_ra_account_handoff(db, &account);
+    expect(account.revision == 2 && strcmp(account.user, "player-two") == 0 &&
+           strcmp(account.pass, "two") == 0, "next reader gets the complete new snapshot");
+    unlink(db);
+}
 
-    char user[64] = "";
-    char pass[128] = "";
-    char revision[32] = "";
-    jw_db_setting_query queries[] = {
-        {"retroachievements_user", user, sizeof(user), 0},
-        {"retroachievements_pass", pass, sizeof(pass), 0},
-        {"retroachievements_revision", revision, sizeof(revision), 0},
-    };
-    expect(jw_db_get_settings(db, queries, 3) == 0, "multi-key read succeeds");
-    expect(strcmp(user, "player-two") == 0 && strcmp(pass, "two") == 0 &&
-           strcmp(revision, "2") == 0,
-           "multi-key read returns one coherent snapshot");
+/* Save or sign out after either the initial legacy read or its revision
+   initialization. Neither gap may pair old credentials with a new revision. */
+static void test_legacy_handoff_race(void) {
+    for (int boundary = 1; boundary <= 2; boundary++) {
+        for (int sign_out = 0; sign_out <= 1; sign_out++) {
+            char db[64];
+            fresh_db(db, sizeof(db));
+            set(db, "retroachievements_user", "player-one");
+            set(db, "retroachievements_pass", "one");
+            race_db = db;
+            race_close_count = boundary;
+            race_sign_out = sign_out;
+            race_writes = 0;
+            jw_ra_account handed, stored;
+            jw_db_resolve_ra_account_handoff(db, &handed);
+            expect(race_writes == 1, "writer ran at the legacy transaction boundary");
+            jw_db_resolve_ra_account(db, &stored);
+            expect(handed.state == stored.state && handed.revision == stored.revision &&
+                   strcmp(handed.user, stored.user) == 0 &&
+                   strcmp(handed.pass, stored.pass) == 0,
+                   "legacy handoff re-reads the whole committed account");
+            unlink(db);
+        }
+    }
+    race_sign_out = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -494,6 +557,7 @@ int main(void) {
     test_malformed_stored_values();
     test_revision_overflow_fails();
     test_coherent_snapshot();
+    test_legacy_handoff_race();
     test_credential_check();
     test_handoff_never_fabricates_revision();
 
