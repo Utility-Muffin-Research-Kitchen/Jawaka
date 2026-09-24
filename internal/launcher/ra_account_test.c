@@ -1,7 +1,7 @@
 /* standalone-ra-account-v1 launch authorization tests: the exact target and
    capability checks that decide whether a standalone child receives the
    account snapshot. Covers the bundled-Flycast launcher/marker pair, the
-   DSperate provider/core/path/manifest matrix, the spoof cases that
+   DSperate provider/core/path/manifest/record matrix, the spoof cases that
    must every time fall to refusal, and the child environment the producer
    builds from a stored account (never CONFIGURED without a revision). */
 
@@ -49,6 +49,9 @@ static void make_dsperate_pak(const char *pak_json) {
              "apps/mlp1/DSperate.pak/scripts/run.sh");
     write_file("apps/mlp1/DSperate.pak/scripts/run.sh", "#!/bin/sh\n");
     chmod(run_sh, 0755);
+    /* DSperate-pak ships pak/ra-account-v1 at the installed pak root. */
+    write_file("apps/mlp1/DSperate.pak/ra-account-v1",
+               "standalone-ra-account-v1\n");
 }
 
 static const jw_standalone_policy FLYCAST_RELEASE = {
@@ -200,6 +203,50 @@ static void test_dsperate(void) {
                                             &FLYCAST_RELEASE,
                                             "mlp1/DSperate.pak", platform),
            "release policy cannot take the provider branch");
+
+    /* The shipped capability record is required alongside the version. */
+    char record[PATH_MAX];
+    snprintf(record, sizeof(record), "%s/apps/mlp1/DSperate.pak/ra-account-v1",
+             root);
+    unlink(record);
+    expect(!jw_ra_account_target_authorized(launcher, "dsperate",
+                                            &PROVIDER_BOUND,
+                                            "mlp1/DSperate.pak", platform),
+           "dsperate 2.1.1 without the ra-account-v1 record denied");
+    static const struct { const char *content; bool ok; } records[] = {
+        { "standalone-ra-account-v1", true },
+        { "standalone-ra-account-v1\n", true },
+        { "standalone-ra-account-v1\n\n", false },
+        { "standalone-ra-account-v1\r\n", false },
+        { " standalone-ra-account-v1\n", false },
+        { "standalone-ra-account-v2\n", false },
+        { "", false },
+    };
+    for (size_t i = 0; i < sizeof(records) / sizeof(records[0]); i++) {
+        char what[128];
+        write_file("apps/mlp1/DSperate.pak/ra-account-v1", records[i].content);
+        snprintf(what, sizeof(what), "dsperate record case %zu %s", i,
+                 records[i].ok ? "authorized" : "denied");
+        expect(jw_ra_account_target_authorized(launcher, "dsperate",
+                                               &PROVIDER_BOUND,
+                                               "mlp1/DSperate.pak", platform) ==
+                   records[i].ok,
+               what);
+    }
+    write_file("apps/mlp1/DSperate.pak/ra-account-v1",
+               "standalone-ra-account-v1\n");
+    /* The record does not stand in for the version: 2.0.0 with it is still
+       refused. */
+    make_dsperate_pak(
+        "{ \"id\": \"org.umrk.dsperate\", \"platform\": \"mlp1\","
+        "  \"pak_version\": \"2.0.0\" }\n");
+    expect(!jw_ra_account_target_authorized(launcher, "dsperate",
+                                            &PROVIDER_BOUND,
+                                            "mlp1/DSperate.pak", platform),
+           "dsperate 2.0.0 with the record denied");
+    make_dsperate_pak(
+        "{ \"id\": \"org.umrk.dsperate\", \"platform\": \"mlp1\","
+        "  \"pak_version\": \"2.1.1\" }\n");
 
     /* Missing manifest. */
     char manifest[PATH_MAX];

@@ -45,6 +45,18 @@ static bool jw__ra_capability_matches(const char *content, const char *id) {
     return len == id_len && memcmp(content, id, id_len) == 0;
 }
 
+/* <dir>/<name> exists and holds exactly id. */
+static bool jw__ra_record_matches(const char *dir, const char *name,
+                                  const char *id) {
+    char path[1024];
+    char content[64];
+    if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path)) {
+        return false;
+    }
+    return jw__ra_read_file(path, content, sizeof(content)) == 0 &&
+           jw__ra_capability_matches(content, id);
+}
+
 /* DSperate's account adapter first shipped in pak 2.1.1. Older installed
    builds ignore the snapshot and must receive none, which is exactly the
    "unknown/older consumer gets no secrets" rule. */
@@ -131,7 +143,11 @@ bool jw_ra_account_target_authorized(const char *launcher_path,
                                              sizeof(pak_root)) &&
                snprintf(manifest, sizeof(manifest), "%s/pak.json", pak_root) <
                    (int)sizeof(manifest) &&
-               jw__ra_dsperate_manifest_capable(manifest);
+               jw__ra_dsperate_manifest_capable(manifest) &&
+               /* The version says the build could consume the contract; the
+                  shipped record says this installed payload does. */
+               jw__ra_record_matches(pak_root, "ra-account-v1",
+                                     JW_RA_ACCOUNT_CONTRACT_ID);
     }
 
     return false;
