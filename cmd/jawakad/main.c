@@ -15702,8 +15702,12 @@ int main(int argc, char *argv[]) {
     /* The RA account snapshot is per-launch child state, resolved fresh from
        the DB for each authorized standalone launch. Never inherit it: with
        the daemon's own environment cleared here, no app, helper or emulator
-       can receive a stale snapshot through ordinary inheritance. */
+       can receive a stale snapshot through ordinary inheritance. The
+       RetroArch channel is per-launch too: set only around the config write
+       and cleared right after, so an inherited value is always stale, and
+       supervised services inherit this environment as-is. */
     jw__ra_account_clear_env();
+    jw__cheevos_clear_env();
 
     if (jw_platform_init(&state.platform, state.runtime_dir, state.sdcard_root) != 0) {
         jw_log_error("could not initialize platform service");
