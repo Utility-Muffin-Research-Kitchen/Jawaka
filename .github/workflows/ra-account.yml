@@ -18,6 +18,8 @@ name: RetroAchievements account handoff
 #   5. ra-account-env-ipc-smoke: a real jawakad; the environment each launched
 #      child actually got (authorized, unauthorized, spoofed, app, service,
 #      DSperate grant and refusals).
+#   6. settings-status-test: Settings > Accounts shows an invalid stored
+#      account as not saved, never as a truncated name.
 
 on:
   pull_request:
@@ -63,3 +65,20 @@ jobs:
 
       - name: Real-daemon child environment smoke
         run: make -C Jawaka ra-account-env-ipc-smoke
+
+  settings-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Jawaka
+      - name: Check out the pinned UI toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: Utility-Muffin-Research-Kitchen/Catastrophe
+          ref: d06f22cd9919fb516749018fe5cd9bf942fc3fef
+          path: Catastrophe
+      - name: Install native renderer dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsqlite3-dev libcurl4-openssl-dev
+      - name: Settings account row reads the validated account
+        run: make -C Jawaka settings-status-test
