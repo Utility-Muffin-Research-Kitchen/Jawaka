@@ -18,7 +18,7 @@ name: RetroAchievements account handoff
 #   5. ra-account-env-ipc-smoke: a real jawakad; the environment each launched
 #      child actually got (authorized, unauthorized, spoofed, app, service,
 #      DSperate grant and refusals).
-#   6. settings-status-test: Settings > Accounts shows an invalid stored
+#   6. settings-account-test: Settings > Accounts shows an invalid stored
 #      account as not saved, never as a truncated name.
 
 on:
@@ -81,4 +81,4 @@ jobs:
       - name: Install native renderer dependencies
         run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsqlite3-dev libcurl4-openssl-dev
       - name: Settings account row reads the validated account
-        run: make -C Jawaka settings-status-test
+        run: make -C Jawaka settings-account-test
