@@ -2618,14 +2618,11 @@ static void jw__flycast_route_clear_env(void) {
 }
 
 /* The RAOfflineProxy service is live when the supervisor holds a positive
-   PGID in RUNNING or STARTING for a present, valid pak. desired_enabled
-   ("Start with Leaf") and session_run ("Run") are intent flags and neither
-   alone means a process exists; see jw__raofflineproxy_route. */
+   PGID in RUNNING or STARTING for a present, valid pak; see
+   jw_raofflineproxy_entry_live, which the RetroArch gate
+   (jw__raofflineproxy_route) and the Flycast route intent share. */
 static bool jw__raofflineproxy_entry_live(const jw_svc_supervised *entry) {
-    return entry && entry->pak_present && entry->manifest_valid &&
-           entry->pgid > 0 &&
-           (entry->state == JW_SVC_STATE_RUNNING ||
-            entry->state == JW_SVC_STATE_STARTING);
+    return jw_raofflineproxy_entry_live(entry);
 }
 
 static bool jw__raofflineproxy_service_live(const jw_daemon_state *state) {

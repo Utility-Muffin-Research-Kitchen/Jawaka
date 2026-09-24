@@ -1134,8 +1134,10 @@ raofflineproxy-bridge-test: | $(BUILD)/bin
 		internal/platform/raofflineproxy_bridge_test.c internal/platform/paths.c \
 		internal/platform/raofflineproxy.c \
 		internal/platform/platform_id_mock.c internal/retroarch/catalog.c \
+		internal/launcher/ra_account.c internal/launcher/standalone_policy.c \
+		internal/db/db.c internal/db/relocation.c internal/storage/sources.c \
 		$(EFFECTIVE_CATALOG_SRCS) \
-		internal/core/log.c third_party/cjson/cJSON.c -lpthread
+		internal/core/log.c third_party/cjson/cJSON.c -lpthread $(LDLIBS_COMMON)
 	$(BUILD)/bin/raofflineproxy-bridge-test
 
 retroarch-runner-stop-smoke: jawaka-retroarch-runner
