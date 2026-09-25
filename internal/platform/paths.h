@@ -43,6 +43,19 @@ char *jw_retroarch_core_path_for_system_choice(const char *system,
                                                char *diagnostic,
                                                size_t diagnostic_size);
 bool jw_sdcard_exec_available_for_path(const char *path, char *error, size_t error_size);
+/* How a value can be written to a RetroArch config line so RetroArch's
+ * escape-free parser reads back exactly that value. QUOTED is `key = "v"`,
+ * BARE is `key = v` (the only spelling for a value holding '"'), UNWRITABLE
+ * has no exact spelling: a '"' together with whitespace, '#', a non-ASCII
+ * byte or a line break, or a leading '"'. Settings uses it to refuse such a
+ * RetroAchievements password up front. See paths.c. */
+typedef enum {
+    JW_RA_CFG_QUOTED,
+    JW_RA_CFG_BARE,
+    JW_RA_CFG_UNWRITABLE,
+} jw_ra_cfg_form;
+jw_ra_cfg_form jw_retroarch_cfg_value_form(const char *value);
+
 /* player_joypad_indices: per-user SDL joypad indices for players 1-4 from the
  * Jawaka input roster (-1 = unused player). Non-NULL also raises the generated
  * input_max_users to 4 on MLP1, and every generated index is protected from

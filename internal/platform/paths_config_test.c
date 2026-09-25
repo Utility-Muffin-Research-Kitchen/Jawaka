@@ -1,7 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "internal/platform/paths.h"
+#include "third_party/retroarch/config_file_parser.inc"
 
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -125,6 +127,37 @@ static int key_count(const char *text, const char *key, const char *value) {
         line = next ? next + 1 : NULL;
     }
     return count;
+}
+
+/* Look `key` up in config text the way RetroArch v1.22.2 does, returning a
+   malloc'd copy of its value or NULL. Lines split on '\n' as
+   filestream_getline does; the per-line steps restate the non-directive path
+   of config_file_parse_line and call the vendored config_file_strip_comment
+   and config_file_extract_value for the parts that decide a value. The first
+   occurrence wins, as in config_file_load_internal. */
+static char *ra_parse_value(const char *text, const char *key) {
+    char *copy = strdup(text ? text : "");
+    char *found = NULL;
+    if (!copy) return NULL;
+    for (char *line = copy; line && !found;) {
+        char *next = strchr(line, '\n');
+        if (next) *next++ = '\0';
+        if (*line && !config_file_strip_comment(line)) {
+            char *p = line;
+            while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+            char *k = p;
+            while (isgraph((unsigned char)*p)) p++;
+            size_t key_len = (size_t)(p - k);
+            while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+            if (*p == '=' && key_len == strlen(key) &&
+                strncmp(k, key, key_len) == 0) {
+                found = config_file_extract_value(p + 1);
+            }
+        }
+        line = next;
+    }
+    free(copy);
+    return found;
 }
 
 static int verify_runtime(const char *path, const char *shader_dir) {
@@ -977,6 +1010,98 @@ int main(void) {
         if (!absent_ok) {
             return fail("proxied backup invented cheevos keys that were absent");
         }
+    }
+
+    /* RetroAchievements credentials reach RetroArch exactly. The writer's
+       output goes through RetroArch's own parser (vendored, see
+       third_party/retroarch/config_file_parser.inc), so a password with a '"'
+       or '\\' either reads back byte for byte or is left out entirely --
+       never truncated or doubled. Synthetic passwords only; a failure names
+       the case number, never the value. */
+    {
+        static const struct {
+            const char *pass;
+            jw_ra_cfg_form form;
+        } cases[] = {
+            { "plainpass", JW_RA_CFG_QUOTED },
+            { "with space", JW_RA_CFG_QUOTED },
+            { "semi;colon", JW_RA_CFG_QUOTED },
+            { "hash#tag", JW_RA_CFG_QUOTED },
+            { "#leading-hash", JW_RA_CFG_QUOTED },
+            { " padded ", JW_RA_CFG_QUOTED },
+            { "back\\slash", JW_RA_CFG_QUOTED },
+            { "trail\\", JW_RA_CFG_QUOTED },
+            { "\\\\two", JW_RA_CFG_QUOTED },
+            { "tab\there", JW_RA_CFG_QUOTED },
+            { "caf\xc3\xa9 ok", JW_RA_CFG_QUOTED },
+            { "=equals=", JW_RA_CFG_QUOTED },
+            { "quote\"inside", JW_RA_CFG_BARE },
+            { "trail\"", JW_RA_CFG_BARE },
+            { "a\"b\\c", JW_RA_CFG_BARE },
+            { "q\"=;!~", JW_RA_CFG_BARE },
+            { "\"leading", JW_RA_CFG_UNWRITABLE },
+            { "quote\" and space", JW_RA_CFG_UNWRITABLE },
+            { "quote\"#hash", JW_RA_CFG_UNWRITABLE },
+            { "quote\"caf\xc3\xa9", JW_RA_CFG_UNWRITABLE },
+            { "quote\"\ttab", JW_RA_CFG_UNWRITABLE },
+            { "line\nbreak", JW_RA_CFG_UNWRITABLE },
+            { "carriage\rreturn", JW_RA_CFG_UNWRITABLE },
+        };
+        static const char user[] = "synthetic_user";
+        if (write_text(shared_cfg, "menu_driver = \"rgui\"\n") != 0) {
+            return fail("cheevos credential shared config write failed");
+        }
+        setenv("JAWAKA_CHEEVOS_USERNAME", user, 1);
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            char label[96];
+            if (jw_retroarch_cfg_value_form(cases[i].pass) != cases[i].form) {
+                snprintf(label, sizeof(label),
+                         "credential case %zu classified wrongly", i);
+                return fail(label);
+            }
+            setenv("JAWAKA_CHEEVOS_PASSWORD", cases[i].pass, 1);
+            runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                      true, false,
+                                                      error, sizeof(error));
+            if (!runtime_cfg) {
+                unsetenv("JAWAKA_CHEEVOS_USERNAME");
+                unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+                return fail(error[0] ? error : "credential config failed");
+            }
+            char *text = read_text(runtime_cfg);
+            char *got_pass = ra_parse_value(text, "cheevos_password");
+            char *got_user = ra_parse_value(text, "cheevos_username");
+            char *got_enable = ra_parse_value(text, "cheevos_enable");
+            /* An unrelated generated key still parses the same way. */
+            char *got_menu = ra_parse_value(text, "network_cmd_enable");
+            int ok = text && got_menu && strcmp(got_menu, "true") == 0;
+            if (cases[i].form == JW_RA_CFG_UNWRITABLE) {
+                ok = ok && !got_pass && !got_user && !got_enable &&
+                     occurrences(text, "cheevos_password") == 0;
+            } else {
+                ok = ok && got_pass && strcmp(got_pass, cases[i].pass) == 0 &&
+                     got_user && strcmp(got_user, user) == 0 &&
+                     got_enable && strcmp(got_enable, "true") == 0 &&
+                     occurrences(text, "cheevos_password") == 1;
+            }
+            free(got_pass);
+            free(got_user);
+            free(got_enable);
+            free(got_menu);
+            free(text);
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            if (!ok) {
+                unsetenv("JAWAKA_CHEEVOS_USERNAME");
+                unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+                snprintf(label, sizeof(label),
+                         "credential case %zu did not round-trip through "
+                         "RetroArch's parser", i);
+                return fail(label);
+            }
+        }
+        unsetenv("JAWAKA_CHEEVOS_USERNAME");
+        unsetenv("JAWAKA_CHEEVOS_PASSWORD");
     }
 
     /* An ordinary, non-Leaf-owned key survives the full round trip the app

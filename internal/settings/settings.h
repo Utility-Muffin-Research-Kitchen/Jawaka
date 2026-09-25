@@ -387,6 +387,10 @@ typedef struct {
                                                account resolves configured (never a truncated copy) */
     bool               ra_account_needs_repair; /* stored account is invalid or unreadable: shown
                                                    as not saved, and Y may clear it */
+    bool               ra_pass_unwritable;  /* saved username or password has no exact
+                                               retroarch.cfg spelling: kept for the other
+                                               emulators, RetroArch launches skip sign-in;
+                                               see jw_retroarch_cfg_value_form */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     /* Home Tabs editor. home_tab_order holds all JW_HOME_TABS_COUNT tabs in
        display order (each a jw_tab index); home_tab_hidden says which of them the

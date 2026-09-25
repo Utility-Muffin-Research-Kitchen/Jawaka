@@ -1692,6 +1692,13 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 ui->scrape_region_order);
             /* JW_SETTING_RA_USER is loaded through the account validator
                below, never copied (and truncated) from the raw row. */
+            ui->ra_pass_unwritable =
+                (jw__setting_has(values, found, JW_SETTING_RA_PASS) &&
+                 jw_retroarch_cfg_value_form(values[JW_SETTING_RA_PASS]) ==
+                     JW_RA_CFG_UNWRITABLE) ||
+                (jw__setting_has(values, found, JW_SETTING_RA_USER) &&
+                 jw_retroarch_cfg_value_form(values[JW_SETTING_RA_USER]) ==
+                     JW_RA_CFG_UNWRITABLE);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
                 ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
@@ -4407,7 +4414,12 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
                                    JW_ACCOUNTS_SCREENSCRAPER, "ScreenScraper.fr",
                                    ss_value, &mq[JW_ACCOUNTS_SCREENSCRAPER], dt);
     char ra_value[96];
-    jw_settings_ra_account_value(ui, ra_value, sizeof(ra_value));
+    if (ui->ra_username[0] && ui->ra_pass_unwritable) {
+        snprintf(ra_value, sizeof(ra_value),
+                 "Saved: %.48s - not usable by RetroArch", ui->ra_username);
+    } else {
+        jw_settings_ra_account_value(ui, ra_value, sizeof(ra_value));
+    }
     anim |= jw__render_account_row(&ui->accounts_list, x, ly, w,
                                    JW_ACCOUNTS_RETROACHIEVEMENTS, "RetroAchievements",
                                    ra_value, &mq[JW_ACCOUNTS_RETROACHIEVEMENTS], dt);
@@ -7699,6 +7711,15 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     snprintf(status_buf, status_size, "Cancelled");
                     break;
                 }
+                /* RetroArch's config format has no escapes, so a password
+                   with a double quote plus a space, '#' or non-ASCII letter
+                   cannot reach it intact (jw_retroarch_cfg_value_form). Save
+                   it anyway: the standalone emulators take the account
+                   through their own handoff and can use it. RetroArch
+                   launches skip sign-in for it rather than fail every time. */
+                bool retroarch_unusable =
+                    jw_retroarch_cfg_value_form(kb.text) == JW_RA_CFG_UNWRITABLE ||
+                    jw_retroarch_cfg_value_form(pw.text) == JW_RA_CFG_UNWRITABLE;
                 /* Validate before any truncating copy: username 63 UTF-8 bytes,
                    password 127. A rejected or failed save keeps the previous
                    account and shows no success. */
@@ -7723,8 +7744,11 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                          (int)sizeof(ui->ra_username) - 1, kb.text);
                 ui->ra_account_needs_repair = false;
                 jw_ipc_rumble(ui->socket_path, "select");
-                snprintf(status_buf, status_size,
-                         "Saved - emulators sign in on next launch");
+                ui->ra_pass_unwritable = retroarch_unusable;
+                snprintf(status_buf, status_size, "%s",
+                         retroarch_unusable
+                             ? "Saved - RetroArch can't use this password"
+                             : "Saved - emulators sign in on next launch");
                 break;
             }
             case CAT_BTN_Y:
@@ -7757,6 +7781,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     }
                     ui->ra_username[0] = '\0';
                     ui->ra_account_needs_repair = false;
+                    ui->ra_pass_unwritable = false;
                     snprintf(status_buf, status_size, "Signed out of RetroAchievements");
                 }
                 break;

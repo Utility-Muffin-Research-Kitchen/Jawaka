@@ -206,15 +206,17 @@ int main(void) {
     setenv("UMRK_RETROARCH_SHADERS_DIR", shaders, 1);
     setenv("UMRK_RETROARCH_USER_SHADERS_DIR", user_shaders, 1);
 
-    /* Configured: saved through the checked write, and a legacy pair. */
+    /* Configured: saved through the checked write, and a legacy pair. A
+       double quote plus a space has no retroarch.cfg spelling; that case is
+       covered by retroarch-config-test against RetroArch's own parser. */
     long long revision = 0;
     unlink(db);
-    if (jw_db_save_ra_account(db, "ra-player", "p@$$ w0rd; \"q\" |&,",
+    if (jw_db_save_ra_account(db, "ra-player", "p@$$ w0rd; 'q' |&,",
                               &revision) != 0) {
         fprintf(stderr, "ra-account-retroarch-test: save failed\n");
         return 1;
     }
-    expect_signed_in(db, "configured", "ra-player", "p@$$ w0rd; \"q\" |&,");
+    expect_signed_in(db, "configured", "ra-player", "p@$$ w0rd; 'q' |&,");
     seed_db(db, "legacy-player", "legacy pass", NULL);
     expect_signed_in(db, "legacy pair", "legacy-player", "legacy pass");
 
