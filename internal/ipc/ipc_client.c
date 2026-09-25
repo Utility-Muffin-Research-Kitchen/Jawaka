@@ -2616,7 +2616,7 @@ int jw_ipc_set_color_temp(const char *socket_path, int kelvin,
     if (ipc__request(socket_path, req, &resp) != 0) {
         if (status && status_len > 0) {
             snprintf(status, (size_t)status_len, "%s",
-                     "color temperature failed: daemon unavailable");
+                     "Color temperature failed: daemon unavailable");
         }
         return -1;
     }
@@ -2628,7 +2628,7 @@ int jw_ipc_set_color_temp(const char *socket_path, int kelvin,
             snprintf(status, (size_t)status_len, "%s", message->valuestring);
         } else {
             snprintf(status, (size_t)status_len, "%s",
-                     ok ? "color temperature updated" : "color temperature failed");
+                     ok ? "Color temperature updated" : "Color temperature failed");
         }
     }
 

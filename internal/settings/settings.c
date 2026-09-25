@@ -6793,7 +6793,7 @@ static void jw__set_color_temp(jw_settings_ui *ui, int kelvin,
     }
     if (!ui->color_temp_supported) {
         snprintf(status_buf, status_size, "%s",
-                 T("color temperature unavailable on this platform"));
+                 T("Color temperature unavailable on this platform"));
         return;
     }
 
@@ -6801,7 +6801,7 @@ static void jw__set_color_temp(jw_settings_ui *ui, int kelvin,
     status_buf[0] = '\0';
     if (jw_ipc_set_color_temp(ui->socket_path, kelvin, status_buf, (int)status_size) != 0) {
         if (!status_buf[0]) {
-            snprintf(status_buf, status_size, "%s", T("color temperature change failed"));
+            snprintf(status_buf, status_size, "%s", T("Color temperature change failed"));
         }
         return;
     }
@@ -7334,7 +7334,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                        jw__render_display). */
                     if (jw__display_on_tv(ui)) {
                         snprintf(status_buf, status_size, "%s",
-                                 T("color temperature unavailable while HDMI is active"));
+                                 T("Color temperature unavailable while HDMI is active"));
                     } else {
                         jw__set_color_temp(ui,
                             ui->color_temp_kelvin + dir * JW_PLATFORM_COLOR_TEMP_STEP_K,

@@ -785,6 +785,18 @@ msgid "Color Temperature"
 msgstr ""
 
 #: internal/settings/settings.c
+msgid "Color temperature change failed"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Color temperature unavailable on this platform"
+msgstr ""
+
+#: internal/settings/settings.c
+msgid "Color temperature unavailable while HDMI is active"
+msgstr ""
+
+#: internal/settings/settings.c
 msgid "Colors"
 msgstr ""
 
@@ -3158,18 +3170,6 @@ msgstr ""
 
 #: internal/settings/settings.c
 msgid "brightness failed"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "color temperature change failed"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "color temperature unavailable on this platform"
-msgstr ""
-
-#: internal/settings/settings.c
-msgid "color temperature unavailable while HDMI is active"
 msgstr ""
 
 #: internal/settings/settings.c

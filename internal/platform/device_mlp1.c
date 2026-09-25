@@ -3399,30 +3399,30 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         if (jw__mlp1_hdmi_tv_active()) {
             if (jw_platform_clamp_color_temp_k(value) != JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
                 jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
-                                       "color temperature unavailable while HDMI is active");
+                                       "Color temperature unavailable while HDMI is active");
                 return;
             }
             if (jw__mlp1_write_gamma_ramp(1.0, 1.0, 1.0) != 0) {
                 jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                                       "color temperature reset for the external display failed");
+                                       "Color temperature reset for the external display failed");
                 return;
             }
             jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
-                                   "color temperature neutral for the external display");
+                                   "Color temperature neutral for the external display");
             return;
         }
         int kelvin = jw_platform_clamp_color_temp_k(value);
         if (jw__mlp1_set_color_temp(kelvin) != 0) {
             jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
-                                   "color temperature change failed");
+                                   "Color temperature change failed");
             return;
         }
         jw_log_info("display: color temperature -> %d K", kelvin);
         char msg[40];
         if (kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
-            snprintf(msg, sizeof(msg), "color temperature neutral");
+            snprintf(msg, sizeof(msg), "Color temperature neutral");
         } else {
-            snprintf(msg, sizeof(msg), "color temperature %d K", kelvin);
+            snprintf(msg, sizeof(msg), "Color temperature %d K", kelvin);
         }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
