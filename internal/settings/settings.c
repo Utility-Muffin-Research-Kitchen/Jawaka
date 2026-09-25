@@ -2789,8 +2789,8 @@ static int jw__display_value_col_w(TTF_Font *body) {
     return jw__widest_text(body, readings, sizeof(readings) / sizeof(readings[0]));
 }
 
-/* Width of the widest slider label on the page, in the current language. The
-   tracks take all the room to the right of it. */
+/* Width of the widest slider label on the page, in the current language. A track
+   is never drawn to the left of it. */
 static int jw__display_label_col_w(TTF_Font *body) {
     const char *const labels[] = { T("Brightness"), T("Color Temperature"), T("Volume") };
     return jw__widest_text(body, labels, sizeof(labels) / sizeof(labels[0]));
@@ -2831,12 +2831,14 @@ static void jw__draw_slider_row_ex(const jw_settings_ui *ui, int x, int y_base, 
     if (vw > val_w) val_w = vw;
     int val_x = x + w - cat_scale(16) - val_w;
 
-    /* The track takes all the room between the widest label and the value
-       column (never less than a short stub, so a very long translated label
-       ellipsizes instead of squeezing the track away). */
+    /* The track keeps the length it has always had, and sits against the value
+       column, so a wider column just moves it left. Only if that would run it
+       into the widest label (a long translation) is it shortened, and never below
+       a short stub, so the label ellipsizes instead of squeezing the track away. */
     int track_right = val_x - cat_scale(14);
     int track_left = x + cat_scale(12) + jw__display_label_col_w(body) + cat_scale(20);
-    int track_w = track_right - track_left;
+    int track_w = cat_scale(216);
+    if (track_right - track_w < track_left) track_w = track_right - track_left;
     if (track_w < cat_scale(96)) track_w = cat_scale(96);
     int track_h = cat_scale(9);
     int track_x = track_right - track_w;
