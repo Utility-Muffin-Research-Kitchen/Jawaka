@@ -1271,7 +1271,7 @@ msgstr "主页布局"
 
 #: internal/settings/settings.c
 msgid "Home Screen"
-msgstr ""
+msgstr "主屏幕"
 
 #: internal/settings/settings.c
 msgid "Home Tabs"
@@ -1279,15 +1279,15 @@ msgstr "主页标签"
 
 #: internal/settings/settings.c
 msgid "Hotkey"
-msgstr ""
+msgstr "快捷键"
 
 #: internal/settings/settings.c
 msgid "Hotkeys"
-msgstr ""
+msgstr "快捷键"
 
 #: internal/settings/settings.c
 msgid "Hotkeys & Rumble"
-msgstr ""
+msgstr "按键与震动"
 
 #: internal/settings/settings.c
 msgid "IP: %s"
@@ -2005,7 +2005,7 @@ msgstr "录制"
 
 #: internal/settings/settings.c
 msgid "Recording Hotkey"
-msgstr ""
+msgstr "录制快捷键"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Refresh"
@@ -2339,7 +2339,7 @@ msgstr "截图"
 
 #: internal/settings/settings.c
 msgid "Screenshot Hotkey"
-msgstr ""
+msgstr "截图快捷键"
 
 #: internal/settings/settings.c
 msgid "Screenshots"
@@ -3192,11 +3192,11 @@ msgstr "X: 抓取   Y: 移除   B: 返回   A: 下一步"
 
 #: internal/settings/storage_ui.c
 msgid "You can save files again."
-msgstr ""
+msgstr "已恢复文件保存功能。"
 
 #: internal/settings/storage_ui.c
 msgid "Your SD card check did not finish successfully."
-msgstr ""
+msgstr "SD 卡检查未能完成。"
 
 #: internal/settings/storage_ui.c
 #, fuzzy
@@ -3207,7 +3207,7 @@ msgstr "SD 卡已启用写保护"
 msgid ""
 "Your SD card is protected because your last shutdown didn't finish saving. "
 "Restart your device to check it."
-msgstr ""
+msgstr "由于上次关机未完成保存，SD 卡已进入保护状态。请重启设备检查。"
 
 #: cmd/jawaka-osd/game_launch.c
 msgid "Your SD card is read-only"
@@ -3236,7 +3236,7 @@ msgid ""
 "Your SD card is still protected. Turn off your device, repair the card on a "
 "computer, safely eject it, then insert it and turn your device on to check "
 "it again."
-msgstr ""
+msgstr "你的 SD 卡仍处于保护状态。请关闭设备，在电脑上修复 SD 卡，安全弹出后重新插入，再开机检查。"
 
 #: cmd/jawaka-launcher/main.c
 msgid "Your SD card is waiting for repair. Nothing new can be saved to it."
@@ -3300,7 +3300,7 @@ msgstr "设备的内部存储无法记录修复过程。请改为在电脑上检
 
 #: internal/settings/storage_ui.c
 msgid "Your last shutdown didn't finish saving."
-msgstr ""
+msgstr "上次关机时保存未完成。"
 
 #: internal/settings/storage_ui.c
 msgid ""
