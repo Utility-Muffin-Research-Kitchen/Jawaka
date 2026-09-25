@@ -2054,6 +2054,18 @@ static int jw__reply_error(jw_ipc_client *client, const char *message) {
     return jw__reply_json(client, root);
 }
 
+/* Retry re-runs the same launch through every gate, so it is only offered
+   where the block is transient and re-checkable without a decision from the
+   user: RAOfflineProxy not ready yet. Every other block keeps its two-way
+   Cancel / Play Anyway contract. */
+static bool jw__game_launch_retry_allowed(const jw_daemon_state *state) {
+    return state && state->game_launch_blocked &&
+           !state->game_check_decision &&
+           !state->game_launch_blocked_requires_verified_stop &&
+           strcmp(state->game_launch_blocked_reason,
+                  "raofflineproxy-not-ready") == 0;
+}
+
 static int jw__reply_game_launch_blocked(jw_daemon_state *state,
                                          jw_ipc_client *client) {
     cJSON *root = cJSON_CreateObject();
@@ -2073,6 +2085,9 @@ static int jw__reply_game_launch_blocked(jw_daemon_state *state,
     cJSON_AddBoolToObject(root, "blocked", blocked);
     cJSON_AddBoolToObject(root, "override_allowed",
                           state->game_launch_blocked && !conservative_active);
+    cJSON_AddBoolToObject(root, "retry_allowed",
+                          jw__game_launch_retry_allowed(state) &&
+                              !conservative_active);
     cJSON_AddBoolToObject(
         root, "requires_verified_stop",
         state->game_launch_blocked_requires_verified_stop);
@@ -13450,6 +13465,42 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
                                    "overridden game launch still failed");
         }
         return jw__reply_ok(client, "game-launch-override", NULL);
+    }
+
+    /* Retry answers the RAOfflineProxy prompt without bypassing anything: the
+       same pending launch runs again with no override and no skipped check,
+       so it takes the full coordination path and the same bounded (500 ms,
+       fail-closed) routing decision as a fresh launch. Healthy now means a
+       normal proxied launch; still not ready re-blocks with the same reason
+       and the replacement launcher shows the prompt again. One attempt per
+       request, never a loop. */
+    if (strcmp(type->valuestring, "game-launch-retry") == 0) {
+        if (!jw__game_launch_retry_allowed(state) ||
+            state->active_game.active || state->pending_launch_game_id <= 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client,
+                                   "blocked game launch is not retryable");
+        }
+        state->pending_launch = true;
+        state->pending_launch_resume_switcher =
+            state->game_launch_blocked_resume_switcher;
+        state->pending_launch_skip_check = false;
+        state->pending_launch_override_unverified = false;
+        state->game_launch_blocked = false;
+        state->game_launch_blocked_resume_switcher = false;
+        state->game_launch_blocked_requires_verified_stop = false;
+        state->game_launch_blocked_service_id[0] = '\0';
+        state->game_launch_blocked_reason[0] = '\0';
+        jw_log_info("life1: user chose Retry for blocked launch");
+        bool launch_now = state->child_pid <= 0;
+        cJSON_Delete(root);
+        if (launch_now && jw__spawn_pending_game(state) != 0) {
+            return jw__reply_error(client,
+                                   state->game_launch_blocked
+                                       ? "retried game launch still blocked"
+                                       : "retried game launch failed");
+        }
+        return jw__reply_ok(client, "game-launch-retry", NULL);
     }
 
     if (strcmp(type->valuestring, "launch-app") == 0) {
