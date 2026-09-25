@@ -172,6 +172,27 @@ bool jw_ra_account_target_authorized(const char *launcher_path,
     return false;
 }
 
+bool jw_flycast_ra_route_target_authorized(const char *launcher_path,
+                                           const char *core_id,
+                                           const jw_standalone_policy *policy,
+                                           const char *provider,
+                                           const char *platform_dir) {
+    /* The account authorization already pins the exact release-owned
+       launcher; repeating the release check here keeps DSperate, which is
+       also account-authorized, out of the route. */
+    return policy && !policy->provider_bound &&
+           policy->release == JW_STANDALONE_RELEASE_FLYCAST &&
+           jw_ra_account_target_authorized(launcher_path, core_id, policy,
+                                           provider, platform_dir) &&
+           jw__ra_flycast_record_matches(platform_dir, "ra-route-v1",
+                                         JW_FLYCAST_RA_ROUTE_CAPABILITY_ID);
+}
+
+const char *jw_flycast_ra_route_value(bool service_live) {
+    return service_live ? JW_FLYCAST_RA_ROUTE_SERVICE_LIVE
+                        : JW_FLYCAST_RA_ROUTE_NATIVE;
+}
+
 void jw_ra_account_clear_env(void) {
     unsetenv(JW_RA_ACCOUNT_ENV_VERSION);
     unsetenv(JW_RA_ACCOUNT_ENV_STATE);

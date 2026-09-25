@@ -2605,6 +2605,32 @@ static void jw__ra_account_clear_env(void) {
     jw_ra_account_clear_env();
 }
 
+/* Drop the bundled-Flycast proxy route intent and Flycast's developer probe
+   channel from the CURRENT process environment. UMRK_FLYCAST_RA_ROUTE is
+   per-launch child state for one authorized target; FLYCAST_PROBE and
+   FLYCAST_CONFIG_OVERRIDES belong to explicit developer probes run outside
+   the daemon and must never ride along on a managed launch, where they could
+   inject an achievement host or Hardcore override. */
+static void jw__flycast_route_clear_env(void) {
+    unsetenv(JW_FLYCAST_RA_ROUTE_ENV);
+    unsetenv("FLYCAST_PROBE");
+    unsetenv("FLYCAST_CONFIG_OVERRIDES");
+}
+
+/* The RAOfflineProxy service is live when the supervisor holds a positive
+   PGID in RUNNING or STARTING for a present, valid pak; see
+   jw_raofflineproxy_entry_live, which the RetroArch gate
+   (jw__raofflineproxy_route) and the Flycast route intent share. */
+static bool jw__raofflineproxy_entry_live(const jw_svc_supervised *entry) {
+    return jw_raofflineproxy_entry_live(entry);
+}
+
+static bool jw__raofflineproxy_service_live(const jw_daemon_state *state) {
+    return state && state->services &&
+           jw__raofflineproxy_entry_live(
+               jw_svc_supervisor_find(state->services, JW_ROP_SERVICE_ID));
+}
+
 /* True when the pak dir refers to the bundled RetroArch app — the one app whose
    runner builds its own RetroArch config and so legitimately consumes the
    cheevos credentials. Case-insensitive match on "retroarch". */
@@ -4712,7 +4738,17 @@ static bool jw__reserve_game_process_group(pid_t pid) {
 }
 
 static int jw__game_child_set_own_group(void) {
-    return setpgid(0, 0);
+    /* The parent calls setpgid(pid, pid) concurrently. Darwin can refuse
+       this call with EPERM while the parent's is in flight, so accept the
+       group the parent made (the parent's own check, mirrored) and retry
+       briefly before failing closed. */
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (setpgid(0, 0) == 0 || getpgrp() == getpid()) {
+            return 0;
+        }
+        usleep(1000);
+    }
+    return -1;
 }
 
 static int jw__signal_tracked_game_group(jw_daemon_state *state, int signal) {
@@ -9403,6 +9439,7 @@ static int jw__spawn_app(jw_daemon_state *state) {
            RetroArch is not a standalone consumer and non-RetroArch app pak
            launches are not authorized targets. */
         jw__ra_account_clear_env();
+        jw__flycast_route_clear_env();
         if (app_is_retroarch) {
             jw__cheevos_apply_env(&cheevos);
         } else {
@@ -9642,6 +9679,28 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw_ra_account_target_authorized(target->path, target->core_id,
                                         &target->standalone_policy,
                                         target->provider, ra_platform_dir);
+    /* Proxy plan P2: service intent for the bundled Flycast build that can
+       route. Jawaka neither probes health nor decides per-game eligibility
+       here; Flycast does both after loading its own per-game settings. */
+    bool flycast_route_authorized =
+        ra_account_authorized &&
+        jw_flycast_ra_route_target_authorized(target->path, target->core_id,
+                                              &target->standalone_policy,
+                                              target->provider,
+                                              ra_platform_dir);
+    bool flycast_route_live =
+        flycast_route_authorized && jw__raofflineproxy_service_live(state);
+    if (flycast_route_authorized) {
+        jw_log_info("RAOfflineProxy: Flycast route intent %s",
+                    jw_flycast_ra_route_value(flycast_route_live));
+    } else if (!target->standalone_policy.provider_bound &&
+               target->standalone_policy.release ==
+                   JW_STANDALONE_RELEASE_FLYCAST &&
+               jw__raofflineproxy_service_live(state)) {
+        jw_log_info("RAOfflineProxy: this Flycast build cannot route through "
+                    "the offline service; achievements stay direct until "
+                    "Flycast is updated");
+    }
 
     if (direct_drm) {
         jw_log_info("direct DRM handoff requested for core=%s rom=%s",
@@ -9742,6 +9801,11 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
            a stale account snapshot; only an authorized target receives the
            fresh snapshot, applied over a cleared set. */
         jw_ra_account_prepare_standalone_env(&ra_account, ra_account_authorized);
+        jw__flycast_route_clear_env();
+        if (flycast_route_authorized) {
+            setenv(JW_FLYCAST_RA_ROUTE_ENV,
+                   jw_flycast_ra_route_value(flycast_route_live), 1);
+        }
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
@@ -9928,11 +9992,7 @@ static jw__rop_gate_result jw__raofflineproxy_route(
        may be a proxy to talk to", and it is true however the service got
        there. Everything else is direct with zero wait, which is exactly what
        the plan asks for: absent, invalid, disabled, or session-stopped. */
-    bool service_live = entry && entry->pgid > 0 &&
-                        (entry->state == JW_SVC_STATE_RUNNING ||
-                         entry->state == JW_SVC_STATE_STARTING);
-    if (!entry || !entry->pak_present || !entry->manifest_valid ||
-        !service_live) {
+    if (!jw__raofflineproxy_entry_live(entry)) {
         jw_log_info("RAOfflineProxy: direct launch (service %s)",
                     !entry ? "absent"
                     : !entry->pak_present || !entry->manifest_valid
@@ -15709,6 +15769,7 @@ int main(int argc, char *argv[]) {
        supervised services inherit this environment as-is. */
     jw__ra_account_clear_env();
     jw__cheevos_clear_env();
+    jw__flycast_route_clear_env();
 
     if (jw_platform_init(&state.platform, state.runtime_dir, state.sdcard_root) != 0) {
         jw_log_error("could not initialize platform service");
