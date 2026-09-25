@@ -2891,6 +2891,11 @@ static void jw__draw_display_focus(int x, int y, int w, int h, void *user) {
                   h - cat_scale(6), theme->highlight);
 }
 
+/* An external display is the active output: cable plugged in and HDMI Output not off. */
+static bool jw__display_on_tv(const jw_settings_ui *ui) {
+    return ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0;
+}
+
 static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, int h) {
     jw__draw_header("Display & Sound", x, y, w);
     /* Fit the rows to the box rather than assuming the natural pitch clears it.
@@ -2914,7 +2919,7 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
        whatever the TV is showing; see the JW_PLATFORM_ACTION_SET_COLOR_TEMP guard
        in device_mlp1.c) -- it is a plain text row like Black Frame Insertion's
        "100/120 Hz only" and HDMI Output's "Not connected", not a greyed slider. */
-    bool ct_on_tv = ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0;
+    bool ct_on_tv = jw__display_on_tv(ui);
     bool ct_enabled = ui->color_temp_supported && !ct_on_tv;
     int ct_span = JW_PLATFORM_COLOR_TEMP_MAX_K - JW_PLATFORM_COLOR_TEMP_MIN_K;
     int ct_fill = ((ui->color_temp_kelvin - JW_PLATFORM_COLOR_TEMP_MIN_K) * 100) / ct_span;
@@ -7327,7 +7332,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                        without a round trip while HDMI is the active output
                        (the row is plain "Panel only" text then; see
                        jw__render_display). */
-                    if (ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0) {
+                    if (jw__display_on_tv(ui)) {
                         snprintf(status_buf, status_size, "%s",
                                  T("color temperature unavailable while HDMI is active"));
                     } else {
