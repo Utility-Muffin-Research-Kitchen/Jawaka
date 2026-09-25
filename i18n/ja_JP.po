@@ -1845,6 +1845,10 @@ msgstr "プレイ"
 msgid "Play anyway"
 msgstr ""
 
+#: cmd/jawaka-launcher/main.c
+msgid "Play directly"
+msgstr "直接プレイ"
+
 #: internal/launcher/system_names.c
 msgid "PlayStation"
 msgstr "PlayStation"
@@ -2121,6 +2125,10 @@ msgstr "RetroArch のリセットをキャンセルしました"
 #: cmd/jawaka-osd/game_launch.c
 msgid "RetroArch settings not saved"
 msgstr ""
+
+#: cmd/jawaka-launcher/main.c
+msgid "Retry"
+msgstr "再試行"
 
 #: cmd/jawaka-menu/main.c
 msgid "Return to Launcher"

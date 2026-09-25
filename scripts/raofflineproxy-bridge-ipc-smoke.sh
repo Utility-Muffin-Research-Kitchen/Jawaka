@@ -298,19 +298,101 @@ blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"
 printf '%s' "$blocked" | grep -q '"blocked":false'
 echo "case5 blocked-cancel ok"
 
-# -- Case 6: blocked prompt again; override -> direct play, single bypass --
-"$CTL" --socket "$SOCKET" request \
-    '{"type":"launch-game","system":"N64","rom_path":"Roms/N64/Bridge.n64"}' |
+# Retry is refused when nothing is blocked: it can never start a launch of
+# its own.
+"$CTL" --socket "$SOCKET" request '{"type":"game-launch-retry"}' |
     grep -F '"type":"error"' >/dev/null
-for _ in $(seq 1 500); do
-    blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"}' 2>/dev/null || true)"
-    printf '%s' "$blocked" | grep -q '"blocked":true' && break
-    sleep 0.02
-done
+
+block_launch() {
+    "$CTL" --socket "$SOCKET" request \
+        '{"type":"launch-game","system":"N64","rom_path":"Roms/N64/Bridge.n64"}' |
+        grep -F '"type":"error"' >/dev/null
+    for _ in $(seq 1 500); do
+        blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"}' 2>/dev/null || true)"
+        printf '%s' "$blocked" | grep -q '"blocked":true' && break
+        sleep 0.02
+    done
+    printf '%s' "$blocked" | grep -q '"reason":"raofflineproxy-not-ready"'
+    printf '%s' "$blocked" | grep -q '"override_allowed":true'
+    printf '%s' "$blocked" | grep -q '"retry_allowed":true'
+}
+
+# Retry once, timed: the daemon re-runs the bounded check synchronously, so a
+# still-down service costs the full 500 ms budget before it re-blocks.
+retry_timed() {
+    local start reply elapsed
+    start=$(now_ms)
+    reply="$("$CTL" --socket "$SOCKET" request '{"type":"game-launch-retry"}' || true)"
+    elapsed=$(( $(now_ms) - start ))
+    printf '%s' "$reply" >"$TMP_DIR/retry.reply"
+    echo "$elapsed"
+}
+
+# -- Case 5b: Retry while still down re-blocks; Cancel after it still cancels --
+block_launch
+elapsed_ms=$(retry_timed)
+grep -F '"type":"error"' "$TMP_DIR/retry.reply" >/dev/null
+grep -F 'still blocked' "$TMP_DIR/retry.reply" >/dev/null
+[ "$elapsed_ms" -ge 400 ]
+blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"}')"
+printf '%s' "$blocked" | grep -q '"blocked":true'
 printf '%s' "$blocked" | grep -q '"reason":"raofflineproxy-not-ready"'
-"$CTL" --socket "$SOCKET" request '{"type":"game-launch-override"}' |
+printf '%s' "$blocked" | grep -q '"retry_allowed":true'
+[ ! -e "$CAPTURED_CFG" ]
+# Each Retry is one explicit attempt; a second one behaves the same.
+elapsed_ms=$(retry_timed)
+grep -F '"type":"error"' "$TMP_DIR/retry.reply" >/dev/null
+[ "$elapsed_ms" -ge 400 ]
+[ "$(grep -c 'user chose Retry for blocked launch' "$LOG")" = 2 ]
+"$CTL" --socket "$SOCKET" request '{"type":"game-launch-blocked-dismiss"}' |
+    grep -F '"type":"ok"' >/dev/null
+sleep 0.2
+[ ! -e "$CAPTURED_CFG" ]
+blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"}')"
+printf '%s' "$blocked" | grep -q '"blocked":false'
+printf '%s' "$blocked" | grep -q '"retry_allowed":false'
+echo "case5b retry-still-down-reblocks ok (${elapsed_ms}ms)"
+
+# -- Case 5c: Retry after the service came back -> normal proxied launch --
+printf '%s' \
+  "menu_driver = \"rgui\"
+cheevos_custom_host = \"foreign.example:9999\"
+cheevos_hardcore_mode_enable = \"false\"
+" >"$SHARED_CFG"
+block_launch
+python3 "$HEALTH_PY" & HEALTH_PID=$!
+sleep 0.3
+"$CTL" --socket "$SOCKET" request '{"type":"game-launch-retry"}' |
     grep -F '"type":"ok"' >/dev/null
 wait_backup_fresh 5
+[ -e "$CAPTURED_CFG" ]
+grep -q "cheevos_custom_host = \"127.0.0.1:8080\"" "$CAPTURED_CFG"
+grep -q "cheevos_hardcore_mode_enable = \"false\"" "$CAPTURED_CFG"
+# Snapshot restore intact, exactly as case 2.
+grep -qxF 'cheevos_custom_host = "foreign.example:9999"' "$SHARED_CFG"
+[ "$(grep -c 'cheevos_custom_host' "$SHARED_CFG")" = 1 ]
+! grep -q "127.0.0.1:8080" "$SHARED_CFG"
+! grep -q "cheevos_token" "$SHARED_CFG"
+blocked="$($CTL --socket "$SOCKET" request '{"type":"game-launch-blocked-status"}')"
+printf '%s' "$blocked" | grep -q '"blocked":false'
+echo "case5c retry-healthy-proxied ok"
+
+kill "$HEALTH_PID" 2>/dev/null; wait "$HEALTH_PID" 2>/dev/null || true
+HEALTH_PID=""
+printf '%s' \
+  "menu_driver = \"rgui\"
+cheevos_hardcore_mode_enable = \"false\"
+" >"$SHARED_CFG"
+rm -f "$CAPTURED_CFG"
+
+# -- Case 6: blocked prompt again; a failed Retry first, then override ->
+# direct play, single bypass (Play Anyway unchanged by Retry) --
+block_launch
+elapsed_ms=$(retry_timed)
+grep -F '"type":"error"' "$TMP_DIR/retry.reply" >/dev/null
+"$CTL" --socket "$SOCKET" request '{"type":"game-launch-override"}' |
+    grep -F '"type":"ok"' >/dev/null
+wait_backup_fresh 6
 [ -e "$CAPTURED_CFG" ]
 ! grep -q "127.0.0.1:8080" "$CAPTURED_CFG"
 ! grep -q "cheevos_custom_host" "$SHARED_CFG"
@@ -322,7 +404,7 @@ echo "case6 override-direct ok"
 python3 "$HEALTH_PY" & HEALTH_PID=$!
 sleep 0.3
 launch | grep -F '"type":"ok"' >/dev/null
-wait_backup_fresh 6
+wait_backup_fresh 7
 grep -q "cheevos_custom_host = \"127.0.0.1:8080\"" "$CAPTURED_CFG"
 echo "case7 bypass-consumed ok"
 
@@ -356,7 +438,7 @@ cheevos_hardcore_mode_enable = \"false\"
 " >"$SHARED_CFG"
 rm -f "$CAPTURED_CFG"
 launch | grep -F '"type":"ok"' >/dev/null
-wait_backup_fresh 7
+wait_backup_fresh 8
 grep -q "cheevos_custom_host = \"127.0.0.1:8080\"" "$CAPTURED_CFG"
 grep -q "cheevos_hardcore_mode_enable = \"false\"" "$CAPTURED_CFG"
 ! grep -q "cheevos_custom_host" "$SHARED_CFG"

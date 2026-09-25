@@ -1928,6 +1928,10 @@ msgstr "Jugar"
 msgid "Play anyway"
 msgstr "Jugar de todos modos"
 
+#: cmd/jawaka-launcher/main.c
+msgid "Play directly"
+msgstr "Jugar directamente"
+
 #: internal/launcher/system_names.c
 msgid "PlayStation"
 msgstr "PlayStation"
@@ -2213,6 +2217,10 @@ msgstr "Restablecimiento de RetroArch cancelado"
 #: cmd/jawaka-osd/game_launch.c
 msgid "RetroArch settings not saved"
 msgstr "Ajustes de RetroArch no guardados"
+
+#: cmd/jawaka-launcher/main.c
+msgid "Retry"
+msgstr "Reintentar"
 
 #: cmd/jawaka-menu/main.c
 msgid "Return to Launcher"
