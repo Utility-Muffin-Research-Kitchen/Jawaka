@@ -24,6 +24,7 @@
 #include "internal/i18n/i18n.h"
 #include "internal/platform/input_shortcuts.h"
 #include "internal/platform/input_roster.h"
+#include "internal/platform/ledd_spawn.h"
 #include "internal/platform/paths.h"
 #include "internal/platform/perf_policy.h"
 #include "internal/platform/raofflineproxy.h"
@@ -7859,13 +7860,9 @@ static int jw__spawn_ledd(jw_daemon_state *state, const char *effect,
     snprintf(sb,  sizeof(sb),  "%d", b);
     snprintf(sbr, sizeof(sbr), "%d", brightness);
     snprintf(ssp, sizeof(ssp), "%d", speed);
-    pid_t pid = fork();
+    char *const argv[] = { path, (char *)effect, sr, sg, sb, sbr, ssp, NULL };
+    pid_t pid = jw_ledd_spawn(path, argv);
     if (pid < 0) { jw_log_warn("ledd fork failed: %s", strerror(errno)); return -1; }
-    if (pid == 0) {
-        char *const argv[] = { path, (char *)effect, sr, sg, sb, sbr, ssp, NULL };
-        execv(path, argv);
-        _exit(127);
-    }
     state->ledd_pid = pid;
     jw_log_info("spawned jawaka-ledd %s pid=%d", effect, (int)pid);
     return 0;

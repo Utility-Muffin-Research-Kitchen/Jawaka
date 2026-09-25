@@ -10,6 +10,8 @@
  * loong_light is stopped, the ring would be stuck. So we thaw from atexit() AND
  * from handlers for every fatal/term signal. Killing this process is therefore
  * the clean "stop the effect" operation: death itself thaws the daemon.
+ * jawakad arms SIGTERM as this process's parent-death signal, so a daemon that
+ * dies without stopping the effect stops it all the same.
  *
  * Usage: jawaka-ledd <effect> <r> <g> <b> <brightness 0-10> <speed 0-10>
  *   effects: off static breath rainbow comet sweep fountain hiccup
@@ -247,9 +249,9 @@ int main(int argc, char **argv) {
     long interval_ms = constant_frame ? 1000 : JW_LED_FPS_INTERVAL_MS;
     long advance = 6 + (long)speed * 6;   /* sub-LED units per frame */
 
-    g_daemon_pid = jw__find_daemon(JW_LED_DAEMON);
-    if (g_daemon_pid > 0) kill(g_daemon_pid, SIGSTOP);
-
+    /* Handlers before the freeze: jawakad sends SIGTERM as soon as it stops
+       an effect or dies, and a default-action SIGTERM after the SIGSTOP would
+       leave the daemon frozen. */
     atexit(jw__thaw);
     signal(SIGTERM, jw__on_term);
     signal(SIGINT,  jw__on_term);
@@ -258,6 +260,9 @@ int main(int argc, char **argv) {
     signal(SIGABRT, jw__on_fatal);
     signal(SIGFPE,  jw__on_fatal);
     signal(SIGBUS,  jw__on_fatal);
+
+    g_daemon_pid = jw__find_daemon(JW_LED_DAEMON);
+    if (g_daemon_pid > 0) kill(g_daemon_pid, SIGSTOP);
 
     struct timespec sleep_for = {
         .tv_sec  = interval_ms / 1000,
