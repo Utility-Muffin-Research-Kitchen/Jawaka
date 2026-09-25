@@ -3169,7 +3169,7 @@ msgid "color temperature unavailable on this platform"
 msgstr ""
 
 #: internal/settings/settings.c
-msgid "colour temperature unavailable while HDMI is active"
+msgid "color temperature unavailable while HDMI is active"
 msgstr ""
 
 #: internal/settings/settings.c

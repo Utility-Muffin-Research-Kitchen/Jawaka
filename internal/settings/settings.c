@@ -2766,28 +2766,53 @@ static void jw__render_statusbar(const jw_settings_ui *ui, int x, int y, int w, 
 /* One labelled slider row (Brightness / Volume) on the Display & Sound page.
    item_h is the page's fitted row pitch; every row on the page must be passed the
    same value or they overlap and gap, since each positions itself as row*item_h. */
+/* Widest of the given strings, in pixels. */
+static int jw__widest_text(TTF_Font *body, const char *const *texts, size_t count) {
+    int widest = 0;
+    for (size_t i = 0; i < count; i++) {
+        int w = cat_measure_text(body, texts[i]);
+        if (w > widest) widest = w;
+    }
+    return widest;
+}
+
+/* Width of the value column shared by every slider row on the Display & Sound
+   page: the widest reading a slider can show ("100%" for Brightness/Volume and
+   the Color Temperature row's "10000 K" and "Neutral"), in the current language.
+   The Color Temperature row shows plain text instead of a slider when it can't
+   be used, so its long "Panel only" / "Unavailable" readings need no room here.
+   Sizing it once keeps the tracks aligned as the value changes. */
+static int jw__display_value_col_w(TTF_Font *body) {
+    char kelvin[24];
+    snprintf(kelvin, sizeof(kelvin), T("%d K"), JW_PLATFORM_COLOR_TEMP_MAX_K);
+    const char *const readings[] = { "100%", kelvin, T("Neutral") };
+    return jw__widest_text(body, readings, sizeof(readings) / sizeof(readings[0]));
+}
+
+/* Width of the widest slider label on the page, in the current language. The
+   tracks take all the room to the right of it. */
+static int jw__display_label_col_w(TTF_Font *body) {
+    const char *const labels[] = { T("Brightness"), T("Color Temperature"), T("Volume") };
+    return jw__widest_text(body, labels, sizeof(labels) / sizeof(labels[0]));
+}
+
 /* fill_percent drives the track bar (0..100); value_str is the right-aligned
    readout. Passing value_str = NULL formats fill_percent as "%d%%" (the
    Brightness / Volume case); a non-NULL string is drawn verbatim and is
-   translated by the caller if it needs to be. enabled = false greys the row
-   and the caller must also refuse input on it. */
+   translated by the caller if it needs to be. */
 static void jw__draw_slider_row_ex(const jw_settings_ui *ui, int x, int y_base, int w,
                                    int row, const char *label, int fill_percent,
-                                   const char *value_str, bool enabled, int item_h) {
+                                   const char *value_str, int item_h) {
     label = T(label);
     ap_theme *theme = cat_get_theme();
     TTF_Font *body = cat_get_font(CAT_FONT_MEDIUM);
     int iy;
     if (!jw__settings_row_position(&ui->display_list, row, &iy)) return;
-    float focus = enabled ? jw__settings_row_focus(&ui->display_list, row) : 0.0f;
+    float focus = jw__settings_row_focus(&ui->display_list, row);
     int pill_h = item_h - cat_scale(6);
     int pill_y = iy + cat_scale(3);
-    ap_color label_c = enabled
-        ? cat_draw_color_lerp(theme->text, theme->highlighted_text, focus)
-        : theme->hint;
-    ap_color value_c = enabled
-        ? cat_draw_color_lerp(theme->hint, theme->highlighted_text, focus)
-        : theme->hint;
+    ap_color label_c = cat_draw_color_lerp(theme->text, theme->highlighted_text, focus);
+    ap_color value_c = cat_draw_color_lerp(theme->hint, theme->highlighted_text, focus);
     int fh = TTF_FontHeight(body);
     int ty = pill_y + (pill_h - fh) / 2;
 
@@ -2797,15 +2822,24 @@ static void jw__draw_slider_row_ex(const jw_settings_ui *ui, int x, int y_base, 
         value_str = buf;
     }
 
-    /* The value column is sized for the widest reading, not this one, so the
-       track does not shift as the number gains or loses a digit. */
-    int val_w = cat_measure_text(body, "100%");
+    /* The value column is sized for the widest reading any row can show, not this
+       one, so the track does not shift as the value changes and the rows line up.
+       A reading wider than that (an unexpected translation) still widens it
+       instead of overlapping the track. */
     int vw = cat_measure_text(body, value_str);
+    int val_w = jw__display_value_col_w(body);
+    if (vw > val_w) val_w = vw;
     int val_x = x + w - cat_scale(16) - val_w;
 
-    int track_w = cat_scale(216);
+    /* The track takes all the room between the widest label and the value
+       column (never less than a short stub, so a very long translated label
+       ellipsizes instead of squeezing the track away). */
+    int track_right = val_x - cat_scale(14);
+    int track_left = x + cat_scale(12) + jw__display_label_col_w(body) + cat_scale(20);
+    int track_w = track_right - track_left;
+    if (track_w < cat_scale(96)) track_w = cat_scale(96);
     int track_h = cat_scale(9);
-    int track_x = val_x - cat_scale(14) - track_w;
+    int track_x = track_right - track_w;
     int track_y = ty + (fh - track_h) / 2;
     int radius = track_h / 2;
 
@@ -2827,7 +2861,7 @@ static void jw__draw_slider_row_ex(const jw_settings_ui *ui, int x, int y_base, 
 
 static void jw__draw_slider_row(const jw_settings_ui *ui, int x, int y_base, int w,
                                 int row, const char *label, int percent, int item_h) {
-    jw__draw_slider_row_ex(ui, x, y_base, w, row, label, percent, NULL, true, item_h);
+    jw__draw_slider_row_ex(ui, x, y_base, w, row, label, percent, NULL, item_h);
 }
 
 static void jw__draw_audio_output_row(const jw_settings_ui *ui, int x, int y_base, int w,
@@ -2871,13 +2905,15 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
                                        jw__draw_display_focus);
     jw__draw_slider_row(ui, x, y_base, w, JW_DISPLAY_BRIGHTNESS, "Brightness",
                         ui->brightness_percent, item_h);
-    /* Colour temperature. Slider from MIN_K..MAX_K; the value fed to the gamma
+    /* Color temperature. Slider from MIN_K..MAX_K; the value fed to the gamma
        curve, not a measured white point, so on this warm panel a target above
-       NEUTRAL_K (6500) reads as "cooler". NEUTRAL_K shows as "Neutral" and is a
-       true LUT bypass. Greyed on platforms without the capability, and also
-       while HDMI drives the active output -- the LUT corrects the internal
-       panel specifically and would just mistint whatever the TV is showing
-       (see the JW_PLATFORM_ACTION_SET_COLOR_TEMP guard in device_mlp1.c). */
+       NEUTRAL_K (6500) reads as "cooler". NEUTRAL_K shows as "Neutral" and
+       applies no correction (an identity ramp). Where it can't be used -- on
+       platforms without the capability, and while HDMI drives the active output
+       (the LUT corrects the internal panel specifically and would just mistint
+       whatever the TV is showing; see the JW_PLATFORM_ACTION_SET_COLOR_TEMP guard
+       in device_mlp1.c) -- it is a plain text row like Black Frame Insertion's
+       "100/120 Hz only" and HDMI Output's "Not connected", not a greyed slider. */
     bool ct_on_tv = ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0;
     bool ct_enabled = ui->color_temp_supported && !ct_on_tv;
     int ct_span = JW_PLATFORM_COLOR_TEMP_MAX_K - JW_PLATFORM_COLOR_TEMP_MIN_K;
@@ -2892,8 +2928,13 @@ static void jw__render_display(const jw_settings_ui *ui, int x, int y, int w, in
     } else {
         snprintf(ct_val, sizeof(ct_val), T("%d K"), ui->color_temp_kelvin);
     }
-    jw__draw_slider_row_ex(ui, x, y_base, w, JW_DISPLAY_COLOR_TEMP, "Color Temperature",
-                           ct_enabled ? ct_fill : 0, ct_val, ct_enabled, item_h);
+    if (ct_enabled) {
+        jw__draw_slider_row_ex(ui, x, y_base, w, JW_DISPLAY_COLOR_TEMP, "Color Temperature",
+                               ct_fill, ct_val, item_h);
+    } else {
+        jw__render_list_row_h(&ui->display_list, x, y_base, w, JW_DISPLAY_COLOR_TEMP,
+                              "Color Temperature", ct_val, false, item_h);
+    }
     /* Display refresh rate (kPanelRefreshHz). Cycler when the platform supports it. */
     char refresh_val[16];
     snprintf(refresh_val, sizeof(refresh_val), T("%d Hz"), ui->refresh_rate_hz);
@@ -7287,7 +7328,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                        active output -- see jw__render_display. */
                     if (ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0) {
                         snprintf(status_buf, status_size, "%s",
-                                 T("colour temperature unavailable while HDMI is active"));
+                                 T("color temperature unavailable while HDMI is active"));
                     } else {
                         jw__set_color_temp(ui,
                             ui->color_temp_kelvin + dir * JW_PLATFORM_COLOR_TEMP_STEP_K,
