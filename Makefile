@@ -640,6 +640,14 @@ power-request-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/power-request-test internal/platform/power_request_test.c
 	$(BUILD)/bin/power-request-test
 
+# jawaka-ledd ships for the MLP1 only, but it is plain libc: a host build is
+# enough to prove it stops, and hands the LED ring back, when jawakad dies.
+.PHONY: ledd-spawn-test
+ledd-spawn-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ledd-spawn-test-ledd cmd/jawaka-ledd/main.c
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/ledd-spawn-test internal/platform/ledd_spawn_test.c
+	$(BUILD)/bin/ledd-spawn-test $(BUILD)/bin/ledd-spawn-test-ledd
+
 storage-health-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/storage-health-test \
 		internal/storage/health_test.c internal/storage/health.c internal/core/log.c
