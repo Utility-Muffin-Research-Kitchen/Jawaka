@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "internal/platform/power_request.h"
+#include "internal/platform/weston_initd.h"
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -1434,7 +1435,7 @@ static int jw__mlp1_set_refresh_rate(int hz) {
                 dup2(devnull, STDERR_FILENO);
             }
             execl("/bin/sh", "sh", "-c",
-                  "cd / && /etc/init.d/S49weston restart; sleep 1; "
+                  JW_WESTON_INITD("restart") "; sleep 1; "
                   "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
                   (char *)NULL);
             _exit(127);
@@ -1491,8 +1492,8 @@ static int jw__mlp1_set_hdmi_output(int mode) {
     if (mode == JW_MLP1_HDMI_OFF) {
         snprintf(script, sizeof(script),
             "rm -f /tmp/.weston_drm.conf %s; "
-            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=DSI-1; "
-            "cd / && /etc/init.d/S49weston restart; sleep 1; "
+            JW_WESTON_ROOTFS_ENV " WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=DSI-1 "
+            JW_WESTON_INITD_SCRIPT " restart; sleep 1; "
             "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
             JW_MLP1_WESTON_OVERRIDE_INI);
     } else {
@@ -1509,8 +1510,9 @@ static int jw__mlp1_set_hdmi_output(int mode) {
         snprintf(script, sizeof(script),
             "rm -f %s; "
             "printf 'output:HDMI-A-1:mode=%s\\n%soutput:HDMI-A-1:primary\\n' > /tmp/.weston_drm.conf; "
-            "export WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf; "
-            "cd / && /etc/init.d/S49weston restart; sleep 1; "
+            JW_WESTON_ROOTFS_ENV " WESTON_DRM_SINGLE_HEAD=1 WESTON_DRM_PRIMARY=HDMI-A-1 "
+            "WESTON_DRM_VIRTUAL_SIZE=960x720 WESTON_DRM_CONFIG=/tmp/.weston_drm.conf "
+            JW_WESTON_INITD_SCRIPT " restart; sleep 1; "
             "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
             JW_MLP1_WESTON_OVERRIDE_INI, modestr, rectline);
     }

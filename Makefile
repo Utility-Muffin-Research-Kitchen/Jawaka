@@ -623,6 +623,15 @@ storage-sources-test: | $(BUILD)/bin
 		internal/storage/sources_test.c internal/storage/sources.c
 	$(BUILD)/bin/storage-sources-test
 
+# Weston outlives the Leaf generation that restarts it; see weston_initd.h.
+# Every S49weston call in C must go through that header.
+.PHONY: weston-initd-test
+weston-initd-test: | $(BUILD)/bin
+	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/weston-initd-test internal/platform/weston_initd_test.c
+	$(BUILD)/bin/weston-initd-test
+	@if grep -rn --include='*.c' '/etc/init.d/S49weston' cmd internal; then \
+		echo "weston-initd-test: start S49weston through JW_WESTON_INITD (weston_initd.h)"; exit 1; fi
+
 .PHONY: power-request-test
 power-request-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/power-request-test internal/platform/power_request_test.c
