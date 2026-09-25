@@ -14,6 +14,7 @@
 #include "internal/launcher/bios.h"
 #include "internal/launcher/core_selection.h"
 #include "internal/launcher/standalone_policy.h"
+#include "internal/launcher/ra_account.h"
 #include "internal/launcher/menu_escape.h"
 #include "internal/launcher/pico8.h"
 #include "cmd/jawakad/osd_client.h"
@@ -177,6 +178,9 @@ typedef struct {
     /* Standalone targets only, resolved once from the catalog core by
        jw__try_path_core() before any eligibility check. */
     jw_standalone_policy standalone_policy;
+    /* Catalog provenance (Apps-relative, "" for release cores), retained for
+       account-target authorization; policy embeds no provider string. */
+    char provider[128];
     bool supports_menu;
     bool requires_direct_drm;
     bool native_pico8;
@@ -2556,49 +2560,49 @@ static void jw__refresh_platform_cache(jw_daemon_state *state) {
 }
 
 /* Stored RetroAchievements credentials (Settings > Games > Accounts). Resolved from the
-   DB in the daemon parent, then applied to the environment of the forked
-   RetroArch child only — never the long-lived daemon — so the plaintext
-   password is not inherited by the launcher, OSD, ledd, or app-store apps. */
-typedef struct {
-    char user[64];
-    char pass[128];
-} jw_cheevos_creds;
+   DB in the daemon parent as one coherent account snapshot (state, validated
+   credentials, revision), then applied to the environment of the forked child
+   only — never the long-lived daemon — so the plaintext password is not
+   inherited by the launcher, OSD, ledd, or app-store apps. The same snapshot
+   drives two handoffs: the existing RetroArch per-launch config (JAWAKA_CHEEVOS_*)
+   and the standalone-ra-account-v1 child-only snapshot (UMRK_RA_ACCOUNT_*). */
+typedef jw_ra_account jw_cheevos_creds;
 
-/* Read the credentials from the DB. Opening SQLite happens in the parent before
-   fork(); the resulting struct is applied child-side via jw__cheevos_apply_env. */
+/* Read the account from the DB. Opening SQLite happens in the parent before
+   fork(); the resulting struct is applied child-side via jw__cheevos_apply_env
+   (RetroArch) or jw_ra_account_prepare_standalone_env (authorized
+   standalones). A legacy saved pair without a revision is initialized
+   exactly once here, in the parent, with the same checked write discipline
+   as an account save; if that cannot happen the snapshot is unreadable (or
+   invalid for malformed rows), never configured with a guessed revision. */
 static void jw__cheevos_resolve(jw_daemon_state *state, jw_cheevos_creds *creds) {
-    creds->user[0] = '\0';
-    creds->pass[0] = '\0';
-    if (state && state->db_path) {
-        (void)jw_db_get_setting(state->db_path, "retroachievements_user",
-                                creds->user, sizeof(creds->user));
-        (void)jw_db_get_setting(state->db_path, "retroachievements_pass",
-                                creds->pass, sizeof(creds->pass));
-    }
+    jw_db_resolve_ra_account_handoff(state ? state->db_path : NULL, creds);
 }
 
 /* Apply the credentials to the CURRENT process environment. The RetroArch
    session config writer (jw_prepare_retroarch_config) reads JAWAKA_CHEEVOS_* via
    getenv to put cheevos_username/password into the per-launch config that
-   RetroArch validates at launch. Empty credentials clear the vars, leaving
-   whatever the user configured inside RetroArch untouched. Because the writer
-   runs in the daemon parent, callers there must clear the env again right after
-   the config is written so the plaintext password does not persist. */
+   RetroArch validates at launch. Any account state that is not a complete
+   configured pair clears the vars, and the session config then carries no
+   account (cheevos_* are protected keys, never merged in from the shared
+   config). Because the writer runs in the daemon parent,
+   callers there must clear the env again right after the config is written
+   so the plaintext password does not persist. */
 static void jw__cheevos_apply_env(const jw_cheevos_creds *creds) {
-    if (creds->user[0] && creds->pass[0]) {
-        setenv("JAWAKA_CHEEVOS_USERNAME", creds->user, 1);
-        setenv("JAWAKA_CHEEVOS_PASSWORD", creds->pass, 1);
-    } else {
-        unsetenv("JAWAKA_CHEEVOS_USERNAME");
-        unsetenv("JAWAKA_CHEEVOS_PASSWORD");
-    }
+    jw_ra_account_apply_retroarch_env(creds);
 }
 
 /* Drop any cheevos credentials from the current process environment. Paired with
    jw__cheevos_apply_env around a config write in the parent. */
 static void jw__cheevos_clear_env(void) {
-    unsetenv("JAWAKA_CHEEVOS_USERNAME");
-    unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+    jw_ra_account_clear_retroarch_env();
+}
+
+/* Drop the standalone-ra-account-v1 snapshot from the current process
+   environment. Every standalone and app child starts from a cleared set; only
+   an authorized target gets a fresh snapshot applied right after. */
+static void jw__ra_account_clear_env(void) {
+    jw_ra_account_clear_env();
 }
 
 /* True when the pak dir refers to the bundled RetroArch app — the one app whose
@@ -6147,6 +6151,8 @@ static bool jw__try_path_core(const jw_daemon_state *state,
     target->kind = JW_LAUNCH_TARGET_STANDALONE;
     snprintf(target->path, sizeof(target->path), "%s", exec_path);
     snprintf(target->core_id, sizeof(target->core_id), "%s", core->id ? core->id : "");
+    snprintf(target->provider, sizeof(target->provider), "%s",
+             core->provider ? core->provider : "");
     target->standalone_policy = policy;
     target->supports_menu = core->supports_menu;
     target->requires_direct_drm = core->requires_direct_drm;
@@ -9392,7 +9398,11 @@ static int jw__spawn_app(jw_daemon_state *state) {
                         app_is_pico8 && use_roster);
         /* Only the RetroArch runner gets cheevos creds (it writes its own RA
            config); every other app has them explicitly cleared so the plaintext
-           password never reaches third-party app code. */
+           password never reaches third-party app code. The standalone account
+           snapshot (UMRK_RA_ACCOUNT_*) is never valid for any .pak app child:
+           RetroArch is not a standalone consumer and non-RetroArch app pak
+           launches are not authorized targets. */
+        jw__ra_account_clear_env();
         if (app_is_retroarch) {
             jw__cheevos_apply_env(&cheevos);
         } else {
@@ -9620,6 +9630,19 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_appearance_env appearance;
     jw_appearance_resolve(state->db_path, &appearance);
 
+    /* Resolve the RetroAchievements account and this target's authorization
+       for the standalone-ra-account-v1 handoff in the parent: opening SQLite
+       is not fork-safe post-fork, and the fresh snapshot applies child-side
+       only to an authorized target. */
+    jw_ra_account ra_account;
+    jw__cheevos_resolve(state, &ra_account);
+    char ra_platform_dir[PATH_MAX];
+    bool ra_account_authorized =
+        jw__platform_path(ra_platform_dir, sizeof(ra_platform_dir), state) == 0 &&
+        jw_ra_account_target_authorized(target->path, target->core_id,
+                                        &target->standalone_policy,
+                                        target->provider, ra_platform_dir);
+
     if (direct_drm) {
         jw_log_info("direct DRM handoff requested for core=%s rom=%s",
                     target->core_id, rom_abs);
@@ -9714,6 +9737,11 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw__publish_source_content_env(rom_source);
         jw_pico8_export(target->native_pico8 ? &pico8_paths : NULL,
                         target->native_pico8 && use_roster);
+        /* Standalone children never inherit the RetroArch credential channel
+           (JAWAKA_CHEEVOS_* is RetroArch's own per-launch config handoff) or
+           a stale account snapshot; only an authorized target receives the
+           fresh snapshot, applied over a cleared set. */
+        jw_ra_account_prepare_standalone_env(&ra_account, ra_account_authorized);
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
@@ -15671,6 +15699,16 @@ int main(int argc, char *argv[]) {
     unsetenv("SDL_JOYSTICK_DISABLE_UDEV");
     unsetenv("SDL_JOYSTICK_HIDAPI");
     unsetenv("JAWAKA_INPUT_ROSTER_COUNT");
+
+    /* The RA account snapshot is per-launch child state, resolved fresh from
+       the DB for each authorized standalone launch. Never inherit it: with
+       the daemon's own environment cleared here, no app, helper or emulator
+       can receive a stale snapshot through ordinary inheritance. The
+       RetroArch channel is per-launch too: set only around the config write
+       and cleared right after, so an inherited value is always stale, and
+       supervised services inherit this environment as-is. */
+    jw__ra_account_clear_env();
+    jw__cheevos_clear_env();
 
     if (jw_platform_init(&state.platform, state.runtime_dir, state.sdcard_root) != 0) {
         jw_log_error("could not initialize platform service");

@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1508,6 +1509,15 @@ int jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,
         return -1;
     }
 
+    /* A multi-key reader expects one coherent snapshot: wrap the SELECT loop
+       in a checked read transaction so a concurrent account save cannot split
+       the result between the old and new values. */
+    if (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        jw_db_close(db);
+        return -1;
+    }
+
     int ok = 1;
     for (int i = 0; i < count; i++) {
         if (!queries[i].key || !queries[i].out || queries[i].out_size == 0) {
@@ -1531,6 +1541,9 @@ int jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,
         }
     }
 
+    /* COMMIT vs ROLLBACK is immaterial for a pure read; both end it. A failed
+       end still means the snapshot was coherent, so it is not an error here. */
+    sqlite3_exec(db, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
     sqlite3_finalize(stmt);
     jw_db_close(db);
     return ok ? 0 : -1;
@@ -1699,6 +1712,404 @@ int jw_db_set_settings(const char *db_path, const char *const *keys,
     sqlite3_finalize(stmt);
     jw_db_close(db);
     return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* RetroAchievements account (producer of standalone-ra-account-v1)   */
+/* ------------------------------------------------------------------ */
+
+static const char *JW_RA_USER_KEY = "retroachievements_user";
+static const char *JW_RA_PASS_KEY = "retroachievements_pass";
+static const char *JW_RA_REVISION_KEY = "retroachievements_revision";
+
+/* Strict UTF-8: rejects overlong forms, surrogates and values past U+10FFFF.
+   A stored credential that is not valid UTF-8 is INVALID, never repaired. */
+static bool jw__ra_utf8_valid(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned long cp;
+        int len;
+        if (*p < 0x80) { p++; continue; }
+        if ((*p & 0xE0) == 0xC0)      { len = 2; cp = *p & 0x1F; }
+        else if ((*p & 0xF0) == 0xE0) { len = 3; cp = *p & 0x0F; }
+        else if ((*p & 0xF8) == 0xF0) { len = 4; cp = *p & 0x07; }
+        else return false;
+        for (int i = 1; i < len; i++) {
+            if ((p[i] & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (p[i] & 0x3F);
+        }
+        if (len == 2 && cp < 0x80) return false;          /* overlong */
+        if (len == 3 && cp < 0x800) return false;         /* overlong */
+        if (len == 4 && cp < 0x10000) return false;       /* overlong */
+        if (cp >= 0xD800 && cp <= 0xDFFF) return false;   /* surrogate */
+        if (cp > 0x10FFFF) return false;
+        p += len;
+    }
+    return true;
+}
+
+jw_ra_credentials_check jw_ra_credentials_check_values(const char *user,
+                                                       const char *pass) {
+    if (!user || !pass || !user[0] || !pass[0])
+        return JW_RA_CREDENTIALS_INCOMPLETE;
+    if (strlen(user) > JW_RA_USERNAME_MAX || strlen(pass) > JW_RA_PASSWORD_MAX)
+        return JW_RA_CREDENTIALS_TOO_LONG;
+    for (const char *s = user; *s; s++)
+        if (*s == '\r' || *s == '\n') return JW_RA_CREDENTIALS_BAD_CHARS;
+    for (const char *s = pass; *s; s++)
+        if (*s == '\r' || *s == '\n') return JW_RA_CREDENTIALS_BAD_CHARS;
+    if (!jw__ra_utf8_valid(user) || !jw__ra_utf8_valid(pass))
+        return JW_RA_CREDENTIALS_BAD_CHARS;
+    return JW_RA_CREDENTIALS_OK;
+}
+
+/* Parse a stored revision: digits only, 1..JW_RA_REVISION_MAX. Returns 0 and
+   writes *out on success; -1 when absent, malformed or out of range. */
+static int jw__ra_revision_parse(const char *text, long long *out) {
+    if (!text || !text[0]) return -1;
+    long long v = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p < '0' || *p > '9') return -1;
+        int digit = *p - '0';
+        if (v > (JW_RA_REVISION_MAX - digit) / 10) return -1;
+        v = v * 10 + digit;
+    }
+    if (v < 1 || v > JW_RA_REVISION_MAX) return -1;
+    *out = v;
+    return 0;
+}
+
+/* One settings row, read byte-exactly: *text gets the value (truncated to
+   text_size, which callers size beyond the contract limits on purpose),
+   *bytes gets the true stored length, and the return value is 1 when the row
+   exists, 0 when absent, -1 on error. A length mismatch against the C string
+   means an embedded NUL. */
+static int jw__ra_read_raw(sqlite3_stmt *stmt, const char *key,
+                           char *text, size_t text_size, int *bytes) {
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) {
+        text[0] = '\0';
+        *bytes = 0;
+        return 0;
+    }
+    if (rc != SQLITE_ROW) {
+        text[0] = '\0';
+        *bytes = 0;
+        return -1;
+    }
+    const unsigned char *t = sqlite3_column_text(stmt, 0);
+    int n = sqlite3_column_bytes(stmt, 0);
+    if (!t) { t = (const unsigned char *)""; n = 0; }
+    snprintf(text, text_size, "%.*s", (int)text_size - 1, (const char *)t);
+    *bytes = n;
+    return 1;
+}
+
+int jw_db_resolve_ra_account(const char *db_path, jw_ra_account *out) {
+    if (!db_path || !out) return -1;
+    out->state = JW_RA_ACCOUNT_UNREADABLE;
+    out->user[0] = '\0';
+    out->pass[0] = '\0';
+    out->revision = 0;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *sql = "SELECT value FROM settings WHERE key = ?;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    /* One checked read transaction: the three keys are one coherent snapshot
+       even while another writer saves a new account. */
+    if (sqlite3_exec(db, "BEGIN", NULL, NULL, NULL) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        jw_db_close(db);
+        return -1;
+    }
+    /* +8 headroom so embedded NUL / oversize detection works on the copy. */
+    char user[JW_RA_USERNAME_MAX + 8];
+    char pass[JW_RA_PASSWORD_MAX + 8];
+    char rev_text[32];
+    int user_bytes = 0, pass_bytes = 0;
+    int have_user = jw__ra_read_raw(stmt, JW_RA_USER_KEY, user, sizeof(user), &user_bytes);
+    int have_pass = jw__ra_read_raw(stmt, JW_RA_PASS_KEY, pass, sizeof(pass), &pass_bytes);
+    int have_rev  = jw__ra_read_raw(stmt, JW_RA_REVISION_KEY, rev_text, sizeof(rev_text), &(int){0});
+    int read_ok = (have_user >= 0 && have_pass >= 0 && have_rev >= 0);
+    int end_rc = sqlite3_exec(db, read_ok ? "COMMIT" : "ROLLBACK",
+                              NULL, NULL, NULL);
+    sqlite3_finalize(stmt);
+    jw_db_close(db);
+    if (!read_ok || end_rc != SQLITE_OK) return -1;
+
+    long long revision = 0;
+    int revision_ok = (have_rev == 1) &&
+                      (jw__ra_revision_parse(rev_text, &revision) == 0);
+    /* A present revision row that cannot be parsed makes any state verdict
+       unreliable: malformed is not missing. */
+    int revision_bad = (have_rev == 1) && !revision_ok;
+
+    int user_present = (have_user == 1) && user[0];
+    int pass_present = (have_pass == 1) && pass[0];
+
+    if ((have_user == 1 && (int)strlen(user) != user_bytes) ||
+        (have_pass == 1 && (int)strlen(pass) != pass_bytes)) {
+        /* Embedded NUL: the column bytes disagree with the C string. */
+        out->state = JW_RA_ACCOUNT_INVALID;
+        return 0;
+    }
+    if (user_present && pass_present) {
+        if (user_bytes > JW_RA_USERNAME_MAX || pass_bytes > JW_RA_PASSWORD_MAX ||
+            jw_ra_credentials_check_values(user, pass) != JW_RA_CREDENTIALS_OK ||
+            revision_bad) {
+            out->state = JW_RA_ACCOUNT_INVALID;
+            return 0;
+        }
+        out->state = JW_RA_ACCOUNT_CONFIGURED;
+        snprintf(out->user, sizeof(out->user), "%s", user);
+        snprintf(out->pass, sizeof(out->pass), "%s", pass);
+        out->revision = revision_ok ? revision : 0; /* 0: legacy, init once */
+        return 0;
+    }
+    if (user_present != pass_present) {
+        out->state = JW_RA_ACCOUNT_INVALID; /* incomplete pair */
+        return 0;
+    }
+    if (revision_bad) {
+        out->state = JW_RA_ACCOUNT_INVALID;
+        return 0;
+    }
+    if (revision_ok) {
+        out->state = JW_RA_ACCOUNT_SIGNED_OUT;
+        out->revision = revision;
+        return 0;
+    }
+    out->state = JW_RA_ACCOUNT_NEVER_CONFIGURED;
+    return 0;
+}
+
+/* Read the raw revision inside an already-open checked write transaction.
+   Returns 1 with *cur set when a valid stored revision exists, 0 when it is
+   absent or malformed (the caller restarts at 1), -1 on read error. */
+static int jw__ra_read_current_revision(sqlite3 *db, sqlite3_stmt *stmt,
+                                        long long *cur) {
+    char rev_text[32];
+    int have = jw__ra_read_raw(stmt, JW_RA_REVISION_KEY,
+                               rev_text, sizeof(rev_text), &(int){0});
+    (void)db;
+    if (have < 0) return -1;
+    if (have == 1 && jw__ra_revision_parse(rev_text, cur) == 0) return 1;
+    return 0;
+}
+
+static int jw__ra_upsert(sqlite3_stmt *stmt, const char *key, const char *value) {
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, value, -1, SQLITE_TRANSIENT);
+    return sqlite3_step(stmt) == SQLITE_DONE ? 0 : -1;
+}
+
+/* Shared body of save/clear: BEGIN IMMEDIATE, read the current revision,
+   compute the next one (failing on the contractual ceiling instead of
+   wrapping), upsert user/pass/revision, COMMIT. Returns 0 with the new
+   revision in *revision_out; -1 with nothing committed on any failure. */
+static int jw__ra_write_account(const char *db_path, const char *user,
+                                const char *pass, long long *revision_out) {
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *select_sql = "SELECT value FROM settings WHERE key = ?;";
+    static const char *upsert_sql =
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;";
+    sqlite3_stmt *select_stmt = NULL;
+    sqlite3_stmt *upsert_stmt = NULL;
+    if (sqlite3_prepare_v2(db, select_sql, -1, &select_stmt, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db, upsert_sql, -1, &upsert_stmt, NULL) != SQLITE_OK) {
+        sqlite3_finalize(select_stmt);
+        sqlite3_finalize(upsert_stmt);
+        jw_db_close(db);
+        return -1;
+    }
+
+    int rc = -1;
+    /* IMMEDIATE: the read of the old revision and its increment are one
+       checked write transaction, so a concurrent save can never double-use
+       the same revision. */
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
+        goto out;
+    long long cur = 0;
+    if (jw__ra_read_current_revision(db, select_stmt, &cur) < 0)
+        goto rollback;
+    if (cur >= JW_RA_REVISION_MAX) goto rollback; /* overflow: fail, no wrap */
+    long long next = cur + 1;
+    char rev_canonical[32];
+    snprintf(rev_canonical, sizeof(rev_canonical), "%lld", next);
+
+    if (jw__ra_upsert(upsert_stmt, JW_RA_USER_KEY, user) != 0) goto rollback;
+    if (jw__ra_upsert(upsert_stmt, JW_RA_PASS_KEY, pass) != 0) goto rollback;
+    if (jw__ra_upsert(upsert_stmt, JW_RA_REVISION_KEY, rev_canonical) != 0)
+        goto rollback;
+    /* A failed COMMIT (busy/disk-full/ro-flip) leaves nothing durably
+       written, so surface it as an error rather than reporting success. */
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+        goto rollback;
+    *revision_out = next;
+    rc = 0;
+    goto out;
+rollback:
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+out:
+    sqlite3_finalize(select_stmt);
+    sqlite3_finalize(upsert_stmt);
+    jw_db_close(db);
+    return rc;
+}
+
+int jw_db_save_ra_account(const char *db_path, const char *user,
+                          const char *pass, long long *revision_out) {
+    if (!db_path || !revision_out) return -1;
+    if (jw_ra_credentials_check_values(user, pass) != JW_RA_CREDENTIALS_OK)
+        return -1;
+    return jw__ra_write_account(db_path, user, pass, revision_out);
+}
+
+int jw_db_clear_ra_account(const char *db_path, long long *revision_out) {
+    if (!db_path || !revision_out) return -1;
+    return jw__ra_write_account(db_path, "", "", revision_out);
+}
+
+int jw_db_ensure_ra_account_revision(const char *db_path,
+                                     long long *revision_out) {
+    if (!db_path || !revision_out) return -1;
+
+    sqlite3 *db = NULL;
+    if (jw_db_open(db_path, &db) != 0) return -1;
+    if (jw_db_apply_schema(db) != 0) {
+        jw_db_close(db);
+        return -1;
+    }
+
+    static const char *select_sql = "SELECT value FROM settings WHERE key = ?;";
+    static const char *upsert_sql =
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;";
+    sqlite3_stmt *select_stmt = NULL;
+    sqlite3_stmt *upsert_stmt = NULL;
+    if (sqlite3_prepare_v2(db, select_sql, -1, &select_stmt, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db, upsert_sql, -1, &upsert_stmt, NULL) != SQLITE_OK) {
+        sqlite3_finalize(select_stmt);
+        sqlite3_finalize(upsert_stmt);
+        jw_db_close(db);
+        return -1;
+    }
+
+    int result = -1;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
+        goto out;
+    {
+        char user[JW_RA_USERNAME_MAX + 8];
+        char pass[JW_RA_PASSWORD_MAX + 8];
+        int have_user = jw__ra_read_raw(select_stmt, JW_RA_USER_KEY,
+                                        user, sizeof(user), &(int){0});
+        int have_pass = jw__ra_read_raw(select_stmt, JW_RA_PASS_KEY,
+                                        pass, sizeof(pass), &(int){0});
+        long long cur = 0;
+        int rev_state = jw__ra_read_current_revision(db, select_stmt, &cur);
+        if (have_user < 0 || have_pass < 0 || rev_state < 0)
+            goto rollback;
+        if (have_user != 1 || !user[0] || have_pass != 1 || !pass[0]) {
+            /* No legacy pair: nothing to initialize. */
+            if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+                goto rollback;
+            result = 1;
+            goto out;
+        }
+        if (rev_state == 1) {
+            /* Another writer already initialized it, or it never lacked one. */
+            if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+                goto rollback;
+            *revision_out = cur;
+            result = 0;
+            goto out;
+        }
+        char rev_text[32];
+        int have_rev = jw__ra_read_raw(select_stmt, JW_RA_REVISION_KEY,
+                                       rev_text, sizeof(rev_text), &(int){0});
+        if (have_rev < 0) goto rollback;
+        if (have_rev == 1) {
+            /* Present but malformed: do not guess a repair; the resolver
+               reports the pair INVALID until the next explicit save. */
+            if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+                goto rollback;
+            result = 1;
+            goto out;
+        }
+        if (jw__ra_upsert(upsert_stmt, JW_RA_REVISION_KEY, "1") != 0)
+            goto rollback;
+        if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+            goto rollback;
+        *revision_out = 1;
+        result = 0;
+    }
+    goto out;
+rollback:
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+out:
+    sqlite3_finalize(select_stmt);
+    sqlite3_finalize(upsert_stmt);
+    jw_db_close(db);
+    return result;
+}
+
+/* Replace whatever *out holds with a credential-free verdict. */
+static void jw__ra_account_verdict(jw_ra_account *out,
+                                   jw_ra_account_state state) {
+    memset(out->user, 0, sizeof(out->user));
+    memset(out->pass, 0, sizeof(out->pass));
+    out->revision = 0;
+    out->state = state;
+}
+
+void jw_db_resolve_ra_account_handoff(const char *db_path, jw_ra_account *out) {
+    if (!out) return;
+    if (jw_db_resolve_ra_account(db_path, out) != 0) {
+        jw__ra_account_verdict(out, JW_RA_ACCOUNT_UNREADABLE);
+        return;
+    }
+    if (out->state != JW_RA_ACCOUNT_CONFIGURED || out->revision > 0) return;
+
+    /* A legacy pair: the counter must exist before the first handoff. */
+    long long revision = 0;
+    int ensured = jw_db_ensure_ra_account_revision(db_path, &revision);
+    if (ensured < 0) {
+        /* Could not read or write the counter: never guess one. */
+        jw__ra_account_verdict(out, JW_RA_ACCOUNT_UNREADABLE);
+        return;
+    }
+    /* A save can commit before or after revision initialization. Never attach
+       its counter to credentials from the earlier legacy read: read the whole
+       account again, even when initialization succeeded. */
+    if (jw_db_resolve_ra_account(db_path, out) != 0) {
+        jw__ra_account_verdict(out, JW_RA_ACCOUNT_UNREADABLE);
+        return;
+    }
+    if (out->state == JW_RA_ACCOUNT_CONFIGURED && out->revision <= 0)
+        jw__ra_account_verdict(out, JW_RA_ACCOUNT_INVALID);
 }
 
 int jw_db_load_rumble_settings(const char *db_path, jw_rumble_settings *out) {
