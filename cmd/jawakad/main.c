@@ -9781,7 +9781,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         if (direct_drm) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
-                (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                (void)system("cd / && /etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
                 state->direct_drm_weston_stopped = false;
                 jw__spawn_osd(state);
             }
@@ -9881,7 +9881,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
             if (direct_drm) {
                 state->direct_drm_active = false;
                 if (state->direct_drm_weston_stopped) {
-                    (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                    (void)system("cd / && /etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
                     state->direct_drm_weston_stopped = false;
                     jw__spawn_osd(state);
                 }
@@ -15320,7 +15320,12 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
                 jw_log_info("direct DRM handoff ended; restarting Weston");
-                (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                /* From /, not jawakad's own working directory, which is the
+                   launcher bundle on the SD card: Weston outlives this
+                   session, and a compositor sitting in a card directory
+                   (worse, one a launcher update has since replaced) keeps
+                   the card from closing at shutdown. */
+                (void)system("cd / && /etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
                 sleep(1);
                 state->direct_drm_weston_stopped = false;
             }
