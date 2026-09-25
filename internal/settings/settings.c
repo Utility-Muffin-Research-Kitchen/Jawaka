@@ -7323,9 +7323,10 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                                           status_buf, status_size);
                 else if (ui->display_list.cursor == JW_DISPLAY_COLOR_TEMP) {
                     /* Left = warmer (lower K), right = cooler, matching the
-                       Brightness row's left-lowers convention. Greyed (and
-                       refused here without a round trip) while HDMI is the
-                       active output -- see jw__render_display. */
+                       Brightness row's left-lowers convention. Refused here
+                       without a round trip while HDMI is the active output
+                       (the row is plain "Panel only" text then; see
+                       jw__render_display). */
                     if (ui->hdmi_connected == 1 && ui->hdmi_output_mode != 0) {
                         snprintf(status_buf, status_size, "%s",
                                  T("color temperature unavailable while HDMI is active"));

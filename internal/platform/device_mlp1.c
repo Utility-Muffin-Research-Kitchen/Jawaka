@@ -1406,7 +1406,8 @@ static int jw__mlp1_write_weston_override(int hz) {
 #define JW_MLP1_DRM_CARD "/dev/dri/card0"
 
 /* Tanner Helland black-body approximation: kelvin -> per-channel linear scale in
-   [0,1]. At/above ~6600 K red is pulled down (cooler); below it, blue. */
+   [0,1]. Above ~6600 K red (and a little green) is pulled down: cooler. Below it
+   blue is pulled down instead: warmer. */
 static void jw__mlp1_kelvin_to_rgb(int kelvin, double *r, double *g, double *b) {
     double t = kelvin / 100.0;
     double red, grn, blu;
@@ -1485,7 +1486,7 @@ static int jw__mlp1_drm_pick_crtc(int fd, uint32_t *crtc_id, uint32_t *gamma_siz
    read /sys/kernel/debug/dri/0/summary: on this vendor kernel the summary dump
    (vop2_crtc_debugfs_dump) dereferences NULL when it runs during a CRTC state
    change, which oopsed the kernel and left the display dead until a hard reset
-   (see BUG-vop2-debugfs-summary-oops.md). The daemon used to read it every second. */
+   (the daemon read it every second). */
 static int jw__mlp1_get_display_mode(jw_platform_context *ctx, int *width, int *height,
                                      int *hz) {
     (void)ctx;
@@ -1684,7 +1685,7 @@ static int jw__mlp1_set_hdmi_output(int mode) {
        Weston restart and the connector switch, so it would tint the TV. It is
        deliberately NOT swapped here: on hardware, LUT writes made during an HDMI
        switch were followed by kernel oopses in the vendor's debugfs display dump
-       (which nothing reads any more, see jw__mlp1_get_display_mode). jawakad swaps
+       (which Jawaka no longer reads, see jw__mlp1_get_display_mode). jawakad swaps
        the LUT from its HDMI poll instead, once the link has been quiet for a
        couple of seconds and the display has a mode again, so it does not race the
        mode change (see jw__tick_hdmi): identity for a TV, the panel value again
