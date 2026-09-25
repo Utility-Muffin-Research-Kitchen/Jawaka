@@ -255,8 +255,8 @@ static int s_mlp1_hdmi_mode = -1;
 
 /* Color-temperature target in K, last value we programmed into the CRTC gamma
    LUT. -1 until set. The LUT survives Weston restarts (see the color
-   temperature section below) but is not expected to survive a reboot, so
-   jawakad replays the persisted value at startup; this cache just answers
+   temperature section below) but a cold power cycle clears it, so jawakad
+   replays the persisted value at startup; this cache just answers
    platform-status without re-reading the ramp. */
 static int s_mlp1_color_temp_k = -1;
 
@@ -1396,9 +1396,10 @@ static int jw__mlp1_write_weston_override(int hz) {
    mainline, so this is not portable. Verified on hardware: the ramp takes
    effect live with no compositor restart (unlike refresh rate).
    The LUT stays programmed across a Weston restart, an HDMI connector switch
-   and the direct-DRM handoff (all observed on hardware); it is not expected to
-   survive a reboot, so jawakad replays the persisted value at startup
-   (jw__apply_color_temp).
+   and the direct-DRM handoff (all observed on hardware); a cold power-off and
+   power-on clears it (also observed: the panel came up neutral with a daemon
+   that never touches it), so jawakad replays the persisted value at startup
+   (jw__apply_color_temp). A warm reboot has not been tried.
 
    The kernel uapi headers (<drm/drm.h>) provide the ioctl structs, so there is
    no libdrm header/link dependency in the cross build. */

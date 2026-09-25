@@ -7830,8 +7830,8 @@ static void jw__apply_persisted_brightness(jw_daemon_state *state) {
 }
 
 /* The color-temperature LUT lives in the CRTC, not in any config file, so unlike
-   the refresh-rate weston.ini override it has to be replayed at startup (it is
-   not expected to survive a reboot; see the color temperature section in
+   the refresh-rate weston.ini override it has to be replayed at startup (a cold
+   power cycle clears it; see the color temperature section in
    device_mlp1.c), and swapped whenever HDMI hands the CRTC to or from the
    panel (jw__schedule_lut_sync). Key is "color_temp_k", written by the settings
    UI; absent means "never set" -> leave the panel at its native white point.
