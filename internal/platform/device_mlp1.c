@@ -1424,28 +1424,9 @@ static int jw__mlp1_set_refresh_rate(int hz) {
        restart — the old OSD survives the kill of Weston but never redraws).
        Detached child so the action returns to the caller immediately. Double-fork
        so the grandchild reparents to init and is auto-reaped (no zombie). */
-    pid_t pid = fork();
-    if (pid == 0) {
-        pid_t grandchild = fork();
-        if (grandchild == 0) {
-            setsid();
-            int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
-            if (devnull >= 0) {
-                dup2(devnull, STDOUT_FILENO);
-                dup2(devnull, STDERR_FILENO);
-            }
-            execl("/bin/sh", "sh", "-c",
-                  JW_WESTON_INITD("restart") "; sleep 1; "
-                  "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
-                  (char *)NULL);
-            _exit(127);
-        }
-        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
-    }
-    if (pid > 0) {
-        int status = 0;
-        waitpid(pid, &status, 0);   /* reap the intermediate child only */
-    }
+    (void)jw_weston_initd_spawn_detached(
+        JW_WESTON_INITD("restart") "; sleep 1; "
+        "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null");
     return 0;
 }
 
@@ -1517,28 +1498,11 @@ static int jw__mlp1_set_hdmi_output(int mode) {
             JW_MLP1_WESTON_OVERRIDE_INI, modestr, rectline);
     }
 
-    /* Double-fork so the grandchild reparents to init and is auto-reaped (no
-       zombie); the original parent reaps only the intermediate child. */
-    pid_t pid = fork();
-    if (pid == 0) {
-        pid_t grandchild = fork();
-        if (grandchild == 0) {
-            setsid();
-            int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
-            if (devnull >= 0) {
-                dup2(devnull, STDOUT_FILENO);
-                dup2(devnull, STDERR_FILENO);
-            }
-            execl("/bin/sh", "sh", "-c", script, (char *)NULL);
-            _exit(127);
-        }
-        _exit(0);   /* intermediate child exits immediately; grandchild reparents to init */
-    }
-    if (pid < 0) {
+    /* Detached (double-fork) so the action returns at once; see
+       jw_weston_initd_spawn_detached. */
+    if (jw_weston_initd_spawn_detached(script) != 0) {
         return -1;
     }
-    int status = 0;
-    waitpid(pid, &status, 0);   /* reap the intermediate child only */
     s_mlp1_hdmi_mode = mode;
     return 0;
 }

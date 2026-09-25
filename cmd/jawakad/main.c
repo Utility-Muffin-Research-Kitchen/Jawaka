@@ -9625,10 +9625,10 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw_log_info("direct DRM handoff requested for core=%s rom=%s",
                     target->core_id, rom_abs);
         jw__stop_osd_child(state);
-        int stop_rc = system(JW_WESTON_INITD("stop") " </dev/null >/dev/null 2>&1; "
-                             "for i in 1 2 3 4 5 6 7 8 9 10; do "
-                             "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
-                             "done; exit 0");
+        int stop_rc = jw_weston_initd_run(JW_WESTON_INITD("stop") " </dev/null >/dev/null 2>&1; "
+                                          "for i in 1 2 3 4 5 6 7 8 9 10; do "
+                                          "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
+                                          "done; exit 0");
         if (stop_rc == -1) {
             jw_log_warn("direct DRM handoff: could not invoke Weston stop");
         }
@@ -9685,7 +9685,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         if (direct_drm) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
-                (void)system(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
+                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                 state->direct_drm_weston_stopped = false;
                 jw__spawn_osd(state);
             }
@@ -9775,7 +9775,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
             if (direct_drm) {
                 state->direct_drm_active = false;
                 if (state->direct_drm_weston_stopped) {
-                    (void)system(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
+                    (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                     state->direct_drm_weston_stopped = false;
                     jw__spawn_osd(state);
                 }
@@ -15188,7 +15188,7 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
                    or mapping libraries from a launcher bundle that an update
                    has since replaced keeps the card from closing at
                    shutdown. See weston_initd.h. */
-                (void)system(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
+                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                 sleep(1);
                 state->direct_drm_weston_stopped = false;
             }
