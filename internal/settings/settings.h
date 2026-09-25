@@ -383,8 +383,14 @@ typedef struct {
     jw_ipc_scrape_queue_info *scrape_queue_cache;
     bool               scrape_queue_have_cache;
     unsigned           scrape_queue_next_poll_ms;
-    char               ra_username[64];     /* RetroAchievements account ("" = signed out); exported
-                                               to RetroArch's session config, which validates it */
+    char               ra_username[64];     /* RetroAchievements account; set only when the stored
+                                               account resolves configured (never a truncated copy) */
+    bool               ra_account_needs_repair; /* stored account is invalid or unreadable: shown
+                                                   as not saved, and Y may clear it */
+    bool               ra_pass_unwritable;  /* saved username or password has no exact
+                                               retroarch.cfg spelling: kept for the other
+                                               emulators, RetroArch launches skip sign-in;
+                                               see jw_retroarch_cfg_value_form */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     /* Home Tabs editor. home_tab_order holds all JW_HOME_TABS_COUNT tabs in
        display order (each a jw_tab index); home_tab_hidden says which of them the
@@ -589,6 +595,14 @@ int  jw_settings_user_theme_index(const jw_settings_ui *ui);   /* -1 = None */
    rebuild for the layout (the Layout row raises theme_changed for it). */
 bool jw_settings_ui_select_user_theme(jw_settings_ui *ui, int index,
                                       char *status_buf, size_t status_size);
+/* RetroAchievements row. The loader reads the stored account through the same
+   validator the launch handoff uses (jw_db_resolve_ra_account), so a row the
+   handoff would reject is never displayed as saved. */
+void jw_settings_ui_load_ra_account(jw_settings_ui *ui);
+/* The row's value text: "Saved: <name>", "Not saved - sign in again" for an
+   invalid or unreadable stored account, else "Not signed in". */
+void jw_settings_ra_account_value(const jw_settings_ui *ui, char *out,
+                                  size_t out_size);
 /* Effective grid density: the user's explicit choice wins, then the selected
    theme's recommendation, else 0/0 meaning "use the stylesheet". Returns true
    when cols/rows were set by either source. */

@@ -14,6 +14,7 @@
 #include "internal/launcher/bios.h"
 #include "internal/launcher/core_selection.h"
 #include "internal/launcher/standalone_policy.h"
+#include "internal/launcher/ra_account.h"
 #include "internal/launcher/menu_escape.h"
 #include "internal/launcher/pico8.h"
 #include "cmd/jawakad/osd_client.h"
@@ -28,6 +29,7 @@
 #include "internal/platform/paths.h"
 #include "internal/platform/perf_policy.h"
 #include "internal/platform/raofflineproxy.h"
+#include "internal/platform/weston_initd.h"
 #include "internal/platform/wifi.h"
 #include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
@@ -178,6 +180,9 @@ typedef struct {
     /* Standalone targets only, resolved once from the catalog core by
        jw__try_path_core() before any eligibility check. */
     jw_standalone_policy standalone_policy;
+    /* Catalog provenance (Apps-relative, "" for release cores), retained for
+       account-target authorization; policy embeds no provider string. */
+    char provider[128];
     bool supports_menu;
     bool requires_direct_drm;
     bool native_pico8;
@@ -2051,6 +2056,18 @@ static int jw__reply_error(jw_ipc_client *client, const char *message) {
     return jw__reply_json(client, root);
 }
 
+/* Retry re-runs the same launch through every gate, so it is only offered
+   where the block is transient and re-checkable without a decision from the
+   user: RAOfflineProxy not ready yet. Every other block keeps its two-way
+   Cancel / Play Anyway contract. */
+static bool jw__game_launch_retry_allowed(const jw_daemon_state *state) {
+    return state && state->game_launch_blocked &&
+           !state->game_check_decision &&
+           !state->game_launch_blocked_requires_verified_stop &&
+           strcmp(state->game_launch_blocked_reason,
+                  "raofflineproxy-not-ready") == 0;
+}
+
 static int jw__reply_game_launch_blocked(jw_daemon_state *state,
                                          jw_ipc_client *client) {
     cJSON *root = cJSON_CreateObject();
@@ -2070,6 +2087,9 @@ static int jw__reply_game_launch_blocked(jw_daemon_state *state,
     cJSON_AddBoolToObject(root, "blocked", blocked);
     cJSON_AddBoolToObject(root, "override_allowed",
                           state->game_launch_blocked && !conservative_active);
+    cJSON_AddBoolToObject(root, "retry_allowed",
+                          jw__game_launch_retry_allowed(state) &&
+                              !conservative_active);
     cJSON_AddBoolToObject(
         root, "requires_verified_stop",
         state->game_launch_blocked_requires_verified_stop);
@@ -2557,49 +2577,75 @@ static void jw__refresh_platform_cache(jw_daemon_state *state) {
 }
 
 /* Stored RetroAchievements credentials (Settings > Games > Accounts). Resolved from the
-   DB in the daemon parent, then applied to the environment of the forked
-   RetroArch child only — never the long-lived daemon — so the plaintext
-   password is not inherited by the launcher, OSD, ledd, or app-store apps. */
-typedef struct {
-    char user[64];
-    char pass[128];
-} jw_cheevos_creds;
+   DB in the daemon parent as one coherent account snapshot (state, validated
+   credentials, revision), then applied to the environment of the forked child
+   only — never the long-lived daemon — so the plaintext password is not
+   inherited by the launcher, OSD, ledd, or app-store apps. The same snapshot
+   drives two handoffs: the existing RetroArch per-launch config (JAWAKA_CHEEVOS_*)
+   and the standalone-ra-account-v1 child-only snapshot (UMRK_RA_ACCOUNT_*). */
+typedef jw_ra_account jw_cheevos_creds;
 
-/* Read the credentials from the DB. Opening SQLite happens in the parent before
-   fork(); the resulting struct is applied child-side via jw__cheevos_apply_env. */
+/* Read the account from the DB. Opening SQLite happens in the parent before
+   fork(); the resulting struct is applied child-side via jw__cheevos_apply_env
+   (RetroArch) or jw_ra_account_prepare_standalone_env (authorized
+   standalones). A legacy saved pair without a revision is initialized
+   exactly once here, in the parent, with the same checked write discipline
+   as an account save; if that cannot happen the snapshot is unreadable (or
+   invalid for malformed rows), never configured with a guessed revision. */
 static void jw__cheevos_resolve(jw_daemon_state *state, jw_cheevos_creds *creds) {
-    creds->user[0] = '\0';
-    creds->pass[0] = '\0';
-    if (state && state->db_path) {
-        (void)jw_db_get_setting(state->db_path, "retroachievements_user",
-                                creds->user, sizeof(creds->user));
-        (void)jw_db_get_setting(state->db_path, "retroachievements_pass",
-                                creds->pass, sizeof(creds->pass));
-    }
+    jw_db_resolve_ra_account_handoff(state ? state->db_path : NULL, creds);
 }
 
 /* Apply the credentials to the CURRENT process environment. The RetroArch
    session config writer (jw_prepare_retroarch_config) reads JAWAKA_CHEEVOS_* via
    getenv to put cheevos_username/password into the per-launch config that
-   RetroArch validates at launch. Empty credentials clear the vars, leaving
-   whatever the user configured inside RetroArch untouched. Because the writer
-   runs in the daemon parent, callers there must clear the env again right after
-   the config is written so the plaintext password does not persist. */
+   RetroArch validates at launch. Any account state that is not a complete
+   configured pair clears the vars, and the session config then carries no
+   account (cheevos_* are protected keys, never merged in from the shared
+   config). Because the writer runs in the daemon parent,
+   callers there must clear the env again right after the config is written
+   so the plaintext password does not persist. */
 static void jw__cheevos_apply_env(const jw_cheevos_creds *creds) {
-    if (creds->user[0] && creds->pass[0]) {
-        setenv("JAWAKA_CHEEVOS_USERNAME", creds->user, 1);
-        setenv("JAWAKA_CHEEVOS_PASSWORD", creds->pass, 1);
-    } else {
-        unsetenv("JAWAKA_CHEEVOS_USERNAME");
-        unsetenv("JAWAKA_CHEEVOS_PASSWORD");
-    }
+    jw_ra_account_apply_retroarch_env(creds);
 }
 
 /* Drop any cheevos credentials from the current process environment. Paired with
    jw__cheevos_apply_env around a config write in the parent. */
 static void jw__cheevos_clear_env(void) {
-    unsetenv("JAWAKA_CHEEVOS_USERNAME");
-    unsetenv("JAWAKA_CHEEVOS_PASSWORD");
+    jw_ra_account_clear_retroarch_env();
+}
+
+/* Drop the standalone-ra-account-v1 snapshot from the current process
+   environment. Every standalone and app child starts from a cleared set; only
+   an authorized target gets a fresh snapshot applied right after. */
+static void jw__ra_account_clear_env(void) {
+    jw_ra_account_clear_env();
+}
+
+/* Drop the bundled-Flycast proxy route intent and Flycast's developer probe
+   channel from the CURRENT process environment. UMRK_FLYCAST_RA_ROUTE is
+   per-launch child state for one authorized target; FLYCAST_PROBE and
+   FLYCAST_CONFIG_OVERRIDES belong to explicit developer probes run outside
+   the daemon and must never ride along on a managed launch, where they could
+   inject an achievement host or Hardcore override. */
+static void jw__flycast_route_clear_env(void) {
+    unsetenv(JW_FLYCAST_RA_ROUTE_ENV);
+    unsetenv("FLYCAST_PROBE");
+    unsetenv("FLYCAST_CONFIG_OVERRIDES");
+}
+
+/* The RAOfflineProxy service is live when the supervisor holds a positive
+   PGID in RUNNING or STARTING for a present, valid pak; see
+   jw_raofflineproxy_entry_live, which the RetroArch gate
+   (jw__raofflineproxy_route) and the Flycast route intent share. */
+static bool jw__raofflineproxy_entry_live(const jw_svc_supervised *entry) {
+    return jw_raofflineproxy_entry_live(entry);
+}
+
+static bool jw__raofflineproxy_service_live(const jw_daemon_state *state) {
+    return state && state->services &&
+           jw__raofflineproxy_entry_live(
+               jw_svc_supervisor_find(state->services, JW_ROP_SERVICE_ID));
 }
 
 /* True when the pak dir refers to the bundled RetroArch app — the one app whose
@@ -4709,7 +4755,17 @@ static bool jw__reserve_game_process_group(pid_t pid) {
 }
 
 static int jw__game_child_set_own_group(void) {
-    return setpgid(0, 0);
+    /* The parent calls setpgid(pid, pid) concurrently. Darwin can refuse
+       this call with EPERM while the parent's is in flight, so accept the
+       group the parent made (the parent's own check, mirrored) and retry
+       briefly before failing closed. */
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (setpgid(0, 0) == 0 || getpgrp() == getpid()) {
+            return 0;
+        }
+        usleep(1000);
+    }
+    return -1;
 }
 
 static int jw__signal_tracked_game_group(jw_daemon_state *state, int signal) {
@@ -6148,6 +6204,8 @@ static bool jw__try_path_core(const jw_daemon_state *state,
     target->kind = JW_LAUNCH_TARGET_STANDALONE;
     snprintf(target->path, sizeof(target->path), "%s", exec_path);
     snprintf(target->core_id, sizeof(target->core_id), "%s", core->id ? core->id : "");
+    snprintf(target->provider, sizeof(target->provider), "%s",
+             core->provider ? core->provider : "");
     target->standalone_policy = policy;
     target->supports_menu = core->supports_menu;
     target->requires_direct_drm = core->requires_direct_drm;
@@ -9389,7 +9447,12 @@ static int jw__spawn_app(jw_daemon_state *state) {
                         app_is_pico8 && use_roster);
         /* Only the RetroArch runner gets cheevos creds (it writes its own RA
            config); every other app has them explicitly cleared so the plaintext
-           password never reaches third-party app code. */
+           password never reaches third-party app code. The standalone account
+           snapshot (UMRK_RA_ACCOUNT_*) is never valid for any .pak app child:
+           RetroArch is not a standalone consumer and non-RetroArch app pak
+           launches are not authorized targets. */
+        jw__ra_account_clear_env();
+        jw__flycast_route_clear_env();
         if (app_is_retroarch) {
             jw__cheevos_apply_env(&cheevos);
         } else {
@@ -9617,14 +9680,49 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
     jw_appearance_env appearance;
     jw_appearance_resolve(state->db_path, &appearance);
 
+    /* Resolve the RetroAchievements account and this target's authorization
+       for the standalone-ra-account-v1 handoff in the parent: opening SQLite
+       is not fork-safe post-fork, and the fresh snapshot applies child-side
+       only to an authorized target. */
+    jw_ra_account ra_account;
+    jw__cheevos_resolve(state, &ra_account);
+    char ra_platform_dir[PATH_MAX];
+    bool ra_account_authorized =
+        jw__platform_path(ra_platform_dir, sizeof(ra_platform_dir), state) == 0 &&
+        jw_ra_account_target_authorized(target->path, target->core_id,
+                                        &target->standalone_policy,
+                                        target->provider, ra_platform_dir);
+    /* Proxy plan P2: service intent for the bundled Flycast build that can
+       route. Jawaka neither probes health nor decides per-game eligibility
+       here; Flycast does both after loading its own per-game settings. */
+    bool flycast_route_authorized =
+        ra_account_authorized &&
+        jw_flycast_ra_route_target_authorized(target->path, target->core_id,
+                                              &target->standalone_policy,
+                                              target->provider,
+                                              ra_platform_dir);
+    bool flycast_route_live =
+        flycast_route_authorized && jw__raofflineproxy_service_live(state);
+    if (flycast_route_authorized) {
+        jw_log_info("RAOfflineProxy: Flycast route intent %s",
+                    jw_flycast_ra_route_value(flycast_route_live));
+    } else if (!target->standalone_policy.provider_bound &&
+               target->standalone_policy.release ==
+                   JW_STANDALONE_RELEASE_FLYCAST &&
+               jw__raofflineproxy_service_live(state)) {
+        jw_log_info("RAOfflineProxy: this Flycast build cannot route through "
+                    "the offline service; achievements stay direct until "
+                    "Flycast is updated");
+    }
+
     if (direct_drm) {
         jw_log_info("direct DRM handoff requested for core=%s rom=%s",
                     target->core_id, rom_abs);
         jw__stop_osd_child(state);
-        int stop_rc = system("/etc/init.d/S49weston stop </dev/null >/dev/null 2>&1; "
-                             "for i in 1 2 3 4 5 6 7 8 9 10; do "
-                             "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
-                             "done; exit 0");
+        int stop_rc = jw_weston_initd_run(JW_WESTON_INITD("stop") " </dev/null >/dev/null 2>&1; "
+                                          "for i in 1 2 3 4 5 6 7 8 9 10; do "
+                                          "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
+                                          "done; exit 0");
         if (stop_rc == -1) {
             jw_log_warn("direct DRM handoff: could not invoke Weston stop");
         }
@@ -9681,7 +9779,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         if (direct_drm) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
-                (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                 state->direct_drm_weston_stopped = false;
                 jw__spawn_osd(state);
             }
@@ -9711,6 +9809,16 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw__publish_source_content_env(rom_source);
         jw_pico8_export(target->native_pico8 ? &pico8_paths : NULL,
                         target->native_pico8 && use_roster);
+        /* Standalone children never inherit the RetroArch credential channel
+           (JAWAKA_CHEEVOS_* is RetroArch's own per-launch config handoff) or
+           a stale account snapshot; only an authorized target receives the
+           fresh snapshot, applied over a cleared set. */
+        jw_ra_account_prepare_standalone_env(&ra_account, ra_account_authorized);
+        jw__flycast_route_clear_env();
+        if (flycast_route_authorized) {
+            setenv(JW_FLYCAST_RA_ROUTE_ENV,
+                   jw_flycast_ra_route_value(flycast_route_live), 1);
+        }
         setenv("JAWAKA_GAME_SYSTEM", state->pending_launch_system, 1);
         setenv("JAWAKA_GAME_ROM", state->pending_launch_rom_path, 1);
         setenv("JAWAKA_GAME_ROM_ABS", rom_abs, 1);
@@ -9771,7 +9879,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
             if (direct_drm) {
                 state->direct_drm_active = false;
                 if (state->direct_drm_weston_stopped) {
-                    (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                    (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                     state->direct_drm_weston_stopped = false;
                     jw__spawn_osd(state);
                 }
@@ -9897,11 +10005,7 @@ static jw__rop_gate_result jw__raofflineproxy_route(
        may be a proxy to talk to", and it is true however the service got
        there. Everything else is direct with zero wait, which is exactly what
        the plan asks for: absent, invalid, disabled, or session-stopped. */
-    bool service_live = entry && entry->pgid > 0 &&
-                        (entry->state == JW_SVC_STATE_RUNNING ||
-                         entry->state == JW_SVC_STATE_STARTING);
-    if (!entry || !entry->pak_present || !entry->manifest_valid ||
-        !service_live) {
+    if (!jw__raofflineproxy_entry_live(entry)) {
         jw_log_info("RAOfflineProxy: direct launch (service %s)",
                     !entry ? "absent"
                     : !entry->pak_present || !entry->manifest_valid
@@ -13361,6 +13465,42 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_ok(client, "game-launch-override", NULL);
     }
 
+    /* Retry answers the RAOfflineProxy prompt without bypassing anything: the
+       same pending launch runs again with no override and no skipped check,
+       so it takes the full coordination path and the same bounded (500 ms,
+       fail-closed) routing decision as a fresh launch. Healthy now means a
+       normal proxied launch; still not ready re-blocks with the same reason
+       and the replacement launcher shows the prompt again. One attempt per
+       request, never a loop. */
+    if (strcmp(type->valuestring, "game-launch-retry") == 0) {
+        if (!jw__game_launch_retry_allowed(state) ||
+            state->active_game.active || state->pending_launch_game_id <= 0) {
+            cJSON_Delete(root);
+            return jw__reply_error(client,
+                                   "blocked game launch is not retryable");
+        }
+        state->pending_launch = true;
+        state->pending_launch_resume_switcher =
+            state->game_launch_blocked_resume_switcher;
+        state->pending_launch_skip_check = false;
+        state->pending_launch_override_unverified = false;
+        state->game_launch_blocked = false;
+        state->game_launch_blocked_resume_switcher = false;
+        state->game_launch_blocked_requires_verified_stop = false;
+        state->game_launch_blocked_service_id[0] = '\0';
+        state->game_launch_blocked_reason[0] = '\0';
+        jw_log_info("life1: user chose Retry for blocked launch");
+        bool launch_now = state->child_pid <= 0;
+        cJSON_Delete(root);
+        if (launch_now && jw__spawn_pending_game(state) != 0) {
+            return jw__reply_error(client,
+                                   state->game_launch_blocked
+                                       ? "retried game launch still blocked"
+                                       : "retried game launch failed");
+        }
+        return jw__reply_ok(client, "game-launch-retry", NULL);
+    }
+
     if (strcmp(type->valuestring, "launch-app") == 0) {
         cJSON *pak_dir = cJSON_GetObjectItemCaseSensitive(root, "pak_dir");
         const char *error_message = NULL;
@@ -15178,7 +15318,13 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
                 jw_log_info("direct DRM handoff ended; restarting Weston");
-                (void)system("/etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                /* From / and with the rootfs environment, not jawakad's
+                   card working directory and launcher LD_LIBRARY_PATH:
+                   Weston outlives this session, and a compositor sitting in
+                   or mapping libraries from a launcher bundle that an update
+                   has since replaced keeps the card from closing at
+                   shutdown. See weston_initd.h. */
+                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                 sleep(1);
                 state->direct_drm_weston_stopped = false;
             }
@@ -15668,6 +15814,17 @@ int main(int argc, char *argv[]) {
     unsetenv("SDL_JOYSTICK_DISABLE_UDEV");
     unsetenv("SDL_JOYSTICK_HIDAPI");
     unsetenv("JAWAKA_INPUT_ROSTER_COUNT");
+
+    /* The RA account snapshot is per-launch child state, resolved fresh from
+       the DB for each authorized standalone launch. Never inherit it: with
+       the daemon's own environment cleared here, no app, helper or emulator
+       can receive a stale snapshot through ordinary inheritance. The
+       RetroArch channel is per-launch too: set only around the config write
+       and cleared right after, so an inherited value is always stale, and
+       supervised services inherit this environment as-is. */
+    jw__ra_account_clear_env();
+    jw__cheevos_clear_env();
+    jw__flycast_route_clear_env();
 
     if (jw_platform_init(&state.platform, state.runtime_dir, state.sdcard_root) != 0) {
         jw_log_error("could not initialize platform service");

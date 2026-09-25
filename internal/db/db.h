@@ -271,6 +271,90 @@ int  jw_db_get_setting(const char *db_path, const char *key,
                         char *out, size_t out_size);
 int  jw_db_get_settings(const char *db_path, jw_db_setting_query *queries,
                         int count);
+
+/* RetroAchievements account (producer side of standalone-ra-account-v1).
+   The account is the three settings keys retroachievements_user,
+   retroachievements_pass and retroachievements_revision. The revision is a
+   positive decimal that increments inside the same checked write transaction
+   as every successful account save or clear; a clear stores empty credentials
+   and retains the new revision. A credential is raw UTF-8 of at most
+   JW_RA_USERNAME_MAX / JW_RA_PASSWORD_MAX bytes (excluding NUL) and may not
+   contain NUL, CR or LF. */
+#define JW_RA_USERNAME_MAX 63
+#define JW_RA_PASSWORD_MAX 127
+#define JW_RA_REVISION_MAX 4611686018427387904LL /* 2^62 */
+
+typedef enum {
+    /* No credentials and no revision: the account was never saved. */
+    JW_RA_ACCOUNT_NEVER_CONFIGURED = 0,
+    /* Complete, validated credentials. revision > 0, or 0 for a legacy pair
+       stored before revisions existed; the caller initializes that once with
+       jw_db_ensure_ra_account_revision() before handing the account out. */
+    JW_RA_ACCOUNT_CONFIGURED,
+    /* Credentials cleared; the retained revision proves the sign-out. */
+    JW_RA_ACCOUNT_SIGNED_OUT,
+    /* Stored values are oversized, malformed or an incomplete pair, or the
+       revision is malformed. Not sign-out: durable data stays for repair. */
+    JW_RA_ACCOUNT_INVALID,
+    /* The settings database could not be read. Also not sign-out. */
+    JW_RA_ACCOUNT_UNREADABLE,
+} jw_ra_account_state;
+
+typedef struct {
+    jw_ra_account_state state;
+    char user[JW_RA_USERNAME_MAX + 1];  /* valid only for CONFIGURED */
+    char pass[JW_RA_PASSWORD_MAX + 1];
+    long long revision;                 /* CONFIGURED and SIGNED_OUT only */
+} jw_ra_account;
+
+/* Read all three account keys in one checked read transaction, validate them
+   and classify the result. Never returns truncated credentials as valid:
+   oversized or malformed stored values come back INVALID. */
+int  jw_db_resolve_ra_account(const char *db_path, jw_ra_account *out);
+
+/* Replace the saved account in one checked write transaction, bumping the
+   revision (0/absent/malformed restarts at 1; >= JW_RA_REVISION_MAX fails
+   instead of wrapping). On any failure the prior account is unchanged and -1
+   is returned; *revision_out is left alone. The caller validates input first
+   with jw_ra_credentials_check() and pre-validates again inside here. */
+int  jw_db_save_ra_account(const char *db_path, const char *user,
+                           const char *pass, long long *revision_out);
+
+/* Sign out: store empty credentials and the next revision in one checked
+   write transaction. */
+int  jw_db_clear_ra_account(const char *db_path, long long *revision_out);
+
+/* One-time initialization of a legacy saved pair's missing revision, using
+   the same checked-transaction discipline as a save. Returns 0 and the
+   current (or newly assigned) revision; 1 when there is no legacy pair to
+   initialize; -1 on failure. A malformed stored revision is left alone and
+   reported as 1 (the resolver classifies the pair INVALID). */
+int  jw_db_ensure_ra_account_revision(const char *db_path,
+                                      long long *revision_out);
+
+/* The one resolve every launch handoff uses (the standalone-ra-account-v1
+   snapshot and the RetroArch per-launch config): jw_db_resolve_ra_account plus
+   the one-time legacy revision initialization. It never returns CONFIGURED
+   without a revision in 1..JW_RA_REVISION_MAX, because the contract forbids
+   fabricating one:
+     - the store cannot be read, or the initialization cannot read or write
+       it                                                    -> UNREADABLE
+     - the stored rows are malformed, including a revision row that is
+       present but not a canonical positive integer          -> INVALID
+   Any result other than CONFIGURED carries no credentials. Always fills
+   *out; never fails. */
+void jw_db_resolve_ra_account_handoff(const char *db_path, jw_ra_account *out);
+
+typedef enum {
+    JW_RA_CREDENTIALS_OK = 0,
+    JW_RA_CREDENTIALS_INCOMPLETE,  /* missing or empty half of the pair */
+    JW_RA_CREDENTIALS_TOO_LONG,    /* exceeds the byte limits */
+    JW_RA_CREDENTIALS_BAD_CHARS,   /* NUL/CR/LF or invalid UTF-8 */
+} jw_ra_credentials_check;
+
+jw_ra_credentials_check jw_ra_credentials_check_values(const char *user,
+                                                       const char *pass);
+
 int  jw_db_set_setting(const char *db_path, const char *key, const char *value);
 /* Write multiple key/value settings in a single open + transaction. Far cheaper
    than N jw_db_set_setting() calls, each of which re-opens the DB and re-applies
