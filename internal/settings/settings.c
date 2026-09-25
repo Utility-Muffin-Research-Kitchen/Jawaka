@@ -1661,9 +1661,12 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 snprintf(ui->ra_username, sizeof(ui->ra_username), "%.63s",
                          values[JW_SETTING_RA_USER]);
             ui->ra_pass_unwritable =
-                jw__setting_has(values, found, JW_SETTING_RA_PASS) &&
-                jw_retroarch_cfg_value_form(values[JW_SETTING_RA_PASS]) ==
-                    JW_RA_CFG_UNWRITABLE;
+                (jw__setting_has(values, found, JW_SETTING_RA_PASS) &&
+                 jw_retroarch_cfg_value_form(values[JW_SETTING_RA_PASS]) ==
+                     JW_RA_CFG_UNWRITABLE) ||
+                (jw__setting_has(values, found, JW_SETTING_RA_USER) &&
+                 jw_retroarch_cfg_value_form(values[JW_SETTING_RA_USER]) ==
+                     JW_RA_CFG_UNWRITABLE);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
                 ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
@@ -4381,7 +4384,7 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
     char ra_value[96];
     if (ui->ra_username[0] && ui->ra_pass_unwritable) {
         snprintf(ra_value, sizeof(ra_value),
-                 "Password not usable by RetroArch - sign in again");
+                 "Saved: %.48s - not usable by RetroArch", ui->ra_username);
     } else if (ui->ra_username[0]) {
         snprintf(ra_value, sizeof(ra_value), "Saved: %s", ui->ra_username);
     } else {
@@ -7679,22 +7682,22 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 }
                 /* RetroArch's config format has no escapes, so a password
                    with a double quote plus a space, '#' or non-ASCII letter
-                   cannot reach it intact (jw_retroarch_cfg_value_form). Refuse
-                   it here rather than fail sign-in at every launch. */
-                if (jw_retroarch_cfg_value_form(kb.text) == JW_RA_CFG_UNWRITABLE ||
-                    jw_retroarch_cfg_value_form(pw.text) == JW_RA_CFG_UNWRITABLE) {
-                    snprintf(status_buf, status_size,
-                             "Not saved - RetroArch can't use a password with "
-                             "a \" and a space, # or accented letter");
-                    break;
-                }
+                   cannot reach it intact (jw_retroarch_cfg_value_form). Save
+                   it anyway: the standalone emulators take the account
+                   through their own handoff and can use it. RetroArch
+                   launches skip sign-in for it rather than fail every time. */
+                bool retroarch_unusable =
+                    jw_retroarch_cfg_value_form(kb.text) == JW_RA_CFG_UNWRITABLE ||
+                    jw_retroarch_cfg_value_form(pw.text) == JW_RA_CFG_UNWRITABLE;
                 snprintf(ui->ra_username, sizeof(ui->ra_username), "%.*s",
                          (int)sizeof(ui->ra_username) - 1, kb.text);
-                ui->ra_pass_unwritable = false;
+                ui->ra_pass_unwritable = retroarch_unusable;
                 jw__persist(ui, "retroachievements_user", ui->ra_username);
                 jw__persist(ui, "retroachievements_pass", pw.text);
-                snprintf(status_buf, status_size,
-                         "Saved - RetroArch signs in at game launch");
+                snprintf(status_buf, status_size, "%s",
+                         retroarch_unusable
+                             ? "Saved - RetroArch can't use this password"
+                             : "Saved - RetroArch signs in at game launch");
                 break;
             }
             case CAT_BTN_Y:
