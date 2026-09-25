@@ -385,6 +385,9 @@ typedef struct {
     unsigned           scrape_queue_next_poll_ms;
     char               ra_username[64];     /* RetroAchievements account ("" = signed out); exported
                                                to RetroArch's session config, which validates it */
+    bool               ra_pass_unwritable;  /* saved password has no exact retroarch.cfg spelling,
+                                               so launches skip sign-in; see
+                                               jw_retroarch_cfg_value_form */
     int                startup_tab_index;   /* jw_tab the launcher opens on */
     /* Home Tabs editor. home_tab_order holds all JW_HOME_TABS_COUNT tabs in
        display order (each a jw_tab index); home_tab_hidden says which of them the

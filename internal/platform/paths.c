@@ -1861,6 +1861,59 @@ static int jw__roster_user_count(const int player_joypad_indices[4]) {
 }
 #endif
 
+/* RetroArch's config parser (libretro-common/file/config_file.c,
+   config_file_extract_value) has no escape sequences at all. A value that
+   opens with '"' ends at the NEXT '"', with every byte in between taken
+   literally, backslashes included; any other value runs to the first byte
+   that is not isgraph(). Lines are split on '\n' before either rule applies,
+   and config_file_strip_comment cuts an unquoted value at '#'.
+
+   So a value has at most two exact spellings:
+     quoted  key = "value"   any value without '"', '\n' or '\r'
+     bare    key = value     non-empty printable ASCII with no '#' that does
+                             not start with '"' -- a '"' later on is literal
+   A value with a '"' that also needs quoting (a space, a '#', a non-ASCII
+   byte) cannot be written at all. The old writer backslash-escaped '"' and
+   '\', which RetroArch reads back as a truncated or doubled value.
+   paths_config_test.c checks both spellings against a vendored copy of the
+   real parser. */
+jw_ra_cfg_form jw_retroarch_cfg_value_form(const char *value) {
+    if (!value) {
+        return JW_RA_CFG_QUOTED;
+    }
+    if (!strpbrk(value, "\"\n\r")) {
+        return JW_RA_CFG_QUOTED;
+    }
+    if (value[0] == '"') {
+        return JW_RA_CFG_UNWRITABLE;
+    }
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (*p < 0x21 || *p > 0x7e || *p == '#') {
+            return JW_RA_CFG_UNWRITABLE;
+        }
+    }
+    return JW_RA_CFG_BARE;
+}
+
+/* Write one key in whichever spelling RetroArch reads back exactly. An
+   unwritable value is left out rather than written wrong; only the key is
+   logged, because values can be credentials. Returns false when omitted. */
+static bool jw__retroarch_cfg_string(FILE *fp, const char *key, const char *value) {
+    switch (jw_retroarch_cfg_value_form(value)) {
+        case JW_RA_CFG_QUOTED:
+            fprintf(fp, "%s = \"%s\"\n", key, value ? value : "");
+            return true;
+        case JW_RA_CFG_BARE:
+            fprintf(fp, "%s = %s\n", key, value);
+            return true;
+        case JW_RA_CFG_UNWRITABLE:
+        default:
+            jw_log_warn("retroarch config: %s value cannot be written so "
+                        "RetroArch reads it back intact; key left out", key);
+            return false;
+    }
+}
+
 /* Write input_max_users plus one joypad index per roster member.
    RetroArch keeps these indices in an unsigned array and uses them to index
    its pad state, so writing a "-1" sentinel for an unused player wraps to a
@@ -1868,17 +1921,6 @@ static int jw__roster_user_count(const int player_joypad_indices[4]) {
    the roster instead and emit indices only for players that have a pad: the
    child's private /dev/input already guarantees no other joystick exists, so
    there is nothing left for a phantom player to bind to. */
-static void jw__retroarch_cfg_string(FILE *fp, const char *key, const char *value) {
-    fprintf(fp, "%s = \"", key);
-    for (const char *p = value; p && *p; p++) {
-        if (*p == '\\' || *p == '"') {
-            fputc('\\', fp);
-        }
-        fputc(*p, fp);
-    }
-    fprintf(fp, "\"\n");
-}
-
 #ifdef PLATFORM_MLP1
 static void jw__retroarch_cfg_max_users(FILE *fp,
                                         const int player_joypad_indices[4]) {
@@ -2862,7 +2904,20 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
        password never lands in the persistent shared config. */
     const char *cheevos_user = jw__env_value("JAWAKA_CHEEVOS_USERNAME");
     const char *cheevos_pass = jw__env_value("JAWAKA_CHEEVOS_PASSWORD");
-    if (cheevos_user && cheevos_user[0] && cheevos_pass && cheevos_pass[0]) {
+    if (cheevos_user && cheevos_user[0] && cheevos_pass && cheevos_pass[0] &&
+        (jw_retroarch_cfg_value_form(cheevos_user) == JW_RA_CFG_UNWRITABLE ||
+         jw_retroarch_cfg_value_form(cheevos_pass) == JW_RA_CFG_UNWRITABLE)) {
+        /* Settings refuses to store such credentials, so this is an older
+           saved account. Signing in with a mangled password would only earn a
+           login failure, so leave all three keys out: they are protected from
+           the merge, so the session simply runs without achievements. The
+           Accounts row tells the user to sign in again. Never log the values. */
+        jw_log_warn("RetroAchievements: saved %s has no exact spelling in "
+                    "retroarch.cfg; not signing in this session",
+                    jw_retroarch_cfg_value_form(cheevos_user) ==
+                            JW_RA_CFG_UNWRITABLE
+                        ? "username" : "password");
+    } else if (cheevos_user && cheevos_user[0] && cheevos_pass && cheevos_pass[0]) {
         jw__retroarch_cfg_string(fp, "cheevos_enable", "true");
         jw__retroarch_cfg_string(fp, "cheevos_username", cheevos_user);
         jw__retroarch_cfg_string(fp, "cheevos_password", cheevos_pass);

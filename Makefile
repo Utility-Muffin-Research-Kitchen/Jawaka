@@ -1071,7 +1071,11 @@ RETROARCH_CONFIG_TEST_SRCS := \
 # Both platform shapes, because the hotkey ownership/migration matrix and the
 # rest of the MLP1 protected-key policy only compile under -DPLATFORM_MLP1,
 # while this Mac lane's default build is the one that covers the generic path.
+# The credential round trip parses with a vendored copy of RetroArch's config
+# parser; the drift check compares it with a fetched RetroArch tree when one
+# exists (RETROARCH_SRC, default ../retroarch-builds/workdir/src/RetroArch).
 retroarch-config-test: | $(BUILD)/bin
+	sh scripts/check-retroarch-config-parser.sh
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/retroarch-config-test \
 		$(RETROARCH_CONFIG_TEST_SRCS)
 	$(BUILD)/bin/retroarch-config-test

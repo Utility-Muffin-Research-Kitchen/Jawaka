@@ -1660,6 +1660,10 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
             if (jw__setting_has(values, found, JW_SETTING_RA_USER))
                 snprintf(ui->ra_username, sizeof(ui->ra_username), "%.63s",
                          values[JW_SETTING_RA_USER]);
+            ui->ra_pass_unwritable =
+                jw__setting_has(values, found, JW_SETTING_RA_PASS) &&
+                jw_retroarch_cfg_value_form(values[JW_SETTING_RA_PASS]) ==
+                    JW_RA_CFG_UNWRITABLE;
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
                 ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
@@ -4375,7 +4379,10 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
                                    JW_ACCOUNTS_SCREENSCRAPER, "ScreenScraper.fr",
                                    ss_value, &mq[JW_ACCOUNTS_SCREENSCRAPER], dt);
     char ra_value[96];
-    if (ui->ra_username[0]) {
+    if (ui->ra_username[0] && ui->ra_pass_unwritable) {
+        snprintf(ra_value, sizeof(ra_value),
+                 "Password not usable by RetroArch - sign in again");
+    } else if (ui->ra_username[0]) {
         snprintf(ra_value, sizeof(ra_value), "Saved: %s", ui->ra_username);
     } else {
         snprintf(ra_value, sizeof(ra_value), "Not signed in");
@@ -7670,8 +7677,20 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     snprintf(status_buf, status_size, "Cancelled");
                     break;
                 }
+                /* RetroArch's config format has no escapes, so a password
+                   with a double quote plus a space, '#' or non-ASCII letter
+                   cannot reach it intact (jw_retroarch_cfg_value_form). Refuse
+                   it here rather than fail sign-in at every launch. */
+                if (jw_retroarch_cfg_value_form(kb.text) == JW_RA_CFG_UNWRITABLE ||
+                    jw_retroarch_cfg_value_form(pw.text) == JW_RA_CFG_UNWRITABLE) {
+                    snprintf(status_buf, status_size,
+                             "Not saved - RetroArch can't use a password with "
+                             "a \" and a space, # or accented letter");
+                    break;
+                }
                 snprintf(ui->ra_username, sizeof(ui->ra_username), "%.*s",
                          (int)sizeof(ui->ra_username) - 1, kb.text);
+                ui->ra_pass_unwritable = false;
                 jw__persist(ui, "retroachievements_user", ui->ra_username);
                 jw__persist(ui, "retroachievements_pass", pw.text);
                 snprintf(status_buf, status_size,
@@ -7697,6 +7716,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 } else if (ui->accounts_list.cursor == JW_ACCOUNTS_RETROACHIEVEMENTS &&
                            ui->ra_username[0]) {
                     ui->ra_username[0] = '\0';
+                    ui->ra_pass_unwritable = false;
                     jw__persist(ui, "retroachievements_user", "");
                     jw__persist(ui, "retroachievements_pass", "");
                     snprintf(status_buf, status_size, "Signed out of RetroAchievements");
