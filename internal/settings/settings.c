@@ -1452,6 +1452,37 @@ static int jw__language_cmp(const void *a, const void *b) {
                   jw__language_label((const char *)b));
 }
 
+void jw_settings_ui_load_ra_account(jw_settings_ui *ui) {
+    if (!ui) return;
+    ui->ra_username[0] = '\0';
+    ui->ra_account_needs_repair = false;
+    if (!ui->db_path[0]) return;
+    jw_ra_account account;
+    if (jw_db_resolve_ra_account(ui->db_path, &account) != 0) {
+        ui->ra_account_needs_repair = true;
+        return;
+    }
+    if (account.state == JW_RA_ACCOUNT_CONFIGURED) {
+        snprintf(ui->ra_username, sizeof(ui->ra_username), "%s", account.user);
+    } else if (account.state == JW_RA_ACCOUNT_INVALID ||
+               account.state == JW_RA_ACCOUNT_UNREADABLE) {
+        ui->ra_account_needs_repair = true;
+    }
+    memset(&account, 0, sizeof(account));
+}
+
+void jw_settings_ra_account_value(const jw_settings_ui *ui, char *out,
+                                  size_t out_size) {
+    if (!out || !out_size) return;
+    if (ui && ui->ra_username[0]) {
+        snprintf(out, out_size, "Saved: %s", ui->ra_username);
+    } else if (ui && ui->ra_account_needs_repair) {
+        snprintf(out, out_size, "Not saved - sign in again");
+    } else {
+        snprintf(out, out_size, "Not signed in");
+    }
+}
+
 void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                           const char *initial_theme_name,
                           const char *socket_path) {
@@ -1589,6 +1620,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
     if (socket_path && socket_path[0])
         snprintf(ui->socket_path, sizeof(ui->socket_path), "%s", socket_path);
 
+    jw_settings_ui_load_ra_account(ui);
+
     /* Restore persisted overrides. The index reads below keep the settings
        UI's own state in sync with the DB; the theme itself (all 7 colors,
        pill shape, font size) is applied by the shared override helper. */
@@ -1657,9 +1690,8 @@ void jw_settings_ui_init(jw_settings_ui *ui, const char *db_path,
                 jw_ss_default_region_priority,
                 jw_ss_default_region_priority_count,
                 ui->scrape_region_order);
-            if (jw__setting_has(values, found, JW_SETTING_RA_USER))
-                snprintf(ui->ra_username, sizeof(ui->ra_username), "%.63s",
-                         values[JW_SETTING_RA_USER]);
+            /* JW_SETTING_RA_USER is loaded through the account validator
+               below, never copied (and truncated) from the raw row. */
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY))
                 ui->show_battery = (strcmp(values[JW_SETTING_SHOW_BATTERY], "0") != 0);
             if (jw__setting_has(values, found, JW_SETTING_SHOW_BATTERY_LEVEL))
@@ -4375,11 +4407,7 @@ static void jw__render_accounts(const jw_settings_ui *ui, int x, int y, int w, i
                                    JW_ACCOUNTS_SCREENSCRAPER, "ScreenScraper.fr",
                                    ss_value, &mq[JW_ACCOUNTS_SCREENSCRAPER], dt);
     char ra_value[96];
-    if (ui->ra_username[0]) {
-        snprintf(ra_value, sizeof(ra_value), "Saved: %s", ui->ra_username);
-    } else {
-        snprintf(ra_value, sizeof(ra_value), "Not signed in");
-    }
+    jw_settings_ra_account_value(ui, ra_value, sizeof(ra_value));
     anim |= jw__render_account_row(&ui->accounts_list, x, ly, w,
                                    JW_ACCOUNTS_RETROACHIEVEMENTS, "RetroAchievements",
                                    ra_value, &mq[JW_ACCOUNTS_RETROACHIEVEMENTS], dt);
@@ -7651,8 +7679,9 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     break;
                 }
 
-                /* RetroAchievements: stored for RetroArch, which validates at
-                   game launch. */
+                /* RetroAchievements: one checked account save bumps the shared
+                   account revision; RetroArch and authorized standalone
+                   emulators sign in on their next launch. */
                 char prompt[160];
                 cat_keyboard_result kb;
                 snprintf(prompt, sizeof(prompt),
@@ -7670,12 +7699,32 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     snprintf(status_buf, status_size, "Cancelled");
                     break;
                 }
+                /* Validate before any truncating copy: username 63 UTF-8 bytes,
+                   password 127. A rejected or failed save keeps the previous
+                   account and shows no success. */
+                jw_ra_credentials_check check =
+                    jw_ra_credentials_check_values(kb.text, pw.text);
+                if (check != JW_RA_CREDENTIALS_OK) {
+                    snprintf(status_buf, status_size, "%s",
+                             check == JW_RA_CREDENTIALS_TOO_LONG
+                                 ? "Too long - account unchanged"
+                                 : "Characters not allowed - account unchanged");
+                    break;
+                }
+                long long ra_revision = 0;
+                if (!ui->db_path[0] ||
+                    jw_db_save_ra_account(ui->db_path, kb.text, pw.text,
+                                          &ra_revision) != 0) {
+                    snprintf(status_buf, status_size,
+                             "Save failed - account unchanged");
+                    break;
+                }
                 snprintf(ui->ra_username, sizeof(ui->ra_username), "%.*s",
                          (int)sizeof(ui->ra_username) - 1, kb.text);
-                jw__persist(ui, "retroachievements_user", ui->ra_username);
-                jw__persist(ui, "retroachievements_pass", pw.text);
+                ui->ra_account_needs_repair = false;
+                jw_ipc_rumble(ui->socket_path, "select");
                 snprintf(status_buf, status_size,
-                         "Saved - RetroArch signs in at game launch");
+                         "Saved - emulators sign in on next launch");
                 break;
             }
             case CAT_BTN_Y:
@@ -7695,10 +7744,19 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                     jw__persist(ui, "screenscraper_max_requests", "");
                     snprintf(status_buf, status_size, "Signed out of ScreenScraper");
                 } else if (ui->accounts_list.cursor == JW_ACCOUNTS_RETROACHIEVEMENTS &&
-                           ui->ra_username[0]) {
+                           (ui->ra_username[0] || ui->ra_account_needs_repair)) {
+                    /* Sign-out clears the credentials but retains and bumps the
+                       account revision in the same checked write, so no stale
+                       managed account can revive later. */
+                    long long ra_revision = 0;
+                    if (!ui->db_path[0] ||
+                        jw_db_clear_ra_account(ui->db_path, &ra_revision) != 0) {
+                        snprintf(status_buf, status_size,
+                                 "Sign-out failed - account unchanged");
+                        break;
+                    }
                     ui->ra_username[0] = '\0';
-                    jw__persist(ui, "retroachievements_user", "");
-                    jw__persist(ui, "retroachievements_pass", "");
+                    ui->ra_account_needs_repair = false;
                     snprintf(status_buf, status_size, "Signed out of RetroAchievements");
                 }
                 break;
