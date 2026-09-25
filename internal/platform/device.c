@@ -388,6 +388,18 @@ void jw_platform_safe_unmount_storage(jw_platform_context *ctx, const char *sour
                            "storage source unavailable");
 }
 
+int jw_platform_get_display_mode(jw_platform_context *ctx, int *width, int *height,
+                                 int *hz) {
+    if (!ctx) {
+        return -1;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->get_display_mode) {
+        return backend->get_display_mode(ctx, width, height, hz);
+    }
+    return -1;
+}
+
 void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                          jw_platform_result *out) {
     if (!ctx) {

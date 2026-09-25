@@ -35,6 +35,8 @@ typedef struct {
                                       jw_platform_storage_repair_capability *out);
     void (*set_led)(jw_platform_context *ctx, const jw_led_config *cfg,
                     jw_platform_result *out);
+    /* Optional: the current mode of the active output. 0 on success, -1 unknown. */
+    int  (*get_display_mode)(jw_platform_context *ctx, int *width, int *height, int *hz);
 } jw_platform_backend;
 
 const jw_platform_backend *jw_platform_get_backend(void);

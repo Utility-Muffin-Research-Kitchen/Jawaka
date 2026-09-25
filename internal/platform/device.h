@@ -13,11 +13,11 @@
 #define JW_PLATFORM_BRIGHTNESS_STEP_PERCENT 5
 #define JW_PLATFORM_VOLUME_STEP_PERCENT 5
 
-/* Display colour-temperature correction, applied through the DRM CRTC gamma LUT.
+/* Display color-temperature correction, applied through the DRM CRTC gamma LUT.
    The value is the target fed to the black-body curve, not a measurement of the
    resulting white point: on a panel that is already warm, a target ABOVE
    NEUTRAL_K cools the image back toward neutral. NEUTRAL_K is the identity
-   detent (LUT bypass); below it warms, above it cools. */
+   detent (an identity ramp, no correction); below it warms, above it cools. */
 #define JW_PLATFORM_COLOR_TEMP_MIN_K     4000
 #define JW_PLATFORM_COLOR_TEMP_MAX_K     10000
 #define JW_PLATFORM_COLOR_TEMP_STEP_K    100
@@ -88,7 +88,7 @@ typedef struct {
     bool adb;
     bool boot_splash;
     bool refresh_rate;   /* runtime display refresh-rate switching (e.g. 60/100/120 Hz) */
-    bool color_temperature; /* runtime display colour-temperature correction (gamma LUT) */
+    bool color_temperature; /* runtime display color-temperature correction (gamma LUT) */
     bool hdmi_output;    /* HDMI external output: 4:3 pillarbox / stretch / off */
     bool led;
     bool performance;
@@ -121,7 +121,8 @@ typedef struct {
     int adb_intent_enabled;    /* -1 unknown/unavailable, 0 no, 1 yes */
     int boot_splash_enabled;   /* -1 unknown/unavailable, 0 no, 1 yes */
     int refresh_rate_hz;       /* current panel refresh in Hz; -1 unknown/unsupported */
-    int color_temp_kelvin;     /* applied colour-temperature target in K; -1 unknown/unsupported */
+    int color_temp_kelvin;     /* last panel color-temperature target applied, in K; -1 not applied yet/unsupported.
+                                  Kept while HDMI is active, though the LUT is identity then. */
     int hdmi_connected;        /* HDMI cable: -1 unknown, 0 disconnected, 1 connected */
     int hdmi_output_mode;      /* applied output: -1 unknown, 0 off, 1 4:3, 2 stretch */
 } jw_platform_status;
@@ -237,7 +238,7 @@ typedef enum {
     JW_PLATFORM_ACTION_PLAY_TEST_SOUND,  /* play a short clip on the current audio output */
     JW_PLATFORM_ACTION_SET_REFRESH_RATE, /* value = target panel refresh in Hz (60/90) */
     JW_PLATFORM_ACTION_SET_HDMI_OUTPUT,  /* value = 0 off / 1 4:3 pillarbox / 2 stretch */
-    JW_PLATFORM_ACTION_SET_COLOR_TEMP    /* value = colour-temperature target in K (see JW_PLATFORM_COLOR_TEMP_*) */
+    JW_PLATFORM_ACTION_SET_COLOR_TEMP    /* value = color-temperature target in K (see JW_PLATFORM_COLOR_TEMP_*) */
 } jw_platform_action;
 
 typedef enum {
@@ -300,6 +301,11 @@ void jw_platform_get_storage_repair_capability(jw_platform_context *ctx,
 
 const char *jw_led_mode_name(jw_led_mode mode);     /* "FOREVER"/"BREATH"/"RAINBOW" */
 bool        jw_led_mode_parse(const char *name, jw_led_mode *out);
+/* Current mode of the active display output (width, height, refresh in Hz), read
+   from the DRM core. Returns 0 and fills the outputs, or -1 when it is unknown or
+   the platform cannot report it. */
+int  jw_platform_get_display_mode(jw_platform_context *ctx, int *width, int *height,
+                                  int *hz);
 void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,
                          jw_platform_result *out);
 
