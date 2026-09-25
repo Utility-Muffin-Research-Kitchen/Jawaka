@@ -544,7 +544,7 @@ in_starting_window() { # command...
 }
 
 # -- Case 9: service RUNNING -> the bundled Flycast child gets service-live --
-wait_backup_fresh 7
+wait_backup_fresh 8
 service_status | grep -q '"effective_state":"running"'
 launch_flycast
 expect_flycast_route service-live
