@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <limits.h>
 
 /* PATH_MAX has to be settled here, not left to each includer. jw_active_game is
    passed across translation units (the daemon builds the record, active_game.c

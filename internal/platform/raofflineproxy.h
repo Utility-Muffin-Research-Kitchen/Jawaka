@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "internal/services/supervisor.h"
+
 /* RAOfflineProxy transient launch bridge (umrk-workspace/plans/RAOfflineProxy).
  * One bounded loopback readiness check against the supervised service's fixed
  * /leaf/health response. Only the fixed service id / protocol / ready body is
@@ -22,5 +24,15 @@
  * failure, timeout, or any unexpected body. */
 bool jw_raofflineproxy_health_ready(const char *host, uint16_t port,
                                     int timeout_ms);
+
+/* The service is live when the supervisor holds a positive PGID in RUNNING
+ * or STARTING for a present pak with a valid manifest (proxy plan P2).
+ * STARTING counts: it is a launched generation that has not yet survived
+ * the supervisor's settle window, and a launch in that window must not
+ * lose the route. desired_enabled ("Start with Leaf") and session_run
+ * ("Run") are intent flags and neither alone means a process exists. The
+ * RetroArch gate and the bundled-Flycast route intent both decide with
+ * this one predicate. NULL (no entry) is not live. */
+bool jw_raofflineproxy_entry_live(const jw_svc_supervised *entry);
 
 #endif

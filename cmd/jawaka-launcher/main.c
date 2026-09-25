@@ -12903,6 +12903,7 @@ static void jw__screenshot_flash_handler(int sig) {
 typedef struct {
     bool blocked;
     bool override_allowed;
+    bool retry_allowed;
     bool requires_verified_stop;
     bool sync_pending;
     int pending_items;
@@ -12933,6 +12934,8 @@ static bool jw__blocked_game_launch_query(const char *socket_path,
     cJSON *blocked = cJSON_GetObjectItemCaseSensitive(root, "blocked");
     cJSON *allowed =
         cJSON_GetObjectItemCaseSensitive(root, "override_allowed");
+    cJSON *retry_allowed =
+        cJSON_GetObjectItemCaseSensitive(root, "retry_allowed");
     cJSON *sync_pending =
         cJSON_GetObjectItemCaseSensitive(root, "sync_pending");
     cJSON *requires_verified_stop =
@@ -12945,6 +12948,7 @@ static bool jw__blocked_game_launch_query(const char *socket_path,
     cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
     out->blocked = cJSON_IsTrue(blocked);
     out->override_allowed = cJSON_IsTrue(allowed);
+    out->retry_allowed = cJSON_IsTrue(retry_allowed);
     out->requires_verified_stop = cJSON_IsTrue(requires_verified_stop);
     out->sync_pending = cJSON_IsTrue(sync_pending);
     if (cJSON_IsNumber(pending_items) && pending_items->valuedouble >= 0.0 &&
@@ -12993,6 +12997,84 @@ static bool jw__blocked_game_launch_action(const char *socket_path,
     return ok;
 }
 
+typedef enum {
+    JW__ROP_PROMPT_CANCEL = 0,
+    JW__ROP_PROMPT_RETRY,
+    JW__ROP_PROMPT_PLAY,
+} jw__rop_prompt_choice;
+
+/* RAOfflineProxy is enabled but did not answer its health check in time. This
+   is the one blocked-launch prompt with three answers, and cat_confirmation
+   only knows A and B, so it draws its own. X Retry follows the launcher's
+   X-for-Refresh/Rescan convention; A keeps the direct-play answer it always
+   had, and B cancels. Retry sends one request per press and never loops. */
+static jw__rop_prompt_choice jw__raofflineproxy_prompt(bool retry_allowed) {
+    const char *body = retry_allowed
+        ? "Offline achievements unavailable.\n\n"
+          "RAOfflineProxy is enabled but not responding. Retry checks it "
+          "again. Play directly signs you in to RetroAchievements online, "
+          "but unlocks can't be queued for offline play. To check the "
+          "service, cancel and open Settings > System > Services."
+        : "Offline achievements unavailable.\n\n"
+          "RAOfflineProxy is enabled but not responding. Play directly "
+          "signs you in to RetroAchievements online, but unlocks can't be "
+          "queued for offline play. To check the service, cancel and open "
+          "Settings > System > Services.";
+    TTF_Font *font = cat_get_font(CAT_FONT_MEDIUM);
+    if (!font) {
+        return JW__ROP_PROMPT_CANCEL;
+    }
+    cat_theme *theme = cat_get_theme();
+    cat_footer_item footer[] = {
+        { CAT_BTN_B, "Cancel",        false, JW_HINT("B") },
+        { CAT_BTN_X, "Retry",         false, JW_HINT("X") },
+        { CAT_BTN_A, "Play directly", true,  JW_HINT("A") },
+    };
+    int footer_count = 3;
+    if (!retry_allowed) {
+        footer[1] = footer[2];
+        footer_count = 2;
+    }
+    cat_request_frame();
+    for (;;) {
+        cat_input_event ev;
+        while (cat_poll_input(&ev)) {
+            if (!ev.pressed) {
+                continue;
+            }
+            if (ev.button == CAT_BTN_A) {
+                return JW__ROP_PROMPT_PLAY;
+            }
+            if (ev.button == CAT_BTN_B) {
+                return JW__ROP_PROMPT_CANCEL;
+            }
+            if (ev.button == CAT_BTN_X && retry_allowed) {
+                return JW__ROP_PROMPT_RETRY;
+            }
+        }
+        int sw = cat_get_screen_width();
+        int sh = cat_get_screen_height();
+        int max_w = sw - CAT_S(80);
+        if (max_w < 1) {
+            max_w = 1;
+        }
+        cat_draw_background();
+        int body_h = cat_measure_wrapped_text_height(font, body, max_w);
+        int y = (sh - body_h - cat_get_footer_height()) / 2;
+        if (y < CAT_S(20)) {
+            y = CAT_S(20);
+        }
+        cat_draw_text_wrapped(font, body, CAT_S(40), y, max_w, theme->text,
+                              CAT_ALIGN_CENTER);
+        /* jw__footer_direct translates labels in place; draw from a copy so
+           the next frame does not translate an already translated label. */
+        cat_footer_item drawn[3];
+        memcpy(drawn, footer, sizeof(drawn));
+        jw__footer_direct(drawn, footer_count);
+        jw__present();
+    }
+}
+
 static bool jw__surface_blocked_game_launch(
         const char *socket_path, const jw_blocked_game_launch *blocked) {
     if (!blocked || !blocked->blocked) {
@@ -13033,6 +13115,22 @@ static bool jw__surface_blocked_game_launch(
         bool accepted = jw__blocked_game_launch_action(socket_path, action);
         return accepted && leaves_launcher;
     }
+    if (blocked->override_allowed &&
+        strcmp(blocked->reason, "raofflineproxy-not-ready") == 0) {
+        jw__rop_prompt_choice choice =
+            jw__raofflineproxy_prompt(blocked->retry_allowed);
+        if (choice == JW__ROP_PROMPT_PLAY) {
+            return jw__blocked_game_launch_action(
+                socket_path, "game-launch-override");
+        }
+        if (choice == JW__ROP_PROMPT_RETRY) {
+            return jw__blocked_game_launch_action(
+                socket_path, "game-launch-retry");
+        }
+        (void)jw__blocked_game_launch_action(
+            socket_path, "game-launch-blocked-dismiss");
+        return false;
+    }
     char message[640];
     if (blocked->override_allowed) {
         bool unsafe_card_binding =
@@ -13053,12 +13151,6 @@ static bool jw__surface_blocked_game_launch(
                      "Cancel leaves syncing active.",
                      blocked->pending_items,
                      blocked->pending_items == 1 ? "" : "s", size);
-        } else if (strcmp(blocked->reason, "raofflineproxy-not-ready") == 0) {
-            snprintf(message, sizeof(message),
-                     "Offline achievements unavailable.\n\nRAOfflineProxy is "
-                     "enabled but not responding. You can play now without "
-                     "offline achievements, or cancel and check the service "
-                     "in Settings > System > Services.");
         } else if (blocked->requires_verified_stop) {
             snprintf(message, sizeof(message),
                      "Sync needs attention.\n\nSyncthing could not be verified "
@@ -13072,14 +13164,10 @@ static bool jw__surface_blocked_game_launch(
                      blocked->service_id[0] ? blocked->service_id
                                             : "A background service");
         }
-        bool rop_not_ready =
-            strcmp(blocked->reason, "raofflineproxy-not-ready") == 0;
         cat_footer_item footer[] = {
             { .button = CAT_BTN_B, .label = "Cancel", .is_confirm = false },
             { .button = CAT_BTN_A,
-              .label = unsafe_card_binding ? "Stop & Play"
-                      : rop_not_ready  ? "Play without achievements"
-                                       : "Play Anyway",
+              .label = unsafe_card_binding ? "Stop & Play" : "Play Anyway",
               .is_confirm = true },
         };
         cat_message_opts opts = {

@@ -212,3 +212,10 @@ out:
     close(fd);
     return ready;
 }
+
+bool jw_raofflineproxy_entry_live(const jw_svc_supervised *entry) {
+    return entry && entry->pak_present && entry->manifest_valid &&
+           entry->pgid > 0 &&
+           (entry->state == JW_SVC_STATE_RUNNING ||
+            entry->state == JW_SVC_STATE_STARTING);
+}

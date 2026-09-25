@@ -122,6 +122,16 @@ printf '%s' "$blocked" | grep -q '"blocked":true'
 printf '%s' "$blocked" | grep -q '"override_allowed":true'
 printf '%s' "$blocked" | grep -q "\"service_id\":\"$SERVICE_ID\""
 printf '%s' "$blocked" | grep -q '"reason":"stale-service-generation"'
+# Retry belongs to the RAOfflineProxy prompt only; this block keeps its
+# two-way Cancel / Play Anyway contract and a refused Retry leaves it intact.
+printf '%s' "$blocked" | grep -q '"retry_allowed":false'
+"$CTL" --socket "$SOCKET" request '{"type":"game-launch-retry"}' |
+    grep -F '"type":"error"' >/dev/null
+blocked="$($CTL --socket "$SOCKET" request \
+    '{"type":"game-launch-blocked-status"}')"
+printf '%s' "$blocked" | grep -q '"blocked":true'
+printf '%s' "$blocked" | grep -q '"reason":"stale-service-generation"'
+[ ! -e "$RUNTIME/game-writer-live" ]
 
 "$CTL" --socket "$SOCKET" request '{"type":"game-launch-override"}' |
     grep -F '"type":"ok"' >/dev/null
