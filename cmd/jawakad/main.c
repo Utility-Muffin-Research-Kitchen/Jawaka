@@ -28,6 +28,7 @@
 #include "internal/platform/paths.h"
 #include "internal/platform/perf_policy.h"
 #include "internal/platform/raofflineproxy.h"
+#include "internal/platform/weston_initd.h"
 #include "internal/platform/wifi.h"
 #include "internal/power/suspend_inhibit.h"
 #include "internal/retroarch/command.h"
@@ -9721,10 +9722,10 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         jw_log_info("direct DRM handoff requested for core=%s rom=%s",
                     target->core_id, rom_abs);
         jw__stop_osd_child(state);
-        int stop_rc = system("/etc/init.d/S49weston stop </dev/null >/dev/null 2>&1; "
-                             "for i in 1 2 3 4 5 6 7 8 9 10; do "
-                             "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
-                             "done; exit 0");
+        int stop_rc = jw_weston_initd_run(JW_WESTON_INITD("stop") " </dev/null >/dev/null 2>&1; "
+                                          "for i in 1 2 3 4 5 6 7 8 9 10; do "
+                                          "pidof weston >/dev/null 2>&1 || exit 0; sleep .1; "
+                                          "done; exit 0");
         if (stop_rc == -1) {
             jw_log_warn("direct DRM handoff: could not invoke Weston stop");
         }
@@ -9781,7 +9782,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
         if (direct_drm) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
-                (void)system("cd / && /etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                 state->direct_drm_weston_stopped = false;
                 jw__spawn_osd(state);
             }
@@ -9881,7 +9882,7 @@ static int jw__spawn_standalone_emulator(jw_daemon_state *state,
             if (direct_drm) {
                 state->direct_drm_active = false;
                 if (state->direct_drm_weston_stopped) {
-                    (void)system("cd / && /etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                    (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                     state->direct_drm_weston_stopped = false;
                     jw__spawn_osd(state);
                 }
@@ -15320,12 +15321,13 @@ static void jw__handle_child_exit(jw_daemon_state *state) {
             state->direct_drm_active = false;
             if (state->direct_drm_weston_stopped) {
                 jw_log_info("direct DRM handoff ended; restarting Weston");
-                /* From /, not jawakad's own working directory, which is the
-                   launcher bundle on the SD card: Weston outlives this
-                   session, and a compositor sitting in a card directory
-                   (worse, one a launcher update has since replaced) keeps
-                   the card from closing at shutdown. */
-                (void)system("cd / && /etc/init.d/S49weston start </dev/null >/dev/null 2>&1");
+                /* From / and with the rootfs environment, not jawakad's
+                   card working directory and launcher LD_LIBRARY_PATH:
+                   Weston outlives this session, and a compositor sitting in
+                   or mapping libraries from a launcher bundle that an update
+                   has since replaced keeps the card from closing at
+                   shutdown. See weston_initd.h. */
+                (void)jw_weston_initd_run(JW_WESTON_INITD("start") " </dev/null >/dev/null 2>&1");
                 sleep(1);
                 state->direct_drm_weston_stopped = false;
             }
