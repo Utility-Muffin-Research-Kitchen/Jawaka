@@ -10903,7 +10903,11 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
        goes live by a deliberate change (skip the boot-apply window), arm a 15s
        deadline; the launcher's "keep" press clears it, otherwise revert to the safe,
        universal 720p60 and drop the saved rate to 60 so it sticks. */
-    int is120 = jw__hdmi_live_is_1080p120(state);
+    /* Only ask the display for its mode when a cable is in: 1080p120 exists only on
+       HDMI, and the query opens the DRM device, so a unit with nothing plugged in
+       should not do that every second. */
+    int cur = jw__hdmi_connected_now();
+    int is120 = cur == 1 ? jw__hdmi_live_is_1080p120(state) : 0;
     if (is120 && !state->hdmi_was_120 && now > 30000) {
         state->hdmi_revert_deadline_ms = now + 15000;
         jw_log_info("HDMI 1080p120 live -> auto-revert armed (15s)");
@@ -10923,7 +10927,6 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
         }
     }
 
-    int cur = jw__hdmi_connected_now();
     int prev = state->hdmi_last_connected;
     if (cur == prev) {
         return;
