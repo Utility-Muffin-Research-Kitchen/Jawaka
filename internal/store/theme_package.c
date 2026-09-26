@@ -57,7 +57,7 @@ static const char *const kWarningSlugs[JW_THEME_WARNING_COUNT] = {
 static const char *const kReservedInstallNames[] = { "Sample" };
 
 static const char *const kLicenses[] = {
-    "CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0", "redistribution-permitted",
+    "CC-BY-4.0", "CC-BY-SA-4.0", "CC-BY-NC-SA-2.0", "CC0-1.0", "redistribution-permitted",
 };
 
 const char *jw_theme_package_reason_slug(jw_theme_reason reason) {
