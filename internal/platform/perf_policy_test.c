@@ -18,28 +18,43 @@ static const char *profile_name(jw_platform_perf_profile profile) {
     }
 }
 
-static int expect_profile(const char *system, jw_platform_perf_profile wanted) {
-    jw_platform_perf_profile got = jw_platform_perf_auto_profile_for_system(system);
+/* The system-rule checks below run at 60 Hz, where only the system decides. */
+static int expect_profile_at(const char *system, int refresh_hz,
+                             jw_platform_perf_profile wanted) {
+    jw_platform_perf_profile got =
+        jw_platform_perf_auto_profile_for_system(system, refresh_hz);
     if (got == wanted) {
         return 0;
     }
-    fprintf(stderr, "perf-policy-test: system=%s resolved to %s, expected %s\n",
-            system ? system : "(null)", profile_name(got), profile_name(wanted));
+    fprintf(stderr, "perf-policy-test: system=%s refresh=%d resolved to %s, expected %s\n",
+            system ? system : "(null)", refresh_hz, profile_name(got),
+            profile_name(wanted));
+    return 1;
+}
+
+static int expect_profile(const char *system, jw_platform_perf_profile wanted) {
+    return expect_profile_at(system, 60, wanted);
+}
+
+static int expect_game_profile_at(const char *system, int refresh_hz,
+                                  jw_platform_perf_profile requested,
+                                  jw_platform_perf_profile wanted) {
+    jw_platform_perf_profile got =
+        jw_platform_perf_game_profile(system, refresh_hz, requested);
+    if (got == wanted) {
+        return 0;
+    }
+    fprintf(stderr,
+            "perf-policy-test: system=%s refresh=%d requested=%s resolved to %s, expected %s\n",
+            system ? system : "(null)", refresh_hz, profile_name(requested),
+            profile_name(got), profile_name(wanted));
     return 1;
 }
 
 static int expect_game_profile(const char *system,
                                jw_platform_perf_profile requested,
                                jw_platform_perf_profile wanted) {
-    jw_platform_perf_profile got = jw_platform_perf_game_profile(system, requested);
-    if (got == wanted) {
-        return 0;
-    }
-    fprintf(stderr,
-            "perf-policy-test: system=%s requested=%s resolved to %s, expected %s\n",
-            system ? system : "(null)", profile_name(requested),
-            profile_name(got), profile_name(wanted));
-    return 1;
+    return expect_game_profile_at(system, 60, requested, wanted);
 }
 
 int main(void) {
@@ -138,6 +153,56 @@ int main(void) {
         if (expect_game_profile(other_systems[i].system,
                                 other_systems[i].requested,
                                 other_systems[i].wanted) != 0) {
+            return 1;
+        }
+    }
+
+    /* Above 60 Hz each frame gets one refresh of time instead of two, so AUTO
+       boosts every game. 60 Hz and an unknown rate (-1, or 0 from a status
+       that never read the mode) keep the per-system answer. */
+    static const struct {
+        const char *system;
+        int refresh_hz;
+        jw_platform_perf_profile wanted;
+    } refresh_auto[] = {
+        { "MD",   120, JW_PLATFORM_PERF_PROFILE_PERFORMANCE },
+        { "GBA",  100, JW_PLATFORM_PERF_PROFILE_PERFORMANCE },
+        { "SNES", 120, JW_PLATFORM_PERF_PROFILE_PERFORMANCE },
+        { "N64",  120, JW_PLATFORM_PERF_PROFILE_PERFORMANCE },
+        { "MD",    60, JW_PLATFORM_PERF_PROFILE_BALANCED },
+        { "MD",    -1, JW_PLATFORM_PERF_PROFILE_BALANCED },
+        { "MD",     0, JW_PLATFORM_PERF_PROFILE_BALANCED },
+        { "",     120, JW_PLATFORM_PERF_PROFILE_BALANCED },
+        { NULL,   120, JW_PLATFORM_PERF_PROFILE_BALANCED },
+    };
+    for (size_t i = 0; i < sizeof(refresh_auto) / sizeof(refresh_auto[0]); i++) {
+        if (expect_profile_at(refresh_auto[i].system, refresh_auto[i].refresh_hz,
+                              refresh_auto[i].wanted) != 0) {
+            return 1;
+        }
+    }
+
+    /* The refresh rule is a default, not a contract: an explicit choice wins
+       at 120 Hz, and the idle-device profiles are never touched. */
+    static const struct {
+        const char *system;
+        jw_platform_perf_profile requested;
+        jw_platform_perf_profile wanted;
+    } refresh_game[] = {
+        { "MD",  JW_PLATFORM_PERF_PROFILE_AUTO,          JW_PLATFORM_PERF_PROFILE_PERFORMANCE },
+        { "MD",  JW_PLATFORM_PERF_PROFILE_BALANCED,      JW_PLATFORM_PERF_PROFILE_BALANCED },
+        { "MD",  JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER, JW_PLATFORM_PERF_PROFILE_BATTERY_SAVER },
+        { "MD",  JW_PLATFORM_PERF_PROFILE_CUSTOM,        JW_PLATFORM_PERF_PROFILE_CUSTOM },
+        { "DC",  JW_PLATFORM_PERF_PROFILE_BALANCED,      JW_PLATFORM_PERF_PROFILE_PERFORMANCE },
+        { NULL,  JW_PLATFORM_PERF_PROFILE_FRONTEND,      JW_PLATFORM_PERF_PROFILE_FRONTEND },
+        { NULL,  JW_PLATFORM_PERF_PROFILE_SLEEP,         JW_PLATFORM_PERF_PROFILE_SLEEP },
+        { NULL,  JW_PLATFORM_PERF_PROFILE_AUTO,          JW_PLATFORM_PERF_PROFILE_BALANCED },
+        { "MD",  JW_PLATFORM_PERF_PROFILE_FRONTEND,      JW_PLATFORM_PERF_PROFILE_FRONTEND },
+    };
+    for (size_t i = 0; i < sizeof(refresh_game) / sizeof(refresh_game[0]); i++) {
+        if (expect_game_profile_at(refresh_game[i].system, 120,
+                                   refresh_game[i].requested,
+                                   refresh_game[i].wanted) != 0) {
             return 1;
         }
     }

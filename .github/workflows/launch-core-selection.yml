@@ -11,7 +11,7 @@ name: Launch core selection
 #   3. perf-policy-test covers the AUTO governor-profile rule: the Dreamcast
 #      family (DC, NAOMI, ATOMISWAVE) always runs in performance, whichever
 #      session/game/system/global profile was requested, while other systems
-#      keep the player's override.
+#      keep the player's override; AUTO boosts every game above 60 Hz.
 #
 # scripts/phase3-core-choice-smoke.sh repeats the order against real per-core
 # availability on a fixture card; run it locally when changing the resolver.

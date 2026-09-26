@@ -2278,16 +2278,18 @@ static void jw__perf_request_for_profile(jw_platform_perf_profile profile,
 }
 
 static jw_platform_perf_profile jw__perf_resolve_game_profile(
-        const jw_daemon_state *state,
+        jw_daemon_state *state,
         jw_platform_perf_profile profile,
         const char *system) {
-    (void)state;
     /* One owner for the whole rule (internal/platform/perf_policy.c): the AUTO
        preference, and the Dreamcast-family contract that performance wins over
        a session, game, system or global request for another profile. Every
        Flycast choice on DC, NAOMI and ATOMISWAVE resolves through here, which
-       is why the rule is keyed on the system and not the core. */
-    return jw_platform_perf_game_profile(system, profile);
+       is why the rule is keyed on the system and not the core. The live
+       refresh rate feeds AUTO: above 60 Hz every game gets performance. */
+    jw_platform_status status;
+    jw_platform_get_status(&state->platform, &status);
+    return jw_platform_perf_game_profile(system, status.refresh_rate_hz, profile);
 }
 
 static jw_platform_perf_profile jw__perf_current_requested_profile(
