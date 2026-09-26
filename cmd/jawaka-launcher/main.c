@@ -11273,7 +11273,8 @@ static void jw__menu_host_setting(const char *socket_path, const char *db_path,
             }
         }
         if (!running) break;
-        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE)
+        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE ||
+            jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE_PICKER)
             jw_settings_ui_refresh_update(ui);
 
         jw__poll_library_generation(socket_path, db_path, state);

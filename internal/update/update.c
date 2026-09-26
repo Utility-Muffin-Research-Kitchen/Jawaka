@@ -134,6 +134,7 @@ static void jw__clear_options(jw_update_status *status) {
     if (!status) {
         return;
     }
+    status->options_complete = false;
     status->option_count = 0;
     status->selected_option = -1;
     memset(status->options, 0, sizeof(status->options));
@@ -234,6 +235,31 @@ static bool jw__ascii_equal_ci(const char *a, const char *b) {
     return *a == '\0' && *b == '\0';
 }
 
+/* A transfer that averages under JW_UPDATE_STALL_BYTES_PER_SEC for the stall
+   window is dead. The connect timeout only covers the handshake, so without this
+   a Wi-Fi drop mid-response blocks the release check (or a download) forever,
+   and the daemon refuses every later check while that job is still "running". */
+#define JW_UPDATE_STALL_BYTES_PER_SEC 1L
+#define JW_UPDATE_STALL_SECONDS 30L
+/* Release metadata is small, so its fetches also get a hard cap: a connection
+   that trickles bytes can't hold the check open either. Artifact downloads have
+   no total cap; they can be cancelled. */
+#define JW_UPDATE_METADATA_TIMEOUT_SECONDS 60L
+#define JW_UPDATE_FETCH_MAX_CONNECTIONS 6L
+
+/* JAWAKA_UPDATE_STALL_SECONDS shortens the stall window for tests. */
+static long jw__stall_seconds(void) {
+    const char *value = getenv("JAWAKA_UPDATE_STALL_SECONDS");
+    if (value && value[0]) {
+        char *end = NULL;
+        long seconds = strtol(value, &end, 10);
+        if (end && *end == '\0' && seconds > 0) {
+            return seconds;
+        }
+    }
+    return JW_UPDATE_STALL_SECONDS;
+}
+
 #ifdef JW_UPDATE_USE_LIBCURL
 static bool jw__env_truthy(const char *name) {
     const char *value = getenv(name);
@@ -243,11 +269,90 @@ static bool jw__env_truthy(const char *name) {
            !jw__ascii_equal_ci(value, "no") &&
            !jw__ascii_equal_ci(value, "off");
 }
+
+static struct curl_slist *jw__curl_accept_header(const char *accept) {
+    char accept_header[160];
+    snprintf(accept_header, sizeof(accept_header), "Accept: %s",
+             accept && accept[0] ? accept : "application/octet-stream");
+    return curl_slist_append(NULL, accept_header);
+}
+
+static CURLcode jw__curl_apply_options(CURL *easy,
+                                       const char *url,
+                                       struct curl_slist *headers,
+                                       char *error_buffer,
+                                       long total_timeout) {
+    CURLcode rc = CURLE_OK;
+#define JW_CURL_TRY(option, value) \
+    do { \
+        rc = curl_easy_setopt(easy, option, value); \
+        if (rc != CURLE_OK) { \
+            return rc; \
+        } \
+    } while (0)
+
+    JW_CURL_TRY(CURLOPT_URL, url);
+    JW_CURL_TRY(CURLOPT_ERRORBUFFER, error_buffer);
+    JW_CURL_TRY(CURLOPT_HTTPHEADER, headers);
+    JW_CURL_TRY(CURLOPT_USERAGENT, JW_UPDATE_USER_AGENT);
+    JW_CURL_TRY(CURLOPT_FAILONERROR, 1L);
+    JW_CURL_TRY(CURLOPT_FOLLOWLOCATION, 1L);
+    JW_CURL_TRY(CURLOPT_CONNECTTIMEOUT, 15L);
+    JW_CURL_TRY(CURLOPT_LOW_SPEED_LIMIT, JW_UPDATE_STALL_BYTES_PER_SEC);
+    JW_CURL_TRY(CURLOPT_LOW_SPEED_TIME, jw__stall_seconds());
+    if (total_timeout > 0) {
+        JW_CURL_TRY(CURLOPT_TIMEOUT, total_timeout);
+    }
+    JW_CURL_TRY(CURLOPT_NOSIGNAL, 1L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    JW_CURL_TRY(CURLOPT_PROTOCOLS_STR, "https");
+    JW_CURL_TRY(CURLOPT_REDIR_PROTOCOLS_STR, "https");
+#else
+    JW_CURL_TRY(CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+    JW_CURL_TRY(CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+#endif
+
+    /* Verify TLS against the launcher's bundled Mozilla CA roots when present.
+       Relying on libcurl's compiled-in default is not safe here: some stock
+       LoongOS libcurl builds default to a CA path that does not exist on the
+       device (/run/libreelec/cacert.pem), which fails every HTTPS request. The
+       bundled file makes verification independent of the firmware's CA store. */
+    {
+        const char *bundle = getenv("UMRK_LAUNCHER_PATH");
+        char ca_path[PATH_MAX];
+        if (bundle && bundle[0] &&
+            jw__join_path(ca_path, sizeof(ca_path), bundle, "res/certs/cacert.pem") &&
+            jw__file_exists(ca_path)) {
+            JW_CURL_TRY(CURLOPT_CAINFO, ca_path);
+        }
+    }
+
+    /* Developer escape hatch only; normal builds verify TLS. */
+    if (jw__env_truthy("JAWAKA_UPDATE_INSECURE_TLS")) {
+        JW_CURL_TRY(CURLOPT_SSL_VERIFYPEER, 0L);
+        JW_CURL_TRY(CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+
+#undef JW_CURL_TRY
+    return CURLE_OK;
+}
+
+static void jw__curl_failure(char *error, size_t error_size,
+                             CURLcode rc, const char *curl_error) {
+    if (!error || error_size == 0) {
+        return;
+    }
+    const char *msg = curl_easy_strerror(rc);
+    snprintf(error, error_size, "libcurl download failed: %s",
+             curl_error && curl_error[0] ? curl_error :
+             (msg && msg[0] ? msg : "unknown error"));
+}
 #endif
 
 static int jw__download_with_libcurl(const char *url,
                                      const char *out_path,
                                      const char *accept,
+                                     long total_timeout,
                                      char *error,
                                      size_t error_size) {
     if (error && error_size > 0) {
@@ -258,6 +363,7 @@ static int jw__download_with_libcurl(const char *url,
     (void)url;
     (void)out_path;
     (void)accept;
+    (void)total_timeout;
     if (error && error_size > 0) {
         snprintf(error, error_size, "%s", "libcurl support is not built in");
     }
@@ -298,10 +404,7 @@ static int jw__download_with_libcurl(const char *url,
         goto cleanup;
     }
 
-    char accept_header[160];
-    snprintf(accept_header, sizeof(accept_header), "Accept: %s",
-             accept && accept[0] ? accept : "application/octet-stream");
-    headers = curl_slist_append(headers, accept_header);
+    headers = jw__curl_accept_header(accept);
     if (!headers) {
         if (error && error_size > 0) {
             snprintf(error, error_size, "%s", "cannot allocate libcurl header list");
@@ -309,66 +412,21 @@ static int jw__download_with_libcurl(const char *url,
         goto cleanup;
     }
 
-#define JW_CURL_SET(option, value) \
-    do { \
-        CURLcode set_rc = curl_easy_setopt(easy, option, value); \
-        if (set_rc != CURLE_OK) { \
-            if (error && error_size > 0) { \
-                snprintf(error, error_size, "libcurl option failed: %s", \
-                         curl_easy_strerror(set_rc)); \
-            } \
-            goto cleanup; \
-        } \
-    } while (0)
-
-    JW_CURL_SET(CURLOPT_URL, url);
-    JW_CURL_SET(CURLOPT_ERRORBUFFER, curl_error);
-    JW_CURL_SET(CURLOPT_WRITEDATA, fp);
-    JW_CURL_SET(CURLOPT_HTTPHEADER, headers);
-    JW_CURL_SET(CURLOPT_USERAGENT, JW_UPDATE_USER_AGENT);
-    JW_CURL_SET(CURLOPT_FAILONERROR, 1L);
-    JW_CURL_SET(CURLOPT_FOLLOWLOCATION, 1L);
-    JW_CURL_SET(CURLOPT_CONNECTTIMEOUT, 15L);
-    JW_CURL_SET(CURLOPT_NOSIGNAL, 1L);
-#if LIBCURL_VERSION_NUM >= 0x075500
-    JW_CURL_SET(CURLOPT_PROTOCOLS_STR, "https");
-    JW_CURL_SET(CURLOPT_REDIR_PROTOCOLS_STR, "https");
-#else
-    JW_CURL_SET(CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
-    JW_CURL_SET(CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
-#endif
-
-    /* Verify TLS against the launcher's bundled Mozilla CA roots when present.
-       Relying on libcurl's compiled-in default is not safe here: some stock
-       LoongOS libcurl builds default to a CA path that does not exist on the
-       device (/run/libreelec/cacert.pem), which fails every HTTPS request. The
-       bundled file makes verification independent of the firmware's CA store. */
-    {
-        const char *bundle = getenv("UMRK_LAUNCHER_PATH");
-        char ca_path[PATH_MAX];
-        if (bundle && bundle[0] &&
-            jw__join_path(ca_path, sizeof(ca_path), bundle, "res/certs/cacert.pem") &&
-            jw__file_exists(ca_path)) {
-            JW_CURL_SET(CURLOPT_CAINFO, ca_path);
+    rc = jw__curl_apply_options(easy, url, headers, curl_error, total_timeout);
+    if (rc == CURLE_OK) {
+        rc = curl_easy_setopt(easy, CURLOPT_WRITEDATA, fp);
+    }
+    if (rc != CURLE_OK) {
+        if (error && error_size > 0) {
+            snprintf(error, error_size, "libcurl option failed: %s",
+                     curl_easy_strerror(rc));
         }
+        goto cleanup;
     }
-
-    /* Developer escape hatch only; normal builds verify TLS. */
-    if (jw__env_truthy("JAWAKA_UPDATE_INSECURE_TLS")) {
-        JW_CURL_SET(CURLOPT_SSL_VERIFYPEER, 0L);
-        JW_CURL_SET(CURLOPT_SSL_VERIFYHOST, 0L);
-    }
-
-#undef JW_CURL_SET
 
     rc = curl_easy_perform(easy);
     if (rc != CURLE_OK) {
-        if (error && error_size > 0) {
-            const char *msg = curl_easy_strerror(rc);
-            snprintf(error, error_size, "libcurl download failed: %s",
-                     curl_error[0] ? curl_error :
-                     (msg && msg[0] ? msg : "unknown error"));
-        }
+        jw__curl_failure(error, error_size, rc, curl_error);
         goto cleanup;
     }
 
@@ -403,6 +461,7 @@ cleanup:
 static pid_t jw__spawn_https_to_file(const char *url,
                                      const char *out_path,
                                      const char *accept,
+                                     long total_timeout,
                                      char *error,
                                      size_t error_size) {
     if (error && error_size > 0) {
@@ -421,8 +480,14 @@ static pid_t jw__spawn_https_to_file(const char *url,
     char user_agent_header[160];
     snprintf(user_agent_header, sizeof(user_agent_header), "User-Agent: %s",
              JW_UPDATE_USER_AGENT);
+    char speed_limit[24];
+    snprintf(speed_limit, sizeof(speed_limit), "%ld", JW_UPDATE_STALL_BYTES_PER_SEC);
+    char speed_time[24];
+    snprintf(speed_time, sizeof(speed_time), "%ld", jw__stall_seconds());
+    char max_time[24];
+    snprintf(max_time, sizeof(max_time), "%ld", total_timeout);
 
-    const char *argv[24];
+    const char *argv[32];
     int argc = 0;
     argv[argc++] = "curl";
     argv[argc++] = "--fail";
@@ -436,6 +501,14 @@ static pid_t jw__spawn_https_to_file(const char *url,
     argv[argc++] = "2";
     argv[argc++] = "--connect-timeout";
     argv[argc++] = "15";
+    argv[argc++] = "--speed-limit";
+    argv[argc++] = speed_limit;
+    argv[argc++] = "--speed-time";
+    argv[argc++] = speed_time;
+    if (total_timeout > 0) {
+        argv[argc++] = "--max-time";
+        argv[argc++] = max_time;
+    }
     argv[argc++] = "-H";
     argv[argc++] = accept_header;
     argv[argc++] = "-H";
@@ -456,6 +529,7 @@ static pid_t jw__spawn_https_to_file(const char *url,
     if (pid == 0) {
         char child_error[256];
         int libcurl_rc = jw__download_with_libcurl(url, out_path, accept,
+                                                   total_timeout,
                                                    child_error,
                                                    sizeof(child_error));
         if (libcurl_rc == 0) {
@@ -474,6 +548,7 @@ static pid_t jw__spawn_https_to_file(const char *url,
 static int jw__fetch_https_to_file(const char *url,
                                    const char *out_path,
                                    const char *accept,
+                                   long total_timeout,
                                    char *error,
                                    size_t error_size) {
     if (error && error_size > 0) {
@@ -495,7 +570,7 @@ static int jw__fetch_https_to_file(const char *url,
         return -1;
     }
 
-    int direct_rc = jw__download_with_libcurl(url, tmp_path, accept,
+    int direct_rc = jw__download_with_libcurl(url, tmp_path, accept, total_timeout,
                                               error, error_size);
     if (direct_rc == 0) {
         goto move_download;
@@ -505,7 +580,8 @@ static int jw__fetch_https_to_file(const char *url,
         return -1;
     }
 
-    pid_t pid = jw__spawn_https_to_file(url, tmp_path, accept, error, error_size);
+    pid_t pid = jw__spawn_https_to_file(url, tmp_path, accept, total_timeout,
+                                        error, error_size);
     if (pid < 0) {
         return -1;
     }
@@ -604,6 +680,275 @@ static char *jw__read_text_file(const char *path, char *error, size_t error_size
 
     buf[len] = '\0';
     return buf;
+}
+
+/* One small HTTPS resource fetched into memory: a release list or a manifest. */
+typedef struct {
+    const char *url;
+    char *data;   /* NUL-terminated body when ok; release with jw__fetch_item_free */
+    size_t size;
+    bool ok;
+    char error[256];
+} jw__fetch_item;
+
+/* Fetches release metadata. With libcurl, one multi handle lives for the whole
+   check: the transfers in a batch run concurrently, and its connection cache
+   keeps the GitHub and asset-CDN connections open between batches, so every
+   manifest after the first skips the TCP and TLS handshakes. Without libcurl,
+   each item goes through the curl CLI in turn via a scratch file. */
+typedef struct {
+#ifdef JW_UPDATE_USE_LIBCURL
+    CURLM *multi;
+    bool global_started;
+#endif
+    char scratch_path[PATH_MAX];
+} jw__fetcher;
+
+static void jw__fetch_item_free(jw__fetch_item *item) {
+    if (!item) {
+        return;
+    }
+    free(item->data);
+    item->data = NULL;
+    item->size = 0;
+    item->ok = false;
+}
+
+static void jw__fetcher_close(jw__fetcher *fetcher) {
+    if (!fetcher) {
+        return;
+    }
+#ifdef JW_UPDATE_USE_LIBCURL
+    if (fetcher->multi) {
+        curl_multi_cleanup(fetcher->multi);
+        fetcher->multi = NULL;
+    }
+    if (fetcher->global_started) {
+        curl_global_cleanup();
+        fetcher->global_started = false;
+    }
+#endif
+}
+
+static int jw__fetcher_open(jw__fetcher *fetcher,
+                            const char *update_dir,
+                            char *error,
+                            size_t error_size) {
+    if (error && error_size > 0) {
+        error[0] = '\0';
+    }
+    memset(fetcher, 0, sizeof(*fetcher));
+    int needed = snprintf(fetcher->scratch_path, sizeof(fetcher->scratch_path),
+                          "%s/.metadata.%ld", update_dir, (long)getpid());
+    if (needed < 0 || needed >= (int)sizeof(fetcher->scratch_path)) {
+        if (error && error_size > 0) {
+            snprintf(error, error_size, "%s", "Update metadata path is too long");
+        }
+        return -1;
+    }
+
+#ifdef JW_UPDATE_USE_LIBCURL
+    CURLcode rc = curl_global_init(CURL_GLOBAL_DEFAULT);
+    if (rc != CURLE_OK) {
+        if (error && error_size > 0) {
+            snprintf(error, error_size, "libcurl global init failed: %s",
+                     curl_easy_strerror(rc));
+        }
+        return -1;
+    }
+    fetcher->global_started = true;
+
+    fetcher->multi = curl_multi_init();
+    if (!fetcher->multi) {
+        if (error && error_size > 0) {
+            snprintf(error, error_size, "%s", "libcurl multi init failed");
+        }
+        jw__fetcher_close(fetcher);
+        return -1;
+    }
+    curl_multi_setopt(fetcher->multi, CURLMOPT_MAX_TOTAL_CONNECTIONS,
+                      JW_UPDATE_FETCH_MAX_CONNECTIONS);
+#endif
+    return 0;
+}
+
+#ifdef JW_UPDATE_USE_LIBCURL
+static size_t jw__fetch_item_write(char *ptr, size_t size, size_t nmemb, void *user) {
+    jw__fetch_item *item = (jw__fetch_item *)user;
+    size_t n = size * nmemb;
+    if (n == 0) {
+        return 0;
+    }
+    if (item->size + n > JW_UPDATE_MANIFEST_MAX_BYTES) {
+        snprintf(item->error, sizeof(item->error), "response too large: %s", item->url);
+        return 0;
+    }
+    char *grown = (char *)realloc(item->data, item->size + n + 1u);
+    if (!grown) {
+        snprintf(item->error, sizeof(item->error), "%s", "out of memory");
+        return 0;
+    }
+    memcpy(grown + item->size, ptr, n);
+    item->size += n;
+    grown[item->size] = '\0';
+    item->data = grown;
+    return n;
+}
+#endif
+
+/* Fetch every item, concurrently where libcurl allows. Each item comes back with
+   ok and data set, or with error explaining why not. */
+static void jw__fetcher_run(jw__fetcher *fetcher,
+                            jw__fetch_item *items,
+                            int count,
+                            const char *accept) {
+    if (!fetcher || !items || count <= 0) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        items[i].data = NULL;
+        items[i].size = 0;
+        items[i].ok = false;
+        items[i].error[0] = '\0';
+        if (!jw__https_url_safe(items[i].url)) {
+            snprintf(items[i].error, sizeof(items[i].error), "%s",
+                     "invalid HTTPS download request");
+        }
+    }
+
+#ifdef JW_UPDATE_USE_LIBCURL
+    CURL **easies = (CURL **)calloc((size_t)count, sizeof(*easies));
+    char (*curl_errors)[CURL_ERROR_SIZE] =
+        calloc((size_t)count, sizeof(*curl_errors));
+    struct curl_slist *headers = jw__curl_accept_header(accept);
+    if (!fetcher->multi || !easies || !curl_errors || !headers) {
+        for (int i = 0; i < count; i++) {
+            if (!items[i].error[0]) {
+                snprintf(items[i].error, sizeof(items[i].error), "%s",
+                         "cannot prepare libcurl transfers");
+            }
+        }
+        goto done;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (items[i].error[0]) {
+            continue;
+        }
+        CURL *easy = curl_easy_init();
+        if (!easy) {
+            snprintf(items[i].error, sizeof(items[i].error), "%s",
+                     "libcurl easy init failed");
+            continue;
+        }
+        CURLcode rc = jw__curl_apply_options(easy, items[i].url, headers,
+                                             curl_errors[i],
+                                             JW_UPDATE_METADATA_TIMEOUT_SECONDS);
+        if (rc == CURLE_OK) {
+            rc = curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, jw__fetch_item_write);
+        }
+        if (rc == CURLE_OK) {
+            rc = curl_easy_setopt(easy, CURLOPT_WRITEDATA, &items[i]);
+        }
+        if (rc != CURLE_OK) {
+            snprintf(items[i].error, sizeof(items[i].error),
+                     "libcurl option failed: %s", curl_easy_strerror(rc));
+            curl_easy_cleanup(easy);
+            continue;
+        }
+        if (curl_multi_add_handle(fetcher->multi, easy) != CURLM_OK) {
+            snprintf(items[i].error, sizeof(items[i].error), "%s",
+                     "cannot queue libcurl transfer");
+            curl_easy_cleanup(easy);
+            continue;
+        }
+        easies[i] = easy;
+    }
+
+    for (;;) {
+        int running = 0;
+        CURLMcode mc = curl_multi_perform(fetcher->multi, &running);
+        CURLMsg *msg = NULL;
+        int left = 0;
+        while ((msg = curl_multi_info_read(fetcher->multi, &left)) != NULL) {
+            if (msg->msg != CURLMSG_DONE) {
+                continue;
+            }
+            for (int i = 0; i < count; i++) {
+                if (easies[i] != msg->easy_handle) {
+                    continue;
+                }
+                if (msg->data.result == CURLE_OK) {
+                    items[i].ok = true;
+                } else if (!items[i].error[0]) {
+                    jw__curl_failure(items[i].error, sizeof(items[i].error),
+                                     msg->data.result, curl_errors[i]);
+                }
+                break;
+            }
+        }
+        if (mc != CURLM_OK || running == 0) {
+            break;
+        }
+        if (curl_multi_wait(fetcher->multi, NULL, 0, 1000, NULL) != CURLM_OK) {
+            break;
+        }
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (!easies[i]) {
+            continue;
+        }
+        if (!items[i].ok && !items[i].error[0]) {
+            snprintf(items[i].error, sizeof(items[i].error), "%s",
+                     "libcurl transfer did not finish");
+        }
+        curl_multi_remove_handle(fetcher->multi, easies[i]);
+        curl_easy_cleanup(easies[i]);
+    }
+
+done:
+    free(easies);
+    free(curl_errors);
+    if (headers) {
+        curl_slist_free_all(headers);
+    }
+    for (int i = 0; i < count; i++) {
+        if (items[i].ok && !items[i].data) {
+            items[i].data = (char *)calloc(1, 1);   /* empty body */
+            if (!items[i].data) {
+                items[i].ok = false;
+                snprintf(items[i].error, sizeof(items[i].error), "%s", "out of memory");
+            }
+        }
+    }
+#else
+    for (int i = 0; i < count; i++) {
+        if (items[i].error[0]) {
+            continue;
+        }
+        if (jw__fetch_https_to_file(items[i].url, fetcher->scratch_path, accept,
+                                    JW_UPDATE_METADATA_TIMEOUT_SECONDS,
+                                    items[i].error, sizeof(items[i].error)) != 0) {
+            continue;
+        }
+        char *text = jw__read_text_file(fetcher->scratch_path, items[i].error,
+                                        sizeof(items[i].error));
+        unlink(fetcher->scratch_path);
+        if (!text) {
+            continue;
+        }
+        items[i].data = text;
+        items[i].size = strlen(text);
+        items[i].ok = true;
+    }
+#endif
+
+    for (int i = 0; i < count; i++) {
+        if (!items[i].ok) {
+            jw__fetch_item_free(&items[i]);
+        }
+    }
 }
 
 static const char *jw__json_string(const cJSON *obj, const char *name) {
@@ -856,39 +1201,25 @@ void jw_update_status_init(jw_update_status *status,
     }
 }
 
-static int jw__update_check_local_manifest_artifact(jw_update_status *status,
-                                                    const char *state_dir,
-                                                    const char *platform_id,
-                                                    const char *manifest_path,
-                                                    int artifact_index,
-                                                    bool allow_explicit_urls) {
-    if (!status) {
-        return -1;
-    }
-
+static void jw__begin_manifest_check(jw_update_status *status,
+                                     const char *state_dir,
+                                     const char *platform_id) {
     jw_update_refresh_installed(status, state_dir);
     jw__clear_candidate(status);
     jw__copy_string(status->platform_id, sizeof(status->platform_id), platform_id);
     status->checked_at = time(NULL);
+}
 
-    if (!manifest_path || !manifest_path[0]) {
-        status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "No update manifest path was provided");
+/* Evaluate one artifact of a parsed manifest into the status candidate. Call
+   jw__begin_manifest_check first. */
+static int jw__update_check_manifest_json(jw_update_status *status,
+                                          const char *platform_id,
+                                          const cJSON *root,
+                                          int artifact_index,
+                                          bool allow_explicit_urls) {
+    if (!status) {
         return -1;
     }
-    jw__copy_string(status->source_manifest, sizeof(status->source_manifest),
-                    manifest_path);
-
-    char error[192];
-    char *text = jw__read_text_file(manifest_path, error, sizeof(error));
-    if (!text) {
-        status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", error[0] ? error : "Cannot read update manifest");
-        return -1;
-    }
-
-    cJSON *root = cJSON_Parse(text);
-    free(text);
     if (!root) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Update manifest is not valid JSON");
@@ -903,19 +1234,16 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
     if (!cJSON_IsNumber(schema) || schema->valueint < 1) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Update manifest is missing schema");
-        cJSON_Delete(root);
         return -1;
     }
     if (!product || strcmp(product, "leaf") != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Update manifest product is not leaf");
-        cJSON_Delete(root);
         return -1;
     }
     if (!release_id || !release_id[0]) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Update manifest is missing release_id");
-        cJSON_Delete(root);
         return -1;
     }
     if (!version || !version[0]) {
@@ -924,7 +1252,6 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
     if (!cJSON_IsObject(platforms)) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Update manifest is missing platforms");
-        cJSON_Delete(root);
         return -1;
     }
 
@@ -935,7 +1262,6 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
         jw__copy_string(status->version, sizeof(status->version), version);
         jw__set_message(status, "Release %s does not support %s",
                         release_id, platform_id && platform_id[0] ? platform_id : "this platform");
-        cJSON_Delete(root);
         return 0;
     }
 
@@ -945,7 +1271,6 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
         jw__copy_string(status->release_id, sizeof(status->release_id), release_id);
         jw__copy_string(status->version, sizeof(status->version), version);
         jw__set_message(status, "Release %s requires a newer updater", release_id);
-        cJSON_Delete(root);
         return 0;
     }
 
@@ -968,13 +1293,11 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
         !jw__sha256_looks_valid(artifact_sha256)) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Platform artifact metadata is incomplete");
-        cJSON_Delete(root);
         return -1;
     }
     if (artifact_url && !jw__https_url_safe(artifact_url)) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Local manifest artifact URL must use HTTPS");
-        cJSON_Delete(root);
         return -1;
     }
 
@@ -1043,8 +1366,40 @@ static int jw__update_check_local_manifest_artifact(jw_update_status *status,
         }
     }
 
-    cJSON_Delete(root);
     return 0;
+}
+
+static int jw__update_check_local_manifest_artifact(jw_update_status *status,
+                                                    const char *state_dir,
+                                                    const char *platform_id,
+                                                    const char *manifest_path) {
+    if (!status) {
+        return -1;
+    }
+
+    jw__begin_manifest_check(status, state_dir, platform_id);
+
+    if (!manifest_path || !manifest_path[0]) {
+        status->status = JW_UPDATE_STATUS_ERROR;
+        jw__set_message(status, "%s", "No update manifest path was provided");
+        return -1;
+    }
+    jw__copy_string(status->source_manifest, sizeof(status->source_manifest),
+                    manifest_path);
+
+    char error[192];
+    char *text = jw__read_text_file(manifest_path, error, sizeof(error));
+    if (!text) {
+        status->status = JW_UPDATE_STATUS_ERROR;
+        jw__set_message(status, "%s", error[0] ? error : "Cannot read update manifest");
+        return -1;
+    }
+
+    cJSON *root = cJSON_Parse(text);
+    free(text);
+    int rc = jw__update_check_manifest_json(status, platform_id, root, 0, true);
+    cJSON_Delete(root);
+    return rc;
 }
 
 int jw_update_check_local_manifest(jw_update_status *status,
@@ -1053,9 +1408,11 @@ int jw_update_check_local_manifest(jw_update_status *status,
                                    const char *manifest_path) {
     if (status) {
         jw__clear_options(status);
+        /* A local manifest is the whole list; there are no older releases to load. */
+        status->options_complete = true;
     }
     int rc = jw__update_check_local_manifest_artifact(status, state_dir, platform_id,
-                                                     manifest_path, 0, true);
+                                                     manifest_path);
     if (rc == 0 && status && status->compatible) {
         jw__copy_status_to_option(status, &status->options[0], 0);
         status->option_count = 1;
@@ -1064,24 +1421,8 @@ int jw_update_check_local_manifest(jw_update_status *status,
     return rc;
 }
 
-static int jw__manifest_artifact_count(const char *manifest_path,
-                                       const char *platform_id) {
-    if (!manifest_path || !manifest_path[0] || !platform_id || !platform_id[0]) {
-        return 0;
-    }
-
-    char error[128];
-    char *text = jw__read_text_file(manifest_path, error, sizeof(error));
-    if (!text) {
-        return 0;
-    }
-
-    cJSON *root = cJSON_Parse(text);
-    free(text);
-    if (!cJSON_IsObject(root)) {
-        if (root) {
-            cJSON_Delete(root);
-        }
+static int jw__manifest_artifact_count(const cJSON *root, const char *platform_id) {
+    if (!cJSON_IsObject(root) || !platform_id || !platform_id[0]) {
         return 0;
     }
 
@@ -1096,8 +1437,6 @@ static int jw__manifest_artifact_count(const char *manifest_path,
             count = 1;
         }
     }
-
-    cJSON_Delete(root);
     return count;
 }
 
@@ -1233,21 +1572,103 @@ static const char *jw__release_asset_download_url(const cJSON *asset) {
     return NULL;
 }
 
+/* JAWAKA_UPDATE_RELEASES_URL points both channels at another GitHub-shaped
+   release feed, for staging feeds and tests. It must be HTTPS. */
 static const char *jw__releases_url(jw_update_channel channel) {
+    const char *override = getenv("JAWAKA_UPDATE_RELEASES_URL");
+    if (jw__https_url_safe(override)) {
+        return override;
+    }
     return channel == JW_UPDATE_CHANNEL_BETA ? JW_UPDATE_RELEASES_URL_BETA
                                              : JW_UPDATE_RELEASES_URL_STABLE;
 }
 
-int jw_update_check_github(jw_update_status *status,
-                           const char *state_dir,
-                           const char *platform_id,
-                           jw_update_channel channel) {
+/* Add every compatible artifact a release's manifest offers this platform to
+   status->options. */
+static void jw__add_release_options(jw_update_status *status,
+                                    const char *state_dir,
+                                    const char *platform_id,
+                                    const cJSON *release,
+                                    const char *manifest_url,
+                                    const char *manifest_text,
+                                    char *last_message,
+                                    size_t last_message_size) {
+    cJSON *root = cJSON_Parse(manifest_text ? manifest_text : "");
+    int artifact_count = jw__manifest_artifact_count(root, platform_id);
+    if (artifact_count < 1) {
+        artifact_count = 1;
+    }
+
+    for (int artifact_index = 0;
+         artifact_index < artifact_count &&
+         status->option_count < JW_UPDATE_MAX_OPTIONS;
+         artifact_index++) {
+        jw__begin_manifest_check(status, state_dir, platform_id);
+        if (jw__update_check_manifest_json(status, platform_id, root,
+                                           artifact_index, false) != 0) {
+            snprintf(last_message, last_message_size, "%s", status->message);
+            continue;
+        }
+
+        if (status->status == JW_UPDATE_STATUS_INCOMPATIBLE) {
+            snprintf(last_message, last_message_size, "%s", status->message);
+            continue;
+        }
+
+        const cJSON *artifact_asset =
+            jw__find_release_asset(release, status->artifact_name);
+        const char *artifact_url = jw__release_asset_download_url(artifact_asset);
+        if (!artifact_url) {
+            snprintf(last_message, last_message_size, "%s",
+                     "Release is missing an update asset");
+            continue;
+        }
+
+        jw__copy_string(status->manifest_url, sizeof(status->manifest_url),
+                        manifest_url);
+        jw__copy_string(status->artifact_url, sizeof(status->artifact_url),
+                        artifact_url);
+
+        if (!status->published_at[0]) {
+            jw__copy_string(status->published_at, sizeof(status->published_at),
+                            jw__json_string(release, "published_at"));
+        }
+        if (!status->notes_url[0]) {
+            jw__copy_string(status->notes_url, sizeof(status->notes_url),
+                            jw__json_string(release, "html_url"));
+        }
+
+        if (status->recovery_name[0]) {
+            const cJSON *recovery_asset =
+                jw__find_release_asset(release, status->recovery_name);
+            const char *recovery_url = jw__release_asset_download_url(recovery_asset);
+            if (recovery_url) {
+                jw__copy_string(status->recovery_url, sizeof(status->recovery_url),
+                                recovery_url);
+            }
+        }
+
+        jw__copy_status_to_option(status,
+                                  &status->options[status->option_count],
+                                  status->option_count);
+        status->option_count++;
+    }
+
+    cJSON_Delete(root);
+}
+
+int jw_update_check_releases(jw_update_status *status,
+                             const char *state_dir,
+                             const char *platform_id,
+                             const char *releases_url,
+                             jw_update_check_scope scope) {
     if (!status) {
         return -1;
     }
 
     jw_update_refresh_installed(status, state_dir);
     jw__clear_candidate(status);
+    jw__clear_options(status);
     jw__copy_string(status->platform_id, sizeof(status->platform_id), platform_id);
     status->checked_at = time(NULL);
 
@@ -1258,58 +1679,46 @@ int jw_update_check_github(jw_update_status *status,
         return -1;
     }
 
-    char releases_path[PATH_MAX];
-    if (!jw__join_path(releases_path, sizeof(releases_path),
-                       update_dir, "github-releases.json")) {
-        status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update release path is too long");
-        return -1;
-    }
-
     char error[256];
-    if (jw__fetch_https_to_file(jw__releases_url(channel), releases_path,
-                                "application/vnd.github+json",
-                                error, sizeof(error)) != 0) {
+    jw__fetcher fetcher;
+    if (jw__fetcher_open(&fetcher, update_dir, error, sizeof(error)) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", error[0] ? error : "Cannot fetch Leaf releases");
         return -1;
     }
 
-    char *text = jw__read_text_file(releases_path, error, sizeof(error));
-    if (!text) {
+    jw__fetch_item list;
+    memset(&list, 0, sizeof(list));
+    list.url = releases_url;
+    jw__fetcher_run(&fetcher, &list, 1, "application/vnd.github+json");
+    if (!list.ok) {
+        jw__fetcher_close(&fetcher);
         status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", error[0] ? error : "Cannot read Leaf releases");
+        jw__set_message(status, "%s",
+                        list.error[0] ? list.error : "Cannot fetch Leaf releases");
         return -1;
     }
 
-    cJSON *releases = cJSON_Parse(text);
-    free(text);
+    cJSON *releases = cJSON_Parse(list.data);
+    jw__fetch_item_free(&list);
     if (!cJSON_IsArray(releases)) {
         if (releases) {
             cJSON_Delete(releases);
         }
+        jw__fetcher_close(&fetcher);
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", "Leaf releases response was not a JSON array");
         return -1;
     }
 
-    char manifest_path[PATH_MAX];
-    if (!jw__join_path(manifest_path, sizeof(manifest_path),
-                       update_dir, "leaf-update.json")) {
-        cJSON_Delete(releases);
-        status->status = JW_UPDATE_STATUS_ERROR;
-        jw__set_message(status, "%s", "Update manifest path is too long");
-        return -1;
-    }
-
-    char last_message[JW_UPDATE_MESSAGE_MAX];
-    snprintf(last_message, sizeof(last_message), "%s",
-             "No compatible Leaf update metadata found");
-    jw__clear_options(status);
-
+    /* Published releases that carry update metadata, newest first. */
+    const cJSON *candidates[JW_UPDATE_MAX_OPTIONS];
+    jw__fetch_item manifests[JW_UPDATE_MAX_OPTIONS];
+    memset(manifests, 0, sizeof(manifests));
+    int candidate_count = 0;
     const cJSON *release = NULL;
     cJSON_ArrayForEach(release, releases) {
-        if (status->option_count >= JW_UPDATE_MAX_OPTIONS) {
+        if (candidate_count >= JW_UPDATE_MAX_OPTIONS) {
             break;
         }
         if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(release, "draft")) ||
@@ -1322,85 +1731,65 @@ int jw_update_check_github(jw_update_status *status,
         if (!manifest_url) {
             continue;
         }
-
-        if (jw__fetch_https_to_file(manifest_url, manifest_path,
-                                    "application/octet-stream",
-                                    error, sizeof(error)) != 0) {
-            snprintf(last_message, sizeof(last_message), "%s",
-                     error[0] ? error : "Cannot fetch release manifest");
-            continue;
-        }
-
-        int artifact_count = jw__manifest_artifact_count(manifest_path, platform_id);
-        if (artifact_count < 1) {
-            artifact_count = 1;
-        }
-
-        for (int artifact_index = 0;
-             artifact_index < artifact_count &&
-             status->option_count < JW_UPDATE_MAX_OPTIONS;
-             artifact_index++) {
-            if (jw__update_check_local_manifest_artifact(status, state_dir,
-                                                         platform_id,
-                                                         manifest_path,
-                                                         artifact_index,
-                                                         false) != 0) {
-                snprintf(last_message, sizeof(last_message), "%s", status->message);
-                continue;
-            }
-
-            if (status->status == JW_UPDATE_STATUS_INCOMPATIBLE) {
-                snprintf(last_message, sizeof(last_message), "%s", status->message);
-                continue;
-            }
-
-            const cJSON *artifact_asset =
-                jw__find_release_asset(release, status->artifact_name);
-            const char *artifact_url = jw__release_asset_download_url(artifact_asset);
-            if (!artifact_url) {
-                snprintf(last_message, sizeof(last_message), "%s",
-                         "Release is missing an update asset");
-                continue;
-            }
-
-            jw__copy_string(status->manifest_url, sizeof(status->manifest_url),
-                            manifest_url);
-            jw__copy_string(status->artifact_url, sizeof(status->artifact_url),
-                            artifact_url);
-
-            if (!status->published_at[0]) {
-                jw__copy_string(status->published_at, sizeof(status->published_at),
-                                jw__json_string(release, "published_at"));
-            }
-            if (!status->notes_url[0]) {
-                jw__copy_string(status->notes_url, sizeof(status->notes_url),
-                                jw__json_string(release, "html_url"));
-            }
-
-            if (status->recovery_name[0]) {
-                const cJSON *recovery_asset =
-                    jw__find_release_asset(release, status->recovery_name);
-                const char *recovery_url = jw__release_asset_download_url(recovery_asset);
-                if (recovery_url) {
-                    jw__copy_string(status->recovery_url, sizeof(status->recovery_url),
-                                    recovery_url);
-                }
-            }
-
-            jw__copy_status_to_option(status,
-                                      &status->options[status->option_count],
-                                      status->option_count);
-            status->option_count++;
-        }
+        candidates[candidate_count] = release;
+        manifests[candidate_count].url = manifest_url;
+        candidate_count++;
     }
 
+    char last_message[JW_UPDATE_MESSAGE_MAX];
+    snprintf(last_message, sizeof(last_message), "%s",
+             "No compatible Leaf update metadata found");
+
+    /* The routine check only needs the newest compatible release, so it takes
+       manifests one at a time and stops at the first hit; the fetcher keeps the
+       connections warm for the next one if it has to keep looking. Loading the
+       full list for the release picker fetches every manifest at once. */
+    bool all_fetched = true;
+    int next = 0;
+    while (next < candidate_count && status->option_count < JW_UPDATE_MAX_OPTIONS) {
+        int batch = scope == JW_UPDATE_SCOPE_ALL ? candidate_count - next : 1;
+        jw__fetcher_run(&fetcher, &manifests[next], batch, "application/octet-stream");
+        for (int i = next; i < next + batch; i++) {
+            if (!manifests[i].ok) {
+                all_fetched = false;
+                snprintf(last_message, sizeof(last_message), "%s",
+                         manifests[i].error[0] ? manifests[i].error
+                                               : "Cannot fetch release manifest");
+                continue;
+            }
+            jw__add_release_options(status, state_dir, platform_id, candidates[i],
+                                    manifests[i].url, manifests[i].data,
+                                    last_message, sizeof(last_message));
+        }
+        next += batch;
+        if (scope == JW_UPDATE_SCOPE_LATEST && status->option_count > 0) {
+            break;
+        }
+    }
+    status->options_complete = all_fetched &&
+        (next >= candidate_count || status->option_count >= JW_UPDATE_MAX_OPTIONS);
+
+    for (int i = 0; i < candidate_count; i++) {
+        jw__fetch_item_free(&manifests[i]);
+    }
+    jw__fetcher_close(&fetcher);
     cJSON_Delete(releases);
+
     if (status->option_count > 0) {
         return jw_update_select_option(status, 0);
     }
     status->status = JW_UPDATE_STATUS_ERROR;
     jw__set_message(status, "%s", last_message);
     return -1;
+}
+
+int jw_update_check_github(jw_update_status *status,
+                           const char *state_dir,
+                           const char *platform_id,
+                           jw_update_channel channel,
+                           jw_update_check_scope scope) {
+    return jw_update_check_releases(status, state_dir, platform_id,
+                                    jw__releases_url(channel), scope);
 }
 
 int jw_update_download_candidate(jw_update_status *status,
@@ -1462,7 +1851,7 @@ int jw_update_download_candidate(jw_update_status *status,
 
     char error[256];
     if (jw__fetch_https_to_file(status->artifact_url, out_path,
-                                "application/octet-stream",
+                                "application/octet-stream", 0,
                                 error, sizeof(error)) != 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
         jw__set_message(status, "%s", error[0] ? error : "Cannot download update artifact");
@@ -1685,7 +2074,7 @@ int jw_update_download_start(jw_update_status *status,
 
     char error[256];
     pid_t pid = jw__spawn_https_to_file(status->artifact_url, tmp_path,
-                                        "application/octet-stream",
+                                        "application/octet-stream", 0,
                                         error, sizeof(error));
     if (pid < 0) {
         status->status = JW_UPDATE_STATUS_ERROR;
@@ -1742,9 +2131,46 @@ void jw_update_download_poll(jw_update_status *status,
 static void *jw__update_check_worker(void *arg) {
     jw_update_check_job *job = (jw_update_check_job *)arg;
     job->result = jw_update_check_github(&job->scratch, job->state_dir,
-                                         job->platform_id, job->channel);
+                                         job->platform_id, job->channel,
+                                         job->scope);
     atomic_store_explicit(&job->done, true, memory_order_release);
     return NULL;
+}
+
+/* Hand a finished job's result to the live status. A routine check replaces the
+   whole status. A release-list load only swaps in the options, so the selected
+   candidate and any download stay as they were. */
+static void jw__finish_check_job(jw_update_status *status,
+                                 const jw_update_check_job *job) {
+    if (job->scope == JW_UPDATE_SCOPE_LATEST) {
+        *status = job->scratch;
+        status->options_loading = false;
+        return;
+    }
+
+    status->options_loading = false;
+    if (job->result != 0) {
+        status->options_complete = false;
+        jw__set_message(status, "%s", job->scratch.message);
+        return;
+    }
+
+    memcpy(status->options, job->scratch.options, sizeof(status->options));
+    status->option_count = job->scratch.option_count;
+    status->options_complete = job->scratch.options_complete;
+    if (!status->options_complete) {
+        jw__set_message(status, "%s", "Some releases could not be loaded");
+    }
+    status->selected_option = -1;
+    for (int i = 0; i < status->option_count; i++) {
+        const jw_update_option *option = &status->options[i];
+        if (status->release_id[0] &&
+            strcmp(option->release_id, status->release_id) == 0 &&
+            strcmp(option->artifact_name, status->artifact_name) == 0) {
+            status->selected_option = i;
+            break;
+        }
+    }
 }
 
 void jw_update_check_job_init(jw_update_check_job *job) {
@@ -1758,12 +2184,20 @@ void jw_update_check_job_init(jw_update_check_job *job) {
 int jw_update_check_start(jw_update_status *status,
                           jw_update_check_job *job,
                           const char *state_dir,
-                          jw_update_channel channel) {
+                          jw_update_channel channel,
+                          jw_update_check_scope scope) {
     if (!status || !job) {
         return -1;
     }
     if (job->active) {
-        return 0;  /* a check is already running */
+        /* One job at a time. A release-list load asked for during a routine check
+           runs once that check lands, against the same channel, so the picker is
+           not left waiting on a request that was dropped. */
+        if (scope == JW_UPDATE_SCOPE_ALL && job->scope == JW_UPDATE_SCOPE_LATEST) {
+            job->queued_all = true;
+            status->options_loading = true;
+        }
+        return 0;
     }
 
     /* Seed the worker's scratch from the live status so fields the check does not
@@ -1772,6 +2206,8 @@ int jw_update_check_start(jw_update_status *status,
     atomic_store_explicit(&job->done, false, memory_order_relaxed);
     job->result = 0;
     job->channel = channel;
+    job->scope = scope;
+    job->queued_all = false;
     jw__copy_string(job->state_dir, sizeof(job->state_dir),
                     state_dir ? state_dir : "");
     jw__copy_string(job->platform_id, sizeof(job->platform_id),
@@ -1780,13 +2216,19 @@ int jw_update_check_start(jw_update_status *status,
     if (pthread_create(&job->thread, NULL, jw__update_check_worker, job) != 0) {
         /* Threading failed: fall back to a synchronous check so the feature still
            works. This blocks (the old behaviour) but is not a regression. */
-        jw_update_check_github(status, state_dir, status->platform_id, channel);
+        job->result = jw_update_check_github(&job->scratch, job->state_dir,
+                                             job->platform_id, channel, scope);
+        jw__finish_check_job(status, job);
         return 0;
     }
 
     job->active = true;
-    status->status = JW_UPDATE_STATUS_CHECKING;
-    jw__set_message(status, "%s", "Checking for updates");
+    if (scope == JW_UPDATE_SCOPE_ALL) {
+        status->options_loading = true;
+    } else {
+        status->status = JW_UPDATE_STATUS_CHECKING;
+        jw__set_message(status, "%s", "Checking for updates");
+    }
     return 0;
 }
 
@@ -1797,9 +2239,19 @@ void jw_update_check_poll(jw_update_status *status,
         return;
     }
     pthread_join(job->thread, NULL);  /* makes the worker's writes visible */
-    *status = job->scratch;
+    jw__finish_check_job(status, job);
     job->active = false;
     atomic_store_explicit(&job->done, false, memory_order_relaxed);
+
+    if (job->queued_all) {
+        job->queued_all = false;
+        if (!status->options_complete) {
+            char state_dir[JW_UPDATE_PATH_MAX];
+            jw__copy_string(state_dir, sizeof(state_dir), job->state_dir);
+            jw_update_check_start(status, job, state_dir, job->channel,
+                                  JW_UPDATE_SCOPE_ALL);
+        }
+    }
 }
 
 void jw_update_check_job_wait(jw_update_check_job *job) {
@@ -1808,6 +2260,7 @@ void jw_update_check_job_wait(jw_update_check_job *job) {
     }
     pthread_join(job->thread, NULL);
     job->active = false;
+    job->queued_all = false;
     atomic_store_explicit(&job->done, false, memory_order_relaxed);
 }
 
@@ -2453,6 +2906,8 @@ cJSON *jw_update_status_to_json(const jw_update_status *status) {
         cJSON_AddItemToArray(options, item);
     }
     cJSON_AddItemToObject(root, "options", options);
+    cJSON_AddBoolToObject(root, "options_complete", status->options_complete);
+    cJSON_AddBoolToObject(root, "options_loading", status->options_loading);
     jw__json_add_string_or_null(root, "recovery_name", status->recovery_name);
     jw__json_add_string_or_null(root, "manifest_url", status->manifest_url);
     jw__json_add_string_or_null(root, "artifact_url", status->artifact_url);
