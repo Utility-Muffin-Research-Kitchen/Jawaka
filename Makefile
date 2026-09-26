@@ -1254,7 +1254,8 @@ core-selection-test: | $(BUILD)/bin
 
 # The AUTO governor-profile rule: which systems enter performance without a
 # user override. Dreamcast-family systems (DC, NAOMI, ATOMISWAVE) are the ones
-# every Flycast choice depends on, standalone and libretro alike.
+# every Flycast choice depends on, standalone and libretro alike. Above 60 Hz
+# AUTO boosts every game, since each frame gets one refresh of time.
 .PHONY: perf-policy-test
 perf-policy-test: | $(BUILD)/bin
 	$(CC) $(CFLAGS_COMMON) -o $(BUILD)/bin/perf-policy-test \
@@ -1636,7 +1637,7 @@ help:
 	@echo "  make jawaka-catalog-smoke    Build metadata/core-choice smoke helper"
 	@echo "  make standalone-policy-test  Validate standalone DRM/input classification"
 	@echo "  make core-selection-test  Validate saved/default/alternate launch core order"
-	@echo "  make perf-policy-test     Validate the AUTO performance-profile rule per system"
+	@echo "  make perf-policy-test     Validate the AUTO performance-profile rule per system and refresh rate"
 	@echo "  make performance-dreamcast-ipc-smoke  Verify DC-family launches enter and restore performance"
 	@echo "  make launch-core-pin-ipc-smoke  Verify a pending launch never changes its selected core"
 	@echo "  make launch-notice-test      Validate launch-notice set/expiry policy"

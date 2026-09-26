@@ -8,8 +8,13 @@
  *
  * `system` is the launch's system id (or, when metadata is unavailable, the
  * ROM folder name the compatibility scanner stored). NULL or empty means no
- * preference, which resolves to the balanced profile. */
-jw_platform_perf_profile jw_platform_perf_auto_profile_for_system(const char *system);
+ * preference, which resolves to the balanced profile.
+ *
+ * `refresh_hz` is the live display rate, -1 when unknown. Above 60 Hz every
+ * game resolves to performance: each frame gets one refresh of time instead of
+ * two, and balanced's governors do not always ramp in time. */
+jw_platform_perf_profile jw_platform_perf_auto_profile_for_system(const char *system,
+                                                                  int refresh_hz);
 
 /* The profile a game actually runs with, once the session, game, system and
  * global settings have all had their say. `requested` is their resolved answer,
@@ -27,13 +32,16 @@ jw_platform_perf_profile jw_platform_perf_auto_profile_for_system(const char *sy
  *
  * Every other system keeps the player's choice: a Balanced, Battery Saver,
  * Performance or Custom override is honored, and AUTO falls back to
- * jw_platform_perf_auto_profile_for_system().
+ * jw_platform_perf_auto_profile_for_system(), which also applies the refresh
+ * rule. The refresh rule is a default, not a contract: it never overrides an
+ * explicit choice.
  *
  * The frontend and sleep profiles describe the idle device, not a running
  * game, and the daemon applies them with no system at all. A NULL or empty
  * system therefore keeps whatever was requested, so a Dreamcast game cannot
  * drag the idle device into performance after it exits. */
 jw_platform_perf_profile jw_platform_perf_game_profile(const char *system,
+                                                       int refresh_hz,
                                                        jw_platform_perf_profile requested);
 
 #endif
