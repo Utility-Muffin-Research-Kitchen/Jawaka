@@ -7,6 +7,10 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
+#include <stdint.h>
+#include <drm/drm.h>
+#include <drm/drm_mode.h>
 #include <linux/netlink.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
@@ -248,6 +252,13 @@ static int s_mlp1_target_refresh_hz = -1;
 /* HDMI output mode (0 off / 1 4:3 / 2 stretch); last applied, -1 until set. */
 enum { JW_MLP1_HDMI_OFF = 0, JW_MLP1_HDMI_4_3 = 1, JW_MLP1_HDMI_STRETCH = 2 };
 static int s_mlp1_hdmi_mode = -1;
+
+/* Color-temperature target in K, last value we programmed into the CRTC gamma
+   LUT. -1 until set. The LUT survives Weston restarts (see the color
+   temperature section below) but a cold power cycle clears it, so jawakad
+   replays the persisted value at startup; this cache just answers
+   platform-status without re-reading the ramp. */
+static int s_mlp1_color_temp_k = -1;
 
 static long long jw__monotonic_ms(void) {
     struct timespec ts;
@@ -1320,28 +1331,6 @@ static void jw__mlp1_weston_mode_line(int hz, char *buf, size_t n) {
              "mode=%.2f 720 735 749 769 960 990 998 1018 -hsync -vsync\n", clk);
 }
 
-static int jw__mlp1_get_refresh_hz(void) {
-    FILE *fp = fopen("/sys/kernel/debug/dri/0/summary", "r");
-    if (!fp) {
-        return -1;
-    }
-    int hz = -1;
-    char line[256];
-    while (fgets(line, sizeof(line), fp)) {
-        const char *p = strstr(line, "Display mode:");
-        if (!p) {
-            continue;
-        }
-        int dw, dh, dr;
-        if (sscanf(p, "Display mode: %dx%dp%d", &dw, &dh, &dr) == 3) {
-            hz = dr;
-            break;
-        }
-    }
-    fclose(fp);
-    return hz;
-}
-
 /* Build the override from the stock config: copy it verbatim, drop any
    pre-existing `mode=` line (so re-toggling never duplicates), and append the
    modeline for the target rate. [output] is the stock file's last section, so
@@ -1396,6 +1385,200 @@ static int jw__mlp1_write_weston_override(int hz) {
         return -1;
     }
     return 0;
+}
+
+/* ── Color temperature (DRM CRTC gamma LUT) ─────────────────────────────
+   The RK3566 VOP2 exposes a per-CRTC GAMMA_LUT (1024 entries here). We found no
+   sysfs knob for it and no vendor color-temperature control; the legacy
+   DRM_IOCTL_MODE_SETGAMMA path programs it directly. On this vendor kernel
+   (5.10) SETGAMMA is not gated on DRM master, so a fresh, non-master fd
+   succeeds while Weston holds master -- root does not bypass that check on
+   mainline, so this is not portable. Verified on hardware: the ramp takes
+   effect live with no compositor restart (unlike refresh rate).
+   The LUT stays programmed across a Weston restart, an HDMI connector switch
+   and the direct-DRM handoff (all observed on hardware); a cold power-off and
+   power-on clears it (also observed: the panel came up neutral with a daemon
+   that never touches it), so jawakad replays the persisted value at startup
+   (jw__apply_color_temp). A warm reboot has not been tried.
+
+   The kernel uapi headers (<drm/drm.h>) provide the ioctl structs, so there is
+   no libdrm header/link dependency in the cross build. */
+#define JW_MLP1_DRM_CARD "/dev/dri/card0"
+
+/* Tanner Helland black-body approximation: kelvin -> per-channel linear scale in
+   [0,1]. Above ~6600 K red (and a little green) is pulled down: cooler. Below it
+   blue is pulled down instead: warmer. */
+static void jw__mlp1_kelvin_to_rgb(int kelvin, double *r, double *g, double *b) {
+    double t = kelvin / 100.0;
+    double red, grn, blu;
+    if (t <= 66.0) {
+        red = 255.0;
+        grn = 99.4708025861 * log(t) - 161.1195681661;
+    } else {
+        red = 329.698727446 * pow(t - 60.0, -0.1332047592);
+        grn = 288.1221695283 * pow(t - 60.0, -0.0755148492);
+    }
+    if (t >= 66.0) {
+        blu = 255.0;
+    } else if (t <= 19.0) {
+        blu = 0.0;
+    } else {
+        blu = 138.5177312231 * log(t - 10.0) - 305.0447927307;
+    }
+    *r = (red < 0 ? 0 : red > 255 ? 255 : red) / 255.0;
+    *g = (grn < 0 ? 0 : grn > 255 ? 255 : grn) / 255.0;
+    *b = (blu < 0 ? 0 : blu > 255 ? 255 : blu) / 255.0;
+}
+
+/* Find the CRTC that has a valid mode and copy its state (the core GETCRTC ioctl)
+   to *out. MLP1 exposes a single CRTC that DSI and HDMI share. Returns 0, or -1
+   when none has a valid mode. */
+static int jw__mlp1_drm_active_crtc(int fd, struct drm_mode_crtc *out) {
+    struct drm_mode_card_res res;
+    memset(&res, 0, sizeof(res));
+    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) != 0 || res.count_crtcs == 0) {
+        return -1;
+    }
+    uint32_t n = res.count_crtcs;
+    uint32_t *ids = calloc(n, sizeof(*ids));
+    if (!ids) {
+        return -1;
+    }
+    memset(&res, 0, sizeof(res));
+    res.crtc_id_ptr = (uint64_t)(uintptr_t)ids;
+    res.count_crtcs = n;
+    int rc = -1;
+    if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) == 0) {
+        uint32_t got = res.count_crtcs < n ? res.count_crtcs : n;
+        for (uint32_t i = 0; i < got; i++) {
+            struct drm_mode_crtc c;
+            memset(&c, 0, sizeof(c));
+            c.crtc_id = ids[i];
+            if (ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &c) != 0) {
+                continue;
+            }
+            if (c.mode_valid) {
+                *out = c;
+                rc = 0;
+                break;
+            }
+        }
+    }
+    free(ids);
+    return rc;
+}
+
+/* Pick the CRTC to program: the active one, with a gamma table of at least two
+   entries (the ramp writer divides by size - 1). Only an active CRTC is used on
+   purpose: the gamma LUT is not written while the CRTC has no mode (cable pulled,
+   restart in flight). Returns 0 and fills *crtc_id / *gamma_size, -1 otherwise. */
+static int jw__mlp1_drm_pick_crtc(int fd, uint32_t *crtc_id, uint32_t *gamma_size) {
+    struct drm_mode_crtc c;
+    if (jw__mlp1_drm_active_crtc(fd, &c) != 0 || c.gamma_size < 2) {
+        return -1;
+    }
+    *crtc_id = c.crtc_id;
+    *gamma_size = c.gamma_size;
+    return 0;
+}
+
+/* Current mode of the active output, from the DRM core. This deliberately does not
+   read /sys/kernel/debug/dri/0/summary: on this vendor kernel the summary dump
+   (vop2_crtc_debugfs_dump) dereferences NULL when it runs during a CRTC state
+   change, which oopsed the kernel and left the display dead until a hard reset
+   (the daemon read it every second). */
+static int jw__mlp1_get_display_mode(jw_platform_context *ctx, int *width, int *height,
+                                     int *hz) {
+    (void)ctx;
+    int fd = open(JW_MLP1_DRM_CARD, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    struct drm_mode_crtc c;
+    int rc = jw__mlp1_drm_active_crtc(fd, &c);
+    close(fd);
+    if (rc != 0) {
+        return -1;
+    }
+    if (width) *width = (int)c.mode.hdisplay;
+    if (height) *height = (int)c.mode.vdisplay;
+    if (hz) *hz = (int)c.mode.vrefresh;
+    return 0;
+}
+
+/* Current refresh rate in Hz, or -1 when there is no active mode. */
+static int jw__mlp1_get_refresh_hz(void) {
+    int hz = -1;
+    return jw__mlp1_get_display_mode(NULL, NULL, NULL, &hz) == 0 ? hz : -1;
+}
+
+/* Write a linear ramp scaled by the given per-channel factors (1.0 each =
+   identity) to the CRTC's gamma LUT. Only touches the hardware; callers own any
+   bookkeeping. Returns 0 on success. */
+static int jw__mlp1_write_gamma_ramp(double rf, double gf, double bf) {
+    int fd = open(JW_MLP1_DRM_CARD, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        jw_log_warn("color-temp: open %s: %s", JW_MLP1_DRM_CARD, strerror(errno));
+        return -1;
+    }
+
+    uint32_t crtc_id = 0, gamma_size = 0;
+    int rc = -1;
+    if (jw__mlp1_drm_pick_crtc(fd, &crtc_id, &gamma_size) != 0) {
+        jw_log_warn("color-temp: no gamma-capable CRTC");
+        close(fd);
+        return -1;
+    }
+
+    uint16_t *r = malloc(gamma_size * sizeof(*r));
+    uint16_t *g = malloc(gamma_size * sizeof(*g));
+    uint16_t *b = malloc(gamma_size * sizeof(*b));
+    if (r && g && b) {
+        for (uint32_t i = 0; i < gamma_size; i++) {
+            double base = (double)i / (double)(gamma_size - 1); /* 0..1 */
+            double rv = base * rf, gv = base * gf, bv = base * bf;
+            r[i] = (uint16_t)lround((rv < 0 ? 0 : rv > 1 ? 1 : rv) * 65535.0);
+            g[i] = (uint16_t)lround((gv < 0 ? 0 : gv > 1 ? 1 : gv) * 65535.0);
+            b[i] = (uint16_t)lround((bv < 0 ? 0 : bv > 1 ? 1 : bv) * 65535.0);
+        }
+        struct drm_mode_crtc_lut lut;
+        memset(&lut, 0, sizeof(lut));
+        lut.crtc_id = crtc_id;
+        lut.gamma_size = gamma_size;
+        lut.red = (uint64_t)(uintptr_t)r;
+        lut.green = (uint64_t)(uintptr_t)g;
+        lut.blue = (uint64_t)(uintptr_t)b;
+        if (ioctl(fd, DRM_IOCTL_MODE_SETGAMMA, &lut) == 0) {
+            rc = 0;
+        } else {
+            jw_log_warn("color-temp: SETGAMMA crtc %u: %s", crtc_id, strerror(errno));
+        }
+    }
+    free(r);
+    free(g);
+    free(b);
+    close(fd);
+    return rc;
+}
+
+/* Program the CRTC gamma LUT for the given color-temperature target and, on
+   success, record it as the applied panel value. NEUTRAL_K writes an identity
+   ramp (no correction). Returns 0 on success. */
+static int jw__mlp1_set_color_temp(int kelvin) {
+    kelvin = jw_platform_clamp_color_temp_k(kelvin);
+    double rf = 1.0, gf = 1.0, bf = 1.0;
+    if (kelvin != JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+        jw__mlp1_kelvin_to_rgb(kelvin, &rf, &gf, &bf);
+    }
+    int rc = jw__mlp1_write_gamma_ramp(rf, gf, bf);
+    if (rc == 0) {
+        s_mlp1_color_temp_k = kelvin;
+    }
+    return rc;
+}
+
+static int jw__mlp1_get_color_temp(void) {
+    return s_mlp1_color_temp_k;
 }
 
 static int jw__mlp1_set_refresh_rate(int hz) {
@@ -1497,6 +1680,16 @@ static int jw__mlp1_set_hdmi_output(int mode) {
             "kill -9 $(pgrep -x jawaka-launcher) $(pgrep -x jawaka-osd) 2>/dev/null",
             JW_MLP1_WESTON_OVERRIDE_INI, modestr, rectline);
     }
+
+    /* The color-temperature LUT stays programmed on the (shared) CRTC across the
+       Weston restart and the connector switch, so it would tint the TV. It is
+       deliberately NOT swapped here: on hardware, LUT writes made during an HDMI
+       switch were followed by kernel oopses in the vendor's debugfs display dump
+       (which Jawaka no longer reads, see jw__mlp1_get_display_mode). jawakad swaps
+       the LUT from its HDMI poll instead, once the link has been quiet for a
+       couple of seconds and the display has a mode again, so it does not race the
+       mode change (see jw__tick_hdmi): identity for a TV, the panel value again
+       when the panel is back. */
 
     /* Detached (double-fork) so the action returns at once; see
        jw_weston_initd_spawn_detached. */
@@ -2773,6 +2966,7 @@ static void jw__mlp1_get_status(jw_platform_context *ctx, jw_platform_status *ou
     }
     out->boot_splash_enabled = jw__mlp1_boot_splash_enabled(ctx) ? 1 : 0;
     out->refresh_rate_hz = jw__mlp1_get_refresh_hz();
+    out->color_temp_kelvin = jw__mlp1_get_color_temp();
     out->hdmi_connected = jw__mlp1_hdmi_connected() ? 1 : 0;
     out->hdmi_output_mode = s_mlp1_hdmi_mode;
 }
@@ -3189,6 +3383,47 @@ static void jw__mlp1_perform_action(jw_platform_context *ctx, jw_platform_action
         jw_log_info("display: refresh rate -> %d Hz", hz);
         char msg[32];
         snprintf(msg, sizeof(msg), "switching to %d Hz", hz);
+        jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
+        return;
+    }
+
+    if (action == JW_PLATFORM_ACTION_SET_COLOR_TEMP) {
+        /* This LUT compensates for the internal panel's known warm cast; the
+           value has no meaning on an external TV, and DSI and HDMI share the
+           one CRTC on this device, so applying it while HDMI is active would
+           just tint whatever the TV is showing. While HDMI is the active
+           output only a neutral request is honoured: it writes an identity ramp
+           so the TV isn't tinted, and leaves the tracked panel value alone.
+           Anything else is refused; jawakad sends the neutral request, and the
+           panel value again once the panel is back (see jw__tick_hdmi). */
+        if (jw__mlp1_hdmi_tv_active()) {
+            if (jw_platform_clamp_color_temp_k(value) != JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+                jw_platform_result_set(out, JW_PLATFORM_RESULT_UNAVAILABLE,
+                                       "Color temperature unavailable while HDMI is active");
+                return;
+            }
+            if (jw__mlp1_write_gamma_ramp(1.0, 1.0, 1.0) != 0) {
+                jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                       "Color temperature reset for the external display failed");
+                return;
+            }
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_OK,
+                                   "Color temperature neutral for the external display");
+            return;
+        }
+        int kelvin = jw_platform_clamp_color_temp_k(value);
+        if (jw__mlp1_set_color_temp(kelvin) != 0) {
+            jw_platform_result_set(out, JW_PLATFORM_RESULT_FAILED,
+                                   "Color temperature change failed");
+            return;
+        }
+        jw_log_info("display: color temperature -> %d K", kelvin);
+        char msg[40];
+        if (kelvin == JW_PLATFORM_COLOR_TEMP_NEUTRAL_K) {
+            snprintf(msg, sizeof(msg), "Color temperature neutral");
+        } else {
+            snprintf(msg, sizeof(msg), "Color temperature %d K", kelvin);
+        }
         jw_platform_result_set(out, JW_PLATFORM_RESULT_OK, msg);
         return;
     }
@@ -3663,6 +3898,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
             .adb = true,
             .boot_splash = true,
             .refresh_rate = true,
+            .color_temperature = true,
             .hdmi_output = true,
             .led = true,
             .performance = true,
@@ -3683,6 +3919,7 @@ const jw_platform_backend *jw_platform_get_backend(void) {
         .storage_repair_capability = jw__mlp1_storage_repair_capability,
         .safe_unmount_storage = jw__mlp1_safe_unmount_storage,
         .set_led = jw__mlp1_set_led,
+        .get_display_mode = jw__mlp1_get_display_mode,
     };
     return &backend;
 }

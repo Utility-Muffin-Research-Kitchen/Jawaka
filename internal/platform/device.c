@@ -110,6 +110,7 @@ static void jw__platform_status_init(jw_platform_status *out) {
     out->adb_intent_enabled = -1;
     out->boot_splash_enabled = -1;
     out->refresh_rate_hz = -1;
+    out->color_temp_kelvin = -1;
     out->hdmi_connected = -1;
     out->hdmi_output_mode = -1;
 }
@@ -221,6 +222,8 @@ bool jw_platform_parse_action(const char *name, jw_platform_action *out) {
         *out = JW_PLATFORM_ACTION_SET_REFRESH_RATE;
     } else if (strcmp(name, "set-hdmi-output") == 0) {
         *out = JW_PLATFORM_ACTION_SET_HDMI_OUTPUT;
+    } else if (strcmp(name, "set-color-temp") == 0) {
+        *out = JW_PLATFORM_ACTION_SET_COLOR_TEMP;
     } else {
         return false;
     }
@@ -249,6 +252,7 @@ const char *jw_platform_action_name(jw_platform_action action) {
         case JW_PLATFORM_ACTION_PLAY_TEST_SOUND: return "play-test-sound";
         case JW_PLATFORM_ACTION_SET_REFRESH_RATE: return "set-refresh-rate";
         case JW_PLATFORM_ACTION_SET_HDMI_OUTPUT: return "set-hdmi-output";
+        case JW_PLATFORM_ACTION_SET_COLOR_TEMP: return "set-color-temp";
         default: return "unknown";
     }
 }
@@ -382,6 +386,18 @@ void jw_platform_safe_unmount_storage(jw_platform_context *ctx, const char *sour
 
     jw_platform_result_set(out, JW_PLATFORM_RESULT_UNSUPPORTED,
                            "storage source unavailable");
+}
+
+int jw_platform_get_display_mode(jw_platform_context *ctx, int *width, int *height,
+                                 int *hz) {
+    if (!ctx) {
+        return -1;
+    }
+    const jw_platform_backend *backend = jw_platform_get_backend();
+    if (backend && backend->get_display_mode) {
+        return backend->get_display_mode(ctx, width, height, hz);
+    }
+    return -1;
 }
 
 void jw_platform_set_led(jw_platform_context *ctx, const jw_led_config *cfg,

@@ -432,6 +432,9 @@ typedef struct {
     jw_suspend_policy    suspend_policy;
     int       hdmi_last_connected;        /* -1 unknown, 0/1; for hotplug edge detection */
     long long hdmi_next_poll_ms;          /* throttle for the HDMI hotplug poll */
+    long long lut_sync_not_before_ms;     /* 0 = idle; else swap the color-temp LUT for the current output once this passes */
+    long long lut_sync_deadline_ms;       /* ...and give up if it still fails after this */
+    bool      lut_sync_external;          /* the output to swap for: true = external display */
     long long hdmi_revert_deadline_ms;    /* 0 = none; auto-revert 1080p120 if not kept */
     int       hdmi_was_120;               /* live-1080p120 edge tracker */
     jw_platform_perf_profile perf_global_profile;
@@ -2146,6 +2149,7 @@ static cJSON *jw__platform_capabilities_json(const jw_platform_capabilities *cap
     cJSON_AddBoolToObject(root, "adb", cap && cap->adb);
     cJSON_AddBoolToObject(root, "boot_splash", cap && cap->boot_splash);
     cJSON_AddBoolToObject(root, "refresh_rate", cap && cap->refresh_rate);
+    cJSON_AddBoolToObject(root, "color_temperature", cap && cap->color_temperature);
     cJSON_AddBoolToObject(root, "hdmi_output", cap && cap->hdmi_output);
     cJSON_AddBoolToObject(root, "led", cap && cap->led);
     cJSON_AddBoolToObject(root, "performance", cap && cap->performance);
@@ -2202,6 +2206,7 @@ static cJSON *jw__platform_status_json(const jw_platform_status *status) {
     jw__json_add_int_or_null(root, "adb_intent_enabled", status->adb_intent_enabled);
     jw__json_add_int_or_null(root, "boot_splash_enabled", status->boot_splash_enabled);
     jw__json_add_int_or_null(root, "refresh_rate_hz", status->refresh_rate_hz);
+    jw__json_add_int_or_null(root, "color_temp_kelvin", status->color_temp_kelvin);
     jw__json_add_int_or_null(root, "hdmi_connected", status->hdmi_connected);
     jw__json_add_int_or_null(root, "hdmi_output_mode", status->hdmi_output_mode);
     return root;
@@ -7824,6 +7829,77 @@ static void jw__apply_persisted_brightness(jw_daemon_state *state) {
     }
 }
 
+/* The color-temperature LUT lives in the CRTC, not in any config file, so unlike
+   the refresh-rate weston.ini override it has to be replayed at startup (a cold
+   power cycle clears it; see the color temperature section in
+   device_mlp1.c), and swapped whenever HDMI hands the CRTC to or from the
+   panel (jw__schedule_lut_sync). Key is "color_temp_k", written by the settings
+   UI; absent means "never set" -> leave the panel at its native white point.
+
+   With `external` set the external display is the active output, and the request
+   is for neutral instead (an identity ramp, so the panel's correction does not
+   tint it; the persisted value is left alone).
+
+   Returns true when there is nothing more to do (applied, nothing persisted, an
+   invalid value, or a platform without the feature) and false when the write
+   failed, so a caller that can retry knows it may. */
+static bool jw__apply_color_temp(jw_daemon_state *state, bool external) {
+    char value[32];
+    long parsed = JW_PLATFORM_COLOR_TEMP_NEUTRAL_K;
+    if (!external) {
+        if (!state || !state->db_path ||
+            jw_db_get_setting(state->db_path, "color_temp_k",
+                              value, sizeof(value)) != 0 ||
+            !value[0]) {
+            return true;
+        }
+
+        char *end = NULL;
+        parsed = strtol(value, &end, 10);
+        if (end == value || (end && *end != '\0')) {
+            jw_log_warn("ignoring invalid persisted color temperature: %s", value);
+            return true;
+        }
+    } else if (!state) {
+        return true;
+    }
+
+    jw_platform_result result;
+    jw_platform_perform_action(&state->platform, JW_PLATFORM_ACTION_SET_COLOR_TEMP,
+                               (int)parsed, &result);
+    if (result.code == JW_PLATFORM_RESULT_OK) {
+        jw_log_info("applied color temperature value=%ld K (%s)", parsed,
+                    external ? "external display" : "panel");
+        return true;
+    }
+    if (result.code == JW_PLATFORM_RESULT_UNSUPPORTED) {
+        return true;
+    }
+    jw_log_warn("color temperature apply failed: %s", result.message);
+    return false;
+}
+
+/* The color-temperature LUT is swapped for the current output this long after the
+   last HDMI event, and retried for JW_LUT_SYNC_WINDOW_MS if the display has no
+   valid mode yet. */
+#define JW_LUT_SETTLE_MS 2000
+#define JW_LUT_SYNC_WINDOW_MS 15000
+
+/* Swap the color-temperature LUT for the current output (external display or
+   panel) from the HDMI poll, once no HDMI event has happened for
+   JW_LUT_SETTLE_MS. It is not done inside the HDMI switch itself, so it does not
+   race the mode change (see jw__mlp1_set_hdmi_output). Every new HDMI event
+   restarts the wait. */
+static void jw__schedule_lut_sync(jw_daemon_state *state, bool external) {
+    if (!state) {
+        return;
+    }
+    long long now = jw__monotonic_ms();
+    state->lut_sync_external = external;
+    state->lut_sync_not_before_ms = now + JW_LUT_SETTLE_MS;
+    state->lut_sync_deadline_ms = state->lut_sync_not_before_ms + JW_LUT_SYNC_WINDOW_MS;
+}
+
 static void jw__persist_volume(jw_daemon_state *state, int percent) {
     if (!state || !state->db_path) {
         return;
@@ -10788,22 +10864,17 @@ static int jw__hdmi_connected_now(void) {
 }
 
 /* Is the live HDMI scanout 1080p120? 120Hz only exists at 1080p on this chain, so
-   the "1920x1080p120" mode string is unique to an HDMI 120Hz output. */
-static int jw__hdmi_live_is_1080p120(void) {
-    FILE *fp = fopen("/sys/kernel/debug/dri/0/summary", "r");
-    if (!fp) {
+   a 1920x1080 mode at ~120Hz is unique to an HDMI 120Hz output. */
+static int jw__hdmi_live_is_1080p120(jw_daemon_state *state) {
+    /* Asked from the platform (the DRM core), never from the DRM debugfs summary:
+       this runs every poll, and reading that file during a mode change crashed the
+       kernel (see jw__mlp1_get_display_mode). */
+    int width = 0, height = 0, hz = 0;
+    if (!state ||
+        jw_platform_get_display_mode(&state->platform, &width, &height, &hz) != 0) {
         return 0;
     }
-    char line[256];
-    int found = 0;
-    while (fgets(line, sizeof(line), fp)) {
-        if (strstr(line, "1920x1080p120")) {
-            found = 1;
-            break;
-        }
-    }
-    fclose(fp);
-    return found;
+    return width == 1920 && height == 1080 && hz >= 119;
 }
 
 static void jw__tick_hdmi(jw_daemon_state *state) {
@@ -10813,13 +10884,30 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
     }
     state->hdmi_next_poll_ms = now + JW_HDMI_POLL_MS;
 
+    /* Swap the color-temperature LUT for the output HDMI settled on. The write only
+       lands on an active CRTC, so while Weston is still switching it fails and is
+       retried each poll until the window runs out. */
+    if (state->lut_sync_not_before_ms != 0 && now >= state->lut_sync_not_before_ms) {
+        if (jw__apply_color_temp(state, state->lut_sync_external)) {
+            state->lut_sync_not_before_ms = 0;
+        } else if (now > state->lut_sync_deadline_ms) {
+            jw_log_warn("color temperature could not be swapped after the HDMI change; "
+                        "it applies on the next HDMI change or restart");
+            state->lut_sync_not_before_ms = 0;
+        }
+    }
+
     /* ── Auto-revert safety for 1080p120 ──
        A 1080p120 switch can black out a TV/cable that can't carry the 297MHz signal,
        stranding the user on a screen they can't see to navigate back. When 1080p120
        goes live by a deliberate change (skip the boot-apply window), arm a 15s
        deadline; the launcher's "keep" press clears it, otherwise revert to the safe,
        universal 720p60 and drop the saved rate to 60 so it sticks. */
-    int is120 = jw__hdmi_live_is_1080p120();
+    /* Only ask the display for its mode when a cable is in: 1080p120 exists only on
+       HDMI, and the query opens the DRM device, so a unit with nothing plugged in
+       should not do that every second. */
+    int cur = jw__hdmi_connected_now();
+    int is120 = cur == 1 ? jw__hdmi_live_is_1080p120(state) : 0;
     if (is120 && !state->hdmi_was_120 && now > 30000) {
         state->hdmi_revert_deadline_ms = now + 15000;
         jw_log_info("HDMI 1080p120 live -> auto-revert armed (15s)");
@@ -10839,7 +10927,6 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
         }
     }
 
-    int cur = jw__hdmi_connected_now();
     int prev = state->hdmi_last_connected;
     if (cur == prev) {
         return;
@@ -10864,11 +10951,13 @@ static void jw__tick_hdmi(jw_daemon_state *state) {
         /* plugged in (incl. the first poll after boot) -> apply the chosen mode */
         jw_platform_perform_action(&state->platform,
                                    JW_PLATFORM_ACTION_SET_HDMI_OUTPUT, mode, &res);
+        jw__schedule_lut_sync(state, true);
         jw_log_info("HDMI hotplug: connected -> applying mode %d", mode);
     } else if (prev == 1) {
         /* was connected, now unplugged -> back to the panel */
         jw_platform_perform_action(&state->platform,
                                    JW_PLATFORM_ACTION_SET_HDMI_OUTPUT, 0, &res);
+        jw__schedule_lut_sync(state, false);
         jw_log_info("HDMI hotplug: disconnected -> reverting to panel");
     }
 }
@@ -13674,6 +13763,11 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
             if (result.code == JW_PLATFORM_RESULT_OK) {
                 jw__publish_audio_env(state);
             }
+        } else if (action == JW_PLATFORM_ACTION_SET_HDMI_OUTPUT) {
+            jw_platform_perform_action(&state->platform, action, value, &result);
+            if (result.code == JW_PLATFORM_RESULT_OK) {
+                jw__schedule_lut_sync(state, value == 1 || value == 2);
+            }
         } else if (action == JW_PLATFORM_ACTION_SLEEP) {
             bool inhibited = jw_suspend_inhibitor_count(&state->suspend_inhibitor) > 0;
             jw__deep_suspend(state);
@@ -15885,6 +15979,7 @@ int main(int argc, char *argv[]) {
     (void)jw__perf_apply_frontend(&state, "startup");
     jw__apply_persisted_brightness(&state);
     jw__apply_persisted_volume(&state);
+    (void)jw__apply_color_temp(&state, false);
     jw__apply_persisted_led(&state);
 
     /* 5-Game Mode boot check: decide whether to enter the locked focus screen
