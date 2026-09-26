@@ -119,6 +119,8 @@ static void ipc__parse_update_status(const cJSON *resp,
     out->migrations_count = (int)ipc__json_ll(resp, "migrations_count");
     v = cJSON_GetObjectItemCaseSensitive(resp, "selected_option");
     if (cJSON_IsNumber(v)) out->selected_option = v->valueint;
+    out->options_complete = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "options_complete"));
+    out->options_loading = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(resp, "options_loading"));
 
     const cJSON *options = cJSON_GetObjectItemCaseSensitive(resp, "options");
     if (cJSON_IsArray(options)) {
@@ -2133,6 +2135,42 @@ int jw_ipc_update_check(const char *socket_path,
                         char *status,
                         int status_len) {
     return ipc__update_request(socket_path, manifest_path, true, out, status, status_len);
+}
+
+int jw_ipc_update_releases(const char *socket_path,
+                           bool refresh,
+                           jw_ipc_update_status_info *out,
+                           char *status,
+                           int status_len) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "update-releases");
+    cJSON_AddBoolToObject(req, "refresh", refresh);
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update releases unavailable");
+        }
+        return -1;
+    }
+
+    if (!ipc__type_is(resp, "update-status")) {
+        if (status && status_len > 0) {
+            snprintf(status, (size_t)status_len, "%s", "update releases failed");
+        }
+        cJSON_Delete(resp);
+        return -1;
+    }
+
+    ipc__parse_update_status(resp, out);
+    if (status && status_len > 0) {
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(resp, "message");
+        snprintf(status, (size_t)status_len, "%s",
+                 cJSON_IsString(message) && message->valuestring
+                     ? message->valuestring : "update releases ready");
+    }
+    cJSON_Delete(resp);
+    return 0;
 }
 
 int jw_ipc_update_select(const char *socket_path,

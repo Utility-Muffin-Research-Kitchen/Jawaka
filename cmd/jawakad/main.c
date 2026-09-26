@@ -3323,6 +3323,18 @@ static bool jw__update_check_busy(jw_daemon_state *state) {
     return state->update_check_job.active;
 }
 
+/* Update channel (Stable = Leaf repo, Beta = Leaf-beta repo) from the persisted
+   setting; default Stable. */
+static jw_update_channel jw__update_channel(jw_daemon_state *state) {
+    char chan[16] = "";
+    if (state->db_path[0] &&
+        jw_db_get_setting(state->db_path, "update_channel", chan, sizeof(chan)) == 0 &&
+        strcmp(chan, "beta") == 0) {
+        return JW_UPDATE_CHANNEL_BETA;
+    }
+    return JW_UPDATE_CHANNEL_STABLE;
+}
+
 static int jw__handle_update_check(jw_daemon_state *state,
                                    jw_ipc_client *client,
                                    cJSON *request) {
@@ -3358,25 +3370,47 @@ static int jw__handle_update_check(jw_daemon_state *state,
                                        state->platform.platform_id,
                                        manifest_path);
     } else {
-        /* Resolve the update channel (Stable = Leaf repo, Beta = Leaf-beta repo)
-           from the persisted setting; default Stable. */
-        jw_update_channel channel = JW_UPDATE_CHANNEL_STABLE;
-        char chan[16] = "";
-        if (state->db_path[0] &&
-            jw_db_get_setting(state->db_path, "update_channel", chan, sizeof(chan)) == 0 &&
-            strcmp(chan, "beta") == 0) {
-            channel = JW_UPDATE_CHANNEL_BETA;
-        }
         /* Run the GitHub release check on a worker thread so the blocking fetch
            doesn't freeze the launcher; reply immediately with state=checking and
            let the launcher's status poll pick up the result. */
         jw_update_check_start(&state->update_status,
                               &state->update_check_job,
                               state->state_dir,
-                              channel);
+                              jw__update_channel(state),
+                              JW_UPDATE_SCOPE_LATEST);
     }
     cJSON *root = jw_update_status_to_json(&state->update_status);
     return jw__reply_json(client, root);
+}
+
+/* Load every release in the list for the release picker. The routine check only
+   reads the newest one; this fills in the rest without touching the selected
+   candidate. "refresh": true reloads a list that is already complete. */
+static int jw__handle_update_releases(jw_daemon_state *state,
+                                      jw_ipc_client *client,
+                                      cJSON *request) {
+    jw_update_download_poll(&state->update_status, &state->update_download_job);
+    jw__poll_update_install(state);
+    jw__update_check_busy(state);
+    if (state->update_download_job.active || state->update_install_job.active) {
+        return jw__reply_update_status(state, client);
+    }
+
+    const char *manifest_env = getenv("JAWAKA_UPDATE_MANIFEST");
+    bool local_manifest = manifest_env && manifest_env[0];
+    bool refresh = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "refresh"));
+    if (!local_manifest &&
+        (refresh || !state->update_status.options_complete)) {
+        jw_update_check_start(&state->update_status,
+                              &state->update_check_job,
+                              state->state_dir,
+                              jw__update_channel(state),
+                              JW_UPDATE_SCOPE_ALL);
+    }
+    if (state->update_check_job.active) {
+        return jw__reply_update_status_raw(state, client);
+    }
+    return jw__reply_update_status(state, client);
 }
 
 static int jw__handle_update_download(jw_daemon_state *state,
@@ -13682,6 +13716,12 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
 
     if (strcmp(type->valuestring, "update-check") == 0) {
         int rc = jw__handle_update_check(state, client, root);
+        cJSON_Delete(root);
+        return rc;
+    }
+
+    if (strcmp(type->valuestring, "update-releases") == 0) {
+        int rc = jw__handle_update_releases(state, client, root);
         cJSON_Delete(root);
         return rc;
     }

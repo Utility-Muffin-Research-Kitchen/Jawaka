@@ -217,6 +217,8 @@ typedef struct {
     char message[256];
     int selected_option;
     int option_count;
+    bool options_complete;   /* every release in the list has been read */
+    bool options_loading;    /* a release-list load is running */
     jw_ipc_update_option_info options[JW_IPC_UPDATE_MAX_OPTIONS];
 } jw_ipc_update_status_info;
 
@@ -406,6 +408,13 @@ int jw_ipc_update_check(const char *socket_path,
                         const char *manifest_path,
                         jw_ipc_update_status_info *out,
                         char *status, int status_len);
+/* Load every release in the list for the picker (the routine check only reads
+   the newest). Returns at once; poll status until options_loading clears.
+   refresh reloads a list that is already complete. */
+int jw_ipc_update_releases(const char *socket_path,
+                           bool refresh,
+                           jw_ipc_update_status_info *out,
+                           char *status, int status_len);
 int jw_ipc_update_select(const char *socket_path,
                          int option_index,
                          jw_ipc_update_status_info *out,

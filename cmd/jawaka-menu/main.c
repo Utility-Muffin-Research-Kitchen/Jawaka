@@ -3057,7 +3057,8 @@ static void jw__menu_host_setting(const char *socket_path, jw_menu_state *menu,
             }
         }
         if (!running) break;
-        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE)
+        if (jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE ||
+            jw_settings_ui_screen(ui) == JW_SETTINGS_UPDATE_PICKER)
             jw_settings_ui_refresh_update(ui);
         jw__render_hosted(menu, ui);
     }

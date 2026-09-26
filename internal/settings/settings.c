@@ -869,8 +869,15 @@ static void jw__refresh_update_status(jw_settings_ui *ui, bool quiet) {
 }
 
 bool jw_settings_ui_wants_update_poll(const jw_settings_ui *ui) {
-    return ui && ui->open && ui->screen == JW_SETTINGS_UPDATE &&
-           (ui->update.download_active || ui->update.install_active);
+    if (!ui || !ui->open) {
+        return false;
+    }
+    if (ui->screen == JW_SETTINGS_UPDATE_PICKER) {
+        return ui->update.options_loading;
+    }
+    return ui->screen == JW_SETTINGS_UPDATE &&
+           (ui->update.download_active || ui->update.install_active ||
+            (ui->update_have_status && strcmp(ui->update.state, "checking") == 0));
 }
 
 void jw_settings_ui_refresh_update(jw_settings_ui *ui) {
@@ -5865,14 +5872,24 @@ static void jw__render_update_picker(const jw_settings_ui *ui,
         count = JW_IPC_UPDATE_MAX_OPTIONS;
     }
 
-    const char *message = count > 0
-        ? "Compatible releases"
-        : "Check releases first";
+    bool loading = ui && ui->update.options_loading;
+    const char *message = "Compatible releases";
+    if (loading) {
+        message = "Loading releases...";
+    } else if (count <= 0) {
+        message = "Check releases first";
+    } else if (!ui->update.options_complete && ui->update.message[0]) {
+        message = ui->update.message;   /* the list load failed; say why */
+    }
     cat_draw_text_ellipsized(small, message, x + cat_scale(12), dy,
                              theme->hint, w - cat_scale(24));
     dy += TTF_FontHeight(small) + cat_scale(8);
 
-    if (count > 0) {
+    if (loading) {
+        jw__draw_update_activity(ui, x + cat_scale(12), dy,
+                                 w - cat_scale(24));
+        dy += cat_scale(12);
+    } else if (count > 0) {
         int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) +
                      TTF_FontHeight(small) + cat_scale(16);
         cat_box lb = { x, dy, w, h - (dy - y), 0, 0, 0, 0 };
@@ -6458,17 +6475,42 @@ static bool jw__confirm_update_picker_choice(const jw_settings_ui *ui,
     return jw__confirmation(&opts, &result) == CAT_OK && result.confirmed;
 }
 
+/* Ask the daemon for every release in the list; the routine check only reads
+   the newest. It answers at once and loads in the background. */
+static void jw__update_load_releases(jw_settings_ui *ui,
+                                     bool refresh,
+                                     char *status_buf,
+                                     size_t status_size) {
+    if (!ui || !ui->socket_path[0]) {
+        jw__copy_status(status_buf, status_size, "Update service unavailable");
+        if (ui) jw__update_msg(ui, "Update service unavailable");
+        return;
+    }
+
+    jw_ipc_update_status_info info;
+    memset(&info, 0, sizeof(info));
+    char status[192] = { 0 };
+    if (jw_ipc_update_releases(ui->socket_path, refresh, &info,
+                               status, sizeof(status)) == 0) {
+        jw__settings_update_from_ipc(ui, &info, NULL);
+    } else {
+        jw__copy_status(status_buf, status_size,
+                        status[0] ? status : "Cannot load releases");
+        jw__update_msg(ui, "%s", status[0] ? status : "Cannot load releases");
+    }
+}
+
 static void jw__open_update_picker(jw_settings_ui *ui,
                                    char *status_buf,
                                    size_t status_size) {
     if (!ui) {
         return;
     }
-    if (jw__update_option_count(ui) <= 0) {
-        jw__update_check_releases(ui, status_buf, status_size);
+    if (!ui->update.options_complete) {
+        jw__update_load_releases(ui, false, status_buf, status_size);
     }
     int count = jw__update_option_count(ui);
-    if (count <= 0) {
+    if (count <= 0 && !ui->update.options_loading) {
         jw__copy_status(status_buf, status_size,
                         ui->update_msg[0] ? ui->update_msg : "No releases available");
         return;
@@ -6489,6 +6531,11 @@ static void jw__select_update_picker_choice(jw_settings_ui *ui,
     if (!ui || !ui->socket_path[0]) {
         jw__copy_status(status_buf, status_size, "Update service unavailable");
         if (ui) jw__update_msg(ui, "Update service unavailable");
+        return;
+    }
+
+    if (ui->update.options_loading) {
+        jw__copy_status(status_buf, status_size, "Releases are still loading");
         return;
     }
 
@@ -6889,7 +6936,8 @@ static void jw__cycle_update_channel(jw_settings_ui *ui, char *status_buf,
        uninstalled download would be discarded by the re-check the switch kicks
        off (jw__clear_candidate clears downloaded/download_path). */
     bool checking = ui->update_have_status &&
-                    strcmp(ui->update.state, "checking") == 0;
+                    (strcmp(ui->update.state, "checking") == 0 ||
+                     ui->update.options_loading);
     if (checking || ui->update.download_active || ui->update.install_active ||
         ui->update.install_armed || ui->update.downloaded) {
         jw__copy_status(status_buf, status_size,
@@ -8399,7 +8447,7 @@ static bool jw__settings_handle_button_inner(jw_settings_ui *ui, cat_button butt
                 jw__select_update_picker_choice(ui, status_buf, status_size);
                 break;
             case CAT_BTN_X:
-                jw__update_check_releases(ui, status_buf, status_size);
+                jw__update_load_releases(ui, true, status_buf, status_size);
                 break;
             case CAT_BTN_B:
                 ui->screen = JW_SETTINGS_UPDATE;
