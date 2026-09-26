@@ -2678,6 +2678,7 @@ static const char *jw__pakrat_theme_reason_text(jw_theme_reason reason) {
 static const char *jw__pakrat_license_label(const char *license) {
     if (strcmp(license, "CC-BY-4.0") == 0)    return "CC BY 4.0";
     if (strcmp(license, "CC-BY-SA-4.0") == 0) return "CC BY-SA 4.0";
+    if (strcmp(license, "CC-BY-NC-SA-2.0") == 0) return "CC BY-NC-SA 2.0";
     if (strcmp(license, "CC0-1.0") == 0)      return "CC0 1.0";
     if (strcmp(license, "redistribution-permitted") == 0)
         return T("All rights reserved, redistribution permitted");
