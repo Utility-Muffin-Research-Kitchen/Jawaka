@@ -519,6 +519,13 @@ static bool jw__retroarch_cfg_key_is_protected(const char *key) {
         "video_threaded",
         "video_refresh_rate",
         "video_black_frame_insertion",
+        /* Frame pacing at 120 Hz. RetroArch's Auto swap interval is what makes
+           ~60 fps content hold each frame for two refreshes, and a persisted
+           manual 1 (RetroArch's default) would switch it off for good. The dark
+           frame count keeps Leaf's BFI toggle meaning one black frame: a saved
+           0 turns BFI into plain frame repetition. */
+        "video_bfi_dark_frames",
+        "video_swap_interval",
         "video_driver",
         "video_context_driver",
         "aspect_ratio_index",
@@ -2810,7 +2817,13 @@ static int jw__write_retroarch_protected_config(FILE *fp, const char *sdroot_abs
         const char *bfi = jw__env_value("JAWAKA_BFI");
         jw__retroarch_cfg_string(fp, "video_black_frame_insertion",
                                  (bfi && bfi[0] == '1') ? "1" : "0");
+        /* Inert while BFI is off. */
+        jw__retroarch_cfg_string(fp, "video_bfi_dark_frames", "1");
     }
+    /* Auto. At 120 Hz RetroArch picks interval 2 for ~60 fps content, and the
+       patched SDL context emulates it with two swaps of one frame; 60 Hz, BFI
+       and PAL-at-120 all resolve to 1. */
+    jw__retroarch_cfg_string(fp, "video_swap_interval", "0");
     jw__retroarch_cfg_string(fp, "menu_show_load_content_animation", "false");
     /* The MLP1 is a Nintendo-style layout (A=East confirms) that reports
        Xbox-style SDL button indices, so RetroArch's OK/Cancel default lands on

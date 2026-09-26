@@ -1214,6 +1214,61 @@ int main(void) {
             return fail("menu_show_configurations persisted to the shared config");
         }
     }
+
+    /* 120 Hz frame pacing. The persisted values are what the BFI-repetition
+       trial left on a real card: a manual interval 1 would keep Auto from
+       ever choosing 2, and 0 dark frames would make the next genuine BFI
+       request plain repetition. The session must read Auto and one dark
+       frame, and neither key may be promoted back. */
+    {
+        if (write_text(shared_cfg, "menu_driver = \"rgui\"\n"
+                                   "video_swap_interval = \"1\"\n"
+                                   "video_bfi_dark_frames = \"0\"\n") != 0) {
+            return fail("frame-pacing shared config write failed");
+        }
+        setenv("JAWAKA_BFI", "1", 1);
+        runtime_cfg = jw_prepare_retroarch_config(runtime, root, core, NULL,
+                                                  true, false, error, sizeof(error));
+        unsetenv("JAWAKA_BFI");
+        if (!runtime_cfg) {
+            return fail(error[0] ? error : "frame-pacing config failed");
+        }
+        char *pacing = read_text(runtime_cfg);
+        char *interval = ra_parse_value(pacing, "video_swap_interval");
+        char *dark = ra_parse_value(pacing, "video_bfi_dark_frames");
+        char *bfi = ra_parse_value(pacing, "video_black_frame_insertion");
+        int pacing_ok = pacing &&
+                        key_count(pacing, "video_swap_interval", NULL) == 1 &&
+                        key_count(pacing, "video_bfi_dark_frames", NULL) == 1 &&
+                        interval && strcmp(interval, "0") == 0 &&
+                        dark && strcmp(dark, "1") == 0 &&
+                        bfi && strcmp(bfi, "1") == 0;
+        free(interval);
+        free(dark);
+        free(bfi);
+        free(pacing);
+        if (!pacing_ok) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail("frame-pacing keys were not pinned for the session");
+        }
+        if (jw_backup_retroarch_config(runtime_cfg, root, NULL,
+                                       error, sizeof(error)) != 0) {
+            unlink(runtime_cfg);
+            free(runtime_cfg);
+            return fail(error[0] ? error : "frame-pacing backup failed");
+        }
+        unlink(runtime_cfg);
+        free(runtime_cfg);
+        char *pacing_shared = read_text(shared_cfg);
+        int pacing_shared_ok = pacing_shared &&
+                               key_count(pacing_shared, "video_swap_interval", NULL) == 0 &&
+                               key_count(pacing_shared, "video_bfi_dark_frames", NULL) == 0;
+        free(pacing_shared);
+        if (!pacing_shared_ok) {
+            return fail("frame-pacing keys persisted to the shared config");
+        }
+    }
 #endif
 
     /* Leaf#48 shared hardening: a backup that cannot be written must never
