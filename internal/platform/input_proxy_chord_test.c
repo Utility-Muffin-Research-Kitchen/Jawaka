@@ -81,11 +81,13 @@ static int test_ioctl(int fd, unsigned long request, ...) {
 
 static pthread_t g_main_thread;
 static bool g_tap_on_main;
+static bool g_flush_in_callback;
 
 static bool test_tap(void *unused) {
     (void)unused;
     g_taps++;
     g_tap_on_main = pthread_equal(pthread_self(), g_main_thread);
+    if (g_flush_in_callback) jw_input_proxy_flush(&g_proxy);
     return g_claim_tap;
 }
 static void test_brightness(void *unused, int delta) {
@@ -106,6 +108,7 @@ static bool test_dispatch(void *userdata, jw_input_shortcut_button button) {
     (void)userdata;
     g_last_button = button;
     g_dispatch_calls++;
+    if (g_flush_in_callback) jw_input_proxy_flush(&g_proxy);
     return button < JW_INPUT_SHORTCUT_BUTTON_COUNT && g_claim[button];
 }
 
@@ -121,6 +124,7 @@ static void reset_proxy(bool watch_only) {
     if (pipe2(g_source, O_NONBLOCK | O_CLOEXEC) != 0) exit(2);
     g_now = 10000;
     g_claim_tap = false;
+    g_flush_in_callback = false;
     g_taps = g_brightness = g_thresholds = g_ends = 0;
     g_last_hold = 0;
     memset(&g_proxy, 0, sizeof(g_proxy));
@@ -759,6 +763,63 @@ int main(void) {
     }
     jw__io_thread_stop(&g_data);
     expect("stop answers a waiting callback", g_taps == 0 && !g_data.io_thread_running);
+
+    /* Reset while a tap or shortcut is waiting for the daemon. A reset must
+       cancel the callback AND its input continuation: returning "declined"
+       alone would forward a press after its release was discarded. Also
+       exercise a reset inside the callback, after tick has already taken it. */
+    for (int reset = 0; reset < 4; reset++) {
+        for (int shortcut = 0; shortcut < 2; shortcut++) {
+            reset_proxy(false);
+            int pending_power[2];
+            if (pipe2(pending_power, O_NONBLOCK | O_CLOEXEC) != 0) exit(2);
+            g_data.power_fd = pending_power[0];
+            g_data.power_evdev_clock = true;
+            /* Prefetched by process() but ordered after the Menu gesture.
+               Flushing the fd alone cannot discard this local copy. */
+            struct input_event power = {.type = EV_KEY, .code = KEY_POWER, .value = 1};
+            power.input_event_sec = (g_now + 1000) / 1000;
+            if (write(pending_power[1], &power, sizeof(power)) != sizeof(power)) exit(2);
+            queue_key(BTN_MODE, 1, g_now);
+            if (shortcut) {
+                queue_key(BTN_SOUTH, 1, g_now);
+                queue_key(BTN_SOUTH, 0, g_now);
+            }
+            queue_key(BTN_MODE, 0, g_now);
+            expect("reset test starts thread", jw_input_proxy_start(&g_proxy) == 0);
+            struct pollfd pfd = { jw_input_proxy_poll_fd(&g_proxy), POLLIN, 0 };
+            expect("reset test reaches callback wait", poll(&pfd, 1, 2000) == 1);
+            if (reset == 0) jw_input_proxy_flush(&g_proxy);
+            if (reset == 1) jw_input_proxy_configure_menu(&g_proxy,
+                (jw_input_menu_config){.tap_only = true});
+            if (reset == 2) jw_input_proxy_set_swallow(&g_proxy, true);
+            if (reset == 3) g_flush_in_callback = true;
+            jw_input_proxy_tick(&g_proxy);
+
+            /* A fresh marker proves the worker resumed beyond the cancelled
+               event. While swallowed, observe physical state under the lock
+               instead of waiting for output that must never be emitted. */
+            queue_key(BTN_EAST, 1, g_now);
+            bool reached = false;
+            for (int waited = 0; waited < 2000 && !reached; waited += 5) {
+                jw_mlp1_input_proxy_data *data = jw__api_lock(&g_proxy);
+                reached = jw__bit_is_set(data->physical_keys, BTN_EAST);
+                jw__api_unlock(data);
+                if (!reached) usleep(5000);
+            }
+            expect("reset releases the callback waiter", reached);
+            jw__io_thread_stop(&g_data);
+            expect("reset cancels unstarted callbacks",
+                   g_taps + g_dispatch_calls == (reset == 3 ? 1 : 0));
+            expect("reset drops prefetched power input", g_data.power_edge_count == 0);
+            n = drain(got, 16);
+            const emitted marker[] = {{BTN_EAST, 1}};
+            expect_seq("reset cannot replay a tap or leave a button held", got, n,
+                       marker, reset == 2 ? 0 : 1);
+            close(pending_power[0]); close(pending_power[1]);
+            g_data.power_fd = -1;
+        }
+    }
 
     /* Teardown clears configuration even if initialization failed without a backend. */
     jw_input_proxy empty = {.menu_config = {.tap_only = true, .escape_enabled = true}};

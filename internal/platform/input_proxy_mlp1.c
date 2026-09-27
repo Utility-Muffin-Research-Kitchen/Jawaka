@@ -146,6 +146,7 @@ typedef struct {
     bool            input_fd_failed;
     bool            power_fd_failed;
     uint64_t        generation;          /* tells a replaced proxy from this one */
+    uint64_t        input_generation;    /* flush/screen-off invalidates in-flight input */
     /* The one callback the forwarding thread is blocked on, served by
        jw_input_proxy_tick() on the daemon thread. */
     pthread_cond_t  call_cond;
@@ -210,6 +211,18 @@ static void jw__pipe_kick(int fd) {
 static void jw__pipe_drain(int fd) {
     char buf[64];
     while (fd >= 0 && read(fd, buf, sizeof(buf)) > 0) {
+    }
+}
+
+/* Called under the proxy lock. An already-dispatched callback must finish
+   before its waiter resumes; otherwise its completion could answer a newer
+   call. Both cases invalidate the input that was waiting for the answer. */
+static void jw__invalidate_input(jw_mlp1_input_proxy_data *data) {
+    data->input_generation++;
+    if (data->io_thread_running && data->call_pending && !data->call_taken) {
+        data->call_result = false;
+        data->call_pending = false;
+        pthread_cond_signal(&data->call_cond);
     }
 }
 
@@ -735,8 +748,10 @@ static void jw__menu_end(jw_input_proxy *proxy) {
 static void jw__cancel_menu(jw_input_proxy *proxy) {
     if (!proxy || !proxy->backend_data || !proxy->menu_config.tap_only) return;
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    uint64_t generation = data->input_generation;
     if (data->menu_held && !data->chord_active) {
         jw__menu_end(proxy);
+        if (generation != data->input_generation) return;
         data->chord_active = true;
     }
 }
@@ -794,6 +809,7 @@ static void jw__handle_brightness_key(jw_input_proxy *proxy, uint16_t code, int3
 
 static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) {
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    uint64_t generation = data->input_generation;
 
     if (ev->code == BTN_MODE) {
         if (proxy->menu_config.tap_only && ev->value == 2) return;
@@ -842,11 +858,13 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                 bool handled = proxy->menu_tap &&
                                jw__proxy_call_run(proxy, (jw__proxy_call){
                                    .kind = JW__PROXY_CALL_MENU_TAP });
+                if (generation != data->input_generation) return;
                 if (!handled) {
                     jw__emit_deferred_menu_tap(data);
                 }
             }
             jw__menu_end(proxy);
+            if (generation != data->input_generation) return;
             data->menu_held = false;
             data->menu_forwarded = false;
             data->chord_active = false;
@@ -857,6 +875,7 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
 
     if (ev->value > 0) {
         jw__cancel_menu(proxy);
+        if (generation != data->input_generation) return;
     }
 
     /* Menu + a bindable button: the user's configured Leaf action.
@@ -893,6 +912,7 @@ static void jw__handle_key(jw_input_proxy *proxy, const struct input_event *ev) 
                            jw__proxy_call_run(proxy, (jw__proxy_call){
                                .kind = JW__PROXY_CALL_SHORTCUT,
                                .value = (int)chord_button });
+            if (generation != data->input_generation) return;
             if (handled) {
                 data->chord_active = true;   /* suppress the Menu tap */
                 jw__bit_set(data->chord_consumed_keys, ev->code);
@@ -1366,10 +1386,11 @@ int jw_input_proxy_poll_fd(const jw_input_proxy *proxy) {
 
 static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev) {
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    uint64_t generation = data->input_generation;
     if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
-        jw__reset_chord_state(proxy);
         data->physical_state_valid = false;
         data->input_dropped = true;
+        jw__reset_chord_state(proxy);
         return;
     }
     if (data->input_dropped) {
@@ -1386,6 +1407,7 @@ static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev
         data->abs_value[ev->code] = ev->value;
         if (jw__axis_active(data, ev->code)) jw__cancel_menu(proxy);
     }
+    if (generation != data->input_generation) return;
 
     if (ev->type == EV_KEY ||
         (ev->type == EV_ABS &&
@@ -1400,14 +1422,17 @@ static void jw__handle_input(jw_input_proxy *proxy, const struct input_event *ev
 
 static void jw__handle_power(jw_input_proxy *proxy, const struct input_event *ev) {
     jw_mlp1_input_proxy_data *data = proxy->backend_data;
+    uint64_t generation = data->input_generation;
     if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
         jw__cancel_menu(proxy);
+        if (generation != data->input_generation) return;
         jw__read_physical_state(data);
     }
     if (ev->type != EV_KEY || ev->code != KEY_POWER ||
         (ev->value != 0 && ev->value != 1)) return;
     data->power_held = ev->value == 1;
     jw__cancel_menu(proxy);
+    if (generation != data->input_generation) return;
     if (data->power_edge_count == JW_MLP1_POWER_EDGE_MAX) {
         data->power_edge_head = (data->power_edge_head + 1) % JW_MLP1_POWER_EDGE_MAX;
         data->power_edge_count--;
@@ -1447,12 +1472,20 @@ static void jw__process(jw_input_proxy *proxy) {
        separate Power press; draining it last could leak a queued Menu+Power tap. */
     struct input_event input, power;
     bool have_input = false, have_power = false;
+    uint64_t generation = data->input_generation;
     for (;;) {
         if (data->io_quit) break;   /* shutting down: leave the rest unread */
+        if (generation != data->input_generation) {
+            /* Either stream may already have a prefetched edge whose release
+               the daemon flushed while a callback was waiting. */
+            have_input = have_power = false;
+            generation = data->input_generation;
+        }
         if (!have_input && !data->input_fd_failed)
             have_input = jw__read_input_edge(proxy, data->input_fd, &input);
         if (!have_power && !data->power_fd_failed)
             have_power = jw__read_input_edge(proxy, data->power_fd, &power);
+        if (generation != data->input_generation) continue;
         if (!have_input && !have_power) break;
         bool power_first = !have_input || (have_power &&
             (power.input_event_sec < input.input_event_sec ||
@@ -1541,6 +1574,7 @@ void jw_input_proxy_set_swallow(jw_input_proxy *proxy, bool swallow) {
            releases the chord machine is waiting on. Nothing is mid-gesture
            with the screen off, so put the machine back to rest rather than
            leaving it waiting for releases that are no longer coming. */
+        jw__invalidate_input(data);
         jw__reset_chord_state(proxy);
     }
     data->swallow = swallow;
@@ -1636,7 +1670,9 @@ static void jw__reset_chord_state(jw_input_proxy *proxy) {
     jw_mlp1_input_proxy_data *data =
         (jw_mlp1_input_proxy_data *)proxy->backend_data;
 
+    uint64_t generation = data->input_generation;
     jw__menu_end(proxy);
+    if (generation != data->input_generation) return;
     data->menu_escape_reported = false;
 
     /* Forwarded buttons and axes, plus any deferred Menu-up they were holding
@@ -1669,6 +1705,7 @@ static void jw__flush(jw_input_proxy *proxy) {
         return;
     }
     jw_mlp1_input_proxy_data *data = (jw_mlp1_input_proxy_data *)proxy->backend_data;
+    jw__invalidate_input(data);
     /* Drain the physical gamepad without forwarding — drops presses that queued
        while suspended so they don't replay into the launcher on wake. */
     struct input_event ev;
@@ -1888,6 +1925,7 @@ static void jw__io_thread_stop(jw_mlp1_input_proxy_data *data) {
     }
     pthread_mutex_lock(&data->lock);
     data->io_quit = true;
+    jw__invalidate_input(data);
     pthread_cond_broadcast(&data->call_cond);
     pthread_mutex_unlock(&data->lock);
     jw__pipe_kick(data->io_kick_pipe[1]);
