@@ -94,6 +94,13 @@
 #define JW_RETROARCH_AUDIO_REINIT_TIMEOUT_MS 10000LL
 #define JW_RETROARCH_QUIT_GRACE_MS 700LL
 #define JW_RETROARCH_KILL_GRACE_MS 700LL
+/* platform-levels answers from the brightness/volume cache. jawakad writes
+   both values itself and caches what it wrote, so the cache is only re-read
+   from the hardware this often, which bounds how long a change jawakad did not
+   make (a Bluetooth headset's own buttons) can go unseen. An unknown value is
+   retried sooner. */
+#define JW_PLATFORM_LEVELS_TTL_MS 5000LL
+#define JW_PLATFORM_LEVELS_RETRY_MS 1000LL
 /* A quit the menu asked for that RetroArch never honors, seen when a savestate
    write stalls on a read-only card: it then ignores SIGTERM as well. */
 #define JW_RETROARCH_STUCK_QUIT_MS 15000LL
@@ -354,6 +361,7 @@ typedef struct {
     pid_t ledd_pid;            /* jawaka-ledd custom LED effect engine, -1 when idle */
     int cached_brightness_percent;
     int cached_volume_percent;
+    long long platform_cache_read_ms;  /* last full hardware read, 0 = never */
     long long audio_reconcile_last_ms;
     jw_led_config cached_led;
     bool led_configured;       /* true once a user LED setting has been persisted/applied */
@@ -2581,6 +2589,7 @@ static void jw__refresh_platform_cache(jw_daemon_state *state) {
     jw_platform_status status;
     jw_platform_get_status(&state->platform, &status);
     jw__cache_platform_status(state, &status);
+    state->platform_cache_read_ms = jw__monotonic_ms();
 }
 
 /* Stored RetroAchievements credentials (Settings > Games > Accounts). Resolved from the
@@ -2902,6 +2911,7 @@ static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *clie
     jw_platform_status status;
     jw_platform_get_status(&state->platform, &status);
     jw__cache_platform_status(state, &status);
+    state->platform_cache_read_ms = jw__monotonic_ms();
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "platform-status");
@@ -2923,6 +2933,29 @@ static int jw__reply_platform_status(jw_daemon_state *state, jw_ipc_client *clie
         cJSON_AddItemToObject(status_json, "led", led);
     }
     cJSON_AddItemToObject(root, "status", status_json);
+    return jw__reply_json(client, root);
+}
+
+/* Brightness and volume alone, for the launcher's status-bar and Display &
+   Sound polls. platform-status carries the same two numbers but re-derives the
+   audio route and volume through three or four pactl/amixer spawns, ~100 ms on
+   this loop -- the loop that forwards the pad -- and the launcher asks every
+   second, or every 300 ms with Display & Sound open. Serve the cache instead
+   (see JW_PLATFORM_LEVELS_TTL_MS). */
+static int jw__reply_platform_levels(jw_daemon_state *state, jw_ipc_client *client) {
+    long long now = jw__monotonic_ms();
+    long long age = now - state->platform_cache_read_ms;
+    bool unknown = state->cached_brightness_percent < 0 ||
+                   state->cached_volume_percent < 0;
+    if (state->platform_cache_read_ms == 0 || age >= JW_PLATFORM_LEVELS_TTL_MS ||
+        (unknown && age >= JW_PLATFORM_LEVELS_RETRY_MS)) {
+        jw__refresh_platform_cache(state);
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "platform-levels");
+    cJSON_AddNumberToObject(root, "brightness_percent", state->cached_brightness_percent);
+    cJSON_AddNumberToObject(root, "volume_percent", state->cached_volume_percent);
     return jw__reply_json(client, root);
 }
 
@@ -13689,6 +13722,11 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
         return jw__reply_platform_audio_status(state, client);
     }
 
+    if (strcmp(type->valuestring, "platform-levels") == 0) {
+        cJSON_Delete(root);
+        return jw__reply_platform_levels(state, client);
+    }
+
     if (strcmp(type->valuestring, "performance-status") == 0) {
         cJSON_Delete(root);
         return jw__reply_performance_status(state, client);
@@ -13806,6 +13844,9 @@ static int jw__handle_message(jw_daemon_state *state, jw_ipc_client *client,
             jw_platform_perform_action(&state->platform, action, value, &result);
             if (result.code == JW_PLATFORM_RESULT_OK) {
                 jw__publish_audio_env(state);
+                /* Each output restores its own stored level, so the cached
+                   percent belongs to the output we just left. */
+                state->cached_volume_percent = -1;
             }
         } else if (action == JW_PLATFORM_ACTION_SET_HDMI_OUTPUT) {
             jw_platform_perform_action(&state->platform, action, value, &result);

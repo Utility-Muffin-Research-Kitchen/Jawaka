@@ -1632,7 +1632,11 @@ static int jw__load_library_cache(const char *socket_path, const char *db_path,
 #define JW_STATUS_POLL_VOLUME (1 << 0)
 #define JW_STATUS_POLL_WIFI   (1 << 1)
 #define JW_STATUS_POLL_BT     (1 << 2)
-#define JW_STATUS_POLL_AV     (1 << 3)   /* brightness + full audio status */
+#define JW_STATUS_POLL_AV     (1 << 3)   /* brightness + volume + full audio status */
+#define JW_STATUS_POLL_AV_AUDIO (1 << 4) /* ...with the audio status every pass */
+/* With Display & Sound open, the full audio status is sampled once every this
+   many passes (~300 ms apart); brightness and volume every pass. */
+#define JW_STATUS_AV_AUDIO_EVERY 5
 #define JW_STATUS_SAMPLE_NONE INT_MIN
 
 typedef struct {
@@ -1663,6 +1667,7 @@ typedef struct {
        mutex+seq shape as scrape above, because audio status is a struct and one
        atomic cannot carry it. Brightness rides along as a plain mailbox. */
     atomic_int  av_brightness;
+    atomic_int  av_volume;
     pthread_mutex_t av_mu;
     jw_ipc_audio_status av_audio;
     atomic_int  av_seq;
@@ -1673,6 +1678,7 @@ static jw_status_poller jw__status_poller;
 static void *jw__status_poll_worker(void *arg) {
     jw_status_poller *P = (jw_status_poller *)arg;
     uint32_t last_slow = 0;
+    unsigned av_pass = 0;
     while (!atomic_load(&P->stop)) {
         int mask = atomic_load(&P->poll_mask);
         /* ~1s cadence: volume + library generation (both IPC to the daemon). */
@@ -1681,20 +1687,35 @@ static void *jw__status_poll_worker(void *arg) {
             if (jw_ipc_platform_volume(P->socket_path, &percent) == 0 && percent >= 0)
                 atomic_store(&P->volume, percent > 100 ? 100 : percent);
         }
-        /* Display & Sound: brightness + audio status. Two blocking round trips
-           that used to run on the render thread and stall cursor movement on
-           that page; out here they cost nothing anyone can see. */
+        /* Display & Sound. Off the render thread these round trips cost the
+           launcher nothing anyone can see, but not jawakad: it answers on the
+           loop that forwards the pad, and the audio status costs it a dozen
+           pactl/amixer/bluetoothctl spawns. Sampling that every 300 ms kept
+           jawakad busy half the time and the page's D-pad input waited behind
+           it. So brightness and volume, which follow the hardware keys and
+           come from jawakad's cache, are read every pass; the audio status
+           (route, outputs, test clip) every JW_STATUS_AV_AUDIO_EVERY passes,
+           or every pass while the page asks for it (test clip playing). */
         if (mask & JW_STATUS_POLL_AV) {
-            int percent = -1;
-            if (jw_ipc_platform_brightness(P->socket_path, &percent) == 0 && percent >= 0)
-                atomic_store(&P->av_brightness, percent);
-            jw_ipc_audio_status audio;
-            if (jw_ipc_platform_audio_status(P->socket_path, &audio) == 0) {
-                pthread_mutex_lock(&P->av_mu);
-                P->av_audio = audio;
-                pthread_mutex_unlock(&P->av_mu);
-                atomic_fetch_add(&P->av_seq, 1);
+            int brightness = -1, volume = -1;
+            if (jw_ipc_platform_levels(P->socket_path, &brightness, &volume) == 0) {
+                if (brightness >= 0)
+                    atomic_store(&P->av_brightness, brightness);
+                if (volume >= 0)
+                    atomic_store(&P->av_volume, volume > 100 ? 100 : volume);
             }
+            if ((mask & JW_STATUS_POLL_AV_AUDIO) || av_pass % JW_STATUS_AV_AUDIO_EVERY == 0) {
+                jw_ipc_audio_status audio;
+                if (jw_ipc_platform_audio_status(P->socket_path, &audio) == 0) {
+                    pthread_mutex_lock(&P->av_mu);
+                    P->av_audio = audio;
+                    pthread_mutex_unlock(&P->av_mu);
+                    atomic_fetch_add(&P->av_seq, 1);
+                }
+            }
+            av_pass++;
+        } else {
+            av_pass = 0;   /* the page's first pass samples everything */
         }
         jw_ipc_library_status_info lib;
         if (jw_ipc_library_status_full(P->socket_path, &lib) == 0) {
@@ -1787,10 +1808,14 @@ static void jw__status_poller_fallback_poll(jw_settings_ui *s, int mask) {
 static int jw__status_poll_mask(const jw_settings_ui *s) {
     int mask = 0;
     /* The A/V sample carries volume too, so the two never both run. */
-    if (jw_settings_ui_wants_av_poll(s))
+    if (jw_settings_ui_wants_av_poll(s)) {
         mask |= JW_STATUS_POLL_AV;
-    else if (jw_settings_show_volume(s))
+        /* Keep sampling the clip so its row returns to Play when it ends. */
+        if (s->test_sound_playing)
+            mask |= JW_STATUS_POLL_AV_AUDIO;
+    } else if (jw_settings_show_volume(s)) {
         mask |= JW_STATUS_POLL_VOLUME;
+    }
     if (jw_settings_show_wifi(s) && !jw_settings_ui_wants_wifi_poll(s))
         mask |= JW_STATUS_POLL_WIFI;
     if (s->show_bluetooth && !jw_settings_ui_wants_bluetooth_poll(s))
@@ -1823,6 +1848,7 @@ static void jw__status_poller_sync(jw_settings_ui *s) {
     if (mask & JW_STATUS_POLL_AV) {
         static int av_seen = 0;
         int brightness = atomic_exchange(&P->av_brightness, JW_STATUS_SAMPLE_NONE);
+        int volume = atomic_exchange(&P->av_volume, JW_STATUS_SAMPLE_NONE);
         int seq = atomic_load(&P->av_seq);
         jw_ipc_audio_status audio;
         bool have_audio = false;
@@ -1833,9 +1859,11 @@ static void jw__status_poller_sync(jw_settings_ui *s) {
             pthread_mutex_unlock(&P->av_mu);
             have_audio = true;
         }
-        if (brightness != JW_STATUS_SAMPLE_NONE || have_audio) {
+        if (brightness != JW_STATUS_SAMPLE_NONE || volume != JW_STATUS_SAMPLE_NONE ||
+            have_audio) {
             jw_settings_ui_apply_av(s,
                                     brightness == JW_STATUS_SAMPLE_NONE ? -1 : brightness,
+                                    volume == JW_STATUS_SAMPLE_NONE ? -1 : volume,
                                     have_audio ? &audio : NULL);
         }
     }
@@ -1874,6 +1902,7 @@ static void jw__status_poller_start(const char *socket_path, jw_settings_ui *set
     pthread_mutex_init(&P->scrape_mu, NULL);
     pthread_mutex_init(&P->av_mu, NULL);
     atomic_store(&P->av_brightness, JW_STATUS_SAMPLE_NONE);
+    atomic_store(&P->av_volume, JW_STATUS_SAMPLE_NONE);
     atomic_store(&P->av_seq, 0);
     atomic_store(&P->scrape_seq, 0);
     atomic_store(&P->stop, false);

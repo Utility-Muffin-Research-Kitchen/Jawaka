@@ -368,6 +368,12 @@ int jw_ipc_frontend_ready(const char *socket_path, const char *role);
  * Returns 0 on success. */
 int jw_ipc_platform_action(const char *socket_path, const char *action, int value);
 
+/* Brightness and volume from jawakad's cache (platform-levels), cheap enough to
+ * poll: platform-status re-reads the audio route and volume with several
+ * process spawns. jw_ipc_platform_brightness() and jw_ipc_platform_volume() are
+ * the one-value forms. Either output may be NULL; -1 means unknown. */
+int jw_ipc_platform_levels(const char *socket_path, int *out_brightness,
+                           int *out_volume);
 int jw_ipc_platform_brightness(const char *socket_path, int *out_percent);
 int jw_ipc_platform_power_status(const char *socket_path,
                                  int *out_battery_percent,
@@ -444,6 +450,21 @@ int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
                            char *status, int status_len);
 int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
                             bool *out_supported);
+
+/* The rows jw_ipc_get_refresh_rate(), jw_ipc_get_color_temp() and
+ * jw_ipc_get_hdmi_status() each answer, from one platform-status round trip
+ * instead of three. Returns 0 when the daemon answered; unknown values stay
+ * -1 / false. */
+typedef struct {
+    int  refresh_rate_hz;
+    bool refresh_rate_supported;
+    int  color_temp_kelvin;
+    bool color_temp_supported;
+    int  hdmi_connected;
+    int  hdmi_output_mode;
+    bool hdmi_supported;
+} jw_ipc_display_status;
+int jw_ipc_get_display_status(const char *socket_path, jw_ipc_display_status *out);
 int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
                             char *status, int status_len);
 int jw_ipc_get_color_temp(const char *socket_path, int *out_kelvin,

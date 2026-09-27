@@ -1521,13 +1521,17 @@ int jw_ipc_frontend_ready(const char *socket_path, const char *role) {
     return ok ? 0 : -1;
 }
 
-int jw_ipc_platform_brightness(const char *socket_path, int *out_percent) {
-    if (out_percent) {
-        *out_percent = -1;
+int jw_ipc_platform_levels(const char *socket_path, int *out_brightness,
+                           int *out_volume) {
+    if (out_brightness) {
+        *out_brightness = -1;
+    }
+    if (out_volume) {
+        *out_volume = -1;
     }
 
     cJSON *req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "type", "platform-status");
+    cJSON_AddStringToObject(req, "type", "platform-levels");
 
     cJSON *resp = NULL;
     if (ipc__request(socket_path, req, &resp) != 0) {
@@ -1535,17 +1539,24 @@ int jw_ipc_platform_brightness(const char *socket_path, int *out_percent) {
     }
 
     int rc = -1;
-    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
-    const cJSON *brightness = cJSON_GetObjectItemCaseSensitive(status, "brightness_percent");
-    if (cJSON_IsNumber(brightness)) {
-        if (out_percent) {
-            *out_percent = brightness->valueint;
+    const cJSON *brightness = cJSON_GetObjectItemCaseSensitive(resp, "brightness_percent");
+    const cJSON *volume = cJSON_GetObjectItemCaseSensitive(resp, "volume_percent");
+    if (cJSON_IsNumber(brightness) && cJSON_IsNumber(volume)) {
+        if (out_brightness) {
+            *out_brightness = brightness->valueint;
+        }
+        if (out_volume) {
+            *out_volume = volume->valueint;
         }
         rc = 0;
     }
 
     cJSON_Delete(resp);
     return rc;
+}
+
+int jw_ipc_platform_brightness(const char *socket_path, int *out_percent) {
+    return jw_ipc_platform_levels(socket_path, out_percent, NULL);
 }
 
 int jw_ipc_platform_power_status(const char *socket_path,
@@ -1630,30 +1641,7 @@ int jw_ipc_set_brightness(const char *socket_path, int percent,
 }
 
 int jw_ipc_platform_volume(const char *socket_path, int *out_percent) {
-    if (out_percent) {
-        *out_percent = -1;
-    }
-
-    cJSON *req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "type", "platform-status");
-
-    cJSON *resp = NULL;
-    if (ipc__request(socket_path, req, &resp) != 0) {
-        return -1;
-    }
-
-    int rc = -1;
-    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
-    const cJSON *volume = cJSON_GetObjectItemCaseSensitive(status, "volume_percent");
-    if (cJSON_IsNumber(volume)) {
-        if (out_percent) {
-            *out_percent = volume->valueint;
-        }
-        rc = 0;
-    }
-
-    cJSON_Delete(resp);
-    return rc;
+    return jw_ipc_platform_levels(socket_path, NULL, out_percent);
 }
 
 int jw_ipc_hdmi_revert_status(const char *socket_path, int *out_seconds) {
@@ -2535,6 +2523,62 @@ int jw_ipc_set_boot_splash(const char *socket_path, int enabled,
     return ok ? 0 : -1;
 }
 
+/* platform-status field readers, shared by the one-row getters below and by
+   jw_ipc_get_display_status(), which fills all three rows from one reply. The
+   outputs are already initialized to "unknown". */
+static int ipc__parse_refresh_rate(const cJSON *resp, int *out_hz, bool *out_supported) {
+    int rc = -1;
+    const cJSON *capabilities = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
+    const cJSON *rate_cap = cJSON_GetObjectItemCaseSensitive(capabilities, "refresh_rate");
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *hz = cJSON_GetObjectItemCaseSensitive(status, "refresh_rate_hz");
+    if (out_supported) {
+        *out_supported = cJSON_IsTrue(rate_cap);
+    }
+    if (cJSON_IsNumber(hz)) {
+        if (out_hz) {
+            *out_hz = hz->valueint;
+        }
+        rc = 0;
+    } else if (cJSON_IsBool(rate_cap)) {
+        rc = 0;
+    }
+    return rc;
+}
+
+static int ipc__parse_color_temp(const cJSON *resp, int *out_kelvin, bool *out_supported) {
+    int rc = -1;
+    const cJSON *capabilities = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
+    const cJSON *temp_cap = cJSON_GetObjectItemCaseSensitive(capabilities, "color_temperature");
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *kelvin = cJSON_GetObjectItemCaseSensitive(status, "color_temp_kelvin");
+    if (out_supported) {
+        *out_supported = cJSON_IsTrue(temp_cap);
+    }
+    if (cJSON_IsNumber(kelvin)) {
+        if (out_kelvin) {
+            *out_kelvin = kelvin->valueint;
+        }
+        rc = 0;
+    } else if (cJSON_IsBool(temp_cap)) {
+        rc = 0;
+    }
+    return rc;
+}
+
+static int ipc__parse_hdmi_status(const cJSON *resp, int *out_connected, int *out_mode,
+                                  bool *out_supported) {
+    const cJSON *cap = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
+    const cJSON *hdmi_cap = cJSON_GetObjectItemCaseSensitive(cap, "hdmi_output");
+    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
+    const cJSON *conn = cJSON_GetObjectItemCaseSensitive(status, "hdmi_connected");
+    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(status, "hdmi_output_mode");
+    if (out_supported) *out_supported = cJSON_IsTrue(hdmi_cap);
+    if (out_connected && cJSON_IsNumber(conn)) *out_connected = conn->valueint;
+    if (out_mode && cJSON_IsNumber(mode)) *out_mode = mode->valueint;
+    return cJSON_IsBool(hdmi_cap) ? 0 : -1;
+}
+
 int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
                             bool *out_supported) {
     if (out_hz) {
@@ -2552,25 +2596,37 @@ int jw_ipc_get_refresh_rate(const char *socket_path, int *out_hz,
         return -1;
     }
 
-    int rc = -1;
-    const cJSON *capabilities = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
-    const cJSON *rate_cap = cJSON_GetObjectItemCaseSensitive(capabilities, "refresh_rate");
-    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
-    const cJSON *hz = cJSON_GetObjectItemCaseSensitive(status, "refresh_rate_hz");
-    if (out_supported) {
-        *out_supported = cJSON_IsTrue(rate_cap);
-    }
-    if (cJSON_IsNumber(hz)) {
-        if (out_hz) {
-            *out_hz = hz->valueint;
-        }
-        rc = 0;
-    } else if (cJSON_IsBool(rate_cap)) {
-        rc = 0;
-    }
-
+    int rc = ipc__parse_refresh_rate(resp, out_hz, out_supported);
     cJSON_Delete(resp);
     return rc;
+}
+
+int jw_ipc_get_display_status(const char *socket_path, jw_ipc_display_status *out) {
+    if (!out) {
+        return -1;
+    }
+    out->refresh_rate_hz = -1;
+    out->refresh_rate_supported = false;
+    out->color_temp_kelvin = -1;
+    out->color_temp_supported = false;
+    out->hdmi_connected = -1;
+    out->hdmi_output_mode = -1;
+    out->hdmi_supported = false;
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "type", "platform-status");
+
+    cJSON *resp = NULL;
+    if (ipc__request(socket_path, req, &resp) != 0) {
+        return -1;
+    }
+
+    (void)ipc__parse_refresh_rate(resp, &out->refresh_rate_hz, &out->refresh_rate_supported);
+    (void)ipc__parse_color_temp(resp, &out->color_temp_kelvin, &out->color_temp_supported);
+    (void)ipc__parse_hdmi_status(resp, &out->hdmi_connected, &out->hdmi_output_mode,
+                                 &out->hdmi_supported);
+    cJSON_Delete(resp);
+    return 0;
 }
 
 int jw_ipc_set_refresh_rate(const char *socket_path, int hz,
@@ -2622,23 +2678,7 @@ int jw_ipc_get_color_temp(const char *socket_path, int *out_kelvin,
         return -1;
     }
 
-    int rc = -1;
-    const cJSON *capabilities = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
-    const cJSON *temp_cap = cJSON_GetObjectItemCaseSensitive(capabilities, "color_temperature");
-    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
-    const cJSON *kelvin = cJSON_GetObjectItemCaseSensitive(status, "color_temp_kelvin");
-    if (out_supported) {
-        *out_supported = cJSON_IsTrue(temp_cap);
-    }
-    if (cJSON_IsNumber(kelvin)) {
-        if (out_kelvin) {
-            *out_kelvin = kelvin->valueint;
-        }
-        rc = 0;
-    } else if (cJSON_IsBool(temp_cap)) {
-        rc = 0;
-    }
-
+    int rc = ipc__parse_color_temp(resp, out_kelvin, out_supported);
     cJSON_Delete(resp);
     return rc;
 }
@@ -2733,17 +2773,9 @@ int jw_ipc_get_hdmi_status(const char *socket_path, int *out_connected,
         return -1;
     }
 
-    const cJSON *cap = cJSON_GetObjectItemCaseSensitive(resp, "capabilities");
-    const cJSON *hdmi_cap = cJSON_GetObjectItemCaseSensitive(cap, "hdmi_output");
-    const cJSON *status = cJSON_GetObjectItemCaseSensitive(resp, "status");
-    const cJSON *conn = cJSON_GetObjectItemCaseSensitive(status, "hdmi_connected");
-    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(status, "hdmi_output_mode");
-    if (out_supported) *out_supported = cJSON_IsTrue(hdmi_cap);
-    if (out_connected && cJSON_IsNumber(conn)) *out_connected = conn->valueint;
-    if (out_mode && cJSON_IsNumber(mode)) *out_mode = mode->valueint;
-
+    int rc = ipc__parse_hdmi_status(resp, out_connected, out_mode, out_supported);
     cJSON_Delete(resp);
-    return cJSON_IsBool(hdmi_cap) ? 0 : -1;
+    return rc;
 }
 
 int jw_ipc_set_hdmi_output(const char *socket_path, int mode,
