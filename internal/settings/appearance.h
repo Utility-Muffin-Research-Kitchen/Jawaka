@@ -90,6 +90,12 @@ typedef struct jw_appearance_env {
  * anywhere a normal SQLite open is safe — but NOT between fork() and execv(). */
 void jw_appearance_resolve(const char *db_path, jw_appearance_env *out);
 
+/* jw_appearance_resolve() without the Bluetooth snapshot: status_bt_state is
+ * left "0". The snapshot shells out to bluetoothctl, which on jawakad's main
+ * loop stalls input forwarding; use this for a child that draws no status bar
+ * (the OSD). Reads the DB exactly once. Same fork() rule as above. */
+void jw_appearance_resolve_settings(const char *db_path, jw_appearance_env *out);
+
 /* Child-side: export a resolved appearance into the environment with setenv
  * only — no allocation beyond setenv's own, no DB/SQLite. Safe to call in a
  * forked child before execv(). Returns 0 on success, -1 if any setenv failed. */
