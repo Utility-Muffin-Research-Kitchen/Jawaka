@@ -459,6 +459,7 @@ typedef struct {
     unsigned           wifi_msg_ms;         /* when wifi_msg was set (0 = none); auto-expires */
     char               wifi_attempt_ssid[64];  /* network we're trying to join ("" = none) */
     unsigned           wifi_attempt_ms;     /* when the join attempt started */
+    int                wifi_attempt_auth_fails; /* auth-fail events seen this attempt */
     int                wifi_monitor_fd;     /* wpa event-socket fd during a join (-1 = none) */
     bool               wifi_radio_on;       /* Wi-Fi on/off toggle state */
     int                wifi_strength_cached;/* 0..3 for the status-bar icon; polled on a throttle */

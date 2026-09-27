@@ -926,8 +926,9 @@ jw_wifi_evt jw_wifi_monitor_poll(int fd) {
                    ((strstr(buf, "Authentication") && strstr(buf, "timed out")) ||
                     strstr(buf, "CTRL-EVENT-ASSOC-REJECT") != NULL)) {
             /* SAE/WPA3 bad key, or assoc rejected — likely-but-not-certain bad key.
-               A clean successful connect never emits these, so it's safe to act on
-               within the attempt (the monitor is closed before recovery churn). */
+               A connect that succeeds can still emit one: an iPhone hotspot seen as
+               two BSSIDs rejected on one and accepted on the other a second later.
+               jw_wifi_attempt_resolve decides how many end the attempt. */
             result = JW_WIFI_EVT_AUTH_FAIL;
         }
     }

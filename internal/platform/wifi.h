@@ -83,7 +83,8 @@ int  jw_wifi_monitor_open(void);
 typedef enum {
     JW_WIFI_EVT_NONE = 0,    /* nothing conclusive yet */
     JW_WIFI_EVT_WRONG_KEY,   /* explicit WRONG_KEY (plain WPA2-PSK 4-way failure) */
-    JW_WIFI_EVT_AUTH_FAIL,   /* auth timed out / assoc-reject — likely bad key, not certain */
+    JW_WIFI_EVT_AUTH_FAIL,   /* auth timed out / assoc-reject from one access point:
+                                maybe a bad key, maybe one AP of several refusing */
 } jw_wifi_evt;
 
 /* Drain buffered events (non-blocking) and report the strongest failure seen.
@@ -95,6 +96,24 @@ void jw_wifi_monitor_close(int fd);
 
 /* Recover connectivity after a failed attempt. */
 void jw_wifi_recover(void);
+
+/* Where a join attempt stands after one poll. */
+typedef enum {
+    JW_WIFI_ATTEMPT_PENDING = 0,
+    JW_WIFI_ATTEMPT_CONNECTED,
+    JW_WIFI_ATTEMPT_WRONG_KEY,   /* definitive; the profile can be forgotten */
+    JW_WIFI_ATTEMPT_FAILED,      /* give up and recover the previous network */
+} jw_wifi_attempt_result;
+
+#define JW_WIFI_ATTEMPT_TIMEOUT_MS 12000u
+#define JW_WIFI_ATTEMPT_AUTH_FAILS 2   /* AUTH_FAIL events that end an attempt */
+
+/* Resolve a join attempt from one poll: whether status shows the target SSID
+ * connected, the event drained since the last poll, and the time since the
+ * attempt began. *auth_fails counts AUTH_FAIL events across the attempt and
+ * starts at 0. Platform-independent (wifi_attempt.c). */
+jw_wifi_attempt_result jw_wifi_attempt_resolve(bool connected, jw_wifi_evt evt,
+                                               int *auth_fails, unsigned elapsed_ms);
 
 /* ── Radio on/off ───────────────────────────────────────────────────────── */
 
