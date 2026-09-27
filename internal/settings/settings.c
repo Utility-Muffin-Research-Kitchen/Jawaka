@@ -622,6 +622,7 @@ static void jw__refresh_audio_status(jw_settings_ui *ui) {
    (almost none of it work), and this page used to make four of them in a row
    every 300ms, which is what made its cursor movement drag. */
 void jw_settings_ui_apply_av(jw_settings_ui *ui, int brightness_percent,
+                             int volume_percent,
                              const jw_ipc_audio_status *audio) {
     if (!ui) return;
     if (brightness_percent >= 0) {
@@ -629,6 +630,12 @@ void jw_settings_ui_apply_av(jw_settings_ui *ui, int brightness_percent,
     }
     if (audio) {
         jw__apply_audio_status(ui, audio);
+    }
+    /* After the audio status, which also carries a volume: the poller samples
+       the levels every pass but the audio status only every few, so this is the
+       fresher of the two. */
+    if (volume_percent >= 0) {
+        ui->volume_percent = volume_percent > 100 ? 100 : volume_percent;
     }
 }
 
@@ -739,71 +746,50 @@ static void jw__refresh_boot_splash(jw_settings_ui *ui) {
     }
 }
 
-static void jw__refresh_refresh_rate(jw_settings_ui *ui) {
+/* Refresh Rate, Color Temperature and HDMI Output all come from platform-status,
+   which costs jawakad several process spawns to answer, so fetch it once for the
+   three rows rather than once per row on every page open. */
+static void jw__refresh_display_modes(jw_settings_ui *ui) {
     if (!ui) {
         return;
     }
     ui->refresh_rate_supported = false;
-    if (!ui->socket_path[0]) {
-        return;
-    }
-
-    int hz = -1;
-    bool supported = false;
-    if (jw_ipc_get_refresh_rate(ui->socket_path, &hz, &supported) == 0) {
-        ui->refresh_rate_supported = supported;
-        /* Reflect the panel's actual current rate when the daemon reports it
-           (truth over the persisted mirror, e.g. after moving the card). Any
-           positive rate is taken as-is rather than filtered against the offered
-           list: the live mode IS the truth, so a panel left at a retired rate
-           (90 Hz, from before it left the menu) must read 90 rather than have
-           the row quietly claim 60. Cycling off it then retires it for good. */
-        if (hz > 0) {
-            ui->refresh_rate_hz = hz;
-        }
-    }
-}
-
-static void jw__refresh_color_temp(jw_settings_ui *ui) {
-    if (!ui) {
-        return;
-    }
     ui->color_temp_supported = false;
-    if (!ui->socket_path[0]) {
-        return;
-    }
-
-    int kelvin = -1;
-    bool supported = false;
-    if (jw_ipc_get_color_temp(ui->socket_path, &kelvin, &supported) == 0) {
-        ui->color_temp_supported = supported;
-        /* The daemon only knows a value once one has been applied this boot; a
-           negative reading means "not set yet", so keep the persisted mirror. */
-        if (kelvin > 0) {
-            ui->color_temp_kelvin = jw_platform_clamp_color_temp_k(kelvin);
-        }
-    }
-}
-
-static void jw__refresh_hdmi(jw_settings_ui *ui) {
-    if (!ui) {
-        return;
-    }
     ui->hdmi_supported = false;
     ui->hdmi_connected = -1;
     if (!ui->socket_path[0]) {
         return;
     }
-    int connected = -1, mode = -1;
-    bool supported = false;
-    if (jw_ipc_get_hdmi_status(ui->socket_path, &connected, &mode, &supported) == 0) {
-        ui->hdmi_supported = supported;
-        ui->hdmi_connected = connected;
-        /* The persisted setting is the source of truth for the chosen mode; only
-           adopt the daemon's live mode when it actually has one applied. */
-        if (mode >= 0 && mode <= 2) {
-            ui->hdmi_output_mode = mode;
-        }
+
+    jw_ipc_display_status status;
+    if (jw_ipc_get_display_status(ui->socket_path, &status) != 0) {
+        return;
+    }
+
+    ui->refresh_rate_supported = status.refresh_rate_supported;
+    /* Reflect the panel's actual current rate when the daemon reports it
+       (truth over the persisted mirror, e.g. after moving the card). Any
+       positive rate is taken as-is rather than filtered against the offered
+       list: the live mode IS the truth, so a panel left at a retired rate
+       (90 Hz, from before it left the menu) must read 90 rather than have
+       the row quietly claim 60. Cycling off it then retires it for good. */
+    if (status.refresh_rate_hz > 0) {
+        ui->refresh_rate_hz = status.refresh_rate_hz;
+    }
+
+    ui->color_temp_supported = status.color_temp_supported;
+    /* The daemon only knows a value once one has been applied this boot; a
+       negative reading means "not set yet", so keep the persisted mirror. */
+    if (status.color_temp_kelvin > 0) {
+        ui->color_temp_kelvin = jw_platform_clamp_color_temp_k(status.color_temp_kelvin);
+    }
+
+    ui->hdmi_supported = status.hdmi_supported;
+    ui->hdmi_connected = status.hdmi_connected;
+    /* The persisted setting is the source of truth for the chosen mode; only
+       adopt the daemon's live mode when it actually has one applied. */
+    if (status.hdmi_output_mode >= 0 && status.hdmi_output_mode <= 2) {
+        ui->hdmi_output_mode = status.hdmi_output_mode;
     }
 }
 
@@ -7013,9 +6999,7 @@ static bool jw__enter_screen(jw_settings_ui *ui, jw_settings_screen screen,
         jw__refresh_brightness(ui);
         jw__refresh_volume(ui);
         jw__refresh_audio_status(ui);
-        jw__refresh_refresh_rate(ui);
-        jw__refresh_color_temp(ui);
-        jw__refresh_hdmi(ui);
+        jw__refresh_display_modes(ui);
         break;
     case JW_SETTINGS_LIGHTING:
         jw__refresh_led(ui);
