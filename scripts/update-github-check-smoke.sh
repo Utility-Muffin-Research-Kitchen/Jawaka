@@ -230,6 +230,14 @@ assert again["candidate"]["release_id"] == "v0.2.0", again
 assert again["downloaded"] is True, again
 assert again["selected_option"] == out["picked"] == 2, again
 assert again["options_complete"] is True and again["options_loading"] is False, again
+# A routine check drops the old list's "complete" until it lands, so a list
+# request during it queues a fresh load.
+assert out["complete_while_rechecking"] is False, out
+assert out["loading_after_second_queue"] is True, out
+last = out["after_recheck"]
+assert last["candidate"]["release_id"] == "v0.4.0", last
+assert len(last["options"]) == 3 and last["options_complete"] is True, last
+assert last["options_loading"] is False, last
 PY
 
 # A response that stops arriving fails once the stall window passes.

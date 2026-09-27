@@ -55,6 +55,17 @@ static int run_job_scenario(const char *state_dir, const char *platform)
     wait_for_job(&status, &job);
     cJSON_AddNumberToObject(out, "picked", pick);
     cJSON_AddItemToObject(out, "after_reload", jw_update_status_to_json(&status));
+
+    /* Reopening the page runs a routine check. Asking for the list during it
+       must queue a fresh load, not trust the complete list from before. */
+    jw_update_check_start(&status, &job, state_dir, JW_UPDATE_CHANNEL_BETA,
+                          JW_UPDATE_SCOPE_LATEST);
+    cJSON_AddBoolToObject(out, "complete_while_rechecking", status.options_complete);
+    jw_update_check_start(&status, &job, state_dir, JW_UPDATE_CHANNEL_BETA,
+                          JW_UPDATE_SCOPE_ALL);
+    cJSON_AddBoolToObject(out, "loading_after_second_queue", status.options_loading);
+    wait_for_job(&status, &job);
+    cJSON_AddItemToObject(out, "after_recheck", jw_update_status_to_json(&status));
     jw_update_check_job_wait(&job);
 
     char *printed = cJSON_Print(out);

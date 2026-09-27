@@ -2227,6 +2227,10 @@ int jw_update_check_start(jw_update_status *status,
         status->options_loading = true;
     } else {
         status->status = JW_UPDATE_STATUS_CHECKING;
+        /* The check replaces the options with the newest release alone. Until
+           it lands, don't let the picker take the previous list as complete:
+           asking for the full list now has to queue a load behind this check. */
+        status->options_complete = false;
         jw__set_message(status, "%s", "Checking for updates");
     }
     return 0;

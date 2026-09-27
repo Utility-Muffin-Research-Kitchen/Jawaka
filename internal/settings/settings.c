@@ -5889,6 +5889,10 @@ static void jw__render_update_picker(const jw_settings_ui *ui,
         jw__draw_update_activity(ui, x + cat_scale(12), dy,
                                  w - cat_scale(24));
         dy += cat_scale(12);
+        /* Keep the loop drawing so the bar animates and the status poll keeps
+           running; otherwise the loop idles until a button press and the list
+           never appears. */
+        cat_request_frame();
     } else if (count > 0) {
         int item_h = TTF_FontHeight(cat_get_font(CAT_FONT_MEDIUM)) +
                      TTF_FontHeight(small) + cat_scale(16);
@@ -6493,6 +6497,11 @@ static void jw__update_load_releases(jw_settings_ui *ui,
     if (jw_ipc_update_releases(ui->socket_path, refresh, &info,
                                status, sizeof(status)) == 0) {
         jw__settings_update_from_ipc(ui, &info, NULL);
+        /* Opening the picker asks from the update page, which would schedule
+           its slow 3 s poll; the list usually lands well before that. */
+        if (info.options_loading) {
+            ui->update_next_poll_ms = SDL_GetTicks() + 500;
+        }
     } else {
         jw__copy_status(status_buf, status_size,
                         status[0] ? status : "Cannot load releases");
@@ -6585,7 +6594,12 @@ static void jw__update_check_releases(jw_settings_ui *ui,
     char status[192] = { 0 };
     if (jw_ipc_update_check(ui->socket_path, NULL, &info,
                             status, sizeof(status)) == 0) {
-        jw__settings_update_from_ipc(ui, &info, status);
+        /* While the check runs, the daemon's own message says so and turns into
+           the result when it lands. A transient copy of "Checking for updates"
+           would outlive a fast check: the page stops redrawing once the result
+           is in, so the message never gets to expire. */
+        bool checking = strcmp(info.state, "checking") == 0;
+        jw__settings_update_from_ipc(ui, &info, checking ? NULL : status);
         jw__copy_status(status_buf, status_size, status);
     } else {
         jw__settings_update_from_ipc(ui, &info,
